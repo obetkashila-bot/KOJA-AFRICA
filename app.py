@@ -1,10 +1,8 @@
-
 # ============================================================
 # KOJA AFRICA
-# ============================================================
-# Knowledge • Questions • Answers
+# KNOWLEDGE • QUESTIONS • ANSWERS
 #
-# SINGLE-FILE FLASK APPLICATION
+# SINGLE FILE FLASK APPLICATION
 #
 # DATABASE:
 #   Supabase PostgreSQL REST API
@@ -12,23 +10,34 @@
 # STORAGE:
 #   Supabase Storage
 #
-# WORKS WITH:
-#   Pydroid 3
+# PAYMENTS:
+#   Flutterwave
+#   Zambia Mobile Money:
+#       MTN
+#       Airtel
+#       Zamtel
+#
+# DEPLOYMENT:
 #   Render
 #   Railway
 #   VPS
-#   Gunicorn
+#   Pydroid 3
 #
 # NO SQLITE
 # NO psycopg
 # NO psycopg2
+#
 # ============================================================
 
 import os
 import uuid
 import mimetypes
 import requests
+import hmac
+import hashlib
+import base64
 
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 from functools import wraps
 
@@ -53,7 +62,7 @@ from werkzeug.utils import secure_filename
 
 
 # ============================================================
-# CONFIGURATION
+# APPLICATION CONFIGURATION
 # ============================================================
 
 APP_NAME = "KOJA AFRICA"
@@ -67,53 +76,17 @@ APP_TAGLINE = (
 # SUPABASE CONFIGURATION
 # ============================================================
 
-# Put your real Supabase project URL in the environment.
-#
-# Example:
-# SUPABASE_URL=https://xxxxxxxx.supabase.co
-
 SUPABASE_URL = os.environ.get(
     "SUPABASE_URL",
     ""
 ).strip().rstrip("/")
 
 
-# ------------------------------------------------------------
-# CURRENT SUPABASE SECRET KEY
-# ------------------------------------------------------------
-#
-# Current Supabase backend key:
-#
-# sb_secret_...
-#
-# ------------------------------------------------------------
-
 SUPABASE_SERVICE_KEY = os.environ.get(
     "SUPABASE_SERVICE_KEY",
     ""
 ).strip()
 
-
-# ------------------------------------------------------------
-# BACKWARD COMPATIBILITY
-# ------------------------------------------------------------
-#
-# This also accepts the old variable name that some previous
-# versions of the project may have used.
-#
-# You can therefore use:
-#
-# SUPABASE_SERVICE_KEY
-#
-# OR:
-#
-# SUPABASE_SERVICE_ROLE_KEY
-#
-# OR:
-#
-# sb_se
-#
-# ------------------------------------------------------------
 
 if not SUPABASE_SERVICE_KEY:
 
@@ -131,9 +104,9 @@ if not SUPABASE_SERVICE_KEY:
     ).strip()
 
 
-# ------------------------------------------------------------
-# STORAGE BUCKET
-# ------------------------------------------------------------
+# ============================================================
+# SUPABASE STORAGE
+# ============================================================
 
 STORAGE_BUCKET = os.environ.get(
     "KOJA_STORAGE_BUCKET",
@@ -142,7 +115,7 @@ STORAGE_BUCKET = os.environ.get(
 
 
 # ============================================================
-# SECURITY
+# FLASK SECURITY
 # ============================================================
 
 SECRET_KEY = os.environ.get(
@@ -151,14 +124,57 @@ SECRET_KEY = os.environ.get(
 ).strip()
 
 
-# Temporary key for local/Pydroid testing.
-#
-# On Render/Railway/VPS you SHOULD set KOJA_SECRET_KEY
-# as an environment variable.
-
 if not SECRET_KEY:
 
     SECRET_KEY = os.urandom(32)
+
+
+# ============================================================
+# FLUTTERWAVE
+# ============================================================
+
+FLW_SECRET_KEY = os.environ.get(
+    "FLW_SECRET_KEY",
+    ""
+).strip()
+
+
+FLW_SECRET_HASH = os.environ.get(
+    "FLW_SECRET_HASH",
+    ""
+).strip()
+
+
+try:
+
+    KOJA_PAYMENT_AMOUNT = Decimal(
+        os.environ.get(
+            "KOJA_PAYMENT_AMOUNT",
+            "10"
+        ).strip()
+    )
+
+except (
+    InvalidOperation,
+    ValueError
+):
+
+    KOJA_PAYMENT_AMOUNT = Decimal(
+        "10.00"
+    )
+
+
+FLW_API_URL = (
+    "https://api.flutterwave.com/v3"
+)
+
+
+# Zambia mobile-money networks
+ZAMBIA_NETWORKS = [
+    "MTN",
+    "Airtel",
+    "Zamtel"
+]
 
 
 # ============================================================
@@ -169,6 +185,7 @@ HOST = os.environ.get(
     "HOST",
     "0.0.0.0"
 )
+
 
 try:
 
@@ -204,15 +221,21 @@ app = Flask(__name__)
 
 app.secret_key = SECRET_KEY
 
-app.config["MAX_CONTENT_LENGTH"] = (
-    10 * 1024 * 1024
-)
+app.config[
+    "MAX_CONTENT_LENGTH"
+] = 10 * 1024 * 1024
 
-app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config[
+    "SESSION_COOKIE_HTTPONLY"
+] = True
 
-app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config[
+    "SESSION_COOKIE_SAMESITE"
+] = "Lax"
 
-app.config["SESSION_COOKIE_SECURE"] = HTTPS_ENABLED
+app.config[
+    "SESSION_COOKIE_SECURE"
+] = HTTPS_ENABLED
 
 
 # ============================================================
@@ -308,7 +331,7 @@ SUBJECTS = [
 
 
 # ============================================================
-# FILE TYPES
+# ALLOWED FILE TYPES
 # ============================================================
 
 ALLOWED_EXTENSIONS = {
@@ -329,7 +352,7 @@ ALLOWED_EXTENSIONS = {
 
 
 # ============================================================
-# DATABASE
+# DATABASE HELPERS
 # ============================================================
 
 def database_ready():
@@ -337,20 +360,27 @@ def database_ready():
     return bool(
         SUPABASE_URL
         and SUPABASE_SERVICE_KEY
-        and SUPABASE_URL.startswith("https://")
+        and SUPABASE_URL.startswith(
+            "https://"
+        )
     )
 
 
 def db_headers():
 
     return {
-        "apikey": SUPABASE_SERVICE_KEY,
-        "Authorization": (
+        "apikey":
+            SUPABASE_SERVICE_KEY,
+
+        "Authorization":
             "Bearer "
-            + SUPABASE_SERVICE_KEY
-        ),
-        "Content-Type": "application/json",
-        "Accept": "application/json"
+            + SUPABASE_SERVICE_KEY,
+
+        "Content-Type":
+            "application/json",
+
+        "Accept":
+            "application/json"
     }
 
 
@@ -549,8 +579,10 @@ def get_user_by_username(
         "username":
             "eq."
             + username,
+
         "select":
             "*",
+
         "limit":
             "1"
     }
@@ -567,7 +599,11 @@ def get_user_by_username(
         params
     )
 
-    return rows[0] if rows else None
+    return (
+        rows[0]
+        if rows
+        else None
+    )
 
 
 def get_user_by_id(
@@ -580,14 +616,20 @@ def get_user_by_id(
             "id":
                 "eq."
                 + str(user_id),
+
             "select":
                 "*",
+
             "limit":
                 "1"
         }
     )
 
-    return rows[0] if rows else None
+    return (
+        rows[0]
+        if rows
+        else None
+    )
 
 
 def email_exists(
@@ -600,8 +642,10 @@ def email_exists(
             "email":
                 "eq."
                 + email,
+
             "select":
                 "id",
+
             "limit":
                 "1"
         }
@@ -624,14 +668,20 @@ def get_question(
             "id":
                 "eq."
                 + str(question_id),
+
             "select":
                 "*",
+
             "limit":
                 "1"
         }
     )
 
-    return rows[0] if rows else None
+    return (
+        rows[0]
+        if rows
+        else None
+    )
 
 
 def get_student_question(
@@ -645,17 +695,24 @@ def get_student_question(
             "id":
                 "eq."
                 + str(question_id),
+
             "user_id":
                 "eq."
                 + str(user_id),
+
             "select":
                 "*",
+
             "limit":
                 "1"
         }
     )
 
-    return rows[0] if rows else None
+    return (
+        rows[0]
+        if rows
+        else None
+    )
 
 
 def get_answer(
@@ -668,14 +725,20 @@ def get_answer(
             "question_id":
                 "eq."
                 + str(question_id),
+
             "select":
                 "*",
+
             "limit":
                 "1"
         }
     )
 
-    return rows[0] if rows else None
+    return (
+        rows[0]
+        if rows
+        else None
+    )
 
 
 # ============================================================
@@ -698,7 +761,10 @@ def allowed_file(
         .lower()
     )
 
-    return extension in ALLOWED_EXTENSIONS
+    return (
+        extension
+        in ALLOWED_EXTENSIONS
+    )
 
 
 def storage_upload(
@@ -737,21 +803,16 @@ def storage_upload(
             "Unsupported file type."
         )
 
+    extension = ""
+
     if "." in original:
 
         extension = (
             "."
             + original
-            .rsplit(
-                ".",
-                1
-            )[1]
+            .rsplit(".", 1)[1]
             .lower()
         )
-
-    else:
-
-        extension = ""
 
     storage_path = (
         folder
@@ -777,6 +838,7 @@ def storage_upload(
     )
 
     headers = {
+
         "Authorization":
             "Bearer "
             + SUPABASE_SERVICE_KEY,
@@ -806,6 +868,7 @@ def storage_upload(
         )
 
     return {
+
         "original_name":
             original,
 
@@ -941,9 +1004,7 @@ def send_storage_file(
 # AUTHORIZATION
 # ============================================================
 
-def student_required(
-    function
-):
+def student_required(function):
 
     @wraps(function)
     def wrapper(
@@ -971,9 +1032,7 @@ def student_required(
     return wrapper
 
 
-def admin_required(
-    function
-):
+def admin_required(function):
 
     @wraps(function)
     def wrapper(
@@ -1002,7 +1061,7 @@ def admin_required(
 
 
 # ============================================================
-# NOTIFICATION COUNT
+# NOTIFICATIONS
 # ============================================================
 
 def unread_count():
@@ -1042,6 +1101,275 @@ def unread_count():
     except Exception:
 
         return 0
+
+
+# ============================================================
+# PAYMENT FUNCTIONS
+# ============================================================
+
+def payment_ready():
+
+    return bool(
+        FLW_SECRET_KEY
+        and FLW_SECRET_HASH
+    )
+
+
+def create_flutterwave_payment(
+    phone_number,
+    network,
+    customer_name,
+    email,
+    tx_ref
+):
+
+    if not FLW_SECRET_KEY:
+
+        raise RuntimeError(
+            "FLW_SECRET_KEY is not configured."
+        )
+
+    if network not in ZAMBIA_NETWORKS:
+
+        raise ValueError(
+            "Invalid Zambia mobile-money network."
+        )
+
+    payload = {
+
+        "phone_number":
+            phone_number,
+
+        "network":
+            network,
+
+        "amount":
+            float(
+                KOJA_PAYMENT_AMOUNT
+            ),
+
+        "currency":
+            "ZMW",
+
+        "fullname":
+            customer_name,
+
+        "email":
+            email,
+
+        "tx_ref":
+            tx_ref
+    }
+
+    response = requests.post(
+
+        FLW_API_URL
+        + "/charges?type=mobile_money_zambia",
+
+        headers={
+
+            "Authorization":
+                "Bearer "
+                + FLW_SECRET_KEY,
+
+            "Content-Type":
+                "application/json",
+
+            "Accept":
+                "application/json"
+        },
+
+        json=payload,
+
+        timeout=60
+    )
+
+    if not response.ok:
+
+        raise RuntimeError(
+            "Flutterwave rejected payment: "
+            + response.text
+        )
+
+    result = response.json()
+
+    if result.get(
+        "status"
+    ) != "success":
+
+        raise RuntimeError(
+            result.get(
+                "message",
+                "Payment could not be initiated."
+            )
+        )
+
+    return result
+
+
+def verify_flutterwave_transaction(
+    transaction_id
+):
+
+    if not FLW_SECRET_KEY:
+
+        raise RuntimeError(
+            "FLW_SECRET_KEY is not configured."
+        )
+
+    response = requests.get(
+
+        FLW_API_URL
+        + "/transactions/"
+        + str(transaction_id)
+        + "/verify",
+
+        headers={
+
+            "Authorization":
+                "Bearer "
+                + FLW_SECRET_KEY,
+
+            "Content-Type":
+                "application/json",
+
+            "Accept":
+                "application/json"
+        },
+
+        timeout=60
+    )
+
+    if not response.ok:
+
+        raise RuntimeError(
+            "Flutterwave verification failed: "
+            + response.text
+        )
+
+    return response.json()
+
+
+def verify_payment(
+    transaction_id,
+    expected_reference,
+    expected_amount
+):
+
+    result = verify_flutterwave_transaction(
+        transaction_id
+    )
+
+    if result.get(
+        "status"
+    ) != "success":
+
+        return False, result
+
+    data = result.get(
+        "data"
+    ) or {}
+
+    status = str(
+        data.get(
+            "status",
+            ""
+        )
+    ).lower()
+
+    reference = (
+        data.get("tx_ref")
+        or data.get("reference")
+    )
+
+    currency = str(
+        data.get(
+            "currency",
+            ""
+        )
+    ).upper()
+
+    try:
+
+        amount = Decimal(
+            str(
+                data.get(
+                    "amount",
+                    "0"
+                )
+            )
+        )
+
+    except Exception:
+
+        amount = Decimal("0")
+
+    if status not in (
+        "successful",
+        "succeeded"
+    ):
+
+        return False, data
+
+    if reference != expected_reference:
+
+        return False, data
+
+    if currency != "ZMW":
+
+        return False, data
+
+    if amount < expected_amount:
+
+        return False, data
+
+    return True, data
+
+
+def mark_payment_successful(
+    payment
+):
+
+    payment_id = payment["id"]
+
+    question_id = payment.get(
+        "question_id"
+    )
+
+    db_update(
+        "payments",
+        {
+            "id":
+                payment_id
+        },
+        {
+            "status":
+                "successful",
+
+            "updated_at":
+                current_time()
+        }
+    )
+
+    if question_id:
+
+        db_update(
+            "questions",
+            {
+                "id":
+                    question_id
+            },
+            {
+                "payment_status":
+                    "paid",
+
+                "status":
+                    "Pending",
+
+                "updated_at":
+                    current_time()
+            }
+        )
 
 
 # ============================================================
@@ -1336,7 +1664,8 @@ width:100%;
 border-collapse:collapse;
 }
 
-th,td{
+th,
+td{
 padding:10px;
 border-bottom:1px solid #e2e8f0;
 text-align:left;
@@ -1415,6 +1744,10 @@ Dashboard
 Questions
 </a>
 
+<a href="{{ url_for('admin_payments') }}">
+Payments
+</a>
+
 <a href="{{ url_for('logout') }}">
 Logout
 </a>
@@ -1486,17 +1819,27 @@ Connecting students with academic help across Africa.
 
 def page(
     content,
-    title="KOJA"
+    title="KOJA",
+    **extra
 ):
 
     return render_template_string(
         PAGE,
+
         content=render_template_string(
             content,
+
             countries=AFRICAN_COUNTRIES,
-            subjects=SUBJECTS
+
+            subjects=SUBJECTS,
+
+            amount=KOJA_PAYMENT_AMOUNT,
+
+            **extra
         ),
+
         title=title,
+
         unread_count=unread_count()
     )
 
@@ -1507,8 +1850,6 @@ def page(
 
 @app.route("/")
 def index():
-
-    database_status = database_ready()
 
     return page(
         """
@@ -1560,13 +1901,13 @@ Academic Questions
 </div>
 
 <div class="stat">
-<div class="num">📄</div>
-Learning Resources
+<div class="num">💳</div>
+Mobile Payments
 </div>
 
 <div class="stat">
 <div class="num">🔔</div>
-Answer Notifications
+Notifications
 </div>
 
 </div>
@@ -1575,14 +1916,19 @@ Answer Notifications
 
 <h2>How KOJA Works</h2>
 
-<p>1. Create a student account.</p>
-<p>2. Select your country and institution.</p>
-<p>3. Submit your assignment question.</p>
-<p>4. Attach your assignment if necessary.</p>
-<p>5. KOJA administrator reviews the question.</p>
-<p>6. An academic answer is added.</p>
+<p>1. Create your student account.</p>
+
+<p>2. Submit your assignment question.</p>
+
+<p>3. Pay using supported mobile money.</p>
+
+<p>4. KOJA verifies the payment.</p>
+
+<p>5. Your question enters the administrator queue.</p>
+
+<p>6. Administrator provides the academic answer.</p>
+
 <p>7. You receive an in-site notification.</p>
-<p>8. Download permitted assignment/resource files.</p>
 
 </div>
 
@@ -1590,7 +1936,7 @@ Answer Notifications
 
 <h2>System Status</h2>
 
-{% if database_status %}
+{% if database_ready() %}
 
 <div class="success">
 Supabase configuration detected.
@@ -1599,14 +1945,25 @@ Supabase configuration detected.
 {% else %}
 
 <div class="error">
+Supabase is not configured.
+</div>
 
-Supabase is not configured yet.
+{% endif %}
 
-<br><br>
+{% if payment_ready() %}
 
-Set SUPABASE_URL and SUPABASE_SERVICE_KEY
-in your environment.
+<br>
 
+<div class="success">
+Payment configuration detected.
+</div>
+
+{% else %}
+
+<br>
+
+<div class="info">
+Payment system is not configured yet.
 </div>
 
 {% endif %}
@@ -1739,6 +2096,7 @@ def register():
             db_insert(
                 "users",
                 {
+
                     "name":
                         name,
 
@@ -1906,7 +2264,7 @@ Create Account
 
 
 # ============================================================
-# LOGIN
+# STUDENT LOGIN
 # ============================================================
 
 @app.route(
@@ -1945,8 +2303,13 @@ def login():
                 session.clear()
 
                 session["user_id"] = user["id"]
+
                 session["name"] = user["name"]
-                session["username"] = user["username"]
+
+                session["username"] = (
+                    user["username"]
+                )
+
                 session["role"] = "student"
 
                 return redirect(
@@ -2005,12 +2368,9 @@ Login
 
 <br>
 
-<p>
-Don't have an account?
 <a href="{{ url_for('register') }}">
-Register
+Create an account
 </a>
-</p>
 
 </div>
         """,
@@ -2084,6 +2444,11 @@ def student_dashboard():
         if q.get("status") == "Answered"
     ])
 
+    paid = len([
+        q for q in questions
+        if q.get("payment_status") == "paid"
+    ])
+
     return page(
         """
 <div class="hero">
@@ -2108,6 +2473,11 @@ Ask New Question
 <div class="stat">
 <div class="num">{{ total }}</div>
 Questions
+</div>
+
+<div class="stat">
+<div class="num">{{ paid }}</div>
+Paid
 </div>
 
 <div class="stat">
@@ -2138,7 +2508,13 @@ Answered
 {{ q["question"][:250] }}
 </p>
 
-{% if q["status"] == "Answered" %}
+{% if q.get("payment_status") != "paid" %}
+
+<span class="badge pending">
+Payment Required
+</span>
+
+{% elif q["status"] == "Answered" %}
 
 <span class="badge answered">
 Answered
@@ -2147,7 +2523,7 @@ Answered
 {% else %}
 
 <span class="badge pending">
-Pending
+Paid / Pending Answer
 </span>
 
 {% endif %}
@@ -2161,6 +2537,18 @@ question_id=q['id']
 ) }}">
 Open
 </a>
+
+{% if q.get("payment_status") != "paid" %}
+
+<a class="btn orange"
+href="{{ url_for(
+'pay_question',
+question_id=q['id']
+) }}">
+Pay K{{ "%.2f"|format(amount) }}
+</a>
+
+{% endif %}
 
 </div>
 
@@ -2212,9 +2600,7 @@ def submit_question():
             )
 
             return redirect(
-                url_for(
-                    "submit_question"
-                )
+                url_for("submit_question")
             )
 
         if subject not in SUBJECTS:
@@ -2224,9 +2610,7 @@ def submit_question():
             )
 
             return redirect(
-                url_for(
-                    "submit_question"
-                )
+                url_for("submit_question")
             )
 
         uploaded = None
@@ -2243,9 +2627,10 @@ def submit_question():
                     "questions"
                 )
 
-            db_insert(
+            result = db_insert(
                 "questions",
                 {
+
                     "user_id":
                         session[
                             "user_id"
@@ -2281,22 +2666,45 @@ def submit_question():
                         ),
 
                     "status":
-                        "Pending",
+                        "Awaiting Payment",
 
                     "answer_seen":
                         0,
+
+                    "payment_required":
+                        True,
+
+                    "payment_status":
+                        "unpaid",
 
                     "created_at":
                         current_time()
                 }
             )
 
+            question_id = None
+
+            if result:
+
+                question_id = result[0].get(
+                    "id"
+                )
+
+            if not question_id:
+
+                raise RuntimeError(
+                    "Question was created but its ID was not returned."
+                )
+
             flash(
-                "Question submitted successfully."
+                "Question created. Complete payment to send it to the administrator."
             )
 
             return redirect(
-                url_for("my_questions")
+                url_for(
+                    "pay_question",
+                    question_id=question_id
+                )
             )
 
         except Exception as error:
@@ -2322,9 +2730,11 @@ def submit_question():
 
 <div class="info">
 
-Write the complete assignment question.
-You can attach a PDF, Word document, image
-or other supported file up to 10 MB.
+Questions require payment before they enter
+the administrator answering queue.
+
+Current price:
+<b>K{{ "%.2f"|format(amount) }}</b>
 
 </div>
 
@@ -2382,7 +2792,7 @@ name="attachment">
 </div>
 
 <button class="btn">
-Submit Question
+Continue to Payment
 </button>
 
 </form>
@@ -2391,6 +2801,802 @@ Submit Question
         """,
         "Ask Question"
     )
+
+
+# ============================================================
+# PAYMENT PAGE
+# ============================================================
+
+@app.route(
+    "/pay/<int:question_id>",
+    methods=["GET", "POST"]
+)
+@student_required
+def pay_question(
+    question_id
+):
+
+    question = get_student_question(
+        question_id,
+        session["user_id"]
+    )
+
+    if not question:
+
+        abort(404)
+
+    if question.get(
+        "payment_status"
+    ) == "paid":
+
+        flash(
+            "This question has already been paid for."
+        )
+
+        return redirect(
+            url_for(
+                "view_question",
+                question_id=question_id
+            )
+        )
+
+    if request.method == "POST":
+
+        network = request.form.get(
+            "network",
+            ""
+        ).strip()
+
+        phone = request.form.get(
+            "phone",
+            ""
+        ).strip()
+
+        if network not in ZAMBIA_NETWORKS:
+
+            flash(
+                "Select MTN, Airtel or Zamtel."
+            )
+
+            return redirect(
+                url_for(
+                    "pay_question",
+                    question_id=question_id
+                )
+            )
+
+        if not phone:
+
+            flash(
+                "Enter your mobile-money phone number."
+            )
+
+            return redirect(
+                url_for(
+                    "pay_question",
+                    question_id=question_id
+                )
+            )
+
+        if not payment_ready():
+
+            flash(
+                "Payment system is not configured on the server."
+            )
+
+            return redirect(
+                url_for(
+                    "pay_question",
+                    question_id=question_id
+                )
+            )
+
+        user = get_user_by_id(
+            session["user_id"]
+        )
+
+        if not user:
+
+            flash(
+                "Student account could not be found."
+            )
+
+            return redirect(
+                url_for("logout")
+            )
+
+        tx_ref = (
+            "KOJA-"
+            + uuid.uuid4().hex.upper()
+        )
+
+        try:
+
+            db_insert(
+                "payments",
+                {
+
+                    "user_id":
+                        session[
+                            "user_id"
+                        ],
+
+                    "question_id":
+                        question_id,
+
+                    "tx_ref":
+                        tx_ref,
+
+                    "amount":
+                        float(
+                            KOJA_PAYMENT_AMOUNT
+                        ),
+
+                    "currency":
+                        "ZMW",
+
+                    "network":
+                        network,
+
+                    "phone_number":
+                        phone,
+
+                    "status":
+                        "pending",
+
+                    "payment_type":
+                        "mobile_money",
+
+                    "created_at":
+                        current_time()
+                }
+            )
+
+            result = create_flutterwave_payment(
+
+                phone_number=phone,
+
+                network=network,
+
+                customer_name=
+                    user.get(
+                        "name",
+                        session.get(
+                            "name",
+                            "KOJA Student"
+                        )
+                    ),
+
+                email=
+                    user.get(
+                        "email"
+                    ),
+
+                tx_ref=tx_ref
+            )
+
+            data = result.get(
+                "data"
+            ) or {}
+
+            authorization = (
+                result.get(
+                    "meta"
+                ) or {}
+            ).get(
+                "authorization"
+            ) or {}
+
+            redirect_url = authorization.get(
+                "redirect"
+            )
+
+            transaction_id = data.get(
+                "id"
+            )
+
+            if transaction_id:
+
+                db_update(
+                    "payments",
+                    {
+                        "tx_ref":
+                            tx_ref
+                    },
+                    {
+                        "flutterwave_transaction_id":
+                            str(
+                                transaction_id
+                            )
+                    }
+                )
+
+            if redirect_url:
+
+                return redirect(
+                    redirect_url
+                )
+
+            flash(
+                "Payment initiated. Approve the mobile-money request on your phone."
+            )
+
+            return redirect(
+                url_for(
+                    "payment_status",
+                    tx_ref=tx_ref
+                )
+            )
+
+        except Exception as error:
+
+            try:
+
+                db_update(
+                    "payments",
+                    {
+                        "tx_ref":
+                            tx_ref
+                    },
+                    {
+                        "status":
+                            "failed",
+
+                        "updated_at":
+                            current_time()
+                    }
+                )
+
+            except Exception:
+
+                pass
+
+            flash(
+                "Payment could not be started: "
+                + str(error)
+            )
+
+    return page(
+        """
+<div class="card">
+
+<h1>Pay for Question</h1>
+
+<div class="info">
+
+<b>Amount: K{{ "%.2f"|format(amount) }}</b>
+
+<br><br>
+
+Supported Zambia mobile-money networks:
+
+<br><br>
+
+<b>MTN</b> |
+<b>Airtel</b> |
+<b>Zamtel</b>
+
+</div>
+
+<br>
+
+<h3>
+{{ question["subject"] }}
+</h3>
+
+<p>
+{{ question["question"][:500] }}
+</p>
+
+<form method="POST">
+
+<div class="form">
+
+<label>Mobile Money Network</label>
+
+<select name="network" required>
+
+<option value="">
+Select network
+</option>
+
+<option value="MTN">
+MTN
+</option>
+
+<option value="Airtel">
+Airtel
+</option>
+
+<option value="Zamtel">
+Zamtel
+</option>
+
+</select>
+
+</div>
+
+<div class="form">
+
+<label>Mobile Money Phone Number</label>
+
+<input
+name="phone"
+type="tel"
+placeholder="097XXXXXXX"
+required>
+
+</div>
+
+<button class="btn green">
+Pay K{{ "%.2f"|format(amount) }}
+</button>
+
+</form>
+
+</div>
+        """,
+        "Payment"
+    )
+
+
+# ============================================================
+# PAYMENT STATUS
+# ============================================================
+
+@app.route(
+    "/payment/<tx_ref>"
+)
+@student_required
+def payment_status(
+    tx_ref
+):
+
+    rows = db_select(
+        "payments",
+        {
+
+            "tx_ref":
+                "eq."
+                + tx_ref,
+
+            "user_id":
+                "eq."
+                + str(
+                    session[
+                        "user_id"
+                    ]
+                ),
+
+            "select":
+                "*",
+
+            "limit":
+                "1"
+        }
+    )
+
+    if not rows:
+
+        abort(404)
+
+    payment = rows[0]
+
+    return page(
+        """
+<div class="card">
+
+<h1>Payment Status</h1>
+
+{% if payment["status"] == "successful" %}
+
+<div class="success">
+
+Payment successful.
+
+<br><br>
+
+Your question has been sent to the KOJA
+administrator queue.
+
+</div>
+
+<br>
+
+<a class="btn green"
+href="{{ url_for(
+'view_question',
+question_id=payment['question_id']
+) }}">
+Open Question
+</a>
+
+{% elif payment["status"] == "failed" %}
+
+<div class="error">
+
+Payment failed.
+
+</div>
+
+{% else %}
+
+<div class="info">
+
+Payment is still pending.
+
+<br><br>
+
+Approve the mobile-money request on your
+phone and then check the status again.
+
+</div>
+
+<br>
+
+<a class="btn"
+href="{{ url_for(
+'check_payment',
+tx_ref=payment['tx_ref']
+) }}">
+Check Payment
+</a>
+
+{% endif %}
+
+<br><br>
+
+<p>
+<b>Reference:</b>
+{{ payment["tx_ref"] }}
+</p>
+
+<p>
+<b>Network:</b>
+{{ payment["network"] }}
+</p>
+
+<p>
+<b>Amount:</b>
+K{{ payment["amount"] }}
+</p>
+
+</div>
+        """,
+        "Payment Status",
+        payment=payment
+    )
+
+
+# ============================================================
+# CHECK PAYMENT
+# ============================================================
+
+@app.route(
+    "/payment/<tx_ref>/check"
+)
+@student_required
+def check_payment(
+    tx_ref
+):
+
+    rows = db_select(
+        "payments",
+        {
+
+            "tx_ref":
+                "eq."
+                + tx_ref,
+
+            "user_id":
+                "eq."
+                + str(
+                    session[
+                        "user_id"
+                    ]
+                ),
+
+            "select":
+                "*",
+
+            "limit":
+                "1"
+        }
+    )
+
+    if not rows:
+
+        abort(404)
+
+    payment = rows[0]
+
+    transaction_id = payment.get(
+        "flutterwave_transaction_id"
+    )
+
+    if not transaction_id:
+
+        flash(
+            "Payment is still being processed. Please try again shortly."
+        )
+
+        return redirect(
+            url_for(
+                "payment_status",
+                tx_ref=tx_ref
+            )
+        )
+
+    try:
+
+        valid, data = verify_payment(
+
+            transaction_id,
+
+            payment["tx_ref"],
+
+            Decimal(
+                str(
+                    payment["amount"]
+                )
+            )
+        )
+
+        if valid:
+
+            mark_payment_successful(
+                payment
+            )
+
+            flash(
+                "Payment verified successfully."
+            )
+
+        else:
+
+            status = str(
+                data.get(
+                    "status",
+                    ""
+                )
+            ).lower()
+
+            if status in (
+                "failed",
+                "cancelled"
+            ):
+
+                db_update(
+                    "payments",
+                    {
+                        "id":
+                            payment["id"]
+                    },
+                    {
+                        "status":
+                            status,
+
+                        "updated_at":
+                            current_time()
+                    }
+                )
+
+                flash(
+                    "Payment was not successful."
+                )
+
+            else:
+
+                flash(
+                    "Payment is still pending."
+                )
+
+    except Exception as error:
+
+        flash(
+            "Payment verification error: "
+            + str(error)
+        )
+
+    return redirect(
+        url_for(
+            "payment_status",
+            tx_ref=tx_ref
+        )
+    )
+
+
+# ============================================================
+# FLUTTERWAVE WEBHOOK
+# ============================================================
+
+@app.route(
+    "/flutterwave/webhook",
+    methods=["POST"]
+)
+def flutterwave_webhook():
+
+    if not FLW_SECRET_HASH:
+
+        return "", 401
+
+    raw_body = request.get_data()
+
+    signature = request.headers.get(
+        "flutterwave-signature"
+    )
+
+    # Current Flutterwave HMAC-SHA256 signature
+    if signature:
+
+        digest = hmac.new(
+            FLW_SECRET_HASH.encode(
+                "utf-8"
+            ),
+            raw_body,
+            hashlib.sha256
+        ).digest()
+
+        calculated = base64.b64encode(
+            digest
+        ).decode(
+            "utf-8"
+        )
+
+        if not hmac.compare_digest(
+            calculated,
+            signature
+        ):
+
+            return "", 401
+
+    else:
+
+        # Compatibility with older
+        # Flutterwave webhook format.
+        old_signature = request.headers.get(
+            "verif-hash"
+        )
+
+        if (
+            not old_signature
+            or not hmac.compare_digest(
+                old_signature,
+                FLW_SECRET_HASH
+            )
+        ):
+
+            return "", 401
+
+    payload = request.get_json(
+        silent=True
+    ) or {}
+
+    data = payload.get(
+        "data"
+    ) or {}
+
+    transaction_id = data.get(
+        "id"
+    )
+
+    tx_ref = (
+        data.get("tx_ref")
+        or data.get("reference")
+    )
+
+    if not transaction_id or not tx_ref:
+
+        return "", 200
+
+    try:
+
+        payments = db_select(
+            "payments",
+            {
+
+                "tx_ref":
+                    "eq."
+                    + str(tx_ref),
+
+                "select":
+                    "*",
+
+                "limit":
+                    "1"
+            }
+        )
+
+        if not payments:
+
+            return "", 200
+
+        payment = payments[0]
+
+        # Save transaction ID if this is
+        # the first callback.
+        db_update(
+            "payments",
+            {
+                "id":
+                    payment["id"]
+            },
+            {
+                "flutterwave_transaction_id":
+                    str(
+                        transaction_id
+                    ),
+
+                "updated_at":
+                    current_time()
+            }
+        )
+
+        # Re-fetch after update.
+        payment["flutterwave_transaction_id"] = (
+            str(transaction_id)
+        )
+
+        valid, verified = verify_payment(
+
+            transaction_id,
+
+            payment["tx_ref"],
+
+            Decimal(
+                str(
+                    payment["amount"]
+                )
+            )
+        )
+
+        if valid:
+
+            if payment.get(
+                "status"
+            ) != "successful":
+
+                mark_payment_successful(
+                    payment
+                )
+
+        else:
+
+            status = str(
+                verified.get(
+                    "status",
+                    ""
+                )
+            ).lower()
+
+            if status in (
+                "failed",
+                "cancelled"
+            ):
+
+                db_update(
+                    "payments",
+                    {
+                        "id":
+                            payment["id"]
+                    },
+                    {
+                        "status":
+                            status,
+
+                        "updated_at":
+                            current_time()
+                    }
+                )
+
+    except Exception as error:
+
+        print(
+            "Flutterwave webhook error:",
+            error
+        )
+
+    return "", 200
 
 
 # ============================================================
@@ -2408,6 +3614,7 @@ def my_questions():
         questions = db_select(
             "questions",
             {
+
                 "user_id":
                     "eq."
                     + str(
@@ -2464,7 +3671,13 @@ href="{{ url_for('submit_question') }}">
 
 <br>
 
-{% if q["status"] == "Answered" %}
+{% if q.get("payment_status") != "paid" %}
+
+<span class="badge pending">
+Payment Required
+</span>
+
+{% elif q["status"] == "Answered" %}
 
 <span class="badge answered">
 Answered
@@ -2473,7 +3686,7 @@ Answered
 {% else %}
 
 <span class="badge pending">
-Pending
+Paid / Pending Answer
 </span>
 
 {% endif %}
@@ -2488,7 +3701,19 @@ question_id=q['id']
 View
 </a>
 
-{% if q["attachment_file"] %}
+{% if q.get("payment_status") != "paid" %}
+
+<a class="btn orange"
+href="{{ url_for(
+'pay_question',
+question_id=q['id']
+) }}">
+Pay K{{ "%.2f"|format(amount) }}
+</a>
+
+{% endif %}
+
+{% if q.get("attachment_file") %}
 
 <a class="btn purple"
 href="{{ url_for(
@@ -2537,9 +3762,15 @@ def view_question(
 
         abort(404)
 
-    answer = get_answer(
-        question_id
-    )
+    answer = None
+
+    if question.get(
+        "payment_status"
+    ) == "paid":
+
+        answer = get_answer(
+            question_id
+        )
 
     if answer:
 
@@ -2548,6 +3779,7 @@ def view_question(
             db_update(
                 "questions",
                 {
+
                     "id":
                         question_id,
 
@@ -2584,7 +3816,7 @@ def view_question(
 {{ question["question"] }}
 </div>
 
-{% if question["attachment_file"] %}
+{% if question.get("attachment_file") %}
 
 <div class="actions">
 
@@ -2602,7 +3834,32 @@ Download Assignment
 
 </div>
 
-{% if answer %}
+{% if question.get("payment_status") != "paid" %}
+
+<div class="card">
+
+<h2>Payment Required</h2>
+
+<div class="info">
+
+Your question has been saved but has not
+entered the answering queue.
+
+</div>
+
+<br>
+
+<a class="btn orange"
+href="{{ url_for(
+'pay_question',
+question_id=question['id']
+) }}">
+Pay K{{ "%.2f"|format(amount) }}
+</a>
+
+</div>
+
+{% elif answer %}
 
 <div class="card answer">
 
@@ -2616,7 +3873,7 @@ Download Assignment
 Answered {{ answer["answered_at"] }}
 </p>
 
-{% if answer["attachment_file"] %}
+{% if answer.get("attachment_file") %}
 
 <a class="btn purple"
 href="{{ url_for(
@@ -2637,8 +3894,8 @@ Download Answer Resource
 <h2>Answer Pending</h2>
 
 <p>
-The administrator has not answered this
-question yet.
+Payment has been confirmed. The administrator
+has not answered this question yet.
 </p>
 
 </div>
@@ -2664,6 +3921,7 @@ def notifications():
         questions = db_select(
             "questions",
             {
+
                 "user_id":
                     "eq."
                     + str(
@@ -2699,8 +3957,7 @@ def notifications():
 <h1>Notifications</h1>
 
 <p>
-Questions that have received answers
-appear here.
+Questions that have received answers appear here.
 </p>
 
 </div>
@@ -2709,7 +3966,9 @@ appear here.
 
 <div class="card">
 
-<h2>{{ q["subject"] }}</h2>
+<h2>
+{{ q["subject"] }}
+</h2>
 
 {% if q["answer_seen"] == 0 %}
 
@@ -2753,7 +4012,7 @@ No answers yet.
 
 
 # ============================================================
-# STUDENT QUESTION DOWNLOAD
+# QUESTION FILE DOWNLOAD
 # ============================================================
 
 @app.route(
@@ -2790,7 +4049,7 @@ def download_question_file(
 
 
 # ============================================================
-# STUDENT ANSWER DOWNLOAD
+# ANSWER FILE DOWNLOAD
 # ============================================================
 
 @app.route(
@@ -2874,8 +4133,13 @@ def admin_login():
                 session.clear()
 
                 session["user_id"] = admin["id"]
+
                 session["name"] = admin["name"]
-                session["username"] = admin["username"]
+
+                session["username"] = (
+                    admin["username"]
+                )
+
                 session["role"] = "admin"
 
                 return redirect(
@@ -2953,6 +4217,10 @@ def admin_dashboard():
         questions = db_select(
             "questions",
             {
+
+                "payment_status":
+                    "eq.paid",
+
                 "select":
                     "*",
 
@@ -2964,11 +4232,24 @@ def admin_dashboard():
         students = db_select(
             "users",
             {
+
                 "role":
                     "eq.student",
 
                 "select":
                     "id"
+            }
+        )
+
+        payments = db_select(
+            "payments",
+            {
+
+                "status":
+                    "eq.successful",
+
+                "select":
+                    "id,amount"
             }
         )
 
@@ -2981,6 +4262,7 @@ def admin_dashboard():
 
         questions = []
         students = []
+        payments = []
 
     pending = len([
         q for q in questions
@@ -2992,6 +4274,18 @@ def admin_dashboard():
         if q.get("status") == "Answered"
     ])
 
+    revenue = sum(
+        Decimal(
+            str(
+                p.get(
+                    "amount",
+                    0
+                )
+            )
+        )
+        for p in payments
+    )
+
     return page(
         """
 <div class="hero">
@@ -2999,37 +4293,54 @@ def admin_dashboard():
 <h1>KOJA Administrator</h1>
 
 <p>
-Manage student assignment questions
-and academic answers.
+Manage paid student questions,
+answers and payments.
 </p>
+
+<div class="actions">
 
 <a class="btn"
 href="{{ url_for('admin_questions') }}">
 Manage Questions
 </a>
 
+<a class="btn green"
+href="{{ url_for('admin_payments') }}">
+Payments
+</a>
+
+</div>
+
 </div>
 
 <div class="stats">
 
 <div class="stat">
-<div class="num">{{ questions|length }}</div>
-Total Questions
+<div class="num">
+{{ questions|length }}
+</div>
+Paid Questions
 </div>
 
 <div class="stat">
-<div class="num">{{ pending }}</div>
+<div class="num">
+{{ pending }}
+</div>
 Pending
 </div>
 
 <div class="stat">
-<div class="num">{{ answered }}</div>
+<div class="num">
+{{ answered }}
+</div>
 Answered
 </div>
 
 <div class="stat">
-<div class="num">{{ students|length }}</div>
-Students
+<div class="num">
+K{{ "%.2f"|format(revenue) }}
+</div>
+Revenue
 </div>
 
 </div>
@@ -3059,6 +4370,10 @@ def admin_questions():
     ).strip()
 
     params = {
+
+        "payment_status":
+            "eq.paid",
+
         "select":
             "*",
 
@@ -3118,7 +4433,7 @@ def admin_questions():
         questions = []
 
         flash(
-            "Search failed: "
+            "Question search failed: "
             + str(error)
         )
 
@@ -3228,7 +4543,7 @@ Open
 {% else %}
 
 <div class="card empty">
-No questions found.
+No paid questions found.
 </div>
 
 {% endfor %}
@@ -3238,7 +4553,7 @@ No questions found.
 
 
 # ============================================================
-# ADMIN QUESTION VIEW
+# ADMIN VIEW QUESTION
 # ============================================================
 
 @app.route(
@@ -3256,6 +4571,20 @@ def admin_view_question(
     if not question:
 
         abort(404)
+
+    if question.get(
+        "payment_status"
+    ) != "paid":
+
+        flash(
+            "This question has not been paid for."
+        )
+
+        return redirect(
+            url_for(
+                "admin_questions"
+            )
+        )
 
     answer = get_answer(
         question_id
@@ -3284,7 +4613,7 @@ def admin_view_question(
 {{ question["question"] }}
 </div>
 
-{% if question["attachment_file"] %}
+{% if question.get("attachment_file") %}
 
 <div class="actions">
 
@@ -3364,7 +4693,7 @@ Send Answer
 
 
 # ============================================================
-# WRITE / UPDATE ANSWER
+# WRITE ANSWER
 # ============================================================
 
 @app.route(
@@ -3406,6 +4735,20 @@ def write_answer(
 
         abort(404)
 
+    if question.get(
+        "payment_status"
+    ) != "paid":
+
+        flash(
+            "Question has not been paid for."
+        )
+
+        return redirect(
+            url_for(
+                "admin_questions"
+            )
+        )
+
     uploaded = None
 
     try:
@@ -3427,6 +4770,7 @@ def write_answer(
         if existing:
 
             update = {
+
                 "answer":
                     text,
 
@@ -3472,6 +4816,7 @@ def write_answer(
             db_insert(
                 "answers",
                 {
+
                     "question_id":
                         question_id,
 
@@ -3508,11 +4853,15 @@ def write_answer(
                     question_id
             },
             {
+
                 "status":
                     "Answered",
 
                 "answer_seen":
-                    0
+                    0,
+
+                "updated_at":
+                    current_time()
             }
         )
 
@@ -3616,6 +4965,133 @@ def admin_download_answer(
 
 
 # ============================================================
+# ADMIN PAYMENTS
+# ============================================================
+
+@app.route(
+    "/admin/payments"
+)
+@admin_required
+def admin_payments():
+
+    try:
+
+        payments = db_select(
+            "payments",
+            {
+
+                "select":
+                    "*",
+
+                "order":
+                    "id.desc"
+            }
+        )
+
+    except Exception as error:
+
+        flash(
+            "Could not load payments: "
+            + str(error)
+        )
+
+        payments = []
+
+    return page(
+        """
+<div class="card">
+
+<h1>Payments</h1>
+
+<p>
+KOJA payment transactions.
+</p>
+
+</div>
+
+<div class="card">
+
+<table>
+
+<tr>
+
+<th>Reference</th>
+<th>Amount</th>
+<th>Network</th>
+<th>Status</th>
+<th>Date</th>
+
+</tr>
+
+{% for p in payments %}
+
+<tr>
+
+<td>
+{{ p["tx_ref"] }}
+</td>
+
+<td>
+K{{ p["amount"] }}
+</td>
+
+<td>
+{{ p["network"] }}
+</td>
+
+<td>
+
+{% if p["status"] == "successful" %}
+
+<span class="badge answered">
+Successful
+</span>
+
+{% elif p["status"] == "pending" %}
+
+<span class="badge pending">
+Pending
+</span>
+
+{% else %}
+
+<span class="badge"
+style="background:#fee2e2;color:#991b1b">
+{{ p["status"] }}
+</span>
+
+{% endif %}
+
+</td>
+
+<td>
+{{ p["created_at"] }}
+</td>
+
+</tr>
+
+{% else %}
+
+<tr>
+
+<td colspan="5">
+No payments found.
+</td>
+
+</tr>
+
+{% endfor %}
+
+</table>
+
+</div>
+        """,
+        "Payments",
+        payments=payments
+    )
+
+
+# ============================================================
 # HEALTH CHECK
 # ============================================================
 
@@ -3627,6 +5103,7 @@ def health():
     if not database_ready():
 
         return {
+
             "status":
                 "error",
 
@@ -3635,6 +5112,7 @@ def health():
 
             "database":
                 "not configured"
+
         }, 500
 
     try:
@@ -3644,12 +5122,14 @@ def health():
             {
                 "select":
                     "id",
+
                 "limit":
                     "1"
             }
         )
 
         return {
+
             "status":
                 "ok",
 
@@ -3659,13 +5139,23 @@ def health():
             "database":
                 "connected",
 
+            "payments":
+                (
+                    "configured"
+                    if payment_ready()
+                    else
+                    "not configured"
+                ),
+
             "storage":
                 STORAGE_BUCKET
+
         }
 
     except Exception as error:
 
         return {
+
             "status":
                 "error",
 
@@ -3674,11 +5164,12 @@ def health():
 
             "error":
                 str(error)
+
         }, 500
 
 
 # ============================================================
-# SAFE STATUS
+# STATUS
 # ============================================================
 
 @app.route(
@@ -3687,11 +5178,15 @@ def health():
 def status():
 
     return {
+
         "application":
             APP_NAME,
 
         "supabase_configured":
             database_ready(),
+
+        "payment_configured":
+            payment_ready(),
 
         "storage_bucket":
             STORAGE_BUCKET,
@@ -3712,9 +5207,7 @@ def status():
 # ============================================================
 
 @app.errorhandler(413)
-def too_large(
-    error
-):
+def too_large(error):
 
     return (
         "File too large. Maximum allowed size is 10 MB.",
@@ -3727,9 +5220,7 @@ def too_large(
 # ============================================================
 
 @app.errorhandler(404)
-def not_found(
-    error
-):
+def not_found(error):
 
     return page(
         """
@@ -3755,9 +5246,7 @@ KOJA Home
 # ============================================================
 
 @app.errorhandler(500)
-def server_error(
-    error
-):
+def server_error(error):
 
     return page(
         """
@@ -3801,6 +5290,19 @@ if __name__ == "__main__":
     )
 
     print(
+        "Flutterwave configured:",
+        payment_ready()
+    )
+
+    print(
+        "Payment amount:",
+        "K"
+        + str(
+            KOJA_PAYMENT_AMOUNT
+        )
+    )
+
+    print(
         "Storage bucket:",
         STORAGE_BUCKET
     )
@@ -3824,4 +5326,4 @@ if __name__ == "__main__":
         debug=False,
         threaded=True,
         use_reloader=False
-    )
+    ) 
