@@ -63,9 +63,12 @@ from reportlab.platypus import (
     Paragraph,
     Spacer
 )
+import os
+import requests
+from flask import Flask, request, session, redirect, url_for, render_template
 
+app = Flask(__name__)
 
-# ============================================================
 # APPLICATION
 # ============================================================
 
@@ -74,6 +77,25 @@ APP_NAME = "KOJA AFRICA"
 APP_TAGLINE = (
     "Assignment Questions • Academic Answers • Learning Resources"
 )
+
+# ============================================================
+# SUPABASE CONFIGURATION
+# ============================================================
+
+SUPABASE_URL = os.environ.get(
+    "SUPABASE_URL",
+    "https://orkgbochkzpnnpjsbpbo.supabase.co"
+)
+
+SUPABASE_KEY = os.environ.get(
+    "SUPABASE_KEY",
+    "sb_publishable_rcxOM5HlC6Ap8fPaYrrS0g_7UnheoZJ"
+)
+
+SUPABASE_HEADERS = {
+    "apikey": SUPABASE_KEY,
+    "Authorization": f"Bearer {SUPABASE_KEY}",
+    "Content-Type": "application/json"
 
 
 # ============================================================
