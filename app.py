@@ -86,26 +86,174 @@ def env(name, default=""):
 
 
 # ============================================================
-# SUPABASE
+# ============================================================
+# SUPABASE DATABASE
 # ============================================================
 
-SUPABASE_URL = env("SUPABASE_URL").rstrip("/")
-
-SUPABASE_SERVICE_KEY = env(
-    "SUPABASE_SERVICE_KEY"
-)
-
-if not SUPABASE_SERVICE_KEY:
-    SUPABASE_SERVICE_KEY = env(
-        "SUPABASE_SERVICE_ROLE_KEY"
+def database_ready():
+    return bool(
+        SUPABASE_URL
+        and SUPABASE_SERVICE_KEY
+        and SUPABASE_URL.startswith("https://")
     )
 
-STORAGE_BUCKET = env(
-    "KOJA_STORAGE_BUCKET",
-    "koja-assignments"
-)
+
+def db_headers():
+    return {
+        "apikey": SUPABASE_SERVICE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
 
 
+def rest_url(table):
+    return f"{SUPABASE_URL}/rest/v1/{table}"
+
+
+def db_select(table, params=None):
+
+    if not database_ready():
+        raise RuntimeError(
+            "Supabase configuration missing. "
+            "Set SUPABASE_URL and SUPABASE_SERVICE_KEY."
+        )
+
+    try:
+        response = requests.get(
+            rest_url(table),
+            headers=db_headers(),
+            params=params or {},
+            timeout=30
+        )
+    except requests.RequestException as error:
+        raise RuntimeError(
+            f"Supabase connection failed: {error}"
+        )
+
+    if not response.ok:
+        raise RuntimeError(
+            f"Supabase SELECT {table} failed "
+            f"[HTTP {response.status_code}]: "
+            f"{response.text}"
+        )
+
+    try:
+        return response.json() if response.text else []
+    except ValueError:
+        raise RuntimeError(
+            f"Supabase returned invalid JSON: {response.text}"
+        )
+
+
+def db_insert(table, data):
+
+    if not database_ready():
+        raise RuntimeError(
+            "Supabase configuration missing."
+        )
+
+    headers = db_headers()
+    headers["Prefer"] = "return=representation"
+
+    try:
+        response = requests.post(
+            rest_url(table),
+            headers=headers,
+            json=data,
+            timeout=30
+        )
+    except requests.RequestException as error:
+        raise RuntimeError(
+            f"Supabase INSERT connection failed: {error}"
+        )
+
+    if not response.ok:
+        raise RuntimeError(
+            f"Supabase INSERT {table} failed "
+            f"[HTTP {response.status_code}]: "
+            f"{response.text}"
+        )
+
+    try:
+        return response.json() if response.text else []
+    except ValueError:
+        return []
+
+
+def db_update(table, filters, data):
+
+    if not database_ready():
+        raise RuntimeError(
+            "Supabase configuration missing."
+        )
+
+    params = {}
+
+    for key, value in filters.items():
+        params[key] = f"eq.{value}"
+
+    headers = db_headers()
+    headers["Prefer"] = "return=representation"
+
+    try:
+        response = requests.patch(
+            rest_url(table),
+            headers=headers,
+            params=params,
+            json=data,
+            timeout=30
+        )
+    except requests.RequestException as error:
+        raise RuntimeError(
+            f"Supabase UPDATE connection failed: {error}"
+        )
+
+    if not response.ok:
+        raise RuntimeError(
+            f"Supabase UPDATE {table} failed "
+            f"[HTTP {response.status_code}]: "
+            f"{response.text}"
+        )
+
+    try:
+        return response.json() if response.text else []
+    except ValueError:
+        return []
+
+
+def db_delete(table, filters):
+
+    if not database_ready():
+        raise RuntimeError(
+            "Supabase configuration missing."
+        )
+
+    params = {}
+
+    for key, value in filters.items():
+        params[key] = f"eq.{value}"
+
+    try:
+        response = requests.delete(
+            rest_url(table),
+            headers=db_headers(),
+            params=params,
+            timeout=30
+        )
+    except requests.RequestException as error:
+        raise RuntimeError(
+            f"Supabase DELETE connection failed: {error}"
+        )
+
+    if not response.ok:
+        raise RuntimeError(
+            f"Supabase DELETE {table} failed "
+            f"[HTTP {response.status_code}]: "
+            f"{response.text}"
+        )
+
+    return True
 # ============================================================
 # FLUTTERWAVE
 # ============================================================
@@ -117,7 +265,9 @@ FLW_SECRET_KEY = env(
 FLW_SECRET_HASH = env(
     "FLW_SECRET_HASH"
 )
-
+flutterwave_ready = bool(
+    FLW_SECRET_KEY
+)
 FLW_BASE_URL = (
     "https://api.flutterwave.com/v3"
 )
@@ -801,9 +951,13 @@ def storage_upload_stream(
 ):
 
     if not database_ready():
-
         raise RuntimeError(
             "Supabase is not configured."
+        )
+
+    if not STORAGE_BUCKET:
+        raise RuntimeError(
+            "KOJA_STORAGE_BUCKET is empty."
         )
 
     url = (
@@ -815,35 +969,54 @@ def storage_upload_stream(
     )
 
     headers = {
-        "Authorization": (
+        "Authorization":
             "Bearer "
-            + SUPABASE_SERVICE_KEY
-        ),
-        "apikey": SUPABASE_SERVICE_KEY,
-        "Content-Type": content_type,
-        "x-upsert": "false"
+            + SUPABASE_SERVICE_KEY,
+
+        "apikey":
+            SUPABASE_SERVICE_KEY,
+
+        "Content-Type":
+            content_type,
+
+        "x-upsert":
+            "false"
     }
 
-    response = requests.post(
-        url,
-        headers=headers,
-        data=stream,
-        timeout=120
-    )
+    try:
+
+        response = requests.post(
+            url,
+            headers=headers,
+            data=stream,
+            timeout=120
+        )
+
+    except requests.RequestException as error:
+
+        raise RuntimeError(
+            "Supabase Storage connection failed: "
+            + str(error)
+        )
 
     if not response.ok:
 
         raise RuntimeError(
-            "Storage upload failed: "
+            "Supabase Storage upload failed "
+            f"[HTTP {response.status_code}]: "
             + response.text
         )
 
     return {
-        "original_name": original_name,
-        "storage_path": storage_path,
-        "content_type": content_type
-    }
+        "original_name":
+            original_name,
 
+        "storage_path":
+            storage_path,
+
+        "content_type":
+            content_type
+    }
 
 def storage_upload(
     file_storage,
@@ -2458,7 +2631,7 @@ def submit_question():
             ""
         ).strip()
 
-        question = request.form.get(
+        question_text = request.form.get(
             "question",
             ""
         ).strip()
@@ -2467,22 +2640,26 @@ def submit_question():
             "attachment"
         )
 
-        if not subject or not question:
-
-            flash(
-                "Subject and question are required."
-            )
-
+        if not subject:
+            flash("Please select a subject.")
             return redirect(
                 url_for("submit_question")
             )
 
         if subject not in SUBJECTS:
-
-            flash(
-                "Select a valid subject."
+            flash("Invalid subject selected.")
+            return redirect(
+                url_for("submit_question")
             )
 
+        if not question_text:
+            flash("Please enter your assignment question.")
+            return redirect(
+                url_for("submit_question")
+            )
+
+        if len(question_text) < 3:
+            flash("Question is too short.")
             return redirect(
                 url_for("submit_question")
             )
@@ -2490,6 +2667,67 @@ def submit_question():
         uploaded = None
 
         try:
+
+            # ------------------------------------------------
+            # FIRST: VERIFY SUPABASE
+            # ------------------------------------------------
+
+            if not database_ready():
+                raise RuntimeError(
+                    "Supabase is not configured. "
+                    "Check SUPABASE_URL and "
+                    "SUPABASE_SERVICE_KEY."
+                )
+
+            # ------------------------------------------------
+            # SECOND: INSERT QUESTION
+            # ------------------------------------------------
+
+            question_rows = db_insert(
+                "questions",
+                {
+                    "user_id": int(
+                        session["user_id"]
+                    ),
+
+                    "student_name": str(
+                        session.get(
+                            "name",
+                            "KOJA Student"
+                        )
+                    ),
+
+                    "subject": subject,
+
+                    "question": question_text,
+
+                    "status": "Pending",
+
+                    "answer_seen": 0,
+
+                    "answer_price": float(
+                        decimal_price(
+                            DEFAULT_ANSWER_PRICE
+                        )
+                    ),
+
+                    "created_at": current_time()
+                }
+            )
+
+            if not question_rows:
+                raise RuntimeError(
+                    "Supabase did not return the "
+                    "new question record."
+                )
+
+            created_question = question_rows[0]
+
+            question_id = created_question["id"]
+
+            # ------------------------------------------------
+            # THIRD: OPTIONAL ATTACHMENT
+            # ------------------------------------------------
 
             if (
                 attachment
@@ -2501,71 +2739,63 @@ def submit_question():
                     "questions"
                 )
 
-            db_insert(
-                "questions",
-                {
-                    "user_id":
-                        session["user_id"],
+                if uploaded:
 
-                    "student_name":
-                        session["name"],
+                    db_update(
+                        "questions",
+                        {
+                            "id": question_id
+                        },
+                        {
+                            "attachment_name":
+                                uploaded[
+                                    "original_name"
+                                ],
 
-                    "subject":
-                        subject,
-
-                    "question":
-                        question,
-
-                    "attachment_name":
-                        (
-                            uploaded["original_name"]
-                            if uploaded
-                            else None
-                        ),
-
-                    "attachment_file":
-                        (
-                            uploaded["storage_path"]
-                            if uploaded
-                            else None
-                        ),
-
-                    "status":
-                        "Pending",
-
-                    "answer_seen":
-                        0,
-
-                    "answer_price":
-                        str(
-                            decimal_price(
-                                DEFAULT_ANSWER_PRICE
-                            )
-                        ),
-
-                    "created_at":
-                        current_time()
-                }
-            )
+                            "attachment_file":
+                                uploaded[
+                                    "storage_path"
+                                ]
+                        }
+                    )
 
             flash(
                 "Question submitted successfully."
             )
 
             return redirect(
-                url_for("my_questions")
+                url_for(
+                    "my_questions"
+                )
             )
 
         except Exception as error:
 
+            # If attachment uploaded but database
+            # update failed, remove the orphaned file.
+
             if uploaded:
+
                 storage_delete(
-                    uploaded["storage_path"]
+                    uploaded.get(
+                        "storage_path"
+                    )
                 )
 
+            print(
+                "QUESTION SUBMISSION ERROR:",
+                repr(error)
+            )
+
             flash(
-                "Submission failed: "
+                "Question submission failed: "
                 + str(error)
+            )
+
+            return redirect(
+                url_for(
+                    "submit_question"
+                )
             )
 
     return page(
@@ -2575,10 +2805,8 @@ def submit_question():
 <h1>Ask KOJA</h1>
 
 <div class="info">
-
 Write the complete assignment question.
-Attachments are limited to 10 MB.
-
+Attachments are optional and limited to 10 MB.
 </div>
 
 <br>
@@ -2628,12 +2856,17 @@ placeholder="Write your complete assignment question..."
 
 <input
 type="file"
-name="attachment">
+name="attachment"
+accept=".jpg,.jpeg,.png,.gif,.webp,.pdf,.doc,.docx,.txt,.ppt,.pptx,.xls,.xlsx">
 
 </div>
 
-<button class="btn">
+<button
+class="btn"
+type="submit">
+
 Submit Question
+
 </button>
 
 </form>
@@ -2642,7 +2875,6 @@ Submit Question
         """,
         "Ask Question"
     )
-
 
 # ============================================================
 # MY QUESTIONS
