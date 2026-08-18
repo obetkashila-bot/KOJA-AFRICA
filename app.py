@@ -1,62 +1,36 @@
 # ============================================================
 # KOJA AFRICA
-# ============================================================
 # Knowledge • Questions • Answers
 #
 # SINGLE-FILE FLASK APPLICATION
 #
-# FEATURES
-# ------------------------------------------------------------
-# Student registration/login
-# Student questions
-# Attachments
-# Administrator dashboard
-# Administrator answers
-# Automatic PDF generation
-# Paid PDF downloads
-# Flutterwave payments
-# Payment verification
-# Supabase PostgreSQL REST API
-# Supabase private Storage
+# Flask + Supabase REST API + Supabase Private Storage
+# Flutterwave Standard Payments
+# ReportLab PDF generation
 #
-# PAYMENT FLOW
-# ------------------------------------------------------------
-# 1. Student asks question
-# 2. Admin answers question
-# 3. Student reads answer text FREE
-# 4. PDF download is locked
-# 5. Student clicks PAY & DOWNLOAD PDF
-# 6. Flutterwave checkout opens
-# 7. Flutterwave redirects to KOJA
-# 8. KOJA verifies transaction SERVER-SIDE
-# 9. Payment becomes PAID
-# 10. Student downloads PDF
-#
-# WORKS WITH
-# ------------------------------------------------------------
-# Pydroid 3
-# Render
-# Railway
-# VPS
-# Gunicorn
+# Designed for:
+#   Render
+#   Railway
+#   VPS
+#   Pydroid 3
 #
 # NO SQLITE
 # NO psycopg
 # NO psycopg2
+#
 # ============================================================
 
-
 import os
-import uuid
-import mimetypes
-import requests
 import io
-
+import uuid
+import html
+import mimetypes
+import secrets
 from decimal import Decimal, InvalidOperation
-
 from datetime import datetime, timezone
-
 from functools import wraps
+
+import requests
 
 from flask import (
     Flask,
@@ -67,7 +41,8 @@ from flask import (
     session,
     abort,
     Response,
-    render_template_string
+    render_template_string,
+    jsonify
 )
 
 from werkzeug.security import (
@@ -78,20 +53,15 @@ from werkzeug.security import (
 from werkzeug.utils import secure_filename
 
 from reportlab.lib.pagesizes import A4
-
-from reportlab.lib import colors
-
-from reportlab.lib.styles import getSampleStyleSheet
-
-from reportlab.lib.styles import ParagraphStyle
-
+from reportlab.lib.styles import (
+    getSampleStyleSheet,
+    ParagraphStyle
+)
 from reportlab.lib.enums import TA_CENTER
-
 from reportlab.platypus import (
     SimpleDocTemplate,
     Paragraph,
-    Spacer,
-    PageBreak
+    Spacer
 )
 
 
@@ -107,146 +77,100 @@ APP_TAGLINE = (
 
 
 # ============================================================
+# ENVIRONMENT HELPERS
+# ============================================================
+
+def env(name, default=""):
+    value = os.environ.get(name, default)
+    return str(value).strip()
+
+
+# ============================================================
 # SUPABASE
 # ============================================================
 
-SUPABASE_URL = os.environ.get(
-    "SUPABASE_URL",
-    ""
-).strip().rstrip("/")
+SUPABASE_URL = env("SUPABASE_URL").rstrip("/")
 
-
-SUPABASE_SERVICE_KEY = os.environ.get(
-    "SUPABASE_SERVICE_KEY",
-    ""
-).strip()
-
+SUPABASE_SERVICE_KEY = env(
+    "SUPABASE_SERVICE_KEY"
+)
 
 if not SUPABASE_SERVICE_KEY:
+    SUPABASE_SERVICE_KEY = env(
+        "SUPABASE_SERVICE_ROLE_KEY"
+    )
 
-    SUPABASE_SERVICE_KEY = os.environ.get(
-        "SUPABASE_SERVICE_ROLE_KEY",
-        ""
-    ).strip()
-
-
-if not SUPABASE_SERVICE_KEY:
-
-    SUPABASE_SERVICE_KEY = os.environ.get(
-        "sb_se",
-        ""
-    ).strip()
-
-
-STORAGE_BUCKET = os.environ.get(
+STORAGE_BUCKET = env(
     "KOJA_STORAGE_BUCKET",
     "koja-assignments"
-).strip()
+)
 
 
 # ============================================================
 # FLUTTERWAVE
 # ============================================================
-#
-# NEVER put the secret key inside HTML or JavaScript.
-#
-# Get the secret key from your Flutterwave dashboard.
-#
-# Example environment variable:
-#
-# FLW_SECRET_KEY=FLWSECK-xxxxxxxxxxxxxxxx
-#
-# ============================================================
 
-FLW_SECRET_KEY = os.environ.get(
-    "FLW_SECRET_KEY",
-    ""
-).strip()
+FLW_SECRET_KEY = env(
+    "FLW_SECRET_KEY"
+)
 
+FLW_SECRET_HASH = env(
+    "FLW_SECRET_HASH"
+)
 
 FLW_BASE_URL = (
     "https://api.flutterwave.com/v3"
 )
 
-
-PAYMENT_CURRENCY = os.environ.get(
+PAYMENT_CURRENCY = env(
     "KOJA_PAYMENT_CURRENCY",
     "ZMW"
-).strip().upper()
+).upper()
 
-
-# Default price.
-#
-# IMPORTANT:
-# Each question has its own answer_price.
-# The administrator can change it.
-#
-DEFAULT_ANSWER_PRICE = os.environ.get(
+DEFAULT_ANSWER_PRICE = env(
     "KOJA_PAYMENT_AMOUNT",
     "10.00"
-).strip()
+)
 
 
 # ============================================================
-# PUBLIC BASE URL
-# ============================================================
-#
-# On Render:
-#
-# KOJA_BASE_URL=https://your-app.onrender.com
-#
-# On Railway:
-#
-# KOJA_BASE_URL=https://your-app.up.railway.app
-#
-# Local:
-#
-# http://127.0.0.1:5000
-#
+# PUBLIC URL
 # ============================================================
 
-KOJA_BASE_URL = os.environ.get(
-    "KOJA_BASE_URL",
-    ""
-).strip().rstrip("/")
+KOJA_BASE_URL = env(
+    "KOJA_BASE_URL"
+).rstrip("/")
 
 
 # ============================================================
 # SECURITY
 # ============================================================
 
-SECRET_KEY = os.environ.get(
-    "KOJA_SECRET_KEY",
-    ""
-).strip()
-
+SECRET_KEY = env(
+    "KOJA_SECRET_KEY"
+)
 
 if not SECRET_KEY:
-
-    SECRET_KEY = os.urandom(32)
+    SECRET_KEY = secrets.token_urlsafe(48)
 
 
 # ============================================================
 # SERVER
 # ============================================================
 
-HOST = os.environ.get(
+HOST = env(
     "HOST",
     "0.0.0.0"
 )
 
-
 try:
-
     PORT = int(
-        os.environ.get(
+        env(
             "PORT",
             "5000"
         )
     )
-
 except ValueError:
-
     PORT = 5000
 
 
@@ -255,10 +179,10 @@ except ValueError:
 # ============================================================
 
 HTTPS_ENABLED = (
-    os.environ.get(
+    env(
         "KOJA_HTTPS",
         "0"
-    ).strip() == "1"
+    ) == "1"
 )
 
 
@@ -274,17 +198,11 @@ app.config["MAX_CONTENT_LENGTH"] = (
     10 * 1024 * 1024
 )
 
-app.config[
-    "SESSION_COOKIE_HTTPONLY"
-] = True
+app.config["SESSION_COOKIE_HTTPONLY"] = True
 
-app.config[
-    "SESSION_COOKIE_SAMESITE"
-] = "Lax"
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
-app.config[
-    "SESSION_COOKIE_SECURE"
-] = HTTPS_ENABLED
+app.config["SESSION_COOKIE_SECURE"] = HTTPS_ENABLED
 
 
 # ============================================================
@@ -292,7 +210,6 @@ app.config[
 # ============================================================
 
 AFRICAN_COUNTRIES = [
-
     "Algeria",
     "Angola",
     "Benin",
@@ -355,7 +272,6 @@ AFRICAN_COUNTRIES = [
 # ============================================================
 
 SUBJECTS = [
-
     "Mathematics",
     "English",
     "Chemistry",
@@ -386,23 +302,17 @@ SUBJECTS = [
 # ============================================================
 
 ALLOWED_EXTENSIONS = {
-
     "jpg",
     "jpeg",
     "png",
     "gif",
     "webp",
-
     "pdf",
-
     "doc",
     "docx",
-
     "txt",
-
     "ppt",
     "pptx",
-
     "xls",
     "xlsx"
 }
@@ -415,48 +325,31 @@ ALLOWED_EXTENSIONS = {
 def database_ready():
 
     return bool(
-
         SUPABASE_URL
-
         and SUPABASE_SERVICE_KEY
-
-        and SUPABASE_URL.startswith(
-            "https://"
-        )
-
+        and SUPABASE_URL.startswith("https://")
     )
 
 
 def db_headers():
 
     return {
-
-        "apikey":
-            SUPABASE_SERVICE_KEY,
-
-        "Authorization":
+        "apikey": SUPABASE_SERVICE_KEY,
+        "Authorization": (
             "Bearer "
-            + SUPABASE_SERVICE_KEY,
-
-        "Content-Type":
-            "application/json",
-
-        "Accept":
-            "application/json"
-
+            + SUPABASE_SERVICE_KEY
+        ),
+        "Content-Type": "application/json",
+        "Accept": "application/json"
     }
 
 
 def rest_url(table):
 
     return (
-
         SUPABASE_URL
-
         + "/rest/v1/"
-
         + table
-
     )
 
 
@@ -466,43 +359,27 @@ def db_select(
 ):
 
     if not database_ready():
-
         raise RuntimeError(
             "Supabase is not configured."
         )
 
-
     response = requests.get(
-
         rest_url(table),
-
         headers=db_headers(),
-
         params=params or {},
-
         timeout=30
-
     )
 
-
     if not response.ok:
-
         raise RuntimeError(
-
             "Database SELECT failed: "
-
             + response.text
-
         )
 
-
-    try:
-
-        return response.json()
-
-    except Exception:
-
+    if not response.text:
         return []
+
+    return response.json()
 
 
 def db_insert(
@@ -511,11 +388,9 @@ def db_insert(
 ):
 
     if not database_ready():
-
         raise RuntimeError(
             "Supabase is not configured."
         )
-
 
     headers = db_headers()
 
@@ -523,38 +398,23 @@ def db_insert(
         "return=representation"
     )
 
-
     response = requests.post(
-
         rest_url(table),
-
         headers=headers,
-
         json=data,
-
         timeout=30
-
     )
 
-
     if not response.ok:
-
         raise RuntimeError(
-
             "Database INSERT failed: "
-
             + response.text
-
         )
 
-
-    try:
-
-        return response.json()
-
-    except Exception:
-
+    if not response.text:
         return []
+
+    return response.json()
 
 
 def db_update(
@@ -564,14 +424,11 @@ def db_update(
 ):
 
     if not database_ready():
-
         raise RuntimeError(
             "Supabase is not configured."
         )
 
-
     params = {}
-
 
     for key, value in filters.items():
 
@@ -580,47 +437,30 @@ def db_update(
             + str(value)
         )
 
-
     headers = db_headers()
 
     headers["Prefer"] = (
         "return=representation"
     )
 
-
     response = requests.patch(
-
         rest_url(table),
-
         headers=headers,
-
         params=params,
-
         json=data,
-
         timeout=30
-
     )
 
-
     if not response.ok:
-
         raise RuntimeError(
-
             "Database UPDATE failed: "
-
             + response.text
-
         )
 
-
-    try:
-
-        return response.json()
-
-    except Exception:
-
+    if not response.text:
         return []
+
+    return response.json()
 
 
 def db_delete(
@@ -629,14 +469,11 @@ def db_delete(
 ):
 
     if not database_ready():
-
         raise RuntimeError(
             "Supabase is not configured."
         )
 
-
     params = {}
-
 
     for key, value in filters.items():
 
@@ -645,30 +482,18 @@ def db_delete(
             + str(value)
         )
 
-
     response = requests.delete(
-
         rest_url(table),
-
         headers=db_headers(),
-
         params=params,
-
         timeout=30
-
     )
 
-
     if not response.ok:
-
         raise RuntimeError(
-
             "Database DELETE failed: "
-
             + response.text
-
         )
-
 
     return True
 
@@ -697,7 +522,6 @@ def decimal_price(value):
         )
 
         if amount <= 0:
-
             raise InvalidOperation
 
         return amount.quantize(
@@ -727,33 +551,20 @@ def get_user_by_username(
 ):
 
     params = {
-
-        "username":
-            "eq."
-            + username,
-
-        "select":
-            "*",
-
-        "limit":
-            "1"
-
+        "username": "eq." + username,
+        "select": "*",
+        "limit": "1"
     }
 
-
     if role:
-
         params["role"] = (
-            "eq."
-            + role
+            "eq." + role
         )
-
 
     rows = db_select(
         "users",
         params
     )
-
 
     return (
         rows[0]
@@ -767,25 +578,16 @@ def get_user_by_id(
 ):
 
     rows = db_select(
-
         "users",
-
         {
-
-            "id":
+            "id": (
                 "eq."
-                + str(user_id),
-
-            "select":
-                "*",
-
-            "limit":
-                "1"
-
+                + str(user_id)
+            ),
+            "select": "*",
+            "limit": "1"
         }
-
     )
-
 
     return (
         rows[0]
@@ -799,25 +601,16 @@ def email_exists(
 ):
 
     rows = db_select(
-
         "users",
-
         {
-
-            "email":
+            "email": (
                 "eq."
-                + email,
-
-            "select":
-                "id",
-
-            "limit":
-                "1"
-
+                + email
+            ),
+            "select": "id",
+            "limit": "1"
         }
-
     )
-
 
     return bool(rows)
 
@@ -831,25 +624,16 @@ def get_question(
 ):
 
     rows = db_select(
-
         "questions",
-
         {
-
-            "id":
+            "id": (
                 "eq."
-                + str(question_id),
-
-            "select":
-                "*",
-
-            "limit":
-                "1"
-
+                + str(question_id)
+            ),
+            "select": "*",
+            "limit": "1"
         }
-
     )
-
 
     return (
         rows[0]
@@ -864,29 +648,20 @@ def get_student_question(
 ):
 
     rows = db_select(
-
         "questions",
-
         {
-
-            "id":
+            "id": (
                 "eq."
-                + str(question_id),
-
-            "user_id":
+                + str(question_id)
+            ),
+            "user_id": (
                 "eq."
-                + str(user_id),
-
-            "select":
-                "*",
-
-            "limit":
-                "1"
-
+                + str(user_id)
+            ),
+            "select": "*",
+            "limit": "1"
         }
-
     )
-
 
     return (
         rows[0]
@@ -904,25 +679,16 @@ def get_answer(
 ):
 
     rows = db_select(
-
         "answers",
-
         {
-
-            "question_id":
+            "question_id": (
                 "eq."
-                + str(question_id),
-
-            "select":
-                "*",
-
-            "limit":
-                "1"
-
+                + str(question_id)
+            ),
+            "select": "*",
+            "limit": "1"
         }
-
     )
-
 
     return (
         rows[0]
@@ -940,25 +706,16 @@ def get_payment_by_tx_ref(
 ):
 
     rows = db_select(
-
         "payments",
-
         {
-
-            "tx_ref":
+            "tx_ref": (
                 "eq."
-                + tx_ref,
-
-            "select":
-                "*",
-
-            "limit":
-                "1"
-
+                + tx_ref
+            ),
+            "select": "*",
+            "limit": "1"
         }
-
     )
-
 
     return (
         rows[0]
@@ -973,35 +730,22 @@ def get_paid_payment(
 ):
 
     rows = db_select(
-
         "payments",
-
         {
-
-            "student_id":
+            "student_id": (
                 "eq."
-                + str(student_id),
-
-            "question_id":
+                + str(student_id)
+            ),
+            "question_id": (
                 "eq."
-                + str(question_id),
-
-            "status":
-                "eq.paid",
-
-            "select":
-                "*",
-
-            "order":
-                "id.desc",
-
-            "limit":
-                "1"
-
+                + str(question_id)
+            ),
+            "status": "eq.paid",
+            "select": "*",
+            "order": "id.desc",
+            "limit": "1"
         }
-
     )
-
 
     return (
         rows[0]
@@ -1032,134 +776,20 @@ def allowed_file(
 ):
 
     if not filename:
-
         return False
-
 
     if "." not in filename:
-
         return False
 
-
     extension = (
-
         filename
-
-        .rsplit(
-            ".",
-            1
-        )[1]
-
+        .rsplit(".", 1)[1]
         .lower()
-
     )
-
 
     return (
         extension
         in ALLOWED_EXTENSIONS
-    )
-
-
-def storage_upload(
-    file_storage,
-    folder
-):
-
-    if (
-
-        not file_storage
-
-        or not file_storage.filename
-
-    ):
-
-        return None
-
-
-    if not database_ready():
-
-        raise RuntimeError(
-            "Supabase is not configured."
-        )
-
-
-    original = secure_filename(
-        file_storage.filename
-    )
-
-
-    if not original:
-
-        raise ValueError(
-            "Invalid filename."
-        )
-
-
-    if not allowed_file(
-        original
-    ):
-
-        raise ValueError(
-            "Unsupported file type."
-        )
-
-
-    if "." in original:
-
-        extension = (
-
-            "."
-
-            + original
-
-            .rsplit(
-                ".",
-                1
-            )[1]
-
-            .lower()
-
-        )
-
-    else:
-
-        extension = ""
-
-
-    storage_path = (
-
-        folder
-
-        + "/"
-
-        + uuid.uuid4().hex
-
-        + extension
-
-    )
-
-
-    return storage_upload_stream(
-
-        file_storage.stream,
-
-        storage_path,
-
-        original,
-
-        (
-
-            file_storage.mimetype
-
-            or mimetypes.guess_type(
-                original
-            )[0]
-
-            or "application/octet-stream"
-
-        )
-
     )
 
 
@@ -1170,75 +800,108 @@ def storage_upload_stream(
     content_type
 ):
 
+    if not database_ready():
+
+        raise RuntimeError(
+            "Supabase is not configured."
+        )
+
     url = (
-
         SUPABASE_URL
-
         + "/storage/v1/object/"
-
         + STORAGE_BUCKET
-
         + "/"
-
         + storage_path
-
     )
-
 
     headers = {
-
-        "Authorization":
+        "Authorization": (
             "Bearer "
-            + SUPABASE_SERVICE_KEY,
-
-        "apikey":
-            SUPABASE_SERVICE_KEY,
-
-        "Content-Type":
-            content_type,
-
-        "x-upsert":
-            "false"
-
+            + SUPABASE_SERVICE_KEY
+        ),
+        "apikey": SUPABASE_SERVICE_KEY,
+        "Content-Type": content_type,
+        "x-upsert": "false"
     }
 
-
     response = requests.post(
-
         url,
-
         headers=headers,
-
         data=stream,
-
         timeout=120
-
     )
-
 
     if not response.ok:
 
         raise RuntimeError(
-
             "Storage upload failed: "
-
             + response.text
-
         )
 
-
     return {
-
-        "original_name":
-            original_name,
-
-        "storage_path":
-            storage_path,
-
-        "content_type":
-            content_type
-
+        "original_name": original_name,
+        "storage_path": storage_path,
+        "content_type": content_type
     }
+
+
+def storage_upload(
+    file_storage,
+    folder
+):
+
+    if (
+        not file_storage
+        or not file_storage.filename
+    ):
+        return None
+
+    original = secure_filename(
+        file_storage.filename
+    )
+
+    if not original:
+        raise ValueError(
+            "Invalid filename."
+        )
+
+    if not allowed_file(original):
+        raise ValueError(
+            "Unsupported file type."
+        )
+
+    extension = ""
+
+    if "." in original:
+
+        extension = (
+            "."
+            + original
+            .rsplit(".", 1)[1]
+            .lower()
+        )
+
+    storage_path = (
+        folder
+        + "/"
+        + uuid.uuid4().hex
+        + extension
+    )
+
+    content_type = (
+        file_storage.mimetype
+        or mimetypes.guess_type(
+            original
+        )[0]
+        or "application/octet-stream"
+    )
+
+    return storage_upload_stream(
+        file_storage.stream,
+        storage_path,
+        original,
+        content_type
+    )
 
 
 def storage_upload_bytes(
@@ -1248,18 +911,11 @@ def storage_upload_bytes(
     content_type="application/pdf"
 ):
 
-    stream = io.BytesIO(data)
-
     return storage_upload_stream(
-
-        stream,
-
+        io.BytesIO(data),
         storage_path,
-
         original_name,
-
         content_type
-
     )
 
 
@@ -1268,55 +924,35 @@ def storage_get(
 ):
 
     if not path:
-
         return None
 
-
     url = (
-
         SUPABASE_URL
-
         + "/storage/v1/object/"
-
         + STORAGE_BUCKET
-
         + "/"
-
         + path
-
     )
-
 
     try:
 
         response = requests.get(
-
             url,
-
             headers={
-
-                "Authorization":
+                "Authorization": (
                     "Bearer "
-                    + SUPABASE_SERVICE_KEY,
-
-                "apikey":
-                    SUPABASE_SERVICE_KEY
-
+                    + SUPABASE_SERVICE_KEY
+                ),
+                "apikey": SUPABASE_SERVICE_KEY
             },
-
             timeout=120
-
         )
 
-
         if response.ok:
-
             return response
 
     except Exception:
-
         pass
-
 
     return None
 
@@ -1326,53 +962,34 @@ def storage_delete(
 ):
 
     if not path:
-
         return
-
 
     if not database_ready():
-
         return
 
-
     url = (
-
         SUPABASE_URL
-
         + "/storage/v1/object/"
-
         + STORAGE_BUCKET
-
         + "/"
-
         + path
-
     )
-
 
     try:
 
         requests.delete(
-
             url,
-
             headers={
-
-                "Authorization":
+                "Authorization": (
                     "Bearer "
-                    + SUPABASE_SERVICE_KEY,
-
-                "apikey":
-                    SUPABASE_SERVICE_KEY
-
+                    + SUPABASE_SERVICE_KEY
+                ),
+                "apikey": SUPABASE_SERVICE_KEY
             },
-
             timeout=30
-
         )
 
     except Exception:
-
         pass
 
 
@@ -1381,63 +998,38 @@ def send_storage_file(
     filename
 ):
 
-    response = storage_get(
-        path
-    )
-
+    response = storage_get(path)
 
     if response is None:
-
         abort(404)
 
-
     safe_filename = (
-
         secure_filename(filename)
-
         or "download"
-
     )
 
-
     content_type = (
-
         response.headers.get(
             "Content-Type"
         )
-
         or "application/octet-stream"
-
     )
 
-
     return Response(
-
         response.content,
-
         headers={
-
-            "Content-Type":
-                content_type,
-
-            "Content-Disposition":
-                (
-
-                    'attachment; filename="'
-
-                    + safe_filename
-
-                    + '"'
-
-                )
-
+            "Content-Type": content_type,
+            "Content-Disposition": (
+                'attachment; filename="'
+                + safe_filename
+                + '"'
+            )
         }
-
     )
 
 
 # ============================================================
-# PDF GENERATION
+# PDF
 # ============================================================
 
 def build_answer_pdf(
@@ -1447,78 +1039,44 @@ def build_answer_pdf(
 
     buffer = io.BytesIO()
 
-
     document = SimpleDocTemplate(
-
         buffer,
-
         pagesize=A4,
-
         rightMargin=45,
-
         leftMargin=45,
-
         topMargin=45,
-
         bottomMargin=45
-
     )
-
 
     styles = getSampleStyleSheet()
 
-
     title_style = ParagraphStyle(
-
         "KojaTitle",
-
         parent=styles["Title"],
-
         alignment=TA_CENTER,
-
         fontSize=20,
-
         leading=25,
-
         spaceAfter=15
-
     )
-
 
     heading_style = ParagraphStyle(
-
         "KojaHeading",
-
         parent=styles["Heading2"],
-
         fontSize=13,
-
         leading=18,
-
         spaceBefore=10,
-
         spaceAfter=7
-
     )
-
 
     body_style = ParagraphStyle(
-
         "KojaBody",
-
         parent=styles["BodyText"],
-
         fontSize=10.5,
-
         leading=17,
-
         spaceAfter=9
-
     )
 
-
     story = []
-
 
     story.append(
         Paragraph(
@@ -1527,7 +1085,6 @@ def build_answer_pdf(
         )
     )
 
-
     story.append(
         Paragraph(
             "Academic Answer",
@@ -1535,42 +1092,39 @@ def build_answer_pdf(
         )
     )
 
-
     story.append(
         Paragraph(
             "<b>Subject:</b> "
-            + escape_html(
-                question.get(
-                    "subject",
-                    ""
+            + html.escape(
+                str(
+                    question.get(
+                        "subject",
+                        ""
+                    )
                 )
             ),
             body_style
         )
     )
-
 
     story.append(
         Paragraph(
             "<b>Student:</b> "
-            + escape_html(
-                question.get(
-                    "student_name",
-                    ""
+            + html.escape(
+                str(
+                    question.get(
+                        "student_name",
+                        ""
+                    )
                 )
             ),
             body_style
         )
     )
 
-
     story.append(
-        Spacer(
-            1,
-            10
-        )
+        Spacer(1, 10)
     )
-
 
     story.append(
         Paragraph(
@@ -1579,23 +1133,17 @@ def build_answer_pdf(
         )
     )
 
-
-    question_text = escape_html(
-        question.get(
-            "question",
-            ""
+    question_text = html.escape(
+        str(
+            question.get(
+                "question",
+                ""
+            )
         )
+    ).replace(
+        "\n",
+        "<br/>"
     )
-
-
-    question_text = (
-        question_text
-        .replace(
-            "\n",
-            "<br/>"
-        )
-    )
-
 
     story.append(
         Paragraph(
@@ -1604,14 +1152,9 @@ def build_answer_pdf(
         )
     )
 
-
     story.append(
-        Spacer(
-            1,
-            10
-        )
+        Spacer(1, 10)
     )
-
 
     story.append(
         Paragraph(
@@ -1620,23 +1163,17 @@ def build_answer_pdf(
         )
     )
 
-
-    answer_text = escape_html(
-        answer.get(
-            "answer",
-            ""
+    answer_text = html.escape(
+        str(
+            answer.get(
+                "answer",
+                ""
+            )
         )
+    ).replace(
+        "\n",
+        "<br/>"
     )
-
-
-    answer_text = (
-        answer_text
-        .replace(
-            "\n",
-            "<br/>"
-        )
-    )
-
 
     story.append(
         Paragraph(
@@ -1645,14 +1182,9 @@ def build_answer_pdf(
         )
     )
 
-
     story.append(
-        Spacer(
-            1,
-            20
-        )
+        Spacer(1, 20)
     )
-
 
     story.append(
         Paragraph(
@@ -1661,59 +1193,12 @@ def build_answer_pdf(
         )
     )
 
-
-    document.build(
-        story
-    )
-
+    document.build(story)
 
     buffer.seek(0)
 
-
     return buffer.read()
 
-
-def escape_html(value):
-
-    value = str(
-        value or ""
-    )
-
-
-    replacements = {
-
-        "&":
-            "&amp;",
-
-        "<":
-            "&lt;",
-
-        ">":
-            "&gt;",
-
-        '"':
-            "&quot;",
-
-        "'":
-            "&#x27;"
-
-    }
-
-
-    for old, new in replacements.items():
-
-        value = value.replace(
-            old,
-            new
-        )
-
-
-    return value
-
-
-# ============================================================
-# GENERATE AND STORE ANSWER PDF
-# ============================================================
 
 def generate_and_store_answer_pdf(
     question,
@@ -1721,72 +1206,40 @@ def generate_and_store_answer_pdf(
 ):
 
     pdf_data = build_answer_pdf(
-
         question,
-
         answer
-
     )
-
 
     filename = (
-
         "KOJA_Answer_"
-
-        + str(
-            question["id"]
-        )
-
+        + str(question["id"])
         + ".pdf"
-
     )
-
 
     storage_path = (
-
         "answer-pdfs/"
-
         + uuid.uuid4().hex
-
         + ".pdf"
-
     )
 
-
-    uploaded = storage_upload_bytes(
-
+    return storage_upload_bytes(
         pdf_data,
-
         storage_path,
-
         filename,
-
         "application/pdf"
-
     )
 
 
-    return uploaded
-
-
 # ============================================================
-# AUTHORIZATION
+# AUTH
 # ============================================================
 
-def student_required(
-    function
-):
+def student_required(function):
 
     @wraps(function)
+    def wrapper(*args, **kwargs):
 
-    def wrapper(
-        *args,
-        **kwargs
-    ):
-
-        if session.get(
-            "role"
-        ) != "student":
+        if session.get("role") != "student":
 
             flash(
                 "Please log in as a student."
@@ -1796,30 +1249,20 @@ def student_required(
                 url_for("login")
             )
 
-
         return function(
             *args,
             **kwargs
         )
 
-
     return wrapper
 
 
-def admin_required(
-    function
-):
+def admin_required(function):
 
     @wraps(function)
+    def wrapper(*args, **kwargs):
 
-    def wrapper(
-        *args,
-        **kwargs
-    ):
-
-        if session.get(
-            "role"
-        ) != "admin":
+        if session.get("role") != "admin":
 
             flash(
                 "Administrator login required."
@@ -1829,63 +1272,43 @@ def admin_required(
                 url_for("admin_login")
             )
 
-
         return function(
             *args,
             **kwargs
         )
 
-
     return wrapper
 
 
 # ============================================================
-# NOTIFICATIONS
+# NOTIFICATION COUNT
 # ============================================================
 
 def unread_count():
 
-    if session.get(
-        "role"
-    ) != "student":
-
+    if session.get("role") != "student":
         return 0
-
 
     try:
 
         rows = db_select(
-
             "questions",
-
             {
-
-                "user_id":
+                "user_id": (
                     "eq."
                     + str(
-                        session[
-                            "user_id"
-                        ]
-                    ),
-
-                "status":
-                    "eq.Answered",
-
-                "answer_seen":
-                    "eq.0",
-
-                "select":
-                    "id"
-
+                        session["user_id"]
+                    )
+                ),
+                "status": "eq.Answered",
+                "answer_seen": "eq.0",
+                "select": "id"
             }
-
         )
-
 
         return len(rows)
 
     except Exception:
-
         return 0
 
 
@@ -1894,7 +1317,6 @@ def unread_count():
 # ============================================================
 
 PAGE = """
-
 <!doctype html>
 
 <html>
@@ -2195,7 +1617,9 @@ select:focus,
 textarea:focus{
 outline:none;
 border-color:#2563eb;
-box-shadow:0 0 0 2px rgba(37,99,235,.12);
+box-shadow:
+0 0 0 2px
+rgba(37,99,235,.12);
 }
 
 table{
@@ -2205,7 +1629,8 @@ border-collapse:collapse;
 
 th,td{
 padding:10px;
-border-bottom:1px solid #e2e8f0;
+border-bottom:
+1px solid #e2e8f0;
 text-align:left;
 }
 
@@ -2221,6 +1646,11 @@ font-size:27px;
 
 .links a{
 font-size:12px;
+}
+
+table{
+display:block;
+overflow-x:auto;
 }
 
 }
@@ -2258,7 +1688,7 @@ Ask
 </a>
 
 <a href="{{ url_for('my_questions') }}">
-My Questions
+Questions
 </a>
 
 <a href="{{ url_for('notifications') }}">
@@ -2365,23 +1795,15 @@ def page(
 ):
 
     return render_template_string(
-
         PAGE,
-
         content=render_template_string(
-
             content,
-
             countries=AFRICAN_COUNTRIES,
-
-            subjects=SUBJECTS
-
+            subjects=SUBJECTS,
+            payment_currency=PAYMENT_CURRENCY
         ),
-
         title=title,
-
         unread_count=unread_count()
-
     )
 
 
@@ -2392,17 +1814,8 @@ def page(
 @app.route("/")
 def index():
 
-    database_status = database_ready()
-
-    flutterwave_status = bool(
-        FLW_SECRET_KEY
-    )
-
-
     return page(
-
         """
-
 <div class="hero">
 
 <h1>KOJA AFRICA</h1>
@@ -2438,7 +1851,6 @@ Administrator
 
 </div>
 
-
 <div class="stats">
 
 <div class="stat">
@@ -2453,7 +1865,7 @@ Academic Questions
 
 <div class="stat">
 <div class="num">📄</div>
-Paid PDF Resources
+PDF Resources
 </div>
 
 <div class="stat">
@@ -2463,79 +1875,51 @@ Secure Payments
 
 </div>
 
-
 <div class="card">
 
 <h2>How KOJA Works</h2>
 
 <p>1. Create a student account.</p>
-
 <p>2. Submit your assignment question.</p>
-
-<p>3. KOJA administrator reviews the question.</p>
-
-<p>4. Administrator writes the academic answer.</p>
-
-<p>5. Student reads the answer on KOJA.</p>
-
-<p>6. PDF answer is available for purchase.</p>
-
-<p>7. Student pays through Flutterwave.</p>
-
+<p>3. KOJA reviews the question.</p>
+<p>4. Administrator writes the answer.</p>
+<p>5. Student reads the answer for free.</p>
+<p>6. Student pays for the PDF.</p>
+<p>7. Flutterwave processes payment.</p>
 <p>8. KOJA verifies the transaction.</p>
-
-<p>9. Student downloads the paid PDF.</p>
+<p>9. PDF becomes downloadable.</p>
 
 </div>
-
 
 <div class="card">
 
 <h2>System Status</h2>
 
-{% if database_status %}
-
+{% if database_ready %}
 <div class="success">
-Supabase configuration detected.
+Supabase configured.
 </div>
-
 {% else %}
-
 <div class="error">
-
 Supabase is not configured.
-
 </div>
-
 {% endif %}
 
 <br>
 
-{% if flutterwave_status %}
-
+{% if flutterwave_ready %}
 <div class="success">
-Flutterwave configuration detected.
+Flutterwave configured.
 </div>
-
 {% else %}
-
 <div class="error">
-
-Flutterwave is not configured yet.
-
-Set FLW_SECRET_KEY in your hosting
-environment.
-
+Flutterwave is not configured.
 </div>
-
 {% endif %}
 
 </div>
-
         """,
-
         "Home"
-
     )
 
 
@@ -2586,16 +1970,15 @@ def register():
             ""
         ).strip()
 
-
-        if not all([
-
-            name,
-            username,
-            email,
-            password,
-            country
-
-        ]):
+        if not all(
+            [
+                name,
+                username,
+                email,
+                password,
+                country
+            ]
+        ):
 
             flash(
                 "Complete all required fields."
@@ -2604,7 +1987,6 @@ def register():
             return redirect(
                 url_for("register")
             )
-
 
         if country not in AFRICAN_COUNTRIES:
 
@@ -2616,7 +1998,6 @@ def register():
                 url_for("register")
             )
 
-
         if len(username) < 3:
 
             flash(
@@ -2627,7 +2008,6 @@ def register():
                 url_for("register")
             )
 
-
         if len(password) < 6:
 
             flash(
@@ -2637,7 +2017,6 @@ def register():
             return redirect(
                 url_for("register")
             )
-
 
         try:
 
@@ -2653,10 +2032,7 @@ def register():
                     url_for("register")
                 )
 
-
-            if email_exists(
-                email
-            ):
+            if email_exists(email):
 
                 flash(
                     "Email already exists."
@@ -2666,56 +2042,33 @@ def register():
                     url_for("register")
                 )
 
-
             db_insert(
-
                 "users",
-
                 {
-
-                    "name":
-                        name,
-
-                    "username":
-                        username,
-
-                    "email":
-                        email,
-
+                    "name": name,
+                    "username": username,
+                    "email": email,
                     "password":
                         generate_password_hash(
                             password
                         ),
-
-                    "role":
-                        "student",
-
-                    "country":
-                        country,
-
-                    "institution":
-                        institution,
-
+                    "role": "student",
+                    "country": country,
+                    "institution": institution,
                     "academic_level":
                         academic_level,
-
                     "created_at":
                         current_time()
-
                 }
-
             )
-
 
             flash(
                 "Account created successfully."
             )
 
-
             return redirect(
                 url_for("login")
             )
-
 
         except Exception as error:
 
@@ -2724,11 +2077,8 @@ def register():
                 + str(error)
             )
 
-
     return page(
-
         """
-
 <div class="card">
 
 <h1>Create KOJA Account</h1>
@@ -2736,44 +2086,24 @@ def register():
 <form method="POST">
 
 <div class="form">
-
 <label>Full Name</label>
-
-<input
-name="name"
-autocomplete="name"
-required>
-
+<input name="name" required>
 </div>
 
-
 <div class="form">
-
 <label>Username</label>
-
-<input
-name="username"
-autocomplete="username"
-required>
-
+<input name="username" required>
 </div>
 
-
 <div class="form">
-
 <label>Email</label>
-
 <input
 name="email"
 type="email"
-autocomplete="email"
 required>
-
 </div>
 
-
 <div class="form">
-
 <label>Country</label>
 
 <select name="country" required>
@@ -2794,20 +2124,14 @@ Select country
 
 </div>
 
-
 <div class="form">
-
 <label>Institution</label>
-
 <input
 name="institution"
 placeholder="University / College / School">
-
 </div>
 
-
 <div class="form">
-
 <label>Academic Level</label>
 
 <select name="academic_level">
@@ -2827,20 +2151,14 @@ Select level
 
 </div>
 
-
 <div class="form">
-
 <label>Password</label>
-
 <input
 name="password"
 type="password"
 minlength="6"
-autocomplete="new-password"
 required>
-
 </div>
-
 
 <button class="btn">
 Create Account
@@ -2849,16 +2167,13 @@ Create Account
 </form>
 
 </div>
-
         """,
-
         "Register"
-
     )
 
 
 # ============================================================
-# LOGIN
+# STUDENT LOGIN
 # ============================================================
 
 @app.route(
@@ -2879,7 +2194,6 @@ def login():
             ""
         )
 
-
         try:
 
             user = get_user_by_username(
@@ -2887,45 +2201,30 @@ def login():
                 "student"
             )
 
-
             if (
-
                 user
-
                 and check_password_hash(
-
                     user["password"],
-
                     password
-
                 )
-
             ):
 
                 session.clear()
 
                 session["user_id"] = user["id"]
-
                 session["name"] = user["name"]
-
                 session["username"] = user["username"]
-
                 session["role"] = "student"
 
-
                 return redirect(
-
                     url_for(
                         "student_dashboard"
                     )
-
                 )
-
 
             flash(
                 "Invalid username or password."
             )
-
 
         except Exception as error:
 
@@ -2934,11 +2233,8 @@ def login():
                 + str(error)
             )
 
-
     return page(
-
         """
-
 <div class="card">
 
 <h1>Student Login</h1>
@@ -2951,11 +2247,9 @@ def login():
 
 <input
 name="username"
-autocomplete="username"
 required>
 
 </div>
-
 
 <div class="form">
 
@@ -2964,11 +2258,9 @@ required>
 <input
 name="password"
 type="password"
-autocomplete="current-password"
 required>
 
 </div>
-
 
 <button class="btn">
 Login
@@ -2986,11 +2278,8 @@ Register
 </p>
 
 </div>
-
         """,
-
         "Login"
-
     )
 
 
@@ -3019,27 +2308,17 @@ def student_dashboard():
     try:
 
         questions = db_select(
-
             "questions",
-
             {
-
-                "user_id":
+                "user_id": (
                     "eq."
                     + str(
-                        session[
-                            "user_id"
-                        ]
-                    ),
-
-                "select":
-                    "*",
-
-                "order":
-                    "id.desc"
-
+                        session["user_id"]
+                    )
+                ),
+                "select": "*",
+                "order": "id.desc"
             }
-
         )
 
     except Exception as error:
@@ -3051,38 +2330,24 @@ def student_dashboard():
 
         questions = []
 
+    total = len(questions)
 
-    total = len(
-        questions
+    pending = len(
+        [
+            q for q in questions
+            if q.get("status") == "Pending"
+        ]
     )
 
-
-    pending = len([
-
-        q for q in questions
-
-        if q.get(
-            "status"
-        ) == "Pending"
-
-    ])
-
-
-    answered = len([
-
-        q for q in questions
-
-        if q.get(
-            "status"
-        ) == "Answered"
-
-    ])
-
+    answered = len(
+        [
+            q for q in questions
+            if q.get("status") == "Answered"
+        ]
+    )
 
     return page(
-
         """
-
 <div class="hero">
 
 <h1>
@@ -3090,7 +2355,7 @@ Welcome, {{ session.get("name") }}
 </h1>
 
 <p>
-KOJA AFRICA assignment assistance portal.
+KOJA AFRICA academic assistance portal.
 </p>
 
 <a class="btn"
@@ -3099,7 +2364,6 @@ Ask New Question
 </a>
 
 </div>
-
 
 <div class="stats">
 
@@ -3120,10 +2384,9 @@ Answered
 
 </div>
 
-
 <div class="card">
 
-<h2>My Recent Questions</h2>
+<h2>Recent Questions</h2>
 
 {% for q in questions[:10] %}
 
@@ -3136,7 +2399,6 @@ Answered
 <p>
 {{ q["question"][:250] }}
 </p>
-
 
 {% if q["status"] == "Answered" %}
 
@@ -3151,7 +2413,6 @@ Pending
 </span>
 
 {% endif %}
-
 
 <div class="actions">
 
@@ -3174,11 +2435,8 @@ Open
 {% endfor %}
 
 </div>
-
         """,
-
         "Dashboard"
-
     )
 
 
@@ -3209,7 +2467,6 @@ def submit_question():
             "attachment"
         )
 
-
         if not subject or not question:
 
             flash(
@@ -3217,11 +2474,8 @@ def submit_question():
             )
 
             return redirect(
-                url_for(
-                    "submit_question"
-                )
+                url_for("submit_question")
             )
-
 
         if subject not in SUBJECTS:
 
@@ -3230,49 +2484,31 @@ def submit_question():
             )
 
             return redirect(
-                url_for(
-                    "submit_question"
-                )
+                url_for("submit_question")
             )
 
-
         uploaded = None
-
 
         try:
 
             if (
-
                 attachment
-
                 and attachment.filename
-
             ):
 
                 uploaded = storage_upload(
-
                     attachment,
-
                     "questions"
-
                 )
 
-
             db_insert(
-
                 "questions",
-
                 {
-
                     "user_id":
-                        session[
-                            "user_id"
-                        ],
+                        session["user_id"],
 
                     "student_name":
-                        session[
-                            "name"
-                        ],
+                        session["name"],
 
                     "subject":
                         subject,
@@ -3282,28 +2518,16 @@ def submit_question():
 
                     "attachment_name":
                         (
-
-                            uploaded[
-                                "original_name"
-                            ]
-
+                            uploaded["original_name"]
                             if uploaded
-
                             else None
-
                         ),
 
                     "attachment_file":
                         (
-
-                            uploaded[
-                                "storage_path"
-                            ]
-
+                            uploaded["storage_path"]
                             if uploaded
-
                             else None
-
                         ),
 
                     "status":
@@ -3313,7 +2537,7 @@ def submit_question():
                         0,
 
                     "answer_price":
-                        float(
+                        str(
                             decimal_price(
                                 DEFAULT_ANSWER_PRICE
                             )
@@ -3321,45 +2545,31 @@ def submit_question():
 
                     "created_at":
                         current_time()
-
                 }
-
             )
-
 
             flash(
                 "Question submitted successfully."
             )
 
-
             return redirect(
                 url_for("my_questions")
             )
 
-
         except Exception as error:
 
             if uploaded:
-
                 storage_delete(
-
-                    uploaded[
-                        "storage_path"
-                    ]
-
+                    uploaded["storage_path"]
                 )
-
 
             flash(
                 "Submission failed: "
                 + str(error)
             )
 
-
     return page(
-
         """
-
 <div class="card">
 
 <h1>Ask KOJA</h1>
@@ -3367,21 +2577,15 @@ def submit_question():
 <div class="info">
 
 Write the complete assignment question.
-You can attach a PDF, Word document, image
-or other supported file up to 10 MB.
-
-The administrator will set the PDF answer
-price for your question.
+Attachments are limited to 10 MB.
 
 </div>
 
 <br>
 
-
 <form
 method="POST"
 enctype="multipart/form-data">
-
 
 <div class="form">
 
@@ -3405,7 +2609,6 @@ Select subject
 
 </div>
 
-
 <div class="form">
 
 <label>Assignment Question</label>
@@ -3419,19 +2622,15 @@ placeholder="Write your complete assignment question..."
 
 </div>
 
-
 <div class="form">
 
-<label>
-Attachment — Maximum 10 MB
-</label>
+<label>Attachment</label>
 
 <input
 type="file"
 name="attachment">
 
 </div>
-
 
 <button class="btn">
 Submit Question
@@ -3440,11 +2639,8 @@ Submit Question
 </form>
 
 </div>
-
         """,
-
         "Ask Question"
-
     )
 
 
@@ -3452,36 +2648,24 @@ Submit Question
 # MY QUESTIONS
 # ============================================================
 
-@app.route(
-    "/my-questions"
-)
+@app.route("/my-questions")
 @student_required
 def my_questions():
 
     try:
 
         questions = db_select(
-
             "questions",
-
             {
-
-                "user_id":
+                "user_id": (
                     "eq."
                     + str(
-                        session[
-                            "user_id"
-                        ]
-                    ),
-
-                "select":
-                    "*",
-
-                "order":
-                    "id.desc"
-
+                        session["user_id"]
+                    )
+                ),
+                "select": "*",
+                "order": "id.desc"
             }
-
         )
 
     except Exception as error:
@@ -3493,11 +2677,8 @@ def my_questions():
 
         questions = []
 
-
     return page(
-
         """
-
 <div class="card">
 
 <h1>My Questions</h1>
@@ -3508,7 +2689,6 @@ href="{{ url_for('submit_question') }}">
 </a>
 
 </div>
-
 
 {% for q in questions %}
 
@@ -3522,13 +2702,11 @@ href="{{ url_for('submit_question') }}">
 {{ q["created_at"] }}
 </p>
 
-
 <div class="text">
 {{ q["question"] }}
 </div>
 
 <br>
-
 
 {% if q["status"] == "Answered" %}
 
@@ -3544,7 +2722,6 @@ Pending
 
 {% endif %}
 
-
 <div class="actions">
 
 <a class="btn"
@@ -3555,8 +2732,7 @@ question_id=q['id']
 View
 </a>
 
-
-{% if q["attachment_file"] %}
+{% if q.get("attachment_file") %}
 
 <a class="btn purple"
 href="{{ url_for(
@@ -3572,7 +2748,6 @@ Download Assignment
 
 </div>
 
-
 {% else %}
 
 <div class="card empty">
@@ -3580,11 +2755,8 @@ No questions yet.
 </div>
 
 {% endfor %}
-
         """,
-
         "My Questions"
-
     )
 
 
@@ -3601,81 +2773,54 @@ def view_question(
 ):
 
     question = get_student_question(
-
         question_id,
-
         session["user_id"]
-
     )
 
-
     if not question:
-
         abort(404)
-
 
     answer = get_answer(
         question_id
     )
-
 
     if answer:
 
         try:
 
             db_update(
-
                 "questions",
-
                 {
-
-                    "id":
-                        question_id,
-
+                    "id": question_id,
                     "user_id":
-                        session[
-                            "user_id"
-                        ]
-
+                        session["user_id"]
                 },
-
                 {
-
-                    "answer_seen":
-                        1
-
+                    "answer_seen": 1
                 }
-
             )
 
         except Exception:
-
             pass
 
+    paid = False
 
-    paid = has_paid_for_pdf(
+    if answer:
 
-        session["user_id"],
-
-        question_id
-
-    ) if answer else False
-
+        paid = has_paid_for_pdf(
+            session["user_id"],
+            question_id
+        )
 
     price = money(
-
         question.get(
             "answer_price",
             DEFAULT_ANSWER_PRICE
         )
-
     )
 
-
     return page(
-
         """
-
 <div class="card question">
 
 <h1>
@@ -3686,15 +2831,13 @@ def view_question(
 {{ question["created_at"] }}
 </p>
 
-
 <h3>Your Question</h3>
 
 <div class="text">
 {{ question["question"] }}
 </div>
 
-
-{% if question["attachment_file"] %}
+{% if question.get("attachment_file") %}
 
 <div class="actions">
 
@@ -3712,7 +2855,6 @@ Download Assignment
 
 </div>
 
-
 {% if answer %}
 
 <div class="card answer">
@@ -3723,31 +2865,24 @@ Download Assignment
 {{ answer["answer"] }}
 </div>
 
-
 <p class="small">
 Answered {{ answer["answered_at"] }}
 </p>
 
 </div>
 
-
-{% if answer["pdf_file"] %}
+{% if answer.get("pdf_file") %}
 
 <div class="card payment">
 
 <h2>PDF Answer</h2>
 
-
 {% if paid %}
 
 <div class="success">
-
 Payment confirmed.
-
-Your PDF answer is unlocked.
-
+Your PDF is unlocked.
 </div>
-
 
 <div class="actions">
 
@@ -3761,19 +2896,14 @@ Download Paid PDF
 
 </div>
 
-
 {% else %}
 
 <div class="info">
 
-The academic answer above is available
-for viewing.
-
-The professionally generated PDF answer
-requires payment.
+The answer is free to read.
+The downloadable PDF requires payment.
 
 </div>
-
 
 <br>
 
@@ -3782,12 +2912,6 @@ requires payment.
 {{ price }} {{ payment_currency }}
 
 </div>
-
-
-<p>
-Pay once to unlock this PDF answer.
-</p>
-
 
 <div class="actions">
 
@@ -3798,7 +2922,6 @@ question_id=question['id']
 ) }}">
 
 Pay {{ price }} {{ payment_currency }}
-& Download PDF
 
 </a>
 
@@ -3809,7 +2932,6 @@ Pay {{ price }} {{ payment_currency }}
 </div>
 
 {% endif %}
-
 
 {% else %}
 
@@ -3825,11 +2947,8 @@ question yet.
 </div>
 
 {% endif %}
-
         """,
-
         "Question"
-
     )
 
 
@@ -3837,39 +2956,25 @@ question yet.
 # NOTIFICATIONS
 # ============================================================
 
-@app.route(
-    "/notifications"
-)
+@app.route("/notifications")
 @student_required
 def notifications():
 
     try:
 
         questions = db_select(
-
             "questions",
-
             {
-
-                "user_id":
+                "user_id": (
                     "eq."
                     + str(
-                        session[
-                            "user_id"
-                        ]
-                    ),
-
-                "status":
-                    "eq.Answered",
-
-                "select":
-                    "*",
-
-                "order":
-                    "id.desc"
-
+                        session["user_id"]
+                    )
+                ),
+                "status": "eq.Answered",
+                "select": "*",
+                "order": "id.desc"
             }
-
         )
 
     except Exception as error:
@@ -3881,11 +2986,8 @@ def notifications():
 
         questions = []
 
-
     return page(
-
         """
-
 <div class="card">
 
 <h1>Notifications</h1>
@@ -3897,18 +2999,17 @@ appear here.
 
 </div>
 
-
 {% for q in questions %}
 
 <div class="card">
 
-<h2>{{ q["subject"] }}</h2>
+<h2>
+{{ q["subject"] }}
+</h2>
 
+{% if q.get("answer_seen", 0) == 0 %}
 
-{% if q["answer_seen"] == 0 %}
-
-<span class="badge"
-style="background:#fee2e2;color:#991b1b">
+<span class="badge unpaid">
 NEW
 </span>
 
@@ -3919,7 +3020,6 @@ READ
 </span>
 
 {% endif %}
-
 
 <div class="actions">
 
@@ -3935,7 +3035,6 @@ Read Answer
 
 </div>
 
-
 {% else %}
 
 <div class="card empty">
@@ -3943,16 +3042,13 @@ No answers yet.
 </div>
 
 {% endfor %}
-
         """,
-
         "Notifications"
-
     )
 
 
 # ============================================================
-# QUESTION FILE DOWNLOAD
+# DOWNLOAD QUESTION FILE
 # ============================================================
 
 @app.route(
@@ -3964,42 +3060,30 @@ def download_question_file(
 ):
 
     question = get_student_question(
-
         question_id,
-
         session["user_id"]
-
     )
 
-
     if not question:
-
         abort(404)
-
 
     path = question.get(
         "attachment_file"
     )
 
-
     if not path:
-
         abort(404)
 
-
     return send_storage_file(
-
         path,
-
         question.get(
             "attachment_name"
         ) or "assignment"
-
     )
 
 
 # ============================================================
-# FLUTTERWAVE CREATE PAYMENT
+# START FLUTTERWAVE PAYMENT
 # ============================================================
 
 @app.route(
@@ -4011,84 +3095,53 @@ def start_pdf_payment(
 ):
 
     question = get_student_question(
-
         question_id,
-
         session["user_id"]
-
     )
 
-
     if not question:
-
         abort(404)
-
 
     answer = get_answer(
         question_id
     )
 
-
     if not answer:
-
         flash(
             "The answer is not available yet."
         )
 
         return redirect(
-
             url_for(
-
                 "view_question",
-
                 question_id=question_id
-
             )
-
         )
 
-
-    if not answer.get(
-        "pdf_file"
-    ):
+    if not answer.get("pdf_file"):
 
         flash(
-            "The PDF answer has not been generated yet."
+            "The PDF has not been generated yet."
         )
 
         return redirect(
-
             url_for(
-
                 "view_question",
-
                 question_id=question_id
-
             )
-
         )
 
-
     if has_paid_for_pdf(
-
         session["user_id"],
-
         question_id
-
     ):
 
         return redirect(
-
             url_for(
-
                 "download_answer_pdf",
-
                 question_id=question_id
-
             )
-
         )
-
 
     if not FLW_SECRET_KEY:
 
@@ -4097,72 +3150,48 @@ def start_pdf_payment(
         )
 
         return redirect(
-
             url_for(
-
                 "view_question",
-
                 question_id=question_id
-
             )
-
         )
 
-
     amount = decimal_price(
-
         question.get(
             "answer_price",
             DEFAULT_ANSWER_PRICE
         )
-
     )
 
+    tx_ref = (
+        "KOJA-"
+        + str(question_id)
+        + "-"
+        + uuid.uuid4().hex
+    )
 
-    if amount <= 0:
+    existing_payment = (
+        get_payment_by_tx_ref(tx_ref)
+    )
+
+    if existing_payment:
 
         flash(
-            "Invalid PDF price."
+            "Payment reference collision. Please try again."
         )
 
         return redirect(
-
             url_for(
-
                 "view_question",
-
                 question_id=question_id
-
             )
-
         )
-
-
-    tx_ref = (
-
-        "KOJA-"
-
-        + str(
-            question_id
-        )
-
-        + "-"
-
-        + uuid.uuid4().hex[:20]
-
-    )
-
 
     payment_rows = db_insert(
-
         "payments",
-
         {
-
             "student_id":
-                session[
-                    "user_id"
-                ],
+                session["user_id"],
 
             "question_id":
                 question_id,
@@ -4171,7 +3200,7 @@ def start_pdf_payment(
                 tx_ref,
 
             "amount":
-                float(amount),
+                str(amount),
 
             "currency":
                 PAYMENT_CURRENCY,
@@ -4181,11 +3210,8 @@ def start_pdf_payment(
 
             "created_at":
                 current_time()
-
         }
-
     )
-
 
     if not payment_rows:
 
@@ -4194,86 +3220,47 @@ def start_pdf_payment(
         )
 
         return redirect(
-
             url_for(
-
                 "view_question",
-
                 question_id=question_id
-
             )
-
         )
 
-
-    if KOJA_BASE_URL:
-
-        redirect_url = (
-
-            KOJA_BASE_URL
-
-            + url_for(
-                "flutterwave_callback"
-            )
-
+    redirect_url = (
+        KOJA_BASE_URL
+        + url_for(
+            "flutterwave_callback"
         )
-
-    else:
-
-        redirect_url = url_for(
-
+        if KOJA_BASE_URL
+        else url_for(
             "flutterwave_callback",
-
             _external=True
-
         )
-
+    )
 
     user = get_user_by_id(
-
-        session[
-            "user_id"
-        ]
-
+        session["user_id"]
     )
-
 
     customer_email = (
-
-        user.get(
-            "email"
-        )
-
+        user.get("email", "")
         if user
-
         else ""
-
     )
 
-
     customer_name = (
-
-        user.get(
-            "name"
-        )
-
+        user.get("name")
         if user
-
         else session.get(
             "name",
             "KOJA Student"
         )
-
     )
 
-
     payload = {
+        "tx_ref": tx_ref,
 
-        "tx_ref":
-            tx_ref,
-
-        "amount":
-            float(amount),
+        "amount": str(amount),
 
         "currency":
             PAYMENT_CURRENCY,
@@ -4282,178 +3269,247 @@ def start_pdf_payment(
             redirect_url,
 
         "customer": {
-
             "email":
                 customer_email,
 
             "name":
                 customer_name
-
         },
 
         "customizations": {
-
             "title":
                 "KOJA AFRICA",
 
             "description":
-                "PDF Academic Answer",
-
-            "logo":
-                ""
-
+                "Academic Answer PDF"
         },
 
         "configurations": {
-
             "session_duration":
                 30,
 
             "max_retry_attempt":
                 5
-
         }
-
     }
-
 
     try:
 
         response = requests.post(
-
             FLW_BASE_URL
             + "/payments",
 
             headers={
-
                 "Authorization":
                     "Bearer "
                     + FLW_SECRET_KEY,
 
                 "Content-Type":
-                    "application/json"
+                    "application/json",
 
+                "Accept":
+                    "application/json"
             },
 
             json=payload,
 
             timeout=45
-
         )
 
-
         data = response.json()
-
 
     except Exception as error:
 
         db_update(
-
             "payments",
-
+            {"tx_ref": tx_ref},
             {
-
-                "tx_ref":
-                    tx_ref
-
-            },
-
-            {
-
-                "status":
-                    "failed"
-
+                "status": "failed",
+                "verified_at":
+                    current_time()
             }
-
         )
-
 
         flash(
-
             "Flutterwave connection failed: "
             + str(error)
-
         )
-
 
         return redirect(
-
             url_for(
-
                 "view_question",
-
                 question_id=question_id
-
             )
-
         )
-
 
     if (
-
         response.ok
-
-        and data.get(
-            "status"
-        ) == "success"
-
-        and data.get(
-            "data"
-        )
-
-        and data["data"].get(
-            "link"
-        )
-
+        and data.get("status") == "success"
+        and data.get("data")
+        and data["data"].get("link")
     ):
 
         return redirect(
-
             data["data"]["link"]
-
         )
-
 
     db_update(
-
         "payments",
-
+        {"tx_ref": tx_ref},
         {
-
-            "tx_ref":
-                tx_ref
-
-        },
-
-        {
-
-            "status":
-                "failed"
-
+            "status": "failed",
+            "verified_at":
+                current_time()
         }
-
     )
-
 
     flash(
+        "Flutterwave could not create payment."
+    )
 
-        "Flutterwave could not create the payment: "
-
-        + str(data)
-
+    return redirect(
+        url_for(
+            "view_question",
+            question_id=question_id
+        )
     )
 
 
-    return redirect(
+# ============================================================
+# FLUTTERWAVE VERIFY FUNCTION
+# ============================================================
 
-        url_for(
+def verify_flutterwave_transaction(
+    transaction_id
+):
 
-            "view_question",
-
-            question_id=question_id
-
+    if not FLW_SECRET_KEY:
+        raise RuntimeError(
+            "Flutterwave secret key is missing."
         )
 
+    response = requests.get(
+        FLW_BASE_URL
+        + "/transactions/"
+        + str(transaction_id)
+        + "/verify",
+
+        headers={
+            "Authorization":
+                "Bearer "
+                + FLW_SECRET_KEY,
+
+            "Content-Type":
+                "application/json",
+
+            "Accept":
+                "application/json"
+        },
+
+        timeout=45
+    )
+
+    if not response.ok:
+
+        raise RuntimeError(
+            "Flutterwave verification failed: "
+            + response.text
+        )
+
+    data = response.json()
+
+    transaction = data.get(
+        "data"
+    )
+
+    if not transaction:
+
+        raise RuntimeError(
+            "No transaction data returned."
+        )
+
+    return transaction
+
+
+# ============================================================
+# PAYMENT VALIDATION
+# ============================================================
+
+def validate_payment_transaction(
+    payment,
+    transaction
+):
+
+    expected_tx_ref = str(
+        payment.get(
+            "tx_ref",
+            ""
+        )
+    )
+
+    expected_currency = str(
+        payment.get(
+            "currency",
+            PAYMENT_CURRENCY
+        )
+    ).upper()
+
+    try:
+
+        expected_amount = Decimal(
+            str(
+                payment.get(
+                    "amount",
+                    "0"
+                )
+            )
+        )
+
+    except Exception:
+
+        return False
+
+    actual_status = str(
+        transaction.get(
+            "status",
+            ""
+        )
+    ).lower()
+
+    actual_tx_ref = str(
+        transaction.get(
+            "tx_ref",
+            ""
+        )
+    )
+
+    actual_currency = str(
+        transaction.get(
+            "currency",
+            ""
+        )
+    ).upper()
+
+    try:
+
+        actual_amount = Decimal(
+            str(
+                transaction.get(
+                    "amount",
+                    "0"
+                )
+            )
+        )
+
+    except Exception:
+
+        actual_amount = Decimal("0")
+
+    return (
+        actual_status == "successful"
+        and actual_tx_ref == expected_tx_ref
+        and actual_currency == expected_currency
+        and actual_amount >= expected_amount
     )
 
 
@@ -4471,77 +3527,37 @@ def flutterwave_callback():
         ""
     ).strip()
 
-
     transaction_id = request.args.get(
         "transaction_id",
         ""
     ).strip()
-
 
     status = request.args.get(
         "status",
         ""
     ).strip().lower()
 
-
     if not tx_ref:
 
-        return page(
-
-            """
-
-<div class="card">
-
-<h1>Payment Error</h1>
-
-<div class="error">
-Missing payment reference.
-</div>
-
-</div>
-
-            """,
-
-            "Payment Error"
-
+        return payment_result_page(
+            None,
+            False,
+            "Missing payment reference."
         ), 400
-
 
     payment = get_payment_by_tx_ref(
         tx_ref
     )
 
-
     if not payment:
 
-        return page(
-
-            """
-
-<div class="card">
-
-<h1>Payment Error</h1>
-
-<div class="error">
-Payment record was not found.
-</div>
-
-</div>
-
-            """,
-
-            "Payment Error"
-
+        return payment_result_page(
+            None,
+            False,
+            "Payment record was not found."
         ), 404
 
-
-    # --------------------------------------------------------
-    # ALREADY PAID
-    # --------------------------------------------------------
-
-    if payment.get(
-        "status"
-    ) == "paid":
+    if payment.get("status") == "paid":
 
         return payment_result_page(
             payment,
@@ -4549,251 +3565,62 @@ Payment record was not found.
             "Payment was already verified."
         )
 
-
-    # --------------------------------------------------------
-    # FLUTTERWAVE FAILED
-    # --------------------------------------------------------
-
     if status == "failed":
 
         db_update(
-
             "payments",
-
+            {"tx_ref": tx_ref},
             {
-
-                "tx_ref":
-                    tx_ref
-
-            },
-
-            {
-
-                "status":
-                    "failed",
-
+                "status": "failed",
                 "verified_at":
                     current_time()
-
             }
-
         )
 
+        payment["status"] = "failed"
 
         return payment_result_page(
-
             payment,
-
             False,
-
-            "Flutterwave reported that the payment was not successful."
-
+            "Flutterwave reported that the payment failed."
         )
-
 
     if not transaction_id:
 
         return payment_result_page(
-
             payment,
-
             False,
-
-            "No Flutterwave transaction ID was returned."
-
+            "No transaction ID was returned."
         )
-
-
-    # --------------------------------------------------------
-    # VERIFY SERVER-SIDE
-    # --------------------------------------------------------
 
     try:
 
-        response = requests.get(
-
-            FLW_BASE_URL
-
-            + "/transactions/"
-
-            + transaction_id
-
-            + "/verify",
-
-            headers={
-
-                "Authorization":
-                    "Bearer "
-                    + FLW_SECRET_KEY,
-
-                "Content-Type":
-                    "application/json"
-
-            },
-
-            timeout=45
-
+        transaction = (
+            verify_flutterwave_transaction(
+                transaction_id
+            )
         )
-
-
-        verification = response.json()
-
 
     except Exception as error:
 
         return payment_result_page(
-
             payment,
-
             False,
-
-            "Payment verification failed: "
-            + str(error)
-
+            str(error)
         )
 
-
-    if not response.ok:
-
-        return payment_result_page(
-
-            payment,
-
-            False,
-
-            "Flutterwave verification request failed."
-
-        )
-
-
-    transaction = verification.get(
-        "data"
+    valid = validate_payment_transaction(
+        payment,
+        transaction
     )
-
-
-    if not transaction:
-
-        return payment_result_page(
-
-            payment,
-
-            False,
-
-            "Flutterwave returned no transaction data."
-
-        )
-
-
-    verified_status = str(
-
-        transaction.get(
-            "status",
-            ""
-        )
-
-    ).lower()
-
-
-    verified_tx_ref = str(
-
-        transaction.get(
-            "tx_ref",
-            ""
-        )
-
-    )
-
-
-    verified_currency = str(
-
-        transaction.get(
-            "currency",
-            ""
-        )
-
-    ).upper()
-
-
-    try:
-
-        verified_amount = Decimal(
-
-            str(
-
-                transaction.get(
-                    "amount",
-                    "0"
-                )
-
-            )
-
-        )
-
-    except Exception:
-
-        verified_amount = Decimal("0")
-
-
-    expected_amount = Decimal(
-
-        str(
-            payment.get(
-                "amount",
-                "0"
-            )
-        )
-
-    )
-
-
-    expected_currency = str(
-
-        payment.get(
-            "currency",
-            PAYMENT_CURRENCY
-        )
-
-    ).upper()
-
-
-    # --------------------------------------------------------
-    # CRITICAL VALIDATION
-    # --------------------------------------------------------
-
-    valid = (
-
-        verified_status
-        == "successful"
-
-        and verified_tx_ref
-        == tx_ref
-
-        and verified_currency
-        == expected_currency
-
-        and verified_amount
-        >= expected_amount
-
-    )
-
 
     if not valid:
 
         db_update(
-
             "payments",
-
+            {"tx_ref": tx_ref},
             {
-
-                "tx_ref":
-                    tx_ref
-
-            },
-
-            {
-
-                "status":
-                    "failed",
+                "status": "failed",
 
                 "flutterwave_transaction_id":
                     str(
@@ -4805,42 +3632,20 @@ Payment record was not found.
 
                 "verified_at":
                     current_time()
-
             }
-
         )
-
 
         return payment_result_page(
-
             payment,
-
             False,
-
-            "Payment could not be verified. The PDF remains locked."
-
+            "Payment verification failed. The PDF remains locked."
         )
 
-
-    # --------------------------------------------------------
-    # PAYMENT SUCCESS
-    # --------------------------------------------------------
-
     db_update(
-
         "payments",
-
+        {"tx_ref": tx_ref},
         {
-
-            "tx_ref":
-                tx_ref
-
-        },
-
-        {
-
-            "status":
-                "paid",
+            "status": "paid",
 
             "flutterwave_transaction_id":
                 str(
@@ -4855,26 +3660,163 @@ Payment record was not found.
 
             "verified_at":
                 current_time()
-
         }
-
     )
 
-
-    paid_payment = get_payment_by_tx_ref(
-        tx_ref
+    paid_payment = (
+        get_payment_by_tx_ref(
+            tx_ref
+        )
     )
-
 
     return payment_result_page(
-
         paid_payment or payment,
-
         True,
-
         "Payment verified successfully."
-
     )
+
+
+# ============================================================
+# FLUTTERWAVE WEBHOOK
+# ============================================================
+
+@app.route(
+    "/webhook/flutterwave",
+    methods=["POST"]
+)
+def flutterwave_webhook():
+
+    if not FLW_SECRET_HASH:
+
+        return jsonify({
+            "status": "disabled"
+        }), 200
+
+    received_hash = request.headers.get(
+        "verif-hash",
+        ""
+    )
+
+    if (
+        not received_hash
+        or received_hash != FLW_SECRET_HASH
+    ):
+
+        return jsonify({
+            "status": "unauthorized"
+        }), 401
+
+    payload = request.get_json(
+        silent=True
+    ) or {}
+
+    transaction_id = payload.get(
+        "id"
+    )
+
+    data = payload.get(
+        "data"
+    ) or {}
+
+    if not transaction_id:
+
+        transaction_id = data.get(
+            "id"
+        )
+
+    if not transaction_id:
+
+        return jsonify({
+            "status": "ignored"
+        }), 200
+
+    tx_ref = data.get(
+        "tx_ref"
+    )
+
+    if not tx_ref:
+
+        return jsonify({
+            "status": "ignored"
+        }), 200
+
+    try:
+
+        payment = get_payment_by_tx_ref(
+            str(tx_ref)
+        )
+
+        if not payment:
+
+            return jsonify({
+                "status": "ignored"
+            }), 200
+
+        transaction = (
+            verify_flutterwave_transaction(
+                transaction_id
+            )
+        )
+
+        valid = (
+            validate_payment_transaction(
+                payment,
+                transaction
+            )
+        )
+
+        if valid:
+
+            db_update(
+                "payments",
+                {
+                    "tx_ref":
+                        str(tx_ref)
+                },
+                {
+                    "status": "paid",
+
+                    "flutterwave_transaction_id":
+                        str(
+                            transaction.get(
+                                "id",
+                                transaction_id
+                            )
+                        ),
+
+                    "paid_at":
+                        current_time(),
+
+                    "verified_at":
+                        current_time()
+                }
+            )
+
+        else:
+
+            db_update(
+                "payments",
+                {
+                    "tx_ref":
+                        str(tx_ref)
+                },
+                {
+                    "status": "failed",
+                    "verified_at":
+                        current_time()
+                }
+            )
+
+    except Exception as error:
+
+        print(
+            "Webhook processing error:",
+            error
+        )
+
+    return jsonify({
+        "status": "received"
+    }), 200
 
 
 # ============================================================
@@ -4887,15 +3829,37 @@ def payment_result_page(
     message
 ):
 
+    if not payment:
+
+        return page(
+            """
+<div class="card">
+
+<h1>Payment Error</h1>
+
+<div class="error">
+{{ message }}
+</div>
+
+<br>
+
+<a class="btn"
+href="{{ url_for('index') }}">
+KOJA Home
+</a>
+
+</div>
+            """,
+            "Payment"
+        )
+
     question_id = payment.get(
         "question_id"
     )
 
-
     if success:
 
         content = """
-
 <div class="card">
 
 <h1>Payment Successful</h1>
@@ -4910,12 +3874,6 @@ Your payment has been verified by KOJA.
 
 </div>
 
-
-<p>
-The PDF answer is now unlocked.
-</p>
-
-
 <div class="actions">
 
 <a class="btn green"
@@ -4925,7 +3883,6 @@ question_id=question_id
 ) }}">
 Download PDF Answer
 </a>
-
 
 <a class="btn gray"
 href="{{ url_for(
@@ -4938,13 +3895,11 @@ Return to Answer
 </div>
 
 </div>
-
         """
 
     else:
 
         content = """
-
 <div class="card">
 
 <h1>Payment Not Completed</h1>
@@ -4955,12 +3910,10 @@ Return to Answer
 
 </div>
 
-
 <p>
-Your PDF remains locked until a successful
-payment is verified.
+Your PDF remains locked until payment
+is successfully verified.
 </p>
-
 
 <div class="actions">
 
@@ -4975,16 +3928,11 @@ Return to Question
 </div>
 
 </div>
-
         """
 
-
     return page(
-
         content,
-
         "Payment"
-
     )
 
 
@@ -5001,137 +3949,50 @@ def download_answer_pdf(
 ):
 
     question = get_student_question(
-
         question_id,
-
         session["user_id"]
-
     )
 
-
     if not question:
-
         abort(404)
-
 
     answer = get_answer(
         question_id
     )
 
-
     if not answer:
-
         abort(404)
-
 
     path = answer.get(
         "pdf_file"
     )
 
-
     if not path:
-
         abort(404)
 
-
-    # --------------------------------------------------------
-    # PAYMENT CHECK
-    # --------------------------------------------------------
-
     payment = get_paid_payment(
-
         session["user_id"],
-
         question_id
-
     )
-
 
     if not payment:
 
         flash(
-
             "Payment required before downloading the PDF."
-
         )
-
 
         return redirect(
-
             url_for(
-
                 "view_question",
-
                 question_id=question_id
-
             )
-
         )
 
-
-    # --------------------------------------------------------
-    # SEND PRIVATE STORAGE FILE
-    # --------------------------------------------------------
-
     return send_storage_file(
-
         path,
-
         answer.get(
             "pdf_name"
-        )
-
-        or "KOJA_Answer.pdf"
-
-    )
-
-
-# ============================================================
-# QUESTION ATTACHMENT
-# ============================================================
-
-@app.route(
-    "/download/question/<int:question_id>"
-)
-@student_required
-def download_question_file(
-    question_id
-):
-
-    question = get_student_question(
-
-        question_id,
-
-        session["user_id"]
-
-    )
-
-
-    if not question:
-
-        abort(404)
-
-
-    path = question.get(
-        "attachment_file"
-    )
-
-
-    if not path:
-
-        abort(404)
-
-
-    return send_storage_file(
-
-        path,
-
-        question.get(
-            "attachment_name"
-        )
-
-        or "assignment"
-
+        ) or "KOJA_Answer.pdf"
     )
 
 
@@ -5157,56 +4018,37 @@ def admin_login():
             ""
         )
 
-
         try:
 
             admin = get_user_by_username(
-
                 username,
-
                 "admin"
-
             )
 
-
             if (
-
                 admin
-
                 and check_password_hash(
-
                     admin["password"],
-
                     password
-
                 )
-
             ):
 
                 session.clear()
 
                 session["user_id"] = admin["id"]
-
                 session["name"] = admin["name"]
-
                 session["username"] = admin["username"]
-
                 session["role"] = "admin"
 
-
                 return redirect(
-
                     url_for(
                         "admin_dashboard"
                     )
-
                 )
-
 
             flash(
                 "Invalid administrator credentials."
             )
-
 
         except Exception as error:
 
@@ -5215,11 +4057,8 @@ def admin_login():
                 + str(error)
             )
 
-
     return page(
-
         """
-
 <div class="card">
 
 <h1>KOJA Administrator</h1>
@@ -5232,11 +4071,9 @@ def admin_login():
 
 <input
 name="username"
-autocomplete="username"
 required>
 
 </div>
-
 
 <div class="form">
 
@@ -5245,11 +4082,9 @@ required>
 <input
 name="password"
 type="password"
-autocomplete="current-password"
 required>
 
 </div>
-
 
 <button class="btn">
 Administrator Login
@@ -5258,11 +4093,8 @@ Administrator Login
 </form>
 
 </div>
-
         """,
-
         "Admin Login"
-
     )
 
 
@@ -5270,130 +4102,84 @@ Administrator Login
 # ADMIN DASHBOARD
 # ============================================================
 
-@app.route(
-    "/admin"
-)
+@app.route("/admin")
 @admin_required
 def admin_dashboard():
 
     try:
 
         questions = db_select(
-
             "questions",
-
             {
-
-                "select":
-                    "*",
-
-                "order":
-                    "id.desc"
-
+                "select": "*",
+                "order": "id.desc"
             }
-
         )
-
 
         students = db_select(
-
             "users",
-
             {
-
-                "role":
-                    "eq.student",
-
-                "select":
-                    "id"
-
+                "role": "eq.student",
+                "select": "id"
             }
-
         )
 
-
         payments = db_select(
-
             "payments",
-
             {
-
-                "select":
-                    "*"
-
+                "select": "*"
             }
-
         )
 
     except Exception as error:
 
         flash(
-
             "Could not load administrator data: "
-
             + str(error)
-
         )
 
         questions = []
-
         students = []
-
         payments = []
 
+    pending = len(
+        [
+            q for q in questions
+            if q.get("status") == "Pending"
+        ]
+    )
 
-    pending = len([
+    answered = len(
+        [
+            q for q in questions
+            if q.get("status") == "Answered"
+        ]
+    )
 
-        q for q in questions
-
-        if q.get(
-            "status"
-        ) == "Pending"
-
-    ])
-
-
-    answered = len([
-
-        q for q in questions
-
-        if q.get(
-            "status"
-        ) == "Answered"
-
-    ])
-
-
-    paid = len([
-
-        p for p in payments
-
-        if p.get(
-            "status"
-        ) == "paid"
-
-    ])
-
+    paid = len(
+        [
+            p for p in payments
+            if p.get("status") == "paid"
+        ]
+    )
 
     return page(
-
         """
-
 <div class="hero">
 
 <h1>KOJA Administrator</h1>
 
 <p>
-Manage student assignment questions,
-answers, PDF prices and payments.
+Manage student questions, answers,
+PDF prices and payments.
 </p>
 
+<div class="actions">
 
 <a class="btn"
 href="{{ url_for('admin_questions') }}">
 Manage Questions
 </a>
-
 
 <a class="btn green"
 href="{{ url_for('admin_payments') }}">
@@ -5402,6 +4188,7 @@ Payments
 
 </div>
 
+</div>
 
 <div class="stats">
 
@@ -5410,24 +4197,20 @@ Payments
 Total Questions
 </div>
 
-
 <div class="stat">
 <div class="num">{{ pending }}</div>
 Pending
 </div>
-
 
 <div class="stat">
 <div class="num">{{ answered }}</div>
 Answered
 </div>
 
-
 <div class="stat">
 <div class="num">{{ students|length }}</div>
 Students
 </div>
-
 
 <div class="stat">
 <div class="num">{{ paid }}</div>
@@ -5435,11 +4218,8 @@ Paid Transactions
 </div>
 
 </div>
-
         """,
-
         "Admin Dashboard"
-
     )
 
 
@@ -5447,9 +4227,7 @@ Paid Transactions
 # ADMIN QUESTIONS
 # ============================================================
 
-@app.route(
-    "/admin/questions"
-)
+@app.route("/admin/questions")
 @admin_required
 def admin_questions():
 
@@ -5458,98 +4236,58 @@ def admin_questions():
         ""
     ).strip()
 
-
     status = request.args.get(
         "status",
         ""
     ).strip()
 
-
     params = {
-
-        "select":
-            "*",
-
-        "order":
-            "id.desc"
-
+        "select": "*",
+        "order": "id.desc"
     }
 
-
     if status in (
-
         "Pending",
-
         "Answered"
-
     ):
 
         params["status"] = (
-
             "eq."
-
             + status
-
         )
-
 
     if search:
 
         safe_search = (
-
             search
+            .replace("*", "")
+            .replace(",", " ")
+            .strip()
+        )
 
-            .replace(
-                "*",
-                ""
+        if safe_search:
+
+            value = (
+                "*"
+                + safe_search
+                + "*"
             )
 
-            .replace(
-                ",",
-                " "
+            params["or"] = (
+                "(student_name.ilike."
+                + value
+                + ",subject.ilike."
+                + value
+                + ",question.ilike."
+                + value
+                + ")"
             )
-
-        )
-
-
-        value = (
-
-            "*"
-
-            + safe_search
-
-            + "*"
-
-        )
-
-
-        params["or"] = (
-
-            "(student_name.ilike."
-
-            + value
-
-            + ",subject.ilike."
-
-            + value
-
-            + ",question.ilike."
-
-            + value
-
-            + ")"
-
-        )
-
 
     try:
 
         questions = db_select(
-
             "questions",
-
             params
-
         )
 
     except Exception as error:
@@ -5557,18 +4295,12 @@ def admin_questions():
         questions = []
 
         flash(
-
             "Search failed: "
-
             + str(error)
-
         )
 
-
     return page(
-
         """
-
 <div class="card">
 
 <h1>Questions</h1>
@@ -5586,7 +4318,6 @@ placeholder="Student, subject or question">
 
 </div>
 
-
 <div class="form">
 
 <label>Status</label>
@@ -5597,7 +4328,6 @@ placeholder="Student, subject or question">
 All
 </option>
 
-
 <option
 value="Pending"
 {% if status == "Pending" %}
@@ -5606,7 +4336,6 @@ selected
 >
 Pending
 </option>
-
 
 <option
 value="Answered"
@@ -5621,7 +4350,6 @@ Answered
 
 </div>
 
-
 <button class="btn">
 Search
 </button>
@@ -5629,7 +4357,6 @@ Search
 </form>
 
 </div>
-
 
 {% for q in questions %}
 
@@ -5639,30 +4366,24 @@ Search
 {{ q["student_name"] }}
 </h2>
 
-
 <p>
 <b>{{ q["subject"] }}</b>
 </p>
 
-
 <p>
 {{ q["question"][:400] }}
 </p>
-
 
 <p>
 
 PDF Price:
 
 <b>
-
 {{ q.get("answer_price", 10) }}
 {{ payment_currency }}
-
 </b>
 
 </p>
-
 
 {% if q["status"] == "Answered" %}
 
@@ -5678,7 +4399,6 @@ Pending
 
 {% endif %}
 
-
 <div class="actions">
 
 <a class="btn"
@@ -5693,7 +4413,6 @@ Open
 
 </div>
 
-
 {% else %}
 
 <div class="card empty">
@@ -5701,16 +4420,13 @@ No questions found.
 </div>
 
 {% endfor %}
-
         """,
-
         "Admin Questions"
-
     )
 
 
 # ============================================================
-# ADMIN QUESTION VIEW
+# ADMIN QUESTION
 # ============================================================
 
 @app.route(
@@ -5725,48 +4441,37 @@ def admin_view_question(
         question_id
     )
 
-
     if not question:
-
         abort(404)
-
 
     answer = get_answer(
         question_id
     )
 
-
     return page(
-
         """
-
 <div class="card question">
 
 <h1>
 {{ question["subject"] }}
 </h1>
 
-
 <p>
 <b>Student:</b>
 {{ question["student_name"] }}
 </p>
 
-
 <p class="small">
 {{ question["created_at"] }}
 </p>
 
-
 <h3>Assignment Question</h3>
-
 
 <div class="text">
 {{ question["question"] }}
 </div>
 
-
-{% if question["attachment_file"] %}
+{% if question.get("attachment_file") %}
 
 <div class="actions">
 
@@ -5778,12 +4483,11 @@ question_id=question['id']
 Download Assignment
 </a>
 
-</div>
-
 {% endif %}
 
 </div>
 
+</div>
 
 <div class="card">
 
@@ -5797,20 +4501,18 @@ Write Answer
 
 </h2>
 
-
 <form
 method="POST"
-enctype="multipart/form-data"
 action="{{ url_for(
 'write_answer',
 question_id=question['id']
 ) }}">
 
-
 <div class="form">
 
 <label>
-PDF Answer Price ({{ payment_currency }})
+PDF Answer Price
+({{ payment_currency }})
 </label>
 
 <input
@@ -5823,7 +4525,6 @@ required>
 
 </div>
 
-
 <div class="form">
 
 <label>Academic Answer</label>
@@ -5834,7 +4535,6 @@ rows="16"
 required>{% if answer %}{{ answer["answer"] }}{% endif %}</textarea>
 
 </div>
-
 
 <div class="form">
 
@@ -5848,7 +4548,6 @@ name="answer_attachment">
 
 </div>
 
-
 <button class="btn green">
 
 {% if answer %}
@@ -5861,17 +4560,28 @@ Send Answer
 
 </form>
 
+{% if answer and answer.get("attachment_file") %}
+
+<br>
+
+<a class="btn purple"
+href="{{ url_for(
+'admin_download_answer',
+question_id=question['id']
+) }}">
+Download Additional Answer File
+</a>
+
+{% endif %}
+
 </div>
-
         """,
-
         "Answer Question"
-
     )
 
 
 # ============================================================
-# WRITE / UPDATE ANSWER
+# WRITE ANSWER
 # ============================================================
 
 @app.route(
@@ -5888,17 +4598,14 @@ def write_answer(
         ""
     ).strip()
 
-
     price_text = request.form.get(
         "answer_price",
         DEFAULT_ANSWER_PRICE
     ).strip()
 
-
     attachment = request.files.get(
         "answer_attachment"
     )
-
 
     if not text:
 
@@ -5907,22 +4614,32 @@ def write_answer(
         )
 
         return redirect(
-
             url_for(
-
                 "admin_view_question",
-
                 question_id=question_id
-
             )
-
         )
 
+    try:
 
-    price = decimal_price(
-        price_text
-    )
+        price = Decimal(
+            price_text
+        ).quantize(
+            Decimal("0.01")
+        )
 
+    except Exception:
+
+        flash(
+            "Invalid PDF price."
+        )
+
+        return redirect(
+            url_for(
+                "admin_view_question",
+                question_id=question_id
+            )
+        )
 
     if price <= 0:
 
@@ -5931,107 +4648,60 @@ def write_answer(
         )
 
         return redirect(
-
             url_for(
-
                 "admin_view_question",
-
                 question_id=question_id
-
             )
-
         )
-
 
     question = get_question(
         question_id
     )
 
-
     if not question:
-
         abort(404)
 
-
     uploaded = None
-
     new_pdf = None
-
 
     try:
 
-        # ----------------------------------------------------
-        # SAVE QUESTION PRICE
-        # ----------------------------------------------------
-
         db_update(
-
             "questions",
-
+            {"id": question_id},
             {
-
-                "id":
-                    question_id
-
-            },
-
-            {
-
                 "answer_price":
-                    float(price)
-
+                    str(price)
             }
-
         )
 
-
-        # ----------------------------------------------------
-        # OPTIONAL EXTRA ANSWER RESOURCE
-        # ----------------------------------------------------
-
         if (
-
             attachment
-
             and attachment.filename
-
         ):
 
             uploaded = storage_upload(
-
                 attachment,
-
                 "answers"
-
             )
-
 
         existing = get_answer(
             question_id
         )
 
-
-        # ----------------------------------------------------
-        # CREATE OR UPDATE ANSWER
-        # ----------------------------------------------------
-
         if existing:
 
             update = {
-
                 "answer":
                     text,
 
                 "answered_at":
                     current_time()
-
             }
-
 
             old_file = existing.get(
                 "attachment_file"
             )
-
 
             if uploaded:
 
@@ -6041,45 +4711,29 @@ def write_answer(
                     "original_name"
                 ]
 
-
                 update[
                     "attachment_file"
                 ] = uploaded[
                     "storage_path"
                 ]
 
-
             db_update(
-
                 "answers",
-
                 {
-
                     "id":
                         existing["id"]
-
                 },
-
                 update
-
             )
 
-
             if uploaded and old_file:
-
-                storage_delete(
-                    old_file
-                )
-
+                storage_delete(old_file)
 
         else:
 
             rows = db_insert(
-
                 "answers",
-
                 {
-
                     "question_id":
                         question_id,
 
@@ -6088,102 +4742,56 @@ def write_answer(
 
                     "attachment_name":
                         (
-
-                            uploaded[
-                                "original_name"
-                            ]
-
+                            uploaded["original_name"]
                             if uploaded
-
                             else None
-
                         ),
 
                     "attachment_file":
                         (
-
-                            uploaded[
-                                "storage_path"
-                            ]
-
+                            uploaded["storage_path"]
                             if uploaded
-
                             else None
-
                         ),
 
                     "answered_at":
                         current_time()
-
                 }
-
             )
 
-
             if not rows:
-
                 raise RuntimeError(
                     "Could not create answer."
                 )
-
-
-        # ----------------------------------------------------
-        # GET CURRENT ANSWER
-        # ----------------------------------------------------
 
         current_answer = get_answer(
             question_id
         )
 
-
         if not current_answer:
 
             raise RuntimeError(
-                "Answer was not found after saving."
+                "Answer could not be loaded."
             )
-
-
-        # ----------------------------------------------------
-        # GENERATE PDF
-        # ----------------------------------------------------
 
         new_pdf = (
             generate_and_store_answer_pdf(
-
                 question,
-
                 current_answer
-
             )
         )
-
-
-        # ----------------------------------------------------
-        # OLD PDF
-        # ----------------------------------------------------
 
         old_pdf = current_answer.get(
             "pdf_file"
         )
 
-
-        # ----------------------------------------------------
-        # SAVE PDF PATH
-        # ----------------------------------------------------
-
         db_update(
-
             "answers",
-
             {
-
                 "id":
                     current_answer["id"]
-
             },
-
             {
-
                 "pdf_file":
                     new_pdf[
                         "storage_path"
@@ -6193,101 +4801,50 @@ def write_answer(
                     new_pdf[
                         "original_name"
                     ]
-
             }
-
         )
 
-
-        # ----------------------------------------------------
-        # DELETE OLD PDF
-        # ----------------------------------------------------
-
         if old_pdf:
-
-            storage_delete(
-                old_pdf
-            )
-
-
-        # ----------------------------------------------------
-        # MARK QUESTION ANSWERED
-        # ----------------------------------------------------
+            storage_delete(old_pdf)
 
         db_update(
-
             "questions",
-
+            {"id": question_id},
             {
-
-                "id":
-                    question_id
-
-            },
-
-            {
-
                 "status":
                     "Answered",
 
                 "answer_seen":
                     0
-
             }
-
         )
-
 
         flash(
-
             "Answer saved and PDF generated successfully."
-
         )
-
 
     except Exception as error:
 
         if uploaded:
-
             storage_delete(
-
-                uploaded[
-                    "storage_path"
-                ]
-
+                uploaded["storage_path"]
             )
-
 
         if new_pdf:
-
             storage_delete(
-
-                new_pdf[
-                    "storage_path"
-                ]
-
+                new_pdf["storage_path"]
             )
 
-
         flash(
-
             "Could not save answer: "
-
             + str(error)
-
         )
-
 
     return redirect(
-
         url_for(
-
             "admin_view_question",
-
             question_id=question_id
-
         )
-
     )
 
 
@@ -6307,37 +4864,26 @@ def admin_download_question(
         question_id
     )
 
-
     if not question:
-
         abort(404)
-
 
     path = question.get(
         "attachment_file"
     )
 
-
     if not path:
-
         abort(404)
 
-
     return send_storage_file(
-
         path,
-
         question.get(
             "attachment_name"
-        )
-
-        or "assignment"
-
+        ) or "assignment"
     )
 
 
 # ============================================================
-# ADMIN ANSWER RESOURCE DOWNLOAD
+# ADMIN ANSWER FILE
 # ============================================================
 
 @app.route(
@@ -6352,32 +4898,21 @@ def admin_download_answer(
         question_id
     )
 
-
     if not answer:
-
         abort(404)
-
 
     path = answer.get(
         "attachment_file"
     )
 
-
     if not path:
-
         abort(404)
 
-
     return send_storage_file(
-
         path,
-
         answer.get(
             "attachment_name"
-        )
-
-        or "answer"
-
+        ) or "answer"
     )
 
 
@@ -6394,19 +4929,11 @@ def admin_payments():
     try:
 
         payments = db_select(
-
             "payments",
-
             {
-
-                "select":
-                    "*",
-
-                "order":
-                    "id.desc"
-
+                "select": "*",
+                "order": "id.desc"
             }
-
         )
 
     except Exception as error:
@@ -6414,38 +4941,34 @@ def admin_payments():
         payments = []
 
         flash(
-
             "Could not load payments: "
-
             + str(error)
-
         )
 
+    total_paid = Decimal("0")
 
-    total_paid = sum(
+    for payment in payments:
 
-        Decimal(
-            str(
-                p.get(
-                    "amount",
-                    0
-                )
-            )
-        )
-
-        for p in payments
-
-        if p.get(
+        if payment.get(
             "status"
-        ) == "paid"
+        ) == "paid":
 
-    )
+            try:
 
+                total_paid += Decimal(
+                    str(
+                        payment.get(
+                            "amount",
+                            "0"
+                        )
+                    )
+                )
+
+            except Exception:
+                pass
 
     return page(
-
         """
-
 <div class="card">
 
 <h1>Payment History</h1>
@@ -6462,7 +4985,6 @@ Total Paid:
 
 </div>
 
-
 <div class="card">
 
 <table>
@@ -6470,44 +4992,28 @@ Total Paid:
 <tr>
 
 <th>ID</th>
-
 <th>Student</th>
-
 <th>Question</th>
-
 <th>Amount</th>
-
 <th>Status</th>
-
 <th>Reference</th>
 
 </tr>
-
 
 {% for p in payments %}
 
 <tr>
 
-<td>
-{{ p["id"] }}
-</td>
+<td>{{ p["id"] }}</td>
 
+<td>{{ p["student_id"] }}</td>
 
-<td>
-{{ p["student_id"] }}
-</td>
-
-
-<td>
-{{ p["question_id"] }}
-</td>
-
+<td>{{ p["question_id"] }}</td>
 
 <td>
 {{ p["amount"] }}
 {{ payment_currency }}
 </td>
-
 
 <td>
 
@@ -6533,13 +5039,11 @@ PENDING
 
 </td>
 
-
 <td>
 {{ p["tx_ref"] }}
 </td>
 
 </tr>
-
 
 {% else %}
 
@@ -6556,48 +5060,36 @@ No payments yet.
 </table>
 
 </div>
-
         """,
-
         "Payments"
-
+    ).replace(
+        "{{ total_paid }}",
+        money(total_paid)
     )
 
 
 # ============================================================
-# STUDENT PAYMENT HISTORY
+# STUDENT PAYMENTS
 # ============================================================
 
-@app.route(
-    "/payments"
-)
+@app.route("/payments")
 @student_required
 def payments_history():
 
     try:
 
         payments = db_select(
-
             "payments",
-
             {
-
-                "student_id":
+                "student_id": (
                     "eq."
                     + str(
-                        session[
-                            "user_id"
-                        ]
-                    ),
-
-                "select":
-                    "*",
-
-                "order":
-                    "id.desc"
-
+                        session["user_id"]
+                    )
+                ),
+                "select": "*",
+                "order": "id.desc"
             }
-
         )
 
     except Exception as error:
@@ -6605,24 +5097,17 @@ def payments_history():
         payments = []
 
         flash(
-
             "Could not load payment history: "
-
             + str(error)
-
         )
 
-
     return page(
-
         """
-
 <div class="card">
 
 <h1>My Payments</h1>
 
 </div>
-
 
 <div class="card">
 
@@ -6631,15 +5116,11 @@ def payments_history():
 <tr>
 
 <th>Question</th>
-
 <th>Amount</th>
-
 <th>Status</th>
-
 <th>Date</th>
 
 </tr>
-
 
 {% for p in payments %}
 
@@ -6649,12 +5130,10 @@ def payments_history():
 {{ p["question_id"] }}
 </td>
 
-
 <td>
 {{ p["amount"] }}
 {{ payment_currency }}
 </td>
-
 
 <td>
 
@@ -6680,13 +5159,11 @@ PENDING
 
 </td>
 
-
 <td>
 {{ p["created_at"] }}
 </td>
 
 </tr>
-
 
 {% else %}
 
@@ -6703,93 +5180,51 @@ No payments yet.
 </table>
 
 </div>
-
         """,
-
         "My Payments"
-
     )
 
 
 # ============================================================
-# HEALTH CHECK
+# HEALTH
 # ============================================================
 
-@app.route(
-    "/health"
-)
+@app.route("/health")
 def health():
 
     if not database_ready():
 
         return {
-
-            "status":
-                "error",
-
-            "application":
-                APP_NAME,
-
-            "database":
-                "not configured"
-
+            "status": "error",
+            "application": APP_NAME,
+            "database": "not configured"
         }, 500
-
 
     try:
 
         db_select(
-
             "users",
-
             {
-
-                "select":
-                    "id",
-
-                "limit":
-                    "1"
-
+                "select": "id",
+                "limit": "1"
             }
-
         )
 
-
         return {
-
-            "status":
-                "ok",
-
-            "application":
-                APP_NAME,
-
-            "database":
-                "connected",
-
-            "storage":
-                STORAGE_BUCKET,
-
+            "status": "ok",
+            "application": APP_NAME,
+            "database": "connected",
+            "storage": STORAGE_BUCKET,
             "flutterwave":
-                bool(
-                    FLW_SECRET_KEY
-                )
-
+                bool(FLW_SECRET_KEY)
         }
-
 
     except Exception as error:
 
         return {
-
-            "status":
-                "error",
-
-            "database":
-                "not connected",
-
-            "error":
-                str(error)
-
+            "status": "error",
+            "database": "not connected",
+            "error": str(error)
         }, 500
 
 
@@ -6797,39 +5232,25 @@ def health():
 # STATUS
 # ============================================================
 
-@app.route(
-    "/status"
-)
+@app.route("/status")
 def status():
 
     return {
-
-        "application":
-            APP_NAME,
-
+        "application": APP_NAME,
         "supabase_configured":
             database_ready(),
-
         "storage_bucket":
             STORAGE_BUCKET,
-
         "flutterwave_configured":
-            bool(
-                FLW_SECRET_KEY
-            ),
-
+            bool(FLW_SECRET_KEY),
         "currency":
             PAYMENT_CURRENCY,
-
         "host":
             HOST,
-
         "port":
             PORT,
-
         "https":
             HTTPS_ENABLED
-
     }
 
 
@@ -6838,16 +5259,11 @@ def status():
 # ============================================================
 
 @app.errorhandler(413)
-def too_large(
-    error
-):
+def too_large(error):
 
     return (
-
         "File too large. Maximum allowed size is 10 MB.",
-
         413
-
     )
 
 
@@ -6856,16 +5272,11 @@ def too_large(
 # ============================================================
 
 @app.errorhandler(404)
-def not_found(
-    error
-):
+def not_found(error):
 
     return (
-
         page(
-
             """
-
 <div class="card empty">
 
 <h1>404</h1>
@@ -6878,15 +5289,10 @@ KOJA Home
 </a>
 
 </div>
-
             """,
-
             "404"
-
         ),
-
         404
-
     )
 
 
@@ -6895,16 +5301,11 @@ KOJA Home
 # ============================================================
 
 @app.errorhandler(500)
-def server_error(
-    error
-):
+def server_error(error):
 
     return (
-
         page(
-
             """
-
 <div class="card">
 
 <h1>Server Error</h1>
@@ -6923,37 +5324,23 @@ Return Home
 </a>
 
 </div>
-
             """,
-
             "Server Error"
-
         ),
-
         500
-
     )
 
 
 # ============================================================
-# START SERVER
+# START
 # ============================================================
 
 if __name__ == "__main__":
 
     print()
-
-    print(
-        "=" * 60
-    )
-
-    print(
-        "KOJA AFRICA"
-    )
-
-    print(
-        "=" * 60
-    )
+    print("=" * 60)
+    print("KOJA AFRICA")
+    print("=" * 60)
 
     print(
         "Supabase configured:",
@@ -6967,9 +5354,12 @@ if __name__ == "__main__":
 
     print(
         "Flutterwave configured:",
-        bool(
-            FLW_SECRET_KEY
-        )
+        bool(FLW_SECRET_KEY)
+    )
+
+    print(
+        "Flutterwave webhook hash:",
+        bool(FLW_SECRET_HASH)
     )
 
     print(
@@ -6987,23 +5377,13 @@ if __name__ == "__main__":
         PORT
     )
 
-    print(
-        "=" * 60
-    )
-
+    print("=" * 60)
     print()
 
-
     app.run(
-
         host=HOST,
-
         port=PORT,
-
         debug=False,
-
         threaded=True,
-
         use_reloader=False
-
     )
