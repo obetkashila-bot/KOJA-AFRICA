@@ -1,5 +1,5 @@
 # ============================================================
-# KOJA AFRICA
+# KOJA ZM
 # Knowledge • Questions • Answers
 #
 # SINGLE-FILE FLASK APPLICATION
@@ -10,15 +10,30 @@
 # Flutterwave Standard Payments
 # ReportLab PDF generation
 #
-# Designed for:
-#   Render
-#   Railway
-#   VPS
-#   Pydroid 3
+# Render / Railway / VPS / Pydroid 3
 #
 # NO SQLITE
-# NO psycopg
+# NO psycopG
 # NO psycopg2
+#
+# PRODUCTION CONFIGURATION
+#
+# Required Render variables:
+#
+# SUPABASE_URL
+# SUPABASE_SERVICE_KEY
+# KOJA_SECRET_KEY
+#
+# Optional:
+#
+# SUPABASE_PUBLISHABLE_KEY
+# KOJA_STORAGE_BUCKET
+# KOJA_BASE_URL
+# FLW_SECRET_KEY
+# FLW_SECRET_HASH
+# KOJA_PAYMENT_CURRENCY
+# KOJA_PAYMENT_AMOUNT
+#
 # ============================================================
 
 import os
@@ -30,7 +45,6 @@ import hashlib
 import base64
 import mimetypes
 import secrets
-
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 from functools import wraps
@@ -74,7 +88,7 @@ from reportlab.platypus import (
 # APPLICATION
 # ============================================================
 
-APP_NAME = "KOJA AFRICA"
+APP_NAME = "KOJA ZM"
 
 APP_TAGLINE = (
     "Assignment Questions • Academic Answers • Learning Resources"
@@ -95,37 +109,20 @@ def env(name, default=""):
 # ============================================================
 
 SUPABASE_URL = env(
-    "SUPABASE_URL",
-    "https://orkgbochkzpnnpjsbpbo.supabase.co",
+    "SUPABASE_URL"
 ).rstrip("/")
 
 
-# Your supplied publishable key.
-#
-# This key is safe to use as a public/client key.
-SUPABASE_KEY = env(
-    "SUPABASE_KEY",
-    "sb_publishable_rcxOM5HlC6Ap8fPaYrrS0g_7UnheoZJ",
+SUPABASE_SERVICE_KEY = env(
+    "SUPABASE_SERVICE_KEY"
 )
 
 
-# Backend secret.
-#
-# Recommended:
-# SUPABASE_SECRET_KEY=sb_secret_...
-#
-# Legacy alternative:
-# SUPABASE_SERVICE_KEY=...
-#
-# We do NOT hard-code a secret key.
-#
-SUPABASE_SERVER_KEY = (
-    env("sb_secret_EX9Y6imSI1GjyHcdJsQTxw_iGBSnScX")
-    or env("sb_secret_EX9Y6imSI1GjyHcdJsQTxw_iGBSnScX")
+SUPABASE_PUBLISHABLE_KEY = env(
+    "SUPABASE_PUBLISHABLE_KEY"
 )
 
 
-# Storage bucket
 STORAGE_BUCKET = env(
     "KOJA_STORAGE_BUCKET",
     "koja-files",
@@ -136,9 +133,13 @@ STORAGE_BUCKET = env(
 # FLUTTERWAVE
 # ============================================================
 
-FLW_SECRET_KEY = env("FLW_SECRET_KEY")
+FLW_SECRET_KEY = env(
+    "FLW_SECRET_KEY"
+)
 
-FLW_SECRET_HASH = env("FLW_SECRET_HASH")
+FLW_SECRET_HASH = env(
+    "FLW_SECRET_HASH"
+)
 
 FLW_BASE_URL = (
     "https://api.flutterwave.com/v3"
@@ -160,7 +161,7 @@ DEFAULT_ANSWER_PRICE = env(
 # ============================================================
 
 KOJA_BASE_URL = env(
-    "KOJA_BASE_URL",
+    "KOJA_BASE_URL"
 ).rstrip("/")
 
 
@@ -203,7 +204,7 @@ except ValueError:
 HTTPS_ENABLED = (
     env(
         "KOJA_HTTPS",
-        "0",
+        "1",
     ).lower()
     in ("1", "true", "yes", "on")
 )
@@ -226,6 +227,14 @@ app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 app.config["SESSION_COOKIE_SECURE"] = HTTPS_ENABLED
+
+app.config["SESSION_COOKIE_NAME"] = (
+    "koja_session"
+)
+
+app.config["PERMANENT_SESSION_LIFETIME"] = (
+    60 * 60 * 24 * 7
+)
 
 
 # ============================================================
@@ -334,14 +343,15 @@ ALLOWED_EXTENSIONS = {
 
 
 # ============================================================
-# CONFIGURATION STATUS
+# CONFIGURATION
 # ============================================================
 
 def database_ready():
     return bool(
         SUPABASE_URL
-        and SUPABASE_SERVER_KEY
+        and SUPABASE_SERVICE_KEY
         and SUPABASE_URL.startswith("https://")
+        and SUPABASE_SERVICE_KEY.startswith("sb_secret_")
     )
 
 
@@ -359,11 +369,17 @@ def flutterwave_ready():
 
 
 def db_headers():
+    if not database_ready():
+        raise RuntimeError(
+            "Supabase is not configured. "
+            "Set SUPABASE_URL and SUPABASE_SERVICE_KEY."
+        )
+
     return {
-        "apikey": SUPABASE_SERVER_KEY,
+        "apikey": SUPABASE_SERVICE_KEY,
         "Authorization": (
             "Bearer "
-            + SUPABASE_SERVER_KEY
+            + SUPABASE_SERVICE_KEY
         ),
         "Content-Type": "application/json",
         "Accept": "application/json",
@@ -379,21 +395,19 @@ def rest_url(table):
 
 
 # ============================================================
-# DATABASE HELPERS
+# DATABASE
 # ============================================================
 
-def db_select(table, params=None):
-
-    if not database_ready():
-        raise RuntimeError(
-            "Supabase server key is not configured. "
-            "Set SUPABASE_SECRET_KEY in Render."
-        )
+def db_select(
+    table,
+    params=None,
+):
+    headers = db_headers()
 
     try:
         response = requests.get(
             rest_url(table),
-            headers=db_headers(),
+            headers=headers,
             params=params or {},
             timeout=30,
         )
@@ -414,20 +428,22 @@ def db_select(table, params=None):
         return []
 
     try:
-        return response.json()
+        data = response.json()
     except ValueError:
         raise RuntimeError(
             "Supabase returned invalid JSON."
         )
 
+    if not isinstance(data, list):
+        return []
 
-def db_insert(table, data):
+    return data
 
-    if not database_ready():
-        raise RuntimeError(
-            "Supabase server key is not configured."
-        )
 
+def db_insert(
+    table,
+    data,
+):
     headers = db_headers()
 
     headers["Prefer"] = (
@@ -458,9 +474,28 @@ def db_insert(table, data):
         return []
 
     try:
-        return response.json()
+        data = response.json()
     except ValueError:
         return []
+
+    return data if isinstance(data, list) else []
+
+
+def make_filters(filters):
+    params = {}
+
+    for key, value in filters.items():
+
+        if value is None:
+            params[key] = "is.null"
+
+        else:
+            params[key] = (
+                "eq."
+                + str(value)
+            )
+
+    return params
 
 
 def db_update(
@@ -468,25 +503,13 @@ def db_update(
     filters,
     data,
 ):
-
-    if not database_ready():
-        raise RuntimeError(
-            "Supabase server key is not configured."
-        )
-
-    params = {}
-
-    for key, value in filters.items():
-        params[key] = (
-            "eq."
-            + str(value)
-        )
-
     headers = db_headers()
 
     headers["Prefer"] = (
         "return=representation"
     )
+
+    params = make_filters(filters)
 
     try:
         response = requests.patch(
@@ -513,33 +536,25 @@ def db_update(
         return []
 
     try:
-        return response.json()
+        data = response.json()
     except ValueError:
         return []
+
+    return data if isinstance(data, list) else []
 
 
 def db_delete(
     table,
     filters,
 ):
+    headers = db_headers()
 
-    if not database_ready():
-        raise RuntimeError(
-            "Supabase server key is not configured."
-        )
-
-    params = {}
-
-    for key, value in filters.items():
-        params[key] = (
-            "eq."
-            + str(value)
-        )
+    params = make_filters(filters)
 
     try:
         response = requests.delete(
             rest_url(table),
-            headers=db_headers(),
+            headers=headers,
             params=params,
             timeout=30,
         )
@@ -574,7 +589,6 @@ def current_time():
 # ============================================================
 
 def decimal_price(value):
-
     try:
         amount = Decimal(
             str(value)
@@ -599,14 +613,13 @@ def money(value):
 
 
 # ============================================================
-# USERS
+# USER FUNCTIONS
 # ============================================================
 
 def get_user_by_username(
     username,
     role=None,
 ):
-
     params = {
         "username":
             "eq."
@@ -630,15 +643,12 @@ def get_user_by_username(
         params,
     )
 
-    return (
-        rows[0]
-        if rows
-        else None
-    )
+    return rows[0] if rows else None
 
 
-def get_user_by_id(user_id):
-
+def get_user_by_id(
+    user_id,
+):
     rows = db_select(
         "users",
         {
@@ -654,15 +664,10 @@ def get_user_by_id(user_id):
         },
     )
 
-    return (
-        rows[0]
-        if rows
-        else None
-    )
+    return rows[0] if rows else None
 
 
 def email_exists(email):
-
     rows = db_select(
         "users",
         {
@@ -682,11 +687,12 @@ def email_exists(email):
 
 
 # ============================================================
-# QUESTIONS
+# QUESTION FUNCTIONS
 # ============================================================
 
-def get_question(question_id):
-
+def get_question(
+    question_id,
+):
     rows = db_select(
         "questions",
         {
@@ -702,18 +708,13 @@ def get_question(question_id):
         },
     )
 
-    return (
-        rows[0]
-        if rows
-        else None
-    )
+    return rows[0] if rows else None
 
 
 def get_student_question(
     question_id,
     user_id,
 ):
-
     rows = db_select(
         "questions",
         {
@@ -733,19 +734,16 @@ def get_student_question(
         },
     )
 
-    return (
-        rows[0]
-        if rows
-        else None
-    )
+    return rows[0] if rows else None
 
 
 # ============================================================
 # ANSWERS
 # ============================================================
 
-def get_answer(question_id):
-
+def get_answer(
+    question_id,
+):
     rows = db_select(
         "answers",
         {
@@ -761,25 +759,22 @@ def get_answer(question_id):
         },
     )
 
-    return (
-        rows[0]
-        if rows
-        else None
-    )
+    return rows[0] if rows else None
 
 
 # ============================================================
 # PAYMENTS
 # ============================================================
 
-def get_payment_by_tx_ref(tx_ref):
-
+def get_payment_by_tx_ref(
+    tx_ref,
+):
     rows = db_select(
         "payments",
         {
             "tx_ref":
                 "eq."
-                + tx_ref,
+                + str(tx_ref),
 
             "select":
                 "*",
@@ -789,18 +784,13 @@ def get_payment_by_tx_ref(tx_ref):
         },
     )
 
-    return (
-        rows[0]
-        if rows
-        else None
-    )
+    return rows[0] if rows else None
 
 
 def get_paid_payment(
     student_id,
     question_id,
 ):
-
     rows = db_select(
         "payments",
         {
@@ -826,18 +816,13 @@ def get_paid_payment(
         },
     )
 
-    return (
-        rows[0]
-        if rows
-        else None
-    )
+    return rows[0] if rows else None
 
 
 def has_paid_for_pdf(
     student_id,
     question_id,
 ):
-
     return bool(
         get_paid_payment(
             student_id,
@@ -851,7 +836,6 @@ def has_paid_for_pdf(
 # ============================================================
 
 def allowed_file(filename):
-
     if not filename:
         return False
 
@@ -864,9 +848,18 @@ def allowed_file(filename):
         .lower()
     )
 
+    return extension in ALLOWED_EXTENSIONS
+
+
+def storage_object_url(path):
+    safe_path = str(path).lstrip("/")
+
     return (
-        extension
-        in ALLOWED_EXTENSIONS
+        SUPABASE_URL
+        + "/storage/v1/object/"
+        + STORAGE_BUCKET
+        + "/"
+        + safe_path
     )
 
 
@@ -876,27 +869,18 @@ def storage_upload_stream(
     original_name,
     content_type,
 ):
-
     if not storage_ready():
         raise RuntimeError(
             "Supabase Storage is not configured."
         )
 
-    url = (
-        SUPABASE_URL
-        + "/storage/v1/object/"
-        + STORAGE_BUCKET
-        + "/"
-        + storage_path
-    )
-
     headers = {
         "Authorization":
             "Bearer "
-            + SUPABASE_SERVER_KEY,
+            + SUPABASE_SERVICE_KEY,
 
         "apikey":
-            SUPABASE_SERVER_KEY,
+            SUPABASE_SERVICE_KEY,
 
         "Content-Type":
             content_type,
@@ -907,7 +891,9 @@ def storage_upload_stream(
 
     try:
         response = requests.post(
-            url,
+            storage_object_url(
+                storage_path
+            ),
             headers=headers,
             data=stream,
             timeout=120,
@@ -941,7 +927,6 @@ def storage_upload(
     file_storage,
     folder,
 ):
-
     if (
         not file_storage
         or not file_storage.filename
@@ -1001,7 +986,6 @@ def storage_upload_bytes(
     original_name,
     content_type="application/pdf",
 ):
-
     return storage_upload_stream(
         io.BytesIO(data),
         storage_path,
@@ -1011,71 +995,50 @@ def storage_upload_bytes(
 
 
 def storage_get(path):
-
-    if not path:
+    if not path or not storage_ready():
         return None
 
-    if not storage_ready():
-        return None
+    headers = {
+        "Authorization":
+            "Bearer "
+            + SUPABASE_SERVICE_KEY,
 
-    url = (
-        SUPABASE_URL
-        + "/storage/v1/object/"
-        + STORAGE_BUCKET
-        + "/"
-        + path
-    )
+        "apikey":
+            SUPABASE_SERVICE_KEY,
+    }
 
     try:
         response = requests.get(
-            url,
-            headers={
-                "Authorization":
-                    "Bearer "
-                    + SUPABASE_SERVER_KEY,
-
-                "apikey":
-                    SUPABASE_SERVER_KEY,
-            },
+            storage_object_url(path),
+            headers=headers,
             timeout=120,
         )
-
-        if response.ok:
-            return response
-
     except requests.RequestException:
-        pass
+        return None
+
+    if response.ok:
+        return response
 
     return None
 
 
 def storage_delete(path):
-
-    if not path:
+    if not path or not storage_ready():
         return
 
-    if not storage_ready():
-        return
+    headers = {
+        "Authorization":
+            "Bearer "
+            + SUPABASE_SERVICE_KEY,
 
-    url = (
-        SUPABASE_URL
-        + "/storage/v1/object/"
-        + STORAGE_BUCKET
-        + "/"
-        + path
-    )
+        "apikey":
+            SUPABASE_SERVICE_KEY,
+    }
 
     try:
         requests.delete(
-            url,
-            headers={
-                "Authorization":
-                    "Bearer "
-                    + SUPABASE_SERVER_KEY,
-
-                "apikey":
-                    SUPABASE_SERVER_KEY,
-            },
+            storage_object_url(path),
+            headers=headers,
             timeout=30,
         )
     except requests.RequestException:
@@ -1086,7 +1049,6 @@ def send_storage_file(
     path,
     filename,
 ):
-
     response = storage_get(path)
 
     if response is None:
@@ -1106,9 +1068,13 @@ def send_storage_file(
 
     return Response(
         response.content,
+        status=200,
         headers={
             "Content-Type":
                 content_type,
+
+            "Content-Length":
+                str(len(response.content)),
 
             "Content-Disposition":
                 (
@@ -1116,19 +1082,21 @@ def send_storage_file(
                     + safe_filename
                     + '"'
                 ),
+
+            "Cache-Control":
+                "private, no-store",
         },
     )
 
 
 # ============================================================
-# PDF
+# PDF GENERATION
 # ============================================================
 
 def build_answer_pdf(
     question,
     answer,
 ):
-
     buffer = io.BytesIO()
 
     document = SimpleDocTemplate(
@@ -1172,7 +1140,7 @@ def build_answer_pdf(
 
     story.append(
         Paragraph(
-            "KOJA AFRICA",
+            "KOJA ZM",
             title_style,
         )
     )
@@ -1280,7 +1248,7 @@ def build_answer_pdf(
 
     story.append(
         Paragraph(
-            "Generated by KOJA AFRICA",
+            "Generated by KOJA ZM",
             body_style,
         )
     )
@@ -1296,7 +1264,6 @@ def generate_and_store_answer_pdf(
     question,
     answer,
 ):
-
     pdf_data = build_answer_pdf(
         question,
         answer,
@@ -1323,7 +1290,7 @@ def generate_and_store_answer_pdf(
 
 
 # ============================================================
-# AUTH
+# AUTH DECORATORS
 # ============================================================
 
 def student_required(function):
@@ -1332,7 +1299,6 @@ def student_required(function):
     def wrapper(*args, **kwargs):
 
         if session.get("role") != "student":
-
             flash(
                 "Please log in as a student."
             )
@@ -1355,7 +1321,6 @@ def admin_required(function):
     def wrapper(*args, **kwargs):
 
         if session.get("role") != "admin":
-
             flash(
                 "Administrator login required."
             )
@@ -1409,7 +1374,7 @@ def unread_count():
 
 
 # ============================================================
-# HTML
+# HTML TEMPLATE
 # ============================================================
 
 PAGE = """
@@ -1427,7 +1392,7 @@ content="width=device-width,initial-scale=1">
 <meta name="theme-color"
 content="#071426">
 
-<title>{{ title }} - KOJA Africa</title>
+<title>{{ title }} - KOJA ZM</title>
 
 <style>
 
@@ -1762,7 +1727,7 @@ overflow-x:auto;
 
 <div class="logo">
 
-KOJA AFRICA
+KOJA ZM
 
 <small>
 Assignment Questions • Academic Answers
@@ -1862,7 +1827,7 @@ get_flashed_messages() %}
 
 <div class="footer">
 
-<b>KOJA AFRICA</b>
+<b>KOJA ZM</b>
 
 <br>
 
@@ -1870,7 +1835,7 @@ Assignment Questions • Academic Answers
 
 <br><br>
 
-Connecting students with academic help across Africa.
+Connecting students with academic help.
 
 </div>
 
@@ -1897,6 +1862,9 @@ def page(
             countries=AFRICAN_COUNTRIES,
             subjects=SUBJECTS,
             payment_currency=PAYMENT_CURRENCY,
+            database_ready=database_ready(),
+            storage_ready=storage_ready(),
+            flutterwave_ready=flutterwave_ready(),
             **context,
         ),
         title=title,
@@ -1915,7 +1883,7 @@ def index():
         """
 <div class="hero">
 
-<h1>KOJA AFRICA</h1>
+<h1>KOJA ZM</h1>
 
 <h2>
 Assignment Questions & Academic Answers
@@ -1952,12 +1920,12 @@ Administrator
 
 <div class="stat">
 <div class="num">🌍</div>
-Africa-wide
+Academic Platform
 </div>
 
 <div class="stat">
 <div class="num">📚</div>
-Academic Questions
+Questions
 </div>
 
 <div class="stat">
@@ -1967,7 +1935,7 @@ PDF Resources
 
 <div class="stat">
 <div class="num">💳</div>
-Secure Payments
+Payments
 </div>
 
 </div>
@@ -1980,7 +1948,7 @@ Secure Payments
 <p>2. Submit your assignment question.</p>
 <p>3. KOJA reviews the question.</p>
 <p>4. Administrator writes the answer.</p>
-<p>5. Student reads the answer for free.</p>
+<p>5. Student reads the answer.</p>
 <p>6. Student pays for the PDF.</p>
 <p>7. Flutterwave processes payment.</p>
 <p>8. KOJA verifies the transaction.</p>
@@ -1990,40 +1958,52 @@ Secure Payments
 
 <div class="card">
 
-<h2>System Configuration</h2>
+<h2>System Status</h2>
 
 {% if database_ready %}
+
 <div class="success">
 Supabase backend configured.
 </div>
+
 {% else %}
+
 <div class="error">
-Supabase backend secret key is missing.
+Supabase backend is not configured.
 </div>
+
 {% endif %}
 
 <br>
 
 {% if storage_ready %}
+
 <div class="success">
 Private Storage configured.
 </div>
+
 {% else %}
+
 <div class="error">
 Private Storage is not configured.
 </div>
+
 {% endif %}
 
 <br>
 
 {% if flutterwave_ready %}
+
 <div class="success">
 Flutterwave configured.
 </div>
+
 {% else %}
-<div class="error">
-Flutterwave is not configured.
+
+<div class="info">
+Flutterwave is not configured yet.
 </div>
+
 {% endif %}
 
 </div>
@@ -2079,15 +2059,13 @@ def register():
             "",
         ).strip()
 
-        if not all(
-            [
-                name,
-                username,
-                email,
-                password,
-                country,
-            ]
-        ):
+        if not all([
+            name,
+            username,
+            email,
+            password,
+            country,
+        ]):
 
             flash(
                 "Complete all required fields."
@@ -2117,10 +2095,10 @@ def register():
                 url_for("register")
             )
 
-        if len(password) < 6:
+        if len(password) < 8:
 
             flash(
-                "Password must contain at least 6 characters."
+                "Password must contain at least 8 characters."
             )
 
             return redirect(
@@ -2151,7 +2129,7 @@ def register():
                     url_for("register")
                 )
 
-            db_insert(
+            rows = db_insert(
                 "users",
                 {
                     "name":
@@ -2185,6 +2163,11 @@ def register():
                 },
             )
 
+            if not rows:
+                raise RuntimeError(
+                    "User was not created."
+                )
+
             flash(
                 "Account created successfully."
             )
@@ -2194,6 +2177,11 @@ def register():
             )
 
         except Exception as error:
+
+            print(
+                "REGISTER ERROR:",
+                repr(error),
+            )
 
             flash(
                 "Registration failed: "
@@ -2215,15 +2203,12 @@ def register():
 
 <div class="form">
 <label>Username</label>
-<input name="username" required>
+<input name="username" minlength="3" required>
 </div>
 
 <div class="form">
 <label>Email</label>
-<input
-name="email"
-type="email"
-required>
+<input name="email" type="email" required>
 </div>
 
 <div class="form">
@@ -2236,11 +2221,9 @@ Select country
 </option>
 
 {% for country in countries %}
-
 <option value="{{ country }}">
 {{ country }}
 </option>
-
 {% endfor %}
 
 </select>
@@ -2282,7 +2265,7 @@ Select level
 <input
 name="password"
 type="password"
-minlength="6"
+minlength="8"
 required>
 
 </div>
@@ -2300,7 +2283,7 @@ Create Account
 
 
 # ============================================================
-# STUDENT LOGIN
+# LOGIN
 # ============================================================
 
 @app.route(
@@ -2338,14 +2321,11 @@ def login():
 
                 session.clear()
 
+                session.permanent = True
+
                 session["user_id"] = user["id"]
-
                 session["name"] = user["name"]
-
-                session["username"] = (
-                    user["username"]
-                )
-
+                session["username"] = user["username"]
                 session["role"] = "student"
 
                 return redirect(
@@ -2359,6 +2339,11 @@ def login():
             )
 
         except Exception as error:
+
+            print(
+                "LOGIN ERROR:",
+                repr(error),
+            )
 
             flash(
                 "Login error: "
@@ -2374,24 +2359,16 @@ def login():
 <form method="POST">
 
 <div class="form">
-
 <label>Username</label>
-
-<input
-name="username"
-required>
-
+<input name="username" required>
 </div>
 
 <div class="form">
-
 <label>Password</label>
-
 <input
 name="password"
 type="password"
 required>
-
 </div>
 
 <button class="btn">
@@ -2465,20 +2442,16 @@ def student_dashboard():
 
         questions = []
 
-    total = len(questions)
-
-    pending = len(
-        [
-            q for q in questions
-            if q.get("status") == "Pending"
-        ]
+    pending = sum(
+        1
+        for q in questions
+        if q.get("status") == "Pending"
     )
 
-    answered = len(
-        [
-            q for q in questions
-            if q.get("status") == "Answered"
-        ]
+    answered = sum(
+        1
+        for q in questions
+        if q.get("status") == "Answered"
     )
 
     return page(
@@ -2490,7 +2463,7 @@ Welcome, {{ session.get("name") }}
 </h1>
 
 <p>
-KOJA AFRICA academic assistance portal.
+KOJA ZM academic assistance portal.
 </p>
 
 <a class="btn"
@@ -2503,7 +2476,7 @@ Ask New Question
 <div class="stats">
 
 <div class="stat">
-<div class="num">{{ total }}</div>
+<div class="num">{{ questions|length }}</div>
 Questions
 </div>
 
@@ -2573,6 +2546,8 @@ Open
         """,
         "Dashboard",
         questions=questions,
+        pending=pending,
+        answered=answered,
     )
 
 
@@ -2627,12 +2602,6 @@ def submit_question():
 
         try:
 
-            if not database_ready():
-
-                raise RuntimeError(
-                    "Supabase backend is not configured."
-                )
-
             rows = db_insert(
                 "questions",
                 {
@@ -2642,11 +2611,9 @@ def submit_question():
                         ),
 
                     "student_name":
-                        str(
-                            session.get(
-                                "name",
-                                "KOJA Student",
-                            )
+                        session.get(
+                            "name",
+                            "KOJA Student",
                         ),
 
                     "subject":
@@ -2662,7 +2629,7 @@ def submit_question():
                         0,
 
                     "answer_price":
-                        float(
+                        str(
                             decimal_price(
                                 DEFAULT_ANSWER_PRICE
                             )
@@ -2674,7 +2641,6 @@ def submit_question():
             )
 
             if not rows:
-
                 raise RuntimeError(
                     "Question was not created."
                 )
@@ -2721,11 +2687,8 @@ def submit_question():
         except Exception as error:
 
             if uploaded:
-
                 storage_delete(
-                    uploaded[
-                        "storage_path"
-                    ]
+                    uploaded["storage_path"]
                 )
 
             print(
@@ -2738,12 +2701,6 @@ def submit_question():
                 + str(error)
             )
 
-            return redirect(
-                url_for(
-                    "submit_question"
-                )
-            )
-
     return page(
         """
 <div class="card">
@@ -2751,8 +2708,7 @@ def submit_question():
 <h1>Ask KOJA</h1>
 
 <div class="info">
-Write the complete assignment question.
-Attachments are optional. Maximum file size is 10 MB.
+Maximum upload size: 10 MB.
 </div>
 
 <br>
@@ -2772,11 +2728,9 @@ Select subject
 </option>
 
 {% for subject in subjects %}
-
 <option value="{{ subject }}">
 {{ subject }}
 </option>
-
 {% endfor %}
 
 </select>
@@ -2872,9 +2826,7 @@ href="{{ url_for('submit_question') }}">
 
 <div class="card question">
 
-<h2>
-{{ q["subject"] }}
-</h2>
+<h2>{{ q["subject"] }}</h2>
 
 <p class="small">
 {{ q["created_at"] }}
@@ -2947,7 +2899,9 @@ No questions yet.
     "/question/<int:question_id>"
 )
 @student_required
-def view_question(question_id):
+def view_question(
+    question_id,
+):
 
     question = get_student_question(
         question_id,
@@ -2986,7 +2940,6 @@ def view_question(question_id):
     paid = False
 
     if answer:
-
         paid = has_paid_for_pdf(
             session["user_id"],
             question_id,
@@ -3183,9 +3136,7 @@ Questions that have received answers appear here.
 
 <div class="card">
 
-<h2>
-{{ q["subject"] }}
-</h2>
+<h2>{{ q["subject"] }}</h2>
 
 {% if q.get("answer_seen", 0) == 0 %}
 
@@ -3229,7 +3180,7 @@ No answers yet.
 
 
 # ============================================================
-# DOWNLOAD QUESTION
+# QUESTION FILE
 # ============================================================
 
 @app.route(
@@ -3237,7 +3188,7 @@ No answers yet.
 )
 @student_required
 def download_question_file(
-    question_id
+    question_id,
 ):
 
     question = get_student_question(
@@ -3273,7 +3224,7 @@ def download_question_file(
 )
 @student_required
 def start_pdf_payment(
-    question_id
+    question_id,
 ):
 
     question = get_student_question(
@@ -3338,6 +3289,39 @@ def start_pdf_payment(
             )
         )
 
+    user = get_user_by_id(
+        session["user_id"]
+    )
+
+    if not user:
+        abort(403)
+
+    customer_email = (
+        user.get("email")
+        or ""
+    ).strip()
+
+    customer_name = (
+        user.get("name")
+        or session.get(
+            "name",
+            "KOJA Student",
+        )
+    )
+
+    if not customer_email:
+
+        flash(
+            "Your account needs a valid email address before payment."
+        )
+
+        return redirect(
+            url_for(
+                "view_question",
+                question_id=question_id,
+            )
+        )
+
     amount = decimal_price(
         question.get(
             "answer_price",
@@ -3346,7 +3330,7 @@ def start_pdf_payment(
     )
 
     tx_ref = (
-        "KOJA-"
+        "KOJA-ZM-"
         + str(question_id)
         + "-"
         + uuid.uuid4().hex
@@ -3391,60 +3375,20 @@ def start_pdf_payment(
             )
         )
 
-    redirect_url = (
-        KOJA_BASE_URL
-        + url_for(
-            "flutterwave_callback"
+    if KOJA_BASE_URL:
+
+        redirect_url = (
+            KOJA_BASE_URL
+            + url_for(
+                "flutterwave_callback"
+            )
         )
-        if KOJA_BASE_URL
-        else url_for(
+
+    else:
+
+        redirect_url = url_for(
             "flutterwave_callback",
             _external=True,
-        )
-    )
-
-    user = get_user_by_id(
-        session["user_id"]
-    )
-
-    customer_email = (
-        user.get("email", "")
-        if user
-        else ""
-    )
-
-    customer_name = (
-        user.get("name")
-        if user
-        else session.get(
-            "name",
-            "KOJA Student",
-        )
-    )
-
-    if not customer_email:
-
-        flash(
-            "Your account does not have a valid email address."
-        )
-
-        db_update(
-            "payments",
-            {"tx_ref": tx_ref},
-            {
-                "status":
-                    "failed",
-
-                "verified_at":
-                    current_time(),
-            },
-        )
-
-        return redirect(
-            url_for(
-                "view_question",
-                question_id=question_id,
-            )
         )
 
     payload = {
@@ -3470,7 +3414,7 @@ def start_pdf_payment(
 
         "customizations": {
             "title":
-                "KOJA AFRICA",
+                "KOJA ZM",
 
             "description":
                 "Academic Answer PDF",
@@ -3570,7 +3514,7 @@ def start_pdf_payment(
 
 
 # ============================================================
-# VERIFY FLUTTERWAVE
+# FLUTTERWAVE VERIFY
 # ============================================================
 
 def verify_flutterwave_transaction(
@@ -3578,7 +3522,6 @@ def verify_flutterwave_transaction(
 ):
 
     if not FLW_SECRET_KEY:
-
         raise RuntimeError(
             "Flutterwave secret key is missing."
         )
@@ -3611,24 +3554,22 @@ def verify_flutterwave_transaction(
             + response.text
         )
 
-    data = response.json()
+    try:
+        data = response.json()
+    except ValueError:
+        raise RuntimeError(
+            "Flutterwave returned invalid JSON."
+        )
 
-    transaction = data.get(
-        "data"
-    )
+    transaction = data.get("data")
 
     if not transaction:
-
         raise RuntimeError(
             "No transaction data returned."
         )
 
     return transaction
 
-
-# ============================================================
-# PAYMENT VALIDATION
-# ============================================================
 
 def validate_payment_transaction(
     payment,
@@ -3661,7 +3602,6 @@ def validate_payment_transaction(
         )
 
     except Exception:
-
         return False
 
     actual_status = str(
@@ -3674,7 +3614,10 @@ def validate_payment_transaction(
     actual_tx_ref = str(
         transaction.get(
             "tx_ref",
-            "",
+            transaction.get(
+                "reference",
+                "",
+            ),
         )
     )
 
@@ -3701,10 +3644,17 @@ def validate_payment_transaction(
         actual_amount = Decimal("0")
 
     return (
-        actual_status == "successful"
-        and actual_tx_ref == expected_tx_ref
-        and actual_currency == expected_currency
-        and actual_amount >= expected_amount
+        actual_status
+        in (
+            "successful",
+            "succeeded",
+        )
+        and actual_tx_ref
+        == expected_tx_ref
+        and actual_currency
+        == expected_currency
+        and actual_amount
+        >= expected_amount
     )
 
 
@@ -3806,12 +3756,10 @@ def flutterwave_callback():
             str(error),
         )
 
-    valid = validate_payment_transaction(
+    if not validate_payment_transaction(
         payment,
         transaction,
-    )
-
-    if not valid:
+    ):
 
         db_update(
             "payments",
@@ -3875,10 +3823,6 @@ def flutterwave_callback():
 
 # ============================================================
 # FLUTTERWAVE WEBHOOK
-#
-# Current Flutterwave webhook security:
-# HMAC-SHA256 using FLW_SECRET_HASH
-# and flutterwave-signature header.
 # ============================================================
 
 @app.route(
@@ -3911,9 +3855,11 @@ def flutterwave_webhook():
         hashlib.sha256,
     ).digest()
 
-    expected_signature = base64.b64encode(
-        digest
-    ).decode("utf-8")
+    expected_signature = (
+        base64.b64encode(
+            digest
+        ).decode("utf-8")
+    )
 
     if not signature:
 
@@ -3982,14 +3928,10 @@ def flutterwave_webhook():
             )
         )
 
-        valid = (
-            validate_payment_transaction(
-                payment,
-                transaction,
-            )
-        )
-
-        if valid:
+        if validate_payment_transaction(
+            payment,
+            transaction,
+        ):
 
             db_update(
                 "payments",
@@ -4041,8 +3983,6 @@ def flutterwave_webhook():
             repr(error),
         )
 
-        # Return 500 so Flutterwave can retry
-        # when server-side processing fails.
         return jsonify({
             "status":
                 "processing_error"
@@ -4183,7 +4123,7 @@ Return to Question
 )
 @student_required
 def download_answer_pdf(
-    question_id
+    question_id,
 ):
 
     question = get_student_question(
@@ -4274,14 +4214,11 @@ def admin_login():
 
                 session.clear()
 
+                session.permanent = True
+
                 session["user_id"] = admin["id"]
-
                 session["name"] = admin["name"]
-
-                session["username"] = (
-                    admin["username"]
-                )
-
+                session["username"] = admin["username"]
                 session["role"] = "admin"
 
                 return redirect(
@@ -4295,6 +4232,11 @@ def admin_login():
             )
 
         except Exception as error:
+
+            print(
+                "ADMIN LOGIN ERROR:",
+                repr(error),
+            )
 
             flash(
                 "Admin login error: "
@@ -4379,6 +4321,9 @@ def admin_dashboard():
             {
                 "select":
                     "*",
+
+                "order":
+                    "id.desc",
             },
         )
 
@@ -4393,25 +4338,22 @@ def admin_dashboard():
         students = []
         payments = []
 
-    pending = len(
-        [
-            q for q in questions
-            if q.get("status") == "Pending"
-        ]
+    pending = sum(
+        1
+        for q in questions
+        if q.get("status") == "Pending"
     )
 
-    answered = len(
-        [
-            q for q in questions
-            if q.get("status") == "Answered"
-        ]
+    answered = sum(
+        1
+        for q in questions
+        if q.get("status") == "Answered"
     )
 
-    paid = len(
-        [
-            p for p in payments
-            if p.get("status") == "paid"
-        ]
+    paid = sum(
+        1
+        for p in payments
+        if p.get("status") == "paid"
     )
 
     return page(
@@ -4421,8 +4363,7 @@ def admin_dashboard():
 <h1>KOJA Administrator</h1>
 
 <p>
-Manage student questions, answers,
-PDF prices and payments.
+Manage questions, answers, PDF resources and payments.
 </p>
 
 <div class="actions">
@@ -4518,18 +4459,20 @@ def admin_questions():
 
     if search:
 
-        search = (
+        safe_search = (
             search
             .replace("*", "")
             .replace(",", " ")
+            .replace("(", "")
+            .replace(")", "")
             .strip()
         )
 
-        if search:
+        if safe_search:
 
             value = (
                 "*"
-                + search
+                + safe_search
                 + "*"
             )
 
@@ -4694,7 +4637,7 @@ No questions found.
 )
 @admin_required
 def admin_view_question(
-    question_id
+    question_id,
 ):
 
     question = get_question(
@@ -4752,13 +4695,11 @@ Download Assignment
 <div class="card">
 
 <h2>
-
 {% if answer %}
 Update Answer
 {% else %}
 Write Answer
 {% endif %}
-
 </h2>
 
 <form
@@ -4853,7 +4794,7 @@ Download Additional Answer File
 )
 @admin_required
 def write_answer(
-    question_id
+    question_id,
 ):
 
     text = request.form.get(
@@ -5094,19 +5035,13 @@ def write_answer(
     except Exception as error:
 
         if uploaded:
-
             storage_delete(
-                uploaded[
-                    "storage_path"
-                ]
+                uploaded["storage_path"]
             )
 
         if new_pdf:
-
             storage_delete(
-                new_pdf[
-                    "storage_path"
-                ]
+                new_pdf["storage_path"]
             )
 
         print(
@@ -5128,7 +5063,7 @@ def write_answer(
 
 
 # ============================================================
-# ADMIN QUESTION FILE
+# ADMIN FILES
 # ============================================================
 
 @app.route(
@@ -5136,7 +5071,7 @@ def write_answer(
 )
 @admin_required
 def admin_download_question(
-    question_id
+    question_id,
 ):
 
     question = get_question(
@@ -5162,16 +5097,12 @@ def admin_download_question(
     )
 
 
-# ============================================================
-# ADMIN ANSWER FILE
-# ============================================================
-
 @app.route(
     "/admin/download/answer/<int:question_id>"
 )
 @admin_required
 def admin_download_answer(
-    question_id
+    question_id,
 ):
 
     answer = get_answer(
@@ -5279,9 +5210,7 @@ Total Paid:
 <tr>
 
 <td>{{ p["id"] }}</td>
-
 <td>{{ p["student_id"] }}</td>
-
 <td>{{ p["question_id"] }}</td>
 
 <td>
@@ -5474,14 +5403,22 @@ def health():
         "application":
             APP_NAME,
 
-        "supabase_url":
-            SUPABASE_URL,
+        "supabase_url_configured":
+            bool(SUPABASE_URL),
 
         "publishable_key_configured":
-            bool(SUPABASE_KEY),
+            bool(SUPABASE_PUBLISHABLE_KEY),
 
-        "server_key_configured":
-            bool(SUPABASE_SERVER_KEY),
+        "secret_key_configured":
+            bool(SUPABASE_SERVICE_KEY),
+
+        "secret_key_format_valid":
+            bool(
+                SUPABASE_SERVICE_KEY
+                and SUPABASE_SERVICE_KEY.startswith(
+                    "sb_secret_"
+                )
+            ),
 
         "storage_bucket":
             STORAGE_BUCKET,
@@ -5501,7 +5438,7 @@ def health():
         result["status"] = "error"
 
         result["database"] = (
-            "server key missing"
+            "Supabase configuration missing."
         )
 
         return jsonify(result), 500
@@ -5521,7 +5458,9 @@ def health():
 
         result["database"] = "connected"
 
-        return jsonify(result), 200
+        return jsonify(
+            result
+        ), 200
 
     except Exception as error:
 
@@ -5531,7 +5470,9 @@ def health():
 
         result["error"] = str(error)
 
-        return jsonify(result), 500
+        return jsonify(
+            result
+        ), 500
 
 
 # ============================================================
@@ -5546,14 +5487,18 @@ def status():
         "application":
             APP_NAME,
 
-        "supabase_url":
-            SUPABASE_URL,
+        "supabase_url_configured":
+            bool(SUPABASE_URL),
 
         "supabase_publishable_key":
-            bool(SUPABASE_KEY),
+            bool(
+                SUPABASE_PUBLISHABLE_KEY
+            ),
 
-        "supabase_server_key":
-            bool(SUPABASE_SERVER_KEY),
+        "supabase_service_key":
+            bool(
+                SUPABASE_SERVICE_KEY
+            ),
 
         "database":
             database_ready(),
@@ -5664,22 +5609,22 @@ if __name__ == "__main__":
 
     print()
     print("=" * 60)
-    print("KOJA AFRICA")
+    print("KOJA ZM")
     print("=" * 60)
 
     print(
-        "Supabase URL:",
-        SUPABASE_URL,
+        "Supabase URL configured:",
+        bool(SUPABASE_URL),
     )
 
     print(
-        "Publishable key:",
-        bool(SUPABASE_KEY),
+        "Supabase publishable key:",
+        bool(SUPABASE_PUBLISHABLE_KEY),
     )
 
     print(
-        "Server key:",
-        bool(SUPABASE_SERVER_KEY),
+        "Supabase secret key:",
+        bool(SUPABASE_SERVICE_KEY),
     )
 
     print(
