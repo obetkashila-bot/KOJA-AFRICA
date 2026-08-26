@@ -1,44 +1,3 @@
-# ============================================================
-# KOJA AFRICA
-# Knowledge • Questions • Answers
-#
-# SINGLE-FILE FLASK APPLICATION
-#
-# PUBLIC:
-#   - KOJA AFRICA landing page
-#   - Log In
-#   - Create Account
-#
-# PRIVATE:
-#   - Student dashboard
-#   - Student questions
-#   - Student answers
-#   - Student files
-#
-# ADMIN:
-#   - Dashboard
-#   - Questions
-#   - Answers
-#   - Users
-#   - Logs
-#
-# SECURITY:
-#   - Password hashing
-#   - Session authentication
-#   - Role-based access
-#   - Private student questions
-#   - Private answers
-#   - Protected files
-#   - Security logging
-#
-# RUN:
-#   pip install flask werkzeug
-#   python app.py
-#
-# OPEN:
-#   http://127.0.0.1:9999
-# ============================================================
-
 import os
 import json
 import uuid
@@ -56,14 +15,36 @@ from flask import (
     render_template_string,
     flash,
     send_from_directory,
-    abort
+    abort,
+    make_response,
 )
 
-from werkzeug.utils import secure_filename
-
-
 # ============================================================
-# APPLICATION
+# KOJA AFRICA
+# KNOWLEDGE • QUESTIONS • ANSWERS
+#
+# PUBLIC:
+#   Home
+#   Log In
+#   Create Account
+#
+# ADMIN:
+#   Dashboard
+#   Questions
+#   Answers
+#   Upload Documents
+#   Downloads
+#   Logs
+#
+# STUDENT:
+#   Dashboard
+#   Ask Question
+#   My Questions
+#   Research
+#   Downloads
+#
+# IMPORTANT:
+# Public pages NEVER contain admin/student navigation.
 # ============================================================
 
 app = Flask(__name__)
@@ -77,30 +58,28 @@ BASE_DIR = os.path.dirname(
     os.path.abspath(__file__)
 )
 
-
-# ============================================================
-# DIRECTORIES
-# ============================================================
-
 DATA_DIR = os.path.join(
     BASE_DIR,
     "koja_data"
 )
 
-STUDENT_UPLOAD_DIR = os.path.join(
+UPLOAD_DIR = os.path.join(
     DATA_DIR,
-    "student_uploads"
+    "uploads"
+)
+
+STUDENT_UPLOAD_DIR = os.path.join(
+    UPLOAD_DIR,
+    "students"
 )
 
 ADMIN_UPLOAD_DIR = os.path.join(
-    DATA_DIR,
-    "admin_uploads"
+    UPLOAD_DIR,
+    "admin"
 )
 
-os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(STUDENT_UPLOAD_DIR, exist_ok=True)
 os.makedirs(ADMIN_UPLOAD_DIR, exist_ok=True)
-
 
 USERS_FILE = os.path.join(
     DATA_DIR,
@@ -117,141 +96,71 @@ LOGS_FILE = os.path.join(
     "logs.json"
 )
 
-
-# ============================================================
-# CONFIGURATION
-# ============================================================
-
-APP_NAME = "KOJA AFRICA"
-
-APP_TAGLINE = (
-    "Knowledge • Questions • Answers"
-)
-
-SITE_DESCRIPTION = (
-    "KOJA Africa is an academic learning "
-    "platform for questions, assignments, "
-    "research and academic answers."
-)
-
-MAX_CONTENT_LENGTH = 10 * 1024 * 1024
-
-app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
-
-ALLOWED_EXTENSIONS = {
-    "pdf",
-    "doc",
-    "docx",
-    "txt",
-    "png",
-    "jpg",
-    "jpeg"
-}
-
-
-# ============================================================
-# DEFAULT ADMIN
-# ============================================================
-
-ADMIN_EMAIL = os.environ.get(
-    "KOJA_ADMIN_EMAIL",
-    "admin@kojaafrica.com"
-)
-
-ADMIN_PASSWORD = os.environ.get(
-    "KOJA_ADMIN_PASSWORD",
-    "ChangeThisPassword123!"
+DOCUMENTS_FILE = os.path.join(
+    DATA_DIR,
+    "documents.json"
 )
 
 
 # ============================================================
-# JSON DATABASE
+# FILE HELPERS
 # ============================================================
 
-def load_json(path, default):
+def ensure_file(path, default):
+    if not os.path.exists(path):
+        with open(
+            path,
+            "w",
+            encoding="utf-8"
+        ) as f:
+            json.dump(
+                default,
+                f,
+                indent=2
+            )
+
+
+ensure_file(USERS_FILE, [])
+ensure_file(QUESTIONS_FILE, [])
+ensure_file(LOGS_FILE, [])
+ensure_file(DOCUMENTS_FILE, [])
+
+
+def read_json(path, default=None):
     try:
-        if not os.path.exists(path):
-            save_json(path, default)
-            return default
-
         with open(
             path,
             "r",
             encoding="utf-8"
-        ) as file:
-            data = json.load(file)
-
-        return data
-
+        ) as f:
+            return json.load(f)
     except Exception:
-        return default
+        return default if default is not None else []
 
 
-def save_json(path, data):
-    temp_path = path + ".tmp"
+def write_json(path, data):
+    temp = path + ".tmp"
 
     with open(
-        temp_path,
+        temp,
         "w",
         encoding="utf-8"
-    ) as file:
+    ) as f:
         json.dump(
             data,
-            file,
+            f,
             indent=2,
             ensure_ascii=False
         )
 
     os.replace(
-        temp_path,
+        temp,
         path
     )
 
 
-def get_users():
-    return load_json(
-        USERS_FILE,
-        []
-    )
-
-
-def save_users(users):
-    save_json(
-        USERS_FILE,
-        users
-    )
-
-
-def get_questions():
-    return load_json(
-        QUESTIONS_FILE,
-        []
-    )
-
-
-def save_questions(questions):
-    save_json(
-        QUESTIONS_FILE,
-        questions
-    )
-
-
-def get_logs():
-    return load_json(
-        LOGS_FILE,
-        []
-    )
-
-
-def save_logs(logs):
-    save_json(
-        LOGS_FILE,
-        logs
-    )
-
-
 # ============================================================
-# PASSWORD SECURITY
+# PASSWORDS
 # ============================================================
 
 def hash_password(password):
@@ -261,7 +170,7 @@ def hash_password(password):
         "sha256",
         password.encode("utf-8"),
         salt,
-        310000
+        150000
     )
 
     return (
@@ -273,10 +182,7 @@ def hash_password(password):
 
 def verify_password(password, stored):
     try:
-        salt_hex, key_hex = stored.split(
-            "$",
-            1
-        )
+        salt_hex, key_hex = stored.split("$")
 
         salt = bytes.fromhex(
             salt_hex
@@ -290,7 +196,7 @@ def verify_password(password, stored):
             "sha256",
             password.encode("utf-8"),
             salt,
-            310000
+            150000
         )
 
         return secrets.compare_digest(
@@ -303,6 +209,54 @@ def verify_password(password, stored):
 
 
 # ============================================================
+# ADMIN ACCOUNT
+# ============================================================
+
+def ensure_admin():
+    users = read_json(
+        USERS_FILE,
+        []
+    )
+
+    for user in users:
+        if user.get("role") == "admin":
+            return
+
+    admin_password = os.environ.get(
+        "KOJA_ADMIN_PASSWORD"
+    )
+
+    if not admin_password:
+        admin_password = "ChangeMe123!"
+
+    admin = {
+        "id": str(uuid.uuid4()),
+        "name": "KOJA Administrator",
+        "email": os.environ.get(
+            "KOJA_ADMIN_EMAIL",
+            "admin@koja.africa"
+        ).lower(),
+        "password": hash_password(
+            admin_password
+        ),
+        "role": "admin",
+        "created_at": datetime.now(
+            timezone.utc
+        ).isoformat()
+    }
+
+    users.append(admin)
+
+    write_json(
+        USERS_FILE,
+        users
+    )
+
+
+ensure_admin()
+
+
+# ============================================================
 # LOGGING
 # ============================================================
 
@@ -312,73 +266,36 @@ def log_event(
     level="INFO",
     details=""
 ):
-    logs = get_logs()
+    logs = read_json(
+        LOGS_FILE,
+        []
+    )
 
-    entry = {
+    logs.append({
         "id": str(uuid.uuid4()),
-        "timestamp": datetime.now(
-            timezone.utc
-        ).isoformat(),
         "event": event,
         "category": category,
         "level": level,
         "details": details,
+        "time": datetime.now(
+            timezone.utc
+        ).isoformat(),
         "user_id": session.get(
             "user_id"
-        ),
-        "email": session.get(
-            "email"
-        ),
-        "ip": request.remote_addr
-    }
+        )
+    })
 
-    logs.append(entry)
-
-    # Keep logs manageable.
+    # Keep the log file manageable.
     logs = logs[-5000:]
 
-    save_logs(
+    write_json(
+        LOGS_FILE,
         logs
     )
 
 
 # ============================================================
-# INITIALIZE ADMIN
-# ============================================================
-
-def initialize_admin():
-    users = get_users()
-
-    for user in users:
-        if user.get("email") == ADMIN_EMAIL:
-            return
-
-    admin = {
-        "id": str(uuid.uuid4()),
-        "name": "KOJA Administrator",
-        "email": ADMIN_EMAIL.lower(),
-        "password": hash_password(
-            ADMIN_PASSWORD
-        ),
-        "role": "admin",
-        "created_at": datetime.now(
-            timezone.utc
-        ).isoformat(),
-        "active": True
-    }
-
-    users.append(admin)
-
-    save_users(
-        users
-    )
-
-
-initialize_admin()
-
-
-# ============================================================
-# HELPERS
+# AUTH HELPERS
 # ============================================================
 
 def current_user():
@@ -389,7 +306,10 @@ def current_user():
     if not user_id:
         return None
 
-    users = get_users()
+    users = read_json(
+        USERS_FILE,
+        []
+    )
 
     for user in users:
         if user.get("id") == user_id:
@@ -398,137 +318,52 @@ def current_user():
     return None
 
 
-def is_logged_in():
-    return current_user() is not None
-
-
-def is_admin_session():
-    user = current_user()
-
-    return (
-        user is not None
-        and user.get("role") == "admin"
-    )
-
-
-def find_user(user_id):
-    for user in get_users():
-        if user.get("id") == user_id:
-            return user
-
-    return None
-
-
-def find_question(question_id):
-    for question in get_questions():
-        if question.get("id") == question_id:
-            return question
-
-    return None
-
-
-def allowed_file(filename):
-    if not filename:
-        return False
-
-    if "." not in filename:
-        return False
-
-    extension = filename.rsplit(
-        ".",
-        1
-    )[1].lower()
-
-    return extension in ALLOWED_EXTENSIONS
-
-
-# ============================================================
-# AUTH DECORATORS
-# ============================================================
-
-def login_required(function):
-
-    @wraps(function)
-    def wrapper(*args, **kwargs):
-
-        if not is_logged_in():
+def login_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not current_user():
             flash(
                 "Please log in first.",
                 "error"
             )
-
             return redirect(
                 url_for("login")
             )
 
-        return function(
+        return view(
             *args,
             **kwargs
         )
 
-    return wrapper
+    return wrapped
 
 
-def admin_required(function):
+def admin_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        user = current_user()
 
-    @wraps(function)
-    def wrapper(*args, **kwargs):
-
-        if not is_logged_in():
-            flash(
-                "Administrator login required.",
-                "error"
-            )
-
+        if not user:
             return redirect(
                 url_for("login")
             )
 
-        if not is_admin_session():
-            log_event(
-                "Unauthorized Admin Access",
-                "Security",
-                "WARNING"
-            )
-
+        if user.get("role") != "admin":
             abort(403)
 
-        return function(
+        return view(
             *args,
             **kwargs
         )
 
-    return wrapper
+    return wrapped
 
 
 # ============================================================
-# BASE HTML
+# COMMON CSS
 # ============================================================
 
-HTML = r"""
-<!DOCTYPE html>
-<html lang="en">
-
-<head>
-
-<meta charset="UTF-8">
-
-<meta name="viewport"
-      content="width=device-width, initial-scale=1.0">
-
-<meta name="theme-color"
-      content="#071a3d">
-
-<meta name="description"
-      content="{{ site_description }}">
-
-<meta name="robots"
-      content="index, follow">
-
-<title>
-    {{ title }} - KOJA AFRICA
-</title>
-
+CSS = """
 <style>
 
 * {
@@ -539,926 +374,424 @@ html,
 body {
     margin: 0;
     padding: 0;
-    min-height: 100%;
     font-family:
         Arial,
         Helvetica,
         sans-serif;
-    background: #f3f6fb;
+    background: #f4f7fb;
     color: #111827;
 }
 
 body {
-    overflow-x: hidden;
+    min-height: 100vh;
 }
 
-
-/* =========================================================
-   OPENING ANIMATION
-   ========================================================= */
-
-#openingAnimation {
-
-    position: fixed;
-
-    inset: 0;
-
-    z-index: 99999;
-
-    display: flex;
-
-    align-items: center;
-
-    justify-content: center;
-
-    flex-direction: column;
-
-    background:
-        linear-gradient(
-            135deg,
-            #06142f,
-            #0b2b5c
-        );
-
-    color: white;
-
-    opacity: 1;
-
-    visibility: visible;
-
-    transition:
-        opacity .7s ease,
-        visibility .7s ease;
+a {
+    text-decoration: none;
 }
-
-
-#openingAnimation.hide {
-
-    opacity: 0;
-
-    visibility: hidden;
-
-    pointer-events: none;
-}
-
-
-.opening-logo {
-
-    font-size:
-        clamp(
-            70px,
-            18vw,
-            150px
-        );
-
-    font-weight: 900;
-
-    letter-spacing: 5px;
-
-    line-height: 1;
-
-    animation:
-        logoIn 1.2s ease forwards;
-}
-
-
-.opening-logo .k {
-    color: #1976d2;
-}
-
-.opening-logo .o {
-    color: #2e7d32;
-}
-
-.opening-logo .j {
-    color: #d32f2f;
-}
-
-.opening-logo .a {
-    color: #1565c0;
-}
-
-
-.opening-africa {
-
-    margin-top: 15px;
-
-    font-size: 20px;
-
-    letter-spacing: 8px;
-
-    font-weight: bold;
-
-    opacity: 0;
-
-    animation:
-        africaIn 1s ease .5s forwards;
-}
-
-
-.opening-line {
-
-    width: 0;
-
-    height: 3px;
-
-    margin-top: 22px;
-
-    background: white;
-
-    animation:
-        lineIn 1s ease .9s forwards;
-}
-
-
-.opening-text {
-
-    margin-top: 18px;
-
-    font-size: 16px;
-
-    opacity: 0;
-
-    animation:
-        textIn 1s ease 1.2s forwards;
-}
-
-
-@keyframes logoIn {
-
-    from {
-        opacity: 0;
-        transform: scale(.7);
-    }
-
-    to {
-        opacity: 1;
-        transform: scale(1);
-    }
-}
-
-
-@keyframes africaIn {
-
-    from {
-        opacity: 0;
-        transform: translateY(15px);
-    }
-
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
-}
-
-
-@keyframes lineIn {
-
-    from {
-        width: 0;
-    }
-
-    to {
-        width: 180px;
-    }
-}
-
-
-@keyframes textIn {
-
-    from {
-        opacity: 0;
-    }
-
-    to {
-        opacity: 1;
-    }
-}
-
 
 /* =========================================================
    DARK BLUE TOP BAR
    ========================================================= */
 
 .topbar {
-
-    position: sticky;
-
-    top: 0;
-
-    z-index: 1000;
-
-    background:
-        #071a3d;
-
-    border-bottom:
-        1px solid
-        rgba(255,255,255,.12);
-
+    width: 100%;
+    background: #061b49;
+    color: white;
     box-shadow:
-        0 3px 15px
-        rgba(0,0,0,.20);
+        0 4px 18px rgba(0,0,0,.15);
 }
-
 
 .topbar-inner {
-
-    max-width: 1250px;
-
+    width: 100%;
+    max-width: 1300px;
     margin: auto;
-
-    min-height: 74px;
-
-    padding:
-        12px 20px;
+    min-height: 72px;
+    padding: 12px 20px;
 
     display: flex;
-
     align-items: center;
-
     justify-content: space-between;
 
-    gap: 15px;
+    gap: 20px;
 }
-
-
-/* =========================================================
-   LOGO
-   ========================================================= */
 
 .logo {
-
-    text-decoration: none;
-
-    font-size: 31px;
-
-    font-weight: 900;
-
-    letter-spacing: 1px;
-
     color: white;
+    font-size: 30px;
+    font-weight: 900;
+    letter-spacing: 1px;
 }
 
-
 .logo .k {
-    color: #42a5f5;
+    color: #2196f3;
 }
 
 .logo .o {
-    color: #66bb6a;
+    color: #43a047;
 }
 
 .logo .j {
-    color: #ef5350;
+    color: #e53935;
 }
 
 .logo .a {
-    color: #64b5f6;
+    color: #1565c0;
 }
-
 
 .logo small {
-
     display: block;
-
-    font-size: 8px;
-
-    letter-spacing: 5px;
-
-    color: #cbd5e1;
-
     text-align: center;
-
-    margin-top: -2px;
+    font-size: 8px;
+    letter-spacing: 5px;
+    color: #cbd5e1;
 }
 
-
 /* =========================================================
-   NAVIGATION
+   PUBLIC NAVIGATION
+   ONLY LOGIN + CREATE ACCOUNT
    ========================================================= */
 
-.nav {
-
+.public-nav {
     display: flex;
-
     align-items: center;
-
-    justify-content: flex-end;
-
-    gap: 8px;
-
-    flex-wrap: wrap;
+    gap: 10px;
 }
 
-
-.nav a {
-
-    text-decoration: none;
-
-    color: white;
-
-    font-weight: 700;
-
-    padding:
-        10px 14px;
-
+.public-nav a {
+    padding: 11px 17px;
     border-radius: 8px;
-
-    transition:
-        .2s ease;
+    font-weight: 700;
 }
 
-
-.nav a:hover {
-
-    background:
-        rgba(255,255,255,.10);
+.login-btn {
+    color: white;
+    border: 1px solid #60a5fa;
 }
 
-
-.nav .login-link {
-
-    border:
-        1px solid
-        #60a5fa;
-
-    color: #bfdbfe;
-}
-
-
-.nav .register-link {
-
-    background:
-        #1976d2;
-
+.register-btn {
+    background: #1976d2;
     color: white;
 }
-
-
-.nav .register-link:hover {
-
-    background:
-        #1565c0;
-}
-
 
 /* =========================================================
-   MAIN
+   PRIVATE NAVIGATION
    ========================================================= */
 
-main {
+.private-nav {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 5px;
+}
 
+.private-nav a {
+    color: white;
+    padding: 10px 12px;
+    border-radius: 7px;
+    font-weight: 700;
+    font-size: 14px;
+}
+
+.private-nav a:hover {
+    background: rgba(255,255,255,.12);
+}
+
+.logout {
+    border: 1px solid #93c5fd;
+}
+
+/* =========================================================
+   CONTENT
+   ========================================================= */
+
+.container {
     width: 100%;
-
     max-width: 1200px;
-
     margin: auto;
-
-    padding:
-        25px 18px 50px;
+    padding: 25px 18px 60px;
 }
 
-
-.hero,
 .card {
-
     background: white;
-
-    border-radius: 16px;
-
+    border-radius: 15px;
     padding: 25px;
-
     margin-bottom: 20px;
-
     box-shadow:
-        0 8px 30px
-        rgba(15,23,42,.06);
+        0 8px 30px rgba(15,23,42,.07);
 }
-
 
 .hero {
-
+    background: white;
     text-align: center;
-
-    padding:
-        65px 25px;
+    border-radius: 18px;
+    padding: 70px 25px;
+    margin-top: 25px;
+    box-shadow:
+        0 10px 35px rgba(15,23,42,.07);
 }
-
 
 .hero h1 {
-
-    font-size:
-        clamp(
-            35px,
-            7vw,
-            64px
-        );
-
-    margin:
-        0 0 12px;
+    margin: 0;
+    font-size: clamp(38px, 7vw, 70px);
 }
-
 
 .hero p {
-
-    max-width: 780px;
-
-    margin:
-        12px auto;
-
-    line-height: 1.8;
-
-    color: #475569;
+    max-width: 760px;
+    margin: 18px auto;
+    color: #64748b;
+    font-size: 18px;
+    line-height: 1.7;
 }
 
-
-.hero-actions {
-
+.hero-buttons {
     margin-top: 25px;
 }
 
-
 .btn,
 button {
-
     display: inline-block;
-
-    border: none;
-
-    background:
-        #1976d2;
-
+    border: 0;
+    padding: 12px 18px;
+    border-radius: 8px;
+    background: #1976d2;
     color: white;
-
-    padding:
-        12px 19px;
-
-    border-radius: 9px;
-
-    text-decoration: none;
-
     font-weight: 700;
-
     cursor: pointer;
-
-    margin:
-        5px 4px;
 }
-
-
-.btn:hover,
-button:hover {
-
-    opacity: .92;
-}
-
 
 .btn.green {
-
-    background:
-        #2e7d32;
+    background: #2e7d32;
 }
-
 
 .btn.dark {
-
-    background:
-        #071a3d;
+    background: #061b49;
 }
-
 
 .btn.red {
-
-    background:
-        #b91c1c;
+    background: #c62828;
 }
-
-
-.grid {
-
-    display: grid;
-
-    grid-template-columns:
-        repeat(
-            auto-fit,
-            minmax(210px, 1fr)
-        );
-
-    gap: 18px;
-
-    margin-bottom: 25px;
-}
-
-
-.feature {
-
-    background: white;
-
-    padding: 25px;
-
-    border-radius: 15px;
-
-    box-shadow:
-        0 7px 25px
-        rgba(15,23,42,.05);
-}
-
-
-.feature h3 {
-
-    margin-top: 0;
-}
-
-
-.feature p {
-
-    line-height: 1.7;
-
-    color: #64748b;
-}
-
-
-/* =========================================================
-   FORMS
-   ========================================================= */
 
 input,
 textarea,
 select {
-
     width: 100%;
-
     padding: 13px;
-
-    margin:
-        7px 0 16px;
-
-    border:
-        1px solid #d1d5db;
-
-    border-radius: 9px;
-
+    margin: 7px 0 15px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
     font: inherit;
 }
 
-
 textarea {
-
     min-height: 180px;
-
-    resize: vertical;
 }
-
 
 label {
-
     display: block;
-
+    margin-top: 10px;
     font-weight: 700;
-
-    margin-top: 8px;
 }
 
-
-/* =========================================================
-   TABLE
-   ========================================================= */
-
-.table-wrap {
-
-    overflow-x: auto;
+.grid {
+    display: grid;
+    grid-template-columns:
+        repeat(
+            auto-fit,
+            minmax(200px, 1fr)
+        );
+    gap: 15px;
 }
 
+.stat {
+    background: white;
+    border-radius: 14px;
+    padding: 25px;
+    text-align: center;
+    box-shadow:
+        0 7px 25px rgba(0,0,0,.06);
+}
+
+.stat h2 {
+    margin: 0;
+    font-size: 35px;
+}
+
+.question {
+    white-space: pre-wrap;
+    background: #f8fafc;
+    padding: 18px;
+    border-radius: 10px;
+    line-height: 1.7;
+}
+
+.answer {
+    white-space: pre-wrap;
+    background: #eff6ff;
+    padding: 18px;
+    border-radius: 10px;
+    line-height: 1.7;
+}
+
+.alert {
+    max-width: 1200px;
+    margin: 15px auto;
+    padding: 13px 18px;
+    border-radius: 8px;
+    background: #dbeafe;
+}
+
+.alert.error {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.alert.success {
+    background: #dcfce7;
+    color: #166534;
+}
 
 table {
-
     width: 100%;
-
-    border-collapse:
-        collapse;
+    border-collapse: collapse;
 }
-
 
 th,
 td {
-
     padding: 12px;
-
     border-bottom:
         1px solid #e5e7eb;
-
     text-align: left;
-
-    vertical-align: top;
 }
 
-
-/* =========================================================
-   ALERT
-   ========================================================= */
-
-.alert {
-
-    max-width: 1200px;
-
-    margin:
-        15px auto;
-
-    padding:
-        13px 18px;
-
-    border-radius: 9px;
-
-    background:
-        #dbeafe;
-
-    color:
-        #1e3a8a;
+.table-wrap {
+    overflow-x: auto;
 }
-
-
-.alert.error {
-
-    background:
-        #fee2e2;
-
-    color:
-        #991b1b;
-}
-
-
-.alert.success {
-
-    background:
-        #dcfce7;
-
-    color:
-        #166534;
-}
-
-
-/* =========================================================
-   QUESTION / ANSWER
-   ========================================================= */
-
-.question,
-.answer {
-
-    white-space:
-        pre-wrap;
-
-    line-height:
-        1.7;
-
-    padding:
-        18px;
-
-    border-radius:
-        10px;
-
-    background:
-        #f8fafc;
-}
-
-
-.answer {
-
-    border-left:
-        4px solid
-        #1976d2;
-}
-
 
 .badge {
-
-    display:
-        inline-block;
-
-    padding:
-        5px 10px;
-
-    border-radius:
-        20px;
-
-    font-size:
-        12px;
-
-    font-weight:
-        bold;
+    display: inline-block;
+    padding: 5px 9px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 700;
 }
 
-
-.badge.answered {
-
-    background:
-        #dcfce7;
-
-    color:
-        #166534;
+.pending {
+    background: #fef3c7;
+    color: #92400e;
 }
 
-
-.badge.pending {
-
-    background:
-        #fef3c7;
-
-    color:
-        #92400e;
+.answered {
+    background: #dcfce7;
+    color: #166534;
 }
-
-
-/* =========================================================
-   FOOTER
-   ========================================================= */
 
 footer {
-
-    text-align:
-        center;
-
-    padding:
-        35px 20px;
-
-    color:
-        #64748b;
+    text-align: center;
+    padding: 35px 20px;
+    color: #64748b;
 }
 
-
-/* =========================================================
-   MOBILE
-   ========================================================= */
-
-@media (max-width: 650px) {
+@media(max-width:700px) {
 
     .topbar-inner {
-
-        align-items:
-            flex-start;
-
-        flex-direction:
-            column;
+        flex-direction: column;
+        align-items: flex-start;
     }
 
-    .nav {
-
+    .public-nav,
+    .private-nav {
         width: 100%;
-
-        justify-content:
-            flex-start;
     }
 
-    .nav a {
-
-        font-size:
-            14px;
-
-        padding:
-            8px 10px;
+    .private-nav {
+        overflow-x: auto;
     }
 
-    .hero,
-    .card {
-
-        padding:
-            20px;
+    .hero {
+        padding: 45px 20px;
     }
 }
 
 </style>
+"""
+
+
+# ============================================================
+# PUBLIC LAYOUT
+#
+# CRITICAL:
+# There is NO admin/student navigation here.
+# ============================================================
+
+PUBLIC_LAYOUT = """
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+<meta charset="UTF-8">
+
+<meta
+    name="viewport"
+    content="width=device-width,
+             initial-scale=1.0"
+>
+
+<meta
+    name="description"
+    content="KOJA AFRICA - Knowledge, Questions and Answers"
+>
+
+<meta
+    name="robots"
+    content="index, follow"
+>
+
+<title>{{ title }} | KOJA AFRICA</title>
+
+""" + CSS + """
 
 </head>
 
-
 <body>
-
-
-<!-- ========================================================
-     OPENING ANIMATION
-     ======================================================== -->
-
-<div id="openingAnimation">
-
-    <div class="opening-logo">
-
-        <span class="k">K</span>
-        <span class="o">O</span>
-        <span class="j">J</span>
-        <span class="a">A</span>
-
-    </div>
-
-    <div class="opening-africa">
-        AFRICA
-    </div>
-
-    <div class="opening-line"></div>
-
-    <div class="opening-text">
-        Knowledge • Questions • Answers
-    </div>
-
-</div>
-
-
-<!-- ========================================================
-     HEADER
-     ======================================================== -->
 
 <header class="topbar">
 
 <div class="topbar-inner">
 
-
 <a class="logo"
    href="{{ url_for('home') }}">
 
-    <span class="k">k</span>
-    <span class="o">o</span>
-    <span class="j">j</span>
-    <span class="a">a</span>
+<span class="k">k</span><span
+class="o">o</span><span
+class="j">j</span><span
+class="a">a</span>
 
-    <small>AFRICA</small>
+<small>AFRICA</small>
 
 </a>
 
+<!-- =====================================================
+     PUBLIC NAVIGATION
+     THESE ARE THE ONLY PUBLIC NAVIGATION BUTTONS
+     ===================================================== -->
 
-<nav class="nav">
+<nav class="public-nav">
 
+<a
+    class="login-btn"
+    href="{{ url_for('login') }}"
+>
+    Log In
+</a>
 
-{% if session.get("user_id") %}
-
-
-    {% if session.get("role") == "admin" %}
-
-        <a href="{{ url_for('admin_dashboard') }}">
-            Dashboard
-        </a>
-
-        <a href="{{ url_for('admin_questions') }}">
-            Questions
-        </a>
-
-        <a href="{{ url_for('admin_answers') }}">
-            Answers
-        </a>
-
-        <a href="{{ url_for('admin_users') }}">
-            Users
-        </a>
-
-        <a href="{{ url_for('admin_logs') }}">
-            Logs
-        </a>
-
-        <a href="{{ url_for('logout') }}">
-            Logout
-        </a>
-
-    {% else %}
-
-        <a href="{{ url_for('student_dashboard') }}">
-            Dashboard
-        </a>
-
-        <a href="{{ url_for('ask_question') }}">
-            Ask
-        </a>
-
-        <a href="{{ url_for('my_questions') }}">
-            My Questions
-        </a>
-
-        <a href="{{ url_for('logout') }}">
-            Logout
-        </a>
-
-    {% endif %}
-
-
-{% else %}
-
-    <!--
-        PUBLIC USERS SEE ONLY THESE TWO LINKS.
-        NO USERS.
-        NO ANSWERS.
-        NO QUESTIONS.
-        NO LOGS.
-        NO ADMIN.
-    -->
-
-    <a class="login-link"
-       href="{{ url_for('login') }}">
-        Log In
-    </a>
-
-    <a class="register-link"
-       href="{{ url_for('register') }}">
-        Create Account
-    </a>
-
-{% endif %}
-
+<a
+    class="register-btn"
+    href="{{ url_for('register') }}"
+>
+    Create Account
+</a>
 
 </nav>
 
@@ -1466,133 +799,40 @@ footer {
 
 </header>
 
-
-<!-- ========================================================
-     FLASH MESSAGES
-     ======================================================== -->
-
 {% with messages =
-        get_flashed_messages(
-            with_categories=true
-        )
-%}
+get_flashed_messages(
+with_categories=true
+) %}
 
-    {% for category, message in messages %}
+{% for category, message in messages %}
 
-        <div class="alert {{ category }}">
-            {{ message }}
-        </div>
+<div class="alert {{ category }}">
+{{ message }}
+</div>
 
-    {% endfor %}
+{% endfor %}
 
 {% endwith %}
 
+<main class="container">
 
-<!-- ========================================================
-     CONTENT
-     ======================================================== -->
-
-<main>
-
-    {{ content|safe }}
+{{ content|safe }}
 
 </main>
 
-
-<!-- ========================================================
-     FOOTER
-     ======================================================== -->
-
 <footer>
 
-    <strong>
-        KOJA AFRICA
-    </strong>
+<strong>KOJA AFRICA</strong>
 
-    <br>
+<br>
 
-    Knowledge • Questions • Answers
+Knowledge • Questions • Answers
 
-    <br><br>
+<br><br>
 
-    Academic Questions • Assignments • Research
+Academic Research • Learning • Questions
 
 </footer>
-
-
-<!-- ========================================================
-     OPENING ANIMATION SCRIPT
-     ======================================================== -->
-
-<script>
-
-(function () {
-
-    const animation =
-        document.getElementById(
-            "openingAnimation"
-        );
-
-    if (!animation) {
-        return;
-    }
-
-
-    let alreadyPlayed = false;
-
-
-    try {
-
-        alreadyPlayed =
-            sessionStorage.getItem(
-                "koja_opening_played"
-            ) === "1";
-
-    } catch (error) {
-
-        alreadyPlayed = false;
-
-    }
-
-
-    if (alreadyPlayed) {
-
-        animation.classList.add(
-            "hide"
-        );
-
-        return;
-
-    }
-
-
-    try {
-
-        sessionStorage.setItem(
-            "koja_opening_played",
-            "1"
-        );
-
-    } catch (error) {
-        // Continue normally.
-    }
-
-
-    setTimeout(
-        function () {
-
-            animation.classList.add(
-                "hide"
-            );
-
-        },
-        3500
-    );
-
-})();
-
-</script>
-
 
 </body>
 
@@ -1601,134 +841,233 @@ footer {
 
 
 # ============================================================
-# RENDER HELPER
+# PRIVATE LAYOUT
 # ============================================================
 
-def render_page(
-    content,
-    title="Home"
-):
+PRIVATE_LAYOUT = """
+<!DOCTYPE html>
+<html lang="en">
 
+<head>
+
+<meta charset="UTF-8">
+
+<meta
+    name="viewport"
+    content="width=device-width,
+             initial-scale=1.0"
+>
+
+<meta
+    name="robots"
+    content="noindex, nofollow"
+>
+
+<title>{{ title }} | KOJA AFRICA</title>
+
+""" + CSS + """
+
+</head>
+
+<body>
+
+<header class="topbar">
+
+<div class="topbar-inner">
+
+<a class="logo"
+   href="{{ url_for('home') }}">
+
+<span class="k">k</span><span
+class="o">o</span><span
+class="j">j</span><span
+class="a">a</span>
+
+<small>AFRICA</small>
+
+</a>
+
+<nav class="private-nav">
+
+{% if session.get("role") == "admin" %}
+
+<a href="{{ url_for('admin_dashboard') }}">
+Dashboard
+</a>
+
+<a href="{{ url_for('admin_questions') }}">
+Questions
+</a>
+
+<a href="{{ url_for('admin_answers') }}">
+Answers
+</a>
+
+<a href="{{ url_for('admin_documents') }}">
+Documents
+</a>
+
+<a href="{{ url_for('admin_logs') }}">
+Logs
+</a>
+
+{% else %}
+
+<a href="{{ url_for('student_dashboard') }}">
+Dashboard
+</a>
+
+<a href="{{ url_for('ask_question') }}">
+Ask Question
+</a>
+
+<a href="{{ url_for('student_questions') }}">
+My Questions
+</a>
+
+<a href="{{ url_for('research') }}">
+Research
+</a>
+
+{% endif %}
+
+<a
+    class="logout"
+    href="{{ url_for('logout') }}"
+>
+Logout
+</a>
+
+</nav>
+
+</div>
+
+</header>
+
+{% with messages =
+get_flashed_messages(
+with_categories=true
+) %}
+
+{% for category, message in messages %}
+
+<div class="alert {{ category }}">
+{{ message }}
+</div>
+
+{% endfor %}
+
+{% endwith %}
+
+<main class="container">
+
+{{ content|safe }}
+
+</main>
+
+<footer>
+
+<strong>KOJA AFRICA</strong>
+
+<br>
+
+Knowledge • Questions • Answers
+
+</footer>
+
+</body>
+
+</html>
+"""
+
+
+def public_page(title, content):
     return render_template_string(
-        HTML,
-        content=content,
+        PUBLIC_LAYOUT,
         title=title,
-        site_description=SITE_DESCRIPTION
+        content=content
+    )
+
+
+def private_page(title, content):
+    return render_template_string(
+        PRIVATE_LAYOUT,
+        title=title,
+        content=content
     )
 
 
 # ============================================================
-# PUBLIC HOME
+# HOME
+#
+# PUBLIC HTML CONTAINS ONLY:
+# LOG IN
+# CREATE ACCOUNT
 # ============================================================
 
 @app.route("/")
 def home():
 
-    # IMPORTANT:
-    # The public homepage does NOT retrieve or display
-    # registered users, private questions or answers.
+    # Deliberately do NOT pass user navigation
+    # into the public home page.
 
     content = """
-    <section class="hero">
+<section class="hero">
 
-        <h1>
-            KOJA AFRICA
-        </h1>
+<h1>
+<span style="color:#1976d2;">K</span><span
+style="color:#2e7d32;">O</span><span
+style="color:#d32f2f;">J</span><span
+style="color:#1565c0;">A</span>
+</h1>
 
-        <p>
-            Knowledge • Questions • Answers
-        </p>
+<h2>KOJA AFRICA</h2>
 
-        <p>
-            A digital academic platform for
-            assignments, questions, research
-            and learning.
-        </p>
+<p>
+Knowledge • Questions • Answers
+</p>
 
-        <div class="hero-actions">
+<p>
+A platform for academic questions,
+research, learning resources and
+educational support.
+</p>
 
-            <a class="btn"
-               href="/login">
-                Log In
-            </a>
+<div class="hero-buttons">
 
-            <a class="btn green"
-               href="/register">
-                Create Account
-            </a>
+<a
+    class="btn dark"
+    href="/login"
+>
+    Log In
+</a>
 
-        </div>
+<a
+    class="btn"
+    href="/register"
+>
+    Create Account
+</a>
 
-    </section>
+</div>
 
+</section>
+"""
 
-    <section class="grid">
-
-        <div class="feature">
-
-            <h3>
-                Academic Questions
-            </h3>
-
-            <p>
-                Submit your academic question
-                privately and receive an answer
-                through your KOJA account.
-            </p>
-
-        </div>
-
-
-        <div class="feature">
-
-            <h3>
-                Assignments
-            </h3>
-
-            <p>
-                Upload assignment questions
-                and supporting documents
-                securely.
-            </p>
-
-        </div>
-
-
-        <div class="feature">
-
-            <h3>
-                Research
-            </h3>
-
-            <p>
-                Use KOJA as a learning and
-                academic research platform.
-            </p>
-
-        </div>
-
-
-        <div class="feature">
-
-            <h3>
-                Private Answers
-            </h3>
-
-            <p>
-                Your submitted questions and
-                answers are associated with
-                your account.
-            </p>
-
-        </div>
-
-    </section>
-    """
-
-    return render_page(
-        content,
-        "Home"
+    response = make_response(
+        public_page(
+            "Home",
+            content
+        )
     )
+
+    # Tell search engines that this is the
+    # public landing page.
+    response.headers[
+        "X-Robots-Tag"
+    ] = "index, follow"
+
+    return response
 
 
 # ============================================================
@@ -1758,115 +1097,61 @@ def register():
             ""
         )
 
-        confirm = request.form.get(
-            "confirm_password",
-            ""
+        if not name or not email or not password:
+            flash(
+                "Complete all fields.",
+                "error"
+            )
+            return redirect(
+                url_for("register")
+            )
+
+        users = read_json(
+            USERS_FILE,
+            []
         )
 
-        if not name:
+        if any(
+            u.get("email") == email
+            for u in users
+        ):
             flash(
-                "Enter your name.",
+                "An account with that email already exists.",
                 "error"
             )
-
             return redirect(
                 url_for("register")
             )
-
-        if not email:
-            flash(
-                "Enter your email.",
-                "error"
-            )
-
-            return redirect(
-                url_for("register")
-            )
-
-        if len(password) < 8:
-            flash(
-                "Password must contain at least 8 characters.",
-                "error"
-            )
-
-            return redirect(
-                url_for("register")
-            )
-
-        if password != confirm:
-            flash(
-                "Passwords do not match.",
-                "error"
-            )
-
-            return redirect(
-                url_for("register")
-            )
-
-        users = get_users()
-
-        for user in users:
-
-            if user.get("email") == email:
-
-                flash(
-                    "An account with that email already exists.",
-                    "error"
-                )
-
-                return redirect(
-                    url_for("register")
-                )
-
 
         user = {
-
-            "id":
-                str(uuid.uuid4()),
-
-            "name":
-                name,
-
-            "email":
-                email,
-
-            "password":
-                hash_password(
-                    password
-                ),
-
-            "role":
-                "student",
-
-            "created_at":
-                datetime.now(
-                    timezone.utc
-                ).isoformat(),
-
-            "active":
-                True
+            "id": str(uuid.uuid4()),
+            "name": name,
+            "email": email,
+            "password": hash_password(
+                password
+            ),
+            "role": "student",
+            "created_at": datetime.now(
+                timezone.utc
+            ).isoformat()
         }
 
+        users.append(user)
 
-        users.append(
-            user
-        )
-
-        save_users(
+        write_json(
+            USERS_FILE,
             users
         )
 
-
         log_event(
-            "New Student Account Created",
+            "Student Account Created",
             "Authentication",
             "INFO",
             email
         )
 
-
         flash(
-            "Account created successfully. You can now log in.",
+            "Account created successfully. Please log in.",
             "success"
         )
 
@@ -1874,79 +1159,49 @@ def register():
             url_for("login")
         )
 
-
     content = """
+<div class="card">
 
-    <section class="card">
+<h1>Create Account</h1>
 
-        <h1>Create Account</h1>
+<form method="post">
 
-        <p class="muted">
-            Create your private KOJA Africa
-            student account.
-        </p>
+<label>Name</label>
 
-        <form method="POST">
+<input
+    type="text"
+    name="name"
+    required
+>
 
-            <label>
-                Full Name
-            </label>
+<label>Email</label>
 
-            <input
-                type="text"
-                name="name"
-                required
-            >
+<input
+    type="email"
+    name="email"
+    required
+>
 
+<label>Password</label>
 
-            <label>
-                Email Address
-            </label>
+<input
+    type="password"
+    name="password"
+    required
+>
 
-            <input
-                type="email"
-                name="email"
-                required
-            >
+<button type="submit">
+Create Account
+</button>
 
+</form>
 
-            <label>
-                Password
-            </label>
+</div>
+"""
 
-            <input
-                type="password"
-                name="password"
-                minlength="8"
-                required
-            >
-
-
-            <label>
-                Confirm Password
-            </label>
-
-            <input
-                type="password"
-                name="confirm_password"
-                minlength="8"
-                required
-            >
-
-
-            <button type="submit">
-                Create Account
-            </button>
-
-        </form>
-
-    </section>
-
-    """
-
-    return render_page(
-        content,
-        "Create Account"
+    return public_page(
+        "Create Account",
+        content
     )
 
 
@@ -1972,35 +1227,23 @@ def login():
             ""
         )
 
-        users = get_users()
+        users = read_json(
+            USERS_FILE,
+            []
+        )
 
-        user_found = None
+        user = next(
+            (
+                u for u in users
+                if u.get("email") == email
+            ),
+            None
+        )
 
-        for user in users:
-
-            if (
-                user.get("email")
-                == email
-                and
-                user.get("active", True)
-            ):
-
-                user_found = user
-                break
-
-
-        if (
-            not user_found
-            or
-            not verify_password(
-                password,
-                user_found.get(
-                    "password",
-                    ""
-                )
-            )
+        if not user or not verify_password(
+            password,
+            user.get("password", "")
         ):
-
             log_event(
                 "Failed Login",
                 "Authentication",
@@ -2017,32 +1260,19 @@ def login():
                 url_for("login")
             )
 
-
         session.clear()
 
-        session["user_id"] = \
-            user_found["id"]
-
-        session["email"] = \
-            user_found["email"]
-
-        session["role"] = \
-            user_found["role"]
-
-        session["name"] = \
-            user_found["name"]
-
+        session["user_id"] = user["id"]
+        session["role"] = user["role"]
 
         log_event(
-            "Successful Login",
+            "Login",
             "Authentication",
             "INFO",
             email
         )
 
-
-        if user_found["role"] == "admin":
-
+        if user["role"] == "admin":
             return redirect(
                 url_for(
                     "admin_dashboard"
@@ -2055,54 +1285,41 @@ def login():
             )
         )
 
-
     content = """
+<div class="card">
 
-    <section class="card">
+<h1>Log In</h1>
 
-        <h1>Log In</h1>
+<form method="post">
 
-        <p class="muted">
-            Access your private KOJA account.
-        </p>
+<label>Email</label>
 
-        <form method="POST">
+<input
+    type="email"
+    name="email"
+    required
+>
 
-            <label>
-                Email Address
-            </label>
+<label>Password</label>
 
-            <input
-                type="email"
-                name="email"
-                required
-            >
+<input
+    type="password"
+    name="password"
+    required
+>
 
+<button type="submit">
+Log In
+</button>
 
-            <label>
-                Password
-            </label>
+</form>
 
-            <input
-                type="password"
-                name="password"
-                required
-            >
+</div>
+"""
 
-
-            <button type="submit">
-                Log In
-            </button>
-
-        </form>
-
-    </section>
-
-    """
-
-    return render_page(
-        content,
-        "Log In"
+    return public_page(
+        "Log In",
+        content
     )
 
 
@@ -2113,8 +1330,7 @@ def login():
 @app.route("/logout")
 def logout():
 
-    if session.get("user_id"):
-
+    if current_user():
         log_event(
             "Logout",
             "Authentication",
@@ -2122,11 +1338,6 @@ def logout():
         )
 
     session.clear()
-
-    flash(
-        "You have been logged out.",
-        "success"
-    )
 
     return redirect(
         url_for("home")
@@ -2137,114 +1348,78 @@ def logout():
 # STUDENT DASHBOARD
 # ============================================================
 
-@app.route(
-    "/student/dashboard"
-)
+@app.route("/student")
 @login_required
 def student_dashboard():
 
-    if is_admin_session():
+    user = current_user()
 
+    if user["role"] == "admin":
         return redirect(
-            url_for(
-                "admin_dashboard"
-            )
+            url_for("admin_dashboard")
         )
 
-
-    user_id = session.get(
-        "user_id"
+    questions = read_json(
+        QUESTIONS_FILE,
+        []
     )
 
-    questions = [
-
-        q for q in get_questions()
-
+    mine = [
+        q for q in questions
         if q.get("student_id")
-        == user_id
-
+        == user["id"]
     ]
 
-
     answered = sum(
-        1
-        for q in questions
+        1 for q in mine
         if q.get("answer")
     )
 
-
     content = f"""
+<div class="card">
 
-    <section class="hero">
+<h1>
+Welcome, {user.get("name")}
+</h1>
 
-        <h1>
-            Welcome, {session.get("name")}
-        </h1>
+<p>
+KOJA AFRICA Student Portal
+</p>
 
-        <p>
-            Your KOJA Africa academic workspace.
-        </p>
+</div>
 
-        <a class="btn"
-           href="/student/ask">
-            Ask a Question
-        </a>
+<div class="grid">
 
-        <a class="btn dark"
-           href="/student/questions">
-            My Questions
-        </a>
+<div class="stat">
+<h2>{len(mine)}</h2>
+<p>My Questions</p>
+</div>
 
-    </section>
+<div class="stat">
+<h2>{answered}</h2>
+<p>Answered</p>
+</div>
 
+</div>
 
-    <section class="grid">
+<div class="card">
 
-        <div class="feature">
+<a class="btn"
+   href="/ask">
+Ask Question
+</a>
 
-            <h3>
-                My Questions
-            </h3>
+<a class="btn dark"
+   href="/research">
+Research
+</a>
 
-            <h2>
-                {len(questions)}
-            </h2>
+</div>
+"""
 
-        </div>
-
-
-        <div class="feature">
-
-            <h3>
-                Answered
-            </h3>
-
-            <h2>
-                {answered}
-            </h2>
-
-        </div>
-
-
-        <div class="feature">
-
-            <h3>
-                Pending
-            </h3>
-
-            <h2>
-                {len(questions) - answered}
-            </h2>
-
-        </div>
-
-    </section>
-
-    """
-
-    return render_page(
-        content,
-        "Student Dashboard"
+    return private_page(
+        "Student Dashboard",
+        content
     )
 
 
@@ -2253,636 +1428,387 @@ def student_dashboard():
 # ============================================================
 
 @app.route(
-    "/student/ask",
+    "/ask",
     methods=["GET", "POST"]
 )
 @login_required
 def ask_question():
 
-    if is_admin_session():
+    user = current_user()
 
-        abort(403)
-
+    if user["role"] == "admin":
+        return redirect(
+            url_for("admin_dashboard")
+        )
 
     if request.method == "POST":
-
-        subject = request.form.get(
-            "subject",
-            ""
-        ).strip()
 
         question_text = request.form.get(
             "question",
             ""
         ).strip()
 
-
-        if not subject:
-
-            flash(
-                "Enter the subject.",
-                "error"
-            )
-
-            return redirect(
-                url_for("ask_question")
-            )
-
-
         if not question_text:
-
             flash(
                 "Enter your question.",
                 "error"
             )
-
             return redirect(
                 url_for("ask_question")
             )
 
-
-        question_id = str(
-            uuid.uuid4()
-        )
-
-
-        attachments = []
-
-
-        uploaded = request.files.getlist(
-            "files"
-        )
-
-
-        for file in uploaded:
-
-            if not file:
-                continue
-
-            if not file.filename:
-                continue
-
-            if not allowed_file(
-                file.filename
-            ):
-
-                flash(
-                    "One of the uploaded files is not allowed.",
-                    "error"
-                )
-
-                return redirect(
-                    url_for("ask_question")
-                )
-
-
-            original_name = \
-                secure_filename(
-                    file.filename
-                )
-
-
-            stored_name = (
-                question_id
-                + "_"
-                + str(uuid.uuid4())
-                + "_"
-                + original_name
-            )
-
-
-            file.save(
-                os.path.join(
-                    STUDENT_UPLOAD_DIR,
-                    stored_name
-                )
-            )
-
-
-            attachments.append({
-
-                "original_name":
-                    original_name,
-
-                "stored_name":
-                    stored_name
-
-            })
-
-
         question = {
-
-            "id":
-                question_id,
-
-            "student_id":
-                session.get(
-                    "user_id"
-                ),
-
-            "subject":
-                subject,
-
-            "question":
-                question_text,
-
-            "attachments":
-                attachments,
-
-            "answer":
-                "",
-
-            "answer_attachments":
-                [],
-
-            "status":
-                "Pending",
-
-            "created_at":
-                datetime.now(
-                    timezone.utc
-                ).isoformat(),
-
-            "answered_at":
-                None
+            "id": str(uuid.uuid4()),
+            "student_id": user["id"],
+            "student_name": user["name"],
+            "question": question_text,
+            "answer": "",
+            "answer_by": "",
+            "created_at": datetime.now(
+                timezone.utc
+            ).isoformat(),
+            "answered_at": "",
+            "attachments": []
         }
 
+        file = request.files.get(
+            "document"
+        )
 
-        questions = get_questions()
+        if file and file.filename:
+
+            original = file.filename
+
+            safe_name = (
+                str(uuid.uuid4())
+                + "_"
+                + original.replace(
+                    "/",
+                    "_"
+                ).replace(
+                    "\\",
+                    "_"
+                )
+            )
+
+            path = os.path.join(
+                STUDENT_UPLOAD_DIR,
+                safe_name
+            )
+
+            file.save(path)
+
+            question[
+                "attachments"
+            ].append({
+                "original_name": original,
+                "stored_name": safe_name
+            })
+
+        questions = read_json(
+            QUESTIONS_FILE,
+            []
+        )
 
         questions.append(
             question
         )
 
-        save_questions(
+        write_json(
+            QUESTIONS_FILE,
             questions
         )
-
 
         log_event(
             "Question Submitted",
             "Questions",
             "INFO",
-            question_id
+            question["id"]
         )
 
-
         flash(
-            "Your question has been submitted privately.",
+            "Your question has been submitted.",
             "success"
         )
 
-
         return redirect(
             url_for(
-                "my_questions"
+                "student_questions"
             )
         )
 
-
     content = """
+<div class="card">
 
-    <section class="card">
+<h1>Ask KOJA</h1>
 
-        <h1>
-            Ask KOJA
-        </h1>
+<form
+    method="post"
+    enctype="multipart/form-data"
+>
 
-        <p class="muted">
-            Your question is private.
-            It will not be displayed on the
-            public homepage.
-        </p>
+<label>
+Question
+</label>
 
+<textarea
+    name="question"
+    required
+></textarea>
 
-        <form method="POST"
-              enctype="multipart/form-data">
+<label>
+Upload document
+</label>
 
+<input
+    type="file"
+    name="document"
+>
 
-            <label>
-                Subject
-            </label>
+<button type="submit">
+Submit Question
+</button>
 
-            <input
-                type="text"
-                name="subject"
-                placeholder="e.g. Chemistry"
-                required
-            >
+</form>
 
+</div>
+"""
 
-            <label>
-                Question / Assignment
-            </label>
-
-            <textarea
-                name="question"
-                placeholder="Write your question here..."
-                required
-            ></textarea>
-
-
-            <label>
-                Attachments
-            </label>
-
-            <input
-                type="file"
-                name="files"
-                multiple
-            >
-
-
-            <button type="submit">
-                Submit Question
-            </button>
-
-        </form>
-
-    </section>
-
-    """
-
-    return render_page(
-        content,
-        "Ask Question"
+    return private_page(
+        "Ask Question",
+        content
     )
 
 
 # ============================================================
-# MY QUESTIONS
+# STUDENT QUESTIONS
 # ============================================================
 
-@app.route(
-    "/student/questions"
-)
+@app.route("/student/questions")
 @login_required
-def my_questions():
+def student_questions():
 
-    if is_admin_session():
+    user = current_user()
 
-        abort(403)
-
-
-    user_id = session.get(
-        "user_id"
+    questions = read_json(
+        QUESTIONS_FILE,
+        []
     )
 
-
-    questions = [
-
-        q for q in get_questions()
-
+    mine = [
+        q for q in questions
         if q.get("student_id")
-        == user_id
-
+        == user["id"]
     ]
 
+    blocks = []
 
-    cards = ""
+    for q in reversed(mine):
 
+        answer = q.get("answer")
 
-    for q in reversed(
-        questions
-    ):
-
-        status = q.get(
-            "status",
-            "Pending"
+        status = (
+            "Answered"
+            if answer
+            else "Pending"
         )
-
-
-        status_class = (
-            "answered"
-            if q.get("answer")
-            else "pending"
-        )
-
 
         answer_html = ""
 
-
-        if q.get("answer"):
-
+        if answer:
             answer_html = f"""
+<h3>Answer</h3>
 
-            <div class="answer">
+<div class="answer">
+{answer}
+</div>
+"""
 
-                <strong>
-                    KOJA Answer
-                </strong>
+        blocks.append(f"""
+<div class="card">
 
-                <br><br>
+<h3>
+{q.get("question")}
+</h3>
 
-                {q.get("answer")}
+<p>
+Status:
+<strong>{status}</strong>
+</p>
 
-            </div>
+{answer_html}
 
-            """
+</div>
+""")
 
+    content = "".join(blocks)
 
-        attachment_html = ""
+    if not content:
+        content = """
+<div class="card">
 
+<h1>My Questions</h1>
 
-        for attachment in q.get(
-            "attachments",
-            []
-        ):
+<p>
+You have not submitted a question yet.
+</p>
 
-            stored_name = \
-                attachment.get(
-                    "stored_name"
-                )
+<a class="btn"
+   href="/ask">
+Ask Question
+</a>
 
+</div>
+"""
 
-            attachment_html += f"""
-
-            <p>
-
-                <a
-                  href="/student/file/{q['id']}/student/{stored_name}"
-                  target="_blank">
-
-                    View Attachment
-
-                </a>
-
-            </p>
-
-            """
-
-
-        cards += f"""
-
-        <div class="card">
-
-            <span class="badge {status_class}">
-                {status}
-            </span>
-
-            <h2>
-                {q.get("subject")}
-            </h2>
-
-            <p>
-                <strong>
-                    Question
-                </strong>
-            </p>
-
-            <div class="question">
-                {q.get("question")}
-            </div>
-
-            {attachment_html}
-
-            <br>
-
-            {answer_html}
-
-        </div>
-
-        """
-
-
-    if not cards:
-
-        cards = """
-
-        <section class="card">
-
-            <h2>
-                No questions yet.
-            </h2>
-
-            <p>
-                Submit your first academic
-                question to KOJA Africa.
-            </p>
-
-            <a class="btn"
-               href="/student/ask">
-                Ask a Question
-            </a>
-
-        </section>
-
-        """
-
-
-    content = f"""
-
-    <h1>
-        My Questions
-    </h1>
-
-    {cards}
-
-    """
-
-
-    return render_page(
-        content,
-        "My Questions"
+    return private_page(
+        "My Questions",
+        content
     )
 
 
 # ============================================================
-# STUDENT PRIVATE FILE
+# RESEARCH
+#
+# IMPORTANT:
+# Do not expose unanswered questions.
 # ============================================================
 
-@app.route(
-    "/student/file/<question_id>/<category>/<filename>"
-)
+@app.route("/research")
 @login_required
-def student_file(
-    question_id,
-    category,
-    filename
-):
+def research():
 
-    if is_admin_session():
-
-        return redirect(
-            url_for(
-                "admin_file",
-                category=category,
-                filename=filename
-            )
-        )
-
-
-    question = find_question(
-        question_id
+    questions = read_json(
+        QUESTIONS_FILE,
+        []
     )
 
+    answered = [
+        q for q in questions
+        if q.get("answer")
+    ]
 
-    if not question:
+    blocks = []
 
-        abort(404)
+    for q in reversed(answered):
 
+        blocks.append(f"""
+<div class="card">
 
-    if (
-        question.get("student_id")
-        !=
-        session.get("user_id")
-    ):
+<h2>
+{q.get("question")}
+</h2>
 
-        log_event(
-            "Unauthorized File Access",
-            "Security",
-            "WARNING",
-            question_id
-        )
+<div class="answer">
+{q.get("answer")}
+</div>
 
-        abort(403)
+</div>
+""")
 
+    content = """
+<div class="card">
 
-    if category == "student":
+<h1>Research</h1>
 
-        attachments = \
-            question.get(
-                "attachments",
-                []
-            )
+<p>
+Only questions that have been answered
+are available in the research area.
+</p>
 
-        directory = \
-            STUDENT_UPLOAD_DIR
+</div>
+"""
 
+    content += "".join(blocks)
 
-    elif category == "admin":
-
-        attachments = \
-            question.get(
-                "answer_attachments",
-                []
-            )
-
-        directory = \
-            ADMIN_UPLOAD_DIR
-
-
-    else:
-
-        abort(404)
-
-
-    for attachment in attachments:
-
-        if (
-            attachment.get(
-                "stored_name"
-            )
-            ==
-            filename
-        ):
-
-            return send_from_directory(
-                directory,
-                filename
-            )
-
-
-    abort(404)
+    return private_page(
+        "Research",
+        content
+    )
 
 
 # ============================================================
 # ADMIN DASHBOARD
 # ============================================================
 
-@app.route(
-    "/admin"
-)
+@app.route("/admin")
 @admin_required
 def admin_dashboard():
 
-    users = get_users()
-
-    questions = get_questions()
-
-    answered = sum(
-        1
-        for q in questions
-        if q.get("answer")
+    users = read_json(
+        USERS_FILE,
+        []
     )
 
+    questions = read_json(
+        QUESTIONS_FILE,
+        []
+    )
+
+    documents = read_json(
+        DOCUMENTS_FILE,
+        []
+    )
+
+    logs = read_json(
+        LOGS_FILE,
+        []
+    )
+
+    students = [
+        u for u in users
+        if u.get("role") == "student"
+    ]
+
+    answered = [
+        q for q in questions
+        if q.get("answer")
+    ]
 
     content = f"""
+<div class="card">
 
-    <section class="hero">
+<h1>KOJA AFRICA ADMIN</h1>
 
-        <h1>
-            KOJA ADMIN
-        </h1>
+<p>
+Private administration area.
+</p>
 
-        <p>
-            Protected administration area.
-        </p>
+</div>
 
-    </section>
+<div class="grid">
 
+<div class="stat">
+<h2>{len(students)}</h2>
+<p>Students</p>
+</div>
 
-    <section class="grid">
+<div class="stat">
+<h2>{len(questions)}</h2>
+<p>Questions</p>
+</div>
 
-        <div class="feature">
+<div class="stat">
+<h2>{len(answered)}</h2>
+<p>Answered</p>
+</div>
 
-            <h3>
-                Registered Users
-            </h3>
+<div class="stat">
+<h2>{len(documents)}</h2>
+<p>Documents</p>
+</div>
 
-            <h2>
-                {len(users)}
-            </h2>
+<div class="stat">
+<h2>{len(logs)}</h2>
+<p>Logs</p>
+</div>
 
-        </div>
+</div>
+"""
 
-
-        <div class="feature">
-
-            <h3>
-                Questions
-            </h3>
-
-            <h2>
-                {len(questions)}
-            </h2>
-
-        </div>
-
-
-        <div class="feature">
-
-            <h3>
-                Answered
-            </h3>
-
-            <h2>
-                {answered}
-            </h2>
-
-        </div>
-
-
-        <div class="feature">
-
-            <h3>
-                Pending
-            </h3>
-
-            <h2>
-                {len(questions) - answered}
-            </h2>
-
-        </div>
-
-    </section>
-
-    """
-
-
-    return render_page(
-        content,
-        "Admin Dashboard"
+    return private_page(
+        "Admin Dashboard",
+        content
     )
 
 
@@ -2890,165 +1816,92 @@ def admin_dashboard():
 # ADMIN QUESTIONS
 # ============================================================
 
-@app.route(
-    "/admin/questions"
-)
+@app.route("/admin/questions")
 @admin_required
 def admin_questions():
 
-    questions = get_questions()
+    questions = read_json(
+        QUESTIONS_FILE,
+        []
+    )
 
-    rows = ""
+    blocks = []
 
+    for q in reversed(questions):
 
-    for q in reversed(
-        questions
-    ):
-
-        student = find_user(
-            q.get("student_id")
+        status = (
+            "Answered"
+            if q.get("answer")
+            else "Pending"
         )
 
+        blocks.append(f"""
+<div class="card">
 
-        student_name = (
-            student.get("name")
-            if student
-            else "Unknown"
-        )
+<h2>
+{q.get("question")}
+</h2>
 
+<p>
+Student:
+{q.get("student_name")}
+</p>
 
-        status = q.get(
-            "status",
-            "Pending"
-        )
+<p>
+Status:
+<strong>{status}</strong>
+</p>
 
+<a
+ class="btn"
+ href="/admin/answer/{q.get("id")}"
+>
+Answer Question
+</a>
 
-        rows += f"""
+</div>
+""")
 
-        <tr>
+    content = """
+<div class="card">
 
-            <td>
-                {student_name}
-            </td>
+<h1>Questions</h1>
 
-            <td>
-                {q.get("subject")}
-            </td>
+</div>
+""" + "".join(blocks)
 
-            <td>
-                {q.get("question")[:120]}
-            </td>
-
-            <td>
-                {status}
-            </td>
-
-            <td>
-
-                <a class="btn small"
-                   href="/admin/question/{q['id']}">
-
-                    Open
-
-                </a>
-
-            </td>
-
-        </tr>
-
-        """
-
-
-    content = f"""
-
-    <section class="card">
-
-        <h1>
-            Student Questions
-        </h1>
-
-        <div class="table-wrap">
-
-            <table>
-
-                <thead>
-
-                    <tr>
-
-                        <th>
-                            Student
-                        </th>
-
-                        <th>
-                            Subject
-                        </th>
-
-                        <th>
-                            Question
-                        </th>
-
-                        <th>
-                            Status
-                        </th>
-
-                        <th>
-                            Action
-                        </th>
-
-                    </tr>
-
-                </thead>
-
-                <tbody>
-
-                    {rows}
-
-                </tbody>
-
-            </table>
-
-        </div>
-
-    </section>
-
-    """
-
-
-    return render_page(
-        content,
-        "Questions"
+    return private_page(
+        "Questions",
+        content
     )
 
 
 # ============================================================
-# ADMIN QUESTION
+# ADMIN ANSWER QUESTION
 # ============================================================
 
 @app.route(
-    "/admin/question/<question_id>",
+    "/admin/answer/<question_id>",
     methods=["GET", "POST"]
 )
 @admin_required
-def admin_question(
-    question_id
-):
+def admin_answer(question_id):
 
-    questions = get_questions()
+    questions = read_json(
+        QUESTIONS_FILE,
+        []
+    )
 
-    question = None
-
-    for q in questions:
-
-        if q.get("id") == question_id:
-
-            question = q
-            break
-
+    question = next(
+        (
+            q for q in questions
+            if q.get("id") == question_id
+        ),
+        None
+    )
 
     if not question:
-
         abort(404)
-
 
     if request.method == "POST":
 
@@ -3057,247 +1910,141 @@ def admin_question(
             ""
         ).strip()
 
+        if not answer:
+            flash(
+                "Enter an answer.",
+                "error"
+            )
 
-        question["answer"] = \
-            answer
+            return redirect(
+                url_for(
+                    "admin_answer",
+                    question_id=question_id
+                )
+            )
 
-        question["status"] = \
-            "Answered" \
-            if answer \
-            else "Pending"
+        question["answer"] = answer
 
+        admin = current_user()
+
+        question["answer_by"] = (
+            admin.get("name")
+        )
 
         question["answered_at"] = (
             datetime.now(
                 timezone.utc
             ).isoformat()
-            if answer
-            else None
         )
-
-
-        uploaded = request.files.getlist(
-            "files"
-        )
-
-
-        answer_attachments = []
-
-
-        for file in uploaded:
-
-            if not file:
-                continue
-
-            if not file.filename:
-                continue
-
-            if not allowed_file(
-                file.filename
-            ):
-
-                flash(
-                    "Invalid answer attachment.",
-                    "error"
-                )
-
-                return redirect(
-                    url_for(
-                        "admin_question",
-                        question_id=question_id
-                    )
-                )
-
-
-            original_name = \
-                secure_filename(
-                    file.filename
-                )
-
-
-            stored_name = (
-                question_id
-                + "_"
-                + str(uuid.uuid4())
-                + "_"
-                + original_name
-            )
-
-
-            file.save(
-                os.path.join(
-                    ADMIN_UPLOAD_DIR,
-                    stored_name
-                )
-            )
-
-
-            answer_attachments.append({
-
-                "original_name":
-                    original_name,
-
-                "stored_name":
-                    stored_name
-
-            })
-
 
         question[
             "answer_attachments"
-        ] = answer_attachments
+        ] = question.get(
+            "answer_attachments",
+            []
+        )
 
+        file = request.files.get(
+            "document"
+        )
 
-        save_questions(
+        if file and file.filename:
+
+            original = file.filename
+
+            safe_name = (
+                str(uuid.uuid4())
+                + "_"
+                + original.replace(
+                    "/",
+                    "_"
+                ).replace(
+                    "\\",
+                    "_"
+                )
+            )
+
+            path = os.path.join(
+                ADMIN_UPLOAD_DIR,
+                safe_name
+            )
+
+            file.save(path)
+
+            question[
+                "answer_attachments"
+            ].append({
+                "original_name": original,
+                "stored_name": safe_name
+            })
+
+        write_json(
+            QUESTIONS_FILE,
             questions
         )
 
-
         log_event(
             "Question Answered",
-            "Questions",
+            "Answers",
             "INFO",
             question_id
         )
-
 
         flash(
             "Answer saved successfully.",
             "success"
         )
 
-
         return redirect(
             url_for(
-                "admin_question",
-                question_id=question_id
+                "admin_questions"
             )
         )
-
-
-    student = find_user(
-        question.get(
-            "student_id"
-        )
-    )
-
-
-    student_name = (
-        student.get("name")
-        if student
-        else "Unknown"
-    )
-
-
-    attachment_html = ""
-
-
-    for attachment in question.get(
-        "attachments",
-        []
-    ):
-
-        filename = \
-            attachment.get(
-                "stored_name"
-            )
-
-
-        attachment_html += f"""
-
-        <p>
-
-            <a
-              href="/admin/file/student/{filename}"
-              target="_blank">
-
-                View Student Attachment
-
-            </a>
-
-        </p>
-
-        """
-
 
     content = f"""
+<div class="card">
 
-    <section class="card">
+<h1>Answer Question</h1>
 
-        <h1>
-            Question
-        </h1>
+<div class="question">
+{question.get("question")}
+</div>
 
-        <p>
-            <strong>
-                Student:
-            </strong>
+<form
+    method="post"
+    enctype="multipart/form-data"
+>
 
-            {student_name}
-        </p>
+<label>
+Answer
+</label>
 
-        <p>
-            <strong>
-                Subject:
-            </strong>
+<textarea
+    name="answer"
+    required
+>{question.get("answer", "")}</textarea>
 
-            {question.get("subject")}
-        </p>
+<label>
+Upload answer document
+</label>
 
+<input
+    type="file"
+    name="document"
+>
 
-        <div class="question">
+<button type="submit">
+Save Answer
+</button>
 
-            {question.get("question")}
+</form>
 
-        </div>
+</div>
+"""
 
-
-        {attachment_html}
-
-    </section>
-
-
-    <section class="card">
-
-        <h2>
-            Answer
-        </h2>
-
-
-        <form method="POST"
-              enctype="multipart/form-data">
-
-            <textarea
-                name="answer"
-                placeholder="Write the academic answer..."
-            >{question.get("answer", "")}</textarea>
-
-
-            <label>
-                Answer Attachments
-            </label>
-
-            <input
-                type="file"
-                name="files"
-                multiple
-            >
-
-
-            <button type="submit">
-                Save Answer
-            </button>
-
-        </form>
-
-    </section>
-
-    """
-
-
-    return render_page(
-        content,
-        "Answer Question"
+    return private_page(
+        "Answer Question",
+        content
     )
 
 
@@ -3305,225 +2052,300 @@ def admin_question(
 # ADMIN ANSWERS
 # ============================================================
 
-@app.route(
-    "/admin/answers"
-)
+@app.route("/admin/answers")
 @admin_required
 def admin_answers():
 
-    questions = [
+    questions = read_json(
+        QUESTIONS_FILE,
+        []
+    )
 
-        q for q in get_questions()
-
+    answered = [
+        q for q in questions
         if q.get("answer")
-
     ]
 
+    blocks = []
 
-    rows = ""
+    for q in reversed(answered):
 
+        blocks.append(f"""
+<div class="card">
 
-    for q in reversed(
-        questions
-    ):
+<h2>
+{q.get("question")}
+</h2>
 
-        student = find_user(
-            q.get("student_id")
-        )
+<div class="answer">
+{q.get("answer")}
+</div>
 
+<p>
+Answered by:
+{q.get("answer_by", "Admin")}
+</p>
 
-        name = (
-            student.get("name")
-            if student
-            else "Unknown"
-        )
+</div>
+""")
 
+    content = """
+<div class="card">
 
-        rows += f"""
+<h1>Answers</h1>
 
-        <tr>
+<p>
+This section is visible only to administrators.
+</p>
 
-            <td>
-                {name}
-            </td>
+</div>
+""" + "".join(blocks)
 
-            <td>
-                {q.get("subject")}
-            </td>
-
-            <td>
-                {q.get("answer")[:150]}
-            </td>
-
-            <td>
-
-                <a class="btn small"
-                   href="/admin/question/{q['id']}">
-
-                    Open
-
-                </a>
-
-            </td>
-
-        </tr>
-
-        """
-
-
-    content = f"""
-
-    <section class="card">
-
-        <h1>
-            Answers
-        </h1>
-
-        <div class="table-wrap">
-
-            <table>
-
-                <thead>
-
-                    <tr>
-
-                        <th>
-                            Student
-                        </th>
-
-                        <th>
-                            Subject
-                        </th>
-
-                        <th>
-                            Answer
-                        </th>
-
-                        <th>
-                            Action
-                        </th>
-
-                    </tr>
-
-                </thead>
-
-                <tbody>
-
-                    {rows}
-
-                </tbody>
-
-            </table>
-
-        </div>
-
-    </section>
-
-    """
-
-
-    return render_page(
-        content,
-        "Answers"
+    return private_page(
+        "Answers",
+        content
     )
 
 
 # ============================================================
-# ADMIN USERS
+# ADMIN DOCUMENT UPLOAD
 # ============================================================
 
 @app.route(
-    "/admin/users"
+    "/admin/documents",
+    methods=["GET", "POST"]
 )
 @admin_required
-def admin_users():
+def admin_documents():
 
-    users = get_users()
+    if request.method == "POST":
 
-    rows = ""
+        title = request.form.get(
+            "title",
+            ""
+        ).strip()
 
+        file = request.files.get(
+            "document"
+        )
 
-    for user in users:
+        if not title or not file:
+            flash(
+                "Title and document are required.",
+                "error"
+            )
 
-        rows += f"""
+            return redirect(
+                url_for(
+                    "admin_documents"
+                )
+            )
 
-        <tr>
+        original = file.filename
 
-            <td>
-                {user.get("name")}
-            </td>
+        safe_name = (
+            str(uuid.uuid4())
+            + "_"
+            + original.replace(
+                "/",
+                "_"
+            ).replace(
+                "\\",
+                "_"
+            )
+        )
 
-            <td>
-                {user.get("email")}
-            </td>
+        path = os.path.join(
+            ADMIN_UPLOAD_DIR,
+            safe_name
+        )
 
-            <td>
-                {user.get("role")}
-            </td>
+        file.save(path)
 
-            <td>
-                {"Active" if user.get("active") else "Disabled"}
-            </td>
+        documents = read_json(
+            DOCUMENTS_FILE,
+            []
+        )
 
-        </tr>
+        document = {
+            "id": str(uuid.uuid4()),
+            "title": title,
+            "original_name": original,
+            "stored_name": safe_name,
+            "created_at": datetime.now(
+                timezone.utc
+            ).isoformat()
+        }
 
-        """
+        documents.append(
+            document
+        )
 
+        write_json(
+            DOCUMENTS_FILE,
+            documents
+        )
+
+        log_event(
+            "Document Uploaded",
+            "Documents",
+            "INFO",
+            original
+        )
+
+        flash(
+            "Document uploaded.",
+            "success"
+        )
+
+        return redirect(
+            url_for(
+                "admin_documents"
+            )
+        )
+
+    documents = read_json(
+        DOCUMENTS_FILE,
+        []
+    )
+
+    rows = []
+
+    for d in reversed(documents):
+
+        rows.append(f"""
+<tr>
+
+<td>
+{d.get("title")}
+</td>
+
+<td>
+{d.get("original_name")}
+</td>
+
+<td>
+
+<a
+ class="btn"
+ href="/admin/download/{d.get("id")}"
+>
+Download
+</a>
+
+</td>
+
+</tr>
+""")
 
     content = f"""
+<div class="card">
 
-    <section class="card">
+<h1>Upload Documents</h1>
 
-        <h1>
-            Registered Users
-        </h1>
+<form
+    method="post"
+    enctype="multipart/form-data"
+>
 
-        <div class="table-wrap">
+<label>
+Document title
+</label>
 
-            <table>
+<input
+    type="text"
+    name="title"
+    required
+>
 
-                <thead>
+<label>
+Document
+</label>
 
-                    <tr>
+<input
+    type="file"
+    name="document"
+    required
+>
 
-                        <th>
-                            Name
-                        </th>
+<button type="submit">
+Upload Document
+</button>
 
-                        <th>
-                            Email
-                        </th>
+</form>
 
-                        <th>
-                            Role
-                        </th>
+</div>
 
-                        <th>
-                            Status
-                        </th>
+<div class="card">
 
-                    </tr>
+<h2>Documents</h2>
 
-                </thead>
+<div class="table-wrap">
 
-                <tbody>
+<table>
 
-                    {rows}
+<tr>
+<th>Title</th>
+<th>File</th>
+<th>Download</th>
+</tr>
 
-                </tbody>
+{''.join(rows)}
 
-            </table>
+</table>
 
-        </div>
+</div>
 
-    </section>
+</div>
+"""
 
-    """
+    return private_page(
+        "Documents",
+        content
+    )
 
 
-    return render_page(
-        content,
-        "Users"
+# ============================================================
+# ADMIN DOWNLOAD DOCUMENT
+# ============================================================
+
+@app.route(
+    "/admin/download/<document_id>"
+)
+@admin_required
+def admin_download(document_id):
+
+    documents = read_json(
+        DOCUMENTS_FILE,
+        []
+    )
+
+    document = next(
+        (
+            d for d in documents
+            if d.get("id") == document_id
+        ),
+        None
+    )
+
+    if not document:
+        abort(404)
+
+    filename = document.get(
+        "stored_name"
+    )
+
+    log_event(
+        "Admin Document Downloaded",
+        "Documents",
+        "INFO",
+        filename
+    )
+
+    return send_from_directory(
+        ADMIN_UPLOAD_DIR,
+        filename,
+        as_attachment=True
     )
 
 
@@ -3531,234 +2353,86 @@ def admin_users():
 # ADMIN LOGS
 # ============================================================
 
-@app.route(
-    "/admin/logs"
-)
+@app.route("/admin/logs")
 @admin_required
 def admin_logs():
 
-    logs = get_logs()
+    logs = read_json(
+        LOGS_FILE,
+        []
+    )
 
-    rows = ""
+    rows = []
 
+    for item in reversed(logs[-500:]):
 
-    for log in reversed(
-        logs[-300:]
-    ):
+        rows.append(f"""
+<tr>
 
-        rows += f"""
+<td>
+{item.get("time", "")}
+</td>
 
-        <tr>
+<td>
+{item.get("event", "")}
+</td>
 
-            <td>
-                {log.get("timestamp")}
-            </td>
+<td>
+{item.get("category", "")}
+</td>
 
-            <td>
-                {log.get("level")}
-            </td>
+<td>
+{item.get("level", "")}
+</td>
 
-            <td>
-                {log.get("event")}
-            </td>
+<td>
+{item.get("details", "")}
+</td>
 
-            <td>
-                {log.get("category")}
-            </td>
-
-            <td>
-                {log.get("details")}
-            </td>
-
-        </tr>
-
-        """
-
+</tr>
+""")
 
     content = f"""
+<div class="card">
 
-    <section class="card">
+<h1>System Logs</h1>
 
-        <h1>
-            KOJA System Logs
-        </h1>
+<p>
+Private administrator information.
+</p>
 
-        <div class="table-wrap">
+<div class="table-wrap">
 
-            <table>
+<table>
 
-                <thead>
+<tr>
+<th>Time</th>
+<th>Event</th>
+<th>Category</th>
+<th>Level</th>
+<th>Details</th>
+</tr>
 
-                    <tr>
+{''.join(rows)}
 
-                        <th>
-                            Time
-                        </th>
+</table>
 
-                        <th>
-                            Level
-                        </th>
+</div>
 
-                        <th>
-                            Event
-                        </th>
+</div>
+"""
 
-                        <th>
-                            Category
-                        </th>
-
-                        <th>
-                            Details
-                        </th>
-
-                    </tr>
-
-                </thead>
-
-                <tbody>
-
-                    {rows}
-
-                </tbody>
-
-            </table>
-
-        </div>
-
-    </section>
-
-    """
-
-
-    return render_page(
-        content,
-        "Logs"
-    )
-
-
-# ============================================================
-# ADMIN FILE
-# ============================================================
-
-@app.route(
-    "/admin/file/<category>/<filename>"
-)
-@admin_required
-def admin_file(
-    category,
-    filename
-):
-
-    if category == "student":
-
-        directory = \
-            STUDENT_UPLOAD_DIR
-
-    elif category == "admin":
-
-        directory = \
-            ADMIN_UPLOAD_DIR
-
-    else:
-
-        abort(404)
-
-
-    log_event(
-        "Admin File Viewed",
-        "Storage",
-        "INFO",
-        f"{category}/{filename}"
-    )
-
-
-    return send_from_directory(
-        directory,
-        filename
-    )
-
-
-# ============================================================
-# ERROR PAGES
-# ============================================================
-
-@app.errorhandler(403)
-def forbidden(error):
-
-    content = """
-
-    <section class="hero">
-
-        <h1>
-            403
-        </h1>
-
-        <p>
-            Access denied.
-        </p>
-
-        <a class="btn"
-           href="/">
-            Return Home
-        </a>
-
-    </section>
-
-    """
-
-    return render_page(
-        content,
-        "Access Denied"
-    ), 403
-
-
-@app.errorhandler(404)
-def not_found(error):
-
-    content = """
-
-    <section class="hero">
-
-        <h1>
-            404
-        </h1>
-
-        <p>
-            The requested page was not found.
-        </p>
-
-        <a class="btn"
-           href="/">
-            Return Home
-        </a>
-
-    </section>
-
-    """
-
-    return render_page(
-        content,
-        "Page Not Found"
-    ), 404
-
-
-@app.errorhandler(413)
-def file_too_large(error):
-
-    flash(
-        "The uploaded file is too large. Maximum size is 10 MB.",
-        "error"
-    )
-
-    return redirect(
-        request.referrer
-        or
-        url_for("home")
+    return private_page(
+        "Logs",
+        content
     )
 
 
 # ============================================================
 # SECURITY HEADERS
+#
+# Prevent public pages from accidentally being indexed as
+# private pages.
 # ============================================================
 
 @app.after_request
@@ -3776,19 +2450,156 @@ def security_headers(response):
         "Referrer-Policy"
     ] = "strict-origin-when-cross-origin"
 
-    response.headers[
-        "Permissions-Policy"
-    ] = (
-        "geolocation=(), "
-        "microphone=(), "
-        "camera=()"
-    )
+    # Private/admin routes must not be cached.
+    if (
+        request.path.startswith("/admin")
+        or request.path.startswith("/student")
+        or request.path.startswith("/ask")
+    ):
+        response.headers[
+            "Cache-Control"
+        ] = (
+            "no-store, "
+            "no-cache, "
+            "must-revalidate, "
+            "private"
+        )
+
+        response.headers[
+            "Pragma"
+        ] = "no-cache"
+
+        response.headers[
+            "X-Robots-Tag"
+        ] = "noindex, nofollow, noarchive"
 
     return response
 
 
 # ============================================================
-# START
+# ERROR PAGES
+# ============================================================
+
+@app.errorhandler(403)
+def forbidden(error):
+
+    return public_page(
+        "Access Denied",
+        """
+<div class="card">
+
+<h1>Access Denied</h1>
+
+<p>
+You do not have permission to access
+this page.
+</p>
+
+<a class="btn"
+   href="/">
+Return Home
+</a>
+
+</div>
+"""
+    ), 403
+
+
+@app.errorhandler(404)
+def not_found(error):
+
+    return public_page(
+        "Page Not Found",
+        """
+<div class="card">
+
+<h1>Page Not Found</h1>
+
+<p>
+The requested page does not exist.
+</p>
+
+<a class="btn"
+   href="/">
+Return Home
+</a>
+
+</div>
+"""
+    ), 404
+
+
+# ============================================================
+# ROBOTS.TXT
+# ============================================================
+
+@app.route("/robots.txt")
+def robots():
+
+    text = """User-agent: *
+Allow: /
+
+Disallow: /admin
+Disallow: /student
+Disallow: /ask
+Disallow: /logout
+
+"""
+
+    response = make_response(
+        text
+    )
+
+    response.headers[
+        "Content-Type"
+    ] = "text/plain"
+
+    return response
+
+
+# ============================================================
+# SITEMAP
+# ============================================================
+
+@app.route("/sitemap.xml")
+def sitemap():
+
+    base = request.url_root.rstrip("/")
+
+    xml = f"""<?xml version="1.0"
+encoding="UTF-8"?>
+
+<urlset
+xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+
+<url>
+<loc>{base}/</loc>
+</url>
+
+<url>
+<loc>{base}/login</loc>
+</url>
+
+<url>
+<loc>{base}/register</loc>
+</url>
+
+</urlset>
+"""
+
+    response = make_response(
+        xml
+    )
+
+    response.headers[
+        "Content-Type"
+    ] = "application/xml"
+
+    return response
+
+
+# ============================================================
+# START SERVER
 # ============================================================
 
 if __name__ == "__main__":
@@ -3800,64 +2611,31 @@ if __name__ == "__main__":
         )
     )
 
-
     print("=" * 60)
-
-    print(
-        "KOJA AFRICA"
-    )
-
-    print(
-        "Knowledge • Questions • Answers"
-    )
-
-    print(
-        "Public Page: ENABLED"
-    )
-
-    print(
-        "Public User List: HIDDEN"
-    )
-
-    print(
-        "Public Questions: HIDDEN"
-    )
-
-    print(
-        "Public Answers: HIDDEN"
-    )
-
-    print(
-        "Student Questions: PRIVATE"
-    )
-
-    print(
-        "Student Answers: PRIVATE"
-    )
-
-    print(
-        "Admin Dashboard: PROTECTED"
-    )
-
-    print(
-        "Admin Logs: PROTECTED"
-    )
-
-    print(
-        "Dark Blue Header: ENABLED"
-    )
-
-    print(
-        "Opening Animation: ENABLED"
-    )
-
-    print(
-        "Port:",
-        port
-    )
-
+    print("KOJA AFRICA")
+    print("Knowledge • Questions • Answers")
     print("=" * 60)
-
+    print("PUBLIC:")
+    print("  Home")
+    print("  Log In")
+    print("  Create Account")
+    print()
+    print("ADMIN:")
+    print("  Dashboard")
+    print("  Questions")
+    print("  Answers")
+    print("  Documents")
+    print("  Logs")
+    print("  Downloads")
+    print()
+    print("STUDENT:")
+    print("  Dashboard")
+    print("  Ask Question")
+    print("  My Questions")
+    print("  Research")
+    print()
+    print("Server:", f"http://0.0.0.0:{port}")
+    print("=" * 60)
 
     app.run(
         host="0.0.0.0",
