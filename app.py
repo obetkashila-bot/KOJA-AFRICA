@@ -105,28 +105,20 @@ def env(name, default=""):
 
 
 # ============================================================
+# ============================================================
 # SUPABASE
 # ============================================================
 
-SUPABASE_URL = env(
-    "https://rarwbuhpajggduyptymt.supabase.co"
-).rstrip("/")
+SUPABASE_URL = env("SUPABASE_URL").rstrip("/")
 
+SUPABASE_SERVICE_KEY = env("SUPABASE_SERVICE_KEY")
 
-SUPABASE_SERVICE_KEY = env(
-    "SUPABASE_SERVICE_KEY")
-
-
-SUPABASE_PUBLISHABLE_KEY = env(
-    "sb_publishable_FYpe_y6h0uaVzJajShQFzg_x1dpUcL3"
-)
-
+SUPABASE_PUBLISHABLE_KEY = env("SUPABASE_PUBLISHABLE_KEY")
 
 STORAGE_BUCKET = env(
     "KOJA_STORAGE_BUCKET",
     "koja-files",
 )
-
 
 # ============================================================
 # FLUTTERWAVE
