@@ -25,7 +25,7 @@
 # KOJA_SECRET_KEY
 #
 # Optional:
-#
+#œ
 # SUPABASE_PUBLISHABLE_KEY
 # KOJA_STORAGE_BUCKET
 # KOJA_BASE_URL
@@ -109,17 +109,17 @@ def env(name, default=""):
 # ============================================================
 
 SUPABASE_URL = env(
-    "SUPABASE_URL"
+    "https://rarwbuhpajggduyptymt.supabase.co"
 ).rstrip("/")
 
 
 SUPABASE_SERVICE_KEY = env(
-    "SUPABASE_SERVICE_KEY"
-)
+    "sb_secret_wvVJIql26AxfSjA8brnEvQ_toxHtJn7
+")
 
 
 SUPABASE_PUBLISHABLE_KEY = env(
-    "SUPABASE_PUBLISHABLE_KEY"
+    "sb_publishable_FYpe_y6h0uaVzJajShQFzg_x1dpUcL3"
 )
 
 
