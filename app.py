@@ -932,8 +932,8 @@ HTML = """
 <meta
     name="theme-color"
     content="#101828"
+  google-site-verification=u4nfIf5MfXm0iVvECSQeYAov4Tz4601ayY5kYzNc4ko      
 >
-
 <title>
 {{ title }} - KOJA AFRICA
 </title>
