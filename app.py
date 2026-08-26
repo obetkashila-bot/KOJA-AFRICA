@@ -23,28 +23,36 @@ from flask import (
 # KOJA AFRICA
 # KNOWLEDGE • QUESTIONS • ANSWERS
 #
-# PUBLIC:
+# SINGLE-FILE FLASK APPLICATION
+#
+# PUBLIC
 #   Home
 #   Log In
 #   Create Account
 #
-# ADMIN:
-#   Dashboard
-#   Questions
-#   Answers
-#   Upload Documents
-#   Downloads
-#   Logs
-#
-# STUDENT:
+# STUDENT
 #   Dashboard
 #   Ask Question
 #   My Questions
 #   Research
-#   Downloads
+#   Documents
+#   Upload documents to Admin
+#   Download documents sent by Admin
 #
-# IMPORTANT:
-# Public pages NEVER contain admin/student navigation.
+# ADMIN
+#   Dashboard
+#   Questions
+#   Answers
+#   Documents
+#   Receive student documents
+#   Send documents to individual students
+#   Download documents
+#   Logs
+#
+# NOTE:
+# This version uses local JSON/filesystem storage because it is
+# designed as a single-file Flask application.
+# For production on Render, use persistent storage/Supabase.
 # ============================================================
 
 app = Flask(__name__)
@@ -81,43 +89,30 @@ ADMIN_UPLOAD_DIR = os.path.join(
 os.makedirs(STUDENT_UPLOAD_DIR, exist_ok=True)
 os.makedirs(ADMIN_UPLOAD_DIR, exist_ok=True)
 
-USERS_FILE = os.path.join(
-    DATA_DIR,
-    "users.json"
-)
+USERS_FILE = os.path.join(DATA_DIR, "users.json")
+QUESTIONS_FILE = os.path.join(DATA_DIR, "questions.json")
+LOGS_FILE = os.path.join(DATA_DIR, "logs.json")
+DOCUMENTS_FILE = os.path.join(DATA_DIR, "documents.json")
 
-QUESTIONS_FILE = os.path.join(
-    DATA_DIR,
-    "questions.json"
-)
+MAX_FILE_SIZE = 15 * 1024 * 1024
 
-LOGS_FILE = os.path.join(
-    DATA_DIR,
-    "logs.json"
-)
-
-DOCUMENTS_FILE = os.path.join(
-    DATA_DIR,
-    "documents.json"
-)
+ALLOWED_EXTENSIONS = {
+    "pdf", "doc", "docx", "txt",
+    "jpg", "jpeg", "png",
+    "xls", "xlsx",
+    "ppt", "pptx",
+    "csv"
+}
 
 
 # ============================================================
-# FILE HELPERS
+# JSON STORAGE
 # ============================================================
 
 def ensure_file(path, default):
     if not os.path.exists(path):
-        with open(
-            path,
-            "w",
-            encoding="utf-8"
-        ) as f:
-            json.dump(
-                default,
-                f,
-                indent=2
-            )
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(default, f, indent=2)
 
 
 ensure_file(USERS_FILE, [])
@@ -128,11 +123,7 @@ ensure_file(DOCUMENTS_FILE, [])
 
 def read_json(path, default=None):
     try:
-        with open(
-            path,
-            "r",
-            encoding="utf-8"
-        ) as f:
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return default if default is not None else []
@@ -141,11 +132,7 @@ def read_json(path, default=None):
 def write_json(path, data):
     temp = path + ".tmp"
 
-    with open(
-        temp,
-        "w",
-        encoding="utf-8"
-    ) as f:
+    with open(temp, "w", encoding="utf-8") as f:
         json.dump(
             data,
             f,
@@ -153,10 +140,7 @@ def write_json(path, data):
             ensure_ascii=False
         )
 
-    os.replace(
-        temp,
-        path
-    )
+    os.replace(temp, path)
 
 
 # ============================================================
@@ -173,24 +157,15 @@ def hash_password(password):
         150000
     )
 
-    return (
-        salt.hex()
-        + "$"
-        + key.hex()
-    )
+    return salt.hex() + "$" + key.hex()
 
 
 def verify_password(password, stored):
     try:
         salt_hex, key_hex = stored.split("$")
 
-        salt = bytes.fromhex(
-            salt_hex
-        )
-
-        expected = bytes.fromhex(
-            key_hex
-        )
+        salt = bytes.fromhex(salt_hex)
+        expected = bytes.fromhex(key_hex)
 
         actual = hashlib.pbkdf2_hmac(
             "sha256",
@@ -213,44 +188,34 @@ def verify_password(password, stored):
 # ============================================================
 
 def ensure_admin():
-    users = read_json(
-        USERS_FILE,
-        []
-    )
+    users = read_json(USERS_FILE, [])
 
     for user in users:
         if user.get("role") == "admin":
             return
 
     admin_password = os.environ.get(
-        "KOJA_ADMIN_PASSWORD"
+        "KOJA_ADMIN_PASSWORD",
+        "ChangeMe123!"
     )
 
-    if not admin_password:
-        admin_password = "ChangeMe123!"
+    admin_email = os.environ.get(
+        "KOJA_ADMIN_EMAIL",
+        "admin@koja.africa"
+    ).strip().lower()
 
-    admin = {
+    users.append({
         "id": str(uuid.uuid4()),
         "name": "KOJA Administrator",
-        "email": os.environ.get(
-            "KOJA_ADMIN_EMAIL",
-            "admin@koja.africa"
-        ).lower(),
-        "password": hash_password(
-            admin_password
-        ),
+        "email": admin_email,
+        "password": hash_password(admin_password),
         "role": "admin",
         "created_at": datetime.now(
             timezone.utc
         ).isoformat()
-    }
+    })
 
-    users.append(admin)
-
-    write_json(
-        USERS_FILE,
-        users
-    )
+    write_json(USERS_FILE, users)
 
 
 ensure_admin()
@@ -266,10 +231,7 @@ def log_event(
     level="INFO",
     details=""
 ):
-    logs = read_json(
-        LOGS_FILE,
-        []
-    )
+    logs = read_json(LOGS_FILE, [])
 
     logs.append({
         "id": str(uuid.uuid4()),
@@ -280,60 +242,50 @@ def log_event(
         "time": datetime.now(
             timezone.utc
         ).isoformat(),
-        "user_id": session.get(
-            "user_id"
-        )
+        "user_id": session.get("user_id")
     })
 
-    # Keep the log file manageable.
     logs = logs[-5000:]
 
-    write_json(
-        LOGS_FILE,
-        logs
-    )
+    write_json(LOGS_FILE, logs)
 
 
 # ============================================================
-# AUTH HELPERS
+# AUTHENTICATION
 # ============================================================
 
 def current_user():
-    user_id = session.get(
-        "user_id"
-    )
+    user_id = session.get("user_id")
 
     if not user_id:
         return None
 
-    users = read_json(
-        USERS_FILE,
-        []
+    users = read_json(USERS_FILE, [])
+
+    return next(
+        (
+            u for u in users
+            if u.get("id") == user_id
+        ),
+        None
     )
-
-    for user in users:
-        if user.get("id") == user_id:
-            return user
-
-    return None
 
 
 def login_required(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
+
         if not current_user():
             flash(
                 "Please log in first.",
                 "error"
             )
+
             return redirect(
                 url_for("login")
             )
 
-        return view(
-            *args,
-            **kwargs
-        )
+        return view(*args, **kwargs)
 
     return wrapped
 
@@ -341,9 +293,15 @@ def login_required(view):
 def admin_required(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
+
         user = current_user()
 
         if not user:
+            flash(
+                "Please log in first.",
+                "error"
+            )
+
             return redirect(
                 url_for("login")
             )
@@ -351,16 +309,134 @@ def admin_required(view):
         if user.get("role") != "admin":
             abort(403)
 
-        return view(
-            *args,
-            **kwargs
-        )
+        return view(*args, **kwargs)
 
     return wrapped
 
 
 # ============================================================
-# COMMON CSS
+# USER HELPERS
+# ============================================================
+
+def get_user_by_id(user_id):
+    users = read_json(USERS_FILE, [])
+
+    return next(
+        (
+            u for u in users
+            if u.get("id") == user_id
+        ),
+        None
+    )
+
+
+def get_students():
+    users = read_json(USERS_FILE, [])
+
+    return [
+        u for u in users
+        if u.get("role") == "student"
+    ]
+
+
+# ============================================================
+# FILE HELPERS
+# ============================================================
+
+def allowed_file(filename):
+    if not filename or "." not in filename:
+        return False
+
+    extension = filename.rsplit(
+        ".",
+        1
+    )[1].lower()
+
+    return extension in ALLOWED_EXTENSIONS
+
+
+def safe_filename(filename):
+    filename = os.path.basename(filename or "")
+    filename = filename.replace("\x00", "")
+    return filename[:200]
+
+
+def save_uploaded_file(file, directory):
+    if not file or not file.filename:
+        return None
+
+    original = safe_filename(file.filename)
+
+    if not allowed_file(original):
+        raise ValueError(
+            "This file type is not allowed."
+        )
+
+    data = file.read()
+
+    if len(data) > MAX_FILE_SIZE:
+        raise ValueError(
+            "File is too large. Maximum size is 15 MB."
+        )
+
+    stored_name = (
+        str(uuid.uuid4())
+        + "_"
+        + original
+    )
+
+    path = os.path.join(
+        directory,
+        stored_name
+    )
+
+    with open(path, "wb") as f:
+        f.write(data)
+
+    return {
+        "original_name": original,
+        "stored_name": stored_name,
+        "size": len(data)
+    }
+
+
+def format_size(size):
+    try:
+        size = int(size)
+    except Exception:
+        return ""
+
+    if size < 1024:
+        return f"{size} B"
+
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KB"
+
+    return f"{size / (1024 * 1024):.1f} MB"
+
+
+def html_escape(value):
+    """
+    Basic HTML escaping for values inserted into HTML
+    strings generated by this single-file application.
+    """
+    if value is None:
+        return ""
+
+    text = str(value)
+
+    return (
+        text
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
+    )
+
+
+# ============================================================
+# CSS
 # ============================================================
 
 CSS = """
@@ -390,10 +466,6 @@ a {
     text-decoration: none;
 }
 
-/* =========================================================
-   DARK BLUE TOP BAR
-   ========================================================= */
-
 .topbar {
     width: 100%;
     background: #061b49;
@@ -404,15 +476,13 @@ a {
 
 .topbar-inner {
     width: 100%;
-    max-width: 1300px;
+    max-width: 1400px;
     margin: auto;
     min-height: 72px;
     padding: 12px 20px;
-
     display: flex;
     align-items: center;
     justify-content: space-between;
-
     gap: 20px;
 }
 
@@ -447,15 +517,12 @@ a {
     color: #cbd5e1;
 }
 
-/* =========================================================
-   PUBLIC NAVIGATION
-   ONLY LOGIN + CREATE ACCOUNT
-   ========================================================= */
-
-.public-nav {
+.public-nav,
+.private-nav {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 10px;
+    gap: 7px;
 }
 
 .public-nav a {
@@ -474,17 +541,6 @@ a {
     color: white;
 }
 
-/* =========================================================
-   PRIVATE NAVIGATION
-   ========================================================= */
-
-.private-nav {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 5px;
-}
-
 .private-nav a {
     color: white;
     padding: 10px 12px;
@@ -500,10 +556,6 @@ a {
 .logout {
     border: 1px solid #93c5fd;
 }
-
-/* =========================================================
-   CONTENT
-   ========================================================= */
 
 .container {
     width: 100%;
@@ -572,6 +624,10 @@ button {
     background: #c62828;
 }
 
+.btn.gray {
+    background: #475569;
+}
+
 input,
 textarea,
 select {
@@ -596,10 +652,7 @@ label {
 .grid {
     display: grid;
     grid-template-columns:
-        repeat(
-            auto-fit,
-            minmax(200px, 1fr)
-        );
+        repeat(auto-fit, minmax(200px, 1fr));
     gap: 15px;
 }
 
@@ -633,6 +686,14 @@ label {
     line-height: 1.7;
 }
 
+.document-box {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    padding: 16px;
+    border-radius: 10px;
+    margin-top: 12px;
+}
+
 .alert {
     max-width: 1200px;
     margin: 15px auto;
@@ -662,6 +723,7 @@ td {
     border-bottom:
         1px solid #e5e7eb;
     text-align: left;
+    vertical-align: top;
 }
 
 .table-wrap {
@@ -686,13 +748,23 @@ td {
     color: #166534;
 }
 
+.muted {
+    color: #64748b;
+}
+
+.empty {
+    padding: 25px;
+    text-align: center;
+    color: #64748b;
+}
+
 footer {
     text-align: center;
     padding: 35px 20px;
     color: #64748b;
 }
 
-@media(max-width:700px) {
+@media(max-width:900px) {
 
     .topbar-inner {
         flex-direction: column;
@@ -706,6 +778,7 @@ footer {
 
     .private-nav {
         overflow-x: auto;
+        flex-wrap: nowrap;
     }
 
     .hero {
@@ -719,9 +792,6 @@ footer {
 
 # ============================================================
 # PUBLIC LAYOUT
-#
-# CRITICAL:
-# There is NO admin/student navigation here.
 # ============================================================
 
 PUBLIC_LAYOUT = """
@@ -760,8 +830,10 @@ PUBLIC_LAYOUT = """
 
 <div class="topbar-inner">
 
-<a class="logo"
-   href="{{ url_for('home') }}">
+<a
+    class="logo"
+    href="{{ url_for('home') }}"
+>
 
 <span class="k">k</span><span
 class="o">o</span><span
@@ -772,25 +844,20 @@ class="a">a</span>
 
 </a>
 
-<!-- =====================================================
-     PUBLIC NAVIGATION
-     THESE ARE THE ONLY PUBLIC NAVIGATION BUTTONS
-     ===================================================== -->
-
 <nav class="public-nav">
 
 <a
     class="login-btn"
     href="{{ url_for('login') }}"
 >
-    Log In
+Log In
 </a>
 
 <a
     class="register-btn"
     href="{{ url_for('register') }}"
 >
-    Create Account
+Create Account
 </a>
 
 </nav>
@@ -875,8 +942,10 @@ PRIVATE_LAYOUT = """
 
 <div class="topbar-inner">
 
-<a class="logo"
-   href="{{ url_for('home') }}">
+<a
+    class="logo"
+    href="{{ url_for('home') }}"
+>
 
 <span class="k">k</span><span
 class="o">o</span><span
@@ -927,6 +996,10 @@ My Questions
 
 <a href="{{ url_for('research') }}">
 Research
+</a>
+
+<a href="{{ url_for('student_documents') }}">
+Documents
 </a>
 
 {% endif %}
@@ -999,17 +1072,10 @@ def private_page(title, content):
 
 # ============================================================
 # HOME
-#
-# PUBLIC HTML CONTAINS ONLY:
-# LOG IN
-# CREATE ACCOUNT
 # ============================================================
 
 @app.route("/")
 def home():
-
-    # Deliberately do NOT pass user navigation
-    # into the public home page.
 
     content = """
 <section class="hero">
@@ -1037,16 +1103,16 @@ educational support.
 
 <a
     class="btn dark"
-    href="/login"
+    href="{{ url_for('login') }}"
 >
-    Log In
+Log In
 </a>
 
 <a
     class="btn"
-    href="/register"
+    href="{{ url_for('register') }}"
 >
-    Create Account
+Create Account
 </a>
 
 </div>
@@ -1057,12 +1123,10 @@ educational support.
     response = make_response(
         public_page(
             "Home",
-            content
+            render_template_string(content)
         )
     )
 
-    # Tell search engines that this is the
-    # public landing page.
     response.headers[
         "X-Robots-Tag"
     ] = "index, follow"
@@ -1106,6 +1170,15 @@ def register():
                 url_for("register")
             )
 
+        if len(password) < 6:
+            flash(
+                "Password must contain at least 6 characters.",
+                "error"
+            )
+            return redirect(
+                url_for("register")
+            )
+
         users = read_json(
             USERS_FILE,
             []
@@ -1127,9 +1200,7 @@ def register():
             "id": str(uuid.uuid4()),
             "name": name,
             "email": email,
-            "password": hash_password(
-                password
-            ),
+            "password": hash_password(password),
             "role": "student",
             "created_at": datetime.now(
                 timezone.utc
@@ -1187,6 +1258,7 @@ def register():
 <input
     type="password"
     name="password"
+    minlength="6"
     required
 >
 
@@ -1274,15 +1346,11 @@ def login():
 
         if user["role"] == "admin":
             return redirect(
-                url_for(
-                    "admin_dashboard"
-                )
+                url_for("admin_dashboard")
             )
 
         return redirect(
-            url_for(
-                "student_dashboard"
-            )
+            url_for("student_dashboard")
         )
 
     content = """
@@ -1364,10 +1432,14 @@ def student_dashboard():
         []
     )
 
+    documents = read_json(
+        DOCUMENTS_FILE,
+        []
+    )
+
     mine = [
         q for q in questions
-        if q.get("student_id")
-        == user["id"]
+        if q.get("student_id") == user["id"]
     ]
 
     answered = sum(
@@ -1375,11 +1447,21 @@ def student_dashboard():
         if q.get("answer")
     )
 
+    received_documents = [
+        d for d in documents
+        if d.get("direction") == "admin_to_student"
+        and d.get("recipient_id") == user["id"]
+    ]
+
+    name = html_escape(
+        user.get("name")
+    )
+
     content = f"""
 <div class="card">
 
 <h1>
-Welcome, {user.get("name")}
+Welcome, {name}
 </h1>
 
 <p>
@@ -1400,18 +1482,28 @@ KOJA AFRICA Student Portal
 <p>Answered</p>
 </div>
 
+<div class="stat">
+<h2>{len(received_documents)}</h2>
+<p>Documents Received</p>
+</div>
+
 </div>
 
 <div class="card">
 
 <a class="btn"
-   href="/ask">
+   href="{url_for('ask_question')}">
 Ask Question
 </a>
 
 <a class="btn dark"
-   href="/research">
+   href="{url_for('research')}">
 Research
+</a>
+
+<a class="btn green"
+   href="{url_for('student_documents')}">
+My Documents
 </a>
 
 </div>
@@ -1468,7 +1560,8 @@ def ask_question():
                 timezone.utc
             ).isoformat(),
             "answered_at": "",
-            "attachments": []
+            "attachments": [],
+            "answer_attachments": []
         }
 
         file = request.files.get(
@@ -1477,42 +1570,32 @@ def ask_question():
 
         if file and file.filename:
 
-            original = file.filename
-
-            safe_name = (
-                str(uuid.uuid4())
-                + "_"
-                + original.replace(
-                    "/",
-                    "_"
-                ).replace(
-                    "\\",
-                    "_"
+            try:
+                saved = save_uploaded_file(
+                    file,
+                    STUDENT_UPLOAD_DIR
                 )
-            )
 
-            path = os.path.join(
-                STUDENT_UPLOAD_DIR,
-                safe_name
-            )
+                question["attachments"].append(
+                    saved
+                )
 
-            file.save(path)
+            except ValueError as exc:
+                flash(
+                    str(exc),
+                    "error"
+                )
 
-            question[
-                "attachments"
-            ].append({
-                "original_name": original,
-                "stored_name": safe_name
-            })
+                return redirect(
+                    url_for("ask_question")
+                )
 
         questions = read_json(
             QUESTIONS_FILE,
             []
         )
 
-        questions.append(
-            question
-        )
+        questions.append(question)
 
         write_json(
             QUESTIONS_FILE,
@@ -1532,9 +1615,7 @@ def ask_question():
         )
 
         return redirect(
-            url_for(
-                "student_questions"
-            )
+            url_for("student_questions")
         )
 
     content = """
@@ -1547,9 +1628,7 @@ def ask_question():
     enctype="multipart/form-data"
 >
 
-<label>
-Question
-</label>
+<label>Question</label>
 
 <textarea
     name="question"
@@ -1557,13 +1636,18 @@ Question
 ></textarea>
 
 <label>
-Upload document
+Optional supporting document
 </label>
 
 <input
     type="file"
     name="document"
 >
+
+<p class="muted">
+Allowed: PDF, Word, Excel, PowerPoint,
+text, images and CSV. Maximum 15 MB.
+</p>
 
 <button type="submit">
 Submit Question
@@ -1597,30 +1681,110 @@ def student_questions():
 
     mine = [
         q for q in questions
-        if q.get("student_id")
-        == user["id"]
+        if q.get("student_id") == user["id"]
     ]
 
     blocks = []
 
     for q in reversed(mine):
 
-        answer = q.get("answer")
+        question_text = html_escape(
+            q.get("question")
+        )
 
         status = (
             "Answered"
-            if answer
+            if q.get("answer")
             else "Pending"
         )
 
+        status_class = (
+            "answered"
+            if q.get("answer")
+            else "pending"
+        )
+
+        attachment_html = ""
+
+        for attachment in q.get(
+            "attachments",
+            []
+        ):
+
+            attachment_html += f"""
+<div class="document-box">
+
+<strong>
+Your supporting document
+</strong>
+
+<br><br>
+
+{html_escape(
+    attachment.get("original_name")
+)}
+
+<br><br>
+
+<a
+    class="btn gray"
+    href="{url_for(
+        'student_question_file',
+        question_id=q.get('id'),
+        stored_name=attachment.get('stored_name')
+    )}"
+>
+Download
+</a>
+
+</div>
+"""
+
         answer_html = ""
 
-        if answer:
+        if q.get("answer"):
+
             answer_html = f"""
 <h3>Answer</h3>
 
 <div class="answer">
-{answer}
+{html_escape(q.get("answer"))}
+</div>
+"""
+
+        answer_files = ""
+
+        for attachment in q.get(
+            "answer_attachments",
+            []
+        ):
+
+            answer_files += f"""
+<div class="document-box">
+
+<strong>
+Document from KOJA Administration
+</strong>
+
+<br><br>
+
+{html_escape(
+    attachment.get("original_name")
+)}
+
+<br><br>
+
+<a
+    class="btn green"
+    href="{url_for(
+        'student_answer_file',
+        question_id=q.get('id'),
+        stored_name=attachment.get('stored_name')
+    )}"
+>
+Download Document
+</a>
+
 </div>
 """
 
@@ -1628,33 +1792,52 @@ def student_questions():
 <div class="card">
 
 <h3>
-{q.get("question")}
+{question_text}
 </h3>
 
 <p>
-Status:
-<strong>{status}</strong>
+<span class="badge {status_class}">
+{status}
+</span>
 </p>
 
+{attachment_html}
+
 {answer_html}
+
+{answer_files}
 
 </div>
 """)
 
-    content = "".join(blocks)
-
-    if not content:
-        content = """
+    content = """
 <div class="card">
 
 <h1>My Questions</h1>
 
 <p>
-You have not submitted a question yet.
+Only your own questions and their answers
+are shown here.
 </p>
 
-<a class="btn"
-   href="/ask">
+</div>
+"""
+
+    if blocks:
+        content += "".join(blocks)
+
+    else:
+        content += """
+<div class="card">
+
+<div class="empty">
+You have not submitted a question yet.
+</div>
+
+<a
+    class="btn"
+    href="/ask"
+>
 Ask Question
 </a>
 
@@ -1668,10 +1851,7 @@ Ask Question
 
 
 # ============================================================
-# RESEARCH
-#
-# IMPORTANT:
-# Do not expose unanswered questions.
+# STUDENT RESEARCH
 # ============================================================
 
 @app.route("/research")
@@ -1696,11 +1876,11 @@ def research():
 <div class="card">
 
 <h2>
-{q.get("question")}
+{html_escape(q.get("question"))}
 </h2>
 
 <div class="answer">
-{q.get("answer")}
+{html_escape(q.get("answer"))}
 </div>
 
 </div>
@@ -1712,8 +1892,9 @@ def research():
 <h1>Research</h1>
 
 <p>
-Only questions that have been answered
-are available in the research area.
+Only answered academic questions are
+available in the research area.
+Unanswered student questions are private.
 </p>
 
 </div>
@@ -1724,6 +1905,550 @@ are available in the research area.
     return private_page(
         "Research",
         content
+    )
+
+
+# ============================================================
+# STUDENT DOCUMENTS
+#
+# STUDENT -> ADMIN
+# ADMIN -> STUDENT
+# ============================================================
+
+@app.route(
+    "/student/documents",
+    methods=["GET", "POST"]
+)
+@login_required
+def student_documents():
+
+    user = current_user()
+
+    if user.get("role") == "admin":
+        return redirect(
+            url_for("admin_documents")
+        )
+
+    if request.method == "POST":
+
+        title = request.form.get(
+            "title",
+            ""
+        ).strip()
+
+        description = request.form.get(
+            "description",
+            ""
+        ).strip()
+
+        file = request.files.get(
+            "document"
+        )
+
+        if not title:
+            flash(
+                "Enter a document title.",
+                "error"
+            )
+            return redirect(
+                url_for("student_documents")
+            )
+
+        if not file or not file.filename:
+            flash(
+                "Select a document.",
+                "error"
+            )
+            return redirect(
+                url_for("student_documents")
+            )
+
+        try:
+            saved = save_uploaded_file(
+                file,
+                STUDENT_UPLOAD_DIR
+            )
+
+        except ValueError as exc:
+            flash(
+                str(exc),
+                "error"
+            )
+            return redirect(
+                url_for("student_documents")
+            )
+
+        documents = read_json(
+            DOCUMENTS_FILE,
+            []
+        )
+
+        document = {
+            "id": str(uuid.uuid4()),
+            "direction": "student_to_admin",
+
+            "sender_id": user["id"],
+            "sender_name": user["name"],
+
+            "recipient_id": "",
+            "recipient_name": "KOJA Administration",
+
+            "title": title,
+            "description": description,
+
+            "original_name": saved["original_name"],
+            "stored_name": saved["stored_name"],
+            "size": saved["size"],
+
+            "created_at": datetime.now(
+                timezone.utc
+            ).isoformat()
+        }
+
+        documents.append(document)
+
+        write_json(
+            DOCUMENTS_FILE,
+            documents
+        )
+
+        log_event(
+            "Student Document Submitted",
+            "Documents",
+            "INFO",
+            saved["original_name"]
+        )
+
+        flash(
+            "Your document has been sent to KOJA Administration.",
+            "success"
+        )
+
+        return redirect(
+            url_for("student_documents")
+        )
+
+    documents = read_json(
+        DOCUMENTS_FILE,
+        []
+    )
+
+    sent = [
+        d for d in documents
+        if d.get("direction") == "student_to_admin"
+        and d.get("sender_id") == user["id"]
+    ]
+
+    received = [
+        d for d in documents
+        if d.get("direction") == "admin_to_student"
+        and d.get("recipient_id") == user["id"]
+    ]
+
+    received_rows = []
+
+    for d in reversed(received):
+
+        received_rows.append(f"""
+<tr>
+
+<td>
+{html_escape(d.get("created_at", ""))}
+</td>
+
+<td>
+<strong>
+{html_escape(d.get("title", ""))}
+</strong>
+</td>
+
+<td>
+{html_escape(d.get("original_name", ""))}
+<br>
+<span class="muted">
+{format_size(d.get("size", 0))}
+</span>
+</td>
+
+<td>
+{html_escape(d.get("description", ""))}
+</td>
+
+<td>
+
+<a
+    class="btn green"
+    href="{url_for(
+        'student_document_download',
+        document_id=d.get('id')
+    )}"
+>
+Download
+</a>
+
+</td>
+
+</tr>
+""")
+
+    sent_rows = []
+
+    for d in reversed(sent):
+
+        sent_rows.append(f"""
+<tr>
+
+<td>
+{html_escape(d.get("created_at", ""))}
+</td>
+
+<td>
+{html_escape(d.get("title", ""))}
+</td>
+
+<td>
+{html_escape(d.get("original_name", ""))}
+<br>
+<span class="muted">
+{format_size(d.get("size", 0))}
+</span>
+</td>
+
+<td>
+Sent to KOJA Administration
+</td>
+
+</tr>
+""")
+
+    if not received_rows:
+        received_html = """
+<div class="empty">
+No documents have been sent to you yet.
+</div>
+"""
+    else:
+        received_html = f"""
+<div class="table-wrap">
+
+<table>
+
+<tr>
+<th>Date</th>
+<th>Title</th>
+<th>File</th>
+<th>Description</th>
+<th>Download</th>
+</tr>
+
+{''.join(received_rows)}
+
+</table>
+
+</div>
+"""
+
+    if not sent_rows:
+        sent_html = """
+<div class="empty">
+You have not sent a document yet.
+</div>
+"""
+    else:
+        sent_html = f"""
+<div class="table-wrap">
+
+<table>
+
+<tr>
+<th>Date</th>
+<th>Title</th>
+<th>File</th>
+<th>Status</th>
+</tr>
+
+{''.join(sent_rows)}
+
+</table>
+
+</div>
+"""
+
+    content = f"""
+<div class="card">
+
+<h1>My Documents</h1>
+
+<p>
+Send documents to KOJA Administration and
+download documents sent specifically to you.
+</p>
+
+</div>
+
+<div class="card">
+
+<h2>Send Document To KOJA Administration</h2>
+
+<form
+    method="post"
+    enctype="multipart/form-data"
+>
+
+<label>Document Title</label>
+
+<input
+    type="text"
+    name="title"
+    placeholder="Assignment, research work, report..."
+    required
+>
+
+<label>Description</label>
+
+<textarea
+    name="description"
+    placeholder="Optional description"
+    style="min-height:120px;"
+></textarea>
+
+<label>Document</label>
+
+<input
+    type="file"
+    name="document"
+    required
+>
+
+<p class="muted">
+Maximum file size: 15 MB.
+</p>
+
+<button type="submit">
+Send Document
+</button>
+
+</form>
+
+</div>
+
+<div class="card">
+
+<h2>Documents Received From KOJA</h2>
+
+{received_html}
+
+</div>
+
+<div class="card">
+
+<h2>Documents I Sent</h2>
+
+{sent_html}
+
+</div>
+"""
+
+    return private_page(
+        "My Documents",
+        content
+    )
+
+
+# ============================================================
+# STUDENT DOWNLOAD ADMIN DOCUMENT
+#
+# SECURITY:
+# Student can only download a document where
+# recipient_id equals the logged-in user's ID.
+# ============================================================
+
+@app.route(
+    "/student/documents/download/<document_id>"
+)
+@login_required
+def student_document_download(document_id):
+
+    user = current_user()
+
+    if user.get("role") == "admin":
+        return redirect(
+            url_for("admin_documents")
+        )
+
+    documents = read_json(
+        DOCUMENTS_FILE,
+        []
+    )
+
+    document = next(
+        (
+            d for d in documents
+            if d.get("id") == document_id
+            and d.get("direction") == "admin_to_student"
+            and d.get("recipient_id") == user["id"]
+        ),
+        None
+    )
+
+    if not document:
+        abort(403)
+
+    filename = document.get("stored_name")
+
+    if not filename:
+        abort(404)
+
+    path = os.path.join(
+        ADMIN_UPLOAD_DIR,
+        filename
+    )
+
+    if not os.path.isfile(path):
+        abort(404)
+
+    log_event(
+        "Student Document Downloaded",
+        "Documents",
+        "INFO",
+        document.get("original_name", filename)
+    )
+
+    return send_from_directory(
+        ADMIN_UPLOAD_DIR,
+        filename,
+        as_attachment=True
+    )
+
+
+# ============================================================
+# STUDENT DOWNLOAD OWN QUESTION ATTACHMENT
+# ============================================================
+
+@app.route(
+    "/student/question-file/<question_id>/<stored_name>"
+)
+@login_required
+def student_question_file(
+    question_id,
+    stored_name
+):
+
+    user = current_user()
+
+    if user.get("role") == "admin":
+        abort(403)
+
+    questions = read_json(
+        QUESTIONS_FILE,
+        []
+    )
+
+    question = next(
+        (
+            q for q in questions
+            if q.get("id") == question_id
+            and q.get("student_id") == user["id"]
+        ),
+        None
+    )
+
+    if not question:
+        abort(403)
+
+    attachment = next(
+        (
+            a for a in question.get("attachments", [])
+            if a.get("stored_name") == stored_name
+        ),
+        None
+    )
+
+    if not attachment:
+        abort(404)
+
+    path = os.path.join(
+        STUDENT_UPLOAD_DIR,
+        stored_name
+    )
+
+    if not os.path.isfile(path):
+        abort(404)
+
+    return send_from_directory(
+        STUDENT_UPLOAD_DIR,
+        stored_name,
+        as_attachment=True
+    )
+
+
+# ============================================================
+# STUDENT DOWNLOAD ADMIN ANSWER DOCUMENT
+#
+# Only the student who owns the question can download it.
+# ============================================================
+
+@app.route(
+    "/student/answer-file/<question_id>/<stored_name>"
+)
+@login_required
+def student_answer_file(
+    question_id,
+    stored_name
+):
+
+    user = current_user()
+
+    if user.get("role") == "admin":
+        abort(403)
+
+    questions = read_json(
+        QUESTIONS_FILE,
+        []
+    )
+
+    question = next(
+        (
+            q for q in questions
+            if q.get("id") == question_id
+            and q.get("student_id") == user["id"]
+        ),
+        None
+    )
+
+    if not question:
+        abort(403)
+
+    attachment = next(
+        (
+            a for a in question.get("answer_attachments", [])
+            if a.get("stored_name") == stored_name
+        ),
+        None
+    )
+
+    if not attachment:
+        abort(404)
+
+    path = os.path.join(
+        ADMIN_UPLOAD_DIR,
+        stored_name
+    )
+
+    if not os.path.isfile(path):
+        abort(404)
+
+    log_event(
+        "Student Answer Document Downloaded",
+        "Documents",
+        "INFO",
+        attachment.get("original_name", stored_name)
+    )
+
+    return send_from_directory(
+        ADMIN_UPLOAD_DIR,
+        stored_name,
+        as_attachment=True
     )
 
 
@@ -1765,6 +2490,16 @@ def admin_dashboard():
         if q.get("answer")
     ]
 
+    received = [
+        d for d in documents
+        if d.get("direction") == "student_to_admin"
+    ]
+
+    sent = [
+        d for d in documents
+        if d.get("direction") == "admin_to_student"
+    ]
+
     content = f"""
 <div class="card">
 
@@ -1794,14 +2529,44 @@ Private administration area.
 </div>
 
 <div class="stat">
-<h2>{len(documents)}</h2>
-<p>Documents</p>
+<h2>{len(received)}</h2>
+<p>Student Documents</p>
+</div>
+
+<div class="stat">
+<h2>{len(sent)}</h2>
+<p>Documents Sent</p>
 </div>
 
 <div class="stat">
 <h2>{len(logs)}</h2>
 <p>Logs</p>
 </div>
+
+</div>
+
+<div class="card">
+
+<a
+    class="btn"
+    href="{url_for('admin_questions')}"
+>
+Questions
+</a>
+
+<a
+    class="btn green"
+    href="{url_for('admin_documents')}"
+>
+Documents
+</a>
+
+<a
+    class="btn dark"
+    href="{url_for('admin_answers')}"
+>
+Answers
+</a>
 
 </div>
 """
@@ -1835,26 +2600,76 @@ def admin_questions():
             else "Pending"
         )
 
+        status_class = (
+            "answered"
+            if q.get("answer")
+            else "pending"
+        )
+
+        attachment_html = ""
+
+        for attachment in q.get(
+            "attachments",
+            []
+        ):
+
+            attachment_html += f"""
+<div class="document-box">
+
+<strong>
+Student Document
+</strong>
+
+<br><br>
+
+{html_escape(
+    attachment.get("original_name")
+)}
+
+<br><br>
+
+<a
+    class="btn gray"
+    href="{url_for(
+        'admin_question_file',
+        question_id=q.get('id'),
+        stored_name=attachment.get('stored_name')
+    )}"
+>
+Download Student Document
+</a>
+
+</div>
+"""
+
         blocks.append(f"""
 <div class="card">
 
 <h2>
-{q.get("question")}
+{html_escape(q.get("question"))}
 </h2>
 
 <p>
 Student:
-{q.get("student_name")}
+<strong>
+{html_escape(q.get("student_name"))}
+</strong>
 </p>
 
 <p>
-Status:
-<strong>{status}</strong>
+<span class="badge {status_class}">
+{status}
+</span>
 </p>
 
+{attachment_html}
+
 <a
- class="btn"
- href="/admin/answer/{q.get("id")}"
+    class="btn"
+    href="{url_for(
+        'admin_answer',
+        question_id=q.get('id')
+    )}"
 >
 Answer Question
 </a>
@@ -1867,8 +2682,24 @@ Answer Question
 
 <h1>Questions</h1>
 
+<p>
+Only administrators can see submitted
+student questions.
+</p>
+
 </div>
-""" + "".join(blocks)
+"""
+
+    content += "".join(blocks)
+
+    if not blocks:
+        content += """
+<div class="card">
+<div class="empty">
+No questions have been submitted.
+</div>
+</div>
+"""
 
     return private_page(
         "Questions",
@@ -1927,9 +2758,7 @@ def admin_answer(question_id):
 
         admin = current_user()
 
-        question["answer_by"] = (
-            admin.get("name")
-        )
+        question["answer_by"] = admin.get("name")
 
         question["answered_at"] = (
             datetime.now(
@@ -1937,12 +2766,8 @@ def admin_answer(question_id):
             ).isoformat()
         )
 
-        question[
-            "answer_attachments"
-        ] = question.get(
-            "answer_attachments",
-            []
-        )
+        if "answer_attachments" not in question:
+            question["answer_attachments"] = []
 
         file = request.files.get(
             "document"
@@ -1950,33 +2775,28 @@ def admin_answer(question_id):
 
         if file and file.filename:
 
-            original = file.filename
-
-            safe_name = (
-                str(uuid.uuid4())
-                + "_"
-                + original.replace(
-                    "/",
-                    "_"
-                ).replace(
-                    "\\",
-                    "_"
+            try:
+                saved = save_uploaded_file(
+                    file,
+                    ADMIN_UPLOAD_DIR
                 )
-            )
 
-            path = os.path.join(
-                ADMIN_UPLOAD_DIR,
-                safe_name
-            )
+                question[
+                    "answer_attachments"
+                ].append(saved)
 
-            file.save(path)
+            except ValueError as exc:
+                flash(
+                    str(exc),
+                    "error"
+                )
 
-            question[
-                "answer_attachments"
-            ].append({
-                "original_name": original,
-                "stored_name": safe_name
-            })
+                return redirect(
+                    url_for(
+                        "admin_answer",
+                        question_id=question_id
+                    )
+                )
 
         write_json(
             QUESTIONS_FILE,
@@ -2001,14 +2821,38 @@ def admin_answer(question_id):
             )
         )
 
+    existing_files = ""
+
+    for attachment in question.get(
+        "answer_attachments",
+        []
+    ):
+
+        existing_files += f"""
+<div class="document-box">
+{html_escape(
+    attachment.get("original_name")
+)}
+</div>
+"""
+
     content = f"""
 <div class="card">
 
 <h1>Answer Question</h1>
 
+<p>
+Student:
+<strong>
+{html_escape(question.get("student_name"))}
+</strong>
+</p>
+
 <div class="question">
-{question.get("question")}
+{html_escape(question.get("question"))}
 </div>
+
+{existing_files}
 
 <form
     method="post"
@@ -2022,16 +2866,22 @@ Answer
 <textarea
     name="answer"
     required
->{question.get("answer", "")}</textarea>
+>{html_escape(question.get("answer", ""))}</textarea>
 
 <label>
-Upload answer document
+Attach answer document
 </label>
 
 <input
     type="file"
     name="document"
 >
+
+<p class="muted">
+The student who submitted this question
+will be able to download this document.
+Maximum 15 MB.
+</p>
 
 <button type="submit">
 Save Answer
@@ -2074,16 +2924,21 @@ def admin_answers():
 <div class="card">
 
 <h2>
-{q.get("question")}
+{html_escape(q.get("question"))}
 </h2>
 
 <div class="answer">
-{q.get("answer")}
+{html_escape(q.get("answer"))}
 </div>
 
 <p>
+Student:
+{html_escape(q.get("student_name"))}
+</p>
+
+<p>
 Answered by:
-{q.get("answer_by", "Admin")}
+{html_escape(q.get("answer_by", "Admin"))}
 </p>
 
 </div>
@@ -2099,7 +2954,9 @@ This section is visible only to administrators.
 </p>
 
 </div>
-""" + "".join(blocks)
+"""
+
+    content += "".join(blocks)
 
     return private_page(
         "Answers",
@@ -2108,7 +2965,12 @@ This section is visible only to administrators.
 
 
 # ============================================================
-# ADMIN DOCUMENT UPLOAD
+# ADMIN DOCUMENTS
+#
+# ADMIN CAN:
+#   1. Receive documents from students.
+#   2. Send documents to individual students.
+#   3. Download both types.
 # ============================================================
 
 @app.route(
@@ -2118,10 +2980,24 @@ This section is visible only to administrators.
 @admin_required
 def admin_documents():
 
+    admin = current_user()
+
+    students = get_students()
+
     if request.method == "POST":
+
+        student_id = request.form.get(
+            "student_id",
+            ""
+        ).strip()
 
         title = request.form.get(
             "title",
+            ""
+        ).strip()
+
+        description = request.form.get(
+            "description",
             ""
         ).strip()
 
@@ -2129,38 +3005,55 @@ def admin_documents():
             "document"
         )
 
-        if not title or not file:
+        student = get_user_by_id(
+            student_id
+        )
+
+        if not student or student.get("role") != "student":
             flash(
-                "Title and document are required.",
+                "Please select a valid student.",
                 "error"
             )
 
             return redirect(
-                url_for(
-                    "admin_documents"
-                )
+                url_for("admin_documents")
             )
 
-        original = file.filename
-
-        safe_name = (
-            str(uuid.uuid4())
-            + "_"
-            + original.replace(
-                "/",
-                "_"
-            ).replace(
-                "\\",
-                "_"
+        if not title:
+            flash(
+                "Enter a document title.",
+                "error"
             )
-        )
 
-        path = os.path.join(
-            ADMIN_UPLOAD_DIR,
-            safe_name
-        )
+            return redirect(
+                url_for("admin_documents")
+            )
 
-        file.save(path)
+        if not file or not file.filename:
+            flash(
+                "Select a document.",
+                "error"
+            )
+
+            return redirect(
+                url_for("admin_documents")
+            )
+
+        try:
+            saved = save_uploaded_file(
+                file,
+                ADMIN_UPLOAD_DIR
+            )
+
+        except ValueError as exc:
+            flash(
+                str(exc),
+                "error"
+            )
+
+            return redirect(
+                url_for("admin_documents")
+            )
 
         documents = read_json(
             DOCUMENTS_FILE,
@@ -2169,17 +3062,27 @@ def admin_documents():
 
         document = {
             "id": str(uuid.uuid4()),
+            "direction": "admin_to_student",
+
+            "sender_id": admin["id"],
+            "sender_name": admin["name"],
+
+            "recipient_id": student["id"],
+            "recipient_name": student["name"],
+
             "title": title,
-            "original_name": original,
-            "stored_name": safe_name,
+            "description": description,
+
+            "original_name": saved["original_name"],
+            "stored_name": saved["stored_name"],
+            "size": saved["size"],
+
             "created_at": datetime.now(
                 timezone.utc
             ).isoformat()
         }
 
-        documents.append(
-            document
-        )
+        documents.append(document)
 
         write_json(
             DOCUMENTS_FILE,
@@ -2187,21 +3090,19 @@ def admin_documents():
         )
 
         log_event(
-            "Document Uploaded",
+            "Document Sent To Student",
             "Documents",
             "INFO",
-            original
+            f'{saved["original_name"]} -> {student["email"]}'
         )
 
         flash(
-            "Document uploaded.",
+            f'Document sent to {student["name"]}.',
             "success"
         )
 
         return redirect(
-            url_for(
-                "admin_documents"
-            )
+            url_for("admin_documents")
         )
 
     documents = read_json(
@@ -2209,26 +3110,67 @@ def admin_documents():
         []
     )
 
-    rows = []
+    received = [
+        d for d in documents
+        if d.get("direction") == "student_to_admin"
+    ]
 
-    for d in reversed(documents):
+    sent = [
+        d for d in documents
+        if d.get("direction") == "admin_to_student"
+    ]
 
-        rows.append(f"""
+    student_options = []
+
+    for student in students:
+
+        student_options.append(
+            f"""
+<option value="{html_escape(student.get("id"))}">
+{html_escape(student.get("name"))}
+-
+{html_escape(student.get("email"))}
+</option>
+"""
+        )
+
+    received_rows = []
+
+    for d in reversed(received):
+
+        received_rows.append(f"""
 <tr>
 
 <td>
-{d.get("title")}
+{html_escape(d.get("created_at", ""))}
 </td>
 
 <td>
-{d.get("original_name")}
+<strong>
+{html_escape(d.get("sender_name", "Student"))}
+</strong>
+</td>
+
+<td>
+{html_escape(d.get("title", ""))}
+</td>
+
+<td>
+{html_escape(d.get("original_name", ""))}
+<br>
+<span class="muted">
+{format_size(d.get("size", 0))}
+</span>
 </td>
 
 <td>
 
 <a
- class="btn"
- href="/admin/download/{d.get("id")}"
+    class="btn"
+    href="{url_for(
+        'admin_document_download',
+        document_id=d.get('id')
+    )}"
 >
 Download
 </a>
@@ -2238,19 +3180,140 @@ Download
 </tr>
 """)
 
+    sent_rows = []
+
+    for d in reversed(sent):
+
+        sent_rows.append(f"""
+<tr>
+
+<td>
+{html_escape(d.get("created_at", ""))}
+</td>
+
+<td>
+{html_escape(d.get("recipient_name", ""))}
+</td>
+
+<td>
+{html_escape(d.get("title", ""))}
+</td>
+
+<td>
+{html_escape(d.get("original_name", ""))}
+<br>
+<span class="muted">
+{format_size(d.get("size", 0))}
+</span>
+</td>
+
+<td>
+
+<a
+    class="btn"
+    href="{url_for(
+        'admin_document_download',
+        document_id=d.get('id')
+    )}"
+>
+Download
+</a>
+
+</td>
+
+</tr>
+""")
+
+    if not received_rows:
+        received_html = """
+<div class="empty">
+No documents have been received from students.
+</div>
+"""
+    else:
+        received_html = f"""
+<div class="table-wrap">
+
+<table>
+
+<tr>
+<th>Date</th>
+<th>Student</th>
+<th>Title</th>
+<th>File</th>
+<th>Download</th>
+</tr>
+
+{''.join(received_rows)}
+
+</table>
+
+</div>
+"""
+
+    if not sent_rows:
+        sent_html = """
+<div class="empty">
+No documents have been sent to students.
+</div>
+"""
+    else:
+        sent_html = f"""
+<div class="table-wrap">
+
+<table>
+
+<tr>
+<th>Date</th>
+<th>Student</th>
+<th>Title</th>
+<th>File</th>
+<th>Download</th>
+</tr>
+
+{''.join(sent_rows)}
+
+</table>
+
+</div>
+"""
+
     content = f"""
 <div class="card">
 
-<h1>Upload Documents</h1>
+<h1>Documents</h1>
+
+<p>
+This area is private to administrators.
+</p>
+
+</div>
+
+<div class="card">
+
+<h2>Send Document To Student</h2>
 
 <form
     method="post"
     enctype="multipart/form-data"
 >
 
-<label>
-Document title
-</label>
+<label>Student</label>
+
+<select
+    name="student_id"
+    required
+>
+
+<option value="">
+Select student
+</option>
+
+{''.join(student_options)}
+
+</select>
+
+<label>Document Title</label>
 
 <input
     type="text"
@@ -2258,9 +3321,15 @@ Document title
     required
 >
 
-<label>
-Document
-</label>
+<label>Description</label>
+
+<textarea
+    name="description"
+    placeholder="Optional description"
+    style="min-height:120px;"
+></textarea>
+
+<label>Document</label>
 
 <input
     type="file"
@@ -2268,8 +3337,14 @@ Document
     required
 >
 
+<p class="muted">
+The selected student will be the only student
+allowed to download this document.
+Maximum 15 MB.
+</p>
+
 <button type="submit">
-Upload Document
+Send Document
 </button>
 
 </form>
@@ -2278,23 +3353,17 @@ Upload Document
 
 <div class="card">
 
-<h2>Documents</h2>
+<h2>Documents Received From Students</h2>
 
-<div class="table-wrap">
-
-<table>
-
-<tr>
-<th>Title</th>
-<th>File</th>
-<th>Download</th>
-</tr>
-
-{''.join(rows)}
-
-</table>
+{received_html}
 
 </div>
+
+<div class="card">
+
+<h2>Documents Sent To Students</h2>
+
+{sent_html}
 
 </div>
 """
@@ -2306,14 +3375,14 @@ Upload Document
 
 
 # ============================================================
-# ADMIN DOWNLOAD DOCUMENT
+# ADMIN DOCUMENT DOWNLOAD
 # ============================================================
 
 @app.route(
-    "/admin/download/<document_id>"
+    "/admin/documents/download/<document_id>"
 )
 @admin_required
-def admin_download(document_id):
+def admin_document_download(document_id):
 
     documents = read_json(
         DOCUMENTS_FILE,
@@ -2335,16 +3404,104 @@ def admin_download(document_id):
         "stored_name"
     )
 
+    if not filename:
+        abort(404)
+
+    direction = document.get(
+        "direction"
+    )
+
+    if direction == "student_to_admin":
+        directory = STUDENT_UPLOAD_DIR
+    else:
+        directory = ADMIN_UPLOAD_DIR
+
+    path = os.path.join(
+        directory,
+        filename
+    )
+
+    if not os.path.isfile(path):
+        abort(404)
+
     log_event(
         "Admin Document Downloaded",
         "Documents",
         "INFO",
-        filename
+        document.get(
+            "original_name",
+            filename
+        )
     )
 
     return send_from_directory(
-        ADMIN_UPLOAD_DIR,
+        directory,
         filename,
+        as_attachment=True
+    )
+
+
+# ============================================================
+# ADMIN QUESTION ATTACHMENT
+# ============================================================
+
+@app.route(
+    "/admin/question-file/<question_id>/<stored_name>"
+)
+@admin_required
+def admin_question_file(
+    question_id,
+    stored_name
+):
+
+    questions = read_json(
+        QUESTIONS_FILE,
+        []
+    )
+
+    question = next(
+        (
+            q for q in questions
+            if q.get("id") == question_id
+        ),
+        None
+    )
+
+    if not question:
+        abort(404)
+
+    attachment = next(
+        (
+            a for a in question.get("attachments", [])
+            if a.get("stored_name") == stored_name
+        ),
+        None
+    )
+
+    if not attachment:
+        abort(404)
+
+    path = os.path.join(
+        STUDENT_UPLOAD_DIR,
+        stored_name
+    )
+
+    if not os.path.isfile(path):
+        abort(404)
+
+    log_event(
+        "Admin Student Attachment Downloaded",
+        "Documents",
+        "INFO",
+        attachment.get(
+            "original_name",
+            stored_name
+        )
+    )
+
+    return send_from_directory(
+        STUDENT_UPLOAD_DIR,
+        stored_name,
         as_attachment=True
     )
 
@@ -2370,23 +3527,23 @@ def admin_logs():
 <tr>
 
 <td>
-{item.get("time", "")}
+{html_escape(item.get("time", ""))}
 </td>
 
 <td>
-{item.get("event", "")}
+{html_escape(item.get("event", ""))}
 </td>
 
 <td>
-{item.get("category", "")}
+{html_escape(item.get("category", ""))}
 </td>
 
 <td>
-{item.get("level", "")}
+{html_escape(item.get("level", ""))}
 </td>
 
 <td>
-{item.get("details", "")}
+{html_escape(item.get("details", ""))}
 </td>
 
 </tr>
@@ -2399,6 +3556,7 @@ def admin_logs():
 
 <p>
 Private administrator information.
+Students cannot access this page.
 </p>
 
 <div class="table-wrap">
@@ -2430,9 +3588,6 @@ Private administrator information.
 
 # ============================================================
 # SECURITY HEADERS
-#
-# Prevent public pages from accidentally being indexed as
-# private pages.
 # ============================================================
 
 @app.after_request
@@ -2450,12 +3605,17 @@ def security_headers(response):
         "Referrer-Policy"
     ] = "strict-origin-when-cross-origin"
 
-    # Private/admin routes must not be cached.
-    if (
-        request.path.startswith("/admin")
-        or request.path.startswith("/student")
-        or request.path.startswith("/ask")
+    private_prefixes = (
+        "/admin",
+        "/student",
+        "/ask",
+        "/research"
+    )
+
+    if request.path.startswith(
+        private_prefixes
     ):
+
         response.headers[
             "Cache-Control"
         ] = (
@@ -2492,11 +3652,13 @@ def forbidden(error):
 
 <p>
 You do not have permission to access
-this page.
+this page or document.
 </p>
 
-<a class="btn"
-   href="/">
+<a
+    class="btn"
+    href="/"
+>
 Return Home
 </a>
 
@@ -2519,8 +3681,10 @@ def not_found(error):
 The requested page does not exist.
 </p>
 
-<a class="btn"
-   href="/">
+<a
+    class="btn"
+    href="/"
+>
 Return Home
 </a>
 
@@ -2530,7 +3694,7 @@ Return Home
 
 
 # ============================================================
-# ROBOTS.TXT
+# ROBOTS
 # ============================================================
 
 @app.route("/robots.txt")
@@ -2542,13 +3706,12 @@ Allow: /
 Disallow: /admin
 Disallow: /student
 Disallow: /ask
+Disallow: /research
 Disallow: /logout
-
+Disallow: /student/documents
 """
 
-    response = make_response(
-        text
-    )
+    response = make_response(text)
 
     response.headers[
         "Content-Type"
@@ -2587,9 +3750,7 @@ xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 </urlset>
 """
 
-    response = make_response(
-        xml
-    )
+    response = make_response(xml)
 
     response.headers[
         "Content-Type"
@@ -2626,13 +3787,13 @@ if __name__ == "__main__":
     print("  Answers")
     print("  Documents")
     print("  Logs")
-    print("  Downloads")
     print()
     print("STUDENT:")
     print("  Dashboard")
     print("  Ask Question")
     print("  My Questions")
     print("  Research")
+    print("  Documents")
     print()
     print("Server:", f"http://0.0.0.0:{port}")
     print("=" * 60)
