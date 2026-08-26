@@ -3042,7 +3042,14 @@ def server_error(error):
         """
     ), 500
 
+# ============================================================
+# GOOGLE SEARCH CONSOLE VERIFICATION
+# ============================================================
 
+@app.route("/google4d3d8178b7b4659e.html")
+def google_verification():
+
+    return "google-site-verification: google4d3d8178b7b4659e.html"
 # ============================================================
 # START
 # ============================================================
