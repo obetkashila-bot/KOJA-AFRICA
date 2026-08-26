@@ -2,26 +2,41 @@
 # KOJA ZM
 # Knowledge • Questions • Answers
 #
-# SINGLE-FILE FLASK WEBSITE PORTAL
+# SINGLE-FILE WEBSITE PORTAL
 #
-# GRACEFUL DEGRADATION:
-# - App starts without Supabase
-# - App starts without Flutterwave
-# - Bad external configuration does not crash the portal
-# - Supabase is used automatically when configured correctly
-# - Flutterwave is used automatically when configured correctly
-# - Local fallback storage is used when external services fail
+# FEATURES
+#   • Student portal
+#   • Admin portal
+#   • Questions
+#   • Answers
+#   • Assignments
+#   • Resources
+#   • Notifications
+#   • Payments status
+#   • Supabase REST API
+#   • Supabase Storage
+#   • Graceful fallback when Supabase is unavailable
 #
-# DEPLOYMENT:
-# Render / Railway / VPS / Pydroid 3
+# NO SQLITE
+# NO psycopg
+# NO psycopg2
+#
+# RUN:
+#   python app.py
+#
+# DEFAULT FALLBACK ADMIN:
+#   username: admin
+#   password: kojaadmin
+#
+# IMPORTANT:
+# Change the fallback password before real deployment.
 # ============================================================
 
 import os
 import uuid
-import json
-import hashlib
 import secrets
-import logging
+import hashlib
+import hmac
 from datetime import datetime
 from functools import wraps
 
@@ -35,27 +50,28 @@ from flask import (
     session,
     jsonify,
     render_template_string,
-    send_file,
-    flash
+    flash,
 )
 
+
 # ============================================================
-# APP
+# APPLICATION
 # ============================================================
 
 app = Flask(__name__)
 
 app.secret_key = os.environ.get(
-    "SECRET_KEY",
-    "koja-development-secret-change-this"
+    "KOJA_SECRET_KEY",
+    secrets.token_hex(32)
 )
 
-app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
+APP_NAME = "KOJA ZM"
+APP_TAGLINE = "Assignment Questions • Academic Answers"
 
-logging.basicConfig(level=logging.INFO)
+PORT = int(os.environ.get("PORT", "5000"))
 
 # ============================================================
-# CONFIGURATION
+# SUPABASE CONFIGURATION
 # ============================================================
 
 SUPABASE_URL = os.environ.get(
@@ -73,708 +89,606 @@ SUPABASE_PUBLISHABLE_KEY = os.environ.get(
     ""
 ).strip()
 
-FLUTTERWAVE_SECRET_KEY = os.environ.get(
-    "FLUTTERWAVE_SECRET_KEY",
-    ""
-).strip()
-
-FLUTTERWAVE_PUBLIC_KEY = os.environ.get(
-    "FLUTTERWAVE_PUBLIC_KEY",
-    ""
-).strip()
-
 STORAGE_BUCKET = os.environ.get(
     "KOJA_STORAGE_BUCKET",
-    "koja-files"
+    "koja-assignments"
+).strip()
+
+
+# ============================================================
+# FALLBACK ADMIN
+# ============================================================
+
+FALLBACK_ADMIN_USERNAME = os.environ.get(
+    "KOJA_ADMIN_USERNAME",
+    "admin"
 )
 
-ADMIN_EMAIL = os.environ.get(
-    "ADMIN_EMAIL",
-    "admin@koja.edu"
+FALLBACK_ADMIN_PASSWORD = os.environ.get(
+    "KOJA_ADMIN_PASSWORD",
+    "kojaadmin"
 )
 
-ADMIN_PASSWORD = os.environ.get(
-    "ADMIN_PASSWORD",
-    "admin123"
+
+# ============================================================
+# RUNTIME MODE
+# ============================================================
+
+SUPABASE_CONFIGURED = bool(
+    SUPABASE_URL and SUPABASE_SERVICE_KEY
 )
 
-# ============================================================
-# RUNTIME STATUS
-# ============================================================
-
-SUPABASE_OK = False
-FLUTTERWAVE_OK = False
-
-# ============================================================
-# LOCAL FALLBACK DATABASE
-# ============================================================
-
-DATA_DIR = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "koja_data"
-)
-
-os.makedirs(DATA_DIR, exist_ok=True)
-
-USERS_FILE = os.path.join(DATA_DIR, "users.json")
-QUESTIONS_FILE = os.path.join(DATA_DIR, "questions.json")
-NOTIFICATIONS_FILE = os.path.join(DATA_DIR, "notifications.json")
-PURCHASES_FILE = os.path.join(DATA_DIR, "purchases.json")
-
-
-def load_json(path, default):
-    try:
-        if not os.path.exists(path):
-            return default
-
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-
-    except Exception as e:
-        app.logger.warning(
-            "Could not read %s: %s",
-            path,
-            e
-        )
-        return default
-
-
-def save_json(path, data):
-    try:
-        temp = path + ".tmp"
-
-        with open(temp, "w", encoding="utf-8") as f:
-            json.dump(
-                data,
-                f,
-                indent=2,
-                ensure_ascii=False
-            )
-
-        os.replace(temp, path)
-
-        return True
-
-    except Exception as e:
-        app.logger.error(
-            "Could not save %s: %s",
-            path,
-            e
-        )
-
-        return False
+SUPABASE_ONLINE = False
 
 
 # ============================================================
-# INITIAL DATA
+# FALLBACK DATA
+#
+# This is memory-based fallback data.
+# It allows the portal to operate when Supabase is unavailable.
+# Data disappears when the Python process restarts.
 # ============================================================
 
-def initialize_local_data():
+FALLBACK_USERS = []
 
-    users = load_json(USERS_FILE, [])
+FALLBACK_QUESTIONS = [
+    {
+        "id": "demo-question-1",
+        "title": "What is photosynthesis?",
+        "subject": "Biology",
+        "question": (
+            "Explain the process of photosynthesis "
+            "and state its importance."
+        ),
+        "answer": (
+            "Photosynthesis is the process by which green plants "
+            "use light energy to convert carbon dioxide and water "
+            "into glucose and oxygen. Chlorophyll absorbs light "
+            "energy needed for the process."
+        ),
+        "status": "Published",
+        "created_at": datetime.utcnow().isoformat(),
+    },
+    {
+        "id": "demo-question-2",
+        "title": "What is a chemical reaction?",
+        "subject": "Chemistry",
+        "question": (
+            "Define a chemical reaction and give one example."
+        ),
+        "answer": (
+            "A chemical reaction is a process in which one or more "
+            "substances are transformed into new substances with "
+            "different chemical properties."
+        ),
+        "status": "Published",
+        "created_at": datetime.utcnow().isoformat(),
+    },
+]
 
-    if not isinstance(users, list):
-        users = []
+FALLBACK_ASSIGNMENTS = []
 
-    admin_exists = any(
-        u.get("email", "").lower()
-        == ADMIN_EMAIL.lower()
-        for u in users
-    )
+FALLBACK_RESOURCES = []
 
-    if not admin_exists:
-        users.append({
-            "id": str(uuid.uuid4()),
-            "name": "KOJA Administrator",
-            "email": ADMIN_EMAIL.lower(),
-            "password": hash_password(ADMIN_PASSWORD),
-            "role": "admin",
-            "created_at": datetime.utcnow().isoformat()
-        })
+FALLBACK_NOTIFICATIONS = [
+    {
+        "id": "notification-1",
+        "title": "Welcome to KOJA ZM",
+        "message": (
+            "KOJA ZM is ready. You can access assignments, "
+            "questions and academic resources."
+        ),
+        "created_at": datetime.utcnow().isoformat(),
+    }
+]
 
-        save_json(USERS_FILE, users)
-
-    if not os.path.exists(QUESTIONS_FILE):
-        save_json(QUESTIONS_FILE, [])
-
-    if not os.path.exists(NOTIFICATIONS_FILE):
-        save_json(NOTIFICATIONS_FILE, [])
-
-    if not os.path.exists(PURCHASES_FILE):
-        save_json(PURCHASES_FILE, [])
+FALLBACK_PAYMENTS = []
 
 
 # ============================================================
-# PASSWORD
+# HELPERS
 # ============================================================
+
+def now():
+    return datetime.utcnow().isoformat()
+
 
 def hash_password(password):
-    salt = secrets.token_hex(16)
-
-    hashed = hashlib.pbkdf2_hmac(
-        "sha256",
-        password.encode("utf-8"),
-        salt.encode("utf-8"),
-        200000
-    ).hex()
-
-    return f"{salt}${hashed}"
+    return hashlib.sha256(
+        password.encode("utf-8")
+    ).hexdigest()
 
 
-def verify_password(password, stored):
+def check_password(password, password_hash):
+    return hmac.compare_digest(
+        hash_password(password),
+        password_hash
+    )
 
-    try:
-        salt, hashed = stored.split("$", 1)
-
-        check = hashlib.pbkdf2_hmac(
-            "sha256",
-            password.encode("utf-8"),
-            salt.encode("utf-8"),
-            200000
-        ).hex()
-
-        return secrets.compare_digest(
-            check,
-            hashed
-        )
-
-    except Exception:
-        return False
-
-
-# ============================================================
-# SUPABASE
-# ============================================================
 
 def supabase_headers():
-
     return {
         "apikey": SUPABASE_SERVICE_KEY,
-        "Authorization": (
-            "Bearer " +
-            SUPABASE_SERVICE_KEY
-        ),
+        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
         "Content-Type": "application/json",
-        "Prefer": "return=representation"
     }
-
-
-def check_supabase():
-
-    global SUPABASE_OK
-
-    if not SUPABASE_URL:
-        SUPABASE_OK = False
-        return False
-
-    if not SUPABASE_SERVICE_KEY:
-        SUPABASE_OK = False
-        return False
-
-    try:
-
-        response = requests.get(
-            SUPABASE_URL + "/rest/v1/",
-            headers=supabase_headers(),
-            timeout=5
-        )
-
-        SUPABASE_OK = (
-            response.status_code < 500
-        )
-
-        return SUPABASE_OK
-
-    except Exception as e:
-
-        app.logger.warning(
-            "Supabase unavailable: %s",
-            e
-        )
-
-        SUPABASE_OK = False
-        return False
 
 
 def supabase_request(
     method,
     table,
-    payload=None,
-    params=None
+    data=None,
+    params=None,
+    timeout=8
 ):
+    """
+    Attempts Supabase REST API.
 
-    if not SUPABASE_URL:
-        return None
+    Failure NEVER crashes the portal.
+    """
 
-    if not SUPABASE_SERVICE_KEY:
+    global SUPABASE_ONLINE
+
+    if not SUPABASE_CONFIGURED:
+        SUPABASE_ONLINE = False
         return None
 
     try:
-
-        url = (
-            SUPABASE_URL +
-            "/rest/v1/" +
-            table
-        )
-
         response = requests.request(
-            method,
-            url,
+            method=method,
+            url=f"{SUPABASE_URL}/rest/v1/{table}",
             headers=supabase_headers(),
-            json=payload,
+            json=data,
             params=params,
-            timeout=10
+            timeout=timeout,
         )
 
-        if response.status_code >= 400:
+        if response.status_code >= 200 and response.status_code < 300:
+            SUPABASE_ONLINE = True
 
-            app.logger.warning(
-                "Supabase %s error %s: %s",
-                table,
-                response.status_code,
-                response.text[:500]
-            )
+            if response.text:
+                try:
+                    return response.json()
+                except Exception:
+                    return response.text
 
-            return None
+            return True
 
-        if not response.text:
-            return []
+        SUPABASE_ONLINE = False
+        return None
 
-        return response.json()
-
-    except Exception as e:
-
-        app.logger.warning(
-            "Supabase request failed: %s",
-            e
-        )
-
+    except Exception:
+        SUPABASE_ONLINE = False
         return None
 
 
-# ============================================================
-# FLUTTERWAVE
-# ============================================================
+def current_mode():
+    if SUPABASE_CONFIGURED and SUPABASE_ONLINE:
+        return "SUPABASE"
 
-def check_flutterwave():
+    if SUPABASE_CONFIGURED:
+        return "FALLBACK / SUPABASE OFFLINE"
 
-    global FLUTTERWAVE_OK
-
-    if not FLUTTERWAVE_SECRET_KEY:
-
-        FLUTTERWAVE_OK = False
-        return False
-
-    try:
-
-        response = requests.get(
-            "https://api.flutterwave.com/v3/banks/zm",
-            headers={
-                "Authorization":
-                    "Bearer " +
-                    FLUTTERWAVE_SECRET_KEY
-            },
-            timeout=5
-        )
-
-        FLUTTERWAVE_OK = (
-            response.status_code < 500
-        )
-
-        return FLUTTERWAVE_OK
-
-    except Exception as e:
-
-        app.logger.warning(
-            "Flutterwave unavailable: %s",
-            e
-        )
-
-        FLUTTERWAVE_OK = False
-        return False
+    return "FALLBACK / SUPABASE NOT CONFIGURED"
 
 
 # ============================================================
-# DATA ACCESS
+# DATABASE-STYLE FUNCTIONS
 # ============================================================
-
-def get_users():
-
-    if SUPABASE_OK:
-
-        result = supabase_request(
-            "GET",
-            "users",
-            params={
-                "select": "*"
-            }
-        )
-
-        if result is not None:
-            return result
-
-    return load_json(
-        USERS_FILE,
-        []
-    )
-
 
 def get_questions():
-
-    if SUPABASE_OK:
-
-        result = supabase_request(
-            "GET",
-            "questions",
-            params={
-                "select": "*",
-                "order": "created_at.desc"
-            }
-        )
-
-        if result is not None:
-            return result
-
-    return load_json(
-        QUESTIONS_FILE,
-        []
+    result = supabase_request(
+        "GET",
+        "questions",
+        params={
+            "select": "*",
+            "order": "created_at.desc"
+        }
     )
 
+    if isinstance(result, list):
+        return result
 
-def save_question(question):
+    return FALLBACK_QUESTIONS
 
-    if SUPABASE_OK:
 
-        result = supabase_request(
-            "POST",
-            "questions",
-            question
-        )
-
-        if result is not None:
-            return result
-
-    questions = load_json(
-        QUESTIONS_FILE,
-        []
+def get_users():
+    result = supabase_request(
+        "GET",
+        "users",
+        params={
+            "select": "id,email,name,role,created_at",
+            "order": "created_at.desc"
+        }
     )
 
-    questions.append(question)
+    if isinstance(result, list):
+        return result
 
-    save_json(
-        QUESTIONS_FILE,
-        questions
+    return FALLBACK_USERS
+
+
+def get_assignments():
+    result = supabase_request(
+        "GET",
+        "assignments",
+        params={
+            "select": "*",
+            "order": "created_at.desc"
+        }
     )
 
-    return [question]
+    if isinstance(result, list):
+        return result
+
+    return FALLBACK_ASSIGNMENTS
 
 
-def save_user(user):
-
-    if SUPABASE_OK:
-
-        result = supabase_request(
-            "POST",
-            "users",
-            user
-        )
-
-        if result is not None:
-            return result
-
-    users = load_json(
-        USERS_FILE,
-        []
+def get_resources():
+    result = supabase_request(
+        "GET",
+        "resources",
+        params={
+            "select": "*",
+            "order": "created_at.desc"
+        }
     )
 
-    users.append(user)
+    if isinstance(result, list):
+        return result
 
-    save_json(
-        USERS_FILE,
-        users
+    return FALLBACK_RESOURCES
+
+
+def get_notifications():
+    result = supabase_request(
+        "GET",
+        "notifications",
+        params={
+            "select": "*",
+            "order": "created_at.desc"
+        }
     )
 
-    return [user]
+    if isinstance(result, list):
+        return result
+
+    return FALLBACK_NOTIFICATIONS
+
+
+def insert_record(table, record, fallback_list):
+    result = supabase_request(
+        "POST",
+        table,
+        data=record
+    )
+
+    if result is not None:
+        return True
+
+    fallback_list.insert(0, record)
+
+    return True
 
 
 # ============================================================
 # AUTH DECORATORS
 # ============================================================
 
-def login_required(fn):
+def admin_required(function):
 
-    @wraps(fn)
+    @wraps(function)
     def wrapper(*args, **kwargs):
 
-        if "user_id" not in session:
-            return redirect(
-                url_for("login")
-            )
+        if not session.get("admin_logged_in"):
+            return redirect(url_for("admin_login"))
 
-        return fn(*args, **kwargs)
+        return function(*args, **kwargs)
 
     return wrapper
 
 
-def admin_required(fn):
+def student_required(function):
 
-    @wraps(fn)
+    @wraps(function)
     def wrapper(*args, **kwargs):
 
-        if session.get("role") != "admin":
-            return redirect(
-                url_for("login")
-            )
+        if not session.get("student_logged_in"):
+            return redirect(url_for("student_login"))
 
-        return fn(*args, **kwargs)
+        return function(*args, **kwargs)
 
     return wrapper
 
 
 # ============================================================
-# TEMPLATE
+# BASE HTML
 # ============================================================
 
 BASE_HTML = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
-
 <meta charset="UTF-8">
 
-<meta name="viewport"
-      content="width=device-width,initial-scale=1">
+<meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+>
 
-<title>{{ title }} — KOJA</title>
+<title>{{ title }} - KOJA ZM</title>
 
 <style>
 
 * {
-    box-sizing:border-box;
+    box-sizing: border-box;
 }
 
 body {
-    margin:0;
+    margin: 0;
     font-family:
         Arial,
         Helvetica,
         sans-serif;
-    background:#f5f7fb;
-    color:#172033;
+    background: #f4f7fb;
+    color: #172033;
 }
 
-nav {
-    background:#ffffff;
-    border-bottom:1px solid #e5e7eb;
-    padding:15px 20px;
-    display:flex;
-    align-items:center;
-    justify-content:space-between;
-    gap:15px;
-    position:sticky;
-    top:0;
-    z-index:100;
+.navbar {
+    background: #111827;
+    color: white;
+    padding: 15px 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 15px;
+    flex-wrap: wrap;
 }
 
 .logo {
-    font-size:25px;
-    font-weight:900;
-    letter-spacing:1px;
+    font-size: 23px;
+    font-weight: 800;
 }
 
 .logo span:nth-child(1) {
-    color:#2563eb;
+    color: #2563eb;
 }
 
 .logo span:nth-child(2) {
-    color:#16a34a;
+    color: #16a34a;
 }
 
 .logo span:nth-child(3) {
-    color:#dc2626;
+    color: #dc2626;
 }
 
 .logo span:nth-child(4) {
-    color:#1d4ed8;
+    color: #1d4ed8;
 }
 
-nav a {
-    text-decoration:none;
-    color:#334155;
-    margin-left:12px;
-    font-weight:600;
+.nav-links {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.nav-links a {
+    color: white;
+    text-decoration: none;
+    padding: 8px 12px;
+    border-radius: 7px;
+}
+
+.nav-links a:hover {
+    background: #263244;
 }
 
 .container {
-    max-width:1150px;
-    margin:auto;
-    padding:25px 18px;
+    width: min(1200px, 94%);
+    margin: 25px auto;
 }
 
 .hero {
-    background:linear-gradient(
-        135deg,
-        #1d4ed8,
-        #2563eb
-    );
-    color:white;
-    padding:50px 25px;
-    border-radius:20px;
-    margin-bottom:25px;
+    background: white;
+    padding: 35px;
+    border-radius: 18px;
+    margin-bottom: 25px;
+    box-shadow:
+        0 5px 20px rgba(0,0,0,.06);
 }
 
 .hero h1 {
-    font-size:42px;
-    margin:0 0 12px;
-}
-
-.hero p {
-    font-size:18px;
-    line-height:1.6;
+    margin-top: 0;
+    font-size: 35px;
 }
 
 .grid {
-    display:grid;
+    display: grid;
     grid-template-columns:
-        repeat(auto-fit,minmax(230px,1fr));
-    gap:18px;
+        repeat(auto-fit, minmax(220px, 1fr));
+    gap: 18px;
 }
 
 .card {
-    background:white;
-    border-radius:16px;
-    padding:22px;
+    background: white;
+    padding: 22px;
+    border-radius: 15px;
     box-shadow:
-        0 5px 20px
-        rgba(0,0,0,.06);
+        0 5px 18px rgba(0,0,0,.06);
 }
 
 .card h3 {
-    margin-top:0;
+    margin-top: 0;
+}
+
+.stat {
+    font-size: 32px;
+    font-weight: 800;
 }
 
 .btn {
-    display:inline-block;
-    background:#2563eb;
-    color:white;
-    border:0;
-    border-radius:10px;
-    padding:12px 18px;
-    text-decoration:none;
-    cursor:pointer;
-    font-weight:700;
+    display: inline-block;
+    border: none;
+    background: #2563eb;
+    color: white;
+    text-decoration: none;
+    padding: 11px 16px;
+    border-radius: 8px;
+    cursor: pointer;
+    margin: 3px;
 }
 
-.btn.secondary {
-    background:#475569;
+.btn:hover {
+    opacity: .9;
 }
 
-.btn.success {
-    background:#16a34a;
+.btn-danger {
+    background: #dc2626;
+}
+
+.btn-green {
+    background: #16a34a;
+}
+
+.btn-dark {
+    background: #111827;
+}
+
+.form-card {
+    max-width: 600px;
+    margin: 30px auto;
+    background: white;
+    padding: 30px;
+    border-radius: 16px;
+    box-shadow:
+        0 5px 20px rgba(0,0,0,.08);
 }
 
 input,
 textarea,
 select {
-    width:100%;
-    padding:13px;
-    border:1px solid #cbd5e1;
-    border-radius:10px;
-    margin:7px 0 15px;
-    font-size:16px;
+    width: 100%;
+    padding: 12px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    margin: 7px 0 15px;
+    font-size: 15px;
+}
+
+textarea {
+    min-height: 130px;
+    resize: vertical;
 }
 
 label {
-    font-weight:700;
+    font-weight: 600;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    background: white;
+}
+
+th,
+td {
+    padding: 12px;
+    border-bottom: 1px solid #e5e7eb;
+    text-align: left;
+}
+
+th {
+    background: #111827;
+    color: white;
+}
+
+.table-wrap {
+    overflow-x: auto;
 }
 
 .alert {
-    padding:13px;
-    border-radius:10px;
-    background:#fff7ed;
-    border:1px solid #fed7aa;
-    margin-bottom:15px;
+    padding: 14px;
+    background: #fff7ed;
+    border-left: 5px solid #f97316;
+    border-radius: 8px;
+    margin-bottom: 15px;
 }
 
-.status {
-    display:inline-block;
-    padding:7px 10px;
-    border-radius:20px;
-    background:#dcfce7;
-    color:#166534;
-    font-size:13px;
-    font-weight:bold;
+.success {
+    background: #ecfdf5;
+    border-left-color: #16a34a;
 }
 
-.status.off {
-    background:#fee2e2;
-    color:#991b1b;
+.warning {
+    background: #fffbeb;
+    border-left-color: #eab308;
 }
 
-footer {
-    text-align:center;
-    padding:35px;
-    color:#64748b;
+.badge {
+    display: inline-block;
+    padding: 5px 9px;
+    border-radius: 20px;
+    background: #e5e7eb;
+    font-size: 12px;
+    font-weight: 700;
 }
 
-.question {
-    border-left:4px solid #2563eb;
-    margin-bottom:15px;
+.footer {
+    text-align: center;
+    padding: 35px;
+    color: #6b7280;
 }
 
-.small {
-    font-size:13px;
-    color:#64748b;
+.mobile-menu {
+    display: none;
+}
+
+@media(max-width:700px) {
+
+    .hero {
+        padding: 22px;
+    }
+
+    .hero h1 {
+        font-size: 27px;
+    }
+
+    table {
+        font-size: 13px;
+    }
 }
 
 </style>
-
 </head>
 
 <body>
 
-<nav>
-
-<a href="{{ url_for('home') }}"
-   style="text-decoration:none">
+<nav class="navbar">
 
 <div class="logo">
-<span>K</span><span>O</span><span>J</span><span>A</span>
+<span>k</span><span>o</span><span>j</span><span>a</span>
+<span style="color:white;"> ZM</span>
 </div>
 
-</a>
+<div class="nav-links">
 
-<div>
-
-<a href="{{ url_for('home') }}">
-Home
-</a>
+<a href="{{ url_for('home') }}">Home</a>
 
 <a href="{{ url_for('questions') }}">
 Questions
 </a>
 
-{% if session.get("user_id") %}
-
-<a href="{{ url_for('dashboard') }}">
-Dashboard
+<a href="{{ url_for('resources') }}">
+Resources
 </a>
 
-<a href="{{ url_for('logout') }}">
-Logout
+<a href="{{ url_for('assignments') }}">
+Assignments
 </a>
 
-{% else %}
-
-<a href="{{ url_for('login') }}">
-Login
+<a href="{{ url_for('admin_login') }}">
+Admin
 </a>
-
-<a href="{{ url_for('register') }}">
-Register
-</a>
-
-{% endif %}
 
 </div>
 
@@ -783,32 +697,21 @@ Register
 <div class="container">
 
 {% with messages = get_flashed_messages() %}
-
 {% for message in messages %}
-
-<div class="alert">
+<div class="alert success">
 {{ message }}
 </div>
-
 {% endfor %}
-
 {% endwith %}
 
 {{ content|safe }}
 
 </div>
 
-<footer>
-
-<strong>KOJA</strong><br>
-
+<div class="footer">
+KOJA ZM © 2026<br>
 Knowledge • Questions • Answers
-
-<br><br>
-
-Assignment Questions • Academic Answers
-
-</footer>
+</div>
 
 </body>
 </html>
@@ -816,7 +719,6 @@ Assignment Questions • Academic Answers
 
 
 def page(title, content):
-
     return render_template_string(
         BASE_HTML,
         title=title,
@@ -832,541 +734,76 @@ def page(title, content):
 def home():
 
     questions = get_questions()
-
-    content = render_template_string("""
-<div class="hero">
-
-<h1>KOJA</h1>
-
-<p>
-Knowledge • Questions • Answers
-</p>
-
-<p>
-Assignment Questions • Academic Answers
-• Learning Resources
-</p>
-
-<a class="btn"
-   href="{{ url_for('questions') }}">
-Explore Questions
-</a>
-
-</div>
-
-<div class="grid">
-
-<div class="card">
-
-<h3>📚 Academic Questions</h3>
-
-<p>
-Ask questions and access academic
-learning resources.
-</p>
-
-</div>
-
-<div class="card">
-
-<h3>📝 Assignments</h3>
-
-<p>
-Submit and manage your academic
-questions.
-</p>
-
-</div>
-
-<div class="card">
-
-<h3>📖 Learning Resources</h3>
-
-<p>
-Build a searchable collection of
-educational resources.
-</p>
-
-</div>
-
-<div class="card">
-
-<h3>🌍 Global Access</h3>
-
-<p>
-Designed to work through the internet
-from anywhere.
-</p>
-
-</div>
-
-</div>
-
-<br>
-
-<div class="card">
-
-<h3>System status</h3>
-
-<p>
-Portal:
-<span class="status">ONLINE</span>
-</p>
-
-<p>
-Supabase:
-{% if supabase %}
-<span class="status">CONNECTED</span>
-{% else %}
-<span class="status off">FALLBACK MODE</span>
-{% endif %}
-</p>
-
-<p>
-Payments:
-{% if flutterwave %}
-<span class="status">AVAILABLE</span>
-{% else %}
-<span class="status off">DISABLED</span>
-{% endif %}
-</p>
-
-</div>
-
-""",
-        supabase=SUPABASE_OK,
-        flutterwave=FLUTTERWAVE_OK
-    )
-
-    return page(
-        "Home",
-        content
-    )
-
-
-# ============================================================
-# REGISTER
-# ============================================================
-
-@app.route(
-    "/register",
-    methods=["GET", "POST"]
-)
-def register():
-
-    if request.method == "POST":
-
-        name = request.form.get(
-            "name",
-            ""
-        ).strip()
-
-        email = request.form.get(
-            "email",
-            ""
-        ).strip().lower()
-
-        password = request.form.get(
-            "password",
-            ""
-        )
-
-        if not name or not email or not password:
-
-            flash(
-                "Please complete all fields."
-            )
-
-            return redirect(
-                url_for("register")
-            )
-
-        users = get_users()
-
-        if any(
-            u.get("email", "").lower()
-            == email
-            for u in users
-        ):
-
-            flash(
-                "An account with this email already exists."
-            )
-
-            return redirect(
-                url_for("login")
-            )
-
-        user = {
-            "id": str(uuid.uuid4()),
-            "name": name,
-            "email": email,
-            "password": hash_password(password),
-            "role": "student",
-            "created_at":
-                datetime.utcnow().isoformat()
-        }
-
-        save_user(user)
-
-        flash(
-            "Account created successfully."
-        )
-
-        return redirect(
-            url_for("login")
-        )
-
-    content = """
-<h2>Create KOJA Account</h2>
-
-<div class="card">
-
-<form method="POST">
-
-<label>Name</label>
-
-<input
-    type="text"
-    name="name"
-    required
->
-
-<label>Email</label>
-
-<input
-    type="email"
-    name="email"
-    required
->
-
-<label>Password</label>
-
-<input
-    type="password"
-    name="password"
-    minlength="6"
-    required
->
-
-<button class="btn"
-        type="submit">
-Create Account
-</button>
-
-</form>
-
-</div>
-"""
-
-    return page(
-        "Register",
-        content
-    )
-
-
-# ============================================================
-# LOGIN
-# ============================================================
-
-@app.route(
-    "/login",
-    methods=["GET", "POST"]
-)
-def login():
-
-    if request.method == "POST":
-
-        email = request.form.get(
-            "email",
-            ""
-        ).strip().lower()
-
-        password = request.form.get(
-            "password",
-            ""
-        )
-
-        users = get_users()
-
-        user = next(
-            (
-                u for u in users
-                if u.get("email", "").lower()
-                == email
-            ),
-            None
-        )
-
-        if user and verify_password(
-            password,
-            user.get("password", "")
-        ):
-
-            session.clear()
-
-            session["user_id"] = user["id"]
-            session["email"] = user["email"]
-            session["name"] = user.get(
-                "name",
-                ""
-            )
-            session["role"] = user.get(
-                "role",
-                "student"
-            )
-
-            return redirect(
-                url_for("dashboard")
-            )
-
-        flash(
-            "Invalid email or password."
-        )
-
-    content = """
-<h2>Login</h2>
-
-<div class="card">
-
-<form method="POST">
-
-<label>Email</label>
-
-<input
-    type="email"
-    name="email"
-    required
->
-
-<label>Password</label>
-
-<input
-    type="password"
-    name="password"
-    required
->
-
-<button class="btn"
-        type="submit">
-Login
-</button>
-
-</form>
-
-</div>
-"""
-
-    return page(
-        "Login",
-        content
-    )
-
-
-# ============================================================
-# LOGOUT
-# ============================================================
-
-@app.route("/logout")
-def logout():
-
-    session.clear()
-
-    return redirect(
-        url_for("home")
-    )
-
-
-# ============================================================
-# DASHBOARD
-# ============================================================
-
-@app.route("/dashboard")
-@login_required
-def dashboard():
-
-    questions = get_questions()
-
-    my_questions = [
-        q for q in questions
-        if q.get("user_id")
-        == session.get("user_id")
-    ]
-
-    content = render_template_string("""
-<h2>
-Welcome, {{ name }}
-</h2>
-
-<div class="grid">
-
-<div class="card">
-
-<h3>My Questions</h3>
-
-<p style="font-size:30px">
-{{ count }}
-</p>
-
-</div>
-
-<div class="card">
-
-<h3>Account</h3>
-
-<p>
-{{ email }}
-</p>
-
-</div>
-
-<div class="card">
-
-<h3>Portal</h3>
-
-<p>
-<span class="status">ONLINE</span>
-</p>
-
-</div>
-
-</div>
-
-<br>
-
-<div class="card">
-
-<h3>Submit a Question</h3>
-
-<form method="POST"
-      action="{{ url_for('ask') }}">
-
-<label>Subject</label>
-
-<input
-    type="text"
-    name="subject"
-    placeholder="e.g. Chemistry"
-    required
->
-
-<label>Question</label>
-
-<textarea
-    name="question"
-    rows="6"
-    placeholder="Write your question..."
-    required
-></textarea>
-
-<button class="btn"
-        type="submit">
-Submit Question
-</button>
-
-</form>
-
-</div>
-
-<br>
-
-<h2>My Recent Questions</h2>
-
-{% for q in my_questions[-10:]|reverse %}
-
-<div class="card question">
-
-<h3>
-{{ q.get("subject") }}
-</h3>
-
-<p>
-{{ q.get("question") }}
-</p>
-
-<p class="small">
-{{ q.get("created_at") }}
-</p>
-
-</div>
-
-{% else %}
-
-<div class="card">
-<p>
-You have not submitted any questions yet.
-</p>
-</div>
-
-{% endfor %}
-
-""",
-        name=session.get("name"),
-        email=session.get("email"),
-        count=len(my_questions),
-        my_questions=my_questions
-    )
-
-    return page(
-        "Dashboard",
-        content
-    )
-
-
-# ============================================================
-# ASK QUESTION
-# ============================================================
-
-@app.route(
-    "/ask",
-    methods=["POST"]
-)
-@login_required
-def ask():
-
-    subject = request.form.get(
-        "subject",
-        ""
-    ).strip()
-
-    question_text = request.form.get(
-        "question",
-        ""
-    ).strip()
-
-    if not subject or not question_text:
-
-        flash(
-            "Subject and question are required."
-        )
-
-        return redirect(
-            url_for("dashboard")
-        )
-
-    question = {
-        "id": str(uuid.uuid4()),
-        "user_id":
-            session.get("user_id"),
-        "student_name":
-            session.get("name"),
-        "subject": subject,
-        "question": question_text,
-        "status": "Pending",
-        "answer": "",
-        "created_at":
-            datetime.utcnow().isoformat()
-    }
-
-    save_question(question)
-
-    flash(
-        "Question submitted successfully."
-    )
-
-    return redirect(
-        url_for("dashboard")
-    )
+    resources = get_resources()
+    assignments = get_assignments()
+
+    content = f"""
+    <section class="hero">
+
+        <h1>KOJA ZM</h1>
+
+        <p>
+        Knowledge • Questions • Answers
+        </p>
+
+        <p>
+        Assignment Questions • Academic Answers
+        • Learning Resources
+        </p>
+
+        <a class="btn"
+           href="{url_for('questions')}">
+           Browse Questions
+        </a>
+
+        <a class="btn btn-green"
+           href="{url_for('student_login')}">
+           Student Login
+        </a>
+
+    </section>
+
+    <div class="grid">
+
+        <div class="card">
+            <h3>Questions</h3>
+            <div class="stat">
+                {len(questions)}
+            </div>
+            <p>Academic questions and answers.</p>
+        </div>
+
+        <div class="card">
+            <h3>Resources</h3>
+            <div class="stat">
+                {len(resources)}
+            </div>
+            <p>Learning materials and documents.</p>
+        </div>
+
+        <div class="card">
+            <h3>Assignments</h3>
+            <div class="stat">
+                {len(assignments)}
+            </div>
+            <p>Academic assignments.</p>
+        </div>
+
+        <div class="card">
+            <h3>System</h3>
+            <div class="stat" style="font-size:18px;">
+                {current_mode()}
+            </div>
+            <p>
+                KOJA continues operating even when
+                Supabase is unavailable.
+            </p>
+        </div>
+
+    </div>
+    """
+
+    return page("Home", content)
 
 
 # ============================================================
@@ -1376,304 +813,1598 @@ def ask():
 @app.route("/questions")
 def questions():
 
-    all_questions = get_questions()
+    records = get_questions()
 
-    content = render_template_string("""
-<h2>Academic Questions</h2>
+    cards = ""
 
-<div class="card">
+    for q in records:
 
-<form method="GET">
+        cards += f"""
+        <div class="card">
 
-<input
-    type="search"
-    name="q"
-    value="{{ search }}"
-    placeholder="Search questions..."
->
+            <span class="badge">
+            {q.get("subject", "General")}
+            </span>
 
-<button class="btn"
-        type="submit">
-Search
-</button>
+            <h3>
+            {q.get("title", "Question")}
+            </h3>
 
-</form>
+            <p>
+            {q.get("question", "")}
+            </p>
 
-</div>
+            <details>
+                <summary>
+                View Answer
+                </summary>
 
-<br>
+                <p>
+                {q.get("answer", "Answer unavailable.")}
+                </p>
+            </details>
 
-{% for item in questions %}
+        </div>
+        """
 
-<div class="card question">
+    content = f"""
+    <div class="hero">
+        <h1>Academic Questions</h1>
 
-<h3>
-{{ item.get("subject") }}
-</h3>
+        <p>
+        Find questions and academic answers.
+        </p>
+    </div>
 
-<p>
-{{ item.get("question") }}
-</p>
+    <div class="grid">
+        {cards or '<div class="card">No questions available.</div>'}
+    </div>
+    """
 
-{% if item.get("answer") %}
-
-<hr>
-
-<h4>Answer</h4>
-
-<p>
-{{ item.get("answer") }}
-</p>
-
-{% endif %}
-
-<p class="small">
-Status:
-{{ item.get("status", "Pending") }}
-</p>
-
-</div>
-
-{% else %}
-
-<div class="card">
-
-<p>
-No questions found.
-</p>
-
-</div>
-
-{% endfor %}
-
-""",
-        questions=(
-            [
-                q for q in all_questions
-                if search.lower()
-                in (
-                    q.get("question", "") +
-                    " " +
-                    q.get("subject", "")
-                ).lower()
-            ]
-            if (
-                search :=
-                request.args.get(
-                    "q",
-                    ""
-                ).strip()
-            )
-            else all_questions
-        )
-    )
-
-    return page(
-        "Questions",
-        content
-    )
+    return page("Questions", content)
 
 
 # ============================================================
-# ADMIN
+# RESOURCES
 # ============================================================
 
-@app.route("/admin")
-@admin_required
-def admin():
+@app.route("/resources")
+def resources():
 
-    users = get_users()
-    questions = get_questions()
+    records = get_resources()
 
-    content = render_template_string("""
-<h2>KOJA Administration</h2>
+    rows = ""
 
-<div class="grid">
+    for r in records:
 
-<div class="card">
+        rows += f"""
+        <tr>
+            <td>{r.get("title", "")}</td>
+            <td>{r.get("subject", "")}</td>
+            <td>{r.get("type", "Resource")}</td>
+            <td>
+                <a class="btn"
+                   href="{r.get('url', '#')}">
+                   Open
+                </a>
+            </td>
+        </tr>
+        """
 
-<h3>Users</h3>
+    content = f"""
+    <div class="hero">
+        <h1>Learning Resources</h1>
+        <p>Academic resources available through KOJA.</p>
+    </div>
 
-<p style="font-size:30px">
-{{ users|length }}
-</p>
+    <div class="card table-wrap">
 
-</div>
+    <table>
 
-<div class="card">
+        <tr>
+            <th>Title</th>
+            <th>Subject</th>
+            <th>Type</th>
+            <th>Action</th>
+        </tr>
 
-<h3>Questions</h3>
+        {rows or '''
+        <tr>
+            <td colspan="4">
+            No resources available.
+            </td>
+        </tr>
+        '''}
 
-<p style="font-size:30px">
-{{ questions|length }}
-</p>
+    </table>
 
-</div>
+    </div>
+    """
 
-<div class="card">
-
-<h3>Supabase</h3>
-
-<p>
-{% if supabase %}
-<span class="status">
-CONNECTED
-</span>
-{% else %}
-<span class="status off">
-FALLBACK
-</span>
-{% endif %}
-</p>
-
-</div>
-
-<div class="card">
-
-<h3>Flutterwave</h3>
-
-<p>
-{% if flutterwave %}
-<span class="status">
-AVAILABLE
-</span>
-{% else %}
-<span class="status off">
-DISABLED
-</span>
-{% endif %}
-</p>
-
-</div>
-
-</div>
-
-<br>
-
-<h2>Submitted Questions</h2>
-
-{% for q in questions|reverse %}
-
-<div class="card question">
-
-<h3>
-{{ q.get("subject") }}
-</h3>
-
-<p>
-{{ q.get("question") }}
-</p>
-
-<p class="small">
-Student:
-{{ q.get("student_name") }}
-</p>
-
-<form method="POST"
-      action="{{ url_for(
-          'answer_question',
-          question_id=q.get('id')
-      ) }}">
-
-<textarea
-    name="answer"
-    rows="5"
-    placeholder="Write academic answer..."
->{{ q.get("answer", "") }}</textarea>
-
-<button class="btn success"
-        type="submit">
-Save Answer
-</button>
-
-</form>
-
-</div>
-
-{% endfor %}
-
-""",
-        users=users,
-        questions=questions,
-        supabase=SUPABASE_OK,
-        flutterwave=FLUTTERWAVE_OK
-    )
-
-    return page(
-        "Admin",
-        content
-    )
+    return page("Resources", content)
 
 
 # ============================================================
-# ADMIN ANSWER
+# ASSIGNMENTS
 # ============================================================
 
-@app.route(
-    "/admin/answer/<question_id>",
-    methods=["POST"]
-)
-@admin_required
-def answer_question(question_id):
+@app.route("/assignments")
+def assignments():
 
-    answer = request.form.get(
-        "answer",
+    records = get_assignments()
+
+    cards = ""
+
+    for a in records:
+
+        cards += f"""
+        <div class="card">
+
+            <h3>
+            {a.get("title", "Assignment")}
+            </h3>
+
+            <p>
+            <strong>Subject:</strong>
+            {a.get("subject", "")}
+            </p>
+
+            <p>
+            {a.get("description", "")}
+            </p>
+
+        </div>
+        """
+
+    content = f"""
+    <div class="hero">
+
+        <h1>Assignments</h1>
+
+        <p>
+        Access academic assignments.
+        </p>
+
+    </div>
+
+    <div class="grid">
+
+        {cards or
+        '<div class="card">No assignments available.</div>'}
+
+    </div>
+    """
+
+    return page("Assignments", content)
+
+
+# ============================================================
+# STUDENT LOGIN
+# ============================================================
+
+@app.route("/login")
+def student_login():
+
+    content = f"""
+    <div class="form-card">
+
+        <h2>Student Login</h2>
+
+        <form method="POST"
+              action="{url_for('student_login_post')}">
+
+            <label>Email</label>
+
+            <input
+                type="email"
+                name="email"
+                required
+            >
+
+            <label>Password</label>
+
+            <input
+                type="password"
+                name="password"
+                required
+            >
+
+            <button class="btn">
+                Login
+            </button>
+
+        </form>
+
+        <p>
+        Don't have an account?
+        <a href="{url_for('student_register')}">
+        Register
+        </a>
+        </p>
+
+    </div>
+    """
+
+    return page("Student Login", content)
+
+
+@app.route("/login", methods=["POST"])
+def student_login_post():
+
+    email = request.form.get(
+        "email",
         ""
-    ).strip()
+    ).strip().lower()
 
-    questions = get_questions()
+    password = request.form.get(
+        "password",
+        ""
+    )
 
-    found = False
+    result = supabase_request(
+        "GET",
+        "users",
+        params={
+            "select": "*",
+            "email": f"eq.{email}"
+        }
+    )
 
-    for q in questions:
+    if isinstance(result, list) and result:
 
-        if q.get("id") == question_id:
+        user = result[0]
 
-            q["answer"] = answer
+        if check_password(
+            password,
+            user.get("password_hash", "")
+        ):
 
-            q["status"] = (
-                "Answered"
-                if answer
-                else "Pending"
-            )
+            session["student_logged_in"] = True
+            session["student_email"] = email
 
-            found = True
+            return redirect(url_for("student_dashboard"))
 
-            break
+    for user in FALLBACK_USERS:
 
-    if found:
+        if user.get("email") == email:
 
-        if SUPABASE_OK:
+            if check_password(
+                password,
+                user.get("password_hash", "")
+            ):
 
-            supabase_request(
-                "PATCH",
-                "questions",
-                {
-                    "answer": answer,
-                    "status":
-                        "Answered"
-                        if answer
-                        else "Pending"
-                },
-                {
-                    "id":
-                        "eq." +
-                        question_id
-                }
-            )
+                session["student_logged_in"] = True
+                session["student_email"] = email
 
-        save_json(
-            QUESTIONS_FILE,
-            questions
+                return redirect(
+                    url_for("student_dashboard")
+                )
+
+    flash("Invalid student login.")
+
+    return redirect(url_for("student_login"))
+
+
+# ============================================================
+# STUDENT REGISTRATION
+# ============================================================
+
+@app.route("/register")
+def student_register():
+
+    content = f"""
+    <div class="form-card">
+
+        <h2>Create Student Account</h2>
+
+        <form method="POST"
+              action="{url_for('student_register_post')}">
+
+            <label>Name</label>
+
+            <input
+                name="name"
+                required
+            >
+
+            <label>Email</label>
+
+            <input
+                type="email"
+                name="email"
+                required
+            >
+
+            <label>Password</label>
+
+            <input
+                type="password"
+                name="password"
+                minlength="6"
+                required
+            >
+
+            <button class="btn btn-green">
+                Create Account
+            </button>
+
+        </form>
+
+    </div>
+    """
+
+    return page("Register", content)
+
+
+@app.route("/register", methods=["POST"])
+def student_register_post():
+
+    name = request.form.get("name", "").strip()
+    email = request.form.get(
+        "email",
+        ""
+    ).strip().lower()
+
+    password = request.form.get(
+        "password",
+        ""
+    )
+
+    if not name or not email or not password:
+
+        flash("All fields are required.")
+
+        return redirect(
+            url_for("student_register")
         )
+
+    record = {
+        "id": str(uuid.uuid4()),
+        "name": name,
+        "email": email,
+        "password_hash": hash_password(password),
+        "role": "student",
+        "created_at": now(),
+    }
+
+    inserted = insert_record(
+        "users",
+        record,
+        FALLBACK_USERS
+    )
+
+    if inserted:
 
         flash(
-            "Answer saved."
+            "Account created. You can now log in."
         )
 
     return redirect(
-        url_for("admin")
+        url_for("student_login")
     )
+
+
+# ============================================================
+# STUDENT DASHBOARD
+# ============================================================
+
+@app.route("/student")
+@student_required
+def student_dashboard():
+
+    email = session.get(
+        "student_email",
+        ""
+    )
+
+    notifications = get_notifications()
+
+    notification_html = ""
+
+    for n in notifications[:10]:
+
+        notification_html += f"""
+        <div class="card">
+            <h3>{n.get("title", "")}</h3>
+            <p>{n.get("message", "")}</p>
+        </div>
+        """
+
+    content = f"""
+    <section class="hero">
+
+        <h1>Student Dashboard</h1>
+
+        <p>
+        Welcome, {email}
+        </p>
+
+        <a class="btn"
+           href="{url_for('questions')}">
+           Questions
+        </a>
+
+        <a class="btn btn-green"
+           href="{url_for('resources')}">
+           Resources
+        </a>
+
+        <a class="btn btn-dark"
+           href="{url_for('student_logout')}">
+           Logout
+        </a>
+
+    </section>
+
+    <h2>Notifications</h2>
+
+    <div class="grid">
+
+        {notification_html or
+        '<div class="card">No notifications.</div>'}
+
+    </div>
+    """
+
+    return page(
+        "Student Dashboard",
+        content
+    )
+
+
+@app.route("/student/logout")
+def student_logout():
+
+    session.pop("student_logged_in", None)
+    session.pop("student_email", None)
+
+    return redirect(url_for("home"))
+
+
+# ============================================================
+# ADMIN LOGIN
+# ============================================================
+
+@app.route("/admin")
+def admin_login():
+
+    if session.get("admin_logged_in"):
+
+        return redirect(
+            url_for("admin_dashboard")
+        )
+
+    content = f"""
+    <div class="form-card">
+
+        <h2>KOJA ZM Administration</h2>
+
+        <p>
+        Secure administrator access.
+        </p>
+
+        <div class="alert warning">
+
+        Current system mode:
+        <strong>
+        {current_mode()}
+        </strong>
+
+        </div>
+
+        <form method="POST"
+              action="{url_for('admin_login_post')}">
+
+            <label>Admin Username</label>
+
+            <input
+                name="username"
+                autocomplete="username"
+                required
+            >
+
+            <label>Admin Password</label>
+
+            <input
+                type="password"
+                name="password"
+                autocomplete="current-password"
+                required
+            >
+
+            <button class="btn btn-dark">
+                Admin Login
+            </button>
+
+        </form>
+
+    </div>
+    """
+
+    return page(
+        "Admin Login",
+        content
+    )
+
+
+@app.route("/admin/login", methods=["POST"])
+def admin_login_post():
+
+    username = request.form.get(
+        "username",
+        ""
+    ).strip()
+
+    password = request.form.get(
+        "password",
+        ""
+    )
+
+    # --------------------------------------------------------
+    # EMERGENCY FALLBACK ADMIN
+    # --------------------------------------------------------
+
+    if (
+        hmac.compare_digest(
+            username,
+            FALLBACK_ADMIN_USERNAME
+        )
+        and
+        hmac.compare_digest(
+            password,
+            FALLBACK_ADMIN_PASSWORD
+        )
+    ):
+
+        session["admin_logged_in"] = True
+        session["admin_username"] = username
+
+        flash(
+            "Admin access granted."
+        )
+
+        return redirect(
+            url_for("admin_dashboard")
+        )
+
+    # --------------------------------------------------------
+    # SUPABASE ADMIN
+    # --------------------------------------------------------
+
+    result = supabase_request(
+        "GET",
+        "admins",
+        params={
+            "select": "*",
+            "username": f"eq.{username}"
+        }
+    )
+
+    if isinstance(result, list) and result:
+
+        admin = result[0]
+
+        stored_hash = admin.get(
+            "password_hash",
+            ""
+        )
+
+        if check_password(
+            password,
+            stored_hash
+        ):
+
+            session["admin_logged_in"] = True
+            session["admin_username"] = username
+
+            return redirect(
+                url_for("admin_dashboard")
+            )
+
+    flash("Invalid administrator credentials.")
+
+    return redirect(
+        url_for("admin_login")
+    )
+
+
+# ============================================================
+# ADMIN DASHBOARD
+# ============================================================
+
+@app.route("/admin/dashboard")
+@admin_required
+def admin_dashboard():
+
+    users = get_users()
+    questions_data = get_questions()
+    assignments_data = get_assignments()
+    resources_data = get_resources()
+    notifications = get_notifications()
+
+    status_class = (
+        "success"
+        if SUPABASE_ONLINE
+        else "warning"
+    )
+
+    content = f"""
+    <section class="hero">
+
+        <h1>KOJA ZM Admin Dashboard</h1>
+
+        <p>
+        Administrator:
+        <strong>
+        {session.get("admin_username", "admin")}
+        </strong>
+        </p>
+
+        <div class="alert {status_class}">
+
+            <strong>System mode:</strong>
+            {current_mode()}
+
+            <br><br>
+
+            The portal remains accessible even when
+            Supabase is not configured.
+
+        </div>
+
+        <a class="btn btn-danger"
+           href="{url_for('admin_logout')}">
+           Logout
+        </a>
+
+    </section>
+
+    <div class="grid">
+
+        <div class="card">
+            <h3>Users</h3>
+            <div class="stat">{len(users)}</div>
+            <a href="{url_for('admin_users')}"
+               class="btn">
+               Manage
+            </a>
+        </div>
+
+        <div class="card">
+            <h3>Questions</h3>
+            <div class="stat">
+                {len(questions_data)}
+            </div>
+            <a href="{url_for('admin_questions')}"
+               class="btn">
+               Manage
+            </a>
+        </div>
+
+        <div class="card">
+            <h3>Assignments</h3>
+            <div class="stat">
+                {len(assignments_data)}
+            </div>
+            <a href="{url_for('admin_assignments')}"
+               class="btn">
+               Manage
+            </a>
+        </div>
+
+        <div class="card">
+            <h3>Resources</h3>
+            <div class="stat">
+                {len(resources_data)}
+            </div>
+            <a href="{url_for('admin_resources')}"
+               class="btn">
+               Manage
+            </a>
+        </div>
+
+        <div class="card">
+            <h3>Notifications</h3>
+            <div class="stat">
+                {len(notifications)}
+            </div>
+            <a href="{url_for('admin_notifications')}"
+               class="btn">
+               Manage
+            </a>
+        </div>
+
+        <div class="card">
+            <h3>System</h3>
+
+            <p>
+            Supabase configured:
+            <strong>
+            {"YES" if SUPABASE_CONFIGURED else "NO"}
+            </strong>
+            </p>
+
+            <p>
+            Supabase online:
+            <strong>
+            {"YES" if SUPABASE_ONLINE else "NO"}
+            </strong>
+            </p>
+
+            <a href="{url_for('admin_system')}"
+               class="btn btn-dark">
+               System Status
+            </a>
+
+        </div>
+
+    </div>
+    """
+
+    return page(
+        "Admin Dashboard",
+        content
+    )
+
+
+# ============================================================
+# ADMIN USERS
+# ============================================================
+
+@app.route("/admin/users")
+@admin_required
+def admin_users():
+
+    users = get_users()
+
+    rows = ""
+
+    for u in users:
+
+        rows += f"""
+        <tr>
+
+            <td>
+            {u.get("name", "")}
+            </td>
+
+            <td>
+            {u.get("email", "")}
+            </td>
+
+            <td>
+            {u.get("role", "student")}
+            </td>
+
+            <td>
+            {u.get("created_at", "")}
+            </td>
+
+        </tr>
+        """
+
+    content = f"""
+    <div class="hero">
+
+        <h1>Users</h1>
+
+        <a class="btn"
+           href="{url_for('admin_dashboard')}">
+           Dashboard
+        </a>
+
+    </div>
+
+    <div class="card table-wrap">
+
+        <table>
+
+        <tr>
+            <th>Name</th>
+            <th>Email</th>
+            <th>Role</th>
+            <th>Created</th>
+        </tr>
+
+        {rows or '''
+        <tr>
+            <td colspan="4">
+            No users found.
+            </td>
+        </tr>
+        '''}
+
+        </table>
+
+    </div>
+    """
+
+    return page(
+        "Admin Users",
+        content
+    )
+
+
+# ============================================================
+# ADMIN QUESTIONS
+# ============================================================
+
+@app.route("/admin/questions")
+@admin_required
+def admin_questions():
+
+    records = get_questions()
+
+    rows = ""
+
+    for q in records:
+
+        rows += f"""
+        <tr>
+
+            <td>
+            {q.get("title", "")}
+            </td>
+
+            <td>
+            {q.get("subject", "")}
+            </td>
+
+            <td>
+            {q.get("status", "Published")}
+            </td>
+
+        </tr>
+        """
+
+    content = f"""
+    <div class="hero">
+
+        <h1>Manage Questions</h1>
+
+        <a class="btn btn-green"
+           href="{url_for('admin_add_question')}">
+           Add Question
+        </a>
+
+        <a class="btn"
+           href="{url_for('admin_dashboard')}">
+           Dashboard
+        </a>
+
+    </div>
+
+    <div class="card table-wrap">
+
+        <table>
+
+        <tr>
+            <th>Title</th>
+            <th>Subject</th>
+            <th>Status</th>
+        </tr>
+
+        {rows}
+
+        </table>
+
+    </div>
+    """
+
+    return page(
+        "Admin Questions",
+        content
+    )
+
+
+@app.route("/admin/questions/add")
+@admin_required
+def admin_add_question():
+
+    content = f"""
+    <div class="form-card">
+
+        <h2>Add Academic Question</h2>
+
+        <form method="POST"
+              action="{url_for('admin_add_question_post')}">
+
+            <label>Title</label>
+
+            <input
+                name="title"
+                required
+            >
+
+            <label>Subject</label>
+
+            <input
+                name="subject"
+                required
+            >
+
+            <label>Question</label>
+
+            <textarea
+                name="question"
+                required
+            ></textarea>
+
+            <label>Answer</label>
+
+            <textarea
+                name="answer"
+                required
+            ></textarea>
+
+            <button class="btn btn-green">
+                Save Question
+            </button>
+
+        </form>
+
+    </div>
+    """
+
+    return page(
+        "Add Question",
+        content
+    )
+
+
+@app.route(
+    "/admin/questions/add",
+    methods=["POST"]
+)
+@admin_required
+def admin_add_question_post():
+
+    record = {
+        "id": str(uuid.uuid4()),
+        "title": request.form.get(
+            "title",
+            ""
+        ).strip(),
+
+        "subject": request.form.get(
+            "subject",
+            ""
+        ).strip(),
+
+        "question": request.form.get(
+            "question",
+            ""
+        ).strip(),
+
+        "answer": request.form.get(
+            "answer",
+            ""
+        ).strip(),
+
+        "status": "Published",
+        "created_at": now(),
+    }
+
+    insert_record(
+        "questions",
+        record,
+        FALLBACK_QUESTIONS
+    )
+
+    flash("Question saved successfully.")
+
+    return redirect(
+        url_for("admin_questions")
+    )
+
+
+# ============================================================
+# ADMIN ASSIGNMENTS
+# ============================================================
+
+@app.route("/admin/assignments")
+@admin_required
+def admin_assignments():
+
+    records = get_assignments()
+
+    rows = ""
+
+    for a in records:
+
+        rows += f"""
+        <tr>
+
+            <td>{a.get("title", "")}</td>
+
+            <td>{a.get("subject", "")}</td>
+
+            <td>{a.get("created_at", "")}</td>
+
+        </tr>
+        """
+
+    content = f"""
+    <div class="hero">
+
+        <h1>Manage Assignments</h1>
+
+        <a class="btn btn-green"
+           href="{url_for('admin_add_assignment')}">
+           Add Assignment
+        </a>
+
+        <a class="btn"
+           href="{url_for('admin_dashboard')}">
+           Dashboard
+        </a>
+
+    </div>
+
+    <div class="card table-wrap">
+
+        <table>
+
+            <tr>
+                <th>Title</th>
+                <th>Subject</th>
+                <th>Created</th>
+            </tr>
+
+            {rows}
+
+        </table>
+
+    </div>
+    """
+
+    return page(
+        "Admin Assignments",
+        content
+    )
+
+
+@app.route("/admin/assignments/add")
+@admin_required
+def admin_add_assignment():
+
+    content = f"""
+    <div class="form-card">
+
+        <h2>Add Assignment</h2>
+
+        <form method="POST"
+              action="{url_for('admin_add_assignment_post')}">
+
+            <label>Title</label>
+
+            <input
+                name="title"
+                required
+            >
+
+            <label>Subject</label>
+
+            <input
+                name="subject"
+                required
+            >
+
+            <label>Description</label>
+
+            <textarea
+                name="description"
+                required
+            ></textarea>
+
+            <button class="btn btn-green">
+                Save Assignment
+            </button>
+
+        </form>
+
+    </div>
+    """
+
+    return page(
+        "Add Assignment",
+        content
+    )
+
+
+@app.route(
+    "/admin/assignments/add",
+    methods=["POST"]
+)
+@admin_required
+def admin_add_assignment_post():
+
+    record = {
+        "id": str(uuid.uuid4()),
+
+        "title": request.form.get(
+            "title",
+            ""
+        ).strip(),
+
+        "subject": request.form.get(
+            "subject",
+            ""
+        ).strip(),
+
+        "description": request.form.get(
+            "description",
+            ""
+        ).strip(),
+
+        "created_at": now(),
+    }
+
+    insert_record(
+        "assignments",
+        record,
+        FALLBACK_ASSIGNMENTS
+    )
+
+    flash("Assignment saved.")
+
+    return redirect(
+        url_for("admin_assignments")
+    )
+
+
+# ============================================================
+# ADMIN RESOURCES
+# ============================================================
+
+@app.route("/admin/resources")
+@admin_required
+def admin_resources():
+
+    records = get_resources()
+
+    rows = ""
+
+    for r in records:
+
+        rows += f"""
+        <tr>
+
+            <td>{r.get("title", "")}</td>
+
+            <td>{r.get("subject", "")}</td>
+
+            <td>{r.get("type", "")}</td>
+
+            <td>
+            <a href="{r.get('url', '#')}"
+               class="btn">
+               Open
+            </a>
+            </td>
+
+        </tr>
+        """
+
+    content = f"""
+    <div class="hero">
+
+        <h1>Manage Resources</h1>
+
+        <a class="btn btn-green"
+           href="{url_for('admin_add_resource')}">
+           Add Resource
+        </a>
+
+        <a class="btn"
+           href="{url_for('admin_dashboard')}">
+           Dashboard
+        </a>
+
+    </div>
+
+    <div class="card table-wrap">
+
+        <table>
+
+            <tr>
+                <th>Title</th>
+                <th>Subject</th>
+                <th>Type</th>
+                <th>Action</th>
+            </tr>
+
+            {rows}
+
+        </table>
+
+    </div>
+    """
+
+    return page(
+        "Admin Resources",
+        content
+    )
+
+
+@app.route("/admin/resources/add")
+@admin_required
+def admin_add_resource():
+
+    content = f"""
+    <div class="form-card">
+
+        <h2>Add Resource</h2>
+
+        <form method="POST"
+              action="{url_for('admin_add_resource_post')}">
+
+            <label>Title</label>
+
+            <input
+                name="title"
+                required
+            >
+
+            <label>Subject</label>
+
+            <input
+                name="subject"
+                required
+            >
+
+            <label>Type</label>
+
+            <select name="type">
+
+                <option>PDF</option>
+                <option>Video</option>
+                <option>Document</option>
+                <option>Link</option>
+
+            </select>
+
+            <label>Resource URL</label>
+
+            <input
+                name="url"
+                placeholder="https://..."
+                required
+            >
+
+            <button class="btn btn-green">
+                Save Resource
+            </button>
+
+        </form>
+
+    </div>
+    """
+
+    return page(
+        "Add Resource",
+        content
+    )
+
+
+@app.route(
+    "/admin/resources/add",
+    methods=["POST"]
+)
+@admin_required
+def admin_add_resource_post():
+
+    record = {
+        "id": str(uuid.uuid4()),
+
+        "title": request.form.get(
+            "title",
+            ""
+        ).strip(),
+
+        "subject": request.form.get(
+            "subject",
+            ""
+        ).strip(),
+
+        "type": request.form.get(
+            "type",
+            "Resource"
+        ).strip(),
+
+        "url": request.form.get(
+            "url",
+            "#"
+        ).strip(),
+
+        "created_at": now(),
+    }
+
+    insert_record(
+        "resources",
+        record,
+        FALLBACK_RESOURCES
+    )
+
+    flash("Resource saved.")
+
+    return redirect(
+        url_for("admin_resources")
+    )
+
+
+# ============================================================
+# ADMIN NOTIFICATIONS
+# ============================================================
+
+@app.route("/admin/notifications")
+@admin_required
+def admin_notifications():
+
+    records = get_notifications()
+
+    cards = ""
+
+    for n in records:
+
+        cards += f"""
+        <div class="card">
+
+            <h3>
+            {n.get("title", "")}
+            </h3>
+
+            <p>
+            {n.get("message", "")}
+            </p>
+
+            <small>
+            {n.get("created_at", "")}
+            </small>
+
+        </div>
+        """
+
+    content = f"""
+    <div class="hero">
+
+        <h1>Notifications</h1>
+
+        <a class="btn btn-green"
+           href="{url_for('admin_add_notification')}">
+           New Notification
+        </a>
+
+        <a class="btn"
+           href="{url_for('admin_dashboard')}">
+           Dashboard
+        </a>
+
+    </div>
+
+    <div class="grid">
+
+        {cards}
+
+    </div>
+    """
+
+    return page(
+        "Admin Notifications",
+        content
+    )
+
+
+@app.route("/admin/notifications/add")
+@admin_required
+def admin_add_notification():
+
+    content = f"""
+    <div class="form-card">
+
+        <h2>Create Notification</h2>
+
+        <form method="POST"
+              action="{url_for('admin_add_notification_post')}">
+
+            <label>Title</label>
+
+            <input
+                name="title"
+                required
+            >
+
+            <label>Message</label>
+
+            <textarea
+                name="message"
+                required
+            ></textarea>
+
+            <button class="btn btn-green">
+                Publish
+            </button>
+
+        </form>
+
+    </div>
+    """
+
+    return page(
+        "New Notification",
+        content
+    )
+
+
+@app.route(
+    "/admin/notifications/add",
+    methods=["POST"]
+)
+@admin_required
+def admin_add_notification_post():
+
+    record = {
+        "id": str(uuid.uuid4()),
+
+        "title": request.form.get(
+            "title",
+            ""
+        ).strip(),
+
+        "message": request.form.get(
+            "message",
+            ""
+        ).strip(),
+
+        "created_at": now(),
+    }
+
+    insert_record(
+        "notifications",
+        record,
+        FALLBACK_NOTIFICATIONS
+    )
+
+    flash("Notification published.")
+
+    return redirect(
+        url_for("admin_notifications")
+    )
+
+
+# ============================================================
+# ADMIN SYSTEM
+# ============================================================
+
+@app.route("/admin/system")
+@admin_required
+def admin_system():
+
+    content = f"""
+    <div class="hero">
+
+        <h1>System Status</h1>
+
+        <a class="btn"
+           href="{url_for('admin_dashboard')}">
+           Dashboard
+        </a>
+
+    </div>
+
+    <div class="grid">
+
+        <div class="card">
+
+            <h3>Application</h3>
+
+            <p>
+            <strong>ONLINE</strong>
+            </p>
+
+        </div>
+
+        <div class="card">
+
+            <h3>Supabase Configuration</h3>
+
+            <p>
+            {
+                "Configured"
+                if SUPABASE_CONFIGURED
+                else "Not Configured"
+            }
+            </p>
+
+        </div>
+
+        <div class="card">
+
+            <h3>Supabase Connection</h3>
+
+            <p>
+            {
+                "ONLINE"
+                if SUPABASE_ONLINE
+                else "OFFLINE / NOT TESTED"
+            }
+            </p>
+
+        </div>
+
+        <div class="card">
+
+            <h3>Current Mode</h3>
+
+            <p>
+            {current_mode()}
+            </p>
+
+        </div>
+
+        <div class="card">
+
+            <h3>Storage Bucket</h3>
+
+            <p>
+            {STORAGE_BUCKET}
+            </p>
+
+        </div>
+
+        <div class="card">
+
+            <h3>Architecture</h3>
+
+            <p>
+            Flask + Supabase REST API
+            </p>
+
+            <p>
+            Graceful degradation enabled.
+            </p>
+
+        </div>
+
+    </div>
+    """
+
+    return page(
+        "System Status",
+        content
+    )
+
+
+# ============================================================
+# ADMIN LOGOUT
+# ============================================================
+
+@app.route("/admin/logout")
+def admin_logout():
+
+    session.pop("admin_logged_in", None)
+    session.pop("admin_username", None)
+
+    return redirect(
+        url_for("admin_login")
+    )
+
+
+# ============================================================
+# HEALTH CHECK
+# ============================================================
+
+@app.route("/health")
+def health():
+
+    return jsonify({
+        "status": "ok",
+        "application": APP_NAME,
+        "mode": current_mode(),
+        "supabase_configured": SUPABASE_CONFIGURED,
+        "supabase_online": SUPABASE_ONLINE,
+        "time": now(),
+    })
 
 
 # ============================================================
@@ -1684,40 +2415,15 @@ def answer_question(question_id):
 def api_status():
 
     return jsonify({
+        "application": APP_NAME,
         "status": "online",
-        "application": "KOJA",
-        "supabase": SUPABASE_OK,
-        "flutterwave": FLUTTERWAVE_OK,
-        "mode":
-            "cloud"
-            if SUPABASE_OK
-            else "fallback",
-        "timestamp":
-            datetime.utcnow().isoformat()
+        "mode": current_mode(),
+        "supabase": {
+            "configured": SUPABASE_CONFIGURED,
+            "online": SUPABASE_ONLINE,
+        },
+        "fallback": True,
     })
-
-
-# ============================================================
-# API QUESTIONS
-# ============================================================
-
-@app.route("/api/questions")
-def api_questions():
-
-    return jsonify({
-        "success": True,
-        "data": get_questions()
-    })
-
-
-# ============================================================
-# HEALTH CHECK
-# ============================================================
-
-@app.route("/health")
-def health():
-
-    return "KOJA ONLINE", 200
 
 
 # ============================================================
@@ -1727,61 +2433,51 @@ def health():
 @app.errorhandler(404)
 def not_found(error):
 
-    return page(
-        "Page Not Found",
-        """
-        <div class="card">
-        <h2>Page not found</h2>
+    content = """
+    <div class="hero">
+
+        <h1>404</h1>
+
         <p>
         The page you requested does not exist.
         </p>
-        <a class="btn"
-           href="/">
+
+        <a class="btn" href="/">
         Return Home
         </a>
-        </div>
-        """
+
+    </div>
+    """
+
+    return page(
+        "Page Not Found",
+        content
     ), 404
 
 
-@app.errorhandler(413)
-def file_too_large(error):
-
-    return page(
-        "File Too Large",
-        """
-        <div class="card">
-        <h2>File too large</h2>
-        <p>
-        The maximum upload size is 10 MB.
-        </p>
-        </div>
-        """
-    ), 413
-
-
 @app.errorhandler(500)
-def server_error(error):
+def internal_error(error):
 
-    app.logger.exception(
-        "Unexpected server error"
-    )
+    content = """
+    <div class="hero">
+
+        <h1>KOJA is still running</h1>
+
+        <p>
+        A server operation failed, but the portal
+        itself remains available.
+        </p>
+
+        <a class="btn" href="/">
+        Return Home
+        </a>
+
+    </div>
+    """
 
     return page(
         "Temporary Error",
-        """
-        <div class="card">
-        <h2>KOJA is still running</h2>
-        <p>
-        A temporary problem occurred while
-        processing this request.
-        </p>
-        <a class="btn"
-           href="/">
-        Return Home
-        </a>
-        </div>
-        """
+        content
     ), 500
 
 
@@ -1789,53 +2485,74 @@ def server_error(error):
 # STARTUP
 # ============================================================
 
-initialize_local_data()
-
-check_supabase()
-check_flutterwave()
-
-app.logger.info(
-    "========================================"
-)
-
-app.logger.info(
-    "KOJA started"
-)
-
-app.logger.info(
-    "Supabase: %s",
-    "CONNECTED"
-    if SUPABASE_OK
-    else "FALLBACK MODE"
-)
-
-app.logger.info(
-    "Flutterwave: %s",
-    "AVAILABLE"
-    if FLUTTERWAVE_OK
-    else "DISABLED"
-)
-
-app.logger.info(
-    "========================================"
-)
-
-
-# ============================================================
-# RUN
-# ============================================================
-
 if __name__ == "__main__":
 
-    port = int(
-        os.environ.get(
-            "PORT",
-            "5000"
+    print("=" * 60)
+    print("KOJA ZM")
+    print("Knowledge • Questions • Answers")
+    print("=" * 60)
+
+    if SUPABASE_CONFIGURED:
+
+        print("Supabase configuration: FOUND")
+
+        # Test connection without preventing startup.
+        try:
+
+            test = supabase_request(
+                "GET",
+                "questions",
+                params={
+                    "select": "id",
+                    "limit": "1"
+                }
+            )
+
+            if test is not None:
+                SUPABASE_ONLINE = True
+                print("Supabase: ONLINE")
+
+            else:
+                print(
+                    "Supabase: OFFLINE"
+                )
+
+        except Exception:
+            SUPABASE_ONLINE = False
+            print(
+                "Supabase: OFFLINE"
+            )
+
+    else:
+
+        print(
+            "Supabase configuration: NOT FOUND"
         )
+
+        print(
+            "Starting in FALLBACK mode."
+        )
+
+    print()
+    print(
+        "Admin username:",
+        FALLBACK_ADMIN_USERNAME
     )
+
+    print(
+        "Admin password:",
+        FALLBACK_ADMIN_PASSWORD
+    )
+
+    print()
+    print(
+        "Portal will start even without Supabase."
+    )
+
+    print("=" * 60)
 
     app.run(
         host="0.0.0.0",
-        port=port,
+        port=PORT,
         debug=False
     )
