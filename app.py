@@ -735,10 +735,7 @@ HTML = """
     content="width=device-width, initial-scale=1"
 >
 
-<meta
-    name="theme-color"
-    content="#101828"
->
+<meta name="theme-color" content="#101828">
 
 <meta
     name="google-site-verification"
