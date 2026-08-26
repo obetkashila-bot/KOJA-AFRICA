@@ -1,3 +1,35 @@
+# ============================================================
+# KOJA AFRICA
+# Knowledge • Questions • Answers
+#
+# SINGLE-FILE FLASK PORTAL
+# LOCAL-FIRST + OPTIONAL SUPABASE
+#
+# PUBLIC HOME:
+#   - KOJA opening animation
+#   - How KOJA Works
+#   - Login
+#   - Create Account
+#
+# PRIVATE:
+#   - Student dashboard
+#   - Student questions
+#   - Student files
+#
+# ADMIN ONLY:
+#   - Dashboard
+#   - All questions
+#   - Answers
+#   - Answer files
+#   - Logs
+#   - Configuration
+#
+# PUBLIC RESEARCH:
+#   - ONLY answered/published questions
+#   - NO question counters on home
+#
+# ============================================================
+
 import os
 import json
 import uuid
@@ -23,23 +55,14 @@ from flask import (
 )
 
 # ============================================================
-# KOJA AFRICA
-# Knowledge • Questions • Answers
-#
-# SINGLE-FILE FLASK PORTAL
-#
-# LOCAL-FIRST + OPTIONAL SUPABASE
+# APPLICATION
 # ============================================================
 
 app = Flask(__name__)
 
-# ============================================================
-# SECURITY / APPLICATION
-# ============================================================
-
 app.secret_key = os.environ.get(
     "FLASK_SECRET_KEY",
-    "CHANGE_THIS_SECRET_IN_PRODUCTION"
+    "CHANGE_THIS_SECRET_BEFORE_PRODUCTION"
 )
 
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
@@ -49,6 +72,7 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 if os.environ.get("FLASK_SECURE_COOKIE", "0") == "1":
     app.config["SESSION_COOKIE_SECURE"] = True
+
 
 # ============================================================
 # SITE CONFIGURATION
@@ -62,24 +86,34 @@ SITE_URL = os.environ.get(
 SITE_NAME = "KOJA AFRICA"
 
 SITE_DESCRIPTION = (
-    "KOJA AFRICA is a knowledge, questions and answers "
-    "platform for academic research, assignments, "
-    "learning resources and educational questions."
+    "KOJA AFRICA is a knowledge, questions and answers platform "
+    "for academic research, assignments, learning resources "
+    "and educational questions."
 )
 
 GOOGLE_VERIFICATION = os.environ.get(
     "GOOGLE_VERIFICATION",
     ""
-)
+).strip()
+
 
 # ============================================================
 # LOCAL STORAGE
 # ============================================================
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(
+    os.path.abspath(__file__)
+)
 
-DATA_DIR = os.path.join(BASE_DIR, "koja_data")
-UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
+DATA_DIR = os.path.join(
+    BASE_DIR,
+    "koja_data"
+)
+
+UPLOAD_DIR = os.path.join(
+    DATA_DIR,
+    "uploads"
+)
 
 STUDENT_UPLOAD_DIR = os.path.join(
     UPLOAD_DIR,
@@ -99,6 +133,7 @@ for directory in (
 ):
     os.makedirs(directory, exist_ok=True)
 
+
 USERS_FILE = os.path.join(
     DATA_DIR,
     "users.json"
@@ -116,8 +151,9 @@ LOGS_FILE = os.path.join(
 
 LOCK = threading.Lock()
 
+
 # ============================================================
-# ADMIN
+# ADMIN CONFIGURATION
 # ============================================================
 
 ADMIN_EMAIL = os.environ.get(
@@ -130,8 +166,9 @@ ADMIN_PASSWORD = os.environ.get(
     "ChangeMe123!"
 )
 
+
 # ============================================================
-# SUPABASE
+# SUPABASE CONFIGURATION
 # ============================================================
 
 SUPABASE_URL = os.environ.get(
@@ -149,8 +186,9 @@ STORAGE_BUCKET = os.environ.get(
     "koja-files"
 ).strip()
 
+
 # ============================================================
-# FILE TYPES
+# FILE CONFIGURATION
 # ============================================================
 
 ALLOWED_EXTENSIONS = {
@@ -178,8 +216,9 @@ IMAGE_EXTENSIONS = {
     "gif",
 }
 
+
 # ============================================================
-# BASIC HELPERS
+# GENERAL HELPERS
 # ============================================================
 
 def now():
@@ -226,7 +265,11 @@ def read_json(path):
             ) as file:
                 value = json.load(file)
 
-        return value if isinstance(value, list) else []
+        return (
+            value
+            if isinstance(value, list)
+            else []
+        )
 
     except Exception:
         return []
@@ -253,6 +296,7 @@ def write_json(path, data):
             path
         )
 
+
 # ============================================================
 # SUPABASE
 # ============================================================
@@ -265,11 +309,14 @@ def supabase_configured():
     )
 
 
-def supabase_headers(content_type=True):
+def supabase_headers(
+    content_type=True
+):
     headers = {
         "apikey": SUPABASE_SERVICE_KEY,
         "Authorization":
-            "Bearer " + SUPABASE_SERVICE_KEY,
+            "Bearer " +
+            SUPABASE_SERVICE_KEY,
     }
 
     if content_type:
@@ -313,7 +360,10 @@ def supabase_request(
         return None
 
 
-def supabase_insert(table, row):
+def supabase_insert(
+    table,
+    row
+):
     return supabase_request(
         "POST",
         "/rest/v1/" + table,
@@ -329,7 +379,8 @@ def supabase_update(
 ):
     return supabase_request(
         "PATCH",
-        f"/rest/v1/{table}?{key}=eq.{value}",
+        f"/rest/v1/{table}"
+        f"?{key}=eq.{value}",
         row
     )
 
@@ -350,11 +401,9 @@ def supabase_test():
     except Exception:
         return False
 
+
 # ============================================================
 # LOGGING
-#
-# Logs are stored locally but displayed only through
-# administrator-protected routes.
 # ============================================================
 
 def client_ip():
@@ -383,7 +432,7 @@ def log_event(
     level="INFO",
     details="",
     user_id=None,
-    user_email=None,
+    user_email=None
 ):
     try:
         uid = (
@@ -445,6 +494,7 @@ def log_event(
 def logs():
     return read_json(LOGS_FILE)
 
+
 # ============================================================
 # PASSWORD SECURITY
 # ============================================================
@@ -459,7 +509,11 @@ def hash_password(password):
         200000,
     )
 
-    return salt + "$" + digest.hex()
+    return (
+        salt +
+        "$" +
+        digest.hex()
+    )
 
 
 def verify_password(
@@ -487,6 +541,7 @@ def verify_password(
     except Exception:
         return False
 
+
 # ============================================================
 # USERS
 # ============================================================
@@ -497,9 +552,7 @@ def users():
 
 def find_user(email):
     email = (
-        email
-        or
-        ""
+        email or ""
     ).strip().lower()
 
     for user in users():
@@ -545,16 +598,19 @@ def create_admin():
 
             return
 
-    data.append({
-        "id": "ADMIN",
-        "name": "KOJA Administrator",
-        "email": ADMIN_EMAIL,
-        "password": hash_password(
-            ADMIN_PASSWORD
-        ),
-        "role": "admin",
-        "created_at": now(),
-    })
+    data.append(
+        {
+            "id": "ADMIN",
+            "name": "KOJA Administrator",
+            "email": ADMIN_EMAIL,
+            "password":
+                hash_password(
+                    ADMIN_PASSWORD
+                ),
+            "role": "admin",
+            "created_at": now(),
+        }
+    )
 
     write_json(
         USERS_FILE,
@@ -563,6 +619,7 @@ def create_admin():
 
 
 create_admin()
+
 
 # ============================================================
 # QUESTIONS
@@ -599,22 +656,29 @@ def sync_question(question):
 
     row = {
         "id": question["id"],
-        "student_id": question["student_id"],
-        "student_name": question["student_name"],
-        "student_email": question["student_email"],
-        "subject": question["subject"],
-        "question": question["question"],
-        "status": question["status"],
-        "answer": question.get(
-            "answer",
-            ""
-        ),
-        "created_at": question[
-            "created_at"
-        ],
-        "answered_at": question.get(
-            "answered_at"
-        ),
+        "student_id":
+            question["student_id"],
+        "student_name":
+            question["student_name"],
+        "student_email":
+            question["student_email"],
+        "subject":
+            question["subject"],
+        "question":
+            question["question"],
+        "status":
+            question["status"],
+        "answer":
+            question.get(
+                "answer",
+                ""
+            ),
+        "created_at":
+            question["created_at"],
+        "answered_at":
+            question.get(
+                "answered_at"
+            ),
     }
 
     try:
@@ -628,18 +692,16 @@ def sync_question(question):
     except Exception:
         return False
 
+
 # ============================================================
-# AUTH
+# AUTHORIZATION
 # ============================================================
 
 def login_required(fn):
-
     @wraps(fn)
     def wrapper(*args, **kwargs):
 
-        if not session.get(
-            "user_id"
-        ):
+        if not session.get("user_id"):
             flash(
                 "Please log in first.",
                 "error"
@@ -672,13 +734,10 @@ def is_admin_session():
 
 
 def admin_required(fn):
-
     @wraps(fn)
     def wrapper(*args, **kwargs):
 
-        if not session.get(
-            "user_id"
-        ):
+        if not session.get("user_id"):
             return redirect(
                 url_for("login")
             )
@@ -689,7 +748,7 @@ def admin_required(fn):
                 "Unauthorized Admin Access",
                 "Security",
                 "WARNING",
-                request.path,
+                request.path
             )
 
             flash(
@@ -698,7 +757,9 @@ def admin_required(fn):
             )
 
             return redirect(
-                url_for("student_dashboard")
+                url_for(
+                    "student_dashboard"
+                )
             )
 
         return fn(
@@ -708,15 +769,14 @@ def admin_required(fn):
 
     return wrapper
 
+
 # ============================================================
 # FILE HELPERS
 # ============================================================
 
 def extension_of(filename):
     filename = (
-        filename
-        or
-        ""
+        filename or ""
     ).strip()
 
     if "." not in filename:
@@ -741,15 +801,10 @@ def safe_storage_name(filename):
         filename
     )
 
-    if not extension:
-        return str(uuid.uuid4())
-
     return (
         str(uuid.uuid4())
-        +
-        "."
-        +
-        extension
+        + "."
+        + extension
     )
 
 
@@ -768,12 +823,10 @@ def upload_to_supabase(
         ) as file:
 
             response = requests.post(
-                (
-                    f"{SUPABASE_URL}"
-                    f"/storage/v1/object/"
-                    f"{STORAGE_BUCKET}/"
-                    f"{storage_path}"
-                ),
+                f"{SUPABASE_URL}"
+                f"/storage/v1/object/"
+                f"{STORAGE_BUCKET}/"
+                f"{storage_path}",
                 headers={
                     "apikey":
                         SUPABASE_SERVICE_KEY,
@@ -790,9 +843,10 @@ def upload_to_supabase(
                 timeout=30,
             )
 
-        return response.status_code in (
-            200,
-            201
+        return (
+            response.status_code
+            in
+            (200, 201)
         )
 
     except Exception:
@@ -818,7 +872,8 @@ def save_upload(
             "Upload Failed",
             "Storage",
             "ERROR",
-            "Invalid file type: " + original,
+            "Invalid file type: "
+            + original
         )
 
         return None
@@ -854,7 +909,7 @@ def save_upload(
             "Upload Failed",
             "Storage",
             "ERROR",
-            str(exc),
+            str(exc)
         )
 
         return None
@@ -873,29 +928,38 @@ def save_upload(
         "application/octet-stream"
     )
 
-    log_event(
-        "File Uploaded"
-        if uploaded
-        else
-        "File Saved Locally",
-        "Storage",
-        "SUCCESS"
-        if uploaded
-        else
-        "INFO",
-        original,
-    )
+    if uploaded:
+        log_event(
+            "File Uploaded",
+            "Storage",
+            "SUCCESS",
+            f"{original} -> Supabase Storage"
+        )
+    else:
+        log_event(
+            "File Saved Locally",
+            "Storage",
+            "INFO",
+            f"{original}; Supabase unavailable"
+        )
 
     return {
-        "id": str(uuid.uuid4()),
-        "original_name": original,
-        "stored_name": stored,
-        "category": category,
-        "extension": extension,
+        "id":
+            str(uuid.uuid4()),
+        "original_name":
+            original,
+        "stored_name":
+            stored,
+        "category":
+            category,
+        "extension":
+            extension,
         "is_image":
             extension in IMAGE_EXTENSIONS,
-        "storage_path": storage_path,
-        "supabase_uploaded": uploaded,
+        "storage_path":
+            storage_path,
+        "supabase_uploaded":
+            uploaded,
     }
 
 
@@ -907,6 +971,7 @@ def save_multiple_uploads(
     result = []
 
     for file in files:
+
         saved = save_upload(
             file,
             category,
@@ -960,7 +1025,7 @@ def attachment_html(
             route = url_for(
                 "admin_file",
                 category=category,
-                filename=stored,
+                filename=stored
             )
 
         else:
@@ -969,7 +1034,7 @@ def attachment_html(
                 "student_file",
                 question_id=question_id,
                 category=category,
-                filename=stored,
+                filename=stored
             )
 
         preview = ""
@@ -994,6 +1059,7 @@ def attachment_html(
                 class="btn small"
                 href="{route}"
                 target="_blank"
+                rel="noopener"
             >
                 Open File
             </a>
@@ -1001,6 +1067,7 @@ def attachment_html(
         """
 
     return output
+
 
 # ============================================================
 # MAIN HTML
@@ -1016,12 +1083,12 @@ HTML = r"""
 
 <meta
     name="viewport"
-    content="width=device-width, initial-scale=1"
+    content="width=device-width, initial-scale=1.0"
 >
 
 <meta
     name="theme-color"
-    content="#101828"
+    content="#0b1220"
 >
 
 <meta
@@ -1065,316 +1132,11 @@ body {
         Helvetica,
         sans-serif;
     background: #f5f7fa;
-    color: #101828;
+    color: #172033;
 }
 
 body {
-    overflow-x: hidden;
-}
-
-a {
-    color: inherit;
-}
-
-button,
-input,
-textarea,
-select {
-    font: inherit;
-}
-
-button,
-.btn {
-    display: inline-block;
-    border: 0;
-    border-radius: 10px;
-    padding: 12px 18px;
-    background: #101828;
-    color: white;
-    text-decoration: none;
-    cursor: pointer;
-    margin: 4px;
-}
-
-button:hover,
-.btn:hover {
-    opacity: .9;
-}
-
-.btn.green {
-    background: #087443;
-}
-
-.btn.purple {
-    background: #6941c6;
-}
-
-.btn.small {
-    padding: 8px 12px;
-    font-size: 14px;
-}
-
-.container {
-    width: 100%;
-    max-width: 1400px;
-    margin: 0 auto;
-    padding: 18px;
-}
-
-.topbar {
-    width: 100%;
-    background: #101828;
-    color: white;
-}
-
-.topbar-inner {
-    width: 100%;
-    max-width: 1400px;
-    margin: auto;
-    min-height: 64px;
-    padding: 10px 18px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 15px;
-}
-
-.logo {
-    font-size: 22px;
-    font-weight: 900;
-    white-space: nowrap;
-}
-
-.logo .k {
-    color: #2563eb;
-}
-
-.logo .o {
-    color: #16a34a;
-}
-
-.logo .j {
-    color: #dc2626;
-}
-
-.logo .a {
-    color: #1d4ed8;
-}
-
-.navlinks {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    gap: 6px;
-}
-
-.navlinks a {
-    text-decoration: none;
-    padding: 8px 10px;
-    border-radius: 8px;
-    font-size: 14px;
-}
-
-.navlinks a:hover {
-    background: rgba(255,255,255,.12);
-}
-
-main {
-    width: 100%;
-}
-
-.hero {
-    width: 100%;
-    padding: 50px 25px;
-    background: white;
-    border-radius: 16px;
-    margin-bottom: 20px;
-}
-
-.hero h1 {
-    margin-top: 0;
-    font-size: clamp(30px, 6vw, 58px);
-}
-
-.hero p {
-    max-width: 800px;
-    line-height: 1.7;
-    font-size: 17px;
-}
-
-.card {
-    background: white;
-    border-radius: 14px;
-    padding: 24px;
-    margin-bottom: 18px;
-    width: 100%;
-}
-
-.grid {
-    width: 100%;
-    display: grid;
-    grid-template-columns:
-        repeat(
-            auto-fit,
-            minmax(240px, 1fr)
-        );
-    gap: 18px;
-    margin-bottom: 20px;
-}
-
-.stat {
-    background: white;
-    border-radius: 14px;
-    padding: 25px;
-}
-
-.stat h2 {
-    font-size: 35px;
-    margin: 0 0 5px;
-}
-
-.search-box {
-    display: flex;
-    width: 100%;
-    gap: 8px;
-}
-
-.search-box input {
-    flex: 1;
-}
-
-input,
-textarea,
-select {
-    width: 100%;
-    padding: 13px;
-    margin: 6px 0 16px;
-    border: 1px solid #d0d5dd;
-    border-radius: 9px;
-    background: white;
-}
-
-textarea {
-    min-height: 180px;
-    resize: vertical;
-}
-
-label {
-    font-weight: 700;
-}
-
-.question,
-.answer {
-    white-space: pre-wrap;
-    line-height: 1.75;
-    padding: 18px;
-    border-radius: 10px;
-    background: #f8fafc;
-}
-
-.answer {
-    background: #f0fdf4;
-}
-
-.subject {
-    display: inline-block;
-    padding: 5px 10px;
-    border-radius: 999px;
-    background: #e0e7ff;
-    font-weight: 700;
-    font-size: 13px;
-}
-
-.badge {
-    display: inline-block;
-    padding: 5px 10px;
-    border-radius: 999px;
-    font-size: 13px;
-    font-weight: 700;
-}
-
-.badge.answered {
-    background: #dcfce7;
-    color: #166534;
-}
-
-.badge.pending {
-    background: #fef3c7;
-    color: #92400e;
-}
-
-.muted {
-    color: #667085;
-}
-
-.alert {
-    padding: 13px 16px;
-    margin-bottom: 15px;
-    border-radius: 9px;
-}
-
-.alert.success {
-    background: #dcfce7;
-    color: #166534;
-}
-
-.alert.error {
-    background: #fee2e2;
-    color: #991b1b;
-}
-
-table {
-    width: 100%;
-    border-collapse: collapse;
-    min-width: 800px;
-}
-
-th,
-td {
-    text-align: left;
-    padding: 12px;
-    border-bottom: 1px solid #eaecf0;
-    vertical-align: top;
-}
-
-.live {
-    display: inline-block;
-    padding: 8px 12px;
-    background: #ecfdf3;
-    color: #027a48;
-    border-radius: 999px;
-    font-weight: 700;
-}
-
-.attachment {
-    border: 1px solid #eaecf0;
-    padding: 14px;
-    border-radius: 10px;
-    margin: 10px 0;
-}
-
-.attachment-image {
-    display: block;
-    max-width: 100%;
-    max-height: 350px;
-    margin: 12px 0;
-    border-radius: 8px;
-}
-
-footer {
-    width: 100%;
-    padding: 35px 18px;
-    text-align: center;
-    color: #667085;
-}
-
-.auth {
-    max-width: 600px;
-    margin: 30px auto;
-}
-
-.empty {
-    text-align: center;
+    min-height: 100vh;
 }
 
 /* =========================================================
@@ -1384,122 +1146,118 @@ footer {
 #koja-opening {
     position: fixed;
     inset: 0;
-    width: 100vw;
-    height: 100vh;
-    z-index: 999999;
-    background: #101828;
+    z-index: 99999;
     display: flex;
     align-items: center;
     justify-content: center;
-    overflow: hidden;
+    flex-direction: column;
+    background: #0b1220;
+    color: white;
     animation:
-        openingExit .65s ease 3.4s forwards;
-}
-
-.opening-inner {
-    width: 100%;
-    text-align: center;
-    padding: 20px;
+        openingFade 0.7s ease
+        2.8s forwards;
 }
 
 .opening-logo {
-    font-size: clamp(60px, 17vw, 150px);
-    font-weight: 1000;
-    letter-spacing: 2px;
+    font-size: clamp(
+        4rem,
+        15vw,
+        9rem
+    );
+    font-weight: 900;
+    letter-spacing: -0.08em;
     line-height: 1;
     animation:
-        logoEntrance 1.1s ease forwards;
+        logoZoom 1s ease;
 }
 
-.opening-logo span:nth-child(1) {
-    color: #2563eb;
+.opening-logo .k {
+    color: #2878ff;
 }
 
-.opening-logo span:nth-child(2) {
+.opening-logo .o {
     color: #16a34a;
 }
 
-.opening-logo span:nth-child(3) {
-    color: #dc2626;
+.opening-logo .j {
+    color: #ef4444;
 }
 
-.opening-logo span:nth-child(4) {
-    color: #1d4ed8;
+.opening-logo .a {
+    color: #2563eb;
 }
 
-.opening-title {
-    color: white;
-    font-size: clamp(20px, 5vw, 38px);
-    margin-top: 18px;
+.opening-africa {
+    margin-top: 12px;
+    font-size: clamp(
+        1rem,
+        3vw,
+        1.6rem
+    );
+    letter-spacing: 0.35em;
     opacity: 0;
     animation:
-        fadeIn .8s ease 1s forwards;
+        fadeUp 0.8s ease
+        0.4s forwards;
 }
 
 .opening-line {
+    width: min(
+        280px,
+        65vw
+    );
     height: 3px;
-    width: 0;
-    margin: 20px auto;
     background: white;
+    margin: 25px 0 18px;
+    transform: scaleX(0);
     animation:
-        lineGrow 1s ease 1.2s forwards;
+        lineGrow 0.8s ease
+        0.8s forwards;
 }
 
-.opening-status {
-    color: #d0d5dd;
+.opening-text {
+    font-size: clamp(
+        0.85rem,
+        3vw,
+        1.15rem
+    );
     opacity: 0;
     animation:
-        fadeIn .8s ease 1.8s forwards;
+        fadeUp 0.8s ease
+        1.1s forwards;
 }
 
-@keyframes logoEntrance {
-
-    0% {
+@keyframes logoZoom {
+    from {
         opacity: 0;
-        transform:
-            scale(.45)
-            translateY(35px);
+        transform: scale(0.5);
     }
 
-    60% {
+    to {
         opacity: 1;
-        transform:
-            scale(1.08)
-            translateY(0);
+        transform: scale(1);
+    }
+}
+
+@keyframes fadeUp {
+    from {
+        opacity: 0;
+        transform: translateY(15px);
     }
 
-    100% {
+    to {
         opacity: 1;
-        transform:
-            scale(1)
-            translateY(0);
+        transform: translateY(0);
     }
 }
 
 @keyframes lineGrow {
-
-    from {
-        width: 0;
-    }
-
     to {
-        width: min(420px, 70vw);
+        transform: scaleX(1);
     }
 }
 
-@keyframes fadeIn {
-
-    from {
-        opacity: 0;
-    }
-
-    to {
-        opacity: 1;
-    }
-}
-
-@keyframes openingExit {
-
+@keyframes openingFade {
     to {
         opacity: 0;
         visibility: hidden;
@@ -1507,39 +1265,498 @@ footer {
     }
 }
 
-/*
-The opening animation is only created on the first page
-request of the browser session.
-*/
+/* =========================================================
+   APP
+   ========================================================= */
 
-@media (max-width: 700px) {
+.site {
+    width: 100%;
+    min-height: 100vh;
+}
 
-    .topbar-inner {
+.header {
+    width: 100%;
+    background: #0b1220;
+    color: white;
+    padding:
+        14px
+        clamp(16px, 4vw, 50px);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    flex-wrap: wrap;
+}
+
+.logo {
+    font-size: 1.55rem;
+    font-weight: 900;
+    letter-spacing: -0.04em;
+}
+
+.logo .k {
+    color: #2878ff;
+}
+
+.logo .o {
+    color: #16a34a;
+}
+
+.logo .j {
+    color: #ef4444;
+}
+
+.logo .a {
+    color: #2563eb;
+}
+
+.logo small {
+    color: white;
+    margin-left: 7px;
+    letter-spacing: 0.12em;
+}
+
+.nav {
+    display: flex;
+    gap: 7px;
+    flex-wrap: wrap;
+}
+
+.nav a {
+    color: white;
+    text-decoration: none;
+    padding: 9px 12px;
+    border-radius: 7px;
+    font-size: 0.9rem;
+}
+
+.nav a:hover {
+    background: rgba(
+        255,
+        255,
+        255,
+        0.12
+    );
+}
+
+/* =========================================================
+   FULL WIDTH CONTENT
+   ========================================================= */
+
+.main {
+    width: 100%;
+    padding:
+        clamp(18px, 4vw, 45px);
+}
+
+.content {
+    width: 100%;
+    max-width: 1400px;
+    margin: auto;
+}
+
+.hero {
+    width: 100%;
+    min-height: 55vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    text-align: center;
+    padding: 35px 15px;
+}
+
+.hero h1 {
+    font-size: clamp(
+        2.2rem,
+        7vw,
+        5rem
+    );
+    margin: 0 0 15px;
+    line-height: 1;
+}
+
+.hero p {
+    max-width: 750px;
+    font-size: clamp(
+        1rem,
+        2.5vw,
+        1.3rem
+    );
+    line-height: 1.7;
+    color: #5b6472;
+}
+
+/* =========================================================
+   HOW KOJA WORKS
+   ========================================================= */
+
+.how {
+    width: 100%;
+    padding:
+        20px 0 45px;
+}
+
+.how h2 {
+    text-align: center;
+    font-size: 2rem;
+    margin-bottom: 25px;
+}
+
+.steps {
+    display: grid;
+    grid-template-columns:
+        repeat(
+            auto-fit,
+            minmax(220px, 1fr)
+        );
+    gap: 18px;
+}
+
+.step {
+    background: white;
+    border: 1px solid #e3e8ef;
+    border-radius: 12px;
+    padding: 24px;
+}
+
+.step-number {
+    font-size: 1.8rem;
+    font-weight: 900;
+    margin-bottom: 12px;
+}
+
+/* =========================================================
+   CARDS
+   ========================================================= */
+
+.card {
+    width: 100%;
+    background: white;
+    border: 1px solid #e1e7ef;
+    border-radius: 12px;
+    padding:
+        clamp(18px, 3vw, 30px);
+    margin-bottom: 18px;
+}
+
+.card h1,
+.card h2 {
+    margin-top: 0;
+}
+
+.grid {
+    display: grid;
+    grid-template-columns:
+        repeat(
+            auto-fit,
+            minmax(220px, 1fr)
+        );
+    gap: 18px;
+}
+
+.stat {
+    background: white;
+    border: 1px solid #e1e7ef;
+    border-radius: 12px;
+    padding: 22px;
+}
+
+.stat h2 {
+    font-size: 2.3rem;
+    margin: 0;
+}
+
+/* =========================================================
+   FORMS
+   ========================================================= */
+
+form {
+    width: 100%;
+}
+
+label {
+    display: block;
+    margin:
+        15px 0 7px;
+    font-weight: 700;
+}
+
+input,
+textarea,
+select {
+    width: 100%;
+    padding: 13px;
+    border: 1px solid #ccd4df;
+    border-radius: 8px;
+    background: white;
+    color: #172033;
+    font: inherit;
+}
+
+textarea {
+    min-height: 170px;
+    resize: vertical;
+}
+
+button,
+.btn {
+    display: inline-block;
+    border: 0;
+    background: #2563eb;
+    color: white;
+    padding: 12px 17px;
+    border-radius: 8px;
+    cursor: pointer;
+    text-decoration: none;
+    font-weight: 700;
+    margin:
+        8px 6px 8px 0;
+}
+
+button:hover,
+.btn:hover {
+    opacity: 0.9;
+}
+
+.btn.green {
+    background: #15803d;
+}
+
+.btn.purple {
+    background: #7c3aed;
+}
+
+.btn.small {
+    padding: 7px 10px;
+    font-size: 0.85rem;
+}
+
+/* =========================================================
+   AUTH
+   ========================================================= */
+
+.auth {
+    max-width: 600px;
+    margin:
+        40px auto;
+}
+
+/* =========================================================
+   RESEARCH
+   ========================================================= */
+
+.search-box {
+    width: 100%;
+    max-width: 900px;
+    display: flex;
+    gap: 8px;
+    margin: 20px auto;
+}
+
+.search-box input {
+    flex: 1;
+}
+
+.research-card {
+    margin-bottom: 16px;
+}
+
+.subject {
+    display: inline-block;
+    background: #eaf1ff;
+    color: #2453b8;
+    border-radius: 30px;
+    padding: 5px 10px;
+    font-size: 0.8rem;
+    font-weight: 700;
+}
+
+.question {
+    white-space: pre-wrap;
+    line-height: 1.7;
+    background: #f7f9fc;
+    padding: 15px;
+    border-radius: 8px;
+}
+
+.answer {
+    white-space: pre-wrap;
+    line-height: 1.8;
+    background: #f0fdf4;
+    padding: 17px;
+    border-radius: 8px;
+}
+
+.muted {
+    color: #667085;
+}
+
+.badge {
+    display: inline-block;
+    padding: 5px 9px;
+    border-radius: 30px;
+    font-size: 0.8rem;
+    font-weight: 700;
+}
+
+.badge.pending {
+    background: #fff7ed;
+    color: #c2410c;
+}
+
+.badge.answered {
+    background: #ecfdf3;
+    color: #15803d;
+}
+
+/* =========================================================
+   TABLES
+   ========================================================= */
+
+.table-wrap {
+    width: 100%;
+    overflow-x: auto;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 850px;
+}
+
+th,
+td {
+    border-bottom: 1px solid #e4e8ee;
+    padding: 12px;
+    text-align: left;
+    vertical-align: top;
+}
+
+th {
+    background: #f7f9fc;
+}
+
+/* =========================================================
+   LOGS
+   ========================================================= */
+
+.log-success {
+    color: #15803d;
+}
+
+.log-warning {
+    color: #c2410c;
+}
+
+.log-error {
+    color: #dc2626;
+}
+
+.log-info {
+    color: #2563eb;
+}
+
+.log-details {
+    max-width: 450px;
+    white-space: pre-wrap;
+}
+
+/* =========================================================
+   FILES
+   ========================================================= */
+
+.attachment {
+    padding: 12px;
+    border: 1px solid #e1e7ef;
+    border-radius: 8px;
+    margin:
+        8px 0;
+    background: #fafbfc;
+}
+
+.attachment-image {
+    display: block;
+    max-width: 100%;
+    max-height: 400px;
+    margin:
+        12px 0;
+    border-radius: 7px;
+}
+
+/* =========================================================
+   ALERTS
+   ========================================================= */
+
+.alert {
+    margin: 0;
+    padding: 13px 20px;
+    font-weight: 700;
+}
+
+.alert.success {
+    background: #ecfdf3;
+    color: #166534;
+}
+
+.alert.error {
+    background: #fef2f2;
+    color: #991b1b;
+}
+
+/* =========================================================
+   FOOTER
+   ========================================================= */
+
+.footer {
+    width: 100%;
+    background: #0b1220;
+    color: #d7dce5;
+    text-align: center;
+    padding: 30px 15px;
+    margin-top: 30px;
+}
+
+.footer a {
+    color: white;
+}
+
+/* =========================================================
+   MOBILE
+   ========================================================= */
+
+@media (max-width: 650px) {
+
+    .header {
         align-items: flex-start;
         flex-direction: column;
     }
 
-    .navlinks {
+    .nav {
         width: 100%;
-        justify-content: flex-start;
     }
 
-    .hero {
-        padding: 30px 18px;
+    .nav a {
+        background:
+            rgba(
+                255,
+                255,
+                255,
+                0.06
+            );
     }
 
     .search-box {
         flex-direction: column;
     }
 
-    .search-box button {
-        width: 100%;
+    .hero {
+        min-height: 60vh;
     }
 
-    .container {
-        padding: 12px;
+    .main {
+        padding: 14px;
     }
-
 }
 
 </style>
@@ -1548,119 +1765,106 @@ request of the browser session.
 
 <body>
 
-{% if show_opening %}
+<!-- ======================================================
+     OPENING ANIMATION
+     ====================================================== -->
 
 <div id="koja-opening">
 
-    <div class="opening-inner">
+    <div class="opening-logo">
+        <span class="k">K</span><span class="o">O</span><span class="j">J</span><span class="a">A</span>
+    </div>
 
-        <div class="opening-logo">
-            <span>K</span>
-            <span>O</span>
-            <span>J</span>
-            <span>A</span>
-        </div>
+    <div class="opening-africa">
+        AFRICA
+    </div>
 
-        <div class="opening-title">
-            KOJA AFRICA
-        </div>
+    <div class="opening-line"></div>
 
-        <div class="opening-line"></div>
-
-        <div class="opening-status">
-            Knowledge • Questions • Answers
-        </div>
-
+    <div class="opening-text">
+        Knowledge • Questions • Answers
     </div>
 
 </div>
 
-{% endif %}
 
-<header class="topbar">
+<div class="site">
 
-    <div class="topbar-inner">
+<header class="header">
 
-        <div class="logo">
-            <span class="k">k</span><span class="o">o</span><span class="j">j</span><span class="a">a</span>
-            AFRICA
-        </div>
+    <div class="logo">
+        <span class="k">k</span><span class="o">o</span><span class="j">j</span><span class="a">a</span>
+        <small>AFRICA</small>
+    </div>
 
-        <nav class="navlinks">
+    <nav class="nav">
 
-            <a href="/">
-                Home
-            </a>
+        {% if session.get("user_id") %}
 
-            <a href="/research">
-                Research
-            </a>
+            {% if session.get("role") == "admin" %}
 
-            {% if session.get("user_id") %}
+                <a href="{{ url_for('admin_dashboard') }}">
+                    Dashboard
+                </a>
 
-                {% if session.get("role") == "admin" %}
+                <a href="{{ url_for('admin_questions') }}">
+                    Questions
+                </a>
 
-                    <a href="/admin">
-                        Dashboard
-                    </a>
+                <a href="{{ url_for('admin_answers') }}">
+                    Answers
+                </a>
 
-                    <a href="/admin/questions">
-                        Questions
-                    </a>
+                <a href="{{ url_for('admin_logs') }}">
+                    Logs
+                </a>
 
-                    <a href="/admin/answers">
-                        Answers
-                    </a>
-
-                    <a href="/admin/logs">
-                        Logs
-                    </a>
-
-                    <a href="/admin/config">
-                        Config
-                    </a>
-
-                {% else %}
-
-                    <a href="/student">
-                        My Dashboard
-                    </a>
-
-                    <a href="/student/ask">
-                        Ask
-                    </a>
-
-                {% endif %}
-
-                <a href="/logout">
-                    Logout
+                <a href="{{ url_for('admin_config') }}">
+                    Configuration
                 </a>
 
             {% else %}
 
-                <a href="/login">
-                    Login
+                <a href="{{ url_for('student_dashboard') }}">
+                    Dashboard
                 </a>
 
-                <a href="/register">
-                    Create Account
+                <a href="{{ url_for('ask_question') }}">
+                    Ask
+                </a>
+
+                <a href="{{ url_for('research') }}">
+                    Research
                 </a>
 
             {% endif %}
 
-        </nav>
+            <a href="{{ url_for('logout') }}">
+                Logout
+            </a>
 
-    </div>
+        {% else %}
+
+            <a href="{{ url_for('home') }}">
+                Home
+            </a>
+
+            <a href="{{ url_for('login') }}">
+                Log In
+            </a>
+
+            <a href="{{ url_for('register') }}">
+                Create Account
+            </a>
+
+        {% endif %}
+
+    </nav>
 
 </header>
 
-<main>
 
-<div class="container">
-
-{% with messages = get_flashed_messages(
-    with_categories=true
-) %}
+{% with messages = get_flashed_messages(with_categories=true) %}
 
     {% for category, message in messages %}
 
@@ -1672,13 +1876,19 @@ request of the browser session.
 
 {% endwith %}
 
+
+<main class="main">
+
+<div class="content">
+
 {{ content|safe }}
 
 </div>
 
 </main>
 
-<footer>
+
+<footer class="footer">
 
     <strong>KOJA AFRICA</strong>
 
@@ -1690,24 +1900,14 @@ request of the browser session.
 
     Academic Research • Learning • Questions
 
-    <br><br>
-
-    <a href="/research">
-        Research
-    </a>
-
-    &nbsp; | &nbsp;
-
-    <a href="/about">
-        About
-    </a>
-
 </footer>
 
-</body>
+</div>
 
+</body>
 </html>
 """
+
 
 # ============================================================
 # PAGE RENDERER
@@ -1716,10 +1916,8 @@ request of the browser session.
 def render_page(
     title,
     content,
-    canonical=None,
-    show_opening=False
+    canonical=None
 ):
-
     return render_template_string(
         HTML,
         title=title,
@@ -1729,126 +1927,46 @@ def render_page(
             or
             SITE_URL
         ),
-        site_description=SITE_DESCRIPTION,
-        google_verification=GOOGLE_VERIFICATION,
-        show_opening=show_opening,
+        site_description=
+            SITE_DESCRIPTION,
+        google_verification=
+            GOOGLE_VERIFICATION
     )
 
+
 # ============================================================
-# OPENING / HOME
-#
-# Animation is shown only on the root page.
-# Therefore navigating to another page does not replay it.
+# HOME
 # ============================================================
 
 @app.route("/")
 def home():
 
     content = """
+
     <section class="hero">
 
         <h1>
-            How KOJA AFRICA Works
+            KOJA AFRICA
         </h1>
 
         <p>
-            KOJA AFRICA is a knowledge,
-            questions and answers platform
-            designed for academic learning,
-            research and educational support.
+            Knowledge • Questions • Answers
         </p>
 
-        <div class="grid">
+        <p>
+            A platform where students can
+            submit academic questions,
+            receive academic answers and
+            access published research.
+        </p>
 
-            <div class="card">
-                <h2>
-                    1. Create an Account
-                </h2>
-
-                <p>
-                    Students create a personal
-                    KOJA AFRICA account.
-                </p>
-
-                <a
-                    class="btn"
-                    href="/register"
-                >
-                    Create Account
-                </a>
-            </div>
-
-            <div class="card">
-                <h2>
-                    2. Ask a Question
-                </h2>
-
-                <p>
-                    Submit an academic question
-                    and, when necessary, upload
-                    supporting documents.
-                </p>
-
-                <a
-                    class="btn"
-                    href="/login"
-                >
-                    Login to Ask
-                </a>
-            </div>
-
-            <div class="card">
-                <h2>
-                    3. KOJA Reviews It
-                </h2>
-
-                <p>
-                    Submitted questions are handled
-                    through the protected administrator
-                    workspace.
-                </p>
-            </div>
-
-            <div class="card">
-                <h2>
-                    4. Receive an Answer
-                </h2>
-
-                <p>
-                    The administrator can provide
-                    an academic answer and supporting
-                    files.
-                </p>
-            </div>
-
-            <div class="card">
-                <h2>
-                    5. Research
-                </h2>
-
-                <p>
-                    Published answered questions
-                    can become part of the public
-                    KOJA research collection.
-                </p>
-
-                <a
-                    class="btn"
-                    href="/research"
-                >
-                    Research
-                </a>
-            </div>
-
-        </div>
-
-        <div style="margin-top:20px">
+        <div>
 
             <a
                 class="btn"
                 href="/login"
             >
-                Login
+                Log In
             </a>
 
             <a
@@ -1861,20 +1979,125 @@ def home():
         </div>
 
     </section>
+
+
+    <section class="how">
+
+        <h2>
+            How KOJA Works
+        </h2>
+
+        <div class="steps">
+
+            <div class="step">
+
+                <div class="step-number">
+                    01
+                </div>
+
+                <h3>
+                    Create an Account
+                </h3>
+
+                <p>
+                    Create your KOJA student
+                    account and log in securely.
+                </p>
+
+            </div>
+
+
+            <div class="step">
+
+                <div class="step-number">
+                    02
+                </div>
+
+                <h3>
+                    Ask Your Question
+                </h3>
+
+                <p>
+                    Submit your academic
+                    question and supporting
+                    files.
+                </p>
+
+            </div>
+
+
+            <div class="step">
+
+                <div class="step-number">
+                    03
+                </div>
+
+                <h3>
+                    KOJA Reviews It
+                </h3>
+
+                <p>
+                    Your question is private.
+                    Only you and authorized
+                    KOJA administrators can
+                    see it.
+                </p>
+
+            </div>
+
+
+            <div class="step">
+
+                <div class="step-number">
+                    04
+                </div>
+
+                <h3>
+                    Receive an Answer
+                </h3>
+
+                <p>
+                    The administrator provides
+                    an academic answer and can
+                    attach supporting files.
+                </p>
+
+            </div>
+
+
+            <div class="step">
+
+                <div class="step-number">
+                    05
+                </div>
+
+                <h3>
+                    Research
+                </h3>
+
+                <p>
+                    Only questions that have
+                    been answered and published
+                    become available through
+                    public research.
+                </p>
+
+            </div>
+
+        </div>
+
+    </section>
     """
 
     return render_page(
         "Home",
         content,
-        SITE_URL + "/",
-        show_opening=True
+        SITE_URL + "/"
     )
 
+
 # ============================================================
-# RESEARCH
-#
-# Only answered questions are public.
-# Pending questions never appear here.
+# PUBLIC RESEARCH
 # ============================================================
 
 @app.route("/research")
@@ -1885,12 +2108,20 @@ def research():
         ""
     ).strip()
 
+    data = questions()
+
+    # ONLY ANSWERED QUESTIONS ARE PUBLIC
     public_questions = [
         q
-        for q in questions()
+        for q in data
         if q.get("status")
         ==
         "Answered"
+        and
+        q.get(
+            "public",
+            True
+        )
     ]
 
     if query:
@@ -1903,20 +2134,28 @@ def research():
 
         def matches(q):
 
-            haystack = " ".join([
-                str(q.get(
-                    "subject",
-                    ""
-                )),
-                str(q.get(
-                    "question",
-                    ""
-                )),
-                str(q.get(
-                    "answer",
-                    ""
-                )),
-            ]).lower()
+            haystack = " ".join(
+                [
+                    str(
+                        q.get(
+                            "subject",
+                            ""
+                        )
+                    ),
+                    str(
+                        q.get(
+                            "question",
+                            ""
+                        )
+                    ),
+                    str(
+                        q.get(
+                            "answer",
+                            ""
+                        )
+                    ),
+                ]
+            ).lower()
 
             return all(
                 term in haystack
@@ -1933,14 +2172,17 @@ def research():
             "Public Research Search",
             "Research",
             "INFO",
-            query,
+            query
         )
 
     public_questions.sort(
         key=lambda q:
             q.get(
                 "answered_at",
-                ""
+                q.get(
+                    "created_at",
+                    ""
+                )
             ),
         reverse=True
     )
@@ -1965,18 +2207,21 @@ def research():
             preview += "..."
 
         cards += f"""
-        <div class="card">
+
+        <div class="card research-card">
 
             <span class="subject">
                 {esc(q.get("subject"))}
             </span>
 
             <h2>
+
                 <a
                     href="/question/{esc(q.get('id'))}"
                 >
                     {esc(question_text)}
                 </a>
+
             </h2>
 
             <p class="muted">
@@ -1998,43 +2243,38 @@ def research():
             </a>
 
         </div>
+
         """
 
     if not cards:
 
         cards = """
-        <div class="card empty">
+
+        <div class="card">
 
             <h2>
-                No research results found.
+                No published research found.
             </h2>
 
-            <p>
-                Search for an academic topic
-                or question.
+            <p class="muted">
+                Search another academic topic.
             </p>
 
-            <a
-                class="btn"
-                href="/login"
-            >
-                Login
-            </a>
-
         </div>
+
         """
 
     content = f"""
 
-    <div class="hero">
+    <div class="card">
 
         <h1>
             KOJA AFRICA Research
         </h1>
 
-        <p>
-            Search publicly available
-            academic questions and answers.
+        <p class="muted">
+            Search published academic
+            questions and answers.
         </p>
 
         <form
@@ -2048,7 +2288,7 @@ def research():
                     type="search"
                     name="q"
                     value="{esc(query)}"
-                    placeholder="Search KOJA AFRICA..."
+                    placeholder="Search KOJA research..."
                 >
 
                 <button type="submit">
@@ -2061,10 +2301,6 @@ def research():
 
     </div>
 
-    <h2>
-        {"Search Results" if query else "Research"}
-    </h2>
-
     {cards}
 
     """
@@ -2075,8 +2311,9 @@ def research():
         SITE_URL + "/research"
     )
 
+
 # ============================================================
-# PUBLIC ANSWERED QUESTION
+# PUBLIC QUESTION
 # ============================================================
 
 @app.route(
@@ -2089,6 +2326,7 @@ def public_question(question_id):
     )
 
     if not question:
+
         return (
             render_page(
                 "Question Not Found",
@@ -2096,7 +2334,7 @@ def public_question(question_id):
                 <div class="card">
 
                     <h1>
-                        Question Not Found
+                        Research Not Found
                     </h1>
 
                     <a
@@ -2107,28 +2345,38 @@ def public_question(question_id):
                     </a>
 
                 </div>
-                """
+                """,
+                SITE_URL + "/research"
             ),
             404
         )
 
-    if question.get(
-        "status"
-    ) != "Answered":
+    # PRIVATE UNTIL ANSWERED
+    if (
+        question.get("status")
+        !=
+        "Answered"
+        or
+        not question.get(
+            "public",
+            True
+        )
+    ):
 
         return (
             render_page(
-                "Research Question",
+                "Research Unavailable",
                 """
                 <div class="card">
 
                     <h1>
-                        Research Question
+                        Research Unavailable
                     </h1>
 
                     <p>
                         This question has not
-                        been publicly answered.
+                        been published for public
+                        research.
                     </p>
 
                     <a
@@ -2139,7 +2387,8 @@ def public_question(question_id):
                     </a>
 
                 </div>
-                """
+                """,
+                SITE_URL + "/research"
             ),
             404
         )
@@ -2170,6 +2419,7 @@ def public_question(question_id):
 
     </div>
 
+
     <div class="card">
 
         <h2>
@@ -2182,6 +2432,7 @@ def public_question(question_id):
 
     </div>
 
+
     <div class="card">
 
         <h2>
@@ -2190,7 +2441,7 @@ def public_question(question_id):
 
         <a
             class="btn"
-            href="/research?q={esc(question.get("subject"))}"
+            href="/research?q={esc(question.get('subject'))}"
         >
             Related Research
         </a>
@@ -2211,6 +2462,83 @@ def public_question(question_id):
         +
         str(question_id)
     )
+
+
+# ============================================================
+# ABOUT / HOW KOJA WORKS
+# ============================================================
+
+@app.route("/how-koja-works")
+def how_koja_works():
+
+    content = """
+
+    <div class="card">
+
+        <h1>
+            How KOJA Works
+        </h1>
+
+        <p>
+            KOJA AFRICA connects students
+            with academic question-and-answer
+            support.
+        </p>
+
+        <div class="steps">
+
+            <div class="step">
+                <h2>1. Register</h2>
+                <p>
+                    Create a student account.
+                </p>
+            </div>
+
+            <div class="step">
+                <h2>2. Submit</h2>
+                <p>
+                    Submit your academic
+                    question and files.
+                </p>
+            </div>
+
+            <div class="step">
+                <h2>3. Review</h2>
+                <p>
+                    Your question remains
+                    private while it is being
+                    reviewed.
+                </p>
+            </div>
+
+            <div class="step">
+                <h2>4. Answer</h2>
+                <p>
+                    An administrator provides
+                    the academic answer.
+                </p>
+            </div>
+
+            <div class="step">
+                <h2>5. Research</h2>
+                <p>
+                    Published answered questions
+                    can become part of the public
+                    research library.
+                </p>
+            </div>
+
+        </div>
+
+    </div>
+
+    """
+
+    return render_page(
+        "How KOJA Works",
+        content
+    )
+
 
 # ============================================================
 # ABOUT
@@ -2233,16 +2561,10 @@ def about():
         </p>
 
         <p>
-            The platform provides a structured
-            environment where students can submit
-            academic questions while administrators
-            manage answers and learning resources.
-        </p>
-
-        <p>
-            Only answers that have been processed
-            and published become part of the public
-            research area.
+            The platform is designed to
+            support students and researchers
+            with academic questions,
+            answers and learning resources.
         </p>
 
     </div>
@@ -2255,8 +2577,9 @@ def about():
         SITE_URL + "/about"
     )
 
+
 # ============================================================
-# ROBOTS
+# SEO
 # ============================================================
 
 @app.route("/robots.txt")
@@ -2264,6 +2587,7 @@ def robots():
 
     text = f"""User-agent: *
 Allow: /
+
 Disallow: /admin
 Disallow: /student
 Disallow: /login
@@ -2278,9 +2602,6 @@ Sitemap: {SITE_URL}/sitemap.xml
         mimetype="text/plain"
     )
 
-# ============================================================
-# SITEMAP
-# ============================================================
 
 @app.route("/sitemap.xml")
 def sitemap():
@@ -2289,20 +2610,30 @@ def sitemap():
         SITE_URL + "/",
         SITE_URL + "/research",
         SITE_URL + "/about",
+        SITE_URL + "/how-koja-works",
     ]
 
     for question in questions():
 
-        if question.get(
-            "status"
-        ) == "Answered":
+        if (
+            question.get("status")
+            ==
+            "Answered"
+            and
+            question.get(
+                "public",
+                True
+            )
+        ):
 
             public_urls.append(
                 SITE_URL
                 +
                 "/question/"
                 +
-                str(question.get("id"))
+                str(
+                    question.get("id")
+                )
             )
 
     urls = ""
@@ -2336,6 +2667,7 @@ def sitemap():
         mimetype="application/xml"
     )
 
+
 # ============================================================
 # GOOGLE VERIFICATION
 # ============================================================
@@ -2349,6 +2681,7 @@ def google_verification():
         "google-site-verification: "
         "google4d3d8178b7b4659e.html"
     )
+
 
 # ============================================================
 # LOGIN
@@ -2376,7 +2709,7 @@ def login():
             ""
         )
 
-        # ADMIN
+        # ADMIN LOGIN
         if (
             email == ADMIN_EMAIL
             and
@@ -2408,10 +2741,8 @@ def login():
                 )
             )
 
-        # STUDENT
-        user = find_user(
-            email
-        )
+        # STUDENT LOGIN
+        user = find_user(email)
 
         if (
             not user
@@ -2429,8 +2760,8 @@ def login():
                 "Failed Login",
                 "Auth",
                 "WARNING",
-                "Invalid credentials",
-                user_email=email,
+                f"Invalid credentials for {email}",
+                user_email=email
             )
 
             flash(
@@ -2450,7 +2781,7 @@ def login():
         session["role"] = "student"
 
         log_event(
-            "Student Login",
+            "User Login",
             "Auth",
             "SUCCESS",
             "Student logged in"
@@ -2467,7 +2798,7 @@ def login():
     <div class="auth card">
 
         <h1>
-            Login
+            Log In
         </h1>
 
         <p class="muted">
@@ -2483,6 +2814,7 @@ def login():
             <input
                 type="email"
                 name="email"
+                autocomplete="email"
                 required
             >
 
@@ -2493,11 +2825,12 @@ def login():
             <input
                 type="password"
                 name="password"
+                autocomplete="current-password"
                 required
             >
 
             <button type="submit">
-                Login
+                Log In
             </button>
 
         </form>
@@ -2519,6 +2852,7 @@ def login():
         SITE_URL + "/login"
     )
 
+
 # ============================================================
 # REGISTER
 # ============================================================
@@ -2535,7 +2869,8 @@ def register():
             request.form.get(
                 "name",
                 ""
-            ).strip()
+            )
+            .strip()
         )
 
         email = (
@@ -2613,14 +2948,18 @@ def register():
             )
 
         user = {
-            "id": str(uuid.uuid4()),
-            "name": name,
-            "email": email,
-            "password": hash_password(
-                password
-            ),
-            "role": "student",
-            "created_at": now(),
+            "id":
+                str(uuid.uuid4()),
+            "name":
+                name,
+            "email":
+                email,
+            "password":
+                hash_password(password),
+            "role":
+                "student",
+            "created_at":
+                now(),
         }
 
         data = users()
@@ -2637,10 +2976,14 @@ def register():
             supabase_insert(
                 "koja_users",
                 {
-                    "id": user["id"],
-                    "name": name,
-                    "email": email,
-                    "role": "student",
+                    "id":
+                        user["id"],
+                    "name":
+                        name,
+                    "email":
+                        email,
+                    "role":
+                        "student",
                     "created_at":
                         user["created_at"],
                 }
@@ -2652,7 +2995,7 @@ def register():
             "SUCCESS",
             "New student account created",
             user_id=user["id"],
-            user_email=email,
+            user_email=email
         )
 
         flash(
@@ -2680,6 +3023,7 @@ def register():
 
             <input
                 name="name"
+                autocomplete="name"
                 required
             >
 
@@ -2690,6 +3034,7 @@ def register():
             <input
                 type="email"
                 name="email"
+                autocomplete="email"
                 required
             >
 
@@ -2701,6 +3046,7 @@ def register():
                 type="password"
                 name="password"
                 minlength="6"
+                autocomplete="new-password"
                 required
             >
 
@@ -2712,6 +3058,7 @@ def register():
                 type="password"
                 name="confirm"
                 minlength="6"
+                autocomplete="new-password"
                 required
             >
 
@@ -2724,7 +3071,7 @@ def register():
         <p>
             Already registered?
             <a href="/login">
-                Login
+                Log In
             </a>
         </p>
 
@@ -2733,10 +3080,11 @@ def register():
     """
 
     return render_page(
-        "Register",
+        "Create Account",
         content,
         SITE_URL + "/register"
     )
+
 
 # ============================================================
 # LOGOUT
@@ -2760,6 +3108,7 @@ def logout():
         url_for("home")
     )
 
+
 # ============================================================
 # STUDENT DASHBOARD
 # ============================================================
@@ -2776,6 +3125,8 @@ def student_dashboard():
             )
         )
 
+    # IMPORTANT:
+    # STUDENTS ONLY SEE THEIR OWN QUESTIONS
     data = [
         q
         for q in questions()
@@ -2791,6 +3142,21 @@ def student_dashboard():
                 ""
             ),
         reverse=True
+    )
+
+    total = len(data)
+
+    answered = sum(
+        q.get("status")
+        ==
+        "Answered"
+        for q in data
+    )
+
+    pending = (
+        total
+        -
+        answered
     )
 
     cards = ""
@@ -2814,28 +3180,31 @@ def student_dashboard():
             ""
         )
 
-        answer_html = (
-            f"""
-            <div class="answer">
-                {esc(answer)}
-            </div>
-            """
-            if answer
-            else
-            """
-            <p class="muted">
-                Waiting for an answer.
-            </p>
-            """
-        )
+        if answer:
+
+            answer_html = (
+                '<div class="answer">'
+                +
+                esc(answer)
+                +
+                '</div>'
+            )
+
+        else:
+
+            answer_html = (
+                '<p class="muted">'
+                'Waiting for an answer.'
+                '</p>'
+            )
 
         cards += f"""
 
         <div class="card">
 
-            <span class="subject">
+            <h2>
                 {esc(q.get("subject"))}
-            </span>
+            </h2>
 
             <span class="badge {badge}">
                 {esc(status)}
@@ -2855,7 +3224,7 @@ def student_dashboard():
             </div>
 
             <h3>
-                Your Files
+                Your Attachments
             </h3>
 
             {
@@ -2901,15 +3270,14 @@ def student_dashboard():
         <div class="card">
 
             <h2>
-                You have not submitted
-                a question yet.
+                You have not asked a question yet.
             </h2>
 
             <a
                 class="btn"
                 href="/student/ask"
             >
-                Ask KOJA
+                Ask Question
             </a>
 
         </div>
@@ -2926,26 +3294,62 @@ def student_dashboard():
         </h1>
 
         <p>
-            Your questions are private
-            to your account and the
-            KOJA administrator.
+            Submit an academic question
+            and receive your answer privately.
         </p>
 
-        <a
-            class="btn"
-            href="/student/ask"
-        >
-            Ask Question
-        </a>
+        <div>
 
-        <a
-            class="btn"
-            href="/research"
-        >
-            Research
-        </a>
+            <a
+                class="btn"
+                href="/student/ask"
+            >
+                Ask Question
+            </a>
+
+            <a
+                class="btn green"
+                href="/research"
+            >
+                Research
+            </a>
+
+        </div>
 
     </div>
+
+
+    <div class="grid">
+
+        <div class="stat">
+            <h2>
+                {total}
+            </h2>
+            <p>
+                My Questions
+            </p>
+        </div>
+
+        <div class="stat">
+            <h2>
+                {answered}
+            </h2>
+            <p>
+                Answered
+            </p>
+        </div>
+
+        <div class="stat">
+            <h2>
+                {pending}
+            </h2>
+            <p>
+                Pending
+            </p>
+        </div>
+
+    </div>
+
 
     <h2>
         My Questions
@@ -2959,6 +3363,7 @@ def student_dashboard():
         "Student Dashboard",
         content
     )
+
 
 # ============================================================
 # ASK QUESTION
@@ -2985,14 +3390,16 @@ def ask_question():
             request.form.get(
                 "subject",
                 ""
-            ).strip()
+            )
+            .strip()
         )
 
         question_text = (
             request.form.get(
                 "question",
                 ""
-            ).strip()
+            )
+            .strip()
         )
 
         if (
@@ -3027,31 +3434,49 @@ def ask_question():
         )
 
         item = {
-            "id": question_id,
+
+            "id":
+                question_id,
+
             "student_id":
-                session.get(
-                    "user_id"
-                ),
+                session.get("user_id"),
+
             "student_name":
-                session.get(
-                    "name"
-                ),
+                session.get("name"),
+
             "student_email":
-                session.get(
-                    "email"
-                ),
-            "subject": subject,
+                session.get("email"),
+
+            "subject":
+                subject,
+
             "question":
                 question_text,
+
             "attachments":
                 attachments,
+
             "status":
                 "Pending",
-            "answer": "",
-            "answer_attachments": [],
-            "answered_at": None,
-            "answered_by": None,
-            "created_at": now(),
+
+            "answer":
+                "",
+
+            "answer_attachments":
+                [],
+
+            "answered_at":
+                None,
+
+            "answered_by":
+                None,
+
+            # PRIVATE UNTIL ADMIN ANSWERS
+            "public":
+                False,
+
+            "created_at":
+                now(),
         }
 
         data = questions()
@@ -3066,13 +3491,7 @@ def ask_question():
             "Question Submitted",
             "Question",
             "INFO",
-            (
-                subject
-                +
-                " | "
-                +
-                question_id
-            )
+            f"{subject} | {question_id}"
         )
 
         flash(
@@ -3095,9 +3514,9 @@ def ask_question():
         </h1>
 
         <p class="muted">
-            Your submitted question is not
-            publicly displayed while it is
-            pending.
+            Your question is private and
+            can only be viewed by you and
+            authorized KOJA administrators.
         </p>
 
         <form
@@ -3151,6 +3570,7 @@ def ask_question():
         content
     )
 
+
 # ============================================================
 # ADMIN DASHBOARD
 # ============================================================
@@ -3189,36 +3609,67 @@ def admin_dashboard():
         </h1>
 
         <p>
-            Private administrator workspace
-            for questions, answers, files,
-            research and security logs.
+            Administrative control centre.
         </p>
 
     </div>
 
+
     <div class="grid">
 
         <div class="stat">
-            <h2>{total}</h2>
-            <p>Total Questions</p>
+
+            <h2>
+                {total}
+            </h2>
+
+            <p>
+                Questions
+            </p>
+
         </div>
 
-        <div class="stat">
-            <h2>{pending}</h2>
-            <p>Pending</p>
-        </div>
 
         <div class="stat">
-            <h2>{answered}</h2>
-            <p>Answered</p>
+
+            <h2>
+                {pending}
+            </h2>
+
+            <p>
+                Pending
+            </p>
+
         </div>
 
+
         <div class="stat">
-            <h2>{total_logs}</h2>
-            <p>System Logs</p>
+
+            <h2>
+                {answered}
+            </h2>
+
+            <p>
+                Answered
+            </p>
+
+        </div>
+
+
+        <div class="stat">
+
+            <h2>
+                {total_logs}
+            </h2>
+
+            <p>
+                Logs
+            </p>
+
         </div>
 
     </div>
+
 
     <div class="card">
 
@@ -3259,11 +3710,9 @@ def admin_dashboard():
         content
     )
 
+
 # ============================================================
 # ADMIN QUESTIONS
-#
-# This is private.
-# Students/public cannot access it.
 # ============================================================
 
 @app.route("/admin/questions")
@@ -3308,11 +3757,15 @@ def admin_questions():
         <tr>
 
             <td>
+
                 {esc(q.get("student_name"))}
+
                 <br>
+
                 <small>
                     {esc(q.get("student_email"))}
                 </small>
+
             </td>
 
             <td>
@@ -3324,9 +3777,11 @@ def admin_questions():
             </td>
 
             <td>
+
                 <span class="badge pending">
                     Pending
                 </span>
+
             </td>
 
             <td>
@@ -3356,9 +3811,11 @@ def admin_questions():
         rows = """
 
         <tr>
+
             <td colspan="5">
                 No pending questions.
             </td>
+
         </tr>
 
         """
@@ -3372,15 +3829,17 @@ def admin_questions():
         </h1>
 
         <p>
-            Only administrators can see
-            submitted questions here.
+            These questions are private
+            and visible only to authorized
+            administrators.
         </p>
 
     </div>
 
+
     <div class="card">
 
-        <div style="overflow-x:auto">
+        <div class="table-wrap">
 
             <table>
 
@@ -3431,6 +3890,7 @@ def admin_questions():
         content
     )
 
+
 # ============================================================
 # ADMIN QUESTION
 # ============================================================
@@ -3465,7 +3925,8 @@ def admin_question(question_id):
             request.form.get(
                 "answer",
                 ""
-            ).strip()
+            )
+            .strip()
         )
 
         if len(answer) < 2:
@@ -3495,11 +3956,21 @@ def admin_question(question_id):
             ):
 
                 item["answer"] = answer
-                item["status"] = "Answered"
-                item["answered_at"] = answered_at
-                item["answered_by"] = session.get(
-                    "email"
+
+                item["status"] = (
+                    "Answered"
                 )
+
+                item["answered_at"] = (
+                    answered_at
+                )
+
+                item["answered_by"] = (
+                    session.get("email")
+                )
+
+                # ADMIN HAS NOW PUBLISHED IT
+                item["public"] = True
 
                 break
 
@@ -3510,9 +3981,12 @@ def admin_question(question_id):
             "id",
             question_id,
             {
-                "answer": answer,
-                "status": "Answered",
-                "answered_at": answered_at,
+                "answer":
+                    answer,
+                "status":
+                    "Answered",
+                "answered_at":
+                    answered_at,
             }
         )
 
@@ -3526,7 +4000,7 @@ def admin_question(question_id):
         )
 
         flash(
-            "Answer saved.",
+            "Answer saved and published.",
             "success"
         )
 
@@ -3550,9 +4024,11 @@ def admin_question(question_id):
         </h1>
 
         <p>
+
             <strong>
                 Student:
             </strong>
+
             {esc(question.get("student_name"))}
 
             <br>
@@ -3560,10 +4036,13 @@ def admin_question(question_id):
             <strong>
                 Email:
             </strong>
+
             {esc(question.get("student_email"))}
+
         </p>
 
     </div>
+
 
     <div class="card">
 
@@ -3592,6 +4071,7 @@ def admin_question(question_id):
 
     </div>
 
+
     <div class="card">
 
         <h2>
@@ -3609,7 +4089,7 @@ def admin_question(question_id):
                 class="green"
                 type="submit"
             >
-                Save Answer
+                Save & Publish Answer
             </button>
 
         </form>
@@ -3620,7 +4100,7 @@ def admin_question(question_id):
             class="btn purple"
             href="/admin/question/{question_id}/upload"
         >
-            Answer + Files
+            Upload With Answer
         </a>
 
     </div>
@@ -3632,6 +4112,7 @@ def admin_question(question_id):
         content
     )
 
+
 # ============================================================
 # ADMIN ANSWER + FILES
 # ============================================================
@@ -3641,7 +4122,9 @@ def admin_question(question_id):
     methods=["GET", "POST"]
 )
 @admin_required
-def admin_upload_answer(question_id):
+def admin_upload_answer(
+    question_id
+):
 
     question = find_question(
         question_id
@@ -3666,7 +4149,8 @@ def admin_upload_answer(question_id):
             request.form.get(
                 "answer",
                 ""
-            ).strip()
+            )
+            .strip()
         )
 
         if not answer:
@@ -3675,7 +4159,8 @@ def admin_upload_answer(question_id):
                 question.get(
                     "answer",
                     ""
-                ).strip()
+                )
+                .strip()
             )
 
         if len(answer) < 2:
@@ -3715,11 +4200,21 @@ def admin_upload_answer(question_id):
             ):
 
                 item["answer"] = answer
-                item["status"] = "Answered"
-                item["answered_at"] = answered_at
-                item["answered_by"] = session.get(
-                    "email"
+
+                item["status"] = (
+                    "Answered"
                 )
+
+                item["answered_at"] = (
+                    answered_at
+                )
+
+                item["answered_by"] = (
+                    session.get("email")
+                )
+
+                # PUBLIC RESEARCH NOW ENABLED
+                item["public"] = True
 
                 existing = item.get(
                     "answer_attachments",
@@ -3736,9 +4231,9 @@ def admin_upload_answer(question_id):
                     attachments
                 )
 
-                item["answer_attachments"] = (
-                    existing
-                )
+                item[
+                    "answer_attachments"
+                ] = existing
 
                 break
 
@@ -3749,9 +4244,12 @@ def admin_upload_answer(question_id):
             "id",
             question_id,
             {
-                "answer": answer,
-                "status": "Answered",
-                "answered_at": answered_at,
+                "answer":
+                    answer,
+                "status":
+                    "Answered",
+                "answered_at":
+                    answered_at,
             }
         )
 
@@ -3759,12 +4257,10 @@ def admin_upload_answer(question_id):
             "Answer Sent",
             "Answer",
             "SUCCESS",
-            (
-                f"Answer and "
-                f"{len(attachments)} "
-                f"attachment(s) sent to "
-                f"{question_id}"
-            )
+            f"Answer and "
+            f"{len(attachments)} "
+            f"attachment(s) sent to "
+            f"{question_id}"
         )
 
         flash(
@@ -3791,10 +4287,12 @@ def admin_upload_answer(question_id):
         </h1>
 
         <p>
+
             Student:
             <strong>
                 {esc(question.get("student_name"))}
             </strong>
+
         </p>
 
         <div class="question">
@@ -3802,6 +4300,7 @@ def admin_upload_answer(question_id):
         </div>
 
     </div>
+
 
     <div class="card">
 
@@ -3841,6 +4340,7 @@ def admin_upload_answer(question_id):
 
     </div>
 
+
     <div class="card">
 
         <h2>
@@ -3853,7 +4353,7 @@ def admin_upload_answer(question_id):
                     "answer_attachments",
                     []
                 ),
-                "admin",
+                "student",
                 question_id
             )
         }
@@ -3866,6 +4366,7 @@ def admin_upload_answer(question_id):
         "Answer + Files",
         content
     )
+
 
 # ============================================================
 # ADMIN ANSWERS
@@ -3900,20 +4401,22 @@ def admin_answers():
 
         <div class="card">
 
-            <span class="subject">
+            <h2>
                 {esc(q.get("subject"))}
-            </span>
+            </h2>
 
             <span class="badge answered">
                 Answered
             </span>
 
             <p>
+
                 <strong>
                     Student:
                 </strong>
 
                 {esc(q.get("student_name"))}
+
             </p>
 
             <div class="question">
@@ -3941,10 +4444,11 @@ def admin_answers():
 
         """
 
-    if not cards:
-
-        cards = """
-
+    return render_page(
+        "Answers",
+        cards
+        or
+        """
         <div class="card">
 
             <h2>
@@ -3952,19 +4456,12 @@ def admin_answers():
             </h2>
 
         </div>
-
         """
-
-    return render_page(
-        "Previous Answers",
-        cards
     )
+
 
 # ============================================================
 # ADMIN LOGS
-#
-# PRIVATE ADMIN ONLY.
-# There is no public route to logs.
 # ============================================================
 
 @app.route("/admin/logs")
@@ -4087,10 +4584,14 @@ def admin_logs():
         )
 
         css = {
-            "SUCCESS": "log-success",
-            "WARNING": "log-warning",
-            "ERROR": "log-error",
-            "INFO": "log-info",
+            "SUCCESS":
+                "log-success",
+            "WARNING":
+                "log-warning",
+            "ERROR":
+                "log-error",
+            "INFO":
+                "log-info",
         }.get(
             level,
             "log-info"
@@ -4122,7 +4623,7 @@ def admin_logs():
                 {esc(item.get("action"))}
             </td>
 
-            <td>
+            <td class="log-details">
                 {esc(item.get("details"))}
             </td>
 
@@ -4139,30 +4640,31 @@ def admin_logs():
         rows = """
 
         <tr>
+
             <td colspan="7">
                 No matching logs.
             </td>
+
         </tr>
 
         """
 
-    categories = sorted({
-        str(
-            x.get(
-                "category",
-                ""
+    categories = sorted(
+        {
+            str(
+                x.get(
+                    "category",
+                    ""
+                )
             )
-        )
-        for x in all_logs
-        if x.get("category")
-    })
+            for x in all_logs
+            if x.get("category")
+        }
+    )
 
     options = "".join(
         f"""
-        <option
-            value="{esc(category)}"
-            {"selected" if category_filter == category.lower() else ""}
-        >
+        <option value="{esc(category)}">
             {esc(category)}
         </option>
         """
@@ -4178,39 +4680,67 @@ def admin_logs():
         </h1>
 
         <p>
-            Private administrator activity
-            and security monitoring.
+            Administrator-only system activity.
         </p>
 
-        <span class="live">
-            ● Logging active
-        </span>
-
     </div>
+
 
     <div class="grid">
 
         <div class="stat">
-            <h2>{len(all_logs)}</h2>
-            <p>Total Logs</p>
+
+            <h2>
+                {len(all_logs)}
+            </h2>
+
+            <p>
+                Total Logs
+            </p>
+
         </div>
 
-        <div class="stat">
-            <h2>{today_count}</h2>
-            <p>Today</p>
-        </div>
 
         <div class="stat">
-            <h2>{errors}</h2>
-            <p>Errors</p>
+
+            <h2>
+                {today_count}
+            </h2>
+
+            <p>
+                Today
+            </p>
+
         </div>
 
+
         <div class="stat">
-            <h2>{len(users())}</h2>
-            <p>Registered Users</p>
+
+            <h2>
+                {errors}
+            </h2>
+
+            <p>
+                Errors
+            </p>
+
+        </div>
+
+
+        <div class="stat">
+
+            <h2>
+                {len(users())}
+            </h2>
+
+            <p>
+                Registered Users
+            </p>
+
         </div>
 
     </div>
+
 
     <div class="card">
 
@@ -4230,35 +4760,24 @@ def admin_logs():
                     All Levels
                 </option>
 
-                <option
-                    value="INFO"
-                    {"selected" if level_filter == "INFO" else ""}
-                >
+                <option value="INFO">
                     INFO
                 </option>
 
-                <option
-                    value="SUCCESS"
-                    {"selected" if level_filter == "SUCCESS" else ""}
-                >
+                <option value="SUCCESS">
                     SUCCESS
                 </option>
 
-                <option
-                    value="WARNING"
-                    {"selected" if level_filter == "WARNING" else ""}
-                >
+                <option value="WARNING">
                     WARNING
                 </option>
 
-                <option
-                    value="ERROR"
-                    {"selected" if level_filter == "ERROR" else ""}
-                >
+                <option value="ERROR">
                     ERROR
                 </option>
 
             </select>
+
 
             <label>
                 Category
@@ -4274,6 +4793,7 @@ def admin_logs():
 
             </select>
 
+
             <label>
                 User
             </label>
@@ -4283,6 +4803,7 @@ def admin_logs():
                 value="{esc(user_filter)}"
                 placeholder="Search email"
             >
+
 
             <button type="submit">
                 Filter
@@ -4299,9 +4820,10 @@ def admin_logs():
 
     </div>
 
+
     <div class="card">
 
-        <div style="overflow-x:auto">
+        <div class="table-wrap">
 
             <table>
 
@@ -4309,13 +4831,33 @@ def admin_logs():
 
                     <tr>
 
-                        <th>Time</th>
-                        <th>Level</th>
-                        <th>Category</th>
-                        <th>User</th>
-                        <th>Action</th>
-                        <th>Details</th>
-                        <th>IP</th>
+                        <th>
+                            Time
+                        </th>
+
+                        <th>
+                            Level
+                        </th>
+
+                        <th>
+                            Category
+                        </th>
+
+                        <th>
+                            User
+                        </th>
+
+                        <th>
+                            Action
+                        </th>
+
+                        <th>
+                            Details
+                        </th>
+
+                        <th>
+                            IP
+                        </th>
 
                     </tr>
 
@@ -4340,6 +4882,7 @@ def admin_logs():
         content
     )
 
+
 # ============================================================
 # ADMIN FILE ACCESS
 # ============================================================
@@ -4354,16 +4897,19 @@ def admin_file(
 ):
 
     if category == "student":
+
         directory = STUDENT_UPLOAD_DIR
 
     elif category == "admin":
+
         directory = ADMIN_UPLOAD_DIR
 
     else:
+
         abort(404)
 
     log_event(
-        "File Viewed",
+        "Admin File Viewed",
         "Storage",
         "INFO",
         f"{category}/{filename}"
@@ -4373,6 +4919,7 @@ def admin_file(
         directory,
         filename
     )
+
 
 # ============================================================
 # STUDENT FILE ACCESS
@@ -4388,11 +4935,14 @@ def student_file(
     filename
 ):
 
+    # ADMIN USES ADMIN ROUTE
     if is_admin_session():
 
         return redirect(
             url_for(
-                "admin_dashboard"
+                "admin_file",
+                category=category,
+                filename=filename
             )
         )
 
@@ -4401,15 +4951,15 @@ def student_file(
     )
 
     if not question:
+
         return (
             "File not found",
             404
         )
 
+    # STUDENT CAN ONLY ACCESS OWN QUESTION
     if (
-        question.get(
-            "student_id"
-        )
+        question.get("student_id")
         !=
         session.get("user_id")
     ):
@@ -4418,7 +4968,7 @@ def student_file(
             "Unauthorized File Access",
             "Security",
             "WARNING",
-            question_id
+            f"Question {question_id}"
         )
 
         return (
@@ -4433,7 +4983,9 @@ def student_file(
             []
         )
 
-        directory = STUDENT_UPLOAD_DIR
+        directory = (
+            STUDENT_UPLOAD_DIR
+        )
 
     elif category == "admin":
 
@@ -4442,7 +4994,9 @@ def student_file(
             []
         )
 
-        directory = ADMIN_UPLOAD_DIR
+        directory = (
+            ADMIN_UPLOAD_DIR
+        )
 
     else:
 
@@ -4462,7 +5016,7 @@ def student_file(
         ):
 
             log_event(
-                "File Viewed",
+                "Student File Viewed",
                 "Storage",
                 "INFO",
                 f"{category}/{filename}"
@@ -4477,6 +5031,7 @@ def student_file(
         "File not found",
         404
     )
+
 
 # ============================================================
 # ADMIN CONFIGURATION
@@ -4502,7 +5057,7 @@ def admin_config():
     <div class="card">
 
         <h1>
-            KOJA Configuration
+            Configuration
         </h1>
 
         <h2>
@@ -4510,54 +5065,81 @@ def admin_config():
         </h2>
 
         <p>
+
             Configured:
 
-            <span class="badge
-                {"answered" if configured else "pending"}
-            ">
-                {"YES" if configured else "NO"}
+            <span class="badge {
+                'answered'
+                if configured
+                else
+                'pending'
+            }">
+
+                {
+                    "YES"
+                    if configured
+                    else
+                    "NO"
+                }
+
             </span>
+
         </p>
 
+
         <p>
+
             Connection:
 
-            <span class="badge
-                {"answered" if connected else "pending"}
-            ">
-                {"WORKING" if connected else "UNAVAILABLE"}
+            <span class="badge {
+                'answered'
+                if connected
+                else
+                'pending'
+            }">
+
+                {
+                    "WORKING"
+                    if connected
+                    else
+                    "UNAVAILABLE"
+                }
+
             </span>
+
         </p>
 
+
         <p>
+
             Storage bucket:
+
             <strong>
                 {esc(STORAGE_BUCKET)}
             </strong>
+
         </p>
 
+
         <h2>
-            Local Storage
+            Local Fallback
         </h2>
 
         <p>
-            Local JSON storage is active.
-            KOJA can continue operating even
-            when Supabase is unavailable.
+            Local JSON storage is enabled.
+            KOJA can continue operating when
+            Supabase is not configured.
         </p>
+
 
         <h2>
             Security
         </h2>
 
         <p>
-            Administrator logs are private.
-        </p>
-
-        <p>
-            Student questions remain private
-            until an administrator answers
-            and publishes them.
+            Administrative pages are protected
+            by server-side administrator
+            authorization.
         </p>
 
     </div>
@@ -4569,6 +5151,7 @@ def admin_config():
         content
     )
 
+
 # ============================================================
 # HEALTH
 # ============================================================
@@ -4577,21 +5160,44 @@ def admin_config():
 def health():
 
     return {
-        "status": "ok",
-        "application": SITE_NAME,
+
+        "status":
+            "ok",
+
+        "application":
+            SITE_NAME,
+
         "supabase_configured":
             supabase_configured(),
+
         "supabase_connected":
-            supabase_test(),
-        "logging": True,
-        "local_fallback": True,
-        "research": True,
-        "public_pending_questions":
-            False,
-        "admin_dashboard_protected":
+            (
+                supabase_test()
+                if supabase_configured()
+                else
+                False
+            ),
+
+        "logging":
             True,
-        "timestamp": now(),
+
+        "local_fallback":
+            True,
+
+        "research":
+            True,
+
+        "private_questions":
+            True,
+
+        "admin_protected":
+            True,
+
+        "timestamp":
+            now(),
+
     }
+
 
 # ============================================================
 # ERROR HANDLERS
@@ -4711,6 +5317,7 @@ def server_error(error):
         500
     )
 
+
 # ============================================================
 # START APPLICATION
 # ============================================================
@@ -4727,11 +5334,14 @@ if __name__ == "__main__":
     print("=" * 60)
     print("KOJA AFRICA")
     print("Knowledge • Questions • Answers")
+    print("Public Home: ENABLED")
     print("Opening Animation: ENABLED")
-    print("Animation Location: HOME ONLY")
-    print("Public Pending Questions: DISABLED")
+    print("Private Student Questions: ENABLED")
+    print("Public Research: ANSWERED ONLY")
     print("Admin Dashboard: PROTECTED")
     print("Admin Logs: PROTECTED")
+    print("Admin Configuration: PROTECTED")
+    print("System Logging: ENABLED")
     print("Local Fallback: ENABLED")
     print(
         "Supabase:",
