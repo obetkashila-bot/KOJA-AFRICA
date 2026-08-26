@@ -1,65 +1,12 @@
-# ============================================================
-# KOJA AFRICA
-# KNOWLEDGE • QUESTIONS • ANSWERS
-#
-# COMPLETE SINGLE-FILE FLASK APPLICATION
-#
-# STUDENT + ADMIN ACADEMIC PORTAL
-#
-# FEATURES
-# ------------------------------------------------------------
-# STUDENT
-#   - Register
-#   - Login / Logout
-#   - Dashboard
-#   - Ask academic questions
-#   - Upload documents
-#   - Upload multiple photos
-#   - Take photo using phone camera
-#   - View own questions
-#   - View administrator answers
-#   - View administrator attachments
-#
-# ADMIN
-#   - Secure admin login
-#   - Dashboard
-#   - View all questions
-#   - Search/filter questions
-#   - Read student attachments
-#   - Answer questions
-#   - Upload documents
-#   - Take photos using camera
-#   - Send attachments to students
-#   - Configuration
-#
-# STORAGE
-# ------------------------------------------------------------
-# Local JSON + local file storage always available
-# Optional Supabase PostgreSQL REST synchronization
-#
-# DEPLOYMENT
-# ------------------------------------------------------------
-# Render
-# Railway
-# VPS
-# Local Python
-# Pydroid 3
-#
-# NO SQLITE
-# NO psycopg
-# NO psycopg2
-#
-# ============================================================
-
 import os
 import json
 import uuid
 import hashlib
 import secrets
 import threading
-import html
-from datetime import datetime, timezone
+from datetime import datetime
 from functools import wraps
+from html import escape
 
 import requests
 
@@ -72,36 +19,72 @@ from flask import (
     render_template_string,
     flash,
     send_from_directory,
-    abort,
-    jsonify
+    abort
 )
 
 
 # ============================================================
-# APPLICATION
+# KOJA AFRICA
+# KNOWLEDGE • QUESTIONS • ANSWERS
+#
+# COMPLETE STUDENT + ADMIN ACADEMIC PORTAL
+#
+# FEATURES
+# ------------------------------------------------------------
+# STUDENT
+#   - Register
+#   - Login
+#   - Dashboard
+#   - Ask academic questions
+#   - Upload documents
+#   - Upload photos
+#   - Take photos using phone camera
+#   - View own questions
+#   - View administrator answers
+#   - View administrator attachments
+#
+# ADMIN
+#   - Secure admin login
+#   - Dashboard
+#   - Pending Questions
+#   - Previous Answers
+#   - Read student questions
+#   - View student attachments
+#   - Answer questions
+#   - Upload files with answers
+#   - Take photos using camera
+#   - Upload standalone academic resources
+#   - View uploaded resources
+#   - Configuration
+#
+# STORAGE
+#   - Local fallback
+#   - Optional Supabase
+#
+# DEPLOYMENT
+#   - Render
+#   - Railway
+#   - VPS
+#   - Local Python / Pydroid 3
+#
 # ============================================================
+
 
 app = Flask(__name__)
 
+
+# ============================================================
+# SECURITY
+# ============================================================
+
 app.secret_key = os.environ.get(
     "FLASK_SECRET_KEY",
-    "CHANGE_THIS_SECRET_KEY"
+    "CHANGE_THIS_KOJA_SECRET_KEY_2026"
 )
 
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
+
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
-
-# Safer cookie settings.
-app.config["SESSION_COOKIE_HTTPONLY"] = True
-app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-
-# Set this to true behind HTTPS in production.
-app.config["SESSION_COOKIE_SECURE"] = (
-    os.environ.get(
-        "KOJA_COOKIE_SECURE",
-        "false"
-    ).lower() == "true"
-)
 
 
 # ============================================================
@@ -132,11 +115,40 @@ ADMIN_UPLOAD_DIR = os.path.join(
     "admin"
 )
 
-os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(STUDENT_UPLOAD_DIR, exist_ok=True)
-os.makedirs(ADMIN_UPLOAD_DIR, exist_ok=True)
+RESOURCE_UPLOAD_DIR = os.path.join(
+    UPLOAD_DIR,
+    "resources"
+)
 
+os.makedirs(
+    DATA_DIR,
+    exist_ok=True
+)
+
+os.makedirs(
+    UPLOAD_DIR,
+    exist_ok=True
+)
+
+os.makedirs(
+    STUDENT_UPLOAD_DIR,
+    exist_ok=True
+)
+
+os.makedirs(
+    ADMIN_UPLOAD_DIR,
+    exist_ok=True
+)
+
+os.makedirs(
+    RESOURCE_UPLOAD_DIR,
+    exist_ok=True
+)
+
+
+# ============================================================
+# JSON FILES
+# ============================================================
 
 USERS_FILE = os.path.join(
     DATA_DIR,
@@ -148,7 +160,12 @@ QUESTIONS_FILE = os.path.join(
     "questions.json"
 )
 
-LOCK = threading.RLock()
+RESOURCES_FILE = os.path.join(
+    DATA_DIR,
+    "resources.json"
+)
+
+LOCK = threading.Lock()
 
 
 # ============================================================
@@ -187,7 +204,7 @@ STORAGE_BUCKET = os.environ.get(
 
 
 # ============================================================
-# ALLOWED FILE TYPES
+# FILE TYPES
 # ============================================================
 
 ALLOWED_EXTENSIONS = {
@@ -217,10 +234,10 @@ IMAGE_EXTENSIONS = {
 
 
 # ============================================================
-# JSON DATABASE
+# DATABASE HELPERS
 # ============================================================
 
-def ensure_json_file(path, default):
+def ensure_file(path, default):
 
     if not os.path.exists(path):
 
@@ -228,23 +245,28 @@ def ensure_json_file(path, default):
             path,
             "w",
             encoding="utf-8"
-        ) as file:
+        ) as f:
 
             json.dump(
                 default,
-                file,
+                f,
                 indent=2,
                 ensure_ascii=False
             )
 
 
-ensure_json_file(
+ensure_file(
     USERS_FILE,
     []
 )
 
-ensure_json_file(
+ensure_file(
     QUESTIONS_FILE,
+    []
+)
+
+ensure_file(
+    RESOURCES_FILE,
     []
 )
 
@@ -259,14 +281,9 @@ def read_json(path):
                 path,
                 "r",
                 encoding="utf-8"
-            ) as file:
+            ) as f:
 
-                value = json.load(file)
-
-                if isinstance(value, list):
-                    return value
-
-                return []
+                return json.load(f)
 
     except Exception:
 
@@ -277,61 +294,30 @@ def write_json(path, data):
 
     with LOCK:
 
-        temporary = (
-            path
-            + "."
-            + str(uuid.uuid4())
-            + ".tmp"
-        )
+        temp = path + ".tmp"
 
         with open(
-            temporary,
+            temp,
             "w",
             encoding="utf-8"
-        ) as file:
+        ) as f:
 
             json.dump(
                 data,
-                file,
+                f,
                 indent=2,
                 ensure_ascii=False
             )
 
         os.replace(
-            temporary,
+            temp,
             path
         )
 
 
 # ============================================================
-# TIME
-# ============================================================
-
-def now_iso():
-
-    return datetime.now(
-        timezone.utc
-    ).isoformat()
-
-
-# ============================================================
-# HTML ESCAPING
-# ============================================================
-
-def esc(value):
-
-    return html.escape(
-        str(value or ""),
-        quote=True
-    )
-
-
-# ============================================================
 # PASSWORD SECURITY
 # ============================================================
-
-PBKDF2_ITERATIONS = 300_000
-
 
 def hash_password(password):
 
@@ -341,7 +327,7 @@ def hash_password(password):
         "sha256",
         password.encode("utf-8"),
         salt.encode("utf-8"),
-        PBKDF2_ITERATIONS
+        200000
     )
 
     return (
@@ -367,7 +353,7 @@ def verify_password(
             "sha256",
             password.encode("utf-8"),
             salt.encode("utf-8"),
-            PBKDF2_ITERATIONS
+            200000
         ).hex()
 
         return secrets.compare_digest(
@@ -384,7 +370,7 @@ def verify_password(
 # USERS
 # ============================================================
 
-def get_users():
+def users():
 
     return read_json(
         USERS_FILE
@@ -405,27 +391,14 @@ def find_user(email):
         email or ""
     ).strip().lower()
 
-    for user in get_users():
+    for user in users():
 
         if (
-            user.get("email", "")
-            .strip()
-            .lower()
+            user.get(
+                "email",
+                ""
+            ).lower()
             == email
-        ):
-
-            return user
-
-    return None
-
-
-def find_user_by_id(user_id):
-
-    for user in get_users():
-
-        if (
-            str(user.get("id"))
-            == str(user_id)
         ):
 
             return user
@@ -435,38 +408,45 @@ def find_user_by_id(user_id):
 
 def create_admin():
 
-    data = get_users()
+    data = users()
 
-    existing = None
+    found = None
 
     for user in data:
 
         if (
-            user.get("email", "")
-            .lower()
+            user.get(
+                "email",
+                ""
+            ).lower()
             == ADMIN_EMAIL
         ):
 
-            existing = user
+            found = user
             break
 
-    if existing:
+    if found:
 
-        existing["role"] = "admin"
-        existing["name"] = "KOJA Administrator"
+        found["role"] = "admin"
 
-        # Environment variable is authoritative.
-        existing["password"] = hash_password(
-            ADMIN_PASSWORD
+        found["name"] = (
+            "KOJA Administrator"
+        )
+
+        found["password"] = (
+            hash_password(
+                ADMIN_PASSWORD
+            )
         )
 
         save_users(data)
 
         return
 
-    data.append({
+    admin = {
 
-        "id": str(uuid.uuid4()),
+        "id":
+            "ADMIN",
 
         "name":
             "KOJA Administrator",
@@ -483,9 +463,10 @@ def create_admin():
             "admin",
 
         "created_at":
-            now_iso()
+            datetime.utcnow().isoformat()
+    }
 
-    })
+    data.append(admin)
 
     save_users(data)
 
@@ -517,74 +498,8 @@ def supabase_headers():
             + SUPABASE_SERVICE_KEY,
 
         "Content-Type":
-            "application/json",
-
-        "Prefer":
-            "return=minimal"
+            "application/json"
     }
-
-
-def supabase_request(
-    method,
-    endpoint,
-    data=None,
-    params=None
-):
-
-    if not supabase_configured():
-
-        return None
-
-    try:
-
-        response = requests.request(
-
-            method=method,
-
-            url=(
-                SUPABASE_URL
-                + endpoint
-            ),
-
-            headers=supabase_headers(),
-
-            json=data,
-
-            params=params,
-
-            timeout=10
-        )
-
-        if response.status_code >= 400:
-
-            print(
-                "Supabase error:",
-                response.status_code,
-                response.text[:500]
-            )
-
-            return None
-
-        if not response.text:
-
-            return {}
-
-        try:
-
-            return response.json()
-
-        except Exception:
-
-            return {}
-
-    except Exception as error:
-
-        print(
-            "Supabase connection error:",
-            error
-        )
-
-        return None
 
 
 def supabase_test():
@@ -596,12 +511,9 @@ def supabase_test():
     try:
 
         response = requests.get(
-
             SUPABASE_URL
             + "/rest/v1/",
-
             headers=supabase_headers(),
-
             timeout=5
         )
 
@@ -610,6 +522,41 @@ def supabase_test():
     except Exception:
 
         return False
+
+
+def supabase_request(
+    method,
+    endpoint,
+    data=None
+):
+
+    if not supabase_configured():
+
+        return None
+
+    try:
+
+        response = requests.request(
+            method,
+            SUPABASE_URL + endpoint,
+            headers=supabase_headers(),
+            json=data,
+            timeout=8
+        )
+
+        if response.status_code >= 400:
+
+            return None
+
+        if not response.text:
+
+            return {}
+
+        return response.json()
+
+    except Exception:
+
+        return None
 
 
 def supabase_insert(
@@ -631,123 +578,13 @@ def supabase_update(
 ):
 
     return supabase_request(
-
         "PATCH",
-
         "/rest/v1/"
-        + table,
-
-        row,
-
-        params={
-            "id":
-                "eq."
-                + str(question_id)
-        }
-    )
-
-
-def sync_question(question):
-
-    if not supabase_configured():
-
-        return False
-
-    row = {
-
-        "id":
-            question["id"],
-
-        "student_id":
-            question["student_id"],
-
-        "student_name":
-            question["student_name"],
-
-        "student_email":
-            question["student_email"],
-
-        "subject":
-            question["subject"],
-
-        "question":
-            question["question"],
-
-        "status":
-            question["status"],
-
-        "answer":
-            question.get(
-                "answer",
-                ""
-            ),
-
-        "created_at":
-            question["created_at"],
-
-        "answered_at":
-            question.get(
-                "answered_at"
-            ),
-
-        "answered_by":
-            question.get(
-                "answered_by"
-            )
-    }
-
-    result = supabase_insert(
-        "koja_questions",
+        + table
+        + "?id=eq."
+        + str(question_id),
         row
     )
-
-    return result is not None
-
-
-# ============================================================
-# CSRF PROTECTION
-# ============================================================
-
-def csrf_token():
-
-    token = session.get(
-        "_csrf_token"
-    )
-
-    if not token:
-
-        token = secrets.token_urlsafe(32)
-
-        session["_csrf_token"] = token
-
-    return token
-
-
-def validate_csrf():
-
-    submitted = request.form.get(
-        "_csrf",
-        ""
-    )
-
-    stored = session.get(
-        "_csrf_token",
-        ""
-    )
-
-    if (
-        not submitted
-        or not stored
-        or not secrets.compare_digest(
-            submitted,
-            stored
-        )
-    ):
-
-        abort(
-            400,
-            description="Invalid security token."
-        )
 
 
 # ============================================================
@@ -762,11 +599,6 @@ def login_required(function):
         if not session.get(
             "user_id"
         ):
-
-            flash(
-                "Please log in first.",
-                "error"
-            )
 
             return redirect(
                 url_for("login")
@@ -785,10 +617,11 @@ def is_admin_session():
     return (
         session.get("role")
         == "admin"
-        and
-        session.get("email", "")
-        .strip()
-        .lower()
+        or
+        session.get(
+            "email",
+            ""
+        ).strip().lower()
         == ADMIN_EMAIL
     )
 
@@ -814,7 +647,9 @@ def admin_required(function):
             )
 
             return redirect(
-                url_for("student_dashboard")
+                url_for(
+                    "student_dashboard"
+                )
             )
 
         return function(
@@ -855,17 +690,16 @@ def allowed_file(filename):
 
 
 def save_upload(
-    uploaded_file,
+    file,
     category
 ):
 
-    if not uploaded_file:
+    if not file:
 
         return None
 
     original_name = (
-        uploaded_file.filename
-        or ""
+        file.filename or ""
     ).strip()
 
     if not original_name:
@@ -890,30 +724,33 @@ def save_upload(
 
     if category == "student":
 
-        category_dir = STUDENT_UPLOAD_DIR
+        directory = STUDENT_UPLOAD_DIR
 
     elif category == "admin":
 
-        category_dir = ADMIN_UPLOAD_DIR
+        directory = ADMIN_UPLOAD_DIR
+
+    elif category == "resources":
+
+        directory = RESOURCE_UPLOAD_DIR
 
     else:
 
         return None
 
+    os.makedirs(
+        directory,
+        exist_ok=True
+    )
+
     destination = os.path.join(
-        category_dir,
+        directory,
         stored_name
     )
 
-    try:
-
-        uploaded_file.save(
-            destination
-        )
-
-    except Exception:
-
-        return None
+    file.save(
+        destination
+    )
 
     return {
 
@@ -934,11 +771,7 @@ def save_upload(
 
         "is_image":
             extension
-            in IMAGE_EXTENSIONS,
-
-        "uploaded_at":
-            now_iso()
-
+            in IMAGE_EXTENSIONS
     }
 
 
@@ -947,33 +780,37 @@ def save_multiple_uploads(
     category
 ):
 
-    result = []
+    attachments = []
 
-    for uploaded_file in files:
+    for file in files:
 
-        if not uploaded_file:
+        if not file:
+
             continue
 
-        if not uploaded_file.filename:
+        if not file.filename:
+
             continue
 
         saved = save_upload(
-            uploaded_file,
+            file,
             category
         )
 
         if saved:
 
-            result.append(saved)
+            attachments.append(
+                saved
+            )
 
-    return result
+    return attachments
 
 
 # ============================================================
 # QUESTIONS
 # ============================================================
 
-def get_questions():
+def questions():
 
     return read_json(
         QUESTIONS_FILE
@@ -988,128 +825,90 @@ def save_questions(data):
     )
 
 
-def find_question(question_id):
+# ============================================================
+# RESOURCES
+# ============================================================
 
-    for question in get_questions():
+def resources():
 
-        if (
-            str(question.get("id"))
-            == str(question_id)
-        ):
+    return read_json(
+        RESOURCES_FILE
+    )
 
-            return question
 
-    return None
+def save_resources(data):
+
+    write_json(
+        RESOURCES_FILE,
+        data
+    )
 
 
 # ============================================================
-# ATTACHMENT HTML
+# SUPABASE QUESTION SYNC
 # ============================================================
 
-def attachment_html(
-    attachments,
-    viewer,
-    question_id=None
-):
+def sync_question(question):
 
-    if not attachments:
+    if not supabase_configured():
 
-        return """
-        <p class="muted">
-            No attachments.
-        </p>
-        """
+        return
 
-    output = ""
+    try:
 
-    for attachment in attachments:
+        row = {
 
-        stored = attachment.get(
-            "stored_name"
+            "id":
+                question["id"],
+
+            "student_id":
+                question["student_id"],
+
+            "student_name":
+                question["student_name"],
+
+            "student_email":
+                question["student_email"],
+
+            "subject":
+                question["subject"],
+
+            "question":
+                question["question"],
+
+            "status":
+                question["status"],
+
+            "answer":
+                question.get(
+                    "answer",
+                    ""
+                ),
+
+            "created_at":
+                question["created_at"],
+
+            "answered_at":
+                question.get(
+                    "answered_at"
+                )
+        }
+
+        supabase_insert(
+            "koja_questions",
+            row
         )
 
-        if not stored:
+    except Exception:
 
-            continue
-
-        original = esc(
-            attachment.get(
-                "original_name",
-                "Attachment"
-            )
-        )
-
-        category = attachment.get(
-            "category",
-            ""
-        )
-
-        if viewer == "admin":
-
-            route = url_for(
-                "admin_file",
-                category=category,
-                filename=stored
-            )
-
-        else:
-
-            route = url_for(
-                "student_file",
-                question_id=question_id,
-                category=category,
-                filename=stored
-            )
-
-        if attachment.get(
-            "is_image"
-        ):
-
-            preview = f"""
-            <img
-                src="{esc(route)}"
-                alt="Uploaded image"
-                loading="lazy"
-            >
-            """
-
-        else:
-
-            preview = ""
-
-        output += f"""
-
-        <div class="attachment">
-
-            <div class="attachment-title">
-                📎 {original}
-            </div>
-
-            {preview}
-
-            <br>
-
-            <a
-                class="btn"
-                href="{esc(route)}"
-                target="_blank"
-                rel="noopener"
-            >
-                Open Attachment
-            </a>
-
-        </div>
-
-        """
-
-    return output
+        pass
 
 
 # ============================================================
-# MAIN HTML TEMPLATE
+# HTML
 # ============================================================
 
-HTML = r"""
+HTML = """
 
 <!DOCTYPE html>
 
@@ -1129,11 +928,6 @@ HTML = r"""
     content="#101828"
 >
 
-<meta
-    name="description"
-    content="KOJA AFRICA academic question and answer portal"
->
-
 <title>
 {{ title }} - KOJA AFRICA
 </title>
@@ -1142,10 +936,6 @@ HTML = r"""
 
 * {
     box-sizing: border-box;
-}
-
-html {
-    scroll-behavior: smooth;
 }
 
 body {
@@ -1160,8 +950,6 @@ body {
         Arial,
         Helvetica,
         sans-serif;
-
-    line-height: 1.5;
 }
 
 nav {
@@ -1283,10 +1071,6 @@ nav a:hover {
     margin-bottom: 20px;
 }
 
-.hero h1 {
-    margin-top: 0;
-}
-
 .grid {
 
     display: grid;
@@ -1395,6 +1179,10 @@ button:hover,
     background: #7c3aed;
 }
 
+.teal {
+    background: #0f766e;
+}
+
 .badge {
 
     display: inline-block;
@@ -1446,8 +1234,6 @@ button:hover,
 
     white-space: pre-wrap;
 
-    overflow-wrap: anywhere;
-
     line-height: 1.65;
 
     background: #f8fafc;
@@ -1460,8 +1246,6 @@ button:hover,
 .answer {
 
     white-space: pre-wrap;
-
-    overflow-wrap: anywhere;
 
     background: #f0fdf4;
 
@@ -1567,22 +1351,18 @@ th {
 }
 
 .upload-button.camera {
-
     background: #7c3aed;
 }
 
 .upload-button.document {
-
     background: #2563eb;
 }
 
 .upload-button.photo {
-
     background: #16a34a;
 }
 
 .file-input {
-
     display: none;
 }
 
@@ -1593,8 +1373,6 @@ th {
     font-size: 13px;
 
     color: #475467;
-
-    overflow-wrap: anywhere;
 }
 
 .attachment {
@@ -1642,48 +1420,66 @@ th {
     margin-bottom: 15px;
 }
 
-.search-box {
+.action-grid {
 
     display: grid;
 
     grid-template-columns:
-        1fr auto;
+        repeat(
+            auto-fit,
+            minmax(180px, 1fr)
+        );
 
-    gap: 10px;
+    gap: 12px;
+
+    margin-bottom: 20px;
 }
 
-.search-box input {
+.action-card {
+
+    padding: 20px;
+
+    border-radius: 12px;
+
+    color: white;
+
+    text-decoration: none;
+
+    display: block;
+}
+
+.action-card h3 {
+
+    margin-top: 0;
+
+    font-size: 19px;
+}
+
+.action-card p {
+
     margin-bottom: 0;
-}
 
-.empty {
-
-    text-align: center;
-
-    padding: 30px;
-
-    color: #667085;
-}
-
-.footer {
-
-    text-align: center;
-
-    color: #667085;
-
-    padding: 30px 10px;
+    opacity: .9;
 
     font-size: 13px;
 }
 
-hr {
+.resource-card {
 
-    border: 0;
+    border:
+        1px solid #e4e7ec;
 
-    border-top:
-        1px solid #eaecf0;
+    padding: 16px;
 
-    margin: 25px 0;
+    border-radius: 10px;
+
+    margin-bottom: 12px;
+
+    background: #fff;
+}
+
+.resource-card h3 {
+    margin-top: 0;
 }
 
 @media(max-width:650px) {
@@ -1692,17 +1488,13 @@ hr {
         width: 96%;
     }
 
-    nav {
-        position: relative;
-    }
-
-    .search-box {
-        grid-template-columns: 1fr;
-    }
-
     table {
         display: block;
         overflow-x: auto;
+    }
+
+    nav {
+        position: relative;
     }
 
 }
@@ -1717,7 +1509,11 @@ hr {
 
 <div class="logo">
 
-<span class="k">k</span><span class="o">o</span><span class="j">j</span><span class="a">a</span>
+<span class="k">k</span>
+<span class="o">o</span>
+<span class="j">j</span>
+<span class="a">a</span>
+
 AFRICA
 
 </div>
@@ -1728,27 +1524,35 @@ AFRICA
 
 {% if session.get("role") == "admin" %}
 
-<a href="{{ url_for('admin_dashboard') }}">
+<a href="/admin">
 Admin
 </a>
 
-<a href="{{ url_for('admin_config') }}">
+<a href="/admin/upload">
+Upload
+</a>
+
+<a href="/admin/answers">
+Previous Answers
+</a>
+
+<a href="/admin/config">
 Configuration
 </a>
 
 {% else %}
 
-<a href="{{ url_for('student_dashboard') }}">
+<a href="/student">
 Dashboard
 </a>
 
-<a href="{{ url_for('ask_question') }}">
+<a href="/student/ask">
 Ask Question
 </a>
 
 {% endif %}
 
-<a href="{{ url_for('logout') }}">
+<a href="/logout">
 Logout
 </a>
 
@@ -1781,12 +1585,6 @@ with_categories=true
 
 </div>
 
-<div class="footer">
-
-KOJA AFRICA • Knowledge • Questions • Answers
-
-</div>
-
 </body>
 
 </html>
@@ -1794,23 +1592,124 @@ KOJA AFRICA • Knowledge • Questions • Answers
 """
 
 
-# ============================================================
-# RENDER
-# ============================================================
-
 def render_page(
     title,
     content
 ):
 
     return render_template_string(
-
         HTML,
-
         title=title,
-
         content=content
     )
+
+
+# ============================================================
+# ATTACHMENT HTML
+# ============================================================
+
+def attachment_html(
+    attachments,
+    viewer,
+    question_id=None
+):
+
+    if not attachments:
+
+        return """
+        <p class="muted">
+            No attachments.
+        </p>
+        """
+
+    output = ""
+
+    for attachment in attachments:
+
+        name = escape(
+            attachment.get(
+                "original_name",
+                "Attachment"
+            )
+        )
+
+        stored = attachment.get(
+            "stored_name"
+        )
+
+        category = attachment.get(
+            "category",
+            ""
+        )
+
+        if not stored:
+
+            continue
+
+        if viewer == "admin":
+
+            route = (
+                "/admin/file/"
+                + category
+                + "/"
+                + stored
+            )
+
+        else:
+
+            route = (
+                "/student/file/"
+                + str(question_id)
+                + "/"
+                + category
+                + "/"
+                + stored
+            )
+
+        is_image = bool(
+            attachment.get(
+                "is_image"
+            )
+        )
+
+        if is_image:
+
+            preview = f"""
+            <img
+                src="{route}"
+                alt="Uploaded image"
+            >
+            """
+
+        else:
+
+            preview = ""
+
+        output += f"""
+
+        <div class="attachment">
+
+            <div class="attachment-title">
+                📎 {name}
+            </div>
+
+            {preview}
+
+            <br>
+
+            <a
+                class="btn"
+                href="{route}"
+                target="_blank"
+            >
+                Open Attachment
+            </a>
+
+        </div>
+
+        """
+
+    return output
 
 
 # ============================================================
@@ -1831,15 +1730,11 @@ def home():
     if is_admin_session():
 
         return redirect(
-            url_for(
-                "admin_dashboard"
-            )
+            url_for("admin_dashboard")
         )
 
     return redirect(
-        url_for(
-            "student_dashboard"
-        )
+        url_for("student_dashboard")
     )
 
 
@@ -1855,8 +1750,6 @@ def login():
 
     if request.method == "POST":
 
-        validate_csrf()
-
         email = (
             request.form.get(
                 "email",
@@ -1871,21 +1764,7 @@ def login():
             ""
         )
 
-        if not email or not password:
-
-            flash(
-                "Enter your email and password.",
-                "error"
-            )
-
-            return redirect(
-                url_for("login")
-            )
-
-        # ----------------------------------------------------
         # ADMIN LOGIN
-        # ----------------------------------------------------
-
         if (
             email == ADMIN_EMAIL
             and secrets.compare_digest(
@@ -1897,11 +1776,16 @@ def login():
             session.clear()
 
             session["user_id"] = "ADMIN"
-            session["email"] = ADMIN_EMAIL
-            session["name"] = "KOJA Administrator"
-            session["role"] = "admin"
 
-            csrf_token()
+            session["email"] = (
+                ADMIN_EMAIL
+            )
+
+            session["name"] = (
+                "KOJA Administrator"
+            )
+
+            session["role"] = "admin"
 
             return redirect(
                 url_for(
@@ -1909,21 +1793,27 @@ def login():
                 )
             )
 
-        # ----------------------------------------------------
         # STUDENT LOGIN
-        # ----------------------------------------------------
+        user = find_user(
+            email
+        )
 
-        user = find_user(email)
+        if not user:
 
-        if (
-            not user
-            or user.get("role") != "student"
-            or not verify_password(
-                password,
-                user.get(
-                    "password",
-                    ""
-                )
+            flash(
+                "Invalid email or password.",
+                "error"
+            )
+
+            return redirect(
+                url_for("login")
+            )
+
+        if not verify_password(
+            password,
+            user.get(
+                "password",
+                ""
             )
         ):
 
@@ -1938,12 +1828,19 @@ def login():
 
         session.clear()
 
-        session["user_id"] = user["id"]
-        session["email"] = user["email"]
-        session["name"] = user["name"]
-        session["role"] = "student"
+        session["user_id"] = (
+            user["id"]
+        )
 
-        csrf_token()
+        session["email"] = (
+            user["email"]
+        )
+
+        session["name"] = (
+            user["name"]
+        )
+
+        session["role"] = "student"
 
         return redirect(
             url_for(
@@ -1951,9 +1848,7 @@ def login():
             )
         )
 
-    token = csrf_token()
-
-    content = f"""
+    content = """
 
     <div class="auth card">
 
@@ -1966,12 +1861,6 @@ def login():
         </p>
 
         <form method="post">
-
-            <input
-                type="hidden"
-                name="_csrf"
-                value="{esc(token)}"
-            >
 
             <label>
                 Email
@@ -2005,7 +1894,7 @@ def login():
 
         <p>
             New student?
-            <a href="{url_for('register')}">
+            <a href="/register">
                 Create Student Account
             </a>
         </p>
@@ -2031,8 +1920,6 @@ def login():
 def register():
 
     if request.method == "POST":
-
-        validate_csrf()
 
         name = (
             request.form.get(
@@ -2065,17 +1952,6 @@ def register():
 
             flash(
                 "Enter your full name.",
-                "error"
-            )
-
-            return redirect(
-                url_for("register")
-            )
-
-        if "@" not in email:
-
-            flash(
-                "Enter a valid email address.",
                 "error"
             )
 
@@ -2127,7 +2003,7 @@ def register():
                 url_for("register")
             )
 
-        data = get_users()
+        data = users()
 
         data.append({
 
@@ -2149,14 +2025,13 @@ def register():
                 "student",
 
             "created_at":
-                now_iso()
-
+                datetime.utcnow().isoformat()
         })
 
         save_users(data)
 
         flash(
-            "Account created successfully. You can now log in.",
+            "Account created successfully.",
             "success"
         )
 
@@ -2164,9 +2039,7 @@ def register():
             url_for("login")
         )
 
-    token = csrf_token()
-
-    content = f"""
+    content = """
 
     <div class="auth card">
 
@@ -2176,12 +2049,6 @@ def register():
 
         <form method="post">
 
-            <input
-                type="hidden"
-                name="_csrf"
-                value="{esc(token)}"
-            >
-
             <label>
                 Full Name
             </label>
@@ -2189,7 +2056,6 @@ def register():
             <input
                 type="text"
                 name="name"
-                autocomplete="name"
                 required
             >
 
@@ -2200,7 +2066,6 @@ def register():
             <input
                 type="email"
                 name="email"
-                autocomplete="email"
                 required
             >
 
@@ -2212,7 +2077,6 @@ def register():
                 type="password"
                 name="password"
                 minlength="6"
-                autocomplete="new-password"
                 required
             >
 
@@ -2224,7 +2088,6 @@ def register():
                 type="password"
                 name="confirm"
                 minlength="6"
-                autocomplete="new-password"
                 required
             >
 
@@ -2235,7 +2098,7 @@ def register():
         </form>
 
         <p>
-            <a href="{url_for('login')}">
+            <a href="/login">
                 Already have an account?
             </a>
         </p>
@@ -2280,76 +2143,38 @@ def student_dashboard():
             )
         )
 
-    user_id = session.get(
-        "user_id"
-    )
+    all_questions = questions()
 
     my_questions = [
 
         q
 
-        for q in get_questions()
+        for q in all_questions
 
-        if str(
-            q.get("student_id")
+        if q.get(
+            "student_id"
         )
-        == str(user_id)
-
+        == session.get(
+            "user_id"
+        )
     ]
 
     my_questions.sort(
-
         key=lambda q:
             q.get(
                 "created_at",
                 ""
             ),
-
         reverse=True
-    )
-
-    total = len(
-        my_questions
-    )
-
-    answered = sum(
-
-        1
-
-        for q in my_questions
-
-        if q.get("status")
-        == "Answered"
-
-    )
-
-    pending = sum(
-
-        1
-
-        for q in my_questions
-
-        if q.get("status")
-        == "Pending"
-
     )
 
     cards = ""
 
     for q in my_questions:
 
-        subject = esc(
-            q.get(
-                "subject",
-                "Question"
-            )
-        )
-
-        status = esc(
-            q.get(
-                "status",
-                "Pending"
-            )
+        status = q.get(
+            "status",
+            "Pending"
         )
 
         badge = (
@@ -2358,59 +2183,64 @@ def student_dashboard():
             else "pending"
         )
 
-        question_text = esc(
-            q.get(
-                "question",
-                ""
+        subject = escape(
+            str(
+                q.get(
+                    "subject",
+                    "Question"
+                )
             )
         )
 
-        answer = q.get(
-            "answer",
-            ""
+        question_text = escape(
+            str(
+                q.get(
+                    "question",
+                    ""
+                )
+            )
+        )
+
+        answer = escape(
+            str(
+                q.get(
+                    "answer",
+                    ""
+                )
+            )
         )
 
         if answer:
 
             answer_html = f"""
-
             <div class="answer">
-                {esc(answer)}
+                {answer}
             </div>
-
             """
 
         else:
 
             answer_html = """
-
             <p class="muted">
                 Waiting for administrator answer.
             </p>
-
             """
 
         student_files = attachment_html(
-
             q.get(
                 "attachments",
                 []
             ),
-
             "student",
-
             q.get("id")
         )
 
         admin_files = attachment_html(
-
             q.get(
                 "answer_attachments",
                 []
             ),
-
             "student",
-
             q.get("id")
         )
 
@@ -2423,17 +2253,15 @@ def student_dashboard():
             </h2>
 
             <span class="badge {badge}">
-                {status}
+                {escape(str(status))}
             </span>
 
             <p class="muted small">
                 Submitted:
-                {esc(
-                    q.get(
-                        "created_at",
-                        ""
-                    )
-                )}
+                {escape(str(q.get(
+                    "created_at",
+                    ""
+                )))}
             </p>
 
             <h3>
@@ -2472,7 +2300,7 @@ def student_dashboard():
 
         cards = """
 
-        <div class="card empty">
+        <div class="card">
 
             <h2>
                 No questions yet.
@@ -2493,23 +2321,42 @@ def student_dashboard():
 
         """
 
+    total = len(
+        my_questions
+    )
+
+    answered = sum(
+        1
+        for q in my_questions
+        if q.get("status")
+        == "Answered"
+    )
+
+    pending = sum(
+        1
+        for q in my_questions
+        if q.get("status")
+        == "Pending"
+    )
+
     content = f"""
 
     <div class="hero">
 
         <h1>
-            Welcome, {esc(session.get("name"))}
+            Welcome,
+            {escape(str(session.get("name")))}
         </h1>
 
         <p>
             Ask academic questions,
-            upload assignments and receive
-            answers from KOJA administrators.
+            upload assignments and
+            receive answers.
         </p>
 
         <a
             class="btn"
-            href="{url_for('ask_question')}"
+            href="/student/ask"
         >
             Ask Question
         </a>
@@ -2519,39 +2366,18 @@ def student_dashboard():
     <div class="grid">
 
         <div class="stat">
-
-            <h2>
-                {total}
-            </h2>
-
-            <p>
-                Total Questions
-            </p>
-
+            <h2>{total}</h2>
+            <p>Total Questions</p>
         </div>
 
         <div class="stat">
-
-            <h2>
-                {answered}
-            </h2>
-
-            <p>
-                Answered
-            </p>
-
+            <h2>{answered}</h2>
+            <p>Answered</p>
         </div>
 
         <div class="stat">
-
-            <h2>
-                {pending}
-            </h2>
-
-            <p>
-                Pending
-            </p>
-
+            <h2>{pending}</h2>
+            <p>Pending</p>
         </div>
 
     </div>
@@ -2591,8 +2417,6 @@ def ask_question():
 
     if request.method == "POST":
 
-        validate_csrf()
-
         subject = (
             request.form.get(
                 "subject",
@@ -2631,34 +2455,29 @@ def ask_question():
                 url_for("ask_question")
             )
 
-        uploaded_files = request.files.getlist(
-            "attachments"
+        uploaded_files = (
+            request.files.getlist(
+                "attachments"
+            )
         )
 
         attachments = save_multiple_uploads(
-
             uploaded_files,
-
             "student"
         )
 
-        has_files = any(
-
-            file
-            and file.filename
-
-            for file in uploaded_files
-
+        has_named_files = any(
+            f and f.filename
+            for f in uploaded_files
         )
 
         if (
-            has_files
+            has_named_files
             and not attachments
         ):
 
             flash(
-                "No valid attachment was uploaded. "
-                "Check the file type and 10 MB limit.",
+                "No valid attachment was uploaded.",
                 "error"
             )
 
@@ -2711,11 +2530,10 @@ def ask_question():
                 None,
 
             "created_at":
-                now_iso()
-
+                datetime.utcnow().isoformat()
         }
 
-        data = get_questions()
+        data = questions()
 
         data.append(item)
 
@@ -2734,9 +2552,7 @@ def ask_question():
             )
         )
 
-    token = csrf_token()
-
-    content = f"""
+    content = """
 
     <div class="card">
 
@@ -2746,20 +2562,14 @@ def ask_question():
 
         <p class="muted">
             Type your academic question.
-            You can upload documents, photos,
-            or take a new photo using your phone.
+            You can upload documents or use
+            your phone camera.
         </p>
 
         <form
             method="post"
             enctype="multipart/form-data"
         >
-
-            <input
-                type="hidden"
-                name="_csrf"
-                value="{esc(token)}"
-            >
 
             <label>
                 Subject
@@ -2778,7 +2588,7 @@ def ask_question():
 
             <textarea
                 name="question"
-                placeholder="Write your academic question..."
+                placeholder="Write your question..."
                 required
             ></textarea>
 
@@ -2789,7 +2599,8 @@ def ask_question():
                 </h3>
 
                 <p class="small muted">
-                    Maximum total request size: 10 MB.
+                    Maximum total request size:
+                    10 MB.
                 </p>
 
                 <div class="upload-actions">
@@ -2815,7 +2626,7 @@ def ask_question():
                         class="upload-button photo"
                         for="photoInput"
                     >
-                        🖼️ Choose Photos
+                        🖼️ Choose Photo
                     </label>
 
                     <input
@@ -2870,36 +2681,46 @@ def ask_question():
 
         const inputs = [
 
-            document.getElementById("cameraInput"),
+            document.getElementById(
+                "cameraInput"
+            ),
 
-            document.getElementById("photoInput"),
+            document.getElementById(
+                "photoInput"
+            ),
 
-            document.getElementById("documentInput")
+            document.getElementById(
+                "documentInput"
+            )
 
         ];
 
         let names = [];
 
-        inputs.forEach(function(input) {
+        inputs.forEach(
+            function(input) {
 
-            if (!input) return;
+                if (!input) return;
 
-            for (
-                let i = 0;
-                i < input.files.length;
-                i++
-            ) {
+                for (
+                    let i = 0;
+                    i < input.files.length;
+                    i++
+                ) {
 
-                names.push(
-                    input.files[i].name
-                );
+                    names.push(
+                        input.files[i].name
+                    );
+
+                }
 
             }
-
-        });
+        );
 
         const list =
-            document.getElementById("fileList");
+            document.getElementById(
+                "fileList"
+            );
 
         if (!names.length) {
 
@@ -2907,26 +2728,12 @@ def ask_question():
                 "No files selected.";
 
             return;
+
         }
 
         list.innerHTML =
             "<strong>Selected:</strong><br>"
-            + names
-                .map(function(name) {
-                    return escapeHtml(name);
-                })
-                .join("<br>");
-
-    }
-
-    function escapeHtml(text) {
-
-        const div =
-            document.createElement("div");
-
-        div.textContent = text;
-
-        return div.innerHTML;
+            + names.join("<br>");
 
     }
 
@@ -2948,225 +2755,36 @@ def ask_question():
 @admin_required
 def admin_dashboard():
 
-    search = (
-        request.args.get(
-            "q",
-            ""
-        )
-        .strip()
-        .lower()
-    )
-
-    status_filter = (
-        request.args.get(
-            "status",
-            ""
-        )
-        .strip()
-        .lower()
-    )
-
-    data = get_questions()
+    data = questions()
 
     data.sort(
-
         key=lambda q:
             q.get(
                 "created_at",
                 ""
             ),
-
         reverse=True
     )
 
     total = len(data)
 
     pending = sum(
-
         1
-
         for q in data
-
         if q.get("status")
         == "Pending"
-
     )
 
     answered = sum(
-
         1
-
         for q in data
-
         if q.get("status")
         == "Answered"
-
     )
 
-    filtered = []
-
-    for q in data:
-
-        searchable = " ".join([
-
-            str(q.get(
-                "student_name",
-                ""
-            )),
-
-            str(q.get(
-                "student_email",
-                ""
-            )),
-
-            str(q.get(
-                "subject",
-                ""
-            )),
-
-            str(q.get(
-                "question",
-                ""
-            ))
-
-        ]).lower()
-
-        if search and search not in searchable:
-            continue
-
-        if (
-            status_filter
-            and status_filter != "all"
-            and q.get(
-                "status",
-                ""
-            ).lower()
-            != status_filter
-        ):
-            continue
-
-        filtered.append(q)
-
-    rows = ""
-
-    for q in filtered:
-
-        status = q.get(
-            "status",
-            "Pending"
-        )
-
-        badge = (
-            "answered"
-            if status == "Answered"
-            else "pending"
-        )
-
-        question_preview = (
-            str(
-                q.get(
-                    "question",
-                    ""
-                )
-            )[:180]
-        )
-
-        rows += f"""
-
-        <tr>
-
-            <td>
-
-                <strong>
-                    {esc(
-                        q.get(
-                            "student_name",
-                            ""
-                        )
-                    )}
-                </strong>
-
-                <br>
-
-                <small>
-                    {esc(
-                        q.get(
-                            "student_email",
-                            ""
-                        )
-                    )}
-                </small>
-
-            </td>
-
-            <td>
-                {esc(
-                    q.get(
-                        "subject",
-                        ""
-                    )
-                )}
-            </td>
-
-            <td>
-                {esc(question_preview)}
-                {"..." if len(
-                    str(q.get("question",""))
-                ) > 180 else ""}
-            </td>
-
-            <td>
-
-                <span class="badge {badge}">
-                    {esc(status)}
-                </span>
-
-                <br>
-
-                <small>
-                    📎
-                    {len(
-                        q.get(
-                            "attachments",
-                            []
-                        )
-                    )}
-                    attachment(s)
-                </small>
-
-            </td>
-
-            <td>
-
-                <a
-                    class="btn"
-                    href="{url_for(
-                        'admin_question',
-                        question_id=q.get('id')
-                    )}"
-                >
-                    Open
-                </a>
-
-            </td>
-
-        </tr>
-
-        """
-
-    if not rows:
-
-        rows = """
-
-        <tr>
-
-            <td colspan="5">
-                No questions match your search.
-            </td>
-
-        </tr>
-
-        """
+    resources_count = len(
+        resources()
+    )
 
     content = f"""
 
@@ -3177,9 +2795,93 @@ def admin_dashboard():
         </h1>
 
         <p>
-            Manage student academic questions,
-            attachments and answers.
+            Manage student questions,
+            answers and academic resources.
         </p>
+
+    </div>
+
+    <div class="action-grid">
+
+        <a
+            href="/admin/pending"
+            class="action-card orange"
+        >
+
+            <h3>
+                ⏳ Pending Questions
+            </h3>
+
+            <p>
+                View questions waiting
+                for an administrator answer.
+            </p>
+
+        </a>
+
+        <a
+            href="/admin/answers"
+            class="action-card green"
+        >
+
+            <h3>
+                ✅ Previous Answers
+            </h3>
+
+            <p>
+                View questions that have
+                already been answered.
+            </p>
+
+        </a>
+
+        <a
+            href="/admin/upload"
+            class="action-card purple"
+        >
+
+            <h3>
+                📤 Upload Resource
+            </h3>
+
+            <p>
+                Upload academic documents,
+                photos and learning resources.
+            </p>
+
+        </a>
+
+        <a
+            href="/admin/resources"
+            class="action-card teal"
+        >
+
+            <h3>
+                📚 Resources
+            </h3>
+
+            <p>
+                View files uploaded directly
+                by the administrator.
+            </p>
+
+        </a>
+
+        <a
+            href="/admin/config"
+            class="action-card dark"
+        >
+
+            <h3>
+                ⚙️ Configuration
+            </h3>
+
+            <p>
+                Check Supabase and system
+                configuration.
+            </p>
+
+        </a>
 
     </div>
 
@@ -3224,13 +2926,11 @@ def admin_dashboard():
         <div class="stat">
 
             <h2>
-                ⚙️
+                {resources_count}
             </h2>
 
             <p>
-                <a href="{url_for('admin_config')}">
-                    Configuration
-                </a>
+                Uploaded Resources
             </p>
 
         </div>
@@ -3240,97 +2940,13 @@ def admin_dashboard():
     <div class="card">
 
         <h2>
-            Student Questions
+            Recent Questions
         </h2>
 
-        <form
-            method="get"
-            class="search-box"
-        >
-
-            <input
-                type="search"
-                name="q"
-                value="{esc(search)}"
-                placeholder="Search student, subject or question..."
-            >
-
-            <select name="status">
-
-                <option
-                    value=""
-                    {"selected" if not status_filter else ""}
-                >
-                    All Statuses
-                </option>
-
-                <option
-                    value="pending"
-                    {"selected" if status_filter == "pending" else ""}
-                >
-                    Pending
-                </option>
-
-                <option
-                    value="answered"
-                    {"selected" if status_filter == "answered" else ""}
-                >
-                    Answered
-                </option>
-
-            </select>
-
-            <button type="submit">
-                Search
-            </button>
-
-        </form>
-
-    </div>
-
-    <div class="card">
-
-        <div style="overflow-x:auto">
-
-            <table>
-
-                <thead>
-
-                    <tr>
-
-                        <th>
-                            Student
-                        </th>
-
-                        <th>
-                            Subject
-                        </th>
-
-                        <th>
-                            Question
-                        </th>
-
-                        <th>
-                            Status
-                        </th>
-
-                        <th>
-                            Action
-                        </th>
-
-                    </tr>
-
-                </thead>
-
-                <tbody>
-
-                    {rows}
-
-                </tbody>
-
-            </table>
-
-        </div>
+        <p class="muted">
+            Use the buttons above to manage
+            pending questions and previous answers.
+        </p>
 
     </div>
 
@@ -3343,7 +2959,326 @@ def admin_dashboard():
 
 
 # ============================================================
-# ADMIN QUESTION
+# ADMIN PENDING QUESTIONS
+# ============================================================
+
+@app.route("/admin/pending")
+@admin_required
+def admin_pending():
+
+    data = [
+
+        q
+
+        for q in questions()
+
+        if q.get(
+            "status"
+        )
+        != "Answered"
+
+    ]
+
+    data.sort(
+        key=lambda q:
+            q.get(
+                "created_at",
+                ""
+            ),
+        reverse=True
+    )
+
+    cards = ""
+
+    for q in data:
+
+        student_name = escape(
+            str(
+                q.get(
+                    "student_name",
+                    ""
+                )
+            )
+        )
+
+        subject = escape(
+            str(
+                q.get(
+                    "subject",
+                    ""
+                )
+            )
+        )
+
+        question_text = escape(
+            str(
+                q.get(
+                    "question",
+                    ""
+                )
+            )
+        )
+
+        cards += f"""
+
+        <div class="card">
+
+            <span class="badge pending">
+                Pending
+            </span>
+
+            <h2>
+                {subject}
+            </h2>
+
+            <p>
+                <strong>
+                    Student:
+                </strong>
+
+                {student_name}
+            </p>
+
+            <div class="question">
+                {question_text[:1000]}
+            </div>
+
+            <br>
+
+            <a
+                class="btn orange"
+                href="/admin/question/{q.get("id")}"
+            >
+                Open & Answer
+            </a>
+
+        </div>
+
+        """
+
+    if not cards:
+
+        cards = """
+
+        <div class="card">
+
+            <h2>
+                No pending questions.
+            </h2>
+
+            <p class="muted">
+                All student questions have
+                been answered.
+            </p>
+
+        </div>
+
+        """
+
+    content = f"""
+
+    <div class="card">
+
+        <a href="/admin">
+            ← Admin Dashboard
+        </a>
+
+        <h1>
+            ⏳ Pending Questions
+        </h1>
+
+        <p class="muted">
+            These questions still require
+            administrator attention.
+        </p>
+
+    </div>
+
+    {cards}
+
+    """
+
+    return render_page(
+        "Pending Questions",
+        content
+    )
+
+
+# ============================================================
+# ADMIN PREVIOUS ANSWERS
+# ============================================================
+
+@app.route("/admin/answers")
+@admin_required
+def admin_answers():
+
+    data = [
+
+        q
+
+        for q in questions()
+
+        if q.get(
+            "status"
+        )
+        == "Answered"
+
+    ]
+
+    data.sort(
+        key=lambda q:
+            q.get(
+                "answered_at",
+                q.get(
+                    "created_at",
+                    ""
+                )
+            ),
+        reverse=True
+    )
+
+    cards = ""
+
+    for q in data:
+
+        student_name = escape(
+            str(
+                q.get(
+                    "student_name",
+                    ""
+                )
+            )
+        )
+
+        subject = escape(
+            str(
+                q.get(
+                    "subject",
+                    ""
+                )
+            )
+        )
+
+        answer = escape(
+            str(
+                q.get(
+                    "answer",
+                    ""
+                )
+            )
+        )
+
+        answer_attachments = len(
+            q.get(
+                "answer_attachments",
+                []
+            )
+        )
+
+        cards += f"""
+
+        <div class="card">
+
+            <span class="badge answered">
+                Answered
+            </span>
+
+            <h2>
+                {subject}
+            </h2>
+
+            <p>
+                <strong>
+                    Student:
+                </strong>
+
+                {student_name}
+            </p>
+
+            <p class="muted small">
+                Answered:
+                {escape(str(
+                    q.get(
+                        "answered_at",
+                        ""
+                    )
+                ))}
+            </p>
+
+            <h3>
+                Answer
+            </h3>
+
+            <div class="answer">
+                {answer}
+            </div>
+
+            <p class="small muted">
+                📎 {answer_attachments}
+                answer attachment(s)
+            </p>
+
+            <a
+                class="btn green"
+                href="/admin/question/{q.get("id")}"
+            >
+                Open Answer
+            </a>
+
+        </div>
+
+        """
+
+    if not cards:
+
+        cards = """
+
+        <div class="card">
+
+            <h2>
+                No previous answers.
+            </h2>
+
+            <p class="muted">
+                Answered questions will
+                appear here.
+            </p>
+
+        </div>
+
+        """
+
+    content = f"""
+
+    <div class="card">
+
+        <a href="/admin">
+            ← Admin Dashboard
+        </a>
+
+        <h1>
+            ✅ Previous Answers
+        </h1>
+
+        <p class="muted">
+            This page contains answered
+            student questions only.
+        </p>
+
+    </div>
+
+    {cards}
+
+    """
+
+    return render_page(
+        "Previous Answers",
+        content
+    )
+
+
+# ============================================================
+# ADMIN QUESTION / ANSWER
 # ============================================================
 
 @app.route(
@@ -3351,25 +3286,25 @@ def admin_dashboard():
     methods=["GET", "POST"]
 )
 @admin_required
-def admin_question(question_id):
+def admin_question(
+    question_id
+):
 
-    data = get_questions()
+    data = questions()
 
     question = None
-    question_index = None
 
-    for index, item in enumerate(data):
+    for item in data:
 
         if (
-            str(item.get("id"))
-            == str(question_id)
+            item.get("id")
+            == question_id
         ):
 
             question = item
-            question_index = index
             break
 
-    if question is None:
+    if not question:
 
         flash(
             "Question not found.",
@@ -3383,8 +3318,6 @@ def admin_question(question_id):
         )
 
     if request.method == "POST":
-
-        validate_csrf()
 
         answer = (
             request.form.get(
@@ -3408,8 +3341,10 @@ def admin_question(question_id):
                 )
             )
 
-        uploaded_files = request.files.getlist(
-            "answer_attachments"
+        uploaded_files = (
+            request.files.getlist(
+                "answer_attachments"
+            )
         )
 
         new_attachments = (
@@ -3419,17 +3354,13 @@ def admin_question(question_id):
             )
         )
 
-        has_files = any(
-
-            file
-            and file.filename
-
-            for file in uploaded_files
-
+        has_named_files = any(
+            f and f.filename
+            for f in uploaded_files
         )
 
         if (
-            has_files
+            has_named_files
             and not new_attachments
         ):
 
@@ -3452,20 +3383,24 @@ def admin_question(question_id):
 
         question["answer"] = answer
 
-        question["status"] = "Answered"
+        question["status"] = (
+            "Answered"
+        )
 
         question["answer_attachments"] = (
             old_attachments
             + new_attachments
         )
 
-        question["answered_at"] = now_iso()
-
-        question["answered_by"] = (
-            session.get("email")
+        question["answered_at"] = (
+            datetime.utcnow().isoformat()
         )
 
-        data[question_index] = question
+        question["answered_by"] = (
+            session.get(
+                "email"
+            )
+        )
 
         save_questions(data)
 
@@ -3478,7 +3413,6 @@ def admin_question(question_id):
                 question_id,
 
                 {
-
                     "answer":
                         answer,
 
@@ -3488,13 +3422,7 @@ def admin_question(question_id):
                     "answered_at":
                         question[
                             "answered_at"
-                        ],
-
-                    "answered_by":
-                        question[
-                            "answered_by"
                         ]
-
                 }
             )
 
@@ -3510,43 +3438,98 @@ def admin_question(question_id):
             )
         )
 
-    student_files = attachment_html(
-
+    student_attachments = (
         question.get(
             "attachments",
             []
-        ),
-
-        "admin"
+        )
     )
 
-    admin_files = attachment_html(
+    student_attachment_html = (
+        attachment_html(
+            student_attachments,
+            "admin"
+        )
+    )
 
+    admin_attachments = (
         question.get(
             "answer_attachments",
             []
-        ),
-
-        "admin"
+        )
     )
 
-    token = csrf_token()
+    admin_attachment_html = (
+        attachment_html(
+            admin_attachments,
+            "admin"
+        )
+    )
+
+    subject = escape(
+        str(
+            question.get(
+                "subject",
+                ""
+            )
+        )
+    )
+
+    student_name = escape(
+        str(
+            question.get(
+                "student_name",
+                ""
+            )
+        )
+    )
+
+    student_email = escape(
+        str(
+            question.get(
+                "student_email",
+                ""
+            )
+        )
+    )
+
+    question_text = escape(
+        str(
+            question.get(
+                "question",
+                ""
+            )
+        )
+    )
+
+    answer_text = escape(
+        str(
+            question.get(
+                "answer",
+                ""
+            )
+        )
+    )
+
+    status = escape(
+        str(
+            question.get(
+                "status",
+                "Pending"
+            )
+        )
+    )
 
     content = f"""
 
     <div class="card">
 
-        <a href="{url_for('admin_dashboard')}">
-            ← Back to Admin Dashboard
+        <a href="/admin/pending">
+            ← Pending Questions
         </a>
 
         <h1>
-            {esc(
-                question.get(
-                    "subject",
-                    ""
-                )
-            )}
+            {subject}
         </h1>
 
         <p>
@@ -3554,12 +3537,7 @@ def admin_question(question_id):
                 Student:
             </strong>
 
-            {esc(
-                question.get(
-                    "student_name",
-                    ""
-                )
-            )}
+            {student_name}
         </p>
 
         <p>
@@ -3567,12 +3545,7 @@ def admin_question(question_id):
                 Email:
             </strong>
 
-            {esc(
-                question.get(
-                    "student_email",
-                    ""
-                )
-            )}
+            {student_email}
         </p>
 
         <p>
@@ -3582,28 +3555,19 @@ def admin_question(question_id):
             </strong>
 
             <span class="badge">
-
-                {esc(
-                    question.get(
-                        "status",
-                        ""
-                    )
-                )}
-
+                {status}
             </span>
 
         </p>
 
         <p class="muted small">
-
             Submitted:
-            {esc(
+            {escape(str(
                 question.get(
                     "created_at",
                     ""
                 )
-            )}
-
+            ))}
         </p>
 
         <hr>
@@ -3613,14 +3577,7 @@ def admin_question(question_id):
         </h2>
 
         <div class="question">
-
-            {esc(
-                question.get(
-                    "question",
-                    ""
-                )
-            )}
-
+            {question_text}
         </div>
 
     </div>
@@ -3631,7 +3588,7 @@ def admin_question(question_id):
             📎 Student Attachments
         </h2>
 
-        {student_files}
+        {student_attachment_html}
 
     </div>
 
@@ -3646,12 +3603,6 @@ def admin_question(question_id):
             enctype="multipart/form-data"
         >
 
-            <input
-                type="hidden"
-                name="_csrf"
-                value="{esc(token)}"
-            >
-
             <label>
                 Academic Answer
             </label>
@@ -3660,22 +3611,18 @@ def admin_question(question_id):
                 name="answer"
                 required
                 placeholder="Write the academic answer..."
-            >{esc(
-                question.get(
-                    "answer",
-                    ""
-                )
-            )}</textarea>
+            >{answer_text}</textarea>
 
             <div class="upload-box">
 
                 <h3>
-                    📎 Attach to Answer
+                    📤 Upload With Answer
                 </h3>
 
                 <p class="small muted">
-                    These files will become available
-                    to the student after you send the answer.
+                    These files will be available
+                    to this student after you
+                    send the answer.
                 </p>
 
                 <div class="upload-actions">
@@ -3701,7 +3648,7 @@ def admin_question(question_id):
                         class="upload-button photo"
                         for="adminPhoto"
                     >
-                        🖼️ Choose Photos
+                        🖼️ Choose Photo
                     </label>
 
                     <input
@@ -3759,7 +3706,7 @@ def admin_question(question_id):
             Previously Sent Attachments
         </h2>
 
-        {admin_files}
+        {admin_attachment_html}
 
     </div>
 
@@ -3769,33 +3716,41 @@ def admin_question(question_id):
 
         const inputs = [
 
-            document.getElementById("adminCamera"),
+            document.getElementById(
+                "adminCamera"
+            ),
 
-            document.getElementById("adminPhoto"),
+            document.getElementById(
+                "adminPhoto"
+            ),
 
-            document.getElementById("adminDocuments")
+            document.getElementById(
+                "adminDocuments"
+            )
 
         ];
 
         let names = [];
 
-        inputs.forEach(function(input) {
+        inputs.forEach(
+            function(input) {
 
-            if (!input) return;
+                if (!input) return;
 
-            for (
-                let i = 0;
-                i < input.files.length;
-                i++
-            ) {
+                for (
+                    let i = 0;
+                    i < input.files.length;
+                    i++
+                ) {
 
-                names.push(
-                    input.files[i].name
-                );
+                    names.push(
+                        input.files[i].name
+                    );
+
+                }
 
             }
-
-        });
+        );
 
         const list =
             document.getElementById(
@@ -3812,22 +3767,7 @@ def admin_question(question_id):
 
         list.innerHTML =
             "<strong>Selected:</strong><br>"
-            + names
-                .map(function(name) {
-                    return escapeHtml(name);
-                })
-                .join("<br>");
-
-    }
-
-    function escapeHtml(text) {
-
-        const div =
-            document.createElement("div");
-
-        div.textContent = text;
-
-        return div.innerHTML;
+            + names.join("<br>");
 
     }
 
@@ -3838,6 +3778,574 @@ def admin_question(question_id):
     return render_page(
         "Answer Question",
         content
+    )
+
+
+# ============================================================
+# ADMIN STANDALONE UPLOAD
+# ============================================================
+
+@app.route(
+    "/admin/upload",
+    methods=["GET", "POST"]
+)
+@admin_required
+def admin_upload():
+
+    if request.method == "POST":
+
+        title = (
+            request.form.get(
+                "title",
+                ""
+            )
+            .strip()
+        )
+
+        subject = (
+            request.form.get(
+                "subject",
+                ""
+            )
+            .strip()
+        )
+
+        description = (
+            request.form.get(
+                "description",
+                ""
+            )
+            .strip()
+        )
+
+        files = request.files.getlist(
+            "resource_files"
+        )
+
+        if not title:
+
+            flash(
+                "Enter a resource title.",
+                "error"
+            )
+
+            return redirect(
+                url_for("admin_upload")
+            )
+
+        if not files:
+
+            flash(
+                "Choose at least one file.",
+                "error"
+            )
+
+            return redirect(
+                url_for("admin_upload")
+            )
+
+        saved_files = (
+            save_multiple_uploads(
+                files,
+                "resources"
+            )
+        )
+
+        if not saved_files:
+
+            flash(
+                "No valid file was uploaded.",
+                "error"
+            )
+
+            return redirect(
+                url_for("admin_upload")
+            )
+
+        resource = {
+
+            "id":
+                str(uuid.uuid4()),
+
+            "title":
+                title,
+
+            "subject":
+                subject,
+
+            "description":
+                description,
+
+            "files":
+                saved_files,
+
+            "uploaded_by":
+                session.get(
+                    "email"
+                ),
+
+            "created_at":
+                datetime.utcnow().isoformat()
+        }
+
+        data = resources()
+
+        data.append(
+            resource
+        )
+
+        save_resources(data)
+
+        flash(
+            "Resource uploaded successfully.",
+            "success"
+        )
+
+        return redirect(
+            url_for(
+                "admin_resources"
+            )
+        )
+
+    content = """
+
+    <div class="card">
+
+        <a href="/admin">
+            ← Admin Dashboard
+        </a>
+
+        <h1>
+            📤 Upload Academic Resource
+        </h1>
+
+        <p class="muted">
+            Upload a document, PDF, image,
+            spreadsheet or presentation directly
+            from the administrator panel.
+        </p>
+
+        <form
+            method="post"
+            enctype="multipart/form-data"
+        >
+
+            <label>
+                Resource Title
+            </label>
+
+            <input
+                type="text"
+                name="title"
+                placeholder="e.g. Grade 10 Chemistry Notes"
+                required
+            >
+
+            <label>
+                Subject
+            </label>
+
+            <input
+                type="text"
+                name="subject"
+                placeholder="e.g. Chemistry"
+            >
+
+            <label>
+                Description
+            </label>
+
+            <textarea
+                name="description"
+                placeholder="Describe this resource..."
+            ></textarea>
+
+            <div class="upload-box">
+
+                <h3>
+                    📎 Select Resource
+                </h3>
+
+                <div class="upload-actions">
+
+                    <label
+                        class="upload-button camera"
+                        for="resourceCamera"
+                    >
+                        📷 Take Photo
+                    </label>
+
+                    <input
+                        id="resourceCamera"
+                        class="file-input"
+                        type="file"
+                        name="resource_files"
+                        accept="image/*"
+                        capture="environment"
+                        onchange="showResourceFiles()"
+                    >
+
+                    <label
+                        class="upload-button photo"
+                        for="resourcePhoto"
+                    >
+                        🖼️ Choose Photo
+                    </label>
+
+                    <input
+                        id="resourcePhoto"
+                        class="file-input"
+                        type="file"
+                        name="resource_files"
+                        accept="image/*"
+                        multiple
+                        onchange="showResourceFiles()"
+                    >
+
+                    <label
+                        class="upload-button document"
+                        for="resourceDocuments"
+                    >
+                        📄 Choose Documents
+                    </label>
+
+                    <input
+                        id="resourceDocuments"
+                        class="file-input"
+                        type="file"
+                        name="resource_files"
+                        accept=".pdf,.doc,.docx,.txt,.ppt,.pptx,.xls,.xlsx,.csv,.png,.jpg,.jpeg,.webp"
+                        multiple
+                        onchange="showResourceFiles()"
+                    >
+
+                </div>
+
+                <div
+                    id="resourceFileList"
+                    class="file-list"
+                >
+                    No files selected.
+                </div>
+
+            </div>
+
+            <button
+                type="submit"
+                class="purple"
+            >
+                Upload Resource
+            </button>
+
+        </form>
+
+    </div>
+
+    <script>
+
+    function showResourceFiles() {
+
+        const inputs = [
+
+            document.getElementById(
+                "resourceCamera"
+            ),
+
+            document.getElementById(
+                "resourcePhoto"
+            ),
+
+            document.getElementById(
+                "resourceDocuments"
+            )
+
+        ];
+
+        let names = [];
+
+        inputs.forEach(
+            function(input) {
+
+                if (!input) return;
+
+                for (
+                    let i = 0;
+                    i < input.files.length;
+                    i++
+                ) {
+
+                    names.push(
+                        input.files[i].name
+                    );
+
+                }
+
+            }
+        );
+
+        const list =
+            document.getElementById(
+                "resourceFileList"
+            );
+
+        if (!names.length) {
+
+            list.innerText =
+                "No files selected.";
+
+            return;
+        }
+
+        list.innerHTML =
+            "<strong>Selected:</strong><br>"
+            + names.join("<br>");
+
+    }
+
+    </script>
+
+    """
+
+    return render_page(
+        "Upload Resource",
+        content
+    )
+
+
+# ============================================================
+# ADMIN RESOURCES
+# ============================================================
+
+@app.route("/admin/resources")
+@admin_required
+def admin_resources():
+
+    data = resources()
+
+    data.sort(
+        key=lambda r:
+            r.get(
+                "created_at",
+                ""
+            ),
+        reverse=True
+    )
+
+    cards = ""
+
+    for resource in data:
+
+        title = escape(
+            str(
+                resource.get(
+                    "title",
+                    "Resource"
+                )
+            )
+        )
+
+        subject = escape(
+            str(
+                resource.get(
+                    "subject",
+                    ""
+                )
+            )
+        )
+
+        description = escape(
+            str(
+                resource.get(
+                    "description",
+                    ""
+                )
+            )
+        )
+
+        files_html = ""
+
+        for file in resource.get(
+            "files",
+            []
+        ):
+
+            stored = file.get(
+                "stored_name"
+            )
+
+            if not stored:
+                continue
+
+            name = escape(
+                str(
+                    file.get(
+                        "original_name",
+                        "File"
+                    )
+                )
+            )
+
+            route = (
+                "/admin/resource-file/"
+                + stored
+            )
+
+            files_html += f"""
+
+            <div class="attachment">
+
+                <div class="attachment-title">
+                    📎 {name}
+                </div>
+
+                <a
+                    class="btn teal"
+                    href="{route}"
+                    target="_blank"
+                >
+                    Open File
+                </a>
+
+            </div>
+
+            """
+
+        cards += f"""
+
+        <div class="resource-card">
+
+            <h3>
+                📚 {title}
+            </h3>
+
+            <p>
+                <strong>
+                    Subject:
+                </strong>
+
+                {subject or "General"}
+            </p>
+
+            <p>
+                {description}
+            </p>
+
+            <p class="muted small">
+
+                Uploaded:
+                {escape(str(
+                    resource.get(
+                        "created_at",
+                        ""
+                    )
+                ))}
+
+            </p>
+
+            {files_html}
+
+        </div>
+
+        """
+
+    if not cards:
+
+        cards = """
+
+        <div class="card">
+
+            <h2>
+                No resources uploaded.
+            </h2>
+
+            <a
+                class="btn purple"
+                href="/admin/upload"
+            >
+                Upload First Resource
+            </a>
+
+        </div>
+
+        """
+
+    content = f"""
+
+    <div class="card">
+
+        <a href="/admin">
+            ← Admin Dashboard
+        </a>
+
+        <h1>
+            📚 Academic Resources
+        </h1>
+
+        <p class="muted">
+            Resources uploaded directly
+            from the administrator panel.
+        </p>
+
+        <a
+            class="btn purple"
+            href="/admin/upload"
+        >
+            📤 Upload New Resource
+        </a>
+
+    </div>
+
+    {cards}
+
+    """
+
+    return render_page(
+        "Resources",
+        content
+    )
+
+
+# ============================================================
+# ADMIN RESOURCE FILE
+# ============================================================
+
+@app.route(
+    "/admin/resource-file/<filename>"
+)
+@admin_required
+def admin_resource_file(
+    filename
+):
+
+    allowed = False
+
+    for resource in resources():
+
+        for file in resource.get(
+            "files",
+            []
+        ):
+
+            if (
+                file.get(
+                    "stored_name"
+                )
+                == filename
+            ):
+
+                allowed = True
+                break
+
+        if allowed:
+            break
+
+    if not allowed:
+
+        abort(404)
+
+    return send_from_directory(
+        RESOURCE_UPLOAD_DIR,
+        filename
     )
 
 
@@ -3854,72 +4362,66 @@ def admin_file(
     filename
 ):
 
-    if category not in {
-        "student",
-        "admin"
-    }:
+    if category == "student":
+
+        directory = STUDENT_UPLOAD_DIR
+
+    elif category == "admin":
+
+        directory = ADMIN_UPLOAD_DIR
+
+    else:
 
         abort(404)
 
-    # Confirm that the file actually belongs
-    # to an attachment known to the system.
-    found = False
+    allowed = False
 
-    for question in get_questions():
+    data = questions()
 
-        attachment_groups = [
+    for q in data:
 
-            question.get(
-                "attachments",
-                []
-            ),
+        for attachment in q.get(
+            "attachments",
+            []
+        ):
 
-            question.get(
-                "answer_attachments",
-                []
-            )
+            if (
+                attachment.get(
+                    "stored_name"
+                )
+                == filename
+                and category == "student"
+            ):
 
-        ]
-
-        for group in attachment_groups:
-
-            for attachment in group:
-
-                if (
-                    attachment.get(
-                        "category"
-                    )
-                    == category
-                    and
-                    attachment.get(
-                        "stored_name"
-                    )
-                    == filename
-                ):
-
-                    found = True
-                    break
-
-            if found:
+                allowed = True
                 break
 
-        if found:
+        for attachment in q.get(
+            "answer_attachments",
+            []
+        ):
+
+            if (
+                attachment.get(
+                    "stored_name"
+                )
+                == filename
+                and category == "admin"
+            ):
+
+                allowed = True
+                break
+
+        if allowed:
             break
 
-    if not found:
+    if not allowed:
 
         abort(404)
-
-    directory = (
-        STUDENT_UPLOAD_DIR
-        if category == "student"
-        else ADMIN_UPLOAD_DIR
-    )
 
     return send_from_directory(
         directory,
-        filename,
-        as_attachment=False
+        filename
     )
 
 
@@ -3945,47 +4447,73 @@ def student_file(
             )
         )
 
-    question = find_question(
-        question_id
-    )
+    question = None
+
+    for item in questions():
+
+        if (
+            item.get("id")
+            == question_id
+        ):
+
+            question = item
+            break
 
     if not question:
 
-        abort(404)
+        return (
+            "File not found",
+            404
+        )
 
-    # Student can only access
-    # their own question.
-    if str(
+    if (
         question.get(
             "student_id"
         )
-    ) != str(
-        session.get(
+        != session.get(
             "user_id"
         )
     ):
 
-        abort(403)
+        return (
+            "Access denied",
+            403
+        )
 
     if category == "student":
 
-        attachments = question.get(
-            "attachments",
-            []
+        attachments = (
+            question.get(
+                "attachments",
+                []
+            )
+        )
+
+        directory = (
+            STUDENT_UPLOAD_DIR
         )
 
     elif category == "admin":
 
-        attachments = question.get(
-            "answer_attachments",
-            []
+        attachments = (
+            question.get(
+                "answer_attachments",
+                []
+            )
+        )
+
+        directory = (
+            ADMIN_UPLOAD_DIR
         )
 
     else:
 
-        abort(404)
+        return (
+            "Invalid file category",
+            404
+        )
 
-    authorized = False
+    allowed = False
 
     for attachment in attachments:
 
@@ -3996,23 +4524,19 @@ def student_file(
             == filename
         ):
 
-            authorized = True
+            allowed = True
             break
 
-    if not authorized:
+    if not allowed:
 
-        abort(404)
-
-    directory = (
-        STUDENT_UPLOAD_DIR
-        if category == "student"
-        else ADMIN_UPLOAD_DIR
-    )
+        return (
+            "File not found",
+            404
+        )
 
     return send_from_directory(
         directory,
-        filename,
-        as_attachment=False
+        filename
     )
 
 
@@ -4034,28 +4558,16 @@ def admin_config():
         else False
     )
 
-    configured_class = (
+    config_badge = (
         "answered"
         if configured
         else "pending"
     )
 
-    connected_class = (
+    connection_badge = (
         "answered"
         if connected
         else "pending"
-    )
-
-    configured_text = (
-        "YES"
-        if configured
-        else "NO"
-    )
-
-    connected_text = (
-        "WORKING"
-        if connected
-        else "UNAVAILABLE"
     )
 
     content = f"""
@@ -4067,7 +4579,8 @@ def admin_config():
         </h1>
 
         <p>
-            KOJA AFRICA system status.
+            Administrator configuration
+            and connection status.
         </p>
 
     </div>
@@ -4082,8 +4595,14 @@ def admin_config():
 
             Configured:
 
-            <span class="badge {configured_class}">
-                {configured_text}
+            <span class="badge {config_badge}">
+
+                {
+                    "YES"
+                    if configured
+                    else "NO"
+                }
+
             </span>
 
         </p>
@@ -4092,8 +4611,14 @@ def admin_config():
 
             Connection:
 
-            <span class="badge {connected_class}">
-                {connected_text}
+            <span class="badge {connection_badge}">
+
+                {
+                    "WORKING"
+                    if connected
+                    else "UNAVAILABLE"
+                }
+
             </span>
 
         </p>
@@ -4104,87 +4629,68 @@ def admin_config():
             Supabase URL
         </h3>
 
-        <pre>{esc(
-            SUPABASE_URL
-            if SUPABASE_URL
-            else "Not configured"
-        )}</pre>
+        <pre>
+{
+    escape(
+        SUPABASE_URL
+    )
+    if SUPABASE_URL
+    else "Not configured"
+}
+        </pre>
 
         <h3>
             Service Key
         </h3>
 
-        <pre>{
-            "Configured — hidden"
-            if SUPABASE_SERVICE_KEY
-            else "Not configured"
-        }</pre>
+        <pre>
+{
+    "Configured — hidden"
+    if SUPABASE_SERVICE_KEY
+    else "Not configured"
+}
+        </pre>
 
         <h3>
             Storage Bucket
         </h3>
 
-        <pre>{esc(STORAGE_BUCKET)}</pre>
+        <pre>
+{escape(STORAGE_BUCKET)}
+        </pre>
 
     </div>
 
     <div class="card">
 
         <h2>
-            Local Fallback
+            Fallback Storage
         </h2>
 
         <div class="notice">
 
-            Local JSON database and local uploads
-            are enabled.
+            KOJA can continue operating
+            using local storage when
+            Supabase is unavailable.
 
         </div>
 
         <p>
-            The application can operate without
-            Supabase.
+
+            Student accounts,
+            questions and uploaded files
+            are stored locally.
+
         </p>
 
         <p class="muted">
 
-            Important:
-            platforms such as Render may use
-            ephemeral filesystems depending on
-            the service configuration. For a
-            production application, persistent
-            external storage/database should be
-            configured.
+            On hosting platforms such as
+            Render, local filesystem storage
+            may not be permanent. Configure
+            persistent database/storage for
+            production.
 
-        </p>
-
-    </div>
-
-    <div class="card">
-
-        <h2>
-            Application Information
-        </h2>
-
-        <p>
-            <strong>Application:</strong>
-            KOJA AFRICA
-        </p>
-
-        <p>
-            <strong>Storage:</strong>
-            Local fallback + optional Supabase
-        </p>
-
-        <p>
-            <strong>Maximum request:</strong>
-            10 MB
-        </p>
-
-        <p>
-            <strong>Allowed uploads:</strong>
-            PDF, Word, Excel, PowerPoint,
-            TXT, CSV and images
         </p>
 
     </div>
@@ -4198,13 +4704,13 @@ def admin_config():
 
 
 # ============================================================
-# HEALTH CHECK
+# HEALTH
 # ============================================================
 
 @app.route("/health")
 def health():
 
-    return jsonify({
+    return {
 
         "status":
             "ok",
@@ -4216,18 +4722,16 @@ def health():
             supabase_configured(),
 
         "supabase_connected":
-            supabase_test()
-            if supabase_configured()
-            else False,
+            supabase_test(),
 
         "fallback":
             True
 
-    })
+    }
 
 
 # ============================================================
-# ERROR: 413
+# 413
 # ============================================================
 
 @app.errorhandler(413)
@@ -4262,88 +4766,7 @@ def too_large(error):
 
 
 # ============================================================
-# ERROR: 400
-# ============================================================
-
-@app.errorhandler(400)
-def bad_request(error):
-
-    message = getattr(
-        error,
-        "description",
-        "Bad request."
-    )
-
-    return render_page(
-
-        "Bad Request",
-
-        f"""
-
-        <div class="card">
-
-            <h1>
-                Bad Request
-            </h1>
-
-            <p>
-                {esc(message)}
-            </p>
-
-            <a
-                class="btn"
-                href="{url_for('home')}"
-            >
-                Go Home
-            </a>
-
-        </div>
-
-        """
-
-    ), 400
-
-
-# ============================================================
-# ERROR: 403
-# ============================================================
-
-@app.errorhandler(403)
-def forbidden(error):
-
-    return render_page(
-
-        "Access Denied",
-
-        """
-
-        <div class="card">
-
-            <h1>
-                Access Denied
-            </h1>
-
-            <p>
-                You do not have permission
-                to access this resource.
-            </p>
-
-            <a
-                class="btn"
-                href="/"
-            >
-                Go Home
-            </a>
-
-        </div>
-
-        """
-
-    ), 403
-
-
-# ============================================================
-# ERROR: 404
+# 404
 # ============================================================
 
 @app.errorhandler(404)
@@ -4380,7 +4803,7 @@ def not_found(error):
 
 
 # ============================================================
-# ERROR: 500
+# 500
 # ============================================================
 
 @app.errorhandler(500)
@@ -4395,11 +4818,11 @@ def server_error(error):
         <div class="card">
 
             <h1>
-                KOJA is still running
+                KOJA encountered an error
             </h1>
 
             <p>
-                An unexpected server error occurred.
+                An unexpected error occurred.
                 Please try again.
             </p>
 
@@ -4436,7 +4859,7 @@ if __name__ == "__main__":
     print("Knowledge • Questions • Answers")
     print("=" * 60)
     print(
-        "ADMIN EMAIL:",
+        "ADMIN:",
         ADMIN_EMAIL
     )
     print(
