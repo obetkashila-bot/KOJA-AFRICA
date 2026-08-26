@@ -4,14 +4,15 @@
 #
 # SINGLE-FILE FLASK PORTAL
 #
-# LOCAL-FIRST + OPTIONAL SUPABASE
-#
-# Features:
-# - KOJA opening animation
+# FEATURES
+# ------------------------------------------------------------
+# - Global KOJA opening animation
+# - Animation shown to public visitors, students and admin
+# - Animation plays once per browser tab/session
 # - Public research/search
 # - Public answered-question pages
 # - Student registration/login
-# - Question submission
+# - Student question submission
 # - Student file uploads
 # - Admin dashboard
 # - Academic answers
@@ -26,9 +27,11 @@
 # - health endpoint
 # - configuration page
 #
-# IMPORTANT:
-# SUPABASE_SERVICE_KEY MUST NEVER BE PUT IN HTML/JS.
-# Keep it as a server environment variable.
+# SECURITY
+# ------------------------------------------------------------
+# SUPABASE_SERVICE_KEY IS SERVER-SIDE ONLY.
+# NEVER PUT IT IN HTML, CSS OR JAVASCRIPT.
+#
 # ============================================================
 
 import os
@@ -55,7 +58,6 @@ from flask import (
     Response,
 )
 
-
 # ============================================================
 # APPLICATION
 # ============================================================
@@ -70,7 +72,6 @@ app.secret_key = os.environ.get(
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
-# Recommended cookie configuration.
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
@@ -135,10 +136,7 @@ for directory in (
     STUDENT_UPLOAD_DIR,
     ADMIN_UPLOAD_DIR,
 ):
-    os.makedirs(
-        directory,
-        exist_ok=True
-    )
+    os.makedirs(directory, exist_ok=True)
 
 
 USERS_FILE = os.path.join(
@@ -155,7 +153,6 @@ LOGS_FILE = os.path.join(
     DATA_DIR,
     "logs.json"
 )
-
 
 LOCK = threading.Lock()
 
@@ -230,9 +227,7 @@ IMAGE_EXTENSIONS = {
 # ============================================================
 
 def now():
-    return datetime.now(
-        timezone.utc
-    ).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def esc(value):
@@ -260,22 +255,9 @@ def ensure_file(path, default):
             )
 
 
-ensure_file(
-    USERS_FILE,
-    []
-)
-
-ensure_file(
-    QUESTIONS_FILE,
-    []
-)
-
-ensure_file(
-    LOGS_FILE,
-    []
-
-
-)
+ensure_file(USERS_FILE, [])
+ensure_file(QUESTIONS_FILE, [])
+ensure_file(LOGS_FILE, [])
 
 
 def read_json(path):
@@ -288,11 +270,7 @@ def read_json(path):
             ) as file:
                 value = json.load(file)
 
-        return (
-            value
-            if isinstance(value, list)
-            else []
-        )
+        return value if isinstance(value, list) else []
 
     except Exception:
         return []
@@ -326,20 +304,18 @@ def write_json(path, data):
 
 def supabase_configured():
     return bool(
-        SUPABASE_URL
-        and
+        SUPABASE_URL and
         SUPABASE_SERVICE_KEY
     )
 
 
-def supabase_headers(
-    content_type=True
-):
+def supabase_headers(content_type=True):
     headers = {
         "apikey": SUPABASE_SERVICE_KEY,
-        "Authorization":
-            "Bearer "
-            + SUPABASE_SERVICE_KEY,
+        "Authorization": (
+            "Bearer " +
+            SUPABASE_SERVICE_KEY
+        ),
     }
 
     if content_type:
@@ -354,7 +330,7 @@ def supabase_request(
     method,
     endpoint,
     data=None,
-    timeout=10,
+    timeout=10
 ):
     if not supabase_configured():
         return None
@@ -383,15 +359,11 @@ def supabase_request(
         return None
 
 
-def supabase_insert(
-    table,
-    row
-):
+def supabase_insert(table, row):
     return supabase_request(
         "POST",
-        "/rest/v1/"
-        + table,
-        row,
+        "/rest/v1/" + table,
+        row
     )
 
 
@@ -399,13 +371,12 @@ def supabase_update(
     table,
     key,
     value,
-    row,
+    row
 ):
     return supabase_request(
         "PATCH",
-        f"/rest/v1/{table}"
-        f"?{key}=eq.{value}",
-        row,
+        f"/rest/v1/{table}?{key}=eq.{value}",
+        row
     )
 
 
@@ -416,9 +387,7 @@ def supabase_test():
     try:
         response = requests.get(
             SUPABASE_URL + "/rest/v1/",
-            headers=supabase_headers(
-                False
-            ),
+            headers=supabase_headers(False),
             timeout=5,
         )
 
@@ -478,9 +447,7 @@ def log_event(
         )
 
         entry = {
-            "id": str(
-                uuid.uuid4()
-            ),
+            "id": str(uuid.uuid4()),
             "created_at": now(),
             "level": level.upper(),
             "category": category,
@@ -520,9 +487,7 @@ def log_event(
 
 
 def logs():
-    return read_json(
-        LOGS_FILE
-    )
+    return read_json(LOGS_FILE)
 
 
 # ============================================================
@@ -540,9 +505,9 @@ def hash_password(password):
     )
 
     return (
-        salt
-        + "$"
-        + digest.hex()
+        salt +
+        "$" +
+        digest.hex()
     )
 
 
@@ -577,16 +542,12 @@ def verify_password(
 # ============================================================
 
 def users():
-    return read_json(
-        USERS_FILE
-    )
+    return read_json(USERS_FILE)
 
 
 def find_user(email):
     email = (
-        email
-        or
-        ""
+        email or ""
     ).strip().lower()
 
     for user in users():
@@ -614,14 +575,13 @@ def create_admin():
             ==
             ADMIN_EMAIL
         ):
+
             user["role"] = "admin"
             user["name"] = (
                 "KOJA Administrator"
             )
 
-            if not user.get(
-                "password"
-            ):
+            if not user.get("password"):
                 user["password"] = (
                     hash_password(
                         ADMIN_PASSWORD
@@ -638,18 +598,13 @@ def create_admin():
     data.append(
         {
             "id": "ADMIN",
-            "name":
-                "KOJA Administrator",
-            "email":
-                ADMIN_EMAIL,
-            "password":
-                hash_password(
-                    ADMIN_PASSWORD
-                ),
-            "role":
-                "admin",
-            "created_at":
-                now(),
+            "name": "KOJA Administrator",
+            "email": ADMIN_EMAIL,
+            "password": hash_password(
+                ADMIN_PASSWORD
+            ),
+            "role": "admin",
+            "created_at": now(),
         }
     )
 
@@ -682,9 +637,7 @@ def save_questions(data):
 def find_question(question_id):
     for question in questions():
         if (
-            str(
-                question.get("id")
-            )
+            str(question.get("id"))
             ==
             str(question_id)
         ):
@@ -698,31 +651,21 @@ def sync_question(question):
         return False
 
     row = {
-        "id":
-            question["id"],
-        "student_id":
-            question["student_id"],
-        "student_name":
-            question["student_name"],
-        "student_email":
-            question["student_email"],
-        "subject":
-            question["subject"],
-        "question":
-            question["question"],
-        "status":
-            question["status"],
-        "answer":
-            question.get(
-                "answer",
-                ""
-            ),
-        "created_at":
-            question["created_at"],
-        "answered_at":
-            question.get(
-                "answered_at"
-            ),
+        "id": question["id"],
+        "student_id": question["student_id"],
+        "student_name": question["student_name"],
+        "student_email": question["student_email"],
+        "subject": question["subject"],
+        "question": question["question"],
+        "status": question["status"],
+        "answer": question.get(
+            "answer",
+            ""
+        ),
+        "created_at": question["created_at"],
+        "answered_at": question.get(
+            "answered_at"
+        ),
     }
 
     try:
@@ -744,13 +687,10 @@ def sync_question(question):
 def login_required(fn):
 
     @wraps(fn)
-    def wrapper(
-        *args,
-        **kwargs
-    ):
-        if not session.get(
-            "user_id"
-        ):
+    def wrapper(*args, **kwargs):
+
+        if not session.get("user_id"):
+
             flash(
                 "Please log in first.",
                 "error"
@@ -774,10 +714,9 @@ def is_admin_session():
         ==
         "admin"
         and
-        session.get(
-            "email",
-            ""
-        ).strip().lower()
+        session.get("email", "")
+        .strip()
+        .lower()
         ==
         ADMIN_EMAIL
     )
@@ -786,14 +725,9 @@ def is_admin_session():
 def admin_required(fn):
 
     @wraps(fn)
-    def wrapper(
-        *args,
-        **kwargs
-    ):
+    def wrapper(*args, **kwargs):
 
-        if not session.get(
-            "user_id"
-        ):
+        if not session.get("user_id"):
             return redirect(
                 url_for("login")
             )
@@ -832,9 +766,7 @@ def admin_required(fn):
 
 def extension_of(filename):
     filename = (
-        filename
-        or
-        ""
+        filename or ""
     ).strip()
 
     if "." not in filename:
@@ -854,10 +786,29 @@ def allowed_file(filename):
     )
 
 
+def safe_storage_name(filename):
+    extension = extension_of(
+        filename
+    )
+
+    if not extension:
+        return str(
+            uuid.uuid4()
+        )
+
+    return (
+        str(uuid.uuid4())
+        +
+        "."
+        +
+        extension
+    )
+
+
 def upload_to_supabase(
     local_path,
     storage_path,
-    content_type,
+    content_type
 ):
     if not supabase_configured():
         return False
@@ -881,7 +832,8 @@ def upload_to_supabase(
                         SUPABASE_SERVICE_KEY,
                     "Authorization":
                         "Bearer "
-                        + SUPABASE_SERVICE_KEY,
+                        +
+                        SUPABASE_SERVICE_KEY,
                     "Content-Type":
                         content_type,
                     "x-upsert":
@@ -901,22 +853,10 @@ def upload_to_supabase(
         return False
 
 
-def safe_storage_name(filename):
-    extension = extension_of(
-        filename
-    )
-
-    return (
-        str(uuid.uuid4())
-        + "."
-        + extension
-    )
-
-
 def save_upload(
     file,
     category,
-    question_id=None,
+    question_id=None
 ):
     if not file:
         return None
@@ -926,15 +866,15 @@ def save_upload(
 
     original = file.filename.strip()
 
-    if not allowed_file(
-        original
-    ):
+    if not allowed_file(original):
+
         log_event(
             "Upload Failed",
             "Storage",
             "ERROR",
             "Invalid file type: "
-            + original,
+            +
+            original,
         )
 
         return None
@@ -948,14 +888,10 @@ def save_upload(
     )
 
     if category == "student":
-        directory = (
-            STUDENT_UPLOAD_DIR
-        )
+        directory = STUDENT_UPLOAD_DIR
 
     elif category == "admin":
-        directory = (
-            ADMIN_UPLOAD_DIR
-        )
+        directory = ADMIN_UPLOAD_DIR
 
     else:
         return None
@@ -966,10 +902,7 @@ def save_upload(
     )
 
     try:
-
-        file.save(
-            destination
-        )
+        file.save(destination)
 
     except Exception as exc:
 
@@ -993,7 +926,7 @@ def save_upload(
         storage_path,
         file.mimetype
         or
-        "application/octet-stream",
+        "application/octet-stream"
     )
 
     if uploaded:
@@ -1002,10 +935,7 @@ def save_upload(
             "File Uploaded",
             "Storage",
             "SUCCESS",
-            (
-                f"{original} -> "
-                f"Supabase Storage"
-            ),
+            f"{original} -> Supabase Storage",
         )
 
     else:
@@ -1021,31 +951,22 @@ def save_upload(
         )
 
     return {
-        "id":
-            str(uuid.uuid4()),
-        "original_name":
-            original,
-        "stored_name":
-            stored,
-        "category":
-            category,
-        "extension":
-            extension,
+        "id": str(uuid.uuid4()),
+        "original_name": original,
+        "stored_name": stored,
+        "category": category,
+        "extension": extension,
         "is_image":
-            extension
-            in
-            IMAGE_EXTENSIONS,
-        "storage_path":
-            storage_path,
-        "supabase_uploaded":
-            uploaded,
+            extension in IMAGE_EXTENSIONS,
+        "storage_path": storage_path,
+        "supabase_uploaded": uploaded,
     }
 
 
 def save_multiple_uploads(
     files,
     category,
-    question_id=None,
+    question_id=None
 ):
     result = []
 
@@ -1054,13 +975,11 @@ def save_multiple_uploads(
         saved = save_upload(
             file,
             category,
-            question_id,
+            question_id
         )
 
         if saved:
-            result.append(
-                saved
-            )
+            result.append(saved)
 
     return result
 
@@ -1068,13 +987,13 @@ def save_multiple_uploads(
 def attachment_html(
     attachments,
     viewer,
-    question_id=None,
+    question_id=None
 ):
     if not attachments:
         return (
-            '<div class="muted">'
-            "No attachments."
-            "</div>"
+            '<p class="muted">'
+            'No attachments.'
+            '</p>'
         )
 
     output = ""
@@ -1133,9 +1052,7 @@ def attachment_html(
 
         output += f"""
         <div class="attachment">
-            <strong>
-                📎 {name}
-            </strong>
+            <strong>📎 {name}</strong>
 
             {preview}
 
@@ -1155,737 +1072,987 @@ def attachment_html(
 
 
 # ============================================================
-# HTML TEMPLATE
+# MAIN HTML TEMPLATE
+#
+# IMPORTANT:
+# THE OPENING ANIMATION IS GLOBAL.
+#
+# sessionStorage KEY:
+# koja_opening_seen
+#
+# This means:
+# - Public visitors see it.
+# - Students see it.
+# - Admin sees it.
+# - It does not replay during normal navigation.
+# - Closing the browser tab and opening a new tab starts
+#   a new browser session and can show the animation again.
 # ============================================================
 
 HTML = r"""
 <!DOCTYPE html>
+
 <html lang="en">
 
 <head>
 
-<meta charset="UTF-8">
-
-<meta
-    name="viewport"
-    content="width=device-width, initial-scale=1"
->
-
-<meta
-    name="theme-color"
-    content="#101828"
->
-
-<meta
-    name="google-site-verification"
-    content="{{ google_verification }}"
->
-
-<meta
-    name="description"
-    content="{{ site_description }}"
->
-
-<meta
-    name="robots"
-    content="index, follow"
->
-
-<link
-    rel="canonical"
-    href="{{ canonical_url }}"
->
-
-<title>
-    {{ title }} - KOJA AFRICA
-</title>
-
-<style>
-
-* {
-    box-sizing: border-box;
-}
-
-html {
-    scroll-behavior: smooth;
-}
-
-body {
-    margin: 0;
-    font-family:
-        Arial,
-        Helvetica,
-        sans-serif;
-    background: #f5f7fa;
-    color: #172033;
-    line-height: 1.6;
-}
-
-a {
-    color: #155eef;
-    text-decoration: none;
-}
-
-a:hover {
-    text-decoration: underline;
-}
-
-.container {
-    width: min(
-        1100px,
-        calc(100% - 30px)
-    );
-    margin: auto;
-}
-
-header {
-    background: #101828;
-    color: white;
-    position: sticky;
-    top: 0;
-    z-index: 100;
-    box-shadow:
-        0 2px 12px
-        rgba(0,0,0,.15);
-}
-
-.header-inner {
-    min-height: 70px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 15px;
-}
-
-.logo {
-    font-size: 25px;
-    font-weight: 800;
-    white-space: nowrap;
-}
-
-.logo .k {
-    color: #2563eb;
-}
-
-.logo .o {
-    color: #16a34a;
-}
-
-.logo .j {
-    color: #dc2626;
-}
-
-.logo .a {
-    color: #1d4ed8;
-}
-
-.navlinks {
-    display: flex;
-    gap: 13px;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-}
-
-.navlinks a {
-    color: white;
-    font-size: 14px;
-}
-
-main {
-    padding:
-        30px
-        0
-        50px;
-}
-
-.hero {
-    background:
-        linear-gradient(
-            135deg,
-            #101828,
-            #243b64
-        );
-    color: white;
-    border-radius: 18px;
-    padding: 45px 25px;
-    margin-bottom: 25px;
-}
-
-.hero h1 {
-    margin-top: 0;
-    font-size: clamp(
-        30px,
-        7vw,
-        55px
-    );
-}
-
-.grid {
-    display: grid;
-    grid-template-columns:
-        repeat(
-            auto-fit,
-            minmax(220px, 1fr)
-        );
-    gap: 18px;
-    margin-bottom: 25px;
-}
-
-.card,
-.stat {
-    background: white;
-    border-radius: 15px;
-    padding: 23px;
-    margin-bottom: 18px;
-    box-shadow:
-        0 4px 18px
-        rgba(16,24,40,.07);
-}
-
-.stat {
-    text-align: center;
-}
-
-.stat h2 {
-    font-size: 35px;
-    margin: 0;
-}
-
-.search-box {
-    display: flex;
-    gap: 10px;
-    width: 100%;
-}
-
-.search-box input {
-    flex: 1;
-}
-
-input,
-textarea,
-select {
-    width: 100%;
-    padding: 13px;
-    margin:
-        7px
-        0
-        17px;
-    border:
-        1px solid #d0d5dd;
-    border-radius: 9px;
-    font: inherit;
-    background: white;
-}
-
-textarea {
-    min-height: 180px;
-    resize: vertical;
-}
-
-button,
-.btn {
-    display: inline-block;
-    border: 0;
-    border-radius: 9px;
-    padding:
-        11px
-        17px;
-    background: #155eef;
-    color: white;
-    cursor: pointer;
-    font-weight: 700;
-    margin:
-        3px
-        3px
-        3px
-        0;
-}
-
-button:hover,
-.btn:hover {
-    text-decoration: none;
-    opacity: .9;
-}
-
-.btn.green {
-    background: #16a34a;
-}
-
-.btn.purple {
-    background: #7c3aed;
-}
-
-.btn.small {
-    padding:
-        7px
-        11px;
-    font-size: 13px;
-}
-
-.alert {
-    padding: 14px;
-    border-radius: 9px;
-    margin-bottom: 15px;
-    font-weight: 600;
-}
-
-.alert.success {
-    background: #dcfce7;
-    color: #166534;
-}
-
-.alert.error {
-    background: #fee2e2;
-    color: #991b1b;
-}
-
-.alert.warning {
-    background: #fef3c7;
-    color: #92400e;
-}
-
-.badge {
-    display: inline-block;
-    padding:
-        4px
-        9px;
-    border-radius: 30px;
-    font-size: 12px;
-    font-weight: 700;
-}
-
-.badge.answered {
-    background: #dcfce7;
-    color: #166534;
-}
-
-.badge.pending {
-    background: #fef3c7;
-    color: #92400e;
-}
-
-.question {
-    background: #f8fafc;
-    border-left:
-        4px solid
-        #155eef;
-    padding: 15px;
-    white-space: pre-wrap;
-}
-
-.answer {
-    background: #f0fdf4;
-    border-left:
-        4px solid
-        #16a34a;
-    padding: 15px;
-    white-space: pre-wrap;
-}
-
-.muted {
-    color: #667085;
-}
-
-.subject {
-    display: inline-block;
-    background: #e0e7ff;
-    color: #3730a3;
-    padding:
-        4px
-        9px;
-    border-radius: 20px;
-    font-size: 12px;
-    font-weight: 700;
-}
-
-.attachment {
-    padding: 13px;
-    margin:
-        10px
-        0;
-    background: #f8fafc;
-    border-radius: 10px;
-}
-
-.attachment-image {
-    display: block;
-    max-width: 100%;
-    max-height: 400px;
-    margin:
-        12px
-        0;
-    border-radius: 8px;
-}
-
-table {
-    width: 100%;
-    border-collapse: collapse;
-}
-
-th,
-td {
-    padding: 11px;
-    border-bottom:
-        1px solid #eaecf0;
-    text-align: left;
-    vertical-align: top;
-}
-
-th {
-    background: #f8fafc;
-}
-
-.log-success {
-    color: #15803d;
-}
-
-.log-warning {
-    color: #b45309;
-}
-
-.log-error {
-    color: #b91c1c;
-}
-
-.log-info {
-    color: #175cd3;
-}
-
-.log-details {
-    max-width: 350px;
-    word-break: break-word;
-}
-
-.live {
-    color: #86efac;
-    font-weight: 700;
-}
-
-footer {
-    background: #101828;
-    color: white;
-    padding: 30px 0;
-}
-
-footer a {
-    color: #93c5fd;
-}
-
-/* KOJA opening animation */
-
-.koja-animation {
-    position: fixed;
-    inset: 0;
-    z-index: 9999;
-    background: #101828;
-    color: white;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    animation:
-        kojaIntro
-        1s
-        ease
-        7s
-        forwards;
-}
-
-.koja-intro-logo {
-    font-size:
-        clamp(
-            70px,
-            20vw,
-            140px
-        );
-    font-weight: 900;
-    letter-spacing: 5px;
-    animation:
-        logoZoom
-        1.4s
-        ease
-        forwards;
-}
-
-.intro-k {
-    color: #2563eb;
-}
-
-.intro-o {
-    color: #16a34a;
-}
-
-.intro-j {
-    color: #dc2626;
-}
-
-.intro-a {
-    color: #1d4ed8;
-}
-
-.koja-line {
-    width: 0;
-    height: 3px;
-    background: white;
-    animation:
-        lineGrow
-        1.3s
-        ease
-        .5s
-        forwards;
-}
-
-.koja-tagline {
-    opacity: 0;
-    margin-top: 15px;
-    font-size: 16px;
-    animation:
-        fadeIn
-        1s
-        ease
-        1s
-        forwards;
-}
-
-.koja-loading {
-    width: 220px;
-    height: 4px;
-    background: #344054;
-    margin-top: 30px;
-    overflow: hidden;
-    border-radius: 20px;
-}
-
-.koja-loading-bar {
-    width: 0;
-    height: 100%;
-    background: white;
-    animation:
-        loading
-        4s
-        linear
-        .5s
-        forwards;
-}
-
-.koja-status {
-    margin-top: 15px;
-    opacity: 0;
-    font-size: 13px;
-    color: #98a2b3;
-    animation:
-        fadeIn
-        1s
-        ease
-        1.5s
-        forwards;
-}
-
-@keyframes kojaIntro {
-    to {
-        opacity: 0;
-        visibility: hidden;
-        pointer-events: none;
-    }
-}
-
-@keyframes logoZoom {
-    from {
-        transform: scale(.5);
-        opacity: 0;
-    }
-    to {
-        transform: scale(1);
-        opacity: 1;
-    }
-}
-
-@keyframes lineGrow {
-    to {
-        width: 220px;
-    }
-}
-
-@keyframes fadeIn {
-    to {
-        opacity: 1;
-    }
-}
-
-@keyframes loading {
-    to {
-        width: 100%;
-    }
-}
-
-@media (
-    max-width: 700px
-) {
-
-    .header-inner {
-        flex-direction: column;
-        padding:
-            13px
-            0;
-    }
-
-    .navlinks {
-        justify-content: center;
-    }
-
-    .search-box {
-        flex-direction: column;
-    }
-
-    main {
-        padding-top: 20px;
-    }
-
-    .hero {
-        padding: 30px 18px;
-    }
-
-    table {
-        min-width: 750px;
-    }
-}
-
-</style>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <meta
+        name="theme-color"
+        content="#101828"
+    >
+
+    <meta
+        name="google-site-verification"
+        content="{{ google_verification }}"
+    >
+
+    <meta
+        name="description"
+        content="{{ site_description }}"
+    >
+
+    <meta
+        name="robots"
+        content="index, follow"
+    >
+
+    <title>
+        {{ title }} - KOJA AFRICA
+    </title>
+
+
+    <style>
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            margin: 0;
+            font-family:
+                Arial,
+                Helvetica,
+                sans-serif;
+            background: #f5f7fb;
+            color: #101828;
+            line-height: 1.6;
+        }
+
+        a {
+            color: inherit;
+            text-decoration: none;
+        }
+
+        .topbar {
+            background: #101828;
+            color: white;
+            padding: 14px 5%;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            box-shadow:
+                0 3px 15px
+                rgba(0,0,0,.12);
+        }
+
+        .navbar {
+            max-width: 1200px;
+            margin: auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+
+        .logo {
+            font-size: 24px;
+            font-weight: 900;
+            letter-spacing: 1px;
+        }
+
+        .logo .k {
+            color: #1677ff;
+        }
+
+        .logo .o {
+            color: #22c55e;
+        }
+
+        .logo .j {
+            color: #ef4444;
+        }
+
+        .logo .a {
+            color: #1d4ed8;
+        }
+
+        .logo-small {
+            font-size: 11px;
+            color: #cbd5e1;
+            margin-left: 5px;
+        }
+
+        .navlinks {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .navlinks a {
+            padding: 8px 12px;
+            border-radius: 8px;
+            color: #e2e8f0;
+            font-size: 14px;
+        }
+
+        .navlinks a:hover {
+            background: #1e293b;
+        }
+
+        main {
+            width: 92%;
+            max-width: 1200px;
+            margin: 30px auto;
+            min-height: 70vh;
+        }
+
+        .hero {
+            background:
+                linear-gradient(
+                    135deg,
+                    #101828,
+                    #1e293b
+                );
+            color: white;
+            border-radius: 20px;
+            padding: 45px 30px;
+            margin-bottom: 25px;
+            box-shadow:
+                0 12px 30px
+                rgba(16,24,40,.16);
+        }
+
+        .hero h1 {
+            font-size: clamp(
+                30px,
+                6vw,
+                54px
+            );
+            margin: 0 0 10px;
+        }
+
+        .hero p {
+            color: #dbe4ef;
+            max-width: 800px;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns:
+                repeat(
+                    auto-fit,
+                    minmax(220px, 1fr)
+                );
+            gap: 18px;
+            margin-bottom: 25px;
+        }
+
+        .card,
+        .stat {
+            background: white;
+            border-radius: 16px;
+            padding: 25px;
+            margin-bottom: 20px;
+            box-shadow:
+                0 5px 20px
+                rgba(16,24,40,.07);
+            border: 1px solid #e5e7eb;
+        }
+
+        .stat {
+            text-align: center;
+        }
+
+        .stat h2 {
+            font-size: 35px;
+            margin: 0;
+        }
+
+        .btn,
+        button {
+            display: inline-block;
+            border: 0;
+            background: #1677ff;
+            color: white;
+            padding: 11px 17px;
+            border-radius: 9px;
+            cursor: pointer;
+            font-weight: 700;
+            margin: 4px;
+            font-size: 14px;
+        }
+
+        .btn:hover,
+        button:hover {
+            opacity: .88;
+        }
+
+        .btn.green,
+        button.green {
+            background: #16a34a;
+        }
+
+        .btn.purple {
+            background: #7c3aed;
+        }
+
+        .btn.small {
+            padding: 7px 11px;
+            font-size: 12px;
+        }
+
+        input,
+        textarea,
+        select {
+            width: 100%;
+            padding: 12px;
+            margin: 7px 0 17px;
+            border: 1px solid #cbd5e1;
+            border-radius: 9px;
+            background: white;
+            font: inherit;
+        }
+
+        textarea {
+            min-height: 180px;
+            resize: vertical;
+        }
+
+        label {
+            font-weight: 700;
+            display: block;
+        }
+
+        .search-box {
+            display: flex;
+            gap: 8px;
+        }
+
+        .search-box input {
+            margin: 0;
+            flex: 1;
+        }
+
+        .search-box button {
+            margin: 0;
+        }
+
+        .subject {
+            display: inline-block;
+            background: #e8f1ff;
+            color: #155eef;
+            padding: 5px 10px;
+            border-radius: 50px;
+            font-size: 12px;
+            font-weight: 700;
+        }
+
+        .question {
+            white-space: pre-wrap;
+            background: #f8fafc;
+            border-left: 4px solid #1677ff;
+            padding: 16px;
+            border-radius: 8px;
+        }
+
+        .answer {
+            white-space: pre-wrap;
+            background: #f0fdf4;
+            border-left: 4px solid #16a34a;
+            padding: 16px;
+            border-radius: 8px;
+        }
+
+        .muted {
+            color: #667085;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 5px 10px;
+            border-radius: 50px;
+            font-size: 12px;
+            font-weight: 700;
+        }
+
+        .badge.answered {
+            background: #dcfce7;
+            color: #166534;
+        }
+
+        .badge.pending {
+            background: #fef3c7;
+            color: #92400e;
+        }
+
+        .alert {
+            max-width: 1200px;
+            width: 92%;
+            margin: 15px auto;
+            padding: 13px 16px;
+            border-radius: 9px;
+            font-weight: 600;
+        }
+
+        .alert.success {
+            background: #dcfce7;
+            color: #166534;
+        }
+
+        .alert.error {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 800px;
+        }
+
+        th,
+        td {
+            text-align: left;
+            padding: 12px;
+            border-bottom: 1px solid #e5e7eb;
+            vertical-align: top;
+        }
+
+        th {
+            background: #f8fafc;
+        }
+
+        .attachment {
+            background: #f8fafc;
+            padding: 14px;
+            border-radius: 10px;
+            margin: 10px 0;
+        }
+
+        .attachment-image {
+            display: block;
+            max-width: 100%;
+            max-height: 350px;
+            margin: 12px 0;
+            border-radius: 8px;
+        }
+
+        .live {
+            color: #22c55e;
+            font-weight: 700;
+        }
+
+        .log-success {
+            color: #15803d;
+        }
+
+        .log-warning {
+            color: #b45309;
+        }
+
+        .log-error {
+            color: #dc2626;
+        }
+
+        .log-info {
+            color: #2563eb;
+        }
+
+        .log-details {
+            max-width: 350px;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        footer {
+            background: #101828;
+            color: #cbd5e1;
+            text-align: center;
+            padding: 40px 20px;
+            margin-top: 50px;
+        }
+
+        footer a {
+            color: white;
+        }
+
+
+        /* ==================================================
+           KOJA GLOBAL OPENING ANIMATION
+           ================================================== */
+
+        #koja-opening {
+
+            position: fixed;
+
+            inset: 0;
+
+            width: 100%;
+            height: 100%;
+
+            background:
+                radial-gradient(
+                    circle at center,
+                    #1e293b 0%,
+                    #101828 45%,
+                    #050b14 100%
+                );
+
+            display: flex;
+
+            align-items: center;
+
+            justify-content: center;
+
+            flex-direction: column;
+
+            z-index: 999999;
+
+            overflow: hidden;
+
+            opacity: 1;
+
+            visibility: visible;
+
+        }
+
+
+        #koja-opening.hide {
+
+            animation:
+                kojaFadeOut
+                .8s
+                ease
+                forwards;
+
+            pointer-events: none;
+
+        }
+
+
+        .koja-intro-logo {
+
+            display: flex;
+
+            font-size:
+                clamp(
+                    70px,
+                    18vw,
+                    150px
+                );
+
+            font-weight: 1000;
+
+            letter-spacing: 3px;
+
+            line-height: 1;
+
+            transform:
+                scale(.65);
+
+            opacity: 0;
+
+            animation:
+                kojaLogoIn
+                1.1s
+                cubic-bezier(
+                    .17,
+                    .67,
+                    .25,
+                    1.2
+                )
+                .15s
+                forwards;
+
+        }
+
+
+        .intro-k {
+            color: #1677ff;
+        }
+
+        .intro-o {
+            color: #22c55e;
+        }
+
+        .intro-j {
+            color: #ef4444;
+        }
+
+        .intro-a {
+            color: #2563eb;
+        }
+
+
+        .koja-line {
+
+            width: 0;
+
+            height: 3px;
+
+            background:
+                linear-gradient(
+                    90deg,
+                    #1677ff,
+                    #22c55e,
+                    #ef4444,
+                    #2563eb
+                );
+
+            margin-top: 25px;
+
+            animation:
+                kojaLine
+                .8s
+                ease
+                1.1s
+                forwards;
+
+        }
+
+
+        .koja-tagline {
+
+            color: white;
+
+            font-size:
+                clamp(
+                    15px,
+                    4vw,
+                    24px
+                );
+
+            letter-spacing:
+                2px;
+
+            margin-top: 18px;
+
+            opacity: 0;
+
+            transform:
+                translateY(15px);
+
+            animation:
+                kojaTextIn
+                .7s
+                ease
+                1.25s
+                forwards;
+
+            text-align: center;
+
+        }
+
+
+        .koja-tagline span {
+            color: #64748b;
+            margin: 0 5px;
+        }
+
+
+        .koja-status {
+
+            color: #94a3b8;
+
+            font-size: 13px;
+
+            margin-top: 16px;
+
+            opacity: 0;
+
+            animation:
+                kojaTextIn
+                .7s
+                ease
+                1.55s
+                forwards;
+
+        }
+
+
+        .koja-loading {
+
+            width:
+                min(
+                    260px,
+                    70vw
+                );
+
+            height: 4px;
+
+            background: #334155;
+
+            border-radius: 20px;
+
+            overflow: hidden;
+
+            margin-top: 25px;
+
+            opacity: 0;
+
+            animation:
+                kojaAppear
+                .5s
+                ease
+                1.5s
+                forwards;
+
+        }
+
+
+        .koja-loading-bar {
+
+            width: 0%;
+
+            height: 100%;
+
+            background:
+                linear-gradient(
+                    90deg,
+                    #1677ff,
+                    #22c55e,
+                    #ef4444,
+                    #2563eb
+                );
+
+            animation:
+                kojaLoading
+                1.7s
+                ease
+                1.6s
+                forwards;
+
+        }
+
+
+        @keyframes kojaLogoIn {
+
+            0% {
+                opacity: 0;
+                transform:
+                    scale(.65)
+                    translateY(20px);
+                filter:
+                    blur(12px);
+            }
+
+            60% {
+                opacity: 1;
+                transform:
+                    scale(1.08)
+                    translateY(0);
+                filter:
+                    blur(0);
+            }
+
+            100% {
+                opacity: 1;
+                transform:
+                    scale(1);
+            }
+
+        }
+
+
+        @keyframes kojaLine {
+
+            from {
+                width: 0;
+            }
+
+            to {
+                width:
+                    min(
+                        300px,
+                        70vw
+                    );
+            }
+
+        }
+
+
+        @keyframes kojaTextIn {
+
+            from {
+                opacity: 0;
+                transform:
+                    translateY(15px);
+            }
+
+            to {
+                opacity: 1;
+                transform:
+                    translateY(0);
+            }
+
+        }
+
+
+        @keyframes kojaAppear {
+
+            from {
+                opacity: 0;
+            }
+
+            to {
+                opacity: 1;
+            }
+
+        }
+
+
+        @keyframes kojaLoading {
+
+            from {
+                width: 0%;
+            }
+
+            to {
+                width: 100%;
+            }
+
+        }
+
+
+        @keyframes kojaFadeOut {
+
+            from {
+                opacity: 1;
+                visibility: visible;
+            }
+
+            to {
+                opacity: 0;
+                visibility: hidden;
+            }
+
+        }
+
+
+        @media (max-width: 700px) {
+
+            .navbar {
+                justify-content: center;
+            }
+
+            .navlinks {
+                justify-content: center;
+            }
+
+            .hero {
+                padding: 30px 20px;
+            }
+
+            .search-box {
+                flex-direction: column;
+            }
+
+            .search-box button {
+                width: 100%;
+            }
+
+        }
+
+    </style>
 
 </head>
 
+
 <body>
 
-<div class="koja-animation">
+
+<!-- ========================================================
+     KOJA OPENING SCREEN
+     ======================================================== -->
+
+<div
+    id="koja-opening"
+    aria-label="KOJA Africa opening"
+>
 
     <div
         class="koja-intro-logo"
         aria-label="KOJA Africa"
     >
+
         <span class="intro-k">K</span>
         <span class="intro-o">O</span>
         <span class="intro-j">J</span>
         <span class="intro-a">A</span>
+
     </div>
+
 
     <div class="koja-line"></div>
 
+
     <div class="koja-tagline">
+
         Knowledge
         <span>•</span>
         Questions
         <span>•</span>
         Answers
+
     </div>
+
 
     <div class="koja-loading">
-        <div class="koja-loading-bar"></div>
+
+        <div
+            class="koja-loading-bar"
+        ></div>
+
     </div>
 
+
     <div class="koja-status">
-        Preparing KOJA Africa Research
+
+        Preparing KOJA Africa
+
     </div>
 
 </div>
 
-<header>
 
-<div class="container header-inner">
+<!-- ========================================================
+     MAIN WEBSITE
+     ======================================================== -->
 
-    <div class="logo">
-        <span class="k">k</span><span class="o">o</span><span class="j">j</span><span class="a">a</span>
-        AFRICA
-    </div>
+<header class="topbar">
 
-    <nav class="navlinks">
+    <div class="navbar">
 
-        <a href="/">
-            Home
+
+        <a
+            href="/"
+            class="logo"
+        >
+
+            <span class="k">k</span><span class="o">o</span><span class="j">j</span><span class="a">a</span>
+
+            <span class="logo-small">
+                AFRICA
+            </span>
+
         </a>
 
-        <a href="/research">
-            Research
-        </a>
 
-        {% if session.get("user_id") %}
+        <nav class="navlinks">
 
-            {% if session.get("role") == "admin" %}
+            <a href="/">
+                Home
+            </a>
 
-                <a href="/admin">
-                    Dashboard
+            <a href="/research">
+                Research
+            </a>
+
+
+            {% if session.get("user_id") %}
+
+
+                {% if session.get("role") == "admin" %}
+
+                    <a href="/admin">
+                        Dashboard
+                    </a>
+
+                    <a href="/admin/questions">
+                        Questions
+                    </a>
+
+                    <a href="/admin/answers">
+                        Answers
+                    </a>
+
+                    <a href="/admin/logs">
+                        Logs
+                    </a>
+
+                {% else %}
+
+                    <a href="/student">
+                        Dashboard
+                    </a>
+
+                    <a href="/student/ask">
+                        Ask
+                    </a>
+
+                {% endif %}
+
+
+                <a href="/logout">
+                    Logout
                 </a>
 
-                <a href="/admin/questions">
-                    Questions
-                </a>
-
-                <a href="/admin/answers">
-                    Answers
-                </a>
-
-                <a href="/admin/logs">
-                    Logs
-                </a>
 
             {% else %}
 
-                <a href="/student">
-                    Dashboard
+                <a href="/login">
+                    Login
                 </a>
 
-                <a href="/student/ask">
-                    Ask
+                <a href="/register">
+                    Register
                 </a>
 
             {% endif %}
 
-            <a href="/logout">
-                Logout
-            </a>
+        </nav>
 
-        {% else %}
-
-            <a href="/login">
-                Login
-            </a>
-
-            <a href="/register">
-                Register
-            </a>
-
-        {% endif %}
-
-    </nav>
-
-</div>
+    </div>
 
 </header>
 
-<main>
-
-<div class="container">
 
 {% with messages = get_flashed_messages(with_categories=true) %}
 
     {% for category, message in messages %}
 
         <div class="alert {{ category }}">
+
             {{ message }}
+
         </div>
 
     {% endfor %}
 
 {% endwith %}
 
-{{ content|safe }}
 
-</div>
+<main>
+
+    {{ content|safe }}
 
 </main>
 
-<footer>
 
-<div class="container">
+<footer>
 
     <strong>
         KOJA AFRICA
@@ -1911,9 +2078,107 @@ footer a {
         About
     </a>
 
-</div>
-
 </footer>
+
+
+<!-- ========================================================
+     GLOBAL OPENING ANIMATION JAVASCRIPT
+     ======================================================== -->
+
+<script>
+
+(function () {
+
+    const opening =
+        document.getElementById(
+            "koja-opening"
+        );
+
+    if (!opening) {
+        return;
+    }
+
+
+    /*
+     * sessionStorage is deliberately used here.
+     *
+     * Result:
+     *
+     * 1. First opening of KOJA in this browser tab:
+     *    animation appears.
+     *
+     * 2. Clicking Home, Research, Login, Dashboard, etc.:
+     *    animation does NOT appear again.
+     *
+     * 3. Refreshing the page:
+     *    animation does NOT appear again in the same tab.
+     *
+     * 4. Opening KOJA in a new browser tab:
+     *    a new session is created and animation can appear.
+     */
+
+    const animationKey =
+        "koja_opening_seen";
+
+
+    if (
+        sessionStorage.getItem(
+            animationKey
+        )
+    ) {
+
+        opening.style.display =
+            "none";
+
+        return;
+
+    }
+
+
+    sessionStorage.setItem(
+        animationKey,
+        "1"
+    );
+
+
+    /*
+     * Keep the animation visible
+     * long enough for the logo,
+     * tagline and loading bar.
+     */
+
+    window.setTimeout(
+        function () {
+
+            opening.classList.add(
+                "hide"
+            );
+
+        },
+        3600
+    );
+
+
+    /*
+     * Completely remove it after
+     * the fade-out animation.
+     */
+
+    window.setTimeout(
+        function () {
+
+            opening.style.display =
+                "none";
+
+        },
+        4500
+    );
+
+
+})();
+
+</script>
+
 
 </body>
 
@@ -1928,8 +2193,9 @@ footer a {
 def render_page(
     title,
     content,
-    canonical=None,
+    canonical=None
 ):
+
     return render_template_string(
         HTML,
         title=title,
@@ -1939,10 +2205,10 @@ def render_page(
             or
             SITE_URL
         ),
-        site_description=
-            SITE_DESCRIPTION,
-        google_verification=
-            GOOGLE_VERIFICATION,
+        site_description=SITE_DESCRIPTION,
+        google_verification=(
+            GOOGLE_VERIFICATION
+        ),
     )
 
 
@@ -1982,6 +2248,7 @@ def home():
             and get academic assistance.
         </p>
 
+
         <form
             action="/research"
             method="get"
@@ -2004,7 +2271,9 @@ def home():
 
         </form>
 
+
         <br>
+
 
         <a
             class="btn"
@@ -2012,6 +2281,7 @@ def home():
         >
             Create Student Account
         </a>
+
 
         <a
             class="btn"
@@ -2025,6 +2295,7 @@ def home():
 
     <div class="grid">
 
+
         <div class="card">
 
             <h2>
@@ -2032,8 +2303,9 @@ def home():
             </h2>
 
             <p>
-                Search public academic questions
-                and answers available through
+                Search public academic
+                questions and answers
+                available through
                 KOJA AFRICA.
             </p>
 
@@ -2054,8 +2326,9 @@ def home():
             </h2>
 
             <p>
-                Students can submit academic
-                questions and supporting files.
+                Students can submit
+                academic questions
+                and supporting files.
             </p>
 
             <a
@@ -2075,8 +2348,9 @@ def home():
             </h2>
 
             <p>
-                Explore questions, answers and
-                academic materials.
+                Explore questions,
+                answers and academic
+                materials.
             </p>
 
             <a
@@ -2093,6 +2367,7 @@ def home():
 
     <div class="grid">
 
+
         <div class="stat">
 
             <h2>
@@ -2104,6 +2379,7 @@ def home():
             </p>
 
         </div>
+
 
         <div class="stat">
 
@@ -2135,10 +2411,13 @@ def home():
 @app.route("/research")
 def research():
 
-    query = request.args.get(
-        "q",
-        ""
-    ).strip()
+    query = (
+        request.args.get(
+            "q",
+            ""
+        )
+        .strip()
+    )
 
     data = questions()
 
@@ -2150,6 +2429,7 @@ def research():
         "Answered"
     ]
 
+
     if query:
 
         terms = [
@@ -2157,6 +2437,7 @@ def research():
             for word in query.split()
             if len(word) > 1
         ]
+
 
         def matches(q):
 
@@ -2188,11 +2469,13 @@ def research():
                 for term in terms
             )
 
+
         public_questions = [
             q
             for q in public_questions
             if matches(q)
         ]
+
 
         log_event(
             "Public Research Search",
@@ -2200,6 +2483,7 @@ def research():
             "INFO",
             query,
         )
+
 
     public_questions.sort(
         key=lambda q:
@@ -2210,7 +2494,9 @@ def research():
         reverse=True,
     )
 
+
     cards = ""
+
 
     for q in public_questions:
 
@@ -2229,9 +2515,10 @@ def research():
         if len(answer_text) > 300:
             preview += "..."
 
+
         cards += f"""
 
-        <div class="card research-card">
+        <div class="card">
 
             <span class="subject">
                 {esc(q.get("subject"))}
@@ -2268,20 +2555,21 @@ def research():
 
         """
 
+
     if not cards:
 
         cards = """
 
-        <div class="card empty">
+        <div class="card">
 
             <h2>
                 No research results found.
             </h2>
 
             <p>
-                Try another search term or
-                submit the question directly
-                to KOJA AFRICA.
+                Try another search term
+                or submit the question
+                directly to KOJA AFRICA.
             </p>
 
             <a
@@ -2295,12 +2583,14 @@ def research():
 
         """
 
+
     title = (
         "Research"
         if not query
         else
         f"Research: {query}"
     )
+
 
     content = f"""
 
@@ -2314,6 +2604,7 @@ def research():
             Search questions, academic
             answers and learning resources.
         </p>
+
 
         <form
             action="/research"
@@ -2339,13 +2630,21 @@ def research():
 
     </div>
 
+
     <h2>
-        {"Search Results" if query else "Latest Research"}
+        {
+            "Search Results"
+            if query
+            else
+            "Latest Research"
+        }
     </h2>
+
 
     {cards}
 
     """
+
 
     return render_page(
         title,
@@ -2369,11 +2668,13 @@ def public_question(
         question_id
     )
 
+
     if not question:
 
         return (
             render_page(
                 "Question Not Found",
+
                 """
                 <div class="card">
 
@@ -2390,10 +2691,12 @@ def public_question(
 
                 </div>
                 """,
-                SITE_URL + "/research",
+
+                SITE_URL + "/research"
             ),
-            404,
+            404
         )
+
 
     if question.get(
         "status"
@@ -2402,6 +2705,7 @@ def public_question(
         return (
             render_page(
                 "Research Question",
+
                 """
                 <div class="card">
 
@@ -2410,8 +2714,8 @@ def public_question(
                     </h1>
 
                     <p>
-                        This question has not yet
-                        received a public answer.
+                        This question has not
+                        yet received a public answer.
                     </p>
 
                     <a
@@ -2423,10 +2727,12 @@ def public_question(
 
                 </div>
                 """,
-                SITE_URL + "/research",
+
+                SITE_URL + "/research"
             ),
-            404,
+            404
         )
+
 
     log_event(
         "Public Research Viewed",
@@ -2434,6 +2740,7 @@ def public_question(
         "INFO",
         question_id,
     )
+
 
     content = f"""
 
@@ -2448,8 +2755,10 @@ def public_question(
         </h1>
 
         <p class="muted">
+
             Published:
             {esc(question.get("answered_at"))}
+
         </p>
 
     </div>
@@ -2490,11 +2799,15 @@ def public_question(
 
     """
 
+
     canonical = (
         SITE_URL
-        + "/question/"
-        + str(question_id)
+        +
+        "/question/"
+        +
+        str(question_id)
     )
+
 
     return render_page(
         question.get(
@@ -2502,7 +2815,7 @@ def public_question(
             "Research"
         ),
         content,
-        canonical,
+        canonical
     )
 
 
@@ -2539,9 +2852,9 @@ def about():
         </h2>
 
         <p>
-            Use the public research engine to
-            search questions and answers already
-            published by KOJA AFRICA.
+            Use the public research engine
+            to search questions and answers
+            already published by KOJA AFRICA.
         </p>
 
         <a
@@ -2569,17 +2882,16 @@ def about():
 @app.route("/robots.txt")
 def robots():
 
-    text = f"""User-agent: *
-Allow: /
-
-Disallow: /admin
-Disallow: /student
-Disallow: /login
-Disallow: /register
-Disallow: /logout
-
-Sitemap: {SITE_URL}/sitemap.xml
-"""
+    text = (
+        "User-agent: *\n"
+        "Allow: /\n\n"
+        "Disallow: /admin\n"
+        "Disallow: /student\n"
+        "Disallow: /login\n"
+        "Disallow: /register\n"
+        "Disallow: /logout\n\n"
+        f"Sitemap: {SITE_URL}/sitemap.xml\n"
+    )
 
     return Response(
         text,
@@ -2596,6 +2908,7 @@ def sitemap():
         SITE_URL + "/about",
     ]
 
+
     for question in questions():
 
         if question.get(
@@ -2604,11 +2917,14 @@ def sitemap():
 
             public_urls.append(
                 SITE_URL
-                + "/question/"
-                + str(
+                +
+                "/question/"
+                +
+                str(
                     question.get("id")
                 )
             )
+
 
     urls = ""
 
@@ -2617,10 +2933,13 @@ def sitemap():
         urls += (
             "<url>"
             "<loc>"
-            + esc(item)
-            + "</loc>"
+            +
+            esc(item)
+            +
+            "</loc>"
             "</url>"
         )
+
 
     xml = (
         '<?xml version="1.0" '
@@ -2628,9 +2947,12 @@ def sitemap():
         '<urlset '
         'xmlns="http://www.sitemaps.org/'
         'schemas/sitemap/0.9">'
-        + urls
-        + "</urlset>"
+        +
+        urls
+        +
+        "</urlset>"
     )
+
 
     return Response(
         xml,
@@ -2675,7 +2997,11 @@ def login():
             ""
         )
 
-        # Admin login
+
+        # ----------------------------------------------------
+        # ADMIN LOGIN
+        # ----------------------------------------------------
+
         if (
             email == ADMIN_EMAIL
             and
@@ -2687,21 +3013,12 @@ def login():
 
             session.clear()
 
-            session["user_id"] = (
-                "ADMIN"
-            )
-
-            session["email"] = (
-                ADMIN_EMAIL
-            )
-
+            session["user_id"] = "ADMIN"
+            session["email"] = ADMIN_EMAIL
             session["name"] = (
                 "KOJA Administrator"
             )
-
-            session["role"] = (
-                "admin"
-            )
+            session["role"] = "admin"
 
             log_event(
                 "Admin Login",
@@ -2716,9 +3033,13 @@ def login():
                 )
             )
 
-        user = find_user(
-            email
-        )
+
+        # ----------------------------------------------------
+        # STUDENT LOGIN
+        # ----------------------------------------------------
+
+        user = find_user(email)
+
 
         if (
             not user
@@ -2728,7 +3049,7 @@ def login():
                 user.get(
                     "password",
                     ""
-                ),
+                )
             )
         ):
 
@@ -2752,23 +3073,14 @@ def login():
                 url_for("login")
             )
 
+
         session.clear()
 
-        session["user_id"] = (
-            user["id"]
-        )
+        session["user_id"] = user["id"]
+        session["email"] = user["email"]
+        session["name"] = user["name"]
+        session["role"] = "student"
 
-        session["email"] = (
-            user["email"]
-        )
-
-        session["name"] = (
-            user["name"]
-        )
-
-        session["role"] = (
-            "student"
-        )
 
         log_event(
             "User Login",
@@ -2777,11 +3089,13 @@ def login():
             "Student logged in",
         )
 
+
         return redirect(
             url_for(
                 "student_dashboard"
             )
         )
+
 
     content = """
 
@@ -2795,6 +3109,7 @@ def login():
             Knowledge • Questions • Answers
         </p>
 
+
         <form method="post">
 
             <label>
@@ -2807,6 +3122,7 @@ def login():
                 required
             >
 
+
             <label>
                 Password
             </label>
@@ -2817,11 +3133,13 @@ def login():
                 required
             >
 
+
             <button type="submit">
                 Login
             </button>
 
         </form>
+
 
         <p>
             New student?
@@ -2834,6 +3152,7 @@ def login():
     </div>
 
     """
+
 
     return render_page(
         "Login",
@@ -2858,7 +3177,8 @@ def register():
             request.form.get(
                 "name",
                 ""
-            ).strip()
+            )
+            .strip()
         )
 
         email = (
@@ -2880,6 +3200,7 @@ def register():
             ""
         )
 
+
         if len(name) < 2:
 
             flash(
@@ -2890,6 +3211,7 @@ def register():
             return redirect(
                 url_for("register")
             )
+
 
         if email == ADMIN_EMAIL:
 
@@ -2902,6 +3224,7 @@ def register():
                 url_for("register")
             )
 
+
         if len(password) < 6:
 
             flash(
@@ -2912,6 +3235,7 @@ def register():
             return redirect(
                 url_for("register")
             )
+
 
         if password != confirm:
 
@@ -2924,6 +3248,7 @@ def register():
                 url_for("register")
             )
 
+
         if find_user(email):
 
             flash(
@@ -2935,51 +3260,43 @@ def register():
                 url_for("register")
             )
 
+
         user = {
-            "id":
-                str(uuid.uuid4()),
-            "name":
-                name,
-            "email":
-                email,
-            "password":
-                hash_password(
-                    password
-                ),
-            "role":
-                "student",
-            "created_at":
-                now(),
+            "id": str(uuid.uuid4()),
+            "name": name,
+            "email": email,
+            "password": hash_password(
+                password
+            ),
+            "role": "student",
+            "created_at": now(),
         }
+
 
         data = users()
 
-        data.append(
-            user
-        )
+        data.append(user)
 
         write_json(
             USERS_FILE,
             data
         )
 
+
         if supabase_configured():
 
             supabase_insert(
                 "koja_users",
                 {
-                    "id":
-                        user["id"],
-                    "name":
-                        name,
-                    "email":
-                        email,
-                    "role":
-                        "student",
+                    "id": user["id"],
+                    "name": name,
+                    "email": email,
+                    "role": "student",
                     "created_at":
                         user["created_at"],
-                },
+                }
             )
+
 
         log_event(
             "User Registered",
@@ -2990,14 +3307,17 @@ def register():
             user_email=email,
         )
 
+
         flash(
             "Account created successfully.",
             "success"
         )
 
+
         return redirect(
             url_for("login")
         )
+
 
     content = """
 
@@ -3006,6 +3326,7 @@ def register():
         <h1>
             Student Registration
         </h1>
+
 
         <form method="post">
 
@@ -3018,6 +3339,7 @@ def register():
                 required
             >
 
+
             <label>
                 Email
             </label>
@@ -3027,6 +3349,7 @@ def register():
                 name="email"
                 required
             >
+
 
             <label>
                 Password
@@ -3039,6 +3362,7 @@ def register():
                 required
             >
 
+
             <label>
                 Confirm Password
             </label>
@@ -3050,21 +3374,26 @@ def register():
                 required
             >
 
+
             <button type="submit">
                 Create Account
             </button>
 
         </form>
 
+
         <p>
+
             <a href="/login">
                 Already have an account?
             </a>
+
         </p>
 
     </div>
 
     """
+
 
     return render_page(
         "Register",
@@ -3080,9 +3409,7 @@ def register():
 @app.route("/logout")
 def logout():
 
-    if session.get(
-        "user_id"
-    ):
+    if session.get("user_id"):
 
         log_event(
             "User Logout",
@@ -3114,17 +3441,15 @@ def student_dashboard():
             )
         )
 
+
     data = [
         q
         for q in questions()
-        if q.get(
-            "student_id"
-        )
+        if q.get("student_id")
         ==
-        session.get(
-            "user_id"
-        )
+        session.get("user_id")
     ]
+
 
     data.sort(
         key=lambda q:
@@ -3134,6 +3459,7 @@ def student_dashboard():
             ),
         reverse=True,
     )
+
 
     total = len(data)
 
@@ -3150,7 +3476,9 @@ def student_dashboard():
         answered
     )
 
+
     cards = ""
+
 
     for q in data:
 
@@ -3166,17 +3494,21 @@ def student_dashboard():
             "pending"
         )
 
+
         answer = q.get(
             "answer",
             ""
         )
 
+
         if answer:
 
             answer_html = (
                 '<div class="answer">'
-                + esc(answer)
-                + '</div>'
+                +
+                esc(answer)
+                +
+                '</div>'
             )
 
         else:
@@ -3187,6 +3519,7 @@ def student_dashboard():
                 '</p>'
             )
 
+
         cards += f"""
 
         <div class="card">
@@ -3195,25 +3528,31 @@ def student_dashboard():
                 {esc(q.get("subject"))}
             </h2>
 
+
             <span class="badge {badge}">
                 {esc(status)}
             </span>
+
 
             <p class="muted">
                 {esc(q.get("created_at"))}
             </p>
 
+
             <h3>
                 Your Question
             </h3>
+
 
             <div class="question">
                 {esc(q.get("question"))}
             </div>
 
+
             <h3>
                 Your Attachments
             </h3>
+
 
             {
                 attachment_html(
@@ -3226,15 +3565,19 @@ def student_dashboard():
                 )
             }
 
+
             <h3>
                 Administrator Answer
             </h3>
 
+
             {answer_html}
+
 
             <h3>
                 Administrator Files
             </h3>
+
 
             {
                 attachment_html(
@@ -3250,6 +3593,7 @@ def student_dashboard():
         </div>
 
         """
+
 
     if not cards:
 
@@ -3272,6 +3616,7 @@ def student_dashboard():
 
         """
 
+
     content = f"""
 
     <div class="hero">
@@ -3286,12 +3631,14 @@ def student_dashboard():
             answers through KOJA AFRICA.
         </p>
 
+
         <a
             class="btn"
             href="/student/ask"
         >
             Ask Question
         </a>
+
 
         <a
             class="btn"
@@ -3305,6 +3652,7 @@ def student_dashboard():
 
     <div class="grid">
 
+
         <div class="stat">
 
             <h2>
@@ -3317,6 +3665,7 @@ def student_dashboard():
 
         </div>
 
+
         <div class="stat">
 
             <h2>
@@ -3328,6 +3677,7 @@ def student_dashboard():
             </p>
 
         </div>
+
 
         <div class="stat">
 
@@ -3348,9 +3698,11 @@ def student_dashboard():
         My Questions
     </h2>
 
+
     {cards}
 
     """
+
 
     return render_page(
         "Student Dashboard",
@@ -3377,21 +3729,25 @@ def ask_question():
             )
         )
 
+
     if request.method == "POST":
 
         subject = (
             request.form.get(
                 "subject",
                 ""
-            ).strip()
+            )
+            .strip()
         )
 
         question_text = (
             request.form.get(
                 "question",
                 ""
-            ).strip()
+            )
+            .strip()
         )
+
 
         if (
             len(subject) < 2
@@ -3410,9 +3766,11 @@ def ask_question():
                 )
             )
 
+
         question_id = str(
             uuid.uuid4()
         )
+
 
         attachments = (
             save_multiple_uploads(
@@ -3424,54 +3782,65 @@ def ask_question():
             )
         )
 
+
         item = {
+
             "id":
                 question_id,
+
             "student_id":
                 session.get(
                     "user_id"
                 ),
+
             "student_name":
                 session.get(
                     "name"
                 ),
+
             "student_email":
                 session.get(
                     "email"
                 ),
+
             "subject":
                 subject,
+
             "question":
                 question_text,
+
             "attachments":
                 attachments,
+
             "status":
                 "Pending",
+
             "answer":
                 "",
+
             "answer_attachments":
                 [],
+
             "answered_at":
                 None,
+
             "answered_by":
                 None,
+
             "created_at":
                 now(),
+
         }
+
 
         data = questions()
 
-        data.append(
-            item
-        )
+        data.append(item)
 
-        save_questions(
-            data
-        )
+        save_questions(data)
 
-        sync_question(
-            item
-        )
+        sync_question(item)
+
 
         log_event(
             "Question Submitted",
@@ -3483,16 +3852,19 @@ def ask_question():
             ),
         )
 
+
         flash(
             "Question submitted successfully.",
             "success"
         )
+
 
         return redirect(
             url_for(
                 "student_dashboard"
             )
         )
+
 
     content = """
 
@@ -3506,6 +3878,7 @@ def ask_question():
             Submit an academic question
             and supporting material.
         </p>
+
 
         <form
             method="post"
@@ -3522,6 +3895,7 @@ def ask_question():
                 required
             >
 
+
             <label>
                 Question
             </label>
@@ -3531,6 +3905,7 @@ def ask_question():
                 placeholder="Write your academic question..."
                 required
             ></textarea>
+
 
             <label>
                 Attachments
@@ -3543,6 +3918,7 @@ def ask_question():
                 accept=".pdf,.doc,.docx,.txt,.ppt,.pptx,.xls,.xlsx,.csv,.png,.jpg,.jpeg,.webp,.gif"
             >
 
+
             <button type="submit">
                 Submit Question
             </button>
@@ -3552,6 +3928,7 @@ def ask_question():
     </div>
 
     """
+
 
     return render_page(
         "Ask Question",
@@ -3588,6 +3965,7 @@ def admin_dashboard():
         logs()
     )
 
+
     content = f"""
 
     <div class="hero">
@@ -3606,6 +3984,7 @@ def admin_dashboard():
 
     <div class="grid">
 
+
         <div class="stat">
 
             <h2>
@@ -3617,6 +3996,7 @@ def admin_dashboard():
             </p>
 
         </div>
+
 
         <div class="stat">
 
@@ -3630,6 +4010,7 @@ def admin_dashboard():
 
         </div>
 
+
         <div class="stat">
 
             <h2>
@@ -3641,6 +4022,7 @@ def admin_dashboard():
             </p>
 
         </div>
+
 
         <div class="stat">
 
@@ -3666,6 +4048,7 @@ def admin_dashboard():
             Questions
         </a>
 
+
         <a
             class="btn green"
             href="/admin/answers"
@@ -3673,12 +4056,14 @@ def admin_dashboard():
             Answers
         </a>
 
+
         <a
             class="btn purple"
             href="/admin/logs"
         >
             System Logs
         </a>
+
 
         <a
             class="btn"
@@ -3690,6 +4075,7 @@ def admin_dashboard():
     </div>
 
     """
+
 
     return render_page(
         "Admin Dashboard",
@@ -3713,6 +4099,7 @@ def admin_questions():
         "Answered"
     ]
 
+
     data.sort(
         key=lambda q:
             q.get(
@@ -3722,7 +4109,9 @@ def admin_questions():
         reverse=True,
     )
 
+
     rows = ""
+
 
     for q in data:
 
@@ -3732,10 +4121,13 @@ def admin_questions():
         )
 
         if len(text) > 200:
+
             text = (
                 text[:200]
-                + "..."
+                +
+                "..."
             )
+
 
         rows += f"""
 
@@ -3753,13 +4145,16 @@ def admin_questions():
 
             </td>
 
+
             <td>
                 {esc(q.get("subject"))}
             </td>
 
+
             <td>
                 {esc(text)}
             </td>
+
 
             <td>
 
@@ -3769,6 +4164,7 @@ def admin_questions():
 
             </td>
 
+
             <td>
 
                 <a
@@ -3777,6 +4173,7 @@ def admin_questions():
                 >
                     Open
                 </a>
+
 
                 <a
                     class="btn purple small"
@@ -3791,15 +4188,17 @@ def admin_questions():
 
         """
 
+
     if not rows:
 
-        rows = (
-            '<tr>'
-            '<td colspan="5">'
-            "No pending questions."
-            "</td>"
-            "</tr>"
-        )
+        rows = """
+        <tr>
+            <td colspan="5">
+                No pending questions.
+            </td>
+        </tr>
+        """
+
 
     content = f"""
 
@@ -3851,6 +4250,7 @@ def admin_questions():
 
                 </thead>
 
+
                 <tbody>
 
                     {rows}
@@ -3864,6 +4264,7 @@ def admin_questions():
     </div>
 
     """
+
 
     return render_page(
         "Questions",
@@ -3888,6 +4289,7 @@ def admin_question(
         question_id
     )
 
+
     if not question:
 
         flash(
@@ -3901,14 +4303,17 @@ def admin_question(
             )
         )
 
+
     if request.method == "POST":
 
         answer = (
             request.form.get(
                 "answer",
                 ""
-            ).strip()
+            )
+            .strip()
         )
+
 
         if len(answer) < 2:
 
@@ -3925,9 +4330,11 @@ def admin_question(
                 )
             )
 
+
         answered_at = now()
 
         data = questions()
+
 
         for item in data:
 
@@ -3939,9 +4346,7 @@ def admin_question(
                 str(question_id)
             ):
 
-                item["answer"] = (
-                    answer
-                )
+                item["answer"] = answer
 
                 item["status"] = (
                     "Answered"
@@ -3957,23 +4362,22 @@ def admin_question(
 
                 break
 
-        save_questions(
-            data
-        )
+
+        save_questions(data)
+
 
         supabase_update(
             "koja_questions",
             "id",
             question_id,
             {
-                "answer":
-                    answer,
-                "status":
-                    "Answered",
+                "answer": answer,
+                "status": "Answered",
                 "answered_at":
                     answered_at,
             },
         )
+
 
         log_event(
             "Answer Posted",
@@ -3981,14 +4385,17 @@ def admin_question(
             "SUCCESS",
             (
                 "Answer posted to "
-                + question_id
+                +
+                question_id
             ),
         )
+
 
         flash(
             "Answer saved.",
             "success"
         )
+
 
         return redirect(
             url_for(
@@ -3997,6 +4404,7 @@ def admin_question(
                     question_id,
             )
         )
+
 
     content = f"""
 
@@ -4041,9 +4449,11 @@ def admin_question(
             {esc(question.get("question"))}
         </div>
 
+
         <h2>
             Student Attachments
         </h2>
+
 
         {
             attachment_html(
@@ -4065,12 +4475,14 @@ def admin_question(
             Academic Answer
         </h2>
 
+
         <form method="post">
 
             <textarea
                 name="answer"
                 required
             >{esc(question.get("answer", ""))}</textarea>
+
 
             <button
                 class="green"
@@ -4081,7 +4493,9 @@ def admin_question(
 
         </form>
 
+
         <br>
+
 
         <a
             class="btn purple"
@@ -4093,6 +4507,7 @@ def admin_question(
     </div>
 
     """
+
 
     return render_page(
         "Open Question",
@@ -4117,6 +4532,7 @@ def admin_upload_answer(
         question_id
     )
 
+
     if not question:
 
         flash(
@@ -4130,14 +4546,17 @@ def admin_upload_answer(
             )
         )
 
+
     if request.method == "POST":
 
         answer = (
             request.form.get(
                 "answer",
                 ""
-            ).strip()
+            )
+            .strip()
         )
+
 
         if not answer:
 
@@ -4145,8 +4564,10 @@ def admin_upload_answer(
                 question.get(
                     "answer",
                     ""
-                ).strip()
+                )
+                .strip()
             )
+
 
         if len(answer) < 2:
 
@@ -4163,6 +4584,7 @@ def admin_upload_answer(
                 )
             )
 
+
         attachments = (
             save_multiple_uploads(
                 request.files.getlist(
@@ -4173,9 +4595,11 @@ def admin_upload_answer(
             )
         )
 
+
         answered_at = now()
 
         data = questions()
+
 
         for item in data:
 
@@ -4187,9 +4611,7 @@ def admin_upload_answer(
                 str(question_id)
             ):
 
-                item["answer"] = (
-                    answer
-                )
+                item["answer"] = answer
 
                 item["status"] = (
                     "Answered"
@@ -4203,10 +4625,12 @@ def admin_upload_answer(
                     session.get("email")
                 )
 
+
                 existing = item.get(
                     "answer_attachments",
                     []
                 )
+
 
                 if not isinstance(
                     existing,
@@ -4214,9 +4638,11 @@ def admin_upload_answer(
                 ):
                     existing = []
 
+
                 existing.extend(
                     attachments
                 )
+
 
                 item[
                     "answer_attachments"
@@ -4224,23 +4650,22 @@ def admin_upload_answer(
 
                 break
 
-        save_questions(
-            data
-        )
+
+        save_questions(data)
+
 
         supabase_update(
             "koja_questions",
             "id",
             question_id,
             {
-                "answer":
-                    answer,
-                "status":
-                    "Answered",
+                "answer": answer,
+                "status": "Answered",
                 "answered_at":
                     answered_at,
             },
         )
+
 
         log_event(
             "Answer Sent",
@@ -4254,16 +4679,19 @@ def admin_upload_answer(
             ),
         )
 
+
         flash(
             "Answer sent successfully.",
             "success"
         )
+
 
         return redirect(
             url_for(
                 "admin_answers"
             )
         )
+
 
     content = f"""
 
@@ -4287,8 +4715,11 @@ def admin_upload_answer(
 
         </p>
 
+
         <div class="question">
+
             {esc(question.get("question"))}
+
         </div>
 
     </div>
@@ -4310,6 +4741,7 @@ def admin_upload_answer(
                 required
             >{esc(question.get("answer", ""))}</textarea>
 
+
             <label>
                 Answer Files
             </label>
@@ -4320,6 +4752,7 @@ def admin_upload_answer(
                 multiple
                 accept=".pdf,.doc,.docx,.txt,.ppt,.pptx,.xls,.xlsx,.csv,.png,.jpg,.jpeg,.webp,.gif"
             >
+
 
             <button
                 class="green"
@@ -4339,6 +4772,7 @@ def admin_upload_answer(
             Previously Sent Files
         </h2>
 
+
         {
             attachment_html(
                 question.get(
@@ -4353,6 +4787,7 @@ def admin_upload_answer(
     </div>
 
     """
+
 
     return render_page(
         "Upload With Answer",
@@ -4376,6 +4811,7 @@ def admin_answers():
         "Answered"
     ]
 
+
     data.sort(
         key=lambda q:
             q.get(
@@ -4385,7 +4821,9 @@ def admin_answers():
         reverse=True,
     )
 
+
     cards = ""
+
 
     for q in data:
 
@@ -4397,9 +4835,11 @@ def admin_answers():
                 {esc(q.get("subject"))}
             </h2>
 
+
             <span class="badge answered">
                 Answered
             </span>
+
 
             <p>
 
@@ -4411,19 +4851,28 @@ def admin_answers():
 
             </p>
 
+
             <div class="question">
+
                 {esc(q.get("question"))}
+
             </div>
+
 
             <h3>
                 Answer
             </h3>
 
+
             <div class="answer">
+
                 {esc(q.get("answer"))}
+
             </div>
 
+
             <br>
+
 
             <a
                 class="btn"
@@ -4436,11 +4885,13 @@ def admin_answers():
 
         """
 
+
     return render_page(
         "Previous Answers",
         cards
         or
         """
+
         <div class="card">
 
             <h2>
@@ -4448,6 +4899,7 @@ def admin_answers():
             </h2>
 
         </div>
+
         """
     )
 
@@ -4462,6 +4914,7 @@ def admin_logs():
 
     all_logs = logs()
 
+
     all_logs.sort(
         key=lambda x:
             x.get(
@@ -4470,6 +4923,7 @@ def admin_logs():
             ),
         reverse=True,
     )
+
 
     level_filter = (
         request.args.get(
@@ -4480,6 +4934,7 @@ def admin_logs():
         .strip()
     )
 
+
     category_filter = (
         request.args.get(
             "category",
@@ -4488,6 +4943,7 @@ def admin_logs():
         .strip()
         .lower()
     )
+
 
     user_filter = (
         request.args.get(
@@ -4498,7 +4954,9 @@ def admin_logs():
         .lower()
     )
 
+
     filtered = []
+
 
     for item in all_logs:
 
@@ -4511,6 +4969,7 @@ def admin_logs():
         ):
             continue
 
+
         if (
             category_filter
             and
@@ -4522,6 +4981,7 @@ def admin_logs():
             ).lower()
         ):
             continue
+
 
         if (
             user_filter
@@ -4539,9 +4999,9 @@ def admin_logs():
         ):
             continue
 
-        filtered.append(
-            item
-        )
+
+        filtered.append(item)
+
 
     today = (
         datetime.now(
@@ -4550,6 +5010,7 @@ def admin_logs():
         .date()
         .isoformat()
     )
+
 
     today_count = sum(
         str(
@@ -4561,6 +5022,7 @@ def admin_logs():
         for x in all_logs
     )
 
+
     errors = sum(
         x.get("level")
         ==
@@ -4568,7 +5030,9 @@ def admin_logs():
         for x in all_logs
     )
 
+
     rows = ""
+
 
     for item in filtered[:500]:
 
@@ -4577,19 +5041,25 @@ def admin_logs():
             "INFO"
         )
 
+
         css = {
             "SUCCESS":
                 "log-success",
+
             "WARNING":
                 "log-warning",
+
             "ERROR":
                 "log-error",
+
             "INFO":
                 "log-info",
+
         }.get(
             level,
             "log-info"
         )
+
 
         rows += f"""
 
@@ -4599,6 +5069,7 @@ def admin_logs():
                 {esc(item.get("created_at"))}
             </td>
 
+
             <td class="{css}">
 
                 <strong>
@@ -4607,21 +5078,26 @@ def admin_logs():
 
             </td>
 
+
             <td>
                 {esc(item.get("category"))}
             </td>
+
 
             <td>
                 {esc(item.get("user_email"))}
             </td>
 
+
             <td>
                 {esc(item.get("action"))}
             </td>
 
+
             <td class="log-details">
                 {esc(item.get("details"))}
             </td>
+
 
             <td>
                 {esc(item.get("ip_address"))}
@@ -4631,15 +5107,17 @@ def admin_logs():
 
         """
 
+
     if not rows:
 
         rows = (
-            '<tr>'
-            '<td colspan="7">'
+            "<tr>"
+            "<td colspan='7'>"
             "No matching logs."
             "</td>"
             "</tr>"
         )
+
 
     categories = sorted(
         {
@@ -4654,6 +5132,7 @@ def admin_logs():
         }
     )
 
+
     options = "".join(
         f"""
         <option value="{esc(category)}">
@@ -4662,6 +5141,7 @@ def admin_logs():
         """
         for category in categories
     )
+
 
     content = f"""
 
@@ -4686,6 +5166,7 @@ def admin_logs():
 
     <div class="grid">
 
+
         <div class="stat">
 
             <h2>
@@ -4697,6 +5178,7 @@ def admin_logs():
             </p>
 
         </div>
+
 
         <div class="stat">
 
@@ -4710,6 +5192,7 @@ def admin_logs():
 
         </div>
 
+
         <div class="stat">
 
             <h2>
@@ -4721,6 +5204,7 @@ def admin_logs():
             </p>
 
         </div>
+
 
         <div class="stat">
 
@@ -4743,11 +5227,13 @@ def admin_logs():
             Filter Logs
         </h2>
 
+
         <form method="get">
 
             <label>
                 Level
             </label>
+
 
             <select name="level">
 
@@ -4778,6 +5264,7 @@ def admin_logs():
                 Category
             </label>
 
+
             <select name="category">
 
                 <option value="">
@@ -4793,15 +5280,18 @@ def admin_logs():
                 User
             </label>
 
+
             <input
                 name="user"
                 value="{esc(user_filter)}"
                 placeholder="Search email"
             >
 
+
             <button type="submit">
                 Filter
             </button>
+
 
             <a
                 class="btn"
@@ -4857,6 +5347,7 @@ def admin_logs():
 
                 </thead>
 
+
                 <tbody>
 
                     {rows}
@@ -4870,6 +5361,7 @@ def admin_logs():
     </div>
 
     """
+
 
     return render_page(
         "System Logs",
@@ -4906,12 +5398,14 @@ def admin_file(
 
         abort(404)
 
+
     log_event(
         "File Viewed",
         "Storage",
         "INFO",
         f"{category}/{filename}",
     )
+
 
     return send_from_directory(
         directory,
@@ -4941,9 +5435,11 @@ def student_file(
             )
         )
 
+
     question = find_question(
         question_id
     )
+
 
     if not question:
 
@@ -4951,6 +5447,7 @@ def student_file(
             "File not found",
             404
         )
+
 
     if (
         question.get(
@@ -4977,6 +5474,7 @@ def student_file(
             403
         )
 
+
     if category == "student":
 
         attachments = question.get(
@@ -4987,6 +5485,7 @@ def student_file(
         directory = (
             STUDENT_UPLOAD_DIR
         )
+
 
     elif category == "admin":
 
@@ -4999,12 +5498,14 @@ def student_file(
             ADMIN_UPLOAD_DIR
         )
 
+
     else:
 
         return (
             "Invalid category",
             404
         )
+
 
     for attachment in attachments:
 
@@ -5031,6 +5532,7 @@ def student_file(
                 filename
             )
 
+
     return (
         "File not found",
         404
@@ -5056,6 +5558,7 @@ def admin_config():
         False
     )
 
+
     content = f"""
 
     <div class="card">
@@ -5068,6 +5571,7 @@ def admin_config():
         <h2>
             Supabase
         </h2>
+
 
         <p>
 
@@ -5145,14 +5649,28 @@ def admin_config():
             Local Fallback
         </h2>
 
+
         <p>
             Local JSON storage is enabled.
             KOJA can operate without Supabase.
         </p>
 
+
+        <h2>
+            Opening Animation
+        </h2>
+
+
+        <p>
+            Global opening animation is enabled.
+            It is shown to public visitors,
+            students and administrators.
+        </p>
+
     </div>
 
     """
+
 
     return render_page(
         "Configuration",
@@ -5168,6 +5686,7 @@ def admin_config():
 def health():
 
     return {
+
         "status":
             "ok",
 
@@ -5189,8 +5708,15 @@ def health():
         "research":
             True,
 
+        "opening_animation":
+            True,
+
+        "animation_scope":
+            "public_students_admin",
+
         "timestamp":
             now(),
+
     }
 
 
@@ -5213,10 +5739,12 @@ def too_large(error):
     except Exception:
         pass
 
+
     flash(
         "Maximum upload size is 10 MB.",
         "error"
     )
+
 
     if session.get(
         "user_id"
@@ -5231,6 +5759,7 @@ def too_large(error):
             )
         )
 
+
     return redirect(
         url_for("login")
     )
@@ -5242,7 +5771,9 @@ def not_found(error):
     return (
         render_page(
             "Not Found",
+
             """
+
             <div class="card">
 
                 <h1>
@@ -5262,9 +5793,10 @@ def not_found(error):
                 </a>
 
             </div>
+
             """
         ),
-        404,
+        404
     )
 
 
@@ -5283,10 +5815,13 @@ def server_error(error):
     except Exception:
         pass
 
+
     return (
         render_page(
             "KOJA Error",
+
             """
+
             <div class="card">
 
                 <h1>
@@ -5305,9 +5840,10 @@ def server_error(error):
                 </a>
 
             </div>
+
             """
         ),
-        500,
+        500
     )
 
 
@@ -5324,24 +5860,53 @@ if __name__ == "__main__":
         )
     )
 
+
     print("=" * 60)
-    print("KOJA AFRICA")
-    print("Knowledge • Questions • Answers")
-    print("Public Research: ENABLED")
-    print("Opening Animation: ENABLED")
-    print("System Logging: ENABLED")
+
+    print(
+        "KOJA AFRICA"
+    )
+
+    print(
+        "Knowledge • Questions • Answers"
+    )
+
+    print(
+        "Public Research: ENABLED"
+    )
+
+    print(
+        "Opening Animation: ENABLED"
+    )
+
+    print(
+        "Animation Scope: PUBLIC + STUDENT + ADMIN"
+    )
+
+    print(
+        "Animation Replay: ONCE PER BROWSER TAB"
+    )
+
+    print(
+        "System Logging: ENABLED"
+    )
+
     print(
         "Local Fallback: ENABLED"
     )
+
     print(
         "Supabase:",
         supabase_configured()
     )
+
     print(
         "Port:",
         port
     )
+
     print("=" * 60)
+
 
     app.run(
         host="0.0.0.0",
