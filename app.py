@@ -1,30 +1,3 @@
-# ============================================================
-# KOJA AFRICA
-# Knowledge • Questions • Answers
-#
-# STUDENT + ADMIN ACADEMIC PORTAL
-#
-# Features:
-#   - Student registration/login
-#   - Student dashboard as default
-#   - Ask questions
-#   - Upload files
-#   - Student question history
-#   - Administrator dashboard
-#   - Admin reads questions
-#   - Admin views attachments
-#   - Admin answers questions
-#   - Student receives answers
-#   - Admin-only configuration
-#   - Supabase REST API support
-#   - Automatic local fallback if Supabase is unavailable
-#
-# Run:
-#   pip install flask requests
-#   python app.py
-#
-# ============================================================
-
 import os
 import json
 import uuid
@@ -36,31 +9,25 @@ from functools import wraps
 
 import requests
 from flask import (
-    Flask,
-    request,
-    redirect,
-    url_for,
-    session,
-    render_template_string,
-    send_from_directory,
-    flash,
+    Flask, request, redirect, url_for, session,
+    render_template_string, flash, send_from_directory
 )
 
 # ============================================================
-# APP CONFIGURATION
+# KOJA AFRICA
+# STUDENT + ADMIN PORTAL
 # ============================================================
 
 app = Flask(__name__)
 
 app.secret_key = os.environ.get(
     "FLASK_SECRET_KEY",
-    "KOJA_CHANGE_THIS_SECRET_KEY_2026"
+    "koja-africa-secret-change-this-2026"
 )
 
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
 DATA_DIR = os.path.join(BASE_DIR, "koja_data")
 UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
 
@@ -70,26 +37,11 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 USERS_FILE = os.path.join(DATA_DIR, "users.json")
 QUESTIONS_FILE = os.path.join(DATA_DIR, "questions.json")
 
-DATA_LOCK = threading.Lock()
+LOCK = threading.Lock()
 
 # ============================================================
-# ENVIRONMENT
+# ADMIN
 # ============================================================
-
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
-
-SUPABASE_SERVICE_KEY = os.environ.get(
-    "SUPABASE_SERVICE_KEY", ""
-).strip()
-
-SUPABASE_PUBLISHABLE_KEY = os.environ.get(
-    "SUPABASE_PUBLISHABLE_KEY", ""
-).strip()
-
-STORAGE_BUCKET = os.environ.get(
-    "KOJA_STORAGE_BUCKET",
-    "koja-files"
-).strip()
 
 ADMIN_EMAIL = os.environ.get(
     "KOJA_ADMIN_EMAIL",
@@ -102,37 +54,52 @@ ADMIN_PASSWORD = os.environ.get(
 )
 
 # ============================================================
-# FALLBACK DATA
+# SUPABASE
 # ============================================================
 
-def ensure_json_file(path, default):
+SUPABASE_URL = os.environ.get(
+    "SUPABASE_URL",
+    ""
+).strip().rstrip("/")
+
+SUPABASE_SERVICE_KEY = os.environ.get(
+    "SUPABASE_SERVICE_KEY",
+    ""
+).strip()
+
+STORAGE_BUCKET = os.environ.get(
+    "KOJA_STORAGE_BUCKET",
+    "koja-files"
+)
+
+# ============================================================
+# JSON DATABASE
+# ============================================================
+
+def ensure_file(path, default):
     if not os.path.exists(path):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(default, f, indent=2)
 
 
-ensure_json_file(USERS_FILE, [])
-ensure_json_file(QUESTIONS_FILE, [])
+ensure_file(USERS_FILE, [])
+ensure_file(QUESTIONS_FILE, [])
 
 
-def read_json(path, default):
+def read_json(path):
     try:
-        with DATA_LOCK:
+        with LOCK:
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
     except Exception:
-        return default
+        return []
 
 
 def write_json(path, data):
-    with DATA_LOCK:
-        temporary = path + ".tmp"
+    with LOCK:
+        temp = path + ".tmp"
 
-        with open(
-            temporary,
-            "w",
-            encoding="utf-8"
-        ) as f:
+        with open(temp, "w", encoding="utf-8") as f:
             json.dump(
                 data,
                 f,
@@ -140,20 +107,21 @@ def write_json(path, data):
                 ensure_ascii=False
             )
 
-        os.replace(temporary, path)
+        os.replace(temp, path)
 
 
 # ============================================================
-# PASSWORD SECURITY
+# PASSWORDS
 # ============================================================
 
 def hash_password(password):
+
     salt = secrets.token_hex(16)
 
     digest = hashlib.pbkdf2_hmac(
         "sha256",
-        password.encode("utf-8"),
-        salt.encode("utf-8"),
+        password.encode(),
+        salt.encode(),
         200000
     )
 
@@ -161,13 +129,14 @@ def hash_password(password):
 
 
 def verify_password(password, stored):
+
     try:
         salt, digest = stored.split("$", 1)
 
         check = hashlib.pbkdf2_hmac(
             "sha256",
-            password.encode("utf-8"),
-            salt.encode("utf-8"),
+            password.encode(),
+            salt.encode(),
             200000
         ).hex()
 
@@ -181,61 +150,75 @@ def verify_password(password, stored):
 
 
 # ============================================================
-# USER MANAGEMENT
+# USERS
 # ============================================================
 
-def get_users():
-    return read_json(USERS_FILE, [])
-
-
-def save_users(users):
-    write_json(USERS_FILE, users)
+def users():
+    return read_json(USERS_FILE)
 
 
 def find_user(email):
-    email = email.lower().strip()
 
-    for user in get_users():
+    email = email.strip().lower()
+
+    for user in users():
+
         if user.get("email", "").lower() == email:
             return user
 
     return None
 
 
-def create_user(name, email, password):
-    users = get_users()
+def save_users(data):
+    write_json(USERS_FILE, data)
 
-    email = email.lower().strip()
 
-    if find_user(email):
-        return False, "An account with that email already exists."
+def create_admin():
 
-    user = {
+    data = users()
+
+    # Remove duplicate admin records
+    found = None
+
+    for user in data:
+
+        if user.get("email", "").lower() == ADMIN_EMAIL:
+
+            found = user
+            break
+
+    if found:
+
+        found["role"] = "admin"
+
+        # Keep environment password authoritative
+        found["password"] = hash_password(
+            ADMIN_PASSWORD
+        )
+
+        found["name"] = "KOJA Administrator"
+
+        save_users(data)
+
+        return
+
+    admin = {
         "id": str(uuid.uuid4()),
-        "name": name.strip(),
-        "email": email,
-        "password": hash_password(password),
-        "role": "student",
+        "name": "KOJA Administrator",
+        "email": ADMIN_EMAIL,
+        "password": hash_password(
+            ADMIN_PASSWORD
+        ),
+        "role": "admin",
         "created_at": datetime.utcnow().isoformat()
     }
 
-    users.append(user)
+    data.append(admin)
 
-    save_users(users)
-
-    return True, "Account created successfully."
+    save_users(data)
 
 
-# ============================================================
-# QUESTION STORAGE
-# ============================================================
-
-def get_questions():
-    return read_json(QUESTIONS_FILE, [])
-
-
-def save_questions(questions):
-    write_json(QUESTIONS_FILE, questions)
+create_admin()
 
 
 # ============================================================
@@ -243,170 +226,84 @@ def save_questions(questions):
 # ============================================================
 
 def supabase_configured():
+
     return bool(
-        SUPABASE_URL
-        and SUPABASE_SERVICE_KEY
+        SUPABASE_URL and
+        SUPABASE_SERVICE_KEY
     )
 
 
 def supabase_headers():
+
     return {
         "apikey": SUPABASE_SERVICE_KEY,
-        "Authorization": "Bearer " + SUPABASE_SERVICE_KEY,
-        "Content-Type": "application/json",
+        "Authorization":
+            "Bearer " + SUPABASE_SERVICE_KEY,
+        "Content-Type": "application/json"
     }
 
 
-def supabase_request(
-    method,
-    endpoint,
-    data=None,
-    timeout=8
-):
+def supabase_test():
+
     if not supabase_configured():
-        return None
+        return False
 
     try:
-        response = requests.request(
-            method,
-            SUPABASE_URL + endpoint,
-            headers=supabase_headers(),
-            json=data,
-            timeout=timeout
-        )
 
-        if response.status_code >= 400:
-            return None
-
-        if not response.text:
-            return {}
-
-        return response.json()
-
-    except Exception:
-        return None
-
-
-def test_supabase():
-    if not supabase_configured():
-        return False, "Supabase is not configured."
-
-    try:
         response = requests.get(
             SUPABASE_URL + "/rest/v1/",
             headers=supabase_headers(),
             timeout=5
         )
 
-        if response.status_code < 400:
-            return True, "Supabase connection is working."
-
-        return False, (
-            "Supabase returned HTTP "
-            + str(response.status_code)
-        )
-
-    except Exception as e:
-        return False, str(e)
-
-
-# ============================================================
-# OPTIONAL SUPABASE TABLE SUPPORT
-# ============================================================
-
-def supabase_insert(table, row):
-    return supabase_request(
-        "POST",
-        "/rest/v1/" + table,
-        row
-    )
-
-
-def supabase_update(table, filters, row):
-    endpoint = "/rest/v1/" + table
-
-    if filters:
-        endpoint += "?" + "&".join(
-            f"{k}=eq.{v}"
-            for k, v in filters.items()
-        )
-
-    return supabase_request(
-        "PATCH",
-        endpoint,
-        row
-    )
-
-
-def sync_user_to_supabase(user):
-    if not supabase_configured():
-        return
-
-    try:
-        row = {
-            "id": user["id"],
-            "name": user["name"],
-            "email": user["email"],
-            "role": user["role"],
-            "created_at": user["created_at"],
-        }
-
-        supabase_insert("koja_users", row)
+        return response.status_code < 400
 
     except Exception:
-        pass
 
-
-def sync_question_to_supabase(question):
-    if not supabase_configured():
-        return
-
-    try:
-        row = {
-            "id": question["id"],
-            "student_id": question["student_id"],
-            "student_name": question["student_name"],
-            "student_email": question["student_email"],
-            "subject": question["subject"],
-            "question": question["question"],
-            "attachment": question.get("attachment"),
-            "status": question["status"],
-            "answer": question.get("answer"),
-            "created_at": question["created_at"],
-            "answered_at": question.get("answered_at"),
-        }
-
-        supabase_insert(
-            "koja_questions",
-            row
-        )
-
-    except Exception:
-        pass
+        return False
 
 
 # ============================================================
-# AUTHENTICATION
+# AUTH
 # ============================================================
 
-def login_required(view):
-    @wraps(view)
-    def wrapped(*args, **kwargs):
-        if "user_id" not in session:
-            return redirect(url_for("login"))
+def login_required(function):
 
-        return view(*args, **kwargs)
+    @wraps(function)
+    def wrapper(*args, **kwargs):
 
-    return wrapped
+        if not session.get("user_id"):
+            return redirect(
+                url_for("login")
+            )
+
+        return function(*args, **kwargs)
+
+    return wrapper
 
 
-def admin_required(view):
-    @wraps(view)
-    def wrapped(*args, **kwargs):
-        if "user_id" not in session:
-            return redirect(url_for("login"))
+def admin_required(function):
 
-        if session.get("role") != "admin":
+    @wraps(function)
+    def wrapper(*args, **kwargs):
+
+        if not session.get("user_id"):
+            return redirect(
+                url_for("login")
+            )
+
+        # IMPORTANT:
+        # Admin is identified by email.
+        # This prevents an incorrect role value
+        # from blocking the real administrator.
+
+        email = session.get(
+            "email",
+            ""
+        ).lower()
+
+        if email != ADMIN_EMAIL:
+
             flash(
                 "Administrator access required.",
                 "error"
@@ -416,117 +313,26 @@ def admin_required(view):
                 url_for("student_dashboard")
             )
 
-        return view(*args, **kwargs)
+        return function(*args, **kwargs)
 
-    return wrapped
-
-
-# ============================================================
-# ADMIN AUTO LOGIN ACCOUNT
-# ============================================================
-
-def ensure_admin():
-    users = get_users()
-
-    for user in users:
-        if (
-            user.get("email") == ADMIN_EMAIL
-            and user.get("role") == "admin"
-        ):
-            return
-
-    admin = {
-        "id": str(uuid.uuid4()),
-        "name": "KOJA Administrator",
-        "email": ADMIN_EMAIL,
-        "password": hash_password(ADMIN_PASSWORD),
-        "role": "admin",
-        "created_at": datetime.utcnow().isoformat()
-    }
-
-    users.append(admin)
-
-    save_users(users)
-
-
-ensure_admin()
+    return wrapper
 
 
 # ============================================================
-# FILE UPLOAD
+# HTML
 # ============================================================
 
-ALLOWED_EXTENSIONS = {
-    "pdf",
-    "png",
-    "jpg",
-    "jpeg",
-    "doc",
-    "docx",
-    "txt",
-    "ppt",
-    "pptx",
-    "xls",
-    "xlsx"
-}
+HTML = """
+<!DOCTYPE html>
 
-
-def allowed_file(filename):
-    if not filename:
-        return False
-
-    if "." not in filename:
-        return False
-
-    extension = filename.rsplit(".", 1)[1].lower()
-
-    return extension in ALLOWED_EXTENSIONS
-
-
-def save_uploaded_file(file):
-    if not file:
-        return None
-
-    original = file.filename or ""
-
-    if not allowed_file(original):
-        return None
-
-    extension = original.rsplit(".", 1)[1].lower()
-
-    generated = (
-        str(uuid.uuid4())
-        + "."
-        + extension
-    )
-
-    destination = os.path.join(
-        UPLOAD_DIR,
-        generated
-    )
-
-    file.save(destination)
-
-    return {
-        "original_name": original,
-        "stored_name": generated
-    }
-
-
-# ============================================================
-# COMMON HTML
-# ============================================================
-
-BASE_HTML = """
-<!doctype html>
-<html lang="en">
+<html>
 
 <head>
 
-<meta charset="utf-8">
+<meta charset="UTF-8">
 
 <meta name="viewport"
-content="width=device-width, initial-scale=1">
+      content="width=device-width, initial-scale=1">
 
 <title>{{ title }} - KOJA AFRICA</title>
 
@@ -538,138 +344,119 @@ content="width=device-width, initial-scale=1">
 
 body {
     margin: 0;
-    font-family:
-        Arial,
-        Helvetica,
-        sans-serif;
     background: #f4f7fb;
+    font-family: Arial, sans-serif;
     color: #172033;
 }
 
-.navbar {
+nav {
     background: #101828;
     color: white;
-    padding: 15px 22px;
+    padding: 15px 20px;
     display: flex;
-    align-items: center;
     justify-content: space-between;
-    gap: 15px;
+    align-items: center;
     flex-wrap: wrap;
+    gap: 10px;
 }
 
 .logo {
     font-size: 23px;
-    font-weight: 800;
+    font-weight: bold;
 }
 
-.logo span:nth-child(1) {
-    color: #2196f3;
-}
+.k {color:#2196f3;}
+.o {color:#22c55e;}
+.j {color:#ef4444;}
+.a {color:#2563eb;}
 
-.logo span:nth-child(2) {
-    color: #22c55e;
-}
-
-.logo span:nth-child(3) {
-    color: #ef4444;
-}
-
-.logo span:nth-child(4) {
-    color: #2563eb;
-}
-
-.nav-links {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-}
-
-.nav-links a {
+nav a {
     color: white;
     text-decoration: none;
-    padding: 8px 11px;
+    margin: 4px;
+    padding: 8px 12px;
     border-radius: 7px;
 }
 
-.nav-links a:hover {
+nav a:hover {
     background: #26354d;
 }
 
 .container {
-    width: min(1100px, 94%);
+    width: 94%;
+    max-width: 1100px;
     margin: 25px auto;
 }
 
 .card {
     background: white;
-    border-radius: 14px;
     padding: 22px;
     margin-bottom: 20px;
-    box-shadow:
-        0 5px 22px rgba(0,0,0,.06);
+    border-radius: 14px;
+    box-shadow: 0 5px 20px rgba(0,0,0,.06);
+}
+
+.hero {
+    background: linear-gradient(
+        135deg,
+        #101828,
+        #2563eb
+    );
+    color: white;
+    padding: 30px;
+    border-radius: 15px;
+    margin-bottom: 20px;
 }
 
 .grid {
     display: grid;
     grid-template-columns:
-        repeat(auto-fit, minmax(210px, 1fr));
-    gap: 17px;
+        repeat(auto-fit, minmax(200px, 1fr));
+    gap: 15px;
 }
 
 .stat {
-    padding: 22px;
-    border-radius: 13px;
     background: #eef4ff;
-}
-
-.stat h2 {
-    margin: 0 0 5px;
+    padding: 20px;
+    border-radius: 12px;
 }
 
 input,
-textarea,
-select {
+textarea {
     width: 100%;
     padding: 12px;
-    border: 1px solid #d0d5dd;
-    border-radius: 8px;
     margin-top: 7px;
     margin-bottom: 15px;
+    border: 1px solid #d0d5dd;
+    border-radius: 8px;
     font-size: 15px;
 }
 
 textarea {
-    min-height: 150px;
-    resize: vertical;
+    min-height: 160px;
 }
 
 button,
 .btn {
-    border: none;
+    display: inline-block;
     background: #2563eb;
     color: white;
+    border: 0;
     padding: 11px 17px;
     border-radius: 8px;
-    cursor: pointer;
     text-decoration: none;
-    display: inline-block;
-    font-size: 14px;
+    cursor: pointer;
 }
 
-button:hover,
-.btn:hover {
-    opacity: .9;
-}
-
-.btn-green {
+.green {
     background: #16a34a;
 }
 
-.btn-red {
+.red {
     background: #dc2626;
 }
 
-.btn-dark {
+.dark {
     background: #111827;
 }
 
@@ -677,40 +464,45 @@ button:hover,
     display: inline-block;
     padding: 5px 10px;
     border-radius: 20px;
-    font-size: 12px;
     background: #e5e7eb;
+    font-size: 12px;
 }
 
-.badge-green {
-    background: #dcfce7;
-    color: #166534;
-}
-
-.badge-orange {
+.pending {
     background: #ffedd5;
     color: #9a3412;
 }
 
-.badge-blue {
-    background: #dbeafe;
-    color: #1e40af;
+.answered {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.question {
+    white-space: pre-wrap;
+    line-height: 1.6;
+}
+
+.answer {
+    white-space: pre-wrap;
+    background: #f0fdf4;
+    border-left: 4px solid #16a34a;
+    padding: 15px;
+    border-radius: 7px;
+    line-height: 1.6;
 }
 
 .alert {
-    padding: 12px 15px;
+    background: #dcfce7;
+    color: #166534;
+    padding: 12px;
     border-radius: 8px;
-    background: #e0f2fe;
     margin-bottom: 15px;
 }
 
 .alert.error {
     background: #fee2e2;
     color: #991b1b;
-}
-
-.alert.success {
-    background: #dcfce7;
-    color: #166534;
 }
 
 table {
@@ -720,53 +512,22 @@ table {
 
 th,
 td {
-    padding: 11px;
+    padding: 12px;
+    border-bottom: 1px solid #eee;
     text-align: left;
-    border-bottom: 1px solid #eaecf0;
-    vertical-align: top;
 }
 
 th {
     background: #f8fafc;
 }
 
-.question {
-    white-space: pre-wrap;
-    line-height: 1.65;
-}
-
-.answer {
-    background: #f0fdf4;
-    border-left: 4px solid #16a34a;
-    padding: 17px;
-    border-radius: 8px;
-    white-space: pre-wrap;
-    line-height: 1.65;
+.auth {
+    max-width: 500px;
+    margin: 50px auto;
 }
 
 .muted {
     color: #667085;
-}
-
-.auth {
-    max-width: 500px;
-    margin: 60px auto;
-}
-
-.hero {
-    padding: 30px;
-    background: linear-gradient(
-        135deg,
-        #101828,
-        #1d4ed8
-    );
-    color: white;
-    border-radius: 16px;
-    margin-bottom: 22px;
-}
-
-.small {
-    font-size: 13px;
 }
 
 pre {
@@ -774,15 +535,11 @@ pre {
     word-break: break-word;
 }
 
-@media(max-width: 650px) {
+@media(max-width:650px) {
 
     table {
         display: block;
         overflow-x: auto;
-    }
-
-    .container {
-        width: 96%;
     }
 
 }
@@ -793,60 +550,63 @@ pre {
 
 <body>
 
-<div class="navbar">
+<nav>
 
-    <div class="logo">
-        <span>k</span><span>o</span><span>j</span><span>a</span>
-        AFRICA
-    </div>
+<div class="logo">
+    <span class="k">k</span>
+    <span class="o">o</span>
+    <span class="j">j</span>
+    <span class="a">a</span>
+    AFRICA
+</div>
 
-    {% if session.get("user_id") %}
+{% if session.get("user_id") %}
 
-        <div class="nav-links">
+<div>
 
-        {% if session.get("role") == "admin" %}
+{% if session.get("email","").lower()
+      == admin_email.lower() %}
 
-            <a href="{{ url_for('admin_dashboard') }}">
-                Admin
-            </a>
+<a href="/admin">Admin</a>
 
-            <a href="{{ url_for('admin_config') }}">
-                Configuration
-            </a>
+<a href="/admin/config">
+Configuration
+</a>
 
-        {% else %}
+{% else %}
 
-            <a href="{{ url_for('student_dashboard') }}">
-                Dashboard
-            </a>
+<a href="/student">
+Dashboard
+</a>
 
-            <a href="{{ url_for('ask_question') }}">
-                Ask Question
-            </a>
+<a href="/student/ask">
+Ask Question
+</a>
 
-        {% endif %}
+{% endif %}
 
-            <a href="{{ url_for('logout') }}">
-                Logout
-            </a>
-
-        </div>
-
-    {% endif %}
+<a href="/logout">
+Logout
+</a>
 
 </div>
 
+{% endif %}
+
+</nav>
+
 <div class="container">
 
-{% with messages = get_flashed_messages(with_categories=true) %}
+{% with messages =
+get_flashed_messages(with_categories=true) %}
 
-    {% for category, message in messages %}
+{% for category, message in messages %}
 
-        <div class="alert {{ category }}">
-            {{ message }}
-        </div>
+<div class="alert {{ category }}">
+{{ message }}
+</div>
 
-    {% endfor %}
+{% endfor %}
 
 {% endwith %}
 
@@ -855,15 +615,18 @@ pre {
 </div>
 
 </body>
+
 </html>
 """
 
 
-def page(title, content):
+def render_page(title, content):
+
     return render_template_string(
-        BASE_HTML,
+        HTML,
         title=title,
-        content=content
+        content=content,
+        admin_email=ADMIN_EMAIL
     )
 
 
@@ -872,22 +635,35 @@ def page(title, content):
 # ============================================================
 
 @app.route("/")
-def index():
+def home():
 
-    if "user_id" not in session:
-        return redirect(url_for("login"))
+    if not session.get("user_id"):
+        return redirect(
+            url_for("login")
+        )
 
-    if session.get("role") == "admin":
-        return redirect(url_for("admin_dashboard"))
+    if (
+        session.get("email", "").lower()
+        == ADMIN_EMAIL.lower()
+    ):
 
-    return redirect(url_for("student_dashboard"))
+        return redirect(
+            url_for("admin_dashboard")
+        )
+
+    return redirect(
+        url_for("student_dashboard")
+    )
 
 
 # ============================================================
 # LOGIN
 # ============================================================
 
-@app.route("/login", methods=["GET", "POST"])
+@app.route(
+    "/login",
+    methods=["GET", "POST"]
+)
 def login():
 
     if request.method == "POST":
@@ -902,94 +678,132 @@ def login():
             ""
         )
 
+        # ----------------------------------------------------
+        # ADMIN LOGIN
+        # ----------------------------------------------------
+
+        if (
+            email == ADMIN_EMAIL and
+            secrets.compare_digest(
+                password,
+                ADMIN_PASSWORD
+            )
+        ):
+
+            session.clear()
+
+            session["user_id"] = "ADMIN"
+            session["email"] = ADMIN_EMAIL
+            session["name"] = "KOJA Administrator"
+            session["role"] = "admin"
+
+            return redirect(
+                url_for("admin_dashboard")
+            )
+
+        # ----------------------------------------------------
+        # STUDENT LOGIN
+        # ----------------------------------------------------
+
         user = find_user(email)
 
         if not user:
+
             flash(
                 "Invalid email or password.",
                 "error"
             )
 
-            return redirect(url_for("login"))
+            return redirect(
+                url_for("login")
+            )
 
         if not verify_password(
             password,
             user.get("password", "")
         ):
+
             flash(
                 "Invalid email or password.",
                 "error"
             )
 
-            return redirect(url_for("login"))
+            return redirect(
+                url_for("login")
+            )
 
         session.clear()
 
         session["user_id"] = user["id"]
         session["email"] = user["email"]
         session["name"] = user["name"]
-        session["role"] = user["role"]
-
-        if user["role"] == "admin":
-            return redirect(
-                url_for("admin_dashboard")
-            )
+        session["role"] = "student"
 
         return redirect(
             url_for("student_dashboard")
         )
 
     content = """
-    <div class="auth card">
 
-        <h1>KOJA AFRICA</h1>
+<div class="auth card">
 
-        <p class="muted">
-            Assignment Questions • Academic Answers
-        </p>
+<h1>KOJA AFRICA</h1>
 
-        <form method="post">
+<p class="muted">
+Knowledge • Questions • Answers
+</p>
 
-            <label>Email</label>
-            <input
-                type="email"
-                name="email"
-                required
-                autocomplete="email"
-            >
+<form method="post">
 
-            <label>Password</label>
-            <input
-                type="password"
-                name="password"
-                required
-                autocomplete="current-password"
-            >
+<label>Email</label>
 
-            <button type="submit">
-                Login
-            </button>
+<input
+type="email"
+name="email"
+required
+>
 
-        </form>
+<label>Password</label>
 
-        <hr>
+<input
+type="password"
+name="password"
+required
+>
 
-        <p>
-            New student?
-            <a href="/register">Create an account</a>
-        </p>
+<button>
+Login
+</button>
 
-    </div>
-    """
+</form>
 
-    return page("Login", content)
+<hr>
+
+<p>
+New student?
+<a href="/register">
+Create Student Account
+</a>
+</p>
+
+</div>
+
+"""
+
+    return render_page(
+        "Login",
+        content
+    )
 
 
 # ============================================================
 # REGISTER
 # ============================================================
 
-@app.route("/register", methods=["GET", "POST"])
+@app.route(
+    "/register",
+    methods=["GET", "POST"]
+)
 def register():
 
     if request.method == "POST":
@@ -1015,6 +829,7 @@ def register():
         )
 
         if len(name) < 2:
+
             flash(
                 "Enter your full name.",
                 "error"
@@ -1024,9 +839,21 @@ def register():
                 url_for("register")
             )
 
-        if len(password) < 6:
+        if email == ADMIN_EMAIL:
+
             flash(
-                "Password must be at least 6 characters.",
+                "That email is reserved for the administrator.",
+                "error"
+            )
+
+            return redirect(
+                url_for("register")
+            )
+
+        if len(password) < 6:
+
+            flash(
+                "Password must contain at least 6 characters.",
                 "error"
             )
 
@@ -1035,6 +862,7 @@ def register():
             )
 
         if password != confirm:
+
             flash(
                 "Passwords do not match.",
                 "error"
@@ -1044,26 +872,33 @@ def register():
                 url_for("register")
             )
 
-        ok, message = create_user(
-            name,
-            email,
-            password
-        )
+        if find_user(email):
 
-        if not ok:
-            flash(message, "error")
+            flash(
+                "An account with this email already exists.",
+                "error"
+            )
 
             return redirect(
                 url_for("register")
             )
 
-        user = find_user(email)
+        data = users()
 
-        if user:
-            sync_user_to_supabase(user)
+        data.append({
+            "id": str(uuid.uuid4()),
+            "name": name,
+            "email": email,
+            "password": hash_password(password),
+            "role": "student",
+            "created_at":
+                datetime.utcnow().isoformat()
+        })
+
+        save_users(data)
 
         flash(
-            "Account created. You can now login.",
+            "Account created successfully.",
             "success"
         )
 
@@ -1072,61 +907,67 @@ def register():
         )
 
     content = """
-    <div class="auth card">
 
-        <h1>Create Student Account</h1>
+<div class="auth card">
 
-        <form method="post">
+<h1>Student Registration</h1>
 
-            <label>Full Name</label>
+<form method="post">
 
-            <input
-                type="text"
-                name="name"
-                required
-            >
+<label>Full Name</label>
 
-            <label>Email</label>
+<input
+type="text"
+name="name"
+required
+>
 
-            <input
-                type="email"
-                name="email"
-                required
-            >
+<label>Email</label>
 
-            <label>Password</label>
+<input
+type="email"
+name="email"
+required
+>
 
-            <input
-                type="password"
-                name="password"
-                minlength="6"
-                required
-            >
+<label>Password</label>
 
-            <label>Confirm Password</label>
+<input
+type="password"
+name="password"
+minlength="6"
+required
+>
 
-            <input
-                type="password"
-                name="confirm"
-                minlength="6"
-                required
-            >
+<label>Confirm Password</label>
 
-            <button type="submit">
-                Register
-            </button>
+<input
+type="password"
+name="confirm"
+minlength="6"
+required
+>
 
-        </form>
+<button>
+Create Account
+</button>
 
-        <p>
-            Already registered?
-            <a href="/login">Login</a>
-        </p>
+</form>
 
-    </div>
-    """
+<p>
+<a href="/login">
+Already have an account?
+</a>
+</p>
 
-    return page("Register", content)
+</div>
+
+"""
+
+    return render_page(
+        "Register",
+        content
+    )
 
 
 # ============================================================
@@ -1151,22 +992,33 @@ def logout():
 @login_required
 def student_dashboard():
 
-    if session.get("role") == "admin":
+    # Admin cannot use student dashboard
+    if (
+        session.get("email", "").lower()
+        == ADMIN_EMAIL.lower()
+    ):
+
         return redirect(
             url_for("admin_dashboard")
         )
 
+    all_questions = read_json(
+        QUESTIONS_FILE
+    )
+
     questions = [
-        q for q in get_questions()
-        if q.get("student_id") == session["user_id"]
+        q for q in all_questions
+        if q.get("student_id")
+        == session.get("user_id")
     ]
 
     questions.sort(
-        key=lambda x: x.get("created_at", ""),
+        key=lambda q:
+        q.get("created_at", ""),
         reverse=True
     )
 
-    rows = ""
+    cards = ""
 
     for q in questions:
 
@@ -1175,146 +1027,177 @@ def student_dashboard():
             "Pending"
         )
 
-        if status == "Answered":
-            badge = "badge-green"
-        elif status == "Pending":
-            badge = "badge-orange"
-        else:
-            badge = "badge-blue"
+        badge = (
+            "answered"
+            if status == "Answered"
+            else "pending"
+        )
 
-        answer = q.get("answer")
+        answer = q.get(
+            "answer",
+            ""
+        )
 
         if answer:
-            answer_html = f"""
-            <div class="answer">
-                {answer}
-            </div>
-            """
-        else:
-            answer_html = """
-            <p class="muted">
-                Waiting for administrator response.
-            </p>
-            """
 
-        attachment = q.get("attachment")
+            answer_html = f"""
+<div class="answer">
+{answer}
+</div>
+"""
+
+        else:
+
+            answer_html = """
+<p class="muted">
+Waiting for administrator answer.
+</p>
+"""
+
+        attachment = q.get(
+            "attachment"
+        )
 
         attachment_html = ""
 
         if attachment:
+
             attachment_html = f"""
-            <p>
-                <strong>Attachment:</strong>
-                {attachment.get("original_name")}
-            </p>
-            """
+<p>
+<strong>Attachment:</strong>
+{attachment.get("original_name")}
+</p>
 
-        rows += f"""
-        <div class="card">
+<a class="btn"
+href="/student/file/{q["id"]}"
+target="_blank">
+Open Attachment
+</a>
+"""
 
-            <h3>
-                {q.get("subject", "Question")}
-            </h3>
+        cards += f"""
 
-            <p>
-                <span class="badge {badge}">
-                    {status}
-                </span>
-            </p>
+<div class="card">
 
-            <p class="small muted">
-                Submitted:
-                {q.get("created_at", "")}
-            </p>
+<h2>
+{q.get("subject","Question")}
+</h2>
 
-            {attachment_html}
+<span class="badge {badge}">
+{status}
+</span>
 
-            <h4>Your Question</h4>
+<p class="muted">
+Submitted:
+{q.get("created_at","")}
+</p>
 
-            <div class="question">
-                {q.get("question", "")}
-            </div>
+{attachment_html}
 
-            <h4>Administrator Answer</h4>
+<h3>Your Question</h3>
 
-            {answer_html}
+<div class="question">
+{q.get("question","")}
+</div>
 
-        </div>
-        """
+<h3>Administrator Answer</h3>
 
-    if not rows:
-        rows = """
-        <div class="card">
-            <h3>No questions yet.</h3>
+{answer_html}
 
-            <p>
-                Ask your first academic question and
-                the administrator will respond.
-            </p>
+</div>
 
-            <a class="btn"
-               href="/student/ask">
-                Ask a Question
-            </a>
-        </div>
-        """
+"""
+
+    if not cards:
+
+        cards = """
+
+<div class="card">
+
+<h2>No questions yet.</h2>
+
+<p>
+You have not submitted any questions.
+</p>
+
+<a class="btn"
+href="/student/ask">
+Ask Your First Question
+</a>
+
+</div>
+
+"""
 
     content = f"""
 
-    <div class="hero">
+<div class="hero">
 
-        <h1>
-            Welcome, {session.get("name", "Student")}
-        </h1>
+<h1>
+Welcome, {session.get("name")}
+</h1>
 
-        <p>
-            Ask questions, upload assignments and
-            receive academic answers.
-        </p>
+<p>
+Ask academic questions and receive answers
+from the KOJA administrator.
+</p>
 
-        <a class="btn"
-           href="/student/ask">
-            Ask a Question
-        </a>
+<a class="btn"
+href="/student/ask">
+Ask Question
+</a>
 
-    </div>
+</div>
 
-    <div class="grid">
+<div class="grid">
 
-        <div class="stat">
-            <h2>{len(questions)}</h2>
-            <p>Total Questions</p>
-        </div>
+<div class="stat">
 
-        <div class="stat">
-            <h2>
-                {sum(
-                    1 for q in questions
-                    if q.get("status") == "Answered"
-                )}
-            </h2>
-            <p>Answered</p>
-        </div>
+<h2>{len(questions)}</h2>
 
-        <div class="stat">
-            <h2>
-                {sum(
-                    1 for q in questions
-                    if q.get("status") == "Pending"
-                )}
-            </h2>
-            <p>Pending</p>
-        </div>
+<p>Total Questions</p>
 
-    </div>
+</div>
 
-    <h2>My Questions</h2>
+<div class="stat">
 
-    {rows}
+<h2>
+{
+sum(
+1 for q in questions
+if q.get("status") == "Answered"
+)
+}
+</h2>
 
-    """
+<p>Answered</p>
 
-    return page(
+</div>
+
+<div class="stat">
+
+<h2>
+{
+sum(
+1 for q in questions
+if q.get("status") == "Pending"
+)
+}
+</h2>
+
+<p>Pending</p>
+
+</div>
+
+</div>
+
+<h2>My Questions</h2>
+
+{cards}
+
+"""
+
+    return render_page(
         "Student Dashboard",
         content
     )
@@ -1331,7 +1214,11 @@ def student_dashboard():
 @login_required
 def ask_question():
 
-    if session.get("role") == "admin":
+    if (
+        session.get("email", "").lower()
+        == ADMIN_EMAIL.lower()
+    ):
+
         return redirect(
             url_for("admin_dashboard")
         )
@@ -1343,18 +1230,19 @@ def ask_question():
             ""
         ).strip()
 
-        question_text = request.form.get(
+        question = request.form.get(
             "question",
             ""
         ).strip()
 
-        attachment_file = request.files.get(
+        file = request.files.get(
             "attachment"
         )
 
         if len(subject) < 2:
+
             flash(
-                "Please enter a subject.",
+                "Enter a subject.",
                 "error"
             )
 
@@ -1362,9 +1250,10 @@ def ask_question():
                 url_for("ask_question")
             )
 
-        if len(question_text) < 3:
+        if len(question) < 3:
+
             flash(
-                "Please enter your question.",
+                "Enter your question.",
                 "error"
             )
 
@@ -1374,15 +1263,28 @@ def ask_question():
 
         attachment = None
 
-        if attachment_file and attachment_file.filename:
+        if file and file.filename:
 
-            attachment = save_uploaded_file(
-                attachment_file
-            )
+            original = file.filename
 
-            if not attachment:
+            allowed = {
+                "pdf",
+                "png",
+                "jpg",
+                "jpeg",
+                "doc",
+                "docx",
+                "txt",
+                "ppt",
+                "pptx",
+                "xls",
+                "xlsx"
+            }
+
+            if "." not in original:
+
                 flash(
-                    "Unsupported attachment type.",
+                    "Invalid file.",
                     "error"
                 )
 
@@ -1390,33 +1292,84 @@ def ask_question():
                     url_for("ask_question")
                 )
 
-        question = {
+            extension = original.rsplit(
+                ".",
+                1
+            )[1].lower()
+
+            if extension not in allowed:
+
+                flash(
+                    "Unsupported file type.",
+                    "error"
+                )
+
+                return redirect(
+                    url_for("ask_question")
+                )
+
+            stored = (
+                str(uuid.uuid4())
+                + "."
+                + extension
+            )
+
+            file.save(
+                os.path.join(
+                    UPLOAD_DIR,
+                    stored
+                )
+            )
+
+            attachment = {
+                "original_name": original,
+                "stored_name": stored
+            }
+
+        item = {
+
             "id": str(uuid.uuid4()),
-            "student_id": session["user_id"],
-            "student_name": session["name"],
-            "student_email": session["email"],
+
+            "student_id":
+                session.get("user_id"),
+
+            "student_name":
+                session.get("name"),
+
+            "student_email":
+                session.get("email"),
+
             "subject": subject,
-            "question": question_text,
+
+            "question": question,
+
             "attachment": attachment,
+
             "status": "Pending",
+
             "answer": "",
+
             "answered_at": None,
+
             "answered_by": None,
-            "created_at": datetime.utcnow().isoformat()
+
+            "created_at":
+                datetime.utcnow().isoformat()
         }
 
-        questions = get_questions()
+        data = read_json(
+            QUESTIONS_FILE
+        )
 
-        questions.append(question)
+        data.append(item)
 
-        save_questions(questions)
-
-        sync_question_to_supabase(
-            question
+        write_json(
+            QUESTIONS_FILE,
+            data
         )
 
         flash(
-            "Your question has been submitted.",
+            "Question submitted successfully.",
             "success"
         )
 
@@ -1425,61 +1378,58 @@ def ask_question():
         )
 
     content = """
-    <div class="card">
 
-        <h1>Ask a Question</h1>
+<div class="card">
 
-        <p class="muted">
-            Submit your academic question below.
-            You may attach an assignment, PDF,
-            image or other supported document.
-        </p>
+<h1>Ask a Question</h1>
 
-        <form
-            method="post"
-            enctype="multipart/form-data"
-        >
+<p class="muted">
+You can type your question and upload
+an assignment or supporting document.
+</p>
 
-            <label>Subject</label>
+<form
+method="post"
+enctype="multipart/form-data"
+>
 
-            <input
-                type="text"
-                name="subject"
-                placeholder="e.g. Chemistry"
-                required
-            >
+<label>Subject</label>
 
-            <label>Your Question</label>
+<input
+type="text"
+name="subject"
+placeholder="e.g. Chemistry"
+required
+>
 
-            <textarea
-                name="question"
-                placeholder="Type your question here..."
-                required
-            ></textarea>
+<label>Question</label>
 
-            <label>
-                Attachment
-                <span class="small muted">
-                    (optional, maximum 10 MB)
-                </span>
-            </label>
+<textarea
+name="question"
+placeholder="Write your question..."
+required
+></textarea>
 
-            <input
-                type="file"
-                name="attachment"
-                accept=".pdf,.png,.jpg,.jpeg,.doc,.docx,.txt,.ppt,.pptx,.xls,.xlsx"
-            >
+<label>
+Attachment
+</label>
 
-            <button type="submit">
-                Submit Question
-            </button>
+<input
+type="file"
+name="attachment"
+>
 
-        </form>
+<button>
+Submit Question
+</button>
 
-    </div>
-    """
+</form>
 
-    return page(
+</div>
+
+"""
+
+    return render_page(
         "Ask Question",
         content
     )
@@ -1493,10 +1443,13 @@ def ask_question():
 @admin_required
 def admin_dashboard():
 
-    questions = get_questions()
+    questions = read_json(
+        QUESTIONS_FILE
+    )
 
     questions.sort(
-        key=lambda x: x.get("created_at", ""),
+        key=lambda q:
+        q.get("created_at", ""),
         reverse=True
     )
 
@@ -1512,7 +1465,7 @@ def admin_dashboard():
         if q.get("status") == "Answered"
     )
 
-    table = ""
+    rows = ""
 
     for q in questions:
 
@@ -1521,123 +1474,141 @@ def admin_dashboard():
             "Pending"
         )
 
-        if status == "Answered":
-            badge = "badge-green"
-        else:
-            badge = "badge-orange"
+        badge = (
+            "answered"
+            if status == "Answered"
+            else "pending"
+        )
 
-        table += f"""
-        <tr>
+        rows += f"""
 
-            <td>
-                <strong>
-                    {q.get("student_name", "")}
-                </strong>
+<tr>
 
-                <br>
+<td>
+<strong>
+{q.get("student_name","")}
+</strong>
 
-                <span class="small muted">
-                    {q.get("student_email", "")}
-                </span>
-            </td>
+<br>
 
-            <td>
-                {q.get("subject", "")}
-            </td>
+<small>
+{q.get("student_email","")}
+</small>
 
-            <td>
-                {q.get("question", "")[:100]}
-            </td>
+</td>
 
-            <td>
-                <span class="badge {badge}">
-                    {status}
-                </span>
-            </td>
+<td>
+{q.get("subject","")}
+</td>
 
-            <td>
-                <a class="btn"
-                   href="/admin/question/{q.get("id")}">
-                    Open
-                </a>
-            </td>
+<td>
+{q.get("question","")[:120]}
+</td>
 
-        </tr>
-        """
+<td>
+<span class="badge {badge}">
+{status}
+</span>
+</td>
+
+<td>
+
+<a class="btn"
+href="/admin/question/{q.get("id")}">
+Open
+</a>
+
+</td>
+
+</tr>
+
+"""
+
+    if not rows:
+
+        rows = """
+<tr>
+<td colspan="5">
+No student questions yet.
+</td>
+</tr>
+"""
 
     content = f"""
 
-    <div class="hero">
+<div class="hero">
 
-        <h1>Administrator Dashboard</h1>
+<h1>KOJA Administrator</h1>
 
-        <p>
-            Manage student questions and academic answers.
-        </p>
+<p>
+Read student questions, open attachments
+and send answers.
+</p>
 
-    </div>
+</div>
 
-    <div class="grid">
+<div class="grid">
 
-        <div class="stat">
-            <h2>{total}</h2>
-            <p>Total Questions</p>
-        </div>
+<div class="stat">
 
-        <div class="stat">
-            <h2>{pending}</h2>
-            <p>Waiting for Answer</p>
-        </div>
+<h2>{total}</h2>
 
-        <div class="stat">
-            <h2>{answered}</h2>
-            <p>Answered</p>
-        </div>
+<p>Total Questions</p>
 
-        <div class="stat">
-            <h2>
-                <a href="/admin/config">
-                    System
-                </a>
-            </h2>
-            <p>Configuration</p>
-        </div>
+</div>
 
-    </div>
+<div class="stat">
 
-    <div class="card">
+<h2>{pending}</h2>
 
-        <h2>Student Questions</h2>
+<p>Pending</p>
 
-        <div style="overflow-x:auto">
+</div>
 
-        <table>
+<div class="stat">
 
-            <thead>
-                <tr>
-                    <th>Student</th>
-                    <th>Subject</th>
-                    <th>Question</th>
-                    <th>Status</th>
-                    <th>Action</th>
-                </tr>
-            </thead>
+<h2>{answered}</h2>
 
-            <tbody>
-                {table if table else
-                '<tr><td colspan="5">No questions yet.</td></tr>'}
-            </tbody>
+<p>Answered</p>
 
-        </table>
+</div>
 
-        </div>
+</div>
 
-    </div>
+<div class="card">
 
-    """
+<h2>Student Questions</h2>
 
-    return page(
-        "Admin Dashboard",
+<table>
+
+<thead>
+
+<tr>
+
+<th>Student</th>
+<th>Subject</th>
+<th>Question</th>
+<th>Status</th>
+<th>Action</th>
+
+</tr>
+
+</thead>
+
+<tbody>
+
+{rows}
+
+</tbody>
+
+</table>
+
+</div>
+
+"""
+
+    return render_page(
+        "Administrator",
         content
     )
 
@@ -1653,16 +1624,21 @@ def admin_dashboard():
 @admin_required
 def admin_question(question_id):
 
-    questions = get_questions()
+    data = read_json(
+        QUESTIONS_FILE
+    )
 
     question = None
 
-    for q in questions:
-        if q.get("id") == question_id:
-            question = q
+    for item in data:
+
+        if item.get("id") == question_id:
+
+            question = item
             break
 
     if not question:
+
         flash(
             "Question not found.",
             "error"
@@ -1680,8 +1656,9 @@ def admin_question(question_id):
         ).strip()
 
         if len(answer) < 2:
+
             flash(
-                "Please write an answer.",
+                "Write an answer first.",
                 "error"
             )
 
@@ -1693,28 +1670,21 @@ def admin_question(question_id):
             )
 
         question["answer"] = answer
+
         question["status"] = "Answered"
+
         question["answered_at"] = (
             datetime.utcnow().isoformat()
         )
-        question["answered_by"] = session.get(
-            "email"
+
+        question["answered_by"] = (
+            session.get("email")
         )
 
-        save_questions(questions)
-
-        if supabase_configured():
-
-            supabase_update(
-                "koja_questions",
-                {"id": question_id},
-                {
-                    "answer": answer,
-                    "status": "Answered",
-                    "answered_at": question["answered_at"],
-                    "answered_by": question["answered_by"]
-                }
-            )
+        write_json(
+            QUESTIONS_FILE,
+            data
+        )
 
         flash(
             "Answer sent to the student.",
@@ -1737,109 +1707,94 @@ def admin_question(question_id):
     if attachment:
 
         attachment_html = f"""
-        <div class="card">
 
-            <h3>Student Attachment</h3>
+<div class="card">
 
-            <p>
-                {attachment.get("original_name")}
-            </p>
+<h3>Student Attachment</h3>
 
-            <a
-                class="btn"
-                href="/admin/file/{attachment.get("stored_name")}"
-                target="_blank"
-            >
-                Open Attachment
-            </a>
+<p>
+{attachment.get("original_name")}
+</p>
 
-        </div>
-        """
+<a class="btn"
+href="/admin/file/{attachment.get("stored_name")}"
+target="_blank">
+Open Attachment
+</a>
 
-    existing_answer = question.get(
-        "answer",
-        ""
-    )
+</div>
+
+"""
 
     content = f"""
 
-    <div class="card">
+<div class="card">
 
-        <a href="/admin">
-            ← Back to Admin Dashboard
-        </a>
+<a href="/admin">
+← Back to Admin Dashboard
+</a>
 
-        <h1>
-            {question.get("subject", "")}
-        </h1>
+<h1>
+{question.get("subject","")}
+</h1>
 
-        <p>
-            <strong>Student:</strong>
-            {question.get("student_name", "")}
-        </p>
+<p>
+<strong>Student:</strong>
+{question.get("student_name","")}
+</p>
 
-        <p>
-            <strong>Email:</strong>
-            {question.get("student_email", "")}
-        </p>
+<p>
+<strong>Email:</strong>
+{question.get("student_email","")}
+</p>
 
-        <p>
-            <strong>Status:</strong>
-            {question.get("status", "")}
-        </p>
+<p>
+<strong>Status:</strong>
+{question.get("status","")}
+</p>
 
-        <p class="muted small">
-            Submitted:
-            {question.get("created_at", "")}
-        </p>
+<hr>
 
-        <hr>
+<h2>Student Question</h2>
 
-        <h2>Student Question</h2>
+<div class="question">
+{question.get("question","")}
+</div>
 
-        <div class="question">
-            {question.get("question", "")}
-        </div>
+</div>
 
-    </div>
+{attachment_html}
 
-    {attachment_html}
+<div class="card">
 
-    <div class="card">
+<h2>Answer Student</h2>
 
-        <h2>
-            Answer Student
-        </h2>
+<form method="post">
 
-        <form method="post">
+<textarea
+name="answer"
+required
+placeholder="Write your academic answer..."
+>{question.get("answer","")}</textarea>
 
-            <textarea
-                name="answer"
-                placeholder="Write the academic answer..."
-                required
-            >{existing_answer}</textarea>
+<button class="green">
+Send Answer to Student
+</button>
 
-            <button
-                type="submit"
-                class="btn-green"
-            >
-                Send Answer to Student
-            </button>
+</form>
 
-        </form>
+</div>
 
-    </div>
+"""
 
-    """
-
-    return page(
+    return render_page(
         "Answer Question",
         content
     )
 
 
 # ============================================================
-# ADMIN FILE ACCESS
+# ADMIN FILE
 # ============================================================
 
 @app.route(
@@ -1850,13 +1805,12 @@ def admin_file(filename):
 
     return send_from_directory(
         UPLOAD_DIR,
-        filename,
-        as_attachment=False
+        filename
     )
 
 
 # ============================================================
-# STUDENT FILE ACCESS
+# STUDENT FILE
 # ============================================================
 
 @app.route(
@@ -1865,23 +1819,26 @@ def admin_file(filename):
 @login_required
 def student_file(question_id):
 
-    questions = get_questions()
+    data = read_json(
+        QUESTIONS_FILE
+    )
 
     question = next(
         (
-            q for q in questions
+            q for q in data
             if q.get("id") == question_id
         ),
         None
     )
 
     if not question:
+
         return "File not found", 404
 
-    if (
-        question.get("student_id")
-        != session.get("user_id")
-    ):
+    if question.get(
+        "student_id"
+    ) != session.get("user_id"):
+
         return "Access denied", 403
 
     attachment = question.get(
@@ -1889,12 +1846,12 @@ def student_file(question_id):
     )
 
     if not attachment:
+
         return "No attachment", 404
 
     return send_from_directory(
         UPLOAD_DIR,
-        attachment["stored_name"],
-        as_attachment=False
+        attachment["stored_name"]
     )
 
 
@@ -1908,237 +1865,185 @@ def admin_config():
 
     configured = supabase_configured()
 
-    status_text = (
-        "Configured"
+    connected = (
+        supabase_test()
         if configured
-        else "Not configured"
+        else False
     )
-
-    status_class = (
-        "badge-green"
-        if configured
-        else "badge-orange"
-    )
-
-    connected = False
-    message = ""
-
-    if configured:
-        connected, message = test_supabase()
-    else:
-        message = (
-            "The portal is running in local fallback mode."
-        )
 
     content = f"""
 
-    <div class="hero">
+<div class="hero">
 
-        <h1>System Configuration</h1>
+<h1>System Configuration</h1>
 
-        <p>
-            This page is visible to administrators only.
-        </p>
+<p>
+Administrator-only configuration.
+</p>
 
-    </div>
+</div>
 
-    <div class="card">
+<div class="card">
 
-        <h2>Supabase</h2>
+<h2>Supabase</h2>
 
-        <p>
-            Configuration:
-            <span class="badge {status_class}">
-                {status_text}
-            </span>
-        </p>
+<p>
 
-        <p>
-            Connection:
-            <span class="badge {
-                "badge-green"
-                if connected
-                else "badge-orange"
-            }">
-                {
-                    "Working"
-                    if connected
-                    else "Unavailable"
-                }
-            </span>
-        </p>
+Configured:
 
-        <hr>
+<span class="badge {
+"answered" if configured else "pending"
+}">
 
-        <p>
-            <strong>Supabase URL</strong>
-        </p>
-
-        <pre>
 {
-    SUPABASE_URL
-    if SUPABASE_URL
-    else "Not configured"
+"YES"
+if configured
+else "NO"
 }
-        </pre>
 
-        <p>
-            <strong>Publishable Key</strong>
-        </p>
+</span>
 
-        <pre>
+</p>
+
+<p>
+
+Connection:
+
+<span class="badge {
+"answered" if connected else "pending"
+}">
+
 {
-    "Configured"
-    if SUPABASE_PUBLISHABLE_KEY
-    else "Not configured"
+"WORKING"
+if connected
+else "UNAVAILABLE"
 }
-        </pre>
 
-        <p>
-            <strong>Service Key</strong>
-        </p>
+</span>
 
-        <pre>
+</p>
+
+<hr>
+
+<h3>Supabase URL</h3>
+
+<pre>
 {
-    "Configured — hidden"
-    if SUPABASE_SERVICE_KEY
-    else "Not configured"
+SUPABASE_URL
+if SUPABASE_URL
+else "Not configured"
 }
-        </pre>
+</pre>
 
-        <p>
-            <strong>Storage Bucket</strong>
-        </p>
+<h3>Service Key</h3>
 
-        <pre>{STORAGE_BUCKET}</pre>
+<pre>
+{
+"Configured — hidden"
+if SUPABASE_SERVICE_KEY
+else "Not configured"
+}
+</pre>
 
-        <hr>
+<h3>Storage Bucket</h3>
 
-        <h3>Connection Message</h3>
+<pre>
+{STORAGE_BUCKET}
+</pre>
 
-        <pre>{message}</pre>
+</div>
 
-    </div>
+<div class="card">
 
-    <div class="card">
+<h2>Fallback Mode</h2>
 
-        <h2>Fallback Mode</h2>
+<p>
+KOJA continues operating using local server
+storage when Supabase is unavailable.
+</p>
 
-        <p>
-            The portal is designed not to stop simply because
-            Supabase is unavailable.
-        </p>
+<p class="muted">
+For permanent production storage on Render,
+Supabase should eventually be configured.
+</p>
 
-        <p>
-            When Supabase cannot be reached, student accounts,
-            questions and uploaded files continue using the
-            server's local storage.
-        </p>
+</div>
 
-        <p class="muted">
-            On hosting platforms with ephemeral storage,
-            configure Supabase for permanent production data.
-        </p>
+"""
 
-    </div>
-
-    """
-
-    return page(
+    return render_page(
         "Configuration",
         content
     )
 
 
 # ============================================================
-# HEALTH CHECK
+# HEALTH
 # ============================================================
 
 @app.route("/health")
 def health():
 
-    supabase_ok, _ = test_supabase()
-
     return {
+
         "status": "ok",
-        "application": "KOJA AFRICA",
-        "supabase_configured": supabase_configured(),
-        "supabase_connected": supabase_ok,
-        "mode": (
-            "supabase"
-            if supabase_ok
-            else "fallback"
-        )
+
+        "application":
+            "KOJA AFRICA",
+
+        "supabase_configured":
+            supabase_configured(),
+
+        "supabase_connected":
+            supabase_test(),
+
+        "fallback":
+            True
+
     }
 
 
 # ============================================================
-# ERROR HANDLERS
+# ERRORS
 # ============================================================
 
 @app.errorhandler(413)
 def too_large(error):
 
     flash(
-        "File is too large. Maximum size is 10 MB.",
+        "Maximum file size is 10 MB.",
         "error"
     )
 
-    if session.get("user_id"):
-        return redirect(
-            url_for("ask_question")
-        )
-
     return redirect(
-        url_for("login")
+        url_for("ask_question")
     )
 
 
 @app.errorhandler(404)
 def not_found(error):
 
-    return page(
+    return render_page(
         "Not Found",
         """
-        <div class="card">
 
-            <h1>Page Not Found</h1>
+<div class="card">
 
-            <p>
-                The page you requested does not exist.
-            </p>
+<h1>Page Not Found</h1>
 
-            <a class="btn" href="/">
-                Go Home
-            </a>
+<p>
+The requested page does not exist.
+</p>
 
-        </div>
-        """
+<a class="btn"
+href="/">
+Go Home
+</a>
+
+</div>
+
+"""
     ), 404
-
-
-@app.errorhandler(500)
-def server_error(error):
-
-    return page(
-        "Portal Error",
-        """
-        <div class="card">
-
-            <h1>KOJA is still running</h1>
-
-            <p>
-                An unexpected error occurred.
-                Please try again.
-            </p>
-
-            <a class="btn" href="/">
-                Go Home
-            </a>
-
-        </div>
-        """
-    ), 500
 
 
 # ============================================================
@@ -2154,37 +2059,14 @@ if __name__ == "__main__":
         )
     )
 
-    print()
     print("=" * 60)
     print("KOJA AFRICA")
-    print("Knowledge • Questions • Answers")
     print("=" * 60)
-    print(
-        "Supabase configured:",
-        supabase_configured()
-    )
-    print(
-        "Storage bucket:",
-        STORAGE_BUCKET
-    )
-    print(
-        "Admin email:",
-        ADMIN_EMAIL
-    )
-    print(
-        "Fallback mode available: YES"
-    )
-    print(
-        "Student dashboard: /student"
-    )
-    print(
-        "Admin dashboard: /admin"
-    )
-    print(
-        "Admin configuration: /admin/config"
-    )
+    print("ADMIN EMAIL:", ADMIN_EMAIL)
+    print("SUPABASE:", supabase_configured())
+    print("FALLBACK: ENABLED")
+    print("PORT:", port)
     print("=" * 60)
-    print()
 
     app.run(
         host="0.0.0.0",
