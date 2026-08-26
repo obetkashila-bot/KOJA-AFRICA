@@ -114,8 +114,7 @@ SUPABASE_URL = env(
 
 
 SUPABASE_SERVICE_KEY = env(
-    "sb_secret_wvVJIql26AxfSjA8brnEvQ_toxHtJn7
-")
+    "SUPABASE_SERVICE_KEY")
 
 
 SUPABASE_PUBLISHABLE_KEY = env(
