@@ -3,6 +3,7 @@ import io
 import uuid
 import secrets
 import logging
+import json
 
 import requests
 from dotenv import load_dotenv
@@ -37,7 +38,23 @@ from reportlab.lib.enums import TA_CENTER
 # ============================================================
 # KOJA AFRICA
 # COMPLETE FLASK APPLICATION
+#
+# Includes:
+# - Student registration/login
+# - Supabase authentication
+# - Document library
+# - Questions and direct answers
+# - Student assignment upload
+# - Assignment questions
+# - Admin assignment responses
+# - Direct administrator answers
+# - Uploaded answered PDF/Word files
+# - Student answered-file downloads
+# - Document upload/edit/delete
+# - Document activity
+# - PDF document report
 # ============================================================
+
 
 load_dotenv()
 
@@ -90,6 +107,15 @@ ALLOWED_EXTENSIONS = {
     ".png",
 }
 
+# Administrator answered-file formats.
+ANSWER_ALLOWED_EXTENSIONS = {
+    ".pdf",
+    ".doc",
+    ".docx",
+}
+
+ANSWER_MAX_FILE_SIZE = MAX_FILE_SIZE
+
 
 # ============================================================
 # FLASK APPLICATION
@@ -113,7 +139,6 @@ logger = logging.getLogger("koja")
 # ============================================================
 
 def supabase_is_configured():
-
     return (
         SUPABASE_URL
         and SUPABASE_SERVICE_KEY
@@ -126,22 +151,21 @@ def supabase_is_configured():
 # ============================================================
 
 def supabase_headers():
-
     return {
         "apikey": SUPABASE_SERVICE_KEY,
-        "Authorization":
-            f"Bearer {SUPABASE_SERVICE_KEY}",
-        "Content-Type":
-            "application/json",
+        "Authorization": (
+            f"Bearer {SUPABASE_SERVICE_KEY}"
+        ),
+        "Content-Type": "application/json",
     }
 
 
 def storage_headers(content_type=None):
-
     headers = {
         "apikey": SUPABASE_SERVICE_KEY,
-        "Authorization":
-            f"Bearer {SUPABASE_SERVICE_KEY}",
+        "Authorization": (
+            f"Bearer {SUPABASE_SERVICE_KEY}"
+        ),
     }
 
     if content_type:
@@ -154,35 +178,23 @@ def storage_headers(content_type=None):
 # SUPABASE REST HELPERS
 # ============================================================
 
-def supabase_get(
-    table,
-    params=None
-):
-
+def supabase_get(table, params=None):
     try:
-
         return requests.get(
             f"{SUPABASE_URL}/rest/v1/{table}",
             headers=supabase_headers(),
             params=params or {},
             timeout=30,
         )
-
     except Exception as exc:
-
         logger.exception(
             "Supabase GET error: %s",
             exc
         )
-
         raise
 
 
-def supabase_post(
-    table,
-    data
-):
-
+def supabase_post(table, data):
     headers = supabase_headers()
 
     headers["Prefer"] = (
@@ -190,34 +202,24 @@ def supabase_post(
     )
 
     try:
-
         return requests.post(
             f"{SUPABASE_URL}/rest/v1/{table}",
             headers=headers,
             json=data,
             timeout=30,
         )
-
     except Exception as exc:
-
         logger.exception(
             "Supabase POST error: %s",
             exc
         )
-
         raise
 
 
-def supabase_patch(
-    table,
-    filters,
-    data
-):
-
+def supabase_patch(table, filters, data):
     params = {}
 
     for key, value in filters.items():
-
         params[key] = f"eq.{value}"
 
     headers = supabase_headers()
@@ -227,7 +229,6 @@ def supabase_patch(
     )
 
     try:
-
         return requests.patch(
             f"{SUPABASE_URL}/rest/v1/{table}",
             headers=headers,
@@ -235,44 +236,32 @@ def supabase_patch(
             json=data,
             timeout=30,
         )
-
     except Exception as exc:
-
         logger.exception(
             "Supabase PATCH error: %s",
             exc
         )
-
         raise
 
 
-def supabase_delete(
-    table,
-    filters
-):
-
+def supabase_delete(table, filters):
     params = {}
 
     for key, value in filters.items():
-
         params[key] = f"eq.{value}"
 
     try:
-
         return requests.delete(
             f"{SUPABASE_URL}/rest/v1/{table}",
             headers=supabase_headers(),
             params=params,
             timeout=30,
         )
-
     except Exception as exc:
-
         logger.exception(
             "Supabase DELETE error: %s",
             exc
         )
-
         raise
 
 
@@ -280,18 +269,12 @@ def supabase_delete(
 # AUTHENTICATION
 # ============================================================
 
-def auth_signup(
-    email,
-    password
-):
-
+def auth_signup(email, password):
     return requests.post(
         f"{SUPABASE_URL}/auth/v1/signup",
         headers={
-            "apikey":
-                SUPABASE_SERVICE_KEY,
-            "Content-Type":
-                "application/json",
+            "apikey": SUPABASE_SERVICE_KEY,
+            "Content-Type": "application/json",
         },
         json={
             "email": email,
@@ -301,19 +284,13 @@ def auth_signup(
     )
 
 
-def auth_login(
-    email,
-    password
-):
-
+def auth_login(email, password):
     return requests.post(
         f"{SUPABASE_URL}/auth/v1/token"
         "?grant_type=password",
         headers={
-            "apikey":
-                SUPABASE_SERVICE_KEY,
-            "Content-Type":
-                "application/json",
+            "apikey": SUPABASE_SERVICE_KEY,
+            "Content-Type": "application/json",
         },
         json={
             "email": email,
@@ -323,17 +300,14 @@ def auth_login(
     )
 
 
-def auth_user(
-    access_token
-):
-
+def auth_user(access_token):
     return requests.get(
         f"{SUPABASE_URL}/auth/v1/user",
         headers={
-            "apikey":
-                SUPABASE_SERVICE_KEY,
-            "Authorization":
-                f"Bearer {access_token}",
+            "apikey": SUPABASE_SERVICE_KEY,
+            "Authorization": (
+                f"Bearer {access_token}"
+            ),
         },
         timeout=30,
     )
@@ -344,17 +318,14 @@ def auth_user(
 # ============================================================
 
 def current_user():
-
     return session.get("user")
 
 
 def is_logged_in():
-
     return current_user() is not None
 
 
 def is_admin():
-
     user = current_user()
 
     if not user:
@@ -362,8 +333,7 @@ def is_admin():
 
     return (
         str(user.get("id"))
-        ==
-        str(ADMIN_UUID)
+        == str(ADMIN_UUID)
     )
 
 
@@ -372,12 +342,9 @@ def is_admin():
 # ============================================================
 
 def login_required(function):
-
     @wraps(function)
     def wrapper(*args, **kwargs):
-
         if not is_logged_in():
-
             flash(
                 "Please log in first.",
                 "warning"
@@ -396,12 +363,9 @@ def login_required(function):
 
 
 def admin_required(function):
-
     @wraps(function)
     def wrapper(*args, **kwargs):
-
         if not is_logged_in():
-
             flash(
                 "Please log in first.",
                 "warning"
@@ -412,7 +376,6 @@ def admin_required(function):
             )
 
         if not is_admin():
-
             abort(403)
 
         return function(
@@ -427,29 +390,21 @@ def admin_required(function):
 # PROFILE
 # ============================================================
 
-def get_profile(
-    user_id
-):
-
+def get_profile(user_id):
     response = supabase_get(
         "profiles",
         {
-            "id":
-                f"eq.{user_id}",
-            "select":
-                "*",
-            "limit":
-                "1",
+            "id": f"eq.{user_id}",
+            "select": "*",
+            "limit": "1",
         }
     )
 
     if response.status_code != 200:
-
         logger.error(
             "Profile lookup failed: %s",
             response.text
         )
-
         return None
 
     rows = response.json()
@@ -461,41 +416,28 @@ def get_profile(
     )
 
 
-def ensure_profile(
-    user_id,
-    email
-):
-
+def ensure_profile(user_id, email):
     profile = get_profile(
         user_id
     )
 
     if profile:
-
         return profile
 
     role = (
         "admin"
         if str(user_id)
-        ==
-        str(ADMIN_UUID)
+        == str(ADMIN_UUID)
         else "student"
     )
 
     response = supabase_post(
         "profiles",
         {
-            "id":
-                user_id,
-
-            "name":
-                email.split("@")[0],
-
-            "email":
-                email,
-
-            "role":
-                role,
+            "id": user_id,
+            "name": email.split("@")[0],
+            "email": email,
+            "role": role,
         }
     )
 
@@ -503,12 +445,10 @@ def ensure_profile(
         200,
         201
     ):
-
         logger.error(
             "Profile creation failed: %s",
             response.text
         )
-
         return None
 
     rows = response.json()
@@ -525,38 +465,14 @@ def ensure_profile(
 # ============================================================
 
 DOCUMENT_TYPES = [
-    (
-        "academic",
-        "Academic"
-    ),
-    (
-        "assignment",
-        "Assignment"
-    ),
-    (
-        "notes",
-        "Notes"
-    ),
-    (
-        "past_paper",
-        "Past Paper"
-    ),
-    (
-        "report",
-        "Report"
-    ),
-    (
-        "answer",
-        "Answer"
-    ),
-    (
-        "announcement",
-        "Announcement"
-    ),
-    (
-        "other",
-        "Other"
-    ),
+    ("academic", "Academic"),
+    ("assignment", "Assignment"),
+    ("notes", "Notes"),
+    ("past_paper", "Past Paper"),
+    ("report", "Report"),
+    ("answer", "Answer"),
+    ("announcement", "Announcement"),
+    ("other", "Other"),
 ]
 
 
@@ -564,31 +480,21 @@ DOCUMENT_TYPES = [
 # DOCUMENTS
 # ============================================================
 
-def get_documents(
-    search=""
-):
-
+def get_documents(search=""):
     response = supabase_get(
         "documents",
         {
-            "select":
-                "*",
-
-            "is_active":
-                "eq.true",
-
-            "order":
-                "created_at.desc",
+            "select": "*",
+            "is_active": "eq.true",
+            "order": "created_at.desc",
         }
     )
 
     if response.status_code != 200:
-
         logger.error(
             "Documents error: %s",
             response.text
         )
-
         return []
 
     documents = response.json()
@@ -600,13 +506,11 @@ def get_documents(
     )
 
     if not search:
-
         return documents
 
     results = []
 
     for document in documents:
-
         text = " ".join([
             str(
                 document.get(
@@ -614,35 +518,30 @@ def get_documents(
                     ""
                 )
             ),
-
             str(
                 document.get(
                     "description",
                     ""
                 )
             ),
-
             str(
                 document.get(
                     "subject",
                     ""
                 )
             ),
-
             str(
                 document.get(
                     "course",
                     ""
                 )
             ),
-
             str(
                 document.get(
                     "class_level",
                     ""
                 )
             ),
-
             str(
                 document.get(
                     "document_type",
@@ -652,7 +551,6 @@ def get_documents(
         ]).lower()
 
         if search in text:
-
             results.append(
                 document
             )
@@ -660,26 +558,17 @@ def get_documents(
     return results
 
 
-def get_document(
-    document_id
-):
-
+def get_document(document_id):
     response = supabase_get(
         "documents",
         {
-            "id":
-                f"eq.{document_id}",
-
-            "select":
-                "*",
-
-            "limit":
-                "1",
+            "id": f"eq.{document_id}",
+            "select": "*",
+            "limit": "1",
         }
     )
 
     if response.status_code != 200:
-
         return None
 
     rows = response.json()
@@ -700,16 +589,13 @@ def create_document_record(
     user_id,
     action
 ):
-
     try:
-
         ip_address = request.headers.get(
             "X-Forwarded-For",
             request.remote_addr
         )
 
         if ip_address:
-
             ip_address = (
                 ip_address
                 .split(",")[0]
@@ -724,30 +610,19 @@ def create_document_record(
         return supabase_post(
             "document_records",
             {
-                "document_id":
-                    document_id,
-
-                "user_id":
-                    user_id,
-
-                "action":
-                    action,
-
-                "ip_address":
-                    ip_address,
-
-                "user_agent":
-                    user_agent,
+                "document_id": document_id,
+                "user_id": user_id,
+                "action": action,
+                "ip_address": ip_address,
+                "user_agent": user_agent,
             }
         )
 
     except Exception as exc:
-
         logger.warning(
             "Activity record failed: %s",
             exc
         )
-
         return None
 
 
@@ -755,16 +630,12 @@ def create_document_record(
 # STORAGE
 # ============================================================
 
-def upload_to_storage(
-    file_storage
-):
-
+def upload_to_storage(file_storage):
     original_name = (
         file_storage.filename
     )
 
     if not original_name:
-
         raise ValueError(
             "No file selected."
         )
@@ -774,7 +645,6 @@ def upload_to_storage(
     )[1].lower()
 
     if extension not in ALLOWED_EXTENSIONS:
-
         raise ValueError(
             "Unsupported file type."
         )
@@ -782,13 +652,11 @@ def upload_to_storage(
     content = file_storage.read()
 
     if not content:
-
         raise ValueError(
             "The selected file is empty."
         )
 
     if len(content) > MAX_FILE_SIZE:
-
         raise ValueError(
             "File is larger than 10 MB."
         )
@@ -828,31 +696,127 @@ def upload_to_storage(
         200,
         201
     ):
-
         raise RuntimeError(
             "Storage upload failed: "
             + response.text
         )
 
     return {
-        "file_path":
-            file_path,
-
-        "file_name":
-            original_name,
-
-        "file_size":
-            len(content),
-
-        "mime_type":
-            content_type,
+        "file_path": file_path,
+        "file_name": original_name,
+        "file_size": len(content),
+        "mime_type": content_type,
     }
 
 
-def download_from_storage(
-    file_path
-):
+# ============================================================
+# ANSWER FILE STORAGE
+# ============================================================
 
+def upload_answer_file(file_storage):
+    """
+    Upload an administrator's answered
+    assignment PDF/Word file.
+
+    Supported:
+    - PDF
+    - DOC
+    - DOCX
+    """
+
+    original_name = (
+        file_storage.filename
+    )
+
+    if not original_name:
+        raise ValueError(
+            "No answer file selected."
+        )
+
+    extension = os.path.splitext(
+        original_name
+    )[1].lower()
+
+    if extension not in ANSWER_ALLOWED_EXTENSIONS:
+        raise ValueError(
+            "Answered file must be PDF, DOC or DOCX."
+        )
+
+    content = file_storage.read()
+
+    if not content:
+        raise ValueError(
+            "The answered file is empty."
+        )
+
+    if len(content) > ANSWER_MAX_FILE_SIZE:
+        raise ValueError(
+            "Answered file is larger than 10 MB."
+        )
+
+    safe_name = (
+        uuid.uuid4().hex
+        + extension
+    )
+
+    file_path = (
+        "assignment-answers/"
+        + safe_name
+    )
+
+    content_type = (
+        file_storage.mimetype
+        or "application/octet-stream"
+    )
+
+    # More reliable MIME values.
+    if extension == ".pdf":
+        content_type = "application/pdf"
+
+    elif extension == ".doc":
+        content_type = (
+            "application/msword"
+        )
+
+    elif extension == ".docx":
+        content_type = (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+
+    url = (
+        f"{SUPABASE_URL}"
+        f"/storage/v1/object/"
+        f"{STORAGE_BUCKET}/"
+        f"{file_path}"
+    )
+
+    response = requests.post(
+        url,
+        headers=storage_headers(
+            content_type
+        ),
+        data=content,
+        timeout=120,
+    )
+
+    if response.status_code not in (
+        200,
+        201
+    ):
+        raise RuntimeError(
+            "Answered file upload failed: "
+            + response.text
+        )
+
+    return {
+        "file_path": file_path,
+        "file_name": original_name,
+        "file_size": len(content),
+        "mime_type": content_type,
+    }
+
+
+def download_from_storage(file_path):
     url = (
         f"{SUPABASE_URL}"
         f"/storage/v1/object/"
@@ -867,10 +831,7 @@ def download_from_storage(
     )
 
 
-def delete_from_storage(
-    file_path
-):
-
+def delete_from_storage(file_path):
     url = (
         f"{SUPABASE_URL}"
         f"/storage/v1/object/"
@@ -886,6 +847,128 @@ def delete_from_storage(
 
 
 # ============================================================
+# ASSIGNMENT ANSWER DATA
+# ============================================================
+
+ANSWER_PREFIX = "KOJA_ANSWER_V1:"
+
+
+def make_assignment_answer_data(
+    answer_text="",
+    answer_file=None
+):
+    """
+    Stores answer information inside the
+    existing assignments.admin_comment field.
+
+    This avoids requiring a new database table.
+    """
+
+    payload = {
+        "version": 1,
+        "answer_text": answer_text or "",
+        "answer_file": answer_file,
+    }
+
+    return (
+        ANSWER_PREFIX
+        + json.dumps(
+            payload,
+            ensure_ascii=False
+        )
+    )
+
+
+def parse_assignment_answer(
+    assignment
+):
+    """
+    Supports both:
+    - New KOJA structured answers
+    - Old plain-text admin_comment values
+    """
+
+    raw = assignment.get(
+        "admin_comment"
+    )
+
+    result = {
+        "answer_text": "",
+        "answer_file": None,
+    }
+
+    if not raw:
+        return result
+
+    raw = str(raw)
+
+    if raw.startswith(
+        ANSWER_PREFIX
+    ):
+        try:
+            payload = json.loads(
+                raw[
+                    len(ANSWER_PREFIX):
+                ]
+            )
+
+            result["answer_text"] = (
+                payload.get(
+                    "answer_text",
+                    ""
+                )
+                or ""
+            )
+
+            result["answer_file"] = (
+                payload.get(
+                    "answer_file"
+                )
+            )
+
+            return result
+
+        except Exception as exc:
+            logger.warning(
+                "Could not parse assignment answer: %s",
+                exc
+            )
+
+    # Backward compatibility.
+    result["answer_text"] = raw
+
+    return result
+
+
+def enrich_assignment(
+    assignment
+):
+    answer = parse_assignment_answer(
+        assignment
+    )
+
+    assignment["answer_text"] = (
+        answer["answer_text"]
+    )
+
+    assignment["answer_file"] = (
+        answer["answer_file"]
+    )
+
+    if answer["answer_file"]:
+        assignment["answer_file_name"] = (
+            answer["answer_file"].get(
+                "file_name"
+            )
+        )
+
+    else:
+        assignment["answer_file_name"] = None
+
+    return assignment
+
+
+# ============================================================
 # DOCUMENT COUNTERS
 # ============================================================
 
@@ -893,12 +976,10 @@ def increment_document_counter(
     document_id,
     field
 ):
-
     if field not in (
         "view_count",
         "download_count",
     ):
-
         return
 
     document = get_document(
@@ -906,7 +987,6 @@ def increment_document_counter(
     )
 
     if not document:
-
         return
 
     current = int(
@@ -920,12 +1000,10 @@ def increment_document_counter(
     supabase_patch(
         "documents",
         {
-            "id":
-                document_id
+            "id": document_id
         },
         {
-            field:
-                current + 1
+            field: current + 1
         }
     )
 
@@ -935,50 +1013,37 @@ def increment_document_counter(
 # ============================================================
 
 def get_questions():
-
     response = supabase_get(
         "questions",
         {
-            "select":
-                "*",
-
-            "order":
-                "created_at.desc",
+            "select": "*",
+            "order": "created_at.desc",
         }
     )
 
     if response.status_code != 200:
-
         logger.error(
             "Questions error: %s",
             response.text
         )
-
         return []
 
     questions = response.json()
 
     for question in questions:
-
         answer_response = supabase_get(
             "answers",
             {
                 "question_id":
                     f"eq.{question['id']}",
-
-                "select":
-                    "*",
-
+                "select": "*",
                 "order":
                     "created_at.desc",
-
-                "limit":
-                    "1",
+                "limit": "1",
             }
         )
 
         if answer_response.status_code == 200:
-
             answers = (
                 answer_response.json()
             )
@@ -990,38 +1055,28 @@ def get_questions():
             )
 
         else:
-
             question["answer"] = None
 
     return questions
 
 
-def get_question(
-    question_id
-):
-
+def get_question(question_id):
     response = supabase_get(
         "questions",
         {
             "id":
                 f"eq.{question_id}",
-
-            "select":
-                "*",
-
-            "limit":
-                "1",
+            "select": "*",
+            "limit": "1",
         }
     )
 
     if response.status_code != 200:
-
         return None
 
     rows = response.json()
 
     if not rows:
-
         return None
 
     question = rows[0]
@@ -1031,20 +1086,14 @@ def get_question(
         {
             "question_id":
                 f"eq.{question_id}",
-
-            "select":
-                "*",
-
+            "select": "*",
             "order":
                 "created_at.desc",
-
-            "limit":
-                "1",
+            "limit": "1",
         }
     )
 
     if answer_response.status_code == 200:
-
         answers = (
             answer_response.json()
         )
@@ -1056,7 +1105,6 @@ def get_question(
         )
 
     else:
-
         question["answer"] = None
 
     return question
@@ -1067,59 +1115,59 @@ def get_question(
 # ============================================================
 
 def get_assignments():
-
     response = supabase_get(
         "assignments",
         {
-            "select":
-                "*",
-
-            "order":
-                "created_at.desc",
+            "select": "*",
+            "order": "created_at.desc",
         }
     )
 
     if response.status_code != 200:
-
         logger.error(
             "Assignments error: %s",
             response.text
         )
-
         return []
 
-    return response.json()
+    assignments = response.json()
+
+    for assignment in assignments:
+        enrich_assignment(
+            assignment
+        )
+
+    return assignments
 
 
 def get_assignment(
     assignment_id
 ):
-
     response = supabase_get(
         "assignments",
         {
             "id":
                 f"eq.{assignment_id}",
-
-            "select":
-                "*",
-
-            "limit":
-                "1",
+            "select": "*",
+            "limit": "1",
         }
     )
 
     if response.status_code != 200:
-
         return None
 
     rows = response.json()
 
-    return (
-        rows[0]
-        if rows
-        else None
+    if not rows:
+        return None
+
+    assignment = rows[0]
+
+    enrich_assignment(
+        assignment
     )
+
+    return assignment
 
 
 # ============================================================
@@ -1127,447 +1175,321 @@ def get_assignment(
 # ============================================================
 
 BASE_TEMPLATE = """
-
-<!doctype html>
-
-<html>
-
+<!DOCTYPE html>
+<html lang="en">
 <head>
-
-<meta charset="utf-8">
-
+<meta charset="UTF-8">
 <meta name="viewport"
-content="width=device-width,initial-scale=1">
+      content="width=device-width, initial-scale=1.0">
 
-<title>
-{{ title }} | KOJA AFRICA
-</title>
+<title>{{ title }} | KOJA AFRICA</title>
 
 <style>
 
-*{
-    box-sizing:border-box;
+* {
+    box-sizing: border-box;
 }
 
-body{
-    margin:0;
-    font-family:
-    Arial,
-    Helvetica,
-    sans-serif;
-
-    background:#f3f6fb;
-
-    color:#172033;
+body {
+    margin: 0;
+    font-family: Arial, Helvetica, sans-serif;
+    background: #f4f7fb;
+    color: #172033;
 }
 
-nav{
-    background:#0b3366;
-
-    color:white;
-
-    padding:15px 5%;
-
-    display:flex;
-
-    align-items:center;
-
-    justify-content:space-between;
-
-    gap:18px;
-
-    flex-wrap:wrap;
+nav {
+    background: #0b3366;
+    padding: 14px 20px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
 }
 
-.logo{
-    font-size:34px;
-
-    font-weight:900;
-
-    letter-spacing:-3px;
+.logo {
+    color: white;
+    font-size: 25px;
+    font-weight: bold;
+    margin-right: 15px;
 }
 
-.logo span:nth-child(1){
-    color:#1687ff;
+nav a {
+    color: white;
+    text-decoration: none;
+    padding: 9px 12px;
+    border-radius: 7px;
 }
 
-.logo span:nth-child(2){
-    color:#20c777;
+nav a:hover {
+    background: rgba(255,255,255,.15);
 }
 
-.logo span:nth-child(3){
-    color:#e73545;
+.container {
+    max-width: 1150px;
+    margin: auto;
+    padding: 20px;
 }
 
-.logo span:nth-child(4){
-    color:#5b7fce;
-}
-
-.navlinks{
-    display:flex;
-
-    gap:8px;
-
-    flex-wrap:wrap;
-
-    align-items:center;
-}
-
-.navlinks a{
-    color:white;
-
-    text-decoration:none;
-
-    font-weight:700;
-
-    padding:8px 10px;
-
-    border-radius:8px;
-}
-
-.navlinks a:hover{
-    background:
-    rgba(255,255,255,.12);
-}
-
-.container{
-    width:92%;
-
-    max-width:1200px;
-
-    margin:28px auto;
-
-    min-height:65vh;
-}
-
-.hero{
-    background:#0b3366;
-
-    color:white;
-
-    padding:42px;
-
-    border-radius:22px;
-
-    margin-bottom:24px;
-}
-
-.hero h1{
-    font-size:38px;
-
-    margin-top:0;
-}
-
-.card{
-    background:white;
-
-    padding:24px;
-
-    border-radius:20px;
-
-    margin-bottom:22px;
-
-    box-shadow:
-    0 5px 20px
-    rgba(0,0,0,.07);
-}
-
-.grid{
-    display:grid;
-
-    grid-template-columns:
-    repeat(
-        auto-fit,
-        minmax(260px,1fr)
+.hero {
+    background: linear-gradient(
+        135deg,
+        #0b3366,
+        #1464a5
     );
-
-    gap:20px;
+    color: white;
+    border-radius: 18px;
+    padding: 35px 25px;
+    margin-bottom: 25px;
 }
 
-.document{
-    background:white;
+.hero h1 {
+    margin-top: 0;
+    font-size: 34px;
+}
 
-    padding:22px;
+.grid {
+    display: grid;
+    grid-template-columns:
+        repeat(auto-fit, minmax(270px, 1fr));
+    gap: 18px;
+}
 
-    border-radius:18px;
-
+.card,
+.document {
+    background: white;
+    border-radius: 14px;
+    padding: 20px;
+    margin-bottom: 18px;
     box-shadow:
-    0 4px 15px
-    rgba(0,0,0,.06);
-}
-
-.document h3{
-    margin-top:8px;
-}
-
-.badge{
-    display:inline-block;
-
-    padding:6px 10px;
-
-    border-radius:20px;
-
-    background:#e8f1ff;
-
-    color:#0b4f99;
-
-    font-size:12px;
-
-    font-weight:bold;
-}
-
-.status{
-    display:inline-block;
-
-    padding:6px 10px;
-
-    border-radius:20px;
-
-    background:#eaf7ef;
-
-    color:#167044;
-
-    font-size:12px;
-
-    font-weight:bold;
-}
-
-.status.pending{
-    background:#fff3d6;
-
-    color:#855d00;
-}
-
-.status.completed{
-    background:#e8f1ff;
-
-    color:#0b4f99;
-}
-
-.status.rejected{
-    background:#ffe8e8;
-
-    color:#a51f1f;
+        0 4px 15px rgba(0,0,0,.07);
 }
 
 input,
 textarea,
-select{
-    width:100%;
-
-    padding:13px;
-
-    border:
-    1px solid #d4dce8;
-
-    border-radius:10px;
-
-    margin-top:7px;
-
-    margin-bottom:16px;
-
-    font-size:16px;
-
-    background:white;
+select {
+    width: 100%;
+    padding: 12px;
+    margin-top: 6px;
+    margin-bottom: 15px;
+    border: 1px solid #ccd5e0;
+    border-radius: 8px;
+    font-size: 15px;
 }
 
-textarea{
-    min-height:130px;
-
-    resize:vertical;
+textarea {
+    min-height: 150px;
+    resize: vertical;
 }
 
 button,
-.btn{
-    display:inline-block;
-
-    border:0;
-
-    border-radius:10px;
-
-    padding:12px 17px;
-
-    background:#0b3366;
-
-    color:white;
-
-    text-decoration:none;
-
-    font-weight:bold;
-
-    cursor:pointer;
+.btn {
+    display: inline-block;
+    border: none;
+    background: #0b3366;
+    color: white;
+    padding: 10px 15px;
+    border-radius: 8px;
+    text-decoration: none;
+    cursor: pointer;
+    font-size: 14px;
 }
 
 button:hover,
-.btn:hover{
-    opacity:.9;
+.btn:hover {
+    opacity: .9;
 }
 
-.btn.green{
-    background:#168a55;
+.btn.green {
+    background: #16834a;
 }
 
-.btn.red{
-    background:#c62828;
+.btn.orange {
+    background: #d97706;
 }
 
-.btn.gray{
-    background:#68758a;
+.btn.gray {
+    background: #596579;
 }
 
-.btn.orange{
-    background:#d97706;
+.btn.red {
+    background: #c62828;
 }
 
-.actions{
-    display:flex;
-
-    gap:8px;
-
-    flex-wrap:wrap;
-
-    align-items:center;
+.actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
 }
 
-.alert{
-    padding:15px;
-
-    border-radius:12px;
-
-    margin-bottom:18px;
-
-    background:#fff1d6;
-
-    color:#704800;
+label {
+    display: block;
+    font-weight: bold;
+    margin-top: 8px;
 }
 
-.answer{
-    background:#eefaf3;
-
-    border-left:
-    5px solid #168a55;
-
-    padding:18px;
-
-    border-radius:10px;
-
-    margin-top:15px;
+.badge {
+    display: inline-block;
+    background: #e7f0fb;
+    color: #0b3366;
+    padding: 5px 9px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: bold;
 }
 
-.question{
-    background:#f8faff;
-
-    padding:18px;
-
-    border-radius:12px;
-
-    border-left:
-    5px solid #0b3366;
+.status {
+    display: inline-block;
+    padding: 5px 10px;
+    border-radius: 20px;
+    background: #eef1f4;
+    margin-left: 5px;
+    font-size: 12px;
 }
 
-.assignment-response{
-    background:#eefaf3;
-
-    border-left:
-    5px solid #168a55;
-
-    padding:18px;
-
-    border-radius:12px;
-
-    margin-top:18px;
+.status.completed {
+    background: #d9f5e5;
+    color: #116b3d;
 }
 
-.stat{
-    font-size:30px;
-
-    font-weight:900;
+.status.pending {
+    background: #fff0c9;
+    color: #805600;
 }
 
-.small{
-    color:#68758a;
-
-    font-size:14px;
+.status.rejected {
+    background: #ffdede;
+    color: #a10000;
 }
 
-.muted{
-    color:#68758a;
+.question {
+    background: #f4f7fb;
+    padding: 15px;
+    border-left: 4px solid #0b3366;
+    border-radius: 8px;
 }
 
-.table-wrap{
-    overflow-x:auto;
+.answer {
+    background: #eaf7ef;
+    padding: 15px;
+    border-left: 4px solid #16834a;
+    border-radius: 8px;
+    margin-top: 12px;
 }
 
-table{
-    width:100%;
+.assignment-response {
+    background: #eaf7ef;
+    padding: 18px;
+    border-left: 5px solid #16834a;
+    border-radius: 10px;
+    margin-top: 15px;
+}
 
-    border-collapse:collapse;
+.answer-file {
+    background: #eef5ff;
+    padding: 15px;
+    border-left: 5px solid #0b3366;
+    border-radius: 10px;
+    margin-top: 15px;
+}
+
+.file-box {
+    background: #f5f5f5;
+    padding: 15px;
+    border-radius: 8px;
+    margin-top: 12px;
+}
+
+.small {
+    font-size: 12px;
+    color: #687386;
+}
+
+.muted {
+    color: #687386;
+}
+
+.stat {
+    font-size: 32px;
+    font-weight: bold;
+    color: #0b3366;
+}
+
+.alert {
+    padding: 12px 15px;
+    border-radius: 8px;
+    margin-bottom: 15px;
+}
+
+.alert.success {
+    background: #d9f5e5;
+    color: #116b3d;
+}
+
+.alert.warning {
+    background: #fff0c9;
+    color: #805600;
+}
+
+.empty {
+    text-align: center;
+    padding: 35px;
+}
+
+.table-wrap {
+    overflow-x: auto;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
 }
 
 th,
-td{
-    padding:12px;
-
-    border-bottom:
-    1px solid #e3e8ef;
-
-    text-align:left;
-
-    vertical-align:top;
+td {
+    padding: 10px;
+    border-bottom: 1px solid #ddd;
+    text-align: left;
+    vertical-align: top;
 }
 
-th{
-    background:#f7f9fc;
+th {
+    background: #eef3f8;
 }
 
-footer{
-    text-align:center;
-
-    padding:35px;
-
-    color:#68758a;
+footer {
+    margin-top: 40px;
+    padding: 25px;
+    text-align: center;
+    background: #0b3366;
+    color: white;
 }
 
-.empty{
-    text-align:center;
+@media(max-width: 650px) {
 
-    padding:30px;
-
-    color:#68758a;
-}
-
-.file-box{
-    background:#f7f9fc;
-
-    padding:14px;
-
-    border-radius:10px;
-
-    margin:15px 0;
-}
-
-@media(max-width:600px){
-
-    .hero{
-        padding:28px;
+    .container {
+        padding: 12px;
     }
 
-    .hero h1{
-        font-size:29px;
+    nav {
+        padding: 10px;
     }
 
-    .navlinks{
-        width:100%;
+    .logo {
+        width: 100%;
+        margin-bottom: 5px;
     }
 
-    .navlinks a{
-        padding:7px;
+    .hero h1 {
+        font-size: 27px;
     }
 
+    table {
+        min-width: 700px;
+    }
 }
 
 </style>
-
 </head>
 
 <body>
@@ -1575,10 +1497,8 @@ footer{
 <nav>
 
 <div class="logo">
-<span>k</span><span>o</span><span>j</span><span>a</span>
+KOJA AFRICA
 </div>
-
-<div class="navlinks">
 
 <a href="{{ url_for('home') }}">
 Home
@@ -1626,20 +1546,18 @@ Create Account
 
 {% endif %}
 
-</div>
-
 </nav>
+
 
 <div class="container">
 
-{% with messages =
-get_flashed_messages(
-with_categories=true
+{% with messages = get_flashed_messages(
+    with_categories=true
 ) %}
 
-{% for category,message in messages %}
+{% for category, message in messages %}
 
-<div class="alert">
+<div class="alert {{ category }}">
 {{ message }}
 </div>
 
@@ -1651,9 +1569,10 @@ with_categories=true
 
 </div>
 
+
 <footer>
 
-KOJA AFRICA
+<strong>KOJA AFRICA</strong>
 
 <br>
 
@@ -1661,12 +1580,13 @@ Knowledge • Questions • Answers
 
 <br>
 
+<span class="small">
 Academic Documents & Learning Resources
+</span>
 
 </footer>
 
 </body>
-
 </html>
 """
 
@@ -1676,18 +1596,13 @@ def render_page(
     content,
     **context
 ):
-
     return render_template_string(
         BASE_TEMPLATE,
-
         title=title,
-
-        content=
-            render_template_string(
-                content,
-                **context
-            ),
-
+        content=render_template_string(
+            content,
+            **context
+        ),
         **context
     )
 
@@ -1703,106 +1618,110 @@ def home():
         "Home",
         """
 
-        <div class="hero">
+<div class="hero">
 
-        <h1>
-        KOJA AFRICA
-        </h1>
+<h1>
+KOJA AFRICA
+</h1>
 
-        <p>
-        Knowledge • Questions • Answers
-        </p>
+<p>
+Knowledge • Questions • Answers
+</p>
 
-        <p>
-        Ask academic questions, submit assignments,
-        access notes, past papers and learning resources.
-        </p>
+<p>
+Ask academic questions, submit assignments,
+access notes, past papers and learning resources.
+</p>
 
-        {% if not session.get('user') %}
+{% if not session.get('user') %}
 
-        <div class="actions">
+<div class="actions">
 
-        <a class="btn"
-        href="{{ url_for('login') }}">
-        Login
-        </a>
+<a class="btn"
+   href="{{ url_for('login') }}">
+Login
+</a>
 
-        <a class="btn green"
-        href="{{ url_for('register') }}">
-        Create Account
-        </a>
+<a class="btn green"
+   href="{{ url_for('register') }}">
+Create Account
+</a>
 
-        </div>
+</div>
 
-        {% else %}
+{% else %}
 
-        <div class="actions">
+<div class="actions">
 
-        <a class="btn"
-        href="{{ url_for('questions') }}">
-        Ask a Question
-        </a>
+<a class="btn"
+   href="{{ url_for('questions') }}">
+Ask a Question
+</a>
 
-        <a class="btn green"
-        href="{{ url_for('assignments') }}">
-        Assignments
-        </a>
+<a class="btn green"
+   href="{{ url_for('assignments') }}">
+Assignments
+</a>
 
-        <a class="btn orange"
-        href="{{ url_for('documents') }}">
-        Documents
-        </a>
+<a class="btn orange"
+   href="{{ url_for('documents') }}">
+Documents
+</a>
 
-        </div>
+</div>
 
-        {% endif %}
+{% endif %}
 
-        </div>
+</div>
 
-        <div class="grid">
 
-        <div class="card">
+<div class="grid">
 
-        <h2>
-        Academic Questions
-        </h2>
+<div class="card">
 
-        <p>
-        Students can submit academic questions
-        and receive administrator answers.
-        </p>
+<h2>
+Academic Questions
+</h2>
 
-        </div>
+<p>
+Students can submit academic questions
+and receive administrator answers.
+</p>
 
-        <div class="card">
+</div>
 
-        <h2>
-        Assignments
-        </h2>
 
-        <p>
-        Upload assignments and track administrator
-        responses.
-        </p>
+<div class="card">
 
-        </div>
+<h2>
+Assignments
+</h2>
 
-        <div class="card">
+<p>
+Upload assignments and receive administrator
+answers either directly in KOJA or as
+answered PDF/Word files.
+</p>
 
-        <h2>
-        Document Library
-        </h2>
+</div>
 
-        <p>
-        Access notes, past papers, academic
-        documents and learning resources.
-        </p>
 
-        </div>
+<div class="card">
 
-        </div>
+<h2>
+Document Library
+</h2>
 
-        """
+<p>
+Access notes, past papers, academic
+documents and learning resources.
+</p>
+
+</div>
+
+</div>
+
+"""
     )
 
 
@@ -1928,33 +1847,23 @@ def register():
                 url_for("login")
             )
 
-        user_id = user.get(
-            "id"
-        )
+        user_id = user.get("id")
 
         profile_response = supabase_post(
             "profiles",
             {
-                "id":
-                    user_id,
-
-                "name":
-                    (
-                        name
-                        or email.split("@")[0]
-                    ),
-
-                "email":
-                    email,
-
-                "role":
-                    (
-                        "admin"
-                        if str(user_id)
-                        ==
-                        str(ADMIN_UUID)
-                        else "student"
-                    ),
+                "id": user_id,
+                "name": (
+                    name
+                    or email.split("@")[0]
+                ),
+                "email": email,
+                "role": (
+                    "admin"
+                    if str(user_id)
+                    == str(ADMIN_UUID)
+                    else "student"
+                ),
             }
         )
 
@@ -1981,53 +1890,56 @@ def register():
         "Create Account",
         """
 
-        <div class="card">
+<div class="card">
 
-        <h1>
-        Create Student Account
-        </h1>
+<h1>
+Create Student Account
+</h1>
 
-        <form method="post">
+<form method="post">
 
-        <label>
-        Name
-        </label>
+<label>
+Name
+</label>
 
-        <input
-        name="name"
-        required
-        placeholder="Full name">
+<input
+name="name"
+required
+placeholder="Full name">
 
-        <label>
-        Email
-        </label>
 
-        <input
-        type="email"
-        name="email"
-        required
-        placeholder="Email">
+<label>
+Email
+</label>
 
-        <label>
-        Password
-        </label>
+<input
+type="email"
+name="email"
+required
+placeholder="Email">
 
-        <input
-        type="password"
-        name="password"
-        minlength="6"
-        required
-        placeholder="Minimum 6 characters">
 
-        <button>
-        Create Account
-        </button>
+<label>
+Password
+</label>
 
-        </form>
+<input
+type="password"
+name="password"
+minlength="6"
+required
+placeholder="Minimum 6 characters">
 
-        </div>
 
-        """
+<button>
+Create Account
+</button>
+
+</form>
+
+</div>
+
+"""
     )
 
 
@@ -2149,9 +2061,7 @@ def login():
                 url_for("login")
             )
 
-        user_id = user.get(
-            "id"
-        )
+        user_id = user.get("id")
 
         user_email = user.get(
             "email",
@@ -2170,27 +2080,19 @@ def login():
         )
 
         session["user"] = {
-            "id":
-                user_id,
-
-            "email":
-                user_email,
-
-            "name":
-                (
-                    profile.get(
-                        "name"
-                    )
-                    if profile
-                    else
-                    user_email.split("@")[0]
-                ),
+            "id": user_id,
+            "email": user_email,
+            "name": (
+                profile.get("name")
+                if profile
+                else
+                user_email.split("@")[0]
+            ),
         }
 
         session["is_admin"] = (
             str(user_id)
-            ==
-            str(ADMIN_UUID)
+            == str(ADMIN_UUID)
         )
 
         flash(
@@ -2212,43 +2114,45 @@ def login():
         "Login",
         """
 
-        <div class="card">
+<div class="card">
 
-        <h1>
-        Login
-        </h1>
+<h1>
+Login
+</h1>
 
-        <form method="post">
+<form method="post">
 
-        <label>
-        Email
-        </label>
+<label>
+Email
+</label>
 
-        <input
-        type="email"
-        name="email"
-        required
-        placeholder="Email">
+<input
+type="email"
+name="email"
+required
+placeholder="Email">
 
-        <label>
-        Password
-        </label>
 
-        <input
-        type="password"
-        name="password"
-        required
-        placeholder="Password">
+<label>
+Password
+</label>
 
-        <button>
-        Login
-        </button>
+<input
+type="password"
+name="password"
+required
+placeholder="Password">
 
-        </form>
 
-        </div>
+<button>
+Login
+</button>
 
-        """
+</form>
+
+</div>
+
+"""
     )
 
 
@@ -2292,116 +2196,117 @@ def documents():
         "Documents",
         """
 
-        <div class="card">
+<div class="card">
 
-        <h1>
-        Document Library
-        </h1>
+<h1>
+Document Library
+</h1>
 
-        <form method="get">
+<form method="get">
 
-        <input
-        name="search"
-        value="{{ search }}"
-        placeholder="Search documents...">
+<input
+name="search"
+value="{{ search }}"
+placeholder="Search documents...">
 
-        <button>
-        Search
-        </button>
+<button>
+Search
+</button>
 
-        </form>
+</form>
 
-        </div>
+</div>
 
-        <div class="grid">
 
-        {% for doc in docs %}
+<div class="grid">
 
-        <div class="document">
+{% for doc in docs %}
 
-        <span class="badge">
-        {{ doc.document_type
-        |replace('_',' ')
-        |title }}
-        </span>
+<div class="document">
 
-        <h3>
-        {{ doc.title }}
-        </h3>
+<span class="badge">
+{{ doc.document_type
+|replace('_',' ')
+|title }}
+</span>
 
-        <p>
-        {{ doc.description or
-        'No description available.' }}
-        </p>
+<h3>
+{{ doc.title }}
+</h3>
 
-        {% if doc.subject %}
+<p>
+{{ doc.description or
+'No description available.' }}
+</p>
 
-        <p>
-        <b>Subject:</b>
-        {{ doc.subject }}
-        </p>
+{% if doc.subject %}
 
-        {% endif %}
+<p>
+<b>Subject:</b>
+{{ doc.subject }}
+</p>
 
-        {% if doc.course %}
+{% endif %}
 
-        <p>
-        <b>Course:</b>
-        {{ doc.course }}
-        </p>
+{% if doc.course %}
 
-        {% endif %}
+<p>
+<b>Course:</b>
+{{ doc.course }}
+</p>
 
-        {% if doc.class_level %}
+{% endif %}
 
-        <p>
-        <b>Class:</b>
-        {{ doc.class_level }}
-        </p>
+{% if doc.class_level %}
 
-        {% endif %}
+<p>
+<b>Class:</b>
+{{ doc.class_level }}
+</p>
 
-        <p class="small">
-        {{ doc.file_name }}
-        </p>
+{% endif %}
 
-        <div class="actions">
+<p class="small">
+{{ doc.file_name }}
+</p>
 
-        <a class="btn"
-        href="{{ url_for(
-        'view_document',
-        document_id=doc.id
-        ) }}">
-        View
-        </a>
+<div class="actions">
 
-        <a class="btn green"
-        href="{{ url_for(
-        'download_document',
-        document_id=doc.id
-        ) }}">
-        Download
-        </a>
+<a class="btn"
+href="{{ url_for(
+'view_document',
+document_id=doc.id
+) }}">
+View
+</a>
 
-        </div>
+<a class="btn green"
+href="{{ url_for(
+'download_document',
+document_id=doc.id
+) }}">
+Download
+</a>
 
-        </div>
+</div>
 
-        {% else %}
+</div>
 
-        <div class="card empty">
+{% else %}
 
-        <h2>
-        No documents found.
-        </h2>
+<div class="card empty">
 
-        </div>
+<h2>
+No documents found.
+</h2>
 
-        {% endfor %}
+</div>
 
-        </div>
+{% endfor %}
 
-        """,
+</div>
+
+""",
         docs=docs,
         search=search
     )
@@ -2424,7 +2329,6 @@ def view_document(
     )
 
     if not document:
-
         abort(404)
 
     response = download_from_storage(
@@ -2457,7 +2361,6 @@ def view_document(
         io.BytesIO(
             response.content
         ),
-
         mimetype=(
             document.get(
                 "mime_type"
@@ -2465,7 +2368,6 @@ def view_document(
             or
             "application/octet-stream"
         ),
-
         download_name=(
             document.get(
                 "file_name"
@@ -2473,7 +2375,6 @@ def view_document(
             or
             "document"
         ),
-
         as_attachment=False
     )
 
@@ -2495,7 +2396,6 @@ def download_document(
     )
 
     if not document:
-
         abort(404)
 
     response = download_from_storage(
@@ -2528,7 +2428,6 @@ def download_document(
         io.BytesIO(
             response.content
         ),
-
         mimetype=(
             document.get(
                 "mime_type"
@@ -2536,7 +2435,6 @@ def download_document(
             or
             "application/octet-stream"
         ),
-
         download_name=(
             document.get(
                 "file_name"
@@ -2544,7 +2442,6 @@ def download_document(
             or
             "document"
         ),
-
         as_attachment=True
     )
 
@@ -2594,23 +2491,12 @@ def questions():
         response = supabase_post(
             "questions",
             {
-                "user_id":
-                    user["id"],
-
-                "name":
-                    user.get("name"),
-
-                "email":
-                    user.get("email"),
-
-                "subject":
-                    subject,
-
-                "question":
-                    question_text,
-
-                "question_type":
-                    "question",
+                "user_id": user["id"],
+                "name": user.get("name"),
+                "email": user.get("email"),
+                "subject": subject,
+                "question": question_text,
+                "question_type": "question",
             }
         )
 
@@ -2650,140 +2536,143 @@ def questions():
             if str(
                 q.get("user_id")
             )
-            ==
-            str(user_id)
+            == str(user_id)
         ]
 
     return render_page(
         "Questions",
         """
 
-        <div class="card">
+<div class="card">
 
-        <h1>
-        Ask a Question
-        </h1>
+<h1>
+Ask a Question
+</h1>
 
-        <form method="post">
+<form method="post">
 
-        <label>
-        Subject
-        </label>
+<label>
+Subject
+</label>
 
-        <input
-        name="subject"
-        placeholder="e.g. Chemistry">
+<input
+name="subject"
+placeholder="e.g. Chemistry">
 
-        <label>
-        Your Question
-        </label>
 
-        <textarea
-        name="question"
-        required
-        placeholder="Type your academic question here..."></textarea>
+<label>
+Your Question
+</label>
 
-        <button>
-        Submit Question
-        </button>
+<textarea
+name="question"
+required
+placeholder="Type your academic question here..."></textarea>
 
-        </form>
 
-        </div>
+<button>
+Submit Question
+</button>
 
-        <h2>
+</form>
 
-        {% if session.get('is_admin') %}
+</div>
 
-        All Student Questions
 
-        {% else %}
+<h2>
 
-        My Questions
+{% if session.get('is_admin') %}
+All Student Questions
+{% else %}
+My Questions
+{% endif %}
 
-        {% endif %}
+</h2>
 
-        </h2>
 
-        {% for q in questions %}
+{% for q in questions %}
 
-        <div class="card">
+<div class="card">
 
-        <span class="badge">
-        {{ q.subject or 'General' }}
-        </span>
+<span class="badge">
+{{ q.subject or 'General' }}
+</span>
 
-        {% if session.get('is_admin') %}
+{% if session.get('is_admin') %}
 
-        <p>
-        <b>
-        Student:
-        </b>
+<p>
+<b>
+Student:
+</b>
 
-        {{ q.name or q.email or 'Student' }}
-        </p>
+{{ q.name or q.email or 'Student' }}
 
-        {% endif %}
+</p>
 
-        <h3>
-        {{ q.question }}
-        </h3>
+{% endif %}
 
-        <p class="small">
-        {{ q.created_at }}
-        </p>
+<h3>
+{{ q.question }}
+</h3>
 
-        {% if q.answer %}
+<p class="small">
+{{ q.created_at }}
+</p>
 
-        <div class="answer">
+{% if q.answer %}
 
-        <b>
-        KOJA Admin Answer
-        </b>
+<div class="answer">
 
-        <p>
-        {{ q.answer.answer }}
-        </p>
+<b>
+KOJA Admin Answer
+</b>
 
-        </div>
+<p>
+{{ q.answer.answer }}
+</p>
 
-        {% else %}
+</div>
 
-        <p class="small">
-        Waiting for administrator answer.
-        </p>
+{% else %}
 
-        {% endif %}
+<p class="small">
+Waiting for administrator answer.
+</p>
 
-        {% if session.get('is_admin') %}
+{% endif %}
 
-        <br>
 
-        <a class="btn"
-        href="{{ url_for(
-        'answer_question',
-        question_id=q.id
-        ) }}">
-        {% if q.answer %}
-        Edit Answer
-        {% else %}
-        Answer
-        {% endif %}
-        </a>
+{% if session.get('is_admin') %}
 
-        {% endif %}
+<br>
 
-        </div>
+<a class="btn"
+href="{{ url_for(
+'answer_question',
+question_id=q.id
+) }}">
 
-        {% else %}
+{% if q.answer %}
+Edit Answer
+{% else %}
+Answer
+{% endif %}
 
-        <div class="card empty">
-        No questions yet.
-        </div>
+</a>
 
-        {% endfor %}
+{% endif %}
 
-        """,
+</div>
+
+{% else %}
+
+<div class="card empty">
+No questions yet.
+</div>
+
+{% endfor %}
+
+""",
         questions=all_questions
     )
 
@@ -2806,7 +2695,6 @@ def answer_question(
     )
 
     if not question:
-
         abort(404)
 
     if request.method == "POST":
@@ -2846,9 +2734,7 @@ def answer_question(
                         existing["id"]
                 },
                 {
-                    "answer":
-                        answer,
-
+                    "answer": answer,
                     "admin_id":
                         current_user()["id"],
                 }
@@ -2861,12 +2747,9 @@ def answer_question(
                 {
                     "question_id":
                         question_id,
-
                     "admin_id":
                         current_user()["id"],
-
-                    "answer":
-                        answer,
+                    "answer": answer,
                 }
             )
 
@@ -2902,65 +2785,65 @@ def answer_question(
         "Answer Question",
         """
 
-        <div class="card">
+<div class="card">
 
-        <h1>
-        Answer Student Question
-        </h1>
+<h1>
+Answer Student Question
+</h1>
 
-        <div class="question">
+<div class="question">
 
-        <b>
-        Student:
-        </b>
+<b>
+Student:
+</b>
 
-        {{ question.name
-        or question.email
-        or 'Student' }}
+{{ question.name
+or question.email
+or 'Student' }}
 
-        <br><br>
+<br><br>
 
-        <b>
-        Subject:
-        </b>
+<b>
+Subject:
+</b>
 
-        {{ question.subject
-        or 'General' }}
+{{ question.subject
+or 'General' }}
 
-        <br><br>
+<br><br>
 
-        <b>
-        Question:
-        </b>
+<b>
+Question:
+</b>
 
-        <p>
-        {{ question.question }}
-        </p>
+<p>
+{{ question.question }}
+</p>
 
-        </div>
+</div>
 
-        <br>
+<br>
 
-        <form method="post">
+<form method="post">
 
-        <label>
-        Administrator Answer
-        </label>
+<label>
+Administrator Answer
+</label>
 
-        <textarea
-        name="answer"
-        required
-        placeholder="Write the academic answer here...">{{ question.answer.answer if question.answer else '' }}</textarea>
+<textarea
+name="answer"
+required
+placeholder="Write the academic answer here...">{{ question.answer.answer if question.answer else '' }}</textarea>
 
-        <button>
-        Save Answer
-        </button>
+<button>
+Save Answer
+</button>
 
-        </form>
+</form>
 
-        </div>
+</div>
 
-        """,
+""",
         question=question
     )
 
@@ -2989,300 +2872,404 @@ def assignments():
                     "student_id"
                 )
             )
-            ==
-            str(student_id)
+            == str(student_id)
         ]
 
     return render_page(
         "Assignments",
         """
 
-        <div class="hero">
+<div class="hero">
 
-        <h1>
-        Assignments
-        </h1>
+<h1>
+Assignments
+</h1>
 
-        <p>
-        Submit an assignment, ask an assignment
-        question and receive an administrator response.
-        </p>
+<p>
+Submit an assignment, ask an assignment
+question and receive an administrator response.
+</p>
 
-        {% if not session.get('is_admin') %}
+{% if not session.get('is_admin') %}
 
-        <div class="actions">
+<div class="actions">
 
-        <a class="btn green"
-        href="{{ url_for(
-        'ask_assignment'
-        ) }}">
-        Ask Assignment
-        </a>
+<a class="btn green"
+href="{{ url_for(
+'ask_assignment'
+) }}">
+Ask Assignment
+</a>
 
-        <a class="btn"
-        href="{{ url_for(
-        'upload_assignment'
-        ) }}">
-        Upload Assignment
-        </a>
+<a class="btn"
+href="{{ url_for(
+'upload_assignment'
+) }}">
+Upload Assignment
+</a>
 
-        </div>
+</div>
 
-        {% endif %}
+{% endif %}
 
-        </div>
+</div>
 
-        <h2>
 
-        {% if session.get('is_admin') %}
+<h2>
 
-        Submitted Assignments
+{% if session.get('is_admin') %}
+Submitted Assignments
+{% else %}
+My Assignments
+{% endif %}
 
-        {% else %}
+</h2>
 
-        My Assignments
 
-        {% endif %}
+{% for item in assignments %}
 
-        </h2>
+<div class="card">
 
-        {% for item in assignments %}
+<div class="actions">
 
-        <div class="card">
+<span class="badge">
+Assignment
+</span>
 
-        <div class="actions">
+<span class="status
+{% if item.status == 'completed' %}
+completed
+{% elif item.status == 'reviewing' %}
+pending
+{% elif item.status == 'rejected' %}
+rejected
+{% endif %}">
 
-        <span class="badge">
-        Assignment
-        </span>
+{{ item.status or 'submitted' }}
 
-        <span class="status
-        {% if item.status == 'completed' %}
-        completed
-        {% elif item.status == 'reviewing' %}
-        pending
-        {% elif item.status == 'rejected' %}
-        rejected
-        {% endif %}">
+</span>
 
-        {{ item.status or 'submitted' }}
+</div>
 
-        </span>
 
-        </div>
+<h2>
+{{ item.title }}
+</h2>
 
-        <h2>
-        {{ item.title }}
-        </h2>
 
-        {% if session.get('is_admin') %}
+{% if session.get('is_admin') %}
 
-        <p>
-        <b>
-        Student:
-        </b>
+<p>
 
-        {{ item.student_name
-        or item.email
-        or item.student_id
-        or 'Student' }}
-        </p>
+<b>
+Student:
+</b>
 
-        {% endif %}
+{{ item.student_name
+or item.email
+or item.student_id
+or 'Student' }}
 
-        {% if item.subject %}
+</p>
 
-        <p>
-        <b>
-        Subject:
-        </b>
+{% endif %}
 
-        {{ item.subject }}
-        </p>
 
-        {% endif %}
+{% if item.subject %}
 
-        {% if item.course %}
+<p>
+<b>Subject:</b>
+{{ item.subject }}
+</p>
 
-        <p>
-        <b>
-        Course:
-        </b>
+{% endif %}
 
-        {{ item.course }}
-        </p>
 
-        {% endif %}
+{% if item.course %}
 
-        {% if item.class_level %}
+<p>
+<b>Course:</b>
+{{ item.course }}
+</p>
 
-        <p>
-        <b>
-        Class:
-        </b>
+{% endif %}
 
-        {{ item.class_level }}
-        </p>
 
-        {% endif %}
+{% if item.class_level %}
 
-        {% if item.description %}
+<p>
+<b>Class:</b>
+{{ item.class_level }}
+</p>
 
-        <div class="question">
+{% endif %}
 
-        <b>
-        Description
-        </b>
 
-        <p>
-        {{ item.description }}
-        </p>
+{% if item.description %}
 
-        </div>
+<div class="question">
 
-        {% endif %}
+<b>
+Description
+</b>
 
-        {% if item.question %}
+<p>
+{{ item.description }}
+</p>
 
-        <div class="question">
+</div>
 
-        <b>
-        Assignment Question
-        </b>
+{% endif %}
 
-        <p>
-        {{ item.question }}
-        </p>
 
-        </div>
+{% if item.question %}
 
-        {% endif %}
+<div class="question">
 
-        {% if item.file_path %}
+<b>
+Assignment Question
+</b>
 
-        <div class="file-box">
+<p>
+{{ item.question }}
+</p>
 
-        <b>
-        File:
-        </b>
+</div>
 
-        {{ item.file_name }}
+{% endif %}
 
-        {% if item.file_size %}
 
-        <p class="small">
+{% if item.file_path %}
 
-        Size:
-        {{ (item.file_size / 1024)|round(1) }}
-        KB
+<div class="file-box">
 
-        </p>
+<b>
+Student Assignment File:
+</b>
 
-        {% endif %}
+{{ item.file_name }}
 
-        <a class="btn"
-        href="{{ url_for(
-        'download_assignment',
-        assignment_id=item.id
-        ) }}">
-        Download Assignment
-        </a>
+{% if item.file_size %}
 
-        </div>
+<p class="small">
 
-        {% endif %}
+Size:
+{{ (item.file_size / 1024)|round(1) }}
+KB
 
-        {% if item.admin_comment %}
+</p>
 
-        <div class="assignment-response">
+{% endif %}
 
-        <b>
-        KOJA Administrator Response
-        </b>
 
-        <p>
-        {{ item.admin_comment }}
-        </p>
+<a class="btn"
+href="{{ url_for(
+'download_assignment',
+assignment_id=item.id
+) }}">
 
-        {% if item.reviewed_by %}
+Download Assignment
 
-        <p class="small">
-        Reviewed by administrator.
-        </p>
+</a>
 
-        {% endif %}
+</div>
 
-        </div>
+{% endif %}
 
-        {% endif %}
 
-        <p class="small">
+{# ====================================================
+   DIRECT ADMIN ANSWER
+   ==================================================== #}
 
-        Submitted:
-        {{ item.created_at }}
+{% if item.answer_text %}
 
-        {% if item.updated_at %}
+<div class="assignment-response">
 
-        <br>
+<b>
+KOJA Administrator Answer
+</b>
 
-        Updated:
-        {{ item.updated_at }}
+<p>
+{{ item.answer_text }}
+</p>
 
-        {% endif %}
+{% if item.reviewed_by %}
 
-        </p>
+<p class="small">
+Reviewed by administrator.
+</p>
 
-        {% if session.get('is_admin') %}
+{% endif %}
 
-        <div class="actions">
+</div>
 
-        {% if item.file_path %}
+{% endif %}
 
-        <a class="btn gray"
-        href="{{ url_for(
-        'download_assignment',
-        assignment_id=item.id
-        ) }}">
-        Download
-        </a>
 
-        {% endif %}
+{# ====================================================
+   UPLOADED ANSWER FILE
+   ==================================================== #}
 
-        <a class="btn green"
-        href="{{ url_for(
-        'ask_assignment_answer',
-        assignment_id=item.id
-        ) }}">
-        Respond
-        </a>
+{% if item.answer_file %}
 
-        </div>
+<div class="answer-file">
 
-        {% endif %}
+<b>
+Answered Assignment File
+</b>
 
-        </div>
+<p>
+{{ item.answer_file.file_name }}
+</p>
 
-        {% else %}
+{% if item.answer_file.file_size %}
 
-        <div class="card empty">
+<p class="small">
 
-        <h2>
-        No assignments found.
-        </h2>
+Size:
+{{ (
+item.answer_file.file_size / 1024
+)|round(1) }}
+KB
 
-        {% if not session.get('is_admin') %}
+</p>
 
-        <p>
-        You have not submitted an assignment yet.
-        </p>
+{% endif %}
 
-        {% endif %}
 
-        </div>
+<a class="btn green"
+href="{{ url_for(
+'download_assignment_answer',
+assignment_id=item.id
+) }}">
 
-        {% endfor %}
+Download Answered File
 
-        """,
+</a>
+
+</div>
+
+{% endif %}
+
+
+{% if not item.answer_text
+and not item.answer_file %}
+
+{% if item.status == 'completed' %}
+
+<p class="small">
+Assignment marked completed.
+</p>
+
+{% else %}
+
+<p class="small">
+Waiting for administrator response.
+</p>
+
+{% endif %}
+
+{% endif %}
+
+
+<p class="small">
+
+Submitted:
+{{ item.created_at }}
+
+{% if item.updated_at %}
+
+<br>
+
+Updated:
+{{ item.updated_at }}
+
+{% endif %}
+
+</p>
+
+
+{% if session.get('is_admin') %}
+
+<div class="actions">
+
+{% if item.file_path %}
+
+<a class="btn gray"
+href="{{ url_for(
+'download_assignment',
+assignment_id=item.id
+) }}">
+
+Download Student File
+
+</a>
+
+{% endif %}
+
+
+<a class="btn green"
+href="{{ url_for(
+'ask_assignment_answer',
+assignment_id=item.id
+) }}">
+
+{% if item.answer_text
+or item.answer_file %}
+
+Edit Response
+
+{% else %}
+
+Respond
+
+{% endif %}
+
+</a>
+
+
+{% if item.answer_file %}
+
+<a class="btn"
+href="{{ url_for(
+'download_assignment_answer',
+assignment_id=item.id
+) }}">
+
+Download Answer
+
+</a>
+
+{% endif %}
+
+</div>
+
+{% endif %}
+
+</div>
+
+
+{% else %}
+
+<div class="card empty">
+
+<h2>
+No assignments found.
+</h2>
+
+{% if not session.get('is_admin') %}
+
+<p>
+You have not submitted an assignment yet.
+</p>
+
+{% endif %}
+
+</div>
+
+{% endfor %}
+
+""",
         assignments=data
     )
 
@@ -3377,49 +3364,34 @@ def ask_assignment():
             {
                 "student_id":
                     user["id"],
-
                 "title":
                     title,
-
                 "description":
                     description or None,
-
                 "subject":
                     subject or None,
-
                 "course":
                     course or None,
-
                 "class_level":
                     class_level or None,
-
                 "file_name":
                     None,
-
                 "file_path":
                     None,
-
                 "file_size":
                     0,
-
                 "mime_type":
                     "application/pdf",
-
                 "status":
                     "submitted",
-
                 "admin_comment":
                     None,
-
                 "reviewed_by":
                     None,
-
                 "email":
                     user.get("email"),
-
                 "question":
                     question,
-
                 "student_name":
                     user.get("name"),
             }
@@ -3458,78 +3430,84 @@ def ask_assignment():
         "Ask Assignment",
         """
 
-        <div class="card">
+<div class="card">
 
-        <h1>
-        Ask Assignment
-        </h1>
+<h1>
+Ask Assignment
+</h1>
 
-        <p class="muted">
-        Submit an assignment question without uploading
-        a file.
-        </p>
+<p class="muted">
+Submit an assignment question without uploading
+a file.
+</p>
 
-        <form method="post">
+<form method="post">
 
-        <label>
-        Assignment Title
-        </label>
+<label>
+Assignment Title
+</label>
 
-        <input
-        name="title"
-        required
-        placeholder="e.g. Rate of Chemical Reaction">
+<input
+name="title"
+required
+placeholder="e.g. Rate of Chemical Reaction">
 
-        <label>
-        Subject
-        </label>
 
-        <input
-        name="subject"
-        placeholder="e.g. Chemistry">
+<label>
+Subject
+</label>
 
-        <label>
-        Course
-        </label>
+<input
+name="subject"
+placeholder="e.g. Chemistry">
 
-        <input
-        name="course"
-        placeholder="e.g. General Science">
 
-        <label>
-        Class Level
-        </label>
+<label>
+Course
+</label>
 
-        <input
-        name="class_level"
-        placeholder="e.g. Grade 12">
+<input
+name="course"
+placeholder="e.g. General Science">
 
-        <label>
-        Description
-        </label>
 
-        <textarea
-        name="description"
-        placeholder="Optional assignment description..."></textarea>
+<label>
+Class Level
+</label>
 
-        <label>
-        Assignment Question
-        </label>
+<input
+name="class_level"
+placeholder="e.g. Grade 12">
 
-        <textarea
-        name="question"
-        required
-        placeholder="Enter the assignment question..."></textarea>
 
-        <button>
-        Submit Assignment Question
-        </button>
+<label>
+Description
+</label>
 
-        </form>
+<textarea
+name="description"
+placeholder="Optional assignment description..."></textarea>
 
-        </div>
 
-        """
+<label>
+Assignment Question
+</label>
+
+<textarea
+name="question"
+required
+placeholder="Enter the assignment question..."></textarea>
+
+
+<button>
+Submit Assignment Question
+</button>
+
+</form>
+
+</div>
+
+"""
     )
 
 
@@ -3635,49 +3613,34 @@ def upload_assignment():
                 {
                     "student_id":
                         user["id"],
-
                     "title":
                         title,
-
                     "description":
                         description or None,
-
                     "subject":
                         subject or None,
-
                     "course":
                         course or None,
-
                     "class_level":
                         class_level or None,
-
                     "file_name":
                         storage["file_name"],
-
                     "file_path":
                         storage["file_path"],
-
                     "file_size":
                         storage["file_size"],
-
                     "mime_type":
                         storage["mime_type"],
-
                     "status":
                         "submitted",
-
                     "admin_comment":
                         None,
-
                     "reviewed_by":
                         None,
-
                     "email":
                         user.get("email"),
-
                     "question":
                         question or None,
-
                     "student_name":
                         user.get("name"),
                 }
@@ -3704,7 +3667,9 @@ def upload_assignment():
                 )
 
                 return redirect(
-                    url_for("upload_assignment")
+                    url_for(
+                        "upload_assignment"
+                    )
                 )
 
             flash(
@@ -3731,7 +3696,6 @@ def upload_assignment():
                     )
 
                 except Exception:
-
                     pass
 
             flash(
@@ -3741,99 +3705,110 @@ def upload_assignment():
             )
 
             return redirect(
-                url_for("upload_assignment")
+                url_for(
+                    "upload_assignment"
+                )
             )
 
     return render_page(
         "Upload Assignment",
         """
 
-        <div class="card">
+<div class="card">
 
-        <h1>
-        Upload Assignment
-        </h1>
+<h1>
+Upload Assignment
+</h1>
 
-        <form
-        method="post"
-        enctype="multipart/form-data">
+<form
+method="post"
+enctype="multipart/form-data">
 
-        <label>
-        Assignment Title
-        </label>
 
-        <input
-        name="title"
-        required
-        placeholder="Assignment title">
+<label>
+Assignment Title
+</label>
 
-        <label>
-        Description
-        </label>
+<input
+name="title"
+required
+placeholder="Assignment title">
 
-        <textarea
-        name="description"
-        placeholder="Describe the assignment..."></textarea>
 
-        <label>
-        Subject
-        </label>
+<label>
+Description
+</label>
 
-        <input
-        name="subject"
-        placeholder="Subject">
+<textarea
+name="description"
+placeholder="Describe the assignment..."></textarea>
 
-        <label>
-        Course
-        </label>
 
-        <input
-        name="course"
-        placeholder="Course">
+<label>
+Subject
+</label>
 
-        <label>
-        Class Level
-        </label>
+<input
+name="subject"
+placeholder="Subject">
 
-        <input
-        name="class_level"
-        placeholder="Class">
 
-        <label>
-        Assignment Question
-        </label>
+<label>
+Course
+</label>
 
-        <textarea
-        name="question"
-        placeholder="Optional assignment question..."></textarea>
+<input
+name="course"
+placeholder="Course">
 
-        <label>
-        Assignment File
-        </label>
 
-        <input
-        type="file"
-        name="file"
-        required>
+<label>
+Class Level
+</label>
 
-        <p class="small">
-        Maximum size: 10 MB.
-        </p>
+<input
+name="class_level"
+placeholder="Class">
 
-        <button>
-        Upload Assignment
-        </button>
 
-        </form>
+<label>
+Assignment Question
+</label>
 
-        </div>
+<textarea
+name="question"
+placeholder="Optional assignment question..."></textarea>
 
-        """
+
+<label>
+Assignment File
+</label>
+
+<input
+type="file"
+name="file"
+required>
+
+
+<p class="small">
+Maximum size: 10 MB.
+</p>
+
+
+<button>
+Upload Assignment
+</button>
+
+</form>
+
+</div>
+
+"""
     )
 
 
 # ============================================================
-# DOWNLOAD ASSIGNMENT
+# DOWNLOAD STUDENT ASSIGNMENT
 # ============================================================
 
 @app.route(
@@ -3849,7 +3824,6 @@ def download_assignment(
     )
 
     if not assignment:
-
         abort(404)
 
     if not is_admin():
@@ -3905,7 +3879,6 @@ def download_assignment(
         io.BytesIO(
             file_response.content
         ),
-
         mimetype=(
             assignment.get(
                 "mime_type"
@@ -3913,7 +3886,6 @@ def download_assignment(
             or
             "application/octet-stream"
         ),
-
         download_name=(
             assignment.get(
                 "file_name"
@@ -3921,7 +3893,112 @@ def download_assignment(
             or
             "assignment"
         ),
+        as_attachment=True
+    )
 
+
+# ============================================================
+# DOWNLOAD ANSWERED ASSIGNMENT FILE
+# ============================================================
+
+@app.route(
+    "/assignments/<assignment_id>/answer/download"
+)
+@login_required
+def download_assignment_answer(
+    assignment_id
+):
+
+    assignment = get_assignment(
+        assignment_id
+    )
+
+    if not assignment:
+        abort(404)
+
+    # Students can only download their own answer.
+    if not is_admin():
+
+        if str(
+            assignment.get(
+                "student_id"
+            )
+        ) != str(
+            current_user()["id"]
+        ):
+
+            abort(403)
+
+    answer_file = assignment.get(
+        "answer_file"
+    )
+
+    if not answer_file:
+
+        flash(
+            "No answered file has been uploaded for this assignment.",
+            "warning"
+        )
+
+        return redirect(
+            url_for("assignments")
+        )
+
+    file_path = answer_file.get(
+        "file_path"
+    )
+
+    if not file_path:
+
+        flash(
+            "Answered file path is missing.",
+            "warning"
+        )
+
+        return redirect(
+            url_for("assignments")
+        )
+
+    file_response = (
+        download_from_storage(
+            file_path
+        )
+    )
+
+    if file_response.status_code != 200:
+
+        logger.error(
+            "Answered assignment download failed: %s",
+            file_response.text
+        )
+
+        flash(
+            "Answered assignment file could not be downloaded.",
+            "warning"
+        )
+
+        return redirect(
+            url_for("assignments")
+        )
+
+    return send_file(
+        io.BytesIO(
+            file_response.content
+        ),
+        mimetype=(
+            answer_file.get(
+                "mime_type"
+            )
+            or
+            "application/octet-stream"
+        ),
+        download_name=(
+            answer_file.get(
+                "file_name"
+            )
+            or
+            "answered-assignment"
+        ),
         as_attachment=True
     )
 
@@ -3944,10 +4021,18 @@ def ask_assignment_answer(
     )
 
     if not assignment:
-
         abort(404)
 
     if request.method == "POST":
+
+        response_type = (
+            request.form.get(
+                "response_type",
+                "direct"
+            )
+            .strip()
+            .lower()
+        )
 
         answer = (
             request.form.get(
@@ -3973,13 +4058,242 @@ def ask_assignment_answer(
         }
 
         if status not in allowed_statuses:
-
             status = "completed"
 
-        if not answer:
+        if response_type not in {
+            "direct",
+            "file"
+        }:
+
+            response_type = "direct"
+
+        answer_file = request.files.get(
+            "answer_file"
+        )
+
+        # ----------------------------------------------------
+        # Validate response type
+        # ----------------------------------------------------
+
+        if response_type == "direct":
+
+            if not answer:
+
+                flash(
+                    "Please enter the administrator answer.",
+                    "warning"
+                )
+
+                return redirect(
+                    url_for(
+                        "ask_assignment_answer",
+                        assignment_id=assignment_id
+                    )
+                )
+
+        elif response_type == "file":
+
+            if (
+                not answer_file
+                or
+                not answer_file.filename
+            ):
+
+                flash(
+                    "Please select an answered PDF or Word file.",
+                    "warning"
+                )
+
+                return redirect(
+                    url_for(
+                        "ask_assignment_answer",
+                        assignment_id=assignment_id
+                    )
+                )
+
+        old_answer_file = (
+            assignment.get(
+                "answer_file"
+            )
+        )
+
+        new_answer_file = None
+
+        try:
+
+            # ------------------------------------------------
+            # Upload new answered file
+            # ------------------------------------------------
+
+            if response_type == "file":
+
+                new_answer_file = (
+                    upload_answer_file(
+                        answer_file
+                    )
+                )
+
+            # ------------------------------------------------
+            # Build response metadata
+            # ------------------------------------------------
+
+            if response_type == "direct":
+
+                stored_comment = (
+                    make_assignment_answer_data(
+                        answer_text=answer,
+                        answer_file=None
+                    )
+                )
+
+            else:
+
+                stored_comment = (
+                    make_assignment_answer_data(
+                        answer_text="",
+                        answer_file=new_answer_file
+                    )
+                )
+
+            # ------------------------------------------------
+            # Update assignment
+            # ------------------------------------------------
+
+            response = supabase_patch(
+                "assignments",
+                {
+                    "id":
+                        assignment_id
+                },
+                {
+                    "admin_comment":
+                        stored_comment,
+                    "status":
+                        status,
+                    "reviewed_by":
+                        current_user()["id"],
+                }
+            )
+
+            if response.status_code not in (
+                200,
+                204
+            ):
+
+                logger.error(
+                    "Assignment response failed: %s",
+                    response.text
+                )
+
+                if new_answer_file:
+
+                    try:
+
+                        delete_from_storage(
+                            new_answer_file[
+                                "file_path"
+                            ]
+                        )
+
+                    except Exception:
+                        pass
+
+                flash(
+                    "Assignment response could not be saved: "
+                    + response.text,
+                    "warning"
+                )
+
+                return redirect(
+                    url_for(
+                        "ask_assignment_answer",
+                        assignment_id=assignment_id
+                    )
+                )
+
+            # ------------------------------------------------
+            # Delete old answer file after successful update
+            # ------------------------------------------------
+
+            if old_answer_file:
+
+                old_path = (
+                    old_answer_file.get(
+                        "file_path"
+                    )
+                )
+
+                if old_path:
+
+                    try:
+
+                        old_delete = (
+                            delete_from_storage(
+                                old_path
+                            )
+                        )
+
+                        if old_delete.status_code not in (
+                            200,
+                            204
+                        ):
+
+                            logger.warning(
+                                "Old answer file could not be deleted: %s",
+                                old_delete.text
+                            )
+
+                    except Exception as exc:
+
+                        logger.warning(
+                            "Old answer cleanup failed: %s",
+                            exc
+                        )
+
+            # ------------------------------------------------
+            # Success
+            # ------------------------------------------------
+
+            if response_type == "direct":
+
+                flash(
+                    "Administrator answer saved successfully.",
+                    "success"
+                )
+
+            else:
+
+                flash(
+                    "Answered PDF/Word file uploaded successfully.",
+                    "success"
+                )
+
+            return redirect(
+                url_for("assignments")
+            )
+
+        except Exception as exc:
+
+            logger.exception(
+                "Assignment response error"
+            )
+
+            if new_answer_file:
+
+                try:
+
+                    delete_from_storage(
+                        new_answer_file[
+                            "file_path"
+                        ]
+                    )
+
+                except Exception:
+                    pass
 
             flash(
-                "Administrator response cannot be empty.",
+                "Assignment response failed: "
+                + str(exc),
                 "warning"
             )
 
@@ -3990,232 +4304,361 @@ def ask_assignment_answer(
                 )
             )
 
-        response = supabase_patch(
-            "assignments",
-            {
-                "id":
-                    assignment_id
-            },
-            {
-                "admin_comment":
-                    answer,
-
-                "status":
-                    status,
-
-                "reviewed_by":
-                    current_user()["id"],
-            }
-        )
-
-        if response.status_code not in (
-            200,
-            204
-        ):
-
-            logger.error(
-                "Assignment response failed: %s",
-                response.text
-            )
-
-            flash(
-                "Assignment response could not be saved: "
-                + response.text,
-                "warning"
-            )
-
-            return redirect(
-                url_for(
-                    "ask_assignment_answer",
-                    assignment_id=assignment_id
-                )
-            )
-
-        flash(
-            "Assignment response saved successfully.",
-            "success"
-        )
-
-        return redirect(
-            url_for("assignments")
-        )
+    # --------------------------------------------------------
+    # GET page
+    # --------------------------------------------------------
 
     return render_page(
         "Respond to Assignment",
         """
 
-        <div class="card">
+<div class="card">
 
-        <h1>
-        Respond to Assignment
-        </h1>
+<h1>
+Respond to Assignment
+</h1>
 
-        <div class="question">
 
-        <b>
-        Student:
-        </b>
+<div class="question">
 
-        {{ assignment.student_name
-        or assignment.email
-        or assignment.student_id
-        or 'Student' }}
+<b>
+Student:
+</b>
 
-        <br><br>
+{{ assignment.student_name
+or assignment.email
+or assignment.student_id
+or 'Student' }}
 
-        <b>
-        Title:
-        </b>
+<br><br>
 
-        {{ assignment.title }}
 
-        <br><br>
+<b>
+Title:
+</b>
 
-        <b>
-        Subject:
-        </b>
+{{ assignment.title }}
 
-        {{ assignment.subject
-        or 'General' }}
+<br><br>
 
-        {% if assignment.course %}
 
-        <br><br>
+<b>
+Subject:
+</b>
 
-        <b>
-        Course:
-        </b>
+{{ assignment.subject
+or 'General' }}
 
-        {{ assignment.course }}
 
-        {% endif %}
+{% if assignment.course %}
 
-        {% if assignment.class_level %}
+<br><br>
 
-        <br><br>
+<b>
+Course:
+</b>
 
-        <b>
-        Class:
-        </b>
+{{ assignment.course }}
 
-        {{ assignment.class_level }}
+{% endif %}
 
-        {% endif %}
 
-        {% if assignment.question %}
+{% if assignment.class_level %}
 
-        <br><br>
+<br><br>
 
-        <b>
-        Assignment Question:
-        </b>
+<b>
+Class:
+</b>
 
-        <p>
-        {{ assignment.question }}
-        </p>
+{{ assignment.class_level }}
 
-        {% endif %}
+{% endif %}
 
-        {% if assignment.description %}
 
-        <br>
+{% if assignment.question %}
 
-        <b>
-        Description:
-        </b>
+<br><br>
 
-        <p>
-        {{ assignment.description }}
-        </p>
+<b>
+Assignment Question:
+</b>
 
-        {% endif %}
+<p>
+{{ assignment.question }}
+</p>
 
-        {% if assignment.file_name %}
+{% endif %}
 
-        <br>
 
-        <b>
-        File:
-        </b>
+{% if assignment.description %}
 
-        {{ assignment.file_name }}
+<br>
 
-        <br><br>
+<b>
+Description:
+</b>
 
-        <a class="btn"
-        href="{{ url_for(
-        'download_assignment',
-        assignment_id=assignment.id
-        ) }}">
-        Download Assignment
-        </a>
+<p>
+{{ assignment.description }}
+</p>
 
-        {% endif %}
+{% endif %}
 
-        </div>
 
-        <br>
+{% if assignment.file_name %}
 
-        <form method="post">
+<br>
 
-        <label>
-        Administrator Response
-        </label>
+<b>
+Student File:
+</b>
 
-        <textarea
-        name="answer"
-        required
-        placeholder="Write your academic response here...">{{ assignment.admin_comment or '' }}</textarea>
+{{ assignment.file_name }}
 
-        <label>
-        Assignment Status
-        </label>
+<br><br>
 
-        <select name="status">
+<a class="btn"
+href="{{ url_for(
+'download_assignment',
+assignment_id=assignment.id
+) }}">
 
-        <option
-        value="submitted"
-        {% if assignment.status == 'submitted' %}
-        selected
-        {% endif %}>
-        Submitted
-        </option>
+Download Student Assignment
 
-        <option
-        value="reviewing"
-        {% if assignment.status == 'reviewing' %}
-        selected
-        {% endif %}>
-        Reviewing
-        </option>
+</a>
 
-        <option
-        value="completed"
-        {% if assignment.status == 'completed' %}
-        selected
-        {% endif %}>
-        Completed
-        </option>
+{% endif %}
 
-        <option
-        value="rejected"
-        {% if assignment.status == 'rejected' %}
-        selected
-        {% endif %}>
-        Rejected
-        </option>
+</div>
 
-        </select>
 
-        <button>
-        Save Assignment Response
-        </button>
+<br>
 
-        </form>
 
-        </div>
+{# ========================================================
+   EXISTING RESPONSE
+   ======================================================== #}
 
-        """,
+{% if assignment.answer_text %}
+
+<div class="answer">
+
+<b>
+Current Direct Answer
+</b>
+
+<p>
+{{ assignment.answer_text }}
+</p>
+
+</div>
+
+{% endif %}
+
+
+{% if assignment.answer_file %}
+
+<div class="answer-file">
+
+<b>
+Current Answer File
+</b>
+
+<p>
+{{ assignment.answer_file.file_name }}
+</p>
+
+<a class="btn"
+href="{{ url_for(
+'download_assignment_answer',
+assignment_id=assignment.id
+) }}">
+
+Download Current Answer
+
+</a>
+
+</div>
+
+{% endif %}
+
+
+<br>
+
+
+<form
+method="post"
+enctype="multipart/form-data">
+
+
+<label>
+Response Type
+</label>
+
+<select
+name="response_type"
+id="response_type"
+onchange="toggleResponseType()">
+
+<option value="direct"
+{% if assignment.answer_text %}
+selected
+{% endif %}>
+Direct Answer
+</option>
+
+<option value="file"
+{% if assignment.answer_file %}
+selected
+{% endif %}>
+Upload Answered PDF / Word
+</option>
+
+</select>
+
+
+<div id="direct_box">
+
+<label>
+Administrator Answer
+</label>
+
+<textarea
+name="answer"
+placeholder="Write the complete academic answer here...">{{ assignment.answer_text or '' }}</textarea>
+
+<p class="small">
+Choose Direct Answer when you want the student
+to read the answer directly inside KOJA AFRICA.
+</p>
+
+</div>
+
+
+<div id="file_box">
+
+<label>
+Answered Assignment File
+</label>
+
+<input
+type="file"
+name="answer_file"
+accept=".pdf,.doc,.docx">
+
+<p class="small">
+Allowed formats: PDF, DOC and DOCX.
+Maximum size: 10 MB.
+</p>
+
+<p class="small">
+The uploaded answered file will be stored securely
+in the KOJA storage bucket and made available
+to the student.
+</p>
+
+</div>
+
+
+<label>
+Assignment Status
+</label>
+
+<select name="status">
+
+<option
+value="submitted"
+{% if assignment.status == 'submitted' %}
+selected
+{% endif %}>
+Submitted
+</option>
+
+<option
+value="reviewing"
+{% if assignment.status == 'reviewing' %}
+selected
+{% endif %}>
+Reviewing
+</option>
+
+<option
+value="completed"
+{% if assignment.status == 'completed' %}
+selected
+{% endif %}>
+Completed
+</option>
+
+<option
+value="rejected"
+{% if assignment.status == 'rejected' %}
+selected
+{% endif %}>
+Rejected
+</option>
+
+</select>
+
+
+<button>
+Save Assignment Response
+</button>
+
+</form>
+
+</div>
+
+
+<script>
+
+function toggleResponseType() {
+
+    const type =
+        document.getElementById(
+            "response_type"
+        ).value;
+
+    const directBox =
+        document.getElementById(
+            "direct_box"
+        );
+
+    const fileBox =
+        document.getElementById(
+            "file_box"
+        );
+
+    if (type === "file") {
+
+        directBox.style.display =
+            "none";
+
+        fileBox.style.display =
+            "block";
+
+    } else {
+
+        directBox.style.display =
+            "block";
+
+        fileBox.style.display =
+            "none";
+    }
+}
+
+
+document.addEventListener(
+    "DOMContentLoaded",
+    function() {
+        toggleResponseType();
+    }
+);
+
+</script>
+
+""",
         assignment=assignment
     )
 
@@ -4272,17 +4715,20 @@ def admin():
         )
     ]
 
+    answered_assignments = [
+        a
+        for a in assignments_data
+        if a.get("answer_text")
+        or a.get("answer_file")
+    ]
+
     records_response = supabase_get(
         "document_records",
         {
-            "select":
-                "*",
-
+            "select": "*",
             "order":
                 "created_at.desc",
-
-            "limit":
-                "100",
+            "limit": "100",
         }
     )
 
@@ -4298,524 +4744,622 @@ def admin():
         "Admin",
         """
 
-        <div class="hero">
+<div class="hero">
 
-        <h1>
-        KOJA ADMIN
-        </h1>
+<h1>
+KOJA ADMIN
+</h1>
 
-        <p>
-        Manage documents, questions and assignments.
-        </p>
+<p>
+Manage documents, questions and assignments.
+</p>
 
-        <div class="actions">
+<div class="actions">
 
-        <a class="btn green"
-        href="{{ url_for(
-        'upload_document'
-        ) }}">
-        Upload Document
-        </a>
+<a class="btn green"
+href="{{ url_for(
+'upload_document'
+) }}">
+Upload Document
+</a>
 
-        <a class="btn"
-        href="{{ url_for(
-        'questions'
-        ) }}">
-        Questions
-        </a>
+<a class="btn"
+href="{{ url_for(
+'questions'
+) }}">
+Questions
+</a>
 
-        <a class="btn orange"
-        href="{{ url_for(
-        'assignments'
-        ) }}">
-        Assignments
-        </a>
+<a class="btn orange"
+href="{{ url_for(
+'assignments'
+) }}">
+Assignments
+</a>
 
-        <a class="btn gray"
-        href="{{ url_for(
-        'document_report'
-        ) }}">
-        PDF Report
-        </a>
+<a class="btn gray"
+href="{{ url_for(
+'document_report'
+) }}">
+PDF Report
+</a>
 
-        </div>
+</div>
 
-        </div>
+</div>
 
-        <div class="grid">
 
-        <div class="card">
+<div class="grid">
 
-        <div class="small">
-        Documents
-        </div>
 
-        <div class="stat">
-        {{ docs|length }}
-        </div>
+<div class="card">
 
-        </div>
+<div class="small">
+Documents
+</div>
 
-        <div class="card">
+<div class="stat">
+{{ docs|length }}
+</div>
 
-        <div class="small">
-        Questions
-        </div>
+</div>
 
-        <div class="stat">
-        {{ questions|length }}
-        </div>
 
-        </div>
+<div class="card">
 
-        <div class="card">
+<div class="small">
+Questions
+</div>
 
-        <div class="small">
-        Unanswered
-        </div>
+<div class="stat">
+{{ questions|length }}
+</div>
 
-        <div class="stat">
-        {{ unanswered|length }}
-        </div>
+</div>
 
-        </div>
 
-        <div class="card">
+<div class="card">
 
-        <div class="small">
-        Assignments
-        </div>
+<div class="small">
+Unanswered Questions
+</div>
 
-        <div class="stat">
-        {{ assignments|length }}
-        </div>
+<div class="stat">
+{{ unanswered|length }}
+</div>
 
-        </div>
+</div>
 
-        <div class="card">
 
-        <div class="small">
-        Pending Assignments
-        </div>
+<div class="card">
 
-        <div class="stat">
-        {{ pending_assignments|length }}
-        </div>
+<div class="small">
+Assignments
+</div>
 
-        </div>
+<div class="stat">
+{{ assignments|length }}
+</div>
 
-        <div class="card">
+</div>
 
-        <div class="small">
-        Document Views
-        </div>
 
-        <div class="stat">
-        {{ total_views }}
-        </div>
+<div class="card">
 
-        </div>
+<div class="small">
+Pending Assignments
+</div>
 
-        <div class="card">
+<div class="stat">
+{{ pending_assignments|length }}
+</div>
 
-        <div class="small">
-        Document Downloads
-        </div>
+</div>
 
-        <div class="stat">
-        {{ total_downloads }}
-        </div>
 
-        </div>
+<div class="card">
 
-        </div>
+<div class="small">
+Answered Assignments
+</div>
 
-        <div class="card">
+<div class="stat">
+{{ answered_assignments|length }}
+</div>
 
-        <h2>
-        Student Questions
-        </h2>
+</div>
 
-        {% for q in questions %}
 
-        <div class="question">
+<div class="card">
 
-        <b>
-        {{ q.name
-        or q.email
-        or 'Student' }}
-        </b>
+<div class="small">
+Document Views
+</div>
 
-        <p>
+<div class="stat">
+{{ total_views }}
+</div>
 
-        <b>
-        {{ q.subject
-        or 'General' }}
-        </b>
+</div>
 
-        </p>
 
-        <p>
-        {{ q.question }}
-        </p>
+<div class="card">
 
-        {% if q.answer %}
+<div class="small">
+Document Downloads
+</div>
 
-        <div class="answer">
+<div class="stat">
+{{ total_downloads }}
+</div>
 
-        <b>
-        Answer:
-        </b>
+</div>
 
-        <p>
-        {{ q.answer.answer }}
-        </p>
+</div>
 
-        <a class="btn gray"
-        href="{{ url_for(
-        'answer_question',
-        question_id=q.id
-        ) }}">
-        Edit Answer
-        </a>
 
-        </div>
+<div class="card">
 
-        {% else %}
+<h2>
+Student Questions
+</h2>
 
-        <a class="btn"
-        href="{{ url_for(
-        'answer_question',
-        question_id=q.id
-        ) }}">
-        Answer Question
-        </a>
+{% for q in questions %}
 
-        {% endif %}
+<div class="question">
 
-        </div>
+<b>
+{{ q.name
+or q.email
+or 'Student' }}
+</b>
 
-        <br>
+<p>
+<b>
+{{ q.subject
+or 'General' }}
+</b>
+</p>
 
-        {% else %}
+<p>
+{{ q.question }}
+</p>
 
-        <p>
-        No questions.
-        </p>
 
-        {% endfor %}
+{% if q.answer %}
 
-        </div>
+<div class="answer">
 
-        <div class="card">
+<b>
+Answer:
+</b>
 
-        <h2>
-        Submitted Assignments
-        </h2>
+<p>
+{{ q.answer.answer }}
+</p>
 
-        <div class="table-wrap">
+<a class="btn gray"
+href="{{ url_for(
+'answer_question',
+question_id=q.id
+) }}">
 
-        <table>
+Edit Answer
 
-        <tr>
+</a>
 
-        <th>
-        Student
-        </th>
+</div>
 
-        <th>
-        Title
-        </th>
+{% else %}
 
-        <th>
-        Subject
-        </th>
+<a class="btn"
+href="{{ url_for(
+'answer_question',
+question_id=q.id
+) }}">
 
-        <th>
-        Status
-        </th>
+Answer Question
 
-        <th>
-        File
-        </th>
+</a>
 
-        <th>
-        Action
-        </th>
+{% endif %}
 
-        </tr>
+</div>
 
-        {% for a in assignments %}
+<br>
 
-        <tr>
+{% else %}
 
-        <td>
+<p>
+No questions.
+</p>
 
-        {{ a.student_name
-        or a.email
-        or a.student_id
-        or 'Student' }}
+{% endfor %}
 
-        </td>
+</div>
 
-        <td>
-        {{ a.title }}
-        </td>
 
-        <td>
-        {{ a.subject or '-' }}
-        </td>
+<div class="card">
 
-        <td>
-        {{ a.status or 'submitted' }}
-        </td>
+<h2>
+Submitted Assignments
+</h2>
 
-        <td>
-        {{ a.file_name
-        or 'Question only' }}
-        </td>
+<div class="table-wrap">
 
-        <td>
+<table>
 
-        <div class="actions">
+<tr>
 
-        {% if a.file_path %}
+<th>
+Student
+</th>
 
-        <a class="btn gray"
-        href="{{ url_for(
-        'download_assignment',
-        assignment_id=a.id
-        ) }}">
-        Download
-        </a>
+<th>
+Title
+</th>
 
-        {% endif %}
+<th>
+Subject
+</th>
 
-        <a class="btn green"
-        href="{{ url_for(
-        'ask_assignment_answer',
-        assignment_id=a.id
-        ) }}">
-        Respond
-        </a>
+<th>
+Status
+</th>
 
-        </div>
+<th>
+Student File
+</th>
 
-        </td>
+<th>
+Answer
+</th>
 
-        </tr>
+<th>
+Action
+</th>
 
-        {% else %}
+</tr>
 
-        <tr>
 
-        <td colspan="6">
-        No assignments submitted.
-        </td>
+{% for a in assignments %}
 
-        </tr>
+<tr>
 
-        {% endfor %}
+<td>
 
-        </table>
+{{ a.student_name
+or a.email
+or a.student_id
+or 'Student' }}
 
-        </div>
+</td>
 
-        </div>
 
-        <div class="card">
+<td>
+{{ a.title }}
+</td>
 
-        <h2>
-        Documents
-        </h2>
 
-        <div class="table-wrap">
+<td>
+{{ a.subject or '-' }}
+</td>
 
-        <table>
 
-        <tr>
+<td>
+{{ a.status or 'submitted' }}
+</td>
 
-        <th>
-        Title
-        </th>
 
-        <th>
-        Type
-        </th>
+<td>
 
-        <th>
-        Views
-        </th>
+{% if a.file_path %}
 
-        <th>
-        Downloads
-        </th>
+{{ a.file_name }}
 
-        <th>
-        Actions
-        </th>
+{% else %}
 
-        </tr>
+Question only
 
-        {% for doc in docs %}
+{% endif %}
 
-        <tr>
+</td>
 
-        <td>
-        {{ doc.title }}
-        </td>
 
-        <td>
-        {{ doc.document_type }}
-        </td>
+<td>
 
-        <td>
-        {{ doc.view_count or 0 }}
-        </td>
+{% if a.answer_text %}
 
-        <td>
-        {{ doc.download_count or 0 }}
-        </td>
+Direct answer
 
-        <td>
+{% elif a.answer_file %}
 
-        <div class="actions">
+{{ a.answer_file.file_name }}
 
-        <a class="btn"
-        href="{{ url_for(
-        'view_document',
-        document_id=doc.id
-        ) }}">
-        View
-        </a>
+{% else %}
 
-        <a class="btn gray"
-        href="{{ url_for(
-        'edit_document',
-        document_id=doc.id
-        ) }}">
-        Edit
-        </a>
+Waiting
 
-        <form
-        method="post"
-        action="{{ url_for(
-        'delete_document',
-        document_id=doc.id
-        ) }}"
-        onsubmit="return confirm('Delete this document?');">
+{% endif %}
 
-        <button
-        class="btn red">
-        Delete
-        </button>
+</td>
 
-        </form>
 
-        </div>
+<td>
 
-        </td>
+<div class="actions">
 
-        </tr>
+{% if a.file_path %}
 
-        {% endfor %}
+<a class="btn gray"
+href="{{ url_for(
+'download_assignment',
+assignment_id=a.id
+) }}">
 
-        </table>
+Download
 
-        </div>
+</a>
 
-        </div>
+{% endif %}
 
-        <div class="card">
 
-        <h2>
-        Document Activity
-        </h2>
+{% if a.answer_file %}
 
-        <div class="table-wrap">
+<a class="btn"
+href="{{ url_for(
+'download_assignment_answer',
+assignment_id=a.id
+) }}">
 
-        <table>
+Answer File
 
-        <tr>
+</a>
 
-        <th>
-        Document
-        </th>
+{% endif %}
 
-        <th>
-        User
-        </th>
 
-        <th>
-        Action
-        </th>
+<a class="btn green"
+href="{{ url_for(
+'ask_assignment_answer',
+assignment_id=a.id
+) }}">
 
-        <th>
-        Time
-        </th>
+{% if a.answer_text
+or a.answer_file %}
 
-        </tr>
+Edit Response
 
-        {% for record in records %}
+{% else %}
 
-        <tr>
+Respond
 
-        <td>
-        {{ record.document_id }}
-        </td>
+{% endif %}
 
-        <td>
-        {{ record.user_id
-        or 'Unknown' }}
-        </td>
+</a>
 
-        <td>
-        {{ record.action }}
-        </td>
+</div>
 
-        <td>
-        {{ record.created_at }}
-        </td>
+</td>
 
-        </tr>
+</tr>
 
-        {% else %}
 
-        <tr>
+{% else %}
 
-        <td colspan="4">
-        No activity recorded.
-        </td>
+<tr>
 
-        </tr>
+<td colspan="7">
 
-        {% endfor %}
+No assignments submitted.
 
-        </table>
+</td>
 
-        </div>
+</tr>
 
-        </div>
+{% endfor %}
 
-        """,
+</table>
 
+</div>
+
+</div>
+
+
+<div class="card">
+
+<h2>
+Documents
+</h2>
+
+<div class="table-wrap">
+
+<table>
+
+<tr>
+
+<th>
+Title
+</th>
+
+<th>
+Type
+</th>
+
+<th>
+Views
+</th>
+
+<th>
+Downloads
+</th>
+
+<th>
+Actions
+</th>
+
+</tr>
+
+
+{% for doc in docs %}
+
+<tr>
+
+<td>
+{{ doc.title }}
+</td>
+
+<td>
+{{ doc.document_type }}
+</td>
+
+<td>
+{{ doc.view_count or 0 }}
+</td>
+
+<td>
+{{ doc.download_count or 0 }}
+</td>
+
+<td>
+
+<div class="actions">
+
+<a class="btn"
+href="{{ url_for(
+'view_document',
+document_id=doc.id
+) }}">
+View
+</a>
+
+
+<a class="btn gray"
+href="{{ url_for(
+'edit_document',
+document_id=doc.id
+) }}">
+Edit
+</a>
+
+
+<form
+method="post"
+action="{{ url_for(
+'delete_document',
+document_id=doc.id
+) }}"
+onsubmit="return confirm(
+'Delete this document?'
+);">
+
+<button
+class="btn red">
+
+Delete
+
+</button>
+
+</form>
+
+</div>
+
+</td>
+
+</tr>
+
+{% endfor %}
+
+</table>
+
+</div>
+
+</div>
+
+
+<div class="card">
+
+<h2>
+Document Activity
+</h2>
+
+<div class="table-wrap">
+
+<table>
+
+<tr>
+
+<th>
+Document
+</th>
+
+<th>
+User
+</th>
+
+<th>
+Action
+</th>
+
+<th>
+Time
+</th>
+
+</tr>
+
+
+{% for record in records %}
+
+<tr>
+
+<td>
+{{ record.document_id }}
+</td>
+
+<td>
+{{ record.user_id
+or 'Unknown' }}
+</td>
+
+<td>
+{{ record.action }}
+</td>
+
+<td>
+{{ record.created_at }}
+</td>
+
+</tr>
+
+
+{% else %}
+
+<tr>
+
+<td colspan="4">
+No activity recorded.
+</td>
+
+</tr>
+
+{% endfor %}
+
+</table>
+
+</div>
+
+</div>
+
+""",
         docs=docs,
-
         questions=all_questions,
-
         unanswered=unanswered,
-
         assignments=assignments_data,
-
-        pending_assignments=
-            pending_assignments,
-
+        pending_assignments=pending_assignments,
+        answered_assignments=answered_assignments,
         records=records,
-
         total_views=total_views,
-
-        total_downloads=
-            total_downloads
+        total_downloads=total_downloads
     )
 
 
@@ -4898,7 +5442,9 @@ def upload_document():
             )
 
             return redirect(
-                url_for("upload_document")
+                url_for(
+                    "upload_document"
+                )
             )
 
         if not file or not file.filename:
@@ -4909,7 +5455,9 @@ def upload_document():
             )
 
             return redirect(
-                url_for("upload_document")
+                url_for(
+                    "upload_document"
+                )
             )
 
         storage = None
@@ -4923,59 +5471,35 @@ def upload_document():
             response = supabase_post(
                 "documents",
                 {
-                    "title":
-                        title,
-
+                    "title": title,
                     "description":
                         description or None,
-
                     "document_type":
                         document_type,
-
                     "subject":
                         subject or None,
-
                     "course":
                         course or None,
-
                     "class_level":
                         class_level or None,
-
                     "file_name":
-                        storage[
-                            "file_name"
-                        ],
-
+                        storage["file_name"],
                     "file_path":
-                        storage[
-                            "file_path"
-                        ],
-
+                        storage["file_path"],
                     "file_url":
                         None,
-
                     "file_size":
-                        storage[
-                            "file_size"
-                        ],
-
+                        storage["file_size"],
                     "mime_type":
-                        storage[
-                            "mime_type"
-                        ],
-
+                        storage["mime_type"],
                     "uploaded_by":
                         current_user()["id"],
-
                     "is_public":
                         is_public,
-
                     "is_active":
                         True,
-
                     "download_count":
                         0,
-
                     "view_count":
                         0,
                 }
@@ -4987,9 +5511,7 @@ def upload_document():
             ):
 
                 delete_from_storage(
-                    storage[
-                        "file_path"
-                    ]
+                    storage["file_path"]
                 )
 
                 flash(
@@ -5034,13 +5556,10 @@ def upload_document():
                 try:
 
                     delete_from_storage(
-                        storage[
-                            "file_path"
-                        ]
+                        storage["file_path"]
                     )
 
                 except Exception:
-
                     pass
 
             flash(
@@ -5059,110 +5578,121 @@ def upload_document():
         "Upload Document",
         """
 
-        <div class="card">
+<div class="card">
 
-        <h1>
-        Upload Academic Document
-        </h1>
+<h1>
+Upload Academic Document
+</h1>
 
-        <form
-        method="post"
-        enctype="multipart/form-data">
+<form
+method="post"
+enctype="multipart/form-data">
 
-        <label>
-        Document Title
-        </label>
 
-        <input
-        name="title"
-        required
-        placeholder="e.g. Grade 12 Biology Notes">
+<label>
+Document Title
+</label>
 
-        <label>
-        Description
-        </label>
+<input
+name="title"
+required
+placeholder="e.g. Grade 12 Biology Notes">
 
-        <textarea
-        name="description"
-        placeholder="Description"></textarea>
 
-        <label>
-        Document Type
-        </label>
+<label>
+Description
+</label>
 
-        <select name="document_type">
+<textarea
+name="description"
+placeholder="Description"></textarea>
 
-        {% for value,label in document_types %}
 
-        <option value="{{ value }}">
-        {{ label }}
-        </option>
+<label>
+Document Type
+</label>
 
-        {% endfor %}
+<select name="document_type">
 
-        </select>
+{% for value,label in document_types %}
 
-        <label>
-        Subject
-        </label>
+<option value="{{ value }}">
 
-        <input
-        name="subject"
-        placeholder="Biology">
+{{ label }}
 
-        <label>
-        Course
-        </label>
+</option>
 
-        <input
-        name="course"
-        placeholder="Course">
+{% endfor %}
 
-        <label>
-        Class Level
-        </label>
+</select>
 
-        <input
-        name="class_level"
-        placeholder="Grade 12">
 
-        <label>
-        Document File
-        </label>
+<label>
+Subject
+</label>
 
-        <input
-        type="file"
-        name="file"
-        required>
+<input
+name="subject"
+placeholder="Biology">
 
-        <p class="small">
-        Maximum 10 MB.
-        </p>
 
-        <label>
+<label>
+Course
+</label>
 
-        <input
-        type="checkbox"
-        name="is_public"
-        style="width:auto;">
+<input
+name="course"
+placeholder="Course">
 
-        Public document
 
-        </label>
+<label>
+Class Level
+</label>
 
-        <br><br>
+<input
+name="class_level"
+placeholder="Grade 12">
 
-        <button>
-        Upload Document
-        </button>
 
-        </form>
+<label>
+Document File
+</label>
 
-        </div>
+<input
+type="file"
+name="file"
+required>
 
-        """,
-        document_types=
-            DOCUMENT_TYPES
+
+<p class="small">
+Maximum 10 MB.
+</p>
+
+
+<label>
+
+<input
+type="checkbox"
+name="is_public"
+style="width:auto;">
+
+Public document
+
+</label>
+
+<br><br>
+
+
+<button>
+Upload Document
+</button>
+
+</form>
+
+</div>
+
+""",
+        document_types=DOCUMENT_TYPES
     )
 
 
@@ -5184,7 +5714,6 @@ def edit_document(
     )
 
     if not document:
-
         abort(404)
 
     if request.method == "POST":
@@ -5358,8 +5887,7 @@ def edit_document(
                 return redirect(
                     url_for(
                         "edit_document",
-                        document_id=
-                            document_id
+                        document_id=document_id
                     )
                 )
 
@@ -5427,7 +5955,6 @@ def edit_document(
                     )
 
                 except Exception:
-
                     pass
 
             flash(
@@ -5439,8 +5966,7 @@ def edit_document(
             return redirect(
                 url_for(
                     "edit_document",
-                    document_id=
-                        document_id
+                    document_id=document_id
                 )
             )
 
@@ -5448,144 +5974,157 @@ def edit_document(
         "Edit Document",
         """
 
-        <div class="card">
+<div class="card">
 
-        <h1>
-        Edit Document
-        </h1>
+<h1>
+Edit Document
+</h1>
 
-        <p class="small">
+<p class="small">
 
-        Current file:
-        {{ document.file_name }}
+Current file:
+{{ document.file_name }}
 
-        </p>
+</p>
 
-        <form
-        method="post"
-        enctype="multipart/form-data">
 
-        <label>
-        Title
-        </label>
+<form
+method="post"
+enctype="multipart/form-data">
 
-        <input
-        name="title"
-        required
-        value="{{ document.title }}">
 
-        <label>
-        Description
-        </label>
+<label>
+Title
+</label>
 
-        <textarea
-        name="description">{{ document.description or '' }}</textarea>
+<input
+name="title"
+required
+value="{{ document.title }}">
 
-        <label>
-        Document Type
-        </label>
 
-        <select name="document_type">
+<label>
+Description
+</label>
 
-        {% for value,label in document_types %}
+<textarea
+name="description">{{ document.description or '' }}</textarea>
 
-        <option
-        value="{{ value }}"
-        {% if document.document_type == value %}
-        selected
-        {% endif %}>
 
-        {{ label }}
+<label>
+Document Type
+</label>
 
-        </option>
+<select name="document_type">
 
-        {% endfor %}
+{% for value,label in document_types %}
 
-        </select>
+<option
+value="{{ value }}"
+{% if document.document_type == value %}
+selected
+{% endif %}>
 
-        <label>
-        Subject
-        </label>
+{{ label }}
 
-        <input
-        name="subject"
-        value="{{ document.subject or '' }}">
+</option>
 
-        <label>
-        Course
-        </label>
+{% endfor %}
 
-        <input
-        name="course"
-        value="{{ document.course or '' }}">
+</select>
 
-        <label>
-        Class Level
-        </label>
 
-        <input
-        name="class_level"
-        value="{{ document.class_level or '' }}">
+<label>
+Subject
+</label>
 
-        <label>
-        Replace Existing File
-        </label>
+<input
+name="subject"
+value="{{ document.subject or '' }}">
 
-        <input
-        type="file"
-        name="file">
 
-        <p class="small">
+<label>
+Course
+</label>
 
-        Leave empty if you only want to change
-        the document information.
+<input
+name="course"
+value="{{ document.course or '' }}">
 
-        </p>
 
-        <label>
+<label>
+Class Level
+</label>
 
-        <input
-        type="checkbox"
-        name="is_public"
-        style="width:auto;"
-        {% if document.is_public %}
-        checked
-        {% endif %}>
+<input
+name="class_level"
+value="{{ document.class_level or '' }}">
 
-        Public
 
-        </label>
+<label>
+Replace Existing File
+</label>
 
-        <br>
+<input
+type="file"
+name="file">
 
-        <label>
 
-        <input
-        type="checkbox"
-        name="is_active"
-        style="width:auto;"
-        {% if document.is_active %}
-        checked
-        {% endif %}>
+<p class="small">
 
-        Active
+Leave empty if you only want to change
+the document information.
 
-        </label>
+</p>
 
-        <br><br>
 
-        <button>
-        Save Changes
-        </button>
+<label>
 
-        </form>
+<input
+type="checkbox"
+name="is_public"
+style="width:auto;"
+{% if document.is_public %}
+checked
+{% endif %}>
 
-        </div>
+Public
 
-        """,
+</label>
+
+
+<br>
+
+
+<label>
+
+<input
+type="checkbox"
+name="is_active"
+style="width:auto;"
+{% if document.is_active %}
+checked
+{% endif %}>
+
+Active
+
+</label>
+
+
+<br><br>
+
+
+<button>
+Save Changes
+</button>
+
+</form>
+
+</div>
+
+""",
         document=document,
-        document_types=
-            DOCUMENT_TYPES
+        document_types=DOCUMENT_TYPES
     )
 
 
@@ -5607,7 +6146,6 @@ def delete_document(
     )
 
     if not document:
-
         abort(404)
 
     file_path = document.get(
@@ -5702,15 +6240,10 @@ def document_report():
 
     pdf = SimpleDocTemplate(
         buffer,
-
         pagesize=A4,
-
         rightMargin=35,
-
         leftMargin=35,
-
         topMargin=35,
-
         bottomMargin=35,
     )
 
@@ -5751,7 +6284,6 @@ def document_report():
     for item in docs:
 
         data.append([
-
             str(
                 item.get(
                     "title",
@@ -5787,7 +6319,6 @@ def document_report():
                     0
                 )
             ),
-
         ])
 
     table = Table(
@@ -5868,14 +6399,9 @@ def document_report():
     buffer.seek(0)
 
     return send_file(
-
         buffer,
-
-        mimetype=
-            "application/pdf",
-
+        mimetype="application/pdf",
         as_attachment=True,
-
         download_name=
             "koja-document-report.pdf"
     )
@@ -5917,9 +6443,23 @@ def health():
         "assignment_admin_response":
             True,
 
-        "document_replacement":
+        "direct_assignment_answer":
             True,
 
+        "uploaded_assignment_answer":
+            True,
+
+        "answered_pdf":
+            True,
+
+        "answered_word":
+            True,
+
+        "student_answer_download":
+            True,
+
+        "document_replacement":
+            True,
     }
 
 
@@ -5934,24 +6474,24 @@ def forbidden(error):
         "Access Denied",
         """
 
-        <div class="card">
+<div class="card">
 
-        <h1>
-        Access Denied
-        </h1>
+<h1>
+Access Denied
+</h1>
 
-        <p>
-        You do not have permission to access this page.
-        </p>
+<p>
+You do not have permission to access this page.
+</p>
 
-        <a class="btn"
-        href="{{ url_for('home') }}">
-        Home
-        </a>
+<a class="btn"
+href="{{ url_for('home') }}">
+Home
+</a>
 
-        </div>
+</div>
 
-        """
+"""
     ), 403
 
 
@@ -5962,20 +6502,20 @@ def not_found(error):
         "Not Found",
         """
 
-        <div class="card">
+<div class="card">
 
-        <h1>
-        Page Not Found
-        </h1>
+<h1>
+Page Not Found
+</h1>
 
-        <a class="btn"
-        href="{{ url_for('home') }}">
-        Home
-        </a>
+<a class="btn"
+href="{{ url_for('home') }}">
+Home
+</a>
 
-        </div>
+</div>
 
-        """
+"""
     ), 404
 
 
@@ -5986,19 +6526,19 @@ def too_large(error):
         "File Too Large",
         """
 
-        <div class="card">
+<div class="card">
 
-        <h1>
-        File Too Large
-        </h1>
+<h1>
+File Too Large
+</h1>
 
-        <p>
-        Maximum allowed file size is 10 MB.
-        </p>
+<p>
+Maximum allowed file size is 10 MB.
+</p>
 
-        </div>
+</div>
 
-        """
+"""
     ), 413
 
 
@@ -6013,20 +6553,20 @@ def server_error(error):
         "Server Error",
         """
 
-        <div class="card">
+<div class="card">
 
-        <h1>
-        Server Error
-        </h1>
+<h1>
+Server Error
+</h1>
 
-        <p>
-        Something went wrong.
-        Please try again.
-        </p>
+<p>
+Something went wrong.
+Please try again.
+</p>
 
-        </div>
+</div>
 
-        """
+"""
     ), 500
 
 
