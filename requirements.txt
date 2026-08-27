@@ -1,7 +1,7 @@
-
-Flask
-requests
-python-dotenv
-reportlab
-Flask-Limiter
-gunicorn
+Flask==3.1.2
+requests==2.32.5
+python-dotenv==1.1.1
+openai==1.107.3
+reportlab==4.4.3
+gunicorn==23.0.0
+Werkzeug==3.1.3
