@@ -1,12 +1,9 @@
 import os
 import io
-import re
 import uuid
 import secrets
 import logging
-from datetime import datetime, timezone, timedelta
-from functools import wraps
-from html import escape
+import json
 
 import requests
 from dotenv import load_dotenv
@@ -23,425 +20,130 @@ from flask import (
     abort,
 )
 
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
+from functools import wraps
 
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import mm
 from reportlab.platypus import (
     SimpleDocTemplate,
     Paragraph,
     Spacer,
+    Table,
+    TableStyle,
 )
-from reportlab.lib.styles import (
-    getSampleStyleSheet,
-    ParagraphStyle,
-)
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.enums import TA_CENTER
 
 
 # ============================================================
 # KOJA AFRICA
-# KNOWLEDGE • QUESTIONS • ANSWERS
+# COMPLETE FLASK APPLICATION
 #
-# Professional foundation:
-#
-# Authentication
-# Student portal
-# Admin portal
-# Questions
-# Answers
-# Private documents
-# Document inbox/outbox
-# Secure downloads
-# Audit logs
-# PDF answers
-# Future premium resources
-# Future subscriptions
-# Future payments
-# Future institutions
+# Includes:
+# - Student registration/login
+# - Supabase authentication
+# - Document library
+# - Questions and direct answers
+# - Student assignment upload
+# - Assignment questions
+# - Admin assignment responses
+# - Direct administrator answers
+# - Uploaded answered PDF/Word files
+# - Student answered-file downloads
+# - Document upload/edit/delete
+# - Document activity
+# - PDF document report
 # ============================================================
+
 
 load_dotenv()
 
 
 # ============================================================
-# APPLICATION
+# CONFIGURATION
+# ============================================================
+
+SUPABASE_URL = os.getenv(
+    "SUPABASE_URL",
+    "https://YOUR-PROJECT.supabase.co"
+).rstrip("/")
+
+SUPABASE_SERVICE_KEY = os.getenv(
+    "SUPABASE_SERVICE_KEY",
+    ""
+)
+
+SECRET_KEY = os.getenv(
+    "SECRET_KEY",
+    secrets.token_hex(32)
+)
+
+ADMIN_UUID = os.getenv(
+    "ADMIN_UUID",
+    "fea4ac9a-97a1-4fcf-b5cb-870843dc48dd"
+)
+
+STORAGE_BUCKET = os.getenv(
+    "STORAGE_BUCKET",
+    "koja-files"
+)
+
+MAX_FILE_SIZE = int(
+    os.getenv(
+        "MAX_FILE_SIZE",
+        "10485760"
+    )
+)
+
+ALLOWED_EXTENSIONS = {
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".ppt",
+    ".pptx",
+    ".txt",
+    ".jpg",
+    ".jpeg",
+    ".png",
+}
+
+# Administrator answered-file formats.
+ANSWER_ALLOWED_EXTENSIONS = {
+    ".pdf",
+    ".doc",
+    ".docx",
+}
+
+ANSWER_MAX_FILE_SIZE = MAX_FILE_SIZE
+
+
+# ============================================================
+# FLASK APPLICATION
 # ============================================================
 
 app = Flask(__name__)
 
+app.secret_key = SECRET_KEY
 
-# ============================================================
-# ENVIRONMENT
-# ============================================================
-
-FLASK_SECRET_KEY = os.getenv(
-    "FLASK_SECRET_KEY",
-    ""
-).strip()
-
-SUPABASE_URL = os.getenv(
-    "SUPABASE_URL",
-    ""
-).strip().rstrip("/")
-
-SUPABASE_ANON_KEY = os.getenv(
-    "SUPABASE_ANON_KEY",
-    ""
-).strip()
-
-SUPABASE_SECRET_KEY = os.getenv(
-    "SUPABASE_SECRET_KEY",
-    ""
-).strip()
-
-if not SUPABASE_SECRET_KEY:
-    SUPABASE_SECRET_KEY = os.getenv(
-        "SUPABASE_SERVICE_KEY",
-        ""
-    ).strip()
-
-ADMIN_EMAIL = os.getenv(
-    "ADMIN_EMAIL",
-    ""
-).strip().lower()
-
-SUPABASE_BUCKET = os.getenv(
-    "SUPABASE_BUCKET",
-    "koja-files"
-).strip()
-
-MAX_FILE_SIZE = 10 * 1024 * 1024
-
-
-# ============================================================
-# ALLOWED FILES
-# ============================================================
-
-ALLOWED_EXTENSIONS = {
-    "pdf",
-    "doc",
-    "docx",
-    "txt",
-    "jpg",
-    "jpeg",
-    "png",
-    "webp",
-    "ppt",
-    "pptx",
-    "xls",
-    "xlsx",
-}
-
-
-# ============================================================
-# CONFIG VALIDATION
-# ============================================================
-
-if not FLASK_SECRET_KEY:
-    raise RuntimeError(
-        "FLASK_SECRET_KEY is missing."
-    )
-
-if not SUPABASE_URL:
-    raise RuntimeError(
-        "SUPABASE_URL is missing."
-    )
-
-if not SUPABASE_ANON_KEY:
-    raise RuntimeError(
-        "SUPABASE_ANON_KEY is missing."
-    )
-
-if not SUPABASE_SECRET_KEY:
-    raise RuntimeError(
-        "SUPABASE_SECRET_KEY is missing."
-    )
-
-
-app.secret_key = FLASK_SECRET_KEY
-
-
-# ============================================================
-# FLASK SECURITY
-# ============================================================
-
-COOKIE_SECURE = (
-    os.getenv(
-        "COOKIE_SECURE",
-        "true"
-    ).strip().lower()
-    == "true"
-)
-
-app.config.update(
-    MAX_CONTENT_LENGTH=MAX_FILE_SIZE,
-
-    SESSION_COOKIE_HTTPONLY=True,
-
-    SESSION_COOKIE_SECURE=COOKIE_SECURE,
-
-    SESSION_COOKIE_SAMESITE="Lax",
-
-    PERMANENT_SESSION_LIFETIME=timedelta(
-        hours=8
-    ),
-)
-
-
-# ============================================================
-# LOGGING
-# ============================================================
+app.config["MAX_CONTENT_LENGTH"] = MAX_FILE_SIZE
 
 logging.basicConfig(
-    level=logging.INFO,
-    format=(
-        "%(asctime)s "
-        "%(levelname)s "
-        "%(name)s "
-        "%(message)s"
-    ),
+    level=logging.INFO
 )
 
-logger = logging.getLogger(
-    "koja-africa"
-)
+logger = logging.getLogger("koja")
 
 
 # ============================================================
-# RATE LIMITING
+# SUPABASE VALIDATION
 # ============================================================
 
-limiter = Limiter(
-    key_func=get_remote_address,
-    app=app,
-    default_limits=[
-        "300 per hour"
-    ],
-    storage_uri="memory://",
-)
-
-
-# ============================================================
-# SUPABASE ENDPOINTS
-# ============================================================
-
-SUPABASE_AUTH_URL = (
-    f"{SUPABASE_URL}/auth/v1"
-)
-
-SUPABASE_REST_URL = (
-    f"{SUPABASE_URL}/rest/v1"
-)
-
-SUPABASE_STORAGE_URL = (
-    f"{SUPABASE_URL}/storage/v1"
-)
-
-
-# ============================================================
-# GENERAL HELPERS
-# ============================================================
-
-def now_iso():
-    return datetime.now(
-        timezone.utc
-    ).isoformat()
-
-
-def esc(value):
-    return escape(
-        str(value or "")
-    )
-
-
-def safe_filename(filename):
-    filename = os.path.basename(
-        filename or ""
-    ).strip()
-
-    filename = re.sub(
-        r"[^A-Za-z0-9._ -]",
-        "_",
-        filename
-    )
-
-    return filename[:180] or "file"
-
-
-def allowed_file(filename):
-    if "." not in filename:
-        return False
-
-    extension = (
-        filename.rsplit(
-            ".",
-            1
-        )[1].lower()
-    )
-
-    return extension in ALLOWED_EXTENSIONS
-
-
-def file_extension(filename):
-    if "." not in filename:
-        return ""
-
+def supabase_is_configured():
     return (
-        filename.rsplit(
-            ".",
-            1
-        )[1]
-        .lower()
+        SUPABASE_URL
+        and SUPABASE_SERVICE_KEY
+        and "YOUR-PROJECT" not in SUPABASE_URL
     )
-
-
-def format_size(size):
-    try:
-        size = int(size)
-    except Exception:
-        return "Unknown"
-
-    if size < 1024:
-        return f"{size} B"
-
-    if size < 1024 * 1024:
-        return f"{size / 1024:.1f} KB"
-
-    return f"{size / (1024 * 1024):.1f} MB"
-
-
-def document_direction_label(direction):
-    if direction == "student_to_admin":
-        return "Student → Admin"
-
-    if direction == "admin_to_student":
-        return "Admin → Student"
-
-    return direction or "Document"
-
-
-def document_type_label(filename):
-    extension = file_extension(
-        filename
-    )
-
-    if extension == "pdf":
-        return "PDF"
-
-    if extension in {
-        "doc",
-        "docx"
-    }:
-        return "Word"
-
-    if extension in {
-        "xls",
-        "xlsx"
-    }:
-        return "Excel"
-
-    if extension in {
-        "ppt",
-        "pptx"
-    }:
-        return "PowerPoint"
-
-    if extension in {
-        "jpg",
-        "jpeg",
-        "png",
-        "webp"
-    }:
-        return "Image"
-
-    if extension == "txt":
-        return "Text"
-
-    return extension.upper() or "FILE"
-
-
-# ============================================================
-# CSRF
-# ============================================================
-
-def get_csrf():
-    token = session.get(
-        "_csrf_token"
-    )
-
-    if not token:
-        token = secrets.token_urlsafe(32)
-
-        session["_csrf_token"] = token
-
-    return token
-
-
-def csrf_input():
-    return (
-        '<input type="hidden" '
-        'name="_csrf" '
-        f'value="{esc(get_csrf())}">'
-    )
-
-
-def check_csrf():
-
-    submitted = request.form.get(
-        "_csrf",
-        ""
-    )
-
-    stored = session.get(
-        "_csrf_token",
-        ""
-    )
-
-    if (
-        not submitted
-        or not stored
-        or not secrets.compare_digest(
-            submitted,
-            stored
-        )
-    ):
-        abort(
-            400,
-            description="Invalid security token."
-        )
-
-
-# ============================================================
-# CURRENT USER
-# ============================================================
-
-def current_user():
-    return session.get("user")
-
-
-def current_profile():
-
-    user = current_user()
-
-    if not user:
-        return None
-
-    rows = rest_get(
-        "profiles",
-        {
-            "id":
-                f"eq.{user.get('id')}",
-            "limit":
-                "1"
-        }
-    )
-
-    if rows:
-        return rows[0]
-
-    return None
 
 
 # ============================================================
@@ -449,156 +151,76 @@ def current_profile():
 # ============================================================
 
 def supabase_headers():
-
     return {
-        "apikey":
-            SUPABASE_SECRET_KEY,
-
-        "Authorization":
-            f"Bearer {SUPABASE_SECRET_KEY}",
-
-        "Content-Type":
-            "application/json",
+        "apikey": SUPABASE_SERVICE_KEY,
+        "Authorization": (
+            f"Bearer {SUPABASE_SERVICE_KEY}"
+        ),
+        "Content-Type": "application/json",
     }
 
 
-def auth_headers():
-
-    return {
-        "apikey":
-            SUPABASE_ANON_KEY,
-
-        "Content-Type":
-            "application/json",
+def storage_headers(content_type=None):
+    headers = {
+        "apikey": SUPABASE_SERVICE_KEY,
+        "Authorization": (
+            f"Bearer {SUPABASE_SERVICE_KEY}"
+        ),
     }
 
+    if content_type:
+        headers["Content-Type"] = content_type
 
-def storage_headers():
-
-    return {
-        "apikey":
-            SUPABASE_SECRET_KEY,
-
-        "Authorization":
-            f"Bearer {SUPABASE_SECRET_KEY}",
-    }
+    return headers
 
 
 # ============================================================
-# SUPABASE GET
+# SUPABASE REST HELPERS
 # ============================================================
 
-def rest_get(
-    table,
-    params=None,
-    select="*"
-):
-
+def supabase_get(table, params=None):
     try:
-
-        query = {
-            "select": select
-        }
-
-        if params:
-            query.update(params)
-
-        response = requests.get(
-            f"{SUPABASE_REST_URL}/{table}",
+        return requests.get(
+            f"{SUPABASE_URL}/rest/v1/{table}",
             headers=supabase_headers(),
-            params=query,
+            params=params or {},
             timeout=30,
         )
-
-        if not response.ok:
-
-            logger.error(
-                "Supabase GET %s failed: %s",
-                table,
-                response.text[:1000],
-            )
-
-            return []
-
-        data = response.json()
-
-        if not isinstance(
-            data,
-            list
-        ):
-            return []
-
-        return data
-
-    except Exception:
-
+    except Exception as exc:
         logger.exception(
-            "Supabase GET exception"
+            "Supabase GET error: %s",
+            exc
         )
+        raise
 
-        return []
 
-
-# ============================================================
-# SUPABASE INSERT
-# ============================================================
-
-def rest_insert(
-    table,
-    payload,
-    returning=True
-):
-
+def supabase_post(table, data):
     headers = supabase_headers()
 
-    if returning:
-
-        headers["Prefer"] = (
-            "return=representation"
-        )
+    headers["Prefer"] = (
+        "return=representation"
+    )
 
     try:
-
-        response = requests.post(
-            f"{SUPABASE_REST_URL}/{table}",
+        return requests.post(
+            f"{SUPABASE_URL}/rest/v1/{table}",
             headers=headers,
-            json=payload,
+            json=data,
             timeout=30,
         )
-
-        if not response.ok:
-
-            logger.error(
-                "Supabase INSERT %s failed: %s",
-                table,
-                response.text[:1000],
-            )
-
-            return None
-
-        if not response.text:
-            return []
-
-        return response.json()
-
-    except Exception:
-
+    except Exception as exc:
         logger.exception(
-            "Supabase INSERT exception"
+            "Supabase POST error: %s",
+            exc
         )
+        raise
 
-        return None
 
+def supabase_patch(table, filters, data):
+    params = {}
 
-# ============================================================
-# SUPABASE UPDATE
-# ============================================================
-
-def rest_update(
-    table,
-    params,
-    payload
-):
+    for key, value in filters.items():
+        params[key] = f"eq.{value}"
 
     headers = supabase_headers()
 
@@ -607,355 +229,122 @@ def rest_update(
     )
 
     try:
-
-        response = requests.patch(
-            f"{SUPABASE_REST_URL}/{table}",
+        return requests.patch(
+            f"{SUPABASE_URL}/rest/v1/{table}",
             headers=headers,
             params=params,
-            json=payload,
+            json=data,
             timeout=30,
         )
-
-        if not response.ok:
-
-            logger.error(
-                "Supabase UPDATE %s failed: %s",
-                table,
-                response.text[:1000],
-            )
-
-            return None
-
-        if not response.text:
-            return []
-
-        return response.json()
-
-    except Exception:
-
+    except Exception as exc:
         logger.exception(
-            "Supabase UPDATE exception"
+            "Supabase PATCH error: %s",
+            exc
         )
+        raise
 
-        return None
 
+def supabase_delete(table, filters):
+    params = {}
 
-# ============================================================
-# SUPABASE DELETE
-# ============================================================
-
-def rest_delete(
-    table,
-    params
-):
+    for key, value in filters.items():
+        params[key] = f"eq.{value}"
 
     try:
-
-        response = requests.delete(
-            f"{SUPABASE_REST_URL}/{table}",
+        return requests.delete(
+            f"{SUPABASE_URL}/rest/v1/{table}",
             headers=supabase_headers(),
             params=params,
             timeout=30,
         )
-
-        if not response.ok:
-
-            logger.error(
-                "Supabase DELETE %s failed: %s",
-                table,
-                response.text[:1000],
-            )
-
-            return False
-
-        return True
-
-    except Exception:
-
+    except Exception as exc:
         logger.exception(
-            "Supabase DELETE exception"
+            "Supabase DELETE error: %s",
+            exc
         )
-
-        return False
+        raise
 
 
 # ============================================================
-# SUPABASE AUTH
+# AUTHENTICATION
 # ============================================================
 
-def supabase_signup(
-    email,
-    password,
-    name
-):
-
-    try:
-
-        response = requests.post(
-            f"{SUPABASE_AUTH_URL}/signup",
-            headers=auth_headers(),
-            json={
-                "email":
-                    email,
-
-                "password":
-                    password,
-
-                "data": {
-                    "name":
-                        name
-                }
-            },
-            timeout=30,
-        )
-
-        try:
-            data = response.json()
-        except ValueError:
-            data = {}
-
-        if not response.ok:
-
-            return (
-                None,
-                (
-                    data.get("msg")
-                    or data.get("message")
-                    or data.get(
-                        "error_description"
-                    )
-                    or "Registration failed."
-                )
-            )
-
-        return data, None
-
-    except Exception:
-
-        logger.exception(
-            "Signup failed"
-        )
-
-        return (
-            None,
-            "Authentication service is temporarily unavailable."
-        )
+def auth_signup(email, password):
+    return requests.post(
+        f"{SUPABASE_URL}/auth/v1/signup",
+        headers={
+            "apikey": SUPABASE_SERVICE_KEY,
+            "Content-Type": "application/json",
+        },
+        json={
+            "email": email,
+            "password": password,
+        },
+        timeout=30,
+    )
 
 
-def supabase_login(
-    email,
-    password
-):
+def auth_login(email, password):
+    return requests.post(
+        f"{SUPABASE_URL}/auth/v1/token"
+        "?grant_type=password",
+        headers={
+            "apikey": SUPABASE_SERVICE_KEY,
+            "Content-Type": "application/json",
+        },
+        json={
+            "email": email,
+            "password": password,
+        },
+        timeout=30,
+    )
 
-    try:
 
-        response = requests.post(
-            f"{SUPABASE_AUTH_URL}"
-            "/token?grant_type=password",
-
-            headers=auth_headers(),
-
-            json={
-                "email":
-                    email,
-
-                "password":
-                    password
-            },
-
-            timeout=30,
-        )
-
-        try:
-            data = response.json()
-        except ValueError:
-            data = {}
-
-        if response.ok:
-
-            user = data.get(
-                "user"
-            )
-
-            if not user:
-
-                return (
-                    None,
-                    "Supabase did not return a user."
-                )
-
-            return data, None
-
-        error_code = data.get(
-            "error_code",
-            ""
-        )
-
-        error_description = data.get(
-            "error_description",
-            ""
-        )
-
-        if error_code == "invalid_credentials":
-
-            return (
-                None,
-                "Invalid email or password."
-            )
-
-        if (
-            "email not confirmed"
-            in error_description.lower()
-        ):
-
-            return (
-                None,
-                "Please confirm your email before logging in."
-            )
-
-        return (
-            None,
-            (
-                data.get("msg")
-                or data.get("message")
-                or error_description
-                or "Invalid email or password."
-            )
-        )
-
-    except Exception:
-
-        logger.exception(
-            "Login failed"
-        )
-
-        return (
-            None,
-            "Authentication service is temporarily unavailable."
-        )
+def auth_user(access_token):
+    return requests.get(
+        f"{SUPABASE_URL}/auth/v1/user",
+        headers={
+            "apikey": SUPABASE_SERVICE_KEY,
+            "Authorization": (
+                f"Bearer {access_token}"
+            ),
+        },
+        timeout=30,
+    )
 
 
 # ============================================================
-# PROFILE MANAGEMENT
+# USER / SESSION
 # ============================================================
 
-def ensure_profile(user):
+def current_user():
+    return session.get("user")
+
+
+def is_logged_in():
+    return current_user() is not None
+
+
+def is_admin():
+    user = current_user()
 
     if not user:
-        return None
+        return False
 
-    user_id = user.get(
-        "id"
+    return (
+        str(user.get("id"))
+        == str(ADMIN_UUID)
     )
-
-    email = (
-        user.get(
-            "email"
-        )
-        or ""
-    ).strip().lower()
-
-    if not user_id:
-        return None
-
-    profiles = rest_get(
-        "profiles",
-        {
-            "id":
-                f"eq.{user_id}",
-
-            "limit":
-                "1"
-        }
-    )
-
-    if profiles:
-
-        profile = profiles[0]
-
-        if (
-            ADMIN_EMAIL
-            and email == ADMIN_EMAIL
-            and profile.get("role")
-            != "admin"
-        ):
-
-            updated = rest_update(
-                "profiles",
-                {
-                    "id":
-                        f"eq.{user_id}"
-                },
-                {
-                    "role":
-                        "admin"
-                }
-            )
-
-            if updated:
-                profile = updated[0]
-
-        return profile
-
-    metadata = (
-        user.get(
-            "user_metadata"
-        )
-        or {}
-    )
-
-    name = (
-        metadata.get("name")
-        or metadata.get("full_name")
-        or (
-            email.split("@")[0]
-            if email
-            else "Student"
-        )
-    ).strip()
-
-    role = "student"
-
-    if (
-        ADMIN_EMAIL
-        and email == ADMIN_EMAIL
-    ):
-        role = "admin"
-
-    result = rest_insert(
-        "profiles",
-        {
-            "id":
-                user_id,
-
-            "name":
-                name or "Student",
-
-            "email":
-                email,
-
-            "role":
-                role
-        }
-    )
-
-    if result:
-        return result[0]
-
-    return None
 
 
 # ============================================================
-# AUTH DECORATORS
+# DECORATORS
 # ============================================================
 
-def login_required(view):
-
-    @wraps(view)
-    def wrapped(*args, **kwargs):
-
-        if not current_user():
-
+def login_required(function):
+    @wraps(function)
+    def wrapper(*args, **kwargs):
+        if not is_logged_in():
             flash(
                 "Please log in first.",
                 "warning"
@@ -965,488 +354,835 @@ def login_required(view):
                 url_for("login")
             )
 
-        return view(
+        return function(
             *args,
             **kwargs
         )
 
-    return wrapped
+    return wrapper
 
 
-def admin_required(view):
-
-    @wraps(view)
-    def wrapped(*args, **kwargs):
-
-        user = current_user()
-
-        if not user:
+def admin_required(function):
+    @wraps(function)
+    def wrapper(*args, **kwargs):
+        if not is_logged_in():
+            flash(
+                "Please log in first.",
+                "warning"
+            )
 
             return redirect(
                 url_for("login")
             )
 
-        profile = current_profile()
-
-        if (
-            not profile
-            or profile.get("role")
-            != "admin"
-        ):
-
+        if not is_admin():
             abort(403)
 
-        return view(
+        return function(
             *args,
             **kwargs
         )
 
-    return wrapped
+    return wrapper
 
 
-def student_required(view):
+# ============================================================
+# PROFILE
+# ============================================================
 
-    @wraps(view)
-    def wrapped(*args, **kwargs):
+def get_profile(user_id):
+    response = supabase_get(
+        "profiles",
+        {
+            "id": f"eq.{user_id}",
+            "select": "*",
+            "limit": "1",
+        }
+    )
 
-        user = current_user()
-
-        if not user:
-
-            return redirect(
-                url_for("login")
-            )
-
-        profile = current_profile()
-
-        if not profile:
-
-            abort(403)
-
-        if profile.get("role") == "admin":
-
-            return redirect(
-                url_for(
-                    "admin_dashboard"
-                )
-            )
-
-        return view(
-            *args,
-            **kwargs
+    if response.status_code != 200:
+        logger.error(
+            "Profile lookup failed: %s",
+            response.text
         )
+        return None
 
-    return wrapped
+    rows = response.json()
 
-
-# ============================================================
-# LOGGING
-# ============================================================
-
-def write_log(
-    event,
-    category="System",
-    level="INFO",
-    details="",
-    user_id=None
-):
-
-    try:
-
-        rest_insert(
-            "logs",
-            {
-                "event":
-                    str(event)[:500],
-
-                "category":
-                    str(category)[:100],
-
-                "level":
-                    str(level)[:50],
-
-                "details":
-                    str(details)[:4000],
-
-                "user_id":
-                    user_id
-            },
-
-            returning=False
-        )
-
-    except Exception:
-
-        logger.exception(
-            "Database logging failed"
-        )
+    return (
+        rows[0]
+        if rows
+        else None
+    )
 
 
-# ============================================================
-# PRIVATE STORAGE
-# ============================================================
+def ensure_profile(user_id, email):
+    profile = get_profile(
+        user_id
+    )
 
-def upload_private_file(
-    uploaded_file,
-    folder
-):
+    if profile:
+        return profile
 
-    if (
-        not uploaded_file
-        or not uploaded_file.filename
+    role = (
+        "admin"
+        if str(user_id)
+        == str(ADMIN_UUID)
+        else "student"
+    )
+
+    response = supabase_post(
+        "profiles",
+        {
+            "id": user_id,
+            "name": email.split("@")[0],
+            "email": email,
+            "role": role,
+        }
+    )
+
+    if response.status_code not in (
+        200,
+        201
     ):
+        logger.error(
+            "Profile creation failed: %s",
+            response.text
+        )
+        return None
 
+    rows = response.json()
+
+    return (
+        rows[0]
+        if rows
+        else None
+    )
+
+
+# ============================================================
+# DOCUMENT TYPES
+# ============================================================
+
+DOCUMENT_TYPES = [
+    ("academic", "Academic"),
+    ("assignment", "Assignment"),
+    ("notes", "Notes"),
+    ("past_paper", "Past Paper"),
+    ("report", "Report"),
+    ("answer", "Answer"),
+    ("announcement", "Announcement"),
+    ("other", "Other"),
+]
+
+
+# ============================================================
+# DOCUMENTS
+# ============================================================
+
+def get_documents(search=""):
+    response = supabase_get(
+        "documents",
+        {
+            "select": "*",
+            "is_active": "eq.true",
+            "order": "created_at.desc",
+        }
+    )
+
+    if response.status_code != 200:
+        logger.error(
+            "Documents error: %s",
+            response.text
+        )
+        return []
+
+    documents = response.json()
+
+    search = (
+        search
+        .strip()
+        .lower()
+    )
+
+    if not search:
+        return documents
+
+    results = []
+
+    for document in documents:
+        text = " ".join([
+            str(
+                document.get(
+                    "title",
+                    ""
+                )
+            ),
+            str(
+                document.get(
+                    "description",
+                    ""
+                )
+            ),
+            str(
+                document.get(
+                    "subject",
+                    ""
+                )
+            ),
+            str(
+                document.get(
+                    "course",
+                    ""
+                )
+            ),
+            str(
+                document.get(
+                    "class_level",
+                    ""
+                )
+            ),
+            str(
+                document.get(
+                    "document_type",
+                    ""
+                )
+            ),
+        ]).lower()
+
+        if search in text:
+            results.append(
+                document
+            )
+
+    return results
+
+
+def get_document(document_id):
+    response = supabase_get(
+        "documents",
+        {
+            "id": f"eq.{document_id}",
+            "select": "*",
+            "limit": "1",
+        }
+    )
+
+    if response.status_code != 200:
+        return None
+
+    rows = response.json()
+
+    return (
+        rows[0]
+        if rows
+        else None
+    )
+
+
+# ============================================================
+# DOCUMENT ACTIVITY
+# ============================================================
+
+def create_document_record(
+    document_id,
+    user_id,
+    action
+):
+    try:
+        ip_address = request.headers.get(
+            "X-Forwarded-For",
+            request.remote_addr
+        )
+
+        if ip_address:
+            ip_address = (
+                ip_address
+                .split(",")[0]
+                .strip()
+            )
+
+        user_agent = request.headers.get(
+            "User-Agent",
+            ""
+        )
+
+        return supabase_post(
+            "document_records",
+            {
+                "document_id": document_id,
+                "user_id": user_id,
+                "action": action,
+                "ip_address": ip_address,
+                "user_agent": user_agent,
+            }
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "Activity record failed: %s",
+            exc
+        )
+        return None
+
+
+# ============================================================
+# STORAGE
+# ============================================================
+
+def upload_to_storage(file_storage):
+    original_name = (
+        file_storage.filename
+    )
+
+    if not original_name:
         raise ValueError(
             "No file selected."
         )
 
-    filename = safe_filename(
-        uploaded_file.filename
-    )
+    extension = os.path.splitext(
+        original_name
+    )[1].lower()
 
-    if not allowed_file(filename):
-
+    if extension not in ALLOWED_EXTENSIONS:
         raise ValueError(
             "Unsupported file type."
         )
 
-    content = uploaded_file.read()
+    content = file_storage.read()
 
     if not content:
-
         raise ValueError(
-            "The uploaded file is empty."
+            "The selected file is empty."
         )
 
     if len(content) > MAX_FILE_SIZE:
-
         raise ValueError(
-            "Maximum file size is 10 MB."
+            "File is larger than 10 MB."
         )
 
-    extension = ""
+    safe_name = (
+        uuid.uuid4().hex
+        + extension
+    )
 
-    if "." in filename:
-
-        extension = (
-            "."
-            + file_extension(filename)
-        )
-
-    storage_path = (
-        f"{folder.strip('/')}/"
-        f"{datetime.now(timezone.utc).strftime('%Y/%m/%d')}/"
-        f"{uuid.uuid4().hex}"
-        f"{extension}"
+    file_path = (
+        "documents/"
+        + safe_name
     )
 
     content_type = (
-        uploaded_file.mimetype
+        file_storage.mimetype
         or "application/octet-stream"
     )
 
-    headers = storage_headers()
-
-    headers["Content-Type"] = (
-        content_type
+    url = (
+        f"{SUPABASE_URL}"
+        f"/storage/v1/object/"
+        f"{STORAGE_BUCKET}/"
+        f"{file_path}"
     )
 
     response = requests.post(
-        f"{SUPABASE_STORAGE_URL}"
-        f"/object/{SUPABASE_BUCKET}"
-        f"/{storage_path}",
-
-        headers=headers,
-
+        url,
+        headers=storage_headers(
+            content_type
+        ),
         data=content,
-
         timeout=120,
     )
 
-    if not response.ok:
-
-        logger.error(
-            "Storage upload failed: %s",
-            response.text[:1000],
-        )
-
+    if response.status_code not in (
+        200,
+        201
+    ):
         raise RuntimeError(
-            "Storage upload failed."
+            "Storage upload failed: "
+            + response.text
         )
 
     return {
-        "original_name":
-            filename,
-
-        "storage_path":
-            storage_path,
-
-        "size":
-            len(content),
-
-        "content_type":
-            content_type,
+        "file_path": file_path,
+        "file_name": original_name,
+        "file_size": len(content),
+        "mime_type": content_type,
     }
 
 
-def download_private_file(
-    storage_path
-):
+# ============================================================
+# ANSWER FILE STORAGE
+# ============================================================
 
-    if not storage_path:
+def upload_answer_file(file_storage):
+    """
+    Upload an administrator's answered
+    assignment PDF/Word file.
+
+    Supported:
+    - PDF
+    - DOC
+    - DOCX
+    """
+
+    original_name = (
+        file_storage.filename
+    )
+
+    if not original_name:
+        raise ValueError(
+            "No answer file selected."
+        )
+
+    extension = os.path.splitext(
+        original_name
+    )[1].lower()
+
+    if extension not in ANSWER_ALLOWED_EXTENSIONS:
+        raise ValueError(
+            "Answered file must be PDF, DOC or DOCX."
+        )
+
+    content = file_storage.read()
+
+    if not content:
+        raise ValueError(
+            "The answered file is empty."
+        )
+
+    if len(content) > ANSWER_MAX_FILE_SIZE:
+        raise ValueError(
+            "Answered file is larger than 10 MB."
+        )
+
+    safe_name = (
+        uuid.uuid4().hex
+        + extension
+    )
+
+    file_path = (
+        "assignment-answers/"
+        + safe_name
+    )
+
+    content_type = (
+        file_storage.mimetype
+        or "application/octet-stream"
+    )
+
+    # More reliable MIME values.
+    if extension == ".pdf":
+        content_type = "application/pdf"
+
+    elif extension == ".doc":
+        content_type = (
+            "application/msword"
+        )
+
+    elif extension == ".docx":
+        content_type = (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+
+    url = (
+        f"{SUPABASE_URL}"
+        f"/storage/v1/object/"
+        f"{STORAGE_BUCKET}/"
+        f"{file_path}"
+    )
+
+    response = requests.post(
+        url,
+        headers=storage_headers(
+            content_type
+        ),
+        data=content,
+        timeout=120,
+    )
+
+    if response.status_code not in (
+        200,
+        201
+    ):
+        raise RuntimeError(
+            "Answered file upload failed: "
+            + response.text
+        )
+
+    return {
+        "file_path": file_path,
+        "file_name": original_name,
+        "file_size": len(content),
+        "mime_type": content_type,
+    }
+
+
+def download_from_storage(file_path):
+    url = (
+        f"{SUPABASE_URL}"
+        f"/storage/v1/object/"
+        f"{STORAGE_BUCKET}/"
+        f"{file_path}"
+    )
+
+    return requests.get(
+        url,
+        headers=storage_headers(),
+        timeout=120,
+    )
+
+
+def delete_from_storage(file_path):
+    url = (
+        f"{SUPABASE_URL}"
+        f"/storage/v1/object/"
+        f"{STORAGE_BUCKET}/"
+        f"{file_path}"
+    )
+
+    return requests.delete(
+        url,
+        headers=storage_headers(),
+        timeout=60,
+    )
+
+
+# ============================================================
+# ASSIGNMENT ANSWER DATA
+# ============================================================
+
+ANSWER_PREFIX = "KOJA_ANSWER_V1:"
+
+
+def make_assignment_answer_data(
+    answer_text="",
+    answer_file=None
+):
+    """
+    Stores answer information inside the
+    existing assignments.admin_comment field.
+
+    This avoids requiring a new database table.
+    """
+
+    payload = {
+        "version": 1,
+        "answer_text": answer_text or "",
+        "answer_file": answer_file,
+    }
+
+    return (
+        ANSWER_PREFIX
+        + json.dumps(
+            payload,
+            ensure_ascii=False
+        )
+    )
+
+
+def parse_assignment_answer(
+    assignment
+):
+    """
+    Supports both:
+    - New KOJA structured answers
+    - Old plain-text admin_comment values
+    """
+
+    raw = assignment.get(
+        "admin_comment"
+    )
+
+    result = {
+        "answer_text": "",
+        "answer_file": None,
+    }
+
+    if not raw:
+        return result
+
+    raw = str(raw)
+
+    if raw.startswith(
+        ANSWER_PREFIX
+    ):
+        try:
+            payload = json.loads(
+                raw[
+                    len(ANSWER_PREFIX):
+                ]
+            )
+
+            result["answer_text"] = (
+                payload.get(
+                    "answer_text",
+                    ""
+                )
+                or ""
+            )
+
+            result["answer_file"] = (
+                payload.get(
+                    "answer_file"
+                )
+            )
+
+            return result
+
+        except Exception as exc:
+            logger.warning(
+                "Could not parse assignment answer: %s",
+                exc
+            )
+
+    # Backward compatibility.
+    result["answer_text"] = raw
+
+    return result
+
+
+def enrich_assignment(
+    assignment
+):
+    answer = parse_assignment_answer(
+        assignment
+    )
+
+    assignment["answer_text"] = (
+        answer["answer_text"]
+    )
+
+    assignment["answer_file"] = (
+        answer["answer_file"]
+    )
+
+    if answer["answer_file"]:
+        assignment["answer_file_name"] = (
+            answer["answer_file"].get(
+                "file_name"
+            )
+        )
+
+    else:
+        assignment["answer_file_name"] = None
+
+    return assignment
+
+
+# ============================================================
+# DOCUMENT COUNTERS
+# ============================================================
+
+def increment_document_counter(
+    document_id,
+    field
+):
+    if field not in (
+        "view_count",
+        "download_count",
+    ):
+        return
+
+    document = get_document(
+        document_id
+    )
+
+    if not document:
+        return
+
+    current = int(
+        document.get(
+            field,
+            0
+        )
+        or 0
+    )
+
+    supabase_patch(
+        "documents",
+        {
+            "id": document_id
+        },
+        {
+            field: current + 1
+        }
+    )
+
+
+# ============================================================
+# QUESTIONS
+# ============================================================
+
+def get_questions():
+    response = supabase_get(
+        "questions",
+        {
+            "select": "*",
+            "order": "created_at.desc",
+        }
+    )
+
+    if response.status_code != 200:
+        logger.error(
+            "Questions error: %s",
+            response.text
+        )
+        return []
+
+    questions = response.json()
+
+    for question in questions:
+        answer_response = supabase_get(
+            "answers",
+            {
+                "question_id":
+                    f"eq.{question['id']}",
+                "select": "*",
+                "order":
+                    "created_at.desc",
+                "limit": "1",
+            }
+        )
+
+        if answer_response.status_code == 200:
+            answers = (
+                answer_response.json()
+            )
+
+            question["answer"] = (
+                answers[0]
+                if answers
+                else None
+            )
+
+        else:
+            question["answer"] = None
+
+    return questions
+
+
+def get_question(question_id):
+    response = supabase_get(
+        "questions",
+        {
+            "id":
+                f"eq.{question_id}",
+            "select": "*",
+            "limit": "1",
+        }
+    )
+
+    if response.status_code != 200:
         return None
 
-    try:
+    rows = response.json()
 
-        response = requests.get(
-            f"{SUPABASE_STORAGE_URL}"
-            f"/object/{SUPABASE_BUCKET}"
-            f"/{storage_path}",
-
-            headers=storage_headers(),
-
-            timeout=120,
-        )
-
-        if not response.ok:
-
-            logger.error(
-                "Storage download failed: %s",
-                response.text[:500],
-            )
-
-            return None
-
-        return response.content
-
-    except Exception:
-
-        logger.exception(
-            "Storage download failed"
-        )
-
+    if not rows:
         return None
 
+    question = rows[0]
 
-def delete_private_file(
-    storage_path
+    answer_response = supabase_get(
+        "answers",
+        {
+            "question_id":
+                f"eq.{question_id}",
+            "select": "*",
+            "order":
+                "created_at.desc",
+            "limit": "1",
+        }
+    )
+
+    if answer_response.status_code == 200:
+        answers = (
+            answer_response.json()
+        )
+
+        question["answer"] = (
+            answers[0]
+            if answers
+            else None
+        )
+
+    else:
+        question["answer"] = None
+
+    return question
+
+
+# ============================================================
+# ASSIGNMENTS
+# ============================================================
+
+def get_assignments():
+    response = supabase_get(
+        "assignments",
+        {
+            "select": "*",
+            "order": "created_at.desc",
+        }
+    )
+
+    if response.status_code != 200:
+        logger.error(
+            "Assignments error: %s",
+            response.text
+        )
+        return []
+
+    assignments = response.json()
+
+    for assignment in assignments:
+        enrich_assignment(
+            assignment
+        )
+
+    return assignments
+
+
+def get_assignment(
+    assignment_id
 ):
+    response = supabase_get(
+        "assignments",
+        {
+            "id":
+                f"eq.{assignment_id}",
+            "select": "*",
+            "limit": "1",
+        }
+    )
 
-    if not storage_path:
-        return False
+    if response.status_code != 200:
+        return None
 
-    try:
+    rows = response.json()
 
-        response = requests.delete(
-            f"{SUPABASE_STORAGE_URL}"
-            f"/object/{SUPABASE_BUCKET}"
-            f"/{storage_path}",
+    if not rows:
+        return None
 
-            headers=storage_headers(),
+    assignment = rows[0]
 
-            timeout=60,
-        )
+    enrich_assignment(
+        assignment
+    )
 
-        return response.ok
-
-    except Exception:
-
-        logger.exception(
-            "Storage deletion failed"
-        )
-
-        return False
+    return assignment
 
 
 # ============================================================
-# PDF ANSWER
+# BASE TEMPLATE
 # ============================================================
 
-def create_answer_pdf(
-    question,
-    student_name
-):
-
-    buffer = io.BytesIO()
-
-    document = SimpleDocTemplate(
-        buffer,
-
-        pagesize=A4,
-
-        leftMargin=18 * mm,
-
-        rightMargin=18 * mm,
-
-        topMargin=18 * mm,
-
-        bottomMargin=18 * mm,
-    )
-
-    styles = getSampleStyleSheet()
-
-    title_style = ParagraphStyle(
-        "KOJATitle",
-
-        parent=styles["Title"],
-
-        alignment=TA_CENTER,
-
-        fontSize=22,
-
-        spaceAfter=8,
-    )
-
-    subtitle_style = ParagraphStyle(
-        "KOJASubtitle",
-
-        parent=styles["Normal"],
-
-        alignment=TA_CENTER,
-
-        fontSize=10,
-
-        spaceAfter=18,
-    )
-
-    heading_style = ParagraphStyle(
-        "KOJAHeading",
-
-        parent=styles["Heading2"],
-
-        fontSize=13,
-
-        spaceBefore=10,
-
-        spaceAfter=8,
-    )
-
-    body_style = ParagraphStyle(
-        "KOJABody",
-
-        parent=styles["BodyText"],
-
-        fontSize=10.5,
-
-        leading=16,
-
-        spaceAfter=10,
-    )
-
-    question_text = (
-        escape(
-            question.get(
-                "question",
-                ""
-            )
-        )
-        .replace(
-            "\n",
-            "<br/>"
-        )
-    )
-
-    answer_text = (
-        escape(
-            question.get(
-                "answer",
-                ""
-            )
-        )
-        .replace(
-            "\n",
-            "<br/>"
-        )
-    )
-
-    story = [
-
-        Paragraph(
-            "KOJA AFRICA",
-            title_style
-        ),
-
-        Paragraph(
-            "Knowledge • Questions • Answers",
-            subtitle_style
-        ),
-
-        Paragraph(
-            "<b>Student:</b> "
-            + escape(student_name),
-            body_style
-        ),
-
-        Paragraph(
-            "Question",
-            heading_style
-        ),
-
-        Paragraph(
-            question_text,
-            body_style
-        ),
-
-        Paragraph(
-            "Answer",
-            heading_style
-        ),
-
-        Paragraph(
-            answer_text,
-            body_style
-        ),
-
-        Spacer(
-            1,
-            20
-        ),
-
-        Paragraph(
-            "Generated by KOJA AFRICA",
-            subtitle_style
-        ),
-    ]
-
-    document.build(
-        story
-    )
-
-    buffer.seek(0)
-
-    return buffer
-
-
-# ============================================================
-# BASE HTML
-# ============================================================
-
-BASE_HTML = r"""
+BASE_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
-
 <meta charset="UTF-8">
+<meta name="viewport"
+      content="width=device-width, initial-scale=1.0">
 
-<meta
-name="viewport"
-content="width=device-width, initial-scale=1.0"
->
-
-<meta
-name="theme-color"
-content="#061b49"
->
-
-<meta
-name="description"
-content="KOJA AFRICA — Knowledge, Questions and Answers"
->
-
-<title>
-{{ title }} | KOJA AFRICA
-</title>
+<title>{{ title }} | KOJA AFRICA</title>
 
 <style>
 
@@ -1454,883 +1190,374 @@ content="KOJA AFRICA — Knowledge, Questions and Answers"
     box-sizing: border-box;
 }
 
-html {
-    scroll-behavior: smooth;
-}
-
 body {
     margin: 0;
-    font-family:
-        Arial,
-        Helvetica,
-        sans-serif;
-
+    font-family: Arial, Helvetica, sans-serif;
     background: #f4f7fb;
-
     color: #172033;
 }
 
-a {
-    text-decoration: none;
-}
-
-header {
-    background: #061b49;
-
-    color: white;
-
-    min-height: 68px;
-
-    padding:
-        13px 20px;
-
+nav {
+    background: #0b3366;
+    padding: 14px 20px;
     display: flex;
-
-    justify-content:
-        space-between;
-
-    align-items:
-        center;
-
-    gap: 15px;
-
-    position: sticky;
-
-    top: 0;
-
-    z-index: 100;
-}
-
-.brand {
-    color: white;
-
-    font-size: 23px;
-
-    font-weight: 900;
-
-    white-space: nowrap;
-}
-
-.brand span {
-    color: #4ea1ff;
-}
-
-.nav {
-    display: flex;
-
-    gap: 5px;
-
     flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
 }
 
-.nav a {
+.logo {
     color: white;
-
-    padding:
-        9px 11px;
-
-    border-radius: 8px;
-
-    font-size: 14px;
-
-    white-space: nowrap;
+    font-size: 25px;
+    font-weight: bold;
+    margin-right: 15px;
 }
 
-.nav a:hover {
-    background: #16366d;
+nav a {
+    color: white;
+    text-decoration: none;
+    padding: 9px 12px;
+    border-radius: 7px;
+}
+
+nav a:hover {
+    background: rgba(255,255,255,.15);
 }
 
 .container {
-    width:
-        min(1200px, 94%);
-
-    margin:
-        28px auto;
-
-    min-height: 70vh;
+    max-width: 1150px;
+    margin: auto;
+    padding: 20px;
 }
 
 .hero {
-    background:
-        linear-gradient(
-            135deg,
-            #061b49,
-            #0b347f
-        );
-
+    background: linear-gradient(
+        135deg,
+        #0b3366,
+        #1464a5
+    );
     color: white;
-
-    border-radius: 22px;
-
-    padding:
-        65px 24px;
-
-    text-align: center;
-
-    box-shadow:
-        0 15px 45px
-        rgba(6,27,73,.15);
+    border-radius: 18px;
+    padding: 35px 25px;
+    margin-bottom: 25px;
 }
 
 .hero h1 {
-    font-size:
-        clamp(35px,8vw,62px);
-
-    margin:
-        0 0 12px;
-}
-
-.hero p {
-    max-width: 760px;
-
-    margin:
-        0 auto 25px;
-
-    line-height: 1.7;
-
-    color: #dce8ff;
+    margin-top: 0;
+    font-size: 34px;
 }
 
 .grid {
     display: grid;
-
     grid-template-columns:
-        repeat(
-            auto-fit,
-            minmax(220px,1fr)
-        );
-
+        repeat(auto-fit, minmax(270px, 1fr));
     gap: 18px;
 }
 
-.card {
+.card,
+.document {
     background: white;
-
-    border-radius: 16px;
-
-    padding: 22px;
-
+    border-radius: 14px;
+    padding: 20px;
+    margin-bottom: 18px;
     box-shadow:
-        0 5px 20px
-        rgba(0,0,0,.06);
-}
-
-.card h2,
-.card h3 {
-    margin-top: 0;
-}
-
-.btn {
-    display: inline-block;
-
-    border: 0;
-
-    cursor: pointer;
-
-    background: #0d6efd;
-
-    color: white;
-
-    padding:
-        11px 17px;
-
-    border-radius: 9px;
-
-    font-weight: 700;
-
-    font-size: 14px;
-}
-
-.btn:hover {
-    opacity: .9;
-}
-
-.btn.dark {
-    background: #061b49;
-}
-
-.btn.green {
-    background: #198754;
-}
-
-.btn.red {
-    background: #dc3545;
-}
-
-.btn.orange {
-    background: #e67e22;
-}
-
-.btn.light {
-    background: white;
-
-    color: #061b49;
-}
-
-.actions {
-    display: flex;
-
-    gap: 10px;
-
-    flex-wrap: wrap;
-
-    justify-content: center;
-}
-
-form {
-    background: white;
-
-    border-radius: 16px;
-
-    padding: 22px;
-
-    box-shadow:
-        0 5px 20px
-        rgba(0,0,0,.06);
-}
-
-label {
-    display: block;
-
-    margin:
-        13px 0 6px;
-
-    font-weight: 700;
+        0 4px 15px rgba(0,0,0,.07);
 }
 
 input,
 textarea,
 select {
     width: 100%;
-
     padding: 12px;
-
-    border:
-        1px solid #d5dbe5;
-
+    margin-top: 6px;
+    margin-bottom: 15px;
+    border: 1px solid #ccd5e0;
     border-radius: 8px;
-
-    font: inherit;
-
-    background: white;
-}
-
-input:focus,
-textarea:focus,
-select:focus {
-    outline:
-        2px solid #9fc5ff;
-
-    border-color:
-        #0d6efd;
+    font-size: 15px;
 }
 
 textarea {
     min-height: 150px;
-
     resize: vertical;
 }
 
-table {
-    width: 100%;
-
-    border-collapse:
-        collapse;
-
-    background: white;
+button,
+.btn {
+    display: inline-block;
+    border: none;
+    background: #0b3366;
+    color: white;
+    padding: 10px 15px;
+    border-radius: 8px;
+    text-decoration: none;
+    cursor: pointer;
+    font-size: 14px;
 }
 
-th,
-td {
-    padding: 12px;
-
-    border-bottom:
-        1px solid #e5e9f0;
-
-    text-align: left;
-
-    vertical-align: top;
+button:hover,
+.btn:hover {
+    opacity: .9;
 }
 
-th {
-    background: #eef3fb;
+.btn.green {
+    background: #16834a;
 }
 
-.tablewrap {
-    overflow-x: auto;
+.btn.orange {
+    background: #d97706;
+}
 
-    border-radius: 12px;
+.btn.gray {
+    background: #596579;
+}
+
+.btn.red {
+    background: #c62828;
+}
+
+.actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+label {
+    display: block;
+    font-weight: bold;
+    margin-top: 8px;
 }
 
 .badge {
     display: inline-block;
-
-    padding:
-        5px 9px;
-
+    background: #e7f0fb;
+    color: #0b3366;
+    padding: 5px 9px;
     border-radius: 20px;
-
-    background: #e9f2ff;
-
-    color: #0759a5;
-
     font-size: 12px;
-
-    font-weight: 700;
+    font-weight: bold;
 }
 
-.badge.green {
-    background: #e5f8ed;
-
-    color: #116332;
+.status {
+    display: inline-block;
+    padding: 5px 10px;
+    border-radius: 20px;
+    background: #eef1f4;
+    margin-left: 5px;
+    font-size: 12px;
 }
 
-.badge.red {
-    background: #ffe8e8;
-
-    color: #8a1111;
+.status.completed {
+    background: #d9f5e5;
+    color: #116b3d;
 }
 
-.badge.orange {
-    background: #fff1df;
-
-    color: #8a4b08;
+.status.pending {
+    background: #fff0c9;
+    color: #805600;
 }
 
-.stat {
-    font-size: 32px;
-
-    font-weight: 800;
-
-    color: #0d6efd;
+.status.rejected {
+    background: #ffdede;
+    color: #a10000;
 }
 
-.flash {
-    padding:
-        12px 15px;
-
-    margin-bottom: 15px;
-
-    border-radius: 9px;
-
-    background: #e7f1ff;
-
-    color: #063b7a;
-}
-
-.flash.error {
-    background: #ffe8e8;
-
-    color: #8a1111;
-}
-
-.flash.success {
-    background: #e5f8ed;
-
-    color: #116332;
-}
-
-.flash.warning {
-    background: #fff4d9;
-
-    color: #765500;
-}
-
-.empty {
-    text-align: center;
-
-    padding: 40px;
-
-    color: #687386;
-}
-
-.info {
-    background: #eef5ff;
-
-    border-left:
-        4px solid #0d6efd;
-
-    padding: 14px;
-
+.question {
+    background: #f4f7fb;
+    padding: 15px;
+    border-left: 4px solid #0b3366;
     border-radius: 8px;
 }
 
 .answer {
-    white-space: pre-wrap;
-
-    line-height: 1.7;
-
-    background: #f7f9fc;
-
+    background: #eaf7ef;
     padding: 15px;
-
-    border-radius: 10px;
+    border-left: 4px solid #16834a;
+    border-radius: 8px;
+    margin-top: 12px;
 }
 
-.question-box {
-    line-height: 1.7;
-
-    background: #f7f9fc;
-
-    padding: 15px;
-
-    border-radius: 10px;
-}
-
-.document-card {
-    border:
-        1px solid #e3e8f0;
-
-    border-radius: 14px;
-
+.assignment-response {
+    background: #eaf7ef;
     padding: 18px;
+    border-left: 5px solid #16834a;
+    border-radius: 10px;
+    margin-top: 15px;
+}
 
-    background: white;
+.answer-file {
+    background: #eef5ff;
+    padding: 15px;
+    border-left: 5px solid #0b3366;
+    border-radius: 10px;
+    margin-top: 15px;
+}
 
+.file-box {
+    background: #f5f5f5;
+    padding: 15px;
+    border-radius: 8px;
+    margin-top: 12px;
+}
+
+.small {
+    font-size: 12px;
+    color: #687386;
+}
+
+.muted {
+    color: #687386;
+}
+
+.stat {
+    font-size: 32px;
+    font-weight: bold;
+    color: #0b3366;
+}
+
+.alert {
+    padding: 12px 15px;
+    border-radius: 8px;
     margin-bottom: 15px;
 }
 
-.document-title {
-    font-size: 18px;
-
-    font-weight: 800;
-
-    color: #061b49;
+.alert.success {
+    background: #d9f5e5;
+    color: #116b3d;
 }
 
-.document-meta {
-    font-size: 13px;
-
-    color: #687386;
-
-    line-height: 1.7;
+.alert.warning {
+    background: #fff0c9;
+    color: #805600;
 }
 
-.searchbar {
-    display: grid;
-
-    grid-template-columns:
-        1fr auto;
-
-    gap: 10px;
-
-    margin-bottom: 20px;
+.empty {
+    text-align: center;
+    padding: 35px;
 }
 
-.notice {
-    padding: 12px;
+.table-wrap {
+    overflow-x: auto;
+}
 
-    border-radius: 10px;
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
 
-    background: #f1f5fa;
+th,
+td {
+    padding: 10px;
+    border-bottom: 1px solid #ddd;
+    text-align: left;
+    vertical-align: top;
+}
 
-    color: #4d596c;
+th {
+    background: #eef3f8;
 }
 
 footer {
+    margin-top: 40px;
+    padding: 25px;
     text-align: center;
-
-    padding:
-        35px 15px;
-
-    color: #697386;
-}
-
-small {
-    color: #687386;
-}
-
-hr {
-    border: 0;
-
-    border-top:
-        1px solid #e5e9f0;
-
-    margin: 20px 0;
-}
-
-.mini-grid {
-    display: grid;
-
-    grid-template-columns:
-        repeat(
-            auto-fit,
-            minmax(160px,1fr)
-        );
-
-    gap: 12px;
-}
-
-.mini-stat {
-    padding: 16px;
-
-    border-radius: 12px;
-
-    background: #f7f9fc;
-}
-
-.mini-stat strong {
-    display: block;
-
-    font-size: 24px;
-
-    color: #061b49;
-}
-
-.future {
-    border:
-        1px dashed #9eb3d3;
-
-    background:
-        linear-gradient(
-            135deg,
-            #f8fbff,
-            #eef5ff
-        );
-}
-
-
-/* ============================================================
-   STARTUP
-   ============================================================ */
-
-#startup {
-    position: fixed;
-
-    inset: 0;
-
-    z-index: 99999;
-
-    background: #061b49;
-
-    display: flex;
-
-    justify-content: center;
-
-    align-items: center;
-
-    opacity: 1;
-
-    visibility: visible;
-
-    transition:
-        opacity 1s ease,
-        visibility 1s ease;
-}
-
-#startup.hide {
-    opacity: 0;
-
-    visibility: hidden;
-
-    pointer-events: none;
-}
-
-.startup-content {
-    text-align: center;
-
+    background: #0b3366;
     color: white;
-
-    animation:
-        startupFade 1.5s ease;
 }
 
-.startup-logo {
-    font-size:
-        clamp(48px,14vw,90px);
+@media(max-width: 650px) {
 
-    font-weight: 900;
-
-    letter-spacing: 3px;
-
-    margin: 0;
-}
-
-.startup-logo .k {
-    color: #4ea1ff;
-}
-
-.startup-logo .o {
-    color: #38c172;
-}
-
-.startup-logo .j {
-    color: #ff4d5d;
-}
-
-.startup-logo .a {
-    color: #dce8ff;
-}
-
-.startup-subtitle {
-    margin-top: 10px;
-
-    font-size: 13px;
-
-    letter-spacing: 2px;
-
-    color: #dce8ff;
-}
-
-.startup-line {
-    width: 70px;
-
-    height: 3px;
-
-    background: white;
-
-    margin:
-        20px auto 0;
-
-    border-radius: 20px;
-
-    animation:
-        startupLine 1.5s ease infinite;
-}
-
-@keyframes startupFade {
-
-    from {
-        opacity: 0;
-
-        transform:
-            translateY(15px)
-            scale(.96);
+    .container {
+        padding: 12px;
     }
 
-    to {
-        opacity: 1;
-
-        transform:
-            translateY(0)
-            scale(1);
-    }
-}
-
-@keyframes startupLine {
-
-    0% {
-        transform: scaleX(.3);
-
-        opacity: .3;
+    nav {
+        padding: 10px;
     }
 
-    50% {
-        transform: scaleX(1);
-
-        opacity: 1;
-    }
-
-    100% {
-        transform: scaleX(.3);
-
-        opacity: .3;
-    }
-}
-
-
-/* ============================================================
-   MOBILE
-   ============================================================ */
-
-@media(max-width:700px) {
-
-    header {
-        flex-direction: column;
-
-        align-items: flex-start;
-    }
-
-    .nav {
-        overflow-x: auto;
-
-        flex-wrap: nowrap;
-
+    .logo {
         width: 100%;
+        margin-bottom: 5px;
     }
 
-    .hero {
-        padding:
-            42px 18px;
+    .hero h1 {
+        font-size: 27px;
     }
 
-    th,
-    td {
-        min-width: 130px;
+    table {
+        min-width: 700px;
     }
-
-    .searchbar {
-        grid-template-columns:
-            1fr;
-    }
-
 }
 
 </style>
-
 </head>
 
 <body>
 
+<nav>
 
-{% if show_startup %}
-
-<div id="startup">
-
-    <div class="startup-content">
-
-        <h1 class="startup-logo">
-
-            <span class="k">K</span><span class="o">O</span><span class="j">J</span><span class="a">A</span>
-
-        </h1>
-
-        <div class="startup-subtitle">
-
-            KNOWLEDGE • QUESTIONS • ANSWERS
-
-        </div>
-
-        <div class="startup-line"></div>
-
-    </div>
-
+<div class="logo">
+KOJA AFRICA
 </div>
 
-<script>
+<a href="{{ url_for('home') }}">
+Home
+</a>
 
-(function () {
+{% if session.get('user') %}
 
-    const startup =
-        document.getElementById("startup");
+<a href="{{ url_for('documents') }}">
+Documents
+</a>
 
-    if (!startup) {
-        return;
-    }
+<a href="{{ url_for('questions') }}">
+Questions
+</a>
 
-    setTimeout(function () {
+<a href="{{ url_for('assignments') }}">
+Assignments
+</a>
 
-        startup.classList.add("hide");
+{% if session.get('is_admin') %}
 
-    }, 1800);
+<a href="{{ url_for('admin') }}">
+Admin
+</a>
 
-})();
-
-</script>
+<a href="{{ url_for('upload_document') }}">
+Upload
+</a>
 
 {% endif %}
 
-
-<header>
-
-<a
-class="brand"
-href="{{ url_for('home') }}"
->
-KOJA <span>AFRICA</span>
+<a href="{{ url_for('logout') }}">
+Logout
 </a>
-
-<nav class="nav">
-
-{% if session.get("user") %}
-
-    {% if session.get("role") == "admin" %}
-
-        <a
-        href="{{ url_for('admin_dashboard') }}"
-        >
-        Dashboard
-        </a>
-
-        <a
-        href="{{ url_for('admin_questions') }}"
-        >
-        Questions
-        </a>
-
-        <a
-        href="{{ url_for('admin_documents') }}"
-        >
-        Documents
-        </a>
-
-        <a
-        href="{{ url_for('admin_users') }}"
-        >
-        Users
-        </a>
-
-        <a
-        href="{{ url_for('admin_logs') }}"
-        >
-        Logs
-        </a>
-
-    {% else %}
-
-        <a
-        href="{{ url_for('student_dashboard') }}"
-        >
-        Dashboard
-        </a>
-
-        <a
-        href="{{ url_for('ask_question') }}"
-        >
-        Ask
-        </a>
-
-        <a
-        href="{{ url_for('student_questions') }}"
-        >
-        My Questions
-        </a>
-
-        <a
-        href="{{ url_for('student_documents') }}"
-        >
-        Documents
-        </a>
-
-    {% endif %}
-
-    <a
-    href="{{ url_for('logout') }}"
-    >
-    Logout
-    </a>
 
 {% else %}
 
-    <a
-    href="{{ url_for('login') }}"
-    >
-    Log In
-    </a>
+<a href="{{ url_for('login') }}">
+Login
+</a>
 
-    <a
-    href="{{ url_for('register') }}"
-    >
-    Create Account
-    </a>
+<a href="{{ url_for('register') }}">
+Create Account
+</a>
 
 {% endif %}
 
 </nav>
 
-</header>
 
+<div class="container">
 
-<main class="container">
-
-{% with messages =
-get_flashed_messages(
-with_categories=true
+{% with messages = get_flashed_messages(
+    with_categories=true
 ) %}
 
 {% for category, message in messages %}
 
-<div class="flash {{ category }}">
+<div class="alert {{ category }}">
 {{ message }}
 </div>
 
@@ -2340,41 +1567,43 @@ with_categories=true
 
 {{ content|safe }}
 
-</main>
+</div>
 
 
 <footer>
 
-KOJA AFRICA —
+<strong>KOJA AFRICA</strong>
+
+<br>
+
 Knowledge • Questions • Answers
+
+<br>
+
+<span class="small">
+Academic Documents & Learning Resources
+</span>
 
 </footer>
 
-
 </body>
-
 </html>
 """
 
 
-# ============================================================
-# PAGE RENDERER
-# ============================================================
-
-def page(
+def render_page(
+    title,
     content,
-    title="KOJA AFRICA",
-    show_startup=False
+    **context
 ):
-
     return render_template_string(
-        BASE_HTML,
-
-        content=content,
-
+        BASE_TEMPLATE,
         title=title,
-
-        show_startup=show_startup,
+        content=render_template_string(
+            content,
+            **context
+        ),
+        **context
     )
 
 
@@ -2385,107 +1614,114 @@ def page(
 @app.route("/")
 def home():
 
-    return page(
+    return render_page(
+        "Home",
         """
-<section class="hero">
+
+<div class="hero">
 
 <h1>
 KOJA AFRICA
 </h1>
 
 <p>
-Assignment Questions • Academic Answers •
-Learning Resources
+Knowledge • Questions • Answers
 </p>
+
+<p>
+Ask academic questions, submit assignments,
+access notes, past papers and learning resources.
+</p>
+
+{% if not session.get('user') %}
 
 <div class="actions">
 
-<a
-class="btn"
-href="/login"
->
-Log In
+<a class="btn"
+   href="{{ url_for('login') }}">
+Login
 </a>
 
-<a
-class="btn light"
-href="/register"
->
+<a class="btn green"
+   href="{{ url_for('register') }}">
 Create Account
 </a>
 
 </div>
 
-</section>
+{% else %}
 
-<br>
+<div class="actions">
+
+<a class="btn"
+   href="{{ url_for('questions') }}">
+Ask a Question
+</a>
+
+<a class="btn green"
+   href="{{ url_for('assignments') }}">
+Assignments
+</a>
+
+<a class="btn orange"
+   href="{{ url_for('documents') }}">
+Documents
+</a>
+
+</div>
+
+{% endif %}
+
+</div>
+
 
 <div class="grid">
 
 <div class="card">
 
-<h3>
-Ask Questions
-</h3>
+<h2>
+Academic Questions
+</h2>
 
 <p>
-Submit academic questions securely
-and track your answers.
+Students can submit academic questions
+and receive administrator answers.
 </p>
 
 </div>
+
 
 <div class="card">
 
-<h3>
-Academic Answers
-</h3>
+<h2>
+Assignments
+</h2>
 
 <p>
-Receive structured academic answers
-from the KOJA administration team.
+Upload assignments and receive administrator
+answers either directly in KOJA or as
+answered PDF/Word files.
 </p>
 
 </div>
+
 
 <div class="card">
 
-<h3>
-Private Documents
-</h3>
+<h2>
+Document Library
+</h2>
 
 <p>
-Send and receive documents through
-KOJA's protected document system.
+Access notes, past papers, academic
+documents and learning resources.
 </p>
 
 </div>
 
-<div class="card future">
-
-<h3>
-KOJA Learning Marketplace
-</h3>
-
-<p>
-Future-ready foundation for premium
-learning resources, subscriptions,
-institutional services and other
-KOJA revenue streams.
-</p>
-
-<span class="badge orange">
-Coming platform feature
-</span>
-
 </div>
 
-</div>
-""",
-
-        "Home",
-
-        show_startup=True,
+"""
     )
 
 
@@ -2497,125 +1733,152 @@ Coming platform feature
     "/register",
     methods=["GET", "POST"]
 )
-@limiter.limit(
-    "5 per minute",
-    methods=["POST"]
-)
 def register():
 
     if request.method == "POST":
 
-        check_csrf()
-
-        name = request.form.get(
-            "name",
-            ""
-        ).strip()
-
-        email = request.form.get(
-            "email",
-            ""
-        ).strip().lower()
+        email = (
+            request.form.get(
+                "email",
+                ""
+            )
+            .strip()
+            .lower()
+        )
 
         password = request.form.get(
             "password",
             ""
         )
 
-        confirm = request.form.get(
-            "confirm",
-            ""
+        name = (
+            request.form.get(
+                "name",
+                ""
+            )
+            .strip()
         )
 
-        if len(name) < 2:
+        if not email or not password:
 
             flash(
-                "Enter your full name.",
-                "error"
+                "Email and password are required.",
+                "warning"
             )
 
             return redirect(
                 url_for("register")
             )
 
-        if not re.match(
-            r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
-            email
+        if len(password) < 6:
+
+            flash(
+                "Password must contain at least 6 characters.",
+                "warning"
+            )
+
+            return redirect(
+                url_for("register")
+            )
+
+        try:
+
+            response = auth_signup(
+                email,
+                password
+            )
+
+        except Exception as exc:
+
+            flash(
+                "Registration connection error: "
+                + str(exc),
+                "warning"
+            )
+
+            return redirect(
+                url_for("register")
+            )
+
+        if response.status_code not in (
+            200,
+            201
         ):
 
+            try:
+
+                data = response.json()
+
+                error = (
+                    data.get("msg")
+                    or data.get("message")
+                    or data.get(
+                        "error_description"
+                    )
+                    or response.text
+                )
+
+            except Exception:
+
+                error = response.text
+
             flash(
-                "Enter a valid email address.",
-                "error"
+                "Registration failed: "
+                + str(error),
+                "warning"
             )
 
             return redirect(
                 url_for("register")
             )
 
-        if len(password) < 8:
+        data = response.json()
+
+        user = data.get("user")
+
+        if not user:
 
             flash(
-                "Password must contain at least 8 characters.",
-                "error"
+                "Account created. Please check your email if confirmation is required.",
+                "success"
             )
 
             return redirect(
-                url_for("register")
+                url_for("login")
             )
 
-        if password != confirm:
+        user_id = user.get("id")
 
-            flash(
-                "Passwords do not match.",
-                "error"
-            )
-
-            return redirect(
-                url_for("register")
-            )
-
-        data, error = supabase_signup(
-            email,
-            password,
-            name
+        profile_response = supabase_post(
+            "profiles",
+            {
+                "id": user_id,
+                "name": (
+                    name
+                    or email.split("@")[0]
+                ),
+                "email": email,
+                "role": (
+                    "admin"
+                    if str(user_id)
+                    == str(ADMIN_UUID)
+                    else "student"
+                ),
+            }
         )
 
-        if error:
+        if profile_response.status_code not in (
+            200,
+            201
+        ):
 
-            flash(
-                error,
-                "error"
-            )
-
-            return redirect(
-                url_for("register")
-            )
-
-        user = (
-            data.get("user")
-            if data
-            else None
-        )
-
-        if user:
-
-            ensure_profile(
-                user
-            )
-
-            write_log(
-                "New account registration",
-                "Authentication",
-                "INFO",
-                email,
-                user.get("id")
+            logger.warning(
+                "Profile creation failed: %s",
+                profile_response.text
             )
 
         flash(
-            "Account created successfully. "
-            "If email confirmation is enabled "
-            "in Supabase, confirm your email "
-            "before logging in.",
+            "Account created successfully.",
             "success"
         )
 
@@ -2623,28 +1886,27 @@ def register():
             url_for("login")
         )
 
-    return page(
-        f"""
-<div style="max-width:520px;margin:auto">
+    return render_page(
+        "Create Account",
+        """
+
+<div class="card">
 
 <h1>
-Create Account
+Create Student Account
 </h1>
 
 <form method="post">
 
-{csrf_input()}
-
 <label>
-Full Name
+Name
 </label>
 
 <input
 name="name"
 required
-autocomplete="name"
-maxlength="120"
->
+placeholder="Full name">
+
 
 <label>
 Email
@@ -2654,9 +1916,8 @@ Email
 type="email"
 name="email"
 required
-autocomplete="email"
-maxlength="180"
->
+placeholder="Email">
+
 
 <label>
 Password
@@ -2665,38 +1926,20 @@ Password
 <input
 type="password"
 name="password"
+minlength="6"
 required
-minlength="8"
-autocomplete="new-password"
->
+placeholder="Minimum 6 characters">
 
-<label>
-Confirm Password
-</label>
 
-<input
-type="password"
-name="confirm"
-required
-minlength="8"
-autocomplete="new-password"
->
-
-<br><br>
-
-<button
-class="btn"
-type="submit"
->
+<button>
 Create Account
 </button>
 
 </form>
 
 </div>
-""",
 
-        "Create Account"
+"""
     )
 
 
@@ -2708,20 +1951,18 @@ Create Account
     "/login",
     methods=["GET", "POST"]
 )
-@limiter.limit(
-    "10 per minute",
-    methods=["POST"]
-)
 def login():
 
     if request.method == "POST":
 
-        check_csrf()
-
-        email = request.form.get(
-            "email",
-            ""
-        ).strip().lower()
+        email = (
+            request.form.get(
+                "email",
+                ""
+            )
+            .strip()
+            .lower()
+        )
 
         password = request.form.get(
             "password",
@@ -2732,116 +1973,154 @@ def login():
 
             flash(
                 "Email and password are required.",
-                "error"
+                "warning"
             )
 
             return redirect(
                 url_for("login")
             )
 
-        data, error = supabase_login(
-            email,
-            password
-        )
+        try:
 
-        if error:
+            response = auth_login(
+                email,
+                password
+            )
+
+        except Exception as exc:
 
             flash(
-                error,
-                "error"
+                "Login connection error: "
+                + str(exc),
+                "warning"
             )
 
             return redirect(
                 url_for("login")
             )
 
-        user = (
-            data.get("user")
-            if data
-            else None
+        if response.status_code != 200:
+
+            try:
+
+                data = response.json()
+
+                error = (
+                    data.get(
+                        "error_description"
+                    )
+                    or data.get("msg")
+                    or data.get("message")
+                    or response.text
+                )
+
+            except Exception:
+
+                error = response.text
+
+            flash(
+                "Login failed: "
+                + str(error),
+                "warning"
+            )
+
+            return redirect(
+                url_for("login")
+            )
+
+        data = response.json()
+
+        access_token = data.get(
+            "access_token"
         )
+
+        user = data.get(
+            "user"
+        )
+
+        if not user and access_token:
+
+            user_response = auth_user(
+                access_token
+            )
+
+            if user_response.status_code == 200:
+
+                user = (
+                    user_response.json()
+                )
 
         if not user:
 
             flash(
-                "Login failed.",
-                "error"
+                "Could not retrieve user information.",
+                "warning"
             )
 
             return redirect(
                 url_for("login")
             )
 
-        profile = ensure_profile(
-            user
+        user_id = user.get("id")
+
+        user_email = user.get(
+            "email",
+            email
         )
 
-        if not profile:
-
-            flash(
-                "Your account exists, but "
-                "your KOJA profile could not be loaded.",
-                "error"
-            )
-
-            return redirect(
-                url_for("login")
-            )
+        profile = ensure_profile(
+            user_id,
+            user_email
+        )
 
         session.clear()
 
-        session.permanent = True
+        session["access_token"] = (
+            access_token
+        )
 
         session["user"] = {
-            "id":
-                user.get("id"),
-
-            "email":
-                user.get("email"),
+            "id": user_id,
+            "email": user_email,
+            "name": (
+                profile.get("name")
+                if profile
+                else
+                user_email.split("@")[0]
+            ),
         }
 
-        session["role"] = profile.get(
-            "role",
-            "student"
+        session["is_admin"] = (
+            str(user_id)
+            == str(ADMIN_UUID)
         )
 
-        session["_csrf_token"] = (
-            secrets.token_urlsafe(32)
+        flash(
+            "Welcome to KOJA AFRICA.",
+            "success"
         )
 
-        write_log(
-            "User logged in",
-            "Authentication",
-            "INFO",
-            email,
-            user.get("id")
-        )
-
-        if profile.get("role") == "admin":
+        if session["is_admin"]:
 
             return redirect(
-                url_for(
-                    "admin_dashboard"
-                )
+                url_for("admin")
             )
 
         return redirect(
-            url_for(
-                "student_dashboard"
-            )
+            url_for("documents")
         )
 
-    return page(
-        f"""
-<div style="max-width:520px;margin:auto">
+    return render_page(
+        "Login",
+        """
+
+<div class="card">
 
 <h1>
-Log In
+Login
 </h1>
 
 <form method="post">
-
-{csrf_input()}
 
 <label>
 Email
@@ -2851,8 +2130,8 @@ Email
 type="email"
 name="email"
 required
-autocomplete="email"
->
+placeholder="Email">
+
 
 <label>
 Password
@@ -2862,36 +2141,18 @@ Password
 type="password"
 name="password"
 required
-autocomplete="current-password"
->
+placeholder="Password">
 
-<br><br>
 
-<button
-class="btn"
-type="submit"
->
-Log In
+<button>
+Login
 </button>
 
 </form>
 
-<br>
-
-<div class="card">
-
-No account?
-
-<a href="/register">
-Create Account
-</a>
-
 </div>
 
-</div>
-""",
-
-        "Log In"
+"""
     )
 
 
@@ -2901,18 +2162,6 @@ Create Account
 
 @app.route("/logout")
 def logout():
-
-    user = current_user()
-
-    if user:
-
-        write_log(
-            "User logged out",
-            "Authentication",
-            "INFO",
-            "",
-            user.get("id")
-        )
 
     session.clear()
 
@@ -2927,1172 +2176,1309 @@ def logout():
 
 
 # ============================================================
-# STUDENT DASHBOARD
+# DOCUMENT LIBRARY
 # ============================================================
 
-@app.route("/student")
-@student_required
-def student_dashboard():
+@app.route("/documents")
+@login_required
+def documents():
 
-    profile = current_profile()
-
-    student_id = profile["id"]
-
-    questions = rest_get(
-        "questions",
-        {
-            "student_id":
-                f"eq.{student_id}",
-
-            "order":
-                "created_at.desc"
-        }
+    search = request.args.get(
+        "search",
+        ""
     )
 
-    received_documents = rest_get(
-        "documents",
-        {
-            "recipient_id":
-                f"eq.{student_id}",
-
-            "direction":
-                "eq.admin_to_student",
-
-            "order":
-                "created_at.desc"
-        }
+    docs = get_documents(
+        search
     )
 
-    sent_documents = rest_get(
-        "documents",
-        {
-            "sender_id":
-                f"eq.{student_id}",
+    return render_page(
+        "Documents",
+        """
 
-            "direction":
-                "eq.student_to_admin",
+<div class="card">
 
-            "order":
-                "created_at.desc"
-        }
-    )
-
-    answered = sum(
-        bool(q.get("answer"))
-        for q in questions
-    )
-
-    return page(
-        f"""
 <h1>
-Student Dashboard
+Document Library
 </h1>
 
-<p>
-Welcome,
-<strong>
-{esc(profile.get("name", "Student"))}
-</strong>
-</p>
+<form method="get">
+
+<input
+name="search"
+value="{{ search }}"
+placeholder="Search documents...">
+
+<button>
+Search
+</button>
+
+</form>
+
+</div>
+
 
 <div class="grid">
 
-<div class="card">
+{% for doc in docs %}
+
+<div class="document">
+
+<span class="badge">
+{{ doc.document_type
+|replace('_',' ')
+|title }}
+</span>
 
 <h3>
-My Questions
+{{ doc.title }}
 </h3>
-
-<div class="stat">
-{len(questions)}
-</div>
-
-</div>
-
-<div class="card">
-
-<h3>
-Answered
-</h3>
-
-<div class="stat">
-{answered}
-</div>
-
-</div>
-
-<div class="card">
-
-<h3>
-Received Documents
-</h3>
-
-<div class="stat">
-{len(received_documents)}
-</div>
-
-</div>
-
-<div class="card">
-
-<h3>
-Sent Documents
-</h3>
-
-<div class="stat">
-{len(sent_documents)}
-</div>
-
-</div>
-
-</div>
-
-<br>
-
-<div class="card">
-
-<h2>
-Document Centre
-</h2>
 
 <p>
-Your private communication area for
-sending documents to KOJA Admin and
-receiving documents from KOJA Admin.
+{{ doc.description or
+'No description available.' }}
 </p>
 
-<div class="actions"
-style="justify-content:flex-start">
+{% if doc.subject %}
 
-<a
-class="btn"
-href="/student/documents"
->
-Open Documents
+<p>
+<b>Subject:</b>
+{{ doc.subject }}
+</p>
+
+{% endif %}
+
+{% if doc.course %}
+
+<p>
+<b>Course:</b>
+{{ doc.course }}
+</p>
+
+{% endif %}
+
+{% if doc.class_level %}
+
+<p>
+<b>Class:</b>
+{{ doc.class_level }}
+</p>
+
+{% endif %}
+
+<p class="small">
+{{ doc.file_name }}
+</p>
+
+<div class="actions">
+
+<a class="btn"
+href="{{ url_for(
+'view_document',
+document_id=doc.id
+) }}">
+View
 </a>
 
-<a
-class="btn dark"
-href="/student/question/new"
->
-Ask Question
+<a class="btn green"
+href="{{ url_for(
+'download_document',
+document_id=doc.id
+) }}">
+Download
 </a>
 
 </div>
 
 </div>
+
+{% else %}
+
+<div class="card empty">
+
+<h2>
+No documents found.
+</h2>
+
+</div>
+
+{% endfor %}
+
+</div>
+
 """,
-
-        "Student Dashboard"
+        docs=docs,
+        search=search
     )
 
 
 # ============================================================
-# ASK QUESTION
+# VIEW DOCUMENT
 # ============================================================
 
 @app.route(
-    "/student/question/new",
+    "/documents/<document_id>/view"
+)
+@login_required
+def view_document(
+    document_id
+):
+
+    document = get_document(
+        document_id
+    )
+
+    if not document:
+        abort(404)
+
+    response = download_from_storage(
+        document["file_path"]
+    )
+
+    if response.status_code != 200:
+
+        flash(
+            "Document could not be opened.",
+            "warning"
+        )
+
+        return redirect(
+            url_for("documents")
+        )
+
+    increment_document_counter(
+        document_id,
+        "view_count"
+    )
+
+    create_document_record(
+        document_id,
+        current_user()["id"],
+        "viewed"
+    )
+
+    return send_file(
+        io.BytesIO(
+            response.content
+        ),
+        mimetype=(
+            document.get(
+                "mime_type"
+            )
+            or
+            "application/octet-stream"
+        ),
+        download_name=(
+            document.get(
+                "file_name"
+            )
+            or
+            "document"
+        ),
+        as_attachment=False
+    )
+
+
+# ============================================================
+# DOWNLOAD DOCUMENT
+# ============================================================
+
+@app.route(
+    "/documents/<document_id>/download"
+)
+@login_required
+def download_document(
+    document_id
+):
+
+    document = get_document(
+        document_id
+    )
+
+    if not document:
+        abort(404)
+
+    response = download_from_storage(
+        document["file_path"]
+    )
+
+    if response.status_code != 200:
+
+        flash(
+            "Download failed.",
+            "warning"
+        )
+
+        return redirect(
+            url_for("documents")
+        )
+
+    increment_document_counter(
+        document_id,
+        "download_count"
+    )
+
+    create_document_record(
+        document_id,
+        current_user()["id"],
+        "downloaded"
+    )
+
+    return send_file(
+        io.BytesIO(
+            response.content
+        ),
+        mimetype=(
+            document.get(
+                "mime_type"
+            )
+            or
+            "application/octet-stream"
+        ),
+        download_name=(
+            document.get(
+                "file_name"
+            )
+            or
+            "document"
+        ),
+        as_attachment=True
+    )
+
+
+# ============================================================
+# QUESTIONS
+# ============================================================
+
+@app.route(
+    "/questions",
     methods=["GET", "POST"]
 )
-@student_required
-@limiter.limit(
-    "20 per hour",
-    methods=["POST"]
-)
-def ask_question():
-
-    profile = current_profile()
+@login_required
+def questions():
 
     if request.method == "POST":
 
-        check_csrf()
+        subject = (
+            request.form.get(
+                "subject",
+                ""
+            )
+            .strip()
+        )
 
-        question_text = request.form.get(
-            "question",
-            ""
-        ).strip()
+        question_text = (
+            request.form.get(
+                "question",
+                ""
+            )
+            .strip()
+        )
 
         if not question_text:
 
             flash(
-                "Enter your question.",
-                "error"
+                "Please enter your question.",
+                "warning"
             )
 
             return redirect(
-                url_for("ask_question")
+                url_for("questions")
             )
 
-        if len(question_text) > 20000:
+        user = current_user()
 
-            flash(
-                "Question is too long.",
-                "error"
-            )
-
-            return redirect(
-                url_for("ask_question")
-            )
-
-        question_id = str(
-            uuid.uuid4()
-        )
-
-        created = rest_insert(
+        response = supabase_post(
             "questions",
             {
-                "id":
-                    question_id,
-
-                "student_id":
-                    profile["id"],
-
-                "student_name":
-                    profile.get(
-                        "name",
-                        ""
-                    ),
-
-                "question":
-                    question_text,
-
-                "answer":
-                    "",
-
-                "answer_by":
-                    ""
+                "user_id": user["id"],
+                "name": user.get("name"),
+                "email": user.get("email"),
+                "subject": subject,
+                "question": question_text,
+                "question_type": "question",
             }
         )
 
-        if not created:
+        if response.status_code not in (
+            200,
+            201
+        ):
 
             flash(
-                "Question could not be submitted.",
-                "error"
+                "Question could not be submitted: "
+                + response.text,
+                "warning"
             )
 
             return redirect(
-                url_for("ask_question")
+                url_for("questions")
             )
 
-        uploaded = request.files.get(
-            "file"
-        )
-
-        if (
-            uploaded
-            and uploaded.filename
-        ):
-
-            try:
-
-                info = upload_private_file(
-                    uploaded,
-                    f"questions/{question_id}"
-                )
-
-                recorded = rest_insert(
-                    "question_files",
-                    {
-                        "question_id":
-                            question_id,
-
-                        "original_name":
-                            info[
-                                "original_name"
-                            ],
-
-                        "storage_path":
-                            info[
-                                "storage_path"
-                            ],
-
-                        "size":
-                            info[
-                                "size"
-                            ],
-
-                        "file_type":
-                            "question"
-                    },
-                    returning=False
-                )
-
-                if not recorded:
-
-                    delete_private_file(
-                        info[
-                            "storage_path"
-                        ]
-                    )
-
-                    flash(
-                        "Question submitted, "
-                        "but attachment could not "
-                        "be recorded.",
-                        "warning"
-                    )
-
-            except Exception:
-
-                logger.exception(
-                    "Question attachment failed"
-                )
-
-                flash(
-                    "Question submitted, "
-                    "but the attachment failed.",
-                    "warning"
-                )
-
-        write_log(
-            "Question submitted",
-            "Questions",
-            "INFO",
-            question_text[:500],
-            profile["id"]
-        )
-
         flash(
-            "Your question has been submitted.",
+            "Your question has been submitted successfully.",
             "success"
         )
 
         return redirect(
-            url_for(
-                "student_questions"
-            )
+            url_for("questions")
         )
 
-    return page(
-        f"""
+    all_questions = get_questions()
+
+    if not is_admin():
+
+        user_id = current_user()["id"]
+
+        all_questions = [
+            q
+            for q in all_questions
+            if str(
+                q.get("user_id")
+            )
+            == str(user_id)
+        ]
+
+    return render_page(
+        "Questions",
+        """
+
+<div class="card">
+
 <h1>
 Ask a Question
 </h1>
 
-<form
-method="post"
-enctype="multipart/form-data"
->
-
-{csrf_input()}
+<form method="post">
 
 <label>
-Question
+Subject
+</label>
+
+<input
+name="subject"
+placeholder="e.g. Chemistry">
+
+
+<label>
+Your Question
 </label>
 
 <textarea
 name="question"
 required
-maxlength="20000"
-placeholder="Enter your academic question..."
-></textarea>
+placeholder="Type your academic question here..."></textarea>
 
-<label>
-Attachment
-</label>
 
-<small>
-Optional. PDF, Word, image, spreadsheet,
-presentation or text file. Maximum 10 MB.
-</small>
-
-<input
-type="file"
-name="file"
->
-
-<br><br>
-
-<button
-class="btn"
-type="submit"
->
+<button>
 Submit Question
 </button>
 
 </form>
-""",
 
-        "Ask Question"
-    )
+</div>
 
 
-# ============================================================
-# STUDENT QUESTIONS
-# ============================================================
+<h2>
 
-@app.route(
-    "/student/questions"
-)
-@student_required
-def student_questions():
+{% if session.get('is_admin') %}
+All Student Questions
+{% else %}
+My Questions
+{% endif %}
 
-    profile = current_profile()
+</h2>
 
-    questions = rest_get(
-        "questions",
-        {
-            "student_id":
-                f"eq.{profile['id']}",
 
-            "order":
-                "created_at.desc"
-        }
-    )
+{% for q in questions %}
 
-    blocks = []
-
-    for question in questions:
-
-        files = rest_get(
-            "question_files",
-            {
-                "question_id":
-                    f"eq.{question['id']}",
-
-                "order":
-                    "created_at.asc"
-            }
-        )
-
-        question_files = ""
-        answer_files = ""
-
-        for file in files:
-
-            link = f"""
-<div style="margin:7px 0">
-
-📎
-
-<a
-href="/question-file/{file['id']}"
->
-{esc(file.get("original_name"))}
-</a>
+<div class="card">
 
 <span class="badge">
-{esc(file.get("file_type"))}
+{{ q.subject or 'General' }}
 </span>
 
-</div>
-"""
-
-            if file.get(
-                "file_type"
-            ) == "answer":
-
-                answer_files += link
-
-            else:
-
-                question_files += link
-
-        answer = question.get(
-            "answer",
-            ""
-        )
-
-        if answer:
-
-            answer_block = f"""
-<div class="card">
-
-<h3>
-Answer
-</h3>
-
-<div class="answer">
-{esc(answer)}
-</div>
-
-<br>
-
-{answer_files}
-
-<br>
-
-<a
-class="btn"
-href="/student/question/{question['id']}/pdf"
->
-Download Answer PDF
-</a>
-
-</div>
-"""
-
-        else:
-
-            answer_block = """
-<div class="card">
-
-<span class="badge orange">
-Waiting for answer
-</span>
-
-</div>
-"""
-
-        status = (
-            "Answered"
-            if answer
-            else "Waiting"
-        )
-
-        badge = (
-            "green"
-            if answer
-            else "orange"
-        )
-
-        blocks.append(
-            f"""
-<div class="card">
-
-<h3>
-Question
-</h3>
-
-<div class="question-box">
-{esc(question.get("question"))}
-</div>
-
-<br>
-
-<span class="badge {badge}">
-{status}
-</span>
+{% if session.get('is_admin') %}
 
 <p>
-<small>
-Submitted:
-{esc(question.get("created_at"))}
-</small>
+<b>
+Student:
+</b>
+
+{{ q.name or q.email or 'Student' }}
+
 </p>
 
-{question_files}
+{% endif %}
+
+<h3>
+{{ q.question }}
+</h3>
+
+<p class="small">
+{{ q.created_at }}
+</p>
+
+{% if q.answer %}
+
+<div class="answer">
+
+<b>
+KOJA Admin Answer
+</b>
+
+<p>
+{{ q.answer.answer }}
+</p>
 
 </div>
 
+{% else %}
+
+<p class="small">
+Waiting for administrator answer.
+</p>
+
+{% endif %}
+
+
+{% if session.get('is_admin') %}
+
 <br>
 
-{answer_block}
+<a class="btn"
+href="{{ url_for(
+'answer_question',
+question_id=q.id
+) }}">
 
-<br>
-"""
-        )
+{% if q.answer %}
+Edit Answer
+{% else %}
+Answer
+{% endif %}
 
-    content = "".join(
-        blocks
-    )
-
-    if not content:
-
-        content = """
-<div class="card empty">
-
-You have not submitted any
-questions yet.
-
-<br><br>
-
-<a
-class="btn"
-href="/student/question/new"
->
-Ask a Question
 </a>
 
+{% endif %}
+
 </div>
-"""
 
-    return page(
-        f"""
-<h1>
-My Questions
-</h1>
+{% else %}
 
-{content}
+<div class="card empty">
+No questions yet.
+</div>
+
+{% endfor %}
+
 """,
-
-        "My Questions"
+        questions=all_questions
     )
 
 
 # ============================================================
-# STUDENT ANSWER PDF
+# ANSWER QUESTION
 # ============================================================
 
 @app.route(
-    "/student/question/<question_id>/pdf"
+    "/admin/questions/<question_id>/answer",
+    methods=["GET", "POST"]
 )
-@student_required
-def student_question_pdf(
+@admin_required
+def answer_question(
     question_id
 ):
 
-    profile = current_profile()
-
-    rows = rest_get(
-        "questions",
-        {
-            "id":
-                f"eq.{question_id}",
-
-            "student_id":
-                f"eq.{profile['id']}",
-
-            "limit":
-                "1"
-        }
+    question = get_question(
+        question_id
     )
 
-    if (
-        not rows
-        or not rows[0].get("answer")
-    ):
-
+    if not question:
         abort(404)
-
-    pdf = create_answer_pdf(
-        rows[0],
-        profile.get(
-            "name",
-            "Student"
-        )
-    )
-
-    write_log(
-        "Answer PDF downloaded",
-        "Documents",
-        "INFO",
-        question_id,
-        profile["id"]
-    )
-
-    return send_file(
-        pdf,
-
-        as_attachment=True,
-
-        download_name=(
-            f"KOJA_Answer_"
-            f"{question_id[:8]}.pdf"
-        ),
-
-        mimetype="application/pdf"
-    )
-
-
-# ============================================================
-# STUDENT DOCUMENTS
-#
-# INBOX + OUTBOX
-# ============================================================
-
-@app.route(
-    "/student/documents",
-    methods=["GET", "POST"]
-)
-@student_required
-@limiter.limit(
-    "20 per hour",
-    methods=["POST"]
-)
-def student_documents():
-
-    profile = current_profile()
-
-    student_id = profile["id"]
-
-    # ========================================================
-    # SEND DOCUMENT TO ADMIN
-    # ========================================================
 
     if request.method == "POST":
 
-        check_csrf()
+        answer = (
+            request.form.get(
+                "answer",
+                ""
+            )
+            .strip()
+        )
 
-        title = request.form.get(
-            "title",
-            ""
-        ).strip()
+        if not answer:
 
-        description = request.form.get(
-            "description",
-            ""
-        ).strip()
+            flash(
+                "Answer cannot be empty.",
+                "warning"
+            )
 
-        category = request.form.get(
-            "category",
-            "Academic"
-        ).strip()
+            return redirect(
+                url_for(
+                    "answer_question",
+                    question_id=question_id
+                )
+            )
 
-        uploaded = request.files.get(
-            "file"
+        existing = question.get(
+            "answer"
+        )
+
+        if existing:
+
+            response = supabase_patch(
+                "answers",
+                {
+                    "id":
+                        existing["id"]
+                },
+                {
+                    "answer": answer,
+                    "admin_id":
+                        current_user()["id"],
+                }
+            )
+
+        else:
+
+            response = supabase_post(
+                "answers",
+                {
+                    "question_id":
+                        question_id,
+                    "admin_id":
+                        current_user()["id"],
+                    "answer": answer,
+                }
+            )
+
+        if response.status_code not in (
+            200,
+            201,
+            204
+        ):
+
+            flash(
+                "Answer could not be saved: "
+                + response.text,
+                "warning"
+            )
+
+            return redirect(
+                url_for(
+                    "answer_question",
+                    question_id=question_id
+                )
+            )
+
+        flash(
+            "Answer saved successfully.",
+            "success"
+        )
+
+        return redirect(
+            url_for("admin")
+        )
+
+    return render_page(
+        "Answer Question",
+        """
+
+<div class="card">
+
+<h1>
+Answer Student Question
+</h1>
+
+<div class="question">
+
+<b>
+Student:
+</b>
+
+{{ question.name
+or question.email
+or 'Student' }}
+
+<br><br>
+
+<b>
+Subject:
+</b>
+
+{{ question.subject
+or 'General' }}
+
+<br><br>
+
+<b>
+Question:
+</b>
+
+<p>
+{{ question.question }}
+</p>
+
+</div>
+
+<br>
+
+<form method="post">
+
+<label>
+Administrator Answer
+</label>
+
+<textarea
+name="answer"
+required
+placeholder="Write the academic answer here...">{{ question.answer.answer if question.answer else '' }}</textarea>
+
+<button>
+Save Answer
+</button>
+
+</form>
+
+</div>
+
+""",
+        question=question
+    )
+
+
+# ============================================================
+# ASSIGNMENTS LIST
+# ============================================================
+
+@app.route("/assignments")
+@login_required
+def assignments():
+
+    data = get_assignments()
+
+    if not is_admin():
+
+        student_id = (
+            current_user()["id"]
+        )
+
+        data = [
+            item
+            for item in data
+            if str(
+                item.get(
+                    "student_id"
+                )
+            )
+            == str(student_id)
+        ]
+
+    return render_page(
+        "Assignments",
+        """
+
+<div class="hero">
+
+<h1>
+Assignments
+</h1>
+
+<p>
+Submit an assignment, ask an assignment
+question and receive an administrator response.
+</p>
+
+{% if not session.get('is_admin') %}
+
+<div class="actions">
+
+<a class="btn green"
+href="{{ url_for(
+'ask_assignment'
+) }}">
+Ask Assignment
+</a>
+
+<a class="btn"
+href="{{ url_for(
+'upload_assignment'
+) }}">
+Upload Assignment
+</a>
+
+</div>
+
+{% endif %}
+
+</div>
+
+
+<h2>
+
+{% if session.get('is_admin') %}
+Submitted Assignments
+{% else %}
+My Assignments
+{% endif %}
+
+</h2>
+
+
+{% for item in assignments %}
+
+<div class="card">
+
+<div class="actions">
+
+<span class="badge">
+Assignment
+</span>
+
+<span class="status
+{% if item.status == 'completed' %}
+completed
+{% elif item.status == 'reviewing' %}
+pending
+{% elif item.status == 'rejected' %}
+rejected
+{% endif %}">
+
+{{ item.status or 'submitted' }}
+
+</span>
+
+</div>
+
+
+<h2>
+{{ item.title }}
+</h2>
+
+
+{% if session.get('is_admin') %}
+
+<p>
+
+<b>
+Student:
+</b>
+
+{{ item.student_name
+or item.email
+or item.student_id
+or 'Student' }}
+
+</p>
+
+{% endif %}
+
+
+{% if item.subject %}
+
+<p>
+<b>Subject:</b>
+{{ item.subject }}
+</p>
+
+{% endif %}
+
+
+{% if item.course %}
+
+<p>
+<b>Course:</b>
+{{ item.course }}
+</p>
+
+{% endif %}
+
+
+{% if item.class_level %}
+
+<p>
+<b>Class:</b>
+{{ item.class_level }}
+</p>
+
+{% endif %}
+
+
+{% if item.description %}
+
+<div class="question">
+
+<b>
+Description
+</b>
+
+<p>
+{{ item.description }}
+</p>
+
+</div>
+
+{% endif %}
+
+
+{% if item.question %}
+
+<div class="question">
+
+<b>
+Assignment Question
+</b>
+
+<p>
+{{ item.question }}
+</p>
+
+</div>
+
+{% endif %}
+
+
+{% if item.file_path %}
+
+<div class="file-box">
+
+<b>
+Student Assignment File:
+</b>
+
+{{ item.file_name }}
+
+{% if item.file_size %}
+
+<p class="small">
+
+Size:
+{{ (item.file_size / 1024)|round(1) }}
+KB
+
+</p>
+
+{% endif %}
+
+
+<a class="btn"
+href="{{ url_for(
+'download_assignment',
+assignment_id=item.id
+) }}">
+
+Download Assignment
+
+</a>
+
+</div>
+
+{% endif %}
+
+
+{# ====================================================
+   DIRECT ADMIN ANSWER
+   ==================================================== #}
+
+{% if item.answer_text %}
+
+<div class="assignment-response">
+
+<b>
+KOJA Administrator Answer
+</b>
+
+<p>
+{{ item.answer_text }}
+</p>
+
+{% if item.reviewed_by %}
+
+<p class="small">
+Reviewed by administrator.
+</p>
+
+{% endif %}
+
+</div>
+
+{% endif %}
+
+
+{# ====================================================
+   UPLOADED ANSWER FILE
+   ==================================================== #}
+
+{% if item.answer_file %}
+
+<div class="answer-file">
+
+<b>
+Answered Assignment File
+</b>
+
+<p>
+{{ item.answer_file.file_name }}
+</p>
+
+{% if item.answer_file.file_size %}
+
+<p class="small">
+
+Size:
+{{ (
+item.answer_file.file_size / 1024
+)|round(1) }}
+KB
+
+</p>
+
+{% endif %}
+
+
+<a class="btn green"
+href="{{ url_for(
+'download_assignment_answer',
+assignment_id=item.id
+) }}">
+
+Download Answered File
+
+</a>
+
+</div>
+
+{% endif %}
+
+
+{% if not item.answer_text
+and not item.answer_file %}
+
+{% if item.status == 'completed' %}
+
+<p class="small">
+Assignment marked completed.
+</p>
+
+{% else %}
+
+<p class="small">
+Waiting for administrator response.
+</p>
+
+{% endif %}
+
+{% endif %}
+
+
+<p class="small">
+
+Submitted:
+{{ item.created_at }}
+
+{% if item.updated_at %}
+
+<br>
+
+Updated:
+{{ item.updated_at }}
+
+{% endif %}
+
+</p>
+
+
+{% if session.get('is_admin') %}
+
+<div class="actions">
+
+{% if item.file_path %}
+
+<a class="btn gray"
+href="{{ url_for(
+'download_assignment',
+assignment_id=item.id
+) }}">
+
+Download Student File
+
+</a>
+
+{% endif %}
+
+
+<a class="btn green"
+href="{{ url_for(
+'ask_assignment_answer',
+assignment_id=item.id
+) }}">
+
+{% if item.answer_text
+or item.answer_file %}
+
+Edit Response
+
+{% else %}
+
+Respond
+
+{% endif %}
+
+</a>
+
+
+{% if item.answer_file %}
+
+<a class="btn"
+href="{{ url_for(
+'download_assignment_answer',
+assignment_id=item.id
+) }}">
+
+Download Answer
+
+</a>
+
+{% endif %}
+
+</div>
+
+{% endif %}
+
+</div>
+
+
+{% else %}
+
+<div class="card empty">
+
+<h2>
+No assignments found.
+</h2>
+
+{% if not session.get('is_admin') %}
+
+<p>
+You have not submitted an assignment yet.
+</p>
+
+{% endif %}
+
+</div>
+
+{% endfor %}
+
+""",
+        assignments=data
+    )
+
+
+# ============================================================
+# ASK ASSIGNMENT
+# ============================================================
+
+@app.route(
+    "/assignments/ask",
+    methods=["GET", "POST"]
+)
+@login_required
+def ask_assignment():
+
+    if request.method == "POST":
+
+        title = (
+            request.form.get(
+                "title",
+                ""
+            )
+            .strip()
+        )
+
+        description = (
+            request.form.get(
+                "description",
+                ""
+            )
+            .strip()
+        )
+
+        subject = (
+            request.form.get(
+                "subject",
+                ""
+            )
+            .strip()
+        )
+
+        course = (
+            request.form.get(
+                "course",
+                ""
+            )
+            .strip()
+        )
+
+        class_level = (
+            request.form.get(
+                "class_level",
+                ""
+            )
+            .strip()
+        )
+
+        question = (
+            request.form.get(
+                "question",
+                ""
+            )
+            .strip()
         )
 
         if not title:
 
             flash(
-                "Document title is required.",
-                "error"
+                "Assignment title is required.",
+                "warning"
             )
 
             return redirect(
-                url_for("student_documents")
+                url_for("ask_assignment")
             )
 
-        if not uploaded or not uploaded.filename:
+        if not question:
 
             flash(
-                "Please select a document.",
-                "error"
+                "Assignment question is required.",
+                "warning"
             )
 
             return redirect(
-                url_for("student_documents")
+                url_for("ask_assignment")
             )
 
-        if len(title) > 300:
+        user = current_user()
 
-            flash(
-                "Title is too long.",
-                "error"
-            )
-
-            return redirect(
-                url_for("student_documents")
-            )
-
-        if len(description) > 4000:
-
-            flash(
-                "Description is too long.",
-                "error"
-            )
-
-            return redirect(
-                url_for("student_documents")
-            )
-
-        storage_path = None
-
-        try:
-
-            info = upload_private_file(
-                uploaded,
-                f"documents/student/{student_id}"
-            )
-
-            storage_path = (
-                info["storage_path"]
-            )
-
-            created = rest_insert(
-                "documents",
-                {
-                    "direction":
-                        "student_to_admin",
-
-                    "sender_id":
-                        student_id,
-
-                    "sender_name":
-                        profile.get(
-                            "name",
-                            "Student"
-                        ),
-
-                    "recipient_id":
-                        None,
-
-                    "recipient_name":
-                        "KOJA Admin",
-
-                    "title":
-                        title,
-
-                    "description":
-                        description,
-
-                    "original_name":
-                        info[
-                            "original_name"
-                        ],
-
-                    "storage_path":
-                        storage_path,
-
-                    "size":
-                        info["size"]
-                }
-            )
-
-            if not created:
-
-                delete_private_file(
-                    storage_path
-                )
-
-                flash(
-                    "The document could not be saved.",
-                    "error"
-                )
-
-                return redirect(
-                    url_for(
-                        "student_documents"
-                    )
-                )
-
-            write_log(
-                "Student uploaded document",
-                "Documents",
-                "INFO",
-                (
-                    f"{category}: "
-                    f"{title}"
-                ),
-                student_id
-            )
-
-            flash(
-                "Document sent successfully. "
-                "KOJA Admin can now access it.",
-                "success"
-            )
-
-        except ValueError as error:
-
-            flash(
-                str(error),
-                "error"
-            )
-
-        except Exception:
-
-            logger.exception(
-                "Student document upload failed"
-            )
-
-            if storage_path:
-
-                delete_private_file(
-                    storage_path
-                )
-
-            flash(
-                "Document upload failed.",
-                "error"
-            )
-
-        return redirect(
-            url_for(
-                "student_documents"
-            )
+        response = supabase_post(
+            "assignments",
+            {
+                "student_id":
+                    user["id"],
+                "title":
+                    title,
+                "description":
+                    description or None,
+                "subject":
+                    subject or None,
+                "course":
+                    course or None,
+                "class_level":
+                    class_level or None,
+                "file_name":
+                    None,
+                "file_path":
+                    None,
+                "file_size":
+                    0,
+                "mime_type":
+                    "application/pdf",
+                "status":
+                    "submitted",
+                "admin_comment":
+                    None,
+                "reviewed_by":
+                    None,
+                "email":
+                    user.get("email"),
+                "question":
+                    question,
+                "student_name":
+                    user.get("name"),
+            }
         )
 
-    # ========================================================
-    # SEARCH
-    # ========================================================
+        if response.status_code not in (
+            200,
+            201
+        ):
 
-    search = request.args.get(
-        "q",
-        ""
-    ).strip().lower()
-
-    # ========================================================
-    # INBOX
-    # ========================================================
-
-    received_documents = rest_get(
-        "documents",
-        {
-            "recipient_id":
-                f"eq.{student_id}",
-
-            "direction":
-                "eq.admin_to_student",
-
-            "order":
-                "created_at.desc"
-        }
-    )
-
-    # ========================================================
-    # OUTBOX
-    # ========================================================
-
-    sent_documents = rest_get(
-        "documents",
-        {
-            "sender_id":
-                f"eq.{student_id}",
-
-            "direction":
-                "eq.student_to_admin",
-
-            "order":
-                "created_at.desc"
-        }
-    )
-
-    # ========================================================
-    # SEARCH FILTER
-    # ========================================================
-
-    def matches(document):
-
-        if not search:
-            return True
-
-        text = " ".join([
-            str(
-                document.get(
-                    "title",
-                    ""
-                )
-            ),
-
-            str(
-                document.get(
-                    "description",
-                    ""
-                )
-            ),
-
-            str(
-                document.get(
-                    "original_name",
-                    ""
-                )
+            logger.error(
+                "Assignment question error: %s",
+                response.text
             )
-        ]).lower()
 
-        return search in text
+            flash(
+                "Assignment question could not be saved: "
+                + response.text,
+                "warning"
+            )
 
-    received_documents = [
-        d
-        for d in received_documents
-        if matches(d)
-    ]
+            return redirect(
+                url_for("ask_assignment")
+            )
 
-    sent_documents = [
-        d
-        for d in sent_documents
-        if matches(d)
-    ]
+        flash(
+            "Assignment question submitted successfully.",
+            "success"
+        )
 
-    # ========================================================
-    # RECEIVED
-    # ========================================================
+        return redirect(
+            url_for("assignments")
+        )
 
-    received_cards = ""
-
-    for document in received_documents:
-
-        received_cards += f"""
-<div class="document-card">
-
-<div class="document-title">
-{esc(document.get("title"))}
-</div>
-
-<p>
-{esc(document.get("description"))}
-</p>
-
-<div class="document-meta">
-
-<b>From:</b>
-KOJA Admin
-<br>
-
-<b>File:</b>
-{esc(document.get("original_name"))}
-<br>
-
-<b>Type:</b>
-{document_type_label(document.get("original_name"))}
-<br>
-
-<b>Size:</b>
-{format_size(document.get("size"))}
-<br>
-
-<b>Received:</b>
-{esc(document.get("created_at"))}
-
-</div>
-
-<br>
-
-<a
-class="btn"
-href="/document/{document['id']}"
->
-Download
-</a>
-
-</div>
-"""
-
-    if not received_cards:
-
-        received_cards = """
-<div class="card empty">
-
-No documents have been received
-from KOJA Admin.
-
-</div>
-"""
-
-    # ========================================================
-    # SENT
-    # ========================================================
-
-    sent_cards = ""
-
-    for document in sent_documents:
-
-        sent_cards += f"""
-<div class="document-card">
-
-<div class="document-title">
-{esc(document.get("title"))}
-</div>
-
-<p>
-{esc(document.get("description"))}
-</p>
-
-<div class="document-meta">
-
-<b>To:</b>
-KOJA Admin
-<br>
-
-<b>File:</b>
-{esc(document.get("original_name"))}
-<br>
-
-<b>Type:</b>
-{document_type_label(document.get("original_name"))}
-<br>
-
-<b>Size:</b>
-{format_size(document.get("size"))}
-<br>
-
-<b>Sent:</b>
-{esc(document.get("created_at"))}
-
-</div>
-
-<br>
-
-<span class="badge green">
-Delivered to KOJA
-</span>
-
-<br><br>
-
-<a
-class="btn dark"
-href="/document/{document['id']}"
->
-Access My Copy
-</a>
-
-</div>
-"""
-
-    if not sent_cards:
-
-        sent_cards = """
-<div class="card empty">
-
-You have not sent any documents
-to KOJA Admin yet.
-
-</div>
-"""
-
-    return page(
-        f"""
-<h1>
-Document Centre
-</h1>
-
-<div class="info">
-
-Your documents are stored in KOJA's
-private document storage. Only the
-authorized student and KOJA Admin
-can access the corresponding files.
-
-</div>
-
-<br>
+    return render_page(
+        "Ask Assignment",
+        """
 
 <div class="card">
 
-<h2>
-Send Document to KOJA Admin
-</h2>
+<h1>
+Ask Assignment
+</h1>
 
-<form
-method="post"
-enctype="multipart/form-data"
->
+<p class="muted">
+Submit an assignment question without uploading
+a file.
+</p>
 
-{csrf_input()}
+<form method="post">
 
 <label>
-Document Title
+Assignment Title
 </label>
 
 <input
 name="title"
 required
-maxlength="300"
-placeholder="Example: Assignment 1"
-/>
+placeholder="e.g. Rate of Chemical Reaction">
+
 
 <label>
-Category
+Subject
 </label>
 
-<select
-name="category"
->
+<input
+name="subject"
+placeholder="e.g. Chemistry">
 
-<option>
-Academic
-</option>
 
-<option>
-Assignment
-</option>
+<label>
+Course
+</label>
 
-<option>
-Application
-</option>
+<input
+name="course"
+placeholder="e.g. General Science">
 
-<option>
-Report
-</option>
 
-<option>
-Other
-</option>
+<label>
+Class Level
+</label>
 
-</select>
+<input
+name="class_level"
+placeholder="e.g. Grade 12">
+
 
 <label>
 Description
@@ -4100,75 +3486,1180 @@ Description
 
 <textarea
 name="description"
-maxlength="4000"
-placeholder="Describe the document..."
-></textarea>
+placeholder="Optional assignment description..."></textarea>
+
 
 <label>
-File
+Assignment Question
 </label>
 
-<input
-type="file"
-name="file"
+<textarea
+name="question"
 required
->
+placeholder="Enter the assignment question..."></textarea>
 
-<small>
-Maximum size: 10 MB.
-</small>
 
-<br><br>
-
-<button
-class="btn"
-type="submit"
->
-Send Document
+<button>
+Submit Assignment Question
 </button>
 
 </form>
 
 </div>
 
-<br>
+"""
+    )
+
+
+# ============================================================
+# UPLOAD ASSIGNMENT
+# ============================================================
+
+@app.route(
+    "/assignments/upload",
+    methods=["GET", "POST"]
+)
+@login_required
+def upload_assignment():
+
+    if request.method == "POST":
+
+        title = (
+            request.form.get(
+                "title",
+                ""
+            )
+            .strip()
+        )
+
+        description = (
+            request.form.get(
+                "description",
+                ""
+            )
+            .strip()
+        )
+
+        subject = (
+            request.form.get(
+                "subject",
+                ""
+            )
+            .strip()
+        )
+
+        course = (
+            request.form.get(
+                "course",
+                ""
+            )
+            .strip()
+        )
+
+        class_level = (
+            request.form.get(
+                "class_level",
+                ""
+            )
+            .strip()
+        )
+
+        question = (
+            request.form.get(
+                "question",
+                ""
+            )
+            .strip()
+        )
+
+        file = request.files.get(
+            "file"
+        )
+
+        if not title:
+
+            flash(
+                "Assignment title is required.",
+                "warning"
+            )
+
+            return redirect(
+                url_for("upload_assignment")
+            )
+
+        if not file or not file.filename:
+
+            flash(
+                "Please select an assignment file.",
+                "warning"
+            )
+
+            return redirect(
+                url_for("upload_assignment")
+            )
+
+        storage = None
+
+        try:
+
+            storage = upload_to_storage(
+                file
+            )
+
+            user = current_user()
+
+            response = supabase_post(
+                "assignments",
+                {
+                    "student_id":
+                        user["id"],
+                    "title":
+                        title,
+                    "description":
+                        description or None,
+                    "subject":
+                        subject or None,
+                    "course":
+                        course or None,
+                    "class_level":
+                        class_level or None,
+                    "file_name":
+                        storage["file_name"],
+                    "file_path":
+                        storage["file_path"],
+                    "file_size":
+                        storage["file_size"],
+                    "mime_type":
+                        storage["mime_type"],
+                    "status":
+                        "submitted",
+                    "admin_comment":
+                        None,
+                    "reviewed_by":
+                        None,
+                    "email":
+                        user.get("email"),
+                    "question":
+                        question or None,
+                    "student_name":
+                        user.get("name"),
+                }
+            )
+
+            if response.status_code not in (
+                200,
+                201
+            ):
+
+                delete_from_storage(
+                    storage["file_path"]
+                )
+
+                logger.error(
+                    "Assignment database save failed: %s",
+                    response.text
+                )
+
+                flash(
+                    "Assignment could not be saved: "
+                    + response.text,
+                    "warning"
+                )
+
+                return redirect(
+                    url_for(
+                        "upload_assignment"
+                    )
+                )
+
+            flash(
+                "Assignment uploaded successfully.",
+                "success"
+            )
+
+            return redirect(
+                url_for("assignments")
+            )
+
+        except Exception as exc:
+
+            logger.exception(
+                "Assignment upload error"
+            )
+
+            if storage:
+
+                try:
+
+                    delete_from_storage(
+                        storage["file_path"]
+                    )
+
+                except Exception:
+                    pass
+
+            flash(
+                "Assignment upload failed: "
+                + str(exc),
+                "warning"
+            )
+
+            return redirect(
+                url_for(
+                    "upload_assignment"
+                )
+            )
+
+    return render_page(
+        "Upload Assignment",
+        """
+
+<div class="card">
+
+<h1>
+Upload Assignment
+</h1>
 
 <form
-method="get"
-class="searchbar"
->
+method="post"
+enctype="multipart/form-data">
+
+
+<label>
+Assignment Title
+</label>
 
 <input
-name="q"
-value="{esc(search)}"
-placeholder="Search my documents..."
->
+name="title"
+required
+placeholder="Assignment title">
 
-<button
-class="btn dark"
-type="submit"
->
-Search
+
+<label>
+Description
+</label>
+
+<textarea
+name="description"
+placeholder="Describe the assignment..."></textarea>
+
+
+<label>
+Subject
+</label>
+
+<input
+name="subject"
+placeholder="Subject">
+
+
+<label>
+Course
+</label>
+
+<input
+name="course"
+placeholder="Course">
+
+
+<label>
+Class Level
+</label>
+
+<input
+name="class_level"
+placeholder="Class">
+
+
+<label>
+Assignment Question
+</label>
+
+<textarea
+name="question"
+placeholder="Optional assignment question..."></textarea>
+
+
+<label>
+Assignment File
+</label>
+
+<input
+type="file"
+name="file"
+required>
+
+
+<p class="small">
+Maximum size: 10 MB.
+</p>
+
+
+<button>
+Upload Assignment
 </button>
 
 </form>
 
-<h2>
-Inbox — From KOJA Admin
-</h2>
+</div>
 
-{received_cards}
+"""
+    )
+
+
+# ============================================================
+# DOWNLOAD STUDENT ASSIGNMENT
+# ============================================================
+
+@app.route(
+    "/assignments/<assignment_id>/download"
+)
+@login_required
+def download_assignment(
+    assignment_id
+):
+
+    assignment = get_assignment(
+        assignment_id
+    )
+
+    if not assignment:
+        abort(404)
+
+    if not is_admin():
+
+        if str(
+            assignment.get(
+                "student_id"
+            )
+        ) != str(
+            current_user()["id"]
+        ):
+
+            abort(403)
+
+    file_path = assignment.get(
+        "file_path"
+    )
+
+    if not file_path:
+
+        flash(
+            "This assignment does not contain an uploaded file.",
+            "warning"
+        )
+
+        return redirect(
+            url_for("assignments")
+        )
+
+    file_response = (
+        download_from_storage(
+            file_path
+        )
+    )
+
+    if file_response.status_code != 200:
+
+        logger.error(
+            "Assignment storage download failed: %s",
+            file_response.text
+        )
+
+        flash(
+            "Assignment file could not be downloaded.",
+            "warning"
+        )
+
+        return redirect(
+            url_for("assignments")
+        )
+
+    return send_file(
+        io.BytesIO(
+            file_response.content
+        ),
+        mimetype=(
+            assignment.get(
+                "mime_type"
+            )
+            or
+            "application/octet-stream"
+        ),
+        download_name=(
+            assignment.get(
+                "file_name"
+            )
+            or
+            "assignment"
+        ),
+        as_attachment=True
+    )
+
+
+# ============================================================
+# DOWNLOAD ANSWERED ASSIGNMENT FILE
+# ============================================================
+
+@app.route(
+    "/assignments/<assignment_id>/answer/download"
+)
+@login_required
+def download_assignment_answer(
+    assignment_id
+):
+
+    assignment = get_assignment(
+        assignment_id
+    )
+
+    if not assignment:
+        abort(404)
+
+    # Students can only download their own answer.
+    if not is_admin():
+
+        if str(
+            assignment.get(
+                "student_id"
+            )
+        ) != str(
+            current_user()["id"]
+        ):
+
+            abort(403)
+
+    answer_file = assignment.get(
+        "answer_file"
+    )
+
+    if not answer_file:
+
+        flash(
+            "No answered file has been uploaded for this assignment.",
+            "warning"
+        )
+
+        return redirect(
+            url_for("assignments")
+        )
+
+    file_path = answer_file.get(
+        "file_path"
+    )
+
+    if not file_path:
+
+        flash(
+            "Answered file path is missing.",
+            "warning"
+        )
+
+        return redirect(
+            url_for("assignments")
+        )
+
+    file_response = (
+        download_from_storage(
+            file_path
+        )
+    )
+
+    if file_response.status_code != 200:
+
+        logger.error(
+            "Answered assignment download failed: %s",
+            file_response.text
+        )
+
+        flash(
+            "Answered assignment file could not be downloaded.",
+            "warning"
+        )
+
+        return redirect(
+            url_for("assignments")
+        )
+
+    return send_file(
+        io.BytesIO(
+            file_response.content
+        ),
+        mimetype=(
+            answer_file.get(
+                "mime_type"
+            )
+            or
+            "application/octet-stream"
+        ),
+        download_name=(
+            answer_file.get(
+                "file_name"
+            )
+            or
+            "answered-assignment"
+        ),
+        as_attachment=True
+    )
+
+
+# ============================================================
+# ADMIN ASSIGNMENT RESPONSE
+# ============================================================
+
+@app.route(
+    "/admin/assignments/<assignment_id>/respond",
+    methods=["GET", "POST"]
+)
+@admin_required
+def ask_assignment_answer(
+    assignment_id
+):
+
+    assignment = get_assignment(
+        assignment_id
+    )
+
+    if not assignment:
+        abort(404)
+
+    if request.method == "POST":
+
+        response_type = (
+            request.form.get(
+                "response_type",
+                "direct"
+            )
+            .strip()
+            .lower()
+        )
+
+        answer = (
+            request.form.get(
+                "answer",
+                ""
+            )
+            .strip()
+        )
+
+        status = (
+            request.form.get(
+                "status",
+                "completed"
+            )
+            .strip()
+        )
+
+        allowed_statuses = {
+            "submitted",
+            "reviewing",
+            "completed",
+            "rejected",
+        }
+
+        if status not in allowed_statuses:
+            status = "completed"
+
+        if response_type not in {
+            "direct",
+            "file"
+        }:
+
+            response_type = "direct"
+
+        answer_file = request.files.get(
+            "answer_file"
+        )
+
+        # ----------------------------------------------------
+        # Validate response type
+        # ----------------------------------------------------
+
+        if response_type == "direct":
+
+            if not answer:
+
+                flash(
+                    "Please enter the administrator answer.",
+                    "warning"
+                )
+
+                return redirect(
+                    url_for(
+                        "ask_assignment_answer",
+                        assignment_id=assignment_id
+                    )
+                )
+
+        elif response_type == "file":
+
+            if (
+                not answer_file
+                or
+                not answer_file.filename
+            ):
+
+                flash(
+                    "Please select an answered PDF or Word file.",
+                    "warning"
+                )
+
+                return redirect(
+                    url_for(
+                        "ask_assignment_answer",
+                        assignment_id=assignment_id
+                    )
+                )
+
+        old_answer_file = (
+            assignment.get(
+                "answer_file"
+            )
+        )
+
+        new_answer_file = None
+
+        try:
+
+            # ------------------------------------------------
+            # Upload new answered file
+            # ------------------------------------------------
+
+            if response_type == "file":
+
+                new_answer_file = (
+                    upload_answer_file(
+                        answer_file
+                    )
+                )
+
+            # ------------------------------------------------
+            # Build response metadata
+            # ------------------------------------------------
+
+            if response_type == "direct":
+
+                stored_comment = (
+                    make_assignment_answer_data(
+                        answer_text=answer,
+                        answer_file=None
+                    )
+                )
+
+            else:
+
+                stored_comment = (
+                    make_assignment_answer_data(
+                        answer_text="",
+                        answer_file=new_answer_file
+                    )
+                )
+
+            # ------------------------------------------------
+            # Update assignment
+            # ------------------------------------------------
+
+            response = supabase_patch(
+                "assignments",
+                {
+                    "id":
+                        assignment_id
+                },
+                {
+                    "admin_comment":
+                        stored_comment,
+                    "status":
+                        status,
+                    "reviewed_by":
+                        current_user()["id"],
+                }
+            )
+
+            if response.status_code not in (
+                200,
+                204
+            ):
+
+                logger.error(
+                    "Assignment response failed: %s",
+                    response.text
+                )
+
+                if new_answer_file:
+
+                    try:
+
+                        delete_from_storage(
+                            new_answer_file[
+                                "file_path"
+                            ]
+                        )
+
+                    except Exception:
+                        pass
+
+                flash(
+                    "Assignment response could not be saved: "
+                    + response.text,
+                    "warning"
+                )
+
+                return redirect(
+                    url_for(
+                        "ask_assignment_answer",
+                        assignment_id=assignment_id
+                    )
+                )
+
+            # ------------------------------------------------
+            # Delete old answer file after successful update
+            # ------------------------------------------------
+
+            if old_answer_file:
+
+                old_path = (
+                    old_answer_file.get(
+                        "file_path"
+                    )
+                )
+
+                if old_path:
+
+                    try:
+
+                        old_delete = (
+                            delete_from_storage(
+                                old_path
+                            )
+                        )
+
+                        if old_delete.status_code not in (
+                            200,
+                            204
+                        ):
+
+                            logger.warning(
+                                "Old answer file could not be deleted: %s",
+                                old_delete.text
+                            )
+
+                    except Exception as exc:
+
+                        logger.warning(
+                            "Old answer cleanup failed: %s",
+                            exc
+                        )
+
+            # ------------------------------------------------
+            # Success
+            # ------------------------------------------------
+
+            if response_type == "direct":
+
+                flash(
+                    "Administrator answer saved successfully.",
+                    "success"
+                )
+
+            else:
+
+                flash(
+                    "Answered PDF/Word file uploaded successfully.",
+                    "success"
+                )
+
+            return redirect(
+                url_for("assignments")
+            )
+
+        except Exception as exc:
+
+            logger.exception(
+                "Assignment response error"
+            )
+
+            if new_answer_file:
+
+                try:
+
+                    delete_from_storage(
+                        new_answer_file[
+                            "file_path"
+                        ]
+                    )
+
+                except Exception:
+                    pass
+
+            flash(
+                "Assignment response failed: "
+                + str(exc),
+                "warning"
+            )
+
+            return redirect(
+                url_for(
+                    "ask_assignment_answer",
+                    assignment_id=assignment_id
+                )
+            )
+
+    # --------------------------------------------------------
+    # GET page
+    # --------------------------------------------------------
+
+    return render_page(
+        "Respond to Assignment",
+        """
+
+<div class="card">
+
+<h1>
+Respond to Assignment
+</h1>
+
+
+<div class="question">
+
+<b>
+Student:
+</b>
+
+{{ assignment.student_name
+or assignment.email
+or assignment.student_id
+or 'Student' }}
+
+<br><br>
+
+
+<b>
+Title:
+</b>
+
+{{ assignment.title }}
+
+<br><br>
+
+
+<b>
+Subject:
+</b>
+
+{{ assignment.subject
+or 'General' }}
+
+
+{% if assignment.course %}
+
+<br><br>
+
+<b>
+Course:
+</b>
+
+{{ assignment.course }}
+
+{% endif %}
+
+
+{% if assignment.class_level %}
+
+<br><br>
+
+<b>
+Class:
+</b>
+
+{{ assignment.class_level }}
+
+{% endif %}
+
+
+{% if assignment.question %}
+
+<br><br>
+
+<b>
+Assignment Question:
+</b>
+
+<p>
+{{ assignment.question }}
+</p>
+
+{% endif %}
+
+
+{% if assignment.description %}
 
 <br>
 
-<h2>
-Sent — To KOJA Admin
-</h2>
+<b>
+Description:
+</b>
 
-{sent_cards}
+<p>
+{{ assignment.description }}
+</p>
+
+{% endif %}
+
+
+{% if assignment.file_name %}
+
+<br>
+
+<b>
+Student File:
+</b>
+
+{{ assignment.file_name }}
+
+<br><br>
+
+<a class="btn"
+href="{{ url_for(
+'download_assignment',
+assignment_id=assignment.id
+) }}">
+
+Download Student Assignment
+
+</a>
+
+{% endif %}
+
+</div>
+
+
+<br>
+
+
+{# ========================================================
+   EXISTING RESPONSE
+   ======================================================== #}
+
+{% if assignment.answer_text %}
+
+<div class="answer">
+
+<b>
+Current Direct Answer
+</b>
+
+<p>
+{{ assignment.answer_text }}
+</p>
+
+</div>
+
+{% endif %}
+
+
+{% if assignment.answer_file %}
+
+<div class="answer-file">
+
+<b>
+Current Answer File
+</b>
+
+<p>
+{{ assignment.answer_file.file_name }}
+</p>
+
+<a class="btn"
+href="{{ url_for(
+'download_assignment_answer',
+assignment_id=assignment.id
+) }}">
+
+Download Current Answer
+
+</a>
+
+</div>
+
+{% endif %}
+
+
+<br>
+
+
+<form
+method="post"
+enctype="multipart/form-data">
+
+
+<label>
+Response Type
+</label>
+
+<select
+name="response_type"
+id="response_type"
+onchange="toggleResponseType()">
+
+<option value="direct"
+{% if assignment.answer_text %}
+selected
+{% endif %}>
+Direct Answer
+</option>
+
+<option value="file"
+{% if assignment.answer_file %}
+selected
+{% endif %}>
+Upload Answered PDF / Word
+</option>
+
+</select>
+
+
+<div id="direct_box">
+
+<label>
+Administrator Answer
+</label>
+
+<textarea
+name="answer"
+placeholder="Write the complete academic answer here...">{{ assignment.answer_text or '' }}</textarea>
+
+<p class="small">
+Choose Direct Answer when you want the student
+to read the answer directly inside KOJA AFRICA.
+</p>
+
+</div>
+
+
+<div id="file_box">
+
+<label>
+Answered Assignment File
+</label>
+
+<input
+type="file"
+name="answer_file"
+accept=".pdf,.doc,.docx">
+
+<p class="small">
+Allowed formats: PDF, DOC and DOCX.
+Maximum size: 10 MB.
+</p>
+
+<p class="small">
+The uploaded answered file will be stored securely
+in the KOJA storage bucket and made available
+to the student.
+</p>
+
+</div>
+
+
+<label>
+Assignment Status
+</label>
+
+<select name="status">
+
+<option
+value="submitted"
+{% if assignment.status == 'submitted' %}
+selected
+{% endif %}>
+Submitted
+</option>
+
+<option
+value="reviewing"
+{% if assignment.status == 'reviewing' %}
+selected
+{% endif %}>
+Reviewing
+</option>
+
+<option
+value="completed"
+{% if assignment.status == 'completed' %}
+selected
+{% endif %}>
+Completed
+</option>
+
+<option
+value="rejected"
+{% if assignment.status == 'rejected' %}
+selected
+{% endif %}>
+Rejected
+</option>
+
+</select>
+
+
+<button>
+Save Assignment Response
+</button>
+
+</form>
+
+</div>
+
+
+<script>
+
+function toggleResponseType() {
+
+    const type =
+        document.getElementById(
+            "response_type"
+        ).value;
+
+    const directBox =
+        document.getElementById(
+            "direct_box"
+        );
+
+    const fileBox =
+        document.getElementById(
+            "file_box"
+        );
+
+    if (type === "file") {
+
+        directBox.style.display =
+            "none";
+
+        fileBox.style.display =
+            "block";
+
+    } else {
+
+        directBox.style.display =
+            "block";
+
+        fileBox.style.display =
+            "none";
+    }
+}
+
+
+document.addEventListener(
+    "DOMContentLoaded",
+    function() {
+        toggleResponseType();
+    }
+);
+
+</script>
+
 """,
-
-        "Document Centre"
+        assignment=assignment
     )
 
 
@@ -4178,318 +4669,323 @@ Sent — To KOJA Admin
 
 @app.route("/admin")
 @admin_required
-def admin_dashboard():
+def admin():
 
-    profiles = rest_get(
-        "profiles"
-    )
+    docs = get_documents()
 
-    questions = rest_get(
-        "questions"
-    )
+    all_questions = get_questions()
 
-    documents = rest_get(
-        "documents"
-    )
+    assignments_data = get_assignments()
 
-    waiting = sum(
-        not bool(
-            q.get("answer")
+    total_views = sum(
+        int(
+            d.get(
+                "view_count",
+                0
+            )
+            or 0
         )
-        for q in questions
+        for d in docs
     )
 
-    answered = (
-        len(questions)
-        - waiting
+    total_downloads = sum(
+        int(
+            d.get(
+                "download_count",
+                0
+            )
+            or 0
+        )
+        for d in docs
     )
 
-    student_documents = [
-        d
-        for d in documents
-        if d.get("direction")
-        == "student_to_admin"
+    unanswered = [
+        q
+        for q in all_questions
+        if not q.get("answer")
     ]
 
-    admin_documents_sent = [
-        d
-        for d in documents
-        if d.get("direction")
-        == "admin_to_student"
+    pending_assignments = [
+        a
+        for a in assignments_data
+        if a.get("status")
+        in (
+            "submitted",
+            "reviewing"
+        )
     ]
 
-    return page(
-        f"""
-<h1>
-Admin Dashboard
-</h1>
+    answered_assignments = [
+        a
+        for a in assignments_data
+        if a.get("answer_text")
+        or a.get("answer_file")
+    ]
 
-<div class="grid">
-
-<div class="card">
-
-<h3>
-Users
-</h3>
-
-<div class="stat">
-{len(profiles)}
-</div>
-
-</div>
-
-<div class="card">
-
-<h3>
-Questions
-</h3>
-
-<div class="stat">
-{len(questions)}
-</div>
-
-</div>
-
-<div class="card">
-
-<h3>
-Answered
-</h3>
-
-<div class="stat">
-{answered}
-</div>
-
-</div>
-
-<div class="card">
-
-<h3>
-Waiting
-</h3>
-
-<div class="stat">
-{waiting}
-</div>
-
-</div>
-
-<div class="card">
-
-<h3>
-Student Documents
-</h3>
-
-<div class="stat">
-{len(student_documents)}
-</div>
-
-</div>
-
-<div class="card">
-
-<h3>
-Sent Documents
-</h3>
-
-<div class="stat">
-{len(admin_documents_sent)}
-</div>
-
-</div>
-
-</div>
-
-<br>
-
-<div class="card">
-
-<h2>
-Document Centre
-</h2>
-
-<div class="actions"
-style="justify-content:flex-start">
-
-<a
-class="btn"
-href="/admin/documents"
->
-Open Documents
-</a>
-
-<a
-class="btn dark"
-href="/admin/questions"
->
-Manage Questions
-</a>
-
-<a
-class="btn"
-href="/admin/users"
->
-Users
-</a>
-
-<a
-class="btn"
-href="/admin/logs"
->
-Logs
-</a>
-
-</div>
-
-</div>
-
-<br>
-
-<div class="card future">
-
-<h2>
-KOJA Business Foundation
-</h2>
-
-<p>
-The current platform is deliberately
-structured so that revenue features
-can be added later without changing
-the student/admin document architecture.
-</p>
-
-<div class="mini-grid">
-
-<div class="mini-stat">
-<strong>
-Free
-</strong>
-Basic learning access
-</div>
-
-<div class="mini-stat">
-<strong>
-Premium
-</strong>
-Paid resources
-</div>
-
-<div class="mini-stat">
-<strong>
-Institution
-</strong>
-School services
-</div>
-
-<div class="mini-stat">
-<strong>
-Subscriptions
-</strong>
-Recurring revenue
-</div>
-
-</div>
-
-</div>
-""",
-
-        "Admin Dashboard"
-    )
-
-
-# ============================================================
-# ADMIN QUESTIONS
-# ============================================================
-
-@app.route(
-    "/admin/questions"
-)
-@admin_required
-def admin_questions():
-
-    questions = rest_get(
-        "questions",
+    records_response = supabase_get(
+        "document_records",
         {
+            "select": "*",
             "order":
-                "created_at.desc"
+                "created_at.desc",
+            "limit": "100",
         }
     )
 
-    rows = ""
+    records = []
 
-    for q in questions:
+    if records_response.status_code == 200:
 
-        status = (
-            "Answered"
-            if q.get("answer")
-            else "Waiting"
+        records = (
+            records_response.json()
         )
 
-        badge = (
-            "green"
-            if q.get("answer")
-            else "orange"
-        )
+    return render_page(
+        "Admin",
+        """
 
-        rows += f"""
-<tr>
+<div class="hero">
 
-<td>
-{esc(q.get("student_name"))}
-</td>
-
-<td>
-{esc(q.get("question"))}
-</td>
-
-<td>
-
-<span class="badge {badge}">
-{status}
-</span>
-
-</td>
-
-<td>
-{esc(q.get("created_at"))}
-</td>
-
-<td>
-
-<a
-class="btn"
-href="/admin/question/{q['id']}"
->
-Open
-</a>
-
-</td>
-
-</tr>
-"""
-
-    if not rows:
-
-        rows = """
-<tr>
-
-<td
-colspan="5"
-class="empty"
->
-No questions yet.
-</td>
-
-</tr>
-"""
-
-    return page(
-        f"""
 <h1>
-Questions
+KOJA ADMIN
 </h1>
 
-<div class="tablewrap">
+<p>
+Manage documents, questions and assignments.
+</p>
+
+<div class="actions">
+
+<a class="btn green"
+href="{{ url_for(
+'upload_document'
+) }}">
+Upload Document
+</a>
+
+<a class="btn"
+href="{{ url_for(
+'questions'
+) }}">
+Questions
+</a>
+
+<a class="btn orange"
+href="{{ url_for(
+'assignments'
+) }}">
+Assignments
+</a>
+
+<a class="btn gray"
+href="{{ url_for(
+'document_report'
+) }}">
+PDF Report
+</a>
+
+</div>
+
+</div>
+
+
+<div class="grid">
+
+
+<div class="card">
+
+<div class="small">
+Documents
+</div>
+
+<div class="stat">
+{{ docs|length }}
+</div>
+
+</div>
+
+
+<div class="card">
+
+<div class="small">
+Questions
+</div>
+
+<div class="stat">
+{{ questions|length }}
+</div>
+
+</div>
+
+
+<div class="card">
+
+<div class="small">
+Unanswered Questions
+</div>
+
+<div class="stat">
+{{ unanswered|length }}
+</div>
+
+</div>
+
+
+<div class="card">
+
+<div class="small">
+Assignments
+</div>
+
+<div class="stat">
+{{ assignments|length }}
+</div>
+
+</div>
+
+
+<div class="card">
+
+<div class="small">
+Pending Assignments
+</div>
+
+<div class="stat">
+{{ pending_assignments|length }}
+</div>
+
+</div>
+
+
+<div class="card">
+
+<div class="small">
+Answered Assignments
+</div>
+
+<div class="stat">
+{{ answered_assignments|length }}
+</div>
+
+</div>
+
+
+<div class="card">
+
+<div class="small">
+Document Views
+</div>
+
+<div class="stat">
+{{ total_views }}
+</div>
+
+</div>
+
+
+<div class="card">
+
+<div class="small">
+Document Downloads
+</div>
+
+<div class="stat">
+{{ total_downloads }}
+</div>
+
+</div>
+
+</div>
+
+
+<div class="card">
+
+<h2>
+Student Questions
+</h2>
+
+{% for q in questions %}
+
+<div class="question">
+
+<b>
+{{ q.name
+or q.email
+or 'Student' }}
+</b>
+
+<p>
+<b>
+{{ q.subject
+or 'General' }}
+</b>
+</p>
+
+<p>
+{{ q.question }}
+</p>
+
+
+{% if q.answer %}
+
+<div class="answer">
+
+<b>
+Answer:
+</b>
+
+<p>
+{{ q.answer.answer }}
+</p>
+
+<a class="btn gray"
+href="{{ url_for(
+'answer_question',
+question_id=q.id
+) }}">
+
+Edit Answer
+
+</a>
+
+</div>
+
+{% else %}
+
+<a class="btn"
+href="{{ url_for(
+'answer_question',
+question_id=q.id
+) }}">
+
+Answer Question
+
+</a>
+
+{% endif %}
+
+</div>
+
+<br>
+
+{% else %}
+
+<p>
+No questions.
+</p>
+
+{% endfor %}
+
+</div>
+
+
+<div class="card">
+
+<h2>
+Submitted Assignments
+</h2>
+
+<div class="table-wrap">
 
 <table>
 
@@ -4500,7 +4996,11 @@ Student
 </th>
 
 <th>
-Question
+Title
+</th>
+
+<th>
+Subject
 </th>
 
 <th>
@@ -4508,7 +5008,11 @@ Status
 </th>
 
 <th>
-Submitted
+Student File
+</th>
+
+<th>
+Answer
 </th>
 
 <th>
@@ -4517,906 +5021,573 @@ Action
 
 </tr>
 
-{rows}
+
+{% for a in assignments %}
+
+<tr>
+
+<td>
+
+{{ a.student_name
+or a.email
+or a.student_id
+or 'Student' }}
+
+</td>
+
+
+<td>
+{{ a.title }}
+</td>
+
+
+<td>
+{{ a.subject or '-' }}
+</td>
+
+
+<td>
+{{ a.status or 'submitted' }}
+</td>
+
+
+<td>
+
+{% if a.file_path %}
+
+{{ a.file_name }}
+
+{% else %}
+
+Question only
+
+{% endif %}
+
+</td>
+
+
+<td>
+
+{% if a.answer_text %}
+
+Direct answer
+
+{% elif a.answer_file %}
+
+{{ a.answer_file.file_name }}
+
+{% else %}
+
+Waiting
+
+{% endif %}
+
+</td>
+
+
+<td>
+
+<div class="actions">
+
+{% if a.file_path %}
+
+<a class="btn gray"
+href="{{ url_for(
+'download_assignment',
+assignment_id=a.id
+) }}">
+
+Download
+
+</a>
+
+{% endif %}
+
+
+{% if a.answer_file %}
+
+<a class="btn"
+href="{{ url_for(
+'download_assignment_answer',
+assignment_id=a.id
+) }}">
+
+Answer File
+
+</a>
+
+{% endif %}
+
+
+<a class="btn green"
+href="{{ url_for(
+'ask_assignment_answer',
+assignment_id=a.id
+) }}">
+
+{% if a.answer_text
+or a.answer_file %}
+
+Edit Response
+
+{% else %}
+
+Respond
+
+{% endif %}
+
+</a>
+
+</div>
+
+</td>
+
+</tr>
+
+
+{% else %}
+
+<tr>
+
+<td colspan="7">
+
+No assignments submitted.
+
+</td>
+
+</tr>
+
+{% endfor %}
 
 </table>
 
 </div>
-""",
-
-        "Admin Questions"
-    )
-
-
-# ============================================================
-# ADMIN QUESTION
-# ============================================================
-
-@app.route(
-    "/admin/question/<question_id>",
-    methods=["GET", "POST"]
-)
-@admin_required
-@limiter.limit(
-    "60 per hour",
-    methods=["POST"]
-)
-def admin_question(
-    question_id
-):
-
-    profile = current_profile()
-
-    questions = rest_get(
-        "questions",
-        {
-            "id":
-                f"eq.{question_id}",
-
-            "limit":
-                "1"
-        }
-    )
-
-    if not questions:
-        abort(404)
-
-    question = questions[0]
-
-    if request.method == "POST":
-
-        check_csrf()
-
-        answer = request.form.get(
-            "answer",
-            ""
-        ).strip()
-
-        if not answer:
-
-            flash(
-                "Answer cannot be empty.",
-                "error"
-            )
-
-            return redirect(
-                url_for(
-                    "admin_question",
-                    question_id=question_id
-                )
-            )
-
-        if len(answer) > 30000:
-
-            flash(
-                "Answer is too long.",
-                "error"
-            )
-
-            return redirect(
-                url_for(
-                    "admin_question",
-                    question_id=question_id
-                )
-            )
-
-        updated = rest_update(
-            "questions",
-            {
-                "id":
-                    f"eq.{question_id}"
-            },
-            {
-                "answer":
-                    answer,
-
-                "answer_by":
-                    profile.get(
-                        "name",
-                        "Admin"
-                    ),
-
-                "answered_at":
-                    now_iso()
-            }
-        )
-
-        if updated is None:
-
-            flash(
-                "Unable to save the answer.",
-                "error"
-            )
-
-        else:
-
-            answer_file = request.files.get(
-                "answer_file"
-            )
-
-            if (
-                answer_file
-                and answer_file.filename
-            ):
-
-                try:
-
-                    info = upload_private_file(
-                        answer_file,
-                        f"answers/{question_id}"
-                    )
-
-                    recorded = rest_insert(
-                        "question_files",
-                        {
-                            "question_id":
-                                question_id,
-
-                            "original_name":
-                                info[
-                                    "original_name"
-                                ],
-
-                            "storage_path":
-                                info[
-                                    "storage_path"
-                                ],
-
-                            "size":
-                                info[
-                                    "size"
-                                ],
-
-                            "file_type":
-                                "answer"
-                        },
-                        returning=False
-                    )
-
-                    if not recorded:
-
-                        delete_private_file(
-                            info[
-                                "storage_path"
-                            ]
-                        )
-
-                        flash(
-                            "Answer saved, "
-                            "but attachment "
-                            "could not be recorded.",
-                            "warning"
-                        )
-
-                except Exception:
-
-                    logger.exception(
-                        "Answer attachment failed"
-                    )
-
-                    flash(
-                        "Answer saved, "
-                        "but attachment failed.",
-                        "warning"
-                    )
-
-            write_log(
-                "Question answered",
-                "Questions",
-                "INFO",
-                question_id,
-                profile["id"]
-            )
-
-            flash(
-                "Answer saved successfully.",
-                "success"
-            )
-
-        return redirect(
-            url_for(
-                "admin_question",
-                question_id=question_id
-            )
-        )
-
-    files = rest_get(
-        "question_files",
-        {
-            "question_id":
-                f"eq.{question_id}",
-
-            "order":
-                "created_at.asc"
-        }
-    )
-
-    file_links = ""
-
-    for file in files:
-
-        file_links += f"""
-<div style="margin:7px 0">
-
-📎
-
-<a
-href="/question-file/{file['id']}"
->
-{esc(file.get("original_name"))}
-</a>
-
-<span class="badge">
-{esc(file.get("file_type"))}
-</span>
 
 </div>
-"""
 
-    status = (
-        "Answered"
-        if question.get("answer")
-        else "Waiting"
-    )
-
-    return page(
-        f"""
-<h1>
-Question
-</h1>
 
 <div class="card">
 
-<p>
+<h2>
+Documents
+</h2>
 
-<strong>
-Student:
-</strong>
+<div class="table-wrap">
 
-{esc(question.get("student_name"))}
+<table>
 
-</p>
+<tr>
 
-<p>
+<th>
+Title
+</th>
 
-<strong>
-Date:
-</strong>
+<th>
+Type
+</th>
 
-{esc(question.get("created_at"))}
+<th>
+Views
+</th>
 
-</p>
+<th>
+Downloads
+</th>
 
-<p>
+<th>
+Actions
+</th>
 
-<strong>
-Status:
-</strong>
+</tr>
 
-<span class="badge">
-{status}
-</span>
 
-</p>
+{% for doc in docs %}
 
-<hr>
+<tr>
 
-<h3>
-Question
-</h3>
+<td>
+{{ doc.title }}
+</td>
 
-<div class="question-box">
+<td>
+{{ doc.document_type }}
+</td>
 
-{esc(question.get("question"))}
+<td>
+{{ doc.view_count or 0 }}
+</td>
 
-</div>
+<td>
+{{ doc.download_count or 0 }}
+</td>
 
-<br>
+<td>
 
-{file_links}
+<div class="actions">
 
-</div>
+<a class="btn"
+href="{{ url_for(
+'view_document',
+document_id=doc.id
+) }}">
+View
+</a>
 
-<br>
+
+<a class="btn gray"
+href="{{ url_for(
+'edit_document',
+document_id=doc.id
+) }}">
+Edit
+</a>
+
 
 <form
 method="post"
-enctype="multipart/form-data"
->
-
-{csrf_input()}
-
-<h2>
-Answer
-</h2>
-
-<textarea
-name="answer"
-required
-maxlength="30000"
->{esc(question.get("answer"))}</textarea>
-
-<label>
-Answer Attachment
-</label>
-
-<input
-type="file"
-name="answer_file"
->
-
-<br><br>
+action="{{ url_for(
+'delete_document',
+document_id=doc.id
+) }}"
+onsubmit="return confirm(
+'Delete this document?'
+);">
 
 <button
-class="btn green"
-type="submit"
->
-Save Answer
+class="btn red">
+
+Delete
+
 </button>
 
 </form>
-""",
 
-        "Answer Question"
+</div>
+
+</td>
+
+</tr>
+
+{% endfor %}
+
+</table>
+
+</div>
+
+</div>
+
+
+<div class="card">
+
+<h2>
+Document Activity
+</h2>
+
+<div class="table-wrap">
+
+<table>
+
+<tr>
+
+<th>
+Document
+</th>
+
+<th>
+User
+</th>
+
+<th>
+Action
+</th>
+
+<th>
+Time
+</th>
+
+</tr>
+
+
+{% for record in records %}
+
+<tr>
+
+<td>
+{{ record.document_id }}
+</td>
+
+<td>
+{{ record.user_id
+or 'Unknown' }}
+</td>
+
+<td>
+{{ record.action }}
+</td>
+
+<td>
+{{ record.created_at }}
+</td>
+
+</tr>
+
+
+{% else %}
+
+<tr>
+
+<td colspan="4">
+No activity recorded.
+</td>
+
+</tr>
+
+{% endfor %}
+
+</table>
+
+</div>
+
+</div>
+
+""",
+        docs=docs,
+        questions=all_questions,
+        unanswered=unanswered,
+        assignments=assignments_data,
+        pending_assignments=pending_assignments,
+        answered_assignments=answered_assignments,
+        records=records,
+        total_views=total_views,
+        total_downloads=total_downloads
     )
 
 
 # ============================================================
-# ADMIN DOCUMENT CENTRE
-#
-# INBOX FROM STUDENTS
-# OUTBOX TO STUDENTS
+# UPLOAD DOCUMENT
 # ============================================================
 
 @app.route(
-    "/admin/documents",
+    "/admin/documents/upload",
     methods=["GET", "POST"]
 )
 @admin_required
-@limiter.limit(
-    "30 per hour",
-    methods=["POST"]
-)
-def admin_documents():
-
-    profile = current_profile()
-
-    admin_id = profile["id"]
-
-    # ========================================================
-    # ADMIN SENDS DOCUMENT
-    # ========================================================
+def upload_document():
 
     if request.method == "POST":
 
-        check_csrf()
-
-        recipient_id = request.form.get(
-            "recipient_id",
-            ""
-        ).strip()
-
-        title = request.form.get(
-            "title",
-            ""
-        ).strip()
-
-        description = request.form.get(
-            "description",
-            ""
-        ).strip()
-
-        category = request.form.get(
-            "category",
-            "Academic"
-        ).strip()
-
-        uploaded = request.files.get(
-            "file"
+        title = (
+            request.form.get(
+                "title",
+                ""
+            )
+            .strip()
         )
 
-        if not recipient_id:
-
-            flash(
-                "Please select a student.",
-                "error"
+        description = (
+            request.form.get(
+                "description",
+                ""
             )
+            .strip()
+        )
 
-            return redirect(
-                url_for(
-                    "admin_documents"
-                )
+        document_type = (
+            request.form.get(
+                "document_type",
+                "academic"
             )
+        )
+
+        subject = (
+            request.form.get(
+                "subject",
+                ""
+            )
+            .strip()
+        )
+
+        course = (
+            request.form.get(
+                "course",
+                ""
+            )
+            .strip()
+        )
+
+        class_level = (
+            request.form.get(
+                "class_level",
+                ""
+            )
+            .strip()
+        )
+
+        is_public = (
+            request.form.get(
+                "is_public"
+            )
+            == "on"
+        )
+
+        file = request.files.get(
+            "file"
+        )
 
         if not title:
 
             flash(
                 "Document title is required.",
-                "error"
+                "warning"
             )
 
             return redirect(
                 url_for(
-                    "admin_documents"
+                    "upload_document"
                 )
             )
 
-        if not uploaded or not uploaded.filename:
+        if not file or not file.filename:
 
             flash(
                 "Please select a document.",
-                "error"
+                "warning"
             )
 
             return redirect(
                 url_for(
-                    "admin_documents"
+                    "upload_document"
                 )
             )
 
-        students = rest_get(
-            "profiles",
-            {
-                "id":
-                    f"eq.{recipient_id}",
-
-                "role":
-                    "eq.student",
-
-                "limit":
-                    "1"
-            }
-        )
-
-        if not students:
-
-            flash(
-                "Selected student was not found.",
-                "error"
-            )
-
-            return redirect(
-                url_for(
-                    "admin_documents"
-                )
-            )
-
-        student = students[0]
-
-        storage_path = None
+        storage = None
 
         try:
 
-            info = upload_private_file(
-                uploaded,
-                f"documents/admin/{recipient_id}"
+            storage = upload_to_storage(
+                file
             )
 
-            storage_path = (
-                info["storage_path"]
-            )
-
-            created = rest_insert(
+            response = supabase_post(
                 "documents",
                 {
-                    "direction":
-                        "admin_to_student",
-
-                    "sender_id":
-                        admin_id,
-
-                    "sender_name":
-                        profile.get(
-                            "name",
-                            "KOJA Admin"
-                        ),
-
-                    "recipient_id":
-                        student["id"],
-
-                    "recipient_name":
-                        student.get(
-                            "name",
-                            ""
-                        ),
-
-                    "title":
-                        title,
-
+                    "title": title,
                     "description":
-                        description,
-
-                    "original_name":
-                        info[
-                            "original_name"
-                        ],
-
-                    "storage_path":
-                        storage_path,
-
-                    "size":
-                        info["size"]
+                        description or None,
+                    "document_type":
+                        document_type,
+                    "subject":
+                        subject or None,
+                    "course":
+                        course or None,
+                    "class_level":
+                        class_level or None,
+                    "file_name":
+                        storage["file_name"],
+                    "file_path":
+                        storage["file_path"],
+                    "file_url":
+                        None,
+                    "file_size":
+                        storage["file_size"],
+                    "mime_type":
+                        storage["mime_type"],
+                    "uploaded_by":
+                        current_user()["id"],
+                    "is_public":
+                        is_public,
+                    "is_active":
+                        True,
+                    "download_count":
+                        0,
+                    "view_count":
+                        0,
                 }
             )
 
-            if not created:
+            if response.status_code not in (
+                200,
+                201
+            ):
 
-                delete_private_file(
-                    storage_path
+                delete_from_storage(
+                    storage["file_path"]
                 )
 
                 flash(
-                    "The document could not be saved.",
-                    "error"
+                    "Document database save failed: "
+                    + response.text,
+                    "warning"
                 )
 
                 return redirect(
                     url_for(
-                        "admin_documents"
+                        "upload_document"
                     )
                 )
 
-            write_log(
-                "Admin sent document",
-                "Documents",
-                "INFO",
-                (
-                    f"{category}: "
-                    f"{title} -> "
-                    f"{student.get('email', '')}"
-                ),
-                admin_id
-            )
+            rows = response.json()
+
+            if rows:
+
+                create_document_record(
+                    rows[0]["id"],
+                    current_user()["id"],
+                    "uploaded"
+                )
 
             flash(
-                "Document sent successfully. "
-                "The student can now access it.",
+                "Document uploaded successfully.",
                 "success"
             )
 
-        except ValueError as error:
-
-            flash(
-                str(error),
-                "error"
+            return redirect(
+                url_for("admin")
             )
 
-        except Exception:
+        except Exception as exc:
 
             logger.exception(
-                "Admin document upload failed"
+                "Document upload error"
             )
 
-            if storage_path:
+            if storage:
 
-                delete_private_file(
-                    storage_path
-                )
+                try:
+
+                    delete_from_storage(
+                        storage["file_path"]
+                    )
+
+                except Exception:
+                    pass
 
             flash(
-                "Document upload failed.",
-                "error"
+                "Upload failed: "
+                + str(exc),
+                "warning"
             )
 
-        return redirect(
-            url_for(
-                "admin_documents"
-            )
-        )
-
-    # ========================================================
-    # SEARCH
-    # ========================================================
-
-    search = request.args.get(
-        "q",
-        ""
-    ).strip().lower()
-
-    # ========================================================
-    # STUDENTS
-    # ========================================================
-
-    students = rest_get(
-        "profiles",
-        {
-            "role":
-                "eq.student",
-
-            "order":
-                "name.asc"
-        }
-    )
-
-    options = ""
-
-    for student in students:
-
-        options += f"""
-<option
-value="{esc(student['id'])}"
->
-{esc(student.get("name"))}
-—
-{esc(student.get("email"))}
-</option>
-"""
-
-    # ========================================================
-    # INBOX
-    # ========================================================
-
-    received_documents = rest_get(
-        "documents",
-        {
-            "direction":
-                "eq.student_to_admin",
-
-            "order":
-                "created_at.desc"
-        }
-    )
-
-    # ========================================================
-    # OUTBOX
-    # ========================================================
-
-    sent_documents = rest_get(
-        "documents",
-        {
-            "direction":
-                "eq.admin_to_student",
-
-            "sender_id":
-                f"eq.{admin_id}",
-
-            "order":
-                "created_at.desc"
-        }
-    )
-
-    def matches(document):
-
-        if not search:
-            return True
-
-        text = " ".join([
-            str(
-                document.get(
-                    "title",
-                    ""
-                )
-            ),
-
-            str(
-                document.get(
-                    "description",
-                    ""
-                )
-            ),
-
-            str(
-                document.get(
-                    "original_name",
-                    ""
-                )
-            ),
-
-            str(
-                document.get(
-                    "sender_name",
-                    ""
-                )
-            ),
-
-            str(
-                document.get(
-                    "recipient_name",
-                    ""
+            return redirect(
+                url_for(
+                    "upload_document"
                 )
             )
-        ]).lower()
 
-        return search in text
-
-    received_documents = [
-        d
-        for d in received_documents
-        if matches(d)
-    ]
-
-    sent_documents = [
-        d
-        for d in sent_documents
-        if matches(d)
-    ]
-
-    # ========================================================
-    # RECEIVED CARDS
-    # ========================================================
-
-    received_rows = ""
-
-    for document in received_documents:
-
-        received_rows += f"""
-<tr>
-
-<td>
-{esc(document.get("sender_name"))}
-</td>
-
-<td>
-{esc(document.get("title"))}
-</td>
-
-<td>
-{esc(document.get("original_name"))}
-</td>
-
-<td>
-{format_size(document.get("size"))}
-</td>
-
-<td>
-{esc(document.get("created_at"))}
-</td>
-
-<td>
-
-<span class="badge orange">
-Received
-</span>
-
-</td>
-
-<td>
-
-<a
-class="btn"
-href="/document/{document['id']}"
->
-Download
-</a>
-
-</td>
-
-</tr>
-"""
-
-    if not received_rows:
-
-        received_rows = """
-<tr>
-
-<td
-colspan="7"
-class="empty"
->
-No documents received from students.
-</td>
-
-</tr>
-"""
-
-    # ========================================================
-    # SENT ROWS
-    # ========================================================
-
-    sent_rows = ""
-
-    for document in sent_documents:
-
-        sent_rows += f"""
-<tr>
-
-<td>
-{esc(document.get("recipient_name"))}
-</td>
-
-<td>
-{esc(document.get("title"))}
-</td>
-
-<td>
-{esc(document.get("original_name"))}
-</td>
-
-<td>
-{format_size(document.get("size"))}
-</td>
-
-<td>
-{esc(document.get("created_at"))}
-</td>
-
-<td>
-
-<span class="badge green">
-Sent
-</span>
-
-</td>
-
-<td>
-
-<a
-class="btn dark"
-href="/document/{document['id']}"
->
-Access
-</a>
-
-</td>
-
-</tr>
-"""
-
-    if not sent_rows:
-
-        sent_rows = """
-<tr>
-
-<td
-colspan="7"
-class="empty"
->
-No documents sent to students yet.
-</td>
-
-</tr>
-"""
-
-    return page(
-        f"""
-<h1>
-Document Centre
-</h1>
-
-<div class="info">
-
-This is the administrator's private
-document inbox and outbox.
-
-Documents sent by students appear in
-the administrator inbox.
-
-Documents sent by the administrator
-appear in the selected student's inbox.
-
-</div>
-
-<br>
+    return render_page(
+        "Upload Document",
+        """
 
 <div class="card">
 
-<h2>
-Send Document to Student
-</h2>
+<h1>
+Upload Academic Document
+</h1>
 
 <form
 method="post"
-enctype="multipart/form-data"
->
+enctype="multipart/form-data">
 
-{csrf_input()}
-
-<label>
-Student
-</label>
-
-<select
-name="recipient_id"
-required
->
-
-<option value="">
-Select student
-</option>
-
-{options}
-
-</select>
 
 <label>
 Document Title
@@ -5425,43 +5596,8 @@ Document Title
 <input
 name="title"
 required
-maxlength="300"
-placeholder="Example: Biology Notes"
->
+placeholder="e.g. Grade 12 Biology Notes">
 
-<label>
-Category
-</label>
-
-<select
-name="category"
->
-
-<option>
-Academic
-</option>
-
-<option>
-Assignment
-</option>
-
-<option>
-Study Material
-</option>
-
-<option>
-Notice
-</option>
-
-<option>
-Application
-</option>
-
-<option>
-Other
-</option>
-
-</select>
 
 <label>
 Description
@@ -5469,613 +5605,805 @@ Description
 
 <textarea
 name="description"
-maxlength="4000"
-placeholder="Describe the document..."
-></textarea>
+placeholder="Description"></textarea>
+
 
 <label>
-Document
+Document Type
+</label>
+
+<select name="document_type">
+
+{% for value,label in document_types %}
+
+<option value="{{ value }}">
+
+{{ label }}
+
+</option>
+
+{% endfor %}
+
+</select>
+
+
+<label>
+Subject
+</label>
+
+<input
+name="subject"
+placeholder="Biology">
+
+
+<label>
+Course
+</label>
+
+<input
+name="course"
+placeholder="Course">
+
+
+<label>
+Class Level
+</label>
+
+<input
+name="class_level"
+placeholder="Grade 12">
+
+
+<label>
+Document File
 </label>
 
 <input
 type="file"
 name="file"
-required
->
+required>
 
-<small>
-Maximum file size: 10 MB.
-</small>
 
-<br><br>
+<p class="small">
+Maximum 10 MB.
+</p>
 
-<button
-class="btn"
-type="submit"
->
-Send to Student
-</button>
 
-</form>
-
-</div>
-
-<br>
-
-<form
-method="get"
-class="searchbar"
->
+<label>
 
 <input
-name="q"
-value="{esc(search)}"
-placeholder="Search documents, students or filenames..."
->
+type="checkbox"
+name="is_public"
+style="width:auto;">
 
-<button
-class="btn dark"
-type="submit"
->
-Search
+Public document
+
+</label>
+
+<br><br>
+
+
+<button>
+Upload Document
 </button>
 
 </form>
 
-<h2>
-Inbox — Documents Received From Students
-</h2>
-
-<div class="tablewrap">
-
-<table>
-
-<tr>
-
-<th>
-Student
-</th>
-
-<th>
-Title
-</th>
-
-<th>
-File
-</th>
-
-<th>
-Size
-</th>
-
-<th>
-Received
-</th>
-
-<th>
-Status
-</th>
-
-<th>
-Action
-</th>
-
-</tr>
-
-{received_rows}
-
-</table>
-
 </div>
 
-<br><br>
-
-<h2>
-Outbox — Documents Sent To Students
-</h2>
-
-<div class="tablewrap">
-
-<table>
-
-<tr>
-
-<th>
-Student
-</th>
-
-<th>
-Title
-</th>
-
-<th>
-File
-</th>
-
-<th>
-Size
-</th>
-
-<th>
-Sent
-</th>
-
-<th>
-Status
-</th>
-
-<th>
-Action
-</th>
-
-</tr>
-
-{sent_rows}
-
-</table>
-
-</div>
 """,
-
-        "Document Centre"
+        document_types=DOCUMENT_TYPES
     )
 
 
 # ============================================================
-# SECURE DOCUMENT DOWNLOAD
+# EDIT DOCUMENT
 # ============================================================
 
 @app.route(
-    "/document/<document_id>"
+    "/admin/documents/<document_id>/edit",
+    methods=["GET", "POST"]
 )
-@login_required
-def document_download(
+@admin_required
+def edit_document(
     document_id
 ):
 
-    profile = current_profile()
+    document = get_document(
+        document_id
+    )
 
-    if not profile:
-        abort(403)
+    if not document:
+        abort(404)
 
-    documents = rest_get(
-        "documents",
-        {
-            "id":
-                f"eq.{document_id}",
+    if request.method == "POST":
 
-            "limit":
-                "1"
+        title = (
+            request.form.get(
+                "title",
+                ""
+            )
+            .strip()
+        )
+
+        if not title:
+
+            flash(
+                "Title is required.",
+                "warning"
+            )
+
+            return redirect(
+                url_for(
+                    "edit_document",
+                    document_id=document_id
+                )
+            )
+
+        data = {
+
+            "title":
+                title,
+
+            "description":
+                (
+                    request.form.get(
+                        "description",
+                        ""
+                    )
+                    .strip()
+                    or None
+                ),
+
+            "document_type":
+                request.form.get(
+                    "document_type",
+                    "academic"
+                ),
+
+            "subject":
+                (
+                    request.form.get(
+                        "subject",
+                        ""
+                    )
+                    .strip()
+                    or None
+                ),
+
+            "course":
+                (
+                    request.form.get(
+                        "course",
+                        ""
+                    )
+                    .strip()
+                    or None
+                ),
+
+            "class_level":
+                (
+                    request.form.get(
+                        "class_level",
+                        ""
+                    )
+                    .strip()
+                    or None
+                ),
+
+            "is_public":
+                request.form.get(
+                    "is_public"
+                ) == "on",
+
+            "is_active":
+                request.form.get(
+                    "is_active"
+                ) == "on",
         }
-    )
 
-    if not documents:
-        abort(404)
-
-    document = documents[0]
-
-    # ========================================================
-    # AUTHORIZATION
-    # ========================================================
-
-    is_admin = (
-        profile.get("role")
-        == "admin"
-    )
-
-    is_sender = (
-        document.get("sender_id")
-        == profile.get("id")
-    )
-
-    is_recipient = (
-        document.get("recipient_id")
-        == profile.get("id")
-    )
-
-    if not (
-        is_admin
-        or is_sender
-        or is_recipient
-    ):
-
-        write_log(
-            "Unauthorized document access blocked",
-            "Security",
-            "WARNING",
-            document_id,
-            profile["id"]
+        replacement_file = (
+            request.files.get(
+                "file"
+            )
         )
 
-        abort(403)
-
-    content = download_private_file(
-        document.get(
-            "storage_path"
-        )
-    )
-
-    if content is None:
-
-        abort(404)
-
-    write_log(
-        "Document downloaded",
-        "Documents",
-        "INFO",
-        (
-            f"{document.get('title')} | "
-            f"{document.get('original_name')}"
-        ),
-        profile["id"]
-    )
-
-    return send_file(
-        io.BytesIO(content),
-
-        as_attachment=True,
-
-        download_name=safe_filename(
+        old_file_path = (
             document.get(
-                "original_name",
-                "document"
+                "file_path"
             )
-        ),
-
-        mimetype=(
-            "application/octet-stream"
-        )
-    )
-
-
-# ============================================================
-# QUESTION FILE DOWNLOAD
-# ============================================================
-
-@app.route(
-    "/question-file/<file_id>"
-)
-@login_required
-def question_file(
-    file_id
-):
-
-    profile = current_profile()
-
-    if not profile:
-        abort(403)
-
-    files = rest_get(
-        "question_files",
-        {
-            "id":
-                f"eq.{file_id}",
-
-            "limit":
-                "1"
-        }
-    )
-
-    if not files:
-        abort(404)
-
-    file = files[0]
-
-    questions = rest_get(
-        "questions",
-        {
-            "id":
-                f"eq.{file['question_id']}",
-
-            "limit":
-                "1"
-        }
-    )
-
-    if not questions:
-        abort(404)
-
-    question = questions[0]
-
-    allowed = (
-        profile.get("role")
-        == "admin"
-
-        or question.get(
-            "student_id"
-        )
-        == profile.get("id")
-    )
-
-    if not allowed:
-
-        write_log(
-            "Unauthorized question file access blocked",
-            "Security",
-            "WARNING",
-            file_id,
-            profile["id"]
         )
 
-        abort(403)
+        new_storage = None
 
-    content = download_private_file(
-        file.get(
-            "storage_path"
-        )
-    )
+        try:
 
-    if content is None:
-        abort(404)
+            if (
+                replacement_file
+                and
+                replacement_file.filename
+            ):
 
-    write_log(
-        "Question file downloaded",
-        "Files",
-        "INFO",
-        file.get(
-            "original_name",
-            ""
-        ),
-        profile["id"]
-    )
+                new_storage = (
+                    upload_to_storage(
+                        replacement_file
+                    )
+                )
 
-    return send_file(
-        io.BytesIO(content),
+                data.update({
 
-        as_attachment=True,
+                    "file_name":
+                        new_storage[
+                            "file_name"
+                        ],
 
-        download_name=safe_filename(
-            file.get(
-                "original_name",
-                "download"
+                    "file_path":
+                        new_storage[
+                            "file_path"
+                        ],
+
+                    "file_size":
+                        new_storage[
+                            "file_size"
+                        ],
+
+                    "mime_type":
+                        new_storage[
+                            "mime_type"
+                        ],
+
+                    "file_url":
+                        None,
+                })
+
+            response = supabase_patch(
+                "documents",
+                {
+                    "id":
+                        document_id
+                },
+                data
             )
-        ),
 
-        mimetype="application/octet-stream"
-    )
+            if response.status_code not in (
+                200,
+                204
+            ):
 
+                if new_storage:
 
-# ============================================================
-# ADMIN USERS
-# ============================================================
+                    delete_from_storage(
+                        new_storage[
+                            "file_path"
+                        ]
+                    )
 
-@app.route(
-    "/admin/users"
-)
-@admin_required
-def admin_users():
+                flash(
+                    "Document update failed: "
+                    + response.text,
+                    "warning"
+                )
 
-    profiles = rest_get(
-        "profiles",
-        {
-            "order":
-                "created_at.desc"
-        }
-    )
+                return redirect(
+                    url_for(
+                        "edit_document",
+                        document_id=document_id
+                    )
+                )
 
-    rows = ""
+            if (
+                new_storage
+                and
+                old_file_path
+            ):
 
-    for profile in profiles:
+                old_response = (
+                    delete_from_storage(
+                        old_file_path
+                    )
+                )
 
-        role = profile.get(
-            "role"
-        )
+                if old_response.status_code not in (
+                    200,
+                    204
+                ):
 
-        badge = (
-            "green"
-            if role == "admin"
-            else ""
-        )
+                    logger.warning(
+                        "Old file could not be deleted: %s",
+                        old_response.text
+                    )
 
-        rows += f"""
-<tr>
+            create_document_record(
+                document_id,
+                current_user()["id"],
+                (
+                    "file_replaced"
+                    if new_storage
+                    else
+                    "updated"
+                )
+            )
 
-<td>
-{esc(profile.get("name"))}
-</td>
+            flash(
+                (
+                    "Document and file updated successfully."
+                    if new_storage
+                    else
+                    "Document updated successfully."
+                ),
+                "success"
+            )
 
-<td>
-{esc(profile.get("email"))}
-</td>
+            return redirect(
+                url_for("admin")
+            )
 
-<td>
+        except Exception as exc:
 
-<span class="badge {badge}">
-{esc(role)}
-</span>
+            logger.exception(
+                "Document update error"
+            )
 
-</td>
+            if new_storage:
 
-<td>
-{esc(profile.get("created_at"))}
-</td>
+                try:
 
-</tr>
-"""
+                    delete_from_storage(
+                        new_storage[
+                            "file_path"
+                        ]
+                    )
 
-    if not rows:
+                except Exception:
+                    pass
 
-        rows = """
-<tr>
+            flash(
+                "Update failed: "
+                + str(exc),
+                "warning"
+            )
 
-<td
-colspan="4"
-class="empty"
->
-No users found.
-</td>
+            return redirect(
+                url_for(
+                    "edit_document",
+                    document_id=document_id
+                )
+            )
 
-</tr>
-"""
-
-    return page(
-        f"""
-<h1>
-Users
-</h1>
-
-<div class="tablewrap">
-
-<table>
-
-<tr>
-
-<th>
-Name
-</th>
-
-<th>
-Email
-</th>
-
-<th>
-Role
-</th>
-
-<th>
-Created
-</th>
-
-</tr>
-
-{rows}
-
-</table>
-
-</div>
-""",
-
-        "Users"
-    )
-
-
-# ============================================================
-# ADMIN LOGS
-# ============================================================
-
-@app.route(
-    "/admin/logs"
-)
-@admin_required
-def admin_logs():
-
-    logs = rest_get(
-        "logs",
-        {
-            "order":
-                "created_at.desc",
-
-            "limit":
-                "500"
-        }
-    )
-
-    rows = ""
-
-    for log in logs:
-
-        rows += f"""
-<tr>
-
-<td>
-{esc(log.get("created_at"))}
-</td>
-
-<td>
-{esc(log.get("event"))}
-</td>
-
-<td>
-{esc(log.get("category"))}
-</td>
-
-<td>
-{esc(log.get("level"))}
-</td>
-
-<td>
-{esc(log.get("details"))}
-</td>
-
-</tr>
-"""
-
-    if not rows:
-
-        rows = """
-<tr>
-
-<td
-colspan="5"
-class="empty"
->
-No logs yet.
-</td>
-
-</tr>
-"""
-
-    return page(
-        f"""
-<h1>
-System Logs
-</h1>
+    return render_page(
+        "Edit Document",
+        """
 
 <div class="card">
 
-<p>
-Administrator-only audit trail.
+<h1>
+Edit Document
+</h1>
+
+<p class="small">
+
+Current file:
+{{ document.file_name }}
+
 </p>
 
-<div class="notice">
 
-Important activities such as logins,
-question submissions, answers,
-document uploads, downloads and
-security events are recorded here.
+<form
+method="post"
+enctype="multipart/form-data">
 
-</div>
 
-</div>
+<label>
+Title
+</label>
+
+<input
+name="title"
+required
+value="{{ document.title }}">
+
+
+<label>
+Description
+</label>
+
+<textarea
+name="description">{{ document.description or '' }}</textarea>
+
+
+<label>
+Document Type
+</label>
+
+<select name="document_type">
+
+{% for value,label in document_types %}
+
+<option
+value="{{ value }}"
+{% if document.document_type == value %}
+selected
+{% endif %}>
+
+{{ label }}
+
+</option>
+
+{% endfor %}
+
+</select>
+
+
+<label>
+Subject
+</label>
+
+<input
+name="subject"
+value="{{ document.subject or '' }}">
+
+
+<label>
+Course
+</label>
+
+<input
+name="course"
+value="{{ document.course or '' }}">
+
+
+<label>
+Class Level
+</label>
+
+<input
+name="class_level"
+value="{{ document.class_level or '' }}">
+
+
+<label>
+Replace Existing File
+</label>
+
+<input
+type="file"
+name="file">
+
+
+<p class="small">
+
+Leave empty if you only want to change
+the document information.
+
+</p>
+
+
+<label>
+
+<input
+type="checkbox"
+name="is_public"
+style="width:auto;"
+{% if document.is_public %}
+checked
+{% endif %}>
+
+Public
+
+</label>
+
 
 <br>
 
-<div class="tablewrap">
 
-<table>
+<label>
 
-<tr>
+<input
+type="checkbox"
+name="is_active"
+style="width:auto;"
+{% if document.is_active %}
+checked
+{% endif %}>
 
-<th>
-Date
-</th>
+Active
 
-<th>
-Event
-</th>
+</label>
 
-<th>
-Category
-</th>
 
-<th>
-Level
-</th>
+<br><br>
 
-<th>
-Details
-</th>
 
-</tr>
+<button>
+Save Changes
+</button>
 
-{rows}
-
-</table>
+</form>
 
 </div>
-""",
 
-        "System Logs"
+""",
+        document=document,
+        document_types=DOCUMENT_TYPES
+    )
+
+
+# ============================================================
+# DELETE DOCUMENT
+# ============================================================
+
+@app.route(
+    "/admin/documents/<document_id>/delete",
+    methods=["POST"]
+)
+@admin_required
+def delete_document(
+    document_id
+):
+
+    document = get_document(
+        document_id
+    )
+
+    if not document:
+        abort(404)
+
+    file_path = document.get(
+        "file_path"
+    )
+
+    storage_failed = False
+
+    if file_path:
+
+        storage_response = (
+            delete_from_storage(
+                file_path
+            )
+        )
+
+        if storage_response.status_code not in (
+            200,
+            204
+        ):
+
+            storage_failed = True
+
+            logger.warning(
+                "Storage deletion failed: %s",
+                storage_response.text
+            )
+
+    response = supabase_delete(
+        "documents",
+        {
+            "id":
+                document_id
+        }
+    )
+
+    if response.status_code not in (
+        200,
+        204
+    ):
+
+        flash(
+            "Document database deletion failed: "
+            + response.text,
+            "warning"
+        )
+
+        return redirect(
+            url_for("admin")
+        )
+
+    if storage_failed:
+
+        flash(
+            "Document deleted from database, but the stored file could not be removed.",
+            "warning"
+        )
+
+    else:
+
+        flash(
+            "Document deleted successfully.",
+            "success"
+        )
+
+    return redirect(
+        url_for("admin")
+    )
+
+
+# ============================================================
+# PDF REPORT
+# ============================================================
+
+@app.route(
+    "/admin/documents/report.pdf"
+)
+@admin_required
+def document_report():
+
+    docs = get_documents()
+
+    buffer = io.BytesIO()
+
+    styles = getSampleStyleSheet()
+
+    title_style = styles["Title"]
+
+    title_style.alignment = (
+        TA_CENTER
+    )
+
+    pdf = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=35,
+        leftMargin=35,
+        topMargin=35,
+        bottomMargin=35,
+    )
+
+    story = []
+
+    story.append(
+        Paragraph(
+            "KOJA AFRICA",
+            title_style
+        )
+    )
+
+    story.append(
+        Spacer(1, 10)
+    )
+
+    story.append(
+        Paragraph(
+            "Document Management Report",
+            styles["Heading2"]
+        )
+    )
+
+    story.append(
+        Spacer(1, 15)
+    )
+
+    data = [
+        [
+            "Title",
+            "Type",
+            "Subject",
+            "Views",
+            "Downloads",
+        ]
+    ]
+
+    for item in docs:
+
+        data.append([
+            str(
+                item.get(
+                    "title",
+                    ""
+                )
+            )[:35],
+
+            str(
+                item.get(
+                    "document_type",
+                    ""
+                )
+            ),
+
+            str(
+                item.get(
+                    "subject",
+                    ""
+                )
+                or ""
+            ),
+
+            str(
+                item.get(
+                    "view_count",
+                    0
+                )
+            ),
+
+            str(
+                item.get(
+                    "download_count",
+                    0
+                )
+            ),
+        ])
+
+    table = Table(
+        data,
+        repeatRows=1
+    )
+
+    table.setStyle(
+        TableStyle([
+
+            (
+                "BACKGROUND",
+                (0, 0),
+                (-1, 0),
+                colors.HexColor(
+                    "#0b3366"
+                )
+            ),
+
+            (
+                "TEXTCOLOR",
+                (0, 0),
+                (-1, 0),
+                colors.white
+            ),
+
+            (
+                "GRID",
+                (0, 0),
+                (-1, -1),
+                0.5,
+                colors.grey
+            ),
+
+            (
+                "FONTNAME",
+                (0, 0),
+                (-1, 0),
+                "Helvetica-Bold"
+            ),
+
+            (
+                "FONTSIZE",
+                (0, 0),
+                (-1, -1),
+                7
+            ),
+
+            (
+                "VALIGN",
+                (0, 0),
+                (-1, -1),
+                "TOP"
+            ),
+
+        ])
+    )
+
+    story.append(
+        table
+    )
+
+    story.append(
+        Spacer(1, 20)
+    )
+
+    story.append(
+        Paragraph(
+            "Generated by KOJA AFRICA",
+            styles["Normal"]
+        )
+    )
+
+    pdf.build(
+        story
+    )
+
+    buffer.seek(0)
+
+    return send_file(
+        buffer,
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=
+            "koja-document-report.pdf"
     )
 
 
@@ -6083,29 +6411,55 @@ Details
 # HEALTH CHECK
 # ============================================================
 
-@app.route(
-    "/health"
-)
+@app.route("/health")
 def health():
 
     return {
+
         "status":
             "ok",
 
         "application":
             "KOJA AFRICA",
 
-        "database":
-            "Supabase REST",
+        "storage_bucket":
+            STORAGE_BUCKET,
 
-        "storage":
-            SUPABASE_BUCKET,
+        "supabase_configured":
+            supabase_is_configured(),
 
-        "storage_private":
+        "questions":
             True,
 
-        "version":
-            "professional-foundation"
+        "answers":
+            True,
+
+        "assignments":
+            True,
+
+        "assignment_student_id":
+            True,
+
+        "assignment_admin_response":
+            True,
+
+        "direct_assignment_answer":
+            True,
+
+        "uploaded_assignment_answer":
+            True,
+
+        "answered_pdf":
+            True,
+
+        "answered_word":
+            True,
+
+        "student_answer_download":
+            True,
+
+        "document_replacement":
+            True,
     }
 
 
@@ -6116,202 +6470,108 @@ def health():
 @app.errorhandler(403)
 def forbidden(error):
 
-    return page(
+    return render_page(
+        "Access Denied",
         """
-<div class="card"
-style="text-align:center">
+
+<div class="card">
 
 <h1>
-403
+Access Denied
 </h1>
 
-<h2>
-Access Denied
-</h2>
-
 <p>
-You do not have permission
-to access this resource.
+You do not have permission to access this page.
 </p>
 
-<a
-class="btn"
-href="/"
->
-Return Home
+<a class="btn"
+href="{{ url_for('home') }}">
+Home
 </a>
 
 </div>
-""",
 
-        "Access Denied"
-
+"""
     ), 403
 
 
 @app.errorhandler(404)
 def not_found(error):
 
-    return page(
+    return render_page(
+        "Not Found",
         """
-<div class="card"
-style="text-align:center">
+
+<div class="card">
 
 <h1>
-404
+Page Not Found
 </h1>
 
-<h2>
-Page Not Found
-</h2>
-
-<a
-class="btn"
-href="/"
->
-Return Home
+<a class="btn"
+href="{{ url_for('home') }}">
+Home
 </a>
 
 </div>
-""",
 
-        "Not Found"
-
+"""
     ), 404
 
 
 @app.errorhandler(413)
 def too_large(error):
 
-    flash(
-        "File too large. Maximum size is 10 MB.",
-        "error"
-    )
-
-    return redirect(
-        request.referrer
-        or url_for("home")
-    )
-
-
-@app.errorhandler(429)
-def too_many_requests(error):
-
-    return page(
+    return render_page(
+        "File Too Large",
         """
-<div class="card"
-style="text-align:center">
+
+<div class="card">
 
 <h1>
-429
+File Too Large
 </h1>
 
-<h2>
-Too Many Requests
-</h2>
-
 <p>
-Please wait a moment and try again.
+Maximum allowed file size is 10 MB.
 </p>
 
-<a
-class="btn"
-href="/"
->
-Return Home
-</a>
-
 </div>
-""",
 
-        "Too Many Requests"
-
-    ), 429
-
-
-@app.errorhandler(400)
-def bad_request(error):
-
-    description = getattr(
-        error,
-        "description",
-        "Bad request."
-    )
-
-    return page(
-        f"""
-<div class="card"
-style="text-align:center">
-
-<h1>
-400
-</h1>
-
-<h2>
-Bad Request
-</h2>
-
-<p>
-{esc(description)}
-</p>
-
-<a
-class="btn"
-href="/"
->
-Return Home
-</a>
-
-</div>
-""",
-
-        "Bad Request"
-
-    ), 400
+"""
+    ), 413
 
 
 @app.errorhandler(500)
-def internal_error(error):
+def server_error(error):
 
     logger.exception(
         "Internal server error"
     )
 
-    return page(
+    return render_page(
+        "Server Error",
         """
-<div class="card"
-style="text-align:center">
+
+<div class="card">
 
 <h1>
-500
+Server Error
 </h1>
 
-<h2>
-Server Error
-</h2>
-
 <p>
-KOJA AFRICA encountered an
-unexpected server error.
+Something went wrong.
+Please try again.
 </p>
 
-<a
-class="btn"
-href="/"
->
-Return Home
-</a>
-
 </div>
-""",
 
-        "Server Error"
-
+"""
     ), 500
 
 
 # ============================================================
-# START
+# START APPLICATION
 # ============================================================
 
 if __name__ == "__main__":
@@ -6325,9 +6585,6 @@ if __name__ == "__main__":
 
     app.run(
         host="0.0.0.0",
-
         port=port,
-
         debug=False
-    
-)
+    )
