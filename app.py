@@ -1,4 +1,4 @@
-import os
+ import os
 import io
 import uuid
 import secrets
@@ -9,6 +9,8 @@ from functools import wraps
 from html import escape
 
 import requests
+from dotenv import load_dotenv
+
 from flask import (
     Flask,
     request,
@@ -20,7 +22,7 @@ from flask import (
     send_file,
     abort,
 )
-from dotenv import load_dotenv
+
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import (
     SimpleDocTemplate,
@@ -33,6 +35,7 @@ from reportlab.lib.styles import (
 )
 from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.units import mm
+
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
@@ -41,40 +44,43 @@ from flask_limiter.util import get_remote_address
 # KOJA AFRICA
 # KNOWLEDGE • QUESTIONS • ANSWERS
 #
-# SINGLE-FILE FLASK + SUPABASE APPLICATION
+# SINGLE FILE FLASK + SUPABASE
 #
-# SUPABASE TABLES:
-#   profiles
-#   questions
-#   documents
-#   question_files
-#   logs
+# Authentication:
+#     Supabase Auth
 #
-# SUPABASE STORAGE:
-#   koja-files
+# Database:
+#     Supabase PostgreSQL REST API
 #
-# IMPORTANT:
-# SUPABASE_SECRET_KEY MUST REMAIN SERVER-SIDE.
-# NEVER PUT IT INTO HTML OR JAVASCRIPT.
+# Storage:
+#     Supabase Storage
+#
+# Tables:
+#     profiles
+#     questions
+#     question_files
+#     documents
+#     logs
+#
 # ============================================================
 
 
 # ============================================================
-# ENVIRONMENT
+# LOAD ENVIRONMENT
 # ============================================================
 
 load_dotenv()
 
 
 # ============================================================
-# APPLICATION
+# FLASK
 # ============================================================
 
 app = Flask(__name__)
 
 
 # ============================================================
-# CONFIGURATION
+# ENVIRONMENT VARIABLES
 # ============================================================
 
 FLASK_SECRET_KEY = os.getenv(
@@ -82,26 +88,20 @@ FLASK_SECRET_KEY = os.getenv(
     ""
 ).strip()
 
-
 SUPABASE_URL = os.getenv(
     "SUPABASE_URL",
     ""
 ).strip().rstrip("/")
 
-
-# Public authentication key
 SUPABASE_ANON_KEY = os.getenv(
     "SUPABASE_ANON_KEY",
     ""
 ).strip()
 
-
-# Private server key
 SUPABASE_SECRET_KEY = os.getenv(
     "SUPABASE_SECRET_KEY",
     ""
 ).strip()
-
 
 # Backwards compatibility
 if not SUPABASE_SECRET_KEY:
@@ -112,7 +112,16 @@ if not SUPABASE_SECRET_KEY:
     ).strip()
 
 
-SUPABASE_BUCKET = "koja-files"
+ADMIN_EMAIL = os.getenv(
+    "ADMIN_EMAIL",
+    ""
+).strip().lower()
+
+
+SUPABASE_BUCKET = os.getenv(
+    "SUPABASE_BUCKET",
+    "koja-files"
+).strip()
 
 
 MAX_FILE_SIZE = 10 * 1024 * 1024
@@ -126,23 +135,8 @@ ALLOWED_EXTENSIONS = {
     "jpg",
     "jpeg",
     "png",
-    "webp"
+    "webp",
 }
-
-
-# Optional:
-# Put the administrator email here.
-#
-# Example Render environment variable:
-#
-# ADMIN_EMAIL=your-email@gmail.com
-#
-# When this email logs in, Flask will ensure
-# its profile has role = admin.
-ADMIN_EMAIL = os.getenv(
-    "ADMIN_EMAIL",
-    ""
-).strip().lower()
 
 
 COOKIE_SECURE = (
@@ -154,36 +148,43 @@ COOKIE_SECURE = (
 )
 
 
+# ============================================================
+# REQUIRED CONFIGURATION
+# ============================================================
+
 if not FLASK_SECRET_KEY:
 
     raise RuntimeError(
-        "FLASK_SECRET_KEY is missing."
+        "FLASK_SECRET_KEY is missing from environment variables."
     )
 
 
 if not SUPABASE_URL:
 
     raise RuntimeError(
-        "SUPABASE_URL is missing."
+        "SUPABASE_URL is missing from environment variables."
     )
 
 
 if not SUPABASE_ANON_KEY:
 
     raise RuntimeError(
-        "SUPABASE_ANON_KEY is missing."
+        "SUPABASE_ANON_KEY is missing from environment variables."
     )
 
 
 if not SUPABASE_SECRET_KEY:
 
     raise RuntimeError(
-        "SUPABASE_SECRET_KEY is missing."
+        "SUPABASE_SECRET_KEY is missing from environment variables."
     )
 
 
-app.secret_key = FLASK_SECRET_KEY
+# ============================================================
+# FLASK CONFIG
+# ============================================================
 
+app.secret_key = FLASK_SECRET_KEY
 
 app.config.update({
 
@@ -220,9 +221,8 @@ logging.basicConfig(
         "%(levelname)s "
         "%(name)s "
         "%(message)s"
-    )
+    ),
 )
-
 
 logger = logging.getLogger(
     "koja-africa"
@@ -243,7 +243,7 @@ limiter = Limiter(
         "300 per hour"
     ],
 
-    storage_uri="memory://"
+    storage_uri="memory://",
 )
 
 
@@ -255,11 +255,9 @@ SUPABASE_AUTH_URL = (
     f"{SUPABASE_URL}/auth/v1"
 )
 
-
 SUPABASE_REST_URL = (
     f"{SUPABASE_URL}/rest/v1"
 )
-
 
 SUPABASE_STORAGE_URL = (
     f"{SUPABASE_URL}/storage/v1"
@@ -302,7 +300,6 @@ def safe_filename(filename):
 def allowed_file(filename):
 
     if "." not in filename:
-
         return False
 
     extension = (
@@ -357,11 +354,8 @@ def check_csrf():
     )
 
     if (
-
         not submitted
-
         or not stored
-
         or not secrets.compare_digest(
             submitted,
             stored
@@ -423,7 +417,7 @@ def auth_headers():
 
 
 # ============================================================
-# STORAGE HEADERS
+# SUPABASE STORAGE HEADERS
 # ============================================================
 
 def storage_headers():
@@ -440,7 +434,7 @@ def storage_headers():
 
 
 # ============================================================
-# SUPABASE REST GET
+# REST GET
 # ============================================================
 
 def rest_get(
@@ -452,16 +446,11 @@ def rest_get(
     try:
 
         query = {
-
-            "select":
-                select
+            "select": select
         }
 
         if params:
-
-            query.update(
-                params
-            )
+            query.update(params)
 
         response = requests.get(
 
@@ -471,35 +460,41 @@ def rest_get(
 
             params=query,
 
-            timeout=30
+            timeout=30,
         )
 
         if not response.ok:
 
             logger.error(
-
-                "Supabase GET %s failed: %s",
-
+                "SUPABASE GET FAILED | table=%s | "
+                "status=%s | response=%s",
                 table,
-
-                response.text[:1000]
+                response.status_code,
+                response.text[:2000],
             )
 
             return []
 
-        return response.json()
+        try:
+
+            return response.json()
+
+        except ValueError:
+
+            return []
 
     except Exception:
 
         logger.exception(
-            "Supabase GET exception"
+            "SUPABASE GET EXCEPTION | table=%s",
+            table,
         )
 
         return []
 
 
 # ============================================================
-# SUPABASE REST INSERT
+# REST INSERT
 # ============================================================
 
 def rest_insert(
@@ -526,18 +521,17 @@ def rest_insert(
 
             json=payload,
 
-            timeout=30
+            timeout=30,
         )
 
         if not response.ok:
 
             logger.error(
-
-                "Supabase INSERT %s failed: %s",
-
+                "SUPABASE INSERT FAILED | table=%s | "
+                "status=%s | response=%s",
                 table,
-
-                response.text[:1000]
+                response.status_code,
+                response.text[:2000],
             )
 
             return None
@@ -546,19 +540,26 @@ def rest_insert(
 
             return []
 
-        return response.json()
+        try:
+
+            return response.json()
+
+        except ValueError:
+
+            return []
 
     except Exception:
 
         logger.exception(
-            "Supabase INSERT exception"
+            "SUPABASE INSERT EXCEPTION | table=%s",
+            table,
         )
 
         return None
 
 
 # ============================================================
-# SUPABASE REST UPDATE
+# REST UPDATE
 # ============================================================
 
 def rest_update(
@@ -585,18 +586,17 @@ def rest_update(
 
             json=payload,
 
-            timeout=30
+            timeout=30,
         )
 
         if not response.ok:
 
             logger.error(
-
-                "Supabase UPDATE %s failed: %s",
-
+                "SUPABASE UPDATE FAILED | table=%s | "
+                "status=%s | response=%s",
                 table,
-
-                response.text[:1000]
+                response.status_code,
+                response.text[:2000],
             )
 
             return None
@@ -605,19 +605,26 @@ def rest_update(
 
             return []
 
-        return response.json()
+        try:
+
+            return response.json()
+
+        except ValueError:
+
+            return []
 
     except Exception:
 
         logger.exception(
-            "Supabase UPDATE exception"
+            "SUPABASE UPDATE EXCEPTION | table=%s",
+            table,
         )
 
         return None
 
 
 # ============================================================
-# SUPABASE REST DELETE
+# REST DELETE
 # ============================================================
 
 def rest_delete(
@@ -625,30 +632,27 @@ def rest_delete(
     params
 ):
 
-    headers = supabase_headers()
-
     try:
 
         response = requests.delete(
 
             f"{SUPABASE_REST_URL}/{table}",
 
-            headers=headers,
+            headers=supabase_headers(),
 
             params=params,
 
-            timeout=30
+            timeout=30,
         )
 
         if not response.ok:
 
             logger.error(
-
-                "Supabase DELETE %s failed: %s",
-
+                "SUPABASE DELETE FAILED | table=%s | "
+                "status=%s | response=%s",
                 table,
-
-                response.text[:1000]
+                response.status_code,
+                response.text[:1000],
             )
 
             return False
@@ -658,14 +662,15 @@ def rest_delete(
     except Exception:
 
         logger.exception(
-            "Supabase DELETE exception"
+            "SUPABASE DELETE EXCEPTION | table=%s",
+            table,
         )
 
         return False
 
 
 # ============================================================
-# SUPABASE AUTH - REGISTER
+# SUPABASE AUTH
 # ============================================================
 
 def supabase_signup(
@@ -673,6 +678,16 @@ def supabase_signup(
     password,
     name
 ):
+
+    email = (
+        email or ""
+    ).strip().lower()
+
+    password = password or ""
+
+    name = (
+        name or ""
+    ).strip()
 
     try:
 
@@ -694,11 +709,12 @@ def supabase_signup(
 
                     "name":
                         name
+
                 }
 
             },
 
-            timeout=30
+            timeout=30,
         )
 
         try:
@@ -711,47 +727,95 @@ def supabase_signup(
 
         if not response.ok:
 
+            logger.error(
+                "SUPABASE SIGNUP FAILED | status=%s | "
+                "response=%s",
+                response.status_code,
+                response.text[:2000],
+            )
+
             return (
 
                 None,
 
                 (
-                    data.get("msg")
-                    or
-                    data.get("message")
-                    or
                     data.get(
                         "error_description"
                     )
                     or
+                    data.get("msg")
+                    or
+                    data.get("message")
+                    or
                     "Registration failed."
                 )
+
             )
 
         return data, None
 
-    except Exception:
+    except requests.exceptions.Timeout:
 
         logger.exception(
-            "Supabase signup failed"
+            "SUPABASE SIGNUP TIMEOUT"
         )
 
         return (
-
             None,
+            "Supabase registration timed out."
+        )
 
-            "Authentication service is temporarily unavailable."
+    except requests.exceptions.RequestException:
+
+        logger.exception(
+            "SUPABASE SIGNUP CONNECTION ERROR"
+        )
+
+        return (
+            None,
+            "KOJA could not connect to Supabase."
+        )
+
+    except Exception:
+
+        logger.exception(
+            "SUPABASE SIGNUP ERROR"
+        )
+
+        return (
+            None,
+            "Registration service is temporarily unavailable."
         )
 
 
 # ============================================================
-# SUPABASE AUTH - LOGIN
+# SUPABASE LOGIN
 # ============================================================
 
 def supabase_login(
     email,
     password
 ):
+
+    email = (
+        email or ""
+    ).strip().lower()
+
+    password = password or ""
+
+    if not email:
+
+        return (
+            None,
+            "Email is required."
+        )
+
+    if not password:
+
+        return (
+            None,
+            "Password is required."
+        )
 
     try:
 
@@ -772,7 +836,7 @@ def supabase_login(
 
             },
 
-            timeout=30
+            timeout=30,
         )
 
         try:
@@ -783,37 +847,111 @@ def supabase_login(
 
             data = {}
 
-        if not response.ok:
+        if response.ok:
 
-            return (
-
-                None,
-
-                (
-                    data.get(
-                        "error_description"
-                    )
-                    or
-                    data.get("msg")
-                    or
-                    data.get("message")
-                    or
-                    "Invalid email or password."
-                )
+            user = data.get(
+                "user"
             )
 
-        return data, None
+            if not user:
+
+                logger.error(
+                    "SUPABASE LOGIN SUCCEEDED "
+                    "BUT USER WAS MISSING"
+                )
+
+                return (
+                    None,
+                    "Supabase did not return a user."
+                )
+
+            return data, None
+
+        # ----------------------------------------------------
+        # Log the real Supabase error on the server.
+        # Passwords and secret keys are never logged.
+        # ----------------------------------------------------
+
+        logger.error(
+            "SUPABASE LOGIN FAILED | status=%s | "
+            "response=%s",
+            response.status_code,
+            response.text[:2000],
+        )
+
+        error_code = data.get(
+            "error_code",
+            ""
+        )
+
+        error_description = data.get(
+            "error_description",
+            ""
+        )
+
+        if error_code == "invalid_credentials":
+
+            return (
+                None,
+                "Invalid email or password."
+            )
+
+        if (
+            "email not confirmed"
+            in error_description.lower()
+        ):
+
+            return (
+                None,
+                "Email confirmation is required. "
+                "Disable Confirm email in "
+                "Supabase Authentication → Providers → Email."
+            )
+
+        return (
+            None,
+            (
+                error_description
+                or
+                data.get("msg")
+                or
+                data.get("message")
+                or
+                f"Supabase authentication failed "
+                f"({response.status_code})."
+            )
+        )
+
+    except requests.exceptions.Timeout:
+
+        logger.exception(
+            "SUPABASE LOGIN TIMEOUT"
+        )
+
+        return (
+            None,
+            "Supabase authentication timed out."
+        )
+
+    except requests.exceptions.RequestException:
+
+        logger.exception(
+            "SUPABASE LOGIN CONNECTION ERROR"
+        )
+
+        return (
+            None,
+            "KOJA could not connect to Supabase."
+        )
 
     except Exception:
 
         logger.exception(
-            "Supabase login failed"
+            "SUPABASE LOGIN ERROR"
         )
 
         return (
-
             None,
-
             "Authentication service is temporarily unavailable."
         )
 
@@ -837,9 +975,17 @@ def ensure_profile(user):
         or ""
     ).strip().lower()
 
-    if not user_id:
+    if not user_id or not email:
+
+        logger.error(
+            "PROFILE ERROR: missing user ID or email"
+        )
 
         return None
+
+    # --------------------------------------------------------
+    # Find existing profile
+    # --------------------------------------------------------
 
     profiles = rest_get(
 
@@ -854,28 +1000,19 @@ def ensure_profile(user):
                 "1"
 
         }
-    )
 
-    # --------------------------------------------------------
-    # Profile already exists
-    # --------------------------------------------------------
+    )
 
     if profiles:
 
         profile = profiles[0]
 
-        # Optional automatic administrator.
-        #
-        # ADMIN_EMAIL must be configured on the server.
+        # Automatically promote ADMIN_EMAIL.
         if (
-
             ADMIN_EMAIL
-
             and email == ADMIN_EMAIL
-
             and profile.get("role")
             != "admin"
-
         ):
 
             updated = rest_update(
@@ -883,17 +1020,13 @@ def ensure_profile(user):
                 "profiles",
 
                 {
-
                     "id":
                         f"eq.{user_id}"
-
                 },
 
                 {
-
                     "role":
                         "admin"
-
                 }
             )
 
@@ -916,12 +1049,18 @@ def ensure_profile(user):
 
     name = (
 
-        metadata.get("name")
+        metadata.get(
+            "name"
+        )
 
         or
-        metadata.get("full_name")
+
+        metadata.get(
+            "full_name"
+        )
 
         or
+
         (
             email.split("@")[0]
             if email
@@ -958,13 +1097,19 @@ def ensure_profile(user):
                 role
 
         }
+
     )
 
-    if result:
+    if not result:
 
-        return result[0]
+        logger.error(
+            "PROFILE CREATION FAILED | email=%s",
+            email
+        )
 
-    return None
+        return None
+
+    return result[0]
 
 
 def current_profile():
@@ -975,6 +1120,14 @@ def current_profile():
 
         return None
 
+    user_id = user.get(
+        "id"
+    )
+
+    if not user_id:
+
+        return None
+
     profiles = rest_get(
 
         "profiles",
@@ -982,19 +1135,23 @@ def current_profile():
         {
 
             "id":
-                f"eq.{user.get('id')}",
+                f"eq.{user_id}",
 
             "limit":
                 "1"
 
         }
+
     )
 
     if profiles:
 
         return profiles[0]
 
-    return None
+    # Self-healing profile
+    return ensure_profile(
+        user
+    )
 
 
 # ============================================================
@@ -1041,13 +1198,9 @@ def admin_required(view):
         profile = current_profile()
 
         if (
-
             not profile
-
-            or
-            profile.get("role")
+            or profile.get("role")
             != "admin"
-
         ):
 
             abort(403)
@@ -1075,31 +1228,19 @@ def student_required(view):
 
         profile = current_profile()
 
-        if (
+        if not profile:
 
-            not profile
+            abort(403)
 
-            or
-            profile.get("role")
-            != "student"
+        if profile.get("role") == "admin":
 
-        ):
-
-            if (
-
-                profile
-
-                and
-                profile.get("role")
-                == "admin"
-
-            ):
-
-                return redirect(
-                    url_for(
-                        "admin_dashboard"
-                    )
+            return redirect(
+                url_for(
+                    "admin_dashboard"
                 )
+            )
+
+        if profile.get("role") != "student":
 
             abort(403)
 
@@ -1154,12 +1295,12 @@ def write_log(
     except Exception:
 
         logger.exception(
-            "Database log failed"
+            "LOG INSERT FAILED"
         )
 
 
 # ============================================================
-# PRIVATE STORAGE
+# STORAGE
 # ============================================================
 
 def upload_private_file(
@@ -1168,12 +1309,8 @@ def upload_private_file(
 ):
 
     if (
-
         not uploaded_file
-
-        or
-        not uploaded_file.filename
-
+        or not uploaded_file.filename
     ):
 
         raise ValueError(
@@ -1211,24 +1348,18 @@ def upload_private_file(
     if "." in filename:
 
         extension = (
-
             "."
-
             +
             filename
             .rsplit(".", 1)[1]
             .lower()
-
         )
 
     storage_path = (
 
         f"{folder.strip('/')}/"
-
         f"{datetime.now(timezone.utc).strftime('%Y/%m/%d')}/"
-
         f"{uuid.uuid4().hex}"
-
         f"{extension}"
 
     )
@@ -1241,7 +1372,11 @@ def upload_private_file(
 
     headers = storage_headers()
 
-    headers["Content-Type"] = content_type
+    headers["Content-Type"] = (
+        content_type
+    )
+
+    headers["x-upsert"] = "false"
 
     response = requests.post(
 
@@ -1253,16 +1388,15 @@ def upload_private_file(
 
         data=content,
 
-        timeout=120
+        timeout=120,
     )
 
     if not response.ok:
 
         logger.error(
-
-            "Storage upload failed: %s",
-
-            response.text[:1000]
+            "STORAGE UPLOAD FAILED | status=%s | response=%s",
+            response.status_code,
+            response.text[:2000],
         )
 
         raise RuntimeError(
@@ -1281,7 +1415,7 @@ def upload_private_file(
             len(content),
 
         "content_type":
-            content_type
+            content_type,
 
     }
 
@@ -1294,34 +1428,38 @@ def download_private_file(
 
         return None
 
-    response = requests.get(
+    try:
 
-        f"{SUPABASE_STORAGE_URL}"
-        f"/object/{SUPABASE_BUCKET}"
-        f"/{storage_path}",
+        response = requests.get(
 
-        headers=storage_headers(),
+            f"{SUPABASE_STORAGE_URL}"
+            f"/object/{SUPABASE_BUCKET}"
+            f"/{storage_path}",
 
-        timeout=120
-    )
+            headers=storage_headers(),
 
-    if not response.ok:
+            timeout=120,
+        )
 
-        logger.error(
+        if not response.ok:
 
-            "Storage download failed: %s",
+            logger.error(
+                "STORAGE DOWNLOAD FAILED | status=%s",
+                response.status_code,
+            )
 
-            response.text[:500]
+            return None
+
+        return response.content
+
+    except Exception:
+
+        logger.exception(
+            "STORAGE DOWNLOAD ERROR"
         )
 
         return None
 
-    return response.content
-
-
-# ============================================================
-# DELETE PRIVATE STORAGE FILE
-# ============================================================
 
 def delete_private_file(
     storage_path
@@ -1341,7 +1479,7 @@ def delete_private_file(
 
             headers=storage_headers(),
 
-            timeout=60
+            timeout=60,
         )
 
         return response.ok
@@ -1349,14 +1487,14 @@ def delete_private_file(
     except Exception:
 
         logger.exception(
-            "Storage deletion failed"
+            "STORAGE DELETE ERROR"
         )
 
         return False
 
 
 # ============================================================
-# PDF GENERATION
+# PDF
 # ============================================================
 
 def create_answer_pdf(
@@ -1378,7 +1516,7 @@ def create_answer_pdf(
 
         topMargin=18 * mm,
 
-        bottomMargin=18 * mm
+        bottomMargin=18 * mm,
 
     )
 
@@ -1394,7 +1532,7 @@ def create_answer_pdf(
 
         fontSize=22,
 
-        spaceAfter=8
+        spaceAfter=8,
 
     )
 
@@ -1408,7 +1546,7 @@ def create_answer_pdf(
 
         fontSize=10,
 
-        spaceAfter=18
+        spaceAfter=18,
 
     )
 
@@ -1422,7 +1560,7 @@ def create_answer_pdf(
 
         spaceBefore=10,
 
-        spaceAfter=8
+        spaceAfter=8,
 
     )
 
@@ -1436,7 +1574,7 @@ def create_answer_pdf(
 
         leading=16,
 
-        spaceAfter=10
+        spaceAfter=10,
 
     )
 
@@ -1485,13 +1623,8 @@ def create_answer_pdf(
         ),
 
         Paragraph(
-
             "<b>Student:</b> "
-            +
-            escape(
-                student_name
-            ),
-
+            + escape(student_name),
             body_style
         ),
 
@@ -1523,7 +1656,7 @@ def create_answer_pdf(
         Paragraph(
             "Generated by KOJA AFRICA",
             subtitle_style
-        )
+        ),
 
     ]
 
@@ -1551,15 +1684,18 @@ BASE_HTML = r"""
 
 <meta
 name="viewport"
-content="width=device-width, initial-scale=1.0">
+content="width=device-width, initial-scale=1.0"
+>
 
 <meta
 name="theme-color"
-content="#061b49">
+content="#061b49"
+>
 
 <meta
 name="description"
-content="KOJA AFRICA - Knowledge, Questions and Answers">
+content="KOJA AFRICA - Knowledge, Questions and Answers"
+>
 
 <title>
 {{ title }} | KOJA AFRICA
@@ -1569,10 +1705,6 @@ content="KOJA AFRICA - Knowledge, Questions and Answers">
 
 * {
     box-sizing: border-box;
-}
-
-html {
-    scroll-behavior: smooth;
 }
 
 body {
@@ -1647,7 +1779,6 @@ header {
 }
 
 .brand span {
-
     color:
         #4ea1ff;
 }
@@ -1683,7 +1814,6 @@ header {
 }
 
 .nav a:hover {
-
     background:
         #16366d;
 }
@@ -1691,7 +1821,7 @@ header {
 .container {
 
     width:
-        min(1180px, 94%);
+        min(1180px,94%);
 
     margin:
         28px auto;
@@ -1783,7 +1913,6 @@ header {
 
 .card h2,
 .card h3 {
-
     margin-top:
         0;
 }
@@ -1819,25 +1948,21 @@ header {
 }
 
 .btn:hover {
-
     opacity:
         .9;
 }
 
 .btn.dark {
-
     background:
         #061b49;
 }
 
 .btn.green {
-
     background:
         #198754;
 }
 
 .btn.red {
-
     background:
         #dc3545;
 }
@@ -1861,9 +1986,6 @@ header {
 
     flex-wrap:
         wrap;
-
-    justify-content:
-        center;
 }
 
 form {
@@ -1915,17 +2037,6 @@ select {
 
     background:
         white;
-}
-
-input:focus,
-textarea:focus,
-select:focus {
-
-    outline:
-        2px solid #9fc5ff;
-
-    border-color:
-        #0d6efd;
 }
 
 textarea {
@@ -2152,7 +2263,6 @@ footer {
 }
 
 small {
-
     color:
         #687386;
 }
@@ -2193,18 +2303,15 @@ hr {
     }
 
     .hero {
-
         padding:
             42px 18px;
     }
 
     th,
     td {
-
         min-width:
             130px;
     }
-
 }
 
 </style>
@@ -2337,7 +2444,7 @@ def page(
 
         content=content,
 
-        title=title
+        title=title,
 
     )
 
@@ -2362,7 +2469,8 @@ Assignment Questions • Academic Answers •
 Learning Resources
 </p>
 
-<div class="actions">
+<div class="actions"
+style="justify-content:center">
 
 <a
 class="btn"
@@ -2420,7 +2528,7 @@ Learning Resources
 
 <p>
 Exchange documents securely through
-the private KOJA file system.
+the KOJA file system.
 </p>
 
 </div>
@@ -2537,11 +2645,9 @@ def register():
             )
 
         user = (
-
             data.get("user")
             if data
             else None
-
         )
 
         if user:
@@ -2552,7 +2658,7 @@ def register():
 
             write_log(
 
-                "New student registration",
+                "New account registered",
 
                 "Authentication",
 
@@ -2564,12 +2670,62 @@ def register():
 
             )
 
+            # If Supabase returned a session,
+            # we can log the user in immediately.
+            if data.get("access_token"):
+
+                profile = ensure_profile(
+                    user
+                )
+
+                if profile:
+
+                    session.clear()
+
+                    session.permanent = True
+
+                    session["user"] = {
+
+                        "id":
+                            user.get("id"),
+
+                        "email":
+                            user.get("email")
+
+                    }
+
+                    session["role"] = (
+                        profile.get(
+                            "role",
+                            "student"
+                        )
+                    )
+
+                    session["_csrf_token"] = (
+                        secrets.token_urlsafe(32)
+                    )
+
+                    if (
+                        profile.get("role")
+                        == "admin"
+                    ):
+
+                        return redirect(
+                            url_for(
+                                "admin_dashboard"
+                            )
+                        )
+
+                    return redirect(
+                        url_for(
+                            "student_dashboard"
+                        )
+                    )
+
         flash(
 
             "Account created successfully. "
-            "If email confirmation is enabled "
-            "in Supabase, confirm your email "
-            "before logging in.",
+            "You can now log in.",
 
             "success"
 
@@ -2598,8 +2754,8 @@ Full Name
 <input
 name="name"
 required
-autocomplete="name"
 maxlength="120"
+autocomplete="name"
 >
 
 <label>
@@ -2610,8 +2766,8 @@ Email
 type="email"
 name="email"
 required
-autocomplete="email"
 maxlength="180"
+autocomplete="email"
 >
 
 <label>
@@ -2640,7 +2796,10 @@ autocomplete="new-password"
 
 <br><br>
 
-<button class="btn">
+<button
+class="btn"
+type="submit"
+>
 Create Account
 </button>
 
@@ -2710,23 +2869,28 @@ def login():
             )
 
         user = (
-
             data.get("user")
             if data
             else None
-
         )
 
         if not user:
 
             flash(
-                "Login failed.",
+                "Login failed because Supabase did not return a user.",
                 "error"
             )
 
             return redirect(
                 url_for("login")
             )
+
+        # ----------------------------------------------------
+        # THIS IS THE IMPORTANT PART
+        #
+        # Login succeeds in Supabase Auth.
+        # Then KOJA creates/loads the profile.
+        # ----------------------------------------------------
 
         profile = ensure_profile(
             user
@@ -2734,15 +2898,29 @@ def login():
 
         if not profile:
 
+            logger.error(
+                "AUTHENTICATION SUCCEEDED BUT "
+                "PROFILE COULD NOT BE CREATED | user=%s",
+                user.get("id")
+            )
+
             flash(
-                "Your account exists, "
-                "but your KOJA profile could not be loaded.",
+
+                "Your Supabase account is valid, "
+                "but KOJA could not create your profile. "
+                "Check the profiles table and Render logs.",
+
                 "error"
+
             )
 
             return redirect(
                 url_for("login")
             )
+
+        # ----------------------------------------------------
+        # New session
+        # ----------------------------------------------------
 
         session.clear()
 
@@ -2786,10 +2964,8 @@ def login():
         )
 
         if (
-
             profile.get("role")
             == "admin"
-
         ):
 
             return redirect(
@@ -2840,7 +3016,10 @@ autocomplete="current-password"
 
 <br><br>
 
-<button class="btn">
+<button
+class="btn"
+type="submit"
+>
 Log In
 </button>
 
@@ -2850,9 +3029,14 @@ Log In
 
 <div class="card">
 
-No account?
+Don't have an account?
 
-<a href="/register">
+<br><br>
+
+<a
+class="btn"
+href="/register"
+>
 Create Account
 </a>
 
@@ -2905,25 +3089,10 @@ def logout():
 # ============================================================
 
 @app.route("/student")
-@login_required
+@student_required
 def student_dashboard():
 
     profile = current_profile()
-
-    if not profile:
-
-        abort(403)
-
-    if (
-        profile.get("role")
-        == "admin"
-    ):
-
-        return redirect(
-            url_for(
-                "admin_dashboard"
-            )
-        )
 
     questions = rest_get(
 
@@ -3023,8 +3192,7 @@ Documents
 
 <br>
 
-<div class="actions"
-style="justify-content:flex-start">
+<div class="actions">
 
 <a
 class="btn"
@@ -3199,21 +3367,19 @@ def ask_question():
                     )
 
                     flash(
-                        "Question submitted, "
-                        "but attachment could not "
-                        "be recorded.",
+                        "Question submitted, but attachment "
+                        "could not be recorded.",
                         "warning"
                     )
 
             except Exception:
 
                 logger.exception(
-                    "Question attachment failed"
+                    "QUESTION ATTACHMENT ERROR"
                 )
 
                 flash(
-                    "Question submitted, "
-                    "but the attachment failed.",
+                    "Question submitted, but attachment failed.",
                     "warning"
                 )
 
@@ -3282,7 +3448,10 @@ name="file"
 
 <br><br>
 
-<button class="btn">
+<button
+class="btn"
+type="submit"
+>
 Submit Question
 </button>
 
@@ -3340,20 +3509,23 @@ def student_questions():
         )
 
         question_files = ""
-
         answer_files = ""
 
         for file in files:
 
             link = f"""
 <div style="margin:7px 0">
+
 📎
+
 <a href="/question-file/{file['id']}">
 {esc(file.get("original_name"))}
 </a>
+
 <span class="badge">
 {esc(file.get("file_type"))}
 </span>
+
 </div>
 """
 
@@ -3474,8 +3646,7 @@ Submitted:
 
 <div class="card empty">
 
-You have not submitted any
-questions yet.
+You have not submitted any questions yet.
 
 <br><br>
 
@@ -3583,8 +3754,7 @@ def student_question_pdf(
             f"{question_id[:8]}.pdf"
         ),
 
-        mimetype=
-            "application/pdf"
+        mimetype="application/pdf"
 
     )
 
@@ -3624,19 +3794,6 @@ def student_documents():
             "file"
         )
 
-        if len(title) > 300:
-
-            flash(
-                "Title is too long.",
-                "error"
-            )
-
-            return redirect(
-                url_for(
-                    "student_documents"
-                )
-            )
-
         if (
             not title
             or not uploaded
@@ -3660,8 +3817,7 @@ def student_documents():
 
                 uploaded,
 
-                f"documents/student/"
-                f"{profile['id']}"
+                f"documents/student/{profile['id']}"
 
             )
 
@@ -3750,7 +3906,7 @@ def student_documents():
         except Exception:
 
             logger.exception(
-                "Student document upload failed"
+                "STUDENT DOCUMENT ERROR"
             )
 
             flash(
@@ -3821,9 +3977,14 @@ Download
         rows = """
 
 <tr>
-<td colspan="4" class="empty">
+
+<td
+colspan="4"
+class="empty"
+>
 No documents yet.
 </td>
+
 </tr>
 
 """
@@ -3878,7 +4039,10 @@ required
 
 <br><br>
 
-<button class="btn">
+<button
+class="btn"
+type="submit"
+>
 Upload Document
 </button>
 
@@ -3994,9 +4158,7 @@ def question_file(
 
         or
 
-        question.get(
-            "student_id"
-        )
+        question.get("student_id")
         == profile.get("id")
 
     )
@@ -4040,11 +4202,10 @@ def question_file(
 
         as_attachment=True,
 
-        download_name=
-            file.get(
-                "original_name",
-                "download"
-            )
+        download_name=file.get(
+            "original_name",
+            "download"
+        )
 
     )
 
@@ -4096,16 +4257,12 @@ def document_download(
 
         or
 
-        document.get(
-            "sender_id"
-        )
+        document.get("sender_id")
         == profile.get("id")
 
         or
 
-        document.get(
-            "recipient_id"
-        )
+        document.get("recipient_id")
         == profile.get("id")
 
     )
@@ -4149,11 +4306,10 @@ def document_download(
 
         as_attachment=True,
 
-        download_name=
-            document.get(
-                "original_name",
-                "document"
-            )
+        download_name=document.get(
+            "original_name",
+            "document"
+        )
 
     )
 
@@ -4179,16 +4335,14 @@ def admin_dashboard():
     )
 
     waiting = sum(
-
-        not bool(
-            q.get("answer")
-        )
-
+        not bool(q.get("answer"))
         for q in questions
-
     )
 
-    answered = len(questions) - waiting
+    answered = (
+        len(questions)
+        - waiting
+    )
 
     return page(f"""
 
@@ -4262,8 +4416,7 @@ Documents
 
 <br>
 
-<div class="actions"
-style="justify-content:flex-start">
+<div class="actions">
 
 <a
 class="btn"
@@ -4326,12 +4479,10 @@ def admin_questions():
     for q in questions:
 
         status = (
-
             "Answered"
             if q.get("answer")
             else
             "Waiting"
-
         )
 
         badge = (
@@ -4356,9 +4507,7 @@ def admin_questions():
 <td>
 
 <span class="badge {badge}">
-
 {status}
-
 </span>
 
 </td>
@@ -4494,8 +4643,7 @@ def admin_question(
             return redirect(
                 url_for(
                     "admin_question",
-                    question_id=
-                        question_id
+                    question_id=question_id
                 )
             )
 
@@ -4509,8 +4657,7 @@ def admin_question(
             return redirect(
                 url_for(
                     "admin_question",
-                    question_id=
-                        question_id
+                    question_id=question_id
                 )
             )
 
@@ -4605,28 +4752,19 @@ def admin_question(
                         )
 
                         flash(
-                            "Answer saved, "
-                            "but attachment could "
-                            "not be recorded.",
+                            "Answer saved, but attachment "
+                            "could not be recorded.",
                             "warning"
                         )
-
-                except ValueError as error:
-
-                    flash(
-                        str(error),
-                        "warning"
-                    )
 
                 except Exception:
 
                     logger.exception(
-                        "Answer attachment failed"
+                        "ANSWER ATTACHMENT ERROR"
                     )
 
                     flash(
-                        "Answer saved, "
-                        "but attachment failed.",
+                        "Answer saved, but attachment failed.",
                         "warning"
                     )
 
@@ -4655,8 +4793,7 @@ def admin_question(
 
                 "admin_question",
 
-                question_id=
-                    question_id
+                question_id=question_id
 
             )
 
@@ -4689,15 +4826,11 @@ def admin_question(
 📎
 
 <a href="/question-file/{file['id']}">
-
 {esc(file.get("original_name"))}
-
 </a>
 
 <span class="badge">
-
 {esc(file.get("file_type"))}
-
 </span>
 
 </div>
@@ -4705,12 +4838,10 @@ def admin_question(
 """
 
     status = (
-
         "Answered"
         if question.get("answer")
         else
         "Waiting"
-
     )
 
     return page(f"""
@@ -4748,9 +4879,7 @@ Status:
 </strong>
 
 <span class="badge">
-
 {status}
-
 </span>
 
 </p>
@@ -4762,9 +4891,7 @@ Question
 </h3>
 
 <div class="question-box">
-
 {esc(question.get("question"))}
-
 </div>
 
 <br>
@@ -4807,7 +4934,10 @@ name="answer_file"
 
 <br><br>
 
-<button class="btn green">
+<button
+class="btn green"
+type="submit"
+>
 Save Answer
 </button>
 
@@ -4893,19 +5023,6 @@ def admin_documents():
                 )
             )
 
-        if len(title) > 300:
-
-            flash(
-                "Title is too long.",
-                "error"
-            )
-
-            return redirect(
-                url_for(
-                    "admin_documents"
-                )
-            )
-
         student = students[0]
 
         try:
@@ -4914,8 +5031,7 @@ def admin_documents():
 
                 uploaded,
 
-                f"documents/admin/"
-                f"{recipient_id}"
+                f"documents/admin/{recipient_id}"
 
             )
 
@@ -4997,17 +5113,10 @@ def admin_documents():
                     "success"
                 )
 
-        except ValueError as error:
-
-            flash(
-                str(error),
-                "error"
-            )
-
         except Exception:
 
             logger.exception(
-                "Admin document upload failed"
+                "ADMIN DOCUMENT ERROR"
             )
 
             flash(
@@ -5043,9 +5152,7 @@ def admin_documents():
 
         options += f"""
 
-<option
-value="{student['id']}"
->
+<option value="{student['id']}">
 
 {esc(student.get("name"))}
 —
@@ -5187,7 +5294,10 @@ required
 
 <br><br>
 
-<button class="btn">
+<button
+class="btn"
+type="submit"
+>
 Send Document
 </button>
 
@@ -5479,10 +5589,31 @@ Details
 # HEALTH CHECK
 # ============================================================
 
-@app.route(
-    "/health"
-)
+@app.route("/health")
 def health():
+
+    # Check basic Supabase REST connectivity
+    try:
+
+        response = requests.get(
+
+            f"{SUPABASE_REST_URL}/profiles",
+
+            headers=supabase_headers(),
+
+            params={
+                "select": "id",
+                "limit": "1"
+            },
+
+            timeout=10
+        )
+
+        database_ok = response.ok
+
+    except Exception:
+
+        database_ok = False
 
     return {
 
@@ -5494,6 +5625,9 @@ def health():
 
         "database":
             "Supabase REST",
+
+        "database_connection":
+            database_ok,
 
         "storage":
             SUPABASE_BUCKET,
@@ -5654,10 +5788,6 @@ Return Home
 """, "Bad Request"), 400
 
 
-# ============================================================
-# INTERNAL SERVER ERROR
-# ============================================================
-
 @app.errorhandler(500)
 def internal_error(error):
 
@@ -5696,7 +5826,7 @@ Return Home
 
 
 # ============================================================
-# LOCAL DEVELOPMENT / RENDER
+# START
 # ============================================================
 
 if __name__ == "__main__":
