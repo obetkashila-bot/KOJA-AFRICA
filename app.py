@@ -10,6 +10,7 @@ from html import escape
 
 import requests
 from dotenv import load_dotenv
+
 from flask import (
     Flask,
     request,
@@ -21,6 +22,7 @@ from flask import (
     send_file,
     abort,
 )
+
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
@@ -41,13 +43,30 @@ from reportlab.lib.enums import TA_CENTER
 # ============================================================
 # KOJA AFRICA
 # KNOWLEDGE • QUESTIONS • ANSWERS
+#
+# Professional foundation:
+#
+# Authentication
+# Student portal
+# Admin portal
+# Questions
+# Answers
+# Private documents
+# Document inbox/outbox
+# Secure downloads
+# Audit logs
+# PDF answers
+# Future premium resources
+# Future subscriptions
+# Future payments
+# Future institutions
 # ============================================================
 
 load_dotenv()
 
 
 # ============================================================
-# FLASK
+# APPLICATION
 # ============================================================
 
 app = Flask(__name__)
@@ -77,7 +96,6 @@ SUPABASE_SECRET_KEY = os.getenv(
     ""
 ).strip()
 
-# Backwards compatibility
 if not SUPABASE_SECRET_KEY:
     SUPABASE_SECRET_KEY = os.getenv(
         "SUPABASE_SERVICE_KEY",
@@ -89,9 +107,17 @@ ADMIN_EMAIL = os.getenv(
     ""
 ).strip().lower()
 
-SUPABASE_BUCKET = "koja-files"
+SUPABASE_BUCKET = os.getenv(
+    "SUPABASE_BUCKET",
+    "koja-files"
+).strip()
 
 MAX_FILE_SIZE = 10 * 1024 * 1024
+
+
+# ============================================================
+# ALLOWED FILES
+# ============================================================
 
 ALLOWED_EXTENSIONS = {
     "pdf",
@@ -102,11 +128,15 @@ ALLOWED_EXTENSIONS = {
     "jpeg",
     "png",
     "webp",
+    "ppt",
+    "pptx",
+    "xls",
+    "xlsx",
 }
 
 
 # ============================================================
-# REQUIRED CONFIGURATION
+# CONFIG VALIDATION
 # ============================================================
 
 if not FLASK_SECRET_KEY:
@@ -134,7 +164,7 @@ app.secret_key = FLASK_SECRET_KEY
 
 
 # ============================================================
-# FLASK CONFIG
+# FLASK SECURITY
 # ============================================================
 
 COOKIE_SECURE = (
@@ -147,9 +177,13 @@ COOKIE_SECURE = (
 
 app.config.update(
     MAX_CONTENT_LENGTH=MAX_FILE_SIZE,
+
     SESSION_COOKIE_HTTPONLY=True,
+
     SESSION_COOKIE_SECURE=COOKIE_SECURE,
+
     SESSION_COOKIE_SAMESITE="Lax",
+
     PERMANENT_SESSION_LIFETIME=timedelta(
         hours=8
     ),
@@ -176,7 +210,7 @@ logger = logging.getLogger(
 
 
 # ============================================================
-# RATE LIMITER
+# RATE LIMITING
 # ============================================================
 
 limiter = Limiter(
@@ -190,7 +224,7 @@ limiter = Limiter(
 
 
 # ============================================================
-# SUPABASE URLS
+# SUPABASE ENDPOINTS
 # ============================================================
 
 SUPABASE_AUTH_URL = (
@@ -207,7 +241,7 @@ SUPABASE_STORAGE_URL = (
 
 
 # ============================================================
-# HELPERS
+# GENERAL HELPERS
 # ============================================================
 
 def now_iso():
@@ -250,6 +284,84 @@ def allowed_file(filename):
     return extension in ALLOWED_EXTENSIONS
 
 
+def file_extension(filename):
+    if "." not in filename:
+        return ""
+
+    return (
+        filename.rsplit(
+            ".",
+            1
+        )[1]
+        .lower()
+    )
+
+
+def format_size(size):
+    try:
+        size = int(size)
+    except Exception:
+        return "Unknown"
+
+    if size < 1024:
+        return f"{size} B"
+
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KB"
+
+    return f"{size / (1024 * 1024):.1f} MB"
+
+
+def document_direction_label(direction):
+    if direction == "student_to_admin":
+        return "Student → Admin"
+
+    if direction == "admin_to_student":
+        return "Admin → Student"
+
+    return direction or "Document"
+
+
+def document_type_label(filename):
+    extension = file_extension(
+        filename
+    )
+
+    if extension == "pdf":
+        return "PDF"
+
+    if extension in {
+        "doc",
+        "docx"
+    }:
+        return "Word"
+
+    if extension in {
+        "xls",
+        "xlsx"
+    }:
+        return "Excel"
+
+    if extension in {
+        "ppt",
+        "pptx"
+    }:
+        return "PowerPoint"
+
+    if extension in {
+        "jpg",
+        "jpeg",
+        "png",
+        "webp"
+    }:
+        return "Image"
+
+    if extension == "txt":
+        return "Text"
+
+    return extension.upper() or "FILE"
+
+
 # ============================================================
 # CSRF
 # ============================================================
@@ -261,6 +373,7 @@ def get_csrf():
 
     if not token:
         token = secrets.token_urlsafe(32)
+
         session["_csrf_token"] = token
 
     return token
@@ -275,6 +388,7 @@ def csrf_input():
 
 
 def check_csrf():
+
     submitted = request.form.get(
         "_csrf",
         ""
@@ -307,38 +421,71 @@ def current_user():
     return session.get("user")
 
 
+def current_profile():
+
+    user = current_user()
+
+    if not user:
+        return None
+
+    rows = rest_get(
+        "profiles",
+        {
+            "id":
+                f"eq.{user.get('id')}",
+            "limit":
+                "1"
+        }
+    )
+
+    if rows:
+        return rows[0]
+
+    return None
+
+
 # ============================================================
 # SUPABASE HEADERS
 # ============================================================
 
 def supabase_headers():
+
     return {
-        "apikey": SUPABASE_SECRET_KEY,
-        "Authorization": (
-            f"Bearer {SUPABASE_SECRET_KEY}"
-        ),
-        "Content-Type": "application/json",
+        "apikey":
+            SUPABASE_SECRET_KEY,
+
+        "Authorization":
+            f"Bearer {SUPABASE_SECRET_KEY}",
+
+        "Content-Type":
+            "application/json",
     }
 
 
 def auth_headers():
+
     return {
-        "apikey": SUPABASE_ANON_KEY,
-        "Content-Type": "application/json",
+        "apikey":
+            SUPABASE_ANON_KEY,
+
+        "Content-Type":
+            "application/json",
     }
 
 
 def storage_headers():
+
     return {
-        "apikey": SUPABASE_SECRET_KEY,
-        "Authorization": (
-            f"Bearer {SUPABASE_SECRET_KEY}"
-        ),
+        "apikey":
+            SUPABASE_SECRET_KEY,
+
+        "Authorization":
+            f"Bearer {SUPABASE_SECRET_KEY}",
     }
 
 
 # ============================================================
-# SUPABASE REST GET
+# SUPABASE GET
 # ============================================================
 
 def rest_get(
@@ -346,7 +493,9 @@ def rest_get(
     params=None,
     select="*"
 ):
+
     try:
+
         query = {
             "select": select
         }
@@ -362,24 +511,36 @@ def rest_get(
         )
 
         if not response.ok:
+
             logger.error(
                 "Supabase GET %s failed: %s",
                 table,
                 response.text[:1000],
             )
+
             return []
 
-        return response.json()
+        data = response.json()
+
+        if not isinstance(
+            data,
+            list
+        ):
+            return []
+
+        return data
 
     except Exception:
+
         logger.exception(
             "Supabase GET exception"
         )
+
         return []
 
 
 # ============================================================
-# SUPABASE REST INSERT
+# SUPABASE INSERT
 # ============================================================
 
 def rest_insert(
@@ -387,14 +548,17 @@ def rest_insert(
     payload,
     returning=True
 ):
+
     headers = supabase_headers()
 
     if returning:
+
         headers["Prefer"] = (
             "return=representation"
         )
 
     try:
+
         response = requests.post(
             f"{SUPABASE_REST_URL}/{table}",
             headers=headers,
@@ -403,11 +567,13 @@ def rest_insert(
         )
 
         if not response.ok:
+
             logger.error(
                 "Supabase INSERT %s failed: %s",
                 table,
                 response.text[:1000],
             )
+
             return None
 
         if not response.text:
@@ -416,14 +582,16 @@ def rest_insert(
         return response.json()
 
     except Exception:
+
         logger.exception(
             "Supabase INSERT exception"
         )
+
         return None
 
 
 # ============================================================
-# SUPABASE REST UPDATE
+# SUPABASE UPDATE
 # ============================================================
 
 def rest_update(
@@ -431,6 +599,7 @@ def rest_update(
     params,
     payload
 ):
+
     headers = supabase_headers()
 
     headers["Prefer"] = (
@@ -438,6 +607,7 @@ def rest_update(
     )
 
     try:
+
         response = requests.patch(
             f"{SUPABASE_REST_URL}/{table}",
             headers=headers,
@@ -447,11 +617,13 @@ def rest_update(
         )
 
         if not response.ok:
+
             logger.error(
                 "Supabase UPDATE %s failed: %s",
                 table,
                 response.text[:1000],
             )
+
             return None
 
         if not response.text:
@@ -460,21 +632,25 @@ def rest_update(
         return response.json()
 
     except Exception:
+
         logger.exception(
             "Supabase UPDATE exception"
         )
+
         return None
 
 
 # ============================================================
-# SUPABASE REST DELETE
+# SUPABASE DELETE
 # ============================================================
 
 def rest_delete(
     table,
     params
 ):
+
     try:
+
         response = requests.delete(
             f"{SUPABASE_REST_URL}/{table}",
             headers=supabase_headers(),
@@ -483,24 +659,28 @@ def rest_delete(
         )
 
         if not response.ok:
+
             logger.error(
                 "Supabase DELETE %s failed: %s",
                 table,
                 response.text[:1000],
             )
+
             return False
 
         return True
 
     except Exception:
+
         logger.exception(
             "Supabase DELETE exception"
         )
+
         return False
 
 
 # ============================================================
-# SUPABASE SIGNUP
+# SUPABASE AUTH
 # ============================================================
 
 def supabase_signup(
@@ -508,15 +688,22 @@ def supabase_signup(
     password,
     name
 ):
+
     try:
+
         response = requests.post(
             f"{SUPABASE_AUTH_URL}/signup",
             headers=auth_headers(),
             json={
-                "email": email,
-                "password": password,
+                "email":
+                    email,
+
+                "password":
+                    password,
+
                 "data": {
-                    "name": name
+                    "name":
+                        name
                 }
             },
             timeout=30,
@@ -528,6 +715,7 @@ def supabase_signup(
             data = {}
 
         if not response.ok:
+
             return (
                 None,
                 (
@@ -543,8 +731,9 @@ def supabase_signup(
         return data, None
 
     except Exception:
+
         logger.exception(
-            "Supabase signup failed"
+            "Signup failed"
         )
 
         return (
@@ -553,23 +742,27 @@ def supabase_signup(
         )
 
 
-# ============================================================
-# SUPABASE LOGIN
-# ============================================================
-
 def supabase_login(
     email,
     password
 ):
+
     try:
+
         response = requests.post(
             f"{SUPABASE_AUTH_URL}"
             "/token?grant_type=password",
+
             headers=auth_headers(),
+
             json={
-                "email": email,
-                "password": password
+                "email":
+                    email,
+
+                "password":
+                    password
             },
+
             timeout=30,
         )
 
@@ -579,13 +772,12 @@ def supabase_login(
             data = {}
 
         if response.ok:
-            user = data.get("user")
+
+            user = data.get(
+                "user"
+            )
 
             if not user:
-                logger.error(
-                    "SUPABASE LOGIN SUCCEEDED "
-                    "BUT USER WAS MISSING"
-                )
 
                 return (
                     None,
@@ -593,12 +785,6 @@ def supabase_login(
                 )
 
             return data, None
-
-        logger.error(
-            "SUPABASE LOGIN FAILED | status=%s | response=%s",
-            response.status_code,
-            response.text[:2000],
-        )
 
         error_code = data.get(
             "error_code",
@@ -611,6 +797,7 @@ def supabase_login(
         )
 
         if error_code == "invalid_credentials":
+
             return (
                 None,
                 "Invalid email or password."
@@ -620,6 +807,7 @@ def supabase_login(
             "email not confirmed"
             in error_description.lower()
         ):
+
             return (
                 None,
                 "Please confirm your email before logging in."
@@ -636,8 +824,9 @@ def supabase_login(
         )
 
     except Exception:
+
         logger.exception(
-            "Supabase login failed"
+            "Login failed"
         )
 
         return (
@@ -647,17 +836,23 @@ def supabase_login(
 
 
 # ============================================================
-# PROFILE
+# PROFILE MANAGEMENT
 # ============================================================
 
 def ensure_profile(user):
+
     if not user:
         return None
 
-    user_id = user.get("id")
+    user_id = user.get(
+        "id"
+    )
 
     email = (
-        user.get("email") or ""
+        user.get(
+            "email"
+        )
+        or ""
     ).strip().lower()
 
     if not user_id:
@@ -666,26 +861,34 @@ def ensure_profile(user):
     profiles = rest_get(
         "profiles",
         {
-            "id": f"eq.{user_id}",
-            "limit": "1"
+            "id":
+                f"eq.{user_id}",
+
+            "limit":
+                "1"
         }
     )
 
     if profiles:
+
         profile = profiles[0]
 
         if (
             ADMIN_EMAIL
             and email == ADMIN_EMAIL
-            and profile.get("role") != "admin"
+            and profile.get("role")
+            != "admin"
         ):
+
             updated = rest_update(
                 "profiles",
                 {
-                    "id": f"eq.{user_id}"
+                    "id":
+                        f"eq.{user_id}"
                 },
                 {
-                    "role": "admin"
+                    "role":
+                        "admin"
                 }
             )
 
@@ -695,7 +898,9 @@ def ensure_profile(user):
         return profile
 
     metadata = (
-        user.get("user_metadata")
+        user.get(
+            "user_metadata"
+        )
         or {}
     )
 
@@ -720,10 +925,17 @@ def ensure_profile(user):
     result = rest_insert(
         "profiles",
         {
-            "id": user_id,
-            "name": name or "Student",
-            "email": email,
-            "role": role
+            "id":
+                user_id,
+
+            "name":
+                name or "Student",
+
+            "email":
+                email,
+
+            "role":
+                role
         }
     )
 
@@ -733,53 +945,43 @@ def ensure_profile(user):
     return None
 
 
-def current_profile():
-    user = current_user()
-
-    if not user:
-        return None
-
-    profiles = rest_get(
-        "profiles",
-        {
-            "id": f"eq.{user.get('id')}",
-            "limit": "1"
-        }
-    )
-
-    if profiles:
-        return profiles[0]
-
-    return None
-
-
 # ============================================================
 # AUTH DECORATORS
 # ============================================================
 
 def login_required(view):
+
     @wraps(view)
     def wrapped(*args, **kwargs):
+
         if not current_user():
+
             flash(
                 "Please log in first.",
                 "warning"
             )
+
             return redirect(
                 url_for("login")
             )
 
-        return view(*args, **kwargs)
+        return view(
+            *args,
+            **kwargs
+        )
 
     return wrapped
 
 
 def admin_required(view):
+
     @wraps(view)
     def wrapped(*args, **kwargs):
+
         user = current_user()
 
         if not user:
+
             return redirect(
                 url_for("login")
             )
@@ -788,21 +990,29 @@ def admin_required(view):
 
         if (
             not profile
-            or profile.get("role") != "admin"
+            or profile.get("role")
+            != "admin"
         ):
+
             abort(403)
 
-        return view(*args, **kwargs)
+        return view(
+            *args,
+            **kwargs
+        )
 
     return wrapped
 
 
 def student_required(view):
+
     @wraps(view)
     def wrapped(*args, **kwargs):
+
         user = current_user()
 
         if not user:
+
             return redirect(
                 url_for("login")
             )
@@ -810,20 +1020,27 @@ def student_required(view):
         profile = current_profile()
 
         if not profile:
+
             abort(403)
 
         if profile.get("role") == "admin":
+
             return redirect(
-                url_for("admin_dashboard")
+                url_for(
+                    "admin_dashboard"
+                )
             )
 
-        return view(*args, **kwargs)
+        return view(
+            *args,
+            **kwargs
+        )
 
     return wrapped
 
 
 # ============================================================
-# LOGS
+# LOGGING
 # ============================================================
 
 def write_log(
@@ -833,22 +1050,35 @@ def write_log(
     details="",
     user_id=None
 ):
+
     try:
+
         rest_insert(
             "logs",
             {
-                "event": str(event)[:500],
-                "category": str(category)[:100],
-                "level": str(level)[:50],
-                "details": str(details)[:4000],
-                "user_id": user_id
+                "event":
+                    str(event)[:500],
+
+                "category":
+                    str(category)[:100],
+
+                "level":
+                    str(level)[:50],
+
+                "details":
+                    str(details)[:4000],
+
+                "user_id":
+                    user_id
             },
+
             returning=False
         )
 
     except Exception:
+
         logger.exception(
-            "Database log failed"
+            "Database logging failed"
         )
 
 
@@ -860,10 +1090,12 @@ def upload_private_file(
     uploaded_file,
     folder
 ):
+
     if (
         not uploaded_file
         or not uploaded_file.filename
     ):
+
         raise ValueError(
             "No file selected."
         )
@@ -873,6 +1105,7 @@ def upload_private_file(
     )
 
     if not allowed_file(filename):
+
         raise ValueError(
             "Unsupported file type."
         )
@@ -880,11 +1113,13 @@ def upload_private_file(
     content = uploaded_file.read()
 
     if not content:
+
         raise ValueError(
             "The uploaded file is empty."
         )
 
     if len(content) > MAX_FILE_SIZE:
+
         raise ValueError(
             "Maximum file size is 10 MB."
         )
@@ -892,12 +1127,10 @@ def upload_private_file(
     extension = ""
 
     if "." in filename:
+
         extension = (
             "."
-            + filename.rsplit(
-                ".",
-                1
-            )[1].lower()
+            + file_extension(filename)
         )
 
     storage_path = (
@@ -913,18 +1146,25 @@ def upload_private_file(
     )
 
     headers = storage_headers()
-    headers["Content-Type"] = content_type
+
+    headers["Content-Type"] = (
+        content_type
+    )
 
     response = requests.post(
         f"{SUPABASE_STORAGE_URL}"
         f"/object/{SUPABASE_BUCKET}"
         f"/{storage_path}",
+
         headers=headers,
+
         data=content,
+
         timeout=120,
     )
 
     if not response.ok:
+
         logger.error(
             "Storage upload failed: %s",
             response.text[:1000],
@@ -935,77 +1175,111 @@ def upload_private_file(
         )
 
     return {
-        "original_name": filename,
-        "storage_path": storage_path,
-        "size": len(content),
-        "content_type": content_type,
+        "original_name":
+            filename,
+
+        "storage_path":
+            storage_path,
+
+        "size":
+            len(content),
+
+        "content_type":
+            content_type,
     }
 
 
 def download_private_file(
     storage_path
 ):
+
     if not storage_path:
         return None
 
-    response = requests.get(
-        f"{SUPABASE_STORAGE_URL}"
-        f"/object/{SUPABASE_BUCKET}"
-        f"/{storage_path}",
-        headers=storage_headers(),
-        timeout=120,
-    )
+    try:
 
-    if not response.ok:
-        logger.error(
-            "Storage download failed: %s",
-            response.text[:500],
+        response = requests.get(
+            f"{SUPABASE_STORAGE_URL}"
+            f"/object/{SUPABASE_BUCKET}"
+            f"/{storage_path}",
+
+            headers=storage_headers(),
+
+            timeout=120,
         )
-        return None
 
-    return response.content
+        if not response.ok:
+
+            logger.error(
+                "Storage download failed: %s",
+                response.text[:500],
+            )
+
+            return None
+
+        return response.content
+
+    except Exception:
+
+        logger.exception(
+            "Storage download failed"
+        )
+
+        return None
 
 
 def delete_private_file(
     storage_path
 ):
+
     if not storage_path:
         return False
 
     try:
+
         response = requests.delete(
             f"{SUPABASE_STORAGE_URL}"
             f"/object/{SUPABASE_BUCKET}"
             f"/{storage_path}",
+
             headers=storage_headers(),
+
             timeout=60,
         )
 
         return response.ok
 
     except Exception:
+
         logger.exception(
             "Storage deletion failed"
         )
+
         return False
 
 
 # ============================================================
-# PDF
+# PDF ANSWER
 # ============================================================
 
 def create_answer_pdf(
     question,
     student_name
 ):
+
     buffer = io.BytesIO()
 
     document = SimpleDocTemplate(
         buffer,
+
         pagesize=A4,
+
         leftMargin=18 * mm,
+
         rightMargin=18 * mm,
+
         topMargin=18 * mm,
+
         bottomMargin=18 * mm,
     )
 
@@ -1013,33 +1287,49 @@ def create_answer_pdf(
 
     title_style = ParagraphStyle(
         "KOJATitle",
+
         parent=styles["Title"],
+
         alignment=TA_CENTER,
+
         fontSize=22,
+
         spaceAfter=8,
     )
 
     subtitle_style = ParagraphStyle(
         "KOJASubtitle",
+
         parent=styles["Normal"],
+
         alignment=TA_CENTER,
+
         fontSize=10,
+
         spaceAfter=18,
     )
 
     heading_style = ParagraphStyle(
         "KOJAHeading",
+
         parent=styles["Heading2"],
+
         fontSize=13,
+
         spaceBefore=10,
+
         spaceAfter=8,
     )
 
     body_style = ParagraphStyle(
         "KOJABody",
+
         parent=styles["BodyText"],
+
         fontSize=10.5,
+
         leading=16,
+
         spaceAfter=10,
     )
 
@@ -1049,7 +1339,8 @@ def create_answer_pdf(
                 "question",
                 ""
             )
-        ).replace(
+        )
+        .replace(
             "\n",
             "<br/>"
         )
@@ -1061,53 +1352,65 @@ def create_answer_pdf(
                 "answer",
                 ""
             )
-        ).replace(
+        )
+        .replace(
             "\n",
             "<br/>"
         )
     )
 
     story = [
+
         Paragraph(
             "KOJA AFRICA",
             title_style
         ),
+
         Paragraph(
             "Knowledge • Questions • Answers",
             subtitle_style
         ),
+
         Paragraph(
             "<b>Student:</b> "
             + escape(student_name),
             body_style
         ),
+
         Paragraph(
             "Question",
             heading_style
         ),
+
         Paragraph(
             question_text,
             body_style
         ),
+
         Paragraph(
             "Answer",
             heading_style
         ),
+
         Paragraph(
             answer_text,
             body_style
         ),
+
         Spacer(
             1,
             20
         ),
+
         Paragraph(
             "Generated by KOJA AFRICA",
             subtitle_style
         ),
     ]
 
-    document.build(story)
+    document.build(
+        story
+    )
 
     buffer.seek(0)
 
@@ -1128,15 +1431,18 @@ BASE_HTML = r"""
 
 <meta
 name="viewport"
-content="width=device-width, initial-scale=1.0">
+content="width=device-width, initial-scale=1.0"
+>
 
 <meta
 name="theme-color"
-content="#061b49">
+content="#061b49"
+>
 
 <meta
 name="description"
-content="KOJA AFRICA - Knowledge, Questions and Answers">
+content="KOJA AFRICA — Knowledge, Questions and Answers"
+>
 
 <title>
 {{ title }} | KOJA AFRICA
@@ -1158,7 +1464,9 @@ body {
         Arial,
         Helvetica,
         sans-serif;
+
     background: #f4f7fb;
+
     color: #172033;
 }
 
@@ -1168,22 +1476,38 @@ a {
 
 header {
     background: #061b49;
+
     color: white;
+
     min-height: 68px;
-    padding: 13px 20px;
+
+    padding:
+        13px 20px;
+
     display: flex;
-    justify-content: space-between;
-    align-items: center;
+
+    justify-content:
+        space-between;
+
+    align-items:
+        center;
+
     gap: 15px;
+
     position: sticky;
+
     top: 0;
+
     z-index: 100;
 }
 
 .brand {
     color: white;
+
     font-size: 23px;
+
     font-weight: 900;
+
     white-space: nowrap;
 }
 
@@ -1193,15 +1517,22 @@ header {
 
 .nav {
     display: flex;
+
     gap: 5px;
+
     flex-wrap: wrap;
 }
 
 .nav a {
     color: white;
-    padding: 9px 11px;
+
+    padding:
+        9px 11px;
+
     border-radius: 8px;
+
     font-size: 14px;
+
     white-space: nowrap;
 }
 
@@ -1210,8 +1541,12 @@ header {
 }
 
 .container {
-    width: min(1180px, 94%);
-    margin: 28px auto;
+    width:
+        min(1200px, 94%);
+
+    margin:
+        28px auto;
+
     min-height: 70vh;
 }
 
@@ -1222,10 +1557,16 @@ header {
             #061b49,
             #0b347f
         );
+
     color: white;
+
     border-radius: 22px;
-    padding: 65px 24px;
+
+    padding:
+        65px 24px;
+
     text-align: center;
+
     box-shadow:
         0 15px 45px
         rgba(6,27,73,.15);
@@ -1234,30 +1575,41 @@ header {
 .hero h1 {
     font-size:
         clamp(35px,8vw,62px);
-    margin: 0 0 12px;
+
+    margin:
+        0 0 12px;
 }
 
 .hero p {
     max-width: 760px;
-    margin: 0 auto 25px;
+
+    margin:
+        0 auto 25px;
+
     line-height: 1.7;
+
     color: #dce8ff;
 }
 
 .grid {
     display: grid;
+
     grid-template-columns:
         repeat(
             auto-fit,
             minmax(220px,1fr)
         );
+
     gap: 18px;
 }
 
 .card {
     background: white;
+
     border-radius: 16px;
+
     padding: 22px;
+
     box-shadow:
         0 5px 20px
         rgba(0,0,0,.06);
@@ -1270,13 +1622,22 @@ header {
 
 .btn {
     display: inline-block;
+
     border: 0;
+
     cursor: pointer;
+
     background: #0d6efd;
+
     color: white;
-    padding: 11px 17px;
+
+    padding:
+        11px 17px;
+
     border-radius: 9px;
+
     font-weight: 700;
+
     font-size: 14px;
 }
 
@@ -1296,22 +1657,33 @@ header {
     background: #dc3545;
 }
 
+.btn.orange {
+    background: #e67e22;
+}
+
 .btn.light {
     background: white;
+
     color: #061b49;
 }
 
 .actions {
     display: flex;
+
     gap: 10px;
+
     flex-wrap: wrap;
+
     justify-content: center;
 }
 
 form {
     background: white;
+
     border-radius: 16px;
+
     padding: 22px;
+
     box-shadow:
         0 5px 20px
         rgba(0,0,0,.06);
@@ -1319,7 +1691,10 @@ form {
 
 label {
     display: block;
-    margin: 13px 0 6px;
+
+    margin:
+        13px 0 6px;
+
     font-weight: 700;
 }
 
@@ -1327,11 +1702,16 @@ input,
 textarea,
 select {
     width: 100%;
+
     padding: 12px;
+
     border:
         1px solid #d5dbe5;
+
     border-radius: 8px;
+
     font: inherit;
+
     background: white;
 }
 
@@ -1340,27 +1720,35 @@ textarea:focus,
 select:focus {
     outline:
         2px solid #9fc5ff;
+
     border-color:
         #0d6efd;
 }
 
 textarea {
     min-height: 150px;
+
     resize: vertical;
 }
 
 table {
     width: 100%;
-    border-collapse: collapse;
+
+    border-collapse:
+        collapse;
+
     background: white;
 }
 
 th,
 td {
     padding: 12px;
+
     border-bottom:
         1px solid #e5e9f0;
+
     text-align: left;
+
     vertical-align: top;
 }
 
@@ -1370,90 +1758,181 @@ th {
 
 .tablewrap {
     overflow-x: auto;
+
     border-radius: 12px;
 }
 
 .badge {
     display: inline-block;
-    padding: 5px 9px;
+
+    padding:
+        5px 9px;
+
     border-radius: 20px;
+
     background: #e9f2ff;
+
     color: #0759a5;
+
     font-size: 12px;
+
     font-weight: 700;
 }
 
 .badge.green {
     background: #e5f8ed;
+
     color: #116332;
 }
 
 .badge.red {
     background: #ffe8e8;
+
     color: #8a1111;
+}
+
+.badge.orange {
+    background: #fff1df;
+
+    color: #8a4b08;
 }
 
 .stat {
     font-size: 32px;
+
     font-weight: 800;
+
     color: #0d6efd;
 }
 
 .flash {
-    padding: 12px 15px;
+    padding:
+        12px 15px;
+
     margin-bottom: 15px;
+
     border-radius: 9px;
+
     background: #e7f1ff;
+
     color: #063b7a;
 }
 
 .flash.error {
     background: #ffe8e8;
+
     color: #8a1111;
 }
 
 .flash.success {
     background: #e5f8ed;
+
     color: #116332;
 }
 
 .flash.warning {
     background: #fff4d9;
+
     color: #765500;
 }
 
 .empty {
     text-align: center;
+
     padding: 40px;
+
     color: #687386;
 }
 
 .info {
     background: #eef5ff;
+
     border-left:
         4px solid #0d6efd;
+
     padding: 14px;
+
     border-radius: 8px;
 }
 
 .answer {
     white-space: pre-wrap;
+
     line-height: 1.7;
+
     background: #f7f9fc;
+
     padding: 15px;
+
     border-radius: 10px;
 }
 
 .question-box {
     line-height: 1.7;
+
     background: #f7f9fc;
+
     padding: 15px;
+
     border-radius: 10px;
+}
+
+.document-card {
+    border:
+        1px solid #e3e8f0;
+
+    border-radius: 14px;
+
+    padding: 18px;
+
+    background: white;
+
+    margin-bottom: 15px;
+}
+
+.document-title {
+    font-size: 18px;
+
+    font-weight: 800;
+
+    color: #061b49;
+}
+
+.document-meta {
+    font-size: 13px;
+
+    color: #687386;
+
+    line-height: 1.7;
+}
+
+.searchbar {
+    display: grid;
+
+    grid-template-columns:
+        1fr auto;
+
+    gap: 10px;
+
+    margin-bottom: 20px;
+}
+
+.notice {
+    padding: 12px;
+
+    border-radius: 10px;
+
+    background: #f1f5fa;
+
+    color: #4d596c;
 }
 
 footer {
     text-align: center;
-    padding: 35px 15px;
+
+    padding:
+        35px 15px;
+
     color: #697386;
 }
 
@@ -1463,26 +1942,77 @@ small {
 
 hr {
     border: 0;
+
     border-top:
         1px solid #e5e9f0;
+
     margin: 20px 0;
 }
 
+.mini-grid {
+    display: grid;
 
-/* =========================================================
-   STARTUP FADE
-   ========================================================= */
+    grid-template-columns:
+        repeat(
+            auto-fit,
+            minmax(160px,1fr)
+        );
+
+    gap: 12px;
+}
+
+.mini-stat {
+    padding: 16px;
+
+    border-radius: 12px;
+
+    background: #f7f9fc;
+}
+
+.mini-stat strong {
+    display: block;
+
+    font-size: 24px;
+
+    color: #061b49;
+}
+
+.future {
+    border:
+        1px dashed #9eb3d3;
+
+    background:
+        linear-gradient(
+            135deg,
+            #f8fbff,
+            #eef5ff
+        );
+}
+
+
+/* ============================================================
+   STARTUP
+   ============================================================ */
 
 #startup {
     position: fixed;
+
     inset: 0;
+
     z-index: 99999;
+
     background: #061b49;
+
     display: flex;
+
     justify-content: center;
+
     align-items: center;
+
     opacity: 1;
+
     visibility: visible;
+
     transition:
         opacity 1s ease,
         visibility 1s ease;
@@ -1490,13 +2020,17 @@ hr {
 
 #startup.hide {
     opacity: 0;
+
     visibility: hidden;
+
     pointer-events: none;
 }
 
 .startup-content {
     text-align: center;
+
     color: white;
+
     animation:
         startupFade 1.5s ease;
 }
@@ -1504,8 +2038,11 @@ hr {
 .startup-logo {
     font-size:
         clamp(48px,14vw,90px);
+
     font-weight: 900;
+
     letter-spacing: 3px;
+
     margin: 0;
 }
 
@@ -1527,24 +2064,35 @@ hr {
 
 .startup-subtitle {
     margin-top: 10px;
+
     font-size: 13px;
+
     letter-spacing: 2px;
+
     color: #dce8ff;
 }
 
 .startup-line {
     width: 70px;
+
     height: 3px;
+
     background: white;
-    margin: 20px auto 0;
+
+    margin:
+        20px auto 0;
+
     border-radius: 20px;
+
     animation:
         startupLine 1.5s ease infinite;
 }
 
 @keyframes startupFade {
+
     from {
         opacity: 0;
+
         transform:
             translateY(15px)
             scale(.96);
@@ -1552,6 +2100,7 @@ hr {
 
     to {
         opacity: 1;
+
         transform:
             translateY(0)
             scale(1);
@@ -1559,47 +2108,60 @@ hr {
 }
 
 @keyframes startupLine {
+
     0% {
         transform: scaleX(.3);
+
         opacity: .3;
     }
 
     50% {
         transform: scaleX(1);
+
         opacity: 1;
     }
 
     100% {
         transform: scaleX(.3);
+
         opacity: .3;
     }
 }
 
 
-/* =========================================================
+/* ============================================================
    MOBILE
-   ========================================================= */
+   ============================================================ */
 
 @media(max-width:700px) {
 
     header {
         flex-direction: column;
+
         align-items: flex-start;
     }
 
     .nav {
         overflow-x: auto;
+
         flex-wrap: nowrap;
+
         width: 100%;
     }
 
     .hero {
-        padding: 42px 18px;
+        padding:
+            42px 18px;
     }
 
     th,
     td {
         min-width: 130px;
+    }
+
+    .searchbar {
+        grid-template-columns:
+            1fr;
     }
 
 }
@@ -1674,58 +2236,82 @@ KOJA <span>AFRICA</span>
 
     {% if session.get("role") == "admin" %}
 
-        <a href="{{ url_for('admin_dashboard') }}">
-            Dashboard
+        <a
+        href="{{ url_for('admin_dashboard') }}"
+        >
+        Dashboard
         </a>
 
-        <a href="{{ url_for('admin_questions') }}">
-            Questions
+        <a
+        href="{{ url_for('admin_questions') }}"
+        >
+        Questions
         </a>
 
-        <a href="{{ url_for('admin_documents') }}">
-            Documents
+        <a
+        href="{{ url_for('admin_documents') }}"
+        >
+        Documents
         </a>
 
-        <a href="{{ url_for('admin_users') }}">
-            Users
+        <a
+        href="{{ url_for('admin_users') }}"
+        >
+        Users
         </a>
 
-        <a href="{{ url_for('admin_logs') }}">
-            Logs
+        <a
+        href="{{ url_for('admin_logs') }}"
+        >
+        Logs
         </a>
 
     {% else %}
 
-        <a href="{{ url_for('student_dashboard') }}">
-            Dashboard
+        <a
+        href="{{ url_for('student_dashboard') }}"
+        >
+        Dashboard
         </a>
 
-        <a href="{{ url_for('ask_question') }}">
-            Ask
+        <a
+        href="{{ url_for('ask_question') }}"
+        >
+        Ask
         </a>
 
-        <a href="{{ url_for('student_questions') }}">
-            My Questions
+        <a
+        href="{{ url_for('student_questions') }}"
+        >
+        My Questions
         </a>
 
-        <a href="{{ url_for('student_documents') }}">
-            Documents
+        <a
+        href="{{ url_for('student_documents') }}"
+        >
+        Documents
         </a>
 
     {% endif %}
 
-    <a href="{{ url_for('logout') }}">
-        Logout
+    <a
+    href="{{ url_for('logout') }}"
+    >
+    Logout
     </a>
 
 {% else %}
 
-    <a href="{{ url_for('login') }}">
-        Log In
+    <a
+    href="{{ url_for('login') }}"
+    >
+    Log In
     </a>
 
-    <a href="{{ url_for('register') }}">
-        Create Account
+    <a
+    href="{{ url_for('register') }}"
+    >
+    Create Account
     </a>
 
 {% endif %}
@@ -1772,7 +2358,7 @@ Knowledge • Questions • Answers
 
 
 # ============================================================
-# PAGE
+# PAGE RENDERER
 # ============================================================
 
 def page(
@@ -1780,10 +2366,14 @@ def page(
     title="KOJA AFRICA",
     show_startup=False
 ):
+
     return render_template_string(
         BASE_HTML,
+
         content=content,
+
         title=title,
+
         show_startup=show_startup,
     )
 
@@ -1794,6 +2384,7 @@ def page(
 
 @app.route("/")
 def home():
+
     return page(
         """
 <section class="hero">
@@ -1839,7 +2430,7 @@ Ask Questions
 
 <p>
 Submit academic questions securely
-to KOJA AFRICA.
+and track your answers.
 </p>
 
 </div>
@@ -1851,8 +2442,8 @@ Academic Answers
 </h3>
 
 <p>
-Receive academic answers from the
-KOJA administration team.
+Receive structured academic answers
+from the KOJA administration team.
 </p>
 
 </div>
@@ -1860,19 +2451,40 @@ KOJA administration team.
 <div class="card">
 
 <h3>
-Learning Resources
+Private Documents
 </h3>
 
 <p>
-Exchange documents securely through
-the private KOJA file system.
+Send and receive documents through
+KOJA's protected document system.
 </p>
+
+</div>
+
+<div class="card future">
+
+<h3>
+KOJA Learning Marketplace
+</h3>
+
+<p>
+Future-ready foundation for premium
+learning resources, subscriptions,
+institutional services and other
+KOJA revenue streams.
+</p>
+
+<span class="badge orange">
+Coming platform feature
+</span>
 
 </div>
 
 </div>
 """,
+
         "Home",
+
         show_startup=True,
     )
 
@@ -1916,10 +2528,12 @@ def register():
         )
 
         if len(name) < 2:
+
             flash(
                 "Enter your full name.",
                 "error"
             )
+
             return redirect(
                 url_for("register")
             )
@@ -1928,28 +2542,34 @@ def register():
             r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
             email
         ):
+
             flash(
                 "Enter a valid email address.",
                 "error"
             )
+
             return redirect(
                 url_for("register")
             )
 
         if len(password) < 8:
+
             flash(
                 "Password must contain at least 8 characters.",
                 "error"
             )
+
             return redirect(
                 url_for("register")
             )
 
         if password != confirm:
+
             flash(
                 "Passwords do not match.",
                 "error"
             )
+
             return redirect(
                 url_for("register")
             )
@@ -1961,10 +2581,12 @@ def register():
         )
 
         if error:
+
             flash(
                 error,
                 "error"
             )
+
             return redirect(
                 url_for("register")
             )
@@ -1977,10 +2599,12 @@ def register():
 
         if user:
 
-            ensure_profile(user)
+            ensure_profile(
+                user
+            )
 
             write_log(
-                "New student registration",
+                "New account registration",
                 "Authentication",
                 "INFO",
                 email,
@@ -2060,7 +2684,10 @@ autocomplete="new-password"
 
 <br><br>
 
-<button class="btn">
+<button
+class="btn"
+type="submit"
+>
 Create Account
 </button>
 
@@ -2068,6 +2695,7 @@ Create Account
 
 </div>
 """,
+
         "Create Account"
     )
 
@@ -2101,10 +2729,12 @@ def login():
         )
 
         if not email or not password:
+
             flash(
                 "Email and password are required.",
                 "error"
             )
+
             return redirect(
                 url_for("login")
             )
@@ -2115,10 +2745,12 @@ def login():
         )
 
         if error:
+
             flash(
                 error,
                 "error"
             )
+
             return redirect(
                 url_for("login")
             )
@@ -2130,21 +2762,25 @@ def login():
         )
 
         if not user:
+
             flash(
                 "Login failed.",
                 "error"
             )
+
             return redirect(
                 url_for("login")
             )
 
-        profile = ensure_profile(user)
+        profile = ensure_profile(
+            user
+        )
 
         if not profile:
 
             flash(
-                "Your Supabase account exists, "
-                "but your KOJA profile could not be created or loaded.",
+                "Your account exists, but "
+                "your KOJA profile could not be loaded.",
                 "error"
             )
 
@@ -2157,8 +2793,11 @@ def login():
         session.permanent = True
 
         session["user"] = {
-            "id": user.get("id"),
-            "email": user.get("email"),
+            "id":
+                user.get("id"),
+
+            "email":
+                user.get("email"),
         }
 
         session["role"] = profile.get(
@@ -2179,6 +2818,7 @@ def login():
         )
 
         if profile.get("role") == "admin":
+
             return redirect(
                 url_for(
                     "admin_dashboard"
@@ -2227,7 +2867,10 @@ autocomplete="current-password"
 
 <br><br>
 
-<button class="btn">
+<button
+class="btn"
+type="submit"
+>
 Log In
 </button>
 
@@ -2247,6 +2890,7 @@ Create Account
 
 </div>
 """,
+
         "Log In"
     )
 
@@ -2261,6 +2905,7 @@ def logout():
     user = current_user()
 
     if user:
+
         write_log(
             "User logged out",
             "Authentication",
@@ -2291,22 +2936,42 @@ def student_dashboard():
 
     profile = current_profile()
 
+    student_id = profile["id"]
+
     questions = rest_get(
         "questions",
         {
             "student_id":
-                f"eq.{profile['id']}",
+                f"eq.{student_id}",
+
             "order":
                 "created_at.desc"
         }
     )
 
-    documents = rest_get(
+    received_documents = rest_get(
         "documents",
         {
-            "or":
-                f"(sender_id.eq.{profile['id']},"
-                f"recipient_id.eq.{profile['id']})",
+            "recipient_id":
+                f"eq.{student_id}",
+
+            "direction":
+                "eq.admin_to_student",
+
+            "order":
+                "created_at.desc"
+        }
+    )
+
+    sent_documents = rest_get(
+        "documents",
+        {
+            "sender_id":
+                f"eq.{student_id}",
+
+            "direction":
+                "eq.student_to_admin",
+
             "order":
                 "created_at.desc"
         }
@@ -2359,11 +3024,23 @@ Answered
 <div class="card">
 
 <h3>
-Documents
+Received Documents
 </h3>
 
 <div class="stat">
-{len(documents)}
+{len(received_documents)}
+</div>
+
+</div>
+
+<div class="card">
+
+<h3>
+Sent Documents
+</h3>
+
+<div class="stat">
+{len(sent_documents)}
 </div>
 
 </div>
@@ -2372,32 +3049,40 @@ Documents
 
 <br>
 
+<div class="card">
+
+<h2>
+Document Centre
+</h2>
+
+<p>
+Your private communication area for
+sending documents to KOJA Admin and
+receiving documents from KOJA Admin.
+</p>
+
 <div class="actions"
 style="justify-content:flex-start">
 
 <a
 class="btn"
-href="/student/question/new"
+href="/student/documents"
 >
-Ask a Question
+Open Documents
 </a>
 
 <a
 class="btn dark"
-href="/student/questions"
+href="/student/question/new"
 >
-My Questions
-</a>
-
-<a
-class="btn"
-href="/student/documents"
->
-Documents
+Ask Question
 </a>
 
 </div>
+
+</div>
 """,
+
         "Student Dashboard"
     )
 
@@ -2429,19 +3114,23 @@ def ask_question():
         ).strip()
 
         if not question_text:
+
             flash(
                 "Enter your question.",
                 "error"
             )
+
             return redirect(
                 url_for("ask_question")
             )
 
         if len(question_text) > 20000:
+
             flash(
                 "Question is too long.",
                 "error"
             )
+
             return redirect(
                 url_for("ask_question")
             )
@@ -2453,25 +3142,36 @@ def ask_question():
         created = rest_insert(
             "questions",
             {
-                "id": question_id,
-                "student_id": profile["id"],
+                "id":
+                    question_id,
+
+                "student_id":
+                    profile["id"],
+
                 "student_name":
                     profile.get(
                         "name",
                         ""
                     ),
+
                 "question":
                     question_text,
-                "answer": "",
-                "answer_by": ""
+
+                "answer":
+                    "",
+
+                "answer_by":
+                    ""
             }
         )
 
         if not created:
+
             flash(
                 "Question could not be submitted.",
                 "error"
             )
+
             return redirect(
                 url_for("ask_question")
             )
@@ -2497,12 +3197,22 @@ def ask_question():
                     {
                         "question_id":
                             question_id,
+
                         "original_name":
-                            info["original_name"],
+                            info[
+                                "original_name"
+                            ],
+
                         "storage_path":
-                            info["storage_path"],
+                            info[
+                                "storage_path"
+                            ],
+
                         "size":
-                            info["size"],
+                            info[
+                                "size"
+                            ],
+
                         "file_type":
                             "question"
                     },
@@ -2510,8 +3220,11 @@ def ask_question():
                 )
 
                 if not recorded:
+
                     delete_private_file(
-                        info["storage_path"]
+                        info[
+                            "storage_path"
+                        ]
                     )
 
                     flash(
@@ -2581,8 +3294,8 @@ Attachment
 </label>
 
 <small>
-PDF, Word, image or text file.
-Maximum 10 MB.
+Optional. PDF, Word, image, spreadsheet,
+presentation or text file. Maximum 10 MB.
 </small>
 
 <input
@@ -2592,12 +3305,16 @@ name="file"
 
 <br><br>
 
-<button class="btn">
+<button
+class="btn"
+type="submit"
+>
 Submit Question
 </button>
 
 </form>
 """,
+
         "Ask Question"
     )
 
@@ -2619,6 +3336,7 @@ def student_questions():
         {
             "student_id":
                 f"eq.{profile['id']}",
+
             "order":
                 "created_at.desc"
         }
@@ -2633,6 +3351,7 @@ def student_questions():
             {
                 "question_id":
                     f"eq.{question['id']}",
+
                 "order":
                     "created_at.asc"
             }
@@ -2648,7 +3367,9 @@ def student_questions():
 
 📎
 
-<a href="/question-file/{file['id']}">
+<a
+href="/question-file/{file['id']}"
+>
 {esc(file.get("original_name"))}
 </a>
 
@@ -2659,9 +3380,14 @@ def student_questions():
 </div>
 """
 
-            if file.get("file_type") == "answer":
+            if file.get(
+                "file_type"
+            ) == "answer":
+
                 answer_files += link
+
             else:
+
                 question_files += link
 
         answer = question.get(
@@ -2703,7 +3429,7 @@ Download Answer PDF
             answer_block = """
 <div class="card">
 
-<span class="badge">
+<span class="badge orange">
 Waiting for answer
 </span>
 
@@ -2713,7 +3439,13 @@ Waiting for answer
         status = (
             "Answered"
             if answer
-            else "Waiting for answer"
+            else "Waiting"
+        )
+
+        badge = (
+            "green"
+            if answer
+            else "orange"
         )
 
         blocks.append(
@@ -2730,7 +3462,7 @@ Question
 
 <br>
 
-<span class="badge">
+<span class="badge {badge}">
 {status}
 </span>
 
@@ -2753,9 +3485,12 @@ Submitted:
 """
         )
 
-    content = "".join(blocks)
+    content = "".join(
+        blocks
+    )
 
     if not content:
+
         content = """
 <div class="card empty">
 
@@ -2782,12 +3517,13 @@ My Questions
 
 {content}
 """,
+
         "My Questions"
     )
 
 
 # ============================================================
-# STUDENT PDF
+# STUDENT ANSWER PDF
 # ============================================================
 
 @app.route(
@@ -2805,8 +3541,10 @@ def student_question_pdf(
         {
             "id":
                 f"eq.{question_id}",
+
             "student_id":
                 f"eq.{profile['id']}",
+
             "limit":
                 "1"
         }
@@ -2816,6 +3554,7 @@ def student_question_pdf(
         not rows
         or not rows[0].get("answer")
     ):
+
         abort(404)
 
     pdf = create_answer_pdf(
@@ -2836,17 +3575,22 @@ def student_question_pdf(
 
     return send_file(
         pdf,
+
         as_attachment=True,
+
         download_name=(
             f"KOJA_Answer_"
             f"{question_id[:8]}.pdf"
         ),
+
         mimetype="application/pdf"
     )
 
 
 # ============================================================
 # STUDENT DOCUMENTS
+#
+# INBOX + OUTBOX
 # ============================================================
 
 @app.route(
@@ -2862,6 +3606,12 @@ def student_documents():
 
     profile = current_profile()
 
+    student_id = profile["id"]
+
+    # ========================================================
+    # SEND DOCUMENT TO ADMIN
+    # ========================================================
+
     if request.method == "POST":
 
         check_csrf()
@@ -2876,40 +3626,70 @@ def student_documents():
             ""
         ).strip()
 
+        category = request.form.get(
+            "category",
+            "Academic"
+        ).strip()
+
         uploaded = request.files.get(
             "file"
         )
 
-        if (
-            not title
-            or not uploaded
-            or not uploaded.filename
-        ):
+        if not title:
+
             flash(
-                "Title and file are required.",
+                "Document title is required.",
                 "error"
             )
+
+            return redirect(
+                url_for("student_documents")
+            )
+
+        if not uploaded or not uploaded.filename:
+
+            flash(
+                "Please select a document.",
+                "error"
+            )
+
             return redirect(
                 url_for("student_documents")
             )
 
         if len(title) > 300:
+
             flash(
                 "Title is too long.",
                 "error"
             )
+
             return redirect(
                 url_for("student_documents")
             )
+
+        if len(description) > 4000:
+
+            flash(
+                "Description is too long.",
+                "error"
+            )
+
+            return redirect(
+                url_for("student_documents")
+            )
+
+        storage_path = None
 
         try:
 
             info = upload_private_file(
                 uploaded,
-                (
-                    "documents/student/"
-                    f"{profile['id']}"
-                )
+                f"documents/student/{student_id}"
+            )
+
+            storage_path = (
+                info["storage_path"]
             )
 
             created = rest_insert(
@@ -2917,25 +3697,36 @@ def student_documents():
                 {
                     "direction":
                         "student_to_admin",
+
                     "sender_id":
-                        profile["id"],
+                        student_id,
+
                     "sender_name":
                         profile.get(
                             "name",
-                            ""
+                            "Student"
                         ),
+
                     "recipient_id":
                         None,
+
                     "recipient_name":
                         "KOJA Admin",
+
                     "title":
                         title,
+
                     "description":
                         description,
+
                     "original_name":
-                        info["original_name"],
+                        info[
+                            "original_name"
+                        ],
+
                     "storage_path":
-                        info["storage_path"],
+                        storage_path,
+
                     "size":
                         info["size"]
                 }
@@ -2944,28 +3735,36 @@ def student_documents():
             if not created:
 
                 delete_private_file(
-                    info["storage_path"]
+                    storage_path
                 )
 
                 flash(
-                    "Document could not be recorded.",
+                    "The document could not be saved.",
                     "error"
                 )
 
-            else:
-
-                write_log(
-                    "Student uploaded document",
-                    "Documents",
-                    "INFO",
-                    title,
-                    profile["id"]
+                return redirect(
+                    url_for(
+                        "student_documents"
+                    )
                 )
 
-                flash(
-                    "Document uploaded successfully.",
-                    "success"
-                )
+            write_log(
+                "Student uploaded document",
+                "Documents",
+                "INFO",
+                (
+                    f"{category}: "
+                    f"{title}"
+                ),
+                student_id
+            )
+
+            flash(
+                "Document sent successfully. "
+                "KOJA Admin can now access it.",
+                "success"
+            )
 
         except ValueError as error:
 
@@ -2980,46 +3779,157 @@ def student_documents():
                 "Student document upload failed"
             )
 
+            if storage_path:
+
+                delete_private_file(
+                    storage_path
+                )
+
             flash(
                 "Document upload failed.",
                 "error"
             )
 
         return redirect(
-            url_for("student_documents")
+            url_for(
+                "student_documents"
+            )
         )
 
-    documents = rest_get(
+    # ========================================================
+    # SEARCH
+    # ========================================================
+
+    search = request.args.get(
+        "q",
+        ""
+    ).strip().lower()
+
+    # ========================================================
+    # INBOX
+    # ========================================================
+
+    received_documents = rest_get(
         "documents",
         {
-            "or":
-                f"(sender_id.eq.{profile['id']},"
-                f"recipient_id.eq.{profile['id']})",
+            "recipient_id":
+                f"eq.{student_id}",
+
+            "direction":
+                "eq.admin_to_student",
+
             "order":
                 "created_at.desc"
         }
     )
 
-    rows = ""
+    # ========================================================
+    # OUTBOX
+    # ========================================================
 
-    for document in documents:
+    sent_documents = rest_get(
+        "documents",
+        {
+            "sender_id":
+                f"eq.{student_id}",
 
-        rows += f"""
-<tr>
+            "direction":
+                "eq.student_to_admin",
 
-<td>
+            "order":
+                "created_at.desc"
+        }
+    )
+
+    # ========================================================
+    # SEARCH FILTER
+    # ========================================================
+
+    def matches(document):
+
+        if not search:
+            return True
+
+        text = " ".join([
+            str(
+                document.get(
+                    "title",
+                    ""
+                )
+            ),
+
+            str(
+                document.get(
+                    "description",
+                    ""
+                )
+            ),
+
+            str(
+                document.get(
+                    "original_name",
+                    ""
+                )
+            )
+        ]).lower()
+
+        return search in text
+
+    received_documents = [
+        d
+        for d in received_documents
+        if matches(d)
+    ]
+
+    sent_documents = [
+        d
+        for d in sent_documents
+        if matches(d)
+    ]
+
+    # ========================================================
+    # RECEIVED
+    # ========================================================
+
+    received_cards = ""
+
+    for document in received_documents:
+
+        received_cards += f"""
+<div class="document-card">
+
+<div class="document-title">
 {esc(document.get("title"))}
-</td>
+</div>
 
-<td>
+<p>
+{esc(document.get("description"))}
+</p>
+
+<div class="document-meta">
+
+<b>From:</b>
+KOJA Admin
+<br>
+
+<b>File:</b>
 {esc(document.get("original_name"))}
-</td>
+<br>
 
-<td>
-{esc(document.get("direction"))}
-</td>
+<b>Type:</b>
+{document_type_label(document.get("original_name"))}
+<br>
 
-<td>
+<b>Size:</b>
+{format_size(document.get("size"))}
+<br>
+
+<b>Received:</b>
+{esc(document.get("created_at"))}
+
+</div>
+
+<br>
 
 <a
 class="btn"
@@ -3028,30 +3938,112 @@ href="/document/{document['id']}"
 Download
 </a>
 
-</td>
-
-</tr>
+</div>
 """
 
-    if not rows:
-        rows = """
-<tr>
-<td colspan="4" class="empty">
-No documents yet.
-</td>
-</tr>
+    if not received_cards:
+
+        received_cards = """
+<div class="card empty">
+
+No documents have been received
+from KOJA Admin.
+
+</div>
+"""
+
+    # ========================================================
+    # SENT
+    # ========================================================
+
+    sent_cards = ""
+
+    for document in sent_documents:
+
+        sent_cards += f"""
+<div class="document-card">
+
+<div class="document-title">
+{esc(document.get("title"))}
+</div>
+
+<p>
+{esc(document.get("description"))}
+</p>
+
+<div class="document-meta">
+
+<b>To:</b>
+KOJA Admin
+<br>
+
+<b>File:</b>
+{esc(document.get("original_name"))}
+<br>
+
+<b>Type:</b>
+{document_type_label(document.get("original_name"))}
+<br>
+
+<b>Size:</b>
+{format_size(document.get("size"))}
+<br>
+
+<b>Sent:</b>
+{esc(document.get("created_at"))}
+
+</div>
+
+<br>
+
+<span class="badge green">
+Delivered to KOJA
+</span>
+
+<br><br>
+
+<a
+class="btn dark"
+href="/document/{document['id']}"
+>
+Access My Copy
+</a>
+
+</div>
+"""
+
+    if not sent_cards:
+
+        sent_cards = """
+<div class="card empty">
+
+You have not sent any documents
+to KOJA Admin yet.
+
+</div>
 """
 
     return page(
         f"""
 <h1>
-Documents
+Document Centre
 </h1>
+
+<div class="info">
+
+Your documents are stored in KOJA's
+private document storage. Only the
+authorized student and KOJA Admin
+can access the corresponding files.
+
+</div>
+
+<br>
 
 <div class="card">
 
 <h2>
-Send Document to Admin
+Send Document to KOJA Admin
 </h2>
 
 <form
@@ -3062,14 +4054,45 @@ enctype="multipart/form-data"
 {csrf_input()}
 
 <label>
-Title
+Document Title
 </label>
 
 <input
 name="title"
 required
 maxlength="300"
+placeholder="Example: Assignment 1"
+/>
+
+<label>
+Category
+</label>
+
+<select
+name="category"
 >
+
+<option>
+Academic
+</option>
+
+<option>
+Assignment
+</option>
+
+<option>
+Application
+</option>
+
+<option>
+Report
+</option>
+
+<option>
+Other
+</option>
+
+</select>
 
 <label>
 Description
@@ -3078,6 +4101,7 @@ Description
 <textarea
 name="description"
 maxlength="4000"
+placeholder="Describe the document..."
 ></textarea>
 
 <label>
@@ -3090,10 +4114,17 @@ name="file"
 required
 >
 
+<small>
+Maximum size: 10 MB.
+</small>
+
 <br><br>
 
-<button class="btn">
-Upload Document
+<button
+class="btn"
+type="submit"
+>
+Send Document
 </button>
 
 </form>
@@ -3102,194 +4133,42 @@ Upload Document
 
 <br>
 
+<form
+method="get"
+class="searchbar"
+>
+
+<input
+name="q"
+value="{esc(search)}"
+placeholder="Search my documents..."
+>
+
+<button
+class="btn dark"
+type="submit"
+>
+Search
+</button>
+
+</form>
+
 <h2>
-My Documents
+Inbox — From KOJA Admin
 </h2>
 
-<div class="tablewrap">
+{received_cards}
 
-<table>
+<br>
 
-<tr>
+<h2>
+Sent — To KOJA Admin
+</h2>
 
-<th>
-Title
-</th>
-
-<th>
-File
-</th>
-
-<th>
-Direction
-</th>
-
-<th>
-Action
-</th>
-
-</tr>
-
-{rows}
-
-</table>
-
-</div>
+{sent_cards}
 """,
-        "Student Documents"
-    )
 
-
-# ============================================================
-# QUESTION FILE DOWNLOAD
-# ============================================================
-
-@app.route(
-    "/question-file/<file_id>"
-)
-@login_required
-def question_file(file_id):
-
-    profile = current_profile()
-
-    if not profile:
-        abort(403)
-
-    files = rest_get(
-        "question_files",
-        {
-            "id":
-                f"eq.{file_id}",
-            "limit":
-                "1"
-        }
-    )
-
-    if not files:
-        abort(404)
-
-    file = files[0]
-
-    questions = rest_get(
-        "questions",
-        {
-            "id":
-                f"eq.{file['question_id']}",
-            "limit":
-                "1"
-        }
-    )
-
-    if not questions:
-        abort(404)
-
-    question = questions[0]
-
-    allowed = (
-        profile.get("role") == "admin"
-        or question.get("student_id")
-        == profile.get("id")
-    )
-
-    if not allowed:
-        abort(403)
-
-    content = download_private_file(
-        file.get("storage_path")
-    )
-
-    if content is None:
-        abort(404)
-
-    write_log(
-        "Question file downloaded",
-        "Files",
-        "INFO",
-        file.get(
-            "original_name",
-            ""
-        ),
-        profile["id"]
-    )
-
-    return send_file(
-        io.BytesIO(content),
-        as_attachment=True,
-        download_name=file.get(
-            "original_name",
-            "download"
-        )
-    )
-
-
-# ============================================================
-# DOCUMENT DOWNLOAD
-# ============================================================
-
-@app.route(
-    "/document/<document_id>"
-)
-@login_required
-def document_download(
-    document_id
-):
-
-    profile = current_profile()
-
-    if not profile:
-        abort(403)
-
-    documents = rest_get(
-        "documents",
-        {
-            "id":
-                f"eq.{document_id}",
-            "limit":
-                "1"
-        }
-    )
-
-    if not documents:
-        abort(404)
-
-    document = documents[0]
-
-    allowed = (
-        profile.get("role") == "admin"
-        or document.get("sender_id")
-        == profile.get("id")
-        or document.get("recipient_id")
-        == profile.get("id")
-    )
-
-    if not allowed:
-        abort(403)
-
-    content = download_private_file(
-        document.get("storage_path")
-    )
-
-    if content is None:
-        abort(404)
-
-    write_log(
-        "Document downloaded",
-        "Documents",
-        "INFO",
-        document.get(
-            "title",
-            ""
-        ),
-        profile["id"]
-    )
-
-    return send_file(
-        io.BytesIO(content),
-        as_attachment=True,
-        download_name=document.get(
-            "original_name",
-            "document"
-        )
+        "Document Centre"
     )
 
 
@@ -3314,7 +4193,9 @@ def admin_dashboard():
     )
 
     waiting = sum(
-        not bool(q.get("answer"))
+        not bool(
+            q.get("answer")
+        )
         for q in questions
     )
 
@@ -3322,6 +4203,20 @@ def admin_dashboard():
         len(questions)
         - waiting
     )
+
+    student_documents = [
+        d
+        for d in documents
+        if d.get("direction")
+        == "student_to_admin"
+    ]
+
+    admin_documents_sent = [
+        d
+        for d in documents
+        if d.get("direction")
+        == "admin_to_student"
+    ]
 
     return page(
         f"""
@@ -3382,11 +4277,23 @@ Waiting
 <div class="card">
 
 <h3>
-Documents
+Student Documents
 </h3>
 
 <div class="stat">
-{len(documents)}
+{len(student_documents)}
+</div>
+
+</div>
+
+<div class="card">
+
+<h3>
+Sent Documents
+</h3>
+
+<div class="stat">
+{len(admin_documents_sent)}
 </div>
 
 </div>
@@ -3395,21 +4302,27 @@ Documents
 
 <br>
 
+<div class="card">
+
+<h2>
+Document Centre
+</h2>
+
 <div class="actions"
 style="justify-content:flex-start">
 
 <a
 class="btn"
-href="/admin/questions"
+href="/admin/documents"
 >
-Manage Questions
+Open Documents
 </a>
 
 <a
 class="btn dark"
-href="/admin/documents"
+href="/admin/questions"
 >
-Documents
+Manage Questions
 </a>
 
 <a
@@ -3427,7 +4340,59 @@ Logs
 </a>
 
 </div>
+
+</div>
+
+<br>
+
+<div class="card future">
+
+<h2>
+KOJA Business Foundation
+</h2>
+
+<p>
+The current platform is deliberately
+structured so that revenue features
+can be added later without changing
+the student/admin document architecture.
+</p>
+
+<div class="mini-grid">
+
+<div class="mini-stat">
+<strong>
+Free
+</strong>
+Basic learning access
+</div>
+
+<div class="mini-stat">
+<strong>
+Premium
+</strong>
+Paid resources
+</div>
+
+<div class="mini-stat">
+<strong>
+Institution
+</strong>
+School services
+</div>
+
+<div class="mini-stat">
+<strong>
+Subscriptions
+</strong>
+Recurring revenue
+</div>
+
+</div>
+
+</div>
 """,
+
         "Admin Dashboard"
     )
 
@@ -3463,7 +4428,7 @@ def admin_questions():
         badge = (
             "green"
             if q.get("answer")
-            else ""
+            else "orange"
         )
 
         rows += f"""
@@ -3486,6 +4451,10 @@ def admin_questions():
 </td>
 
 <td>
+{esc(q.get("created_at"))}
+</td>
+
+<td>
 
 <a
 class="btn"
@@ -3500,11 +4469,12 @@ Open
 """
 
     if not rows:
+
         rows = """
 <tr>
 
 <td
-colspan="4"
+colspan="5"
 class="empty"
 >
 No questions yet.
@@ -3538,6 +4508,10 @@ Status
 </th>
 
 <th>
+Submitted
+</th>
+
+<th>
 Action
 </th>
 
@@ -3549,6 +4523,7 @@ Action
 
 </div>
 """,
+
         "Admin Questions"
     )
 
@@ -3577,6 +4552,7 @@ def admin_question(
         {
             "id":
                 f"eq.{question_id}",
+
             "limit":
                 "1"
         }
@@ -3597,10 +4573,12 @@ def admin_question(
         ).strip()
 
         if not answer:
+
             flash(
                 "Answer cannot be empty.",
                 "error"
             )
+
             return redirect(
                 url_for(
                     "admin_question",
@@ -3609,10 +4587,12 @@ def admin_question(
             )
 
         if len(answer) > 30000:
+
             flash(
                 "Answer is too long.",
                 "error"
             )
+
             return redirect(
                 url_for(
                     "admin_question",
@@ -3629,11 +4609,13 @@ def admin_question(
             {
                 "answer":
                     answer,
+
                 "answer_by":
                     profile.get(
                         "name",
                         "Admin"
                     ),
+
                 "answered_at":
                     now_iso()
             }
@@ -3669,12 +4651,22 @@ def admin_question(
                         {
                             "question_id":
                                 question_id,
+
                             "original_name":
-                                info["original_name"],
+                                info[
+                                    "original_name"
+                                ],
+
                             "storage_path":
-                                info["storage_path"],
+                                info[
+                                    "storage_path"
+                                ],
+
                             "size":
-                                info["size"],
+                                info[
+                                    "size"
+                                ],
+
                             "file_type":
                                 "answer"
                         },
@@ -3684,13 +4676,15 @@ def admin_question(
                     if not recorded:
 
                         delete_private_file(
-                            info["storage_path"]
+                            info[
+                                "storage_path"
+                            ]
                         )
 
                         flash(
                             "Answer saved, "
-                            "but attachment could "
-                            "not be recorded.",
+                            "but attachment "
+                            "could not be recorded.",
                             "warning"
                         )
 
@@ -3731,6 +4725,7 @@ def admin_question(
         {
             "question_id":
                 f"eq.{question_id}",
+
             "order":
                 "created_at.asc"
         }
@@ -3745,16 +4740,14 @@ def admin_question(
 
 📎
 
-<a href="/question-file/{file['id']}">
-
+<a
+href="/question-file/{file['id']}"
+>
 {esc(file.get("original_name"))}
-
 </a>
 
 <span class="badge">
-
 {esc(file.get("file_type"))}
-
 </span>
 
 </div>
@@ -3801,9 +4794,7 @@ Status:
 </strong>
 
 <span class="badge">
-
 {status}
-
 </span>
 
 </p>
@@ -3849,10 +4840,6 @@ maxlength="30000"
 Answer Attachment
 </label>
 
-<small>
-Optional. Maximum 10 MB.
-</small>
-
 <input
 type="file"
 name="answer_file"
@@ -3860,18 +4847,25 @@ name="answer_file"
 
 <br><br>
 
-<button class="btn green">
+<button
+class="btn green"
+type="submit"
+>
 Save Answer
 </button>
 
 </form>
 """,
+
         "Answer Question"
     )
 
 
 # ============================================================
-# ADMIN DOCUMENTS
+# ADMIN DOCUMENT CENTRE
+#
+# INBOX FROM STUDENTS
+# OUTBOX TO STUDENTS
 # ============================================================
 
 @app.route(
@@ -3886,6 +4880,12 @@ Save Answer
 def admin_documents():
 
     profile = current_profile()
+
+    admin_id = profile["id"]
+
+    # ========================================================
+    # ADMIN SENDS DOCUMENT
+    # ========================================================
 
     if request.method == "POST":
 
@@ -3906,46 +4906,84 @@ def admin_documents():
             ""
         ).strip()
 
+        category = request.form.get(
+            "category",
+            "Academic"
+        ).strip()
+
         uploaded = request.files.get(
             "file"
         )
+
+        if not recipient_id:
+
+            flash(
+                "Please select a student.",
+                "error"
+            )
+
+            return redirect(
+                url_for(
+                    "admin_documents"
+                )
+            )
+
+        if not title:
+
+            flash(
+                "Document title is required.",
+                "error"
+            )
+
+            return redirect(
+                url_for(
+                    "admin_documents"
+                )
+            )
+
+        if not uploaded or not uploaded.filename:
+
+            flash(
+                "Please select a document.",
+                "error"
+            )
+
+            return redirect(
+                url_for(
+                    "admin_documents"
+                )
+            )
 
         students = rest_get(
             "profiles",
             {
                 "id":
                     f"eq.{recipient_id}",
+
                 "role":
                     "eq.student",
+
                 "limit":
                     "1"
             }
         )
 
-        if (
-            not students
-            or not title
-            or not uploaded
-            or not uploaded.filename
-        ):
+        if not students:
+
             flash(
-                "Student, title and file are required.",
+                "Selected student was not found.",
                 "error"
-            )
-            return redirect(
-                url_for("admin_documents")
             )
 
-        if len(title) > 300:
-            flash(
-                "Title is too long.",
-                "error"
-            )
             return redirect(
-                url_for("admin_documents")
+                url_for(
+                    "admin_documents"
+                )
             )
 
         student = students[0]
+
+        storage_path = None
 
         try:
 
@@ -3954,33 +4992,48 @@ def admin_documents():
                 f"documents/admin/{recipient_id}"
             )
 
+            storage_path = (
+                info["storage_path"]
+            )
+
             created = rest_insert(
                 "documents",
                 {
                     "direction":
                         "admin_to_student",
+
                     "sender_id":
-                        profile["id"],
+                        admin_id,
+
                     "sender_name":
                         profile.get(
                             "name",
-                            "Admin"
+                            "KOJA Admin"
                         ),
+
                     "recipient_id":
                         student["id"],
+
                     "recipient_name":
                         student.get(
                             "name",
                             ""
                         ),
+
                     "title":
                         title,
+
                     "description":
                         description,
+
                     "original_name":
-                        info["original_name"],
+                        info[
+                            "original_name"
+                        ],
+
                     "storage_path":
-                        info["storage_path"],
+                        storage_path,
+
                     "size":
                         info["size"]
                 }
@@ -3989,28 +5042,37 @@ def admin_documents():
             if not created:
 
                 delete_private_file(
-                    info["storage_path"]
+                    storage_path
                 )
 
                 flash(
-                    "Document could not be recorded.",
+                    "The document could not be saved.",
                     "error"
                 )
 
-            else:
-
-                write_log(
-                    "Admin sent document",
-                    "Documents",
-                    "INFO",
-                    title,
-                    profile["id"]
+                return redirect(
+                    url_for(
+                        "admin_documents"
+                    )
                 )
 
-                flash(
-                    "Document sent successfully.",
-                    "success"
-                )
+            write_log(
+                "Admin sent document",
+                "Documents",
+                "INFO",
+                (
+                    f"{category}: "
+                    f"{title} -> "
+                    f"{student.get('email', '')}"
+                ),
+                admin_id
+            )
+
+            flash(
+                "Document sent successfully. "
+                "The student can now access it.",
+                "success"
+            )
 
         except ValueError as error:
 
@@ -4025,20 +5087,42 @@ def admin_documents():
                 "Admin document upload failed"
             )
 
+            if storage_path:
+
+                delete_private_file(
+                    storage_path
+                )
+
             flash(
                 "Document upload failed.",
                 "error"
             )
 
         return redirect(
-            url_for("admin_documents")
+            url_for(
+                "admin_documents"
+            )
         )
+
+    # ========================================================
+    # SEARCH
+    # ========================================================
+
+    search = request.args.get(
+        "q",
+        ""
+    ).strip().lower()
+
+    # ========================================================
+    # STUDENTS
+    # ========================================================
 
     students = rest_get(
         "profiles",
         {
             "role":
                 "eq.student",
+
             "order":
                 "name.asc"
         }
@@ -4050,41 +5134,140 @@ def admin_documents():
 
         options += f"""
 <option
-value="{student['id']}"
+value="{esc(student['id'])}"
 >
-
 {esc(student.get("name"))}
 —
 {esc(student.get("email"))}
-
 </option>
 """
 
-    documents = rest_get(
+    # ========================================================
+    # INBOX
+    # ========================================================
+
+    received_documents = rest_get(
         "documents",
         {
+            "direction":
+                "eq.student_to_admin",
+
             "order":
                 "created_at.desc"
         }
     )
 
-    rows = ""
+    # ========================================================
+    # OUTBOX
+    # ========================================================
 
-    for document in documents:
+    sent_documents = rest_get(
+        "documents",
+        {
+            "direction":
+                "eq.admin_to_student",
 
-        rows += f"""
+            "sender_id":
+                f"eq.{admin_id}",
+
+            "order":
+                "created_at.desc"
+        }
+    )
+
+    def matches(document):
+
+        if not search:
+            return True
+
+        text = " ".join([
+            str(
+                document.get(
+                    "title",
+                    ""
+                )
+            ),
+
+            str(
+                document.get(
+                    "description",
+                    ""
+                )
+            ),
+
+            str(
+                document.get(
+                    "original_name",
+                    ""
+                )
+            ),
+
+            str(
+                document.get(
+                    "sender_name",
+                    ""
+                )
+            ),
+
+            str(
+                document.get(
+                    "recipient_name",
+                    ""
+                )
+            )
+        ]).lower()
+
+        return search in text
+
+    received_documents = [
+        d
+        for d in received_documents
+        if matches(d)
+    ]
+
+    sent_documents = [
+        d
+        for d in sent_documents
+        if matches(d)
+    ]
+
+    # ========================================================
+    # RECEIVED CARDS
+    # ========================================================
+
+    received_rows = ""
+
+    for document in received_documents:
+
+        received_rows += f"""
 <tr>
-
-<td>
-{esc(document.get("title"))}
-</td>
 
 <td>
 {esc(document.get("sender_name"))}
 </td>
 
 <td>
-{esc(document.get("recipient_name"))}
+{esc(document.get("title"))}
+</td>
+
+<td>
+{esc(document.get("original_name"))}
+</td>
+
+<td>
+{format_size(document.get("size"))}
+</td>
+
+<td>
+{esc(document.get("created_at"))}
+</td>
+
+<td>
+
+<span class="badge orange">
+Received
+</span>
+
 </td>
 
 <td>
@@ -4101,15 +5284,84 @@ Download
 </tr>
 """
 
-    if not rows:
-        rows = """
+    if not received_rows:
+
+        received_rows = """
 <tr>
 
 <td
-colspan="4"
+colspan="7"
 class="empty"
 >
-No documents yet.
+No documents received from students.
+</td>
+
+</tr>
+"""
+
+    # ========================================================
+    # SENT ROWS
+    # ========================================================
+
+    sent_rows = ""
+
+    for document in sent_documents:
+
+        sent_rows += f"""
+<tr>
+
+<td>
+{esc(document.get("recipient_name"))}
+</td>
+
+<td>
+{esc(document.get("title"))}
+</td>
+
+<td>
+{esc(document.get("original_name"))}
+</td>
+
+<td>
+{format_size(document.get("size"))}
+</td>
+
+<td>
+{esc(document.get("created_at"))}
+</td>
+
+<td>
+
+<span class="badge green">
+Sent
+</span>
+
+</td>
+
+<td>
+
+<a
+class="btn dark"
+href="/document/{document['id']}"
+>
+Access
+</a>
+
+</td>
+
+</tr>
+"""
+
+    if not sent_rows:
+
+        sent_rows = """
+<tr>
+
+<td
+colspan="7"
+class="empty"
+>
+No documents sent to students yet.
 </td>
 
 </tr>
@@ -4118,8 +5370,23 @@ No documents yet.
     return page(
         f"""
 <h1>
-Document Management
+Document Centre
 </h1>
+
+<div class="info">
+
+This is the administrator's private
+document inbox and outbox.
+
+Documents sent by students appear in
+the administrator inbox.
+
+Documents sent by the administrator
+appear in the selected student's inbox.
+
+</div>
+
+<br>
 
 <div class="card">
 
@@ -4152,14 +5419,49 @@ Select student
 </select>
 
 <label>
-Title
+Document Title
 </label>
 
 <input
 name="title"
 required
 maxlength="300"
+placeholder="Example: Biology Notes"
 >
+
+<label>
+Category
+</label>
+
+<select
+name="category"
+>
+
+<option>
+Academic
+</option>
+
+<option>
+Assignment
+</option>
+
+<option>
+Study Material
+</option>
+
+<option>
+Notice
+</option>
+
+<option>
+Application
+</option>
+
+<option>
+Other
+</option>
+
+</select>
 
 <label>
 Description
@@ -4168,10 +5470,11 @@ Description
 <textarea
 name="description"
 maxlength="4000"
+placeholder="Describe the document..."
 ></textarea>
 
 <label>
-File
+Document
 </label>
 
 <input
@@ -4180,10 +5483,17 @@ name="file"
 required
 >
 
+<small>
+Maximum file size: 10 MB.
+</small>
+
 <br><br>
 
-<button class="btn">
-Send Document
+<button
+class="btn"
+type="submit"
+>
+Send to Student
 </button>
 
 </form>
@@ -4192,8 +5502,28 @@ Send Document
 
 <br>
 
+<form
+method="get"
+class="searchbar"
+>
+
+<input
+name="q"
+value="{esc(search)}"
+placeholder="Search documents, students or filenames..."
+>
+
+<button
+class="btn dark"
+type="submit"
+>
+Search
+</button>
+
+</form>
+
 <h2>
-Documents
+Inbox — Documents Received From Students
 </h2>
 
 <div class="tablewrap">
@@ -4203,30 +5533,305 @@ Documents
 <tr>
 
 <th>
+Student
+</th>
+
+<th>
 Title
-</th>
-
-<th>
-Sender
-</th>
-
-<th>
-Recipient
 </th>
 
 <th>
 File
 </th>
 
+<th>
+Size
+</th>
+
+<th>
+Received
+</th>
+
+<th>
+Status
+</th>
+
+<th>
+Action
+</th>
+
 </tr>
 
-{rows}
+{received_rows}
+
+</table>
+
+</div>
+
+<br><br>
+
+<h2>
+Outbox — Documents Sent To Students
+</h2>
+
+<div class="tablewrap">
+
+<table>
+
+<tr>
+
+<th>
+Student
+</th>
+
+<th>
+Title
+</th>
+
+<th>
+File
+</th>
+
+<th>
+Size
+</th>
+
+<th>
+Sent
+</th>
+
+<th>
+Status
+</th>
+
+<th>
+Action
+</th>
+
+</tr>
+
+{sent_rows}
 
 </table>
 
 </div>
 """,
-        "Admin Documents"
+
+        "Document Centre"
+    )
+
+
+# ============================================================
+# SECURE DOCUMENT DOWNLOAD
+# ============================================================
+
+@app.route(
+    "/document/<document_id>"
+)
+@login_required
+def document_download(
+    document_id
+):
+
+    profile = current_profile()
+
+    if not profile:
+        abort(403)
+
+    documents = rest_get(
+        "documents",
+        {
+            "id":
+                f"eq.{document_id}",
+
+            "limit":
+                "1"
+        }
+    )
+
+    if not documents:
+        abort(404)
+
+    document = documents[0]
+
+    # ========================================================
+    # AUTHORIZATION
+    # ========================================================
+
+    is_admin = (
+        profile.get("role")
+        == "admin"
+    )
+
+    is_sender = (
+        document.get("sender_id")
+        == profile.get("id")
+    )
+
+    is_recipient = (
+        document.get("recipient_id")
+        == profile.get("id")
+    )
+
+    if not (
+        is_admin
+        or is_sender
+        or is_recipient
+    ):
+
+        write_log(
+            "Unauthorized document access blocked",
+            "Security",
+            "WARNING",
+            document_id,
+            profile["id"]
+        )
+
+        abort(403)
+
+    content = download_private_file(
+        document.get(
+            "storage_path"
+        )
+    )
+
+    if content is None:
+
+        abort(404)
+
+    write_log(
+        "Document downloaded",
+        "Documents",
+        "INFO",
+        (
+            f"{document.get('title')} | "
+            f"{document.get('original_name')}"
+        ),
+        profile["id"]
+    )
+
+    return send_file(
+        io.BytesIO(content),
+
+        as_attachment=True,
+
+        download_name=safe_filename(
+            document.get(
+                "original_name",
+                "document"
+            )
+        ),
+
+        mimetype=(
+            "application/octet-stream"
+        )
+    )
+
+
+# ============================================================
+# QUESTION FILE DOWNLOAD
+# ============================================================
+
+@app.route(
+    "/question-file/<file_id>"
+)
+@login_required
+def question_file(
+    file_id
+):
+
+    profile = current_profile()
+
+    if not profile:
+        abort(403)
+
+    files = rest_get(
+        "question_files",
+        {
+            "id":
+                f"eq.{file_id}",
+
+            "limit":
+                "1"
+        }
+    )
+
+    if not files:
+        abort(404)
+
+    file = files[0]
+
+    questions = rest_get(
+        "questions",
+        {
+            "id":
+                f"eq.{file['question_id']}",
+
+            "limit":
+                "1"
+        }
+    )
+
+    if not questions:
+        abort(404)
+
+    question = questions[0]
+
+    allowed = (
+        profile.get("role")
+        == "admin"
+
+        or question.get(
+            "student_id"
+        )
+        == profile.get("id")
+    )
+
+    if not allowed:
+
+        write_log(
+            "Unauthorized question file access blocked",
+            "Security",
+            "WARNING",
+            file_id,
+            profile["id"]
+        )
+
+        abort(403)
+
+    content = download_private_file(
+        file.get(
+            "storage_path"
+        )
+    )
+
+    if content is None:
+        abort(404)
+
+    write_log(
+        "Question file downloaded",
+        "Files",
+        "INFO",
+        file.get(
+            "original_name",
+            ""
+        ),
+        profile["id"]
+    )
+
+    return send_file(
+        io.BytesIO(content),
+
+        as_attachment=True,
+
+        download_name=safe_filename(
+            file.get(
+                "original_name",
+                "download"
+            )
+        ),
+
+        mimetype="application/octet-stream"
     )
 
 
@@ -4252,6 +5857,16 @@ def admin_users():
 
     for profile in profiles:
 
+        role = profile.get(
+            "role"
+        )
+
+        badge = (
+            "green"
+            if role == "admin"
+            else ""
+        )
+
         rows += f"""
 <tr>
 
@@ -4265,10 +5880,8 @@ def admin_users():
 
 <td>
 
-<span class="badge">
-
-{esc(profile.get("role"))}
-
+<span class="badge {badge}">
+{esc(role)}
 </span>
 
 </td>
@@ -4281,6 +5894,7 @@ def admin_users():
 """
 
     if not rows:
+
         rows = """
 <tr>
 
@@ -4330,6 +5944,7 @@ Created
 
 </div>
 """,
+
         "Users"
     )
 
@@ -4349,6 +5964,7 @@ def admin_logs():
         {
             "order":
                 "created_at.desc",
+
             "limit":
                 "500"
         }
@@ -4385,6 +6001,7 @@ def admin_logs():
 """
 
     if not rows:
+
         rows = """
 <tr>
 
@@ -4407,8 +6024,17 @@ System Logs
 <div class="card">
 
 <p>
-Administrator-only activity log.
+Administrator-only audit trail.
 </p>
+
+<div class="notice">
+
+Important activities such as logins,
+question submissions, answers,
+document uploads, downloads and
+security events are recorded here.
+
+</div>
 
 </div>
 
@@ -4448,23 +6074,38 @@ Details
 
 </div>
 """,
+
         "System Logs"
     )
 
 
 # ============================================================
-# HEALTH
+# HEALTH CHECK
 # ============================================================
 
-@app.route("/health")
+@app.route(
+    "/health"
+)
 def health():
 
     return {
-        "status": "ok",
-        "application": "KOJA AFRICA",
-        "database": "Supabase REST",
-        "storage": SUPABASE_BUCKET,
-        "storage_private": True,
+        "status":
+            "ok",
+
+        "application":
+            "KOJA AFRICA",
+
+        "database":
+            "Supabase REST",
+
+        "storage":
+            SUPABASE_BUCKET,
+
+        "storage_private":
+            True,
+
+        "version":
+            "professional-foundation"
     }
 
 
@@ -4490,7 +6131,7 @@ Access Denied
 
 <p>
 You do not have permission
-to access this page.
+to access this resource.
 </p>
 
 <a
@@ -4502,7 +6143,9 @@ Return Home
 
 </div>
 """,
+
         "Access Denied"
+
     ), 403
 
 
@@ -4531,7 +6174,9 @@ Return Home
 
 </div>
 """,
+
         "Not Found"
+
     ), 404
 
 
@@ -4578,7 +6223,9 @@ Return Home
 
 </div>
 """,
+
         "Too Many Requests"
+
     ), 429
 
 
@@ -4617,7 +6264,9 @@ Return Home
 
 </div>
 """,
+
         "Bad Request"
+
     ), 400
 
 
@@ -4655,7 +6304,9 @@ Return Home
 
 </div>
 """,
+
         "Server Error"
+
     ), 500
 
 
@@ -4674,6 +6325,8 @@ if __name__ == "__main__":
 
     app.run(
         host="0.0.0.0",
+
         port=port,
+
         debug=False
     )
