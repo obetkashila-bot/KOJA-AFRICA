@@ -4,7 +4,6 @@ import uuid
 import secrets
 import hashlib
 import logging
-
 from datetime import datetime, timezone
 from functools import wraps
 from html import escape
@@ -23,8 +22,6 @@ from flask import (
     send_file,
     abort,
 )
-
-from werkzeug.utils import secure_filename
 
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import (
@@ -45,7 +42,10 @@ from reportlab.lib.enums import TA_CENTER
 
 load_dotenv()
 
-SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
+SUPABASE_URL = os.getenv(
+    "SUPABASE_URL",
+    "https://YOUR-PROJECT.supabase.co"
+).rstrip("/")
 
 SUPABASE_SERVICE_KEY = os.getenv(
     "SUPABASE_SERVICE_KEY",
@@ -62,9 +62,11 @@ ADMIN_UUID = os.getenv(
     "fea4ac9a-97a1-4fcf-b5cb-870843dc48dd"
 )
 
+# IMPORTANT:
+# Your actual Supabase bucket is koja-files
 STORAGE_BUCKET = os.getenv(
     "STORAGE_BUCKET",
-    "documents"
+    "koja-files"
 )
 
 MAX_FILE_SIZE = int(
@@ -85,18 +87,11 @@ app.secret_key = SECRET_KEY
 
 app.config["MAX_CONTENT_LENGTH"] = MAX_FILE_SIZE
 
-
-# ============================================================
-# LOGGING
-# ============================================================
-
 logging.basicConfig(
     level=logging.INFO
 )
 
-logger = logging.getLogger(
-    "koja"
-)
+logger = logging.getLogger("koja")
 
 
 # ============================================================
@@ -104,303 +99,175 @@ logger = logging.getLogger(
 # ============================================================
 
 def supabase_headers():
-
     return {
         "apikey": SUPABASE_SERVICE_KEY,
-        "Authorization":
-            f"Bearer {SUPABASE_SERVICE_KEY}",
-        "Content-Type":
-            "application/json",
+        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+        "Content-Type": "application/json",
     }
 
 
-def supabase_storage_headers():
-
-    return {
+def storage_headers(content_type=None):
+    headers = {
         "apikey": SUPABASE_SERVICE_KEY,
-        "Authorization":
-            f"Bearer {SUPABASE_SERVICE_KEY}",
+        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
     }
 
+    if content_type:
+        headers["Content-Type"] = content_type
+
+    return headers
+
 
 # ============================================================
-# SUPABASE REST HELPERS
+# SUPABASE DATABASE HELPERS
 # ============================================================
 
-def supabase_get(
-    table,
-    params=None
-):
-
-    url = (
-        f"{SUPABASE_URL}"
-        f"/rest/v1/{table}"
-    )
+def supabase_get(table, params=None):
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
 
     response = requests.get(
         url,
         headers=supabase_headers(),
-        params=params,
-        timeout=30
+        params=params or {},
+        timeout=30,
     )
 
-    if not response.ok:
-
-        logger.error(
-            "Supabase GET error: %s",
-            response.text
-        )
-
-        raise RuntimeError(
-            response.text
-        )
-
-    return response.json()
+    return response
 
 
-def supabase_insert(
-    table,
-    data,
-    return_data=True
-):
-
-    url = (
-        f"{SUPABASE_URL}"
-        f"/rest/v1/{table}"
-    )
+def supabase_post(table, data):
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
 
     headers = supabase_headers()
-
-    if return_data:
-
-        headers["Prefer"] = (
-            "return=representation"
-        )
+    headers["Prefer"] = "return=representation"
 
     response = requests.post(
         url,
         headers=headers,
         json=data,
-        timeout=30
+        timeout=30,
     )
 
-    if not response.ok:
-
-        logger.error(
-            "Supabase INSERT error: %s",
-            response.text
-        )
-
-        raise RuntimeError(
-            response.text
-        )
-
-    if not return_data:
-
-        return True
-
-    return response.json()
+    return response
 
 
-def supabase_update(
-    table,
-    filters,
-    data
-):
-
-    url = (
-        f"{SUPABASE_URL}"
-        f"/rest/v1/{table}"
-    )
+def supabase_patch(table, filters, data):
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
 
     params = {}
 
-    params.update(filters)
+    for key, value in filters.items():
+        params[key] = f"eq.{value}"
 
     headers = supabase_headers()
-
-    headers["Prefer"] = (
-        "return=representation"
-    )
+    headers["Prefer"] = "return=representation"
 
     response = requests.patch(
         url,
         headers=headers,
         params=params,
         json=data,
-        timeout=30
+        timeout=30,
     )
 
-    if not response.ok:
-
-        logger.error(
-            "Supabase UPDATE error: %s",
-            response.text
-        )
-
-        raise RuntimeError(
-            response.text
-        )
-
-    return response.json()
+    return response
 
 
-def supabase_delete(
-    table,
-    filters
-):
+def supabase_delete(table, filters):
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
 
-    url = (
-        f"{SUPABASE_URL}"
-        f"/rest/v1/{table}"
-    )
+    params = {}
+
+    for key, value in filters.items():
+        params[key] = f"eq.{value}"
 
     response = requests.delete(
         url,
         headers=supabase_headers(),
-        params=filters,
-        timeout=30
+        params=params,
+        timeout=30,
     )
 
-    if not response.ok:
-
-        logger.error(
-            "Supabase DELETE error: %s",
-            response.text
-        )
-
-        raise RuntimeError(
-            response.text
-        )
-
-    return True
+    return response
 
 
 # ============================================================
-# SUPABASE AUTH
+# AUTHENTICATION
 # ============================================================
 
-def auth_login(
-    email,
-    password
-):
+def auth_signup(email, password):
+    url = f"{SUPABASE_URL}/auth/v1/signup"
 
+    response = requests.post(
+        url,
+        headers={
+            "apikey": SUPABASE_SERVICE_KEY,
+            "Content-Type": "application/json",
+        },
+        json={
+            "email": email,
+            "password": password,
+        },
+        timeout=30,
+    )
+
+    return response
+
+
+def auth_login(email, password):
     url = (
-        f"{SUPABASE_URL}"
-        "/auth/v1/token"
+        f"{SUPABASE_URL}/auth/v1/token"
+        "?grant_type=password"
     )
 
     response = requests.post(
         url,
         headers={
-            "apikey":
-                SUPABASE_SERVICE_KEY,
-            "Content-Type":
-                "application/json",
-        },
-        params={
-            "grant_type": "password"
+            "apikey": SUPABASE_SERVICE_KEY,
+            "Content-Type": "application/json",
         },
         json={
             "email": email,
-            "password": password
+            "password": password,
         },
-        timeout=30
+        timeout=30,
     )
 
-    if not response.ok:
-
-        logger.warning(
-            "Login failed: %s",
-            response.text
-        )
-
-        return None
-
-    return response.json()
+    return response
 
 
-def auth_register(
-    email,
-    password
-):
+def auth_user(access_token):
+    url = f"{SUPABASE_URL}/auth/v1/user"
 
-    url = (
-        f"{SUPABASE_URL}"
-        "/auth/v1/signup"
-    )
-
-    response = requests.post(
+    return requests.get(
         url,
         headers={
-            "apikey":
-                SUPABASE_SERVICE_KEY,
-            "Content-Type":
-                "application/json",
+            "apikey": SUPABASE_SERVICE_KEY,
+            "Authorization": f"Bearer {access_token}",
         },
-        json={
-            "email": email,
-            "password": password
-        },
-        timeout=30
+        timeout=30,
     )
-
-    if not response.ok:
-
-        logger.warning(
-            "Registration failed: %s",
-            response.text
-        )
-
-        return None, response.text
-
-    return response.json(), None
 
 
 # ============================================================
 # CURRENT USER
 # ============================================================
 
-def current_user_id():
-
-    return session.get(
-        "user_id"
-    )
-
-
 def current_user():
+    return session.get("user")
 
-    uid = current_user_id()
 
-    if not uid:
-        return None
+def is_logged_in():
+    return current_user() is not None
 
-    try:
 
-        rows = supabase_get(
-            "profiles",
-            {
-                "select":
-                    "id,name,email,role,created_at",
-                "id":
-                    f"eq.{uid}",
-                "limit":
-                    "1"
-            }
-        )
+def is_admin():
+    user = current_user()
 
-        if rows:
+    if not user:
+        return False
 
-            return rows[0]
-
-    except Exception as exc:
-
-        logger.error(
-            "Profile lookup failed: %s",
-            exc
-        )
-
-    return None
+    return str(user.get("id")) == str(ADMIN_UUID)
 
 
 # ============================================================
@@ -412,8 +279,7 @@ def login_required(function):
     @wraps(function)
     def wrapper(*args, **kwargs):
 
-        if not current_user_id():
-
+        if not is_logged_in():
             flash(
                 "Please log in first.",
                 "warning"
@@ -423,10 +289,7 @@ def login_required(function):
                 url_for("login")
             )
 
-        return function(
-            *args,
-            **kwargs
-        )
+        return function(*args, **kwargs)
 
     return wrapper
 
@@ -436,179 +299,401 @@ def admin_required(function):
     @wraps(function)
     def wrapper(*args, **kwargs):
 
-        uid = current_user_id()
-
-        if uid != ADMIN_UUID:
-
+        if not is_logged_in():
             flash(
-                "Administrator access required.",
-                "danger"
+                "Please log in first.",
+                "warning"
             )
 
             return redirect(
-                url_for("home")
+                url_for("login")
             )
 
-        return function(
-            *args,
-            **kwargs
-        )
+        if not is_admin():
+            abort(403)
+
+        return function(*args, **kwargs)
 
     return wrapper
 
 
 # ============================================================
-# ACTIVITY LOGGER
+# PROFILE
 # ============================================================
 
-def record_document_action(
+def get_profile(user_id):
+
+    response = supabase_get(
+        "profiles",
+        {
+            "id": f"eq.{user_id}",
+            "select": "*",
+            "limit": "1",
+        }
+    )
+
+    if response.status_code != 200:
+        return None
+
+    rows = response.json()
+
+    if not rows:
+        return None
+
+    return rows[0]
+
+
+def ensure_profile(user_id, email):
+
+    profile = get_profile(user_id)
+
+    if profile:
+        return profile
+
+    role = (
+        "admin"
+        if str(user_id) == str(ADMIN_UUID)
+        else "student"
+    )
+
+    response = supabase_post(
+        "profiles",
+        {
+            "id": user_id,
+            "name": email.split("@")[0],
+            "email": email,
+            "role": role,
+        }
+    )
+
+    if response.status_code not in (200, 201):
+        logger.error(
+            "Profile creation failed: %s",
+            response.text
+        )
+
+        return None
+
+    rows = response.json()
+
+    return rows[0] if rows else None
+
+
+# ============================================================
+# DOCUMENT HELPERS
+# ============================================================
+
+DOCUMENT_TYPES = [
+    ("academic", "Academic"),
+    ("assignment", "Assignment"),
+    ("notes", "Notes"),
+    ("past_paper", "Past Paper"),
+    ("report", "Report"),
+    ("answer", "Answer"),
+    ("announcement", "Announcement"),
+    ("other", "Other"),
+]
+
+
+def get_documents(search=""):
+
+    params = {
+        "select": "*",
+        "is_active": "eq.true",
+        "order": "created_at.desc",
+    }
+
+    response = supabase_get(
+        "documents",
+        params
+    )
+
+    if response.status_code != 200:
+        logger.error(
+            "Documents error: %s",
+            response.text
+        )
+
+        return []
+
+    documents = response.json()
+
+    search = search.strip().lower()
+
+    if search:
+
+        filtered = []
+
+        for doc in documents:
+
+            text = " ".join([
+                str(doc.get("title", "")),
+                str(doc.get("description", "")),
+                str(doc.get("subject", "")),
+                str(doc.get("course", "")),
+                str(doc.get("class_level", "")),
+                str(doc.get("document_type", "")),
+            ]).lower()
+
+            if search in text:
+                filtered.append(doc)
+
+        return filtered
+
+    return documents
+
+
+def get_document(document_id):
+
+    response = supabase_get(
+        "documents",
+        {
+            "id": f"eq.{document_id}",
+            "select": "*",
+            "limit": "1",
+        }
+    )
+
+    if response.status_code != 200:
+        return None
+
+    rows = response.json()
+
+    return rows[0] if rows else None
+
+
+# ============================================================
+# DOCUMENT RECORD
+# ============================================================
+
+def create_document_record(
     document_id,
+    user_id,
     action
 ):
 
-    uid = current_user_id()
+    ip_address = request.headers.get(
+        "X-Forwarded-For",
+        request.remote_addr
+    )
 
-    if not uid:
-        return
+    user_agent = request.headers.get(
+        "User-Agent",
+        ""
+    )
 
-    try:
+    data = {
+        "document_id": document_id,
+        "user_id": user_id,
+        "action": action,
+        "ip_address": ip_address,
+        "user_agent": user_agent,
+    }
 
-        supabase_insert(
-            "document_records",
-            {
-                "document_id":
-                    document_id,
+    response = supabase_post(
+        "document_records",
+        data
+    )
 
-                "user_id":
-                    uid,
-
-                "action":
-                    action,
-
-                "ip_address":
-                    request.headers.get(
-                        "X-Forwarded-For",
-                        request.remote_addr
-                    ),
-
-                "user_agent":
-                    request.headers.get(
-                        "User-Agent",
-                        ""
-                    ),
-
-                "created_at":
-                    datetime.now(
-                        timezone.utc
-                    ).isoformat()
-            },
-            return_data=False
+    if response.status_code not in (200, 201):
+        logger.warning(
+            "Document record failed: %s",
+            response.text
         )
 
-    except Exception as exc:
-
-        logger.error(
-            "Activity logging failed: %s",
-            exc
-        )
+    return response
 
 
 # ============================================================
 # STORAGE UPLOAD
 # ============================================================
 
-def upload_storage(
-    file,
-    path
-):
+def upload_to_storage(file_storage):
+
+    original_name = file_storage.filename
+
+    if not original_name:
+        raise ValueError(
+            "No file selected."
+        )
+
+    extension = os.path.splitext(
+        original_name
+    )[1].lower()
+
+    allowed_extensions = {
+        ".pdf",
+        ".doc",
+        ".docx",
+        ".ppt",
+        ".pptx",
+        ".txt",
+        ".jpg",
+        ".jpeg",
+        ".png",
+    }
+
+    if extension not in allowed_extensions:
+        raise ValueError(
+            "Unsupported file type."
+        )
+
+    safe_name = (
+        uuid.uuid4().hex
+        + extension
+    )
+
+    # Folder inside the koja-files bucket
+    file_path = (
+        f"documents/{safe_name}"
+    )
+
+    content = file_storage.read()
+
+    if len(content) > MAX_FILE_SIZE:
+        raise ValueError(
+            "File is larger than 10 MB."
+        )
+
+    content_type = (
+        file_storage.mimetype
+        or "application/octet-stream"
+    )
 
     url = (
         f"{SUPABASE_URL}"
         f"/storage/v1/object/"
         f"{STORAGE_BUCKET}/"
-        f"{path}"
-    )
-
-    headers = supabase_storage_headers()
-
-    headers["Content-Type"] = (
-        file.content_type
-        or "application/octet-stream"
+        f"{file_path}"
     )
 
     response = requests.post(
         url,
-        headers=headers,
-        data=file.stream,
-        timeout=120
+        headers=storage_headers(
+            content_type
+        ),
+        data=content,
+        timeout=120,
     )
 
-    if not response.ok:
-
+    if response.status_code not in (
+        200,
+        201
+    ):
         logger.error(
-            "Storage upload error: %s",
+            "Storage upload failed: %s",
             response.text
         )
 
         raise RuntimeError(
-            response.text
+            "Storage upload failed: "
+            + response.text
         )
 
-    return path
+    return {
+        "file_path": file_path,
+        "file_name": original_name,
+        "file_size": len(content),
+        "mime_type": content_type,
+    }
 
 
 # ============================================================
 # STORAGE DOWNLOAD
 # ============================================================
 
-def download_storage(
-    path
+def download_from_storage(
+    file_path
 ):
 
     url = (
         f"{SUPABASE_URL}"
         f"/storage/v1/object/"
         f"{STORAGE_BUCKET}/"
-        f"{path}"
+        f"{file_path}"
     )
 
     response = requests.get(
         url,
-        headers=supabase_storage_headers(),
-        timeout=120
+        headers=storage_headers(),
+        timeout=120,
     )
 
-    if not response.ok:
+    return response
 
-        logger.error(
-            "Storage download error: %s",
-            response.text
-        )
 
-        raise RuntimeError(
-            response.text
-        )
+# ============================================================
+# DELETE FROM STORAGE
+# ============================================================
 
-    return response.content
+def delete_from_storage(
+    file_path
+):
+
+    url = (
+        f"{SUPABASE_URL}"
+        f"/storage/v1/object/"
+        f"{STORAGE_BUCKET}/"
+        f"{file_path}"
+    )
+
+    return requests.delete(
+        url,
+        headers=storage_headers(),
+        timeout=60,
+    )
+
+
+# ============================================================
+# UPDATE DOCUMENT COUNTERS
+# ============================================================
+
+def increment_document_counter(
+    document_id,
+    field
+):
+
+    if field not in (
+        "view_count",
+        "download_count",
+    ):
+        return
+
+    document = get_document(
+        document_id
+    )
+
+    if not document:
+        return
+
+    current = int(
+        document.get(field, 0) or 0
+    )
+
+    supabase_patch(
+        "documents",
+        {
+            "id": document_id
+        },
+        {
+            field: current + 1
+        }
+    )
 
 
 # ============================================================
 # HTML TEMPLATE
 # ============================================================
 
-BASE_HTML = """
-<!DOCTYPE html>
-
-<html lang="en">
-
+BASE_TEMPLATE = """
+<!doctype html>
+<html>
 <head>
 
-<meta charset="UTF-8">
+<meta charset="utf-8">
 
-<meta
-name="viewport"
-content="width=device-width,initial-scale=1.0"
->
+<meta name="viewport"
+content="width=device-width,initial-scale=1">
 
 <title>{{ title }} | KOJA AFRICA</title>
 
@@ -621,28 +706,33 @@ content="width=device-width,initial-scale=1.0"
 body{
     margin:0;
     font-family:
-        Arial,
-        Helvetica,
-        sans-serif;
-    background:#f4f7fb;
+    Arial,
+    Helvetica,
+    sans-serif;
+
+    background:#f3f6fb;
     color:#172033;
 }
 
 nav{
-    background:#082b59;
+    background:#0b3366;
     color:white;
-    padding:15px 20px;
+
+    padding:16px 5%;
+
     display:flex;
-    justify-content:space-between;
     align-items:center;
-    gap:15px;
+    justify-content:space-between;
+
+    gap:20px;
+
     flex-wrap:wrap;
 }
 
 .logo{
-    font-size:24px;
-    font-weight:800;
-    letter-spacing:1px;
+    font-size:32px;
+    font-weight:900;
+    letter-spacing:-2px;
 }
 
 .logo span:nth-child(1){
@@ -650,116 +740,154 @@ nav{
 }
 
 .logo span:nth-child(2){
-    color:#20b96b;
+    color:#20c777;
 }
 
 .logo span:nth-child(3){
-    color:#e63946;
+    color:#e73545;
 }
 
 .logo span:nth-child(4){
-    color:#173f91;
+    color:#3568bd;
 }
 
-nav a{
+.navlinks{
+    display:flex;
+    gap:22px;
+    flex-wrap:wrap;
+}
+
+.navlinks a{
     color:white;
     text-decoration:none;
-    margin:4px 7px;
-    font-weight:600;
+    font-weight:700;
+    font-size:16px;
 }
 
 .container{
-    width:min(1180px,94%);
-    margin:25px auto;
+    width:92%;
+    max-width:1200px;
+    margin:30px auto;
 }
 
 .hero{
-    background:linear-gradient(
-        135deg,
-        #082b59,
-        #0d4d91
-    );
+    background:#0b3366;
     color:white;
-    border-radius:18px;
-    padding:35px;
+    padding:45px;
+    border-radius:22px;
     margin-bottom:25px;
 }
 
 .hero h1{
     margin-top:0;
-    font-size:36px;
+    font-size:38px;
 }
 
 .card{
     background:white;
-    border-radius:16px;
-    padding:22px;
-    margin-bottom:20px;
+    border-radius:20px;
+    padding:25px;
     box-shadow:
-        0 5px 25px
-        rgba(0,0,0,.06);
+    0 5px 20px rgba(0,0,0,.07);
+
+    margin-bottom:22px;
 }
 
 .grid{
     display:grid;
     grid-template-columns:
-        repeat(auto-fit,minmax(240px,1fr));
-    gap:18px;
+    repeat(auto-fit,minmax(260px,1fr));
+
+    gap:20px;
 }
 
-.stat{
+.document{
     background:white;
-    border-radius:15px;
-    padding:20px;
+    border-radius:18px;
+    padding:22px;
+
     box-shadow:
-        0 4px 18px
-        rgba(0,0,0,.05);
+    0 4px 15px rgba(0,0,0,.06);
 }
 
-.stat strong{
-    display:block;
-    font-size:30px;
-    color:#0d4d91;
+.document h3{
+    margin-top:0;
 }
 
-input,
-select,
-textarea{
-    width:100%;
-    padding:12px;
-    margin:6px 0 14px;
-    border:1px solid #d7deea;
-    border-radius:9px;
-    font-size:15px;
-}
+.badge{
+    display:inline-block;
+    background:#e9f2ff;
+    color:#0b4f99;
 
-textarea{
-    min-height:100px;
+    padding:6px 10px;
+    border-radius:20px;
+
+    font-size:12px;
+    font-weight:bold;
 }
 
 button,
 .btn{
-    border:0;
-    background:#0d4d91;
-    color:white;
-    padding:11px 17px;
-    border-radius:9px;
-    cursor:pointer;
-    text-decoration:none;
     display:inline-block;
-    font-weight:600;
+
+    border:0;
+    border-radius:10px;
+
+    padding:12px 18px;
+
+    background:#0b3366;
+    color:white;
+
+    text-decoration:none;
+    font-weight:bold;
+
+    cursor:pointer;
 }
 
-.btn-green{
+.btn.green{
     background:#168a55;
 }
 
-.btn-red{
+.btn.red{
     background:#c62828;
 }
 
-.btn-dark{
-    background:#172033;
+.btn.gray{
+    background:#68758a;
+}
+
+input,
+textarea,
+select{
+    width:100%;
+
+    padding:13px;
+
+    border:1px solid #d5dce7;
+
+    border-radius:10px;
+
+    font-size:16px;
+
+    margin-top:7px;
+    margin-bottom:16px;
+}
+
+textarea{
+    min-height:110px;
+}
+
+label{
+    font-weight:bold;
+}
+
+.alert{
+    padding:15px;
+    border-radius:12px;
+    margin-bottom:18px;
+
+    background:#fff1d6;
+    color:#7b5100;
 }
 
 table{
@@ -770,86 +898,48 @@ table{
 th,
 td{
     padding:12px;
-    border-bottom:1px solid #e8edf4;
+    border-bottom:1px solid #e5e9ef;
     text-align:left;
 }
 
-th{
-    background:#f1f5fa;
+.table-wrap{
+    overflow-x:auto;
 }
 
-.badge{
-    display:inline-block;
-    padding:5px 9px;
-    border-radius:20px;
-    background:#e8f0ff;
-    color:#174d91;
-    font-size:12px;
-    font-weight:bold;
+.stat{
+    font-size:30px;
+    font-weight:900;
 }
 
-.flash{
-    padding:13px 16px;
-    border-radius:10px;
-    margin-bottom:15px;
-}
-
-.flash.success{
-    background:#dff7e9;
-    color:#126332;
-}
-
-.flash.danger{
-    background:#fde4e4;
-    color:#8d1515;
-}
-
-.flash.warning{
-    background:#fff2cf;
-    color:#795600;
-}
-
-.flash.info{
-    background:#e0efff;
-    color:#145287;
-}
-
-.document{
-    height:100%;
-}
-
-.document h3{
-    margin-top:0;
-}
-
-.muted{
-    color:#687386;
+.small{
+    color:#697589;
     font-size:14px;
+}
+
+.actions{
+    display:flex;
+    gap:8px;
+    flex-wrap:wrap;
 }
 
 footer{
     text-align:center;
-    padding:30px;
-    color:#687386;
+    padding:35px;
+    color:#68758a;
 }
 
-@media(max-width:700px){
+@media(max-width:600px){
 
     .hero{
-        padding:24px;
+        padding:28px;
     }
 
     .hero h1{
-        font-size:28px;
+        font-size:29px;
     }
 
-    table{
-        display:block;
-        overflow-x:auto;
-    }
-
-    nav{
-        align-items:flex-start;
+    .navlinks{
+        width:100%;
     }
 
 }
@@ -866,56 +956,37 @@ footer{
 <span>k</span><span>o</span><span>j</span><span>a</span>
 </div>
 
-<div>
+<div class="navlinks">
 
-<a href="{{ url_for('home') }}">
-Home
-</a>
+<a href="{{ url_for('home') }}">Home</a>
 
-{% if session.get('user_id') %}
-
-<a href="{{ url_for('documents') }}">
-Documents
-</a>
-
-{% if session.get('user_id') == admin_uuid %}
-
-<a href="{{ url_for('admin_dashboard') }}">
-Admin
-</a>
-
+{% if session.get('user') %}
+<a href="{{ url_for('documents') }}">Documents</a>
 {% endif %}
 
-<a href="{{ url_for('logout') }}">
-Logout
-</a>
+{% if session.get('user') and session.get('is_admin') %}
+<a href="{{ url_for('admin') }}">Admin</a>
+<a href="{{ url_for('upload_document') }}">Upload</a>
+{% endif %}
 
+{% if session.get('user') %}
+<a href="{{ url_for('logout') }}">Logout</a>
 {% else %}
-
-<a href="{{ url_for('login') }}">
-Login
-</a>
-
-<a href="{{ url_for('register') }}">
-Create Account
-</a>
-
+<a href="{{ url_for('login') }}">Login</a>
+<a href="{{ url_for('register') }}">Create Account</a>
 {% endif %}
 
 </div>
 
 </nav>
 
-
 <div class="container">
 
-{% with messages = get_flashed_messages(
-    with_categories=true
-) %}
+{% with messages = get_flashed_messages(with_categories=true) %}
 
-{% for category,message in messages %}
+{% for category, message in messages %}
 
-<div class="flash {{ category }}">
+<div class="alert">
 {{ message }}
 </div>
 
@@ -923,46 +994,30 @@ Create Account
 
 {% endwith %}
 
-
 {{ content|safe }}
 
 </div>
 
-
 <footer>
-
-<strong>KOJA AFRICA</strong><br>
-
-Knowledge • Questions • Answers
-
+KOJA AFRICA — Knowledge • Questions • Answers
+<br>
+Academic Documents & Learning Resources
 </footer>
 
 </body>
-
 </html>
 """
 
 
-# ============================================================
-# RENDER PAGE
-# ============================================================
-
-def page(
+def render_page(
     title,
     content,
     **context
 ):
 
-    context["title"] = title
-
-    context["admin_uuid"] = ADMIN_UUID
-
-    context["current_user"] = current_user()
-
-    context["session"] = session
-
     return render_template_string(
-        BASE_HTML,
+        BASE_TEMPLATE,
+        title=title,
         content=render_template_string(
             content,
             **context
@@ -978,70 +1033,47 @@ def page(
 @app.route("/")
 def home():
 
-    return page(
+    return render_page(
         "Home",
         """
-        <section class="hero">
+        <div class="hero">
 
-            <h1>
-                KOJA AFRICA
-            </h1>
+        <h1>KOJA AFRICA</h1>
 
-            <p>
-                Knowledge • Questions • Answers
-            </p>
+        <p>
+        Knowledge • Questions • Answers
+        </p>
 
-            <p>
-                Access academic documents,
-                assignments, notes,
-                past papers and learning
-                resources.
-            </p>
+        <p>
+        Access academic documents,
+        assignments, notes, past papers
+        and learning resources.
+        </p>
 
-            {% if not session.get('user_id') %}
+        {% if not session.get('user') %}
 
-            <a class="btn"
-               href="{{ url_for('login') }}">
-                Login
-            </a>
+        <div class="actions">
 
-            <a class="btn btn-green"
-               href="{{ url_for('register') }}">
-                Create Account
-            </a>
+        <a class="btn"
+        href="{{ url_for('login') }}">
+        Login
+        </a>
 
-            {% else %}
+        <a class="btn green"
+        href="{{ url_for('register') }}">
+        Create Account
+        </a>
 
-            <a class="btn"
-               href="{{ url_for('documents') }}">
-                Open Document Library
-            </a>
+        </div>
 
-            {% endif %}
+        {% else %}
 
-        </section>
+        <a class="btn"
+        href="{{ url_for('documents') }}">
+        Open Document Library
+        </a>
 
-        <div class="grid">
-
-            <div class="stat">
-                <strong>📚</strong>
-                Academic Resources
-            </div>
-
-            <div class="stat">
-                <strong>📄</strong>
-                PDF Documents
-            </div>
-
-            <div class="stat">
-                <strong>🔎</strong>
-                Search Resources
-            </div>
-
-            <div class="stat">
-                <strong>⬇</strong>
-                Document Downloads
-            </div>
+        {% endif %}
 
         </div>
         """
@@ -1060,11 +1092,6 @@ def register():
 
     if request.method == "POST":
 
-        name = request.form.get(
-            "name",
-            ""
-        ).strip()
-
         email = request.form.get(
             "email",
             ""
@@ -1075,11 +1102,15 @@ def register():
             ""
         )
 
-        if not name or not email or not password:
+        name = request.form.get(
+            "name",
+            ""
+        ).strip()
 
+        if not email or not password:
             flash(
-                "All fields are required.",
-                "danger"
+                "Email and password are required.",
+                "warning"
             )
 
             return redirect(
@@ -1087,82 +1118,80 @@ def register():
             )
 
         if len(password) < 6:
-
             flash(
                 "Password must contain at least 6 characters.",
-                "danger"
+                "warning"
             )
 
             return redirect(
                 url_for("register")
             )
 
-        result, error = auth_register(
+        response = auth_signup(
             email,
             password
         )
 
-        if error:
+        if response.status_code not in (
+            200,
+            201
+        ):
+            try:
+                error = response.json().get(
+                    "msg"
+                ) or response.json().get(
+                    "message"
+                ) or response.text
+            except Exception:
+                error = response.text
 
             flash(
                 "Registration failed: "
-                + error[:250],
-                "danger"
+                + str(error),
+                "warning"
             )
 
             return redirect(
                 url_for("register")
             )
 
-        user = result.get(
-            "user"
-        )
+        data = response.json()
+
+        user = data.get("user")
 
         if not user:
-
             flash(
-                "Account could not be created.",
-                "danger"
-            )
-
-            return redirect(
-                url_for("register")
-            )
-
-        uid = user.get(
-            "id"
-        )
-
-        try:
-
-            supabase_insert(
-                "profiles",
-                {
-                    "id": uid,
-                    "name": name,
-                    "email": email,
-                    "role": "student"
-                }
-            )
-
-        except Exception as exc:
-
-            logger.error(
-                "Profile creation failed: %s",
-                exc
-            )
-
-            flash(
-                "Account created, but profile setup failed.",
-                "warning"
+                "Account created. Please check your email if confirmation is required, then log in.",
+                "success"
             )
 
             return redirect(
                 url_for("login")
             )
 
+        user_id = user.get("id")
+
+        profile_response = supabase_post(
+            "profiles",
+            {
+                "id": user_id,
+                "name": name or email.split("@")[0],
+                "email": email,
+                "role": "student",
+            }
+        )
+
+        if profile_response.status_code not in (
+            200,
+            201
+        ):
+            logger.warning(
+                "Profile creation after registration failed: %s",
+                profile_response.text
+            )
+
         flash(
-            "Account created successfully. Please log in.",
+            "Account created successfully. You can now log in.",
             "success"
         )
 
@@ -1170,47 +1199,45 @@ def register():
             url_for("login")
         )
 
-    return page(
+    return render_page(
         "Create Account",
         """
         <div class="card">
 
-            <h2>Create KOJA Account</h2>
+        <h1>Create Student Account</h1>
 
-            <form method="POST">
+        <form method="post">
 
-                <label>Name</label>
+        <label>Name</label>
 
-                <input
-                    name="name"
-                    required
-                    autocomplete="name"
-                >
+        <input
+        type="text"
+        name="name"
+        required
+        placeholder="Your full name">
 
-                <label>Email</label>
+        <label>Email</label>
 
-                <input
-                    type="email"
-                    name="email"
-                    required
-                    autocomplete="email"
-                >
+        <input
+        type="email"
+        name="email"
+        required
+        placeholder="student@example.com">
 
-                <label>Password</label>
+        <label>Password</label>
 
-                <input
-                    type="password"
-                    name="password"
-                    minlength="6"
-                    required
-                    autocomplete="new-password"
-                >
+        <input
+        type="password"
+        name="password"
+        required
+        minlength="6"
+        placeholder="Minimum 6 characters">
 
-                <button>
-                    Create Account
-                </button>
+        <button type="submit">
+        Create Account
+        </button>
 
-            </form>
+        </form>
 
         </div>
         """
@@ -1239,47 +1266,94 @@ def login():
             ""
         )
 
-        result = auth_login(
+        response = auth_login(
             email,
             password
         )
 
-        if not result:
+        if response.status_code != 200:
+
+            try:
+                error_data = response.json()
+
+                error = (
+                    error_data.get("error_description")
+                    or error_data.get("msg")
+                    or error_data.get("message")
+                    or response.text
+                )
+
+            except Exception:
+
+                error = response.text
 
             flash(
-                "Invalid email or password.",
-                "danger"
+                "Login failed: "
+                + str(error),
+                "warning"
             )
 
             return redirect(
                 url_for("login")
             )
 
-        user = result.get(
+        data = response.json()
+
+        access_token = data.get(
+            "access_token"
+        )
+
+        user = data.get(
             "user"
         )
 
-        if not user:
+        if not user and access_token:
 
+            user_response = auth_user(
+                access_token
+            )
+
+            if user_response.status_code == 200:
+                user = user_response.json()
+
+        if not user:
             flash(
-                "Login failed.",
-                "danger"
+                "Login failed. User information was not returned.",
+                "warning"
             )
 
             return redirect(
                 url_for("login")
             )
 
-        session.clear()
+        user_id = user.get("id")
 
-        session["user_id"] = user.get(
-            "id"
+        profile = ensure_profile(
+            user_id,
+            user.get("email", email)
         )
 
-        session["email"] = email
+        session.clear()
 
-        session["access_token"] = result.get(
-            "access_token"
+        session["access_token"] = access_token
+
+        session["user"] = {
+            "id": user_id,
+            "email": user.get(
+                "email",
+                email
+            ),
+            "name": (
+                profile.get("name")
+                if profile
+                else email.split("@")[0]
+            ),
+        }
+
+        session["is_admin"] = (
+            str(user_id)
+            ==
+            str(ADMIN_UUID)
         )
 
         flash(
@@ -1291,38 +1365,45 @@ def login():
             url_for("documents")
         )
 
-    return page(
+    return render_page(
         "Login",
         """
         <div class="card">
 
-            <h2>Login</h2>
+        <h1>Login</h1>
 
-            <form method="POST">
+        <form method="post">
 
-                <label>Email</label>
+        <label>Email</label>
 
-                <input
-                    type="email"
-                    name="email"
-                    required
-                    autocomplete="email"
-                >
+        <input
+        type="email"
+        name="email"
+        required
+        placeholder="Email">
 
-                <label>Password</label>
+        <label>Password</label>
 
-                <input
-                    type="password"
-                    name="password"
-                    required
-                    autocomplete="current-password"
-                >
+        <input
+        type="password"
+        name="password"
+        required
+        placeholder="Password">
 
-                <button>
-                    Login
-                </button>
+        <button type="submit">
+        Login
+        </button>
 
-            </form>
+        </form>
+
+        <br>
+
+        <p>
+        Don't have an account?
+        <a href="{{ url_for('register') }}">
+        Create Account
+        </a>
+        </p>
 
         </div>
         """
@@ -1359,251 +1440,120 @@ def documents():
     search = request.args.get(
         "search",
         ""
-    ).strip()
+    )
 
-    document_type = request.args.get(
-        "type",
-        ""
-    ).strip()
+    docs = get_documents(
+        search
+    )
 
-    params = {
-        "select":
-            "*",
-        "is_active":
-            "eq.true",
-        "order":
-            "created_at.desc"
-    }
-
-    if search:
-
-        safe_search = (
-            search
-            .replace(",", " ")
-            .replace("(", " ")
-            .replace(")", " ")
-        )
-
-        params["or"] = (
-            f"(title.ilike.*{safe_search}*,"
-            f"description.ilike.*{safe_search}*,"
-            f"subject.ilike.*{safe_search}*,"
-            f"course.ilike.*{safe_search}*,"
-            f"class_level.ilike.*{safe_search}*)"
-        )
-
-    if document_type:
-
-        params["document_type"] = (
-            f"eq.{document_type}"
-        )
-
-    try:
-
-        docs = supabase_get(
-            "documents",
-            params
-        )
-
-    except Exception as exc:
-
-        logger.error(
-            "Document listing failed: %s",
-            exc
-        )
-
-        docs = []
-
-        flash(
-            "Could not load documents.",
-            "danger"
-        )
-
-    return page(
+    return render_page(
         "Documents",
         """
         <div class="card">
 
-            <h2>Document Library</h2>
+        <h1>Document Library</h1>
 
-            <form method="GET">
+        <form method="get">
 
-                <input
-                    name="search"
-                    value="{{ search }}"
-                    placeholder="Search documents..."
-                >
+        <input
+        type="text"
+        name="search"
+        value="{{ search }}"
+        placeholder="Search title, subject, course...">
 
-                <select name="type">
+        <button type="submit">
+        Search
+        </button>
 
-                    <option value="">
-                        All document types
-                    </option>
-
-                    {% for t in types %}
-
-                    <option
-                        value="{{ t }}"
-                        {% if document_type == t %}
-                        selected
-                        {% endif %}
-                    >
-                        {{ t.replace('_',' ').title() }}
-                    </option>
-
-                    {% endfor %}
-
-                </select>
-
-                <button>
-                    Search
-                </button>
-
-            </form>
+        </form>
 
         </div>
 
-
         <div class="grid">
 
-        {% for d in docs %}
+        {% for doc in docs %}
 
-            <div class="card document">
+        <div class="document">
 
-                <span class="badge">
-                    {{ d.document_type.replace('_',' ').title() }}
-                </span>
+        <span class="badge">
+        {{ doc.document_type|replace('_',' ')|title }}
+        </span>
 
-                <h3>
-                    {{ d.title }}
-                </h3>
+        <h3>
+        {{ doc.title }}
+        </h3>
 
-                {% if d.description %}
+        <p>
+        {{ doc.description or 'No description available.' }}
+        </p>
 
-                <p class="muted">
-                    {{ d.description }}
-                </p>
+        {% if doc.subject %}
+        <p>
+        <b>Subject:</b>
+        {{ doc.subject }}
+        </p>
+        {% endif %}
 
-                {% endif %}
+        {% if doc.course %}
+        <p>
+        <b>Course:</b>
+        {{ doc.course }}
+        </p>
+        {% endif %}
 
-                {% if d.subject %}
+        {% if doc.class_level %}
+        <p>
+        <b>Class:</b>
+        {{ doc.class_level }}
+        </p>
+        {% endif %}
 
-                <p>
-                    <strong>Subject:</strong>
-                    {{ d.subject }}
-                </p>
+        <p class="small">
+        {{ doc.file_name }}
+        </p>
 
-                {% endif %}
+        <p class="small">
+        Views: {{ doc.view_count or 0 }}
+        |
+        Downloads: {{ doc.download_count or 0 }}
+        </p>
 
-                {% if d.course %}
+        <div class="actions">
 
-                <p>
-                    <strong>Course:</strong>
-                    {{ d.course }}
-                </p>
+        <a class="btn"
+        href="{{ url_for('view_document', document_id=doc.id) }}">
+        View
+        </a>
 
-                {% endif %}
+        <a class="btn green"
+        href="{{ url_for('download_document', document_id=doc.id) }}">
+        Download
+        </a>
 
-                {% if d.class_level %}
+        </div>
 
-                <p>
-                    <strong>Class:</strong>
-                    {{ d.class_level }}
-                </p>
-
-                {% endif %}
-
-                <p class="muted">
-                    {{ d.file_name }}
-                </p>
-
-                <p class="muted">
-                    Views: {{ d.view_count }}
-                    |
-                    Downloads: {{ d.download_count }}
-                </p>
-
-                <a
-                    class="btn"
-                    href="{{ url_for(
-                        'view_document',
-                        document_id=d.id
-                    ) }}"
-                >
-                    View
-                </a>
-
-                <a
-                    class="btn btn-green"
-                    href="{{ url_for(
-                        'download_document',
-                        document_id=d.id
-                    ) }}"
-                >
-                    Download
-                </a>
-
-            </div>
+        </div>
 
         {% else %}
 
-            <div class="card">
+        <div class="card">
 
-                <h3>
-                    No documents found.
-                </h3>
+        <h2>No documents found.</h2>
 
-                <p>
-                    Try another search.
-                </p>
+        <p>
+        Try another search or ask the administrator
+        to upload learning resources.
+        </p>
 
-            </div>
+        </div>
 
         {% endfor %}
 
         </div>
         """,
         docs=docs,
-        search=search,
-        document_type=document_type,
-        types=[
-            "academic",
-            "assignment",
-            "notes",
-            "past_paper",
-            "report",
-            "answer",
-            "announcement",
-            "other"
-        ]
+        search=search
     )
-
-
-# ============================================================
-# GET SINGLE DOCUMENT
-# ============================================================
-
-def get_document(
-    document_id
-):
-
-    rows = supabase_get(
-        "documents",
-        {
-            "select":
-                "*",
-            "id":
-                f"eq.{document_id}",
-            "limit":
-                "1"
-        }
-    )
-
-    if not rows:
-
-        return None
-
-    return rows[0]
 
 
 # ============================================================
@@ -1611,137 +1561,53 @@ def get_document(
 # ============================================================
 
 @app.route(
-    "/documents/<document_id>"
+    "/documents/<document_id>/view"
 )
 @login_required
-def view_document(
-    document_id
-):
+def view_document(document_id):
 
     document = get_document(
         document_id
     )
 
     if not document:
-
         abort(404)
 
-    if not document.get(
-        "is_active"
-    ):
-
-        abort(404)
-
-    # Increase view count
-
-    new_count = (
-        int(
-            document.get(
-                "view_count",
-                0
-            )
-        )
-        + 1
+    increment_document_counter(
+        document_id,
+        "view_count"
     )
 
-    try:
-
-        supabase_update(
-            "documents",
-            {
-                "id":
-                    f"eq.{document_id}"
-            },
-            {
-                "view_count":
-                    new_count
-            }
-        )
-
-    except Exception as exc:
-
-        logger.error(
-            "View count update failed: %s",
-            exc
-        )
-
-    record_document_action(
+    create_document_record(
         document_id,
+        current_user()["id"],
         "viewed"
     )
 
-    return page(
-        "View Document",
-        """
-        <div class="card">
+    response = download_from_storage(
+        document["file_path"]
+    )
 
-            <span class="badge">
-                {{ document.document_type
-                   .replace('_',' ')
-                   .title() }}
-            </span>
+    if response.status_code != 200:
 
-            <h2>
-                {{ document.title }}
-            </h2>
+        flash(
+            "The document could not be retrieved from storage.",
+            "warning"
+        )
 
-            {% if document.description %}
+        return redirect(
+            url_for("documents")
+        )
 
-            <p>
-                {{ document.description }}
-            </p>
+    mime = document.get(
+        "mime_type"
+    ) or "application/octet-stream"
 
-            {% endif %}
-
-            <hr>
-
-            <p>
-                <strong>File:</strong>
-                {{ document.file_name }}
-            </p>
-
-            {% if document.subject %}
-
-            <p>
-                <strong>Subject:</strong>
-                {{ document.subject }}
-            </p>
-
-            {% endif %}
-
-            {% if document.course %}
-
-            <p>
-                <strong>Course:</strong>
-                {{ document.course }}
-            </p>
-
-            {% endif %}
-
-            <div style="margin-top:20px">
-
-                <a
-                    class="btn"
-                    href="{{ url_for(
-                        'download_document',
-                        document_id=document.id
-                    ) }}"
-                >
-                    Download Document
-                </a>
-
-                <a
-                    class="btn btn-dark"
-                    href="{{ url_for('documents') }}"
-                >
-                    Back
-                </a>
-
-            </div>
-
-        </div>
-        """,
-        document=document
+    return send_file(
+        io.BytesIO(response.content),
+        mimetype=mime,
+        download_name=document["file_name"],
+        as_attachment=False
     )
 
 
@@ -1753,117 +1619,50 @@ def view_document(
     "/documents/<document_id>/download"
 )
 @login_required
-def download_document(
-    document_id
-):
+def download_document(document_id):
 
     document = get_document(
         document_id
     )
 
     if not document:
-
         abort(404)
 
-    if not document.get(
-        "is_active"
-    ):
-
-        abort(404)
-
-    path = document.get(
-        "file_path"
+    response = download_from_storage(
+        document["file_path"]
     )
 
-    if not path:
+    if response.status_code != 200:
 
         flash(
-            "Document file is missing.",
-            "danger"
+            "Download failed.",
+            "warning"
         )
 
         return redirect(
             url_for("documents")
         )
 
-    try:
-
-        data = download_storage(
-            path
-        )
-
-    except Exception as exc:
-
-        logger.error(
-            "Download failed: %s",
-            exc
-        )
-
-        flash(
-            "Could not download the document.",
-            "danger"
-        )
-
-        return redirect(
-            url_for(
-                "view_document",
-                document_id=document_id
-            )
-        )
-
-    # Increase download count
-
-    new_count = (
-        int(
-            document.get(
-                "download_count",
-                0
-            )
-        )
-        + 1
+    increment_document_counter(
+        document_id,
+        "download_count"
     )
 
-    try:
-
-        supabase_update(
-            "documents",
-            {
-                "id":
-                    f"eq.{document_id}"
-            },
-            {
-                "download_count":
-                    new_count
-            }
-        )
-
-    except Exception as exc:
-
-        logger.error(
-            "Download count update failed: %s",
-            exc
-        )
-
-    record_document_action(
+    create_document_record(
         document_id,
+        current_user()["id"],
         "downloaded"
     )
 
-    filename = secure_filename(
-        document.get(
-            "file_name",
-            "document.pdf"
-        )
-    )
-
     return send_file(
-        io.BytesIO(data),
+        io.BytesIO(response.content),
         mimetype=document.get(
-            "mime_type",
-            "application/pdf"
-        ),
-        as_attachment=True,
-        download_name=filename
+            "mime_type"
+        ) or "application/octet-stream",
+        download_name=document[
+            "file_name"
+        ],
+        as_attachment=True
     )
 
 
@@ -1873,331 +1672,213 @@ def download_document(
 
 @app.route("/admin")
 @admin_required
-def admin_dashboard():
+def admin():
 
-    try:
+    docs = get_documents()
 
-        documents_data = supabase_get(
-            "documents",
-            {
-                "select":
-                    "*",
-                "order":
-                    "created_at.desc"
-            }
-        )
+    total = len(docs)
 
-        records = supabase_get(
-            "document_records",
-            {
-                "select":
-                    "*",
-                "order":
-                    "created_at.desc",
-                "limit":
-                    "100"
-            }
-        )
-
-    except Exception as exc:
-
-        logger.error(
-            "Admin dashboard failed: %s",
-            exc
-        )
-
-        documents_data = []
-        records = []
-
-        flash(
-            "Could not load admin data.",
-            "danger"
-        )
-
-    total = len(
-        documents_data
-    )
-
-    active = sum(
-        1
-        for d in documents_data
-        if d.get("is_active")
-    )
-
-    public = sum(
-        1
-        for d in documents_data
-        if d.get("is_public")
-    )
-
-    downloads = sum(
-        int(
-            d.get(
-                "download_count",
-                0
-            )
-        )
-        for d in documents_data
-    )
-
-    views = sum(
+    total_views = sum(
         int(
             d.get(
                 "view_count",
                 0
-            )
+            ) or 0
         )
-        for d in documents_data
+        for d in docs
     )
 
-    return page(
-        "Admin Dashboard",
+    total_downloads = sum(
+        int(
+            d.get(
+                "download_count",
+                0
+            ) or 0
+        )
+        for d in docs
+    )
+
+    records_response = supabase_get(
+        "document_records",
+        {
+            "select": "*",
+            "order": "created_at.desc",
+            "limit": "100",
+        }
+    )
+
+    records = []
+
+    if records_response.status_code == 200:
+        records = records_response.json()
+
+    return render_page(
+        "Admin",
         """
-        <section class="hero">
+        <div class="hero">
 
-            <h1>
-                Admin Dashboard
-            </h1>
+        <h1>Admin Dashboard</h1>
 
-            <p>
-                Manage KOJA AFRICA documents
-                and monitor document activity.
-            </p>
+        <p>
+        Document Management
+        </p>
 
-        </section>
+        <a class="btn green"
+        href="{{ url_for('upload_document') }}">
+        Upload Document
+        </a>
 
+        </div>
 
         <div class="grid">
 
-            <div class="stat">
-                <strong>
-                    {{ total }}
-                </strong>
-                Total Documents
-            </div>
+        <div class="card">
+        <div class="small">Documents</div>
+        <div class="stat">{{ total }}</div>
+        </div>
 
-            <div class="stat">
-                <strong>
-                    {{ active }}
-                </strong>
-                Active Documents
-            </div>
+        <div class="card">
+        <div class="small">Views</div>
+        <div class="stat">{{ total_views }}</div>
+        </div>
 
-            <div class="stat">
-                <strong>
-                    {{ public }}
-                </strong>
-                Public Documents
-            </div>
-
-            <div class="stat">
-                <strong>
-                    {{ views }}
-                </strong>
-                Total Views
-            </div>
-
-            <div class="stat">
-                <strong>
-                    {{ downloads }}
-                </strong>
-                Total Downloads
-            </div>
+        <div class="card">
+        <div class="small">Downloads</div>
+        <div class="stat">{{ total_downloads }}</div>
+        </div>
 
         </div>
 
-
         <div class="card">
 
-            <h2>
-                Upload Document
-            </h2>
+        <h2>Documents</h2>
 
-            <a
-                class="btn btn-green"
-                href="{{ url_for(
-                    'admin_upload'
-                ) }}"
-            >
-                + Upload Document
-            </a>
+        <div class="table-wrap">
+
+        <table>
+
+        <tr>
+        <th>Title</th>
+        <th>Type</th>
+        <th>Views</th>
+        <th>Downloads</th>
+        <th>Actions</th>
+        </tr>
+
+        {% for doc in docs %}
+
+        <tr>
+
+        <td>
+        {{ doc.title }}
+        </td>
+
+        <td>
+        {{ doc.document_type }}
+        </td>
+
+        <td>
+        {{ doc.view_count or 0 }}
+        </td>
+
+        <td>
+        {{ doc.download_count or 0 }}
+        </td>
+
+        <td>
+
+        <div class="actions">
+
+        <a class="btn"
+        href="{{ url_for('view_document', document_id=doc.id) }}">
+        View
+        </a>
+
+        <a class="btn gray"
+        href="{{ url_for('edit_document', document_id=doc.id) }}">
+        Edit
+        </a>
+
+        <form method="post"
+        action="{{ url_for('delete_document', document_id=doc.id) }}"
+        onsubmit="return confirm('Delete this document?');">
+
+        <button class="btn red"
+        type="submit">
+        Delete
+        </button>
+
+        </form>
 
         </div>
 
+        </td>
 
-        <div class="card">
+        </tr>
 
-            <h2>
-                Document Management
-            </h2>
+        {% endfor %}
 
-            <table>
-
-                <thead>
-
-                <tr>
-
-                    <th>Title</th>
-                    <th>Type</th>
-                    <th>Subject</th>
-                    <th>Views</th>
-                    <th>Downloads</th>
-                    <th>Status</th>
-                    <th>Actions</th>
-
-                </tr>
-
-                </thead>
-
-                <tbody>
-
-                {% for d in docs %}
-
-                <tr>
-
-                    <td>
-                        {{ d.title }}
-                    </td>
-
-                    <td>
-                        {{ d.document_type }}
-                    </td>
-
-                    <td>
-                        {{ d.subject or '-' }}
-                    </td>
-
-                    <td>
-                        {{ d.view_count }}
-                    </td>
-
-                    <td>
-                        {{ d.download_count }}
-                    </td>
-
-                    <td>
-
-                        {% if d.is_active %}
-
-                        <span class="badge">
-                            Active
-                        </span>
-
-                        {% else %}
-
-                        <span class="badge">
-                            Inactive
-                        </span>
-
-                        {% endif %}
-
-                    </td>
-
-                    <td>
-
-                        <a
-                            class="btn"
-                            href="{{ url_for(
-                                'view_document',
-                                document_id=d.id
-                            ) }}"
-                        >
-                            View
-                        </a>
-
-                        <a
-                            class="btn btn-red"
-                            href="{{ url_for(
-                                'admin_delete_document',
-                                document_id=d.id
-                            ) }}"
-                            onclick="return confirm(
-                                'Deactivate this document?'
-                            )"
-                        >
-                            Deactivate
-                        </a>
-
-                    </td>
-
-                </tr>
-
-                {% endfor %}
-
-                </tbody>
-
-            </table>
+        </table>
 
         </div>
 
+        </div>
 
         <div class="card">
 
-            <h2>
-                Recent Activity
-            </h2>
+        <h2>Document Activity</h2>
 
-            <table>
+        <div class="table-wrap">
 
-                <thead>
+        <table>
 
-                <tr>
+        <tr>
+        <th>Document</th>
+        <th>User</th>
+        <th>Action</th>
+        <th>Time</th>
+        </tr>
 
-                    <th>Action</th>
-                    <th>Document ID</th>
-                    <th>User ID</th>
-                    <th>Date</th>
+        {% for record in records %}
 
-                </tr>
+        <tr>
 
-                </thead>
+        <td>
+        {{ record.document_id }}
+        </td>
 
-                <tbody>
+        <td>
+        {{ record.user_id or 'Unknown' }}
+        </td>
 
-                {% for r in records %}
+        <td>
+        {{ record.action }}
+        </td>
 
-                <tr>
+        <td>
+        {{ record.created_at }}
+        </td>
 
-                    <td>
-                        <span class="badge">
-                            {{ r.action }}
-                        </span>
-                    </td>
+        </tr>
 
-                    <td>
-                        {{ r.document_id or 'Deleted document' }}
-                    </td>
+        {% endfor %}
 
-                    <td>
-                        {{ r.user_id or '-' }}
-                    </td>
+        </table>
 
-                    <td>
-                        {{ r.created_at }}
-                    </td>
-
-                </tr>
-
-                {% endfor %}
-
-                </tbody>
-
-            </table>
+        </div>
 
         </div>
         """,
-        docs=documents_data,
+        docs=docs,
         records=records,
         total=total,
-        active=active,
-        public=public,
-        views=views,
-        downloads=downloads
+        total_views=total_views,
+        total_downloads=total_downloads
     )
 
 
 # ============================================================
-# ADMIN UPLOAD
+# UPLOAD DOCUMENT
 # ============================================================
 
 @app.route(
@@ -2205,7 +1886,7 @@ def admin_dashboard():
     methods=["GET", "POST"]
 )
 @admin_required
-def admin_upload():
+def upload_document():
 
     if request.method == "POST":
 
@@ -2222,7 +1903,7 @@ def admin_upload():
         document_type = request.form.get(
             "document_type",
             "academic"
-        ).strip()
+        )
 
         subject = request.form.get(
             "subject",
@@ -2246,184 +1927,124 @@ def admin_upload():
             == "on"
         )
 
-        uploaded_file = request.files.get(
+        file = request.files.get(
             "file"
         )
 
-        allowed_types = {
-            "academic",
-            "assignment",
-            "notes",
-            "past_paper",
-            "report",
-            "answer",
-            "announcement",
-            "other"
-        }
-
         if not title:
-
             flash(
                 "Document title is required.",
-                "danger"
+                "warning"
             )
 
             return redirect(
-                url_for("admin_upload")
+                url_for("upload_document")
             )
 
-        if document_type not in allowed_types:
+        if not file or not file.filename:
+            flash(
+                "Please select a document.",
+                "warning"
+            )
 
+            return redirect(
+                url_for("upload_document")
+            )
+
+        if document_type not in [
+            x[0]
+            for x in DOCUMENT_TYPES
+        ]:
             flash(
                 "Invalid document type.",
-                "danger"
+                "warning"
             )
 
             return redirect(
-                url_for("admin_upload")
+                url_for("upload_document")
             )
-
-        if not uploaded_file:
-
-            flash(
-                "Please select a file.",
-                "danger"
-            )
-
-            return redirect(
-                url_for("admin_upload")
-            )
-
-        original_name = (
-            uploaded_file.filename
-            or ""
-        )
-
-        if not original_name:
-
-            flash(
-                "Invalid filename.",
-                "danger"
-            )
-
-            return redirect(
-                url_for("admin_upload")
-            )
-
-        filename = secure_filename(
-            original_name
-        )
-
-        extension = (
-            os.path.splitext(
-                filename
-            )[1]
-            .lower()
-        )
-
-        allowed_extensions = {
-            ".pdf"
-        }
-
-        if extension not in allowed_extensions:
-
-            flash(
-                "Only PDF documents are currently allowed.",
-                "danger"
-            )
-
-            return redirect(
-                url_for("admin_upload")
-            )
-
-        # Generate unique storage path
-
-        storage_path = (
-            datetime.now(
-                timezone.utc
-            ).strftime(
-                "%Y/%m"
-            )
-            + "/"
-            + str(uuid.uuid4())
-            + ".pdf"
-        )
 
         try:
 
-            uploaded_file.stream.seek(0)
-
-            upload_storage(
-                uploaded_file,
-                storage_path
+            storage_info = upload_to_storage(
+                file
             )
 
-            file_size = (
-                uploaded_file.content_length
-                or 0
-            )
-
-            # Save metadata
-
-            rows = supabase_insert(
-                "documents",
-                {
-                    "title":
-                        title,
-
-                    "description":
-                        description or None,
-
-                    "document_type":
-                        document_type,
-
-                    "subject":
-                        subject or None,
-
-                    "course":
-                        course or None,
-
-                    "class_level":
-                        class_level or None,
-
-                    "file_name":
-                        filename,
-
-                    "file_path":
-                        storage_path,
-
-                    "file_url":
-                        None,
-
-                    "file_size":
-                        file_size,
-
-                    "mime_type":
-                        "application/pdf",
-
-                    "uploaded_by":
-                        current_user_id(),
-
-                    "is_public":
-                        is_public,
-
-                    "is_active":
-                        True
-                }
-            )
-
-            document_id = None
-
-            if rows:
-
-                document_id = rows[0].get(
+            data = {
+                "title": title,
+                "description": description or None,
+                "document_type": document_type,
+                "subject": subject or None,
+                "course": course or None,
+                "class_level": class_level or None,
+                "file_name": storage_info[
+                    "file_name"
+                ],
+                "file_path": storage_info[
+                    "file_path"
+                ],
+                "file_url": None,
+                "file_size": storage_info[
+                    "file_size"
+                ],
+                "mime_type": storage_info[
+                    "mime_type"
+                ],
+                "uploaded_by": current_user()[
                     "id"
+                ],
+                "is_public": is_public,
+                "is_active": True,
+                "download_count": 0,
+                "view_count": 0,
+            }
+
+            response = supabase_post(
+                "documents",
+                data
+            )
+
+            if response.status_code not in (
+                200,
+                201
+            ):
+
+                # Database insert failed,
+                # therefore remove the uploaded file.
+                delete_from_storage(
+                    storage_info[
+                        "file_path"
+                    ]
                 )
+
+                logger.error(
+                    "Document database insert failed: %s",
+                    response.text
+                )
+
+                flash(
+                    "Document metadata could not be saved: "
+                    + response.text,
+                    "warning"
+                )
+
+                return redirect(
+                    url_for("upload_document")
+                )
+
+            rows = response.json()
+
+            document_id = (
+                rows[0]["id"]
+                if rows
+                else None
+            )
 
             if document_id:
 
-                record_document_action(
+                create_document_record(
                     document_id,
+                    current_user()["id"],
                     "uploaded"
                 )
 
@@ -2433,356 +2054,426 @@ def admin_upload():
             )
 
             return redirect(
-                url_for(
-                    "admin_dashboard"
-                )
+                url_for("admin")
             )
 
         except Exception as exc:
 
             logger.exception(
-                "Document upload failed"
+                "Upload error"
             )
 
             flash(
                 "Upload failed: "
-                + str(exc)[:300],
-                "danger"
+                + str(exc),
+                "warning"
             )
 
             return redirect(
-                url_for("admin_upload")
+                url_for("upload_document")
             )
 
-    return page(
+    return render_page(
         "Upload Document",
         """
         <div class="card">
 
-            <h2>
-                Upload Academic Document
-            </h2>
+        <h1>Upload Academic Document</h1>
 
-            <form
-                method="POST"
-                enctype="multipart/form-data"
-            >
+        <form
+        method="post"
+        enctype="multipart/form-data">
 
-                <label>
-                    Document Title
-                </label>
+        <label>Document Title</label>
 
-                <input
-                    name="title"
-                    placeholder="e.g. Grade 12 Biology Notes"
-                    required
-                >
+        <input
+        type="text"
+        name="title"
+        required
+        placeholder="e.g. Grade 12 Biology Notes">
 
-                <label>
-                    Description
-                </label>
+        <label>Description</label>
 
-                <textarea
-                    name="description"
-                    placeholder="Describe the document..."
-                ></textarea>
+        <textarea
+        name="description"
+        placeholder="Describe the document..."></textarea>
 
-                <label>
-                    Document Type
-                </label>
+        <label>Document Type</label>
 
-                <select
-                    name="document_type"
-                    required
-                >
+        <select name="document_type">
 
-                    {% for t in types %}
+        {% for value, label in document_types %}
 
-                    <option value="{{ t }}">
-                        {{ t.replace('_',' ').title() }}
-                    </option>
+        <option value="{{ value }}">
+        {{ label }}
+        </option>
 
-                    {% endfor %}
+        {% endfor %}
 
-                </select>
+        </select>
 
-                <label>
-                    Subject
-                </label>
+        <label>Subject</label>
 
-                <input
-                    name="subject"
-                    placeholder="Biology"
-                >
+        <input
+        type="text"
+        name="subject"
+        placeholder="e.g. Biology">
 
-                <label>
-                    Course
-                </label>
+        <label>Course</label>
 
-                <input
-                    name="course"
-                    placeholder="Biology 12"
-                >
+        <input
+        type="text"
+        name="course"
+        placeholder="e.g. General Biology">
 
-                <label>
-                    Class Level
-                </label>
+        <label>Class Level</label>
 
-                <input
-                    name="class_level"
-                    placeholder="Grade 12"
-                >
+        <input
+        type="text"
+        name="class_level"
+        placeholder="e.g. Grade 12">
 
-                <label>
-                    PDF File
-                </label>
+        <label>Document File</label>
 
-                <input
-                    type="file"
-                    name="file"
-                    accept="application/pdf,.pdf"
-                    required
-                >
+        <input
+        type="file"
+        name="file"
+        required>
 
-                <label>
+        <p class="small">
+        Maximum file size: 10 MB.
+        Supported: PDF, DOC, DOCX, PPT, PPTX,
+        TXT, JPG, JPEG and PNG.
+        </p>
 
-                    <input
-                        type="checkbox"
-                        name="is_public"
-                        style="width:auto"
-                    >
+        <label>
 
-                    Make this document public
+        <input
+        type="checkbox"
+        name="is_public"
+        style="width:auto;">
 
-                </label>
+        Make document public
 
-                <br><br>
+        </label>
 
-                <button>
-                    Upload Document
-                </button>
+        <br><br>
 
-                <a
-                    class="btn btn-dark"
-                    href="{{ url_for(
-                        'admin_dashboard'
-                    ) }}"
-                >
-                    Cancel
-                </a>
+        <button type="submit">
+        Upload Document
+        </button>
 
-            </form>
+        </form>
 
         </div>
         """,
-        types=[
-            "academic",
-            "assignment",
-            "notes",
-            "past_paper",
-            "report",
-            "answer",
-            "announcement",
-            "other"
-        ]
+        document_types=DOCUMENT_TYPES
     )
 
 
 # ============================================================
-# ADMIN DEACTIVATE DOCUMENT
+# EDIT DOCUMENT
 # ============================================================
 
 @app.route(
-    "/admin/documents/<document_id>/delete"
+    "/admin/documents/<document_id>/edit",
+    methods=["GET", "POST"]
 )
 @admin_required
-def admin_delete_document(
-    document_id
-):
+def edit_document(document_id):
 
     document = get_document(
         document_id
     )
 
     if not document:
+        abort(404)
 
-        flash(
-            "Document not found.",
-            "danger"
-        )
+    if request.method == "POST":
 
-        return redirect(
-            url_for("admin_dashboard")
-        )
+        data = {
+            "title": request.form.get(
+                "title",
+                ""
+            ).strip(),
 
-    try:
+            "description": request.form.get(
+                "description",
+                ""
+            ).strip() or None,
 
-        # Preserve document record.
-        # We deactivate instead of physically
-        # deleting the database row.
+            "document_type": request.form.get(
+                "document_type",
+                "academic"
+            ),
 
-        supabase_update(
+            "subject": request.form.get(
+                "subject",
+                ""
+            ).strip() or None,
+
+            "course": request.form.get(
+                "course",
+                ""
+            ).strip() or None,
+
+            "class_level": request.form.get(
+                "class_level",
+                ""
+            ).strip() or None,
+
+            "is_public": (
+                request.form.get(
+                    "is_public"
+                )
+                == "on"
+            ),
+
+            "is_active": (
+                request.form.get(
+                    "is_active"
+                )
+                == "on"
+            ),
+        }
+
+        response = supabase_patch(
             "documents",
             {
-                "id":
-                    f"eq.{document_id}"
+                "id": document_id
             },
-            {
-                "is_active":
-                    False
-            }
+            data
         )
 
-        record_document_action(
+        if response.status_code not in (
+            200,
+            204
+        ):
+
+            flash(
+                "Update failed: "
+                + response.text,
+                "warning"
+            )
+
+            return redirect(
+                url_for(
+                    "edit_document",
+                    document_id=document_id
+                )
+            )
+
+        create_document_record(
             document_id,
-            "deleted"
-        )
-
-        flash(
-            "Document deactivated.",
-            "success"
-        )
-
-    except Exception as exc:
-
-        logger.error(
-            "Document deactivation failed: %s",
-            exc
-        )
-
-        flash(
-            "Could not deactivate document.",
-            "danger"
-        )
-
-    return redirect(
-        url_for(
-            "admin_dashboard"
-        )
-    )
-
-
-# ============================================================
-# ADMIN RESTORE DOCUMENT
-# ============================================================
-
-@app.route(
-    "/admin/documents/<document_id>/restore"
-)
-@admin_required
-def admin_restore_document(
-    document_id
-):
-
-    try:
-
-        supabase_update(
-            "documents",
-            {
-                "id":
-                    f"eq.{document_id}"
-            },
-            {
-                "is_active":
-                    True
-            }
-        )
-
-        record_document_action(
-            document_id,
+            current_user()["id"],
             "updated"
         )
 
         flash(
-            "Document restored.",
+            "Document updated successfully.",
             "success"
         )
 
-    except Exception as exc:
-
-        logger.error(
-            "Restore failed: %s",
-            exc
+        return redirect(
+            url_for("admin")
         )
 
-        flash(
-            "Could not restore document.",
-            "danger"
-        )
-
-    return redirect(
-        url_for(
-            "admin_dashboard"
-        )
-    )
-
-
-# ============================================================
-# ADMIN PROFILE
-# ============================================================
-
-@app.route("/admin/profile")
-@admin_required
-def admin_profile():
-
-    profile = current_user()
-
-    return page(
-        "Admin Profile",
+    return render_page(
+        "Edit Document",
         """
         <div class="card">
 
-            <h2>
-                Administrator
-            </h2>
+        <h1>Edit Document</h1>
 
-            <p>
-                <strong>Name:</strong>
-                {{ profile.name }}
-            </p>
+        <form method="post">
 
-            <p>
-                <strong>Email:</strong>
-                {{ profile.email }}
-            </p>
+        <label>Title</label>
 
-            <p>
-                <strong>Role:</strong>
-                {{ profile.role }}
-            </p>
+        <input
+        type="text"
+        name="title"
+        required
+        value="{{ document.title }}">
 
-            <p>
-                <strong>User ID:</strong>
-                {{ profile.id }}
-            </p>
+        <label>Description</label>
+
+        <textarea
+        name="description">{{ document.description or '' }}</textarea>
+
+        <label>Document Type</label>
+
+        <select name="document_type">
+
+        {% for value, label in document_types %}
+
+        <option
+        value="{{ value }}"
+        {% if document.document_type == value %}
+        selected
+        {% endif %}>
+
+        {{ label }}
+
+        </option>
+
+        {% endfor %}
+
+        </select>
+
+        <label>Subject</label>
+
+        <input
+        type="text"
+        name="subject"
+        value="{{ document.subject or '' }}">
+
+        <label>Course</label>
+
+        <input
+        type="text"
+        name="course"
+        value="{{ document.course or '' }}">
+
+        <label>Class Level</label>
+
+        <input
+        type="text"
+        name="class_level"
+        value="{{ document.class_level or '' }}">
+
+        <label>
+
+        <input
+        type="checkbox"
+        name="is_public"
+        style="width:auto;"
+        {% if document.is_public %}
+        checked
+        {% endif %}>
+
+        Public
+
+        </label>
+
+        <br>
+
+        <label>
+
+        <input
+        type="checkbox"
+        name="is_active"
+        style="width:auto;"
+        {% if document.is_active %}
+        checked
+        {% endif %}>
+
+        Active
+
+        </label>
+
+        <br><br>
+
+        <button type="submit">
+        Save Changes
+        </button>
+
+        </form>
 
         </div>
         """,
-        profile=profile
+        document=document,
+        document_types=DOCUMENT_TYPES
     )
 
 
 # ============================================================
-# PDF GENERATOR
+# DELETE DOCUMENT
 # ============================================================
 
-def build_answer_pdf(
-    subject,
-    student_name,
-    question,
-    answer
-):
+@app.route(
+    "/admin/documents/<document_id>/delete",
+    methods=["POST"]
+)
+@admin_required
+def delete_document(document_id):
+
+    document = get_document(
+        document_id
+    )
+
+    if not document:
+        abort(404)
+
+    file_path = document.get(
+        "file_path"
+    )
+
+    # Delete storage object first.
+    if file_path:
+        storage_response = delete_from_storage(
+            file_path
+        )
+
+        if storage_response.status_code not in (
+            200,
+            204
+        ):
+            logger.warning(
+                "Storage deletion failed: %s",
+                storage_response.text
+            )
+
+    # The database table uses
+    # document_records.document_id
+    # with ON DELETE SET NULL.
+    #
+    # Therefore audit records are preserved.
+
+    response = supabase_delete(
+        "documents",
+        {
+            "id": document_id
+        }
+    )
+
+    if response.status_code not in (
+        200,
+        204
+    ):
+
+        flash(
+            "Database deletion failed: "
+            + response.text,
+            "warning"
+        )
+
+        return redirect(
+            url_for("admin")
+        )
+
+    flash(
+        "Document deleted successfully.",
+        "success"
+    )
+
+    return redirect(
+        url_for("admin")
+    )
+
+
+# ============================================================
+# ADMIN PDF REPORT
+# ============================================================
+
+@app.route(
+    "/admin/documents/report.pdf"
+)
+@admin_required
+def document_report():
+
+    docs = get_documents()
 
     buffer = io.BytesIO()
-
-    document = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        rightMargin=45,
-        leftMargin=45,
-        topMargin=45,
-        bottomMargin=45
-    )
 
     styles = getSampleStyleSheet()
 
@@ -2790,9 +2481,14 @@ def build_answer_pdf(
 
     title_style.alignment = TA_CENTER
 
-    heading = styles["Heading2"]
-
-    body = styles["BodyText"]
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=35,
+        leftMargin=35,
+        topMargin=35,
+        bottomMargin=35,
+    )
 
     story = []
 
@@ -2804,144 +2500,248 @@ def build_answer_pdf(
     )
 
     story.append(
+        Spacer(1, 10)
+    )
+
+    story.append(
+        Paragraph(
+            "Document Management Report",
+            styles["Heading2"]
+        )
+    )
+
+    story.append(
         Spacer(1, 15)
     )
 
-    table_data = [
-        ["Subject", escape(subject or "")],
-        ["Student", escape(student_name or "")],
+    data = [
+        [
+            "Title",
+            "Type",
+            "Subject",
+            "Views",
+            "Downloads",
+        ]
     ]
 
+    for document in docs:
+
+        data.append(
+            [
+                document.get(
+                    "title",
+                    ""
+                )[:35],
+
+                document.get(
+                    "document_type",
+                    ""
+                ),
+
+                document.get(
+                    "subject",
+                    ""
+                ) or "",
+
+                str(
+                    document.get(
+                        "view_count",
+                        0
+                    )
+                ),
+
+                str(
+                    document.get(
+                        "download_count",
+                        0
+                    )
+                ),
+            ]
+        )
+
     table = Table(
-        table_data,
-        colWidths=[
-            100,
-            350
-        ]
+        data,
+        repeatRows=1
     )
 
     table.setStyle(
-        TableStyle([
-            (
-                "GRID",
-                (0,0),
-                (-1,-1),
-                0.5,
-                colors.grey
-            ),
-            (
-                "BACKGROUND",
-                (0,0),
-                (0,-1),
-                colors.lightgrey
-            ),
-            (
-                "VALIGN",
-                (0,0),
-                (-1,-1),
-                "TOP"
-            ),
-        ])
+        TableStyle(
+            [
+                (
+                    "BACKGROUND",
+                    (0, 0),
+                    (-1, 0),
+                    colors.HexColor(
+                        "#0b3366"
+                    )
+                ),
+
+                (
+                    "TEXTCOLOR",
+                    (0, 0),
+                    (-1, 0),
+                    colors.white
+                ),
+
+                (
+                    "GRID",
+                    (0, 0),
+                    (-1, -1),
+                    0.5,
+                    colors.grey
+                ),
+
+                (
+                    "FONTNAME",
+                    (0, 0),
+                    (-1, 0),
+                    "Helvetica-Bold"
+                ),
+
+                (
+                    "FONTSIZE",
+                    (0, 0),
+                    (-1, -1),
+                    7
+                ),
+
+                (
+                    "VALIGN",
+                    (0, 0),
+                    (-1, -1),
+                    "TOP"
+                ),
+            ]
+        )
     )
 
-    story.append(
-        table
-    )
+    story.append(table)
 
     story.append(
         Spacer(1, 20)
-    )
-
-    story.append(
-        Paragraph(
-            "Question",
-            heading
-        )
-    )
-
-    story.append(
-        Paragraph(
-            escape(
-                question or ""
-            ).replace(
-                "\n",
-                "<br/>"
-            ),
-            body
-        )
-    )
-
-    story.append(
-        Spacer(1, 20)
-    )
-
-    story.append(
-        Paragraph(
-            "Answer",
-            heading
-        )
-    )
-
-    story.append(
-        Paragraph(
-            escape(
-                answer or ""
-            ).replace(
-                "\n",
-                "<br/>"
-            ),
-            body
-        )
-    )
-
-    story.append(
-        Spacer(1, 30)
     )
 
     story.append(
         Paragraph(
             "Generated by KOJA AFRICA",
-            body
+            styles["Normal"]
         )
     )
 
-    document.build(
-        story
-    )
+    doc.build(story)
 
     buffer.seek(0)
 
-    return buffer
-
-
-# ============================================================
-# PDF TEST ROUTE
-# ============================================================
-
-@app.route(
-    "/admin/test-pdf"
-)
-@admin_required
-def test_pdf():
-
-    pdf = build_answer_pdf(
-        "Biology",
-        "KOJA Student",
-        "Define photosynthesis.",
-        (
-            "Photosynthesis is the process "
-            "by which green plants use light "
-            "energy to manufacture glucose "
-            "from carbon dioxide and water."
-        )
-    )
-
     return send_file(
-        pdf,
+        buffer,
         mimetype="application/pdf",
         as_attachment=True,
-        download_name="koja-answer.pdf"
+        download_name="koja-document-report.pdf"
     )
+
+
+# ============================================================
+# 403
+# ============================================================
+
+@app.errorhandler(403)
+def forbidden(error):
+
+    return render_page(
+        "Access Denied",
+        """
+        <div class="card">
+
+        <h1>Access Denied</h1>
+
+        <p>
+        You do not have administrator permission
+        to access this page.
+        </p>
+
+        <a class="btn"
+        href="{{ url_for('home') }}">
+        Return Home
+        </a>
+
+        </div>
+        """
+    ), 403
+
+
+# ============================================================
+# 404
+# ============================================================
+
+@app.errorhandler(404)
+def not_found(error):
+
+    return render_page(
+        "Not Found",
+        """
+        <div class="card">
+
+        <h1>Page Not Found</h1>
+
+        <a class="btn"
+        href="{{ url_for('home') }}">
+        Return Home
+        </a>
+
+        </div>
+        """
+    ), 404
+
+
+# ============================================================
+# 413
+# ============================================================
+
+@app.errorhandler(413)
+def too_large(error):
+
+    return render_page(
+        "File Too Large",
+        """
+        <div class="card">
+
+        <h1>File Too Large</h1>
+
+        <p>
+        The maximum allowed document size is 10 MB.
+        </p>
+
+        </div>
+        """
+    ), 413
+
+
+# ============================================================
+# GENERAL ERROR
+# ============================================================
+
+@app.errorhandler(500)
+def server_error(error):
+
+    logger.exception(
+        "Internal server error"
+    )
+
+    return render_page(
+        "Server Error",
+        """
+        <div class="card">
+
+        <h1>Server Error</h1>
+
+        <p>
+        Something went wrong on the server.
+        Please try again.
+        </p>
+
+        </div>
+        """
+    ), 500
 
 
 # ============================================================
@@ -2951,100 +2751,12 @@ def test_pdf():
 @app.route("/health")
 def health():
 
-    if not SUPABASE_URL:
-
-        return {
-            "status":
-                "error",
-            "message":
-                "SUPABASE_URL is missing"
-        }, 500
-
-    if not SUPABASE_SERVICE_KEY:
-
-        return {
-            "status":
-                "error",
-            "message":
-                "SUPABASE_SERVICE_KEY is missing"
-        }, 500
-
-    try:
-
-        supabase_get(
-            "documents",
-            {
-                "select":
-                    "id",
-                "limit":
-                    "1"
-            }
-        )
-
-        return {
-            "status":
-                "ok",
-            "database":
-                "connected",
-            "storage_bucket":
-                STORAGE_BUCKET
-        }
-
-    except Exception as exc:
-
-        return {
-            "status":
-                "error",
-            "database":
-                "connection failed",
-            "message":
-                str(exc)[:300]
-        }, 500
-
-
-# ============================================================
-# ERROR HANDLERS
-# ============================================================
-
-@app.errorhandler(404)
-def not_found(error):
-
-    return page(
-        "Not Found",
-        """
-        <div class="card">
-
-            <h2>
-                Page not found
-            </h2>
-
-            <p>
-                The requested resource does not exist.
-            </p>
-
-            <a
-                class="btn"
-                href="{{ url_for('home') }}"
-            >
-                Return Home
-            </a>
-
-        </div>
-        """
-    ), 404
-
-
-@app.errorhandler(413)
-def file_too_large(error):
-
-    flash(
-        "File is too large. Maximum size is 10 MB.",
-        "danger"
-    )
-
-    return redirect(
-        url_for("admin_upload")
-    )
+    return {
+        "status": "ok",
+        "application": "KOJA AFRICA",
+        "storage_bucket": STORAGE_BUCKET,
+        "documents_system": True,
+    }
 
 
 # ============================================================
@@ -3053,70 +2765,15 @@ def file_too_large(error):
 
 if __name__ == "__main__":
 
-    if not SUPABASE_URL:
-
-        print(
-            "ERROR: SUPABASE_URL is not configured."
+    port = int(
+        os.getenv(
+            "PORT",
+            "5000"
         )
-
-    elif not SUPABASE_SERVICE_KEY:
-
-        print(
-            "ERROR: SUPABASE_SERVICE_KEY is not configured."
-        )
-
-    else:
-
-        print(
-            "======================================"
-        )
-
-        print(
-            "KOJA AFRICA"
-        )
-
-        print(
-            "Document Portal"
-        )
-
-        print(
-            "======================================"
-        )
-
-        print(
-            "Supabase:",
-            SUPABASE_URL
-        )
-
-        print(
-            "Storage:",
-            STORAGE_BUCKET
-        )
-
-        print(
-            "Admin:",
-            ADMIN_UUID
-        )
-
-        print(
-            "Local:"
-        )
-
-        print(
-            "http://127.0.0.1:5000"
-        )
-
-        print(
-            "======================================"
-        )
+    )
 
     app.run(
         host="0.0.0.0",
-        port=int(
-            os.getenv(
-                "PORT",
-                "5000"
-            )
-        ),
+        port=port,
         debug=False
     )
