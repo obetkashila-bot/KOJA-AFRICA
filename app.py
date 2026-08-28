@@ -2,663 +2,1041 @@ import os
 import io
 import uuid
 import secrets
+import logging
 from datetime import datetime, timezone
 from functools import wraps
+from urllib.parse import quote
 
 import requests
 from dotenv import load_dotenv
+
 from flask import (
-    Flask, request, redirect, url_for, session,
-    render_template_string, flash, send_file, abort
+    Flask,
+    request,
+    redirect,
+    url_for,
+    session,
+    render_template_string,
+    flash,
+    send_file,
+    abort,
 )
+
 from werkzeug.security import generate_password_hash, check_password_hash
+
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
 
 load_dotenv()
 
-# ============================================================
-# KOJA AFRICA
-# Client submits work -> KOJA processes it -> KOJA returns
-# the finished document.
-#
-# Stack:
-#   Flask + Supabase REST API + Supabase Storage
-#   Deployable on Render.
-#
-# Required environment variables:
-#   SUPABASE_URL
-#   SUPABASE_SERVICE_KEY
-#   SECRET_KEY
-#   ADMIN_EMAIL
-#   ADMIN_PASSWORD
-#
-# Optional:
-#   STORAGE_BUCKET=koja-files
-#   MAX_FILE_MB=20
-# ============================================================
-
 app = Flask(__name__)
-app.secret_key = os.getenv("SECRET_KEY") or secrets.token_hex(32)
+
+app.secret_key = os.getenv(
+    "SECRET_KEY",
+    secrets.token_hex(32)
+)
+
+app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
+
+logging.basicConfig(level=logging.INFO)
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
-STORAGE_BUCKET = os.getenv("STORAGE_BUCKET", "koja-files")
-ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@koja-africa.com").strip().lower()
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "change-this-password")
-MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "20"))
-MAX_CONTENT_LENGTH = MAX_FILE_MB * 1024 * 1024
 
-app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
+
+STORAGE_BUCKET = os.getenv(
+    "SUPABASE_STORAGE_BUCKET",
+    "koja-assignments"
+)
+
+APP_NAME = "KOJA AFRICA"
+APP_TAGLINE = "Submit • Process • Receive"
 
 ALLOWED_EXTENSIONS = {
-    "pdf", "doc", "docx", "txt",
-    "jpg", "jpeg", "png", "webp",
-    "xls", "xlsx", "csv",
-    "ppt", "pptx"
+    "pdf",
+    "doc",
+    "docx",
+    "txt",
+    "jpg",
+    "jpeg",
+    "png",
+    "webp",
+    "xls",
+    "xlsx",
+    "ppt",
+    "pptx",
+    "zip",
 }
 
-UNIVERSITIES_ZAMBIA = [
-    "Copperbelt University (CBU)",
-    "University of Zambia (UNZA)",
-    "Mulungushi University",
-    "Nkrumah University",
-    "Mukuba University",
-    "Chalimbana University",
-    "Kwame Nkrumah University",
-    "Kapasa Makasa University",
-    "Levy Mwanawasa Medical University",
-    "Mulungushi University School of Medicine",
-    "Zambia Catholic University",
-    "University of Lusaka",
-    "Information and Communications University",
-    "Lusaka Apex Medical University",
-    "Texila American University Zambia",
-    "Zambia Open University",
-    "Rockview University",
-    "Cavendish University Zambia",
-    "National Institute of Public Administration",
-    "Other University in Zambia"
-]
-
-MODES_OF_STUDY = [
-    "Full-time",
-    "Part-time",
-    "Distance Learning",
-    "Open and Distance Learning",
-    "Online",
-    "Evening",
-    "Weekend"
-]
-
-SERVICE_CATEGORIES = [
-    "Result Verification & Certification",
-    "TPN Centre",
-    "Farmer Registration",
-    "Higher Education Applications",
-    "Higher Education Materials",
-    "Assignments",
-    "Supporting Documents",
-    "Other Service"
-]
-
-STATUSES = [
-    "New",
-    "Processing",
-    "Awaiting Client",
-    "Completed",
-    "Cancelled"
-]
+STATUS_NEW = "New"
+STATUS_PROCESSING = "Processing"
+STATUS_COMPLETED = "Completed"
 
 
 # ============================================================
-# BASIC HELPERS
+# BASIC VALIDATION
 # ============================================================
 
-def utc_now():
-    return datetime.now(timezone.utc).isoformat()
-
-
-def configured():
+def configuration_ok():
     return bool(SUPABASE_URL and SUPABASE_SERVICE_KEY)
 
 
-def supabase_headers(extra=None):
-    headers = {
-        "apikey": SUPABASE_SERVICE_KEY,
-        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
-        "Content-Type": "application/json",
-    }
-    if extra:
-        headers.update(extra)
-    return headers
-
-
-def db_url(table):
-    return f"{SUPABASE_URL}/rest/v1/{table}"
-
-
-def storage_url(path=""):
-    base = f"{SUPABASE_URL}/storage/v1"
-    return f"{base}/{path.lstrip('/')}"
-
-
-def db_get(table, params=None):
-    if not configured():
-        raise RuntimeError("Supabase is not configured.")
-    r = requests.get(
-        db_url(table),
-        headers=supabase_headers({"Accept": "application/json"}),
-        params=params or {},
-        timeout=30
-    )
-    if not r.ok:
-        raise RuntimeError(f"Database GET failed for {table}: {r.status_code} {r.text[:500]}")
-    return r.json()
-
-
-def db_insert(table, payload, select="*"):
-    if not configured():
-        raise RuntimeError("Supabase is not configured.")
-    r = requests.post(
-        db_url(table),
-        headers=supabase_headers({
-            "Prefer": "return=representation",
-            "Accept": "application/json"
-        }),
-        params={"select": select},
-        json=payload,
-        timeout=30
-    )
-    if not r.ok:
-        raise RuntimeError(f"Database INSERT failed for {table}: {r.status_code} {r.text[:700]}")
-    return r.json()
-
-
-def db_update(table, filters, payload):
-    if not configured():
-        raise RuntimeError("Supabase is not configured.")
-    r = requests.patch(
-        db_url(table),
-        headers=supabase_headers({
-            "Prefer": "return=representation",
-            "Accept": "application/json"
-        }),
-        params=filters,
-        json=payload,
-        timeout=30
-    )
-    if not r.ok:
-        raise RuntimeError(f"Database UPDATE failed for {table}: {r.status_code} {r.text[:700]}")
-    return r.json()
-
-
-def db_delete(table, filters):
-    if not configured():
-        raise RuntimeError("Supabase is not configured.")
-    r = requests.delete(
-        db_url(table),
-        headers=supabase_headers(),
-        params=filters,
-        timeout=30
-    )
-    if not r.ok:
-        raise RuntimeError(f"Database DELETE failed for {table}: {r.status_code} {r.text[:700]}")
-    return True
-
-
-def first(items):
-    return items[0] if items else None
-
-
-def clean(value):
-    return (value or "").strip()
-
-
-def current_user():
-    uid = session.get("user_id")
-    if not uid:
-        return None
-    try:
-        return first(db_get("profiles", {
-            "id": f"eq.{uid}",
-            "select": "*",
-            "limit": "1"
-        }))
-    except Exception:
-        return None
-
-
-def is_admin():
-    return session.get("role") == "admin"
-
-
-def login_required(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        if not session.get("user_id"):
-            flash("Please log in first.", "warning")
-            return redirect(url_for("login", next=request.path))
-        return fn(*args, **kwargs)
-    return wrapper
-
-
-def admin_required(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        if not is_admin():
-            flash("Administrator access is required.", "danger")
-            return redirect(url_for("admin_login"))
-        return fn(*args, **kwargs)
-    return wrapper
+def require_configuration():
+    if not configuration_ok():
+        raise RuntimeError(
+            "SUPABASE_URL and SUPABASE_SERVICE_KEY are not configured."
+        )
 
 
 def allowed_file(filename):
     if not filename or "." not in filename:
         return False
-    return filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+
+    extension = filename.rsplit(".", 1)[1].lower()
+
+    return extension in ALLOWED_EXTENSIONS
 
 
-def extension(filename):
-    return filename.rsplit(".", 1)[1].lower() if "." in filename else ""
+def safe_filename(filename):
+    filename = os.path.basename(filename or "file")
+    filename = filename.replace("\x00", "")
+    return filename[:180]
 
 
-def make_reference():
-    return "KOJA-" + datetime.now().strftime("%Y%m%d") + "-" + secrets.token_hex(3).upper()
+def now_iso():
+    return datetime.now(timezone.utc).isoformat()
 
 
-def storage_upload(file_storage, folder, reference):
-    if not file_storage or not file_storage.filename:
+# ============================================================
+# SUPABASE REST
+# ============================================================
+
+def supabase_headers(prefer=None):
+    require_configuration()
+
+    headers = {
+        "apikey": SUPABASE_SERVICE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    if prefer:
+        headers["Prefer"] = prefer
+
+    return headers
+
+
+def supabase_request(method, path, **kwargs):
+    require_configuration()
+
+    url = f"{SUPABASE_URL}/rest/v1/{path}"
+
+    headers = kwargs.pop("headers", {})
+    merged = supabase_headers()
+
+    merged.update(headers)
+
+    response = requests.request(
+        method,
+        url,
+        headers=merged,
+        timeout=30,
+        **kwargs
+    )
+
+    if not response.ok:
+        logging.error(
+            "Supabase %s %s failed: %s %s",
+            method,
+            path,
+            response.status_code,
+            response.text[:2000]
+        )
+
+        raise RuntimeError(
+            f"Supabase request failed ({response.status_code}): "
+            f"{response.text[:500]}"
+        )
+
+    if not response.text:
         return None
 
-    if not allowed_file(file_storage.filename):
-        raise ValueError("Unsupported file type.")
+    try:
+        return response.json()
+    except Exception:
+        return response.text
 
-    ext = extension(file_storage.filename)
-    safe_name = f"{uuid.uuid4().hex}.{ext}"
-    path = f"{folder}/{reference}/{safe_name}"
 
-    data = file_storage.read()
-    mime = file_storage.mimetype or "application/octet-stream"
+def db_select(
+    table,
+    select="*",
+    filters=None,
+    order=None,
+    limit=None,
+):
+    params = {
+        "select": select
+    }
 
-    url = storage_url(f"object/{STORAGE_BUCKET}/{path}")
-    headers = supabase_headers({
-        "Content-Type": mime,
-        "x-upsert": "false"
-    })
+    if filters:
+        params.update(filters)
 
-    r = requests.post(url, headers=headers, data=data, timeout=60)
+    if order:
+        params["order"] = order
 
-    if not r.ok:
+    if limit:
+        params["limit"] = str(limit)
+
+    return supabase_request(
+        "GET",
+        table,
+        params=params
+    )
+
+
+def db_insert(table, data, returning=True):
+    prefer = "return=representation" if returning else "return=minimal"
+
+    return supabase_request(
+        "POST",
+        table,
+        headers={
+            "Prefer": prefer
+        },
+        json=data
+    )
+
+
+def db_update(table, filters, data, returning=True):
+    params = dict(filters)
+
+    prefer = "return=representation" if returning else "return=minimal"
+
+    return supabase_request(
+        "PATCH",
+        table,
+        headers={
+            "Prefer": prefer
+        },
+        params=params,
+        json=data
+    )
+
+
+def db_delete(table, filters):
+    return supabase_request(
+        "DELETE",
+        table,
+        params=filters
+    )
+
+
+# ============================================================
+# STORAGE
+# ============================================================
+
+def storage_upload(file_storage, folder="supporting"):
+    """
+    Uploads a file to Supabase Storage.
+    Returns the storage path.
+    """
+
+    require_configuration()
+
+    original_name = safe_filename(file_storage.filename)
+
+    extension = ""
+    if "." in original_name:
+        extension = original_name.rsplit(".", 1)[1].lower()
+
+    unique_name = (
+        f"{uuid.uuid4().hex}"
+        + (f".{extension}" if extension else "")
+    )
+
+    storage_path = f"{folder}/{unique_name}"
+
+    content_type = (
+        file_storage.mimetype
+        or "application/octet-stream"
+    )
+
+    url = (
+        f"{SUPABASE_URL}/storage/v1/object/"
+        f"{quote(STORAGE_BUCKET, safe='')}/"
+        f"{quote(storage_path, safe='/')}"
+    )
+
+    headers = {
+        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+        "apikey": SUPABASE_SERVICE_KEY,
+        "Content-Type": content_type,
+        "x-upsert": "false",
+    }
+
+    file_storage.stream.seek(0)
+
+    response = requests.post(
+        url,
+        headers=headers,
+        data=file_storage.stream,
+        timeout=60
+    )
+
+    if not response.ok:
+        logging.error(
+            "Storage upload failed: %s %s",
+            response.status_code,
+            response.text[:1000]
+        )
+
         raise RuntimeError(
-            f"Storage upload failed: {r.status_code} {r.text[:700]}"
+            f"File upload failed: {response.text[:500]}"
         )
 
     return {
-        "path": path,
-        "original_name": file_storage.filename,
-        "mime_type": mime,
-        "size": len(data)
+        "path": storage_path,
+        "file_name": original_name,
+        "content_type": content_type,
+        "size": request.content_length or 0,
     }
 
 
 def storage_download(path):
-    if not path:
-        abort(404)
+    """
+    Downloads a private Supabase Storage object.
+    """
 
-    url = storage_url(f"object/{STORAGE_BUCKET}/{path}")
-    r = requests.get(
+    require_configuration()
+
+    url = (
+        f"{SUPABASE_URL}/storage/v1/object/"
+        f"{quote(STORAGE_BUCKET, safe='')}/"
+        f"{quote(path, safe='/')}"
+    )
+
+    headers = {
+        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+        "apikey": SUPABASE_SERVICE_KEY,
+    }
+
+    response = requests.get(
         url,
-        headers=supabase_headers(),
+        headers=headers,
         timeout=60
     )
 
-    if not r.ok:
-        abort(404)
+    if not response.ok:
+        raise RuntimeError(
+            f"Storage download failed: {response.text[:500]}"
+        )
 
-    return r.content
-
-
-def notify(user_id, title, message, request_id=None):
-    try:
-        db_insert("notifications", {
-            "user_id": user_id,
-            "title": title,
-            "message": message,
-            "request_id": request_id,
-            "is_read": False,
-            "created_at": utc_now()
-        })
-    except Exception:
-        pass
+    return response
 
 
 # ============================================================
-# HTML
+# REQUEST NUMBER
 # ============================================================
 
-BASE = """
+def generate_request_number():
+    """
+    Example:
+    KOJA-20260828-A1B2C3D4
+    """
+
+    date_part = datetime.now(timezone.utc).strftime("%Y%m%d")
+    random_part = secrets.token_hex(4).upper()
+
+    return f"KOJA-{date_part}-{random_part}"
+
+
+def create_unique_request_number():
+    for _ in range(10):
+        number = generate_request_number()
+
+        existing = db_select(
+            "koja_service_requests",
+            select="id",
+            filters={
+                "request_number": f"eq.{number}"
+            },
+            limit=1
+        )
+
+        if not existing:
+            return number
+
+    raise RuntimeError(
+        "Could not generate a unique request number."
+    )
+
+
+# ============================================================
+# AUTH HELPERS
+# ============================================================
+
+def client_login_required(function):
+    @wraps(function)
+    def wrapper(*args, **kwargs):
+        if not session.get("client_id"):
+            flash("Please log in first.", "warning")
+            return redirect(url_for("login"))
+
+        return function(*args, **kwargs)
+
+    return wrapper
+
+
+def admin_required(function):
+    @wraps(function)
+    def wrapper(*args, **kwargs):
+        if not session.get("admin_logged_in"):
+            flash("Administrator login required.", "warning")
+            return redirect(url_for("admin_login"))
+
+        return function(*args, **kwargs)
+
+    return wrapper
+
+
+# ============================================================
+# HTML / CSS
+# ============================================================
+
+BASE_HTML = """
 <!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{{ title or 'KOJA AFRICA' }}</title>
+
+<meta name="viewport"
+      content="width=device-width, initial-scale=1">
+
+<title>{{ title or "KOJA AFRICA" }}</title>
+
 <style>
-:root{
- --primary:#0b5ed7;
- --dark:#10233f;
- --green:#198754;
- --danger:#dc3545;
- --light:#f5f7fb;
- --border:#dce2ea;
+
+* {
+    box-sizing: border-box;
 }
-*{box-sizing:border-box}
-body{
- margin:0;
- font-family:Arial,Helvetica,sans-serif;
- background:var(--light);
- color:#172033;
+
+body {
+    margin: 0;
+    background: #f4f7fb;
+    color: #172033;
+    font-family:
+        Arial,
+        Helvetica,
+        sans-serif;
 }
-nav{
- background:var(--dark);
- color:#fff;
- padding:14px 5%;
- display:flex;
- align-items:center;
- justify-content:space-between;
- gap:15px;
- flex-wrap:wrap;
+
+nav {
+    background: #101828;
+    color: white;
+    padding: 14px 18px;
 }
-nav a{color:#fff;text-decoration:none;margin:0 6px}
-.brand{font-size:21px;font-weight:800}
-.container{max-width:1150px;margin:25px auto;padding:0 15px}
-.card{
- background:#fff;
- border:1px solid var(--border);
- border-radius:14px;
- padding:20px;
- margin-bottom:18px;
- box-shadow:0 2px 8px rgba(0,0,0,.04)
+
+.nav-inner {
+    max-width: 1100px;
+    margin: auto;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 15px;
 }
-.grid{
- display:grid;
- grid-template-columns:repeat(auto-fit,minmax(240px,1fr));
- gap:15px;
+
+.logo {
+    font-size: 22px;
+    font-weight: 800;
+    text-decoration: none;
+    color: white;
 }
-input,select,textarea{
- width:100%;
- padding:11px 12px;
- border:1px solid #cbd3df;
- border-radius:9px;
- font-size:15px;
- background:#fff;
+
+.nav-links {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
 }
-textarea{min-height:130px;resize:vertical}
-label{font-weight:700;font-size:14px;display:block;margin-bottom:6px}
-.field{margin-bottom:14px}
-button,.btn{
- border:0;
- border-radius:9px;
- padding:11px 16px;
- cursor:pointer;
- text-decoration:none;
- display:inline-block;
- font-weight:700;
- background:var(--primary);
- color:#fff;
+
+.nav-links a {
+    color: white;
+    text-decoration: none;
+    padding: 8px 10px;
+    border-radius: 7px;
 }
-.btn.green{background:var(--green)}
-.btn.dark{background:var(--dark)}
-.btn.red{background:var(--danger)}
-.btn.gray{background:#6c757d}
-.badge{
- display:inline-block;
- padding:5px 9px;
- border-radius:20px;
- background:#e9eef8;
- font-size:12px;
- font-weight:700;
+
+.nav-links a:hover {
+    background: rgba(255,255,255,.1);
 }
-.alert{
- padding:12px 14px;
- border-radius:9px;
- margin-bottom:12px;
- background:#e9eef8;
+
+.container {
+    max-width: 1100px;
+    margin: 25px auto;
+    padding: 0 15px;
 }
-.alert.danger{background:#f8d7da}
-.alert.success{background:#d1e7dd}
-.alert.warning{background:#fff3cd}
-table{width:100%;border-collapse:collapse}
-th,td{text-align:left;padding:10px;border-bottom:1px solid var(--border);vertical-align:top}
-.small{font-size:13px;color:#657085}
-.hero{
- padding:40px 20px;
- text-align:center;
- background:linear-gradient(135deg,#10233f,#0b5ed7);
- color:white;
- border-radius:18px;
- margin-bottom:20px;
+
+.hero {
+    background: white;
+    border-radius: 18px;
+    padding: 30px;
+    margin-bottom: 20px;
+    box-shadow: 0 5px 25px rgba(0,0,0,.06);
 }
-h1,h2,h3{color:var(--dark)}
-.hero h1{color:white;font-size:34px;margin:5px}
-.actions{display:flex;gap:8px;flex-wrap:wrap}
-details summary{cursor:pointer;font-weight:700}
-@media(max-width:650px){
- th:nth-child(3),td:nth-child(3){display:none}
- .hero h1{font-size:27px}
+
+.hero h1 {
+    margin-top: 0;
+    font-size: 34px;
 }
+
+.hero p {
+    color: #667085;
+    font-size: 16px;
+}
+
+.grid {
+    display: grid;
+    grid-template-columns:
+        repeat(auto-fit, minmax(220px, 1fr));
+    gap: 16px;
+}
+
+.card {
+    background: white;
+    padding: 20px;
+    border-radius: 15px;
+    box-shadow: 0 4px 18px rgba(0,0,0,.05);
+}
+
+.card h3 {
+    margin-top: 0;
+}
+
+.card a {
+    text-decoration: none;
+}
+
+.form-card {
+    max-width: 760px;
+    margin: auto;
+    background: white;
+    padding: 25px;
+    border-radius: 18px;
+    box-shadow: 0 5px 25px rgba(0,0,0,.06);
+}
+
+label {
+    display: block;
+    margin-top: 14px;
+    margin-bottom: 6px;
+    font-weight: 700;
+}
+
+input,
+select,
+textarea {
+    width: 100%;
+    padding: 12px;
+    border: 1px solid #d0d5dd;
+    border-radius: 9px;
+    font-size: 15px;
+    background: white;
+}
+
+textarea {
+    min-height: 120px;
+    resize: vertical;
+}
+
+button,
+.btn {
+    display: inline-block;
+    border: 0;
+    background: #176bff;
+    color: white;
+    padding: 12px 17px;
+    border-radius: 9px;
+    text-decoration: none;
+    cursor: pointer;
+    font-weight: 700;
+    margin-top: 16px;
+}
+
+.btn.secondary {
+    background: #344054;
+}
+
+.btn.success {
+    background: #039855;
+}
+
+.btn.warning {
+    background: #f79009;
+}
+
+.btn.danger {
+    background: #d92d20;
+}
+
+.flash {
+    padding: 13px 15px;
+    background: #eaf2ff;
+    border-radius: 9px;
+    margin-bottom: 15px;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    background: white;
+}
+
+th,
+td {
+    padding: 11px;
+    border-bottom: 1px solid #eaecf0;
+    text-align: left;
+    vertical-align: top;
+}
+
+.status {
+    display: inline-block;
+    padding: 6px 9px;
+    border-radius: 20px;
+    background: #eef2ff;
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.status.completed {
+    background: #dcfae6;
+    color: #027a48;
+}
+
+.status.processing {
+    background: #fef0c7;
+    color: #b54708;
+}
+
+.status.new {
+    background: #eaf2ff;
+    color: #175cd3;
+}
+
+.detail {
+    background: #f8fafc;
+    border-radius: 10px;
+    padding: 13px;
+    margin-bottom: 10px;
+}
+
+.small {
+    color: #667085;
+    font-size: 13px;
+}
+
+footer {
+    margin-top: 50px;
+    padding: 25px;
+    background: #101828;
+    color: white;
+    text-align: center;
+}
+
+@media(max-width:650px) {
+
+    .nav-inner {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .hero h1 {
+        font-size: 27px;
+    }
+
+    table {
+        display: block;
+        overflow-x: auto;
+    }
+
+}
+
 </style>
 </head>
+
 <body>
+
 <nav>
- <div class="brand">KOJA AFRICA</div>
- <div>
- {% if session.get('user_id') %}
-   <a href="{{ url_for('dashboard') }}">Dashboard</a>
-   <a href="{{ url_for('new_request') }}">Submit Work</a>
-   <a href="{{ url_for('notifications') }}">Notifications</a>
-   {% if session.get('role') == 'admin' %}
-     <a href="{{ url_for('admin_dashboard') }}">Admin</a>
-   {% endif %}
-   <a href="{{ url_for('logout') }}">Logout</a>
- {% else %}
-   <a href="{{ url_for('login') }}">Login</a>
-   <a href="{{ url_for('register') }}">Register</a>
- {% endif %}
- </div>
+<div class="nav-inner">
+
+<a class="logo" href="{{ url_for('home') }}">
+KOJA AFRICA
+</a>
+
+<div class="nav-links">
+
+<a href="{{ url_for('home') }}">Home</a>
+
+{% if session.get("client_id") %}
+<a href="{{ url_for('dashboard') }}">Dashboard</a>
+<a href="{{ url_for('new_request') }}">New Request</a>
+<a href="{{ url_for('my_requests') }}">My Requests</a>
+<a href="{{ url_for('logout') }}">Logout</a>
+
+{% elif session.get("admin_logged_in") %}
+
+<a href="{{ url_for('admin_dashboard') }}">Admin</a>
+<a href="{{ url_for('admin_logout') }}">Logout</a>
+
+{% else %}
+
+<a href="{{ url_for('login') }}">Client Login</a>
+<a href="{{ url_for('register') }}">Register</a>
+
+{% endif %}
+
+</div>
+</div>
 </nav>
 
 <div class="container">
-{% with messages=get_flashed_messages(with_categories=true) %}
- {% for category,message in messages %}
-   <div class="alert {{ category }}">{{ message }}</div>
- {% endfor %}
+
+{% with messages = get_flashed_messages() %}
+{% for message in messages %}
+<div class="flash">{{ message }}</div>
+{% endfor %}
 {% endwith %}
 
 {{ body|safe }}
+
 </div>
+
+<footer>
+<strong>KOJA AFRICA</strong><br>
+{{ tagline }}<br><br>
+Client submits → KOJA processes → Client receives
+</footer>
+
 </body>
 </html>
 """
 
 
-def page(title, body):
-    return render_template_string(BASE, title=title, body=body)
+def page(title, body_template, **context):
+    body = render_template_string(
+        body_template,
+        **context
+    )
+
+    return render_template_string(
+        BASE_HTML,
+        title=title,
+        body=body,
+        tagline=APP_TAGLINE
+    )
 
 
 # ============================================================
-# PUBLIC
+# HOME
 # ============================================================
 
 @app.route("/")
 def home():
+
     body = """
     <div class="hero">
-      <h1>KOJA AFRICA</h1>
-      <p>Submit your work. KOJA processes it. Receive the finished document.</p>
-      <div class="actions" style="justify-content:center;margin-top:18px">
-        <a class="btn green" href="/register">Create Client Account</a>
-        <a class="btn" href="/login">Client Login</a>
-      </div>
+        <h1>KOJA AFRICA</h1>
+
+        <p>
+        Professional request processing and document delivery.
+        </p>
+
+        <p>
+        Submit your work and supporting documents.
+        KOJA processes the request and returns the completed
+        document through your account.
+        </p>
+
+        {% if not session.get("client_id") %}
+        <a class="btn" href="{{ url_for('register') }}">
+            Create Client Account
+        </a>
+
+        <a class="btn secondary"
+           href="{{ url_for('login') }}">
+            Client Login
+        </a>
+        {% else %}
+        <a class="btn" href="{{ url_for('new_request') }}">
+            Submit New Request
+        </a>
+        {% endif %}
     </div>
 
     <div class="grid">
-      <div class="card"><h3>Higher Education</h3><p>University applications, supporting documents and academic materials.</p></div>
-      <div class="card"><h3>Assignments</h3><p>Submit questions and source files for processing and return.</p></div>
-      <div class="card"><h3>Verification</h3><p>Result verification and certification-related requests.</p></div>
-      <div class="card"><h3>Business & Agriculture</h3><p>TPN Centre, farmer registration and other supported services.</p></div>
-    </div>
 
-    <div class="card">
-      <h2>How KOJA Works</h2>
-      <p><b>1. Submit Request</b> → <b>2. New</b> → <b>3. Processing</b> →
-      <b>4. Completed</b> → <b>5. Download Finished File</b></p>
+        <div class="card">
+            <h3>Assignments</h3>
+            <p>Submit academic work and supporting material.</p>
+        </div>
+
+        <div class="card">
+            <h3>Result Verification</h3>
+            <p>Submit documents for verification and certification services.</p>
+        </div>
+
+        <div class="card">
+            <h3>TPN Centre</h3>
+            <p>Submit TPN-related service requests.</p>
+        </div>
+
+        <div class="card">
+            <h3>Farmer Registration</h3>
+            <p>Submit farmer registration requests.</p>
+        </div>
+
+        <div class="card">
+            <h3>Higher Education</h3>
+            <p>University application and education-related services.</p>
+        </div>
+
+        <div class="card">
+            <h3>Academic Materials</h3>
+            <p>Submit requests for higher education materials.</p>
+        </div>
+
     </div>
     """
+
     return page("KOJA AFRICA", body)
 
 
-@app.route("/health")
-def health():
-    return {
-        "status": "ok",
-        "app": "KOJA AFRICA",
-        "supabase_configured": configured(),
-        "time": utc_now()
-    }
-
-
 # ============================================================
-# AUTH
+# REGISTER
 # ============================================================
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
+
     if request.method == "POST":
-        full_name = clean(request.form.get("full_name"))
-        email = clean(request.form.get("email")).lower()
-        phone = clean(request.form.get("phone"))
+
+        name = request.form.get("name", "").strip()
+        email = request.form.get("email", "").strip().lower()
+        phone = request.form.get("phone", "").strip()
         password = request.form.get("password", "")
 
-        if not full_name or not email or not phone or len(password) < 6:
-            flash("Enter full name, email, contact number and a password of at least 6 characters.", "danger")
+        if not name or not email or not password:
+            flash("Name, email and password are required.")
+            return redirect(url_for("register"))
+
+        if len(password) < 6:
+            flash("Password must be at least 6 characters.")
             return redirect(url_for("register"))
 
         try:
-            existing = db_get("profiles", {
-                "email": f"eq.{email}",
-                "select": "id",
-                "limit": "1"
-            })
+
+            existing = db_select(
+                "koja_clients",
+                select="id",
+                filters={
+                    "email": f"eq.{email}"
+                },
+                limit=1
+            )
+
             if existing:
-                flash("An account with that email already exists.", "warning")
+                flash("An account with that email already exists.")
                 return redirect(url_for("login"))
 
-            rows = db_insert("profiles", {
-                "full_name": full_name,
-                "email": email,
-                "phone": phone,
-                "password_hash": generate_password_hash(password),
-                "role": "client",
-                "created_at": utc_now()
-            })
+            password_hash = generate_password_hash(password)
 
-            user = first(rows)
-            session["user_id"] = user["id"]
-            session["role"] = "client"
-            flash("Account created successfully.", "success")
+            result = db_insert(
+                "koja_clients",
+                {
+                    "name": name,
+                    "email": email,
+                    "phone": phone,
+                    "password_hash": password_hash,
+                    "created_at": now_iso(),
+                }
+            )
+
+            client = result[0]
+
+            session.clear()
+
+            session["client_id"] = client["id"]
+            session["client_name"] = client["name"]
+            session["client_email"] = client["email"]
+
+            flash("Account created successfully.")
+
             return redirect(url_for("dashboard"))
 
-        except Exception as e:
-            flash(str(e), "danger")
+        except Exception as exc:
+
+            logging.exception("Registration error")
+
+            flash(
+                f"Registration error: {str(exc)[:250]}"
+            )
 
     body = """
-    <div class="card">
-      <h2>Create Client Account</h2>
-      <form method="post">
-        <div class="grid">
-          <div class="field"><label>Full Name</label><input name="full_name" required></div>
-          <div class="field"><label>Email Address</label><input type="email" name="email" required></div>
-          <div class="field"><label>Contact Number</label><input name="phone" placeholder="+260..." required></div>
-          <div class="field"><label>Password</label><input type="password" name="password" minlength="6" required></div>
-        </div>
-        <button>Create Account</button>
-      </form>
+    <div class="form-card">
+
+    <h2>Create KOJA Client Account</h2>
+
+    <form method="post">
+
+        <label>Full Name</label>
+        <input name="name"
+               required
+               autocomplete="name">
+
+        <label>Email Address</label>
+        <input type="email"
+               name="email"
+               required
+               autocomplete="email">
+
+        <label>Phone / Contact</label>
+        <input name="phone"
+               placeholder="e.g. 097xxxxxxx">
+
+        <label>Password</label>
+        <input type="password"
+               name="password"
+               required
+               minlength="6"
+               autocomplete="new-password">
+
+        <button type="submit">
+            Create Account
+        </button>
+
+    </form>
+
+    <p>
+    Already have an account?
+    <a href="{{ url_for('login') }}">Login</a>
+    </p>
+
     </div>
     """
+
     return page("Register", body)
 
 
+# ============================================================
+# LOGIN
+# ============================================================
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
+
     if request.method == "POST":
-        email = clean(request.form.get("email")).lower()
-        password = request.form.get("password", "")
+
+        email = request.form.get(
+            "email",
+            ""
+        ).strip().lower()
+
+        password = request.form.get(
+            "password",
+            ""
+        )
 
         try:
-            rows = db_get("profiles", {
-                "email": f"eq.{email}",
-                "select": "*",
-                "limit": "1"
-            })
-            user = first(rows)
 
-            if not user or not check_password_hash(user.get("password_hash", ""), password):
-                flash("Invalid email or password.", "danger")
+            clients = db_select(
+                "koja_clients",
+                select="*",
+                filters={
+                    "email": f"eq.{email}"
+                },
+                limit=1
+            )
+
+            if not clients:
+                flash("Invalid email or password.")
+                return redirect(url_for("login"))
+
+            client = clients[0]
+
+            if not check_password_hash(
+                client["password_hash"],
+                password
+            ):
+                flash("Invalid email or password.")
                 return redirect(url_for("login"))
 
             session.clear()
-            session["user_id"] = user["id"]
-            session["role"] = user.get("role", "client")
-            return redirect(url_for("admin_dashboard" if session["role"] == "admin" else "dashboard"))
 
-        except Exception as e:
-            flash(str(e), "danger")
+            session["client_id"] = client["id"]
+            session["client_name"] = client["name"]
+            session["client_email"] = client["email"]
+
+            return redirect(url_for("dashboard"))
+
+        except Exception as exc:
+
+            logging.exception("Login error")
+
+            flash(
+                f"Login error: {str(exc)[:250]}"
+            )
 
     body = """
-    <div class="card" style="max-width:500px;margin:auto">
-      <h2>Client Login</h2>
-      <form method="post">
-        <div class="field"><label>Email</label><input type="email" name="email" required></div>
-        <div class="field"><label>Password</label><input type="password" name="password" required></div>
-        <button>Login</button>
-      </form>
-      <p class="small">Need an account? <a href="/register">Register here</a>.</p>
+    <div class="form-card">
+
+    <h2>Client Login</h2>
+
+    <form method="post">
+
+        <label>Email</label>
+        <input type="email"
+               name="email"
+               required
+               autocomplete="email">
+
+        <label>Password</label>
+        <input type="password"
+               name="password"
+               required
+               autocomplete="current-password">
+
+        <button type="submit">
+            Login
+        </button>
+
+    </form>
+
+    <p>
+    No account?
+    <a href="{{ url_for('register') }}">Create one</a>
+    </p>
+
     </div>
     """
-    return page("Login", body)
 
+    return page("Client Login", body)
+
+
+# ============================================================
+# LOGOUT
+# ============================================================
 
 @app.route("/logout")
 def logout():
+
     session.clear()
+
+    flash("You have been logged out.")
+
     return redirect(url_for("home"))
-
-
-@app.route("/admin-login", methods=["GET", "POST"])
-def admin_login():
-    if request.method == "POST":
-        email = clean(request.form.get("email")).lower()
-        password = request.form.get("password", "")
-
-        if email == ADMIN_EMAIL and secrets.compare_digest(password, ADMIN_PASSWORD):
-            session.clear()
-            session["user_id"] = "ADMIN"
-            session["role"] = "admin"
-            return redirect(url_for("admin_dashboard"))
-
-        flash("Invalid administrator credentials.", "danger")
-
-    body = """
-    <div class="card" style="max-width:500px;margin:auto">
-      <h2>KOJA Administrator</h2>
-      <form method="post">
-        <div class="field"><label>Admin Email</label><input type="email" name="email" required></div>
-        <div class="field"><label>Admin Password</label><input type="password" name="password" required></div>
-        <button>Administrator Login</button>
-      </form>
-    </div>
-    """
-    return page("Admin Login", body)
 
 
 # ============================================================
@@ -666,511 +1044,1082 @@ def admin_login():
 # ============================================================
 
 @app.route("/dashboard")
-@login_required
+@client_login_required
 def dashboard():
-    user = current_user()
-    if not user:
-        session.clear()
-        return redirect(url_for("login"))
 
-    try:
-        requests_list = db_get("service_requests", {
-            "client_id": f"eq.{user['id']}",
-            "select": "*",
-            "order": "created_at.desc"
-        })
-    except Exception as e:
-        flash(str(e), "danger")
-        requests_list = []
+    email = session["client_email"]
 
-    body = f"""
+    requests_data = db_select(
+        "koja_service_requests",
+        select="*",
+        filters={
+            "client_email": f"eq.{email}"
+        },
+        order="created_at.desc",
+        limit=20
+    )
+
+    notifications = db_select(
+        "koja_notifications",
+        select="*",
+        filters={
+            "client_email": f"eq.{email}",
+            "is_read": "eq.false"
+        },
+        order="created_at.desc",
+        limit=10
+    )
+
+    body = """
     <div class="hero">
-      <h1>Welcome, {user.get('full_name','Client')}</h1>
-      <p>KOJA AFRICA client service centre</p>
-      <a class="btn green" href="/request/new">Submit New Work</a>
+
+        <h1>
+        Welcome, {{ session.get("client_name") }}
+        </h1>
+
+        <p>
+        This is your KOJA AFRICA service dashboard.
+        </p>
+
+        <a class="btn"
+           href="{{ url_for('new_request') }}">
+           Submit New Request
+        </a>
+
     </div>
+
+    <div class="grid">
+
+        <div class="card">
+            <h3>Total Requests</h3>
+            <h2>{{ requests_data|length }}</h2>
+        </div>
+
+        <div class="card">
+            <h3>Notifications</h3>
+            <h2>{{ notifications|length }}</h2>
+        </div>
+
+    </div>
+
+    <br>
 
     <div class="card">
-      <h2>My Requests</h2>
-      <p class="small">Track every job from submission to finished-file delivery.</p>
-      {render_request_table(requests_list)}
+
+        <h2>Recent Requests</h2>
+
+        {% if requests_data %}
+
+        {% for r in requests_data %}
+
+        <div class="detail">
+
+            <strong>{{ r.request_number }}</strong>
+
+            <br>
+
+            {{ r.service_type }}
+
+            <br>
+
+            <span class="status
+            {% if r.status == 'Completed' %}
+            completed
+            {% elif r.status == 'Processing' %}
+            processing
+            {% else %}
+            new
+            {% endif %}
+            ">
+                {{ r.status }}
+            </span>
+
+            <br>
+
+            <a href="{{ url_for(
+                'request_detail',
+                request_id=r.id
+            ) }}">
+                View Request
+            </a>
+
+        </div>
+
+        {% endfor %}
+
+        {% else %}
+
+        <p>You have not submitted any requests yet.</p>
+
+        {% endif %}
+
     </div>
     """
-    return page("Client Dashboard", body)
 
-
-def render_request_table(items):
-    if not items:
-        return "<p>No requests yet. <a href='/request/new'>Submit your first request.</a></p>"
-
-    rows = ""
-    for x in items:
-        ref = x.get("reference_no", "")
-        status = x.get("status", "New")
-        rows += f"""
-        <tr>
-          <td><b>{ref}</b><br><span class="small">{x.get('service_category','')}</span></td>
-          <td>{x.get('subject','')}</td>
-          <td><span class="badge">{status}</span></td>
-          <td>{str(x.get('created_at',''))[:19]}</td>
-          <td><a class="btn" href="/request/{x.get('id')}">Open</a></td>
-        </tr>
-        """
-
-    return f"""
-    <div style="overflow:auto">
-    <table>
-      <thead><tr>
-        <th>Reference</th><th>Subject</th><th>Status</th><th>Submitted</th><th></th>
-      </tr></thead>
-      <tbody>{rows}</tbody>
-    </table>
-    </div>
-    """
+    return page(
+        "Dashboard",
+        body,
+        requests_data=requests_data,
+        notifications=notifications
+    )
 
 
 # ============================================================
-# NEW SERVICE REQUEST
+# NEW REQUEST
 # ============================================================
 
 @app.route("/request/new", methods=["GET", "POST"])
-@login_required
+@client_login_required
 def new_request():
-    user = current_user()
-    if not user:
-        return redirect(url_for("login"))
+
+    try:
+
+        services = db_select(
+            "koja_services",
+            select="*",
+            filters={
+                "active": "eq.true"
+            },
+            order="name.asc"
+        )
+
+        universities = db_select(
+            "koja_universities",
+            select="*",
+            order="name.asc"
+        )
+
+    except Exception as exc:
+
+        logging.exception("Loading request form failed")
+
+        flash(
+            f"Could not load request form: {str(exc)[:250]}"
+        )
+
+        return redirect(url_for("dashboard"))
 
     if request.method == "POST":
-        category = clean(request.form.get("service_category"))
-        subject = clean(request.form.get("subject"))
-        description = clean(request.form.get("description"))
 
-        if not category or not subject:
-            flash("Service category and subject are required.", "danger")
+        service_type = request.form.get(
+            "service_type",
+            ""
+        ).strip()
+
+        description = request.form.get(
+            "description",
+            ""
+        ).strip()
+
+        university = request.form.get(
+            "university",
+            ""
+        ).strip()
+
+        mode_of_study = request.form.get(
+            "mode_of_study",
+            ""
+        ).strip()
+
+        school = request.form.get(
+            "school",
+            ""
+        ).strip()
+
+        programme = request.form.get(
+            "programme",
+            ""
+        ).strip()
+
+        academic_level = request.form.get(
+            "academic_level",
+            ""
+        ).strip()
+
+        year_of_study = request.form.get(
+            "year_of_study",
+            ""
+        ).strip()
+
+        student_number = request.form.get(
+            "student_number",
+            ""
+        ).strip()
+
+        file = request.files.get("supporting_file")
+
+        if not service_type:
+            flash("Please select a service.")
             return redirect(url_for("new_request"))
 
-        reference = make_reference()
+        if not description:
+            flash("Please describe the work you are submitting.")
+            return redirect(url_for("new_request"))
 
-        # General client information
-        full_name = clean(request.form.get("client_full_name")) or user.get("full_name", "")
-        email = clean(request.form.get("client_email")) or user.get("email", "")
-        phone = clean(request.form.get("client_phone")) or user.get("phone", "")
-        address = clean(request.form.get("client_address"))
-        gender = clean(request.form.get("gender"))
-        date_of_birth = clean(request.form.get("date_of_birth"))
-        national_id = clean(request.form.get("national_id"))
+        if file and file.filename:
 
-        # University / higher education information
-        university = clean(request.form.get("university"))
-        university_other = clean(request.form.get("university_other"))
-        mode_of_study = clean(request.form.get("mode_of_study"))
-        school = clean(request.form.get("school"))
-        programme = clean(request.form.get("programme"))
-        study_level = clean(request.form.get("study_level"))
-        student_number = clean(request.form.get("student_number"))
-        year_of_study = clean(request.form.get("year_of_study"))
-        intake = clean(request.form.get("intake"))
+            if not allowed_file(file.filename):
+                flash(
+                    "Unsupported file type. "
+                    "Allowed: PDF, Word, Excel, PowerPoint, "
+                    "images, TXT and ZIP."
+                )
 
-        # Other education/application information
-        application_type = clean(request.form.get("application_type"))
-        previous_school = clean(request.form.get("previous_school"))
-        grade_or_result = clean(request.form.get("grade_or_result"))
-
-        # Agriculture / TPN information
-        farmer_name = clean(request.form.get("farmer_name"))
-        farm_location = clean(request.form.get("farm_location"))
-        farming_type = clean(request.form.get("farming_type"))
-        tpn_number = clean(request.form.get("tpn_number"))
+                return redirect(url_for("new_request"))
 
         try:
-            row = {
-                "client_id": user["id"],
-                "reference_no": reference,
-                "service_category": category,
-                "subject": subject,
+
+            request_number = create_unique_request_number()
+
+            request_data = {
+                "request_number": request_number,
+
+                "client_name": session["client_name"],
+                "client_email": session["client_email"],
+                "client_phone": "",
+
+                "service_type": service_type,
                 "description": description,
-                "status": "New",
-                "client_full_name": full_name,
-                "client_email": email,
-                "client_phone": phone,
-                "client_address": address,
-                "gender": gender,
-                "date_of_birth": date_of_birth or None,
-                "national_id": national_id,
 
                 "university": university,
-                "university_other": university_other,
                 "mode_of_study": mode_of_study,
                 "school": school,
                 "programme": programme,
-                "study_level": study_level,
-                "student_number": student_number,
+                "academic_level": academic_level,
                 "year_of_study": year_of_study,
-                "intake": intake,
+                "student_number": student_number,
 
-                "application_type": application_type,
-                "previous_school": previous_school,
-                "grade_or_result": grade_or_result,
+                "status": STATUS_NEW,
 
-                "farmer_name": farmer_name,
-                "farm_location": farm_location,
-                "farming_type": farming_type,
-                "tpn_number": tpn_number,
-
-                "created_at": utc_now(),
-                "updated_at": utc_now()
+                "created_at": now_iso(),
+                "updated_at": now_iso(),
             }
 
-            created = db_insert("service_requests", row)
-            created_request = first(created)
+            client_info = db_select(
+                "koja_clients",
+                select="phone",
+                filters={
+                    "id": f"eq.{session['client_id']}"
+                },
+                limit=1
+            )
 
-            uploaded_count = 0
-            files = request.files.getlist("supporting_files")
+            if client_info:
+                request_data["client_phone"] = (
+                    client_info[0].get("phone") or ""
+                )
 
-            for f in files:
-                if not f or not f.filename:
-                    continue
+            created = db_insert(
+                "koja_service_requests",
+                request_data
+            )
 
-                info = storage_upload(f, "client-files", reference)
+            service_request = created[0]
 
-                db_insert("request_files", {
-                    "request_id": created_request["id"],
-                    "client_id": user["id"],
-                    "file_name": info["original_name"],
-                    "storage_path": info["path"],
-                    "mime_type": info["mime_type"],
-                    "file_size": info["size"],
-                    "file_type": "supporting",
-                    "created_at": utc_now()
-                })
-                uploaded_count += 1
+            request_id = service_request["id"]
 
-            notify(
-                user["id"],
-                "Request Submitted",
-                f"Your KOJA request {reference} has been submitted and is now New.",
-                created_request["id"]
+            # ------------------------------------------------
+            # SUPPORTING FILE
+            # ------------------------------------------------
+
+            if file and file.filename:
+
+                upload = storage_upload(
+                    file,
+                    folder=f"supporting/{request_id}"
+                )
+
+                db_insert(
+                    "koja_request_files",
+                    {
+                        "request_id": request_id,
+                        "file_name": upload["file_name"],
+                        "file_url": upload["path"],
+                        "file_type": upload["content_type"],
+                        "file_size": upload["size"],
+                        "uploaded_by": session["client_email"],
+                        "created_at": now_iso(),
+                    },
+                    returning=False
+                )
+
+            # ------------------------------------------------
+            # HISTORY
+            # ------------------------------------------------
+
+            db_insert(
+                "koja_request_history",
+                {
+                    "request_id": request_id,
+                    "old_status": None,
+                    "new_status": STATUS_NEW,
+                    "message": "Request submitted by client.",
+                    "changed_by": session["client_email"],
+                    "created_at": now_iso(),
+                },
+                returning=False
+            )
+
+            # ------------------------------------------------
+            # NOTIFICATION
+            # ------------------------------------------------
+
+            db_insert(
+                "koja_notifications",
+                {
+                    "client_email": session["client_email"],
+                    "request_id": request_id,
+                    "title": "Request Submitted",
+                    "message": (
+                        f"Your KOJA request "
+                        f"{request_number} has been received."
+                    ),
+                    "is_read": False,
+                    "created_at": now_iso(),
+                },
+                returning=False
             )
 
             flash(
-                f"Request submitted successfully. Reference: {reference}. Files uploaded: {uploaded_count}.",
-                "success"
+                f"Request submitted successfully. "
+                f"Reference: {request_number}"
             )
-            return redirect(url_for("view_request", request_id=created_request["id"]))
 
-        except Exception as e:
-            flash(str(e), "danger")
+            return redirect(
+                url_for(
+                    "request_detail",
+                    request_id=request_id
+                )
+            )
 
-    university_options = "".join(
-        f"<option>{u}</option>" for u in UNIVERSITIES_ZAMBIA
-    )
-    mode_options = "".join(
-        f"<option>{m}</option>" for m in MODES_OF_STUDY
-    )
-    service_options = "".join(
-        f"<option>{s}</option>" for s in SERVICE_CATEGORIES
-    )
+        except Exception as exc:
 
-    body = f"""
-    <div class="card">
-      <h2>Submit Work to KOJA AFRICA</h2>
-      <p class="small">
-        Enter the client's information accurately. For university-related work,
-        complete the university, mode of study and school/programme information.
-      </p>
+            logging.exception(
+                "Request submission failed"
+            )
 
-      <form method="post" enctype="multipart/form-data">
+            flash(
+                f"Could not submit request: {str(exc)[:300]}"
+            )
 
-        <h3>1. Service</h3>
-        <div class="grid">
-          <div class="field">
-            <label>Service Category *</label>
-            <select name="service_category" required>{service_options}</select>
-          </div>
-          <div class="field">
-            <label>Subject / Job Title *</label>
-            <input name="subject" required placeholder="e.g. University application">
-          </div>
-        </div>
+    body = """
+    <div class="form-card">
 
-        <div class="field">
-          <label>Describe what you want KOJA to process</label>
-          <textarea name="description" placeholder="Give clear instructions, deadlines and other important details."></textarea>
-        </div>
+    <h2>Submit New KOJA Request</h2>
 
-        <h3>2. Client Information</h3>
-        <div class="grid">
-          <div class="field"><label>Full Name</label><input name="client_full_name"></div>
-          <div class="field"><label>Email Address</label><input type="email" name="client_email"></div>
-          <div class="field"><label>Contact Number</label><input name="client_phone"></div>
-          <div class="field"><label>Address / Town</label><input name="client_address"></div>
-          <div class="field"><label>Gender</label>
-            <select name="gender"><option value="">Select</option><option>Male</option><option>Female</option><option>Other</option></select>
-          </div>
-          <div class="field"><label>Date of Birth</label><input type="date" name="date_of_birth"></div>
-          <div class="field"><label>National ID / NRC</label><input name="national_id"></div>
-        </div>
+    <p class="small">
+    Fill in the information below. KOJA will process your
+    request and return the completed document through your account.
+    </p>
 
-        <h3>3. University / Higher Education</h3>
-        <div class="grid">
-          <div class="field">
-            <label>University in Zambia</label>
-            <select name="university">
-              <option value="">Select University</option>
-              {university_options}
-            </select>
-          </div>
-          <div class="field">
-            <label>If Other University</label>
-            <input name="university_other" placeholder="Enter university name">
-          </div>
-          <div class="field">
-            <label>Mode of Study</label>
-            <select name="mode_of_study">
-              <option value="">Select mode</option>
-              {mode_options}
-            </select>
-          </div>
-          <div class="field"><label>School / Faculty</label><input name="school" placeholder="e.g. School of Natural Sciences"></div>
-          <div class="field"><label>Programme / Course</label><input name="programme"></div>
-          <div class="field">
-            <label>Study Level</label>
-            <select name="study_level">
-              <option value="">Select</option>
-              <option>Certificate</option><option>Diploma</option><option>Bachelor's Degree</option>
-              <option>Postgraduate Diploma</option><option>Master's Degree</option><option>PhD</option>
-              <option>Other</option>
-            </select>
-          </div>
-          <div class="field"><label>Student Number</label><input name="student_number"></div>
-          <div class="field"><label>Year of Study</label><input name="year_of_study" placeholder="e.g. Year 2"></div>
-          <div class="field"><label>Intake</label><input name="intake" placeholder="e.g. January 2027"></div>
-        </div>
+    <form method="post"
+          enctype="multipart/form-data">
 
-        <h3>4. Application / Academic Details</h3>
-        <div class="grid">
-          <div class="field"><label>Application Type</label><input name="application_type" placeholder="e.g. undergraduate admission"></div>
-          <div class="field"><label>Previous School / College</label><input name="previous_school"></div>
-          <div class="field"><label>Grades / Results</label><input name="grade_or_result"></div>
-        </div>
+        <label>Service</label>
 
-        <h3>5. Farmer / TPN Information</h3>
-        <div class="grid">
-          <div class="field"><label>Farmer Name</label><input name="farmer_name"></div>
-          <div class="field"><label>Farm Location</label><input name="farm_location"></div>
-          <div class="field"><label>Farming Type</label><input name="farming_type" placeholder="e.g. crop/livestock"></div>
-          <div class="field"><label>TPN Number</label><input name="tpn_number"></div>
-        </div>
+        <select name="service_type" required>
 
-        <h3>6. Supporting Documents</h3>
-        <div class="field">
-          <label>Upload documents</label>
-          <input type="file" name="supporting_files" multiple
-            accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp,.xls,.xlsx,.csv,.ppt,.pptx">
-          <p class="small">Allowed: PDF, Word, Excel, PowerPoint, images and text files. Maximum total request upload size: {MAX_FILE_MB} MB.</p>
-        </div>
+            <option value="">
+                -- Select Service --
+            </option>
 
-        <button class="btn green">Submit Request to KOJA</button>
-      </form>
+            {% for service in services %}
+
+            <option value="{{ service.name }}">
+                {{ service.name }}
+            </option>
+
+            {% endfor %}
+
+        </select>
+
+
+        <label>Describe the Work / Request</label>
+
+        <textarea
+            name="description"
+            required
+            placeholder="Explain exactly what you want KOJA to process..."
+        ></textarea>
+
+
+        <h3>University Information</h3>
+
+        <p class="small">
+        Complete this section when your request concerns
+        university or higher education.
+        </p>
+
+
+        <label>University in Zambia</label>
+
+        <select name="university">
+
+            <option value="">
+                -- Select University --
+            </option>
+
+            {% for university in universities %}
+
+            <option value="{{ university.name }}">
+                {{ university.name }}
+            </option>
+
+            {% endfor %}
+
+        </select>
+
+
+        <label>Mode of Study</label>
+
+        <select name="mode_of_study">
+
+            <option value="">
+                -- Select Mode --
+            </option>
+
+            <option>Full-Time</option>
+            <option>Part-Time</option>
+            <option>Distance Learning</option>
+            <option>Online</option>
+            <option>Evening</option>
+            <option>Weekend</option>
+            <option>Blended</option>
+            <option>Other</option>
+
+        </select>
+
+
+        <label>School / Faculty</label>
+
+        <input
+            name="school"
+            placeholder="e.g. School of Natural Sciences"
+        >
+
+
+        <label>Programme / Course</label>
+
+        <input
+            name="programme"
+            placeholder="e.g. Bachelor of Science"
+        >
+
+
+        <label>Academic Level</label>
+
+        <select name="academic_level">
+
+            <option value="">
+                -- Select Level --
+            </option>
+
+            <option>Certificate</option>
+            <option>Diploma</option>
+            <option>Undergraduate</option>
+            <option>Postgraduate</option>
+            <option>Masters</option>
+            <option>PhD</option>
+            <option>Other</option>
+
+        </select>
+
+
+        <label>Year of Study</label>
+
+        <input
+            name="year_of_study"
+            placeholder="e.g. Year 2"
+        >
+
+
+        <label>Student Number</label>
+
+        <input
+            name="student_number"
+            placeholder="University student number"
+        >
+
+
+        <label>Supporting Document</label>
+
+        <input
+            type="file"
+            name="supporting_file"
+        >
+
+        <p class="small">
+        Maximum upload size: 25 MB.
+        </p>
+
+
+        <button type="submit">
+            Submit Request
+        </button>
+
+    </form>
+
     </div>
     """
-    return page("Submit Work", body)
+
+    return page(
+        "New Request",
+        body,
+        services=services,
+        universities=universities
+    )
 
 
 # ============================================================
-# VIEW CLIENT REQUEST
+# MY REQUESTS
+# ============================================================
+
+@app.route("/requests")
+@client_login_required
+def my_requests():
+
+    requests_data = db_select(
+        "koja_service_requests",
+        select="*",
+        filters={
+            "client_email":
+                f"eq.{session['client_email']}"
+        },
+        order="created_at.desc"
+    )
+
+    body = """
+    <div class="card">
+
+    <h2>My KOJA Requests</h2>
+
+    {% if requests_data %}
+
+    <table>
+
+    <tr>
+        <th>Reference</th>
+        <th>Service</th>
+        <th>Status</th>
+        <th>Date</th>
+        <th></th>
+    </tr>
+
+    {% for r in requests_data %}
+
+    <tr>
+
+        <td>
+            <strong>{{ r.request_number }}</strong>
+        </td>
+
+        <td>
+            {{ r.service_type }}
+        </td>
+
+        <td>
+
+            <span class="status
+            {% if r.status == 'Completed' %}
+            completed
+            {% elif r.status == 'Processing' %}
+            processing
+            {% else %}
+            new
+            {% endif %}
+            ">
+
+            {{ r.status }}
+
+            </span>
+
+        </td>
+
+        <td>
+            {{ r.created_at[:10] if r.created_at else '' }}
+        </td>
+
+        <td>
+
+            <a href="{{ url_for(
+                'request_detail',
+                request_id=r.id
+            ) }}">
+                Open
+            </a>
+
+        </td>
+
+    </tr>
+
+    {% endfor %}
+
+    </table>
+
+    {% else %}
+
+    <p>No requests found.</p>
+
+    {% endif %}
+
+    </div>
+    """
+
+    return page(
+        "My Requests",
+        body,
+        requests_data=requests_data
+    )
+
+
+# ============================================================
+# REQUEST DETAIL
 # ============================================================
 
 @app.route("/request/<request_id>")
-@login_required
-def view_request(request_id):
-    try:
-        rows = db_get("service_requests", {
+@client_login_required
+def request_detail(request_id):
+
+    requests_data = db_select(
+        "koja_service_requests",
+        select="*",
+        filters={
             "id": f"eq.{request_id}",
-            "select": "*",
-            "limit": "1"
-        })
-        req = first(rows)
+            "client_email":
+                f"eq.{session['client_email']}"
+        },
+        limit=1
+    )
 
-        if not req:
-            abort(404)
+    if not requests_data:
+        abort(404)
 
-        if not is_admin() and req.get("client_id") != session.get("user_id"):
-            abort(403)
+    item = requests_data[0]
 
-        files = db_get("request_files", {
-            "request_id": f"eq.{request_id}",
-            "select": "*",
-            "order": "created_at.asc"
-        })
+    files = db_select(
+        "koja_request_files",
+        select="*",
+        filters={
+            "request_id": f"eq.{request_id}"
+        },
+        order="created_at.asc"
+    )
 
-        messages = db_get("request_messages", {
-            "request_id": f"eq.{request_id}",
-            "select": "*",
-            "order": "created_at.asc"
-        })
+    body = """
+    <div class="card">
 
-        file_rows = ""
-        for f in files:
-            file_rows += f"""
-            <tr>
-              <td>{f.get('file_name','')}</td>
-              <td>{f.get('file_type','')}</td>
-              <td>
-                <a class="btn" href="/file/{f.get('id')}">Download</a>
-              </td>
-            </tr>
-            """
+        <h2>
+        {{ item.request_number }}
+        </h2>
 
-        msg_rows = ""
-        for m in messages:
-            sender = m.get("sender_role", "client")
-            msg_rows += f"""
-            <div class="card">
-              <b>{sender.title()}</b>
-              <div>{m.get('message','')}</div>
-              <div class="small">{str(m.get('created_at',''))[:19]}</div>
+        <span class="status
+        {% if item.status == 'Completed' %}
+        completed
+        {% elif item.status == 'Processing' %}
+        processing
+        {% else %}
+        new
+        {% endif %}
+        ">
+            {{ item.status }}
+        </span>
+
+        <hr>
+
+        <div class="detail">
+            <strong>Service</strong><br>
+            {{ item.service_type }}
+        </div>
+
+        <div class="detail">
+            <strong>Description</strong><br>
+            {{ item.description }}
+        </div>
+
+        {% if item.university %}
+
+        <h3>University Information</h3>
+
+        <div class="detail">
+            <strong>University</strong><br>
+            {{ item.university }}
+        </div>
+
+        <div class="detail">
+            <strong>Mode of Study</strong><br>
+            {{ item.mode_of_study }}
+        </div>
+
+        <div class="detail">
+            <strong>School</strong><br>
+            {{ item.school }}
+        </div>
+
+        <div class="detail">
+            <strong>Programme</strong><br>
+            {{ item.programme }}
+        </div>
+
+        <div class="detail">
+            <strong>Academic Level</strong><br>
+            {{ item.academic_level }}
+        </div>
+
+        <div class="detail">
+            <strong>Year of Study</strong><br>
+            {{ item.year_of_study }}
+        </div>
+
+        <div class="detail">
+            <strong>Student Number</strong><br>
+            {{ item.student_number }}
+        </div>
+
+        {% endif %}
+
+
+        <h3>Supporting Documents</h3>
+
+        {% if files %}
+
+            {% for f in files %}
+
+            <div class="detail">
+
+                {{ f.file_name }}
+
+                <br>
+
+                <a href="{{ url_for(
+                    'download_supporting_file',
+                    file_id=f.id
+                ) }}">
+                    Download
+                </a>
+
             </div>
-            """
 
-        university = req.get("university") or req.get("university_other") or ""
-        body = f"""
-        <div class="card">
-          <h2>{req.get('reference_no')}</h2>
-          <span class="badge">{req.get('status','New')}</span>
-          <h3>{req.get('subject','')}</h3>
-          <p>{req.get('description','')}</p>
+            {% endfor %}
+
+        {% else %}
+
+            <p>No supporting document uploaded.</p>
+
+        {% endif %}
+
+
+        {% if item.admin_message %}
+
+        <h3>KOJA Message</h3>
+
+        <div class="detail">
+            {{ item.admin_message }}
         </div>
 
-        <div class="grid">
-          <div class="card">
-            <h3>Client</h3>
-            <p><b>Name:</b> {req.get('client_full_name','')}</p>
-            <p><b>Email:</b> {req.get('client_email','')}</p>
-            <p><b>Contact:</b> {req.get('client_phone','')}</p>
-            <p><b>Address:</b> {req.get('client_address','')}</p>
-          </div>
+        {% endif %}
 
-          <div class="card">
-            <h3>University</h3>
-            <p><b>University:</b> {university}</p>
-            <p><b>Mode:</b> {req.get('mode_of_study','')}</p>
-            <p><b>School:</b> {req.get('school','')}</p>
-            <p><b>Programme:</b> {req.get('programme','')}</p>
-            <p><b>Level:</b> {req.get('study_level','')}</p>
-            <p><b>Student No.:</b> {req.get('student_number','')}</p>
-          </div>
+
+        {% if item.status == 'Completed'
+              and item.completed_file_url %}
+
+        <h3>Completed Document</h3>
+
+        <div class="detail">
+
+            <strong>
+            {{ item.completed_file_name }}
+            </strong>
+
+            <br>
+
+            <a class="btn success"
+               href="{{ url_for(
+                    'download_completed_file',
+                    request_id=item.id
+               ) }}">
+                Download Completed File
+            </a>
+
         </div>
 
-        <div class="card">
-          <h3>Files</h3>
-          <div style="overflow:auto">
-          <table>
-            <tr><th>File</th><th>Type</th><th></th></tr>
-            {file_rows or '<tr><td colspan="3">No files.</td></tr>'}
-          </table>
-          </div>
-        </div>
+        {% endif %}
 
-        <div class="card">
-          <h3>Messages</h3>
-          {msg_rows or '<p>No messages yet.</p>'}
-        </div>
-        """
+    </div>
+    """
 
-        if is_admin():
-            body += f"""
-            <div class="card">
-              <h3>Admin Processing</h3>
-
-              <form method="post" action="/admin/request/{request_id}/status">
-                <div class="field">
-                  <label>Status</label>
-                  <select name="status">
-                    {''.join(f'<option {"selected" if s == req.get("status") else ""}>{s}</option>' for s in STATUSES)}
-                  </select>
-                </div>
-                <button>Update Status</button>
-              </form>
-
-              <hr>
-
-              <form method="post" action="/admin/request/{request_id}/message">
-                <div class="field">
-                  <label>Send Message to Client</label>
-                  <textarea name="message" required placeholder="Tell the client what is happening or what is required."></textarea>
-                </div>
-                <button class="btn dark">Send Message</button>
-              </form>
-
-              <hr>
-
-              <form method="post" action="/admin/request/{request_id}/complete"
-                    enctype="multipart/form-data">
-                <h3>Return Finished Work</h3>
-                <div class="field">
-                  <label>Finished PDF / Word / Excel / PowerPoint / other supported document</label>
-                  <input type="file" name="finished_file" required>
-                </div>
-                <div class="field">
-                  <label>Completion Message</label>
-                  <textarea name="completion_message" placeholder="Your work is ready for download."></textarea>
-                </div>
-                <button class="btn green">Upload Finished File & Complete</button>
-              </form>
-            </div>
-            """
-
-        return page(req.get("reference_no", "Request"), body)
-
-    except Exception as e:
-        flash(str(e), "danger")
-        return redirect(url_for("dashboard"))
+    return page(
+        "Request " + item["request_number"],
+        body,
+        item=item,
+        files=files
+    )
 
 
 # ============================================================
-# FILE DOWNLOAD
+# DOWNLOAD SUPPORTING FILE
 # ============================================================
 
-@app.route("/file/<file_id>")
-@login_required
-def download_file(file_id):
+@app.route("/file/supporting/<file_id>")
+@client_login_required
+def download_supporting_file(file_id):
+
+    files = db_select(
+        "koja_request_files",
+        select="*",
+        filters={
+            "id": f"eq.{file_id}"
+        },
+        limit=1
+    )
+
+    if not files:
+        abort(404)
+
+    file_record = files[0]
+
+    requests_data = db_select(
+        "koja_service_requests",
+        select="id,client_email",
+        filters={
+            "id":
+                f"eq.{file_record['request_id']}",
+            "client_email":
+                f"eq.{session['client_email']}"
+        },
+        limit=1
+    )
+
+    if not requests_data:
+        abort(403)
+
+    response = storage_download(
+        file_record["file_url"]
+    )
+
+    return send_file(
+        io.BytesIO(response.content),
+        mimetype=(
+            file_record.get("file_type")
+            or "application/octet-stream"
+        ),
+        as_attachment=True,
+        download_name=file_record["file_name"]
+    )
+
+
+# ============================================================
+# DOWNLOAD COMPLETED FILE
+# ============================================================
+
+@app.route("/request/<request_id>/download")
+@client_login_required
+def download_completed_file(request_id):
+
+    requests_data = db_select(
+        "koja_service_requests",
+        select="*",
+        filters={
+            "id": f"eq.{request_id}",
+            "client_email":
+                f"eq.{session['client_email']}",
+            "status": f"eq.{STATUS_COMPLETED}"
+        },
+        limit=1
+    )
+
+    if not requests_data:
+        abort(404)
+
+    item = requests_data[0]
+
+    if not item.get("completed_file_url"):
+        abort(404)
+
+    response = storage_download(
+        item["completed_file_url"]
+    )
+
+    return send_file(
+        io.BytesIO(response.content),
+        mimetype=(
+            item.get("completed_file_type")
+            or "application/octet-stream"
+        ),
+        as_attachment=True,
+        download_name=(
+            item.get("completed_file_name")
+            or "KOJA-completed-document"
+        )
+    )
+
+
+# ============================================================
+# NOTIFICATIONS
+# ============================================================
+
+@app.route("/notifications")
+@client_login_required
+def notifications():
+
+    data = db_select(
+        "koja_notifications",
+        select="*",
+        filters={
+            "client_email":
+                f"eq.{session['client_email']}"
+        },
+        order="created_at.desc",
+        limit=50
+    )
+
+    # Mark as read
     try:
-        rows = db_get("request_files", {
-            "id": f"eq.{file_id}",
-            "select": "*",
-            "limit": "1"
-        })
-        f = first(rows)
 
-        if not f:
-            abort(404)
-
-        req_rows = db_get("service_requests", {
-            "id": f"eq.{f['request_id']}",
-            "select": "client_id,reference_no,status",
-            "limit": "1"
-        })
-        req = first(req_rows)
-
-        if not req:
-            abort(404)
-
-        if not is_admin() and req.get("client_id") != session.get("user_id"):
-            abort(403)
-
-        # Clients can download supporting files and completed files.
-        data = storage_download(f.get("storage_path"))
-
-        return send_file(
-            io.BytesIO(data),
-            as_attachment=True,
-            download_name=f.get("file_name", "KOJA-file"),
-            mimetype=f.get("mime_type") or "application/octet-stream"
+        db_update(
+            "koja_notifications",
+            {
+                "client_email":
+                    f"eq.{session['client_email']}",
+                "is_read": "eq.false"
+            },
+            {
+                "is_read": True
+            },
+            returning=False
         )
 
     except Exception:
-        abort(404)
+        logging.exception(
+            "Could not mark notifications as read"
+        )
+
+    body = """
+    <div class="card">
+
+    <h2>Notifications</h2>
+
+    {% if data %}
+
+        {% for n in data %}
+
+        <div class="detail">
+
+            <strong>{{ n.title }}</strong>
+
+            <br><br>
+
+            {{ n.message }}
+
+            <br>
+
+            <span class="small">
+                {{ n.created_at[:16]
+                   if n.created_at else '' }}
+            </span>
+
+        </div>
+
+        {% endfor %}
+
+    {% else %}
+
+        <p>No notifications.</p>
+
+    {% endif %}
+
+    </div>
+    """
+
+    return page(
+        "Notifications",
+        body,
+        data=data
+    )
+
+
+# ============================================================
+# ADMIN LOGIN
+# ============================================================
+
+@app.route("/admin/login", methods=["GET", "POST"])
+def admin_login():
+
+    if request.method == "POST":
+
+        username = request.form.get(
+            "username",
+            ""
+        ).strip()
+
+        password = request.form.get(
+            "password",
+            ""
+        )
+
+        if (
+            username == ADMIN_USERNAME
+            and ADMIN_PASSWORD
+            and secrets.compare_digest(
+                password,
+                ADMIN_PASSWORD
+            )
+        ):
+
+            session.clear()
+            session["admin_logged_in"] = True
+            session["admin_username"] = username
+
+            return redirect(
+                url_for("admin_dashboard")
+            )
+
+        flash("Invalid administrator credentials.")
+
+    body = """
+    <div class="form-card">
+
+    <h2>KOJA AFRICA Administrator</h2>
+
+    <form method="post">
+
+        <label>Username</label>
+
+        <input name="username"
+               required>
+
+        <label>Password</label>
+
+        <input type="password"
+               name="password"
+               required>
+
+        <button type="submit">
+            Administrator Login
+        </button>
+
+    </form>
+
+    </div>
+    """
+
+    return page(
+        "Admin Login",
+        body
+    )
+
+
+# ============================================================
+# ADMIN LOGOUT
+# ============================================================
+
+@app.route("/admin/logout")
+def admin_logout():
+
+    session.clear()
+
+    return redirect(
+        url_for("admin_login")
+    )
 
 
 # ============================================================
@@ -1180,328 +2129,981 @@ def download_file(file_id):
 @app.route("/admin")
 @admin_required
 def admin_dashboard():
-    try:
-        all_requests = db_get("service_requests", {
-            "select": "*",
-            "order": "created_at.desc"
-        })
-        clients = db_get("profiles", {
-            "role": "eq.client",
-            "select": "id,full_name,email,phone,created_at",
-            "order": "created_at.desc"
-        })
-    except Exception as e:
-        flash(str(e), "danger")
-        all_requests = []
-        clients = []
 
-    counts = {}
-    for s in STATUSES:
-        counts[s] = sum(1 for r in all_requests if r.get("status") == s)
-
-    stats = "".join(
-        f'<div class="card"><h3>{s}</h3><div style="font-size:28px;font-weight:800">{counts[s]}</div></div>'
-        for s in STATUSES
+    requests_data = db_select(
+        "koja_service_requests",
+        select="*",
+        order="created_at.desc",
+        limit=100
     )
 
-    body = f"""
+    new_count = sum(
+        1 for r in requests_data
+        if r.get("status") == STATUS_NEW
+    )
+
+    processing_count = sum(
+        1 for r in requests_data
+        if r.get("status") == STATUS_PROCESSING
+    )
+
+    completed_count = sum(
+        1 for r in requests_data
+        if r.get("status") == STATUS_COMPLETED
+    )
+
+    body = """
     <div class="hero">
-      <h1>KOJA AFRICA ADMIN</h1>
-      <p>Manage client requests, process work and return finished files.</p>
+
+        <h1>KOJA AFRICA Admin Dashboard</h1>
+
+        <p>
+        Manage client requests, process work and deliver
+        completed documents.
+        </p>
+
     </div>
 
-    <div class="grid">{stats}</div>
+    <div class="grid">
+
+        <div class="card">
+            <h3>New</h3>
+            <h2>{{ new_count }}</h2>
+        </div>
+
+        <div class="card">
+            <h3>Processing</h3>
+            <h2>{{ processing_count }}</h2>
+        </div>
+
+        <div class="card">
+            <h3>Completed</h3>
+            <h2>{{ completed_count }}</h2>
+        </div>
+
+        <div class="card">
+            <h3>Total</h3>
+            <h2>{{ requests_data|length }}</h2>
+        </div>
+
+    </div>
+
+    <br>
 
     <div class="card">
-      <h2>Service Requests</h2>
-      {render_admin_table(all_requests)}
-    </div>
 
-    <div class="card">
-      <h2>Clients</h2>
-      <div style="overflow:auto">
-      <table>
-        <tr><th>Name</th><th>Email</th><th>Contact</th><th>Registered</th></tr>
-        {''.join(
-          f"<tr><td>{c.get('full_name','')}</td><td>{c.get('email','')}</td>"
-          f"<td>{c.get('phone','')}</td><td>{str(c.get('created_at',''))[:19]}</td></tr>"
-          for c in clients
-        ) or '<tr><td colspan="4">No clients.</td></tr>'}
-      </table>
-      </div>
-    </div>
-    """
-    return page("Admin Dashboard", body)
+    <h2>Client Requests</h2>
 
-
-def render_admin_table(items):
-    if not items:
-        return "<p>No service requests.</p>"
-
-    rows = ""
-    for x in items:
-        rows += f"""
-        <tr>
-          <td><b>{x.get('reference_no','')}</b></td>
-          <td>{x.get('client_full_name','')}</td>
-          <td>{x.get('service_category','')}</td>
-          <td>{x.get('subject','')}</td>
-          <td><span class="badge">{x.get('status','New')}</span></td>
-          <td>{str(x.get('created_at',''))[:19]}</td>
-          <td><a class="btn" href="/request/{x.get('id')}">Process</a></td>
-        </tr>
-        """
-
-    return f"""
-    <div style="overflow:auto">
     <table>
-      <tr>
-        <th>Reference</th><th>Client</th><th>Service</th>
-        <th>Subject</th><th>Status</th><th>Date</th><th></th>
-      </tr>
-      {rows}
+
+    <tr>
+        <th>Reference</th>
+        <th>Client</th>
+        <th>Service</th>
+        <th>Status</th>
+        <th></th>
+    </tr>
+
+    {% for r in requests_data %}
+
+    <tr>
+
+        <td>
+            <strong>{{ r.request_number }}</strong>
+        </td>
+
+        <td>
+            {{ r.client_name }}<br>
+            <span class="small">
+                {{ r.client_email }}
+            </span>
+        </td>
+
+        <td>
+            {{ r.service_type }}
+        </td>
+
+        <td>
+
+            <span class="status
+            {% if r.status == 'Completed' %}
+            completed
+            {% elif r.status == 'Processing' %}
+            processing
+            {% else %}
+            new
+            {% endif %}
+            ">
+
+            {{ r.status }}
+
+            </span>
+
+        </td>
+
+        <td>
+
+            <a href="{{ url_for(
+                'admin_request',
+                request_id=r.id
+            ) }}">
+                Open
+            </a>
+
+        </td>
+
+    </tr>
+
+    {% endfor %}
+
     </table>
+
     </div>
     """
 
+    return page(
+        "Admin Dashboard",
+        body,
+        requests_data=requests_data,
+        new_count=new_count,
+        processing_count=processing_count,
+        completed_count=completed_count
+    )
+
 
 # ============================================================
-# ADMIN PROCESSING
+# ADMIN REQUEST
 # ============================================================
 
-@app.route("/admin/request/<request_id>/status", methods=["POST"])
+@app.route(
+    "/admin/request/<request_id>",
+    methods=["GET", "POST"]
+)
 @admin_required
-def admin_status(request_id):
-    status = clean(request.form.get("status"))
+def admin_request(request_id):
 
-    if status not in STATUSES:
-        flash("Invalid status.", "danger")
-        return redirect(url_for("view_request", request_id=request_id))
+    requests_data = db_select(
+        "koja_service_requests",
+        select="*",
+        filters={
+            "id": f"eq.{request_id}"
+        },
+        limit=1
+    )
+
+    if not requests_data:
+        abort(404)
+
+    item = requests_data[0]
+
+    files = db_select(
+        "koja_request_files",
+        select="*",
+        filters={
+            "request_id": f"eq.{request_id}"
+        },
+        order="created_at.asc"
+    )
+
+    if request.method == "POST":
+
+        action = request.form.get(
+            "action",
+            ""
+        )
+
+        message = request.form.get(
+            "admin_message",
+            ""
+        ).strip()
+
+        # ----------------------------------------------------
+        # MARK PROCESSING
+        # ----------------------------------------------------
+
+        if action == "processing":
+
+            old_status = item["status"]
+
+            db_update(
+                "koja_service_requests",
+                {
+                    "id": f"eq.{request_id}"
+                },
+                {
+                    "status": STATUS_PROCESSING,
+                    "admin_message": message,
+                    "updated_at": now_iso(),
+                },
+                returning=False
+            )
+
+            db_insert(
+                "koja_request_history",
+                {
+                    "request_id": request_id,
+                    "old_status": old_status,
+                    "new_status": STATUS_PROCESSING,
+                    "message": message
+                        or "Request is being processed.",
+                    "changed_by":
+                        session.get(
+                            "admin_username",
+                            "admin"
+                        ),
+                    "created_at": now_iso(),
+                },
+                returning=False
+            )
+
+            db_insert(
+                "koja_notifications",
+                {
+                    "client_email":
+                        item["client_email"],
+                    "request_id": request_id,
+                    "title":
+                        "Request Processing",
+                    "message": (
+                        f"Your request "
+                        f"{item['request_number']} "
+                        f"is now being processed."
+                    ),
+                    "is_read": False,
+                    "created_at": now_iso(),
+                },
+                returning=False
+            )
+
+            flash("Request marked as Processing.")
+
+            return redirect(
+                url_for(
+                    "admin_request",
+                    request_id=request_id
+                )
+            )
+
+        # ----------------------------------------------------
+        # SAVE MESSAGE
+        # ----------------------------------------------------
+
+        if action == "message":
+
+            db_update(
+                "koja_service_requests",
+                {
+                    "id": f"eq.{request_id}"
+                },
+                {
+                    "admin_message": message,
+                    "updated_at": now_iso(),
+                },
+                returning=False
+            )
+
+            db_insert(
+                "koja_notifications",
+                {
+                    "client_email":
+                        item["client_email"],
+                    "request_id": request_id,
+                    "title":
+                        "Message from KOJA",
+                    "message": message,
+                    "is_read": False,
+                    "created_at": now_iso(),
+                },
+                returning=False
+            )
+
+            flash("Message sent to client.")
+
+            return redirect(
+                url_for(
+                    "admin_request",
+                    request_id=request_id
+                )
+            )
+
+        # ----------------------------------------------------
+        # COMPLETE REQUEST
+        # ----------------------------------------------------
+
+        if action == "complete":
+
+            completed_file = request.files.get(
+                "completed_file"
+            )
+
+            if not completed_file or not completed_file.filename:
+
+                flash(
+                    "Please upload the completed document."
+                )
+
+                return redirect(
+                    url_for(
+                        "admin_request",
+                        request_id=request_id
+                    )
+                )
+
+            if not allowed_file(
+                completed_file.filename
+            ):
+
+                flash(
+                    "Unsupported completed-file type."
+                )
+
+                return redirect(
+                    url_for(
+                        "admin_request",
+                        request_id=request_id
+                    )
+                )
+
+            try:
+
+                upload = storage_upload(
+                    completed_file,
+                    folder=f"completed/{request_id}"
+                )
+
+                old_status = item["status"]
+
+                db_update(
+                    "koja_service_requests",
+                    {
+                        "id": f"eq.{request_id}"
+                    },
+                    {
+                        "status": STATUS_COMPLETED,
+                        "admin_message": message,
+                        "completed_file_url":
+                            upload["path"],
+                        "completed_file_name":
+                            upload["file_name"],
+                        "completed_file_type":
+                            upload["content_type"],
+                        "completed_at": now_iso(),
+                        "updated_at": now_iso(),
+                    },
+                    returning=False
+                )
+
+                db_insert(
+                    "koja_request_history",
+                    {
+                        "request_id": request_id,
+                        "old_status": old_status,
+                        "new_status": STATUS_COMPLETED,
+                        "message":
+                            message
+                            or
+                            "Completed document uploaded.",
+                        "changed_by":
+                            session.get(
+                                "admin_username",
+                                "admin"
+                            ),
+                        "created_at": now_iso(),
+                    },
+                    returning=False
+                )
+
+                db_insert(
+                    "koja_notifications",
+                    {
+                        "client_email":
+                            item["client_email"],
+                        "request_id": request_id,
+                        "title":
+                            "Request Completed",
+                        "message": (
+                            f"Your KOJA request "
+                            f"{item['request_number']} "
+                            f"is completed. "
+                            f"The finished document is now "
+                            f"available in your account."
+                        ),
+                        "is_read": False,
+                        "created_at": now_iso(),
+                    },
+                    returning=False
+                )
+
+                flash(
+                    "Request completed successfully."
+                )
+
+                return redirect(
+                    url_for(
+                        "admin_request",
+                        request_id=request_id
+                    )
+                )
+
+            except Exception as exc:
+
+                logging.exception(
+                    "Completing request failed"
+                )
+
+                flash(
+                    f"Could not complete request: "
+                    f"{str(exc)[:300]}"
+                )
+
+                return redirect(
+                    url_for(
+                        "admin_request",
+                        request_id=request_id
+                    )
+                )
+
+    body = """
+    <div class="card">
+
+    <h2>{{ item.request_number }}</h2>
+
+    <span class="status
+    {% if item.status == 'Completed' %}
+    completed
+    {% elif item.status == 'Processing' %}
+    processing
+    {% else %}
+    new
+    {% endif %}
+    ">
+        {{ item.status }}
+    </span>
+
+    <hr>
+
+    <h3>Client Information</h3>
+
+    <div class="detail">
+        <strong>Name:</strong>
+        {{ item.client_name }}
+        <br>
+
+        <strong>Email:</strong>
+        {{ item.client_email }}
+        <br>
+
+        <strong>Phone:</strong>
+        {{ item.client_phone }}
+    </div>
+
+
+    <h3>Service</h3>
+
+    <div class="detail">
+
+        <strong>{{ item.service_type }}</strong>
+
+        <br><br>
+
+        {{ item.description }}
+
+    </div>
+
+
+    <h3>University Information</h3>
+
+    <div class="detail">
+
+        <strong>University:</strong>
+        {{ item.university or 'Not provided' }}
+
+        <br>
+
+        <strong>Mode of Study:</strong>
+        {{ item.mode_of_study or 'Not provided' }}
+
+        <br>
+
+        <strong>School:</strong>
+        {{ item.school or 'Not provided' }}
+
+        <br>
+
+        <strong>Programme:</strong>
+        {{ item.programme or 'Not provided' }}
+
+        <br>
+
+        <strong>Academic Level:</strong>
+        {{ item.academic_level or 'Not provided' }}
+
+        <br>
+
+        <strong>Year:</strong>
+        {{ item.year_of_study or 'Not provided' }}
+
+        <br>
+
+        <strong>Student Number:</strong>
+        {{ item.student_number or 'Not provided' }}
+
+    </div>
+
+
+    <h3>Supporting Documents</h3>
+
+    {% if files %}
+
+        {% for f in files %}
+
+        <div class="detail">
+
+            <strong>{{ f.file_name }}</strong>
+
+            <br>
+
+            <a href="{{ url_for(
+                'admin_download_file',
+                file_id=f.id
+            ) }}">
+                Download Supporting Document
+            </a>
+
+        </div>
+
+        {% endfor %}
+
+    {% else %}
+
+        <p>No supporting files.</p>
+
+    {% endif %}
+
+
+    <hr>
+
+    <h3>Move to Processing</h3>
+
+    <form method="post">
+
+        <input
+            type="hidden"
+            name="action"
+            value="processing"
+        >
+
+        <label>Message to Client</label>
+
+        <textarea
+            name="admin_message"
+            placeholder="Optional message..."
+        ></textarea>
+
+        <button class="btn warning"
+                type="submit">
+            Mark Processing
+        </button>
+
+    </form>
+
+
+    <hr>
+
+    <h3>Send Message</h3>
+
+    <form method="post">
+
+        <input
+            type="hidden"
+            name="action"
+            value="message"
+        >
+
+        <label>Message</label>
+
+        <textarea
+            name="admin_message"
+            required
+        ></textarea>
+
+        <button type="submit">
+            Send Message
+        </button>
+
+    </form>
+
+
+    <hr>
+
+    <h3>Complete Request</h3>
+
+    <p class="small">
+    Upload the finished document that the client should receive.
+    </p>
+
+    <form method="post"
+          enctype="multipart/form-data">
+
+        <input
+            type="hidden"
+            name="action"
+            value="complete"
+        >
+
+        <label>Finished PDF / Word / Document</label>
+
+        <input
+            type="file"
+            name="completed_file"
+            required
+        >
+
+        <label>Completion Message</label>
+
+        <textarea
+            name="admin_message"
+            placeholder="Optional message to the client..."
+        ></textarea>
+
+        <button
+            class="btn success"
+            type="submit">
+            Upload & Mark Completed
+        </button>
+
+    </form>
+
+
+    {% if item.status == 'Completed'
+          and item.completed_file_url %}
+
+    <hr>
+
+    <h3>Current Completed File</h3>
+
+    <div class="detail">
+
+        {{ item.completed_file_name }}
+
+        <br>
+
+        <a class="btn success"
+           href="{{ url_for(
+                'admin_download_completed',
+                request_id=item.id
+           ) }}">
+            Download Completed File
+        </a>
+
+    </div>
+
+    {% endif %}
+
+    </div>
+    """
+
+    return page(
+        "Admin Request",
+        body,
+        item=item,
+        files=files
+    )
+
+
+# ============================================================
+# ADMIN DOWNLOAD SUPPORTING FILE
+# ============================================================
+
+@app.route("/admin/file/<file_id>")
+@admin_required
+def admin_download_file(file_id):
+
+    files = db_select(
+        "koja_request_files",
+        select="*",
+        filters={
+            "id": f"eq.{file_id}"
+        },
+        limit=1
+    )
+
+    if not files:
+        abort(404)
+
+    file_record = files[0]
+
+    response = storage_download(
+        file_record["file_url"]
+    )
+
+    return send_file(
+        io.BytesIO(response.content),
+        mimetype=(
+            file_record.get("file_type")
+            or "application/octet-stream"
+        ),
+        as_attachment=True,
+        download_name=file_record["file_name"]
+    )
+
+
+# ============================================================
+# ADMIN DOWNLOAD COMPLETED FILE
+# ============================================================
+
+@app.route("/admin/request/<request_id>/completed")
+@admin_required
+def admin_download_completed(request_id):
+
+    requests_data = db_select(
+        "koja_service_requests",
+        select="*",
+        filters={
+            "id": f"eq.{request_id}"
+        },
+        limit=1
+    )
+
+    if not requests_data:
+        abort(404)
+
+    item = requests_data[0]
+
+    if not item.get("completed_file_url"):
+        abort(404)
+
+    response = storage_download(
+        item["completed_file_url"]
+    )
+
+    return send_file(
+        io.BytesIO(response.content),
+        mimetype=(
+            item.get("completed_file_type")
+            or "application/octet-stream"
+        ),
+        as_attachment=True,
+        download_name=(
+            item.get("completed_file_name")
+            or "completed-document"
+        )
+    )
+
+
+# ============================================================
+# ADMIN REQUEST HISTORY
+# ============================================================
+
+@app.route("/admin/request/<request_id>/history")
+@admin_required
+def admin_history(request_id):
+
+    history = db_select(
+        "koja_request_history",
+        select="*",
+        filters={
+            "request_id": f"eq.{request_id}"
+        },
+        order="created_at.desc"
+    )
+
+    body = """
+    <div class="card">
+
+    <h2>Request History</h2>
+
+    {% if history %}
+
+        {% for h in history %}
+
+        <div class="detail">
+
+            <strong>
+                {{ h.new_status }}
+            </strong>
+
+            <br>
+
+            {{ h.message or '' }}
+
+            <br>
+
+            <span class="small">
+                By: {{ h.changed_by or 'System' }}
+                <br>
+                {{ h.created_at or '' }}
+            </span>
+
+        </div>
+
+        {% endfor %}
+
+    {% else %}
+
+        <p>No history found.</p>
+
+    {% endif %}
+
+    </div>
+    """
+
+    return page(
+        "Request History",
+        body,
+        history=history
+    )
+
+
+# ============================================================
+# HEALTH CHECK
+# ============================================================
+
+@app.route("/health")
+def health():
+
+    result = {
+        "status": "ok",
+        "app": APP_NAME,
+        "supabase_configured": configuration_ok(),
+        "time": now_iso()
+    }
+
+    return result
+
+
+# ============================================================
+# DATABASE TEST
+# ============================================================
+
+@app.route("/health/database")
+def database_health():
 
     try:
-        rows = db_get("service_requests", {
-            "id": f"eq.{request_id}",
-            "select": "id,client_id,reference_no",
-            "limit": "1"
-        })
-        req = first(rows)
-        if not req:
-            abort(404)
 
-        db_update(
-            "service_requests",
-            {"id": f"eq.{request_id}"},
-            {"status": status, "updated_at": utc_now()}
+        services = db_select(
+            "koja_services",
+            select="id,name",
+            limit=1
         )
 
-        notify(
-            req["client_id"],
-            f"Request {status}",
-            f"Your request {req['reference_no']} is now {status}.",
-            request_id
-        )
+        return {
+            "status": "ok",
+            "database": "connected",
+            "services_table": True,
+            "sample_count": len(services or [])
+        }
 
-        flash("Status updated.", "success")
+    except Exception as exc:
 
-    except Exception as e:
-        flash(str(e), "danger")
-
-    return redirect(url_for("view_request", request_id=request_id))
-
-
-@app.route("/admin/request/<request_id>/message", methods=["POST"])
-@admin_required
-def admin_message(request_id):
-    message = clean(request.form.get("message"))
-
-    if not message:
-        flash("Message cannot be empty.", "danger")
-        return redirect(url_for("view_request", request_id=request_id))
-
-    try:
-        req = first(db_get("service_requests", {
-            "id": f"eq.{request_id}",
-            "select": "id,client_id,reference_no",
-            "limit": "1"
-        }))
-
-        if not req:
-            abort(404)
-
-        db_insert("request_messages", {
-            "request_id": request_id,
-            "sender_role": "admin",
-            "sender_id": "ADMIN",
-            "message": message,
-            "created_at": utc_now()
-        })
-
-        notify(
-            req["client_id"],
-            "New KOJA Message",
-            f"You have a new message concerning {req['reference_no']}.",
-            request_id
-        )
-
-        flash("Message sent to client.", "success")
-
-    except Exception as e:
-        flash(str(e), "danger")
-
-    return redirect(url_for("view_request", request_id=request_id))
-
-
-@app.route("/admin/request/<request_id>/complete", methods=["POST"])
-@admin_required
-def admin_complete(request_id):
-    finished = request.files.get("finished_file")
-    completion_message = clean(request.form.get("completion_message"))
-
-    if not finished or not finished.filename:
-        flash("Select the finished file.", "danger")
-        return redirect(url_for("view_request", request_id=request_id))
-
-    try:
-        req = first(db_get("service_requests", {
-            "id": f"eq.{request_id}",
-            "select": "id,client_id,reference_no",
-            "limit": "1"
-        }))
-
-        if not req:
-            abort(404)
-
-        info = storage_upload(finished, "completed-files", req["reference_no"])
-
-        db_insert("request_files", {
-            "request_id": request_id,
-            "client_id": req["client_id"],
-            "file_name": info["original_name"],
-            "storage_path": info["path"],
-            "mime_type": info["mime_type"],
-            "file_size": info["size"],
-            "file_type": "completed",
-            "created_at": utc_now()
-        })
-
-        db_update(
-            "service_requests",
-            {"id": f"eq.{request_id}"},
-            {
-                "status": "Completed",
-                "completion_message": completion_message,
-                "completed_at": utc_now(),
-                "updated_at": utc_now()
-            }
-        )
-
-        final_message = completion_message or (
-            f"Your KOJA work {req['reference_no']} is completed. "
-            "The finished file is now available in your request."
-        )
-
-        db_insert("request_messages", {
-            "request_id": request_id,
-            "sender_role": "admin",
-            "sender_id": "ADMIN",
-            "message": final_message,
-            "created_at": utc_now()
-        })
-
-        notify(
-            req["client_id"],
-            "Work Completed",
-            final_message,
-            request_id
-        )
-
-        flash("Finished file uploaded. Request marked Completed.", "success")
-
-    except Exception as e:
-        flash(str(e), "danger")
-
-    return redirect(url_for("view_request", request_id=request_id))
+        return {
+            "status": "error",
+            "database": "failed",
+            "error": str(exc)[:500]
+        }, 500
 
 
 # ============================================================
-# NOTIFICATIONS
+# ERROR HANDLERS
 # ============================================================
 
-@app.route("/notifications")
-@login_required
-def notifications():
-    if is_admin():
+@app.errorhandler(413)
+def file_too_large(error):
+
+    flash(
+        "File is too large. Maximum allowed size is 25 MB."
+    )
+
+    if session.get("admin_logged_in"):
         return redirect(url_for("admin_dashboard"))
 
-    try:
-        items = db_get("notifications", {
-            "user_id": f"eq.{session['user_id']}",
-            "select": "*",
-            "order": "created_at.desc"
-        })
-    except Exception as e:
-        flash(str(e), "danger")
-        items = []
+    return redirect(url_for("new_request"))
 
-    rows = ""
-    for n in items:
-        rows += f"""
-        <div class="card">
-          <h3>{n.get('title','')}</h3>
-          <p>{n.get('message','')}</p>
-          <div class="small">{str(n.get('created_at',''))[:19]}</div>
-        </div>
-        """
-
-    body = f"""
-    <h2>Notifications</h2>
-    {rows or '<div class="card">No notifications.</div>'}
-    """
-    return page("Notifications", body)
-
-
-# ============================================================
-# 404 / 413 / ERRORS
-# ============================================================
 
 @app.errorhandler(404)
-def not_found(e):
+def not_found(error):
+
+    body = """
+    <div class="hero">
+
+        <h1>404</h1>
+
+        <p>
+        The requested page or document was not found.
+        </p>
+
+        <a class="btn"
+           href="{{ url_for('home') }}">
+            Return Home
+        </a>
+
+    </div>
+    """
+
     return page(
         "Not Found",
-        "<div class='card'><h2>Page not found</h2><p>The requested page does not exist.</p><a class='btn' href='/'>Home</a></div>"
+        body
     ), 404
 
 
-@app.errorhandler(403)
-def forbidden(e):
+@app.errorhandler(500)
+def server_error(error):
+
+    logging.exception(
+        "Internal server error"
+    )
+
+    body = """
+    <div class="hero">
+
+        <h1>Something went wrong</h1>
+
+        <p>
+        KOJA AFRICA encountered an internal error.
+        Please try again.
+        </p>
+
+        <a class="btn"
+           href="{{ url_for('home') }}">
+            Return Home
+        </a>
+
+    </div>
+    """
+
     return page(
-        "Forbidden",
-        "<div class='card'><h2>Access denied</h2><p>You do not have permission to access this request.</p></div>"
-    ), 403
-
-
-@app.errorhandler(413)
-def too_large(e):
-    return page(
-        "File Too Large",
-        f"<div class='card'><h2>Upload too large</h2><p>The maximum upload size is {MAX_FILE_MB} MB.</p></div>"
-    ), 413
-
-
-@app.errorhandler(Exception)
-def unexpected(e):
-    # Keep production errors away from the client while still giving
-    # a useful message for configuration/database failures.
-    return page(
-        "KOJA Error",
-        f"<div class='card'><h2>Something went wrong</h2><p>{str(e)}</p><a class='btn' href='/'>Home</a></div>"
+        "Server Error",
+        body
     ), 500
 
 
 # ============================================================
-# LOCAL ENTRY POINT
+# START APPLICATION
 # ============================================================
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", "5000"))
-    app.run(host="0.0.0.0", port=port, debug=False)
+
+    port = int(
+        os.getenv(
+            "PORT",
+            "10000"
+        )
+    )
+
+    host = os.getenv(
+        "HOST",
+        "0.0.0.0"
+    )
+
+    logging.info(
+        "Starting %s on %s:%s",
+        APP_NAME,
+        host,
+        port
+    )
+
+    app.run(
+        host=host,
+        port=port,
+        debug=False
+    )
