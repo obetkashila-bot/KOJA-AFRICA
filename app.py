@@ -9,7 +9,6 @@ from functools import wraps
 from urllib.parse import quote
 
 import requests
-
 from dotenv import load_dotenv
 
 from flask import (
@@ -85,7 +84,7 @@ STORAGE_BUCKET = os.getenv(
 APP_NAME = "KOJA AFRICA"
 
 APP_TAGLINE = (
-    "Submit • Process • Receive"
+    "Your Request • KOJA Handles It"
 )
 
 
@@ -110,6 +109,47 @@ ALLOWED_EXTENSIONS = {
     "ppt",
     "pptx",
     "zip",
+}
+
+
+# ============================================================
+# KOJA PUBLIC SERVICES
+# ============================================================
+
+PUBLIC_SERVICES = [
+    "Assignments",
+    "University Applications",
+    "Result Verification & Certification",
+    "Farmer Registration",
+    "TPN Centre",
+    "Higher Education Materials",
+]
+
+
+SERVICE_DESCRIPTIONS = {
+    "Assignments":
+        "Submit academic assignments, questions, "
+        "supporting documents and related academic work.",
+
+    "University Applications":
+        "Get assistance with university and higher "
+        "education application requests and documents.",
+
+    "Result Verification & Certification":
+        "Submit academic result verification, "
+        "certification and related document requests.",
+
+    "Farmer Registration":
+        "Submit farmer registration requests "
+        "and supporting information.",
+
+    "TPN Centre":
+        "Submit TPN-related requests and "
+        "supporting documents through KOJA.",
+
+    "Higher Education Materials":
+        "Request higher education materials, "
+        "academic documents and related resources.",
 }
 
 
@@ -184,13 +224,39 @@ def safe_filename(filename):
     return filename[:180]
 
 
+def client_status_label(status):
+
+    if status == STATUS_NEW:
+
+        return "Request Received"
+
+    if status == STATUS_PROCESSING:
+
+        return "KOJA Is Working on It"
+
+    if status == STATUS_COMPLETED:
+
+        return "Ready — Completed"
+
+    return status or "Request Received"
+
+
+def status_class(status):
+
+    if status == STATUS_COMPLETED:
+        return "completed"
+
+    if status == STATUS_PROCESSING:
+        return "processing"
+
+    return "new"
+
+
 # ============================================================
 # SUPABASE REST API
 # ============================================================
 
-def supabase_headers(
-    prefer=None
-):
+def supabase_headers(prefer=None):
 
     require_configuration()
 
@@ -590,11 +656,18 @@ def client_login_required(function):
         ):
 
             flash(
-                "Please log in first."
+                "Please log in or create "
+                "a KOJA account first."
             )
 
             return redirect(
-                url_for("login")
+                url_for(
+                    "login",
+                    next_service=session.get(
+                        "selected_service",
+                        ""
+                    )
+                )
             )
 
         return function(
@@ -781,7 +854,7 @@ nav {
     grid-template-columns:
         repeat(
             auto-fit,
-            minmax(220px,1fr)
+            minmax(240px,1fr)
         );
 
     gap: 16px;
@@ -800,6 +873,22 @@ nav {
         rgba(0,0,0,.05);
 
     margin-bottom: 16px;
+}
+
+.service-card {
+
+    display: flex;
+
+    flex-direction: column;
+
+    justify-content: space-between;
+
+    min-height: 235px;
+}
+
+.service-card .btn {
+
+    align-self: flex-start;
 }
 
 .form-card {
@@ -880,15 +969,23 @@ button,
 }
 
 .btn.secondary {
+
     background: #344054;
 }
 
 .btn.success {
+
     background: #039855;
 }
 
 .btn.warning {
+
     background: #f79009;
+}
+
+.btn.dark {
+
+    background: #101828;
 }
 
 .flash {
@@ -968,6 +1065,30 @@ button,
     margin-top: 25px;
 }
 
+.service-icon {
+
+    font-size: 34px;
+
+    margin-bottom: 5px;
+}
+
+.service-card h3 {
+
+    margin-bottom: 8px;
+}
+
+.service-card p {
+
+    color: #667085;
+
+    line-height: 1.5;
+}
+
+.how-card {
+
+    text-align: center;
+}
+
 table {
 
     width: 100%;
@@ -1025,6 +1146,14 @@ footer {
 
         overflow-x: auto;
     }
+
+    .btn {
+
+        width: 100%;
+
+        text-align: center;
+    }
+
 }
 
 </style>
@@ -1074,16 +1203,6 @@ Profile
 Logout
 </a>
 
-{% elif session.get("admin_logged_in") %}
-
-<a href="{{ url_for('admin_dashboard') }}">
-Admin
-</a>
-
-<a href="{{ url_for('admin_logout') }}">
-Logout
-</a>
-
 {% else %}
 
 <a href="{{ url_for('login') }}">
@@ -1092,10 +1211,6 @@ Client Login
 
 <a href="{{ url_for('register') }}">
 Register
-</a>
-
-<a href="{{ url_for('admin_login') }}">
-Admin
 </a>
 
 {% endif %}
@@ -1137,9 +1252,9 @@ KOJA AFRICA
 
 <br><br>
 
-Client submits →
-KOJA processes →
-Client receives
+Your Request →
+KOJA Handles It →
+You Receive the Result
 
 </footer>
 
@@ -1189,22 +1304,22 @@ KOJA AFRICA
 
 <p>
 <strong>
-Submit • Process • Receive
+Your Request • KOJA Handles It
 </strong>
 </p>
 
 <p>
-Clients submit their work and supporting
-documents. KOJA AFRICA processes the request
-and returns the finished document through
-the client's account.
+KOJA AFRICA is your request-processing
+platform. Choose the service you need,
+provide your information and documents,
+and KOJA will handle the request for you.
 </p>
 
 {% if not session.get("client_id") %}
 
 <a class="btn"
 href="{{ url_for('register') }}">
-Create Client Account
+Get Started
 </a>
 
 <a class="btn secondary"
@@ -1216,7 +1331,7 @@ Client Login
 
 <a class="btn"
 href="{{ url_for('new_request') }}">
-Submit New Request
+Start a Request
 </a>
 
 {% endif %}
@@ -1224,86 +1339,261 @@ Submit New Request
 </div>
 
 
+<h2>
+KOJA AFRICA Services
+</h2>
+
+
 <div class="grid">
 
-<div class="card">
+
+<div class="card service-card">
+
+<div>
+
+<div class="service-icon">
+📚
+</div>
 
 <h3>
 Assignments
 </h3>
 
 <p>
-Submit academic work and supporting
-documents for processing.
+Submit academic assignments,
+questions, supporting documents
+and related academic work.
 </p>
 
 </div>
 
+<a class="btn"
+href="{{ url_for(
+    'service_start',
+    service='Assignments'
+) }}">
+Request Assignment Service
+</a>
 
-<div class="card">
+</div>
+
+
+<div class="card service-card">
+
+<div>
+
+<div class="service-icon">
+🎓
+</div>
+
+<h3>
+University Applications
+</h3>
+
+<p>
+Get assistance with university
+and higher education application
+requests and related documents.
+</p>
+
+</div>
+
+<a class="btn"
+href="{{ url_for(
+    'service_start',
+    service='University Applications'
+) }}">
+University Applications
+</a>
+
+</div>
+
+
+<div class="card service-card">
+
+<div>
+
+<div class="service-icon">
+📄
+</div>
 
 <h3>
 Result Verification & Certification
 </h3>
 
 <p>
-Submit documents for verification
-and certification services.
+Submit academic result verification,
+certification and related document
+requests.
 </p>
 
 </div>
 
-
-<div class="card">
-
-<h3>
-TPN Centre
-</h3>
-
-<p>
-Submit TPN-related requests.
-</p>
+<a class="btn"
+href="{{ url_for(
+    'service_start',
+    service='Result Verification & Certification'
+) }}">
+Request Verification
+</a>
 
 </div>
 
 
-<div class="card">
+<div class="card service-card">
+
+<div>
+
+<div class="service-icon">
+🧑‍🌾
+</div>
 
 <h3>
 Farmer Registration
 </h3>
 
 <p>
-Submit farmer registration requests.
+Submit farmer registration requests
+and supporting information.
 </p>
 
 </div>
 
+<a class="btn"
+href="{{ url_for(
+    'service_start',
+    service='Farmer Registration'
+) }}">
+Farmer Registration
+</a>
 
-<div class="card">
+</div>
+
+
+<div class="card service-card">
+
+<div>
+
+<div class="service-icon">
+📋
+</div>
 
 <h3>
-Higher Education Applications
+TPN Centre
 </h3>
 
 <p>
-Submit university and higher education
-application requests.
+Submit TPN-related requests and
+supporting documents through KOJA.
 </p>
 
 </div>
 
+<a class="btn"
+href="{{ url_for(
+    'service_start',
+    service='TPN Centre'
+) }}">
+TPN Centre
+</a>
 
-<div class="card">
+</div>
+
+
+<div class="card service-card">
+
+<div>
+
+<div class="service-icon">
+📖
+</div>
 
 <h3>
 Higher Education Materials
 </h3>
 
 <p>
-Submit requests for higher education
-materials and document services.
+Request higher education materials,
+academic documents and related
+learning resources.
 </p>
+
+</div>
+
+<a class="btn"
+href="{{ url_for(
+    'service_start',
+    service='Higher Education Materials'
+) }}">
+Request Materials
+</a>
+
+</div>
+
+
+</div>
+
+
+<div class="hero">
+
+<h2>
+How KOJA Works
+</h2>
+
+<div class="grid">
+
+<div class="card how-card">
+
+<h3>
+1. Choose
+</h3>
+
+<p>
+Choose the KOJA service you need.
+</p>
+
+</div>
+
+
+<div class="card how-card">
+
+<h3>
+2. Send
+</h3>
+
+<p>
+Provide your information and upload
+the required documents.
+</p>
+
+</div>
+
+
+<div class="card how-card">
+
+<h3>
+3. KOJA Handles It
+</h3>
+
+<p>
+KOJA reviews and handles your request.
+</p>
+
+</div>
+
+
+<div class="card how-card">
+
+<h3>
+4. Receive
+</h3>
+
+<p>
+Track your request and receive the
+completed result through your account.
+</p>
+
+</div>
 
 </div>
 
@@ -1318,6 +1608,43 @@ materials and document services.
 
 
 # ============================================================
+# SERVICE START
+# ============================================================
+
+@app.route("/service/<path:service>")
+def service_start(service):
+
+    service = clean(
+        service,
+        200
+    )
+
+    if service not in PUBLIC_SERVICES:
+
+        abort(404)
+
+    session[
+        "selected_service"
+    ] = service
+
+    if session.get("client_id"):
+
+        return redirect(
+            url_for(
+                "new_request",
+                service=service
+            )
+        )
+
+    return redirect(
+        url_for(
+            "login",
+            next_service=service
+        )
+    )
+
+
+# ============================================================
 # REGISTER
 # ============================================================
 
@@ -1326,6 +1653,17 @@ materials and document services.
     methods=["GET", "POST"]
 )
 def register():
+
+    selected_service = clean(
+        request.args.get(
+            "service"
+        )
+        or session.get(
+            "selected_service",
+            ""
+        ),
+        200
+    )
 
     try:
 
@@ -1428,7 +1766,10 @@ def register():
             )
 
             return redirect(
-                url_for("register")
+                url_for(
+                    "register",
+                    service=selected_service
+                )
             )
 
         if not email:
@@ -1438,7 +1779,10 @@ def register():
             )
 
             return redirect(
-                url_for("register")
+                url_for(
+                    "register",
+                    service=selected_service
+                )
             )
 
         if not phone:
@@ -1448,7 +1792,10 @@ def register():
             )
 
             return redirect(
-                url_for("register")
+                url_for(
+                    "register",
+                    service=selected_service
+                )
             )
 
         if len(password) < 6:
@@ -1459,7 +1806,10 @@ def register():
             )
 
             return redirect(
-                url_for("register")
+                url_for(
+                    "register",
+                    service=selected_service
+                )
             )
 
         try:
@@ -1487,7 +1837,10 @@ def register():
                 )
 
                 return redirect(
-                    url_for("login")
+                    url_for(
+                        "login",
+                        next_service=selected_service
+                    )
                 )
 
             result = db_insert(
@@ -1555,6 +1908,25 @@ def register():
                 client["email"]
             )
 
+            if selected_service in PUBLIC_SERVICES:
+
+                session[
+                    "selected_service"
+                ] = selected_service
+
+                flash(
+                    "Account created. "
+                    "Your selected KOJA service "
+                    "is ready."
+                )
+
+                return redirect(
+                    url_for(
+                        "new_request",
+                        service=selected_service
+                    )
+                )
+
             flash(
                 "Account created successfully."
             )
@@ -1587,6 +1959,20 @@ Enter your personal and university information.
 Your details can then be reused when submitting
 KOJA requests.
 </p>
+
+{% if selected_service %}
+
+<div class="detail">
+
+<strong>
+Selected Service:
+</strong>
+
+{{ selected_service }}
+
+</div>
+
+{% endif %}
 
 <form method="post">
 
@@ -1804,7 +2190,10 @@ Create Account
 
 Already have an account?
 
-<a href="{{ url_for('login') }}">
+<a href="{{ url_for(
+    'login',
+    next_service=selected_service
+) }}">
 Login
 </a>
 
@@ -1817,7 +2206,8 @@ Login
     return page(
         "Register",
         body,
-        universities=universities
+        universities=universities,
+        selected_service=selected_service
     )
 
 
@@ -1830,6 +2220,27 @@ Login
     methods=["GET", "POST"]
 )
 def login():
+
+    next_service = clean(
+        request.args.get(
+            "next_service"
+        )
+        or session.get(
+            "selected_service",
+            ""
+        ),
+        200
+    )
+
+    if next_service not in PUBLIC_SERVICES:
+
+        next_service = ""
+
+    if next_service:
+
+        session[
+            "selected_service"
+        ] = next_service
 
     if request.method == "POST":
 
@@ -1867,7 +2278,10 @@ def login():
                 )
 
                 return redirect(
-                    url_for("login")
+                    url_for(
+                        "login",
+                        next_service=next_service
+                    )
                 )
 
             client = clients[0]
@@ -1887,7 +2301,10 @@ def login():
                 )
 
                 return redirect(
-                    url_for("login")
+                    url_for(
+                        "login",
+                        next_service=next_service
+                    )
                 )
 
             session.clear()
@@ -1903,6 +2320,19 @@ def login():
             session["client_email"] = (
                 client["email"]
             )
+
+            if next_service:
+
+                session[
+                    "selected_service"
+                ] = next_service
+
+                return redirect(
+                    url_for(
+                        "new_request",
+                        service=next_service
+                    )
+                )
 
             return redirect(
                 url_for("dashboard")
@@ -1924,8 +2354,22 @@ def login():
 <div class="form-card">
 
 <h2>
-Client Login
+KOJA Client Login
 </h2>
+
+{% if next_service %}
+
+<div class="detail">
+
+You are continuing with:
+
+<strong>
+{{ next_service }}
+</strong>
+
+</div>
+
+{% endif %}
 
 <form method="post">
 
@@ -1963,7 +2407,10 @@ Login
 
 No account?
 
-<a href="{{ url_for('register') }}">
+<a href="{{ url_for(
+    'register',
+    service=next_service
+) }}">
 Create one
 </a>
 
@@ -1975,7 +2422,8 @@ Create one
 
     return page(
         "Client Login",
-        body
+        body,
+        next_service=next_service
     )
 
 
@@ -2459,14 +2907,14 @@ Welcome,
 </h1>
 
 <p>
-Manage your KOJA AFRICA requests,
-messages, supporting documents and
-completed files.
+Manage your KOJA requests,
+messages, supporting documents
+and completed results.
 </p>
 
 <a class="btn"
 href="{{ url_for('new_request') }}">
-Submit New Request
+Start a Request
 </a>
 
 <a class="btn secondary"
@@ -2551,20 +2999,9 @@ Recent Requests
 
 <br>
 
-<span class="status
+<span class="status {{ status_class(r.status) }}">
 
-{% if r.status == 'Completed' %}
-completed
-
-{% elif r.status == 'Processing' %}
-processing
-
-{% else %}
-new
-{% endif %}
-">
-
-{{ r.status }}
+{{ client_status_label(r.status) }}
 
 </span>
 
@@ -2617,6 +3054,31 @@ You have not submitted any requests yet.
 )
 @client_login_required
 def new_request():
+
+    selected_service = clean(
+        request.args.get(
+            "service"
+        )
+        or session.get(
+            "selected_service",
+            ""
+        ),
+        200
+    )
+
+    if (
+        selected_service
+        and selected_service
+        not in PUBLIC_SERVICES
+    ):
+
+        selected_service = ""
+
+    if selected_service:
+
+        session[
+            "selected_service"
+        ] = selected_service
 
     services = db_select(
 
@@ -2747,18 +3209,24 @@ def new_request():
             )
 
             return redirect(
-                url_for("new_request")
+                url_for(
+                    "new_request",
+                    service=selected_service
+                )
             )
 
         if not description:
 
             flash(
                 "Please describe "
-                "the work."
+                "the request."
             )
 
             return redirect(
-                url_for("new_request")
+                url_for(
+                    "new_request",
+                    service=service_type
+                )
             )
 
         if (
@@ -2776,7 +3244,10 @@ def new_request():
                 )
 
                 return redirect(
-                    url_for("new_request")
+                    url_for(
+                        "new_request",
+                        service=service_type
+                    )
                 )
 
         try:
@@ -2939,7 +3410,7 @@ def new_request():
                         STATUS_NEW,
 
                     "message":
-                        "Request submitted by client.",
+                        "Request submitted to KOJA AFRICA.",
 
                     "changed_by":
                         session[
@@ -2973,13 +3444,15 @@ def new_request():
                         request_id,
 
                     "title":
-                        "Request Submitted",
+                        "KOJA Request Received",
 
                     "message":
                         (
                             "Your KOJA request "
                             + request_number
-                            + " has been received."
+                            + " has been received. "
+                            "KOJA will handle your request "
+                            "and update you through your account."
                         ),
 
                     "is_read":
@@ -2993,8 +3466,14 @@ def new_request():
             )
 
 
+            session.pop(
+                "selected_service",
+                None
+            )
+
+
             flash(
-                "Request submitted successfully. "
+                "Request received successfully. "
                 "Reference: "
                 + request_number
             )
@@ -3048,16 +3527,35 @@ def new_request():
 <div class="form-card">
 
 <h2>
-Submit New KOJA Request
+Start a KOJA Request
 </h2>
 
 <p class="small">
 
-Submit the work you want KOJA AFRICA
-to process. Attach the source document
-when necessary.
+Tell KOJA what you need and provide
+the information and documents required.
+KOJA will handle the request and make
+the completed result available in your
+account.
 
 </p>
+
+
+{% if selected_service %}
+
+<div class="detail">
+
+<strong>
+Selected KOJA Service:
+</strong>
+
+<br>
+
+{{ selected_service }}
+
+</div>
+
+{% endif %}
 
 
 <form method="post"
@@ -3081,6 +3579,9 @@ required
 
 <option
 value="{{ service.name }}"
+{% if selected_service == service.name %}
+selected
+{% endif %}
 >
 
 {{ service.name }}
@@ -3099,7 +3600,7 @@ Describe the Work / Request *
 <textarea
 name="description"
 required
-placeholder="Explain exactly what you want KOJA to process..."
+placeholder="Explain exactly what you want KOJA to handle..."
 ></textarea>
 
 
@@ -3221,6 +3722,7 @@ Year of Study
 <input
 name="year_of_study"
 value="{{ client.year_of_study or '' }}"
+placeholder="e.g. Year 2"
 >
 
 
@@ -3231,6 +3733,7 @@ Student Number
 <input
 name="student_number"
 value="{{ client.student_number or '' }}"
+placeholder="University student number"
 >
 
 
@@ -3247,12 +3750,16 @@ name="supporting_file"
 
 Maximum upload size: 25 MB.
 
+Supported formats:
+PDF, Word, TXT, images, Excel,
+PowerPoint and ZIP.
+
 </p>
 
 
 <button type="submit">
 
-Submit Request
+Send Request to KOJA
 
 </button>
 
@@ -3276,7 +3783,9 @@ Submit Request
 
         modes=modes,
 
-        levels=levels
+        levels=levels,
+
+        selected_service=selected_service
     )
 
 
@@ -3357,20 +3866,9 @@ Date
 
 <td>
 
-<span class="status
+<span class="status {{ status_class(r.status) }}">
 
-{% if r.status == 'Completed' %}
-completed
-
-{% elif r.status == 'Processing' %}
-processing
-
-{% else %}
-new
-{% endif %}
-">
-
-{{ r.status }}
+{{ client_status_label(r.status) }}
 
 </span>
 
@@ -3404,6 +3902,11 @@ Open
 <p>
 No requests found.
 </p>
+
+<a class="btn"
+href="{{ url_for('new_request') }}">
+Start a Request
+</a>
 
 {% endif %}
 
@@ -3500,20 +4003,9 @@ def request_detail(
 </h2>
 
 
-<span class="status
+<span class="status {{ status_class(item.status) }}">
 
-{% if item.status == 'Completed' %}
-completed
-
-{% elif item.status == 'Processing' %}
-processing
-
-{% else %}
-new
-{% endif %}
-">
-
-{{ item.status }}
+{{ client_status_label(item.status) }}
 
 </span>
 
@@ -3670,7 +4162,7 @@ No supporting document uploaded.
 {% if item.admin_message %}
 
 <h3>
-KOJA Message
+Message from KOJA
 </h3>
 
 <div class="detail">
@@ -3686,7 +4178,7 @@ KOJA Message
 and item.completed_file_url %}
 
 <h3>
-Completed Document
+KOJA Completed Result
 </h3>
 
 <div class="detail">
@@ -3703,7 +4195,7 @@ href="{{ url_for(
     request_id=item.id
 ) }}">
 
-Download Completed File
+Download Your KOJA Result
 
 </a>
 
@@ -3721,7 +4213,9 @@ Request History
 <div class="detail">
 
 <strong>
-{{ h.new_status }}
+
+{{ client_status_label(h.new_status) }}
+
 </strong>
 
 <br>
@@ -4055,6 +4549,10 @@ No notifications.
 # ============================================================
 # ADMIN LOGIN
 # ============================================================
+# NOTE:
+# The administrator system remains functional,
+# but NO ADMIN LINK is displayed anywhere publicly.
+# ============================================================
 
 @app.route(
     "/admin/login",
@@ -4153,7 +4651,7 @@ Administrator Login
 """
 
     return page(
-        "Admin Login",
+        "Administrator",
         body
     )
 
@@ -4374,19 +4872,7 @@ Date
 
 <td>
 
-<span class="status
-
-{% if r.status == 'Completed' %}
-completed
-
-{% elif r.status == 'Processing' %}
-processing
-
-{% else %}
-new
-{% endif %}
-
-">
+<span class="status {{ status_class(r.status) }}">
 
 {{ r.status }}
 
@@ -4564,7 +5050,7 @@ def admin_request(
                         (
                             message
                             or
-                            "Request is being processed."
+                            "KOJA has started working on the request."
                         ),
 
                     "changed_by":
@@ -4596,16 +5082,16 @@ def admin_request(
                         request_id,
 
                     "title":
-                        "Request Processing",
+                        "KOJA Is Working on Your Request",
 
                     "message":
                         (
-                            "Your request "
+                            "KOJA is now working on your request "
                             + item[
                                 "request_number"
                             ]
-                            + " is now "
-                            "being processed."
+                            + ". You will be notified "
+                            "when it is ready."
                         ),
 
                     "is_read":
@@ -4862,7 +5348,7 @@ def admin_request(
                             (
                                 message
                                 or
-                                "Completed document uploaded."
+                                "KOJA completed the request."
                             ),
 
                         "changed_by":
@@ -4894,7 +5380,7 @@ def admin_request(
                             request_id,
 
                         "title":
-                            "Request Completed",
+                            "Your KOJA Request Is Ready",
 
                         "message":
                             (
@@ -4902,9 +5388,9 @@ def admin_request(
                                 + item[
                                     "request_number"
                                 ]
-                                + " is completed. "
+                                + " is complete. "
                                 "Your finished document "
-                                "is now available."
+                                "is now available in your account."
                             ),
 
                         "is_read":
@@ -4964,19 +5450,7 @@ def admin_request(
 </h2>
 
 
-<span class="status
-
-{% if item.status == 'Completed' %}
-completed
-
-{% elif item.status == 'Processing' %}
-processing
-
-{% else %}
-new
-{% endif %}
-
-">
+<span class="status {{ status_class(item.status) }}">
 
 {{ item.status }}
 
