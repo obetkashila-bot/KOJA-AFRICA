@@ -42,58 +42,42 @@ app.secret_key = os.getenv(
     secrets.token_hex(32)
 )
 
-app.config["MAX_CONTENT_LENGTH"] = (
-    25 * 1024 * 1024
-)
+app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
 
-logging.basicConfig(
-    level=logging.INFO
-)
-
+logging.basicConfig(level=logging.INFO)
 
 SUPABASE_URL = os.getenv(
     "SUPABASE_URL",
     ""
 ).rstrip("/")
 
-
 SUPABASE_SERVICE_KEY = os.getenv(
     "SUPABASE_SERVICE_KEY",
     ""
 )
-
 
 ADMIN_USERNAME = os.getenv(
     "ADMIN_USERNAME",
     "admin"
 )
 
-
 ADMIN_PASSWORD = os.getenv(
     "ADMIN_PASSWORD",
     ""
 )
-
 
 STORAGE_BUCKET = os.getenv(
     "SUPABASE_STORAGE_BUCKET",
     "koja-assignments"
 )
 
-
 APP_NAME = "KOJA AFRICA"
 
-APP_TAGLINE = (
-    "Your Request • KOJA Handles It"
-)
-
+APP_TAGLINE = "Your Request • KOJA Handles It"
 
 STATUS_NEW = "New"
-
 STATUS_PROCESSING = "Processing"
-
 STATUS_COMPLETED = "Completed"
-
 
 ALLOWED_EXTENSIONS = {
     "pdf",
@@ -113,7 +97,7 @@ ALLOWED_EXTENSIONS = {
 
 
 # ============================================================
-# KOJA PUBLIC SERVICES
+# SERVICES
 # ============================================================
 
 PUBLIC_SERVICES = [
@@ -124,7 +108,6 @@ PUBLIC_SERVICES = [
     "TPN Centre",
     "Higher Education Materials",
 ]
-
 
 SERVICE_DESCRIPTIONS = {
     "Assignments":
@@ -158,40 +141,31 @@ SERVICE_DESCRIPTIONS = {
 # ============================================================
 
 def configuration_ok():
-
     return bool(
-        SUPABASE_URL
-        and SUPABASE_SERVICE_KEY
+        SUPABASE_URL and
+        SUPABASE_SERVICE_KEY
     )
 
 
 def require_configuration():
-
     if not configuration_ok():
-
         raise RuntimeError(
-            "SUPABASE_URL and "
-            "SUPABASE_SERVICE_KEY "
+            "SUPABASE_URL and SUPABASE_SERVICE_KEY "
             "are not configured."
         )
 
 
 def now_iso():
-
     return datetime.now(
         timezone.utc
     ).isoformat()
 
 
 def clean(value, maximum=5000):
-
-    return (
-        value or ""
-    ).strip()[:maximum]
+    return (value or "").strip()[:maximum]
 
 
 def allowed_file(filename):
-
     if not filename:
         return False
 
@@ -199,19 +173,13 @@ def allowed_file(filename):
         return False
 
     extension = (
-        filename
-        .rsplit(".", 1)[1]
-        .lower()
+        filename.rsplit(".", 1)[1].lower()
     )
 
-    return (
-        extension
-        in ALLOWED_EXTENSIONS
-    )
+    return extension in ALLOWED_EXTENSIONS
 
 
 def safe_filename(filename):
-
     filename = os.path.basename(
         filename or "file"
     )
@@ -225,24 +193,19 @@ def safe_filename(filename):
 
 
 def client_status_label(status):
-
     if status == STATUS_NEW:
-
         return "Request Received"
 
     if status == STATUS_PROCESSING:
-
         return "KOJA Is Working on It"
 
     if status == STATUS_COMPLETED:
-
         return "Ready — Completed"
 
     return status or "Request Received"
 
 
 def status_class(status):
-
     if status == STATUS_COMPLETED:
         return "completed"
 
@@ -257,24 +220,16 @@ def status_class(status):
 # ============================================================
 
 def supabase_headers(prefer=None):
-
     require_configuration()
 
     headers = {
-
-        "apikey":
-            SUPABASE_SERVICE_KEY,
-
+        "apikey": SUPABASE_SERVICE_KEY,
         "Authorization":
-            "Bearer "
-            + SUPABASE_SERVICE_KEY,
-
-        "Content-Type":
-            "application/json",
+            "Bearer " + SUPABASE_SERVICE_KEY,
+        "Content-Type": "application/json",
     }
 
     if prefer:
-
         headers["Prefer"] = prefer
 
     return headers
@@ -285,7 +240,6 @@ def supabase_request(
     path,
     **kwargs
 ):
-
     require_configuration()
 
     url = (
@@ -294,11 +248,9 @@ def supabase_request(
         + path
     )
 
-    supplied_headers = (
-        kwargs.pop(
-            "headers",
-            {}
-        )
+    supplied_headers = kwargs.pop(
+        "headers",
+        {}
     )
 
     headers = supabase_headers()
@@ -316,7 +268,6 @@ def supabase_request(
     )
 
     if not response.ok:
-
         logging.error(
             "Supabase request failed: "
             "%s %s %s %s",
@@ -333,15 +284,11 @@ def supabase_request(
         )
 
     if not response.text:
-
         return None
 
     try:
-
         return response.json()
-
     except Exception:
-
         return response.text
 
 
@@ -352,24 +299,18 @@ def db_select(
     order=None,
     limit=None
 ):
-
     params = {
         "select": select
     }
 
     if filters:
-
         params.update(filters)
 
     if order:
-
         params["order"] = order
 
     if limit:
-
-        params["limit"] = str(
-            limit
-        )
+        params["limit"] = str(limit)
 
     return supabase_request(
         "GET",
@@ -383,7 +324,6 @@ def db_insert(
     data,
     returning=True
 ):
-
     prefer = (
         "return=representation"
         if returning
@@ -407,7 +347,6 @@ def db_update(
     data,
     returning=True
 ):
-
     prefer = (
         "return=representation"
         if returning
@@ -434,7 +373,6 @@ def storage_upload(
     file_storage,
     folder="supporting"
 ):
-
     require_configuration()
 
     original_name = safe_filename(
@@ -444,7 +382,6 @@ def storage_upload(
     extension = ""
 
     if "." in original_name:
-
         extension = (
             original_name
             .rsplit(".", 1)[1]
@@ -454,8 +391,7 @@ def storage_upload(
     unique_name = (
         uuid.uuid4().hex
         + (
-            "."
-            + extension
+            "." + extension
             if extension
             else ""
         )
@@ -487,10 +423,8 @@ def storage_upload(
     )
 
     headers = {
-
         "Authorization":
-            "Bearer "
-            + SUPABASE_SERVICE_KEY,
+            "Bearer " + SUPABASE_SERVICE_KEY,
 
         "apikey":
             SUPABASE_SERVICE_KEY,
@@ -512,7 +446,6 @@ def storage_upload(
     )
 
     if not response.ok:
-
         raise RuntimeError(
             "File upload failed "
             f"({response.status_code}): "
@@ -520,24 +453,14 @@ def storage_upload(
         )
 
     return {
-
-        "path":
-            storage_path,
-
-        "file_name":
-            original_name,
-
-        "content_type":
-            content_type,
-
-        "size":
-            request.content_length
-            or 0,
+        "path": storage_path,
+        "file_name": original_name,
+        "content_type": content_type,
+        "size": request.content_length or 0,
     }
 
 
 def storage_download(path):
-
     require_configuration()
 
     url = (
@@ -555,10 +478,8 @@ def storage_download(path):
     )
 
     headers = {
-
         "Authorization":
-            "Bearer "
-            + SUPABASE_SERVICE_KEY,
+            "Bearer " + SUPABASE_SERVICE_KEY,
 
         "apikey":
             SUPABASE_SERVICE_KEY,
@@ -571,7 +492,6 @@ def storage_download(path):
     )
 
     if not response.ok:
-
         raise RuntimeError(
             "Storage download failed "
             f"({response.status_code}): "
@@ -586,17 +506,13 @@ def storage_download(path):
 # ============================================================
 
 def generate_request_number():
+    date_part = datetime.now(
+        timezone.utc
+    ).strftime("%Y%m%d")
 
-    date_part = (
-        datetime.now(
-            timezone.utc
-        ).strftime("%Y%m%d")
-    )
-
-    random_part = (
-        secrets.token_hex(4)
-        .upper()
-    )
+    random_part = secrets.token_hex(
+        4
+    ).upper()
 
     return (
         "KOJA-"
@@ -607,35 +523,25 @@ def generate_request_number():
 
 
 def create_unique_request_number():
-
     for _ in range(15):
 
-        number = (
-            generate_request_number()
-        )
+        number = generate_request_number()
 
         existing = db_select(
-
             "koja_service_requests",
-
             select="id",
-
             filters={
                 "request_number":
-                    "eq."
-                    + number
+                    "eq." + number
             },
-
             limit=1
         )
 
         if not existing:
-
             return number
 
     raise RuntimeError(
-        "Could not generate "
-        "a unique request number."
+        "Could not generate a unique request number."
     )
 
 
@@ -646,18 +552,13 @@ def create_unique_request_number():
 def client_login_required(function):
 
     @wraps(function)
-    def wrapper(
-        *args,
-        **kwargs
-    ):
+    def wrapper(*args, **kwargs):
 
-        if not session.get(
-            "client_id"
-        ):
+        if not session.get("client_id"):
 
             flash(
-                "Please log in or create "
-                "a KOJA account first."
+                "Please create a KOJA account "
+                "or log in first."
             )
 
             return redirect(
@@ -681,10 +582,7 @@ def client_login_required(function):
 def admin_required(function):
 
     @wraps(function)
-    def wrapper(
-        *args,
-        **kwargs
-    ):
+    def wrapper(*args, **kwargs):
 
         if not session.get(
             "admin_logged_in"
@@ -707,25 +605,20 @@ def admin_required(function):
 
 
 # ============================================================
-# HTML
+# HTML / DESIGN
 # ============================================================
 
 BASE_HTML = """
-
-<!doctype html>
-
+<!DOCTYPE html>
 <html lang="en">
-
 <head>
-
-<meta charset="utf-8">
+<meta charset="UTF-8">
 
 <meta name="viewport"
-content="width=device-width,initial-scale=1">
+      content="width=device-width,
+               initial-scale=1.0">
 
-<title>
-{{ title or "KOJA AFRICA" }}
-</title>
+<title>{{ title or "KOJA AFRICA" }}</title>
 
 <style>
 
@@ -734,453 +627,293 @@ content="width=device-width,initial-scale=1">
 }
 
 body {
-
     margin: 0;
-
-    background: #f4f7fb;
-
-    color: #172033;
-
     font-family:
         Arial,
         Helvetica,
         sans-serif;
+
+    background: #f5f7fb;
+    color: #172033;
 }
 
-nav {
-
-    background: #101828;
-
-    color: white;
-
-    padding: 14px 18px;
+header {
+    background: #ffffff;
+    border-bottom: 1px solid #e5e7eb;
+    padding: 15px;
+    position: sticky;
+    top: 0;
+    z-index: 20;
 }
 
-.nav-inner {
-
-    max-width: 1150px;
-
+.nav {
+    max-width: 1100px;
     margin: auto;
 
     display: flex;
-
-    justify-content:
-        space-between;
-
     align-items: center;
+    justify-content: space-between;
 
     gap: 15px;
 }
 
 .logo {
-
-    color: white;
-
-    text-decoration: none;
-
-    font-size: 22px;
-
+    font-size: 23px;
     font-weight: 800;
+    color: #173b8f;
 }
 
-.nav-links {
+.logo span:nth-child(1) {
+    color: #1769e0;
+}
 
+.logo span:nth-child(2) {
+    color: #18a957;
+}
+
+.logo span:nth-child(3) {
+    color: #e53935;
+}
+
+.logo span:nth-child(4) {
+    color: #173b8f;
+}
+
+nav {
     display: flex;
-
-    gap: 7px;
-
     flex-wrap: wrap;
+    gap: 7px;
 }
 
-.nav-links a {
-
-    color: white;
-
+nav a {
     text-decoration: none;
-
-    padding: 8px 10px;
-
-    border-radius: 7px;
+    color: #243047;
+    padding: 9px 11px;
+    border-radius: 8px;
+    font-size: 14px;
 }
 
-.nav-links a:hover {
-
-    background:
-        rgba(255,255,255,.1);
+nav a:hover {
+    background: #eef3ff;
 }
 
 .container {
-
-    max-width: 1150px;
-
-    margin: 25px auto;
-
-    padding: 0 15px;
+    width: 94%;
+    max-width: 1100px;
+    margin: 30px auto;
 }
 
 .hero {
+    background: linear-gradient(
+        135deg,
+        #173b8f,
+        #1769e0
+    );
 
-    background: white;
-
-    border-radius: 18px;
-
-    padding: 30px;
-
-    margin-bottom: 20px;
-
-    box-shadow:
-        0 5px 25px
-        rgba(0,0,0,.06);
+    color: white;
+    padding: 55px 25px;
+    border-radius: 20px;
+    text-align: center;
 }
 
 .hero h1 {
-
-    margin-top: 0;
-
-    font-size: 34px;
+    font-size: 42px;
+    margin: 0 0 12px;
 }
 
 .hero p {
-
-    color: #667085;
-
+    font-size: 18px;
     line-height: 1.6;
+    max-width: 700px;
+    margin: 0 auto 25px;
 }
 
-.grid {
+.btn {
+    display: inline-block;
+    border: none;
+    cursor: pointer;
+    text-decoration: none;
 
+    background: #1769e0;
+    color: white;
+
+    padding: 12px 18px;
+    border-radius: 9px;
+
+    font-weight: 700;
+}
+
+.btn:hover {
+    opacity: .9;
+}
+
+.btn-light {
+    background: white;
+    color: #173b8f;
+}
+
+.btn-success {
+    background: #168a48;
+}
+
+.btn-warning {
+    background: #c98200;
+}
+
+.card-grid {
     display: grid;
 
     grid-template-columns:
         repeat(
             auto-fit,
-            minmax(240px,1fr)
+            minmax(240px, 1fr)
         );
 
-    gap: 16px;
+    gap: 18px;
 }
 
 .card {
-
     background: white;
 
-    padding: 20px;
+    border: 1px solid #e3e7ef;
+    border-radius: 16px;
 
-    border-radius: 15px;
+    padding: 22px;
 
     box-shadow:
-        0 4px 18px
-        rgba(0,0,0,.05);
-
-    margin-bottom: 16px;
+        0 5px 20px
+        rgba(0,0,0,.04);
 }
 
-.service-card {
-
-    display: flex;
-
-    flex-direction: column;
-
-    justify-content: space-between;
-
-    min-height: 235px;
+.card h3 {
+    margin-top: 0;
 }
 
-.service-card .btn {
-
-    align-self: flex-start;
+.service-icon {
+    font-size: 38px;
+    margin-bottom: 8px;
 }
 
 .form-card {
-
-    max-width: 820px;
-
-    margin: auto;
-
     background: white;
+    max-width: 720px;
+    margin: auto;
 
     padding: 25px;
 
-    border-radius: 18px;
+    border-radius: 16px;
 
     box-shadow:
         0 5px 25px
-        rgba(0,0,0,.06);
+        rgba(0,0,0,.05);
 }
 
 label {
-
     display: block;
-
-    margin-top: 14px;
-
-    margin-bottom: 6px;
-
     font-weight: 700;
+    margin-top: 15px;
+    margin-bottom: 6px;
 }
 
 input,
 select,
 textarea {
-
     width: 100%;
 
     padding: 12px;
 
-    border:
-        1px solid #d0d5dd;
-
-    border-radius: 9px;
+    border: 1px solid #ccd3df;
+    border-radius: 8px;
 
     font-size: 15px;
-
-    background: white;
 }
 
 textarea {
-
-    min-height: 120px;
-
+    min-height: 150px;
     resize: vertical;
 }
 
-button,
-.btn {
-
-    display: inline-block;
-
-    border: 0;
-
-    background: #176bff;
-
-    color: white;
-
-    padding: 12px 17px;
-
-    border-radius: 9px;
-
-    text-decoration: none;
-
-    cursor: pointer;
-
-    font-weight: 700;
-
-    margin-top: 16px;
-}
-
-.btn.secondary {
-
-    background: #344054;
-}
-
-.btn.success {
-
-    background: #039855;
-}
-
-.btn.warning {
-
-    background: #f79009;
-}
-
-.btn.dark {
-
-    background: #101828;
-}
-
 .flash {
+    max-width: 1100px;
+    width: 94%;
+    margin: 15px auto;
 
-    padding: 13px 15px;
+    padding: 12px 15px;
 
-    background: #eaf2ff;
+    background: #fff8df;
+    border: 1px solid #f0d675;
 
-    border-radius: 9px;
-
-    margin-bottom: 15px;
-}
-
-.status {
-
-    display: inline-block;
-
-    padding: 6px 9px;
-
-    border-radius: 20px;
-
-    background: #eef2ff;
-
-    font-size: 13px;
-
-    font-weight: 700;
-}
-
-.status.completed {
-
-    background: #dcfae6;
-
-    color: #027a48;
-}
-
-.status.processing {
-
-    background: #fef0c7;
-
-    color: #b54708;
-}
-
-.status.new {
-
-    background: #eaf2ff;
-
-    color: #175cd3;
-}
-
-.detail {
-
-    background: #f8fafc;
-
-    border-radius: 10px;
-
-    padding: 13px;
-
-    margin-bottom: 10px;
-
-    line-height: 1.6;
-}
-
-.small {
-
-    color: #667085;
-
-    font-size: 13px;
-}
-
-.section-title {
-
-    border-top:
-        1px solid #eaecf0;
-
-    padding-top: 20px;
-
-    margin-top: 25px;
-}
-
-.service-icon {
-
-    font-size: 34px;
-
-    margin-bottom: 5px;
-}
-
-.service-card h3 {
-
-    margin-bottom: 8px;
-}
-
-.service-card p {
-
-    color: #667085;
-
-    line-height: 1.5;
-}
-
-.how-card {
-
-    text-align: center;
-}
-
-table {
-
-    width: 100%;
-
-    border-collapse:
-        collapse;
-
-    background: white;
-}
-
-th,
-td {
-
-    padding: 11px;
-
-    border-bottom:
-        1px solid #eaecf0;
-
-    text-align: left;
-
-    vertical-align: top;
+    border-radius: 8px;
 }
 
 footer {
-
     margin-top: 50px;
+    padding: 30px 15px;
 
-    padding: 25px;
-
-    background: #101828;
-
+    background: #172033;
     color: white;
 
     text-align: center;
 }
 
-@media(max-width:650px) {
+.small {
+    color: #667085;
+    font-size: 14px;
+    line-height: 1.6;
+}
 
-    .nav-inner {
+.service-card {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+}
 
-        flex-direction: column;
-
-        align-items:
-            flex-start;
-    }
+@media(max-width: 700px) {
 
     .hero h1 {
-
-        font-size: 27px;
+        font-size: 31px;
     }
 
-    table {
-
-        display: block;
-
-        overflow-x: auto;
+    nav {
+        display: none;
     }
 
-    .btn {
-
-        width: 100%;
-
-        text-align: center;
+    .container {
+        margin-top: 20px;
     }
-
 }
 
 </style>
-
 </head>
 
 <body>
 
+<header>
+
+<div class="nav">
+
+<a href="{{ url_for('home') }}"
+   style="text-decoration:none">
+
+<div class="logo">
+<span>k</span><span>o</span><span>j</span><span>a</span>
+<span style="margin-left:5px">
+AFRICA
+</span>
+</div>
+
+</a>
+
 <nav>
-
-<div class="nav-inner">
-
-<a class="logo"
-href="{{ url_for('home') }}">
-KOJA AFRICA
-</a>
-
-<div class="nav-links">
-
-<a href="{{ url_for('home') }}">
-Home
-</a>
 
 {% if session.get("client_id") %}
 
 <a href="{{ url_for('dashboard') }}">
 Dashboard
+</a>
+
+<a href="{{ url_for('services') }}">
+Services
 </a>
 
 <a href="{{ url_for('new_request') }}">
@@ -1206,7 +939,7 @@ Logout
 {% else %}
 
 <a href="{{ url_for('login') }}">
-Client Login
+Login
 </a>
 
 <a href="{{ url_for('register') }}">
@@ -1215,16 +948,13 @@ Register
 
 {% endif %}
 
-</div>
-
-</div>
-
 </nav>
 
-<div class="container">
+</div>
 
-{% with messages =
-get_flashed_messages() %}
+</header>
+
+{% with messages = get_flashed_messages() %}
 
 {% for message in messages %}
 
@@ -1236,30 +966,27 @@ get_flashed_messages() %}
 
 {% endwith %}
 
+<main class="container">
+
 {{ body|safe }}
 
-</div>
+</main>
 
 <footer>
 
-<strong>
-KOJA AFRICA
-</strong>
+<strong>KOJA AFRICA</strong>
 
-<br>
-
+<p>
 {{ tagline }}
+</p>
 
-<br><br>
-
-Your Request →
-KOJA Handles It →
-You Receive the Result
+<p class="small" style="color:#cbd5e1">
+Your Request → KOJA Handles It → You Receive the Result
+</p>
 
 </footer>
 
 </body>
-
 </html>
 """
 
@@ -1276,13 +1003,9 @@ def page(
     )
 
     return render_template_string(
-
         BASE_HTML,
-
         title=title,
-
         body=body,
-
         tagline=APP_TAGLINE
     )
 
@@ -1298,304 +1021,23 @@ def home():
 
 <div class="hero">
 
-<h1>
-KOJA AFRICA
-</h1>
+<h1>KOJA AFRICA</h1>
 
 <p>
-<strong>
 Your Request • KOJA Handles It
-</strong>
 </p>
 
 <p>
-KOJA AFRICA is your request-processing
-platform. Choose the service you need,
-provide your information and documents,
-and KOJA will handle the request for you.
+Choose the service you need and let
+KOJA AFRICA handle your request.
 </p>
 
-{% if not session.get("client_id") %}
+<a class="btn btn-light"
+   href="{{ url_for('services') }}">
 
-<a class="btn"
-href="{{ url_for('register') }}">
 Get Started
+
 </a>
-
-<a class="btn secondary"
-href="{{ url_for('login') }}">
-Client Login
-</a>
-
-{% else %}
-
-<a class="btn"
-href="{{ url_for('new_request') }}">
-Start a Request
-</a>
-
-{% endif %}
-
-</div>
-
-
-<h2>
-KOJA AFRICA Services
-</h2>
-
-
-<div class="grid">
-
-
-<div class="card service-card">
-
-<div>
-
-<div class="service-icon">
-📚
-</div>
-
-<h3>
-Assignments
-</h3>
-
-<p>
-Submit academic assignments,
-questions, supporting documents
-and related academic work.
-</p>
-
-</div>
-
-<a class="btn"
-href="{{ url_for(
-    'service_start',
-    service='Assignments'
-) }}">
-Request Assignment Service
-</a>
-
-</div>
-
-
-<div class="card service-card">
-
-<div>
-
-<div class="service-icon">
-🎓
-</div>
-
-<h3>
-University Applications
-</h3>
-
-<p>
-Get assistance with university
-and higher education application
-requests and related documents.
-</p>
-
-</div>
-
-<a class="btn"
-href="{{ url_for(
-    'service_start',
-    service='University Applications'
-) }}">
-University Applications
-</a>
-
-</div>
-
-
-<div class="card service-card">
-
-<div>
-
-<div class="service-icon">
-📄
-</div>
-
-<h3>
-Result Verification & Certification
-</h3>
-
-<p>
-Submit academic result verification,
-certification and related document
-requests.
-</p>
-
-</div>
-
-<a class="btn"
-href="{{ url_for(
-    'service_start',
-    service='Result Verification & Certification'
-) }}">
-Request Verification
-</a>
-
-</div>
-
-
-<div class="card service-card">
-
-<div>
-
-<div class="service-icon">
-🧑‍🌾
-</div>
-
-<h3>
-Farmer Registration
-</h3>
-
-<p>
-Submit farmer registration requests
-and supporting information.
-</p>
-
-</div>
-
-<a class="btn"
-href="{{ url_for(
-    'service_start',
-    service='Farmer Registration'
-) }}">
-Farmer Registration
-</a>
-
-</div>
-
-
-<div class="card service-card">
-
-<div>
-
-<div class="service-icon">
-📋
-</div>
-
-<h3>
-TPN Centre
-</h3>
-
-<p>
-Submit TPN-related requests and
-supporting documents through KOJA.
-</p>
-
-</div>
-
-<a class="btn"
-href="{{ url_for(
-    'service_start',
-    service='TPN Centre'
-) }}">
-TPN Centre
-</a>
-
-</div>
-
-
-<div class="card service-card">
-
-<div>
-
-<div class="service-icon">
-📖
-</div>
-
-<h3>
-Higher Education Materials
-</h3>
-
-<p>
-Request higher education materials,
-academic documents and related
-learning resources.
-</p>
-
-</div>
-
-<a class="btn"
-href="{{ url_for(
-    'service_start',
-    service='Higher Education Materials'
-) }}">
-Request Materials
-</a>
-
-</div>
-
-
-</div>
-
-
-<div class="hero">
-
-<h2>
-How KOJA Works
-</h2>
-
-<div class="grid">
-
-<div class="card how-card">
-
-<h3>
-1. Choose
-</h3>
-
-<p>
-Choose the KOJA service you need.
-</p>
-
-</div>
-
-
-<div class="card how-card">
-
-<h3>
-2. Send
-</h3>
-
-<p>
-Provide your information and upload
-the required documents.
-</p>
-
-</div>
-
-
-<div class="card how-card">
-
-<h3>
-3. KOJA Handles It
-</h3>
-
-<p>
-KOJA reviews and handles your request.
-</p>
-
-</div>
-
-
-<div class="card how-card">
-
-<h3>
-4. Receive
-</h3>
-
-<p>
-Track your request and receive the
-completed result through your account.
-</p>
-
-</div>
-
-</div>
 
 </div>
 
@@ -1608,10 +1050,89 @@ completed result through your account.
 
 
 # ============================================================
+# SERVICES
+# ============================================================
+
+@app.route("/services")
+def services():
+
+    body = """
+
+<h1>KOJA AFRICA Services</h1>
+
+<p class="small">
+Choose the service you need. You will be
+asked for the information relevant to that
+specific service.
+</p>
+
+<div class="card-grid">
+
+{% for service in services %}
+
+<div class="card service-card">
+
+<div>
+
+<div class="service-icon">
+
+{% if service == "Assignments" %}
+📚
+{% elif service == "University Applications" %}
+🎓
+{% elif service == "Result Verification & Certification" %}
+📄
+{% elif service == "Farmer Registration" %}
+🧑‍🌾
+{% elif service == "TPN Centre" %}
+📋
+{% else %}
+📖
+{% endif %}
+
+</div>
+
+<h3>
+{{ service }}
+</h3>
+
+<p class="small">
+{{ descriptions.get(service, "") }}
+</p>
+
+</div>
+
+<a class="btn"
+   href="{{ url_for(
+       'service_start',
+       service=service
+   ) }}">
+
+Select Service
+
+</a>
+
+</div>
+
+{% endfor %}
+
+</div>
+
+"""
+
+    return page(
+        "KOJA Services",
+        body,
+        services=PUBLIC_SERVICES,
+        descriptions=SERVICE_DESCRIPTIONS
+    )
+
+
+# ============================================================
 # SERVICE START
 # ============================================================
 
-@app.route("/service/<path:service>")
+@app.route("/service/<service>")
 def service_start(service):
 
     service = clean(
@@ -1620,7 +1141,6 @@ def service_start(service):
     )
 
     if service not in PUBLIC_SERVICES:
-
         abort(404)
 
     session[
@@ -1638,8 +1158,8 @@ def service_start(service):
 
     return redirect(
         url_for(
-            "login",
-            next_service=service
+            "register",
+            service=service
         )
     )
 
@@ -1655,9 +1175,7 @@ def service_start(service):
 def register():
 
     selected_service = clean(
-        request.args.get(
-            "service"
-        )
+        request.args.get("service")
         or session.get(
             "selected_service",
             ""
@@ -1665,30 +1183,18 @@ def register():
         200
     )
 
-    try:
+    if (
+        selected_service
+        and
+        selected_service not in PUBLIC_SERVICES
+    ):
+        selected_service = ""
 
-        universities = db_select(
-            "koja_universities",
-            select="*",
-            filters={
-                "active": "eq.true"
-            },
-            order="name.asc"
-        )
+    if selected_service:
 
-    except Exception as exc:
-
-        logging.exception(
-            "University loading failed"
-        )
-
-        universities = []
-
-        flash(
-            "University list could not "
-            "be loaded: "
-            + str(exc)[:250]
-        )
+        session[
+            "selected_service"
+        ] = selected_service
 
     if request.method == "POST":
 
@@ -1710,53 +1216,6 @@ def register():
         password = request.form.get(
             "password",
             ""
-        )
-
-        university = clean(
-            request.form.get(
-                "university"
-            ),
-            200
-        )
-
-        mode_of_study = clean(
-            request.form.get(
-                "mode_of_study"
-            ),
-            80
-        )
-
-        school = clean(
-            request.form.get("school"),
-            200
-        )
-
-        programme = clean(
-            request.form.get(
-                "programme"
-            ),
-            250
-        )
-
-        academic_level = clean(
-            request.form.get(
-                "academic_level"
-            ),
-            100
-        )
-
-        year_of_study = clean(
-            request.form.get(
-                "year_of_study"
-            ),
-            80
-        )
-
-        student_number = clean(
-            request.form.get(
-                "student_number"
-            ),
-            100
         )
 
         if not name:
@@ -1815,17 +1274,12 @@ def register():
         try:
 
             existing = db_select(
-
                 "koja_clients",
-
                 select="id",
-
                 filters={
                     "email":
-                        "eq."
-                        + email
+                        "eq." + email
                 },
-
                 limit=1
             )
 
@@ -1844,40 +1298,21 @@ def register():
                 )
 
             result = db_insert(
-
                 "koja_clients",
-
                 {
+                    "name": name,
+                    "email": email,
+                    "phone": phone,
 
-                    "name":
-                        name,
-
-                    "email":
-                        email,
-
-                    "phone":
-                        phone,
-
-                    "university":
-                        university,
-
-                    "mode_of_study":
-                        mode_of_study,
-
-                    "school":
-                        school,
-
-                    "programme":
-                        programme,
-
-                    "academic_level":
-                        academic_level,
-
-                    "year_of_study":
-                        year_of_study,
-
-                    "student_number":
-                        student_number,
+                    # University fields deliberately
+                    # remain empty at registration.
+                    "university": "",
+                    "mode_of_study": "",
+                    "school": "",
+                    "programme": "",
+                    "academic_level": "",
+                    "year_of_study": "",
+                    "student_number": "",
 
                     "password_hash":
                         generate_password_hash(
@@ -1896,43 +1331,32 @@ def register():
 
             session.clear()
 
-            session["client_id"] = (
-                client["id"]
-            )
+            session[
+                "client_id"
+            ] = client["id"]
 
-            session["client_name"] = (
-                client["name"]
-            )
+            session[
+                "client_name"
+            ] = client["name"]
 
-            session["client_email"] = (
-                client["email"]
-            )
+            session[
+                "client_email"
+            ] = client["email"]
 
-            if selected_service in PUBLIC_SERVICES:
+            if selected_service:
 
                 session[
                     "selected_service"
                 ] = selected_service
 
-                flash(
-                    "Account created. "
-                    "Your selected KOJA service "
-                    "is ready."
-                )
-
-                return redirect(
-                    url_for(
-                        "new_request",
-                        service=selected_service
-                    )
-                )
-
             flash(
                 "Account created successfully."
             )
 
+            # IMPORTANT:
+            # We now send the user to Services.
             return redirect(
-                url_for("dashboard")
+                url_for("services")
             )
 
         except Exception as exc:
@@ -1950,244 +1374,87 @@ def register():
 
 <div class="form-card">
 
-<h2>
-Create KOJA Client Account
-</h2>
+<h2>Create KOJA Account</h2>
 
 <p class="small">
-Enter your personal and university information.
-Your details can then be reused when submitting
-KOJA requests.
+
+Create your KOJA AFRICA account first.
+University information is NOT required here.
+
 </p>
 
 {% if selected_service %}
 
-<div class="detail">
+<p>
 
-<strong>
-Selected Service:
-</strong>
+<strong>Selected Service:</strong><br>
 
 {{ selected_service }}
 
-</div>
+</p>
 
 {% endif %}
 
-<form method="post">
+<form method="POST">
 
 <label>
 Full Name *
 </label>
 
 <input
-name="name"
-required
-autocomplete="name"
+    name="name"
+    required
+    autocomplete="name"
+    placeholder="Your full name"
 >
-
 
 <label>
 Email Address *
 </label>
 
 <input
-type="email"
-name="email"
-required
-autocomplete="email"
+    type="email"
+    name="email"
+    required
+    autocomplete="email"
+    placeholder="you@example.com"
 >
-
 
 <label>
 Phone / Contact *
 </label>
 
 <input
-name="phone"
-required
-placeholder="e.g. 097xxxxxxx"
+    name="phone"
+    required
+    placeholder="e.g. 097xxxxxxx"
 >
-
-
-<h3 class="section-title">
-University / Student Information
-</h3>
-
-
-<label>
-University in Zambia
-</label>
-
-<select name="university">
-
-<option value="">
--- Select University --
-</option>
-
-{% for university in universities %}
-
-<option value="{{ university.name }}">
-
-{{ university.name }}
-
-</option>
-
-{% endfor %}
-
-</select>
-
-
-<label>
-Mode of Study
-</label>
-
-<select name="mode_of_study">
-
-<option value="">
--- Select Mode --
-</option>
-
-<option>
-Full-Time
-</option>
-
-<option>
-Part-Time
-</option>
-
-<option>
-Distance Learning
-</option>
-
-<option>
-Online
-</option>
-
-<option>
-Evening
-</option>
-
-<option>
-Weekend
-</option>
-
-<option>
-Blended
-</option>
-
-<option>
-Other
-</option>
-
-</select>
-
-
-<label>
-School / Faculty
-</label>
-
-<input
-name="school"
-placeholder="e.g. School of Natural Sciences"
->
-
-
-<label>
-Programme / Course
-</label>
-
-<input
-name="programme"
-placeholder="e.g. Bachelor of Science"
->
-
-
-<label>
-Academic Level
-</label>
-
-<select name="academic_level">
-
-<option value="">
--- Select Level --
-</option>
-
-<option>
-Certificate
-</option>
-
-<option>
-Diploma
-</option>
-
-<option>
-Undergraduate
-</option>
-
-<option>
-Postgraduate
-</option>
-
-<option>
-Masters
-</option>
-
-<option>
-PhD
-</option>
-
-<option>
-Other
-</option>
-
-</select>
-
-
-<label>
-Year of Study
-</label>
-
-<input
-name="year_of_study"
-placeholder="e.g. Year 2"
->
-
-
-<label>
-Student Number
-</label>
-
-<input
-name="student_number"
-placeholder="University student number"
->
-
 
 <label>
 Password *
 </label>
 
 <input
-type="password"
-name="password"
-required
-minlength="6"
-autocomplete="new-password"
+    type="password"
+    name="password"
+    required
+    minlength="6"
+    autocomplete="new-password"
+    placeholder="At least 6 characters"
 >
 
+<br><br>
 
-<button type="submit">
-
+<button
+    class="btn"
+    type="submit"
+>
 Create Account
-
 </button>
 
 </form>
 
-
 <p>
-
 Already have an account?
 
 <a href="{{ url_for(
@@ -2204,43 +1471,28 @@ Login
 """
 
     return page(
-        "Register",
+        "Create Account",
         body,
-        universities=universities,
         selected_service=selected_service
     )
-
-
-# ============================================================
+   # ============================================================
 # LOGIN
 # ============================================================
 
-@app.route(
-    "/login",
-    methods=["GET", "POST"]
-)
+@app.route("/login", methods=["GET", "POST"])
 def login():
 
     next_service = clean(
-        request.args.get(
-            "next_service"
-        )
-        or session.get(
-            "selected_service",
-            ""
-        ),
+        request.args.get("next_service")
+        or session.get("selected_service", ""),
         200
     )
 
     if next_service not in PUBLIC_SERVICES:
-
         next_service = ""
 
     if next_service:
-
-        session[
-            "selected_service"
-        ] = next_service
+        session["selected_service"] = next_service
 
     if request.method == "POST":
 
@@ -2257,26 +1509,18 @@ def login():
         try:
 
             clients = db_select(
-
                 "koja_clients",
-
                 select="*",
-
                 filters={
-                    "email":
-                        "eq."
-                        + email
+                    "email": "eq." + email
                 },
-
                 limit=1
             )
 
             if not clients:
-
                 flash(
                     "Invalid email or password."
                 )
-
                 return redirect(
                     url_for(
                         "login",
@@ -2287,19 +1531,12 @@ def login():
             client = clients[0]
 
             if not check_password_hash(
-
-                client[
-                    "password_hash"
-                ],
-
+                client["password_hash"],
                 password
-
             ):
-
                 flash(
                     "Invalid email or password."
                 )
-
                 return redirect(
                     url_for(
                         "login",
@@ -2309,23 +1546,12 @@ def login():
 
             session.clear()
 
-            session["client_id"] = (
-                client["id"]
-            )
-
-            session["client_name"] = (
-                client["name"]
-            )
-
-            session["client_email"] = (
-                client["email"]
-            )
+            session["client_id"] = client["id"]
+            session["client_name"] = client["name"]
+            session["client_email"] = client["email"]
 
             if next_service:
-
-                session[
-                    "selected_service"
-                ] = next_service
+                session["selected_service"] = next_service
 
                 return redirect(
                     url_for(
@@ -2335,7 +1561,7 @@ def login():
                 )
 
             return redirect(
-                url_for("dashboard")
+                url_for("services")
             )
 
         except Exception as exc:
@@ -2353,58 +1579,40 @@ def login():
 
 <div class="form-card">
 
-<h2>
-KOJA Client Login
-</h2>
+<h2>KOJA Client Login</h2>
 
-{% if next_service %}
+<form method="POST">
 
-<div class="detail">
-
-You are continuing with:
-
-<strong>
-{{ next_service }}
-</strong>
-
-</div>
-
-{% endif %}
-
-<form method="post">
-
-<label>
-Email
-</label>
+<label>Email Address</label>
 
 <input
-type="email"
-name="email"
-required
-autocomplete="email"
+    type="email"
+    name="email"
+    required
+    autocomplete="email"
 >
 
-
-<label>
-Password
-</label>
+<label>Password</label>
 
 <input
-type="password"
-name="password"
-required
-autocomplete="current-password"
+    type="password"
+    name="password"
+    required
+    autocomplete="current-password"
 >
 
+<br><br>
 
-<button type="submit">
+<button
+    class="btn"
+    type="submit"
+>
 Login
 </button>
 
 </form>
 
 <p>
-
 No account?
 
 <a href="{{ url_for(
@@ -2413,7 +1621,6 @@ No account?
 ) }}">
 Create one
 </a>
-
 </p>
 
 </div>
@@ -2457,19 +1664,12 @@ def logout():
 def profile():
 
     rows = db_select(
-
         "koja_clients",
-
         select="*",
-
         filters={
             "id":
-                "eq."
-                + session[
-                    "client_id"
-                ]
+                "eq." + session["client_id"]
         },
-
         limit=1
     )
 
@@ -2490,81 +1690,17 @@ def profile():
     if request.method == "POST":
 
         data = {
+            "name": clean(
+                request.form.get("name"),
+                150
+            ),
 
-            "name":
-                clean(
-                    request.form.get(
-                        "name"
-                    ),
-                    150
-                ),
+            "phone": clean(
+                request.form.get("phone"),
+                60
+            ),
 
-            "phone":
-                clean(
-                    request.form.get(
-                        "phone"
-                    ),
-                    60
-                ),
-
-            "university":
-                clean(
-                    request.form.get(
-                        "university"
-                    ),
-                    200
-                ),
-
-            "mode_of_study":
-                clean(
-                    request.form.get(
-                        "mode_of_study"
-                    ),
-                    80
-                ),
-
-            "school":
-                clean(
-                    request.form.get(
-                        "school"
-                    ),
-                    200
-                ),
-
-            "programme":
-                clean(
-                    request.form.get(
-                        "programme"
-                    ),
-                    250
-                ),
-
-            "academic_level":
-                clean(
-                    request.form.get(
-                        "academic_level"
-                    ),
-                    100
-                ),
-
-            "year_of_study":
-                clean(
-                    request.form.get(
-                        "year_of_study"
-                    ),
-                    80
-                ),
-
-            "student_number":
-                clean(
-                    request.form.get(
-                        "student_number"
-                    ),
-                    100
-                ),
-
-            "updated_at":
-                now_iso(),
+            "updated_at": now_iso()
         }
 
         if not data["name"]:
@@ -2580,25 +1716,16 @@ def profile():
         try:
 
             db_update(
-
                 "koja_clients",
-
                 {
                     "id":
-                        "eq."
-                        + session[
-                            "client_id"
-                        ]
+                        "eq." + session["client_id"]
                 },
-
                 data,
-
                 returning=False
             )
 
-            session["client_name"] = (
-                data["name"]
-            )
+            session["client_name"] = data["name"]
 
             flash(
                 "Profile updated successfully."
@@ -2619,212 +1746,44 @@ def profile():
                 + str(exc)[:350]
             )
 
-    universities = db_select(
-
-        "koja_universities",
-
-        select="*",
-
-        filters={
-            "active":
-                "eq.true"
-        },
-
-        order="name.asc"
-    )
-
-    modes = [
-        "Full-Time",
-        "Part-Time",
-        "Distance Learning",
-        "Online",
-        "Evening",
-        "Weekend",
-        "Blended",
-        "Other"
-    ]
-
-    levels = [
-        "Certificate",
-        "Diploma",
-        "Undergraduate",
-        "Postgraduate",
-        "Masters",
-        "PhD",
-        "Other"
-    ]
-
     body = """
 
 <div class="form-card">
 
-<h2>
-My Profile
-</h2>
+<h2>My Profile</h2>
 
-<form method="post">
+<form method="POST">
 
-<label>
-Full Name
-</label>
+<label>Full Name</label>
 
 <input
-name="name"
-value="{{ client.name or '' }}"
-required
+    name="name"
+    value="{{ client.name or '' }}"
+    required
 >
 
-
-<label>
-Email
-</label>
+<label>Email</label>
 
 <input
-value="{{ client.email or '' }}"
-disabled
+    value="{{ client.email or '' }}"
+    disabled
 >
 
-
-<label>
-Phone / Contact
-</label>
+<label>Phone / Contact</label>
 
 <input
-name="phone"
-value="{{ client.phone or '' }}"
-required
+    name="phone"
+    value="{{ client.phone or '' }}"
+    required
 >
 
+<br><br>
 
-<h3 class="section-title">
-University / Student Details
-</h3>
-
-
-<label>
-University
-</label>
-
-<select name="university">
-
-<option value="">
--- Select University --
-</option>
-
-{% for u in universities %}
-
-<option
-value="{{ u.name }}"
-{% if client.university == u.name %}
-selected
-{% endif %}
+<button
+    class="btn"
+    type="submit"
 >
-
-{{ u.name }}
-
-</option>
-
-{% endfor %}
-
-</select>
-
-
-<label>
-Mode of Study
-</label>
-
-<select name="mode_of_study">
-
-{% for m in modes %}
-
-<option
-value="{{ m }}"
-{% if client.mode_of_study == m %}
-selected
-{% endif %}
->
-
-{{ m }}
-
-</option>
-
-{% endfor %}
-
-</select>
-
-
-<label>
-School / Faculty
-</label>
-
-<input
-name="school"
-value="{{ client.school or '' }}"
->
-
-
-<label>
-Programme / Course
-</label>
-
-<input
-name="programme"
-value="{{ client.programme or '' }}"
->
-
-
-<label>
-Academic Level
-</label>
-
-<select name="academic_level">
-
-<option value="">
--- Select Level --
-</option>
-
-{% for level in levels %}
-
-<option
-value="{{ level }}"
-{% if client.academic_level == level %}
-selected
-{% endif %}
->
-
-{{ level }}
-
-</option>
-
-{% endfor %}
-
-</select>
-
-
-<label>
-Year of Study
-</label>
-
-<input
-name="year_of_study"
-value="{{ client.year_of_study or '' }}"
->
-
-
-<label>
-Student Number
-</label>
-
-<input
-name="student_number"
-value="{{ client.student_number or '' }}"
->
-
-
-<button type="submit">
-
 Save Profile
-
 </button>
 
 </form>
@@ -2834,218 +1793,18 @@ Save Profile
 """
 
     return page(
-
         "My Profile",
-
         body,
-
-        client=client,
-
-        universities=universities,
-
-        modes=modes,
-
-        levels=levels
-    )
-
-
-# ============================================================
-# CLIENT DASHBOARD
-# ============================================================
-
-@app.route("/dashboard")
-@client_login_required
-def dashboard():
-
-    email = session[
-        "client_email"
-    ]
-
-    requests_data = db_select(
-
-        "koja_service_requests",
-
-        select="*",
-
-        filters={
-            "client_email":
-                "eq."
-                + email
-        },
-
-        order="created_at.desc",
-
-        limit=100
-    )
-
-    unread = db_select(
-
-        "koja_notifications",
-
-        select="id",
-
-        filters={
-
-            "client_email":
-                "eq."
-                + email,
-
-            "is_read":
-                "eq.false"
-        },
-
-        limit=100
-    )
-
-    body = """
-
-<div class="hero">
-
-<h1>
-Welcome,
-{{ session.get("client_name") }}
-</h1>
-
-<p>
-Manage your KOJA requests,
-messages, supporting documents
-and completed results.
-</p>
-
-<a class="btn"
-href="{{ url_for('new_request') }}">
-Start a Request
-</a>
-
-<a class="btn secondary"
-href="{{ url_for('profile') }}">
-My Profile
-</a>
-
-</div>
-
-
-<div class="grid">
-
-<div class="card">
-
-<h3>
-Total Requests
-</h3>
-
-<h2>
-{{ requests_data|length }}
-</h2>
-
-</div>
-
-
-<div class="card">
-
-<h3>
-Unread Notifications
-</h3>
-
-<h2>
-{{ unread|length }}
-</h2>
-
-</div>
-
-
-<div class="card">
-
-<h3>
-Completed
-</h3>
-
-<h2>
-
-{{ requests_data
-|selectattr(
-    'status',
-    'equalto',
-    'Completed'
-)
-|list
-|length }}
-
-</h2>
-
-</div>
-
-</div>
-
-
-<div class="card">
-
-<h2>
-Recent Requests
-</h2>
-
-{% if requests_data %}
-
-{% for r in requests_data %}
-
-<div class="detail">
-
-<strong>
-{{ r.request_number }}
-</strong>
-
-<br>
-
-{{ r.service_type }}
-
-<br>
-
-<span class="status {{ status_class(r.status) }}">
-
-{{ client_status_label(r.status) }}
-
-</span>
-
-<br>
-
-<a href="{{ url_for(
-    'request_detail',
-    request_id=r.id
-) }}">
-
-View Request
-
-</a>
-
-</div>
-
-{% endfor %}
-
-{% else %}
-
-<p>
-You have not submitted any requests yet.
-</p>
-
-{% endif %}
-
-</div>
-
-"""
-
-    return page(
-
-        "Dashboard",
-
-        body,
-
-        requests_data=requests_data,
-
-        unread=unread
+        client=client
     )
 
 
 # ============================================================
 # NEW REQUEST
+#
+# IMPORTANT:
+# University information is ONLY displayed for
+# "University Applications".
 # ============================================================
 
 @app.route(
@@ -3056,9 +1815,7 @@ You have not submitted any requests yet.
 def new_request():
 
     selected_service = clean(
-        request.args.get(
-            "service"
-        )
+        request.args.get("service")
         or session.get(
             "selected_service",
             ""
@@ -3068,60 +1825,53 @@ def new_request():
 
     if (
         selected_service
-        and selected_service
-        not in PUBLIC_SERVICES
+        and selected_service not in PUBLIC_SERVICES
     ):
-
         selected_service = ""
 
     if selected_service:
-
-        session[
-            "selected_service"
-        ] = selected_service
+        session["selected_service"] = selected_service
 
     services = db_select(
-
         "koja_services",
-
         select="*",
-
         filters={
-            "active":
-                "eq.true"
+            "active": "eq.true"
         },
-
         order="name.asc"
     )
 
-    universities = db_select(
+    # Fallback in case the database service table
+    # has not yet been populated.
+    if not services:
 
-        "koja_universities",
+        services = [
+            {
+                "name": service
+            }
+            for service in PUBLIC_SERVICES
+        ]
 
-        select="*",
+    universities = []
 
-        filters={
-            "active":
-                "eq.true"
-        },
+    if selected_service == "University Applications":
 
-        order="name.asc"
-    )
+        universities = db_select(
+            "koja_universities",
+            select="*",
+            filters={
+                "active": "eq.true"
+            },
+            order="name.asc"
+        )
 
     clients = db_select(
-
         "koja_clients",
-
         select="*",
-
         filters={
             "id":
-                "eq."
-                + session[
-                    "client_id"
-                ]
+                "eq." + session["client_id"]
         },
-
         limit=1
     )
 
@@ -3147,65 +1897,14 @@ def new_request():
             10000
         )
 
-        university = clean(
-            request.form.get(
-                "university"
-            ),
-            200
+        supporting_file = request.files.get(
+            "supporting_file"
         )
 
-        mode_of_study = clean(
-            request.form.get(
-                "mode_of_study"
-            ),
-            80
-        )
-
-        school = clean(
-            request.form.get(
-                "school"
-            ),
-            200
-        )
-
-        programme = clean(
-            request.form.get(
-                "programme"
-            ),
-            250
-        )
-
-        academic_level = clean(
-            request.form.get(
-                "academic_level"
-            ),
-            100
-        )
-
-        year_of_study = clean(
-            request.form.get(
-                "year_of_study"
-            ),
-            80
-        )
-
-        student_number = clean(
-            request.form.get(
-                "student_number"
-            ),
-            100
-        )
-
-        supporting_file = (
-            request.files.get(
-                "supporting_file"
-            )
-        )
-
-        if not service_type:
+        if service_type not in PUBLIC_SERVICES:
 
             flash(
-                "Please select a service."
+                "Please select a valid service."
             )
 
             return redirect(
@@ -3218,8 +1917,7 @@ def new_request():
         if not description:
 
             flash(
-                "Please describe "
-                "the request."
+                "Please describe the request."
             )
 
             return redirect(
@@ -3228,6 +1926,81 @@ def new_request():
                     service=service_type
                 )
             )
+
+        # ----------------------------------------------------
+        # UNIVERSITY INFORMATION
+        # Only collect this for University Applications.
+        # ----------------------------------------------------
+
+        university = ""
+        mode_of_study = ""
+        school = ""
+        programme = ""
+        academic_level = ""
+        year_of_study = ""
+        student_number = ""
+
+        if service_type == "University Applications":
+
+            university = clean(
+                request.form.get("university"),
+                200
+            )
+
+            mode_of_study = clean(
+                request.form.get(
+                    "mode_of_study"
+                ),
+                80
+            )
+
+            school = clean(
+                request.form.get("school"),
+                200
+            )
+
+            programme = clean(
+                request.form.get("programme"),
+                250
+            )
+
+            academic_level = clean(
+                request.form.get(
+                    "academic_level"
+                ),
+                100
+            )
+
+            year_of_study = clean(
+                request.form.get(
+                    "year_of_study"
+                ),
+                80
+            )
+
+            student_number = clean(
+                request.form.get(
+                    "student_number"
+                ),
+                100
+            )
+
+            if not university:
+
+                flash(
+                    "Please select the university."
+                )
+
+                return redirect(
+                    url_for(
+                        "new_request",
+                        service=service_type
+                    )
+                )
+
+        # ----------------------------------------------------
+        # FILE VALIDATION
+        # ----------------------------------------------------
 
         if (
             supporting_file
@@ -3257,28 +2030,19 @@ def new_request():
             )
 
             created = db_insert(
-
                 "koja_service_requests",
-
                 {
-
                     "request_number":
                         request_number,
 
                     "client_id":
-                        session[
-                            "client_id"
-                        ],
+                        session["client_id"],
 
                     "client_name":
-                        session[
-                            "client_name"
-                        ],
+                        session["client_name"],
 
                     "client_email":
-                        session[
-                            "client_email"
-                        ],
+                        session["client_email"],
 
                     "client_phone":
                         client.get(
@@ -3292,6 +2056,8 @@ def new_request():
                     "description":
                         description,
 
+                    # University information is blank
+                    # for non-university services.
                     "university":
                         university,
 
@@ -3331,9 +2097,8 @@ def new_request():
 
             request_id = item["id"]
 
-
             # ------------------------------------------------
-            # UPLOAD SUPPORTING FILE
+            # SUPPORTING FILE
             # ------------------------------------------------
 
             if (
@@ -3343,9 +2108,7 @@ def new_request():
             ):
 
                 upload = storage_upload(
-
                     supporting_file,
-
                     folder=(
                         "supporting/"
                         + str(request_id)
@@ -3353,53 +2116,39 @@ def new_request():
                 )
 
                 db_insert(
-
                     "koja_request_files",
-
                     {
-
                         "request_id":
                             request_id,
 
                         "file_name":
-                            upload[
-                                "file_name"
-                            ],
+                            upload["file_name"],
 
                         "file_url":
                             upload["path"],
 
                         "file_type":
-                            upload[
-                                "content_type"
-                            ],
+                            upload["content_type"],
 
                         "file_size":
                             upload["size"],
 
                         "uploaded_by":
-                            session[
-                                "client_email"
-                            ],
+                            session["client_email"],
 
                         "created_at":
                             now_iso(),
                     },
-
                     returning=False
                 )
-
 
             # ------------------------------------------------
             # HISTORY
             # ------------------------------------------------
 
             db_insert(
-
                 "koja_request_history",
-
                 {
-
                     "request_id":
                         request_id,
 
@@ -3413,32 +2162,23 @@ def new_request():
                         "Request submitted to KOJA AFRICA.",
 
                     "changed_by":
-                        session[
-                            "client_email"
-                        ],
+                        session["client_email"],
 
                     "created_at":
                         now_iso(),
                 },
-
                 returning=False
             )
-
 
             # ------------------------------------------------
             # NOTIFICATION
             # ------------------------------------------------
 
             db_insert(
-
                 "koja_notifications",
-
                 {
-
                     "client_email":
-                        session[
-                            "client_email"
-                        ],
+                        session["client_email"],
 
                     "request_id":
                         request_id,
@@ -3451,8 +2191,9 @@ def new_request():
                             "Your KOJA request "
                             + request_number
                             + " has been received. "
-                            "KOJA will handle your request "
-                            "and update you through your account."
+                            "KOJA will handle your "
+                            "request and update you "
+                            "through your account."
                         ),
 
                     "is_read":
@@ -3461,16 +2202,13 @@ def new_request():
                     "created_at":
                         now_iso(),
                 },
-
                 returning=False
             )
-
 
             session.pop(
                 "selected_service",
                 None
             )
-
 
             flash(
                 "Request received successfully. "
@@ -3479,11 +2217,8 @@ def new_request():
             )
 
             return redirect(
-
                 url_for(
-
                     "request_detail",
-
                     request_id=request_id
                 )
             )
@@ -3500,7 +2235,6 @@ def new_request():
             )
 
     modes = [
-
         "Full-Time",
         "Part-Time",
         "Distance Learning",
@@ -3512,7 +2246,6 @@ def new_request():
     ]
 
     levels = [
-
         "Certificate",
         "Diploma",
         "Undergraduate",
@@ -3526,49 +2259,35 @@ def new_request():
 
 <div class="form-card">
 
-<h2>
-Start a KOJA Request
-</h2>
-
-<p class="small">
-
-Tell KOJA what you need and provide
-the information and documents required.
-KOJA will handle the request and make
-the completed result available in your
-account.
-
-</p>
-
+<h2>Start a KOJA Request</h2>
 
 {% if selected_service %}
 
-<div class="detail">
+<p>
 
-<strong>
-Selected KOJA Service:
-</strong>
+<strong>Selected Service:</strong>
 
 <br>
 
 {{ selected_service }}
 
-</div>
+</p>
 
 {% endif %}
 
-
-<form method="post"
-enctype="multipart/form-data">
-
+<form
+    method="POST"
+    enctype="multipart/form-data"
+>
 
 <label>
 Service *
 </label>
 
 <select
-name="service_type"
-required
+    name="service_type"
+    required
+    onchange="changeService(this.value)"
 >
 
 <option value="">
@@ -3578,14 +2297,12 @@ required
 {% for service in services %}
 
 <option
-value="{{ service.name }}"
-{% if selected_service == service.name %}
-selected
-{% endif %}
+    value="{{ service.name }}"
+    {% if selected_service == service.name %}
+    selected
+    {% endif %}
 >
-
 {{ service.name }}
-
 </option>
 
 {% endfor %}
@@ -3598,22 +2315,50 @@ Describe the Work / Request *
 </label>
 
 <textarea
-name="description"
-required
-placeholder="Explain exactly what you want KOJA to handle..."
+    name="description"
+    required
+    placeholder="Explain what you need KOJA to handle..."
 ></textarea>
 
 
-<h3 class="section-title">
-University Information
+<!-- ======================================================
+     UNIVERSITY SECTION
+     ONLY VISIBLE FOR UNIVERSITY APPLICATIONS
+     ====================================================== -->
+
+<div
+    id="universitySection"
+    style="
+        display:
+        {% if selected_service == 'University Applications' %}
+        block
+        {% else %}
+        none
+        {% endif %};
+        margin-top:25px;
+        padding:20px;
+        background:#f4f7ff;
+        border-radius:12px;
+    "
+>
+
+<h3>
+University Application Information
 </h3>
+
+<p class="small">
+These details are required because you selected
+University Applications.
+</p>
 
 
 <label>
-University in Zambia
+University *
 </label>
 
-<select name="university">
+<select
+    name="university"
+>
 
 <option value="">
 -- Select University --
@@ -3621,15 +2366,8 @@ University in Zambia
 
 {% for university in universities %}
 
-<option
-value="{{ university.name }}"
-{% if client.university == university.name %}
-selected
-{% endif %}
->
-
+<option value="{{ university.name }}">
 {{ university.name }}
-
 </option>
 
 {% endfor %}
@@ -3641,7 +2379,9 @@ selected
 Mode of Study
 </label>
 
-<select name="mode_of_study">
+<select
+    name="mode_of_study"
+>
 
 <option value="">
 -- Select Mode --
@@ -3649,15 +2389,8 @@ Mode of Study
 
 {% for mode in modes %}
 
-<option
-value="{{ mode }}"
-{% if client.mode_of_study == mode %}
-selected
-{% endif %}
->
-
+<option value="{{ mode }}">
 {{ mode }}
-
 </option>
 
 {% endfor %}
@@ -3670,9 +2403,8 @@ School / Faculty
 </label>
 
 <input
-name="school"
-value="{{ client.school or '' }}"
-placeholder="e.g. School of Natural Sciences"
+    name="school"
+    placeholder="e.g. School of Natural Sciences"
 >
 
 
@@ -3681,9 +2413,8 @@ Programme / Course
 </label>
 
 <input
-name="programme"
-value="{{ client.programme or '' }}"
-placeholder="e.g. Bachelor of Science"
+    name="programme"
+    placeholder="e.g. Bachelor of Science"
 >
 
 
@@ -3691,7 +2422,9 @@ placeholder="e.g. Bachelor of Science"
 Academic Level
 </label>
 
-<select name="academic_level">
+<select
+    name="academic_level"
+>
 
 <option value="">
 -- Select Level --
@@ -3699,15 +2432,8 @@ Academic Level
 
 {% for level in levels %}
 
-<option
-value="{{ level }}"
-{% if client.academic_level == level %}
-selected
-{% endif %}
->
-
+<option value="{{ level }}">
 {{ level }}
-
 </option>
 
 {% endfor %}
@@ -3720,9 +2446,8 @@ Year of Study
 </label>
 
 <input
-name="year_of_study"
-value="{{ client.year_of_study or '' }}"
-placeholder="e.g. Year 2"
+    name="year_of_study"
+    placeholder="e.g. Year 2"
 >
 
 
@@ -3731,10 +2456,11 @@ Student Number
 </label>
 
 <input
-name="student_number"
-value="{{ client.student_number or '' }}"
-placeholder="University student number"
+    name="student_number"
+    placeholder="University student number"
 >
+
+</div>
 
 
 <label>
@@ -3742,50 +2468,222 @@ Supporting Document
 </label>
 
 <input
-type="file"
-name="supporting_file"
+    type="file"
+    name="supporting_file"
 >
 
 <p class="small">
-
 Maximum upload size: 25 MB.
-
+<br>
 Supported formats:
 PDF, Word, TXT, images, Excel,
 PowerPoint and ZIP.
-
 </p>
 
+<br>
 
-<button type="submit">
-
+<button
+    class="btn"
+    type="submit"
+>
 Send Request to KOJA
-
 </button>
 
 </form>
 
 </div>
 
+
+<script>
+
+function changeService(value) {
+
+    const section =
+        document.getElementById(
+            "universitySection"
+        );
+
+    if (
+        value ===
+        "University Applications"
+    ) {
+
+        section.style.display =
+            "block";
+
+    } else {
+
+        section.style.display =
+            "none";
+
+    }
+}
+
+</script>
+
 """
 
     return page(
-
         "New Request",
-
         body,
-
         services=services,
-
         universities=universities,
-
         client=client,
-
         modes=modes,
-
         levels=levels,
-
         selected_service=selected_service
+    )
+
+
+# ============================================================
+# CLIENT DASHBOARD
+# ============================================================
+
+@app.route("/dashboard")
+@client_login_required
+def dashboard():
+
+    email = session[
+        "client_email"
+    ]
+
+    requests_data = db_select(
+        "koja_service_requests",
+        select="*",
+        filters={
+            "client_email":
+                "eq." + email
+        },
+        order="created_at.desc",
+        limit=100
+    )
+
+    unread = db_select(
+        "koja_notifications",
+        select="id",
+        filters={
+            "client_email":
+                "eq." + email,
+
+            "is_read":
+                "eq.false"
+        },
+        limit=100
+    )
+
+    completed_count = sum(
+        1
+        for r in requests_data
+        if r.get("status")
+        == STATUS_COMPLETED
+    )
+
+    body = """
+
+<h1>
+Welcome, {{ session.get("client_name") }}
+</h1>
+
+<p class="small">
+Manage your KOJA requests and receive
+completed results here.
+</p>
+
+<p>
+
+<a
+    class="btn"
+    href="{{ url_for('services') }}"
+>
+Start a Request
+</a>
+
+</p>
+
+
+<div class="card-grid">
+
+<div class="card">
+<h3>Total Requests</h3>
+<h2>{{ requests_data|length }}</h2>
+</div>
+
+<div class="card">
+<h3>Unread Notifications</h3>
+<h2>{{ unread|length }}</h2>
+</div>
+
+<div class="card">
+<h3>Completed</h3>
+<h2>{{ completed_count }}</h2>
+</div>
+
+</div>
+
+
+<br>
+
+<div class="card">
+
+<h2>Recent Requests</h2>
+
+{% if requests_data %}
+
+{% for r in requests_data %}
+
+<div style="
+    padding:15px 0;
+    border-bottom:1px solid #eee;
+">
+
+<strong>
+{{ r.request_number }}
+</strong>
+
+<br>
+
+{{ r.service_type }}
+
+<br>
+
+<span>
+{{ client_status_label(r.status) }}
+</span>
+
+<br><br>
+
+<a
+    class="btn"
+    href="{{ url_for(
+        'request_detail',
+        request_id=r.id
+    ) }}"
+>
+View Request
+</a>
+
+</div>
+
+{% endfor %}
+
+{% else %}
+
+<p>
+You have not submitted any requests yet.
+</p>
+
+{% endif %}
+
+</div>
+
+"""
+
+    return page(
+        "Dashboard",
+        body,
+        requests_data=requests_data,
+        unread=unread,
+        completed_count=completed_count
     )
 
 
@@ -3798,128 +2696,89 @@ Send Request to KOJA
 def my_requests():
 
     requests_data = db_select(
-
         "koja_service_requests",
-
         select="*",
-
         filters={
             "client_email":
-                "eq."
-                + session[
+                "eq." + session[
                     "client_email"
                 ]
         },
-
         order="created_at.desc"
     )
 
     body = """
 
-<div class="card">
-
-<h2>
-My KOJA Requests
-</h2>
+<h2>My KOJA Requests</h2>
 
 {% if requests_data %}
 
-<table>
-
-<tr>
-
-<th>
-Reference
-</th>
-
-<th>
-Service
-</th>
-
-<th>
-Status
-</th>
-
-<th>
-Date
-</th>
-
-<th>
-</th>
-
-</tr>
-
+<div class="card">
 
 {% for r in requests_data %}
 
-<tr>
+<div style="
+    padding:18px 0;
+    border-bottom:1px solid #eee;
+">
 
-<td>
 <strong>
 {{ r.request_number }}
 </strong>
-</td>
 
-<td>
+<p>
 {{ r.service_type }}
-</td>
+</p>
 
-<td>
-
-<span class="status {{ status_class(r.status) }}">
-
+<p>
 {{ client_status_label(r.status) }}
+</p>
 
-</span>
+<p class="small">
+{{ r.created_at[:10]
+   if r.created_at else '' }}
+</p>
 
-</td>
-
-<td>
-{{ r.created_at[:10] if r.created_at else '' }}
-</td>
-
-<td>
-
-<a href="{{ url_for(
-    'request_detail',
-    request_id=r.id
-) }}">
-
-Open
-
+<a
+    class="btn"
+    href="{{ url_for(
+        'request_detail',
+        request_id=r.id
+    ) }}"
+>
+Open Request
 </a>
 
-</td>
-
-</tr>
+</div>
 
 {% endfor %}
 
-</table>
+</div>
 
 {% else %}
+
+<div class="card">
 
 <p>
 No requests found.
 </p>
 
-<a class="btn"
-href="{{ url_for('new_request') }}">
+<a
+    class="btn"
+    href="{{ url_for('services') }}"
+>
 Start a Request
 </a>
 
-{% endif %}
-
 </div>
+
+{% endif %}
 
 """
 
     return page(
-
         "My Requests",
-
         body,
-
         requests_data=requests_data
     )
 
@@ -3932,65 +2791,45 @@ Start a Request
     "/request/<request_id>"
 )
 @client_login_required
-def request_detail(
-    request_id
-):
+def request_detail(request_id):
 
     rows = db_select(
-
         "koja_service_requests",
-
         select="*",
-
         filters={
-
             "id":
-                "eq."
-                + request_id,
+                "eq." + request_id,
 
             "client_email":
-                "eq."
-                + session[
+                "eq." + session[
                     "client_email"
                 ]
         },
-
         limit=1
     )
 
     if not rows:
-
         abort(404)
 
     item = rows[0]
 
     files = db_select(
-
         "koja_request_files",
-
         select="*",
-
         filters={
             "request_id":
-                "eq."
-                + request_id
+                "eq." + request_id
         },
-
         order="created_at.asc"
     )
 
     history = db_select(
-
         "koja_request_history",
-
         select="*",
-
         filters={
             "request_id":
-                "eq."
-                + request_id
+                "eq." + request_id
         },
-
         order="created_at.desc"
     )
 
@@ -4002,123 +2841,69 @@ def request_detail(
 {{ item.request_number }}
 </h2>
 
-
-<span class="status {{ status_class(item.status) }}">
-
+<p>
+<strong>
 {{ client_status_label(item.status) }}
-
-</span>
-
-
-<h3 class="section-title">
-Client Information
-</h3>
-
-<div class="detail">
-
-<strong>
-Name:
 </strong>
-
-{{ item.client_name }}
-
-<br>
-
-<strong>
-Email:
-</strong>
-
-{{ item.client_email }}
-
-<br>
-
-<strong>
-Phone:
-</strong>
-
-{{ item.client_phone }}
-
-</div>
+</p>
 
 
-<h3>
-Service
-</h3>
+<h3>Service</h3>
 
-<div class="detail">
-
+<p>
 <strong>
 {{ item.service_type }}
 </strong>
+</p>
 
-<br><br>
-
+<p>
 {{ item.description }}
+</p>
 
-</div>
 
+{% if item.service_type ==
+      'University Applications' %}
 
 <h3>
 University Information
 </h3>
 
-<div class="detail">
-
-<strong>
-University:
-</strong>
-
+<p>
+<strong>University:</strong>
 {{ item.university or 'Not provided' }}
+</p>
 
-<br>
-
-<strong>
-Mode of Study:
-</strong>
-
+<p>
+<strong>Mode of Study:</strong>
 {{ item.mode_of_study or 'Not provided' }}
+</p>
 
-<br>
-
-<strong>
-School:
-</strong>
-
+<p>
+<strong>School:</strong>
 {{ item.school or 'Not provided' }}
+</p>
 
-<br>
-
-<strong>
-Programme:
-</strong>
-
+<p>
+<strong>Programme:</strong>
 {{ item.programme or 'Not provided' }}
+</p>
 
-<br>
-
-<strong>
-Academic Level:
-</strong>
-
+<p>
+<strong>Academic Level:</strong>
 {{ item.academic_level or 'Not provided' }}
+</p>
 
-<br>
-
-<strong>
-Year:
-</strong>
-
+<p>
+<strong>Year:</strong>
 {{ item.year_of_study or 'Not provided' }}
+</p>
 
-<br>
-
-<strong>
-Student Number:
-</strong>
-
+<p>
+<strong>Student Number:</strong>
 {{ item.student_number or 'Not provided' }}
+</p>
 
-</div>
+{% endif %}
 
 
 <h3>
@@ -4129,7 +2914,7 @@ Supporting Documents
 
 {% for f in files %}
 
-<div class="detail">
+<p>
 
 <strong>
 {{ f.file_name }}
@@ -4137,16 +2922,17 @@ Supporting Documents
 
 <br>
 
-<a href="{{ url_for(
-    'download_supporting_file',
-    file_id=f.id
-) }}">
-
+<a
+    class="btn"
+    href="{{ url_for(
+        'download_supporting_file',
+        file_id=f.id
+    ) }}"
+>
 Download Supporting Document
-
 </a>
 
-</div>
+</p>
 
 {% endfor %}
 
@@ -4165,41 +2951,35 @@ No supporting document uploaded.
 Message from KOJA
 </h3>
 
-<div class="detail">
-
+<div class="card">
 {{ item.admin_message }}
-
 </div>
 
 {% endif %}
 
 
 {% if item.status == 'Completed'
-and item.completed_file_url %}
+      and item.completed_file_url %}
 
 <h3>
 KOJA Completed Result
 </h3>
 
-<div class="detail">
-
+<p>
 <strong>
 {{ item.completed_file_name }}
 </strong>
+</p>
 
-<br>
-
-<a class="btn success"
-href="{{ url_for(
-    'download_completed_file',
-    request_id=item.id
-) }}">
-
+<a
+    class="btn btn-success"
+    href="{{ url_for(
+        'download_completed_file',
+        request_id=item.id
+    ) }}"
+>
 Download Your KOJA Result
-
 </a>
-
-</div>
 
 {% endif %}
 
@@ -4210,12 +2990,15 @@ Request History
 
 {% for h in history %}
 
-<div class="detail">
+<div style="
+    padding:12px 0;
+    border-bottom:1px solid #eee;
+">
 
 <strong>
-
-{{ client_status_label(h.new_status) }}
-
+{{ client_status_label(
+    h.new_status
+) }}
 </strong>
 
 <br>
@@ -4225,9 +3008,7 @@ Request History
 <br>
 
 <span class="small">
-
 {{ h.created_at or '' }}
-
 </span>
 
 </div>
@@ -4239,18 +3020,10 @@ Request History
 """
 
     return page(
-
-        "Request "
-        + item[
-            "request_number"
-        ],
-
+        "Request " + item["request_number"],
         body,
-
         item=item,
-
         files=files,
-
         history=history
     )
 
@@ -4263,57 +3036,39 @@ Request History
     "/file/supporting/<file_id>"
 )
 @client_login_required
-def download_supporting_file(
-    file_id
-):
+def download_supporting_file(file_id):
 
     files = db_select(
-
         "koja_request_files",
-
         select="*",
-
         filters={
             "id":
-                "eq."
-                + file_id
+                "eq." + file_id
         },
-
         limit=1
     )
 
     if not files:
-
         abort(404)
 
     record = files[0]
 
     owned = db_select(
-
         "koja_service_requests",
-
         select="id",
-
         filters={
-
             "id":
-                "eq."
-                + record[
-                    "request_id"
-                ],
+                "eq." + record["request_id"],
 
             "client_email":
-                "eq."
-                + session[
+                "eq." + session[
                     "client_email"
                 ]
         },
-
         limit=1
     )
 
     if not owned:
-
         abort(403)
 
     response = storage_download(
@@ -4321,26 +3076,18 @@ def download_supporting_file(
     )
 
     return send_file(
-
         io.BytesIO(
             response.content
         ),
-
         mimetype=(
-            record.get(
-                "file_type"
-            )
+            record.get("file_type")
             or
             "application/octet-stream"
         ),
-
         as_attachment=True,
-
-        download_name=(
-            record[
-                "file_name"
-            ]
-        )
+        download_name=record[
+            "file_name"
+        ]
     )
 
 
@@ -4357,33 +3104,24 @@ def download_completed_file(
 ):
 
     rows = db_select(
-
         "koja_service_requests",
-
         select="*",
-
         filters={
-
             "id":
-                "eq."
-                + request_id,
+                "eq." + request_id,
 
             "client_email":
-                "eq."
-                + session[
+                "eq." + session[
                     "client_email"
                 ],
 
             "status":
-                "eq."
-                + STATUS_COMPLETED
+                "eq." + STATUS_COMPLETED
         },
-
         limit=1
     )
 
     if not rows:
-
         abort(404)
 
     item = rows[0]
@@ -4391,22 +3129,16 @@ def download_completed_file(
     if not item.get(
         "completed_file_url"
     ):
-
         abort(404)
 
     response = storage_download(
-
-        item[
-            "completed_file_url"
-        ]
+        item["completed_file_url"]
     )
 
     return send_file(
-
         io.BytesIO(
             response.content
         ),
-
         mimetype=(
             item.get(
                 "completed_file_type"
@@ -4414,9 +3146,7 @@ def download_completed_file(
             or
             "application/octet-stream"
         ),
-
         as_attachment=True,
-
         download_name=(
             item.get(
                 "completed_file_name"
@@ -4436,51 +3166,38 @@ def download_completed_file(
 def notifications():
 
     data = db_select(
-
         "koja_notifications",
-
         select="*",
-
         filters={
             "client_email":
-                "eq."
-                + session[
+                "eq." + session[
                     "client_email"
                 ]
         },
-
         order="created_at.desc",
-
         limit=100
     )
 
     try:
 
         db_update(
-
             "koja_notifications",
-
             {
-
                 "client_email":
-                    "eq."
-                    + session[
+                    "eq." + session[
                         "client_email"
                     ],
 
                 "is_read":
                     "eq.false"
             },
-
             {
-
                 "is_read":
                     True,
 
                 "read_at":
                     now_iso()
             },
-
             returning=False
         )
 
@@ -4492,66 +3209,60 @@ def notifications():
 
     body = """
 
-<div class="card">
-
-<h2>
-Notifications
-</h2>
+<h2>Notifications</h2>
 
 {% if data %}
 
+<div class="card">
+
 {% for n in data %}
 
-<div class="detail">
+<div style="
+    padding:18px 0;
+    border-bottom:1px solid #eee;
+">
 
 <strong>
 {{ n.title }}
 </strong>
 
-<br><br>
-
+<p>
 {{ n.message }}
-
-<br>
+</p>
 
 <span class="small">
-
 {{ n.created_at or '' }}
-
 </span>
 
 </div>
 
 {% endfor %}
 
+</div>
+
 {% else %}
+
+<div class="card">
 
 <p>
 No notifications.
 </p>
 
-{% endif %}
-
 </div>
+
+{% endif %}
 
 """
 
     return page(
-
         "Notifications",
-
         body,
-
         data=data
     )
 
 
 # ============================================================
 # ADMIN LOGIN
-# ============================================================
-# NOTE:
-# The administrator system remains functional,
-# but NO ADMIN LINK is displayed anywhere publicly.
 # ============================================================
 
 @app.route(
@@ -4575,12 +3286,8 @@ def admin_login():
         )
 
         if (
-
-            username
-            == ADMIN_USERNAME
-
+            username == ADMIN_USERNAME
             and ADMIN_PASSWORD
-
             and secrets.compare_digest(
                 password,
                 ADMIN_PASSWORD
@@ -4615,33 +3322,34 @@ def admin_login():
 KOJA AFRICA Administrator
 </h2>
 
-<form method="post">
+<form method="POST">
 
 <label>
 Username
 </label>
 
 <input
-name="username"
-required
+    name="username"
+    required
 >
-
 
 <label>
 Password
 </label>
 
 <input
-type="password"
-name="password"
-required
+    type="password"
+    name="password"
+    required
 >
 
+<br><br>
 
-<button type="submit">
-
+<button
+    class="btn"
+    type="submit"
+>
 Administrator Login
-
 </button>
 
 </form>
@@ -4666,9 +3374,7 @@ def admin_logout():
     session.clear()
 
     return redirect(
-        url_for(
-            "admin_login"
-        )
+        url_for("admin_login")
     )
 
 
@@ -4681,249 +3387,148 @@ def admin_logout():
 def admin_dashboard():
 
     requests_data = db_select(
-
         "koja_service_requests",
-
         select="*",
-
         order="created_at.desc",
-
         limit=500
     )
 
     new_count = sum(
-
         1
         for r in requests_data
-
         if r.get("status")
         == STATUS_NEW
     )
 
     processing_count = sum(
-
         1
         for r in requests_data
-
         if r.get("status")
         == STATUS_PROCESSING
     )
 
     completed_count = sum(
-
         1
         for r in requests_data
-
         if r.get("status")
         == STATUS_COMPLETED
     )
 
     body = """
 
-<div class="hero">
-
 <h1>
 KOJA AFRICA Admin Dashboard
 </h1>
 
-<p>
+<p class="small">
 
-Manage client requests,
-download submitted work,
-process requests,
-send messages and upload
-completed documents.
+Manage client requests, download submitted
+work, process requests, send messages and
+upload completed documents.
 
 </p>
 
+
+<div class="card-grid">
+
+<div class="card">
+<h3>New</h3>
+<h2>{{ new_count }}</h2>
+</div>
+
+<div class="card">
+<h3>Processing</h3>
+<h2>{{ processing_count }}</h2>
+</div>
+
+<div class="card">
+<h3>Completed</h3>
+<h2>{{ completed_count }}</h2>
+</div>
+
+<div class="card">
+<h3>Total</h3>
+<h2>{{ requests_data|length }}</h2>
+</div>
+
 </div>
 
 
-<div class="grid">
+<br>
 
 <div class="card">
 
-<h3>
-New
-</h3>
-
-<h2>
-{{ new_count }}
-</h2>
-
-</div>
-
-
-<div class="card">
-
-<h3>
-Processing
-</h3>
-
-<h2>
-{{ processing_count }}
-</h2>
-
-</div>
-
-
-<div class="card">
-
-<h3>
-Completed
-</h3>
-
-<h2>
-{{ completed_count }}
-</h2>
-
-</div>
-
-
-<div class="card">
-
-<h3>
-Total
-</h3>
-
-<h2>
-{{ requests_data|length }}
-</h2>
-
-</div>
-
-</div>
-
-
-<div class="card">
-
-<h2>
-Client Requests
-</h2>
-
-<table>
-
-<tr>
-
-<th>
-Reference
-</th>
-
-<th>
-Client
-</th>
-
-<th>
-Service
-</th>
-
-<th>
-Status
-</th>
-
-<th>
-Date
-</th>
-
-<th>
-</th>
-
-</tr>
-
+<h2>Client Requests</h2>
 
 {% for r in requests_data %}
 
-<tr>
-
-<td>
+<div style="
+    padding:18px 0;
+    border-bottom:1px solid #eee;
+">
 
 <strong>
 {{ r.request_number }}
 </strong>
 
-</td>
-
-
-<td>
-
+<p>
 {{ r.client_name }}
-
 <br>
-
-<span class="small">
-
 {{ r.client_email }}
-
 <br>
-
 {{ r.client_phone }}
+</p>
 
-</span>
-
-</td>
-
-
-<td>
-
+<p>
+<strong>
 {{ r.service_type }}
+</strong>
+</p>
 
-</td>
-
-
-<td>
-
-<span class="status {{ status_class(r.status) }}">
-
+<p>
 {{ r.status }}
+</p>
 
-</span>
-
-</td>
-
-
-<td>
-
+<p class="small">
 {{ r.created_at[:10]
-if r.created_at else '' }}
+   if r.created_at else '' }}
+</p>
 
-</td>
-
-
-<td>
-
-<a href="{{ url_for(
-    'admin_request',
-    request_id=r.id
-) }}">
-
+<a
+    class="btn"
+    href="{{ url_for(
+        'admin_request',
+        request_id=r.id
+    ) }}"
+>
 Open
-
 </a>
 
-</td>
-
-</tr>
+</div>
 
 {% endfor %}
 
-</table>
-
 </div>
+
+<p>
+
+<a
+    class="btn btn-warning"
+    href="{{ url_for('admin_logout') }}"
+>
+Administrator Logout
+</a>
+
+</p>
 
 """
 
     return page(
-
         "Admin Dashboard",
-
         body,
-
         requests_data=requests_data,
-
         new_count=new_count,
-
         processing_count=processing_count,
-
         completed_count=completed_count
     )
 
@@ -4937,46 +3542,32 @@ Open
     methods=["GET", "POST"]
 )
 @admin_required
-def admin_request(
-    request_id
-):
+def admin_request(request_id):
 
     rows = db_select(
-
         "koja_service_requests",
-
         select="*",
-
         filters={
             "id":
-                "eq."
-                + request_id
+                "eq." + request_id
         },
-
         limit=1
     )
 
     if not rows:
-
         abort(404)
 
     item = rows[0]
 
     files = db_select(
-
         "koja_request_files",
-
         select="*",
-
         filters={
             "request_id":
-                "eq."
-                + request_id
+                "eq." + request_id
         },
-
         order="created_at.asc"
     )
-
 
     if request.method == "POST":
 
@@ -4986,14 +3577,11 @@ def admin_request(
         )
 
         message = clean(
-
             request.form.get(
                 "admin_message"
             ),
-
             10000
         )
-
 
         # ====================================================
         # PROCESSING
@@ -5001,22 +3589,15 @@ def admin_request(
 
         if action == "processing":
 
-            old_status = item[
-                "status"
-            ]
+            old_status = item["status"]
 
             db_update(
-
                 "koja_service_requests",
-
                 {
                     "id":
-                        "eq."
-                        + request_id
+                        "eq." + request_id
                 },
-
                 {
-
                     "status":
                         STATUS_PROCESSING,
 
@@ -5026,17 +3607,12 @@ def admin_request(
                     "updated_at":
                         now_iso()
                 },
-
                 returning=False
             )
 
-
             db_insert(
-
                 "koja_request_history",
-
                 {
-
                     "request_id":
                         request_id,
 
@@ -5050,7 +3626,8 @@ def admin_request(
                         (
                             message
                             or
-                            "KOJA has started working on the request."
+                            "KOJA has started "
+                            "working on the request."
                         ),
 
                     "changed_by":
@@ -5062,21 +3639,14 @@ def admin_request(
                     "created_at":
                         now_iso()
                 },
-
                 returning=False
             )
 
-
             db_insert(
-
                 "koja_notifications",
-
                 {
-
                     "client_email":
-                        item[
-                            "client_email"
-                        ],
+                        item["client_email"],
 
                     "request_id":
                         request_id,
@@ -5086,12 +3656,11 @@ def admin_request(
 
                     "message":
                         (
-                            "KOJA is now working on your request "
-                            + item[
-                                "request_number"
-                            ]
-                            + ". You will be notified "
-                            "when it is ready."
+                            "KOJA is now working "
+                            "on your request "
+                            + item["request_number"]
+                            + ". You will be "
+                            "notified when it is ready."
                         ),
 
                     "is_read":
@@ -5100,25 +3669,19 @@ def admin_request(
                     "created_at":
                         now_iso()
                 },
-
                 returning=False
             )
-
 
             flash(
                 "Request marked as Processing."
             )
 
             return redirect(
-
                 url_for(
-
                     "admin_request",
-
                     request_id=request_id
                 )
             )
-
 
         # ====================================================
         # MESSAGE
@@ -5133,49 +3696,33 @@ def admin_request(
                 )
 
                 return redirect(
-
                     url_for(
-
                         "admin_request",
-
                         request_id=request_id
                     )
                 )
 
-
             db_update(
-
                 "koja_service_requests",
-
                 {
                     "id":
-                        "eq."
-                        + request_id
+                        "eq." + request_id
                 },
-
                 {
-
                     "admin_message":
                         message,
 
                     "updated_at":
                         now_iso()
                 },
-
                 returning=False
             )
 
-
             db_insert(
-
                 "koja_notifications",
-
                 {
-
                     "client_email":
-                        item[
-                            "client_email"
-                        ],
+                        item["client_email"],
 
                     "request_id":
                         request_id,
@@ -5192,25 +3739,19 @@ def admin_request(
                     "created_at":
                         now_iso()
                 },
-
                 returning=False
             )
-
 
             flash(
                 "Message sent to client."
             )
 
             return redirect(
-
                 url_for(
-
                     "admin_request",
-
                     request_id=request_id
                 )
             )
-
 
         # ====================================================
         # COMPLETE
@@ -5218,12 +3759,9 @@ def admin_request(
 
         if action == "complete":
 
-            completed_file = (
-                request.files.get(
-                    "completed_file"
-                )
+            completed_file = request.files.get(
+                "completed_file"
             )
-
 
             if (
                 not completed_file
@@ -5232,71 +3770,50 @@ def admin_request(
             ):
 
                 flash(
-                    "Please upload "
-                    "the completed document."
+                    "Please upload the completed document."
                 )
 
                 return redirect(
-
                     url_for(
-
                         "admin_request",
-
                         request_id=request_id
                     )
                 )
-
 
             if not allowed_file(
                 completed_file.filename
             ):
 
                 flash(
-                    "Unsupported completed "
-                    "file type."
+                    "Unsupported completed file type."
                 )
 
                 return redirect(
-
                     url_for(
-
                         "admin_request",
-
                         request_id=request_id
                     )
                 )
 
-
             try:
 
                 upload = storage_upload(
-
                     completed_file,
-
                     folder=(
                         "completed/"
                         + str(request_id)
                     )
                 )
 
-
-                old_status = item[
-                    "status"
-                ]
-
+                old_status = item["status"]
 
                 db_update(
-
                     "koja_service_requests",
-
                     {
                         "id":
-                            "eq."
-                            + request_id
+                            "eq." + request_id
                     },
-
                     {
-
                         "status":
                             STATUS_COMPLETED,
 
@@ -5304,19 +3821,13 @@ def admin_request(
                             message,
 
                         "completed_file_url":
-                            upload[
-                                "path"
-                            ],
+                            upload["path"],
 
                         "completed_file_name":
-                            upload[
-                                "file_name"
-                            ],
+                            upload["file_name"],
 
                         "completed_file_type":
-                            upload[
-                                "content_type"
-                            ],
+                            upload["content_type"],
 
                         "completed_at":
                             now_iso(),
@@ -5324,17 +3835,12 @@ def admin_request(
                         "updated_at":
                             now_iso()
                     },
-
                     returning=False
                 )
 
-
                 db_insert(
-
                     "koja_request_history",
-
                     {
-
                         "request_id":
                             request_id,
 
@@ -5360,21 +3866,14 @@ def admin_request(
                         "created_at":
                             now_iso()
                     },
-
                     returning=False
                 )
 
-
                 db_insert(
-
                     "koja_notifications",
-
                     {
-
                         "client_email":
-                            item[
-                                "client_email"
-                            ],
+                            item["client_email"],
 
                         "request_id":
                             request_id,
@@ -5385,9 +3884,7 @@ def admin_request(
                         "message":
                             (
                                 "Your KOJA request "
-                                + item[
-                                    "request_number"
-                                ]
+                                + item["request_number"]
                                 + " is complete. "
                                 "Your finished document "
                                 "is now available in your account."
@@ -5399,25 +3896,19 @@ def admin_request(
                         "created_at":
                             now_iso()
                     },
-
                     returning=False
                 )
-
 
                 flash(
                     "Request completed successfully."
                 )
 
                 return redirect(
-
                     url_for(
-
                         "admin_request",
-
                         request_id=request_id
                     )
                 )
-
 
             except Exception as exc:
 
@@ -5431,15 +3922,11 @@ def admin_request(
                 )
 
                 return redirect(
-
                     url_for(
-
                         "admin_request",
-
                         request_id=request_id
                     )
                 )
-
 
     body = """
 
@@ -5449,134 +3936,100 @@ def admin_request(
 {{ item.request_number }}
 </h2>
 
-
-<span class="status {{ status_class(item.status) }}">
-
+<p>
+<strong>
 {{ item.status }}
+</strong>
+</p>
 
-</span>
 
-
-<h3 class="section-title">
+<h3>
 Client Information
 </h3>
 
-<div class="detail">
-
-<strong>
-Name:
-</strong>
-
+<p>
+<strong>Name:</strong>
 {{ item.client_name }}
+</p>
 
-<br>
-
-<strong>
-Email:
-</strong>
-
+<p>
+<strong>Email:</strong>
 {{ item.client_email }}
+</p>
 
-<br>
-
-<strong>
-Phone:
-</strong>
-
+<p>
+<strong>Phone:</strong>
 {{ item.client_phone }}
-
-</div>
+</p>
 
 
 <h3>
 Service
 </h3>
 
-<div class="detail">
-
+<p>
 <strong>
 {{ item.service_type }}
 </strong>
+</p>
 
-<br><br>
-
+<p>
 {{ item.description }}
+</p>
 
-</div>
 
+{% if item.service_type ==
+      'University Applications' %}
 
 <h3>
 University Information
 </h3>
 
-<div class="detail">
-
-<strong>
-University:
-</strong>
-
+<p>
+<strong>University:</strong>
 {{ item.university or 'Not provided' }}
+</p>
 
-<br>
-
-<strong>
-Mode of Study:
-</strong>
-
+<p>
+<strong>Mode:</strong>
 {{ item.mode_of_study or 'Not provided' }}
+</p>
 
-<br>
-
-<strong>
-School:
-</strong>
-
+<p>
+<strong>School:</strong>
 {{ item.school or 'Not provided' }}
+</p>
 
-<br>
-
-<strong>
-Programme:
-</strong>
-
+<p>
+<strong>Programme:</strong>
 {{ item.programme or 'Not provided' }}
+</p>
 
-<br>
-
-<strong>
-Academic Level:
-</strong>
-
+<p>
+<strong>Academic Level:</strong>
 {{ item.academic_level or 'Not provided' }}
+</p>
 
-<br>
-
-<strong>
-Year:
-</strong>
-
+<p>
+<strong>Year:</strong>
 {{ item.year_of_study or 'Not provided' }}
+</p>
 
-<br>
-
-<strong>
-Student Number:
-</strong>
-
+<p>
+<strong>Student Number:</strong>
 {{ item.student_number or 'Not provided' }}
+</p>
 
-</div>
+{% endif %}
 
 
 <h3>
 Supporting Documents
 </h3>
 
-{% if files %}
-
 {% for f in files %}
 
-<div class="detail">
+<p>
 
 <strong>
 {{ f.file_name }}
@@ -5584,26 +4037,17 @@ Supporting Documents
 
 <br>
 
-<span class="small">
-
-{{ f.file_type or '' }}
-
-</span>
-
-<br>
-
-<a href="{{ url_for(
-    'admin_download_file',
-    file_id=f.id
-) }}">
-
+<a
+    class="btn"
+    href="{{ url_for(
+        'admin_download_file',
+        file_id=f.id
+    ) }}"
+>
 Download Supporting Document
-
 </a>
 
-</div>
-
-{% endfor %}
+</p>
 
 {% else %}
 
@@ -5611,36 +4055,25 @@ Download Supporting Document
 No supporting files.
 </p>
 
-{% endif %}
+{% endfor %}
+
+</div>
 
 
-<p>
-
-<a href="{{ url_for(
-    'admin_history',
-    request_id=item.id
-) }}">
-
-View Full Request History
-
-</a>
-
-</p>
-
-
-<hr>
-
+<div class="card">
 
 <h3>
 Move to Processing
 </h3>
 
-<form method="post">
+<form
+    method="POST"
+>
 
 <input
-type="hidden"
-name="action"
-value="processing"
+    type="hidden"
+    name="action"
+    value="processing"
 >
 
 <label>
@@ -5648,35 +4081,38 @@ Message to Client
 </label>
 
 <textarea
-name="admin_message"
-placeholder="Optional message..."
+    name="admin_message"
+    placeholder="Optional message..."
 ></textarea>
 
+<br><br>
+
 <button
-class="btn warning"
-type="submit"
+    class="btn btn-warning"
+    type="submit"
 >
-
 Mark Processing
-
 </button>
 
 </form>
 
+</div>
 
-<hr>
 
+<div class="card">
 
 <h3>
 Send Message
 </h3>
 
-<form method="post">
+<form
+    method="POST"
+>
 
 <input
-type="hidden"
-name="action"
-value="message"
+    type="hidden"
+    name="action"
+    value="message"
 >
 
 <label>
@@ -5684,123 +4120,127 @@ Message
 </label>
 
 <textarea
-name="admin_message"
-required
-placeholder="Write a message to the client..."
+    name="admin_message"
+    required
 ></textarea>
 
+<br><br>
+
 <button
-type="submit"
+    class="btn"
+    type="submit"
 >
-
 Send Message
-
 </button>
 
 </form>
 
+</div>
 
-<hr>
 
+<div class="card">
 
 <h3>
 Complete Request
 </h3>
 
 <p class="small">
-
-Upload the finished document
-that the client should receive.
-
+Upload the finished document that the
+client should receive.
 </p>
 
-
-<form method="post"
-enctype="multipart/form-data">
-
-<input
-type="hidden"
-name="action"
-value="complete"
+<form
+    method="POST"
+    enctype="multipart/form-data"
 >
 
+<input
+    type="hidden"
+    name="action"
+    value="complete"
+>
 
 <label>
-Finished PDF / Word / Document *
+Finished Document *
 </label>
 
 <input
-type="file"
-name="completed_file"
-required
+    type="file"
+    name="completed_file"
+    required
 >
-
 
 <label>
 Completion Message
 </label>
 
 <textarea
-name="admin_message"
-placeholder="Optional message to the client..."
+    name="admin_message"
+    placeholder="Tell the client what has been completed..."
 ></textarea>
 
+<br><br>
 
 <button
-class="btn success"
-type="submit"
+    class="btn btn-success"
+    type="submit"
 >
-
 Upload & Mark Completed
-
 </button>
 
 </form>
 
+</div>
+
 
 {% if item.status == 'Completed'
-and item.completed_file_url %}
+      and item.completed_file_url %}
 
-<hr>
+<div class="card">
 
 <h3>
 Current Completed File
 </h3>
 
-<div class="detail">
-
+<p>
 {{ item.completed_file_name }}
-
-<br>
+</p>
 
 <a
-class="btn success"
-href="{{ url_for(
-    'admin_download_completed',
-    request_id=item.id
-) }}"
+    class="btn btn-success"
+    href="{{ url_for(
+        'admin_download_completed',
+        request_id=item.id
+    ) }}"
 >
-
 Download Completed File
-
 </a>
 
 </div>
 
 {% endif %}
 
-</div>
+
+<p>
+
+<a
+    class="btn"
+    href="{{ url_for(
+        'admin_history',
+        request_id=item.id
+    ) }}"
+>
+View Full Request History
+</a>
+
+</p>
 
 """
 
     return page(
-
         "Admin Request",
-
         body,
-
         item=item,
-
         files=files
     )
 
@@ -5813,27 +4253,19 @@ Download Completed File
     "/admin/file/<file_id>"
 )
 @admin_required
-def admin_download_file(
-    file_id
-):
+def admin_download_file(file_id):
 
     files = db_select(
-
         "koja_request_files",
-
         select="*",
-
         filters={
             "id":
-                "eq."
-                + file_id
+                "eq." + file_id
         },
-
         limit=1
     )
 
     if not files:
-
         abort(404)
 
     record = files[0]
@@ -5843,26 +4275,18 @@ def admin_download_file(
     )
 
     return send_file(
-
         io.BytesIO(
             response.content
         ),
-
         mimetype=(
-            record.get(
-                "file_type"
-            )
+            record.get("file_type")
             or
             "application/octet-stream"
         ),
-
         as_attachment=True,
-
-        download_name=(
-            record[
-                "file_name"
-            ]
-        )
+        download_name=record[
+            "file_name"
+        ]
     )
 
 
@@ -5879,22 +4303,16 @@ def admin_download_completed(
 ):
 
     rows = db_select(
-
         "koja_service_requests",
-
         select="*",
-
         filters={
             "id":
-                "eq."
-                + request_id
+                "eq." + request_id
         },
-
         limit=1
     )
 
     if not rows:
-
         abort(404)
 
     item = rows[0]
@@ -5902,22 +4320,16 @@ def admin_download_completed(
     if not item.get(
         "completed_file_url"
     ):
-
         abort(404)
 
     response = storage_download(
-
-        item[
-            "completed_file_url"
-        ]
+        item["completed_file_url"]
     )
 
     return send_file(
-
         io.BytesIO(
             response.content
         ),
-
         mimetype=(
             item.get(
                 "completed_file_type"
@@ -5925,9 +4337,7 @@ def admin_download_completed(
             or
             "application/octet-stream"
         ),
-
         as_attachment=True,
-
         download_name=(
             item.get(
                 "completed_file_name"
@@ -5946,22 +4356,15 @@ def admin_download_completed(
     "/admin/request/<request_id>/history"
 )
 @admin_required
-def admin_history(
-    request_id
-):
+def admin_history(request_id):
 
     history = db_select(
-
         "koja_request_history",
-
         select="*",
-
         filters={
             "request_id":
-                "eq."
-                + request_id
+                "eq." + request_id
         },
-
         order="created_at.desc"
     )
 
@@ -5977,28 +4380,27 @@ Request History
 
 {% for h in history %}
 
-<div class="detail">
+<div style="
+    padding:15px 0;
+    border-bottom:1px solid #eee;
+">
 
 <strong>
 {{ h.new_status }}
 </strong>
 
-<br>
-
+<p>
 {{ h.message or '' }}
+</p>
 
-<br>
-
-<span class="small">
-
+<p class="small">
 By:
 {{ h.changed_by or 'System' }}
 
 <br>
 
 {{ h.created_at or '' }}
-
-</span>
+</p>
 
 </div>
 
@@ -6017,11 +4419,8 @@ No history found.
 """
 
     return page(
-
         "Request History",
-
         body,
-
         history=history
     )
 
@@ -6034,18 +4433,11 @@ No history found.
 def health():
 
     return {
-
-        "status":
-            "ok",
-
-        "app":
-            APP_NAME,
-
+        "status": "ok",
+        "app": APP_NAME,
         "supabase_configured":
             configuration_ok(),
-
-        "time":
-            now_iso()
+        "time": now_iso()
     }
 
 
@@ -6055,58 +4447,37 @@ def database_health():
     try:
 
         services = db_select(
-
             "koja_services",
-
             select="id,name",
-
             limit=1
         )
 
         universities = db_select(
-
             "koja_universities",
-
             select="id,name",
-
             limit=1
         )
 
         return {
+            "status": "ok",
+            "database": "connected",
 
-            "status":
-                "ok",
+            "services_table": True,
 
-            "database":
-                "connected",
-
-            "services_table":
-                True,
-
-            "universities_table":
-                True,
+            "universities_table": True,
 
             "sample_services":
-                len(
-                    services or []
-                ),
+                len(services or []),
 
             "sample_universities":
-                len(
-                    universities or []
-                )
+                len(universities or [])
         }
 
     except Exception as exc:
 
         return {
-
-            "status":
-                "error",
-
-            "database":
-                "failed",
-
+            "status": "error",
+            "database": "failed",
             "error":
                 str(exc)[:700]
         }, 500
@@ -6134,14 +4505,10 @@ def file_too_large(error):
             )
         )
 
-    if session.get(
-        "client_id"
-    ):
+    if session.get("client_id"):
 
         return redirect(
-            url_for(
-                "new_request"
-            )
+            url_for("services")
         )
 
     return redirect(
@@ -6154,7 +4521,7 @@ def not_found(error):
 
     body = """
 
-<div class="hero">
+<div class="card">
 
 <h1>
 404
@@ -6165,11 +4532,11 @@ The requested page or document
 was not found.
 </p>
 
-<a class="btn"
-href="{{ url_for('home') }}">
-
+<a
+    class="btn"
+    href="{{ url_for('home') }}"
+>
 Return Home
-
 </a>
 
 </div>
@@ -6191,22 +4558,22 @@ def server_error(error):
 
     body = """
 
-<div class="hero">
+<div class="card">
 
 <h1>
 Something went wrong
 </h1>
 
 <p>
-KOJA AFRICA encountered an
-internal error. Please try again.
+KOJA AFRICA encountered an internal
+error. Please try again.
 </p>
 
-<a class="btn"
-href="{{ url_for('home') }}">
-
+<a
+    class="btn"
+    href="{{ url_for('home') }}"
+>
 Return Home
-
 </a>
 
 </div>
@@ -6245,10 +4612,7 @@ if __name__ == "__main__":
     )
 
     app.run(
-
         host=host,
-
         port=port,
-
         debug=False
-    )
+    ) 
