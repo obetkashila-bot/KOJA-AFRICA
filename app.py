@@ -1,14 +1,14 @@
+
 import os
 import io
 import json
 import uuid
+import sqlite3
 import secrets
-import logging
 from datetime import datetime, timezone
 from functools import wraps
+from pathlib import Path
 
-import requests
-from dotenv import load_dotenv
 from flask import (
     Flask,
     request,
@@ -17,14 +17,13 @@ from flask import (
     session,
     render_template_string,
     flash,
-    send_file,
+    get_flashed_messages,
+    send_from_directory,
     abort,
 )
+
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
-
-load_dotenv()
-
 # ============================================================
 # KOJA AFRICA
 # ============================================================
