@@ -82,13 +82,11 @@ BANKS = [
 MOBILE_PROVIDERS = ["Airtel Money", "MTN MoMo", "Zamtel Kwacha"]
 
 SERVICE_LIST = [
-    ("assignment", "Assignments", "Submit an assignment or academic question for KOJA assistance."),
+    ("assignment", "Assignments", "Submit an assignment, academic question or supporting material to KOJA."),
     ("farmer", "Farmer Registration", "Complete the farmer registration workflow."),
     ("tpin", "TPIN Services", "Submit your TPIN-related request and personal information."),
-    ("university", "University Application", "Get assistance with a university application or academic request."),
-    ("scholarship", "Scholarship / Bursary", "Submit a scholarship or bursary assistance request."),
-    ("business", "Business Assistance", "Submit a business-registration or business-service assistance request."),
-    ("document", "Document Services", "Request document preparation, conversion or application assistance."),
+    ("university", "University Request", "Submit a university-related request to KOJA."),
+    ("help", "KOJA Help", "Send information, documents or questions and let KOJA work on the request."),
     ("other", "Other Services", "Send another service request to KOJA."),
 ]
 
@@ -152,53 +150,6 @@ def init_db():
         created_at TEXT NOT NULL,
         FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     );
-
-    CREATE TABLE IF NOT EXISTS universities (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL UNIQUE,
-        abbreviation TEXT,
-        ownership TEXT,
-        province TEXT,
-        district TEXT,
-        campus TEXT,
-        website TEXT,
-        application_url TEXT,
-        admissions_email TEXT,
-        admissions_phone TEXT,
-        application_fee_zmw TEXT,
-        intake TEXT,
-        deadline TEXT,
-        application_status TEXT DEFAULT 'Verify with institution',
-        general_requirements TEXT,
-        required_documents TEXT,
-        source_url TEXT,
-        last_verified TEXT,
-        is_active INTEGER DEFAULT 1
-    );
-
-    CREATE TABLE IF NOT EXISTS programmes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        university_id INTEGER NOT NULL,
-        programme_name TEXT NOT NULL,
-        qualification_level TEXT,
-        faculty TEXT,
-        duration TEXT,
-        study_mode TEXT,
-        requirements TEXT,
-        application_url TEXT,
-        source_url TEXT,
-        last_verified TEXT,
-        FOREIGN KEY(university_id) REFERENCES universities(id) ON DELETE CASCADE
-    );
-
-    CREATE TABLE IF NOT EXISTS request_messages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        request_id INTEGER NOT NULL,
-        sender_type TEXT NOT NULL,
-        message TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        FOREIGN KEY(request_id) REFERENCES requests(id) ON DELETE CASCADE
-    );
     """)
 
     conn.commit()
@@ -206,41 +157,6 @@ def init_db():
 
 
 init_db()
-
-def seed_universities():
-    universities = [
-        ("University of Zambia", "UNZA", "Public", "Lusaka", "Lusaka", "Main Campus - Great East Road", "https://www.unza.zm", "https://oap.unza.ac.zm/applications/step1"),
-        ("The Copperbelt University", "CBU", "Public", "Copperbelt", "Kitwe", "Main Campus", "https://www.cbu.ac.zm", "https://www.cbu.ac.zm/opus/applyNew/"),
-        ("Mulungushi University", "MU", "Public", "Central", "Kabwe", "Main Campus", "https://www.mu.ac.zm", "https://www.mu.ac.zm/"),
-        ("Chalimbana University", "CHAUNIVERSITY", "Public", "Lusaka", "Chongwe", "Main Campus", "https://www.chau.ac.zm", "https://www.chau.ac.zm/"),
-        ("Kwame Nkrumah University", "KNU", "Public", "Central", "Kabwe", "Main Campus", "https://www.knu.ac.zm", "https://www.knu.ac.zm/"),
-        ("Mukuba University", "MU", "Public", "Copperbelt", "Kitwe", "Main Campus", "https://www.mukuba.edu.zm", "https://www.mukuba.edu.zm/"),
-        ("Levy Mwanawasa Medical University", "LMMU", "Public", "Lusaka", "Lusaka", "Main Campus", "https://www.lmmu.ac.zm", "https://www.lmmu.ac.zm/"),
-        ("Kapasa Makasa University", "KMU", "Public", "Muchinga", "Chinsali", "Main Campus", "https://www.kmu.ac.zm", "https://www.kmu.ac.zm/"),
-        ("Cavendish University Zambia", "CUZ", "Private", "Lusaka", "Lusaka", "Great North Road Campus", "https://www.cavendish.ac.zm", "https://www.cavendish.ac.zm/"),
-        ("University of Lusaka", "UNILUS", "Private", "Lusaka", "Lusaka", "Pioneer Campus", "https://www.unilus.ac.zm", "https://www.unilus.ac.zm/"),
-        ("Northrise University", "NU", "Private", "Copperbelt", "Ndola", "Kitwe-Ndola Dual Carriageway", "https://www.northrise.net", "https://www.northrise.net/"),
-        ("Africa Christian University", "ACU", "Private", "Lusaka", "Lusaka", "Woodlands", "https://acu.edu.zm", "https://acu.edu.zm/"),
-        ("Information and Communications University", "ICU", "Private", "Lusaka", "Lusaka", "Chalala", "https://www.icu.edu.zm", "https://www.icu.edu.zm/"),
-        ("Lusaka Apex Medical University", "LAMU", "Private", "Lusaka", "Lusaka", "Main Campus", "https://www.lamu.edu.zm", "https://www.lamu.edu.zm/"),
-        ("ZCAS University", "ZCAS-U", "Private", "Lusaka", "Lusaka", "Main Campus", "https://www.zcasu.edu.zm", "https://www.zcasu.edu.zm/"),
-        ("Texila American University Zambia", "TAU", "Private", "Lusaka", "Lusaka", "Lake Road Campus", "https://tau.edu.zm", "https://tau.edu.zm/"),
-        ("Justo Mwale University", "JMU", "Private", "Lusaka", "Lusaka", "Lusaka Campus", "https://justomwaleuniversity.ac.zm", "https://justomwaleuniversity.ac.zm/"),
-        ("Rusangu University", "RU", "Private", "Southern", "Monze", "Monze Campus", "https://www.ru.edu.zm", "https://www.ru.edu.zm/"),
-        ("Chreso University", "Chreso", "Private", "Lusaka", "Lusaka", "City Campus", "https://www.chresouniversity.edu.zm", "https://www.chresouniversity.edu.zm/"),
-        ("Eden University", "EU", "Private", "Lusaka", "Lusaka", "Main Campus", "https://www.edenuniversity.edu.zm", "https://www.edenuniversity.edu.zm/"),
-        ("Trans-Africa Christian University", "TACU", "Private", "Copperbelt", "Kitwe", "Kitwe Campus", "https://www.tacu.ac.zm", "https://www.tacu.ac.zm/"),
-        ("Zambia Catholic University", "ZCU", "Private", "Copperbelt", "Kalulushi", "Kalulushi Campus", "https://www.zcu.edu.zm", "https://www.zcu.edu.zm/")
-    ]
-    conn = db()
-    for u in universities:
-        conn.execute("""INSERT OR IGNORE INTO universities
-            (name,abbreviation,ownership,province,district,campus,website,application_url)
-            VALUES (?,?,?,?,?,?,?,?)""", u)
-    conn.commit()
-    conn.close()
-
-seed_universities()
 
 
 # ============================================================
@@ -670,9 +586,9 @@ def page(title, body, admin=False):
             links = [
                 ("Home", url_for("dashboard")),
                 ("KOJA Services", url_for("services")),
-                ("Universities", url_for("universities")),
                 ("My Requests", url_for("my_requests")),
                 ("Notifications", url_for("notifications")),
+                ("KOJA Help", url_for("koja_help")),
                 ("Profile", url_for("profile")),
                 ("Logout", url_for("logout")),
             ]
@@ -731,7 +647,7 @@ def home():
     body = """
     <section class="hero">
       <h1>KOJA AFRICA</h1>
-      <p>Services, requests and support in one place.</p>
+      <p>Assignments, farmer registration, TPIN services, university requests and KOJA support in one place.</p>
       <div class="actions">
         <a class="btn" href="/register">Create Account</a>
         <a class="btn light" href="/login">Client Login</a>
@@ -952,7 +868,7 @@ def services():
         <div class="service">
           <h3>{name}</h3>
           <p>{desc}</p>
-          <a class="btn {'green' if key in ('farmer','tpin') else ''}"
+          <a class="btn {'green' if key in ('assignment','farmer','tpin','help') else ''}"
              href="/request/{key}">Open Service</a>
         </div>
         """
@@ -1095,6 +1011,12 @@ def farmer_step2():
                 "constituency": request.form.get("constituency", "").strip(),
                 "chiefdom": request.form.get("chiefdom", "").strip(),
                 "farming_area": clean_required("farming_area", "Farming location/area"),
+                "farm_size": request.form.get("farm_size", "").strip(),
+                "farm_size_unit": request.form.get("farm_size_unit", "hectares").strip(),
+                "main_crops": request.form.get("main_crops", "").strip(),
+                "livestock": request.form.get("livestock", "").strip(),
+                "cooperative_name": request.form.get("cooperative_name", "").strip(),
+                "production_capacity": request.form.get("production_capacity", "").strip(),
             })
 
             session["farmer_data"] = data
@@ -1142,6 +1064,30 @@ def farmer_step2():
           <div class="field">
             <label>Farming Location / Area *</label>
             <input name="farming_area" required>
+          </div>
+          <div class="field">
+            <label>Farm Size</label>
+            <input name="farm_size" type="number" min="0" step="0.01" placeholder="e.g. 5">
+          </div>
+          <div class="field">
+            <label>Farm Size Unit</label>
+            <select name="farm_size_unit"><option>hectares</option><option>acres</option></select>
+          </div>
+          <div class="field">
+            <label>Main Crops</label>
+            <input name="main_crops" placeholder="e.g. maize, soya beans">
+          </div>
+          <div class="field">
+            <label>Livestock</label>
+            <input name="livestock" placeholder="e.g. cattle, goats, chickens">
+          </div>
+          <div class="field">
+            <label>Cooperative Name</label>
+            <input name="cooperative_name">
+          </div>
+          <div class="field">
+            <label>Production Capacity</label>
+            <input name="production_capacity" placeholder="Optional estimate">
           </div>
         </div>
 
@@ -1313,6 +1259,9 @@ def tpin_request():
                 "district": clean_required("district", "District"),
                 "post_address": clean_required("post_address", "Post address"),
                 "request_type": clean_required("request_type", "TPIN service requested"),
+                "existing_tpin": request.form.get("existing_tpin", "").strip(),
+                "taxpayer_name": request.form.get("taxpayer_name", "").strip(),
+                "tax_type": request.form.get("tax_type", "").strip(),
                 "additional_information": request.form.get(
                     "additional_information", ""
                 ).strip()
@@ -1432,6 +1381,19 @@ def tpin_request():
               <option>Other TPIN Service</option>
             </select>
           </div>
+          <div class="field">
+            <label>Existing TPIN</label>
+            <input name="existing_tpin" placeholder="Only if you already have a TPIN">
+            <div class="help">KOJA assists with the request; official TPIN issuance remains with the relevant authority.</div>
+          </div>
+          <div class="field">
+            <label>Taxpayer Name</label>
+            <input name="taxpayer_name" placeholder="Name registered with ZRA, if known">
+          </div>
+          <div class="field">
+            <label>Tax Type</label>
+            <input name="tax_type" placeholder="Optional">
+          </div>
         </div>
 
         <div class="field">
@@ -1455,6 +1417,104 @@ def tpin_request():
     </div>
     """
     return page("TPIN Services", body)
+
+
+# ============================================================
+# ASSIGNMENTS / ACADEMIC HELP
+# ============================================================
+
+@app.route("/request/assignment", methods=["GET", "POST"])
+@login_required
+def assignment_request():
+    if request.method == "POST":
+        try:
+            data = {
+                "subject": clean_required("subject", "Subject"),
+                "course": request.form.get("course", "").strip(),
+                "institution": request.form.get("institution", "").strip(),
+                "level": request.form.get("level", "").strip(),
+                "question": clean_required("question", "Assignment question"),
+                "deadline": request.form.get("deadline", "").strip(),
+                "instructions": request.form.get("instructions", "").strip(),
+            }
+            user = current_user()
+            request_id, request_no = create_request(user["id"], "assignment", data)
+            for file in request.files.getlist("documents"):
+                if file and file.filename:
+                    save_uploaded_file(file, request_id)
+            flash(f"Assignment {request_no} submitted successfully.", "success")
+            return redirect(url_for("request_detail", request_id=request_id))
+        except ValueError as e:
+            flash(str(e), "error")
+
+    body = """
+    <div class="card">
+      <h2>Assignments & Academic Help</h2>
+      <p>Send the assignment question and any supporting material. KOJA can review the request and provide an academic response or guidance.</p>
+      <form method="post" enctype="multipart/form-data">
+        <div class="grid">
+          <div class="field"><label>Subject *</label><input name="subject" required placeholder="e.g. Biology"></div>
+          <div class="field"><label>Course / Module</label><input name="course"></div>
+          <div class="field"><label>Institution</label><input name="institution"></div>
+          <div class="field"><label>Class / Level</label><input name="level"></div>
+          <div class="field"><label>Deadline</label><input type="datetime-local" name="deadline"></div>
+        </div>
+        <div class="field"><label>Assignment Question *</label><textarea name="question" required placeholder="Paste the full question here."></textarea></div>
+        <div class="field"><label>Instructions / Lecturer Requirements</label><textarea name="instructions" placeholder="Word count, format, referencing style, etc."></textarea></div>
+        <div class="field filebox"><label>Assignment / Supporting Documents</label><input type="file" name="documents" multiple accept=".pdf,.jpg,.jpeg,.png,.webp,.doc,.docx"><div class="help">PDF, Word or image files. Maximum 10 MB per request.</div></div>
+        <button class="btn green">Submit Assignment</button>
+      </form>
+    </div>
+    """
+    return page("Assignments", body)
+
+
+# ============================================================
+# KOJA HELP / CLIENT INFORMATION
+# ============================================================
+
+@app.route("/request/help", methods=["GET", "POST"])
+@login_required
+def koja_help():
+    if request.method == "POST":
+        try:
+            data = {
+                "request_title": clean_required("request_title", "Request title"),
+                "category": clean_required("category", "Help category"),
+                "description": clean_required("description", "Information / question"),
+                "preferred_contact": request.form.get("preferred_contact", "").strip(),
+                "device_type": request.form.get("device_type", "").strip(),
+                "additional_information": request.form.get("additional_information", "").strip(),
+            }
+            user = current_user()
+            request_id, request_no = create_request(user["id"], "help", data)
+            for file in request.files.getlist("documents"):
+                if file and file.filename:
+                    save_uploaded_file(file, request_id)
+            flash(f"KOJA Help request {request_no} submitted successfully.", "success")
+            return redirect(url_for("request_detail", request_id=request_id))
+        except ValueError as e:
+            flash(str(e), "error")
+
+    body = """
+    <div class="card">
+      <h2>KOJA Help</h2>
+      <p>Send your information, question or documents. KOJA will review the request and work on it.</p>
+      <form method="post" enctype="multipart/form-data">
+        <div class="grid">
+          <div class="field"><label>Request Title *</label><input name="request_title" required placeholder="What do you need help with?"></div>
+          <div class="field"><label>Help Category *</label><select name="category" required><option value="">Select category</option><option>General Assistance</option><option>Application Assistance</option><option>Document Assistance</option><option>Education / Academic</option><option>Business Assistance</option><option>Government Service Assistance</option><option>Farmer Assistance</option><option>TPIN Assistance</option><option>Other</option></select></div>
+          <div class="field"><label>Preferred Contact</label><select name="preferred_contact"><option value="">Select</option><option>Phone Call</option><option>WhatsApp</option><option>Email</option><option>KOJA Portal</option></select></div>
+          <div class="field"><label>Device Used</label><select name="device_type"><option value="">Select device</option><option>Android Phone</option><option>iPhone</option><option>Tablet</option><option>Windows Computer</option><option>Mac Computer</option><option>Chromebook</option><option>Other</option></select></div>
+        </div>
+        <div class="field"><label>Information / Question *</label><textarea name="description" required placeholder="Explain exactly what you want KOJA to do for you."></textarea></div>
+        <div class="field"><label>Additional Information</label><textarea name="additional_information" placeholder="Add any other details that may help KOJA process your request."></textarea></div>
+        <div class="field filebox"><label>Attach Documents / Screenshots</label><input type="file" name="documents" multiple accept=".pdf,.jpg,.jpeg,.png,.webp,.doc,.docx"><div class="help">PDF, Word or image files. Maximum 10 MB per request.</div></div>
+        <button class="btn green">Send Information to KOJA</button>
+      </form>
+    </div>
+    """
+    return page("KOJA Help", body)
 
 
 # ============================================================
@@ -1749,7 +1809,6 @@ def request_detail(request_id):
 
 
 @app.route("/files/<path:filename>")
-@login_required
 def private_file(filename):
     # Only allow authenticated clients to access uploaded documents.
     # Admin can also access them.
@@ -1910,7 +1969,6 @@ def admin_dashboard():
     <section class="hero">
       <h1>Admin Dashboard</h1>
       <p>Manage KOJA service requests separately by service type.</p>
-      <div class="actions"><a class="btn" href="/admin/universities">Manage Universities</a></div>
     </section>
     {stats}
     <section class="card">
@@ -2112,167 +2170,6 @@ def admin_request_detail(request_id):
     <a class="btn light" href="/admin">← Back to Admin Dashboard</a>
     """
     return page("Admin Request", body, admin=True)
-
-
-# ============================================================
-# ASSIGNMENTS
-# ============================================================
-
-@app.route("/request/assignment", methods=["GET", "POST"])
-@login_required
-def assignment_request():
-    if request.method == "POST":
-        try:
-            data = {
-                "title": clean_required("title", "Assignment title"),
-                "subject": clean_required("subject", "Subject/Course"),
-                "class_level": request.form.get("class_level", "").strip(),
-                "lecturer_instructions": request.form.get("lecturer_instructions", "").strip(),
-                "deadline": request.form.get("deadline", "").strip(),
-                "assistance_type": clean_required("assistance_type", "Assistance type"),
-                "question": clean_required("question", "Assignment question")
-            }
-            user = current_user()
-            request_id, request_no = create_request(user["id"], "assignment", data)
-            for file in request.files.getlist("assignment_files"):
-                if file and file.filename:
-                    save_uploaded_file(file, request_id)
-            flash(f"Assignment {request_no} submitted successfully.", "success")
-            return redirect(url_for("request_detail", request_id=request_id))
-        except ValueError as e:
-            flash(str(e), "error")
-    body = """
-    <div class="card">
-      <h2>Submit Assignment</h2>
-      <p>Send your assignment question and supporting files to KOJA.</p>
-      <form method="post" enctype="multipart/form-data">
-        <div class="grid">
-          <div class="field"><label>Assignment Title *</label><input name="title" required></div>
-          <div class="field"><label>Subject / Course *</label><input name="subject" required></div>
-          <div class="field"><label>Class / Level</label><input name="class_level"></div>
-          <div class="field"><label>Deadline</label><input type="date" name="deadline"></div>
-        </div>
-        <div class="field"><label>Assistance Type *</label>
-          <select name="assistance_type" required>
-            <option value="">Select</option>
-            <option>Explain the question</option>
-            <option>Academic answer / guidance</option>
-            <option>Assignment review</option>
-            <option>Formatting / document preparation</option>
-            <option>Other academic assistance</option>
-          </select>
-        </div>
-        <div class="field"><label>Assignment Question *</label><textarea name="question" required></textarea></div>
-        <div class="field"><label>Lecturer / Teacher Instructions</label><textarea name="lecturer_instructions"></textarea></div>
-        <div class="field filebox"><label>Assignment Files</label><input type="file" name="assignment_files" multiple accept=".pdf,.jpg,.jpeg,.png,.webp,.doc,.docx"><div class="help">PDF, Word or image. Maximum 10 MB.</div></div>
-        <button class="btn green">Submit Assignment</button>
-      </form>
-    </div>
-    """
-    return page("Submit Assignment", body)
-
-
-# ============================================================
-# UNIVERSITY DIRECTORY
-# ============================================================
-
-@app.route("/universities")
-@login_required
-def universities():
-    q = request.args.get("q", "").strip()
-    ownership = request.args.get("ownership", "").strip()
-    conn = db()
-    sql = "SELECT * FROM universities WHERE is_active=1"
-    params = []
-    if q:
-        sql += " AND (name LIKE ? OR province LIKE ? OR district LIKE ?)"
-        like = f"%{q}%"
-        params += [like, like, like]
-    if ownership:
-        sql += " AND ownership=?"
-        params.append(ownership)
-    sql += " ORDER BY name"
-    rows = conn.execute(sql, params).fetchall()
-    conn.close()
-    cards = "".join(
-        '<div class="service"><h3>{}</h3><p><strong>{}</strong> • {} • {}</p><p>{}</p><a class="btn" href="/university/{}">View University</a></div>'.format(
-            r["name"], r["ownership"], r["province"] or "", r["district"] or "", r["campus"] or "", r["id"]
-        ) for r in rows
-    )
-    body = """<div class="card"><h2>Zambian Universities</h2><p class="small">Verify current admission requirements and deadlines with the institution's official source.</p><form method="get"><div class="grid"><input name="q" value="{}" placeholder="Search university, province or district"><select name="ownership"><option value="">All ownership</option><option value="Public" {}>Public</option><option value="Private" {}>Private</option></select></div><div class="actions"><button class="btn">Search</button></div></form></div><div class="grid">{}</div>""".format(
-        q, "selected" if ownership == "Public" else "", "selected" if ownership == "Private" else "", cards or '<div class="card"><p>No universities found.</p></div>'
-    )
-    return page("Universities", body)
-
-
-@app.route("/university/<int:university_id>")
-def university_detail(university_id):
-    conn = db()
-    u = conn.execute("SELECT * FROM universities WHERE id=? AND is_active=1", (university_id,)).fetchone()
-    programmes = conn.execute("SELECT * FROM programmes WHERE university_id=? ORDER BY programme_name", (university_id,)).fetchall()
-    conn.close()
-    if not u:
-        abort(404)
-    prows = "".join('<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>'.format(p["programme_name"], p["qualification_level"] or "", p["duration"] or "", p["study_mode"] or "") for p in programmes)
-    apply = '<a class="btn green" href="{}" target="_blank" rel="noopener">Official Application Portal</a>'.format(u["application_url"]) if u["application_url"] else '<span class="small">Official application link not yet entered.</span>'
-    web = '<a href="{}" target="_blank" rel="noopener">Official Website</a>'.format(u["website"]) if u["website"] else ''
-    body = """<section class="hero"><h1>{}</h1><p>{} • {} • {}</p><div class="actions">{} {}</div></section><div class="grid"><section class="card"><h2>Application Information</h2><div class="kv"><div class="k">Campus</div><div>{}</div><div class="k">Application Fee</div><div>{}</div><div class="k">Intake</div><div>{}</div><div class="k">Deadline</div><div>{}</div><div class="k">Status</div><div>{}</div></div></section><section class="card"><h2>Requirements</h2><p>{}</p><h3>Required Documents</h3><p>{}</p></section></div><section class="card"><h2>Programmes</h2><table class="data-table"><tr><th>Programme</th><th>Level</th><th>Duration</th><th>Mode</th></tr>{}</table></section><section class="card"><p class="small">Last verified: {}</p></section>""".format(
-        u["name"], u["ownership"], u["province"] or "", u["district"] or "", apply, web, u["campus"] or "", u["application_fee_zmw"] or "Verify with institution", u["intake"] or "Verify current intake", u["deadline"] or "Verify current deadline", u["application_status"], u["general_requirements"] or "Programme-specific requirements should be verified with the institution.", u["required_documents"] or "Check the official application portal for the current document list.", prows or '<tr><td colspan="4">Programme records will be added by KOJA admin.</td></tr>', u["last_verified"] or "Not yet verified"
-    )
-    return page(u["name"], body)
-
-
-# ============================================================
-# SIMPLE CLIENT SERVICES
-# ============================================================
-
-@app.route("/request/<service_type>", methods=["GET", "POST"])
-@login_required
-def generic_service_request(service_type):
-    allowed = {"scholarship": "Scholarship / Bursary", "business": "Business Assistance", "document": "Document Services"}
-    if service_type not in allowed:
-        abort(404)
-    if request.method == "POST":
-        try:
-            data = {"service_title": clean_required("service_title", "Service title"), "description": clean_required("description", "Description"), "additional_information": request.form.get("additional_information", "").strip()}
-            user = current_user()
-            request_id, request_no = create_request(user["id"], service_type, data)
-            for file in request.files.getlist("documents"):
-                if file and file.filename:
-                    save_uploaded_file(file, request_id)
-            flash(f"{allowed[service_type]} request {request_no} submitted successfully.", "success")
-            return redirect(url_for("request_detail", request_id=request_id))
-        except ValueError as e:
-            flash(str(e), "error")
-    body = """<div class="card"><h2>{}</h2><form method="post" enctype="multipart/form-data"><div class="field"><label>Service / Request Title *</label><input name="service_title" required></div><div class="field"><label>Description *</label><textarea name="description" required></textarea></div><div class="field"><label>Additional Information</label><textarea name="additional_information"></textarea></div><div class="field filebox"><label>Supporting Documents</label><input type="file" name="documents" multiple accept=".pdf,.jpg,.jpeg,.png,.webp,.doc,.docx"></div><button class="btn green">Submit Request</button></form></div>""".format(allowed[service_type])
-    return page(allowed[service_type], body)
-
-
-# ============================================================
-# ADMIN: UNIVERSITY DIRECTORY
-# ============================================================
-
-@app.route("/admin/universities", methods=["GET", "POST"])
-@admin_required
-def admin_universities():
-    if request.method == "POST":
-        try:
-            name = clean_required("name", "University name")
-            conn = db()
-            existing = conn.execute("SELECT id FROM universities WHERE name=?", (name,)).fetchone()
-            vals = (request.form.get("abbreviation", ""), request.form.get("ownership", ""), request.form.get("province", ""), request.form.get("district", ""), request.form.get("campus", ""), request.form.get("website", ""), request.form.get("application_url", ""), request.form.get("application_fee_zmw", ""), request.form.get("intake", ""), request.form.get("deadline", ""), request.form.get("application_status", "Verify with institution"), request.form.get("general_requirements", ""), request.form.get("required_documents", ""), request.form.get("source_url", ""), request.form.get("last_verified", ""))
-            if existing:
-                conn.execute("""UPDATE universities SET abbreviation=?,ownership=?,province=?,district=?,campus=?,website=?,application_url=?,application_fee_zmw=?,intake=?,deadline=?,application_status=?,general_requirements=?,required_documents=?,source_url=?,last_verified=?,is_active=1 WHERE id=?""", vals + (existing["id"],))
-            else:
-                conn.execute("""INSERT INTO universities (name,abbreviation,ownership,province,district,campus,website,application_url,application_fee_zmw,intake,deadline,application_status,general_requirements,required_documents,source_url,last_verified,is_active) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)""", (name,) + vals)
-            conn.commit(); conn.close()
-            flash("University saved.", "success")
-        except Exception as e:
-            flash(f"Could not save university: {e}", "error")
-    conn = db(); rows = conn.execute("SELECT * FROM universities ORDER BY name").fetchall(); conn.close()
-    trs = "".join('<tr><td>{}</td><td>{}</td><td>{}</td><td><a class="btn light" href="/university/{}">View</a></td></tr>'.format(r["name"], r["ownership"], r["province"], r["id"]) for r in rows)
-    body = """<div class="card"><h2>Admin • Universities</h2><form method="post"><div class="grid"><input name="name" placeholder="University name" required><input name="abbreviation" placeholder="Abbreviation"><select name="ownership"><option>Public</option><option>Private</option></select><input name="province" placeholder="Province"><input name="district" placeholder="District"><input name="campus" placeholder="Campus"><input name="website" placeholder="Official website"><input name="application_url" placeholder="Official application portal"><input name="application_fee_zmw" placeholder="Application fee"><input name="intake" placeholder="Intake"><input name="deadline" type="date"><input name="application_status" value="Verify with institution"><input name="source_url" placeholder="Source URL"><input name="last_verified" type="date"></div><div class="field"><label>General requirements</label><textarea name="general_requirements"></textarea></div><div class="field"><label>Required documents</label><textarea name="required_documents"></textarea></div><button class="btn green">Save University</button></form></div><div class="card"><table class="data-table"><tr><th>Name</th><th>Ownership</th><th>Province</th><th></th></tr>{}</table></div>""".format(trs)
-    return page("Admin Universities", body, admin=True)
 
 
 # ============================================================
