@@ -43,55 +43,34 @@ from openpyxl import Workbook
 
 
 # ============================================================
-# LOAD ENVIRONMENT
+# CONFIGURATION
 # ============================================================
 
 load_dotenv()
-
-
-# ============================================================
-# FLASK APP
-# ============================================================
 
 app = Flask(__name__)
 
 app.secret_key = os.environ.get(
     "SECRET_KEY",
-    "CHANGE_THIS_SECRET_KEY_IN_RENDER",
+    "CHANGE_THIS_SECRET_KEY_IN_RENDER"
 )
 
 app.config["MAX_CONTENT_LENGTH"] = 15 * 1024 * 1024
-
-
-# ============================================================
-# LOGGING
-# ============================================================
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
 )
 
-
-# ============================================================
-# SUPABASE CONFIGURATION
-# ============================================================
-
 SUPABASE_URL = os.environ.get(
     "SUPABASE_URL",
-    "",
+    ""
 ).strip().rstrip("/")
-
 
 SUPABASE_SERVICE_KEY = os.environ.get(
     "SUPABASE_SERVICE_KEY",
-    "",
+    ""
 ).strip()
-
-
-# ============================================================
-# APPLICATION CONFIGURATION
-# ============================================================
 
 APP_NAME = "KOJA AFRICA"
 
@@ -100,26 +79,19 @@ APP_TAGLINE = (
     "Learning Resources"
 )
 
-
 STORAGE_BUCKET = os.environ.get(
     "SUPABASE_STORAGE_BUCKET",
-    "koja-assignments",
+    "koja-assignments"
 ).strip()
-
-
-# ============================================================
-# ADMIN LOGIN
-# ============================================================
 
 ADMIN_EMAIL = os.environ.get(
     "ADMIN_EMAIL",
-    "admin@koja-africa.com",
+    "admin@koja-africa.com"
 ).strip().lower()
-
 
 ADMIN_PASSWORD = os.environ.get(
     "ADMIN_PASSWORD",
-    "ChangeThisAdminPassword123!",
+    "ChangeThisAdminPassword123!"
 )
 
 
@@ -143,25 +115,6 @@ ALLOWED_EXTENSIONS = {
 MAX_FILE_SIZE = 15 * 1024 * 1024
 
 
-# ============================================================
-# BASIC HELPERS
-# ============================================================
-
-def utc_now():
-    return datetime.now(timezone.utc).isoformat()
-
-
-def clean(value):
-    """
-    Safely escape text before putting it into HTML.
-    """
-
-    if value is None:
-        return ""
-
-    return escape(str(value))
-
-
 def allowed_file(filename):
     if not filename:
         return False
@@ -169,36 +122,33 @@ def allowed_file(filename):
     if "." not in filename:
         return False
 
-    extension = filename.rsplit(
-        ".",
-        1,
-    )[1].lower()
+    extension = filename.rsplit(".", 1)[1].lower()
 
     return extension in ALLOWED_EXTENSIONS
 
 
+def utc_now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def clean(value):
+    if value is None:
+        return ""
+
+    return escape(str(value))
+
+
 # ============================================================
-# SUPABASE HEADERS
+# SUPABASE
 # ============================================================
 
 def supabase_headers():
-    if not SUPABASE_SERVICE_KEY:
-        raise RuntimeError(
-            "SUPABASE_SERVICE_KEY is missing."
-        )
-
     return {
         "apikey": SUPABASE_SERVICE_KEY,
-        "Authorization": (
-            f"Bearer {SUPABASE_SERVICE_KEY}"
-        ),
+        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
         "Content-Type": "application/json",
     }
 
-
-# ============================================================
-# SUPABASE REST REQUEST
-# ============================================================
 
 def supabase_request(
     method,
@@ -208,12 +158,6 @@ def supabase_request(
     headers=None,
     timeout=30,
 ):
-    """
-    Generic Supabase REST request.
-
-    Uses the Supabase service key server-side.
-    """
-
     if not SUPABASE_URL:
         raise RuntimeError(
             "SUPABASE_URL is missing in Render environment variables."
@@ -224,51 +168,33 @@ def supabase_request(
             "SUPABASE_SERVICE_KEY is missing in Render environment variables."
         )
 
-    url = (
-        f"{SUPABASE_URL}/rest/v1/{table}"
-    )
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
 
     final_headers = supabase_headers()
 
     if headers:
         final_headers.update(headers)
 
-    try:
-
-        response = requests.request(
-            method=method,
-            url=url,
-            params=params,
-            json=data,
-            headers=final_headers,
-            timeout=timeout,
-        )
-
-    except requests.RequestException as exc:
-
-        logging.exception(
-            "Supabase network error."
-        )
-
-        raise RuntimeError(
-            f"Could not connect to Supabase: {exc}"
-        )
+    response = requests.request(
+        method=method,
+        url=url,
+        params=params,
+        json=data,
+        headers=final_headers,
+        timeout=timeout,
+    )
 
     if not response.ok:
-
         logging.error(
-            "Supabase request failed. "
-            "Method=%s Table=%s Status=%s Response=%s",
+            "Supabase %s %s failed: %s",
             method,
             table,
-            response.status_code,
             response.text,
         )
 
         raise RuntimeError(
             f"Database request failed: "
-            f"{response.status_code} "
-            f"{response.text}"
+            f"{response.status_code} {response.text}"
         )
 
     if not response.text:
@@ -277,13 +203,9 @@ def supabase_request(
     try:
         return response.json()
 
-    except ValueError:
+    except Exception:
         return response.text
 
-
-# ============================================================
-# DATABASE SELECT
-# ============================================================
 
 def db_select(
     table,
@@ -299,7 +221,7 @@ def db_select(
     if filters:
         params.update(filters)
 
-    if limit is not None:
+    if limit:
         params["limit"] = str(limit)
 
     if order:
@@ -312,26 +234,17 @@ def db_select(
     )
 
 
-# ============================================================
-# DATABASE INSERT
-# ============================================================
-
 def db_insert(
     table,
     data,
     returning=True,
 ):
+    headers = {}
+
     if returning:
-
-        headers = {
-            "Prefer": "return=representation",
-        }
-
+        headers["Prefer"] = "return=representation"
     else:
-
-        headers = {
-            "Prefer": "return=minimal",
-        }
+        headers["Prefer"] = "return=minimal"
 
     return supabase_request(
         "POST",
@@ -340,10 +253,6 @@ def db_insert(
         headers=headers,
     )
 
-
-# ============================================================
-# DATABASE UPDATE
-# ============================================================
 
 def db_update(
     table,
@@ -356,14 +265,10 @@ def db_update(
         params=filters,
         data=data,
         headers={
-            "Prefer": "return=representation",
+            "Prefer": "return=representation"
         },
     )
 
-
-# ============================================================
-# DATABASE DELETE
-# ============================================================
 
 def db_delete(
     table,
@@ -374,13 +279,13 @@ def db_delete(
         table,
         params=filters,
         headers={
-            "Prefer": "return=minimal",
+            "Prefer": "return=minimal"
         },
     )
 
 
 # ============================================================
-# STORAGE UPLOAD
+# STORAGE
 # ============================================================
 
 def storage_upload(
@@ -409,49 +314,29 @@ def storage_upload(
     )
 
     headers = {
-        "Authorization": (
-            f"Bearer {SUPABASE_SERVICE_KEY}"
-        ),
+        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
         "apikey": SUPABASE_SERVICE_KEY,
-        "Content-Type": (
-            content_type
-            or "application/octet-stream"
-        ),
+        "Content-Type": content_type,
         "x-upsert": "true",
     }
 
-    try:
-
-        response = requests.post(
-            url,
-            headers=headers,
-            data=file_bytes,
-            timeout=60,
-        )
-
-    except requests.RequestException as exc:
-
-        raise RuntimeError(
-            f"Storage connection failed: {exc}"
-        )
+    response = requests.post(
+        url,
+        headers=headers,
+        data=file_bytes,
+        timeout=60,
+    )
 
     if not response.ok:
-
         raise RuntimeError(
-            "Storage upload failed: "
-            f"{response.status_code} "
-            f"{response.text}"
+            f"Storage upload failed: "
+            f"{response.status_code} {response.text}"
         )
 
     return storage_path
 
 
-# ============================================================
-# STORAGE DOWNLOAD
-# ============================================================
-
 def storage_download(storage_path):
-
     if not storage_path:
         raise RuntimeError(
             "Storage path is missing."
@@ -463,43 +348,26 @@ def storage_download(storage_path):
     )
 
     headers = {
-        "Authorization": (
-            f"Bearer {SUPABASE_SERVICE_KEY}"
-        ),
+        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
         "apikey": SUPABASE_SERVICE_KEY,
     }
 
-    try:
-
-        response = requests.get(
-            url,
-            headers=headers,
-            timeout=60,
-        )
-
-    except requests.RequestException as exc:
-
-        raise RuntimeError(
-            f"Storage connection failed: {exc}"
-        )
+    response = requests.get(
+        url,
+        headers=headers,
+        timeout=60,
+    )
 
     if not response.ok:
-
         raise RuntimeError(
-            "Storage download failed: "
-            f"{response.status_code} "
-            f"{response.text}"
+            f"Storage download failed: "
+            f"{response.status_code} {response.text}"
         )
 
     return response.content
 
 
-# ============================================================
-# STORAGE DELETE
-# ============================================================
-
 def storage_delete(storage_path):
-
     if not storage_path:
         return False
 
@@ -509,35 +377,21 @@ def storage_delete(storage_path):
     )
 
     headers = {
-        "Authorization": (
-            f"Bearer {SUPABASE_SERVICE_KEY}"
-        ),
+        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
         "apikey": SUPABASE_SERVICE_KEY,
         "Content-Type": "application/json",
     }
 
-    try:
+    response = requests.delete(
+        url,
+        headers=headers,
+        json={
+            "prefixes": [storage_path]
+        },
+        timeout=30,
+    )
 
-        response = requests.delete(
-            url,
-            headers=headers,
-            json={
-                "prefixes": [
-                    storage_path
-                ]
-            },
-            timeout=30,
-        )
-
-        return response.ok
-
-    except requests.RequestException:
-
-        logging.exception(
-            "Storage deletion failed."
-        )
-
-        return False
+    return response.ok
 
 
 # ============================================================
@@ -549,7 +403,6 @@ def current_user():
 
 
 def current_email():
-
     user = current_user()
 
     if not user:
@@ -557,20 +410,6 @@ def current_email():
 
     return user.get("email")
 
-
-def current_user_id():
-
-    user = current_user()
-
-    if not user:
-        return None
-
-    return user.get("id")
-
-
-# ============================================================
-# LOGIN REQUIRED
-# ============================================================
 
 def login_required(function):
 
@@ -588,17 +427,10 @@ def login_required(function):
                 url_for("login")
             )
 
-        return function(
-            *args,
-            **kwargs
-        )
+        return function(*args, **kwargs)
 
     return wrapper
 
-
-# ============================================================
-# ADMIN REQUIRED
-# ============================================================
 
 def admin_required(function):
 
@@ -629,36 +461,27 @@ def admin_required(function):
                 url_for("dashboard")
             )
 
-        return function(
-            *args,
-            **kwargs
-        )
+        return function(*args, **kwargs)
 
     return wrapper
 
 
 # ============================================================
-# USERS TABLE
+# PROFILE / AUTHENTICATION
 #
-# THIS IS THE IMPORTANT FIX.
-#
-# We no longer use the broken profiles table.
+# IMPORTANT:
+# There is NO users table.
+# The profiles table is the application's user table.
 # ============================================================
 
-def find_user_by_email(email):
+def find_profile(email):
 
-    email = (
-        email
-        or ""
-    ).strip().lower()
-
-    if not email:
-        return None
+    email = email.strip().lower()
 
     rows = db_select(
-        "users",
+        "profiles",
         filters={
-            "email": f"eq.{email}",
+            "email": f"eq.{email}"
         },
         limit=1,
     )
@@ -669,15 +492,12 @@ def find_user_by_email(email):
     return None
 
 
-def find_user_by_id(user_id):
-
-    if not user_id:
-        return None
+def find_profile_by_id(user_id):
 
     rows = db_select(
-        "users",
+        "profiles",
         filters={
-            "id": f"eq.{user_id}",
+            "id": f"eq.{user_id}"
         },
         limit=1,
     )
@@ -688,52 +508,114 @@ def find_user_by_id(user_id):
     return None
 
 
-# ============================================================
-# CREATE USER
-# ============================================================
-
-def create_user(
-    name,
+def create_profile(
+    user_id,
     email,
+    name,
+    password_hash,
+):
+    """
+    Creates a user directly in profiles.
+
+    NO users table is used.
+    """
+
+    data = {
+        "id": user_id,
+        "name": name,
+        "full_name": name,
+        "email": email,
+        "password_hash": password_hash,
+        "is_admin": False,
+        "is_active": True,
+    }
+
+    try:
+
+        result = db_insert(
+            "profiles",
+            data,
+        )
+
+        if isinstance(result, list) and result:
+            return result[0]
+
+        return data
+
+    except Exception as exc:
+
+        logging.exception(
+            "Profile creation failed."
+        )
+
+        # Some installations may have one of the optional
+        # columns configured differently. Try a simpler row.
+
+        fallback_rows = [
+            {
+                "id": user_id,
+                "name": name,
+                "email": email,
+                "password_hash": password_hash,
+                "is_admin": False,
+                "is_active": True,
+            },
+            {
+                "id": user_id,
+                "name": name,
+                "email": email,
+                "password_hash": password_hash,
+            },
+            {
+                "id": user_id,
+                "email": email,
+                "password_hash": password_hash,
+            },
+        ]
+
+        errors = [str(exc)]
+
+        for row in fallback_rows:
+
+            try:
+
+                result = db_insert(
+                    "profiles",
+                    row,
+                )
+
+                if isinstance(result, list) and result:
+                    return result[0]
+
+                return row
+
+            except Exception as fallback_error:
+
+                errors.append(
+                    str(fallback_error)
+                )
+
+        raise RuntimeError(
+            "Could not create account in profiles. "
+            + " | ".join(errors)
+        )
+
+
+def register_user(
+    email,
+    name,
     password,
 ):
+    """
+    Register directly into profiles.
 
-    name = (
-        name
-        or ""
-    ).strip()
+    There is deliberately NO users table.
+    """
 
-    email = (
-        email
-        or ""
-    ).strip().lower()
+    email = email.strip().lower()
+    name = name.strip()
 
-    password = password or ""
-
-    if not name:
-        raise ValueError(
-            "Full name is required."
-        )
-
-    if not email:
-        raise ValueError(
-            "Email is required."
-        )
-
-    if not password:
-        raise ValueError(
-            "Password is required."
-        )
-
-    if len(password) < 6:
-        raise ValueError(
-            "Password must contain at least 6 characters."
-        )
-
-    # Check existing user.
-    existing = find_user_by_email(
-        email
-    )
+    existing = find_profile(email)
 
     if existing:
 
@@ -741,91 +623,35 @@ def create_user(
             "An account with that email already exists."
         )
 
-    user_id = str(
-        uuid.uuid4()
-    )
+    user_id = str(uuid.uuid4())
 
     password_hash = generate_password_hash(
         password
     )
 
-    # IMPORTANT:
-    #
-    # Insert directly into users.
-    #
-    # We only use columns that definitely exist
-    # according to the schema you provided.
+    profile = create_profile(
+        user_id=user_id,
+        email=email,
+        name=name,
+        password_hash=password_hash,
+    )
 
-    user_data = {
-        "id": user_id,
-        "name": name,
-        "full_name": name,
-        "email": email,
-        "role": "student",
-        "password_hash": password_hash,
-        "is_active": True,
-        "is_admin": False,
-        "created_at": utc_now(),
-        "updated_at": utc_now(),
-    }
+    return profile
 
-    try:
-
-        result = db_insert(
-            "users",
-            user_data,
-            returning=True,
-        )
-
-    except Exception as exc:
-
-        message = str(exc)
-
-        # Duplicate email protection.
-        if (
-            "duplicate"
-            in message.lower()
-            or "23505"
-            in message
-        ):
-
-            raise ValueError(
-                "An account with that email already exists."
-            )
-
-        raise
-
-    if not result:
-
-        raise RuntimeError(
-            "User account was not created."
-        )
-
-    if isinstance(result, list):
-
-        return result[0]
-
-    return result
-
-
-# ============================================================
-# VERIFY USER
-# ============================================================
 
 def verify_user(
     email,
     password,
 ):
+    email = email.strip().lower()
 
-    user = find_user_by_email(
-        email
-    )
+    profile = find_profile(email)
 
-    if not user:
+    if not profile:
         return None
 
-    # Disabled users cannot login.
-    is_active = user.get(
+    # Check account status when available.
+    is_active = profile.get(
         "is_active",
         True,
     )
@@ -833,7 +659,7 @@ def verify_user(
     if is_active is False:
         return None
 
-    password_hash = user.get(
+    password_hash = profile.get(
         "password_hash"
     )
 
@@ -858,45 +684,31 @@ def verify_user(
     if not valid:
         return None
 
-    return user
+    return profile
 
 
-# ============================================================
-# SESSION USER BUILDER
-# ============================================================
+def profile_to_session(profile):
 
-def build_session_user(user):
-
-    if not user:
-        return None
-
-    role = str(
-        user.get(
-            "role",
-            "student",
-        )
-    ).lower()
-
-    is_admin = bool(
-        user.get(
-            "is_admin",
-            False,
-        )
+    name = profile.get(
+        "full_name"
     )
 
-    if role == "admin":
-        is_admin = True
+    if not name:
+        name = profile.get(
+            "name",
+            "Student",
+        )
 
     return {
-        "id": user.get("id"),
-        "email": user.get("email"),
-        "full_name": (
-            user.get("full_name")
-            or user.get("name")
-            or "Student"
+        "id": profile.get("id"),
+        "email": profile.get("email"),
+        "full_name": name,
+        "is_admin": bool(
+            profile.get(
+                "is_admin",
+                False,
+            )
         ),
-        "role": role,
-        "is_admin": is_admin,
     }
 
 
@@ -908,22 +720,12 @@ def log_activity(
     action,
     description="",
 ):
-
     user = current_user()
 
     email = None
 
-    user_id = None
-
     if user:
-
-        email = user.get(
-            "email"
-        )
-
-        user_id = user.get(
-            "id"
-        )
+        email = user.get("email")
 
     data = {
         "action": action,
@@ -931,13 +733,6 @@ def log_activity(
         "email": email,
         "created_at": utc_now(),
     }
-
-    # user_id is only added if useful.
-    # This avoids breaking installations where
-    # activity_logs does not contain user_id.
-
-    if user_id:
-        data["user_id"] = user_id
 
     try:
 
@@ -949,17 +744,14 @@ def log_activity(
 
     except Exception:
 
-        # Activity logging must NEVER break
-        # registration, login or assignment work.
-
+        # Activity logging should NEVER break the main app.
         logging.warning(
-            "Activity log skipped because "
-            "activity_logs may not exist."
+            "Activity log unavailable."
         )
 
 
 # ============================================================
-# ASSIGNMENT FILE
+# ASSIGNMENT FILES
 # ============================================================
 
 def save_assignment_file(
@@ -984,7 +776,6 @@ def save_assignment_file(
     result = db_insert(
         "assignment_files",
         data,
-        returning=True,
     )
 
     if isinstance(result, list) and result:
@@ -994,7 +785,7 @@ def save_assignment_file(
 
 
 # ============================================================
-# PDF GENERATOR
+# PDF
 # ============================================================
 
 def build_pdf(
@@ -1018,11 +809,9 @@ def build_pdf(
     styles = getSampleStyleSheet()
 
     title_style = styles["Title"]
-
     title_style.alignment = TA_CENTER
 
     heading = styles["Heading2"]
-
     normal = styles["BodyText"]
 
     story = []
@@ -1040,10 +829,7 @@ def build_pdf(
 
     story.append(
         Paragraph(
-            clean(
-                title
-                or "Assignment Answer"
-            ),
+            clean(title),
             heading,
         )
     )
@@ -1054,8 +840,8 @@ def build_pdf(
 
     story.append(
         Paragraph(
-            "<b>Student:</b> "
-            + clean(student_name),
+            f"<b>Student:</b> "
+            f"{clean(student_name)}",
             normal,
         )
     )
@@ -1073,7 +859,6 @@ def build_pdf(
 
     question_text = clean(
         question
-        or ""
     ).replace(
         "\n",
         "<br/>",
@@ -1081,8 +866,7 @@ def build_pdf(
 
     story.append(
         Paragraph(
-            question_text
-            or "No question supplied.",
+            question_text,
             normal,
         )
     )
@@ -1100,7 +884,6 @@ def build_pdf(
 
     answer_text = clean(
         answer
-        or ""
     ).replace(
         "\n",
         "<br/>",
@@ -1108,8 +891,7 @@ def build_pdf(
 
     story.append(
         Paragraph(
-            answer_text
-            or "No answer supplied.",
+            answer_text,
             normal,
         )
     )
@@ -1135,7 +917,7 @@ def build_pdf(
 
 
 # ============================================================
-# WORD GENERATOR
+# WORD
 # ============================================================
 
 def build_docx(
@@ -1153,17 +935,12 @@ def build_docx(
     )
 
     document.add_heading(
-        title
-        or "Assignment Answer",
+        title or "Assignment Answer",
         level=1,
     )
 
     document.add_paragraph(
-        "Student: "
-        + (
-            student_name
-            or ""
-        )
+        f"Student: {student_name}"
     )
 
     document.add_heading(
@@ -1172,8 +949,7 @@ def build_docx(
     )
 
     document.add_paragraph(
-        question
-        or ""
+        question or ""
     )
 
     document.add_heading(
@@ -1182,8 +958,7 @@ def build_docx(
     )
 
     document.add_paragraph(
-        answer
-        or ""
+        answer or ""
     )
 
     document.add_paragraph(
@@ -1192,9 +967,7 @@ def build_docx(
 
     buffer = io.BytesIO()
 
-    document.save(
-        buffer
-    )
+    document.save(buffer)
 
     buffer.seek(0)
 
@@ -1202,7 +975,7 @@ def build_docx(
 
 
 # ============================================================
-# EXCEL GENERATOR
+# EXCEL
 # ============================================================
 
 def build_xlsx(
@@ -1221,46 +994,23 @@ def build_xlsx(
     sheet["A1"] = "KOJA AFRICA"
 
     sheet["A2"] = "Assignment"
-
-    sheet["B2"] = (
-        title
-        or ""
-    )
+    sheet["B2"] = title
 
     sheet["A3"] = "Student"
-
-    sheet["B3"] = (
-        student_name
-        or ""
-    )
+    sheet["B3"] = student_name
 
     sheet["A5"] = "Question"
-
-    sheet["B5"] = (
-        question
-        or ""
-    )
+    sheet["B5"] = question
 
     sheet["A7"] = "Answer"
+    sheet["B7"] = answer
 
-    sheet["B7"] = (
-        answer
-        or ""
-    )
-
-    sheet.column_dimensions[
-        "A"
-    ].width = 25
-
-    sheet.column_dimensions[
-        "B"
-    ].width = 100
+    sheet.column_dimensions["A"].width = 25
+    sheet.column_dimensions["B"].width = 100
 
     buffer = io.BytesIO()
 
-    workbook.save(
-        buffer
-    )
+    workbook.save(buffer)
 
     buffer.seek(0)
 
@@ -1268,7 +1018,7 @@ def build_xlsx(
 
 
 # ============================================================
-# HTML
+# BASE HTML
 # ============================================================
 
 BASE_HTML = """
@@ -1293,10 +1043,7 @@ BASE_HTML = """
 
 body {
     margin: 0;
-    font-family:
-        Arial,
-        Helvetica,
-        sans-serif;
+    font-family: Arial, sans-serif;
     background: #f4f7fb;
     color: #172033;
 }
@@ -1318,7 +1065,7 @@ body {
 }
 
 .brand {
-    font-size: 23px;
+    font-size: 22px;
     font-weight: bold;
 }
 
@@ -1331,12 +1078,8 @@ body {
 .nav a {
     color: white;
     text-decoration: none;
-    margin: 5px 7px;
+    margin: 4px 7px;
     display: inline-block;
-}
-
-.nav a:hover {
-    text-decoration: underline;
 }
 
 .container {
@@ -1347,12 +1090,10 @@ body {
 
 .card {
     background: white;
-    border-radius: 14px;
+    border-radius: 12px;
     padding: 22px;
     margin-bottom: 18px;
-    box-shadow:
-        0 2px 12px
-        rgba(0,0,0,.07);
+    box-shadow: 0 2px 12px rgba(0,0,0,.07);
 }
 
 h1,
@@ -1361,24 +1102,16 @@ h3 {
     margin-top: 0;
 }
 
-label {
-    display: block;
-    font-weight: bold;
-    margin-top: 8px;
-}
-
 input,
 textarea,
 select {
     width: 100%;
-    padding: 13px;
+    padding: 12px;
     margin-top: 6px;
     margin-bottom: 14px;
-    border:
-        1px solid #ccd3df;
+    border: 1px solid #ccd3df;
     border-radius: 8px;
-    font-size: 16px;
-    background: white;
+    font-size: 15px;
 }
 
 textarea {
@@ -1400,11 +1133,6 @@ button,
     font-size: 15px;
 }
 
-button:hover,
-.btn:hover {
-    opacity: .9;
-}
-
 .btn-green {
     background: #138a4b;
 }
@@ -1420,10 +1148,7 @@ button:hover,
 .grid {
     display: grid;
     grid-template-columns:
-        repeat(
-            auto-fit,
-            minmax(210px, 1fr)
-        );
+        repeat(auto-fit, minmax(220px, 1fr));
     gap: 15px;
 }
 
@@ -1447,8 +1172,7 @@ table {
 th,
 td {
     padding: 10px;
-    border-bottom:
-        1px solid #ddd;
+    border-bottom: 1px solid #ddd;
     text-align: left;
 }
 
@@ -1460,7 +1184,7 @@ td {
 }
 
 .flash {
-    padding: 13px;
+    padding: 12px;
     margin-bottom: 12px;
     border-radius: 8px;
     background: #eef4ff;
@@ -1470,18 +1194,6 @@ td {
     text-align: center;
     padding: 30px;
     color: #687386;
-}
-
-.small {
-    color: #687386;
-    font-size: 14px;
-}
-
-.answer-box {
-    background: #f7f9fc;
-    border-radius: 10px;
-    padding: 18px;
-    line-height: 1.7;
 }
 
 @media(max-width:600px) {
@@ -1501,10 +1213,6 @@ td {
     table {
         display: block;
         overflow-x: auto;
-    }
-
-    .card {
-        padding: 18px;
     }
 
 }
@@ -1577,14 +1285,9 @@ Register
 
 </div>
 
-
 <div class="container">
 
-{% with messages =
-    get_flashed_messages(
-        with_categories=true
-    )
-%}
+{% with messages = get_flashed_messages(with_categories=true) %}
 
 {% for category, message in messages %}
 
@@ -1600,7 +1303,6 @@ Register
 
 </div>
 
-
 <div class="footer">
 
 KOJA AFRICA<br>
@@ -1614,10 +1316,6 @@ Assignment Questions • Academic Answers • Learning Resources
 </html>
 """
 
-
-# ============================================================
-# PAGE RENDERER
-# ============================================================
 
 def page(
     title,
@@ -1665,7 +1363,6 @@ def home():
 
     </div>
 
-
     <div class="grid">
 
     <div class="card">
@@ -1673,12 +1370,11 @@ def home():
     <h3>Ask Questions</h3>
 
     <p>
-    Send an academic question directly
-    through your KOJA account.
+    Send an academic question directly through
+    your KOJA account.
     </p>
 
     </div>
-
 
     <div class="card">
 
@@ -1689,7 +1385,6 @@ def home():
     </p>
 
     </div>
-
 
     <div class="card">
 
@@ -1761,6 +1456,17 @@ def register():
                 url_for("register")
             )
 
+        if not password:
+
+            flash(
+                "Password is required.",
+                "warning",
+            )
+
+            return redirect(
+                url_for("register")
+            )
+
         if len(password) < 6:
 
             flash(
@@ -1774,23 +1480,32 @@ def register():
 
         try:
 
-            user = create_user(
-                name=name,
+            profile = register_user(
                 email=email,
+                name=name,
                 password=password,
             )
 
             session.clear()
 
-            session["user"] = (
-                build_session_user(
-                    user
-                )
-            )
+            session["user"] = {
+                "id": profile.get("id"),
+                "email": email,
+                "full_name": (
+                    profile.get(
+                        "full_name"
+                    )
+                    or profile.get(
+                        "name",
+                        name,
+                    )
+                ),
+                "is_admin": False,
+            }
 
             log_activity(
                 "register",
-                "New student account created.",
+                "New student account created",
             )
 
             flash(
@@ -1812,7 +1527,7 @@ def register():
         except Exception as exc:
 
             logging.exception(
-                "Registration error."
+                "Registration error"
             )
 
             flash(
@@ -1915,7 +1630,10 @@ def login():
         try:
 
             # ==================================================
-            # ADMIN ENVIRONMENT LOGIN
+            # ADMIN LOGIN
+            #
+            # This works from Render environment variables.
+            # It does NOT require a users table.
             # ==================================================
 
             if (
@@ -1929,13 +1647,12 @@ def login():
                     "id": "admin",
                     "email": ADMIN_EMAIL,
                     "full_name": "KOJA Administrator",
-                    "role": "admin",
                     "is_admin": True,
                 }
 
                 log_activity(
                     "admin_login",
-                    "Administrator logged in.",
+                    "Administrator logged in",
                 )
 
                 return redirect(
@@ -1945,15 +1662,15 @@ def login():
                 )
 
             # ==================================================
-            # NORMAL USER
+            # NORMAL PROFILE LOGIN
             # ==================================================
 
-            user = verify_user(
+            profile = verify_user(
                 email,
                 password,
             )
 
-            if not user:
+            if not profile:
 
                 flash(
                     "Invalid email or password.",
@@ -1966,20 +1683,16 @@ def login():
 
             session.clear()
 
-            session["user"] = (
-                build_session_user(
-                    user
-                )
+            session["user"] = profile_to_session(
+                profile
             )
 
             log_activity(
                 "login",
-                "User logged in.",
+                "User logged in",
             )
 
-            if session["user"].get(
-                "is_admin"
-            ):
+            if profile.get("is_admin"):
 
                 return redirect(
                     url_for(
@@ -1994,7 +1707,7 @@ def login():
         except Exception as exc:
 
             logging.exception(
-                "Login error."
+                "Login error"
             )
 
             flash(
@@ -2038,9 +1751,7 @@ def login():
 
     <p>
     Don't have an account?
-    <a href="/register">
-    Create one
-    </a>
+    <a href="/register">Create one</a>
     </p>
 
     </div>
@@ -2082,8 +1793,6 @@ def dashboard():
 
     email = current_email()
 
-    rows = []
-
     try:
 
         rows = db_select(
@@ -2101,6 +1810,8 @@ def dashboard():
         logging.exception(
             "Dashboard assignment query failed."
         )
+
+        rows = []
 
         flash(
             f"Could not load assignments: {exc}",
@@ -2150,7 +1861,6 @@ def dashboard():
 
     </div>
 
-
     <div class="grid">
 
     <div class="stat">
@@ -2174,7 +1884,6 @@ def dashboard():
     </div>
 
     </div>
-
 
     <div class="card">
 
@@ -2233,19 +1942,20 @@ def new_assignment():
             "",
         ).strip()
 
-        uploaded_file = request.files.get(
+        file = request.files.get(
             "question_file"
         )
 
         if not title:
             title = "Assignment Question"
 
-        has_file = bool(
-            uploaded_file
-            and uploaded_file.filename
-        )
-
-        if not question and not has_file:
+        if (
+            not question
+            and (
+                not file
+                or not file.filename
+            )
+        ):
 
             flash(
                 "Enter a question or upload a question file.",
@@ -2258,101 +1968,16 @@ def new_assignment():
                 )
             )
 
-        # Validate file BEFORE creating database
-        # record so bad files do not create
-        # empty assignments.
-
-        file_bytes = None
-        original_name = None
-        extension = None
-        content_type = None
-
-        if has_file:
-
-            if not allowed_file(
-                uploaded_file.filename
-            ):
-
-                flash(
-                    "Unsupported file type.",
-                    "danger",
-                )
-
-                return redirect(
-                    url_for(
-                        "new_assignment"
-                    )
-                )
-
-            file_bytes = uploaded_file.read()
-
-            if len(file_bytes) > MAX_FILE_SIZE:
-
-                flash(
-                    "File is too large. Maximum is 15 MB.",
-                    "danger",
-                )
-
-                return redirect(
-                    url_for(
-                        "new_assignment"
-                    )
-                )
-
-            original_name = secure_filename(
-                uploaded_file.filename
-            )
-
-            if (
-                not original_name
-                or "." not in original_name
-            ):
-
-                flash(
-                    "Invalid file name.",
-                    "danger",
-                )
-
-                return redirect(
-                    url_for(
-                        "new_assignment"
-                    )
-                )
-
-            extension = (
-                original_name
-                .rsplit(".", 1)[-1]
-                .lower()
-            )
-
-            content_type = (
-                uploaded_file.content_type
-                or "application/octet-stream"
-            )
-
         try:
 
             assignment_data = {
-                "student_email":
-                    current_email(),
-
-                "title":
-                    title,
-
-                "subject":
-                    subject,
-
-                "question":
-                    question,
-
-                "status":
-                    "Pending",
-
-                "created_at":
-                    utc_now(),
-
-                "updated_at":
-                    utc_now(),
+                "student_email": current_email(),
+                "title": title,
+                "subject": subject,
+                "question": question,
+                "status": "Pending",
+                "created_at": utc_now(),
+                "updated_at": utc_now(),
             }
 
             try:
@@ -2360,37 +1985,35 @@ def new_assignment():
                 result = db_insert(
                     "assignments",
                     assignment_data,
-                    returning=True,
                 )
 
-            except Exception:
+            except Exception as first_error:
 
                 logging.exception(
                     "Full assignment insert failed."
                 )
 
-                # Fallback for databases where
-                # subject or timestamps may not exist.
-
                 fallback = {
                     "student_email":
                         current_email(),
-
                     "title":
                         title,
-
                     "question":
                         question,
-
                     "status":
                         "Pending",
                 }
 
-                result = db_insert(
-                    "assignments",
-                    fallback,
-                    returning=True,
-                )
+                try:
+
+                    result = db_insert(
+                        "assignments",
+                        fallback,
+                    )
+
+                except Exception:
+
+                    raise first_error
 
             if not result:
 
@@ -2398,14 +2021,7 @@ def new_assignment():
                     "Assignment was not created."
                 )
 
-            assignment = (
-                result[0]
-                if isinstance(
-                    result,
-                    list
-                )
-                else result
-            )
+            assignment = result[0]
 
             assignment_id = assignment.get(
                 "id"
@@ -2418,10 +2034,56 @@ def new_assignment():
                 )
 
             # ==================================================
-            # UPLOAD QUESTION FILE
+            # FILE
             # ==================================================
 
-            if has_file:
+            if file and file.filename:
+
+                if not allowed_file(
+                    file.filename
+                ):
+
+                    flash(
+                        "Unsupported file type.",
+                        "danger",
+                    )
+
+                    return redirect(
+                        url_for(
+                            "new_assignment"
+                        )
+                    )
+
+                file_bytes = file.read()
+
+                if len(file_bytes) > MAX_FILE_SIZE:
+
+                    flash(
+                        "File is too large. Maximum is 15 MB.",
+                        "danger",
+                    )
+
+                    return redirect(
+                        url_for(
+                            "new_assignment"
+                        )
+                    )
+
+                original_name = secure_filename(
+                    file.filename
+                )
+
+                if "." not in original_name:
+
+                    raise RuntimeError(
+                        "Invalid file name."
+                    )
+
+                extension = (
+                    original_name
+                    .rsplit(".", 1)[-1]
+                    .lower()
+                )
 
                 storage_path = (
                     f"questions/"
@@ -2430,39 +2092,29 @@ def new_assignment():
                     f"{extension}"
                 )
 
+                content_type = (
+                    file.content_type
+                    or "application/octet-stream"
+                )
+
                 storage_upload(
                     file_bytes,
                     storage_path,
                     content_type,
                 )
 
-                try:
-
-                    save_assignment_file(
-                        assignment_id,
-                        original_name,
-                        storage_path,
-                        content_type,
-                        len(file_bytes),
-                        "question",
-                    )
-
-                except Exception:
-
-                    # If database file record fails,
-                    # remove the storage object.
-                    storage_delete(
-                        storage_path
-                    )
-
-                    raise
+                save_assignment_file(
+                    assignment_id,
+                    original_name,
+                    storage_path,
+                    content_type,
+                    len(file_bytes),
+                    "question",
+                )
 
             log_activity(
                 "assignment_created",
-                (
-                    f"Assignment "
-                    f"{assignment_id} submitted."
-                ),
+                f"Assignment {assignment_id} submitted",
             )
 
             flash(
@@ -2534,7 +2186,7 @@ def new_assignment():
         accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.webp,.txt"
     >
 
-    <p class="small">
+    <p>
     Supported: PDF, Word, Excel, images and text.
     Maximum: 15 MB.
     </p>
@@ -2563,7 +2215,7 @@ def new_assignment():
 @login_required
 def assignments():
 
-    rows = []
+    email = current_email()
 
     try:
 
@@ -2571,7 +2223,7 @@ def assignments():
             "assignments",
             filters={
                 "student_email":
-                    f"eq.{current_email()}"
+                    f"eq.{email}"
             },
             limit=200,
             order="created_at.desc",
@@ -2587,6 +2239,8 @@ def assignments():
             f"Could not load assignments: {exc}",
             "danger",
         )
+
+        rows = []
 
     html = """
 
@@ -2635,7 +2289,7 @@ def assignments():
 
         <th>Date</th>
 
-        <th>Action</th>
+        <th></th>
 
         </tr>
 
@@ -2644,7 +2298,7 @@ def assignments():
         for item in rows:
 
             assignment_id = clean(
-                item.get("id")
+                item.get("id", "")
             )
 
             title = clean(
@@ -2744,29 +2398,33 @@ def assignment_detail(
         )
 
         if not rows:
+
+            # Admins can also open assignments.
+            if current_user().get("is_admin"):
+
+                rows = db_select(
+                    "assignments",
+                    filters={
+                        "id":
+                            f"eq.{assignment_id}"
+                    },
+                    limit=1,
+                )
+
+        if not rows:
             abort(404)
 
         assignment = rows[0]
 
-        try:
-
-            files = db_select(
-                "assignment_files",
-                filters={
-                    "assignment_id":
-                        f"eq.{assignment_id}"
-                },
-                limit=100,
-                order="created_at.desc",
-            )
-
-        except Exception:
-
-            logging.warning(
-                "assignment_files table unavailable."
-            )
-
-            files = []
+        files = db_select(
+            "assignment_files",
+            filters={
+                "assignment_id":
+                    f"eq.{assignment_id}"
+            },
+            limit=100,
+            order="created_at.desc",
+        )
 
     except Exception as exc:
 
@@ -2836,9 +2494,9 @@ def assignment_detail(
 
     <h2>Question</h2>
 
-    <div class="answer-box">
-    {question or "No question text supplied."}
-    </div>
+    <p>
+    {question}
+    </p>
 
     </div>
 
@@ -2854,23 +2512,21 @@ def assignment_detail(
 
         """
 
-        for file_record in files:
+        for file in files:
 
             file_id = clean(
-                file_record.get(
-                    "id"
-                )
+                file.get("id")
             )
 
             name = clean(
-                file_record.get(
+                file.get(
                     "original_filename",
                     "File",
                 )
             )
 
             role = clean(
-                file_record.get(
+                file.get(
                     "file_role",
                     "question",
                 )
@@ -2923,13 +2579,11 @@ def assignment_detail(
 
         <h2>Completed Answer</h2>
 
-        <div class="answer-box">
+        <div class="card">
 
         {answer}
 
         </div>
-
-        <br>
 
         <a class="btn"
            href="/answer/{assignment_id}/pdf">
@@ -2957,7 +2611,7 @@ def assignment_detail(
 
 
 # ============================================================
-# QUESTION FILE DOWNLOAD
+# FILE DOWNLOAD
 # ============================================================
 
 @app.route(
@@ -2988,10 +2642,7 @@ def download_question_file(
             "assignment_id"
         )
 
-        if not assignment_id:
-            abort(404)
-
-        assignment_rows = db_select(
+        assignments_rows = db_select(
             "assignments",
             filters={
                 "id":
@@ -3000,48 +2651,35 @@ def download_question_file(
             limit=1,
         )
 
-        if not assignment_rows:
+        if not assignments_rows:
             abort(404)
 
-        assignment = assignment_rows[0]
+        assignment = assignments_rows[0]
 
         user = current_user()
 
-        is_admin = bool(
-            user.get(
-                "is_admin",
-                False,
-            )
-        )
-
         if (
-            not is_admin
+            not user.get("is_admin")
             and assignment.get(
                 "student_email"
             ) != current_email()
         ):
             abort(403)
 
-        storage_path = file_record.get(
-            "storage_path"
-        )
-
         content = storage_download(
-            storage_path
+            file_record.get(
+                "storage_path"
+            )
         )
 
-        filename = (
-            file_record.get(
-                "original_filename"
-            )
-            or "download"
+        filename = file_record.get(
+            "original_filename",
+            "download",
         )
 
-        content_type = (
-            file_record.get(
-                "content_type"
-            )
-            or "application/octet-stream"
+        content_type = file_record.get(
+            "content_type",
+            "application/octet-stream",
         )
 
         return send_file(
@@ -3075,10 +2713,6 @@ def download_question_file(
 @admin_required
 def admin_dashboard():
 
-    assignments_rows = []
-
-    users = []
-
     try:
 
         assignments_rows = db_select(
@@ -3093,6 +2727,8 @@ def admin_dashboard():
             "Admin assignment query failed."
         )
 
+        assignments_rows = []
+
         flash(
             f"Could not load assignments: {exc}",
             "danger",
@@ -3100,8 +2736,8 @@ def admin_dashboard():
 
     try:
 
-        users = db_select(
-            "users",
+        profiles = db_select(
+            "profiles",
             limit=500,
             order="created_at.desc",
         )
@@ -3109,8 +2745,10 @@ def admin_dashboard():
     except Exception as exc:
 
         logging.exception(
-            "Admin user query failed."
+            "Admin profile query failed."
         )
+
+        profiles = []
 
         flash(
             f"Could not load users: {exc}",
@@ -3153,7 +2791,7 @@ def admin_dashboard():
     <div class="grid">
 
     <div class="stat">
-    <strong>{len(users)}</strong>
+    <strong>{len(profiles)}</strong>
     Users
     </div>
 
@@ -3180,7 +2818,6 @@ def admin_dashboard():
     </div>
 
     </div>
-
 
     <div class="card">
 
@@ -3304,104 +2941,6 @@ def admin_dashboard():
 
     </div>
 
-
-    <div class="card">
-
-    <h2>Registered Users</h2>
-
-    """
-
-    if users:
-
-        html += """
-
-        <table>
-
-        <tr>
-
-        <th>Name</th>
-
-        <th>Email</th>
-
-        <th>Role</th>
-
-        <th>Active</th>
-
-        </tr>
-
-        """
-
-        for user in users:
-
-            name = clean(
-                user.get(
-                    "full_name"
-                )
-                or user.get(
-                    "name"
-                )
-                or ""
-            )
-
-            email = clean(
-                user.get(
-                    "email",
-                    "",
-                )
-            )
-
-            role = clean(
-                user.get(
-                    "role",
-                    "student",
-                )
-            )
-
-            active = (
-                "Yes"
-                if user.get(
-                    "is_active",
-                    True,
-                )
-                else "No"
-            )
-
-            html += f"""
-
-            <tr>
-
-            <td>{name}</td>
-
-            <td>{email}</td>
-
-            <td>{role}</td>
-
-            <td>{active}</td>
-
-            </tr>
-
-            """
-
-        html += """
-
-        </table>
-
-        """
-
-    else:
-
-        html += """
-
-        <p>
-        No registered users found.
-        </p>
-
-        """
-
-    html += """
-
-    </div>
-
     """
 
     return page(
@@ -3478,7 +3017,6 @@ def admin_assignment(
                     {
                         "status":
                             "Processing",
-
                         "updated_at":
                             utc_now(),
                     },
@@ -3486,10 +3024,7 @@ def admin_assignment(
 
                 log_activity(
                     "assignment_processing",
-                    (
-                        f"{assignment_id} "
-                        f"moved to processing."
-                    ),
+                    f"{assignment_id} moved to processing",
                 )
 
                 flash(
@@ -3551,13 +3086,10 @@ def admin_assignment(
                     {
                         "answer":
                             answer,
-
                         "status":
                             "Completed",
-
                         "updated_at":
                             utc_now(),
-
                         "completed_at":
                             utc_now(),
                     },
@@ -3572,13 +3104,10 @@ def admin_assignment(
                         assignment.get(
                             "student_email"
                         ),
-
                     "title":
                         "Assignment Completed",
-
                     "message":
                         "Your assignment answer is ready for download.",
-
                     "created_at":
                         utc_now(),
                 }
@@ -3599,10 +3128,7 @@ def admin_assignment(
 
                 log_activity(
                     "assignment_completed",
-                    (
-                        f"{assignment_id} "
-                        f"completed."
-                    ),
+                    f"{assignment_id} completed",
                 )
 
                 flash(
@@ -3627,10 +3153,6 @@ def admin_assignment(
                     f"Could not complete assignment: {exc}",
                     "danger",
                 )
-
-    # ==================================================
-    # LOAD FILES
-    # ==================================================
 
     try:
 
@@ -3729,9 +3251,9 @@ def admin_assignment(
 
     <h2>Question</h2>
 
-    <div class="answer-box">
+    <div class="card">
 
-    {question or "No question text supplied."}
+    {question}
 
     </div>
 
@@ -3793,7 +3315,6 @@ def admin_assignment(
 
     </form>
 
-
     <h2>Write Answer</h2>
 
     <form method="post">
@@ -3830,7 +3351,7 @@ def admin_assignment(
 
 
 # ============================================================
-# GET COMPLETED ASSIGNMENT
+# COMPLETED ASSIGNMENT
 # ============================================================
 
 def get_completed_assignment(
@@ -3853,23 +3374,12 @@ def get_completed_assignment(
 
     user = current_user()
 
-    if not user:
-        abort(403)
-
-    is_admin = bool(
-        user.get(
-            "is_admin",
-            False,
-        )
-    )
-
     if (
-        not is_admin
+        not user.get("is_admin")
         and assignment.get(
             "student_email"
         ) != current_email()
     ):
-
         abort(403)
 
     if str(
@@ -3890,44 +3400,6 @@ def get_completed_assignment(
 
 
 # ============================================================
-# DOWNLOAD LOG
-# ============================================================
-
-def log_download(
-    assignment_id,
-    file_type,
-):
-
-    data = {
-        "assignment_id":
-            assignment_id,
-
-        "student_email":
-            current_email(),
-
-        "file_type":
-            file_type,
-
-        "downloaded_at":
-            utc_now(),
-    }
-
-    try:
-
-        db_insert(
-            "downloads",
-            data,
-            returning=False,
-        )
-
-    except Exception:
-
-        logging.warning(
-            "Download logging skipped."
-        )
-
-
-# ============================================================
 # ANSWER PDF
 # ============================================================
 
@@ -3939,10 +3411,8 @@ def answer_pdf(
     assignment_id
 ):
 
-    assignment = (
-        get_completed_assignment(
-            assignment_id
-        )
+    assignment = get_completed_assignment(
+        assignment_id
     )
 
     data = build_pdf(
@@ -3950,17 +3420,14 @@ def answer_pdf(
             "title",
             "Assignment Answer",
         ),
-
         assignment.get(
             "student_email",
             "",
         ),
-
         assignment.get(
             "question",
             "",
         ),
-
         assignment.get(
             "answer",
             "",
@@ -3994,10 +3461,8 @@ def answer_docx(
     assignment_id
 ):
 
-    assignment = (
-        get_completed_assignment(
-            assignment_id
-        )
+    assignment = get_completed_assignment(
+        assignment_id
     )
 
     data = build_docx(
@@ -4005,17 +3470,14 @@ def answer_docx(
             "title",
             "Assignment Answer",
         ),
-
         assignment.get(
             "student_email",
             "",
         ),
-
         assignment.get(
             "question",
             "",
         ),
-
         assignment.get(
             "answer",
             "",
@@ -4052,10 +3514,8 @@ def answer_xlsx(
     assignment_id
 ):
 
-    assignment = (
-        get_completed_assignment(
-            assignment_id
-        )
+    assignment = get_completed_assignment(
+        assignment_id
     )
 
     data = build_xlsx(
@@ -4063,17 +3523,14 @@ def answer_xlsx(
             "title",
             "Assignment Answer",
         ),
-
         assignment.get(
             "student_email",
             "",
         ),
-
         assignment.get(
             "question",
             "",
         ),
-
         assignment.get(
             "answer",
             "",
@@ -4099,14 +3556,47 @@ def answer_xlsx(
 
 
 # ============================================================
+# DOWNLOAD LOG
+# ============================================================
+
+def log_download(
+    assignment_id,
+    file_type,
+):
+
+    data = {
+        "assignment_id":
+            assignment_id,
+        "student_email":
+            current_email(),
+        "file_type":
+            file_type,
+        "downloaded_at":
+            utc_now(),
+    }
+
+    try:
+
+        db_insert(
+            "downloads",
+            data,
+            returning=False,
+        )
+
+    except Exception:
+
+        logging.warning(
+            "Download logging table unavailable."
+        )
+
+
+# ============================================================
 # NOTIFICATIONS
 # ============================================================
 
 @app.route("/notifications")
 @login_required
 def notifications():
-
-    rows = []
 
     try:
 
@@ -4122,14 +3612,12 @@ def notifications():
 
     except Exception as exc:
 
-        logging.exception(
-            "Notifications query failed."
+        logging.warning(
+            "Notifications table unavailable: %s",
+            exc,
         )
 
-        flash(
-            f"Could not load notifications: {exc}",
-            "danger",
-        )
+        rows = []
 
     html = """
 
@@ -4207,55 +3695,75 @@ def notifications():
 
 
 # ============================================================
-# HEALTH CHECK
+# DIAGNOSTICS
 # ============================================================
 
 @app.route("/health")
 def health():
 
-    return jsonify(
-        {
-            "status": "ok",
-            "application": APP_NAME,
-            "time": utc_now(),
-            "supabase_configured": bool(
-                SUPABASE_URL
-                and SUPABASE_SERVICE_KEY
-            ),
-            "storage_bucket": STORAGE_BUCKET,
-        }
-    )
+    return jsonify({
+        "status": "ok",
+        "application": APP_NAME,
+        "time": utc_now(),
+        "supabase_configured": bool(
+            SUPABASE_URL
+            and SUPABASE_SERVICE_KEY
+        ),
+        "storage_bucket": STORAGE_BUCKET,
+        "authentication_table": "profiles",
+        "users_table_required": False,
+    })
 
 
-# ============================================================
-# DATABASE HEALTH CHECK
-# ============================================================
-
-@app.route("/health/database")
-def database_health():
+@app.route("/diagnostics")
+def diagnostics():
 
     result = {
-        "status": "unknown",
-        "supabase": False,
+        "application": APP_NAME,
+        "supabase_configured": bool(
+            SUPABASE_URL
+            and SUPABASE_SERVICE_KEY
+        ),
+        "profiles_table": False,
+        "users_table_required": False,
         "users_table": False,
-        "message": "",
+        "assignments_table": False,
+        "assignment_files_table": False,
+        "storage_configured": bool(
+            SUPABASE_URL
+            and SUPABASE_SERVICE_KEY
+            and STORAGE_BUCKET
+        ),
     }
+
+    # --------------------------------------------------------
+    # PROFILES
+    # --------------------------------------------------------
 
     try:
 
-        if not SUPABASE_URL:
-            raise RuntimeError(
-                "SUPABASE_URL is missing."
-            )
+        db_select(
+            "profiles",
+            columns="id",
+            limit=1,
+        )
 
-        if not SUPABASE_SERVICE_KEY:
-            raise RuntimeError(
-                "SUPABASE_SERVICE_KEY is missing."
-            )
+        result["profiles_table"] = True
 
-        result["supabase"] = True
+    except Exception as exc:
 
-        users = db_select(
+        result["profiles_error"] = str(exc)
+
+    # --------------------------------------------------------
+    # USERS
+    #
+    # This is deliberately only a diagnostic check.
+    # KOJA does NOT require it.
+    # --------------------------------------------------------
+
+    try:
+
+        db_select(
             "users",
             columns="id",
             limit=1,
@@ -4263,29 +3771,53 @@ def database_health():
 
         result["users_table"] = True
 
-        result["status"] = "ok"
+    except Exception:
 
-        result["message"] = (
-            "Supabase connection and users table are working."
+        result["users_table"] = False
+
+    # --------------------------------------------------------
+    # ASSIGNMENTS
+    # --------------------------------------------------------
+
+    try:
+
+        db_select(
+            "assignments",
+            columns="id",
+            limit=1,
         )
 
-        result["user_rows_checked"] = len(
-            users
-        )
-
-        return jsonify(result)
+        result["assignments_table"] = True
 
     except Exception as exc:
 
-        result["status"] = "error"
+        result["assignments_error"] = str(exc)
 
-        result["message"] = str(exc)
+    # --------------------------------------------------------
+    # ASSIGNMENT FILES
+    # --------------------------------------------------------
 
-        return jsonify(result), 500
+    try:
+
+        db_select(
+            "assignment_files",
+            columns="id",
+            limit=1,
+        )
+
+        result["assignment_files_table"] = True
+
+    except Exception as exc:
+
+        result["assignment_files_error"] = str(exc)
+
+    result["status"] = "ok"
+
+    return jsonify(result)
 
 
 # ============================================================
-# ERROR HANDLER 403
+# ERROR HANDLERS
 # ============================================================
 
 @app.errorhandler(403)
@@ -4314,10 +3846,6 @@ def error_403(error):
     ), 403
 
 
-# ============================================================
-# ERROR HANDLER 404
-# ============================================================
-
 @app.errorhandler(404)
 def error_404(error):
 
@@ -4343,10 +3871,6 @@ def error_404(error):
         """,
     ), 404
 
-
-# ============================================================
-# ERROR HANDLER 413
-# ============================================================
 
 @app.errorhandler(413)
 def error_413(error):
@@ -4374,15 +3898,11 @@ def error_413(error):
     ), 413
 
 
-# ============================================================
-# ERROR HANDLER 500
-# ============================================================
-
 @app.errorhandler(500)
 def error_500(error):
 
     logging.exception(
-        "Unhandled application error."
+        "Unhandled application error"
     )
 
     return page(
@@ -4413,7 +3933,7 @@ def error_500(error):
 
 
 # ============================================================
-# START APPLICATION
+# START
 # ============================================================
 
 if __name__ == "__main__":
