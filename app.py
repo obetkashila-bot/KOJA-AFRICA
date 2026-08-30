@@ -1,13 +1,13 @@
 import os
-import io
+import json
 import uuid
-import logging
+import secrets
+import mimetypes
 from datetime import datetime, timezone
 from functools import wraps
+from html import escape
 
 import requests
-from dotenv import load_dotenv
-
 from flask import (
     Flask,
     request,
@@ -16,68 +16,295 @@ from flask import (
     session,
     render_template_string,
     flash,
-    send_file,
     abort,
+    send_file,
 )
+from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
 
-from werkzeug.security import (
-    generate_password_hash,
-    check_password_hash,
-)
-
-load_dotenv()
 
 # ============================================================
 # KOJA AFRICA
-# Knowledge • Questions • Answers
+# Your Request • KOJA Handles It • You Receive the Result
 #
-# Flask + Supabase REST API
+# PRODUCTION ARCHITECTURE
+# Flask + Supabase PostgreSQL REST API + Supabase Storage
 #
-# IMPORTANT:
-# This version uses public.profiles as the account table.
-# It DOES NOT use public.users.
+# Render:
+# Build:
+#     pip install -r requirements.txt
+#
+# Start:
+#     gunicorn app:app
+#
+# REQUIRED ENVIRONMENT VARIABLES:
+#
+# SUPABASE_URL
+# SUPABASE_SERVICE_KEY
+# SECRET_KEY
+# ADMIN_EMAIL
+# ADMIN_PASSWORD
+#
+# OPTIONAL:
+# KOJA_STORAGE_BUCKET=koja-files
+# MAX_FILE_MB=10
+# ============================================================
+
+
+# ============================================================
+# APP CONFIGURATION
 # ============================================================
 
 app = Flask(__name__)
 
-app.secret_key = os.getenv(
-    "FLASK_SECRET_KEY",
-    os.getenv("SECRET_KEY", "change-this-secret-key")
+app.secret_key = os.environ.get(
+    "SECRET_KEY",
+    secrets.token_hex(32)
 )
 
-app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
+MAX_FILE_MB = int(os.environ.get("MAX_FILE_MB", "10"))
+MAX_CONTENT_LENGTH = MAX_FILE_MB * 1024 * 1024
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("KOJA")
+app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
 
-# ============================================================
-# SUPABASE CONFIGURATION
-# ============================================================
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
+SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "").strip()
 
-SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
-
-SUPABASE_SERVICE_KEY = os.getenv(
-    "SUPABASE_SERVICE_KEY",
-    os.getenv("SUPABASE_KEY", "")
-)
-
-STORAGE_BUCKET = os.getenv(
-    "SUPABASE_STORAGE_BUCKET",
+STORAGE_BUCKET = os.environ.get(
+    "KOJA_STORAGE_BUCKET",
     "koja-files"
+).strip()
+
+ADMIN_EMAIL = os.environ.get(
+    "ADMIN_EMAIL",
+    "admin@koja-africa.com"
+).strip().lower()
+
+ADMIN_PASSWORD = os.environ.get(
+    "ADMIN_PASSWORD",
+    "CHANGE-THIS-ADMIN-PASSWORD"
 )
 
-if not SUPABASE_URL:
-    logger.warning("SUPABASE_URL is not configured")
-
-if not SUPABASE_SERVICE_KEY:
-    logger.warning("SUPABASE_SERVICE_KEY is not configured")
+SUPABASE_TIMEOUT = 30
 
 
 # ============================================================
-# SUPABASE HEADERS
+# CONSTANTS
 # ============================================================
+
+PROVINCES = [
+    "Central",
+    "Copperbelt",
+    "Eastern",
+    "Luapula",
+    "Lusaka",
+    "Muchinga",
+    "Northern",
+    "North-Western",
+    "Southern",
+    "Western",
+]
+
+GENDERS = [
+    "Male",
+    "Female",
+    "Other",
+]
+
+BANKS = [
+    "ABSA Bank Zambia",
+    "Access Bank Zambia",
+    "Atlas Mara",
+    "Bank of China Zambia",
+    "First Capital Bank",
+    "First National Bank Zambia",
+    "Indo Zambia Bank",
+    "Stanbic Bank Zambia",
+    "Standard Chartered Bank Zambia",
+    "United Bank for Africa Zambia",
+    "Zanaco",
+]
+
+MOBILE_PROVIDERS = [
+    "Airtel Money",
+    "MTN MoMo",
+    "Zamtel Kwacha",
+]
+
+ALLOWED_EXTENSIONS = {
+    "pdf",
+    "png",
+    "jpg",
+    "jpeg",
+    "webp",
+    "doc",
+    "docx",
+}
+
+ALLOWED_MIME_TYPES = {
+    "application/pdf",
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+
+STATUSES = [
+    "Request Received",
+    "Processing",
+    "Awaiting Client",
+    "Completed",
+    "Rejected",
+]
+
+SERVICE_LIST = [
+    (
+        "assignments",
+        "📚 Assignments",
+        "Send an assignment question or academic task to KOJA and receive the completed response.",
+    ),
+    (
+        "university",
+        "🎓 University Applications",
+        "Get assistance with university applications, programme selection and application documents.",
+    ),
+    (
+        "verification",
+        "📄 Result Verification & Certification",
+        "Submit your academic result or certificate for verification and certification assistance.",
+    ),
+    (
+        "farmer",
+        "🧑‍🌾 Farmer Registration",
+        "Submit your farmer registration information through a guided registration process.",
+    ),
+    (
+        "tpn",
+        "📋 TPN Centre",
+        "Get assistance with TPIN registration, updates, certificates and related TPN services.",
+    ),
+    (
+        "materials",
+        "📖 Higher Education Materials",
+        "Request university-level notes, study materials, past papers and other learning resources.",
+    ),
+]
+
+SERVICE_NAMES = dict(
+    (key, name.replace("📚 ", "")
+                .replace("🎓 ", "")
+                .replace("📄 ", "")
+                .replace("🧑‍🌾 ", "")
+                .replace("📋 ", "")
+                .replace("📖 ", ""))
+    for key, name, desc in SERVICE_LIST
+)
+
+
+# ============================================================
+# BASIC HELPERS
+# ============================================================
+
+def now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def new_request_no():
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
+    token = secrets.token_hex(4).upper()
+    return f"KOJA-{stamp}-{token}"
+
+
+def service_name(service_type):
+    return SERVICE_NAMES.get(
+        service_type,
+        "KOJA Service"
+    )
+
+
+def allowed_file(filename):
+    if not filename:
+        return False
+
+    filename = secure_filename(filename)
+
+    if "." not in filename:
+        return False
+
+    ext = filename.rsplit(".", 1)[1].lower()
+
+    return ext in ALLOWED_EXTENSIONS
+
+
+def get_extension(filename):
+    filename = secure_filename(filename)
+
+    if "." not in filename:
+        return ""
+
+    return filename.rsplit(".", 1)[1].lower()
+
+
+def clean_required(name, label=None):
+    value = request.form.get(name, "").strip()
+
+    if not value:
+        raise ValueError(
+            f"{label or name.replace('_', ' ').title()} is required."
+        )
+
+    return value
+
+
+def form_value(name):
+    return request.form.get(name, "").strip()
+
+
+def e(value):
+    return escape(str(value or ""))
+
+
+def json_dumps(data):
+    return json.dumps(
+        data,
+        ensure_ascii=False
+    )
+
+
+def json_loads(value):
+    try:
+        return json.loads(value or "{}")
+    except Exception:
+        return {}
+
+
+def status_class(status):
+    mapping = {
+        "Completed": "completed",
+        "Processing": "processing",
+        "Rejected": "rejected",
+        "Awaiting Client": "awaiting",
+        "Request Received": "received",
+    }
+
+    return mapping.get(status, "received")
+
+
+# ============================================================
+# SUPABASE
+# ============================================================
+
+def ensure_supabase_config():
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        raise RuntimeError(
+            "SUPABASE_URL and SUPABASE_SERVICE_KEY are not configured."
+        )
+
 
 def supabase_headers(extra=None):
+    ensure_supabase_config()
+
     headers = {
         "apikey": SUPABASE_SERVICE_KEY,
         "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
@@ -90,204 +317,143 @@ def supabase_headers(extra=None):
     return headers
 
 
+def supabase_request(
+    method,
+    endpoint,
+    params=None,
+    payload=None,
+    headers=None,
+    timeout=SUPABASE_TIMEOUT,
+):
+    ensure_supabase_config()
+
+    url = f"{SUPABASE_URL}{endpoint}"
+
+    request_headers = supabase_headers()
+
+    if headers:
+        request_headers.update(headers)
+
+    response = requests.request(
+        method,
+        url,
+        params=params,
+        json=payload,
+        headers=request_headers,
+        timeout=timeout,
+    )
+
+    if not response.ok:
+        message = response.text[:1000]
+
+        raise RuntimeError(
+            f"Supabase {method} {endpoint} failed "
+            f"({response.status_code}): {message}"
+        )
+
+    if not response.text:
+        return None
+
+    try:
+        return response.json()
+    except Exception:
+        return response.text
+
+
 # ============================================================
-# DATABASE HELPERS
+# SUPABASE DATABASE HELPERS
 # ============================================================
 
-def table_url(table):
-    return f"{SUPABASE_URL}/rest/v1/{table}"
-
-
-def db_get(table, params=None):
-    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
-        raise RuntimeError("Supabase environment variables are missing")
-
-    response = requests.get(
-        table_url(table),
-        headers=supabase_headers({
-            "Accept": "application/json"
-        }),
+def db_select(
+    table,
+    params=None,
+):
+    return supabase_request(
+        "GET",
+        f"/rest/v1/{table}",
         params=params or {},
-        timeout=30,
     )
 
-    if not response.ok:
-        raise RuntimeError(
-            f"Database GET failed: {response.status_code} {response.text}"
-        )
 
-    return response.json()
-
-
-def db_post(table, data, returning="representation"):
-    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
-        raise RuntimeError("Supabase environment variables are missing")
-
-    headers = supabase_headers({
-        "Prefer": f"return={returning}"
-    })
-
-    response = requests.post(
-        table_url(table),
-        headers=headers,
-        json=data,
-        timeout=30,
-    )
-
-    if not response.ok:
-        raise RuntimeError(
-            f"Database POST failed: {response.status_code} {response.text}"
-        )
-
-    if not response.text:
-        return []
-
-    return response.json()
-
-
-def db_patch(table, params, data):
-    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
-        raise RuntimeError("Supabase environment variables are missing")
-
-    response = requests.patch(
-        table_url(table),
-        headers=supabase_headers({
+def db_insert(
+    table,
+    data,
+    select="*",
+):
+    return supabase_request(
+        "POST",
+        f"/rest/v1/{table}",
+        params={
+            "select": select
+        },
+        payload=data,
+        headers={
             "Prefer": "return=representation"
-        }),
+        },
+    )
+
+
+def db_update(
+    table,
+    filters,
+    data,
+    select="*",
+):
+    params = dict(filters or {})
+    params["select"] = select
+
+    return supabase_request(
+        "PATCH",
+        f"/rest/v1/{table}",
         params=params,
-        json=data,
-        timeout=30,
+        payload=data,
+        headers={
+            "Prefer": "return=representation"
+        },
     )
 
-    if not response.ok:
-        raise RuntimeError(
-            f"Database PATCH failed: {response.status_code} {response.text}"
-        )
 
-    if not response.text:
-        return []
-
-    return response.json()
-
-
-def db_delete(table, params):
-    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
-        raise RuntimeError("Supabase environment variables are missing")
-
-    response = requests.delete(
-        table_url(table),
-        headers=supabase_headers(),
-        params=params,
-        timeout=30,
+def db_delete(
+    table,
+    filters,
+):
+    return supabase_request(
+        "DELETE",
+        f"/rest/v1/{table}",
+        params=filters or {},
+        headers={
+            "Prefer": "return=minimal"
+        },
     )
-
-    if not response.ok:
-        raise RuntimeError(
-            f"Database DELETE failed: {response.status_code} {response.text}"
-        )
-
-    return True
 
 
 # ============================================================
-# STORAGE
+# USER DATABASE
 # ============================================================
 
-def storage_object_url(path):
-    path = path.lstrip("/")
-    return (
-        f"{SUPABASE_URL}/storage/v1/object/"
-        f"{STORAGE_BUCKET}/{path}"
+def get_user_by_id(user_id):
+    rows = db_select(
+        "koja_users",
+        {
+            "id": f"eq.{user_id}",
+            "limit": "1",
+        }
     )
 
+    return rows[0] if rows else None
 
-def storage_upload(path, data, content_type="application/octet-stream"):
-    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
-        raise RuntimeError("Supabase environment variables are missing")
 
-    url = storage_object_url(path)
-
-    headers = {
-        "apikey": SUPABASE_SERVICE_KEY,
-        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
-        "Content-Type": content_type,
-        "x-upsert": "true",
-    }
-
-    response = requests.post(
-        url,
-        headers=headers,
-        data=data,
-        timeout=60,
+def get_user_by_email(email):
+    rows = db_select(
+        "koja_users",
+        {
+            "email": f"eq.{email.lower()}",
+            "limit": "1",
+        }
     )
 
-    if not response.ok:
-        raise RuntimeError(
-            f"Storage upload failed: {response.status_code} "
-            f"{response.text}"
-        )
+    return rows[0] if rows else None
 
-    return path
-
-
-def storage_download(path):
-    if not path:
-        raise RuntimeError("File path is empty")
-
-    url = storage_object_url(path)
-
-    headers = {
-        "apikey": SUPABASE_SERVICE_KEY,
-        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
-    }
-
-    response = requests.get(
-        url,
-        headers=headers,
-        timeout=60,
-    )
-
-    if not response.ok:
-        raise RuntimeError(
-            f"Storage download failed: {response.status_code} "
-            f"{response.text}"
-        )
-
-    return response.content, response.headers.get(
-        "Content-Type",
-        "application/octet-stream"
-    )
-
-
-def storage_delete(path):
-    if not path:
-        return
-
-    url = storage_object_url(path)
-
-    headers = {
-        "apikey": SUPABASE_SERVICE_KEY,
-        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
-        "Content-Type": "application/json",
-    }
-
-    response = requests.delete(
-        url,
-        headers=headers,
-        timeout=30,
-    )
-
-    if not response.ok:
-        logger.warning(
-            "Storage delete failed: %s %s",
-            response.status_code,
-            response.text
-        )
-
-
-# ============================================================
-# USER HELPERS
-# ============================================================
 
 def current_user():
     user_id = session.get("user_id")
@@ -296,124 +462,359 @@ def current_user():
         return None
 
     try:
-        rows = db_get(
-            "profiles",
-            {
-                "id": f"eq.{user_id}",
-                "select": "*",
-                "limit": "1",
-            }
-        )
-
-        if rows:
-            return rows[0]
-
-    except Exception as exc:
-        logger.exception("Could not load current user: %s", exc)
-
-    return None
+        return get_user_by_id(user_id)
+    except Exception:
+        return None
 
 
-def is_admin_user(user):
-    if not user:
-        return False
+# ============================================================
+# AUTH DECORATORS
+# ============================================================
 
-    return (
-        user.get("is_admin") is True
-        or str(user.get("role", "")).lower() == "admin"
+def login_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not session.get("user_id"):
+            flash(
+                "Please create an account or log in first.",
+                "error"
+            )
+            return redirect(url_for("login"))
+
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
+def admin_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not session.get("admin_logged_in"):
+            return redirect(url_for("admin_login"))
+
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
+# ============================================================
+# NOTIFICATIONS
+# ============================================================
+
+def add_notification(
+    user_id,
+    title,
+    message,
+):
+    db_insert(
+        "koja_notifications",
+        {
+            "user_id": user_id,
+            "title": title,
+            "message": message,
+            "is_read": False,
+            "created_at": now_iso(),
+        }
     )
 
 
-def login_required(function):
-    @wraps(function)
-    def wrapper(*args, **kwargs):
-        if not session.get("user_id"):
-            flash("Please login first.", "error")
-            return redirect(url_for("login"))
-
-        user = current_user()
-
-        if not user:
-            session.clear()
-            flash("Your account could not be found.", "error")
-            return redirect(url_for("login"))
-
-        if user.get("is_active") is False:
-            session.clear()
-            flash("Your account has been disabled.", "error")
-            return redirect(url_for("login"))
-
-        return function(*args, **kwargs)
-
-    return wrapper
-
-
-def admin_required(function):
-    @wraps(function)
-    def wrapper(*args, **kwargs):
-
-        if not session.get("user_id"):
-            flash("Administrator login required.", "error")
-            return redirect(url_for("login"))
-
-        user = current_user()
-
-        if not user:
-            session.clear()
-            return redirect(url_for("login"))
-
-        if not is_admin_user(user):
-            flash("Administrator access required.", "error")
-            return redirect(url_for("dashboard"))
-
-        return function(*args, **kwargs)
-
-    return wrapper
-
-
 # ============================================================
-# ACTIVITY LOG
+# STORAGE
 # ============================================================
 
-def log_activity(action, description="", user_id=None, email=None):
-    try:
-        db_post(
-            "activity_logs",
-            {
-                "user_id": user_id,
-                "action": action,
-                "description": description,
-                "ip_address": request.remote_addr,
-                "user_agent": request.headers.get(
-                    "User-Agent",
-                    ""
-                ),
-                "email": email,
-            },
-            returning="minimal",
-        )
-    except Exception as exc:
-        logger.warning(
-            "Activity log failed: %s",
-            exc
+def storage_upload(
+    file_storage,
+    folder,
+    request_id,
+):
+    if not file_storage:
+        return None
+
+    original = secure_filename(
+        file_storage.filename or ""
+    )
+
+    if not original:
+        return None
+
+    if not allowed_file(original):
+        raise ValueError(
+            "Unsupported file type. Use PDF, Word, JPG, PNG or WEBP."
         )
 
+    ext = get_extension(original)
+
+    if not ext:
+        raise ValueError(
+            "The uploaded file has no valid extension."
+        )
+
+    stored = (
+        f"{folder}/"
+        f"{request_id}/"
+        f"{uuid.uuid4().hex}.{ext}"
+    )
+
+    content_type = (
+        file_storage.mimetype
+        or mimetypes.guess_type(original)[0]
+        or "application/octet-stream"
+    )
+
+    if content_type not in ALLOWED_MIME_TYPES:
+        raise ValueError(
+            "The uploaded file type is not supported."
+        )
+
+    file_storage.stream.seek(0)
+
+    data = file_storage.read()
+
+    if not data:
+        raise ValueError(
+            "The uploaded file is empty."
+        )
+
+    if len(data) > MAX_CONTENT_LENGTH:
+        raise ValueError(
+            f"File is too large. Maximum size is {MAX_FILE_MB} MB."
+        )
+
+    url = (
+        f"{SUPABASE_URL}"
+        f"/storage/v1/object/"
+        f"{STORAGE_BUCKET}/"
+        f"{stored}"
+    )
+
+    response = requests.post(
+        url,
+        headers={
+            "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+            "apikey": SUPABASE_SERVICE_KEY,
+            "Content-Type": content_type,
+            "x-upsert": "false",
+        },
+        data=data,
+        timeout=60,
+    )
+
+    if not response.ok:
+        raise RuntimeError(
+            "Supabase Storage upload failed: "
+            + response.text[:1000]
+        )
+
+    return {
+        "stored_path": stored,
+        "original_name": original,
+        "file_type": ext,
+        "mime_type": content_type,
+        "file_size": len(data),
+    }
+
+
+def storage_download(path):
+    url = (
+        f"{SUPABASE_URL}"
+        f"/storage/v1/object/"
+        f"{STORAGE_BUCKET}/"
+        f"{path}"
+    )
+
+    response = requests.get(
+        url,
+        headers={
+            "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+            "apikey": SUPABASE_SERVICE_KEY,
+        },
+        timeout=60,
+    )
+
+    if not response.ok:
+        raise RuntimeError(
+            "Unable to retrieve the requested file."
+        )
+
+    return response
+
+
+def storage_delete(path):
+    if not path:
+        return
+
+    url = (
+        f"{SUPABASE_URL}"
+        f"/storage/v1/object/"
+        f"{STORAGE_BUCKET}"
+    )
+
+    requests.delete(
+        url,
+        headers={
+            "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+            "apikey": SUPABASE_SERVICE_KEY,
+            "Content-Type": "application/json",
+        },
+        json={
+            "prefixes": [path]
+        },
+        timeout=30,
+    )
+
+
+def save_request_file(
+    request_id,
+    user_id,
+    file_storage,
+    category="client",
+):
+    uploaded = storage_upload(
+        file_storage,
+        category,
+        str(request_id),
+    )
+
+    if not uploaded:
+        return None
+
+    row = db_insert(
+        "koja_request_files",
+        {
+            "request_id": request_id,
+            "uploaded_by": user_id,
+            "original_name": uploaded["original_name"],
+            "stored_path": uploaded["stored_path"],
+            "file_type": uploaded["file_type"],
+            "mime_type": uploaded["mime_type"],
+            "file_size": uploaded["file_size"],
+            "category": category,
+            "created_at": now_iso(),
+        }
+    )
+
+    return row[0] if row else None
+
 
 # ============================================================
-# HTML
+# REQUEST DATABASE
 # ============================================================
 
-BASE_HTML = """
-<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport"
-      content="width=device-width,initial-scale=1">
+def get_request(request_id):
+    rows = db_select(
+        "koja_requests",
+        {
+            "id": f"eq.{request_id}",
+            "limit": "1",
+        }
+    )
 
-<title>{{ title or "KOJA Africa" }}</title>
+    if not rows:
+        return None
 
-<style>
+    row = rows[0]
+
+    users = db_select(
+        "koja_users",
+        {
+            "id": f"eq.{row['user_id']}",
+            "limit": "1",
+        }
+    )
+
+    if users:
+        user = users[0]
+
+        row["full_name"] = user.get("full_name", "")
+        row["user_email"] = user.get("email", "")
+        row["user_phone"] = user.get("phone", "")
+
+    else:
+        row["full_name"] = ""
+        row["user_email"] = ""
+        row["user_phone"] = ""
+
+    return row
+
+
+def get_request_files(request_id):
+    return db_select(
+        "koja_request_files",
+        {
+            "request_id": f"eq.{request_id}",
+            "order": "created_at.desc",
+        }
+    )
+
+
+def create_request(
+    user_id,
+    service_type,
+    data,
+):
+    request_no = new_request_no()
+    timestamp = now_iso()
+
+    row = db_insert(
+        "koja_requests",
+        {
+            "request_no": request_no,
+            "user_id": user_id,
+            "service_type": service_type,
+            "service_name": service_name(service_type),
+            "status": "Request Received",
+            "data_json": json_dumps(data),
+            "admin_response": None,
+            "output_file": None,
+            "output_file_original": None,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+        }
+    )
+
+    if not row:
+        raise RuntimeError(
+            "The request could not be created."
+        )
+
+    request_id = row[0]["id"]
+
+    add_notification(
+        user_id,
+        "Request Received",
+        (
+            f"Your {service_name(service_type)} request "
+            f"{request_no} has been received by KOJA."
+        )
+    )
+
+    return request_id, request_no
+
+
+def parse_request_data(row):
+    return json_loads(
+        row.get("data_json", "{}")
+    )
+
+
+# ============================================================
+# HTML DESIGN
+# ============================================================
+
+CSS = """
+:root {
+    --green: #19733f;
+    --green-dark: #12552f;
+    --blue: #214f91;
+    --gold: #e7b73c;
+    --bg: #f4f7f5;
+    --card: #ffffff;
+    --text: #18212b;
+    --muted: #667085;
+    --border: #dfe5e1;
+    --danger: #b42318;
+    --success: #027a48;
+}
 
 * {
     box-sizing: border-box;
@@ -421,244 +822,528 @@ BASE_HTML = """
 
 body {
     margin: 0;
-    font-family: Arial, sans-serif;
-    background: #f3f6fb;
-    color: #172033;
+    font-family:
+        Inter,
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.55;
+}
+
+a {
+    color: var(--green);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
 }
 
 nav {
-    background: #12479b;
-    color: white;
-    padding: 16px 5%;
+    background: #ffffff;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+
+.nav-inner {
+    max-width: 1180px;
+    margin: auto;
+    padding: 14px 18px;
     display: flex;
+    gap: 12px;
     align-items: center;
     justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 10px;
 }
 
 .logo {
-    font-size: 24px;
-    font-weight: bold;
+    font-weight: 900;
+    font-size: 20px;
+    color: var(--green);
 }
 
-nav a {
-    color: white;
+.nav-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+    justify-content: flex-end;
+}
+
+.nav-links a {
+    padding: 8px 11px;
+    border-radius: 9px;
+    font-size: 14px;
+}
+
+.nav-links a:hover {
+    background: #edf6f0;
     text-decoration: none;
-    margin: 0 7px;
-    font-size: 16px;
 }
 
 .container {
-    width: 92%;
-    max-width: 1100px;
-    margin: 25px auto;
+    max-width: 1180px;
+    margin: auto;
+    padding: 24px 16px 70px;
+}
+
+.hero {
+    background:
+        linear-gradient(
+            135deg,
+            #ffffff,
+            #eef8f1
+        );
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 38px 28px;
+    margin-bottom: 22px;
+}
+
+.hero h1 {
+    margin-top: 0;
+    font-size: clamp(30px, 6vw, 50px);
+    line-height: 1.1;
+}
+
+.hero p {
+    font-size: 18px;
+    color: var(--muted);
+    max-width: 760px;
 }
 
 .card {
-    background: white;
-    border-radius: 14px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
     padding: 22px;
     margin-bottom: 18px;
-    box-shadow: 0 3px 15px rgba(0,0,0,.06);
+    box-shadow:
+        0 4px 18px rgba(20, 40, 30, .04);
 }
 
-h1, h2, h3 {
+.card h2 {
     margin-top: 0;
-}
-
-input,
-textarea,
-select {
-    width: 100%;
-    padding: 13px;
-    border: 1px solid #ccd3df;
-    border-radius: 8px;
-    margin: 7px 0 15px;
-    font-size: 15px;
-}
-
-textarea {
-    min-height: 160px;
-    resize: vertical;
-}
-
-button,
-.btn {
-    border: 0;
-    border-radius: 8px;
-    background: #12479b;
-    color: white;
-    padding: 12px 18px;
-    cursor: pointer;
-    text-decoration: none;
-    display: inline-block;
-}
-
-.btn-danger {
-    background: #c62828;
-}
-
-.btn-success {
-    background: #18864b;
-}
-
-.btn-secondary {
-    background: #555;
 }
 
 .grid {
     display: grid;
     grid-template-columns:
-        repeat(auto-fit, minmax(220px, 1fr));
-    gap: 15px;
+        repeat(
+            auto-fit,
+            minmax(230px, 1fr)
+        );
+    gap: 16px;
 }
 
-.stat {
-    background: white;
-    border-radius: 14px;
+.grid2 {
+    display: grid;
+    grid-template-columns:
+        repeat(
+            auto-fit,
+            minmax(300px, 1fr)
+        );
+    gap: 18px;
+}
+
+.grid3 {
+    display: grid;
+    grid-template-columns:
+        repeat(
+            auto-fit,
+            minmax(180px, 1fr)
+        );
+    gap: 14px;
+}
+
+.service {
+    background: #ffffff;
+    border: 1px solid var(--border);
+    border-radius: 15px;
     padding: 20px;
-    box-shadow: 0 3px 15px rgba(0,0,0,.06);
 }
 
-.stat strong {
+.service:hover {
+    border-color: #a7cbb4;
+}
+
+.service h3 {
+    margin-top: 0;
+}
+
+.service p {
+    color: var(--muted);
+}
+
+.service-icon {
+    font-size: 34px;
+    margin-bottom: 8px;
+}
+
+.field {
+    margin-bottom: 16px;
+}
+
+label {
     display: block;
-    font-size: 30px;
-    margin-top: 8px;
+    font-weight: 700;
+    margin-bottom: 7px;
 }
 
-.flash {
-    padding: 14px;
-    border-radius: 8px;
-    background: #e7f0ff;
-    margin-bottom: 15px;
-    word-break: break-word;
+input,
+select,
+textarea {
+    width: 100%;
+    padding: 12px 13px;
+    border: 1px solid #cfd8d2;
+    border-radius: 9px;
+    background: white;
+    font: inherit;
 }
 
-.flash.error {
-    background: #ffe8e8;
-    color: #8d1717;
+textarea {
+    min-height: 130px;
+    resize: vertical;
 }
 
-.flash.success {
-    background: #e5f8eb;
-    color: #146b32;
+input:focus,
+select:focus,
+textarea:focus {
+    outline: 2px solid rgba(25, 115, 63, .16);
+    border-color: var(--green);
 }
 
-.question {
-    border-left: 5px solid #12479b;
-    padding: 15px;
-    background: #f7f9fd;
-    margin: 12px 0;
-    border-radius: 8px;
+.btn {
+    display: inline-block;
+    border: 0;
+    border-radius: 9px;
+    padding: 11px 17px;
+    background: var(--blue);
+    color: white;
+    font-weight: 700;
+    cursor: pointer;
+    text-decoration: none;
 }
 
-.small {
-    color: #667085;
+.btn:hover {
+    text-decoration: none;
+    opacity: .92;
+}
+
+.btn.green {
+    background: var(--green);
+}
+
+.btn.light {
+    background: #edf1ef;
+    color: var(--text);
+}
+
+.btn.danger {
+    background: var(--danger);
+}
+
+.actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 9px;
+    margin-top: 18px;
+}
+
+.alert {
+    max-width: 1180px;
+    margin: 14px auto;
+    padding: 13px 16px;
+    border-radius: 10px;
+    font-weight: 600;
+}
+
+.alert.error {
+    background: #fef3f2;
+    color: #b42318;
+    border: 1px solid #fecdca;
+}
+
+.alert.success {
+    background: #ecfdf3;
+    color: #027a48;
+    border: 1px solid #abefc6;
+}
+
+.alert.warning {
+    background: #fffaeb;
+    color: #b54708;
+    border: 1px solid #fedf89;
+}
+
+.small,
+.help {
+    color: var(--muted);
     font-size: 13px;
 }
 
-.badge {
-    display: inline-block;
-    padding: 5px 9px;
-    border-radius: 20px;
-    background: #e7eefb;
-    font-size: 12px;
+.filebox {
+    background: #f8faf9;
+    padding: 14px;
+    border-radius: 10px;
+    border: 1px dashed #bccbc1;
 }
 
-table {
+.data-table {
     width: 100%;
     border-collapse: collapse;
 }
 
-th,
-td {
-    padding: 10px;
-    border-bottom: 1px solid #ddd;
+.data-table th,
+.data-table td {
+    padding: 11px 9px;
+    border-bottom: 1px solid var(--border);
     text-align: left;
+    vertical-align: top;
 }
 
-pre {
-    white-space: pre-wrap;
-    word-break: break-word;
+.data-table th {
+    background: #f7f9f8;
+}
+
+.status {
+    display: inline-block;
+    padding: 5px 9px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.status.received {
+    background: #eef4ff;
+    color: #175cd3;
+}
+
+.status.processing {
+    background: #fff6ed;
+    color: #b54708;
+}
+
+.status.awaiting {
+    background: #f4f3ff;
+    color: #5925dc;
+}
+
+.status.completed {
+    background: #ecfdf3;
+    color: #027a48;
+}
+
+.status.rejected {
+    background: #fef3f2;
+    color: #b42318;
+}
+
+.kv {
+    display: grid;
+    grid-template-columns:
+        minmax(150px, 240px)
+        1fr;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.kv > div {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+}
+
+.kv .k {
+    font-weight: 700;
+    background: #f8faf9;
+}
+
+.stepbar {
+    display: flex;
+    gap: 12px;
+    margin: 20px 0;
+}
+
+.step {
+    width: 38px;
+    height: 38px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: #e5e9e6;
+    font-weight: 800;
+}
+
+.step.active {
+    background: var(--green);
+    color: white;
+}
+
+.step.done {
+    background: #d8f0df;
+    color: var(--green-dark);
 }
 
 footer {
-    margin-top: 40px;
-    padding: 25px;
+    border-top: 1px solid var(--border);
+    background: white;
+    padding: 24px 16px;
     text-align: center;
-    color: #667085;
+    color: var(--muted);
 }
 
-</style>
-</head>
+@media (max-width: 720px) {
+    .nav-inner {
+        align-items: flex-start;
+        flex-direction: column;
+    }
 
-<body>
+    .nav-links {
+        justify-content: flex-start;
+    }
 
-<nav>
+    .container {
+        padding: 16px 10px 50px;
+    }
 
-<div class="logo">
-KOJA AFRICA
-</div>
+    .hero {
+        padding: 26px 18px;
+    }
 
-<div>
+    .card {
+        padding: 17px;
+    }
 
-<a href="{{ url_for('home') }}">Home</a>
+    .data-table {
+        display: block;
+        overflow-x: auto;
+        white-space: nowrap;
+    }
 
-{% if session.get('user_id') %}
-<a href="{{ url_for('dashboard') }}">Dashboard</a>
-<a href="{{ url_for('my_assignments') }}">My Questions</a>
-
-{% if session.get('is_admin') %}
-<a href="{{ url_for('admin_dashboard') }}">Admin</a>
-{% endif %}
-
-<a href="{{ url_for('logout') }}">Logout</a>
-
-{% else %}
-
-<a href="{{ url_for('login') }}">Login</a>
-<a href="{{ url_for('register') }}">Register</a>
-
-{% endif %}
-
-</div>
-
-</nav>
-
-<div class="container">
-
-{% with messages = get_flashed_messages(with_categories=true) %}
-
-{% for category, message in messages %}
-
-<div class="flash {{ category }}">
-{{ message }}
-</div>
-
-{% endfor %}
-
-{% endwith %}
-
-{{ content|safe }}
-
-</div>
-
-<footer>
-KOJA AFRICA —
-Knowledge • Questions • Answers
-</footer>
-
-</body>
-</html>
+    .kv {
+        grid-template-columns: 1fr;
+    }
+}
 """
 
 
-def render_page(content, title="KOJA Africa"):
+# ============================================================
+# PAGE RENDERER
+# ============================================================
+
+def page(
+    title,
+    body,
+    admin=False,
+):
+    user = current_user()
+
+    if admin:
+        nav = """
+        <nav>
+          <div class="nav-inner">
+            <div class="logo">KOJA AFRICA — ADMIN</div>
+            <div class="nav-links">
+              <a href="/admin">Dashboard</a>
+              <a href="/admin/logout">Logout</a>
+            </div>
+          </div>
+        </nav>
+        """
+
+    elif user:
+        nav = """
+        <nav>
+          <div class="nav-inner">
+            <div class="logo">KOJA AFRICA</div>
+            <div class="nav-links">
+              <a href="/dashboard">Home</a>
+              <a href="/services">Services</a>
+              <a href="/my-requests">My Requests</a>
+              <a href="/notifications">Notifications</a>
+              <a href="/profile">Profile</a>
+              <a href="/logout">Logout</a>
+            </div>
+          </div>
+        </nav>
+        """
+
+    else:
+        nav = """
+        <nav>
+          <div class="nav-inner">
+            <div class="logo">KOJA AFRICA</div>
+            <div class="nav-links">
+              <a href="/">Home</a>
+              <a href="/login">Client Login</a>
+              <a href="/register">Create Account</a>
+            </div>
+          </div>
+        </nav>
+        """
+
+    from flask import get_flashed_messages
+
+    flashes = ""
+
+    for category, message in get_flashed_messages(
+        with_categories=True
+    ):
+        flashes += (
+            f'<div class="alert {e(category)}">'
+            f'{e(message)}'
+            f'</div>'
+        )
+
+    template = """
+    <!doctype html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8">
+      <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1"
+      >
+      <meta
+        name="description"
+        content="KOJA AFRICA - Your Request, KOJA Handles It, You Receive the Result"
+      >
+      <title>{{ title }} | KOJA AFRICA</title>
+      <style>
+        {{ css|safe }}
+      </style>
+    </head>
+
+    <body>
+
+      {{ nav|safe }}
+
+      {{ flashes|safe }}
+
+      <main class="container">
+        {{ body|safe }}
+      </main>
+
+      <footer>
+        <strong>KOJA AFRICA</strong><br>
+        Your Request • KOJA Handles It • You Receive the Result
+      </footer>
+
+    </body>
+    </html>
+    """
+
     return render_template_string(
-        BASE_HTML,
-        content=content,
+        template,
         title=title,
+        css=CSS,
+        nav=nav,
+        flashes=flashes,
+        body=body,
     )
 
 
@@ -668,243 +1353,256 @@ def render_page(content, title="KOJA Africa"):
 
 @app.route("/")
 def home():
+    cards = ""
 
-    content = """
-    <div class="card">
-        <h1>KOJA AFRICA</h1>
+    for key, name, desc in SERVICE_LIST:
+        cards += f"""
+        <div class="service">
+          <div class="service-icon">
+            {e(name.split(" ", 1)[0])}
+          </div>
 
-        <h3>
-        Assignment Questions • Academic Answers
-        </h3>
+          <h3>{e(name)}</h3>
 
-        <p>
-        Submit academic questions, assignments and
-        documents and receive answers through KOJA Africa.
-        </p>
+          <p>{e(desc)}</p>
 
-        <p>
-        <a class="btn" href="/register">Create Account</a>
-        <a class="btn btn-secondary" href="/login">Login</a>
-        </p>
-    </div>
+          <a class="btn green"
+             href="/services/{e(key)}">
+             Choose Service →
+          </a>
+        </div>
+        """
 
-    <div class="grid">
+    body = f"""
+    <section class="hero">
+      <h1>KOJA AFRICA</h1>
 
-        <div class="card">
-            <h3>Questions</h3>
-            <p>
-            Submit your academic questions and assignments.
-            </p>
+      <p>
+        <strong>Your Request • KOJA Handles It • You Receive the Result</strong>
+      </p>
+
+      <p>
+        KOJA AFRICA provides a central online service platform
+        for academic, application, registration, verification
+        and education-support requests.
+      </p>
+
+      <div class="actions">
+        <a class="btn green" href="/register">
+          Create Account
+        </a>
+
+        <a class="btn light" href="/login">
+          Client Login
+        </a>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>How KOJA Works</h2>
+
+      <div class="grid3">
+        <div class="service">
+          <h3>1. Choose</h3>
+          <p>
+            Select the KOJA service you need.
+          </p>
         </div>
 
-        <div class="card">
-            <h3>Answers</h3>
-            <p>
-            Administrators can review and answer submitted
-            questions.
-            </p>
+        <div class="service">
+          <h3>2. Send</h3>
+          <p>
+            Complete the appropriate form and
+            upload supporting documents.
+          </p>
         </div>
 
-        <div class="card">
-            <h3>Documents</h3>
-            <p>
-            Upload and download supported academic files.
-            </p>
+        <div class="service">
+          <h3>3. KOJA Handles It</h3>
+          <p>
+            Your request is received and processed
+            by the KOJA administration team.
+          </p>
         </div>
 
-    </div>
+        <div class="service">
+          <h3>4. Receive</h3>
+          <p>
+            Follow the request status and receive
+            the completed response or document.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>KOJA Services</h2>
+
+      <div class="grid3">
+        {cards}
+      </div>
+    </section>
     """
 
-    return render_page(content)
+    return page(
+        "Home",
+        body
+    )
 
 
 # ============================================================
 # REGISTER
 # ============================================================
 
-@app.route("/register", methods=["GET", "POST"])
+@app.route(
+    "/register",
+    methods=["GET", "POST"]
+)
 def register():
-
     if request.method == "POST":
-
-        name = request.form.get("name", "").strip()
-        email = request.form.get("email", "").strip().lower()
+        full_name = form_value("full_name")
+        email = form_value("email").lower()
+        phone = form_value("phone")
         password = request.form.get("password", "")
-        phone = request.form.get("phone", "").strip()
-        institution = request.form.get(
-            "institution",
+        confirm = request.form.get(
+            "confirm_password",
             ""
-        ).strip()
-        student_number = request.form.get(
-            "student_number",
-            ""
-        ).strip()
+        )
 
-        if not name or not email or not password:
+        if not full_name or not email or not password:
             flash(
                 "Name, email and password are required.",
                 "error"
             )
 
+        elif password != confirm:
+            flash(
+                "Passwords do not match.",
+                "error"
+            )
+
         elif len(password) < 6:
             flash(
-                "Password must contain at least 6 characters.",
+                "Password must be at least 6 characters.",
                 "error"
             )
 
         else:
-
             try:
-
-                # ------------------------------------------------
-                # IMPORTANT:
-                # We check PROFILES, NOT USERS.
-                # ------------------------------------------------
-
-                existing = db_get(
-                    "profiles",
-                    {
-                        "email": f"eq.{email}",
-                        "select": "id,email",
-                        "limit": "1",
-                    }
-                )
+                existing = get_user_by_email(email)
 
                 if existing:
                     flash(
-                        "An account with this email already exists.",
+                        "That email is already registered.",
                         "error"
                     )
-
                 else:
-
-                    user_id = str(uuid.uuid4())
-
-                    profile = {
-                        "id": user_id,
-                        "name": name,
-                        "full_name": name,
-                        "email": email,
-                        "role": "student",
-                        "password_hash":
-                            generate_password_hash(password),
-                        "phone": phone or None,
-                        "institution": institution or None,
-                        "student_number":
-                            student_number or None,
-                        "is_active": True,
-                        "is_admin": False,
-                    }
-
-                    # ------------------------------------------------
-                    # THIS IS THE CRITICAL FIX.
-                    #
-                    # No insertion into public.users.
-                    # No foreign-key dependency.
-                    # ------------------------------------------------
-
-                    created = db_post(
-                        "profiles",
-                        profile
+                    row = db_insert(
+                        "koja_users",
+                        {
+                            "full_name": full_name,
+                            "email": email,
+                            "phone": phone,
+                            "password_hash":
+                                generate_password_hash(
+                                    password
+                                ),
+                            "created_at": now_iso(),
+                        }
                     )
 
-                    if not created:
-                        raise RuntimeError(
-                            "Profile account was not created."
+                    if row:
+                        flash(
+                            "Account created successfully. "
+                            "You can now log in.",
+                            "success"
                         )
 
-                    session.clear()
-
-                    session["user_id"] = user_id
-                    session["is_admin"] = False
-                    session["email"] = email
-
-                    log_activity(
-                        "register",
-                        "New student account registered",
-                        user_id,
-                        email
-                    )
-
-                    flash(
-                        "Registration successful.",
-                        "success"
-                    )
-
-                    return redirect(
-                        url_for("dashboard")
-                    )
+                        return redirect(
+                            url_for("login")
+                        )
 
             except Exception as exc:
-
-                logger.exception(
-                    "Registration failed"
-                )
-
                 flash(
-                    "Registration error: " + str(exc),
+                    f"Account creation failed: {exc}",
                     "error"
                 )
 
-    content = """
+    body = """
     <div class="card">
+      <h2>Create KOJA Account</h2>
 
-        <h2>Create KOJA Account</h2>
+      <p class="small">
+        Create an account to submit requests and
+        track your KOJA services.
+      </p>
 
-        <form method="POST">
+      <form method="post">
 
-            <label>Full Name</label>
+        <div class="grid">
+
+          <div class="field">
+            <label>Full Name *</label>
             <input
-                type="text"
-                name="name"
-                required
+              name="full_name"
+              required
+              autocomplete="name"
             >
+          </div>
 
-            <label>Email</label>
-            <input
-                type="email"
-                name="email"
-                required
-            >
-
+          <div class="field">
             <label>Phone</label>
             <input
-                type="text"
-                name="phone"
+              name="phone"
+              autocomplete="tel"
             >
+          </div>
 
-            <label>Institution</label>
+          <div class="field">
+            <label>Email *</label>
             <input
-                type="text"
-                name="institution"
+              type="email"
+              name="email"
+              required
+              autocomplete="email"
             >
+          </div>
 
-            <label>Student Number</label>
+          <div class="field">
+            <label>Password *</label>
             <input
-                type="text"
-                name="student_number"
+              type="password"
+              name="password"
+              minlength="6"
+              required
+              autocomplete="new-password"
             >
+          </div>
 
-            <label>Password</label>
+          <div class="field">
+            <label>Confirm Password *</label>
             <input
-                type="password"
-                name="password"
-                minlength="6"
-                required
+              type="password"
+              name="confirm_password"
+              minlength="6"
+              required
+              autocomplete="new-password"
             >
+          </div>
 
-            <button type="submit">
-                Register
-            </button>
+        </div>
 
-        </form>
+        <button class="btn green">
+          Create Account
+        </button>
 
+      </form>
     </div>
     """
 
-    return render_page(
-        content,
-        "Register - KOJA Africa"
+    return page(
+        "Create Account",
+        body
     )
 
 
@@ -912,140 +1610,95 @@ def register():
 # LOGIN
 # ============================================================
 
-@app.route("/login", methods=["GET", "POST"])
+@app.route(
+    "/login",
+    methods=["GET", "POST"]
+)
 def login():
-
     if request.method == "POST":
-
-        email = request.form.get(
-            "email",
-            ""
-        ).strip().lower()
-
+        email = form_value("email").lower()
         password = request.form.get(
             "password",
             ""
         )
 
         try:
+            user = get_user_by_email(email)
 
-            rows = db_get(
-                "profiles",
-                {
-                    "email": f"eq.{email}",
-                    "select": "*",
-                    "limit": "1",
-                }
-            )
+            if (
+                user
+                and check_password_hash(
+                    user["password_hash"],
+                    password
+                )
+            ):
+                session.clear()
+                session["user_id"] = user["id"]
 
-            if not rows:
-                flash(
-                    "Invalid email or password.",
-                    "error"
+                return redirect(
+                    url_for("dashboard")
                 )
 
-            else:
-
-                user = rows[0]
-
-                if user.get("is_active") is False:
-                    flash(
-                        "Your account is disabled.",
-                        "error"
-                    )
-
-                else:
-
-                    stored_hash = user.get(
-                        "password_hash"
-                    )
-
-                    valid = False
-
-                    if stored_hash:
-                        try:
-                            valid = check_password_hash(
-                                stored_hash,
-                                password
-                            )
-                        except Exception:
-                            valid = False
-
-                    if valid:
-
-                        session.clear()
-
-                        session["user_id"] = user["id"]
-                        session["email"] = user["email"]
-                        session["is_admin"] = (
-                            is_admin_user(user)
-                        )
-
-                        log_activity(
-                            "login",
-                            "User logged in",
-                            user["id"],
-                            user["email"]
-                        )
-
-                        if is_admin_user(user):
-                            return redirect(
-                                url_for("admin_dashboard")
-                            )
-
-                        return redirect(
-                            url_for("dashboard")
-                        )
-
-                    flash(
-                        "Invalid email or password.",
-                        "error"
-                    )
-
-        except Exception as exc:
-
-            logger.exception(
-                "Login failed"
-            )
-
             flash(
-                "Login error: " + str(exc),
+                "Invalid email or password.",
                 "error"
             )
 
-    content = """
-    <div class="card">
+        except Exception as exc:
+            flash(
+                f"Login failed: {exc}",
+                "error"
+            )
 
-        <h2>Login</h2>
+    body = """
+    <div class="card"
+         style="max-width:600px;margin:auto">
 
-        <form method="POST">
+      <h2>Client Login</h2>
 
-            <label>Email</label>
-            <input
-                type="email"
-                name="email"
-                required
-            >
+      <form method="post">
 
-            <label>Password</label>
-            <input
-                type="password"
-                name="password"
-                required
-            >
+        <div class="field">
+          <label>Email *</label>
+          <input
+            type="email"
+            name="email"
+            required
+            autocomplete="email"
+          >
+        </div>
 
-            <button type="submit">
-                Login
-            </button>
+        <div class="field">
+          <label>Password *</label>
+          <input
+            type="password"
+            name="password"
+            required
+            autocomplete="current-password"
+          >
+        </div>
 
-        </form>
+        <button class="btn green">
+          Login
+        </button>
+
+      </form>
+
+      <div class="actions">
+        <a
+          href="/register"
+          class="btn light"
+        >
+          Create Account
+        </a>
+      </div>
 
     </div>
     """
 
-    return render_page(
-        content,
-        "Login - KOJA Africa"
+    return page(
+        "Client Login",
+        body
     )
 
 
@@ -1055,672 +1708,2601 @@ def login():
 
 @app.route("/logout")
 def logout():
-
-    user_id = session.get("user_id")
-    email = session.get("email")
-
-    if user_id:
-        log_activity(
-            "logout",
-            "User logged out",
-            user_id,
-            email
-        )
-
     session.clear()
 
-    flash(
-        "You have been logged out.",
-        "success"
+    return redirect(
+        url_for("home")
     )
-
-    return redirect(url_for("home"))
 
 
 # ============================================================
-# DASHBOARD
+# CLIENT DASHBOARD
 # ============================================================
 
 @app.route("/dashboard")
 @login_required
 def dashboard():
-
     user = current_user()
 
-    try:
+    if not user:
+        session.clear()
+        return redirect(
+            url_for("login")
+        )
 
-        assignments = db_get(
-            "assignments",
+    rows = db_select(
+        "koja_requests",
+        {
+            "user_id": f"eq.{user['id']}",
+            "order": "created_at.desc",
+            "limit": "5",
+        }
+    )
+
+    counts = {}
+
+    for status in STATUSES:
+        result = db_select(
+            "koja_requests",
             {
-                "student_id": f"eq.{user['id']}",
-                "select": "*",
-                "order": "created_at.desc",
+                "user_id": f"eq.{user['id']}",
+                "status": f"eq.{status}",
+                "select": "id",
             }
         )
 
-    except Exception as exc:
+        counts[status] = len(result)
 
-        logger.exception(
-            "Dashboard assignments failed"
+    cards = ""
+
+    for status, value in counts.items():
+        cards += f"""
+        <div class="service">
+          <strong>{e(status)}</strong>
+          <div style="font-size:30px;margin-top:8px">
+            {value}
+          </div>
+        </div>
+        """
+
+    table_rows = ""
+
+    for row in rows:
+        cls = status_class(
+            row["status"]
         )
 
-        assignments = []
+        table_rows += f"""
+        <tr>
+          <td>
+            <a href="/request/{row['id']}">
+              <strong>
+                {e(row['request_no'])}
+              </strong>
+            </a>
+          </td>
 
-        flash(
-            "Could not load assignments: " + str(exc),
-            "error"
-        )
+          <td>
+            {e(row['service_name'])}
+          </td>
 
-    total = len(assignments)
+          <td>
+            <span class="status {cls}">
+              {e(row['status'])}
+            </span>
+          </td>
 
-    answered = len([
-        a for a in assignments
-        if (
-            a.get("answer")
-            or a.get("answer_text")
-            or a.get("answer_file_path")
-            or a.get("answer_path")
-            or a.get("answer_pdf_path")
-            or a.get("answer_word_path")
-        )
-    ])
+          <td>
+            {e(str(row['created_at'])[:10])}
+          </td>
+        </tr>
+        """
 
-    content = f"""
-    <div class="grid">
+    body = f"""
+    <section class="hero">
+      <h1>
+        Welcome, {e(user['full_name'])}
+      </h1>
 
-        <div class="stat">
-            <div>Total Questions</div>
-            <strong>{total}</strong>
-        </div>
+      <p>
+        Choose a service, send your request,
+        let KOJA handle it and receive the result.
+      </p>
 
-        <div class="stat">
-            <div>Answered</div>
-            <strong>{answered}</strong>
-        </div>
+      <a
+        class="btn green"
+        href="/services"
+      >
+        Explore KOJA Services
+      </a>
+    </section>
 
-        <div class="stat">
-            <div>Account</div>
-            <strong>Student</strong>
-        </div>
-
+    <div class="grid3">
+      {cards}
     </div>
 
-    <div class="card">
+    <section class="card">
+      <h2>Recent Requests</h2>
 
-        <h2>Welcome, {user.get('full_name') or user.get('name') or 'Student'}</h2>
+      <table class="data-table">
+        <tr>
+          <th>Request</th>
+          <th>Service</th>
+          <th>Status</th>
+          <th>Date</th>
+        </tr>
 
-        <p>
-        Email: {user.get('email', '')}
-        </p>
-
-        <p>
-        Institution:
-        {user.get('institution') or 'Not provided'}
-        </p>
-
-        <a class="btn"
-           href="/submit-question">
-           Submit Question
-        </a>
-
-    </div>
+        {table_rows or
+        '<tr><td colspan="4">No requests yet.</td></tr>'}
+      </table>
+    </section>
     """
 
-    return render_page(
-        content,
-        "Dashboard - KOJA Africa"
+    return page(
+        "Dashboard",
+        body
     )
 
 
 # ============================================================
-# SUBMIT QUESTION / ASSIGNMENT
+# SERVICES
+# ============================================================
+
+@app.route("/services")
+@login_required
+def services():
+    cards = ""
+
+    for key, name, desc in SERVICE_LIST:
+        cards += f"""
+        <div class="service">
+          <div class="service-icon">
+            {e(name.split(" ", 1)[0])}
+          </div>
+
+          <h3>{e(name)}</h3>
+
+          <p>{e(desc)}</p>
+
+          <a
+            class="btn green"
+            href="/services/{e(key)}"
+          >
+            Choose Service
+          </a>
+        </div>
+        """
+
+    body = f"""
+    <section class="card">
+      <h2>KOJA Services</h2>
+
+      <p>
+        Choose the service you need.
+        Each service has its own dedicated workflow.
+      </p>
+
+      <div class="grid3">
+        {cards}
+      </div>
+    </section>
+    """
+
+    return page(
+        "KOJA Services",
+        body
+    )
+
+
+# ============================================================
+# SERVICE ROUTER
 # ============================================================
 
 @app.route(
-    "/submit-question",
+    "/services/<service_type>"
+)
+@login_required
+def service_router(service_type):
+    routes = {
+        "assignments": "assignment_request",
+        "university": "university_application",
+        "verification": "verification_request",
+        "farmer": "farmer_step1",
+        "tpn": "tpn_request",
+        "materials": "materials_request",
+    }
+
+    endpoint = routes.get(service_type)
+
+    if not endpoint:
+        abort(404)
+
+    return redirect(
+        url_for(endpoint)
+    )
+
+
+# ============================================================
+# ASSIGNMENTS
+# ============================================================
+
+@app.route(
+    "/request/assignments",
     methods=["GET", "POST"]
 )
 @login_required
-def submit_question():
+def assignment_request():
+    if request.method == "POST":
+        try:
+            data = {
+                "institution": clean_required(
+                    "institution",
+                    "Institution"
+                ),
+                "programme": clean_required(
+                    "programme",
+                    "Programme"
+                ),
+                "course": clean_required(
+                    "course",
+                    "Course / Subject"
+                ),
+                "assignment_title": clean_required(
+                    "assignment_title",
+                    "Assignment title"
+                ),
+                "deadline": form_value(
+                    "deadline"
+                ),
+                "academic_level": form_value(
+                    "academic_level"
+                ),
+                "question": clean_required(
+                    "question",
+                    "Assignment question"
+                ),
+                "instructions": form_value(
+                    "instructions"
+                ),
+            }
+
+            user = current_user()
+
+            request_id, request_no = create_request(
+                user["id"],
+                "assignments",
+                data
+            )
+
+            files = request.files.getlist(
+                "supporting_documents"
+            )
+
+            for uploaded in files:
+                if uploaded and uploaded.filename:
+                    save_request_file(
+                        request_id,
+                        user["id"],
+                        uploaded,
+                        "assignment"
+                    )
+
+            flash(
+                f"Assignment request {request_no} "
+                "was submitted successfully.",
+                "success"
+            )
+
+            return redirect(
+                url_for(
+                    "request_detail",
+                    request_id=request_id
+                )
+            )
+
+        except ValueError as exc:
+            flash(
+                str(exc),
+                "error"
+            )
+
+        except Exception as exc:
+            flash(
+                f"Assignment submission failed: {exc}",
+                "error"
+            )
+
+    body = """
+    <div class="card">
+      <h2>📚 Assignments</h2>
+
+      <p>
+        Submit your assignment question to KOJA.
+        You can attach the assignment paper,
+        instructions or supporting material.
+      </p>
+
+      <form
+        method="post"
+        enctype="multipart/form-data"
+      >
+
+        <div class="grid">
+
+          <div class="field">
+            <label>Institution *</label>
+            <input name="institution" required>
+          </div>
+
+          <div class="field">
+            <label>Programme *</label>
+            <input name="programme" required>
+          </div>
+
+          <div class="field">
+            <label>Course / Subject *</label>
+            <input name="course" required>
+          </div>
+
+          <div class="field">
+            <label>Academic Level</label>
+            <input name="academic_level">
+          </div>
+
+          <div class="field">
+            <label>Assignment Title *</label>
+            <input name="assignment_title" required>
+          </div>
+
+          <div class="field">
+            <label>Deadline</label>
+            <input
+              type="date"
+              name="deadline"
+            >
+          </div>
+
+        </div>
+
+        <div class="field">
+          <label>Assignment Question *</label>
+          <textarea
+            name="question"
+            required
+            placeholder="Paste or type the assignment question here."
+          ></textarea>
+        </div>
+
+        <div class="field">
+          <label>Instructions / Requirements</label>
+          <textarea
+            name="instructions"
+            placeholder="Explain the required format, number of pages, referencing style, etc."
+          ></textarea>
+        </div>
+
+        <div class="field filebox">
+          <label>Supporting Files</label>
+
+          <input
+            type="file"
+            name="supporting_documents"
+            multiple
+            accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.webp"
+          >
+
+          <div class="help">
+            Maximum file size:
+            10 MB per file.
+          </div>
+        </div>
+
+        <button class="btn green">
+          Send Assignment to KOJA
+        </button>
+
+      </form>
+    </div>
+    """
+
+    return page(
+        "Assignments",
+        body
+    )
+
+
+# ============================================================
+# UNIVERSITY APPLICATION
+# ============================================================
+
+@app.route(
+    "/request/university",
+    methods=["GET", "POST"]
+)
+@login_required
+def university_application():
+    if request.method == "POST":
+        try:
+            data = {
+                "university": clean_required(
+                    "university",
+                    "University"
+                ),
+                "programme": clean_required(
+                    "programme",
+                    "Programme"
+                ),
+                "application_type": clean_required(
+                    "application_type",
+                    "Application type"
+                ),
+                "intake": form_value(
+                    "intake"
+                ),
+                "applicant_full_name": clean_required(
+                    "applicant_full_name",
+                    "Applicant full name"
+                ),
+                "nrc_number": clean_required(
+                    "nrc_number",
+                    "NRC number"
+                ),
+                "date_of_birth": clean_required(
+                    "date_of_birth",
+                    "Date of birth"
+                ),
+                "gender": clean_required(
+                    "gender",
+                    "Gender"
+                ),
+                "phone": clean_required(
+                    "phone",
+                    "Phone"
+                ),
+                "email": clean_required(
+                    "email",
+                    "Email"
+                ),
+                "province": clean_required(
+                    "province",
+                    "Province"
+                ),
+                "district": clean_required(
+                    "district",
+                    "District"
+                ),
+                "qualifications": clean_required(
+                    "qualifications",
+                    "Previous qualifications"
+                ),
+                "additional_information": form_value(
+                    "additional_information"
+                ),
+            }
+
+            user = current_user()
+
+            request_id, request_no = create_request(
+                user["id"],
+                "university",
+                data
+            )
+
+            files = request.files.getlist(
+                "documents"
+            )
+
+            for uploaded in files:
+                if uploaded and uploaded.filename:
+                    save_request_file(
+                        request_id,
+                        user["id"],
+                        uploaded,
+                        "university"
+                    )
+
+            flash(
+                f"University application request "
+                f"{request_no} was submitted.",
+                "success"
+            )
+
+            return redirect(
+                url_for(
+                    "request_detail",
+                    request_id=request_id
+                )
+            )
+
+        except ValueError as exc:
+            flash(
+                str(exc),
+                "error"
+            )
+
+        except Exception as exc:
+            flash(
+                f"University application failed: {exc}",
+                "error"
+            )
+
+    province_options = "".join(
+        f"<option>{e(p)}</option>"
+        for p in PROVINCES
+    )
+
+    gender_options = "".join(
+        f"<option>{e(g)}</option>"
+        for g in GENDERS
+    )
+
+    body = f"""
+    <div class="card">
+      <h2>🎓 University Applications</h2>
+
+      <p>
+        Submit your university application
+        information and supporting documents
+        to KOJA.
+      </p>
+
+      <form
+        method="post"
+        enctype="multipart/form-data"
+      >
+
+        <div class="grid">
+
+          <div class="field">
+            <label>University *</label>
+            <input name="university" required>
+          </div>
+
+          <div class="field">
+            <label>Programme *</label>
+            <input name="programme" required>
+          </div>
+
+          <div class="field">
+            <label>Application Type *</label>
+
+            <select name="application_type" required>
+              <option value="">
+                Select application type
+              </option>
+              <option>
+                Undergraduate Application
+              </option>
+              <option>
+                Postgraduate Application
+              </option>
+              <option>
+                Application Assistance
+              </option>
+              <option>
+                Transfer Application
+              </option>
+              <option>
+                Other
+              </option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label>Intake</label>
+            <input
+              name="intake"
+              placeholder="e.g. January 2027"
+            >
+          </div>
+
+          <div class="field">
+            <label>Applicant Full Name *</label>
+            <input
+              name="applicant_full_name"
+              required
+            >
+          </div>
+
+          <div class="field">
+            <label>NRC Number *</label>
+            <input
+              name="nrc_number"
+              required
+            >
+          </div>
+
+          <div class="field">
+            <label>Date of Birth *</label>
+            <input
+              type="date"
+              name="date_of_birth"
+              required
+            >
+          </div>
+
+          <div class="field">
+            <label>Gender *</label>
+            <select name="gender" required>
+              <option value="">
+                Select gender
+              </option>
+              {gender_options}
+            </select>
+          </div>
+
+          <div class="field">
+            <label>Phone *</label>
+            <input
+              name="phone"
+              required
+            >
+          </div>
+
+          <div class="field">
+            <label>Email *</label>
+            <input
+              type="email"
+              name="email"
+              required
+            >
+          </div>
+
+          <div class="field">
+            <label>Province *</label>
+            <select name="province" required>
+              <option value="">
+                Select province
+              </option>
+              {province_options}
+            </select>
+          </div>
+
+          <div class="field">
+            <label>District *</label>
+            <input
+              name="district"
+              required
+            >
+          </div>
+
+        </div>
+
+        <div class="field">
+          <label>
+            Previous Qualifications *
+          </label>
+
+          <textarea
+            name="qualifications"
+            required
+            placeholder="Enter your qualifications, school, examination results, etc."
+          ></textarea>
+        </div>
+
+        <div class="field">
+          <label>
+            Additional Information
+          </label>
+
+          <textarea
+            name="additional_information"
+          ></textarea>
+        </div>
+
+        <div class="field filebox">
+          <label>Application Documents</label>
+
+          <input
+            type="file"
+            name="documents"
+            multiple
+            accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.webp"
+          >
+
+          <div class="help">
+            You may attach certificates,
+            NRC, passport photo, transcripts
+            and other relevant documents.
+          </div>
+        </div>
+
+        <button class="btn green">
+          Send University Application
+        </button>
+
+      </form>
+    </div>
+    """
+
+    return page(
+        "University Applications",
+        body
+    )
+
+
+# ============================================================
+# RESULT VERIFICATION
+# ============================================================
+
+@app.route(
+    "/request/verification",
+    methods=["GET", "POST"]
+)
+@login_required
+def verification_request():
+    if request.method == "POST":
+        try:
+            data = {
+                "full_name": clean_required(
+                    "full_name",
+                    "Full name"
+                ),
+                "nrc_number": clean_required(
+                    "nrc_number",
+                    "NRC number"
+                ),
+                "phone": clean_required(
+                    "phone",
+                    "Phone"
+                ),
+                "email": clean_required(
+                    "email",
+                    "Email"
+                ),
+                "institution": clean_required(
+                    "institution",
+                    "Institution"
+                ),
+                "qualification": clean_required(
+                    "qualification",
+                    "Qualification"
+                ),
+                "programme": clean_required(
+                    "programme",
+                    "Programme"
+                ),
+                "graduation_year": clean_required(
+                    "graduation_year",
+                    "Graduation year"
+                ),
+                "verification_type": clean_required(
+                    "verification_type",
+                    "Verification type"
+                ),
+                "purpose": clean_required(
+                    "purpose",
+                    "Purpose"
+                ),
+                "additional_information": form_value(
+                    "additional_information"
+                ),
+            }
+
+            user = current_user()
+
+            request_id, request_no = create_request(
+                user["id"],
+                "verification",
+                data
+            )
+
+            files = request.files.getlist(
+                "documents"
+            )
+
+            for uploaded in files:
+                if uploaded and uploaded.filename:
+                    save_request_file(
+                        request_id,
+                        user["id"],
+                        uploaded,
+                        "verification"
+                    )
+
+            flash(
+                f"Verification request {request_no} "
+                "was submitted.",
+                "success"
+            )
+
+            return redirect(
+                url_for(
+                    "request_detail",
+                    request_id=request_id
+                )
+            )
+
+        except ValueError as exc:
+            flash(
+                str(exc),
+                "error"
+            )
+
+        except Exception as exc:
+            flash(
+                f"Verification request failed: {exc}",
+                "error"
+            )
+
+    body = """
+    <div class="card">
+
+      <h2>
+        📄 Result Verification & Certification
+      </h2>
+
+      <p>
+        Provide the information KOJA needs
+        to process your verification request.
+      </p>
+
+      <form
+        method="post"
+        enctype="multipart/form-data"
+      >
+
+        <div class="grid">
+
+          <div class="field">
+            <label>Full Name *</label>
+            <input name="full_name" required>
+          </div>
+
+          <div class="field">
+            <label>NRC Number *</label>
+            <input name="nrc_number" required>
+          </div>
+
+          <div class="field">
+            <label>Phone *</label>
+            <input name="phone" required>
+          </div>
+
+          <div class="field">
+            <label>Email *</label>
+            <input
+              type="email"
+              name="email"
+              required
+            >
+          </div>
+
+          <div class="field">
+            <label>Institution *</label>
+            <input name="institution" required>
+          </div>
+
+          <div class="field">
+            <label>Qualification *</label>
+            <input name="qualification" required>
+          </div>
+
+          <div class="field">
+            <label>Programme *</label>
+            <input name="programme" required>
+          </div>
+
+          <div class="field">
+            <label>Graduation Year *</label>
+            <input
+              name="graduation_year"
+              required
+            >
+          </div>
+
+          <div class="field">
+            <label>Verification Type *</label>
+
+            <select
+              name="verification_type"
+              required
+            >
+              <option value="">
+                Select type
+              </option>
+              <option>
+                Result Verification
+              </option>
+              <option>
+                Certificate Verification
+              </option>
+              <option>
+                Academic Certification
+              </option>
+              <option>
+                Other Verification
+              </option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label>Purpose *</label>
+            <input
+              name="purpose"
+              required
+              placeholder="Employment, further studies, immigration, etc."
+            >
+          </div>
+
+        </div>
+
+        <div class="field">
+          <label>Additional Information</label>
+          <textarea
+            name="additional_information"
+          ></textarea>
+        </div>
+
+        <div class="field filebox">
+          <label>Result / Certificate Documents *</label>
+
+          <input
+            type="file"
+            name="documents"
+            multiple
+            required
+            accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.webp"
+          >
+
+          <div class="help">
+            Upload the result, certificate,
+            transcript or supporting document.
+          </div>
+        </div>
+
+        <button class="btn green">
+          Send Verification Request
+        </button>
+
+      </form>
+    </div>
+    """
+
+    return page(
+        "Result Verification",
+        body
+    )
+
+
+# ============================================================
+# FARMER REGISTRATION - STEP 1
+# ============================================================
+
+@app.route(
+    "/request/farmer",
+    methods=["GET", "POST"]
+)
+@login_required
+def farmer_step1():
+    if request.method == "POST":
+        try:
+            data = {
+                "nrc": clean_required(
+                    "nrc",
+                    "NRC"
+                ),
+                "date_of_birth": clean_required(
+                    "date_of_birth",
+                    "Date of birth"
+                ),
+                "first_name": clean_required(
+                    "first_name",
+                    "First name"
+                ),
+                "middle_names": form_value(
+                    "middle_names"
+                ),
+                "last_name": clean_required(
+                    "last_name",
+                    "Last name"
+                ),
+                "gender": clean_required(
+                    "gender",
+                    "Gender"
+                ),
+                "phone": clean_required(
+                    "phone",
+                    "Phone"
+                ),
+            }
+
+            session["farmer_data"] = data
+
+            return redirect(
+                url_for("farmer_step2")
+            )
+
+        except ValueError as exc:
+            flash(
+                str(exc),
+                "error"
+            )
+
+    body = """
+    <div class="card">
+
+      <h2 style="text-align:center">
+        🧑‍🌾 Farmer Registration
+      </h2>
+
+      <div class="stepbar">
+        <div class="step active">1</div>
+        <div class="step">2</div>
+        <div class="step">3</div>
+      </div>
+
+      <h2>Step 1: Personal Details</h2>
+
+      <form method="post">
+
+        <div class="grid">
+
+          <div class="field">
+            <label>NRC *</label>
+            <input
+              name="nrc"
+              placeholder="123456/10/1"
+              required
+            >
+          </div>
+
+          <div class="field">
+            <label>Date of Birth *</label>
+            <input
+              type="date"
+              name="date_of_birth"
+              required
+            >
+          </div>
+
+          <div class="field">
+            <label>First Name *</label>
+            <input name="first_name" required>
+          </div>
+
+          <div class="field">
+            <label>Middle Names</label>
+            <input name="middle_names">
+          </div>
+
+          <div class="field">
+            <label>Last Name *</label>
+            <input name="last_name" required>
+          </div>
+
+          <div class="field">
+            <label>Gender *</label>
+
+            <select name="gender" required>
+              <option value="">
+                Select gender
+              </option>
+              <option>Male</option>
+              <option>Female</option>
+              <option>Other</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label>Phone *</label>
+            <input name="phone" required>
+          </div>
+
+        </div>
+
+        <button class="btn green">
+          Continue to Location →
+        </button>
+
+      </form>
+    </div>
+    """
+
+    return page(
+        "Farmer Registration",
+        body
+    )
+
+
+# ============================================================
+# FARMER REGISTRATION - STEP 2
+# ============================================================
+
+@app.route(
+    "/request/farmer/location",
+    methods=["GET", "POST"]
+)
+@login_required
+def farmer_step2():
+    if "farmer_data" not in session:
+        return redirect(
+            url_for("farmer_step1")
+        )
+
+    if request.method == "POST":
+        try:
+            data = dict(
+                session["farmer_data"]
+            )
+
+            data.update({
+                "province": clean_required(
+                    "province",
+                    "Province"
+                ),
+                "district": clean_required(
+                    "district",
+                    "District"
+                ),
+                "constituency": form_value(
+                    "constituency"
+                ),
+                "chiefdom": form_value(
+                    "chiefdom"
+                ),
+                "farming_area": clean_required(
+                    "farming_area",
+                    "Farming location / area"
+                ),
+            })
+
+            session["farmer_data"] = data
+
+            return redirect(
+                url_for("farmer_step3")
+            )
+
+        except ValueError as exc:
+            flash(
+                str(exc),
+                "error"
+            )
+
+    province_options = "".join(
+        f"<option>{e(p)}</option>"
+        for p in PROVINCES
+    )
+
+    body = f"""
+    <div class="card">
+
+      <h2 style="text-align:center">
+        🧑‍🌾 Farmer Registration
+      </h2>
+
+      <div class="stepbar">
+        <div class="step done">✓</div>
+        <div class="step active">2</div>
+        <div class="step">3</div>
+      </div>
+
+      <h2>Step 2: Location</h2>
+
+      <form method="post">
+
+        <div class="field">
+          <label>Province *</label>
+
+          <select name="province" required>
+            <option value="">
+              Select Province
+            </option>
+            {province_options}
+          </select>
+        </div>
+
+        <div class="grid">
+
+          <div class="field">
+            <label>District *</label>
+            <input name="district" required>
+          </div>
+
+          <div class="field">
+            <label>Constituency</label>
+            <input name="constituency">
+          </div>
+
+          <div class="field">
+            <label>Chiefdom</label>
+            <input name="chiefdom">
+          </div>
+
+          <div class="field">
+            <label>Farming Location / Area *</label>
+            <input
+              name="farming_area"
+              required
+            >
+          </div>
+
+        </div>
+
+        <div class="actions">
+
+          <a
+            class="btn light"
+            href="/request/farmer"
+          >
+            ← Back
+          </a>
+
+          <button class="btn green">
+            Continue to Payment →
+          </button>
+
+        </div>
+
+      </form>
+    </div>
+    """
+
+    return page(
+        "Farmer Registration - Location",
+        body
+    )
+
+
+# ============================================================
+# FARMER REGISTRATION - STEP 3
+# ============================================================
+
+@app.route(
+    "/request/farmer/payment",
+    methods=["GET", "POST"]
+)
+@login_required
+def farmer_step3():
+    if "farmer_data" not in session:
+        return redirect(
+            url_for("farmer_step1")
+        )
+
+    if request.method == "POST":
+        try:
+            data = dict(
+                session["farmer_data"]
+            )
+
+            payment_method = clean_required(
+                "payment_method",
+                "Payment method"
+            )
+
+            provider = clean_required(
+                "provider",
+                "Provider"
+            )
+
+            account_no = clean_required(
+                "account_no",
+                "Account number"
+            )
+
+            account_name = clean_required(
+                "account_name",
+                "Account name"
+            )
+
+            data.update({
+                "payment_method": payment_method,
+                "provider": provider,
+                "branch": form_value("branch"),
+                "account_no": account_no,
+                "account_name": account_name,
+            })
+
+            user = current_user()
+
+            request_id, request_no = create_request(
+                user["id"],
+                "farmer",
+                data
+            )
+
+            uploaded = request.files.get(
+                "nrc_card"
+            )
+
+            if uploaded and uploaded.filename:
+                save_request_file(
+                    request_id,
+                    user["id"],
+                    uploaded,
+                    "farmer"
+                )
+
+            session.pop(
+                "farmer_data",
+                None
+            )
+
+            flash(
+                f"Farmer request {request_no} "
+                "was submitted successfully.",
+                "success"
+            )
+
+            return redirect(
+                url_for(
+                    "request_detail",
+                    request_id=request_id
+                )
+            )
+
+        except ValueError as exc:
+            flash(
+                str(exc),
+                "error"
+            )
+
+        except Exception as exc:
+            flash(
+                f"Farmer request failed: {exc}",
+                "error"
+            )
+
+    body = f"""
+    <div class="card">
+
+      <h2 style="text-align:center">
+        🧑‍🌾 Farmer Registration
+      </h2>
+
+      <div class="stepbar">
+        <div class="step done">✓</div>
+        <div class="step done">✓</div>
+        <div class="step active">3</div>
+      </div>
+
+      <h2>Step 3: Payment & Submit</h2>
+
+      <form
+        method="post"
+        enctype="multipart/form-data"
+      >
+
+        <div class="field">
+
+          <label>Payment Method *</label>
+
+          <select
+            name="payment_method"
+            id="payment_method"
+            required
+            onchange="updateProviders()"
+          >
+            <option value="">
+              Select method
+            </option>
+            <option>Bank Account</option>
+            <option>Mobile Money</option>
+          </select>
+
+        </div>
+
+        <div class="field">
+
+          <label>Provider *</label>
+
+          <select
+            name="provider"
+            id="provider"
+            required
+          >
+            <option value="">
+              Select provider
+            </option>
+          </select>
+
+        </div>
+
+        <div class="field">
+
+          <label>Branch</label>
+
+          <input
+            name="branch"
+            placeholder="Bank branch, if applicable"
+          >
+
+        </div>
+
+        <div class="grid">
+
+          <div class="field">
+            <label>Account No. *</label>
+            <input
+              name="account_no"
+              required
+            >
+          </div>
+
+          <div class="field">
+            <label>Account Name *</label>
+            <input
+              name="account_name"
+              required
+            >
+          </div>
+
+        </div>
+
+        <div class="field filebox">
+
+          <label>
+            NRC Card / Supporting Document
+          </label>
+
+          <input
+            type="file"
+            name="nrc_card"
+            accept=".pdf,.jpg,.jpeg,.png,.webp,.doc,.docx"
+          >
+
+          <div class="help">
+            Maximum {MAX_FILE_MB} MB.
+          </div>
+
+        </div>
+
+        <div class="actions">
+
+          <a
+            class="btn light"
+            href="/request/farmer/location"
+          >
+            ← Back
+          </a>
+
+          <button class="btn green">
+            Submit Farmer Request
+          </button>
+
+        </div>
+
+      </form>
+    </div>
+
+    <script>
+      const banks = {json.dumps(BANKS)};
+      const mobiles = {json.dumps(MOBILE_PROVIDERS)};
+
+      function updateProviders() {{
+        const method =
+          document.getElementById(
+            "payment_method"
+          ).value;
+
+        const provider =
+          document.getElementById(
+            "provider"
+          );
+
+        provider.innerHTML =
+          '<option value="">Select provider</option>';
+
+        let list = [];
+
+        if (method === "Bank Account") {{
+          list = banks;
+        }}
+
+        if (method === "Mobile Money") {{
+          list = mobiles;
+        }}
+
+        list.forEach(function(item) {{
+          const option =
+            document.createElement("option");
+
+          option.value = item;
+          option.textContent = item;
+
+          provider.appendChild(option);
+        }});
+      }}
+    </script>
+    """
+
+    return page(
+        "Farmer Registration - Payment",
+        body
+    )
+
+
+# ============================================================
+# TPN CENTRE
+# ============================================================
+
+@app.route(
+    "/request/tpn",
+    methods=["GET", "POST"]
+)
+@login_required
+def tpn_request():
+    if request.method == "POST":
+        try:
+            data = {
+                "nrc_number": clean_required(
+                    "nrc_number",
+                    "NRC number"
+                ),
+                "date_of_birth": clean_required(
+                    "date_of_birth",
+                    "Date of birth"
+                ),
+                "first_name": clean_required(
+                    "first_name",
+                    "First name"
+                ),
+                "middle_names": form_value(
+                    "middle_names"
+                ),
+                "last_name": clean_required(
+                    "last_name",
+                    "Last name"
+                ),
+                "gender": clean_required(
+                    "gender",
+                    "Gender"
+                ),
+                "phone_number": clean_required(
+                    "phone_number",
+                    "Phone number"
+                ),
+                "email": clean_required(
+                    "email",
+                    "Email"
+                ),
+                "house_number": clean_required(
+                    "house_number",
+                    "House number"
+                ),
+                "province": clean_required(
+                    "province",
+                    "Province"
+                ),
+                "district": clean_required(
+                    "district",
+                    "District"
+                ),
+                "post_address": clean_required(
+                    "post_address",
+                    "Post address"
+                ),
+                "request_type": clean_required(
+                    "request_type",
+                    "TPN service requested"
+                ),
+                "additional_information": form_value(
+                    "additional_information"
+                ),
+            }
+
+            user = current_user()
+
+            request_id, request_no = create_request(
+                user["id"],
+                "tpn",
+                data
+            )
+
+            files = request.files.getlist(
+                "supporting_documents"
+            )
+
+            for uploaded in files:
+                if uploaded and uploaded.filename:
+                    save_request_file(
+                        request_id,
+                        user["id"],
+                        uploaded,
+                        "tpn"
+                    )
+
+            flash(
+                f"TPN request {request_no} "
+                "was submitted successfully.",
+                "success"
+            )
+
+            return redirect(
+                url_for(
+                    "request_detail",
+                    request_id=request_id
+                )
+            )
+
+        except ValueError as exc:
+            flash(
+                str(exc),
+                "error"
+            )
+
+        except Exception as exc:
+            flash(
+                f"TPN request failed: {exc}",
+                "error"
+            )
+
+    province_options = "".join(
+        f"<option>{e(p)}</option>"
+        for p in PROVINCES
+    )
+
+    body = f"""
+    <div class="card">
+
+      <h2>📋 TPN Centre</h2>
+
+      <p>
+        KOJA TPN Centre handles TPIN
+        registration, assistance, updates
+        and related document requests.
+      </p>
+
+      <form
+        method="post"
+        enctype="multipart/form-data"
+      >
+
+        <div class="grid">
+
+          <div class="field">
+            <label>NRC Number *</label>
+            <input name="nrc_number" required>
+          </div>
+
+          <div class="field">
+            <label>Date of Birth *</label>
+            <input
+              type="date"
+              name="date_of_birth"
+              required
+            >
+          </div>
+
+          <div class="field">
+            <label>First Name *</label>
+            <input name="first_name" required>
+          </div>
+
+          <div class="field">
+            <label>Middle Names</label>
+            <input name="middle_names">
+          </div>
+
+          <div class="field">
+            <label>Last Name *</label>
+            <input name="last_name" required>
+          </div>
+
+          <div class="field">
+            <label>Gender *</label>
+
+            <select name="gender" required>
+              <option value="">
+                Select gender
+              </option>
+              <option>Male</option>
+              <option>Female</option>
+              <option>Other</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label>Phone Number *</label>
+            <input name="phone_number" required>
+          </div>
+
+          <div class="field">
+            <label>Email *</label>
+            <input
+              type="email"
+              name="email"
+              required
+            >
+          </div>
+
+          <div class="field">
+            <label>House Number *</label>
+            <input name="house_number" required>
+          </div>
+
+          <div class="field">
+            <label>Province *</label>
+
+            <select name="province" required>
+              <option value="">
+                Select Province
+              </option>
+              {province_options}
+            </select>
+          </div>
+
+          <div class="field">
+            <label>District *</label>
+            <input name="district" required>
+          </div>
+
+          <div class="field">
+            <label>Post Address *</label>
+            <input name="post_address" required>
+          </div>
+
+        </div>
+
+        <div class="field">
+
+          <label>
+            TPN Service Requested *
+          </label>
+
+          <select
+            name="request_type"
+            required
+          >
+            <option value="">
+              Select request
+            </option>
+            <option>
+              TPIN Registration
+            </option>
+            <option>
+              TPIN Assistance
+            </option>
+            <option>
+              TPIN Update
+            </option>
+            <option>
+              TPIN Certificate / Document Request
+            </option>
+            <option>
+              Other TPN Service
+            </option>
+          </select>
+
+        </div>
+
+        <div class="field">
+
+          <label>
+            Additional Information
+          </label>
+
+          <textarea
+            name="additional_information"
+          ></textarea>
+
+        </div>
+
+        <div class="field filebox">
+
+          <label>
+            Supporting Documents
+          </label>
+
+          <input
+            type="file"
+            name="supporting_documents"
+            multiple
+            accept=".pdf,.jpg,.jpeg,.png,.webp,.doc,.docx"
+          >
+
+          <div class="help">
+            Maximum {MAX_FILE_MB} MB per file.
+          </div>
+
+        </div>
+
+        <button class="btn green">
+          Send TPN Request
+        </button>
+
+      </form>
+    </div>
+    """
+
+    return page(
+        "TPN Centre",
+        body
+    )
+
+
+# ============================================================
+# HIGHER EDUCATION MATERIALS
+# ============================================================
+
+@app.route(
+    "/request/materials",
+    methods=["GET", "POST"]
+)
+@login_required
+def materials_request():
+    if request.method == "POST":
+        try:
+            data = {
+                "university": clean_required(
+                    "university",
+                    "University"
+                ),
+                "programme": clean_required(
+                    "programme",
+                    "Programme"
+                ),
+                "course": clean_required(
+                    "course",
+                    "Course / Subject"
+                ),
+                "academic_level": clean_required(
+                    "academic_level",
+                    "Academic level"
+                ),
+                "material_type": clean_required(
+                    "material_type",
+                    "Material type"
+                ),
+                "topic": clean_required(
+                    "topic",
+                    "Topic / Material needed"
+                ),
+                "description": form_value(
+                    "description"
+                ),
+            }
+
+            user = current_user()
+
+            request_id, request_no = create_request(
+                user["id"],
+                "materials",
+                data
+            )
+
+            files = request.files.getlist(
+                "supporting_documents"
+            )
+
+            for uploaded in files:
+                if uploaded and uploaded.filename:
+                    save_request_file(
+                        request_id,
+                        user["id"],
+                        uploaded,
+                        "materials"
+                    )
+
+            flash(
+                f"Materials request {request_no} "
+                "was submitted successfully.",
+                "success"
+            )
+
+            return redirect(
+                url_for(
+                    "request_detail",
+                    request_id=request_id
+                )
+            )
+
+        except ValueError as exc:
+            flash(
+                str(exc),
+                "error"
+            )
+
+        except Exception as exc:
+            flash(
+                f"Materials request failed: {exc}",
+                "error"
+            )
+
+    body = """
+    <div class="card">
+
+      <h2>📖 Higher Education Materials</h2>
+
+      <p>
+        Request legitimate educational materials
+        for your university or college studies.
+      </p>
+
+      <form
+        method="post"
+        enctype="multipart/form-data"
+      >
+
+        <div class="grid">
+
+          <div class="field">
+            <label>University / College *</label>
+            <input name="university" required>
+          </div>
+
+          <div class="field">
+            <label>Programme *</label>
+            <input name="programme" required>
+          </div>
+
+          <div class="field">
+            <label>Course / Subject *</label>
+            <input name="course" required>
+          </div>
+
+          <div class="field">
+            <label>Academic Level *</label>
+            <input name="academic_level" required>
+          </div>
+
+          <div class="field">
+
+            <label>Material Type *</label>
+
+            <select
+              name="material_type"
+              required
+            >
+              <option value="">
+                Select material
+              </option>
+              <option>
+                Lecture Notes
+              </option>
+              <option>
+                Study Guide
+              </option>
+              <option>
+                Revision Material
+              </option>
+              <option>
+                Past Paper
+              </option>
+              <option>
+                Course Outline
+              </option>
+              <option>
+                Other
+              </option>
+            </select>
+
+          </div>
+
+          <div class="field">
+            <label>Topic / Material Needed *</label>
+            <input name="topic" required>
+          </div>
+
+        </div>
+
+        <div class="field">
+
+          <label>
+            Description
+          </label>
+
+          <textarea
+            name="description"
+            placeholder="Explain exactly what material you need."
+          ></textarea>
+
+        </div>
+
+        <div class="field filebox">
+
+          <label>
+            Supporting Documents
+          </label>
+
+          <input
+            type="file"
+            name="supporting_documents"
+            multiple
+            accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.webp"
+          >
+
+        </div>
+
+        <button class="btn green">
+          Send Materials Request
+        </button>
+
+      </form>
+    </div>
+    """
+
+    return page(
+        "Higher Education Materials",
+        body
+    )
+
+
+# ============================================================
+# MY REQUESTS
+# ============================================================
+
+@app.route("/my-requests")
+@login_required
+def my_requests():
+    user = current_user()
+
+    rows = db_select(
+        "koja_requests",
+        {
+            "user_id": f"eq.{user['id']}",
+            "order": "created_at.desc",
+        }
+    )
+
+    table_rows = ""
+
+    for row in rows:
+        cls = status_class(
+            row["status"]
+        )
+
+        table_rows += f"""
+        <tr>
+
+          <td>
+            <a href="/request/{row['id']}">
+              <strong>
+                {e(row['request_no'])}
+              </strong>
+            </a>
+          </td>
+
+          <td>
+            {e(row['service_name'])}
+          </td>
+
+          <td>
+            {e(str(row['created_at'])[:10])}
+          </td>
+
+          <td>
+            <span class="status {cls}">
+              {e(row['status'])}
+            </span>
+          </td>
+
+        </tr>
+        """
+
+    body = f"""
+    <section class="card">
+
+      <h2>My Requests</h2>
+
+      <table class="data-table">
+
+        <tr>
+          <th>Request</th>
+          <th>Service</th>
+          <th>Date</th>
+          <th>Status</th>
+        </tr>
+
+        {table_rows or
+        '<tr><td colspan="4">No requests found.</td></tr>'}
+
+      </table>
+
+    </section>
+    """
+
+    return page(
+        "My Requests",
+        body
+    )
+
+
+# ============================================================
+# REQUEST DETAIL
+# ============================================================
+
+@app.route(
+    "/request/<request_id>"
+)
+@login_required
+def request_detail(request_id):
+    row = get_request(
+        request_id
+    )
+
+    if not row:
+        abort(404)
 
     user = current_user()
 
-    if request.method == "POST":
+    if str(row["user_id"]) != str(user["id"]):
+        abort(403)
 
-        title = request.form.get(
-            "title",
-            ""
-        ).strip()
+    data = parse_request_data(row)
 
-        question = request.form.get(
-            "question",
-            ""
-        ).strip()
+    files = get_request_files(
+        request_id
+    )
 
-        description = request.form.get(
-            "description",
-            ""
-        ).strip()
+    items = ""
 
-        subject = request.form.get(
-            "subject",
-            ""
-        ).strip()
+    for key, value in data.items():
+        label = key.replace(
+            "_",
+            " "
+        ).title()
 
-        course = request.form.get(
-            "course",
-            ""
-        ).strip()
-
-        class_level = request.form.get(
-            "class_level",
-            ""
-        ).strip()
-
-        uploaded_file = request.files.get(
-            "file"
+        value_html = e(value).replace(
+            "\n",
+            "<br>"
         )
 
-        if not title:
-            flash(
-                "Please enter a title.",
-                "error"
+        items += f"""
+        <div class="k">
+          {e(label)}
+        </div>
+
+        <div>
+          {value_html}
+        </div>
+        """
+
+    file_items = ""
+
+    for file_row in files:
+        file_items += f"""
+        <li>
+          <a
+            href="/file/{file_row['id']}"
+            target="_blank"
+          >
+            {e(file_row['original_name'])}
+          </a>
+        </li>
+        """
+
+    output = ""
+
+    if row.get("output_file"):
+        output = f"""
+        <section class="card">
+
+          <h2>Completed Result</h2>
+
+          <p>
+            KOJA has uploaded a result
+            for this request.
+          </p>
+
+          <a
+            class="btn green"
+            href="/download-result/{row['id']}"
+          >
+            Download Result
+          </a>
+
+        </section>
+        """
+
+    cls = status_class(
+        row["status"]
+    )
+
+    body = f"""
+    <section class="card">
+
+      <h2>
+        {e(row['request_no'])}
+      </h2>
+
+      <p>
+        <strong>Service:</strong>
+        {e(row['service_name'])}
+      </p>
+
+      <p>
+        <strong>Status:</strong>
+
+        <span class="status {cls}">
+          {e(row['status'])}
+        </span>
+      </p>
+
+      <p class="small">
+        Submitted:
+        {e(row['created_at'])}
+      </p>
+
+    </section>
+
+    <section class="card">
+
+      <h2>
+        Request Details
+      </h2>
+
+      <div class="kv">
+        {items}
+      </div>
+
+    </section>
+
+    <section class="card">
+
+      <h2>
+        Documents
+      </h2>
+
+      <ul>
+        {file_items or
+        '<li>No documents attached.</li>'}
+      </ul>
+
+    </section>
+
+    <section class="card">
+
+      <h2>
+        KOJA Response
+      </h2>
+
+      <p>
+        {e(row.get("admin_response"))
+        if row.get("admin_response")
+        else "No admin response has been added yet."}
+      </p>
+
+    </section>
+
+    {output}
+    """
+
+    return page(
+        row["request_no"],
+        body
+    )
+
+
+# ============================================================
+# PRIVATE FILE
+# ============================================================
+
+@app.route(
+    "/file/<file_id>"
+)
+@login_required
+def private_file(file_id):
+    rows = db_select(
+        "koja_request_files",
+        {
+            "id": f"eq.{file_id}",
+            "limit": "1",
+        }
+    )
+
+    if not rows:
+        abort(404)
+
+    file_row = rows[0]
+
+    user = current_user()
+
+    request_row = get_request(
+        file_row["request_id"]
+    )
+
+    if not request_row:
+        abort(404)
+
+    if str(request_row["user_id"]) != str(user["id"]):
+        abort(403)
+
+    response = storage_download(
+        file_row["stored_path"]
+    )
+
+    content_type = (
+        file_row.get("mime_type")
+        or "application/octet-stream"
+    )
+
+    return send_file(
+        __import__("io").BytesIO(
+            response.content
+        ),
+        mimetype=content_type,
+        as_attachment=False,
+        download_name=file_row["original_name"],
+    )
+
+
+# ============================================================
+# DOWNLOAD RESULT
+# ============================================================
+
+@app.route(
+    "/download-result/<request_id>"
+)
+@login_required
+def download_result(request_id):
+    row = get_request(
+        request_id
+    )
+
+    if not row:
+        abort(404)
+
+    user = current_user()
+
+    if str(row["user_id"]) != str(user["id"]):
+        abort(403)
+
+    if not row.get("output_file"):
+        abort(404)
+
+    response = storage_download(
+        row["output_file"]
+    )
+
+    filename = (
+        row.get("output_file_original")
+        or "koja-result"
+    )
+
+    return send_file(
+        __import__("io").BytesIO(
+            response.content
+        ),
+        mimetype=(
+            mimetypes.guess_type(
+                filename
+            )[0]
+            or "application/octet-stream"
+        ),
+        as_attachment=True,
+        download_name=filename,
+    )
+
+
+# ============================================================
+# NOTIFICATIONS
+# ============================================================
+
+@app.route("/notifications")
+@login_required
+def notifications():
+    user = current_user()
+
+    rows = db_select(
+        "koja_notifications",
+        {
+            "user_id": f"eq.{user['id']}",
+            "order": "created_at.desc",
+        }
+    )
+
+    try:
+        db_update(
+            "koja_notifications",
+            {
+                "user_id": f"eq.{user['id']}"
+            },
+            {
+                "is_read": True
+            }
+        )
+    except Exception:
+        pass
+
+    cards = ""
+
+    for n in rows:
+        cards += f"""
+        <div class="card">
+
+          <h3>
+            {e(n['title'])}
+          </h3>
+
+          <p>
+            {e(n['message'])}
+          </p>
+
+          <div class="small">
+            {e(n['created_at'])}
+          </div>
+
+        </div>
+        """
+
+    body = (
+        cards
+        or
+        """
+        <div class="card">
+          <h2>Notifications</h2>
+          <p>No notifications yet.</p>
+        </div>
+        """
+    )
+
+    return page(
+        "Notifications",
+        body
+    )
+
+
+# ============================================================
+# PROFILE
+# ============================================================
+
+@app.route("/profile")
+@login_required
+def profile():
+    user = current_user()
+
+    body = f"""
+    <section class="card">
+
+      <h2>Profile</h2>
+
+      <div class="kv">
+
+        <div class="k">
+          Full Name
+        </div>
+
+        <div>
+          {e(user['full_name'])}
+        </div>
+
+        <div class="k">
+          Email
+        </div>
+
+        <div>
+          {e(user['email'])}
+        </div>
+
+        <div class="k">
+          Phone
+        </div>
+
+        <div>
+          {e(user.get('phone'))}
+        </div>
+
+        <div class="k">
+          Account Created
+        </div>
+
+        <div>
+          {e(user['created_at'])}
+        </div>
+
+      </div>
+
+    </section>
+    """
+
+    return page(
+        "Profile",
+        body
+    )
+
+
+# ============================================================
+# ADMIN LOGIN
+# ============================================================
+
+@app.route(
+    "/admin/login",
+    methods=["GET", "POST"]
+)
+def admin_login():
+    if request.method == "POST":
+        email = form_value(
+            "email"
+        ).lower()
+
+        password = request.form.get(
+            "password",
+            ""
+        )
+
+        try:
+            email_ok = secrets.compare_digest(
+                email,
+                ADMIN_EMAIL
             )
 
-        elif not question and not uploaded_file:
-            flash(
-                "Enter a question or upload a question file.",
-                "error"
+            password_ok = secrets.compare_digest(
+                password,
+                ADMIN_PASSWORD
             )
 
-        else:
-
-            try:
-
-                assignment_id = str(uuid.uuid4())
-
-                file_name = None
-                file_path = None
-                file_size = 0
-                mime_type = (
-                    "application/pdf"
-                )
-
-                # ------------------------------------------------
-                # Upload question file if provided
-                # ------------------------------------------------
-
-                if uploaded_file and uploaded_file.filename:
-
-                    original = uploaded_file.filename
-
-                    extension = os.path.splitext(
-                        original
-                    )[1].lower()
-
-                    safe_name = (
-                        f"{uuid.uuid4()}{extension}"
-                    )
-
-                    storage_path = (
-                        f"assignments/"
-                        f"{user['id']}/"
-                        f"{safe_name}"
-                    )
-
-                    file_bytes = uploaded_file.read()
-
-                    file_size = len(file_bytes)
-
-                    mime_type = (
-                        uploaded_file.mimetype
-                        or "application/octet-stream"
-                    )
-
-                    storage_upload(
-                        storage_path,
-                        file_bytes,
-                        mime_type
-                    )
-
-                    file_name = original
-                    file_path = storage_path
-
-                assignment = {
-
-                    "id": assignment_id,
-
-                    "student_id":
-                        user["id"],
-
-                    "title":
-                        title,
-
-                    "description":
-                        description or None,
-
-                    "subject":
-                        subject or None,
-
-                    "course":
-                        course or None,
-
-                    "class_level":
-                        class_level or None,
-
-                    "file_name":
-                        file_name,
-
-                    "file_path":
-                        file_path,
-
-                    "file_size":
-                        file_size,
-
-                    "mime_type":
-                        mime_type,
-
-                    "status":
-                        "submitted",
-
-                    "email":
-                        user.get("email"),
-
-                    "question":
-                        question or None,
-
-                    "student_name":
-                        user.get("full_name")
-                        or user.get("name"),
-
-                    "student_email":
-                        user.get("email"),
-
-                    "institution":
-                        user.get("institution"),
-
-                }
-
-                db_post(
-                    "assignments",
-                    assignment
-                )
-
-                log_activity(
-                    "submit_assignment",
-                    f"Submitted: {title}",
-                    user["id"],
-                    user["email"]
-                )
-
-                flash(
-                    "Question submitted successfully.",
-                    "success"
-                )
+            if email_ok and password_ok:
+                session.clear()
+                session["admin_logged_in"] = True
 
                 return redirect(
                     url_for(
-                        "assignment_detail",
-                        assignment_id=assignment_id
+                        "admin_dashboard"
                     )
                 )
 
-            except Exception as exc:
-
-                logger.exception(
-                    "Question submission failed"
-                )
-
-                flash(
-                    "Submission error: " + str(exc),
-                    "error"
-                )
-
-    content = """
-    <div class="card">
-
-        <h2>Submit Academic Question</h2>
-
-        <form
-            method="POST"
-            enctype="multipart/form-data"
-        >
-
-            <label>Title</label>
-
-            <input
-                type="text"
-                name="title"
-                placeholder="Example: Biology Assignment"
-                required
-            >
-
-            <label>Subject</label>
-
-            <input
-                type="text"
-                name="subject"
-                placeholder="Biology"
-            >
-
-            <label>Course</label>
-
-            <input
-                type="text"
-                name="course"
-                placeholder="Example: Diploma in Education"
-            >
-
-            <label>Class / Level</label>
-
-            <input
-                type="text"
-                name="class_level"
-                placeholder="Example: Grade 12"
-            >
-
-            <label>Question</label>
-
-            <textarea
-                name="question"
-                placeholder="Write your question here..."
-            ></textarea>
-
-            <label>
-                Description / Instructions
-            </label>
-
-            <textarea
-                name="description"
-                placeholder="Additional instructions..."
-            ></textarea>
-
-            <label>
-                Upload Question File
-            </label>
-
-            <input
-                type="file"
-                name="file"
-                accept=".pdf,.doc,.docx,.xls,.xlsx,.txt,.jpg,.jpeg,.png"
-            >
-
-            <button type="submit">
-                Submit Question
-            </button>
-
-        </form>
-
-    </div>
-    """
-
-    return render_page(
-        content,
-        "Submit Question - KOJA Africa"
-    )
-
-
-# ============================================================
-# MY ASSIGNMENTS
-# ============================================================
-
-@app.route("/my-assignments")
-@login_required
-def my_assignments():
-
-    user = current_user()
-
-    try:
-
-        rows = db_get(
-            "assignments",
-            {
-                "student_id": f"eq.{user['id']}",
-                "select": "*",
-                "order": "created_at.desc",
-            }
-        )
-
-    except Exception as exc:
-
-        rows = []
-
-        flash(
-            "Could not load questions: " + str(exc),
-            "error"
-        )
-
-    html = """
-    <div class="card">
-        <h2>My Questions</h2>
-
-        <a class="btn"
-           href="/submit-question">
-           Submit New Question
-        </a>
-    </div>
-    """
-
-    if not rows:
-
-        html += """
-        <div class="card">
-            <p>You have not submitted any questions yet.</p>
-        </div>
-        """
-
-    else:
-
-        for item in rows:
-
-            assignment_id = item.get("id")
-
-            title = (
-                item.get("title")
-                or "Untitled Question"
+            flash(
+                "Invalid administrator credentials.",
+                "error"
             )
 
-            status = (
-                item.get("status")
-                or "submitted"
+        except Exception:
+            flash(
+                "Administrator login failed.",
+                "error"
             )
 
-            html += f"""
-            <div class="card">
+    body = """
+    <div class="card"
+         style="max-width:600px;margin:auto">
 
-                <h3>{title}</h3>
+      <h2>
+        KOJA Administrator Login
+      </h2>
 
-                <p>
-                    <span class="badge">
-                    {status}
-                    </span>
-                </p>
+      <p class="small">
+        Administrator login is separate
+        from client accounts.
+      </p>
 
-                <p>
-                Subject:
-                {item.get('subject') or 'Not specified'}
-                </p>
+      <form method="post">
 
-                <p>
-                Submitted:
-                {item.get('created_at') or ''}
-                </p>
+        <div class="field">
+          <label>Admin Email *</label>
 
-                <a class="btn"
-                   href="/assignment/{assignment_id}">
-                   View
-                </a>
+          <input
+            type="email"
+            name="email"
+            required
+          >
+        </div>
 
-            </div>
-            """
+        <div class="field">
+          <label>Admin Password *</label>
 
-    return render_page(
-        html,
-        "My Questions - KOJA Africa"
+          <input
+            type="password"
+            name="password"
+            required
+          >
+        </div>
+
+        <button class="btn green">
+          Admin Login
+        </button>
+
+      </form>
+
+    </div>
+    """
+
+    return page(
+        "Admin Login",
+        body
     )
 
 
 # ============================================================
-# ASSIGNMENT DETAIL
+# ADMIN LOGOUT
 # ============================================================
 
-@app.route("/assignment/<assignment_id>")
-@login_required
-def assignment_detail(assignment_id):
+@app.route("/admin/logout")
+def admin_logout():
+    session.clear()
 
-    user = current_user()
-
-    try:
-
-        rows = db_get(
-            "assignments",
-            {
-                "id": f"eq.{assignment_id}",
-                "select": "*",
-                "limit": "1",
-            }
-        )
-
-        if not rows:
-            abort(404)
-
-        assignment = rows[0]
-
-        # Student may only see own assignment.
-        if (
-            not is_admin_user(user)
-            and assignment.get("student_id")
-            != user.get("id")
-        ):
-            abort(403)
-
-    except Exception as exc:
-
-        logger.exception(
-            "Assignment detail failed"
-        )
-
-        flash(
-            "Could not load assignment: " + str(exc),
-            "error"
-        )
-
-        return redirect(
-            url_for("dashboard")
-        )
-
-    question = (
-        assignment.get("question")
-        or assignment.get("description")
-        or "No written question."
-    )
-
-    answer = (
-        assignment.get("answer")
-        or assignment.get("answer_text")
-    )
-
-    answer_path = (
-        assignment.get("answer_file_path")
-        or assignment.get("answer_path")
-        or assignment.get("answer_pdf_path")
-        or assignment.get("answer_word_path")
-        or assignment.get("answer_excel_path")
-    )
-
-    question_path = (
-        assignment.get("file_path")
-        or assignment.get("question_path")
-    )
-
-    html = f"""
-    <div class="card">
-
-        <h2>
-        {assignment.get('title') or 'Assignment'}
-        </h2>
-
-        <p>
-        <span class="badge">
-        {assignment.get('status') or 'submitted'}
-        </span>
-        </p>
-
-        <p>
-        <strong>Subject:</strong>
-        {assignment.get('subject') or 'Not specified'}
-        </p>
-
-        <p>
-        <strong>Course:</strong>
-        {assignment.get('course') or 'Not specified'}
-        </p>
-
-        <p>
-        <strong>Class:</strong>
-        {assignment.get('class_level') or 'Not specified'}
-        </p>
-
-    </div>
-
-    <div class="card">
-
-        <h3>Question</h3>
-
-        <div class="question">
-        <pre>{question}</pre>
-        </div>
-    """
-
-    if question_path:
-
-        html += f"""
-        <a class="btn"
-           href="/download-assignment/{assignment_id}">
-           Download Question File
-        </a>
-        """
-
-    html += """
-    </div>
-
-    <div class="card">
-
-        <h3>Answer</h3>
-    """
-
-    if answer:
-
-        html += f"""
-        <div class="question">
-            <pre>{answer}</pre>
-        </div>
-        """
-
-    else:
-
-        html += """
-        <p>
-        Your question has not been answered yet.
-        </p>
-        """
-
-    if answer_path:
-
-        html += f"""
-        <p>
-        <a class="btn btn-success"
-           href="/download-answer/{assignment_id}">
-           Download Answer File
-        </a>
-        </p>
-        """
-
-    html += "</div>"
-
-    return render_page(
-        html,
-        "Assignment - KOJA Africa"
+    return redirect(
+        url_for("admin_login")
     )
 
 
@@ -1731,791 +4313,568 @@ def assignment_detail(assignment_id):
 @app.route("/admin")
 @admin_required
 def admin_dashboard():
-
-    try:
-
-        assignments = db_get(
-            "assignments",
-            {
-                "select": "*",
-                "order": "created_at.desc",
-            }
-        )
-
-    except Exception as exc:
-
-        assignments = []
-
-        flash(
-            "Could not load assignments: " + str(exc),
-            "error"
-        )
-
-    try:
-
-        profiles = db_get(
-            "profiles",
-            {
-                "select": "id,name,full_name,email,role,is_admin,is_active,created_at",
-                "order": "created_at.desc",
-            }
-        )
-
-    except Exception:
-
-        profiles = []
-
-    total_users = len(profiles)
-
-    total_assignments = len(assignments)
-
-    pending = len([
-        a for a in assignments
-        if str(
-            a.get("status", "")
-        ).lower()
-        in (
-            "submitted",
-            "pending",
-            "draft"
-        )
-    ])
-
-    answered = len([
-        a for a in assignments
-        if (
-            a.get("answer")
-            or a.get("answer_text")
-            or a.get("answer_file_path")
-            or a.get("answer_path")
-            or a.get("answer_pdf_path")
-            or a.get("answer_word_path")
-            or a.get("answer_excel_path")
-        )
-    ])
-
-    html = f"""
-    <h1>Administrator Dashboard</h1>
-
-    <div class="grid">
-
-        <div class="stat">
-            Users
-            <strong>{total_users}</strong>
-        </div>
-
-        <div class="stat">
-            Questions
-            <strong>{total_assignments}</strong>
-        </div>
-
-        <div class="stat">
-            Pending
-            <strong>{pending}</strong>
-        </div>
-
-        <div class="stat">
-            Answered
-            <strong>{answered}</strong>
-        </div>
-
-    </div>
-
-    <div class="card">
-
-        <h2>Administration</h2>
-
-        <a class="btn"
-           href="/admin/questions">
-           Manage Questions
-        </a>
-
-        <a class="btn"
-           href="/admin/users">
-           Manage Users
-        </a>
-
-        <a class="btn"
-           href="/admin/create-admin">
-           Create Admin
-        </a>
-
-    </div>
-    """
-
-    return render_page(
-        html,
-        "Admin Dashboard - KOJA Africa"
+    status_filter = form_value(
+        "status"
     )
 
+    service_filter = form_value(
+        "service"
+    )
 
-# ============================================================
-# ADMIN QUESTIONS
-# ============================================================
+    params = {
+        "order": "created_at.desc",
+        "limit": "200",
+    }
 
-@app.route("/admin/questions")
-@admin_required
-def admin_questions():
-
-    try:
-
-        assignments = db_get(
-            "assignments",
-            {
-                "select": "*",
-                "order": "created_at.desc",
-            }
+    if status_filter in STATUSES:
+        params["status"] = (
+            f"eq.{status_filter}"
         )
 
-    except Exception as exc:
-
-        assignments = []
-
-        flash(
-            "Could not load questions: " + str(exc),
-            "error"
+    if service_filter in SERVICE_NAMES:
+        params["service_type"] = (
+            f"eq.{service_filter}"
         )
 
-    html = """
-    <div class="card">
-        <h2>Submitted Questions</h2>
+    rows = db_select(
+        "koja_requests",
+        params
+    )
+
+    total = len(
+        db_select(
+            "koja_requests",
+            {"select": "id"}
+        )
+    )
+
+    counts = {}
+
+    for status in STATUSES:
+        counts[status] = len(
+            db_select(
+                "koja_requests",
+                {
+                    "status": f"eq.{status}",
+                    "select": "id",
+                }
+            )
+        )
+
+    stat_cards = f"""
+    <div class="grid3">
+
+      <div class="service">
+        <strong>Total</strong>
+        <h2>{total}</h2>
+      </div>
+
+      <div class="service">
+        <strong>Request Received</strong>
+        <h2>{counts['Request Received']}</h2>
+      </div>
+
+      <div class="service">
+        <strong>Processing</strong>
+        <h2>{counts['Processing']}</h2>
+      </div>
+
+      <div class="service">
+        <strong>Awaiting Client</strong>
+        <h2>{counts['Awaiting Client']}</h2>
+      </div>
+
+      <div class="service">
+        <strong>Completed</strong>
+        <h2>{counts['Completed']}</h2>
+      </div>
+
+      <div class="service">
+        <strong>Rejected</strong>
+        <h2>{counts['Rejected']}</h2>
+      </div>
+
     </div>
     """
 
-    if not assignments:
+    table_rows = ""
 
-        html += """
-        <div class="card">
-            <p>No questions have been submitted.</p>
-        </div>
-        """
+    for row in rows:
+        user = get_user_by_id(
+            row["user_id"]
+        ) or {}
 
-    for a in assignments:
+        cls = status_class(
+            row["status"]
+        )
 
-        html += f"""
-        <div class="card">
+        table_rows += f"""
+        <tr>
 
-            <h3>
-            {a.get('title') or 'Untitled'}
-            </h3>
-
-            <p>
-            Student:
-            {a.get('student_name') or 'Unknown'}
-            </p>
-
-            <p>
-            Email:
-            {a.get('student_email')
-              or a.get('email')
-              or 'Unknown'}
-            </p>
-
-            <p>
-            Subject:
-            {a.get('subject') or 'Not specified'}
-            </p>
-
-            <p>
-            Status:
-            <span class="badge">
-            {a.get('status') or 'submitted'}
-            </span>
-            </p>
-
-            <a class="btn"
-               href="/admin/question/{a.get('id')}">
-               Open Question
+          <td>
+            <a
+              href="/admin/request/{row['id']}"
+            >
+              <strong>
+                {e(row['request_no'])}
+              </strong>
             </a>
+          </td>
 
-        </div>
+          <td>
+            {e(row['service_name'])}
+          </td>
+
+          <td>
+            {e(user.get('full_name', ''))}
+          </td>
+
+          <td>
+            {e(user.get('email', ''))}
+          </td>
+
+          <td>
+            <span class="status {cls}">
+              {e(row['status'])}
+            </span>
+          </td>
+
+          <td>
+            {e(str(row['created_at'])[:16])}
+          </td>
+
+        </tr>
         """
 
-    return render_page(
-        html,
-        "Manage Questions - KOJA Africa"
+    service_options = ""
+
+    for key, name, desc in SERVICE_LIST:
+        service_options += (
+            f'<option value="{e(key)}" '
+            f'{"selected" if key == service_filter else ""}>'
+            f'{e(name)}'
+            f'</option>'
+        )
+
+    status_options = ""
+
+    for status in STATUSES:
+        status_options += (
+            f'<option '
+            f'{"selected" if status == status_filter else ""}>'
+            f'{e(status)}'
+            f'</option>'
+        )
+
+    body = f"""
+    <section class="hero">
+
+      <h1>KOJA Admin Dashboard</h1>
+
+      <p>
+        One place to manage all KOJA requests
+        while keeping each service workflow separate.
+      </p>
+
+    </section>
+
+    {stat_cards}
+
+    <section class="card">
+
+      <h2>Filter Requests</h2>
+
+      <form method="get">
+
+        <div class="grid">
+
+          <div class="field">
+            <label>Service</label>
+
+            <select name="service">
+
+              <option value="">
+                All Services
+              </option>
+
+              {service_options}
+
+            </select>
+          </div>
+
+          <div class="field">
+            <label>Status</label>
+
+            <select name="status">
+
+              <option value="">
+                All Statuses
+              </option>
+
+              {status_options}
+
+            </select>
+          </div>
+
+        </div>
+
+        <button class="btn green">
+          Filter
+        </button>
+
+        <a
+          class="btn light"
+          href="/admin"
+        >
+          Clear
+        </a>
+
+      </form>
+
+    </section>
+
+    <section class="card">
+
+      <h2>All KOJA Requests</h2>
+
+      <table class="data-table">
+
+        <tr>
+          <th>Request</th>
+          <th>Service</th>
+          <th>Client</th>
+          <th>Email</th>
+          <th>Status</th>
+          <th>Date</th>
+        </tr>
+
+        {table_rows or
+        '<tr><td colspan="6">No requests found.</td></tr>'}
+
+      </table>
+
+    </section>
+    """
+
+    return page(
+        "Admin Dashboard",
+        body,
+        admin=True
     )
 
 
 # ============================================================
-# ADMIN QUESTION DETAIL
+# ADMIN REQUEST DETAIL
 # ============================================================
 
 @app.route(
-    "/admin/question/<assignment_id>",
+    "/admin/request/<request_id>",
     methods=["GET", "POST"]
 )
 @admin_required
-def admin_question(assignment_id):
-
-    admin = current_user()
-
-    rows = db_get(
-        "assignments",
-        {
-            "id": f"eq.{assignment_id}",
-            "select": "*",
-            "limit": "1",
-        }
+def admin_request_detail(request_id):
+    row = get_request(
+        request_id
     )
 
-    if not rows:
+    if not row:
         abort(404)
 
-    assignment = rows[0]
-
     if request.method == "POST":
-
-        answer_text = request.form.get(
-            "answer",
-            ""
-        ).strip()
-
-        admin_notes = request.form.get(
-            "admin_notes",
-            ""
-        ).strip()
-
-        status = request.form.get(
-            "status",
-            "answered"
-        ).strip()
-
-        answer_file = request.files.get(
-            "answer_file"
-        )
-
-        update = {
-            "answer": answer_text or None,
-            "answer_text": answer_text or None,
-            "admin_notes":
-                admin_notes or None,
-            "status": status,
-            "answered_by": admin["id"],
-            "processed_by": admin["id"],
-            "processed_at":
-                datetime.now(timezone.utc).isoformat(),
-            "answered_at":
-                datetime.now(timezone.utc).isoformat(),
-            "completed_at":
-                datetime.now(timezone.utc).isoformat(),
-        }
-
         try:
-
-            # ------------------------------------------------
-            # Upload answer file
-            # ------------------------------------------------
-
-            if (
-                answer_file
-                and answer_file.filename
-            ):
-
-                original = answer_file.filename
-
-                extension = os.path.splitext(
-                    original
-                )[1].lower()
-
-                stored_name = (
-                    f"{uuid.uuid4()}{extension}"
-                )
-
-                storage_path = (
-                    f"answers/"
-                    f"{assignment.get('student_id') or 'unknown'}/"
-                    f"{stored_name}"
-                )
-
-                file_bytes = answer_file.read()
-
-                mime = (
-                    answer_file.mimetype
-                    or "application/octet-stream"
-                )
-
-                storage_upload(
-                    storage_path,
-                    file_bytes,
-                    mime
-                )
-
-                update["answer_file_name"] = original
-                update["answer_file_path"] = storage_path
-                update["answer_filename"] = original
-                update["answer_path"] = storage_path
-
-                # Keep legacy fields useful.
-                if extension == ".pdf":
-                    update["answer_pdf_path"] = storage_path
-
-                elif extension in (
-                    ".doc",
-                    ".docx"
-                ):
-                    update["answer_word_path"] = storage_path
-
-                elif extension in (
-                    ".xls",
-                    ".xlsx"
-                ):
-                    update["answer_excel_path"] = storage_path
-
-            db_patch(
-                "assignments",
-                {
-                    "id": f"eq.{assignment_id}"
-                },
-                update
+            status = form_value(
+                "status"
             )
 
-            # ------------------------------------------------
-            # Also record response in assignment_responses
-            # ------------------------------------------------
+            response_text = form_value(
+                "admin_response"
+            )
 
-            response_data = {
-                "id": str(uuid.uuid4()),
-                "assignment_id":
-                    assignment_id,
-                "admin_id":
-                    admin["id"],
-                "response_text":
-                    answer_text or None,
-            }
-
-            if update.get("answer_file_path"):
-                response_data["file_name"] = (
-                    update.get("answer_file_name")
-                )
-                response_data["file_path"] = (
-                    update.get("answer_file_path")
+            if status not in STATUSES:
+                raise ValueError(
+                    "Invalid request status."
                 )
 
-            try:
+            output = request.files.get(
+                "result_file"
+            )
 
-                db_post(
-                    "assignment_responses",
-                    response_data,
-                    returning="minimal"
+            output_path = row.get(
+                "output_file"
+            )
+
+            output_original = row.get(
+                "output_file_original"
+            )
+
+            if output and output.filename:
+                uploaded = storage_upload(
+                    output,
+                    "results",
+                    str(request_id)
                 )
 
-            except Exception as exc:
+                if uploaded:
+                    output_path = uploaded[
+                        "stored_path"
+                    ]
 
-                logger.warning(
-                    "assignment_responses insert failed: %s",
-                    exc
+                    output_original = uploaded[
+                        "original_name"
+                    ]
+
+            db_update(
+                "koja_requests",
+                {
+                    "id": f"eq.{request_id}"
+                },
+                {
+                    "status": status,
+                    "admin_response": response_text,
+                    "output_file": output_path,
+                    "output_file_original":
+                        output_original,
+                    "updated_at": now_iso(),
+                }
+            )
+
+            add_notification(
+                row["user_id"],
+                f"Request Updated: {row['request_no']}",
+                (
+                    f"Your {row['service_name']} request "
+                    f"is now '{status}'. "
+                    + (
+                        f"KOJA response: {response_text}"
+                        if response_text
+                        else ""
+                    )
                 )
-
-            log_activity(
-                "answer_assignment",
-                f"Answered assignment {assignment_id}",
-                admin["id"],
-                admin["email"]
             )
 
             flash(
-                "Answer saved successfully.",
+                "Request updated successfully.",
                 "success"
             )
 
             return redirect(
                 url_for(
-                    "admin_question",
-                    assignment_id=assignment_id
+                    "admin_request_detail",
+                    request_id=request_id
                 )
+            )
+
+        except ValueError as exc:
+            flash(
+                str(exc),
+                "error"
             )
 
         except Exception as exc:
-
-            logger.exception(
-                "Answer failed"
-            )
-
             flash(
-                "Could not save answer: " + str(exc),
+                f"Request update failed: {exc}",
                 "error"
             )
 
-    question = (
-        assignment.get("question")
-        or assignment.get("description")
-        or ""
+    data = parse_request_data(
+        row
     )
 
-    html = f"""
-    <div class="card">
+    files = get_request_files(
+        request_id
+    )
 
-        <h2>
-        {assignment.get('title') or 'Question'}
-        </h2>
+    items = ""
 
-        <p>
-        <strong>Student:</strong>
-        {assignment.get('student_name') or 'Unknown'}
-        </p>
-
-        <p>
-        <strong>Email:</strong>
-        {assignment.get('student_email')
-          or assignment.get('email')
-          or 'Unknown'}
-        </p>
-
-        <p>
-        <strong>Institution:</strong>
-        {assignment.get('institution')
-          or 'Not provided'}
-        </p>
-
-        <p>
-        <strong>Subject:</strong>
-        {assignment.get('subject')
-          or 'Not specified'}
-        </p>
-
-    </div>
-
-    <div class="card">
-
-        <h3>Question</h3>
-
-        <div class="question">
-            <pre>{question}</pre>
+    for key, value in data.items():
+        items += f"""
+        <div class="k">
+          {e(key.replace('_', ' ').title())}
         </div>
-    """
 
-    if assignment.get("file_path"):
-
-        html += f"""
-        <a class="btn"
-           href="/admin/download-question/{assignment_id}">
-           Download Question File
-        </a>
+        <div>
+          {e(value).replace(chr(10), '<br>')}
+        </div>
         """
 
-    html += f"""
+    file_items = ""
 
-    </div>
-
-    <div class="card">
-
-        <h3>Answer Student</h3>
-
-        <form
-            method="POST"
-            enctype="multipart/form-data"
-        >
-
-            <label>Answer</label>
-
-            <textarea
-                name="answer"
-                placeholder="Write the academic answer here..."
-            >{assignment.get('answer') or assignment.get('answer_text') or ''}</textarea>
-
-            <label>Admin Notes</label>
-
-            <textarea
-                name="admin_notes"
-                placeholder="Internal notes..."
-            >{assignment.get('admin_notes') or ''}</textarea>
-
-            <label>Status</label>
-
-            <select name="status">
-
-                <option value="answered">
-                    Answered
-                </option>
-
-                <option value="completed">
-                    Completed
-                </option>
-
-                <option value="pending">
-                    Pending
-                </option>
-
-                <option value="submitted">
-                    Submitted
-                </option>
-
-            </select>
-
-            <label>
-                Upload Answer File
-            </label>
-
-            <input
-                type="file"
-                name="answer_file"
-                accept=".pdf,.doc,.docx,.xls,.xlsx,.txt"
-            >
-
-            <button
-                type="submit"
-                class="btn-success"
-            >
-                Save Answer
-            </button>
-
-        </form>
-
-    </div>
-    """
-
-    return render_page(
-        html,
-        "Answer Question - KOJA Africa"
-    )
-
-
-# ============================================================
-# ADMIN USERS
-# ============================================================
-
-@app.route("/admin/users")
-@admin_required
-def admin_users():
-
-    try:
-
-        users = db_get(
-            "profiles",
-            {
-                "select": "*",
-                "order": "created_at.desc",
-            }
-        )
-
-    except Exception as exc:
-
-        users = []
-
-        flash(
-            "Could not load users: " + str(exc),
-            "error"
-        )
-
-    html = """
-    <div class="card">
-        <h2>KOJA Users</h2>
-    </div>
-
-    <div class="card">
-
-    <table>
-
-    <tr>
-        <th>Name</th>
-        <th>Email</th>
-        <th>Role</th>
-        <th>Admin</th>
-        <th>Active</th>
-    </tr>
-    """
-
-    for user in users:
-
-        html += f"""
-        <tr>
-
-            <td>
-            {user.get('full_name')
-             or user.get('name')
-             or ''}
-            </td>
-
-            <td>
-            {user.get('email') or ''}
-            </td>
-
-            <td>
-            {user.get('role') or ''}
-            </td>
-
-            <td>
-            {user.get('is_admin')}
-            </td>
-
-            <td>
-            {user.get('is_active')}
-            </td>
-
-        </tr>
+    for f in files:
+        file_items += f"""
+        <li>
+          <a
+            href="/admin/file/{f['id']}"
+            target="_blank"
+          >
+            {e(f['original_name'])}
+          </a>
+        </li>
         """
 
-    html += """
-    </table>
+    selected = {}
 
-    </div>
+    for status in STATUSES:
+        selected[status] = (
+            "selected"
+            if row["status"] == status
+            else ""
+        )
+
+    options = "".join(
+        f'<option {selected[s]}>{e(s)}</option>'
+        for s in STATUSES
+    )
+
+    body = f"""
+    <section class="card">
+
+      <h2>
+        {e(row['request_no'])}
+      </h2>
+
+      <p>
+        <strong>Service:</strong>
+        {e(row['service_name'])}
+      </p>
+
+      <p>
+        <strong>Client:</strong>
+        {e(row.get('full_name'))}
+      </p>
+
+      <p>
+        <strong>Email:</strong>
+        {e(row.get('user_email'))}
+      </p>
+
+      <p>
+        <strong>Phone:</strong>
+        {e(row.get('user_phone'))}
+      </p>
+
+      <p>
+        <strong>Status:</strong>
+
+        <span class="status {status_class(row['status'])}">
+          {e(row['status'])}
+        </span>
+      </p>
+
+    </section>
+
+    <section class="card">
+
+      <h2>
+        Submitted Information
+      </h2>
+
+      <div class="kv">
+        {items}
+      </div>
+
+    </section>
+
+    <section class="card">
+
+      <h2>
+        Client Documents
+      </h2>
+
+      <ul>
+        {file_items or
+        '<li>No documents.</li>'}
+      </ul>
+
+    </section>
+
+    <section class="card">
+
+      <h2>
+        Process Request
+      </h2>
+
+      <form
+        method="post"
+        enctype="multipart/form-data"
+      >
+
+        <div class="field">
+
+          <label>Status</label>
+
+          <select name="status">
+            {options}
+          </select>
+
+        </div>
+
+        <div class="field">
+
+          <label>KOJA Response</label>
+
+          <textarea
+            name="admin_response"
+            placeholder="Enter progress, instructions or result information."
+          >{e(row.get('admin_response'))}</textarea>
+
+        </div>
+
+        <div class="field filebox">
+
+          <label>
+            Upload Completed Result
+          </label>
+
+          <input
+            type="file"
+            name="result_file"
+            accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.webp"
+          >
+
+          <div class="help">
+            Upload the completed result
+            that the client should receive.
+            Maximum {MAX_FILE_MB} MB.
+          </div>
+
+        </div>
+
+        <button class="btn green">
+          Save Request Update
+        </button>
+
+      </form>
+
+    </section>
+
+    <a
+      class="btn light"
+      href="/admin"
+    >
+      ← Back to Admin Dashboard
+    </a>
     """
 
-    return render_page(
-        html,
-        "Users - KOJA Africa"
+    return page(
+        "Admin Request",
+        body,
+        admin=True
     )
 
 
 # ============================================================
-# CREATE ADMIN
+# ADMIN FILE ACCESS
 # ============================================================
 
 @app.route(
-    "/admin/create-admin",
-    methods=["GET", "POST"]
+    "/admin/file/<file_id>"
 )
 @admin_required
-def create_admin():
-
-    if request.method == "POST":
-
-        name = request.form.get(
-            "name",
-            ""
-        ).strip()
-
-        email = request.form.get(
-            "email",
-            ""
-        ).strip().lower()
-
-        password = request.form.get(
-            "password",
-            ""
-        )
-
-        if not name or not email or not password:
-
-            flash(
-                "All fields are required.",
-                "error"
-            )
-
-        else:
-
-            try:
-
-                existing = db_get(
-                    "profiles",
-                    {
-                        "email": f"eq.{email}",
-                        "select": "id",
-                        "limit": "1",
-                    }
-                )
-
-                if existing:
-
-                    flash(
-                        "That email already exists.",
-                        "error"
-                    )
-
-                else:
-
-                    new_id = str(uuid.uuid4())
-
-                    db_post(
-                        "profiles",
-                        {
-                            "id": new_id,
-                            "name": name,
-                            "full_name": name,
-                            "email": email,
-                            "role": "admin",
-                            "password_hash":
-                                generate_password_hash(password),
-                            "is_active": True,
-                            "is_admin": True,
-                        }
-                    )
-
-                    flash(
-                        "Administrator created successfully.",
-                        "success"
-                    )
-
-                    return redirect(
-                        url_for("admin_users")
-                    )
-
-            except Exception as exc:
-
-                logger.exception(
-                    "Admin creation failed"
-                )
-
-                flash(
-                    "Could not create admin: " + str(exc),
-                    "error"
-                )
-
-    content = """
-    <div class="card">
-
-        <h2>Create Administrator</h2>
-
-        <form method="POST">
-
-            <label>Name</label>
-
-            <input
-                type="text"
-                name="name"
-                required
-            >
-
-            <label>Email</label>
-
-            <input
-                type="email"
-                name="email"
-                required
-            >
-
-            <label>Password</label>
-
-            <input
-                type="password"
-                name="password"
-                minlength="6"
-                required
-            >
-
-            <button type="submit">
-                Create Administrator
-            </button>
-
-        </form>
-
-    </div>
-    """
-
-    return render_page(
-        content,
-        "Create Admin - KOJA Africa"
-    )
-
-
-# ============================================================
-# DOWNLOAD QUESTION
-# ============================================================
-
-@app.route(
-    "/download-assignment/<assignment_id>"
-)
-@login_required
-def download_assignment(assignment_id):
-
-    user = current_user()
-
-    rows = db_get(
-        "assignments",
+def admin_file(file_id):
+    rows = db_select(
+        "koja_request_files",
         {
-            "id": f"eq.{assignment_id}",
-            "select": "*",
+            "id": f"eq.{file_id}",
             "limit": "1",
         }
     )
@@ -2523,213 +4882,25 @@ def download_assignment(assignment_id):
     if not rows:
         abort(404)
 
-    assignment = rows[0]
+    file_row = rows[0]
 
-    if (
-        not is_admin_user(user)
-        and assignment.get("student_id")
-        != user.get("id")
-    ):
-        abort(403)
-
-    path = (
-        assignment.get("file_path")
-        or assignment.get("question_path")
+    response = storage_download(
+        file_row["stored_path"]
     )
 
-    if not path:
-        flash(
-            "There is no question file.",
-            "error"
-        )
-
-        return redirect(
-            url_for(
-                "assignment_detail",
-                assignment_id=assignment_id
-            )
-        )
-
-    try:
-
-        data, mime = storage_download(path)
-
-        filename = (
-            assignment.get("file_name")
-            or assignment.get("question_filename")
-            or "question"
-        )
-
-        return send_file(
-            io.BytesIO(data),
-            mimetype=mime,
-            as_attachment=True,
-            download_name=filename,
-        )
-
-    except Exception as exc:
-
-        flash(
-            "Could not download file: " + str(exc),
-            "error"
-        )
-
-        return redirect(
-            url_for(
-                "assignment_detail",
-                assignment_id=assignment_id
-            )
-        )
-
-
-# ============================================================
-# ADMIN DOWNLOAD QUESTION
-# ============================================================
-
-@app.route(
-    "/admin/download-question/<assignment_id>"
-)
-@admin_required
-def admin_download_question(assignment_id):
-
-    rows = db_get(
-        "assignments",
-        {
-            "id": f"eq.{assignment_id}",
-            "select": "*",
-            "limit": "1",
-        }
+    return send_file(
+        __import__("io").BytesIO(
+            response.content
+        ),
+        mimetype=(
+            file_row.get("mime_type")
+            or "application/octet-stream"
+        ),
+        as_attachment=False,
+        download_name=file_row[
+            "original_name"
+        ],
     )
-
-    if not rows:
-        abort(404)
-
-    assignment = rows[0]
-
-    path = (
-        assignment.get("file_path")
-        or assignment.get("question_path")
-    )
-
-    if not path:
-        abort(404)
-
-    try:
-
-        data, mime = storage_download(path)
-
-        filename = (
-            assignment.get("file_name")
-            or assignment.get("question_filename")
-            or "question"
-        )
-
-        return send_file(
-            io.BytesIO(data),
-            mimetype=mime,
-            as_attachment=True,
-            download_name=filename,
-        )
-
-    except Exception as exc:
-
-        flash(
-            "Download failed: " + str(exc),
-            "error"
-        )
-
-        return redirect(
-            url_for(
-                "admin_question",
-                assignment_id=assignment_id
-            )
-        )
-
-
-# ============================================================
-# DOWNLOAD ANSWER
-# ============================================================
-
-@app.route(
-    "/download-answer/<assignment_id>"
-)
-@login_required
-def download_answer(assignment_id):
-
-    user = current_user()
-
-    rows = db_get(
-        "assignments",
-        {
-            "id": f"eq.{assignment_id}",
-            "select": "*",
-            "limit": "1",
-        }
-    )
-
-    if not rows:
-        abort(404)
-
-    assignment = rows[0]
-
-    if (
-        not is_admin_user(user)
-        and assignment.get("student_id")
-        != user.get("id")
-    ):
-        abort(403)
-
-    path = (
-        assignment.get("answer_file_path")
-        or assignment.get("answer_path")
-        or assignment.get("answer_pdf_path")
-        or assignment.get("answer_word_path")
-        or assignment.get("answer_excel_path")
-    )
-
-    if not path:
-        flash(
-            "No answer file is available.",
-            "error"
-        )
-
-        return redirect(
-            url_for(
-                "assignment_detail",
-                assignment_id=assignment_id
-            )
-        )
-
-    try:
-
-        data, mime = storage_download(path)
-
-        filename = (
-            assignment.get("answer_file_name")
-            or assignment.get("answer_filename")
-            or "koja-answer"
-        )
-
-        return send_file(
-            io.BytesIO(data),
-            mimetype=mime,
-            as_attachment=True,
-            download_name=filename,
-        )
-
-    except Exception as exc:
-
-        flash(
-            "Could not download answer: " + str(exc),
-            "error"
-        )
-
-        return redirect(
-            url_for(
-                "assignment_detail",
-                assignment_id=assignment_id
-            )
-        )
 
 
 # ============================================================
@@ -2738,112 +4909,160 @@ def download_answer(assignment_id):
 
 @app.route("/health")
 def health():
-
     result = {
         "status": "ok",
-        "supabase": bool(
+        "application": "KOJA AFRICA",
+        "supabase_configured": bool(
             SUPABASE_URL
             and SUPABASE_SERVICE_KEY
         ),
-        "profiles_table": False,
-        "users_table_used": False,
-        "assignments_table": False,
+        "storage_bucket": STORAGE_BUCKET,
+        "time": now_iso(),
     }
 
-    try:
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        result["status"] = "configuration_error"
 
-        profiles = db_get(
-            "profiles",
+        return result, 503
+
+    try:
+        db_select(
+            "koja_users",
             {
                 "select": "id",
                 "limit": "1",
             }
         )
 
-        result["profiles_table"] = True
-        result["profiles_rows"] = len(profiles)
+        result["database"] = "connected"
+
+        return result, 200
 
     except Exception as exc:
+        result["status"] = "database_error"
+        result["database"] = str(exc)
 
-        result["profiles_error"] = str(exc)
-
-    try:
-
-        assignments = db_get(
-            "assignments",
-            {
-                "select": "id",
-                "limit": "1",
-            }
-        )
-
-        result["assignments_table"] = True
-        result["assignments_rows"] = len(assignments)
-
-    except Exception as exc:
-
-        result["assignments_error"] = str(exc)
-
-    return result
+        return result, 503
 
 
 # ============================================================
 # ERROR HANDLERS
 # ============================================================
 
-@app.errorhandler(404)
-def not_found(error):
+@app.errorhandler(400)
+def bad_request(error):
+    body = """
+    <div class="card">
+      <h1>400</h1>
+      <p>
+        The request could not be understood.
+      </p>
+      <a class="btn green" href="/">
+        Return Home
+      </a>
+    </div>
+    """
 
-    return render_page(
-        """
-        <div class="card">
-            <h2>Page Not Found</h2>
-            <p>The requested page does not exist.</p>
-            <a class="btn" href="/">
-                Home
-            </a>
-        </div>
-        """,
-        "Not Found"
-    ), 404
+    return page(
+        "400",
+        body
+    ), 400
 
 
 @app.errorhandler(403)
 def forbidden(error):
+    body = """
+    <div class="card">
+      <h1>403</h1>
+      <p>
+        You do not have permission to access
+        this page.
+      </p>
+      <a class="btn green" href="/">
+        Return Home
+      </a>
+    </div>
+    """
 
-    return render_page(
-        """
-        <div class="card">
-            <h2>Access Denied</h2>
-            <p>You do not have permission to access this page.</p>
-        </div>
-        """,
-        "Access Denied"
+    return page(
+        "403",
+        body
     ), 403
+
+
+@app.errorhandler(404)
+def not_found(error):
+    body = """
+    <div class="card">
+      <h1>404</h1>
+      <p>
+        The page or request could not be found.
+      </p>
+      <a class="btn green" href="/">
+        Return Home
+      </a>
+    </div>
+    """
+
+    return page(
+        "404",
+        body
+    ), 404
 
 
 @app.errorhandler(413)
 def too_large(error):
+    body = f"""
+    <div class="card">
+      <h1>File Too Large</h1>
 
-    return render_page(
-        """
-        <div class="card">
-            <h2>File Too Large</h2>
-            <p>Maximum upload size is 20 MB.</p>
-        </div>
-        """,
-        "File Too Large"
+      <p>
+        The maximum upload size is
+        {MAX_FILE_MB} MB.
+      </p>
+
+      <a class="btn green" href="/">
+        Return Home
+      </a>
+    </div>
+    """
+
+    return page(
+        "File Too Large",
+        body
     ), 413
 
 
+@app.errorhandler(500)
+def server_error(error):
+    body = """
+    <div class="card">
+      <h1>500</h1>
+
+      <p>
+        KOJA encountered an unexpected
+        server error.
+      </p>
+
+      <a class="btn green" href="/">
+        Return Home
+      </a>
+    </div>
+    """
+
+    return page(
+        "Server Error",
+        body
+    ), 500
+
+
 # ============================================================
-# START SERVER
+# START
 # ============================================================
 
 if __name__ == "__main__":
-
     port = int(
-        os.getenv(
+        os.environ.get(
             "PORT",
             "5000"
         )
