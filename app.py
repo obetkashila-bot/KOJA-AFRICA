@@ -2,13 +2,14 @@ import os
 import io
 import uuid
 import json
+import html
 import logging
 from datetime import datetime, timezone
 from functools import wraps
-from urllib.parse import quote
 
 import requests
 from dotenv import load_dotenv
+
 from flask import (
     Flask,
     request,
@@ -21,8 +22,6 @@ from flask import (
     abort,
 )
 
-from werkzeug.security import generate_password_hash
-
 load_dotenv()
 
 # ============================================================
@@ -30,43 +29,73 @@ load_dotenv()
 # Knowledge • Questions • Answers
 #
 # Flask + Supabase REST API
-# Compatible with existing KOJA database
+# Render compatible
 # ============================================================
 
 app = Flask(__name__)
 
 app.secret_key = os.getenv(
     "FLASK_SECRET_KEY",
-    os.getenv("SECRET_KEY", "change-this-secret-key")
+    os.getenv("SECRET_KEY", "change-this-secret-key"),
 )
 
 app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
-
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
 
-# Some deployments use SUPABASE_ANON_KEY.
-# Service key is preferred for server-side REST operations.
-if not SUPABASE_KEY:
-    SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY", "")
+SUPABASE_SERVICE_KEY = os.getenv(
+    "SUPABASE_SERVICE_KEY",
+    "",
+).strip()
 
-SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
+SUPABASE_ANON_KEY = os.getenv(
+    "SUPABASE_ANON_KEY",
+    "",
+).strip()
 
-FLW_SECRET_KEY = os.getenv("FLW_SECRET_KEY", "")
-FLW_SECRET_HASH = os.getenv("FLW_SECRET_HASH", "")
+SUPABASE_KEY = (
+    SUPABASE_SERVICE_KEY
+    or SUPABASE_ANON_KEY
+)
 
-PAYMENT_CURRENCY = os.getenv("PAYMENT_CURRENCY", "ZMW")
-DEFAULT_ANSWER_PRICE = os.getenv("KOJA_PAYMENT_AMOUNT", "10.00")
+FLW_SECRET_KEY = os.getenv(
+    "FLW_SECRET_KEY",
+    "",
+).strip()
 
-STORAGE_BUCKET = os.getenv("KOJA_STORAGE_BUCKET", "koja-files")
+FLW_SECRET_HASH = os.getenv(
+    "FLW_SECRET_HASH",
+    "",
+).strip()
 
-ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "").strip().lower()
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
+PAYMENT_CURRENCY = os.getenv(
+    "PAYMENT_CURRENCY",
+    "ZMW",
+)
+
+DEFAULT_ANSWER_PRICE = os.getenv(
+    "KOJA_PAYMENT_AMOUNT",
+    "10.00",
+)
+
+STORAGE_BUCKET = os.getenv(
+    "KOJA_STORAGE_BUCKET",
+    "koja-files",
+)
+
+ADMIN_EMAIL = os.getenv(
+    "ADMIN_EMAIL",
+    "",
+).strip().lower()
+
+ADMIN_PASSWORD = os.getenv(
+    "ADMIN_PASSWORD",
+    "",
+)
 
 ALLOWED_EXTENSIONS = {
     "pdf",
@@ -79,14 +108,64 @@ ALLOWED_EXTENSIONS = {
     "webp",
 }
 
+logging.basicConfig(
+    level=logging.INFO,
+)
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("koja")
 
+# ============================================================
+# BASIC HELPERS
+# ============================================================
 
-# ============================================================
-# VALIDATION
-# ============================================================
+
+def clean(value):
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def safe(value):
+    return html.escape(clean(value))
+
+
+def valid_email(email):
+    email = clean(email).lower()
+
+    if not email:
+        return False
+
+    if "@" not in email:
+        return False
+
+    domain = email.split("@")[-1]
+
+    if "." not in domain:
+        return False
+
+    return True
+
+
+def valid_password(password):
+    return bool(
+        password
+        and len(password) >= 6
+    )
+
+
+def allowed_file(filename):
+    filename = clean(filename)
+
+    if "." not in filename:
+        return False
+
+    extension = filename.rsplit(
+        ".",
+        1,
+    )[1].lower()
+
+    return extension in ALLOWED_EXTENSIONS
+
 
 def configuration_error():
     missing = []
@@ -95,55 +174,23 @@ def configuration_error():
         missing.append("SUPABASE_URL")
 
     if not SUPABASE_KEY:
-        missing.append("SUPABASE_SERVICE_KEY or SUPABASE_ANON_KEY")
+        missing.append(
+            "SUPABASE_SERVICE_KEY or SUPABASE_ANON_KEY"
+        )
 
     if missing:
-        return "Missing environment variables: " + ", ".join(missing)
+        return (
+            "Missing environment variables: "
+            + ", ".join(missing)
+        )
 
     return None
-
-
-def valid_email(email):
-    if not email:
-        return False
-
-    email = email.strip()
-
-    if "@" not in email:
-        return False
-
-    if "." not in email.split("@")[-1]:
-        return False
-
-    return True
-
-
-def valid_password(password):
-    return bool(password and len(password) >= 6)
-
-
-def allowed_file(filename):
-    if not filename:
-        return False
-
-    if "." not in filename:
-        return False
-
-    ext = filename.rsplit(".", 1)[1].lower()
-
-    return ext in ALLOWED_EXTENSIONS
-
-
-def clean(value):
-    if value is None:
-        return ""
-
-    return str(value).strip()
 
 
 # ============================================================
 # SUPABASE HEADERS
 # ============================================================
+
 
 def supabase_headers(prefer=None):
     key = SUPABASE_KEY
@@ -161,7 +208,10 @@ def supabase_headers(prefer=None):
 
 
 def service_headers(prefer=None):
-    key = SUPABASE_SERVICE_KEY or SUPABASE_KEY
+    key = (
+        SUPABASE_SERVICE_KEY
+        or SUPABASE_ANON_KEY
+    )
 
     headers = {
         "apikey": key,
@@ -175,25 +225,25 @@ def service_headers(prefer=None):
     return headers
 
 
-# ============================================================
-# SUPABASE REST
-# ============================================================
-
 def rest_url(table):
-    return f"{SUPABASE_URL}/rest/v1/{table}"
+    return (
+        f"{SUPABASE_URL}/rest/v1/{table}"
+    )
+
+
+# ============================================================
+# SUPABASE REST FUNCTIONS
+# ============================================================
 
 
 def rest_select(
     table,
     params=None,
-    use_service=True,
 ):
     try:
-        headers = service_headers()
-
         response = requests.get(
             rest_url(table),
-            headers=headers,
+            headers=service_headers(),
             params=params or {},
             timeout=30,
         )
@@ -202,14 +252,16 @@ def rest_select(
             logger.error(
                 "SELECT %s failed: %s",
                 table,
-                response.text
+                response.text,
             )
             return None
 
         return response.json()
 
     except Exception:
-        logger.exception("Supabase SELECT error")
+        logger.exception(
+            "Supabase SELECT error"
+        )
         return None
 
 
@@ -219,14 +271,14 @@ def rest_insert(
     select="*",
 ):
     try:
-        headers = service_headers(
-            f"return=representation"
-        )
-
         response = requests.post(
             rest_url(table),
-            headers=headers,
-            params={"select": select},
+            headers=service_headers(
+                "return=representation"
+            ),
+            params={
+                "select": select,
+            },
             json=data,
             timeout=30,
         )
@@ -235,14 +287,16 @@ def rest_insert(
             logger.error(
                 "INSERT %s failed: %s",
                 table,
-                response.text
+                response.text,
             )
             return None
 
         return response.json()
 
     except Exception:
-        logger.exception("Supabase INSERT error")
+        logger.exception(
+            "Supabase INSERT error"
+        )
         return None
 
 
@@ -252,13 +306,11 @@ def rest_update(
     data,
 ):
     try:
-        headers = service_headers(
-            "return=representation"
-        )
-
         response = requests.patch(
             rest_url(table),
-            headers=headers,
+            headers=service_headers(
+                "return=representation"
+            ),
             params=filters,
             json=data,
             timeout=30,
@@ -268,14 +320,16 @@ def rest_update(
             logger.error(
                 "UPDATE %s failed: %s",
                 table,
-                response.text
+                response.text,
             )
             return None
 
         return response.json()
 
     except Exception:
-        logger.exception("Supabase UPDATE error")
+        logger.exception(
+            "Supabase UPDATE error"
+        )
         return None
 
 
@@ -284,11 +338,9 @@ def rest_delete(
     filters,
 ):
     try:
-        headers = service_headers()
-
         response = requests.delete(
             rest_url(table),
-            headers=headers,
+            headers=service_headers(),
             params=filters,
             timeout=30,
         )
@@ -297,27 +349,140 @@ def rest_delete(
             logger.error(
                 "DELETE %s failed: %s",
                 table,
-                response.text
+                response.text,
             )
             return False
 
         return True
 
     except Exception:
-        logger.exception("Supabase DELETE error")
+        logger.exception(
+            "Supabase DELETE error"
+        )
         return False
+
+
+def first_row(
+    table,
+    filters,
+):
+    rows = rest_select(
+        table,
+        params={
+            **filters,
+            "limit": "1",
+        },
+    )
+
+    if rows:
+        return rows[0]
+
+    return None
+
+
+def table_exists(table):
+    try:
+        response = requests.get(
+            rest_url(table),
+            headers=service_headers(),
+            params={
+                "limit": "1",
+            },
+            timeout=15,
+        )
+
+        return response.status_code < 400
+
+    except Exception:
+        return False
+
+
+def insert_if_possible(
+    table,
+    data,
+):
+    """
+    Attempts an insert and, if the database is from an
+    older KOJA version, retries after removing optional
+    columns.
+    """
+
+    result = rest_insert(
+        table,
+        data,
+    )
+
+    if result is not None:
+        return result
+
+    optional_columns = [
+        "updated_at",
+        "created_at",
+        "admin_notes",
+        "status",
+        "service_request_id",
+        "user_id",
+        "description",
+        "priority",
+        "amount",
+        "currency",
+        "email",
+        "phone",
+        "role",
+        "user_type",
+        "uploaded_by",
+        "is_public",
+        "is_active",
+        "file_size",
+        "mime_type",
+        "question_text",
+        "question",
+        "additional_information",
+        "references_data",
+        "template",
+        "target_job",
+        "registration_status",
+        "farm_size_unit",
+    ]
+
+    reduced = dict(data)
+
+    for column in optional_columns:
+
+        if column not in reduced:
+            continue
+
+        reduced.pop(
+            column,
+            None,
+        )
+
+        result = rest_insert(
+            table,
+            reduced,
+        )
+
+        if result is not None:
+            return result
+
+    return None
 
 
 # ============================================================
 # SUPABASE AUTH
 # ============================================================
 
-def auth_signup(email, password):
+
+def auth_signup(
+    email,
+    password,
+):
     try:
         response = requests.post(
             f"{SUPABASE_URL}/auth/v1/signup",
             headers={
-                "apikey": SUPABASE_KEY,
+                "apikey": SUPABASE_ANON_KEY
+                or SUPABASE_KEY,
                 "Content-Type": "application/json",
             },
             json={
@@ -333,63 +498,83 @@ def auth_signup(email, password):
             data = {}
 
         if response.status_code >= 400:
-            return False, data.get(
-                "msg",
-                data.get(
-                    "message",
-                    data.get(
-                        "error_description",
-                        "Registration failed."
-                    )
+
+            message = (
+                data.get("msg")
+                or data.get("message")
+                or data.get(
+                    "error_description"
                 )
-            ), data
-
-        return True, "Registration successful.", data
-
-    except Exception as exc:
-        logger.exception("Auth signup failed")
-        return False, str(exc), {}
-
-
-def auth_login(email, password):
-    try:
-        response = requests.post(
-            f"{SUPABASE_URL}/auth/v1/token",
-            params={"grant_type": "password"},
-            headers={
-                "apikey": SUPABASE_KEY,
-                "Content-Type": "application/json",
-            },
-            json={
-                "email": email,
-                "password": password,
-            },
-            timeout=30,
-        )
-
-        try:
-            data = response.json()
-        except Exception:
-            data = {}
-
-        if response.status_code >= 400:
-            message = data.get(
-                "msg",
-                data.get(
-                    "message",
-                    data.get(
-                        "error_description",
-                        "Invalid email or password."
-                    )
-                )
+                or "Registration failed."
             )
 
             return False, message, data
 
-        return True, "Login successful.", data
+        return (
+            True,
+            "Registration successful.",
+            data,
+        )
 
     except Exception as exc:
-        logger.exception("Auth login failed")
+        logger.exception(
+            "Auth signup failed"
+        )
+
+        return False, str(exc), {}
+
+
+def auth_login(
+    email,
+    password,
+):
+    try:
+        response = requests.post(
+            f"{SUPABASE_URL}/auth/v1/token",
+            params={
+                "grant_type": "password",
+            },
+            headers={
+                "apikey": SUPABASE_ANON_KEY
+                or SUPABASE_KEY,
+                "Content-Type": "application/json",
+            },
+            json={
+                "email": email,
+                "password": password,
+            },
+            timeout=30,
+        )
+
+        try:
+            data = response.json()
+        except Exception:
+            data = {}
+
+        if response.status_code >= 400:
+
+            message = (
+                data.get("msg")
+                or data.get("message")
+                or data.get(
+                    "error_description"
+                )
+                or "Invalid email or password."
+            )
+
+            return False, message, data
+
+        return (
+            True,
+            "Login successful.",
+            data,
+        )
+
+    except Exception as exc:
+        logger.exception(
+            "Auth login failed"
+        )
+
         return False, str(exc), {}
 
 
@@ -401,8 +586,11 @@ def auth_user(access_token):
         response = requests.get(
             f"{SUPABASE_URL}/auth/v1/user",
             headers={
-                "apikey": SUPABASE_KEY,
-                "Authorization": f"Bearer {access_token}",
+                "apikey": SUPABASE_ANON_KEY
+                or SUPABASE_KEY,
+                "Authorization": (
+                    f"Bearer {access_token}"
+                ),
             },
             timeout=30,
         )
@@ -419,6 +607,7 @@ def auth_user(access_token):
 # ============================================================
 # SESSION
 # ============================================================
+
 
 def current_user():
     return session.get("user")
@@ -447,18 +636,30 @@ def current_email():
 
 
 def is_admin():
+
     email = current_email()
 
     if not email:
         return False
 
-    if ADMIN_EMAIL and email == ADMIN_EMAIL:
+    # Main administrator account.
+    if (
+        ADMIN_EMAIL
+        and email == ADMIN_EMAIL
+    ):
         return True
 
     user = current_user() or {}
 
-    app_metadata = user.get("app_metadata") or {}
-    user_metadata = user.get("user_metadata") or {}
+    app_metadata = (
+        user.get("app_metadata")
+        or {}
+    )
+
+    user_metadata = (
+        user.get("user_metadata")
+        or {}
+    )
 
     role = (
         app_metadata.get("role")
@@ -466,133 +667,81 @@ def is_admin():
         or session.get("role")
     )
 
-    return str(role).lower() == "admin"
+    return (
+        str(role).lower()
+        == "admin"
+    )
 
 
 def login_required(view):
+
     @wraps(view)
     def wrapper(*args, **kwargs):
 
         if not current_user_id():
-            flash("Please login first.", "warning")
-            return redirect(url_for("login"))
 
-        return view(*args, **kwargs)
+            flash(
+                "Please login first.",
+                "warning",
+            )
+
+            return redirect(
+                url_for("login")
+            )
+
+        return view(
+            *args,
+            **kwargs,
+        )
 
     return wrapper
 
 
 def admin_required(view):
+
     @wraps(view)
     def wrapper(*args, **kwargs):
 
         if not current_user_id():
-            flash("Please login first.", "warning")
-            return redirect(url_for("login"))
+
+            flash(
+                "Please login first.",
+                "warning",
+            )
+
+            return redirect(
+                url_for("login")
+            )
 
         if not is_admin():
-            flash("Administrator access required.", "danger")
-            return redirect(url_for("dashboard"))
 
-        return view(*args, **kwargs)
+            flash(
+                "Administrator access required.",
+                "danger",
+            )
 
-    return wrapper
+            return redirect(
+                url_for("dashboard")
+            )
 
-
-# ============================================================
-# GENERIC TABLE HELPERS
-# ============================================================
-
-def first_row(table, filters):
-    rows = rest_select(
-        table,
-        params={
-            **filters,
-            "limit": "1",
-        },
-    )
-
-    if rows:
-        return rows[0]
-
-    return None
-
-
-def table_exists(table):
-    """
-    REST does not expose information_schema through /rest/v1.
-    We therefore test the table endpoint.
-    """
-
-    try:
-        response = requests.get(
-            rest_url(table),
-            headers=service_headers(),
-            params={"limit": "1"},
-            timeout=15,
+        return view(
+            *args,
+            **kwargs,
         )
 
-        return response.status_code < 400
-
-    except Exception:
-        return False
-
-
-def insert_if_possible(table, data):
-    """
-    Insert into a legacy-compatible table.
-
-    If a table rejects unknown columns, progressively remove
-    optional columns and retry.
-    """
-
-    result = rest_insert(table, data)
-
-    if result is not None:
-        return result
-
-    # Common columns that may not exist in old KOJA tables.
-    optional = [
-        "updated_at",
-        "created_at",
-        "admin_notes",
-        "status",
-        "service_request_id",
-        "user_id",
-        "description",
-        "priority",
-        "amount",
-        "currency",
-    ]
-
-    reduced = dict(data)
-
-    for column in optional:
-
-        if column not in reduced:
-            continue
-
-        reduced.pop(column, None)
-
-        result = rest_insert(table, reduced)
-
-        if result is not None:
-            return result
-
-    return None
+    return wrapper
 
 
 # ============================================================
 # PROFILE COMPATIBILITY
 # ============================================================
 
-def create_compatible_profile(user, name="", phone=""):
-    """
-    KOJA has several profile/user tables from older versions.
 
-    We try profiles first and only send columns that are common
-    across versions.
-    """
+def create_compatible_profile(
+    user,
+    name="",
+    phone="",
+):
 
     uid = user.get("id")
     email = user.get("email", "")
@@ -608,20 +757,8 @@ def create_compatible_profile(user, name="", phone=""):
         if not table_exists(table):
             continue
 
-        data = {
-            "id": uid,
-            "user_id": uid,
-            "email": email,
-            "full_name": name,
-            "name": name,
-            "phone": phone,
-            "role": "student",
-            "user_type": "student",
-        }
-
-        # Try different compatibility payloads.
         attempts = [
-            data,
+
             {
                 "id": uid,
                 "email": email,
@@ -629,16 +766,19 @@ def create_compatible_profile(user, name="", phone=""):
                 "phone": phone,
                 "role": "student",
             },
+
             {
                 "id": uid,
                 "email": email,
                 "name": name,
             },
+
             {
                 "user_id": uid,
                 "email": email,
                 "name": name,
             },
+
         ]
 
         for payload in attempts:
@@ -649,10 +789,12 @@ def create_compatible_profile(user, name="", phone=""):
             )
 
             if result is not None:
+
                 logger.info(
                     "Profile created in %s",
-                    table
+                    table,
                 )
+
                 return result
 
     return None
@@ -662,6 +804,7 @@ def create_compatible_profile(user, name="", phone=""):
 # ACTIVITY LOG
 # ============================================================
 
+
 def log_activity(
     action,
     description="",
@@ -669,6 +812,7 @@ def log_activity(
     old_status=None,
     new_status=None,
 ):
+
     try:
 
         payload = {
@@ -676,71 +820,80 @@ def log_activity(
             "email": current_email(),
             "action": action,
             "description": description,
-            "service_request_id": service_request_id,
+            "service_request_id":
+                service_request_id,
             "old_status": old_status,
             "new_status": new_status,
-            "ip_address": request.remote_addr,
-            "user_agent": request.headers.get(
-                "User-Agent",
-                ""
-            ),
+            "ip_address":
+                request.remote_addr,
+            "user_agent":
+                request.headers.get(
+                    "User-Agent",
+                    "",
+                ),
         }
 
-        # Remove None values
         payload = {
-            k: v
-            for k, v in payload.items()
-            if v is not None
+            key: value
+            for key, value in payload.items()
+            if value is not None
         }
 
         rest_insert(
             "activity_logs",
-            payload
+            payload,
         )
 
     except Exception:
-        logger.exception("Activity log failed")
+        logger.exception(
+            "Activity log failed"
+        )
 
 
 # ============================================================
 # STORAGE
 # ============================================================
 
+
 def upload_storage(
     filename,
     file_bytes,
     content_type="application/octet-stream",
 ):
-    """
-    Upload to Supabase Storage.
-
-    Returns storage path or None.
-    """
 
     safe_name = (
-        filename
+        clean(filename)
         .replace("/", "_")
         .replace("\\", "_")
     )
 
     storage_path = (
-        f"uploads/{uuid.uuid4()}_{safe_name}"
+        f"uploads/"
+        f"{uuid.uuid4()}_"
+        f"{safe_name}"
     )
 
     try:
 
         url = (
-            f"{SUPABASE_URL}/storage/v1/object/"
-            f"{STORAGE_BUCKET}/{storage_path}"
+            f"{SUPABASE_URL}"
+            f"/storage/v1/object/"
+            f"{STORAGE_BUCKET}/"
+            f"{storage_path}"
+        )
+
+        key = (
+            SUPABASE_SERVICE_KEY
+            or SUPABASE_ANON_KEY
         )
 
         response = requests.post(
             url,
             headers={
                 "Authorization":
-                    f"Bearer {SUPABASE_SERVICE_KEY or SUPABASE_KEY}",
+                    f"Bearer {key}",
                 "apikey":
-                    SUPABASE_SERVICE_KEY or SUPABASE_KEY,
+                    key,
                 "Content-Type":
                     content_type,
             },
@@ -749,34 +902,47 @@ def upload_storage(
         )
 
         if response.status_code >= 400:
+
             logger.error(
                 "Storage upload failed: %s",
-                response.text
+                response.text,
             )
+
             return None
 
         return storage_path
 
     except Exception:
-        logger.exception("Storage error")
+        logger.exception(
+            "Storage upload error"
+        )
+
         return None
 
 
 def storage_download(path):
+
     try:
 
         url = (
-            f"{SUPABASE_URL}/storage/v1/object/"
-            f"{STORAGE_BUCKET}/{path}"
+            f"{SUPABASE_URL}"
+            f"/storage/v1/object/"
+            f"{STORAGE_BUCKET}/"
+            f"{path}"
+        )
+
+        key = (
+            SUPABASE_SERVICE_KEY
+            or SUPABASE_ANON_KEY
         )
 
         response = requests.get(
             url,
             headers={
                 "Authorization":
-                    f"Bearer {SUPABASE_SERVICE_KEY or SUPABASE_KEY}",
+                    f"Bearer {key}",
                 "apikey":
-                    SUPABASE_SERVICE_KEY or SUPABASE_KEY,
+                    key,
             },
             timeout=60,
         )
@@ -788,12 +954,15 @@ def storage_download(path):
             response.content,
             response.headers.get(
                 "Content-Type",
-                "application/octet-stream"
+                "application/octet-stream",
             ),
         )
 
     except Exception:
-        logger.exception("Storage download failed")
+        logger.exception(
+            "Storage download failed"
+        )
+
         return None, None
 
 
@@ -801,16 +970,20 @@ def storage_download(path):
 # HTML
 # ============================================================
 
+
 BASE_HTML = """
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
+
 <head>
 
-<meta charset="utf-8">
-<meta name="viewport"
-      content="width=device-width, initial-scale=1">
+<meta charset="UTF-8">
 
-<title>{{ title or "KOJA Africa" }}</title>
+<meta name="viewport"
+      content="width=device-width,
+               initial-scale=1.0">
+
+<title>{{ title }} | KOJA Africa</title>
 
 <style>
 
@@ -824,274 +997,431 @@ body {
         Arial,
         Helvetica,
         sans-serif;
-    background: #f4f7fb;
-    color: #172033;
+
+    background:
+        #f4f7f9;
+
+    color:
+        #17212b;
 }
 
 nav {
-    background: #101c36;
-    color: white;
-    padding: 14px 18px;
-    position: sticky;
-    top: 0;
-    z-index: 10;
+    background:
+        #063b2c;
+
+    color:
+        white;
+
+    padding:
+        15px 5%;
+
+    display:
+        flex;
+
+    flex-wrap:
+        wrap;
+
+    align-items:
+        center;
+
+    gap:
+        15px;
 }
 
-.nav-inner {
-    max-width: 1100px;
-    margin: auto;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 10px;
+nav .brand {
+    font-size:
+        22px;
+
+    font-weight:
+        bold;
+
+    margin-right:
+        auto;
 }
 
-.logo {
-    font-size: 21px;
-    font-weight: 800;
+nav a {
+    color:
+        white;
+
+    text-decoration:
+        none;
+
+    padding:
+        8px 12px;
+
+    border-radius:
+        7px;
 }
 
-.logo span {
-    color: #52d273;
-}
-
-.nav-links {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-}
-
-.nav-links a {
-    color: white;
-    text-decoration: none;
-    padding: 8px 10px;
-    border-radius: 7px;
-}
-
-.nav-links a:hover {
-    background: rgba(255,255,255,.12);
+nav a:hover {
+    background:
+        rgba(255,255,255,.12);
 }
 
 .container {
-    max-width: 1100px;
-    margin: 25px auto;
-    padding: 0 15px;
+    width:
+        min(1100px, 94%);
+
+    margin:
+        25px auto;
 }
 
 .hero {
-    background: linear-gradient(
-        135deg,
-        #101c36,
-        #173c67
-    );
-    color: white;
-    border-radius: 16px;
-    padding: 35px 25px;
-    margin-bottom: 22px;
+    background:
+        linear-gradient(
+            135deg,
+            #063b2c,
+            #087f5b
+        );
+
+    color:
+        white;
+
+    padding:
+        35px;
+
+    border-radius:
+        18px;
+
+    margin-bottom:
+        25px;
 }
 
 .hero h1 {
-    margin-top: 0;
-    font-size: 32px;
-}
-
-.hero p {
-    color: #dce8f7;
-    line-height: 1.6;
+    margin-top:
+        0;
 }
 
 .grid {
-    display: grid;
+    display:
+        grid;
+
     grid-template-columns:
-        repeat(auto-fit, minmax(220px, 1fr));
-    gap: 15px;
+        repeat(
+            auto-fit,
+            minmax(220px, 1fr)
+        );
+
+    gap:
+        18px;
 }
 
 .card {
-    background: white;
-    border-radius: 13px;
-    padding: 20px;
+    background:
+        white;
+
+    border-radius:
+        14px;
+
+    padding:
+        22px;
+
+    margin-bottom:
+        20px;
+
     box-shadow:
-        0 4px 18px rgba(0,0,0,.06);
-    margin-bottom: 15px;
+        0 4px 18px
+        rgba(0,0,0,.07);
 }
 
+.card h2,
 .card h3 {
-    margin-top: 0;
+    margin-top:
+        0;
 }
 
 .btn {
-    display: inline-block;
-    border: 0;
-    border-radius: 8px;
-    padding: 11px 16px;
-    text-decoration: none;
-    cursor: pointer;
-    background: #173c67;
-    color: white;
-    font-weight: 700;
+    display:
+        inline-block;
+
+    border:
+        0;
+
+    background:
+        #174ea6;
+
+    color:
+        white;
+
+    text-decoration:
+        none;
+
+    padding:
+        11px 16px;
+
+    border-radius:
+        8px;
+
+    cursor:
+        pointer;
+
+    margin:
+        5px 3px;
+
+    font-size:
+        14px;
 }
 
 .btn.green {
-    background: #17863a;
+    background:
+        #087f5b;
 }
 
-.btn.red {
-    background: #bd2735;
-}
-
-.btn.gray {
-    background: #697386;
+.btn.danger {
+    background:
+        #b42318;
 }
 
 .btn.small {
-    padding: 7px 10px;
-    font-size: 13px;
+    padding:
+        7px 10px;
+
+    font-size:
+        12px;
 }
 
 form {
-    background: white;
-    padding: 22px;
-    border-radius: 13px;
-    box-shadow:
-        0 4px 18px rgba(0,0,0,.06);
+    display:
+        block;
 }
 
 label {
-    display: block;
-    font-weight: 700;
-    margin-top: 13px;
-    margin-bottom: 6px;
+    display:
+        block;
+
+    font-weight:
+        bold;
+
+    margin:
+        14px 0 6px;
 }
 
 input,
 textarea,
 select {
-    width: 100%;
-    padding: 12px;
-    border: 1px solid #ccd4df;
-    border-radius: 8px;
-    font-size: 15px;
+    width:
+        100%;
+
+    padding:
+        11px;
+
+    border:
+        1px solid #ccd3d8;
+
+    border-radius:
+        8px;
+
+    font-size:
+        15px;
+
+    background:
+        white;
 }
 
 textarea {
-    min-height: 130px;
-    resize: vertical;
-}
+    min-height:
+        120px;
 
-button {
-    margin-top: 18px;
-}
-
-.alert {
-    padding: 12px 15px;
-    margin-bottom: 14px;
-    border-radius: 8px;
-    background: #e9f2ff;
-}
-
-.alert.danger {
-    background: #ffe8eb;
-    color: #8b1723;
-}
-
-.alert.success {
-    background: #e8f8ec;
-    color: #176b2f;
-}
-
-.alert.warning {
-    background: #fff6db;
-    color: #765700;
+    resize:
+        vertical;
 }
 
 table {
-    width: 100%;
-    border-collapse: collapse;
+    width:
+        100%;
+
+    border-collapse:
+        collapse;
+
+    overflow:
+        hidden;
 }
 
 th,
 td {
-    padding: 10px;
-    border-bottom: 1px solid #e5e9ef;
-    text-align: left;
+    padding:
+        11px;
+
+    border-bottom:
+        1px solid #e3e7ea;
+
+    text-align:
+        left;
+
+    vertical-align:
+        top;
+}
+
+th {
+    background:
+        #f0f4f5;
 }
 
 .badge {
-    display: inline-block;
-    padding: 5px 9px;
-    border-radius: 999px;
-    background: #e9edf5;
-    font-size: 12px;
+    display:
+        inline-block;
+
+    padding:
+        5px 9px;
+
+    background:
+        #e9f7ef;
+
+    color:
+        #087f5b;
+
+    border-radius:
+        20px;
+
+    font-size:
+        12px;
+
+    font-weight:
+        bold;
+}
+
+.alert {
+    padding:
+        12px 15px;
+
+    border-radius:
+        8px;
+
+    margin-bottom:
+        12px;
+}
+
+.alert.success {
+    background:
+        #e8f7ee;
+
+    color:
+        #146c43;
+}
+
+.alert.danger {
+    background:
+        #fdecec;
+
+    color:
+        #a61b1b;
+}
+
+.alert.warning {
+    background:
+        #fff5d6;
+
+    color:
+        #805b00;
 }
 
 footer {
-    margin-top: 50px;
-    padding: 30px;
-    text-align: center;
-    background: #101c36;
-    color: white;
+    margin-top:
+        50px;
+
+    padding:
+        25px;
+
+    text-align:
+        center;
+
+    background:
+        #063b2c;
+
+    color:
+        white;
 }
 
-@media(max-width:600px) {
+@media(max-width:700px) {
 
-    .nav-inner {
-        align-items: flex-start;
-        flex-direction: column;
+    nav {
+        align-items:
+            flex-start;
     }
 
-    .hero h1 {
-        font-size: 25px;
+    nav .brand {
+        width:
+            100%;
+
+        margin-bottom:
+            5px;
     }
 
-    th,
-    td {
-        font-size: 13px;
+    table {
+        display:
+            block;
+
+        overflow-x:
+            auto;
     }
+
+    .hero {
+        padding:
+            25px 20px;
+    }
+
 }
 
 </style>
+
 </head>
 
 <body>
 
 <nav>
-<div class="nav-inner">
 
-<div class="logo">
-KOJA <span>AFRICA</span>
+<div class="brand">
+KOJA AFRICA
 </div>
 
-<div class="nav-links">
+<a href="/">Home</a>
 
-<a href="{{ url_for('home') }}">Home</a>
+<a href="/services">
+Services
+</a>
+
+<a href="/documents">
+Resources
+</a>
 
 {% if session.get("user") %}
-<a href="{{ url_for('dashboard') }}">Dashboard</a>
-<a href="{{ url_for('services') }}">Services</a>
-<a href="{{ url_for('documents') }}">Resources</a>
+
+<a href="/dashboard">
+Dashboard
+</a>
 
 {% if admin %}
-<a href="{{ url_for('admin_dashboard') }}">Admin</a>
+
+<a href="/admin">
+Admin
+</a>
+
 {% endif %}
 
-<a href="{{ url_for('logout') }}">Logout</a>
+<a href="/logout">
+Logout
+</a>
 
 {% else %}
 
-<a href="{{ url_for('login') }}">Login</a>
-<a href="{{ url_for('register') }}">Register</a>
+<a href="/login">
+Login
+</a>
+
+<a href="/register">
+Register
+</a>
 
 {% endif %}
 
-</div>
-
-</div>
 </nav>
 
 <div class="container">
 
-{% with messages = get_flashed_messages(with_categories=true) %}
+{% with messages =
+get_flashed_messages(
+with_categories=true
+) %}
 
 {% for category, message in messages %}
 
@@ -1108,16 +1438,31 @@ KOJA <span>AFRICA</span>
 </div>
 
 <footer>
-KOJA AFRICA<br>
+
+<strong>KOJA AFRICA</strong>
+
+<br>
+
 Knowledge • Questions • Answers
+
+<br><br>
+
+Academic assistance • Digital services •
+Learning resources
+
 </footer>
 
 </body>
+
 </html>
 """
 
 
-def page(title, body):
+def page(
+    title,
+    body,
+):
+
     return render_template_string(
         BASE_HTML,
         title=title,
@@ -1130,101 +1475,107 @@ def page(title, body):
 # HOME
 # ============================================================
 
+
 @app.route("/")
 def home():
 
     return page(
         "KOJA Africa",
         """
-        <section class="hero">
+<section class="hero">
 
-        <h1>KOJA AFRICA</h1>
+<h1>KOJA AFRICA</h1>
 
-        <p>
-        Knowledge • Questions • Answers
-        </p>
+<h3>
+Knowledge • Questions • Answers
+</h3>
 
-        <p>
-        Academic assistance, assignments, CV services,
-        farmer registration assistance, TPIN assistance,
-        doctor booking, lawyer booking, tutoring,
-        delivery and other digital services.
-        </p>
+<p>
+Academic assistance, assignments,
+CV services, farmer registration,
+TPIN assistance, doctor booking,
+lawyer consultation, tutoring,
+delivery and other digital services.
+</p>
 
-        <a class="btn green"
-           href="/register">
-           Create Account
-        </a>
+<a class="btn green"
+   href="/register">
+Create Account
+</a>
 
-        <a class="btn"
-           href="/services">
-           Explore Services
-        </a>
+<a class="btn"
+   href="/services">
+Explore Services
+</a>
 
-        </section>
+</section>
 
-        <div class="grid">
+<div class="grid">
 
-        <div class="card">
-        <h3>🎓 Academic</h3>
-        <p>
-        Academic questions, learning materials and
-        assignment support.
-        </p>
-        </div>
+<div class="card">
+<h3>🎓 Academic</h3>
+<p>
+Academic questions, learning materials
+and assignment support.
+</p>
+</div>
 
-        <div class="card">
-        <h3>📄 CV & Career</h3>
-        <p>
-        Professional CV and career document preparation.
-        </p>
-        </div>
+<div class="card">
+<h3>📄 CV & Career</h3>
+<p>
+Professional CV and career document
+preparation.
+</p>
+</div>
 
-        <div class="card">
-        <h3>🌾 Farmer Services</h3>
-        <p>
-        Assistance with farmer registration and related
-        services.
-        </p>
-        </div>
+<div class="card">
+<h3>🌾 Farmer Services</h3>
+<p>
+Farmer registration assistance
+and related services.
+</p>
+</div>
 
-        <div class="card">
-        <h3>🧾 TPIN</h3>
-        <p>
-        TPIN assistance for individuals and businesses.
-        </p>
-        </div>
+<div class="card">
+<h3>🧾 TPIN</h3>
+<p>
+TPIN assistance for individuals
+and businesses.
+</p>
+</div>
 
-        <div class="card">
-        <h3>🏥 Doctor Booking</h3>
-        <p>
-        Request healthcare appointment assistance.
-        </p>
-        </div>
+<div class="card">
+<h3>🏥 Doctor Booking</h3>
+<p>
+Request healthcare appointment
+assistance.
+</p>
+</div>
 
-        <div class="card">
-        <h3>⚖️ Lawyer Booking</h3>
-        <p>
-        Request legal consultation assistance.
-        </p>
-        </div>
+<div class="card">
+<h3>⚖️ Lawyer Booking</h3>
+<p>
+Request legal consultation
+assistance.
+</p>
+</div>
 
-        <div class="card">
-        <h3>👨‍🏫 Teachers & Tutors</h3>
-        <p>
-        Connect with teachers and tutors.
-        </p>
-        </div>
+<div class="card">
+<h3>👨‍🏫 Teachers & Tutors</h3>
+<p>
+Connect with teachers and tutors.
+</p>
+</div>
 
-        <div class="card">
-        <h3>🚚 Delivery</h3>
-        <p>
-        Request driver and delivery services.
-        </p>
-        </div>
+<div class="card">
+<h3>🚚 Delivery</h3>
+<p>
+Request driver and delivery services.
+</p>
+</div>
 
-        </div>
-        """
+</div>
+""",
     )
 
 
@@ -1232,7 +1583,11 @@ def home():
 # REGISTER
 # ============================================================
 
-@app.route("/register", methods=["GET", "POST"])
+
+@app.route(
+    "/register",
+    methods=["GET", "POST"],
+)
 def register():
 
     if request.method == "POST":
@@ -1251,87 +1606,94 @@ def register():
 
         password = request.form.get(
             "password",
-            ""
+            "",
         )
 
         confirm = request.form.get(
             "confirm_password",
-            ""
+            "",
         )
 
         if not name:
+
             flash(
                 "Please enter your full name.",
-                "danger"
+                "danger",
             )
+
             return redirect(
                 url_for("register")
             )
 
         if not valid_email(email):
+
             flash(
                 "Please enter a valid email address.",
-                "danger"
+                "danger",
             )
+
             return redirect(
                 url_for("register")
             )
 
         if not valid_password(password):
+
             flash(
                 "Password must contain at least 6 characters.",
-                "danger"
+                "danger",
             )
+
             return redirect(
                 url_for("register")
             )
 
         if password != confirm:
+
             flash(
                 "Passwords do not match.",
-                "danger"
+                "danger",
             )
+
             return redirect(
                 url_for("register")
             )
 
         success, message, data = auth_signup(
             email,
-            password
+            password,
         )
 
         if not success:
 
             logger.error(
                 "Registration error: %s",
-                message
+                message,
             )
 
             flash(
                 message,
-                "danger"
+                "danger",
             )
 
             return redirect(
                 url_for("register")
             )
 
-        # Supabase can return a user immediately
-        # or require email confirmation.
         user = data.get("user")
 
         if user:
+
             create_compatible_profile(
                 user,
                 name=name,
-                phone=phone
+                phone=phone,
             )
 
         flash(
             "Account created successfully. "
-            "If email confirmation is enabled in Supabase, "
-            "check your email before logging in.",
-            "success"
+            "If Supabase email confirmation is enabled, "
+            "confirm your email before logging in.",
+            "success",
         )
 
         return redirect(
@@ -1341,62 +1703,80 @@ def register():
     return page(
         "Create Account",
         """
-        <div class="card">
+<div class="card">
 
-        <h2>Create your KOJA Africa account</h2>
+<h2>
+Create your KOJA Africa account
+</h2>
 
-        <form method="POST">
+<form method="POST">
 
-        <label>Full name</label>
-        <input
-            type="text"
-            name="name"
-            required
-            autocomplete="name">
+<label>
+Full name
+</label>
 
-        <label>Phone number</label>
-        <input
-            type="tel"
-            name="phone"
-            placeholder="097XXXXXXX">
+<input
+    type="text"
+    name="name"
+    required
+    autocomplete="name">
 
-        <label>Email address</label>
-        <input
-            type="email"
-            name="email"
-            required
-            autocomplete="email">
+<label>
+Phone number
+</label>
 
-        <label>Password</label>
-        <input
-            type="password"
-            name="password"
-            required
-            minlength="6"
-            autocomplete="new-password">
+<input
+    type="tel"
+    name="phone"
+    placeholder="097XXXXXXX">
 
-        <label>Confirm password</label>
-        <input
-            type="password"
-            name="confirm_password"
-            required
-            minlength="6"
-            autocomplete="new-password">
+<label>
+Email address
+</label>
 
-        <button class="btn green"
-                type="submit">
-            Create Account
-        </button>
+<input
+    type="email"
+    name="email"
+    required
+    autocomplete="email">
 
-        </form>
+<label>
+Password
+</label>
 
-        <p>
-        Already have an account?
-        <a href="/login">Login</a>
-        </p>
+<input
+    type="password"
+    name="password"
+    required
+    minlength="6"
+    autocomplete="new-password">
 
-        </div>
-        """
+<label>
+Confirm password
+</label>
+
+<input
+    type="password"
+    name="confirm_password"
+    required
+    minlength="6"
+    autocomplete="new-password">
+
+<button
+    class="btn green"
+    type="submit">
+Create Account
+</button>
+
+</form>
+
+<p>
+Already have an account?
+<a href="/login">Login</a>
+</p>
+
+</div>
+""",
     )
 
 
@@ -1404,7 +1784,11 @@ def register():
 # LOGIN
 # ============================================================
 
-@app.route("/login", methods=["GET", "POST"])
+
+@app.route(
+    "/login",
+    methods=["GET", "POST"],
+)
 def login():
 
     if request.method == "POST":
@@ -1415,37 +1799,41 @@ def login():
 
         password = request.form.get(
             "password",
-            ""
+            "",
         )
 
         if not valid_email(email):
+
             flash(
                 "Please enter a valid email address.",
-                "danger"
+                "danger",
             )
+
             return redirect(
                 url_for("login")
             )
 
         success, message, data = auth_login(
             email,
-            password
+            password,
         )
 
         if not success:
 
-            # Make Supabase's actual error useful.
-            if "Email not confirmed" in message:
+            if (
+                "Email not confirmed"
+                in message
+            ):
+
                 message = (
                     "Your email has not been confirmed. "
-                    "Check your email or disable email "
-                    "confirmation in Supabase Authentication "
-                    "for testing."
+                    "Check your email, or disable email "
+                    "confirmation in Supabase while testing."
                 )
 
             flash(
                 message,
-                "danger"
+                "danger",
             )
 
             return redirect(
@@ -1462,42 +1850,85 @@ def login():
 
         user = data.get("user")
 
-        if not user and access_token:
+        if (
+            not user
+            and access_token
+        ):
+
             user = auth_user(
                 access_token
             )
 
         if not user:
+
             flash(
                 "Login succeeded but user information "
                 "could not be loaded.",
-                "danger"
+                "danger",
             )
+
             return redirect(
                 url_for("login")
             )
 
         session.clear()
 
-        session["access_token"] = access_token
-        session["refresh_token"] = refresh_token
-        session["user"] = user
-        session["email"] = (
-            user.get("email", email)
+        session["access_token"] = (
+            access_token
         )
 
-        # Determine admin from environment first.
-        if ADMIN_EMAIL and email == ADMIN_EMAIL:
+        session["refresh_token"] = (
+            refresh_token
+        )
+
+        session["user"] = user
+
+        session["email"] = (
+            user.get(
+                "email",
+                email,
+            )
+        )
+
+        if (
+            ADMIN_EMAIL
+            and email == ADMIN_EMAIL
+        ):
+
             session["role"] = "admin"
+
+        else:
+
+            app_metadata = (
+                user.get(
+                    "app_metadata"
+                )
+                or {}
+            )
+
+            user_metadata = (
+                user.get(
+                    "user_metadata"
+                )
+                or {}
+            )
+
+            role = (
+                app_metadata.get("role")
+                or user_metadata.get("role")
+                or "student"
+            )
+
+            session["role"] = role
 
         log_activity(
             "login",
-            "User logged into KOJA Africa."
+            "User logged into KOJA Africa.",
         )
 
         flash(
             "Welcome to KOJA Africa.",
-            "success"
+            "success",
         )
 
         return redirect(
@@ -1507,42 +1938,49 @@ def login():
     return page(
         "Login",
         """
-        <div class="card">
+<div class="card">
 
-        <h2>Login</h2>
+<h2>Login</h2>
 
-        <form method="POST">
+<form method="POST">
 
-        <label>Email address</label>
+<label>
+Email address
+</label>
 
-        <input
-            type="email"
-            name="email"
-            required
-            autocomplete="email">
+<input
+    type="email"
+    name="email"
+    required
+    autocomplete="email">
 
-        <label>Password</label>
+<label>
+Password
+</label>
 
-        <input
-            type="password"
-            name="password"
-            required
-            autocomplete="current-password">
+<input
+    type="password"
+    name="password"
+    required
+    autocomplete="current-password">
 
-        <button class="btn green"
-                type="submit">
-            Login
-        </button>
+<button
+    class="btn green"
+    type="submit">
+Login
+</button>
 
-        </form>
+</form>
 
-        <p>
-        No account?
-        <a href="/register">Create one</a>
-        </p>
+<p>
+No account?
+<a href="/register">
+Create one
+</a>
+</p>
 
-        </div>
-        """
+</div>
+""",
     )
 
 
@@ -1550,19 +1988,22 @@ def login():
 # LOGOUT
 # ============================================================
 
+
 @app.route("/logout")
 def logout():
 
-    log_activity(
-        "logout",
-        "User logged out."
-    )
+    if current_user_id():
+
+        log_activity(
+            "logout",
+            "User logged out.",
+        )
 
     session.clear()
 
     flash(
         "You have been logged out.",
-        "success"
+        "success",
     )
 
     return redirect(
@@ -1574,198 +2015,256 @@ def logout():
 # DASHBOARD
 # ============================================================
 
+
 @app.route("/dashboard")
 @login_required
 def dashboard():
 
     uid = current_user_id()
 
-    assignments = rest_select(
-        "assignment_requests",
-        {
-            "user_id": f"eq.{uid}",
-            "order": "created_at.desc",
-            "limit": "10",
-        }
-    ) or []
-
-    service_requests = rest_select(
-        "service_requests",
-        {
-            "user_id": f"eq.{uid}",
-            "order": "created_at.desc",
-            "limit": "10",
-        }
-    ) or []
-
-    notifications = rest_select(
-        "notifications",
-        {
-            "user_id": f"eq.{uid}",
-            "order": "created_at.desc",
-            "limit": "10",
-        }
-    ) or []
-
-    # Some KOJA versions use koja_notifications.
-    if not notifications:
-        notifications = rest_select(
-            "koja_notifications",
+    assignments = (
+        rest_select(
+            "assignment_requests",
             {
-                "user_id": f"eq.{uid}",
-                "order": "created_at.desc",
-                "limit": "10",
-            }
-        ) or []
+                "user_id":
+                    f"eq.{uid}",
+                "order":
+                    "created_at.desc",
+                "limit":
+                    "10",
+            },
+        )
+        or []
+    )
+
+    service_requests = (
+        rest_select(
+            "service_requests",
+            {
+                "user_id":
+                    f"eq.{uid}",
+                "order":
+                    "created_at.desc",
+                "limit":
+                    "20",
+            },
+        )
+        or []
+    )
+
+    notifications = (
+        rest_select(
+            "notifications",
+            {
+                "user_id":
+                    f"eq.{uid}",
+                "order":
+                    "created_at.desc",
+                "limit":
+                    "10",
+            },
+        )
+        or []
+    )
+
+    if not notifications:
+
+        notifications = (
+            rest_select(
+                "koja_notifications",
+                {
+                    "user_id":
+                        f"eq.{uid}",
+                    "order":
+                        "created_at.desc",
+                    "limit":
+                        "10",
+                },
+            )
+            or []
+        )
 
     rows = ""
 
     for item in service_requests:
 
         rows += f"""
-        <tr>
-        <td>{clean(item.get('title'))}</td>
-        <td>
-        <span class="badge">
-        {clean(item.get('status'))}
-        </span>
-        </td>
-        <td>
-        {clean(item.get('created_at'))}
-        </td>
-        </tr>
-        """
+<tr>
+
+<td>
+{safe(item.get("title"))}
+</td>
+
+<td>
+<span class="badge">
+{safe(item.get("status"))}
+</span>
+</td>
+
+<td>
+{safe(item.get("created_at"))}
+</td>
+
+</tr>
+"""
 
     if not rows:
+
         rows = """
-        <tr>
-        <td colspan="3">
-        No service requests yet.
-        </td>
-        </tr>
-        """
+<tr>
+<td colspan="3">
+No service requests yet.
+</td>
+</tr>
+"""
 
     return page(
         "Dashboard",
         f"""
-        <section class="hero">
+<section class="hero">
 
-        <h1>Welcome to KOJA Africa</h1>
+<h1>
+Welcome to KOJA Africa
+</h1>
 
-        <p>
-        {clean(current_email())}
-        </p>
+<p>
+{safe(current_email())}
+</p>
 
-        </section>
+</section>
 
-        <div class="grid">
+<div class="grid">
 
-        <div class="card">
-        <h3>🎓 Academic</h3>
-        <a class="btn"
-           href="/service/academic">
-           Request Academic Help
-        </a>
-        </div>
+<div class="card">
+<h3>🎓 Academic</h3>
 
-        <div class="card">
-        <h3>📝 Assignment</h3>
-        <a class="btn"
-           href="/assignment/new">
-           Submit Assignment
-        </a>
-        </div>
+<a class="btn"
+   href="/service/academic">
+Request Academic Help
+</a>
 
-        <div class="card">
-        <h3>📄 CV</h3>
-        <a class="btn"
-           href="/cv/new">
-           Create CV
-        </a>
-        </div>
+</div>
 
-        <div class="card">
-        <h3>🌾 Farmer</h3>
-        <a class="btn"
-           href="/farmer/new">
-           Farmer Registration
-        </a>
-        </div>
+<div class="card">
+<h3>📝 Assignment</h3>
 
-        <div class="card">
-        <h3>🧾 TPIN</h3>
-        <a class="btn"
-           href="/tpin/new">
-           TPIN Assistance
-        </a>
-        </div>
+<a class="btn"
+   href="/assignment/new">
+Submit Assignment
+</a>
 
-        <div class="card">
-        <h3>🏥 Doctor</h3>
-        <a class="btn"
-           href="/doctor/new">
-           Doctor Booking
-        </a>
-        </div>
+</div>
 
-        <div class="card">
-        <h3>⚖️ Lawyer</h3>
-        <a class="btn"
-           href="/lawyer/new">
-           Lawyer Booking
-        </a>
-        </div>
+<div class="card">
+<h3>📄 CV</h3>
 
-        <div class="card">
-        <h3>🚚 Delivery</h3>
-        <a class="btn"
-           href="/delivery/new">
-           Request Delivery
-        </a>
-        </div>
+<a class="btn"
+   href="/cv/new">
+Create CV
+</a>
 
-        </div>
+</div>
 
-        <div class="card">
+<div class="card">
+<h3>🌾 Farmer</h3>
 
-        <h2>My Service Requests</h2>
+<a class="btn"
+   href="/farmer/new">
+Farmer Registration
+</a>
 
-        <table>
+</div>
 
-        <tr>
-        <th>Service</th>
-        <th>Status</th>
-        <th>Date</th>
-        </tr>
+<div class="card">
+<h3>🧾 TPIN</h3>
 
-        {rows}
+<a class="btn"
+   href="/tpin/new">
+TPIN Assistance
+</a>
 
-        </table>
+</div>
 
-        </div>
+<div class="card">
+<h3>🏥 Doctor</h3>
 
-        <div class="card">
+<a class="btn"
+   href="/doctor/new">
+Doctor Booking
+</a>
 
-        <h2>Notifications</h2>
+</div>
 
-        <p>
-        {len(notifications)}
-        notification(s)
-        </p>
+<div class="card">
+<h3>⚖️ Lawyer</h3>
 
-        </div>
+<a class="btn"
+   href="/lawyer/new">
+Lawyer Booking
+</a>
 
-        <div class="card">
+</div>
 
-        <h2>Assignments</h2>
+<div class="card">
+<h3>🚚 Delivery</h3>
 
-        <p>
-        {len(assignments)}
-        assignment request(s)
-        </p>
+<a class="btn"
+   href="/delivery/new">
+Request Delivery
+</a>
 
-        </div>
-        """
+</div>
+
+</div>
+
+<div class="card">
+
+<h2>
+My Service Requests
+</h2>
+
+<table>
+
+<tr>
+<th>Service</th>
+<th>Status</th>
+<th>Date</th>
+</tr>
+
+{rows}
+
+</table>
+
+</div>
+
+<div class="grid">
+
+<div class="card">
+
+<h3>
+Notifications
+</h3>
+
+<h2>
+{len(notifications)}
+</h2>
+
+</div>
+
+<div class="card">
+
+<h3>
+Assignments
+</h3>
+
+<h2>
+{len(assignments)}
+</h2>
+
+</div>
+
+</div>
+""",
     )
 
 
@@ -1773,16 +2272,22 @@ def dashboard():
 # SERVICES
 # ============================================================
 
+
 @app.route("/services")
 def services():
 
-    categories = rest_select(
-        "service_categories",
-        {
-            "is_active": "eq.true",
-            "order": "name.asc",
-        }
-    ) or []
+    categories = (
+        rest_select(
+            "service_categories",
+            {
+                "is_active":
+                    "eq.true",
+                "order":
+                    "name.asc",
+            },
+        )
+        or []
+    )
 
     cards = ""
 
@@ -1792,45 +2297,81 @@ def services():
             category.get("slug")
         )
 
+        if not slug:
+            continue
+
         cards += f"""
-        <div class="card">
+<div class="card">
 
-        <h3>
-        {clean(category.get('icon'))}
-        {clean(category.get('name'))}
-        </h3>
+<h3>
+{safe(category.get("icon"))}
+{safe(category.get("name"))}
+</h3>
 
-        <p>
-        {clean(category.get('description'))}
-        </p>
+<p>
+{safe(category.get("description"))}
+</p>
 
-        <a class="btn"
-           href="/service/{slug}">
-           Request Service
-        </a>
+<a class="btn"
+   href="/service/{safe(slug)}">
+Request Service
+</a>
 
-        </div>
-        """
+</div>
+"""
 
     if not cards:
 
         cards = """
-        <div class="card">
-        <p>
-        KOJA services are currently being configured.
-        </p>
-        </div>
-        """
+<div class="card">
+
+<h3>
+KOJA Services
+</h3>
+
+<p>
+Services are being configured.
+You can still use the direct
+services available from the dashboard.
+</p>
+
+<div>
+<a class="btn"
+   href="/service/academic">
+Academic
+</a>
+
+<a class="btn"
+   href="/cv/new">
+CV
+</a>
+
+<a class="btn"
+   href="/farmer/new">
+Farmer
+</a>
+
+<a class="btn"
+   href="/tpin/new">
+TPIN
+</a>
+
+</div>
+
+</div>
+"""
 
     return page(
         "Services",
         f"""
-        <h1>KOJA Africa Services</h1>
+<h1>
+KOJA Africa Services
+</h1>
 
-        <div class="grid">
-        {cards}
-        </div>
-        """
+<div class="grid">
+{cards}
+</div>
+""",
     )
 
 
@@ -1838,9 +2379,10 @@ def services():
 # GENERIC SERVICE REQUEST
 # ============================================================
 
+
 @app.route(
     "/service/<slug>",
-    methods=["GET", "POST"]
+    methods=["GET", "POST"],
 )
 @login_required
 def service_request(slug):
@@ -1848,12 +2390,38 @@ def service_request(slug):
     category = first_row(
         "service_categories",
         {
-            "slug": f"eq.{slug}",
-        }
+            "slug":
+                f"eq.{slug}",
+        },
     )
 
+    # Allow important services even when
+    # service_categories has not been populated yet.
+
+    fallback_names = {
+        "academic":
+            "Academic Assistance",
+        "tutoring":
+            "Tutoring",
+        "career":
+            "Career Assistance",
+    }
+
     if not category:
-        abort(404)
+
+        if slug not in fallback_names:
+            abort(404)
+
+        category = {
+            "slug":
+                slug,
+            "name":
+                fallback_names[slug],
+            "description":
+                "KOJA Africa service request.",
+            "icon":
+                "📚",
+        }
 
     if request.method == "POST":
 
@@ -1862,45 +2430,62 @@ def service_request(slug):
         )
 
         description = clean(
-            request.form.get("description")
+            request.form.get(
+                "description"
+            )
         )
 
         if not title:
+
             title = category.get(
                 "name",
-                "KOJA Service"
+                "KOJA Service",
             )
 
-        # First create the central request.
         payload = {
-            "user_id": current_user_id(),
+            "user_id":
+                current_user_id(),
+
             "service_category_id":
                 category.get("id"),
-            "title": title,
-            "description": description,
-            "status": "submitted",
-            "priority": "normal",
-            "currency": PAYMENT_CURRENCY,
+
+            "title":
+                title,
+
+            "description":
+                description,
+
+            "status":
+                "submitted",
+
+            "priority":
+                "normal",
+
+            "currency":
+                PAYMENT_CURRENCY,
         }
 
         result = insert_if_possible(
             "service_requests",
-            payload
+            payload,
         )
 
         if result:
 
-            service_id = result[0].get("id")
+            service_id = (
+                result[0].get("id")
+            )
 
             log_activity(
                 "service_request_created",
                 f"Created {slug} service request.",
-                service_request_id=service_id,
+                service_request_id=
+                    service_id,
             )
 
             flash(
                 "Your service request has been submitted.",
-                "success"
+                "success",
             )
 
             return redirect(
@@ -1910,53 +2495,57 @@ def service_request(slug):
         flash(
             "KOJA could not create the service request. "
             "Please check the Supabase logs.",
-            "danger"
+            "danger",
         )
 
     return page(
         category.get(
             "name",
-            "KOJA Service"
+            "KOJA Service",
         ),
         f"""
-        <div class="card">
+<div class="card">
 
-        <h2>
-        {clean(category.get('icon'))}
-        {clean(category.get('name'))}
-        </h2>
+<h2>
+{safe(category.get("icon"))}
+{safe(category.get("name"))}
+</h2>
 
-        <p>
-        {clean(category.get('description'))}
-        </p>
+<p>
+{safe(category.get("description"))}
+</p>
 
-        <form method="POST">
+<form method="POST">
 
-        <label>Request title</label>
+<label>
+Request title
+</label>
 
-        <input
-            type="text"
-            name="title"
-            placeholder="What do you need?"
-            required>
+<input
+    type="text"
+    name="title"
+    placeholder="What do you need?"
+    required>
 
-        <label>Describe what you need</label>
+<label>
+Describe what you need
+</label>
 
-        <textarea
-            name="description"
-            placeholder="Provide all important details..."
-            required></textarea>
+<textarea
+    name="description"
+    placeholder="Provide all important details..."
+    required></textarea>
 
-        <button
-            class="btn green"
-            type="submit">
-            Submit Request
-        </button>
+<button
+    class="btn green"
+    type="submit">
+Submit Request
+</button>
 
-        </form>
+</form>
 
-        </div>
-        """
+</div>
+""",
     )
 
 
@@ -1964,9 +2553,10 @@ def service_request(slug):
 # ASSIGNMENT
 # ============================================================
 
+
 @app.route(
     "/assignment/new",
-    methods=["GET", "POST"]
+    methods=["GET", "POST"],
 )
 @login_required
 def new_assignment():
@@ -1994,7 +2584,9 @@ def new_assignment():
         )
 
         title = clean(
-            request.form.get("assignment_title")
+            request.form.get(
+                "assignment_title"
+            )
         )
 
         question = clean(
@@ -2011,65 +2603,101 @@ def new_assignment():
             request.form.get("deadline")
         )
 
-        # Central service request.
         service_payload = {
-            "user_id": current_user_id(),
-            "title": title or "Assignment Assistance",
-            "description": question,
-            "status": "submitted",
-            "priority": "normal",
-            "currency": PAYMENT_CURRENCY,
+            "user_id":
+                current_user_id(),
+
+            "title":
+                title
+                or "Assignment Assistance",
+
+            "description":
+                question,
+
+            "status":
+                "submitted",
+
+            "priority":
+                "normal",
+
+            "currency":
+                PAYMENT_CURRENCY,
         }
 
         service_result = insert_if_possible(
             "service_requests",
-            service_payload
+            service_payload,
         )
 
         service_id = None
 
         if service_result:
-            service_id = service_result[0].get(
-                "id"
+
+            service_id = (
+                service_result[0].get("id")
             )
 
         assignment_payload = {
-            "user_id": current_user_id(),
-            "service_request_id": service_id,
-            "institution": institution,
-            "programme": programme,
-            "course": course,
-            "subject": subject,
-            "assignment_title": title,
-            "deadline": deadline or None,
-            "question_text": question,
-            "question": question,
-            "class_level": class_level,
-            "lecturer_requirements": requirements,
-            "additional_information": "",
-            "status": "submitted",
+            "user_id":
+                current_user_id(),
+
+            "service_request_id":
+                service_id,
+
+            "institution":
+                institution,
+
+            "programme":
+                programme,
+
+            "course":
+                course,
+
+            "subject":
+                subject,
+
+            "assignment_title":
+                title,
+
+            "deadline":
+                deadline or None,
+
+            "question_text":
+                question,
+
+            "question":
+                question,
+
+            "class_level":
+                class_level,
+
+            "lecturer_requirements":
+                requirements,
+
+            "additional_information":
+                "",
+
+            "status":
+                "submitted",
         }
 
         result = insert_if_possible(
             "assignment_requests",
-            assignment_payload
+            assignment_payload,
         )
 
         if result:
 
-            assignment_id = result[0].get(
-                "id"
-            )
-
             log_activity(
                 "assignment_submitted",
                 "New assignment request submitted.",
-                service_request_id=service_id,
+                service_request_id=
+                    service_id,
             )
 
             flash(
                 "Assignment submitted successfully.",
-                "success"
+                "success",
             )
 
             return redirect(
@@ -2078,67 +2706,92 @@ def new_assignment():
 
         flash(
             "Assignment could not be submitted.",
-            "danger"
+            "danger",
         )
 
     return page(
         "Submit Assignment",
         """
-        <div class="card">
+<div class="card">
 
-        <h2>Submit Assignment</h2>
+<h2>
+Submit Assignment
+</h2>
 
-        <form method="POST">
+<form method="POST">
 
-        <label>Institution</label>
-        <input name="institution">
+<label>
+Institution
+</label>
 
-        <label>Programme</label>
-        <input name="programme">
+<input name="institution">
 
-        <label>Course</label>
-        <input name="course">
+<label>
+Programme
+</label>
 
-        <label>Subject</label>
-        <input name="subject">
+<input name="programme">
 
-        <label>Class level</label>
-        <input name="class_level">
+<label>
+Course
+</label>
 
-        <label>Assignment title</label>
-        <input
-            name="assignment_title"
-            required>
+<input name="course">
 
-        <label>Deadline</label>
-        <input
-            type="date"
-            name="deadline">
+<label>
+Subject
+</label>
 
-        <label>Question / Assignment</label>
+<input name="subject">
 
-        <textarea
-            name="question"
-            required></textarea>
+<label>
+Class level
+</label>
 
-        <label>
-        Lecturer requirements
-        </label>
+<input name="class_level">
 
-        <textarea
-            name="lecturer_requirements">
-        </textarea>
+<label>
+Assignment title
+</label>
 
-        <button
-            class="btn green"
-            type="submit">
-            Submit Assignment
-        </button>
+<input
+    name="assignment_title"
+    required>
 
-        </form>
+<label>
+Deadline
+</label>
 
-        </div>
-        """
+<input
+    type="date"
+    name="deadline">
+
+<label>
+Question / Assignment
+</label>
+
+<textarea
+    name="question"
+    required></textarea>
+
+<label>
+Lecturer requirements
+</label>
+
+<textarea
+    name="lecturer_requirements">
+</textarea>
+
+<button
+    class="btn green"
+    type="submit">
+Submit Assignment
+</button>
+
+</form>
+
+</div>
+""",
     )
 
 
@@ -2146,9 +2799,10 @@ def new_assignment():
 # CV
 # ============================================================
 
+
 @app.route(
     "/cv/new",
-    methods=["GET", "POST"]
+    methods=["GET", "POST"],
 )
 @login_required
 def new_cv():
@@ -2156,7 +2810,9 @@ def new_cv():
     if request.method == "POST":
 
         full_name = clean(
-            request.form.get("full_name")
+            request.form.get(
+                "full_name"
+            )
         )
 
         phone = clean(
@@ -2192,80 +2848,116 @@ def new_cv():
         )
 
         certificates = clean(
-            request.form.get("certificates")
+            request.form.get(
+                "certificates"
+            )
         )
 
         target_job = clean(
-            request.form.get("target_job")
+            request.form.get(
+                "target_job"
+            )
         )
 
         service_payload = {
-            "user_id": current_user_id(),
-            "title": "CV & Career Service",
+            "user_id":
+                current_user_id(),
+
+            "title":
+                "CV & Career Service",
+
             "description":
                 f"CV for {full_name}",
-            "status": "submitted",
-            "priority": "normal",
-            "currency": PAYMENT_CURRENCY,
+
+            "status":
+                "submitted",
+
+            "priority":
+                "normal",
+
+            "currency":
+                PAYMENT_CURRENCY,
         }
 
         service_result = insert_if_possible(
             "service_requests",
-            service_payload
+            service_payload,
         )
 
         service_id = None
 
         if service_result:
-            service_id = service_result[0].get(
-                "id"
+
+            service_id = (
+                service_result[0].get("id")
             )
 
         payload = {
-            "user_id": current_user_id(),
-            "service_request_id": service_id,
-            "full_name": full_name,
-            "phone": phone,
-            "email": email,
-            "professional_title": title,
-            "professional_summary": summary,
-            "education": (
+            "user_id":
+                current_user_id(),
+
+            "service_request_id":
+                service_id,
+
+            "full_name":
+                full_name,
+
+            "phone":
+                phone,
+
+            "email":
+                email,
+
+            "professional_title":
+                title,
+
+            "professional_summary":
+                summary,
+
+            "education":
                 json.dumps(
                     [education]
-                )
-                if education
-                else "[]"
-            ),
-            "experience": (
+                    if education
+                    else []
+                ),
+
+            "experience":
                 json.dumps(
                     [experience]
-                )
-                if experience
-                else "[]"
-            ),
-            "skills": (
+                    if experience
+                    else []
+                ),
+
+            "skills":
                 json.dumps(
                     [skills]
-                )
-                if skills
-                else "[]"
-            ),
-            "certificates": (
+                    if skills
+                    else []
+                ),
+
+            "certificates":
                 json.dumps(
                     [certificates]
-                )
-                if certificates
-                else "[]"
-            ),
-            "references_data": "[]",
-            "target_job": target_job,
-            "template": "professional",
-            "status": "submitted",
+                    if certificates
+                    else []
+                ),
+
+            "references_data":
+                "[]",
+
+            "target_job":
+                target_job,
+
+            "template":
+                "professional",
+
+            "status":
+                "submitted",
         }
 
         result = insert_if_possible(
             "cv_requests",
-            payload
+            payload,
         )
 
         if result:
@@ -2273,12 +2965,13 @@ def new_cv():
             log_activity(
                 "cv_request_created",
                 "New CV request submitted.",
-                service_request_id=service_id,
+                service_request_id=
+                    service_id,
             )
 
             flash(
                 "CV request submitted successfully.",
-                "success"
+                "success",
             )
 
             return redirect(
@@ -2287,57 +2980,106 @@ def new_cv():
 
         flash(
             "CV request could not be submitted.",
-            "danger"
+            "danger",
         )
 
     return page(
         "CV Service",
         """
-        <div class="card">
+<div class="card">
 
-        <h2>CV & Career Service</h2>
+<h2>
+CV & Career Service
+</h2>
 
-        <form method="POST">
+<form method="POST">
 
-        <label>Full name</label>
-        <input name="full_name" required>
+<label>
+Full name
+</label>
 
-        <label>Phone</label>
-        <input name="phone">
+<input
+    name="full_name"
+    required>
 
-        <label>Email</label>
-        <input type="email" name="email">
+<label>
+Phone
+</label>
 
-        <label>Professional title</label>
-        <input name="professional_title">
+<input name="phone">
 
-        <label>Professional summary</label>
-        <textarea name="professional_summary"></textarea>
+<label>
+Email
+</label>
 
-        <label>Education</label>
-        <textarea name="education"></textarea>
+<input
+    type="email"
+    name="email">
 
-        <label>Work experience</label>
-        <textarea name="experience"></textarea>
+<label>
+Professional title
+</label>
 
-        <label>Skills</label>
-        <textarea name="skills"></textarea>
+<input
+    name="professional_title">
 
-        <label>Certificates</label>
-        <textarea name="certificates"></textarea>
+<label>
+Professional summary
+</label>
 
-        <label>Target job</label>
-        <input name="target_job">
+<textarea
+    name="professional_summary">
+</textarea>
 
-        <button class="btn green"
-                type="submit">
-        Submit CV Request
-        </button>
+<label>
+Education
+</label>
 
-        </form>
+<textarea
+    name="education">
+</textarea>
 
-        </div>
-        """
+<label>
+Work experience
+</label>
+
+<textarea
+    name="experience">
+</textarea>
+
+<label>
+Skills
+</label>
+
+<textarea
+    name="skills">
+</textarea>
+
+<label>
+Certificates
+</label>
+
+<textarea
+    name="certificates">
+</textarea>
+
+<label>
+Target job
+</label>
+
+<input
+    name="target_job">
+
+<button
+    class="btn green"
+    type="submit">
+Submit CV Request
+</button>
+
+</form>
+
+</div>
+""",
     )
 
 
@@ -2345,9 +3087,10 @@ def new_cv():
 # FARMER
 # ============================================================
 
+
 @app.route(
     "/farmer/new",
-    methods=["GET", "POST"]
+    methods=["GET", "POST"],
 )
 @login_required
 def new_farmer():
@@ -2355,7 +3098,9 @@ def new_farmer():
     if request.method == "POST":
 
         full_name = clean(
-            request.form.get("full_name")
+            request.form.get(
+                "full_name"
+            )
         )
 
         phone = clean(
@@ -2391,7 +3136,9 @@ def new_farmer():
         )
 
         farm_location = clean(
-            request.form.get("farm_location")
+            request.form.get(
+                "farm_location"
+            )
         )
 
         farm_size = clean(
@@ -2399,7 +3146,9 @@ def new_farmer():
         )
 
         farming_type = clean(
-            request.form.get("farming_type")
+            request.form.get(
+                "farming_type"
+            )
         )
 
         crops = clean(
@@ -2411,56 +3160,106 @@ def new_farmer():
         )
 
         cooperative = clean(
-            request.form.get("cooperative_name")
+            request.form.get(
+                "cooperative_name"
+            )
         )
 
         service_payload = {
-            "user_id": current_user_id(),
-            "title": "Farmer Registration",
+            "user_id":
+                current_user_id(),
+
+            "title":
+                "Farmer Registration",
+
             "description":
                 f"Farmer registration for {full_name}",
-            "status": "submitted",
-            "priority": "normal",
-            "currency": PAYMENT_CURRENCY,
+
+            "status":
+                "submitted",
+
+            "priority":
+                "normal",
+
+            "currency":
+                PAYMENT_CURRENCY,
         }
 
         service_result = insert_if_possible(
             "service_requests",
-            service_payload
+            service_payload,
         )
 
         service_id = None
 
         if service_result:
-            service_id = service_result[0].get(
-                "id"
+
+            service_id = (
+                service_result[0].get("id")
             )
 
         payload = {
-            "user_id": current_user_id(),
-            "service_request_id": service_id,
-            "full_name": full_name,
-            "phone": phone,
-            "email": email,
-            "nrc_number": nrc,
-            "province": province,
-            "district": district,
-            "chiefdom": chiefdom,
-            "village": village,
-            "farm_name": farm_name,
-            "farm_location": farm_location,
-            "farm_size": farm_size or None,
-            "farm_size_unit": "hectares",
-            "farming_type": farming_type,
-            "crops": crops,
-            "livestock": livestock,
-            "cooperative_name": cooperative,
-            "registration_status": "submitted",
+            "user_id":
+                current_user_id(),
+
+            "service_request_id":
+                service_id,
+
+            "full_name":
+                full_name,
+
+            "phone":
+                phone,
+
+            "email":
+                email,
+
+            "nrc_number":
+                nrc,
+
+            "province":
+                province,
+
+            "district":
+                district,
+
+            "chiefdom":
+                chiefdom,
+
+            "village":
+                village,
+
+            "farm_name":
+                farm_name,
+
+            "farm_location":
+                farm_location,
+
+            "farm_size":
+                farm_size or None,
+
+            "farm_size_unit":
+                "hectares",
+
+            "farming_type":
+                farming_type,
+
+            "crops":
+                crops,
+
+            "livestock":
+                livestock,
+
+            "cooperative_name":
+                cooperative,
+
+            "registration_status":
+                "submitted",
         }
 
         result = insert_if_possible(
             "farmer_profiles",
-            payload
+            payload,
         )
 
         if result:
@@ -2468,12 +3267,13 @@ def new_farmer():
             log_activity(
                 "farmer_registration",
                 "Farmer registration request submitted.",
-                service_request_id=service_id,
+                service_request_id=
+                    service_id,
             )
 
             flash(
                 "Farmer registration request submitted.",
-                "success"
+                "success",
             )
 
             return redirect(
@@ -2482,77 +3282,86 @@ def new_farmer():
 
         flash(
             "Farmer request could not be submitted.",
-            "danger"
+            "danger",
         )
 
     return page(
         "Farmer Registration",
         """
-        <div class="card">
+<div class="card">
 
-        <h2>Farmer Registration Assistance</h2>
+<h2>
+Farmer Registration Assistance
+</h2>
 
-        <form method="POST">
+<form method="POST">
 
-        <label>Full name</label>
-        <input name="full_name" required>
+<label>Full name</label>
+<input name="full_name" required>
 
-        <label>Phone</label>
-        <input name="phone">
+<label>Phone</label>
+<input name="phone">
 
-        <label>Email</label>
-        <input name="email">
+<label>Email</label>
+<input name="email">
 
-        <label>NRC number</label>
-        <input name="nrc_number">
+<label>NRC number</label>
+<input name="nrc_number">
 
-        <label>Province</label>
-        <input name="province">
+<label>Province</label>
+<input name="province">
 
-        <label>District</label>
-        <input name="district">
+<label>District</label>
+<input name="district">
 
-        <label>Chiefdom</label>
-        <input name="chiefdom">
+<label>Chiefdom</label>
+<input name="chiefdom">
 
-        <label>Village</label>
-        <input name="village">
+<label>Village</label>
+<input name="village">
 
-        <label>Farm name</label>
-        <input name="farm_name">
+<label>Farm name</label>
+<input name="farm_name">
 
-        <label>Farm location</label>
-        <input name="farm_location">
+<label>Farm location</label>
+<input name="farm_location">
 
-        <label>Farm size (hectares)</label>
-        <input
-            type="number"
-            step="0.01"
-            name="farm_size">
+<label>
+Farm size (hectares)
+</label>
 
-        <label>Farming type</label>
-        <input
-            name="farming_type"
-            placeholder="Crop farming, livestock, mixed...">
+<input
+    type="number"
+    step="0.01"
+    name="farm_size">
 
-        <label>Crops</label>
-        <textarea name="crops"></textarea>
+<label>
+Farming type
+</label>
 
-        <label>Livestock</label>
-        <textarea name="livestock"></textarea>
+<input
+    name="farming_type"
+    placeholder="Crop farming, livestock, mixed...">
 
-        <label>Cooperative</label>
-        <input name="cooperative_name">
+<label>Crops</label>
+<textarea name="crops"></textarea>
 
-        <button class="btn green"
-                type="submit">
-        Submit Farmer Request
-        </button>
+<label>Livestock</label>
+<textarea name="livestock"></textarea>
 
-        </form>
+<label>Cooperative</label>
+<input name="cooperative_name">
 
-        </div>
-        """
+<button
+    class="btn green"
+    type="submit">
+Submit Farmer Request
+</button>
+
+</form>
+
+</div>
+""",
     )
 
 
@@ -2560,104 +3369,101 @@ def new_farmer():
 # TPIN
 # ============================================================
 
+
 @app.route(
     "/tpin/new",
-    methods=["GET", "POST"]
+    methods=["GET", "POST"],
 )
 @login_required
 def new_tpin():
 
     if request.method == "POST":
 
-        full_name = clean(
-            request.form.get("full_name")
-        )
+        fields = {
+            key:
+                clean(request.form.get(key))
+            for key in [
+                "full_name",
+                "phone",
+                "email",
+                "nrc_number",
+                "business_name",
+                "business_type",
+                "province",
+                "district",
+                "address",
+            ]
+        }
 
-        phone = clean(
-            request.form.get("phone")
+        request_type = (
+            clean(
+                request.form.get(
+                    "request_type"
+                )
+            )
+            or "individual"
         )
-
-        email = clean(
-            request.form.get("email")
-        )
-
-        nrc = clean(
-            request.form.get("nrc_number")
-        )
-
-        business_name = clean(
-            request.form.get("business_name")
-        )
-
-        business_type = clean(
-            request.form.get("business_type")
-        )
-
-        province = clean(
-            request.form.get("province")
-        )
-
-        district = clean(
-            request.form.get("district")
-        )
-
-        address = clean(
-            request.form.get("address")
-        )
-
-        request_type = clean(
-            request.form.get("request_type")
-        ) or "individual"
 
         service_payload = {
-            "user_id": current_user_id(),
-            "title": "TPIN Assistance",
+            "user_id":
+                current_user_id(),
+
+            "title":
+                "TPIN Assistance",
+
             "description":
-                f"TPIN request for {full_name}",
-            "status": "submitted",
-            "priority": "normal",
-            "currency": PAYMENT_CURRENCY,
+                f"TPIN request for "
+                f"{fields['full_name']}",
+
+            "status":
+                "submitted",
+
+            "priority":
+                "normal",
+
+            "currency":
+                PAYMENT_CURRENCY,
         }
 
         service_result = insert_if_possible(
             "service_requests",
-            service_payload
+            service_payload,
         )
 
         service_id = None
 
         if service_result:
-            service_id = service_result[0].get(
-                "id"
+
+            service_id = (
+                service_result[0].get("id")
             )
 
         payload = {
-            "user_id": current_user_id(),
-            "service_request_id": service_id,
-            "full_name": full_name,
-            "phone": phone,
-            "email": email,
-            "nrc_number": nrc,
-            "business_name": business_name,
-            "business_type": business_type,
-            "province": province,
-            "district": district,
-            "address": address,
-            "request_type": request_type,
-            "status": "submitted",
+            "user_id":
+                current_user_id(),
+
+            "service_request_id":
+                service_id,
+
+            **fields,
+
+            "request_type":
+                request_type,
+
+            "status":
+                "submitted",
         }
 
         result = insert_if_possible(
             "tpin_requests",
-            payload
+            payload,
         )
 
-        # Older database may have tpn_requests.
         if not result:
 
             result = insert_if_possible(
                 "tpn_requests",
-                payload
+                payload,
             )
 
         if result:
@@ -2665,12 +3471,13 @@ def new_tpin():
             log_activity(
                 "tpin_request",
                 "TPIN assistance request submitted.",
-                service_request_id=service_id,
+                service_request_id=
+                    service_id,
             )
 
             flash(
                 "TPIN request submitted successfully.",
-                "success"
+                "success",
             )
 
             return redirect(
@@ -2679,76 +3486,81 @@ def new_tpin():
 
         flash(
             "TPIN request could not be submitted.",
-            "danger"
+            "danger",
         )
 
     return page(
         "TPIN Assistance",
         """
-        <div class="card">
+<div class="card">
 
-        <h2>TPIN Assistance</h2>
+<h2>
+TPIN Assistance
+</h2>
 
-        <form method="POST">
+<form method="POST">
 
-        <label>Request type</label>
+<label>
+Request type
+</label>
 
-        <select name="request_type">
+<select name="request_type">
 
-        <option value="individual">
-        Individual
-        </option>
+<option value="individual">
+Individual
+</option>
 
-        <option value="business">
-        Business
-        </option>
+<option value="business">
+Business
+</option>
 
-        <option value="farmer">
-        Farmer
-        </option>
+<option value="farmer">
+Farmer
+</option>
 
-        <option value="other">
-        Other
-        </option>
+<option value="other">
+Other
+</option>
 
-        </select>
+</select>
 
-        <label>Full name</label>
-        <input name="full_name" required>
+<label>Full name</label>
+<input name="full_name" required>
 
-        <label>Phone</label>
-        <input name="phone">
+<label>Phone</label>
+<input name="phone">
 
-        <label>Email</label>
-        <input name="email">
+<label>Email</label>
+<input name="email">
 
-        <label>NRC number</label>
-        <input name="nrc_number">
+<label>NRC number</label>
+<input name="nrc_number">
 
-        <label>Business name</label>
-        <input name="business_name">
+<label>Business name</label>
+<input name="business_name">
 
-        <label>Business type</label>
-        <input name="business_type">
+<label>Business type</label>
+<input name="business_type">
 
-        <label>Province</label>
-        <input name="province">
+<label>Province</label>
+<input name="province">
 
-        <label>District</label>
-        <input name="district">
+<label>District</label>
+<input name="district">
 
-        <label>Address</label>
-        <textarea name="address"></textarea>
+<label>Address</label>
+<textarea name="address"></textarea>
 
-        <button class="btn green"
-                type="submit">
-        Submit TPIN Request
-        </button>
+<button
+    class="btn green"
+    type="submit">
+Submit TPIN Request
+</button>
 
-        </form>
+</form>
 
-        </div>
-        """
+</div>
+""",
     )
 
 
@@ -2756,17 +3568,20 @@ def new_tpin():
 # DOCTOR BOOKING
 # ============================================================
 
+
 @app.route(
     "/doctor/new",
-    methods=["GET", "POST"]
+    methods=["GET", "POST"],
 )
 @login_required
 def new_doctor():
 
     if request.method == "POST":
 
-        doctor_type = clean(
-            request.form.get("appointment_type")
+        appointment_type = clean(
+            request.form.get(
+                "appointment_type"
+            )
         )
 
         date = clean(
@@ -2776,11 +3591,15 @@ def new_doctor():
         )
 
         start = clean(
-            request.form.get("start_time")
+            request.form.get(
+                "start_time"
+            )
         )
 
         end = clean(
-            request.form.get("end_time")
+            request.form.get(
+                "end_time"
+            )
         )
 
         location = clean(
@@ -2792,41 +3611,70 @@ def new_doctor():
         )
 
         service_payload = {
-            "user_id": current_user_id(),
-            "title": "Doctor Appointment",
-            "description": notes,
-            "status": "submitted",
-            "priority": "normal",
-            "currency": PAYMENT_CURRENCY,
+            "user_id":
+                current_user_id(),
+
+            "title":
+                "Doctor Appointment",
+
+            "description":
+                notes,
+
+            "status":
+                "submitted",
+
+            "priority":
+                "normal",
+
+            "currency":
+                PAYMENT_CURRENCY,
         }
 
         service_result = insert_if_possible(
             "service_requests",
-            service_payload
+            service_payload,
         )
 
         service_id = None
 
         if service_result:
-            service_id = service_result[0].get(
-                "id"
+
+            service_id = (
+                service_result[0].get("id")
             )
 
         appointment = {
-            "service_request_id": service_id,
-            "client_id": current_user_id(),
-            "appointment_type": doctor_type,
-            "appointment_date": date or None,
-            "start_time": start or None,
-            "end_time": end or None,
-            "location": location,
-            "status": "pending",
-            "notes": notes,
+            "service_request_id":
+                service_id,
+
+            "client_id":
+                current_user_id(),
+
+            "appointment_type":
+                appointment_type,
+
+            "appointment_date":
+                date or None,
+
+            "start_time":
+                start or None,
+
+            "end_time":
+                end or None,
+
+            "location":
+                location,
+
+            "status":
+                "pending",
+
+            "notes":
+                notes,
         }
 
         result = insert_if_possible(
             "appointments",
-            appointment
+            appointment,
         )
 
         if result:
@@ -2834,12 +3682,13 @@ def new_doctor():
             log_activity(
                 "doctor_booking",
                 "Doctor appointment request submitted.",
-                service_request_id=service_id,
+                service_request_id=
+                    service_id,
             )
 
             flash(
                 "Doctor appointment request submitted.",
-                "success"
+                "success",
             )
 
             return redirect(
@@ -2848,63 +3697,74 @@ def new_doctor():
 
         flash(
             "Doctor appointment could not be created.",
-            "danger"
+            "danger",
         )
 
     return page(
         "Doctor Booking",
         """
-        <div class="card">
+<div class="card">
 
-        <h2>Doctor Booking</h2>
+<h2>
+Doctor Booking
+</h2>
 
-        <form method="POST">
+<form method="POST">
 
-        <label>Appointment type</label>
+<label>
+Appointment type
+</label>
 
-        <select name="appointment_type">
+<select
+    name="appointment_type">
 
-        <option value="in_person">
-        In person
-        </option>
+<option value="in_person">
+In person
+</option>
 
-        <option value="online">
-        Online
-        </option>
+<option value="online">
+Online
+</option>
 
-        </select>
+</select>
 
-        <label>Date</label>
-        <input
-            type="date"
-            name="appointment_date"
-            required>
+<label>Date</label>
 
-        <label>Start time</label>
-        <input
-            type="time"
-            name="start_time">
+<input
+    type="date"
+    name="appointment_date"
+    required>
 
-        <label>End time</label>
-        <input
-            type="time"
-            name="end_time">
+<label>Start time</label>
 
-        <label>Location</label>
-        <input name="location">
+<input
+    type="time"
+    name="start_time">
 
-        <label>Notes</label>
-        <textarea name="notes"></textarea>
+<label>End time</label>
 
-        <button class="btn green"
-                type="submit">
-        Request Doctor Appointment
-        </button>
+<input
+    type="time"
+    name="end_time">
 
-        </form>
+<label>Location</label>
 
-        </div>
-        """
+<input name="location">
+
+<label>Notes</label>
+
+<textarea name="notes"></textarea>
+
+<button
+    class="btn green"
+    type="submit">
+Request Doctor Appointment
+</button>
+
+</form>
+
+</div>
+""",
     )
 
 
@@ -2912,9 +3772,10 @@ def new_doctor():
 # LAWYER BOOKING
 # ============================================================
 
+
 @app.route(
     "/lawyer/new",
-    methods=["GET", "POST"]
+    methods=["GET", "POST"],
 )
 @login_required
 def new_lawyer():
@@ -2954,41 +3815,70 @@ def new_lawyer():
         )
 
         service_payload = {
-            "user_id": current_user_id(),
-            "title": "Lawyer Consultation",
-            "description": notes,
-            "status": "submitted",
-            "priority": "normal",
-            "currency": PAYMENT_CURRENCY,
+            "user_id":
+                current_user_id(),
+
+            "title":
+                "Lawyer Consultation",
+
+            "description":
+                notes,
+
+            "status":
+                "submitted",
+
+            "priority":
+                "normal",
+
+            "currency":
+                PAYMENT_CURRENCY,
         }
 
         service_result = insert_if_possible(
             "service_requests",
-            service_payload
+            service_payload,
         )
 
         service_id = None
 
         if service_result:
-            service_id = service_result[0].get(
-                "id"
+
+            service_id = (
+                service_result[0].get("id")
             )
 
         appointment = {
-            "service_request_id": service_id,
-            "client_id": current_user_id(),
-            "appointment_type": appointment_type,
-            "appointment_date": date or None,
-            "start_time": start or None,
-            "end_time": end or None,
-            "location": location,
-            "status": "pending",
-            "notes": notes,
+            "service_request_id":
+                service_id,
+
+            "client_id":
+                current_user_id(),
+
+            "appointment_type":
+                appointment_type,
+
+            "appointment_date":
+                date or None,
+
+            "start_time":
+                start or None,
+
+            "end_time":
+                end or None,
+
+            "location":
+                location,
+
+            "status":
+                "pending",
+
+            "notes":
+                notes,
         }
 
         result = insert_if_possible(
             "appointments",
-            appointment
+            appointment,
         )
 
         if result:
@@ -2996,12 +3886,13 @@ def new_lawyer():
             log_activity(
                 "lawyer_booking",
                 "Lawyer consultation request submitted.",
-                service_request_id=service_id,
+                service_request_id=
+                    service_id,
             )
 
             flash(
                 "Lawyer consultation request submitted.",
-                "success"
+                "success",
             )
 
             return redirect(
@@ -3010,65 +3901,78 @@ def new_lawyer():
 
         flash(
             "Lawyer request could not be created.",
-            "danger"
+            "danger",
         )
 
     return page(
         "Lawyer Booking",
         """
-        <div class="card">
+<div class="card">
 
-        <h2>Lawyer Consultation</h2>
+<h2>
+Lawyer Consultation
+</h2>
 
-        <form method="POST">
+<form method="POST">
 
-        <label>Consultation type</label>
+<label>
+Consultation type
+</label>
 
-        <select name="appointment_type">
+<select
+    name="appointment_type">
 
-        <option value="in_person">
-        In person
-        </option>
+<option value="in_person">
+In person
+</option>
 
-        <option value="online">
-        Online
-        </option>
+<option value="online">
+Online
+</option>
 
-        </select>
+</select>
 
-        <label>Date</label>
-        <input
-            type="date"
-            name="appointment_date"
-            required>
+<label>Date</label>
 
-        <label>Start time</label>
-        <input
-            type="time"
-            name="start_time">
+<input
+    type="date"
+    name="appointment_date"
+    required>
 
-        <label>End time</label>
-        <input
-            type="time"
-            name="end_time">
+<label>Start time</label>
 
-        <label>Location</label>
-        <input name="location">
+<input
+    type="time"
+    name="start_time">
 
-        <label>Describe your legal matter</label>
-        <textarea
-            name="notes"
-            required></textarea>
+<label>End time</label>
 
-        <button class="btn green"
-                type="submit">
-        Request Lawyer
-        </button>
+<input
+    type="time"
+    name="end_time">
 
-        </form>
+<label>Location</label>
 
-        </div>
-        """
+<input name="location">
+
+<label>
+Describe your legal matter
+</label>
+
+<textarea
+    name="notes"
+    required></textarea>
+
+<button
+    class="btn green"
+    type="submit">
+Request Lawyer
+</button>
+
+</form>
+
+</div>
+""",
     )
 
 
@@ -3076,9 +3980,10 @@ def new_lawyer():
 # DELIVERY
 # ============================================================
 
+
 @app.route(
     "/delivery/new",
-    methods=["GET", "POST"]
+    methods=["GET", "POST"],
 )
 @login_required
 def new_delivery():
@@ -3127,55 +4032,92 @@ def new_delivery():
             )
         )
 
-        fee = clean(
-            request.form.get(
-                "delivery_fee"
+        fee = (
+            clean(
+                request.form.get(
+                    "delivery_fee"
+                )
             )
-        ) or "0"
+            or "0"
+        )
 
         service_payload = {
-            "user_id": current_user_id(),
-            "title": "Driver & Delivery",
+            "user_id":
+                current_user_id(),
+
+            "title":
+                "Driver & Delivery",
+
             "description":
                 f"{pickup} to {destination}",
-            "status": "submitted",
-            "priority": "normal",
-            "amount": fee,
-            "currency": PAYMENT_CURRENCY,
+
+            "status":
+                "submitted",
+
+            "priority":
+                "normal",
+
+            "amount":
+                fee,
+
+            "currency":
+                PAYMENT_CURRENCY,
         }
 
         service_result = insert_if_possible(
             "service_requests",
-            service_payload
+            service_payload,
         )
 
         service_id = None
 
         if service_result:
-            service_id = service_result[0].get(
-                "id"
+
+            service_id = (
+                service_result[0].get("id")
             )
 
         payload = {
-            "service_request_id": service_id,
-            "customer_id": current_user_id(),
-            "pickup_location": pickup,
-            "destination": destination,
-            "recipient_name": recipient,
-            "recipient_phone": recipient_phone,
-            "package_description": package,
-            "delivery_fee": fee,
-            "currency": PAYMENT_CURRENCY,
+            "service_request_id":
+                service_id,
+
+            "customer_id":
+                current_user_id(),
+
+            "pickup_location":
+                pickup,
+
+            "destination":
+                destination,
+
+            "recipient_name":
+                recipient,
+
+            "recipient_phone":
+                recipient_phone,
+
+            "package_description":
+                package,
+
+            "delivery_fee":
+                fee,
+
+            "currency":
+                PAYMENT_CURRENCY,
+
             "requested_date":
                 requested_date or None,
+
             "requested_time":
                 requested_time or None,
-            "status": "requested",
+
+            "status":
+                "requested",
         }
 
         result = insert_if_possible(
             "deliveries",
-            payload
+            payload,
         )
 
         if result:
@@ -3183,12 +4125,13 @@ def new_delivery():
             log_activity(
                 "delivery_request",
                 "Delivery request submitted.",
-                service_request_id=service_id,
+                service_request_id=
+                    service_id,
             )
 
             flash(
                 "Delivery request submitted.",
-                "success"
+                "success",
             )
 
             return redirect(
@@ -3197,64 +4140,92 @@ def new_delivery():
 
         flash(
             "Delivery request could not be created.",
-            "danger"
+            "danger",
         )
 
     return page(
         "Delivery",
         """
-        <div class="card">
+<div class="card">
 
-        <h2>Driver & Delivery</h2>
+<h2>
+Driver & Delivery
+</h2>
 
-        <form method="POST">
+<form method="POST">
 
-        <label>Pickup location</label>
-        <input
-            name="pickup_location"
-            required>
+<label>
+Pickup location
+</label>
 
-        <label>Destination</label>
-        <input
-            name="destination"
-            required>
+<input
+    name="pickup_location"
+    required>
 
-        <label>Recipient name</label>
-        <input name="recipient_name">
+<label>
+Destination
+</label>
 
-        <label>Recipient phone</label>
-        <input name="recipient_phone">
+<input
+    name="destination"
+    required>
 
-        <label>Package description</label>
-        <textarea
-            name="package_description"></textarea>
+<label>
+Recipient name
+</label>
 
-        <label>Delivery date</label>
-        <input
-            type="date"
-            name="requested_date">
+<input name="recipient_name">
 
-        <label>Delivery time</label>
-        <input
-            type="time"
-            name="requested_time">
+<label>
+Recipient phone
+</label>
 
-        <label>Delivery fee (ZMW)</label>
-        <input
-            type="number"
-            step="0.01"
-            name="delivery_fee"
-            value="0">
+<input name="recipient_phone">
 
-        <button class="btn green"
-                type="submit">
-        Request Delivery
-        </button>
+<label>
+Package description
+</label>
 
-        </form>
+<textarea
+    name="package_description">
+</textarea>
 
-        </div>
-        """
+<label>
+Delivery date
+</label>
+
+<input
+    type="date"
+    name="requested_date">
+
+<label>
+Delivery time
+</label>
+
+<input
+    type="time"
+    name="requested_time">
+
+<label>
+Delivery fee (ZMW)
+</label>
+
+<input
+    type="number"
+    step="0.01"
+    name="delivery_fee"
+    value="0">
+
+<button
+    class="btn green"
+    type="submit">
+Request Delivery
+</button>
+
+</form>
+
+</div>
+""",
     )
 
 
@@ -3262,170 +4233,218 @@ def new_delivery():
 # DOCUMENT LIBRARY
 # ============================================================
 
+
 @app.route("/documents")
 def documents():
 
-    docs = rest_select(
-        "documents",
-        {
-            "is_active": "eq.true",
-            "order": "created_at.desc",
-            "limit": "100",
-        }
-    ) or []
+    docs = (
+        rest_select(
+            "documents",
+            {
+                "is_active":
+                    "eq.true",
 
-    # If old table is empty, try document_records.
+                "order":
+                    "created_at.desc",
+
+                "limit":
+                    "100",
+            },
+        )
+        or []
+    )
+
     if not docs:
 
-        docs = rest_select(
-            "document_records",
-            {
-                "order": "created_at.desc",
-                "limit": "100",
-            }
-        ) or []
+        docs = (
+            rest_select(
+                "document_records",
+                {
+                    "order":
+                        "created_at.desc",
+
+                    "limit":
+                        "100",
+                },
+            )
+            or []
+        )
 
     rows = ""
 
     for doc in docs:
 
+        document_id = (
+            doc.get("id")
+        )
+
         rows += f"""
-        <tr>
+<tr>
 
-        <td>
-        {clean(doc.get('title'))}
-        </td>
+<td>
+{safe(doc.get("title"))}
+</td>
 
-        <td>
-        {clean(doc.get('subject'))}
-        </td>
+<td>
+{safe(doc.get("subject"))}
+</td>
 
-        <td>
-        {clean(doc.get('course'))}
-        </td>
+<td>
+{safe(doc.get("course"))}
+</td>
 
-        <td>
-        {clean(doc.get('class_level'))}
-        </td>
+<td>
+{safe(doc.get("class_level"))}
+</td>
 
-        <td>
-        <a class="btn small"
-           href="/document/{doc.get('id')}">
-           View
-        </a>
-        </td>
+<td>
 
-        </tr>
-        """
+<a
+    class="btn small"
+    href="/document/{safe(document_id)}">
+View
+</a>
+
+</td>
+
+</tr>
+"""
 
     if not rows:
 
         rows = """
-        <tr>
-        <td colspan="5">
-        No documents available.
-        </td>
-        </tr>
-        """
+<tr>
+
+<td colspan="5">
+
+No documents available.
+
+</td>
+
+</tr>
+"""
 
     return page(
         "Document Library",
         f"""
-        <div class="card">
+<div class="card">
 
-        <h2>KOJA Academic Resources</h2>
+<h2>
+KOJA Academic Resources
+</h2>
 
-        <table>
+<table>
 
-        <tr>
-        <th>Title</th>
-        <th>Subject</th>
-        <th>Course</th>
-        <th>Class</th>
-        <th></th>
-        </tr>
+<tr>
 
-        {rows}
+<th>Title</th>
+<th>Subject</th>
+<th>Course</th>
+<th>Class</th>
+<th></th>
 
-        </table>
+</tr>
 
-        </div>
-        """
+{rows}
+
+</table>
+
+</div>
+""",
     )
 
 
-@app.route("/document/<document_id>")
+@app.route(
+    "/document/<document_id>"
+)
 def document(document_id):
 
     doc = first_row(
         "documents",
         {
-            "id": f"eq.{document_id}"
-        }
+            "id":
+                f"eq.{document_id}",
+        },
     )
-
-    table = "documents"
 
     if not doc:
 
         doc = first_row(
             "document_records",
             {
-                "id": f"eq.{document_id}"
-            }
+                "id":
+                    f"eq.{document_id}",
+            },
         )
-
-        table = "document_records"
 
     if not doc:
         abort(404)
 
+    file_path = (
+        doc.get("file_path")
+        or doc.get("storage_path")
+    )
+
+    download_button = ""
+
+    if file_path:
+
+        download_button = f"""
+<a
+    class="btn green"
+    href="/document/download/{safe(document_id)}">
+Download
+</a>
+"""
+
+    else:
+
+        download_button = """
+<p>
+File is not currently available.
+</p>
+"""
+
     return page(
         "Document",
         f"""
-        <div class="card">
+<div class="card">
 
-        <h2>
-        {clean(doc.get('title'))}
-        </h2>
+<h2>
+{safe(doc.get("title"))}
+</h2>
 
-        <p>
-        {clean(doc.get('description'))}
-        </p>
+<p>
+{safe(doc.get("description"))}
+</p>
 
-        <p>
-        <strong>Subject:</strong>
-        {clean(doc.get('subject'))}
-        </p>
+<p>
+<strong>Subject:</strong>
+{safe(doc.get("subject"))}
+</p>
 
-        <p>
-        <strong>Course:</strong>
-        {clean(doc.get('course'))}
-        </p>
+<p>
+<strong>Course:</strong>
+{safe(doc.get("course"))}
+</p>
 
-        <p>
-        <strong>Class:</strong>
-        {clean(doc.get('class_level'))}
-        </p>
+<p>
+<strong>Class:</strong>
+{safe(doc.get("class_level"))}
+</p>
 
-        <p>
-        <strong>File:</strong>
-        {clean(doc.get('file_name'))}
-        </p>
+<p>
+<strong>File:</strong>
+{safe(
+    doc.get("file_name")
+    or doc.get("original_filename")
+)}
+</p>
 
-        {
-            (
-                f'<a class="btn green" '
-                f'href="/document/download/{doc.get("id")}">'
-                f'Download</a>'
-            )
-            if doc.get("file_path")
-            else
-            '<p>File is not currently available.</p>'
-        }
+{download_button}
 
-        </div>
-        """
+</div>
+""",
     )
 
 
@@ -3438,16 +4457,19 @@ def download_document(document_id):
     doc = first_row(
         "documents",
         {
-            "id": f"eq.{document_id}"
-        }
+            "id":
+                f"eq.{document_id}",
+        },
     )
 
     if not doc:
+
         doc = first_row(
             "document_records",
             {
-                "id": f"eq.{document_id}"
-            }
+                "id":
+                    f"eq.{document_id}",
+            },
         )
 
     if not doc:
@@ -3461,15 +4483,17 @@ def download_document(document_id):
     if not path:
         abort(404)
 
-    data, content_type = storage_download(
-        path
+    data, content_type = (
+        storage_download(path)
     )
 
     if not data:
+
         flash(
             "Document could not be downloaded.",
-            "danger"
+            "danger",
         )
+
         return redirect(
             url_for("documents")
         )
@@ -3482,7 +4506,7 @@ def download_document(document_id):
 
     log_activity(
         "document_download",
-        f"Downloaded {filename}."
+        f"Downloaded {filename}.",
     )
 
     return send_file(
@@ -3497,33 +4521,49 @@ def download_document(document_id):
 # ADMIN DASHBOARD
 # ============================================================
 
+
 @app.route("/admin")
 @admin_required
 def admin_dashboard():
 
-    service_requests = rest_select(
-        "service_requests",
-        {
-            "order": "created_at.desc",
-            "limit": "100",
-        }
-    ) or []
+    service_requests = (
+        rest_select(
+            "service_requests",
+            {
+                "order":
+                    "created_at.desc",
+                "limit":
+                    "100",
+            },
+        )
+        or []
+    )
 
-    assignments = rest_select(
-        "assignment_requests",
-        {
-            "order": "created_at.desc",
-            "limit": "100",
-        }
-    ) or []
+    assignments = (
+        rest_select(
+            "assignment_requests",
+            {
+                "order":
+                    "created_at.desc",
+                "limit":
+                    "100",
+            },
+        )
+        or []
+    )
 
-    payments = rest_select(
-        "payments",
-        {
-            "order": "created_at.desc",
-            "limit": "100",
-        }
-    ) or []
+    payments = (
+        rest_select(
+            "payments",
+            {
+                "order":
+                    "created_at.desc",
+                "limit":
+                    "100",
+            },
+        )
+        or []
+    )
 
     rows = ""
 
@@ -3532,97 +4572,176 @@ def admin_dashboard():
         rid = item.get("id")
 
         rows += f"""
-        <tr>
+<tr>
 
-        <td>
-        {clean(item.get('title'))}
-        </td>
+<td>
+{safe(item.get("title"))}
+</td>
 
-        <td>
-        {clean(item.get('status'))}
-        </td>
+<td>
+<span class="badge">
+{safe(item.get("status"))}
+</span>
+</td>
 
-        <td>
-        {clean(item.get('priority'))}
-        </td>
+<td>
+{safe(item.get("priority"))}
+</td>
 
-        <td>
-        {clean(item.get('created_at'))}
-        </td>
+<td>
+{safe(item.get("created_at"))}
+</td>
 
-        <td>
+<td>
 
-        <a class="btn small"
-           href="/admin/request/{rid}">
-           Manage
-        </a>
+<a
+    class="btn small"
+    href="/admin/request/{safe(rid)}">
+Manage
+</a>
 
-        </td>
+</td>
 
-        </tr>
-        """
+</tr>
+"""
 
     if not rows:
+
         rows = """
-        <tr>
-        <td colspan="5">
-        No service requests.
-        </td>
-        </tr>
-        """
+<tr>
+
+<td colspan="5">
+No service requests.
+</td>
+
+</tr>
+"""
 
     return page(
         "Admin Dashboard",
         f"""
-        <section class="hero">
+<section class="hero">
 
-        <h1>KOJA AFRICA ADMIN</h1>
+<h1>
+KOJA AFRICA ADMIN
+</h1>
 
-        <p>
-        Administrator Control Centre
-        </p>
+<p>
+Administrator Control Centre
+</p>
 
-        </section>
+</section>
 
-        <div class="grid">
+<div class="grid">
 
-        <div class="card">
-        <h3>Service Requests</h3>
-        <h2>{len(service_requests)}</h2>
-        </div>
+<div class="card">
 
-        <div class="card">
-        <h3>Assignments</h3>
-        <h2>{len(assignments)}</h2>
-        </div>
+<h3>
+Service Requests
+</h3>
 
-        <div class="card">
-        <h3>Payments</h3>
-        <h2>{len(payments)}</h2>
-        </div>
+<h2>
+{len(service_requests)}
+</h2>
 
-        </div>
+</div>
 
-        <div class="card">
+<div class="card">
 
-        <h2>Service Requests</h2>
+<h3>
+Assignments
+</h3>
 
-        <table>
+<h2>
+{len(assignments)}
+</h2>
 
-        <tr>
-        <th>Title</th>
-        <th>Status</th>
-        <th>Priority</th>
-        <th>Date</th>
-        <th></th>
-        </tr>
+</div>
 
-        {rows}
+<div class="card">
 
-        </table>
+<h3>
+Payments
+</h3>
 
-        </div>
-        """
+<h2>
+{len(payments)}
+</h2>
+
+</div>
+
+<div class="card">
+
+<h3>
+Documents
+</h3>
+
+<a
+    class="btn green"
+    href="/admin/documents/new">
+Upload Document
+</a>
+
+</div>
+
+</div>
+
+<div class="card">
+
+<h2>
+Service Requests
+</h2>
+
+<table>
+
+<tr>
+
+<th>Title</th>
+<th>Status</th>
+<th>Priority</th>
+<th>Date</th>
+<th></th>
+
+</tr>
+
+{rows}
+
+</table>
+
+</div>
+
+<div class="grid">
+
+<div class="card">
+
+<h3>
+Manage Assignments
+</h3>
+
+<a
+    class="btn"
+    href="/admin/assignments">
+Open Assignments
+</a>
+
+</div>
+
+<div class="card">
+
+<h3>
+Upload Academic Resource
+</h3>
+
+<a
+    class="btn green"
+    href="/admin/documents/new">
+Upload Document
+</a>
+
+</div>
+
+</div>
+""",
     )
 
 
@@ -3630,9 +4749,10 @@ def admin_dashboard():
 # ADMIN REQUEST MANAGEMENT
 # ============================================================
 
+
 @app.route(
     "/admin/request/<request_id>",
-    methods=["GET", "POST"]
+    methods=["GET", "POST"],
 )
 @admin_required
 def admin_request(request_id):
@@ -3640,8 +4760,9 @@ def admin_request(request_id):
     item = first_row(
         "service_requests",
         {
-            "id": f"eq.{request_id}"
-        }
+            "id":
+                f"eq.{request_id}",
+        },
     )
 
     if not item:
@@ -3649,7 +4770,7 @@ def admin_request(request_id):
 
     old_status = item.get(
         "status",
-        "submitted"
+        "submitted",
     )
 
     if request.method == "POST":
@@ -3659,20 +4780,26 @@ def admin_request(request_id):
         )
 
         admin_notes = clean(
-            request.form.get("admin_notes")
+            request.form.get(
+                "admin_notes"
+            )
         )
 
         update = {
-            "status": status,
-            "admin_notes": admin_notes,
+            "status":
+                status,
+
+            "admin_notes":
+                admin_notes,
         }
 
         result = rest_update(
             "service_requests",
             {
-                "id": f"eq.{request_id}"
+                "id":
+                    f"eq.{request_id}",
             },
-            update
+            update,
         )
 
         if result:
@@ -3680,139 +4807,184 @@ def admin_request(request_id):
             log_activity(
                 "admin_update_request",
                 "Administrator updated service request.",
-                service_request_id=request_id,
-                old_status=old_status,
-                new_status=status,
+                service_request_id=
+                    request_id,
+
+                old_status=
+                    old_status,
+
+                new_status=
+                    status,
             )
 
-            # Notify client.
-            uid = item.get("user_id")
+            uid = item.get(
+                "user_id"
+            )
 
             if uid:
 
-                rest_insert(
-                    "notifications",
-                    {
-                        "user_id": uid,
-                        "service_request_id":
-                            request_id,
-                        "title":
-                            "Service Request Updated",
-                        "message":
-                            (
-                                f"Your request status is now "
-                                f"{status}."
-                            ),
-                        "notification_type":
-                            "service_update",
-                    }
+                notification = {
+                    "user_id":
+                        uid,
+
+                    "service_request_id":
+                        request_id,
+
+                    "title":
+                        "Service Request Updated",
+
+                    "message":
+                        f"Your request status is now {status}.",
+
+                    "notification_type":
+                        "service_update",
+                }
+
+                result_notification = (
+                    insert_if_possible(
+                        "notifications",
+                        notification,
+                    )
                 )
+
+                if not result_notification:
+
+                    insert_if_possible(
+                        "koja_notifications",
+                        notification,
+                    )
 
             flash(
                 "Service request updated.",
-                "success"
+                "success",
             )
 
             return redirect(
                 url_for(
                     "admin_request",
-                    request_id=request_id
+                    request_id=request_id,
                 )
             )
 
         flash(
             "Could not update request.",
-            "danger"
+            "danger",
         )
+
+    current_status = clean(
+        item.get("status")
+    )
 
     return page(
         "Manage Request",
         f"""
-        <div class="card">
+<div class="card">
 
-        <h2>
-        {clean(item.get('title'))}
-        </h2>
+<h2>
+{safe(item.get("title"))}
+</h2>
 
-        <p>
-        {clean(item.get('description'))}
-        </p>
+<p>
+{safe(item.get("description"))}
+</p>
 
-        <p>
-        <strong>User:</strong>
-        {clean(item.get('user_id'))}
-        </p>
+<p>
+<strong>User:</strong>
+{safe(item.get("user_id"))}
+</p>
 
-        <p>
-        <strong>Current status:</strong>
-        {clean(item.get('status'))}
-        </p>
+<p>
+<strong>Current status:</strong>
+{safe(current_status)}
+</p>
 
-        <form method="POST">
+<form method="POST">
 
-        <label>Status</label>
+<label>
+Status
+</label>
 
-        <select name="status">
+<select name="status">
 
-        <option value="submitted">
-        Submitted
-        </option>
+<option
+    value="submitted"
+    {"selected" if current_status == "submitted" else ""}>
+Submitted
+</option>
 
-        <option value="under_review">
-        Under Review
-        </option>
+<option
+    value="under_review"
+    {"selected" if current_status == "under_review" else ""}>
+Under Review
+</option>
 
-        <option value="information_required">
-        Information Required
-        </option>
+<option
+    value="information_required"
+    {"selected" if current_status == "information_required" else ""}>
+Information Required
+</option>
 
-        <option value="assigned">
-        Assigned
-        </option>
+<option
+    value="assigned"
+    {"selected" if current_status == "assigned" else ""}>
+Assigned
+</option>
 
-        <option value="accepted">
-        Accepted
-        </option>
+<option
+    value="accepted"
+    {"selected" if current_status == "accepted" else ""}>
+Accepted
+</option>
 
-        <option value="in_progress">
-        In Progress
-        </option>
+<option
+    value="in_progress"
+    {"selected" if current_status == "in_progress" else ""}>
+In Progress
+</option>
 
-        <option value="scheduled">
-        Scheduled
-        </option>
+<option
+    value="scheduled"
+    {"selected" if current_status == "scheduled" else ""}>
+Scheduled
+</option>
 
-        <option value="completed">
-        Completed
-        </option>
+<option
+    value="completed"
+    {"selected" if current_status == "completed" else ""}>
+Completed
+</option>
 
-        <option value="cancelled">
-        Cancelled
-        </option>
+<option
+    value="cancelled"
+    {"selected" if current_status == "cancelled" else ""}>
+Cancelled
+</option>
 
-        <option value="rejected">
-        Rejected
-        </option>
+<option
+    value="rejected"
+    {"selected" if current_status == "rejected" else ""}>
+Rejected
+</option>
 
-        </select>
+</select>
 
-        <label>Administrator notes</label>
+<label>
+Administrator notes
+</label>
 
-        <textarea
-            name="admin_notes">
-        {clean(item.get('admin_notes'))}
-        </textarea>
+<textarea
+    name="admin_notes">{safe(item.get("admin_notes"))}</textarea>
 
-        <button
-            class="btn green"
-            type="submit">
-        Save Changes
-        </button>
+<button
+    class="btn green"
+    type="submit">
+Save Changes
+</button>
 
-        </form>
+</form>
 
-        </div>
-        """
+</div>
+""",
     )
 
 
@@ -3820,71 +4992,95 @@ def admin_request(request_id):
 # ADMIN ASSIGNMENTS
 # ============================================================
 
+
 @app.route("/admin/assignments")
 @admin_required
 def admin_assignments():
 
-    assignments = rest_select(
-        "assignment_requests",
-        {
-            "order": "created_at.desc",
-            "limit": "100",
-        }
-    ) or []
+    assignments = (
+        rest_select(
+            "assignment_requests",
+            {
+                "order":
+                    "created_at.desc",
+                "limit":
+                    "100",
+            },
+        )
+        or []
+    )
 
     rows = ""
 
     for item in assignments:
 
         rows += f"""
-        <tr>
+<tr>
 
-        <td>
-        {clean(item.get('assignment_title'))}
-        </td>
+<td>
+{safe(item.get("assignment_title"))}
+</td>
 
-        <td>
-        {clean(item.get('subject'))}
-        </td>
+<td>
+{safe(item.get("subject"))}
+</td>
 
-        <td>
-        {clean(item.get('course'))}
-        </td>
+<td>
+{safe(item.get("course"))}
+</td>
 
-        <td>
-        {clean(item.get('status'))}
-        </td>
+<td>
+<span class="badge">
+{safe(item.get("status"))}
+</span>
+</td>
 
-        <td>
-        {clean(item.get('created_at'))}
-        </td>
+<td>
+{safe(item.get("created_at"))}
+</td>
 
-        </tr>
-        """
+</tr>
+"""
+
+    if not rows:
+
+        rows = """
+<tr>
+
+<td colspan="5">
+No assignment requests.
+</td>
+
+</tr>
+"""
 
     return page(
         "Admin Assignments",
         f"""
-        <div class="card">
+<div class="card">
 
-        <h2>Assignment Requests</h2>
+<h2>
+Assignment Requests
+</h2>
 
-        <table>
+<table>
 
-        <tr>
-        <th>Title</th>
-        <th>Subject</th>
-        <th>Course</th>
-        <th>Status</th>
-        <th>Date</th>
-        </tr>
+<tr>
 
-        {rows}
+<th>Title</th>
+<th>Subject</th>
+<th>Course</th>
+<th>Status</th>
+<th>Date</th>
 
-        </table>
+</tr>
 
-        </div>
-        """
+{rows}
+
+</table>
+
+</div>
+""",
     )
 
 
@@ -3892,9 +5088,10 @@ def admin_assignments():
 # ADMIN DOCUMENT UPLOAD
 # ============================================================
 
+
 @app.route(
     "/admin/documents/new",
-    methods=["GET", "POST"]
+    methods=["GET", "POST"],
 )
 @admin_required
 def admin_document_upload():
@@ -3906,7 +5103,9 @@ def admin_document_upload():
         )
 
         description = clean(
-            request.form.get("description")
+            request.form.get(
+                "description"
+            )
         )
 
         subject = clean(
@@ -3918,16 +5117,22 @@ def admin_document_upload():
         )
 
         class_level = clean(
-            request.form.get("class_level")
+            request.form.get(
+                "class_level"
+            )
         )
 
-        file = request.files.get("file")
+        file = request.files.get(
+            "file"
+        )
 
         if not title or not file:
+
             flash(
                 "Title and file are required.",
-                "danger"
+                "danger",
             )
+
             return redirect(
                 url_for(
                     "admin_document_upload"
@@ -3937,10 +5142,12 @@ def admin_document_upload():
         if not allowed_file(
             file.filename
         ):
+
             flash(
                 "File type is not supported.",
-                "danger"
+                "danger",
             )
+
             return redirect(
                 url_for(
                     "admin_document_upload"
@@ -3950,10 +5157,12 @@ def admin_document_upload():
         file_bytes = file.read()
 
         if not file_bytes:
+
             flash(
                 "The uploaded file is empty.",
-                "danger"
+                "danger",
             )
+
             return redirect(
                 url_for(
                     "admin_document_upload"
@@ -3964,14 +5173,16 @@ def admin_document_upload():
             file.filename,
             file_bytes,
             file.content_type
-            or "application/octet-stream"
+            or "application/octet-stream",
         )
 
         if not path:
+
             flash(
                 "File upload failed.",
-                "danger"
+                "danger",
             )
+
             return redirect(
                 url_for(
                     "admin_document_upload"
@@ -3979,33 +5190,54 @@ def admin_document_upload():
             )
 
         payload = {
-            "title": title,
-            "description": description,
-            "subject": subject,
-            "course": course,
-            "class_level": class_level,
-            "file_name": file.filename,
-            "file_path": path,
-            "file_size": len(file_bytes),
+            "title":
+                title,
+
+            "description":
+                description,
+
+            "subject":
+                subject,
+
+            "course":
+                course,
+
+            "class_level":
+                class_level,
+
+            "file_name":
+                file.filename,
+
+            "file_path":
+                path,
+
+            "file_size":
+                len(file_bytes),
+
             "mime_type":
                 file.content_type
                 or "application/octet-stream",
+
             "uploaded_by":
                 current_user_id(),
-            "is_public": True,
-            "is_active": True,
+
+            "is_public":
+                True,
+
+            "is_active":
+                True,
         }
 
         result = insert_if_possible(
             "documents",
-            payload
+            payload,
         )
 
         if result:
 
             flash(
                 "Document uploaded successfully.",
-                "success"
+                "success",
             )
 
             return redirect(
@@ -4014,51 +5246,80 @@ def admin_document_upload():
 
         flash(
             "Document database record could not be created.",
-            "danger"
+            "danger",
         )
 
     return page(
         "Upload Document",
         """
-        <div class="card">
+<div class="card">
 
-        <h2>Upload Academic Document</h2>
+<h2>
+Upload Academic Document
+</h2>
 
-        <form
-            method="POST"
-            enctype="multipart/form-data">
+<form
+    method="POST"
+    enctype="multipart/form-data">
 
-        <label>Title</label>
-        <input name="title" required>
+<label>
+Title
+</label>
 
-        <label>Description</label>
-        <textarea name="description"></textarea>
+<input
+    name="title"
+    required>
 
-        <label>Subject</label>
-        <input name="subject">
+<label>
+Description
+</label>
 
-        <label>Course</label>
-        <input name="course">
+<textarea
+    name="description">
+</textarea>
 
-        <label>Class level</label>
-        <input name="class_level">
+<label>
+Subject
+</label>
 
-        <label>File</label>
-        <input
-            type="file"
-            name="file"
-            required>
+<input name="subject">
 
-        <button
-            class="btn green"
-            type="submit">
-        Upload Document
-        </button>
+<label>
+Course
+</label>
 
-        </form>
+<input name="course">
 
-        </div>
-        """
+<label>
+Class level
+</label>
+
+<input name="class_level">
+
+<label>
+File
+</label>
+
+<input
+    type="file"
+    name="file"
+    required>
+
+<p>
+Maximum upload size:
+20 MB.
+</p>
+
+<button
+    class="btn green"
+    type="submit">
+Upload Document
+</button>
+
+</form>
+
+</div>
+""",
     )
 
 
@@ -4066,22 +5327,34 @@ def admin_document_upload():
 # HEALTH CHECK
 # ============================================================
 
+
 @app.route("/health")
 def health():
 
-    config_error = configuration_error()
+    config_error = (
+        configuration_error()
+    )
 
     if config_error:
 
         return {
-            "status": "error",
-            "message": config_error,
+            "status":
+                "error",
+
+            "message":
+                config_error,
         }, 500
 
     return {
-        "status": "ok",
-        "application": "KOJA AFRICA",
-        "database": "Supabase REST",
+        "status":
+            "ok",
+
+        "application":
+            "KOJA AFRICA",
+
+        "database":
+            "Supabase REST",
+
         "timestamp":
             datetime.now(
                 timezone.utc
@@ -4093,15 +5366,18 @@ def health():
 # DATABASE TEST
 # ============================================================
 
+
 @app.route("/database-test")
 def database_test():
 
     if not SUPABASE_URL or not SUPABASE_KEY:
 
         return {
-            "connected": False,
+            "connected":
+                False,
+
             "error":
-                "SUPABASE_URL or SUPABASE_KEY is missing."
+                "SUPABASE_URL or SUPABASE_KEY is missing.",
         }, 500
 
     results = {}
@@ -4122,17 +5398,48 @@ def database_test():
         "profiles",
         "questions",
         "answers",
+        "activity_logs",
     ]
 
     for table in tables:
 
-        results[table] = table_exists(
-            table
+        results[table] = (
+            table_exists(table)
         )
 
     return {
-        "connected": True,
-        "tables": results,
+        "connected":
+            True,
+
+        "tables":
+            results,
+    }
+
+
+# ============================================================
+# ADMIN TEST
+# ============================================================
+
+
+@app.route("/admin-test")
+@login_required
+def admin_test():
+
+    return {
+        "logged_in":
+            bool(current_user_id()),
+
+        "email":
+            current_email(),
+
+        "is_admin":
+            is_admin(),
+
+        "role":
+            session.get("role"),
+
+        "admin_email_configured":
+            bool(ADMIN_EMAIL),
     }
 
 
@@ -4140,27 +5447,32 @@ def database_test():
 # ERROR HANDLERS
 # ============================================================
 
+
 @app.errorhandler(404)
 def not_found(error):
 
     return page(
         "Not Found",
         """
-        <div class="card">
+<div class="card">
 
-        <h2>Page not found</h2>
+<h2>
+Page not found
+</h2>
 
-        <p>
-        The KOJA Africa page you requested does not exist.
-        </p>
+<p>
+The KOJA Africa page you requested
+does not exist.
+</p>
 
-        <a class="btn"
-           href="/">
-           Return Home
-        </a>
+<a
+    class="btn"
+    href="/">
+Return Home
+</a>
 
-        </div>
-        """
+</div>
+""",
     ), 404
 
 
@@ -4170,16 +5482,18 @@ def too_large(error):
     return page(
         "File Too Large",
         """
-        <div class="card">
+<div class="card">
 
-        <h2>File too large</h2>
+<h2>
+File too large
+</h2>
 
-        <p>
-        The maximum upload size is 20 MB.
-        </p>
+<p>
+The maximum upload size is 20 MB.
+</p>
 
-        </div>
-        """
+</div>
+""",
     ), 413
 
 
@@ -4193,22 +5507,26 @@ def server_error(error):
     return page(
         "Server Error",
         """
-        <div class="card">
+<div class="card">
 
-        <h2>KOJA Africa encountered an error.</h2>
+<h2>
+KOJA Africa encountered an error.
+</h2>
 
-        <p>
-        Please check the Render logs for the exact error.
-        </p>
+<p>
+Please check the Render logs
+for the exact error.
+</p>
 
-        </div>
-        """
+</div>
+""",
     ), 500
 
 
 # ============================================================
-# STARTUP
+# CONTEXT
 # ============================================================
+
 
 @app.context_processor
 def inject_globals():
@@ -4216,11 +5534,18 @@ def inject_globals():
     return {
         "current_user":
             current_user(),
+
         "current_email":
             current_email(),
+
         "is_admin":
             is_admin(),
     }
+
+
+# ============================================================
+# STARTUP
+# ============================================================
 
 
 if __name__ == "__main__":
@@ -4228,23 +5553,23 @@ if __name__ == "__main__":
     port = int(
         os.getenv(
             "PORT",
-            "5000"
+            "5000",
         )
     )
 
     host = os.getenv(
         "HOST",
-        "0.0.0.0"
+        "0.0.0.0",
     )
 
     logger.info(
         "Starting KOJA AFRICA on %s:%s",
         host,
-        port
+        port,
     )
 
     app.run(
         host=host,
         port=port,
-        debug=False
+        debug=False,
     )
