@@ -8,15 +8,8 @@ from functools import wraps
 import requests
 from dotenv import load_dotenv
 from flask import (
-    Flask,
-    request,
-    redirect,
-    url_for,
-    session,
-    render_template_string,
-    flash,
-    jsonify,
-    send_file
+    Flask, request, redirect, url_for, session,
+    render_template_string, flash, jsonify, send_file
 )
 from werkzeug.utils import secure_filename
 
@@ -24,20 +17,20 @@ load_dotenv()
 
 # ============================================================
 # KOJA AFRICA
-# SINGLE-FILE PRODUCTION APPLICATION
+# THREE SERVICES ONLY
 #
-# SERVICES
 # 1. ASSIGNMENTS
-# 2. DRIVER & DELIVERY + LIVE GPS/MAP
-# 3. CV GENERATOR
+# 2. DRIVER + DELIVERY + LIVE GPS MAP
+# 3. CV BUILDER
 # ============================================================
 
 app = Flask(__name__)
-
 app.secret_key = os.getenv(
     "FLASK_SECRET_KEY",
-    "CHANGE_THIS_SECRET_KEY"
+    "CHANGE_THIS_SECRET"
 )
+
+app.config["PERMANENT_SESSION_LIFETIME"] = 86400 * 30
 
 SUPABASE_URL = os.getenv(
     "SUPABASE_URL",
@@ -71,15 +64,12 @@ ALLOWED_EXTENSIONS = {
     "webp"
 }
 
-logging.basicConfig(
-    level=logging.INFO
-)
-
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("koja-africa")
 
 
 # ============================================================
-# BASIC FUNCTIONS
+# HELPERS
 # ============================================================
 
 def configuration_ok():
@@ -95,37 +85,22 @@ def now_iso():
     ).isoformat()
 
 
-def current_user():
-    return session.get("user")
+def api_headers(prefer=None):
+    headers = {
+        "apikey": SUPABASE_SERVICE_KEY,
+        "Authorization":
+            f"Bearer {SUPABASE_SERVICE_KEY}",
+        "Content-Type": "application/json"
+    }
 
+    if prefer:
+        headers["Prefer"] = prefer
 
-def logged_in():
-    return bool(current_user())
-
-
-def is_admin():
-    u = current_user()
-
-    if not u:
-        return False
-
-    email = (
-        u.get("email", "")
-        .strip()
-        .lower()
-    )
-
-    return bool(
-        ADMIN_EMAIL and
-        email == ADMIN_EMAIL
-    )
+    return headers
 
 
 def allowed_file(filename):
-    if not filename:
-        return False
-
-    if "." not in filename:
+    if not filename or "." not in filename:
         return False
 
     extension = filename.rsplit(
@@ -136,77 +111,30 @@ def allowed_file(filename):
     return extension in ALLOWED_EXTENSIONS
 
 
-def login_required(fn):
+def esc(value):
+    """
+    Basic HTML escaping for values inserted into templates.
+    """
+    if value is None:
+        return ""
 
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
+    text = str(value)
 
-        if not logged_in():
-            flash(
-                "Please log in to continue."
-            )
-            return redirect(
-                url_for("login")
-            )
-
-        return fn(*args, **kwargs)
-
-    return wrapper
-
-
-def admin_required(fn):
-
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-
-        if not logged_in():
-            return redirect(
-                url_for("login")
-            )
-
-        if not is_admin():
-            flash(
-                "Administrator access required."
-            )
-            return redirect(
-                url_for("dashboard")
-            )
-
-        return fn(*args, **kwargs)
-
-    return wrapper
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#039;")
+    )
 
 
 # ============================================================
-# SUPABASE
+# SUPABASE DATABASE
 # ============================================================
 
-def api_headers(prefer=None):
-
-    headers = {
-        "apikey": SUPABASE_SERVICE_KEY,
-        "Authorization":
-            f"Bearer {SUPABASE_SERVICE_KEY}",
-        "Content-Type":
-            "application/json"
-    }
-
-    if prefer:
-        headers["Prefer"] = prefer
-
-    return headers
-
-
-def db_get(
-    table,
-    params=None
-):
-
-    if not configuration_ok():
-        return None, "Supabase is not configured."
-
+def db_get(table, params=None):
     try:
-
         response = requests.get(
             f"{SUPABASE_URL}/rest/v1/{table}",
             headers=api_headers(),
@@ -215,39 +143,24 @@ def db_get(
         )
 
         if not response.ok:
-
             logger.error(
                 "GET %s: %s",
                 table,
                 response.text
             )
-
             return None, response.text
 
-        try:
-            return response.json(), None
-        except Exception:
-            return [], None
+        return response.json(), None
 
-    except Exception as exc:
-
+    except Exception as error:
         logger.exception(
-            "Database GET error"
+            "Supabase GET error"
         )
+        return None, str(error)
 
-        return None, str(exc)
 
-
-def db_insert(
-    table,
-    data
-):
-
-    if not configuration_ok():
-        return None, "Supabase is not configured."
-
+def db_insert(table, data):
     try:
-
         response = requests.post(
             f"{SUPABASE_URL}/rest/v1/{table}",
             headers=api_headers(
@@ -258,13 +171,11 @@ def db_insert(
         )
 
         if not response.ok:
-
             logger.error(
                 "INSERT %s: %s",
                 table,
                 response.text
             )
-
             return None, response.text
 
         try:
@@ -272,34 +183,20 @@ def db_insert(
         except Exception:
             return [], None
 
-    except Exception as exc:
-
+    except Exception as error:
         logger.exception(
-            "Database INSERT error"
+            "Supabase INSERT error"
         )
+        return None, str(error)
 
-        return None, str(exc)
 
-
-def db_update(
-    table,
-    filters,
-    data
-):
-
-    if not configuration_ok():
-        return None, "Supabase is not configured."
-
+def db_update(table, filters, data):
     params = {}
 
     for key, value in filters.items():
-
-        params[key] = (
-            f"eq.{value}"
-        )
+        params[key] = f"eq.{value}"
 
     try:
-
         response = requests.patch(
             f"{SUPABASE_URL}/rest/v1/{table}",
             headers=api_headers(
@@ -311,13 +208,11 @@ def db_update(
         )
 
         if not response.ok:
-
             logger.error(
                 "UPDATE %s: %s",
                 table,
                 response.text
             )
-
             return None, response.text
 
         try:
@@ -325,33 +220,25 @@ def db_update(
         except Exception:
             return [], None
 
-    except Exception as exc:
-
+    except Exception as error:
         logger.exception(
-            "Database UPDATE error"
+            "Supabase UPDATE error"
         )
-
-        return None, str(exc)
+        return None, str(error)
 
 
 # ============================================================
-# SUPABASE AUTH
+# AUTHENTICATION
+# EMAIL + PASSWORD ONLY
 # ============================================================
 
-def auth_signup(
-    email,
-    password
-):
-
+def auth_signup(email, password):
     try:
-
         response = requests.post(
             f"{SUPABASE_URL}/auth/v1/signup",
             headers={
-                "apikey":
-                    SUPABASE_SERVICE_KEY,
-                "Content-Type":
-                    "application/json"
+                "apikey": SUPABASE_SERVICE_KEY,
+                "Content-Type": "application/json"
             },
             json={
                 "email": email,
@@ -361,36 +248,25 @@ def auth_signup(
         )
 
         if not response.ok:
-
             logger.error(
                 "SIGNUP: %s",
                 response.text
             )
-
             return None, response.text
 
         return response.json(), None
 
-    except Exception as exc:
+    except Exception as error:
+        return None, str(error)
 
-        return None, str(exc)
 
-
-def auth_login(
-    email,
-    password
-):
-
+def auth_login(email, password):
     try:
-
         response = requests.post(
-            f"{SUPABASE_URL}/auth/v1/token"
-            "?grant_type=password",
+            f"{SUPABASE_URL}/auth/v1/token?grant_type=password",
             headers={
-                "apikey":
-                    SUPABASE_SERVICE_KEY,
-                "Content-Type":
-                    "application/json"
+                "apikey": SUPABASE_SERVICE_KEY,
+                "Content-Type": "application/json"
             },
             json={
                 "email": email,
@@ -400,30 +276,23 @@ def auth_login(
         )
 
         if not response.ok:
-
             logger.error(
                 "LOGIN: %s",
                 response.text
             )
-
             return None, response.text
 
         return response.json(), None
 
-    except Exception as exc:
-
-        return None, str(exc)
+    except Exception as error:
+        return None, str(error)
 
 
 # ============================================================
 # STORAGE
 # ============================================================
 
-def storage_upload(
-    file_storage,
-    folder
-):
-
+def storage_upload(file_storage, folder):
     if not file_storage:
         return None, "No file supplied."
 
@@ -439,10 +308,7 @@ def storage_upload(
     content = file_storage.read()
 
     if len(content) > MAX_FILE_SIZE:
-
-        return None, (
-            "File is larger than 15 MB."
-        )
+        return None, "File is larger than 15 MB."
 
     extension = filename.rsplit(
         ".",
@@ -462,86 +328,143 @@ def storage_upload(
     )
 
     headers = {
-        "apikey":
-            SUPABASE_SERVICE_KEY,
+        "apikey": SUPABASE_SERVICE_KEY,
         "Authorization":
             f"Bearer {SUPABASE_SERVICE_KEY}",
-        "Content-Type":
-            content_type,
-        "x-upsert":
-            "false"
+        "Content-Type": content_type,
+        "x-upsert": "false"
     }
 
     try:
-
         response = requests.post(
             f"{SUPABASE_URL}/storage/v1/object/"
-            f"{SUPABASE_BUCKET}/"
-            f"{object_name}",
+            f"{SUPABASE_BUCKET}/{object_name}",
             headers=headers,
             data=content,
             timeout=60
         )
 
         if not response.ok:
-
             logger.error(
-                "STORAGE: %s",
+                "STORAGE UPLOAD: %s",
                 response.text
             )
-
             return None, response.text
 
         return {
             "path": object_name,
             "filename": filename,
-            "content_type":
-                content_type,
-            "size":
-                len(content)
+            "content_type": content_type,
+            "size": len(content)
         }, None
 
-    except Exception as exc:
-
+    except Exception as error:
         logger.exception(
-            "Storage upload error"
+            "Storage error"
         )
-
-        return None, str(exc)
+        return None, str(error)
 
 
 def storage_download(path):
-
-    headers = {
-        "apikey":
-            SUPABASE_SERVICE_KEY,
-        "Authorization":
-            f"Bearer {SUPABASE_SERVICE_KEY}"
-    }
-
     try:
-
         response = requests.get(
             f"{SUPABASE_URL}/storage/v1/object/"
-            f"{SUPABASE_BUCKET}/"
-            f"{path}",
-            headers=headers,
+            f"{SUPABASE_BUCKET}/{path}",
+            headers={
+                "apikey": SUPABASE_SERVICE_KEY,
+                "Authorization":
+                    f"Bearer {SUPABASE_SERVICE_KEY}"
+            },
             timeout=60
         )
 
         if not response.ok:
-
             return None, response.text
 
         return response.content, None
 
-    except Exception as exc:
-
-        return None, str(exc)
+    except Exception as error:
+        return None, str(error)
 
 
 # ============================================================
-# PAGE TEMPLATE
+# SESSION
+# ============================================================
+
+def current_user():
+    return session.get("user")
+
+
+def logged_in():
+    return bool(current_user())
+
+
+def is_admin():
+    user_data = current_user()
+
+    if not user_data:
+        return False
+
+    email = (
+        user_data.get("email", "")
+        .strip()
+        .lower()
+    )
+
+    return bool(
+        ADMIN_EMAIL
+        and
+        email == ADMIN_EMAIL
+    )
+
+
+def login_required(function):
+    @wraps(function)
+    def wrapper(*args, **kwargs):
+
+        if not logged_in():
+            flash(
+                "Please login to continue."
+            )
+            return redirect(
+                url_for("login")
+            )
+
+        return function(
+            *args,
+            **kwargs
+        )
+
+    return wrapper
+
+
+def admin_required(function):
+    @wraps(function)
+    def wrapper(*args, **kwargs):
+
+        if not logged_in():
+            return redirect(
+                url_for("login")
+            )
+
+        if not is_admin():
+            flash(
+                "Administrator access required."
+            )
+            return redirect(
+                url_for("dashboard")
+            )
+
+        return function(
+            *args,
+            **kwargs
+        )
+
+    return wrapper
+
+
+# ============================================================
+# PROFESSIONAL UI
 # ============================================================
 
 PAGE = """
@@ -556,15 +479,15 @@ PAGE = """
       content="width=device-width,
                initial-scale=1.0">
 
+<meta name="theme-color"
+      content="#07111f">
+
 <title>
 {{ title }} | KOJA AFRICA
 </title>
 
 <link rel="stylesheet"
       href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js">
-</script>
 
 <style>
 
@@ -578,7 +501,6 @@ html{
 
 body{
     margin:0;
-    padding:0;
     background:#f4f7fb;
     color:#172033;
     font-family:
@@ -586,98 +508,30 @@ body{
         Arial,
         Helvetica,
         sans-serif;
+    overflow-x:hidden;
 }
 
-/* NAVIGATION */
-
-.navbar{
-    position:sticky;
-    top:0;
-    z-index:1000;
-    background:
-        rgba(15,23,42,.96);
-    backdrop-filter:blur(12px);
-    border-bottom:
-        1px solid rgba(255,255,255,.08);
-}
-
-.nav-inner{
-    max-width:1180px;
-    margin:auto;
-    padding:14px 20px;
-    display:flex;
-    align-items:center;
-    justify-content:space-between;
-    gap:20px;
-}
-
-.logo{
-    color:white;
-    text-decoration:none;
-    font-size:22px;
-    font-weight:800;
-    letter-spacing:.5px;
-}
-
-.nav-links{
-    display:flex;
-    flex-wrap:wrap;
-    gap:6px;
-}
-
-.nav-links a{
-    color:#dbeafe;
-    text-decoration:none;
-    padding:9px 12px;
-    border-radius:8px;
-    font-size:14px;
-    transition:.25s ease;
-}
-
-.nav-links a:hover{
-    background:
-        rgba(255,255,255,.1);
-    color:white;
-}
-
-/* PAGE */
-
-.container{
-    width:100%;
-    max-width:1180px;
-    margin:auto;
-    padding:28px 20px 50px;
-}
-
-/* ANIMATION */
-
-.animate{
-    animation:
-        fadeUp .65s ease both;
-}
+/* =========================
+   ANIMATION
+========================= */
 
 @keyframes fadeUp{
     from{
         opacity:0;
-        transform:
-            translateY(22px);
+        transform:translateY(22px);
     }
-
     to{
         opacity:1;
-        transform:
-            translateY(0);
+        transform:translateY(0);
     }
 }
 
-@keyframes floatCard{
-    0%,100%{
-        transform:translateY(0);
+@keyframes fadeIn{
+    from{
+        opacity:0;
     }
-
-    50%{
-        transform:
-            translateY(-5px);
+    to{
+        opacity:1;
     }
 }
 
@@ -685,12 +539,12 @@ body{
     0%{
         box-shadow:
             0 0 0 0
-            rgba(37,99,235,.4);
+            rgba(37,99,235,.35);
     }
 
     70%{
         box-shadow:
-            0 0 0 12px
+            0 0 0 15px
             rgba(37,99,235,0);
     }
 
@@ -701,25 +555,142 @@ body{
     }
 }
 
-/* HERO */
+@keyframes float{
+    0%,100%{
+        transform:translateY(0);
+    }
+
+    50%{
+        transform:translateY(-7px);
+    }
+}
+
+.animate{
+    animation:
+        fadeUp .65s ease both;
+}
+
+.delay1{
+    animation-delay:.08s;
+}
+
+.delay2{
+    animation-delay:.16s;
+}
+
+.delay3{
+    animation-delay:.24s;
+}
+
+.delay4{
+    animation-delay:.32s;
+}
+
+/* =========================
+   NAVIGATION
+========================= */
+
+.navbar{
+    position:sticky;
+    top:0;
+    z-index:1000;
+
+    background:
+        rgba(7,17,31,.94);
+
+    backdrop-filter:
+        blur(16px);
+
+    border-bottom:
+        1px solid
+        rgba(255,255,255,.08);
+
+    color:white;
+}
+
+.nav-inner{
+    max-width:1180px;
+    margin:auto;
+    padding:15px 20px;
+
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:20px;
+}
+
+.brand{
+    color:white;
+    text-decoration:none;
+    font-size:22px;
+    font-weight:800;
+    letter-spacing:.4px;
+}
+
+.brand span{
+    color:#4f9cff;
+}
+
+.nav-links{
+    display:flex;
+    gap:6px;
+    flex-wrap:wrap;
+    justify-content:flex-end;
+}
+
+.nav-links a{
+    color:#dce7f5;
+    text-decoration:none;
+    padding:9px 11px;
+    border-radius:8px;
+    font-size:14px;
+    transition:.25s;
+}
+
+.nav-links a:hover{
+    background:
+        rgba(255,255,255,.09);
+    color:white;
+}
+
+/* =========================
+   CONTAINER
+========================= */
+
+.container{
+    width:min(1180px,94%);
+    margin:auto;
+    padding:28px 0 50px;
+}
+
+/* =========================
+   HERO
+========================= */
 
 .hero{
     position:relative;
     overflow:hidden;
-    padding:48px 36px;
-    border-radius:24px;
-    margin-bottom:24px;
-    color:white;
+
     background:
         linear-gradient(
             135deg,
-            #0f172a,
-            #1e3a8a,
-            #0f766e
+            #07111f,
+            #123b68 55%,
+            #2563eb
         );
+
+    color:white;
+
+    border-radius:24px;
+
+    padding:46px 34px;
+
+    margin-bottom:24px;
+
     box-shadow:
-        0 18px 45px
-        rgba(15,23,42,.18);
+        0 20px 50px
+        rgba(10,40,80,.16);
+
     animation:
         fadeUp .7s ease both;
 }
@@ -727,25 +698,36 @@ body{
 .hero:before{
     content:"";
     position:absolute;
-    width:250px;
-    height:250px;
+
+    width:260px;
+    height:260px;
+
     border-radius:50%;
-    right:-80px;
-    top:-100px;
+
     background:
-        rgba(255,255,255,.08);
+        rgba(255,255,255,.07);
+
+    right:-90px;
+    top:-100px;
+
+    animation:
+        float 5s ease-in-out infinite;
 }
 
 .hero:after{
     content:"";
     position:absolute;
-    width:180px;
-    height:180px;
+
+    width:140px;
+    height:140px;
+
     border-radius:50%;
-    left:-90px;
-    bottom:-100px;
+
     background:
         rgba(255,255,255,.05);
+
+    left:-50px;
+    bottom:-70px;
 }
 
 .hero-content{
@@ -754,121 +736,140 @@ body{
 }
 
 .hero h1{
+    margin:0 0 12px;
     font-size:
-        clamp(30px,5vw,56px);
-    margin:
-        0 0 12px;
+        clamp(30px,6vw,56px);
     line-height:1.05;
 }
 
 .hero p{
-    max-width:720px;
-    font-size:17px;
-    line-height:1.7;
+    max-width:700px;
     color:#dbeafe;
+    line-height:1.7;
+    font-size:16px;
 }
 
-/* SERVICE GRID */
+/* =========================
+   GRID
+========================= */
 
 .grid{
     display:grid;
+
     grid-template-columns:
         repeat(
             auto-fit,
             minmax(270px,1fr)
         );
+
     gap:20px;
 }
 
-/* CARD */
+/* =========================
+   CARDS
+========================= */
 
 .card{
     background:white;
-    border-radius:18px;
-    padding:24px;
-    margin-bottom:20px;
+
     border:
-        1px solid #e5e7eb;
+        1px solid
+        #e6ebf2;
+
+    border-radius:18px;
+
+    padding:23px;
+
+    margin-bottom:18px;
+
     box-shadow:
-        0 8px 28px
-        rgba(15,23,42,.07);
+        0 7px 25px
+        rgba(17,24,39,.055);
+
     animation:
-        fadeUp .55s ease both;
+        fadeUp .6s ease both;
+
     transition:
-        transform .25s ease,
-        box-shadow .25s ease,
-        border-color .25s ease;
+        transform .25s,
+        box-shadow .25s,
+        border-color .25s;
 }
 
 .card:hover{
     transform:
-        translateY(-4px);
+        translateY(-3px);
+
     box-shadow:
-        0 16px 35px
-        rgba(15,23,42,.11);
+        0 15px 35px
+        rgba(17,24,39,.09);
+
     border-color:
-        #cbd5e1;
+        #d7e2f1;
 }
 
-.service-card{
-    min-height:250px;
+.card h2{
+    margin-top:0;
 }
 
-.service-card:hover{
-    animation:
-        floatCard 2s ease-in-out infinite;
-}
-
-.service-number{
-    width:42px;
-    height:42px;
-    border-radius:12px;
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    background:#eff6ff;
-    color:#1d4ed8;
-    font-weight:800;
-    margin-bottom:18px;
-}
-
-.card h2,
 .card h3{
     margin-top:0;
-    color:#111827;
 }
 
-.card p{
-    line-height:1.65;
+.muted{
+    color:#697586;
 }
 
-/* BUTTONS */
+.small{
+    font-size:13px;
+    color:#718096;
+}
+
+.divider{
+    height:1px;
+    background:#e8edf3;
+    margin:20px 0;
+}
+
+/* =========================
+   BUTTONS
+========================= */
 
 .btn,
 button{
-    display:inline-block;
     border:0;
+
     border-radius:10px;
+
     padding:12px 18px;
+
     background:#2563eb;
+
     color:white;
+
     text-decoration:none;
+
     cursor:pointer;
+
+    display:inline-block;
+
     font-size:14px;
-    font-weight:700;
+
+    font-weight:600;
+
     transition:
-        transform .2s ease,
-        box-shadow .2s ease,
-        background .2s ease;
+        transform .2s,
+        box-shadow .2s,
+        background .2s;
 }
 
 .btn:hover,
 button:hover{
     transform:
         translateY(-2px);
+
     box-shadow:
-        0 8px 18px
-        rgba(37,99,235,.2);
+        0 8px 20px
+        rgba(37,99,235,.20);
 }
 
 .btn-dark{
@@ -888,46 +889,66 @@ button:hover{
 }
 
 .btn-light{
-    background:#e5e7eb;
-    color:#111827;
+    background:#edf3fa;
+    color:#17324d;
 }
 
-/* FORMS */
+.btn-full{
+    width:100%;
+    text-align:center;
+}
+
+/* =========================
+   FORMS
+========================= */
 
 label{
     display:block;
-    margin-bottom:6px;
+
+    font-size:13px;
+
     font-weight:700;
-    font-size:14px;
-    color:#374151;
+
+    margin:
+        12px 0 6px;
+
+    color:#344054;
 }
 
 input,
 textarea,
 select{
     width:100%;
+
     padding:13px 14px;
-    margin:
-        0 0 17px;
+
     border:
-        1px solid #d1d5db;
+        1px solid
+        #d8e0ea;
+
     border-radius:10px;
-    background:white;
-    color:#111827;
+
+    background:#fff;
+
+    color:#172033;
+
     font-size:15px;
+
     outline:none;
+
     transition:
-        border-color .2s ease,
-        box-shadow .2s ease;
+        border .2s,
+        box-shadow .2s;
 }
 
 input:focus,
 textarea:focus,
 select:focus{
     border-color:#2563eb;
+
     box-shadow:
         0 0 0 3px
-        rgba(37,99,235,.12);
+        rgba(37,99,235,.10);
 }
 
 textarea{
@@ -935,106 +956,173 @@ textarea{
     resize:vertical;
 }
 
-/* STATUS */
+/* =========================
+   SERVICE CARDS
+========================= */
 
-.status{
-    display:inline-flex;
-    align-items:center;
-    padding:
-        6px 11px;
-    border-radius:999px;
-    background:#f1f5f9;
-    color:#334155;
-    font-size:12px;
-    font-weight:800;
+.service-card{
+    position:relative;
+    overflow:hidden;
 }
 
-.status-online{
-    background:#dcfce7;
-    color:#166534;
+.service-number{
+    font-size:12px;
+    font-weight:800;
+    color:#2563eb;
+    letter-spacing:1px;
+    margin-bottom:12px;
+}
+
+.service-card h2{
+    font-size:22px;
+}
+
+.service-card p{
+    color:#697586;
+    line-height:1.65;
+}
+
+/* =========================
+   STATUS
+========================= */
+
+.status{
+    display:inline-block;
+
+    padding:
+        6px 11px;
+
+    border-radius:999px;
+
+    font-size:12px;
+
+    font-weight:700;
+
+    background:#edf1f5;
 }
 
 .status-pending{
-    background:#fef3c7;
-    color:#92400e;
+    background:#fff7ed;
+    color:#c2410c;
 }
 
+.status-approved,
+.status-accepted,
 .status-completed{
-    background:#dcfce7;
-    color:#166534;
+    background:#ecfdf5;
+    color:#047857;
 }
 
+.status-rejected,
 .status-cancelled{
-    background:#fee2e2;
-    color:#991b1b;
+    background:#fef2f2;
+    color:#b91c1c;
 }
 
-/* FLASH */
-
-.flash{
-    padding:14px 17px;
-    margin-bottom:15px;
-    border-radius:10px;
+.status-started,
+.status-in_progress{
     background:#eff6ff;
-    border:
-        1px solid #bfdbfe;
-    color:#1e3a8a;
-    animation:
-        fadeUp .4s ease both;
-}
-
-/* MAP */
-
-#map{
-    width:100%;
-    height:450px;
-    border-radius:16px;
-    overflow:hidden;
-    border:
-        1px solid #dbeafe;
-}
-
-.map-small{
-    height:320px !important;
-}
-
-/* TRACKING */
-
-.tracking-status{
-    display:flex;
-    align-items:center;
-    gap:10px;
-    padding:13px;
-    background:#f8fafc;
-    border-radius:10px;
-    margin-bottom:14px;
-}
-
-.live-dot{
-    width:10px;
-    height:10px;
-    border-radius:50%;
-    background:#16a34a;
-    animation:
-        pulse 1.8s infinite;
-}
-
-/* STAT */
-
-.stat{
-    padding:18px;
-    border-radius:14px;
-    background:#f8fafc;
-    border:1px solid #e5e7eb;
-}
-
-.stat-number{
-    font-size:30px;
-    font-weight:800;
     color:#1d4ed8;
 }
 
-/* TABLE */
+.live{
+    display:inline-flex;
+    align-items:center;
+    gap:8px;
+    color:#047857;
+    font-weight:700;
+}
+
+.live-dot{
+    width:9px;
+    height:9px;
+    border-radius:50%;
+    background:#10b981;
+    animation:
+        pulse 1.7s infinite;
+}
+
+/* =========================
+   MAP
+========================= */
+
+#map{
+    width:100%;
+    height:430px;
+
+    border-radius:16px;
+
+    overflow:hidden;
+
+    border:
+        1px solid
+        #dce4ee;
+
+    animation:
+        fadeIn .8s ease both;
+}
+
+.map-card{
+    padding:0;
+    overflow:hidden;
+}
+
+.map-header{
+    padding:18px 20px;
+    background:#fff;
+}
+
+/* =========================
+   STATS
+========================= */
+
+.stat-grid{
+    display:grid;
+
+    grid-template-columns:
+        repeat(
+            auto-fit,
+            minmax(150px,1fr)
+        );
+
+    gap:14px;
+}
+
+.stat{
+    background:white;
+    border:1px solid #e5eaf0;
+    border-radius:14px;
+    padding:18px;
+}
+
+.stat strong{
+    display:block;
+    font-size:26px;
+    margin-bottom:5px;
+}
+
+/* =========================
+   FLASH
+========================= */
+
+.flash{
+    background:#fff8eb;
+    border:1px solid #fed7aa;
+    color:#92400e;
+
+    padding:13px 15px;
+
+    border-radius:11px;
+
+    margin-bottom:12px;
+
+    animation:
+        fadeUp .45s ease both;
+}
+
+/* =========================
+   TABLE
+========================= */
 
 .table-wrap{
     overflow-x:auto;
@@ -1047,31 +1135,77 @@ table{
 
 th,
 td{
-    padding:13px;
-    border-bottom:
-        1px solid #e5e7eb;
+    padding:12px;
     text-align:left;
+    border-bottom:
+        1px solid #edf0f4;
     font-size:14px;
 }
 
 th{
-    color:#374151;
-    background:#f8fafc;
+    color:#475467;
 }
 
-/* FOOTER */
+/* =========================
+   CV PREVIEW
+========================= */
+
+.cv-preview{
+    background:#fff;
+    border:1px solid #dce3ec;
+    padding:35px;
+    border-radius:4px;
+    box-shadow:
+        0 12px 35px
+        rgba(0,0,0,.07);
+}
+
+.cv-name{
+    font-size:34px;
+    font-weight:800;
+    color:#111827;
+}
+
+.cv-title{
+    color:#2563eb;
+    font-weight:700;
+    margin-top:5px;
+}
+
+.cv-section{
+    margin-top:25px;
+}
+
+.cv-section h3{
+    border-bottom:
+        2px solid #111827;
+    padding-bottom:7px;
+    font-size:15px;
+    text-transform:uppercase;
+    letter-spacing:.7px;
+}
+
+/* =========================
+   FOOTER
+========================= */
 
 footer{
-    background:#0f172a;
-    color:#94a3b8;
+    background:#07111f;
+    color:#9fb0c3;
     text-align:center;
-    padding:32px 20px;
+    padding:30px 20px;
     line-height:1.7;
 }
 
-/* MOBILE */
+footer strong{
+    color:white;
+}
 
-@media(max-width:760px){
+/* =========================
+   MOBILE
+========================= */
+
+@media(max-width:700px){
 
     .nav-inner{
         align-items:flex-start;
@@ -1079,21 +1213,11 @@ footer{
     }
 
     .nav-links{
-        width:100%;
-    }
-
-    .nav-links a{
-        font-size:13px;
-        padding:8px 9px;
-    }
-
-    .container{
-        padding:
-            20px 14px 40px;
+        justify-content:flex-start;
     }
 
     .hero{
-        padding:32px 23px;
+        padding:34px 23px;
         border-radius:18px;
     }
 
@@ -1102,8 +1226,13 @@ footer{
     }
 
     #map{
-        height:360px;
+        height:350px;
     }
+
+    .cv-preview{
+        padding:22px;
+    }
+
 }
 
 </style>
@@ -1116,16 +1245,14 @@ footer{
 
 <div class="nav-inner">
 
-<a class="logo"
+<a class="brand"
    href="/">
-KOJA AFRICA
+   KOJA <span>AFRICA</span>
 </a>
 
 <div class="nav-links">
 
-<a href="/">
-Home
-</a>
+<a href="/">Home</a>
 
 {% if session.get("user") %}
 
@@ -1200,21 +1327,11 @@ get_flashed_messages() %}
 
 <footer>
 
-<strong>
-KOJA AFRICA
-</strong>
+<strong>KOJA AFRICA</strong><br>
 
-<br>
-
-Assignments
-&nbsp; | &nbsp;
-Driver & Delivery
-&nbsp; | &nbsp;
+Assignments |
+Driver & Delivery |
 CV Services
-
-<br><br>
-
-Academic assistance, mobility and professional CV creation.
 
 </footer>
 
@@ -1228,7 +1345,6 @@ def render_page(
     content,
     title="KOJA AFRICA"
 ):
-
     return render_template_string(
         PAGE,
         content=content,
@@ -1245,19 +1361,23 @@ def render_page(
 def home():
 
     content = """
-
 <div class="hero">
 
 <div class="hero-content">
 
-<h1>
+<div class="service-number">
 KOJA AFRICA
+</div>
+
+<h1>
+Practical services for everyday needs.
 </h1>
 
 <p>
-A practical digital platform for academic
-assignments, driver and delivery services,
-and professional CV creation.
+KOJA AFRICA brings assignments,
+driver and delivery services,
+and professional CV creation
+together in one simple platform.
 </p>
 
 <a class="btn"
@@ -1274,14 +1394,12 @@ Login
 
 </div>
 
-
 <div class="grid">
 
-
-<div class="card service-card">
+<div class="card service-card delay1">
 
 <div class="service-number">
-01
+SERVICE 01
 </div>
 
 <h2>
@@ -1289,9 +1407,10 @@ Assignments
 </h2>
 
 <p>
-Submit assignment questions, upload supporting
-files and follow the progress of your request.
-Answers can be provided by the KOJA administrator.
+Submit assignments and academic
+questions, upload supporting files,
+and receive completed answers
+through your account.
 </p>
 
 <a class="btn"
@@ -1301,11 +1420,10 @@ Open Assignments
 
 </div>
 
-
-<div class="card service-card">
+<div class="card service-card delay2">
 
 <div class="service-number">
-02
+SERVICE 02
 </div>
 
 <h2>
@@ -1313,9 +1431,9 @@ Driver & Delivery
 </h2>
 
 <p>
-Find approved online drivers, request a delivery
-and track the driver using live GPS location and
-an interactive map.
+Request a driver or delivery and
+track an active driver using
+live GPS location on the map.
 </p>
 
 <a class="btn btn-green"
@@ -1325,11 +1443,10 @@ Find a Driver
 
 </div>
 
-
-<div class="card service-card">
+<div class="card service-card delay3">
 
 <div class="service-number">
-03
+SERVICE 03
 </div>
 
 <h2>
@@ -1337,9 +1454,9 @@ CV Services
 </h2>
 
 <p>
-Create your own professional CV directly on KOJA
-or submit your information for administrator
-assistance and PDF generation.
+Create a professional CV yourself
+or submit your information for
+administrator-assisted CV creation.
 </p>
 
 <a class="btn btn-orange"
@@ -1349,9 +1466,7 @@ Create CV
 
 </div>
 
-
 </div>
-
 """
 
     return render_page(
@@ -1383,7 +1498,6 @@ def register():
         )
 
         if not email or not password:
-
             flash(
                 "Email and password are required."
             )
@@ -1393,7 +1507,6 @@ def register():
             )
 
         if len(password) < 6:
-
             flash(
                 "Password must contain at least 6 characters."
             )
@@ -1410,7 +1523,7 @@ def register():
         if error:
 
             flash(
-                "Registration failed: "
+                "Registration failed. "
                 + str(error)
             )
 
@@ -1420,7 +1533,7 @@ def register():
 
         flash(
             "Account created successfully. "
-            "You can now log in."
+            "You can now login."
         )
 
         return redirect(
@@ -1428,16 +1541,14 @@ def register():
         )
 
     content = """
-
-<div class="card animate">
+<div class="card">
 
 <h2>
 Create Account
 </h2>
 
-<p>
-Create your KOJA AFRICA account using
-only your email and password.
+<p class="muted">
+Use only your email address and password.
 </p>
 
 <form method="POST">
@@ -1449,8 +1560,8 @@ Email
 <input
     type="email"
     name="email"
-    required
     autocomplete="email"
+    required
 >
 
 <label>
@@ -1461,18 +1572,17 @@ Password
     type="password"
     name="password"
     minlength="6"
-    required
     autocomplete="new-password"
+    required
 >
 
-<button type="submit">
+<button>
 Create Account
 </button>
 
 </form>
 
 </div>
-
 """
 
     return render_page(
@@ -1524,11 +1634,11 @@ def login():
         )
 
         session["user"] = {
-            "id":
-                auth_user.get("id"),
+            "id": auth_user.get("id"),
             "email":
                 auth_user.get("email")
-                or email
+                or
+                email
         }
 
         session.permanent = True
@@ -1538,8 +1648,7 @@ def login():
         )
 
     content = """
-
-<div class="card animate">
+<div class="card">
 
 <h2>
 Login
@@ -1554,8 +1663,8 @@ Email
 <input
     type="email"
     name="email"
-    required
     autocomplete="email"
+    required
 >
 
 <label>
@@ -1565,18 +1674,17 @@ Password
 <input
     type="password"
     name="password"
-    required
     autocomplete="current-password"
+    required
 >
 
-<button type="submit">
+<button>
 Login
 </button>
 
 </form>
 
 </div>
-
 """
 
     return render_page(
@@ -1607,44 +1715,41 @@ def logout():
 @login_required
 def dashboard():
 
-    u = current_user()
+    email = esc(
+        current_user().get("email")
+    )
 
     content = f"""
-
 <div class="hero">
 
 <div class="hero-content">
 
+<div class="service-number">
+MY ACCOUNT
+</div>
+
 <h1>
-Dashboard
+Welcome back.
 </h1>
 
 <p>
-Welcome back.
-<br>
-{u.get("email", "")}
+{email}
 </p>
 
 </div>
 
 </div>
 
-
 <div class="grid">
 
-
-<div class="card service-card">
-
-<div class="service-number">
-01
-</div>
+<div class="card delay1">
 
 <h2>
 Assignments
 </h2>
 
-<p>
-Submit and manage academic questions.
+<p class="muted">
+Submit and manage your academic work.
 </p>
 
 <a class="btn"
@@ -1654,20 +1759,15 @@ Open
 
 </div>
 
-
-<div class="card service-card">
-
-<div class="service-number">
-02
-</div>
+<div class="card delay2">
 
 <h2>
 Driver & Delivery
 </h2>
 
-<p>
-Request a driver, monitor deliveries
-and follow live GPS tracking.
+<p class="muted">
+Request a driver and follow active
+delivery tracking.
 </p>
 
 <a class="btn btn-green"
@@ -1677,20 +1777,15 @@ Open
 
 </div>
 
-
-<div class="card service-card">
-
-<div class="service-number">
-03
-</div>
+<div class="card delay3">
 
 <h2>
-CV
+CV Services
 </h2>
 
-<p>
-Build your own CV or submit your
-information for administrator preparation.
+<p class="muted">
+Create your own professional CV
+or request administrator assistance.
 </p>
 
 <a class="btn btn-orange"
@@ -1700,50 +1795,7 @@ Open
 
 </div>
 
-
 </div>
-
-
-<div class="grid">
-
-<div class="card">
-
-<h3>
-Driver Registration
-</h3>
-
-<p>
-Register as a driver and wait for
-administrator approval.
-</p>
-
-<a class="btn btn-green"
-   href="/drivers/register">
-Register
-</a>
-
-</div>
-
-
-<div class="card">
-
-<h3>
-My Deliveries
-</h3>
-
-<p>
-View active and previous delivery requests.
-</p>
-
-<a class="btn"
-   href="/deliveries">
-View Deliveries
-</a>
-
-</div>
-
-</div>
-
 """
 
     return render_page(
@@ -1767,49 +1819,61 @@ def assignments():
         {
             "student_id":
                 f"eq.{uid}",
-            "select":
-                "*",
+            "select": "*",
             "order":
                 "created_at.desc"
         }
     )
 
     if error:
-        rows = []
-
         flash(
             "Unable to load assignments."
         )
 
+        rows = []
+
     cards = ""
 
     for assignment in rows or []:
+
+        status = (
+            assignment.get("status")
+            or
+            "pending"
+        )
+
+        status_class = (
+            "status-" +
+            str(status).lower()
+            .replace(" ", "_")
+        )
 
         cards += f"""
 
 <div class="card">
 
 <h3>
-{assignment.get("title") or "Assignment"}
+{esc(
+    assignment.get("title")
+    or
+    "Assignment"
+)}
 </h3>
 
-<p>
-<strong>
+<p class="muted">
 Subject:
-</strong>
-
-{assignment.get("subject") or ""}
+{esc(
+    assignment.get("subject")
+    or
+    ""
+)}
 </p>
 
-<p>
-<strong>
-Status:
-</strong>
-
-<span class="status">
-{assignment.get("status") or "pending"}
+<span class="status {status_class}">
+{esc(status)}
 </span>
-</p>
+
+<br><br>
 
 <a class="btn"
    href="/assignments/{assignment.get("id")}">
@@ -1826,13 +1890,17 @@ View
 
 <div class="hero-content">
 
+<div class="service-number">
+SERVICE 01
+</div>
+
 <h1>
 Assignments
 </h1>
 
 <p>
 Submit academic questions and track
-your answers.
+the progress of your work.
 </p>
 
 <a class="btn"
@@ -1847,10 +1915,16 @@ New Assignment
 <div class="grid">
 
 {cards or
-'<div class="card">No assignments yet.</div>'}
+'''
+<div class="card">
+<h3>No assignments yet.</h3>
+<p class="muted">
+Create your first assignment.
+</p>
+</div>
+'''}
 
 </div>
-
 """
 
     return render_page(
@@ -1858,6 +1932,10 @@ New Assignment
         "Assignments"
     )
 
+
+# ============================================================
+# NEW ASSIGNMENT
+# ============================================================
 
 @app.route(
     "/assignments/new",
@@ -1885,7 +1963,7 @@ def new_assignment():
             ""
         ).strip()
 
-        file = request.files.get(
+        question_file = request.files.get(
             "question_file"
         )
 
@@ -1899,63 +1977,48 @@ def new_assignment():
                 url_for("new_assignment")
             )
 
-        file_info = None
+        admin_note = ""
 
-        if file and file.filename:
+        if (
+            question_file
+            and
+            question_file.filename
+        ):
 
-            file_info, error = storage_upload(
-                file,
+            info, upload_error = storage_upload(
+                question_file,
                 "assignment-questions"
             )
 
-            if error:
+            if upload_error:
 
                 flash(
-                    "File upload failed: "
-                    + str(error)
+                    "Question file upload failed: "
+                    + str(upload_error)
                 )
 
                 return redirect(
                     url_for("new_assignment")
                 )
 
-        admin_note = ""
-
-        if file_info:
-
             admin_note = (
                 "QUESTION_FILE|"
-                + file_info["path"]
+                + info["path"]
                 + "|"
-                + file_info["filename"]
+                + info["filename"]
                 + "|"
-                + file_info["content_type"]
+                + info["content_type"]
             )
 
         data = {
-            "id":
-                str(uuid.uuid4()),
-
-            "student_id":
-                uid,
-
-            "title":
-                title,
-
-            "subject":
-                subject,
-
-            "description":
-                description,
-
-            "status":
-                "pending",
-
-            "admin_note":
-                admin_note,
-
-            "answer_text":
-                None
+            "id": str(uuid.uuid4()),
+            "student_id": uid,
+            "title": title,
+            "subject": subject,
+            "description": description,
+            "status": "pending",
+            "admin_note": admin_note,
+            "answer_text": None
         }
 
         result, error = db_insert(
@@ -1984,7 +2047,7 @@ def new_assignment():
 
     content = """
 
-<div class="card animate">
+<div class="card">
 
 <h2>
 New Assignment
@@ -2030,7 +2093,7 @@ Supporting File
     accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.webp"
 >
 
-<button type="submit">
+<button>
 Submit Assignment
 </button>
 
@@ -2050,6 +2113,10 @@ Maximum file size: 15 MB.
     )
 
 
+# ============================================================
+# ASSIGNMENT DETAIL
+# ============================================================
+
 @app.route(
     "/assignments/<assignment_id>"
 )
@@ -2065,12 +2132,9 @@ def assignment_detail(
         {
             "id":
                 f"eq.{assignment_id}",
-
             "student_id":
                 f"eq.{uid}",
-
-            "select":
-                "*"
+            "select": "*"
         }
     )
 
@@ -2086,44 +2150,55 @@ def assignment_detail(
 
     assignment = rows[0]
 
+    answer = (
+        assignment.get(
+            "answer_text"
+        )
+        or
+        "Your answer has not been completed yet."
+    )
+
     content = f"""
 
 <div class="card">
 
 <h2>
-{assignment.get("title") or ""}
+{esc(
+    assignment.get("title")
+)}
 </h2>
 
 <p>
-<strong>
-Subject:
-</strong>
-
-{assignment.get("subject") or ""}
+<strong>Subject:</strong>
+{esc(
+    assignment.get("subject")
+)}
 </p>
 
 <p>
-<strong>
-Status:
-</strong>
-
+<strong>Status:</strong>
 <span class="status">
-{assignment.get("status") or "pending"}
+{esc(
+    assignment.get("status")
+    or
+    "pending"
+)}
 </span>
 </p>
 
-<hr>
+<div class="divider"></div>
 
 <h3>
 Question
 </h3>
 
 <p>
-{assignment.get("description") or ""}
+{esc(
+    assignment.get("description")
+)}
 </p>
 
 </div>
-
 
 <div class="card">
 
@@ -2132,9 +2207,7 @@ Answer
 </h2>
 
 <p>
-{assignment.get("answer_text")
- or
-"The administrator has not completed the answer yet."}
+{esc(answer)}
 </p>
 
 </div>
@@ -2148,16 +2221,989 @@ Answer
 
 
 # ============================================================
-# ADMIN ASSIGNMENTS
+# DRIVER REGISTRATION
 # ============================================================
 
-@app.route("/admin")
-@admin_required
-def admin():
+@app.route(
+    "/drivers/register",
+    methods=["GET", "POST"]
+)
+@login_required
+def driver_register():
+
+    uid = current_user()["id"]
+
+    if request.method == "POST":
+
+        vehicle_type = request.form.get(
+            "vehicle_type",
+            ""
+        ).strip()
+
+        vehicle_number = request.form.get(
+            "vehicle_number",
+            ""
+        ).strip()
+
+        license_number = request.form.get(
+            "license_number",
+            ""
+        ).strip()
+
+        location_name = request.form.get(
+            "location_name",
+            ""
+        ).strip()
+
+        if not vehicle_type:
+
+            flash(
+                "Vehicle type is required."
+            )
+
+            return redirect(
+                request.url
+            )
+
+        data = {
+            "id": str(uuid.uuid4()),
+            "provider_id": uid,
+            "vehicle_type": vehicle_type,
+            "vehicle_number": vehicle_number,
+            "license_number": license_number,
+            "status": "pending",
+            "is_online": False,
+            "latitude": None,
+            "longitude": None,
+            "location_name": location_name
+        }
+
+        result, error = db_insert(
+            "driver_profiles",
+            data
+        )
+
+        if error:
+
+            flash(
+                "Driver registration failed: "
+                + str(error)
+            )
+
+            return redirect(
+                request.url
+            )
+
+        flash(
+            "Driver registration submitted for approval."
+        )
+
+        return redirect(
+            url_for("driver_dashboard")
+        )
+
+    content = """
+
+<div class="hero">
+
+<div class="hero-content">
+
+<div class="service-number">
+DRIVER SERVICE
+</div>
+
+<h1>
+Register as a Driver
+</h1>
+
+<p>
+After approval, you can go online,
+share your GPS location and receive
+delivery requests.
+</p>
+
+</div>
+
+</div>
+
+<div class="card">
+
+<form method="POST">
+
+<label>
+Vehicle Type
+</label>
+
+<input
+    name="vehicle_type"
+    placeholder="Car, motorcycle, van"
+    required
+>
+
+<label>
+Vehicle Number
+</label>
+
+<input
+    name="vehicle_number"
+    required
+>
+
+<label>
+License Number
+</label>
+
+<input
+    name="license_number"
+    required
+>
+
+<label>
+Current Location
+</label>
+
+<input
+    name="location_name"
+    placeholder="Example: Kitwe City Centre"
+    required
+>
+
+<button class="btn-green">
+Submit Registration
+</button>
+
+</form>
+
+</div>
+
+"""
+
+    return render_page(
+        content,
+        "Driver Registration"
+    )
+
+
+# ============================================================
+# DRIVER DASHBOARD
+# ============================================================
+
+@app.route("/driver")
+@login_required
+def driver_dashboard():
+
+    uid = current_user()["id"]
 
     rows, error = db_get(
-        "assignments",
+        "driver_profiles",
         {
+            "provider_id":
+                f"eq.{uid}",
+            "select": "*",
+            "order":
+                "created_at.desc"
+        }
+    )
+
+    if error or not rows:
+
+        content = """
+
+<div class="card">
+
+<h2>
+Driver Registration
+</h2>
+
+<p class="muted">
+You are not registered as a driver yet.
+</p>
+
+<a class="btn btn-green"
+   href="/drivers/register">
+Register as Driver
+</a>
+
+</div>
+
+"""
+
+        return render_page(
+            content,
+            "Driver"
+        )
+
+    driver = rows[0]
+
+    approved = (
+        str(
+            driver.get("status")
+        ).lower()
+        ==
+        "approved"
+    )
+
+    online = bool(
+        driver.get("is_online")
+    )
+
+    if not approved:
+
+        content = f"""
+
+<div class="card">
+
+<h2>
+Driver Application
+</h2>
+
+<p>
+Status:
+<span class="status">
+{esc(
+    driver.get("status")
+    or
+    "pending"
+)}
+</span>
+</p>
+
+<p class="muted">
+Your driver account must be approved
+before you can receive delivery requests.
+</p>
+
+</div>
+
+"""
+
+        return render_page(
+            content,
+            "Driver"
+        )
+
+    online_text = (
+        "ONLINE"
+        if online
+        else
+        "OFFLINE"
+    )
+
+    content = f"""
+
+<div class="hero">
+
+<div class="hero-content">
+
+<div class="service-number">
+DRIVER CONTROL
+</div>
+
+<h1>
+Driver Dashboard
+</h1>
+
+<p>
+{esc(
+    driver.get("vehicle_type")
+)}
+&nbsp;
+{esc(
+    driver.get("vehicle_number")
+)}
+</p>
+
+<div class="live">
+
+<span class="live-dot"></span>
+
+<span id="driverState">
+{online_text}
+</span>
+
+</div>
+
+</div>
+
+</div>
+
+<div class="grid">
+
+<div class="card">
+
+<h2>
+Availability
+</h2>
+
+<p class="muted">
+Go online to allow customers to
+see your current location.
+</p>
+
+<form method="POST"
+      action="/driver/status">
+
+<input type="hidden"
+       name="is_online"
+       value="true">
+
+<button class="btn-green">
+Go Online
+</button>
+
+</form>
+
+<br>
+
+<form method="POST"
+      action="/driver/status">
+
+<input type="hidden"
+       name="is_online"
+       value="false">
+
+<button class="btn-dark">
+Go Offline
+</button>
+
+</form>
+
+</div>
+
+<div class="card">
+
+<h2>
+GPS Location
+</h2>
+
+<p id="gpsStatus"
+   class="muted">
+Waiting for GPS permission...
+</p>
+
+<p>
+Location:
+<strong id="driverLocation">
+{esc(
+    driver.get("location_name")
+    or
+    "Not available"
+)}
+</strong>
+</p>
+
+</div>
+
+</div>
+
+<div class="card map-card">
+
+<div class="map-header">
+
+<h2>
+Live Driver Map
+</h2>
+
+<p class="small">
+Your GPS location is updated while
+you are online.
+</p>
+
+</div>
+
+<div id="map"></div>
+
+</div>
+
+<script>
+
+let map = L.map("map")
+    .setView(
+        [-13.9626, 28.0646],
+        6
+    );
+
+L.tileLayer(
+    "https://{{"{"}}s{{"}"}}.tile.openstreetmap.org/{{"{"}}z{{"}"}}/{{"{"}}x{{"}"}}/{{"{"}}y{{"}"}}.png",
+    {{
+        maxZoom: 19,
+        attribution:
+            "&copy; OpenStreetMap contributors"
+    }}
+).addTo(map);
+
+let marker = null;
+
+function sendLocation(
+    position
+){{
+    const latitude =
+        position.coords.latitude;
+
+    const longitude =
+        position.coords.longitude;
+
+    const status =
+        document.getElementById(
+            "gpsStatus"
+        );
+
+    status.textContent =
+        "GPS location is active.";
+
+    if(!marker){{
+        marker =
+            L.marker(
+                [latitude,longitude]
+            ).addTo(map);
+
+        map.setView(
+            [latitude,longitude],
+            16
+        );
+    }}else{{
+        marker.setLatLng(
+            [latitude,longitude]
+        );
+    }}
+
+    const formData =
+        new FormData();
+
+    formData.append(
+        "latitude",
+        latitude
+    );
+
+    formData.append(
+        "longitude",
+        longitude
+    );
+
+    formData.append(
+        "location_name",
+        document.getElementById(
+            "driverLocation"
+        ).textContent
+    );
+
+    fetch(
+        "/driver/location",
+        {{
+            method:"POST",
+            body:formData
+        }}
+    )
+    .then(
+        response => response.json()
+    )
+    .then(
+        data => {{
+            if(data.success){{
+                document.getElementById(
+                    "gpsStatus"
+                ).textContent =
+                    "Location updated.";
+            }}
+        }}
+    )
+    .catch(
+        () => {{
+            document.getElementById(
+                "gpsStatus"
+            ).textContent =
+                "GPS update failed.";
+        }}
+    );
+}}
+
+function gpsError(error){{
+    document.getElementById(
+        "gpsStatus"
+    ).textContent =
+        "GPS permission or location unavailable.";
+}}
+
+if(
+    navigator.geolocation
+){{
+    navigator.geolocation.watchPosition(
+        sendLocation,
+        gpsError,
+        {{
+            enableHighAccuracy:true,
+            maximumAge:5000,
+            timeout:15000
+        }}
+    );
+}}else{{
+    document.getElementById(
+        "gpsStatus"
+    ).textContent =
+        "This device does not support GPS.";
+}}
+
+</script>
+
+<script src=
+"https://unpkg.com/leaflet@1.9.4/dist/leaflet.js">
+</script>
+
+"""
+
+    return render_page(
+        content,
+        "Driver Dashboard"
+    )
+
+
+# ============================================================
+# DRIVER STATUS
+# ============================================================
+
+@app.route(
+    "/driver/status",
+    methods=["POST"]
+)
+@login_required
+def driver_status():
+
+    uid = current_user()["id"]
+
+    online = (
+        request.form.get(
+            "is_online",
+            "false"
+        ).lower()
+        ==
+        "true"
+    )
+
+    rows, error = db_get(
+        "driver_profiles",
+        {
+            "provider_id":
+                f"eq.{uid}",
+            "status":
+                "eq.approved",
+            "select":
+                "id"
+        }
+    )
+
+    if error or not rows:
+
+        flash(
+            "Approved driver profile not found."
+        )
+
+        return redirect(
+            url_for("driver_dashboard")
+        )
+
+    db_update(
+        "driver_profiles",
+        {
+            "id":
+                rows[0]["id"]
+        },
+        {
+            "is_online":
+                online,
+            "updated_at":
+                now_iso()
+        }
+    )
+
+    flash(
+        "Driver is now "
+        +
+        (
+            "ONLINE."
+            if online
+            else
+            "OFFLINE."
+        )
+    )
+
+    return redirect(
+        url_for("driver_dashboard")
+    )
+
+
+# ============================================================
+# DRIVER GPS UPDATE
+# ============================================================
+
+@app.route(
+    "/driver/location",
+    methods=["POST"]
+)
+@login_required
+def driver_location():
+
+    uid = current_user()["id"]
+
+    rows, error = db_get(
+        "driver_profiles",
+        {
+            "provider_id":
+                f"eq.{uid}",
+            "status":
+                "eq.approved",
+            "select":
+                "id"
+        }
+    )
+
+    if error or not rows:
+
+        return jsonify({
+            "success": False,
+            "message":
+                "Driver profile not found."
+        }), 404
+
+    try:
+
+        latitude = float(
+            request.form.get(
+                "latitude"
+            )
+        )
+
+        longitude = float(
+            request.form.get(
+                "longitude"
+            )
+        )
+
+    except Exception:
+
+        return jsonify({
+            "success": False,
+            "message":
+                "Invalid coordinates."
+        }), 400
+
+    location_name = request.form.get(
+        "location_name",
+        ""
+    ).strip()
+
+    result, error = db_update(
+        "driver_profiles",
+        {
+            "id":
+                rows[0]["id"]
+        },
+        {
+            "latitude":
+                latitude,
+            "longitude":
+                longitude,
+            "location_name":
+                location_name,
+            "is_online":
+                True,
+            "last_location_update":
+                now_iso(),
+            "updated_at":
+                now_iso()
+        }
+    )
+
+    if error:
+
+        return jsonify({
+            "success": False,
+            "message": error
+        }), 500
+
+    return jsonify({
+        "success": True,
+        "latitude": latitude,
+        "longitude": longitude
+    })
+
+
+# ============================================================
+# AVAILABLE DRIVERS
+# ============================================================
+
+@app.route("/drivers")
+@login_required
+def drivers():
+
+    rows, error = db_get(
+        "driver_profiles",
+        {
+            "status":
+                "eq.approved",
+            "is_online":
+                "eq.true",
+            "select":
+                "*",
+            "order":
+                "last_location_update.desc"
+        }
+    )
+
+    if error:
+        rows = []
+
+    cards = ""
+
+    for driver in rows or []:
+
+        cards += f"""
+
+<div class="card">
+
+<h3>
+{esc(
+    driver.get("vehicle_type")
+    or
+    "Driver"
+)}
+</h3>
+
+<p>
+Vehicle:
+{esc(
+    driver.get("vehicle_number")
+)}
+</p>
+
+<p class="live">
+<span class="live-dot"></span>
+Online
+</p>
+
+<p class="muted">
+{esc(
+    driver.get("location_name")
+    or
+    "Current location available on map"
+)}
+</p>
+
+<form method="POST"
+      action="/delivery/request">
+
+<input type="hidden"
+       name="driver_id"
+       value="{esc(driver.get("id"))}">
+
+<label>
+Pickup Location
+</label>
+
+<input
+    name="pickup_location"
+    required
+>
+
+<label>
+Destination
+</label>
+
+<input
+    name="destination_location"
+    required
+>
+
+<label>
+Instructions
+</label>
+
+<textarea
+    name="notes"
+></textarea>
+
+<button class="btn-green">
+Request Driver
+</button>
+
+</form>
+
+</div>
+
+"""
+
+    content = f"""
+
+<div class="hero">
+
+<div class="hero-content">
+
+<div class="service-number">
+SERVICE 02
+</div>
+
+<h1>
+Driver & Delivery
+</h1>
+
+<p>
+Approved drivers who are currently
+online can receive delivery requests.
+Active deliveries can be followed
+using live GPS tracking.
+</p>
+
+<a class="btn btn-green"
+   href="/driver">
+Driver Dashboard
+</a>
+
+<a class="btn btn-dark"
+   href="/drivers/register">
+Register as Driver
+</a>
+
+</div>
+
+</div>
+
+<div class="card">
+
+<h2>
+Available Drivers
+</h2>
+
+<p class="muted">
+Only approved and online drivers are shown.
+</p>
+
+</div>
+
+<div class="grid">
+
+{cards or
+'''
+<div class="card">
+<h3>
+No online drivers available.
+</h3>
+<p class="muted">
+Please check again later.
+</p>
+</div>
+'''}
+
+</div>
+
+"""
+
+    return render_page(
+        content,
+        "Drivers"
+    )
+
+
+# ============================================================
+# DELIVERY REQUEST
+# ============================================================
+
+@app.route(
+    "/delivery/request",
+    methods=["POST"]
+)
+@login_required
+def delivery_request():
+
+    uid = current_user()["id"]
+
+    driver_id = request.form.get(
+        "driver_id"
+    ) or None
+
+    pickup = request.form.get(
+        "pickup_location",
+        ""
+    ).strip()
+
+    destination = request.form.get(
+        "destination_location",
+        ""
+    ).strip()
+
+    notes = request.form.get(
+        "notes",
+        ""
+    ).strip()
+
+    if not pickup or not destination:
+
+        flash(
+            "Pickup and destination are required."
+        )
+
+        return redirect(
+            url_for("drivers")
+        )
+
+    data = {
+        "id": str(uuid.uuid4()),
+        "customer_id": uid,
+        "driver_id": driver_id,
+        "pickup_location": pickup,
+        "delivery_location": destination,
+        "destination_location":
+            destination,
+        "latitude": None,
+        "longitude": None,
+        "pickup_latitude": None,
+        "pickup_longitude": None,
+        "destination_latitude": None,
+        "destination_longitude": None,
+        "status": "pending",
+        "notes": notes,
+        "service_type": "delivery",
+        "requested_at": now_iso()
+    }
+
+    result, error = db_insert(
+        "delivery_requests",
+        data
+    )
+
+    if error:
+
+        flash(
+            "Delivery request failed: "
+            + str(error)
+        )
+
+        return redirect(
+            url_for("drivers")
+        )
+
+    flash(
+        "Driver request submitted."
+    )
+
+    return redirect(
+        url_for("my_deliveries")
+    )
+
+
+# ============================================================
+# CUSTOMER DELIVERIES
+# ============================================================
+
+@app.route("/deliveries")
+@login_required
+def my_deliveries():
+
+    uid = current_user()["id"]
+
+    rows, error = db_get(
+        "delivery_requests",
+        {
+            "customer_id":
+                f"eq.{uid}",
             "select":
                 "*",
             "order":
@@ -2165,41 +3211,612 @@ def admin():
         }
     )
 
+    if error:
+        rows = []
+
     cards = ""
 
-    for a in rows or []:
+    for delivery in rows or []:
+
+        delivery_id = delivery.get(
+            "id"
+        )
+
+        status = (
+            delivery.get("status")
+            or
+            "pending"
+        )
+
+        active = status in {
+            "accepted",
+            "started"
+        }
 
         cards += f"""
 
 <div class="card">
 
 <h3>
-{a.get("title") or ""}
+Delivery Request
 </h3>
 
 <p>
-Student:
-{a.get("student_id") or ""}
+<strong>Pickup:</strong>
+{esc(
+    delivery.get(
+        "pickup_location"
+    )
+)}
 </p>
 
 <p>
-Subject:
-{a.get("subject") or ""}
+<strong>Destination:</strong>
+{esc(
+    delivery.get(
+        "destination_location"
+    )
+)}
 </p>
 
 <p>
-Status:
+<strong>Status:</strong>
 
 <span class="status">
-{a.get("status") or "pending"}
+{esc(status)}
 </span>
 
 </p>
 
-<a class="btn"
-   href="/admin/assignments/{a.get("id")}">
-Process Assignment
+"""
+
+        if active:
+
+            cards += f"""
+
+<a class="btn btn-green"
+   href="/delivery/{delivery_id}/track">
+Track Live Driver
 </a>
+
+"""
+
+        cards += """
+
+</div>
+
+"""
+
+    content = f"""
+
+<div class="hero">
+
+<div class="hero-content">
+
+<div class="service-number">
+MY DELIVERIES
+</div>
+
+<h1>
+Delivery Tracking
+</h1>
+
+<p>
+View your requests and open live
+tracking when a driver has accepted
+or started your delivery.
+</p>
+
+</div>
+
+</div>
+
+<div class="grid">
+
+{cards or
+'''
+<div class="card">
+<h3>
+No delivery requests yet.
+</h3>
+</div>
+'''}
+
+</div>
+
+"""
+
+    return render_page(
+        content,
+        "My Deliveries"
+    )
+
+
+# ============================================================
+# LIVE DELIVERY TRACKING
+# ============================================================
+
+@app.route(
+    "/delivery/<delivery_id>/track"
+)
+@login_required
+def delivery_track(delivery_id):
+
+    uid = current_user()["id"]
+
+    rows, error = db_get(
+        "delivery_requests",
+        {
+            "id":
+                f"eq.{delivery_id}",
+            "customer_id":
+                f"eq.{uid}",
+            "select":
+                "*"
+        }
+    )
+
+    if error or not rows:
+
+        flash(
+            "Delivery not found."
+        )
+
+        return redirect(
+            url_for("my_deliveries")
+        )
+
+    delivery = rows[0]
+
+    content = f"""
+
+<div class="hero">
+
+<div class="hero-content">
+
+<div class="service-number">
+LIVE DELIVERY
+</div>
+
+<h1>
+Driver Tracking
+</h1>
+
+<p>
+Pickup:
+{esc(
+    delivery.get("pickup_location")
+)}
+</p>
+
+<p>
+Destination:
+{esc(
+    delivery.get("destination_location")
+)}
+</p>
+
+<div class="live">
+<span class="live-dot"></span>
+Live GPS Tracking
+</div>
+
+</div>
+
+</div>
+
+<div class="card map-card">
+
+<div class="map-header">
+
+<h2>
+Live Driver Location
+</h2>
+
+<p id="trackingStatus"
+   class="muted">
+Connecting to live GPS...
+</p>
+
+</div>
+
+<div id="map"></div>
+
+</div>
+
+<div class="card">
+
+<h3>
+Delivery Status
+</h3>
+
+<p>
+Current status:
+<strong id="deliveryStatus">
+{esc(
+    delivery.get("status")
+    or
+    "pending"
+)}
+</strong>
+</p>
+
+<p class="muted">
+The map automatically refreshes while
+the delivery is active.
+</p>
+
+</div>
+
+<script src=
+"https://unpkg.com/leaflet@1.9.4/dist/leaflet.js">
+</script>
+
+<script>
+
+const deliveryId =
+"{esc(delivery_id)}";
+
+let map =
+L.map("map")
+.setView(
+    [-13.9626,28.0646],
+    6
+);
+
+L.tileLayer(
+    "https://{{"{"}}s{{"}"}}.tile.openstreetmap.org/{{"{"}}z{{"}"}}/{{"{"}}x{{"}"}}/{{"{"}}y{{"}}"}}.png",
+    {{
+        maxZoom:19,
+        attribution:
+        "&copy; OpenStreetMap contributors"
+    }}
+).addTo(map);
+
+let driverMarker = null;
+
+function loadTracking(){{
+
+    fetch(
+        "/api/delivery/"
+        +
+        deliveryId
+    )
+    .then(
+        response =>
+            response.json()
+    )
+    .then(
+        data => {{
+
+            if(!data.success){{
+                document.getElementById(
+                    "trackingStatus"
+                ).textContent =
+                    "Tracking unavailable.";
+                return;
+            }}
+
+            document.getElementById(
+                "deliveryStatus"
+            ).textContent =
+                data.status || "pending";
+
+            if(
+                data.latitude !== null
+                &&
+                data.longitude !== null
+            ){{
+
+                const position = [
+                    data.latitude,
+                    data.longitude
+                ];
+
+                if(!driverMarker){{
+
+                    driverMarker =
+                        L.marker(
+                            position
+                        )
+                        .addTo(map);
+
+                    driverMarker.bindPopup(
+                        "Driver location"
+                    );
+
+                    map.setView(
+                        position,
+                        16
+                    );
+
+                }}else{{
+
+                    driverMarker.setLatLng(
+                        position
+                    );
+
+                }}
+
+                document.getElementById(
+                    "trackingStatus"
+                ).textContent =
+                    "Driver location updated.";
+
+            }}else{{
+
+                document.getElementById(
+                    "trackingStatus"
+                ).textContent =
+                    "Waiting for driver GPS location.";
+
+            }}
+
+        }}
+    )
+    .catch(
+        () => {{
+            document.getElementById(
+                "trackingStatus"
+            ).textContent =
+                "Connection temporarily unavailable.";
+        }}
+    );
+
+}}
+
+loadTracking();
+
+setInterval(
+    loadTracking,
+    5000
+);
+
+</script>
+
+"""
+
+    return render_page(
+        content,
+        "Live Delivery Tracking"
+    )
+
+
+# ============================================================
+# DELIVERY API
+# ============================================================
+
+@app.route(
+    "/api/delivery/<delivery_id>"
+)
+@login_required
+def delivery_api(delivery_id):
+
+    uid = current_user()["id"]
+
+    rows, error = db_get(
+        "delivery_requests",
+        {
+            "id":
+                f"eq.{delivery_id}",
+            "customer_id":
+                f"eq.{uid}",
+            "select":
+                "*"
+        }
+    )
+
+    if error or not rows:
+
+        return jsonify({
+            "success": False
+        }), 404
+
+    delivery = rows[0]
+
+    latitude = delivery.get(
+        "latitude"
+    )
+
+    longitude = delivery.get(
+        "longitude"
+    )
+
+    driver_id = delivery.get(
+        "driver_id"
+    )
+
+    if driver_id:
+
+        driver_rows, driver_error = db_get(
+            "driver_profiles",
+            {
+                "id":
+                    f"eq.{driver_id}",
+                "select":
+                    "latitude,longitude,location_name,is_online,last_location_update"
+            }
+        )
+
+        if (
+            not driver_error
+            and
+            driver_rows
+        ):
+
+            driver = driver_rows[0]
+
+            latitude = driver.get(
+                "latitude"
+            )
+
+            longitude = driver.get(
+                "longitude"
+            )
+
+            return jsonify({
+                "success": True,
+                "status":
+                    delivery.get(
+                        "status"
+                    ),
+                "latitude":
+                    latitude,
+                "longitude":
+                    longitude,
+                "location_name":
+                    driver.get(
+                        "location_name"
+                    ),
+                "is_online":
+                    driver.get(
+                        "is_online"
+                    ),
+                "last_update":
+                    driver.get(
+                        "last_location_update"
+                    )
+            })
+
+    return jsonify({
+        "success": True,
+        "status":
+            delivery.get(
+                "status"
+            ),
+        "latitude":
+            latitude,
+        "longitude":
+            longitude
+    })
+
+
+# ============================================================
+# DRIVER DELIVERY REQUESTS
+# ============================================================
+
+@app.route(
+    "/driver/deliveries"
+)
+@login_required
+def driver_deliveries():
+
+    uid = current_user()["id"]
+
+    driver_rows, error = db_get(
+        "driver_profiles",
+        {
+            "provider_id":
+                f"eq.{uid}",
+            "status":
+                "eq.approved",
+            "select":
+                "id"
+        }
+    )
+
+    if error or not driver_rows:
+
+        flash(
+            "Approved driver profile not found."
+        )
+
+        return redirect(
+            url_for("driver_dashboard")
+        )
+
+    driver_id = driver_rows[0]["id"]
+
+    rows, error = db_get(
+        "delivery_requests",
+        {
+            "driver_id":
+                f"eq.{driver_id}",
+            "select":
+                "*",
+            "order":
+                "created_at.desc"
+        }
+    )
+
+    if error:
+        rows = []
+
+    cards = ""
+
+    for delivery in rows or []:
+
+        cards += f"""
+
+<div class="card">
+
+<h3>
+Delivery Request
+</h3>
+
+<p>
+Pickup:
+<strong>
+{esc(
+    delivery.get(
+        "pickup_location"
+    )
+)}
+</strong>
+</p>
+
+<p>
+Destination:
+<strong>
+{esc(
+    delivery.get(
+        "destination_location"
+    )
+)}
+</strong>
+</p>
+
+<p>
+Status:
+<span class="status">
+{esc(
+    delivery.get(
+        "status"
+    )
+    or
+    "pending"
+)}
+</span>
+</p>
+
+<form method="POST"
+      action="/driver/delivery/{delivery.get("id")}/status">
+
+<select name="status">
+
+<option value="accepted">
+Accepted
+</option>
+
+<option value="started">
+Started
+</option>
+
+<option value="completed">
+Completed
+</option>
+
+<option value="cancelled">
+Cancelled
+</option>
+
+</select>
+
+<button class="btn-green">
+Update Delivery
+</button>
+
+</form>
 
 </div>
 
@@ -2212,25 +3829,1112 @@ Process Assignment
 <div class="hero-content">
 
 <h1>
-Administrator
+My Delivery Requests
 </h1>
 
 <p>
-Manage the three KOJA AFRICA services.
+Manage delivery requests assigned to you.
 </p>
 
 </div>
 
 </div>
 
+<div class="grid">
+
+{cards or
+'''
+<div class="card">
+<h3>
+No delivery requests.
+</h3>
+</div>
+'''}
+
+</div>
+
+"""
+
+    return render_page(
+        content,
+        "Driver Deliveries"
+    )
+
+
+# ============================================================
+# DRIVER DELIVERY STATUS
+# ============================================================
+
+@app.route(
+    "/driver/delivery/<delivery_id>/status",
+    methods=["POST"]
+)
+@login_required
+def driver_delivery_status(
+    delivery_id
+):
+
+    uid = current_user()["id"]
+
+    driver_rows, error = db_get(
+        "driver_profiles",
+        {
+            "provider_id":
+                f"eq.{uid}",
+            "status":
+                "eq.approved",
+            "select":
+                "id"
+        }
+    )
+
+    if error or not driver_rows:
+
+        flash(
+            "Driver profile not found."
+        )
+
+        return redirect(
+            url_for("driver_dashboard")
+        )
+
+    driver_id = driver_rows[0]["id"]
+
+    delivery_rows, error = db_get(
+        "delivery_requests",
+        {
+            "id":
+                f"eq.{delivery_id}",
+            "driver_id":
+                f"eq.{driver_id}",
+            "select":
+                "id"
+        }
+    )
+
+    if error or not delivery_rows:
+
+        flash(
+            "Delivery request not found."
+        )
+
+        return redirect(
+            url_for("driver_deliveries")
+        )
+
+    status = request.form.get(
+        "status",
+        "accepted"
+    )
+
+    data = {
+        "status":
+            status,
+        "updated_at":
+            now_iso()
+    }
+
+    if status == "accepted":
+        data["accepted_at"] = now_iso()
+
+    elif status == "started":
+        data["started_at"] = now_iso()
+
+    elif status == "completed":
+        data["completed_at"] = now_iso()
+
+    result, update_error = db_update(
+        "delivery_requests",
+        {
+            "id":
+                delivery_id
+        },
+        data
+    )
+
+    flash(
+        "Delivery status updated."
+        if not update_error
+        else
+        "Delivery update failed."
+    )
+
+    return redirect(
+        url_for("driver_deliveries")
+    )
+
+
+# ============================================================
+# CV SERVICE
+#
+# User can:
+# - create CV themselves
+# - generate professional PDF
+#
+# Admin can:
+# - view CV requests
+# - generate CV for a user
+#
+# The PDF is generated directly by the server.
+# ============================================================
+
+@app.route(
+    "/cv",
+    methods=["GET", "POST"]
+)
+@login_required
+def cv_builder():
+
+    if request.method == "POST":
+
+        cv = {
+            "name":
+                request.form.get(
+                    "name",
+                    ""
+                ).strip(),
+
+            "phone":
+                request.form.get(
+                    "phone",
+                    ""
+                ).strip(),
+
+            "email":
+                current_user()["email"],
+
+            "address":
+                request.form.get(
+                    "address",
+                    ""
+                ).strip(),
+
+            "title":
+                request.form.get(
+                    "title",
+                    ""
+                ).strip(),
+
+            "summary":
+                request.form.get(
+                    "summary",
+                    ""
+                ).strip(),
+
+            "education":
+                request.form.get(
+                    "education",
+                    ""
+                ).strip(),
+
+            "experience":
+                request.form.get(
+                    "experience",
+                    ""
+                ).strip(),
+
+            "skills":
+                request.form.get(
+                    "skills",
+                    ""
+                ).strip(),
+
+            "references":
+                request.form.get(
+                    "references",
+                    ""
+                ).strip()
+        }
+
+        if not cv["name"]:
+
+            flash(
+                "Full name is required."
+            )
+
+            return redirect(
+                url_for("cv_builder")
+            )
+
+        session["cv_data"] = cv
+
+        flash(
+            "CV information saved. Review your CV below."
+        )
+
+        return redirect(
+            url_for("cv_preview")
+        )
+
+    content = """
+
+<div class="hero">
+
+<div class="hero-content">
+
+<div class="service-number">
+SERVICE 03
+</div>
+
+<h1>
+Professional CV Builder
+</h1>
+
+<p>
+Create your CV yourself using the
+professional KOJA AFRICA template.
+Your email is taken automatically
+from your account.
+</p>
+
+</div>
+
+</div>
+
+<div class="card">
+
+<form method="POST">
+
+<label>
+Full Name
+</label>
+
+<input
+    name="name"
+    required
+>
+
+<label>
+Phone
+</label>
+
+<input
+    name="phone"
+>
+
+<label>
+Address
+</label>
+
+<input
+    name="address"
+>
+
+<label>
+Professional Title
+</label>
+
+<input
+    name="title"
+    placeholder="Example: Biology Teacher"
+>
+
+<label>
+Professional Summary
+</label>
+
+<textarea
+    name="summary"
+    placeholder="Brief professional profile"
+></textarea>
+
+<label>
+Education
+</label>
+
+<textarea
+    name="education"
+    placeholder="Qualification, institution, year"
+></textarea>
+
+<label>
+Work Experience
+</label>
+
+<textarea
+    name="experience"
+    placeholder="Position, employer, responsibilities, dates"
+></textarea>
+
+<label>
+Skills
+</label>
+
+<textarea
+    name="skills"
+    placeholder="Communication, leadership, computer skills..."
+></textarea>
+
+<label>
+References
+</label>
+
+<textarea
+    name="references"
+    placeholder="Reference name, position, contact"
+></textarea>
+
+<button class="btn-orange">
+Generate CV
+</button>
+
+</form>
+
+</div>
+
+<div class="card">
+
+<h2>
+Administrator CV Service
+</h2>
+
+<p class="muted">
+If you do not want to prepare the CV yourself,
+submit your information to KOJA AFRICA and
+an administrator can prepare the CV for you.
+</p>
+
+<a class="btn btn-dark"
+   href="/cv/admin-request">
+Request Admin CV
+</a>
+
+</div>
+
+"""
+
+    return render_page(
+        content,
+        "CV Builder"
+    )
+
+
+# ============================================================
+# CV PREVIEW
+# ============================================================
+
+@app.route("/cv/preview")
+@login_required
+def cv_preview():
+
+    cv = session.get(
+        "cv_data"
+    )
+
+    if not cv:
+
+        flash(
+            "Create your CV information first."
+        )
+
+        return redirect(
+            url_for("cv_builder")
+        )
+
+    skills = [
+        item.strip()
+        for item in
+        cv.get("skills", "").split(",")
+        if item.strip()
+    ]
+
+    skills_html = ""
+
+    for skill in skills:
+        skills_html += (
+            f"<li>{esc(skill)}</li>"
+        )
+
+    content = f"""
+
+<div class="card">
+
+<div class="cv-preview">
+
+<div class="cv-name">
+{esc(cv.get("name"))}
+</div>
+
+<div class="cv-title">
+{esc(cv.get("title"))}
+</div>
+
+<p>
+{esc(cv.get("email"))}
+<br>
+{esc(cv.get("phone"))}
+<br>
+{esc(cv.get("address"))}
+</p>
+
+<div class="cv-section">
+
+<h3>
+Professional Summary
+</h3>
+
+<p>
+{esc(cv.get("summary"))}
+</p>
+
+</div>
+
+<div class="cv-section">
+
+<h3>
+Education
+</h3>
+
+<p>
+{esc(cv.get("education"))}
+</p>
+
+</div>
+
+<div class="cv-section">
+
+<h3>
+Work Experience
+</h3>
+
+<p>
+{esc(cv.get("experience"))}
+</p>
+
+</div>
+
+<div class="cv-section">
+
+<h3>
+Skills
+</h3>
+
+<ul>
+{skills_html}
+</ul>
+
+</div>
+
+<div class="cv-section">
+
+<h3>
+References
+</h3>
+
+<p>
+{esc(cv.get("references"))}
+</p>
+
+</div>
+
+</div>
+
+<br>
+
+<a class="btn btn-orange"
+   href="/cv/download">
+Download Professional CV
+</a>
+
+<a class="btn btn-light"
+   href="/cv">
+Edit CV
+</a>
+
+</div>
+
+"""
+
+    return render_page(
+        content,
+        "CV Preview"
+    )
+
+
+# ============================================================
+# CV PDF
+# ============================================================
+
+def generate_cv_pdf(cv):
+
+    try:
+
+        from reportlab.lib.pagesizes import A4
+        from reportlab.platypus import (
+            SimpleDocTemplate,
+            Paragraph,
+            Spacer,
+            Table,
+            TableStyle
+        )
+        from reportlab.lib.styles import (
+            getSampleStyleSheet,
+            ParagraphStyle
+        )
+        from reportlab.lib import colors
+        from reportlab.lib.enums import (
+            TA_LEFT
+        )
+
+    except Exception as error:
+
+        logger.exception(
+            "ReportLab unavailable"
+        )
+
+        raise error
+
+    output = BytesIO()
+
+    document = SimpleDocTemplate(
+        output,
+        pagesize=A4,
+        rightMargin=45,
+        leftMargin=45,
+        topMargin=45,
+        bottomMargin=45
+    )
+
+    styles = getSampleStyleSheet()
+
+    name_style = ParagraphStyle(
+        "CVName",
+        parent=styles["Title"],
+        fontSize=25,
+        leading=30,
+        alignment=TA_LEFT,
+        spaceAfter=5
+    )
+
+    title_style = ParagraphStyle(
+        "CVTitle",
+        parent=styles["Normal"],
+        fontSize=12,
+        leading=16,
+        textColor=colors.HexColor(
+            "#2563eb"
+        ),
+        spaceAfter=12
+    )
+
+    heading_style = ParagraphStyle(
+        "CVHeading",
+        parent=styles["Heading3"],
+        fontSize=11,
+        leading=14,
+        spaceBefore=14,
+        spaceAfter=7
+    )
+
+    body_style = ParagraphStyle(
+        "CVBody",
+        parent=styles["BodyText"],
+        fontSize=9.5,
+        leading=14,
+        spaceAfter=5
+    )
+
+    story = []
+
+    story.append(
+        Paragraph(
+            esc(cv.get("name")),
+            name_style
+        )
+    )
+
+    story.append(
+        Paragraph(
+            esc(cv.get("title")),
+            title_style
+        )
+    )
+
+    contact = (
+        f"{esc(cv.get('email'))} | "
+        f"{esc(cv.get('phone'))} | "
+        f"{esc(cv.get('address'))}"
+    )
+
+    story.append(
+        Paragraph(
+            contact,
+            body_style
+        )
+    )
+
+    sections = [
+        (
+            "PROFESSIONAL SUMMARY",
+            cv.get("summary")
+        ),
+        (
+            "EDUCATION",
+            cv.get("education")
+        ),
+        (
+            "WORK EXPERIENCE",
+            cv.get("experience")
+        ),
+        (
+            "SKILLS",
+            cv.get("skills")
+        ),
+        (
+            "REFERENCES",
+            cv.get("references")
+        )
+    ]
+
+    for heading, value in sections:
+
+        if not value:
+            continue
+
+        story.append(
+            Paragraph(
+                heading,
+                heading_style
+            )
+        )
+
+        lines = str(
+            value
+        ).splitlines()
+
+        for line in lines:
+
+            if line.strip():
+
+                story.append(
+                    Paragraph(
+                        esc(line),
+                        body_style
+                    )
+                )
+
+    story.append(
+        Spacer(1, 20)
+    )
+
+    story.append(
+        Paragraph(
+            "Generated with KOJA AFRICA CV Services",
+            ParagraphStyle(
+                "Footer",
+                parent=body_style,
+                fontSize=8,
+                textColor=colors.grey
+            )
+        )
+    )
+
+    document.build(story)
+
+    output.seek(0)
+
+    return output
+
+
+@app.route("/cv/download")
+@login_required
+def cv_download():
+
+    cv = session.get(
+        "cv_data"
+    )
+
+    if not cv:
+
+        flash(
+            "Create your CV first."
+        )
+
+        return redirect(
+            url_for("cv_builder")
+        )
+
+    try:
+
+        pdf = generate_cv_pdf(
+            cv
+        )
+
+    except Exception:
+
+        return (
+            "CV generation requires ReportLab. "
+            "Install reportlab.",
+            500
+        )
+
+    safe_name = secure_filename(
+        cv.get("name")
+        or
+        "KOJA-CV"
+    )
+
+    return send_file(
+        pdf,
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=(
+            safe_name
+            +
+            "-CV.pdf"
+        )
+    )
+
+
+# ============================================================
+# ADMIN CV REQUEST
+#
+# Uses the existing assignments table as the request queue,
+# avoiding dependence on an additional CV database table.
+# ============================================================
+
+@app.route(
+    "/cv/admin-request",
+    methods=["GET", "POST"]
+)
+@login_required
+def cv_admin_request():
+
+    if request.method == "POST":
+
+        uid = current_user()["id"]
+
+        name = request.form.get(
+            "name",
+            ""
+        ).strip()
+
+        phone = request.form.get(
+            "phone",
+            ""
+        ).strip()
+
+        title = request.form.get(
+            "title",
+            ""
+        ).strip()
+
+        education = request.form.get(
+            "education",
+            ""
+        ).strip()
+
+        experience = request.form.get(
+            "experience",
+            ""
+        ).strip()
+
+        skills = request.form.get(
+            "skills",
+            ""
+        ).strip()
+
+        summary = request.form.get(
+            "summary",
+            ""
+        ).strip()
+
+        references = request.form.get(
+            "references",
+            ""
+        ).strip()
+
+        description = f"""
+CV ADMIN REQUEST
+
+Full Name:
+{name}
+
+Phone:
+{phone}
+
+Professional Title:
+{title}
+
+Professional Summary:
+{summary}
+
+Education:
+{education}
+
+Work Experience:
+{experience}
+
+Skills:
+{skills}
+
+References:
+{references}
+""".strip()
+
+        data = {
+            "id": str(uuid.uuid4()),
+            "student_id": uid,
+            "title":
+                "CV Creation Request",
+            "subject":
+                "CV Service",
+            "description":
+                description,
+            "status":
+                "pending",
+            "admin_note":
+                "CV_ADMIN_REQUEST",
+            "answer_text":
+                None
+        }
+
+        result, error = db_insert(
+            "assignments",
+            data
+        )
+
+        if error:
+
+            flash(
+                "CV request could not be submitted: "
+                + str(error)
+            )
+
+            return redirect(
+                request.url
+            )
+
+        flash(
+            "Your CV request has been sent to the administrator."
+        )
+
+        return redirect(
+            url_for("cv")
+        )
+
+    content = """
+
+<div class="hero">
+
+<div class="hero-content">
+
+<h1>
+Administrator CV Creation
+</h1>
+
+<p>
+Provide your information and an administrator
+can prepare the professional CV for you.
+</p>
+
+</div>
+
+</div>
+
+<div class="card">
+
+<form method="POST">
+
+<label>
+Full Name
+</label>
+
+<input name="name"
+       required>
+
+<label>
+Phone
+</label>
+
+<input name="phone">
+
+<label>
+Professional Title
+</label>
+
+<input name="title">
+
+<label>
+Professional Summary
+</label>
+
+<textarea name="summary"></textarea>
+
+<label>
+Education
+</label>
+
+<textarea name="education"></textarea>
+
+<label>
+Work Experience
+</label>
+
+<textarea name="experience"></textarea>
+
+<label>
+Skills
+</label>
+
+<textarea name="skills"></textarea>
+
+<label>
+References
+</label>
+
+<textarea name="references"></textarea>
+
+<button class="btn-orange">
+Send CV Request
+</button>
+
+</form>
+
+</div>
+
+"""
+
+    return render_page(
+        content,
+        "Admin CV Request"
+    )
+
+
+@app.route("/cv")
+@login_required
+def cv():
+    return redirect(
+        url_for("cv_builder")
+    )
+
+
+# ============================================================
+# ADMIN
+# ============================================================
+
+@app.route("/admin")
+@admin_required
+def admin():
+
+    assignment_rows, _ = db_get(
+        "assignments",
+        {
+            "select": "*",
+            "order":
+                "created_at.desc"
+        }
+    )
+
+    driver_rows, _ = db_get(
+        "driver_profiles",
+        {
+            "select": "*",
+            "order":
+                "created_at.desc"
+        }
+    )
+
+    delivery_rows, _ = db_get(
+        "delivery_requests",
+        {
+            "select": "*",
+            "order":
+                "created_at.desc"
+        }
+    )
+
+    assignment_count = len(
+        assignment_rows or []
+    )
+
+    driver_count = len(
+        driver_rows or []
+    )
+
+    delivery_count = len(
+        delivery_rows or []
+    )
+
+    cv_count = len([
+        a for a in
+        (assignment_rows or [])
+        if
+        str(
+            a.get("admin_note")
+            or ""
+        ).startswith(
+            "CV_ADMIN_REQUEST"
+        )
+    ])
+
+    content = f"""
+
+<div class="hero">
+
+<div class="hero-content">
+
+<div class="service-number">
+ADMINISTRATION
+</div>
+
+<h1>
+KOJA AFRICA Admin
+</h1>
+
+<p>
+Manage the three platform services.
+</p>
+
+</div>
+
+</div>
+
+<div class="stat-grid">
+
+<div class="stat">
+<strong>
+{assignment_count}
+</strong>
+Assignments
+</div>
+
+<div class="stat">
+<strong>
+{driver_count}
+</strong>
+Drivers
+</div>
+
+<div class="stat">
+<strong>
+{delivery_count}
+</strong>
+Deliveries
+</div>
+
+<div class="stat">
+<strong>
+{cv_count}
+</strong>
+CV Requests
+</div>
+
+</div>
+
+<br>
 
 <div class="grid">
 
 <div class="card">
 
-<h3>
+<h2>
 Assignments
-</h3>
+</h2>
+
+<p class="muted">
+Review and answer submitted assignments.
+</p>
 
 <a class="btn"
    href="/admin/assignments">
@@ -2241,9 +4945,13 @@ Manage Assignments
 
 <div class="card">
 
-<h3>
+<h2>
 Drivers
-</h3>
+</h2>
+
+<p class="muted">
+Approve drivers and manage driver status.
+</p>
 
 <a class="btn btn-green"
    href="/admin/drivers">
@@ -2254,9 +4962,13 @@ Manage Drivers
 
 <div class="card">
 
-<h3>
+<h2>
 Deliveries
-</h3>
+</h2>
+
+<p class="muted">
+Manage active driver and delivery requests.
+</p>
 
 <a class="btn btn-green"
    href="/admin/deliveries">
@@ -2267,9 +4979,13 @@ Manage Deliveries
 
 <div class="card">
 
-<h3>
+<h2>
 CV Requests
-</h3>
+</h2>
+
+<p class="muted">
+Review administrator-assisted CV requests.
+</p>
 
 <a class="btn btn-orange"
    href="/admin/cv">
@@ -2288,6 +5004,10 @@ Manage CV Requests
     )
 
 
+# ============================================================
+# ADMIN ASSIGNMENTS
+# ============================================================
+
 @app.route("/admin/assignments")
 @admin_required
 def admin_assignments():
@@ -2295,44 +5015,54 @@ def admin_assignments():
     rows, error = db_get(
         "assignments",
         {
-            "select":
-                "*",
+            "select": "*",
             "order":
                 "created_at.desc"
         }
     )
 
+    if error:
+        rows = []
+
     cards = ""
 
-    for a in rows or []:
+    for assignment in rows or []:
 
         cards += f"""
 
 <div class="card">
 
 <h3>
-{a.get("title") or ""}
+{esc(
+    assignment.get("title")
+)}
 </h3>
 
 <p>
-Student:
-{a.get("student_id") or ""}
+Subject:
+{esc(
+    assignment.get("subject")
+)}
 </p>
 
 <p>
-Subject:
-{a.get("subject") or ""}
+Student:
+{esc(
+    assignment.get("student_id")
+)}
 </p>
 
 <p>
 Status:
 <span class="status">
-{a.get("status") or "pending"}
+{esc(
+    assignment.get("status")
+)}
 </span>
 </p>
 
 <a class="btn"
-   href="/admin/assignments/{a.get("id")}">
+   href="/admin/assignments/{assignment.get("id")}">
 Process
 </a>
 
@@ -2357,7 +5087,11 @@ Assignment Management
 <div class="grid">
 
 {cards or
-'<div class="card">No assignments.</div>'}
+'''
+<div class="card">
+No assignments.
+</div>
+'''}
 
 </div>
 
@@ -2365,9 +5099,13 @@ Assignment Management
 
     return render_page(
         content,
-        "Assignment Management"
+        "Admin Assignments"
     )
 
+
+# ============================================================
+# ADMIN ASSIGNMENT PROCESS
+# ============================================================
 
 @app.route(
     "/admin/assignments/<assignment_id>",
@@ -2412,7 +5150,7 @@ def admin_assignment(
             ""
         ).strip()
 
-        admin_note = request.form.get(
+        note = request.form.get(
             "admin_note",
             ""
         ).strip()
@@ -2421,7 +5159,11 @@ def admin_assignment(
             "answer_file"
         )
 
-        if answer_file and answer_file.filename:
+        if (
+            answer_file
+            and
+            answer_file.filename
+        ):
 
             info, upload_error = storage_upload(
                 answer_file,
@@ -2432,42 +5174,47 @@ def admin_assignment(
 
                 flash(
                     "Answer file upload failed: "
-                    + str(upload_error)
+                    +
+                    str(upload_error)
                 )
 
                 return redirect(
                     request.url
                 )
 
-            admin_note += (
+            note += (
                 "\nANSWER_FILE|"
-                + info["path"]
-                + "|"
-                + info["filename"]
-                + "|"
-                + info["content_type"]
+                +
+                info["path"]
+                +
+                "|"
+                +
+                info["filename"]
+                +
+                "|"
+                +
+                info["content_type"]
             )
 
         data = {
             "status":
                 status,
-
             "admin_note":
-                admin_note,
-
+                note,
             "answer_text":
                 answer_text,
-
             "updated_at":
                 now_iso()
         }
 
-        if status in (
+        if status in {
             "completed",
             "approved"
-        ):
+        }:
 
-            data["completed_at"] = now_iso()
+            data["completed_at"] = (
+                now_iso()
+            )
 
         result, update_error = db_update(
             "assignments",
@@ -2478,18 +5225,12 @@ def admin_assignment(
             data
         )
 
-        if update_error:
-
-            flash(
-                "Update failed: "
-                + str(update_error)
-            )
-
-        else:
-
-            flash(
-                "Assignment updated successfully."
-            )
+        flash(
+            "Assignment updated."
+            if not update_error
+            else
+            "Assignment update failed."
+        )
 
         return redirect(
             request.url
@@ -2500,32 +5241,43 @@ def admin_assignment(
 <div class="card">
 
 <h2>
-{assignment.get("title") or ""}
+{esc(
+    assignment.get("title")
+)}
 </h2>
 
 <p>
-<strong>
-Subject:
-</strong>
-
-{assignment.get("subject") or ""}
+Student:
+{esc(
+    assignment.get("student_id")
+)}
 </p>
+
+<p>
+Subject:
+{esc(
+    assignment.get("subject")
+)}
+</p>
+
+<div class="divider"></div>
 
 <h3>
 Question
 </h3>
 
 <p>
-{assignment.get("description") or ""}
+{esc(
+    assignment.get("description")
+)}
 </p>
 
 </div>
 
-
 <div class="card">
 
 <h2>
-Process Assignment
+Process
 </h2>
 
 <form method="POST"
@@ -2555,24 +5307,25 @@ Approved
 
 </select>
 
-
 <label>
 Admin Note
 </label>
 
-<textarea name="admin_note">
-{assignment.get("admin_note") or ""}
-</textarea>
-
+<textarea
+    name="admin_note"
+>{esc(
+    assignment.get("admin_note")
+)}</textarea>
 
 <label>
-Written Answer
+Answer
 </label>
 
-<textarea name="answer_text">
-{assignment.get("answer_text") or ""}
-</textarea>
-
+<textarea
+    name="answer_text"
+>{esc(
+    assignment.get("answer_text")
+)}</textarea>
 
 <label>
 Answer File
@@ -2584,8 +5337,7 @@ Answer File
     accept=".pdf,.doc,.docx"
 >
 
-
-<button type="submit">
+<button>
 Save Answer
 </button>
 
@@ -2602,1794 +5354,7 @@ Save Answer
 
 
 # ============================================================
-# DRIVER REGISTRATION
-# ============================================================
-
-@app.route(
-    "/drivers/register",
-    methods=["GET", "POST"]
-)
-@login_required
-def driver_register():
-
-    uid = current_user()["id"]
-
-    if request.method == "POST":
-
-        data = {
-            "id":
-                str(uuid.uuid4()),
-
-            "user_id":
-                uid,
-
-            "full_name":
-                request.form.get(
-                    "full_name",
-                    ""
-                ).strip(),
-
-            "phone":
-                request.form.get(
-                    "phone",
-                    ""
-                ).strip(),
-
-            "email":
-                current_user()["email"],
-
-            "vehicle_type":
-                request.form.get(
-                    "vehicle_type",
-                    ""
-                ).strip(),
-
-            "vehicle_number":
-                request.form.get(
-                    "vehicle_number",
-                    ""
-                ).strip(),
-
-            "license_number":
-                request.form.get(
-                    "license_number",
-                    ""
-                ).strip(),
-
-            "status":
-                "pending",
-
-            "is_online":
-                False,
-
-            "latitude":
-                None,
-
-            "longitude":
-                None,
-
-            "location_name":
-                "",
-
-            "last_location_update":
-                None
-        }
-
-        if not data["full_name"]:
-
-            flash(
-                "Full name is required."
-            )
-
-            return redirect(
-                request.url
-            )
-
-        if not data["phone"]:
-
-            flash(
-                "Phone number is required."
-            )
-
-            return redirect(
-                request.url
-            )
-
-        if not data["vehicle_type"]:
-
-            flash(
-                "Vehicle type is required."
-            )
-
-            return redirect(
-                request.url
-            )
-
-        result, error = db_insert(
-            "driver_profiles",
-            data
-        )
-
-        if error:
-
-            flash(
-                "Driver registration failed: "
-                + str(error)
-            )
-
-            return redirect(
-                request.url
-            )
-
-        flash(
-            "Driver registration submitted for approval."
-        )
-
-        return redirect(
-            url_for("driver_panel")
-        )
-
-    content = """
-
-<div class="card animate">
-
-<h2>
-Driver Registration
-</h2>
-
-<p>
-Register your vehicle and wait for administrator
-approval before appearing to customers.
-</p>
-
-<form method="POST">
-
-<label>
-Full Name
-</label>
-
-<input
-    name="full_name"
-    required
->
-
-<label>
-Phone Number
-</label>
-
-<input
-    name="phone"
-    required
->
-
-<label>
-Vehicle Type
-</label>
-
-<select
-    name="vehicle_type"
-    required
->
-
-<option value="">
-Select vehicle
-</option>
-
-<option value="Car">
-Car
-</option>
-
-<option value="Motorcycle">
-Motorcycle
-</option>
-
-<option value="Van">
-Van
-</option>
-
-<option value="Truck">
-Truck
-</option>
-
-</select>
-
-<label>
-Vehicle Number
-</label>
-
-<input
-    name="vehicle_number"
-    required
->
-
-<label>
-License Number
-</label>
-
-<input
-    name="license_number"
-    required
->
-
-<button
-    type="submit"
-    class="btn-green"
->
-Register Driver
-</button>
-
-</form>
-
-</div>
-
-"""
-
-    return render_page(
-        content,
-        "Driver Registration"
-    )
-
-
-# ============================================================
-# DRIVER PANEL
-# ============================================================
-
-@app.route("/driver")
-@login_required
-def driver_panel():
-
-    uid = current_user()["id"]
-
-    rows, error = db_get(
-        "driver_profiles",
-        {
-            "user_id":
-                f"eq.{uid}",
-            "select":
-                "*",
-            "order":
-                "created_at.desc"
-        }
-    )
-
-    if error or not rows:
-
-        content = """
-
-<div class="card">
-
-<h2>
-Driver Registration
-</h2>
-
-<p>
-You are not registered as a driver yet.
-</p>
-
-<a class="btn btn-green"
-   href="/drivers/register">
-Register as Driver
-</a>
-
-</div>
-
-"""
-
-        return render_page(
-            content,
-            "Driver Panel"
-        )
-
-    driver = rows[0]
-
-    online = bool(
-        driver.get("is_online")
-    )
-
-    approved = (
-        driver.get("status")
-        == "approved"
-    )
-
-    content = f"""
-
-<div class="hero">
-
-<div class="hero-content">
-
-<h1>
-Driver Panel
-</h1>
-
-<p>
-Manage your availability and share
-your live GPS location with customers.
-</p>
-
-</div>
-
-</div>
-
-
-<div class="card">
-
-<h2>
-Driver Status
-</h2>
-
-<p>
-Approval:
-
-<span class="status">
-{driver.get("status") or "pending"}
-</span>
-</p>
-
-<p>
-Current availability:
-
-<span class="status
-{'status-online' if online else ''}">
-{'ONLINE' if online else 'OFFLINE'}
-</span>
-</p>
-
-<p>
-Vehicle:
-{driver.get("vehicle_type") or ""}
-</p>
-
-<p>
-Vehicle Number:
-{driver.get("vehicle_number") or ""}
-</p>
-
-</div>
-
-
-<div class="card">
-
-<h2>
-Live GPS
-</h2>
-
-<div class="tracking-status">
-
-<span class="live-dot">
-</span>
-
-<span id="gpsStatus">
-GPS is waiting to start.
-</span>
-
-</div>
-
-<button
-    onclick="startDriverGPS()"
-    class="btn-green"
->
-Start Live Location
-</button>
-
-<button
-    onclick="stopDriverGPS()"
-    class="btn-dark"
->
-Stop Location
-</button>
-
-<div style="height:15px">
-</div>
-
-<div id="driverMap"
-     class="map-small">
-</div>
-
-</div>
-
-
-<div class="card">
-
-<h2>
-Availability
-</h2>
-
-<form method="POST"
-      action="/driver/status">
-
-<select name="is_online">
-
-<option value="false"
-{'selected' if not online else ''}>
-Offline
-</option>
-
-<option value="true"
-{'selected' if online else ''}>
-Online
-</option>
-
-</select>
-
-<button
-    type="submit"
-    class="btn-green"
->
-Update Availability
-</button>
-
-</form>
-
-</div>
-
-
-<script>
-
-let driverWatchId = null;
-
-let driverMap = null;
-
-let driverMarker = null;
-
-
-function initDriverMap(){
-
-    driverMap =
-        L.map(
-            "driverMap"
-        ).setView(
-            [-12.8000, 28.2000],
-            12
-        );
-
-    L.tileLayer(
-        "https://{{{{s}}}}.tile.openstreetmap.org/{{{{z}}}}/{{{{x}}}}/{{{{y}}}}.png",
-        {{
-            maxZoom:19,
-            attribution:
-                "&copy; OpenStreetMap contributors"
-        }}
-    ).addTo(
-        driverMap
-    );
-}
-
-
-function updateDriverMap(
-    latitude,
-    longitude
-){
-
-    if(!driverMap){
-        initDriverMap();
-    }
-
-    const position = [
-        latitude,
-        longitude
-    ];
-
-    if(!driverMarker){
-
-        driverMarker =
-            L.marker(
-                position
-            ).addTo(
-                driverMap
-            );
-
-        driverMarker.bindPopup(
-            "Your live driver location"
-        );
-
-    }else{
-
-        driverMarker.setLatLng(
-            position
-        );
-    }
-
-    driverMap.setView(
-        position,
-        16
-    );
-}
-
-
-function sendDriverLocation(
-    latitude,
-    longitude
-){
-
-    const form =
-        new FormData();
-
-    form.append(
-        "latitude",
-        latitude
-    );
-
-    form.append(
-        "longitude",
-        longitude
-    );
-
-    form.append(
-        "location_name",
-        "Live GPS Location"
-    );
-
-    fetch(
-        "/driver/location",
-        {
-            method:"POST",
-            body:form
-        }
-    )
-    .then(
-        response =>
-            response.json()
-    )
-    .then(
-        data => {
-
-            if(
-                data.success
-            ){
-
-                document.getElementById(
-                    "gpsStatus"
-                ).textContent =
-                    "Live GPS location is active.";
-
-            }else{
-
-                document.getElementById(
-                    "gpsStatus"
-                ).textContent =
-                    data.message ||
-                    "GPS update failed.";
-
-            }
-
-        }
-    )
-    .catch(
-        () => {
-
-            document.getElementById(
-                "gpsStatus"
-            ).textContent =
-                "Unable to send GPS location.";
-
-        }
-    );
-}
-
-
-function startDriverGPS(){
-
-    if(!navigator.geolocation){
-
-        document.getElementById(
-            "gpsStatus"
-        ).textContent =
-            "This browser does not support GPS.";
-
-        return;
-    }
-
-    driverWatchId =
-        navigator.geolocation.watchPosition(
-
-            position => {
-
-                const latitude =
-                    position.coords.latitude;
-
-                const longitude =
-                    position.coords.longitude;
-
-                updateDriverMap(
-                    latitude,
-                    longitude
-                );
-
-                sendDriverLocation(
-                    latitude,
-                    longitude
-                );
-
-            },
-
-            error => {
-
-                document.getElementById(
-                    "gpsStatus"
-                ).textContent =
-                    "GPS permission is required.";
-
-            },
-
-            {
-                enableHighAccuracy:true,
-                maximumAge:5000,
-                timeout:15000
-            }
-        );
-
-}
-
-
-function stopDriverGPS(){
-
-    if(
-        driverWatchId !== null
-    ){
-
-        navigator.geolocation.clearWatch(
-            driverWatchId
-        );
-
-        driverWatchId = null;
-
-        document.getElementById(
-            "gpsStatus"
-        ).textContent =
-            "Live GPS has been stopped.";
-    }
-}
-
-
-window.addEventListener(
-    "load",
-    initDriverMap
-);
-
-</script>
-
-"""
-
-    return render_page(
-        content,
-        "Driver Panel"
-    )
-
-
-# ============================================================
-# DRIVER STATUS
-# ============================================================
-
-@app.route(
-    "/driver/status",
-    methods=["POST"]
-)
-@login_required
-def driver_status():
-
-    uid = current_user()["id"]
-
-    value = request.form.get(
-        "is_online",
-        "false"
-    ).lower()
-
-    online = value == "true"
-
-    rows, error = db_get(
-        "driver_profiles",
-        {
-            "user_id":
-                f"eq.{uid}",
-            "select":
-                "id,status"
-        }
-    )
-
-    if error or not rows:
-
-        flash(
-            "Driver profile not found."
-        )
-
-        return redirect(
-            url_for("drivers")
-        )
-
-    driver = rows[0]
-
-    if driver.get("status") != "approved":
-
-        flash(
-            "Your driver account must be approved before going online."
-        )
-
-        return redirect(
-            url_for("driver_panel")
-        )
-
-    db_update(
-        "driver_profiles",
-        {
-            "id":
-                driver["id"]
-        },
-        {
-            "is_online":
-                online,
-
-            "updated_at":
-                now_iso()
-        }
-    )
-
-    flash(
-        "Driver is now "
-        + (
-            "ONLINE."
-            if online
-            else
-            "OFFLINE."
-        )
-    )
-
-    return redirect(
-        url_for("driver_panel")
-    )
-
-
-# ============================================================
-# DRIVER LOCATION API
-# ============================================================
-
-@app.route(
-    "/driver/location",
-    methods=["POST"]
-)
-@login_required
-def driver_location():
-
-    uid = current_user()["id"]
-
-    rows, error = db_get(
-        "driver_profiles",
-        {
-            "user_id":
-                f"eq.{uid}",
-            "select":
-                "id,status"
-        }
-    )
-
-    if error or not rows:
-
-        return jsonify({
-            "success":
-                False,
-
-            "message":
-                "Driver profile not found."
-        }), 404
-
-    driver = rows[0]
-
-    if driver.get("status") != "approved":
-
-        return jsonify({
-            "success":
-                False,
-
-            "message":
-                "Driver is not approved."
-        }), 403
-
-    try:
-
-        latitude = float(
-            request.form.get(
-                "latitude"
-            )
-        )
-
-        longitude = float(
-            request.form.get(
-                "longitude"
-            )
-        )
-
-    except Exception:
-
-        return jsonify({
-            "success":
-                False,
-
-            "message":
-                "Invalid GPS coordinates."
-        }), 400
-
-    if not (
-        -90 <= latitude <= 90
-    ):
-
-        return jsonify({
-            "success":
-                False,
-
-            "message":
-                "Invalid latitude."
-        }), 400
-
-    if not (
-        -180 <= longitude <= 180
-    ):
-
-        return jsonify({
-            "success":
-                False,
-
-            "message":
-                "Invalid longitude."
-        }), 400
-
-    location_name = request.form.get(
-        "location_name",
-        ""
-    ).strip()
-
-    result, update_error = db_update(
-        "driver_profiles",
-        {
-            "id":
-                driver["id"]
-        },
-        {
-            "latitude":
-                latitude,
-
-            "longitude":
-                longitude,
-
-            "location_name":
-                location_name,
-
-            "is_online":
-                True,
-
-            "last_location_update":
-                now_iso(),
-
-            "updated_at":
-                now_iso()
-        }
-    )
-
-    if update_error:
-
-        return jsonify({
-            "success":
-                False,
-
-            "message":
-                update_error
-        }), 500
-
-    return jsonify({
-        "success":
-            True,
-
-        "latitude":
-            latitude,
-
-        "longitude":
-            longitude
-    })
-
-
-# ============================================================
-# AVAILABLE DRIVERS
-# ============================================================
-
-@app.route("/drivers")
-@login_required
-def drivers():
-
-    rows, error = db_get(
-        "driver_profiles",
-        {
-            "status":
-                "eq.approved",
-
-            "is_online":
-                "eq.true",
-
-            "select":
-                "*",
-
-            "order":
-                "last_location_update.desc"
-        }
-    )
-
-    if error:
-        rows = []
-
-        flash(
-            "Unable to load available drivers."
-        )
-
-    cards = ""
-
-    for driver in rows or []:
-
-        cards += f"""
-
-<div class="card">
-
-<h3>
-{driver.get("full_name") or "Driver"}
-</h3>
-
-<p>
-Vehicle:
-<strong>
-{driver.get("vehicle_type") or ""}
-</strong>
-</p>
-
-<p>
-Vehicle Number:
-{driver.get("vehicle_number") or ""}
-</p>
-
-<p>
-Current location:
-{driver.get("location_name") or "Live GPS"}
-</p>
-
-<p>
-<span class="status status-online">
-ONLINE
-</span>
-</p>
-
-<a class="btn btn-green"
-   href="/delivery/request/{driver.get("id")}">
-Request Driver
-</a>
-
-</div>
-
-"""
-
-    content = f"""
-
-<div class="hero">
-
-<div class="hero-content">
-
-<h1>
-Available Drivers
-</h1>
-
-<p>
-Only approved drivers who are currently
-online are shown.
-</p>
-
-<a class="btn btn-green"
-   href="/drivers/register">
-Register as Driver
-</a>
-
-</div>
-
-</div>
-
-
-<div class="grid">
-
-{cards or
-'<div class="card">No online drivers are currently available.</div>'}
-
-</div>
-
-"""
-
-    return render_page(
-        content,
-        "Drivers"
-    )
-
-
-# ============================================================
-# DELIVERY REQUEST
-# ============================================================
-
-@app.route(
-    "/delivery/request/<driver_id>",
-    methods=["GET", "POST"]
-)
-@login_required
-def delivery_request(
-    driver_id
-):
-
-    driver_rows, driver_error = db_get(
-        "driver_profiles",
-        {
-            "id":
-                f"eq.{driver_id}",
-
-            "status":
-                "eq.approved",
-
-            "select":
-                "*"
-        }
-    )
-
-    if driver_error or not driver_rows:
-
-        flash(
-            "Driver not found."
-        )
-
-        return redirect(
-            url_for("drivers")
-        )
-
-    driver = driver_rows[0]
-
-    if request.method == "POST":
-
-        pickup = request.form.get(
-            "pickup_location",
-            ""
-        ).strip()
-
-        destination = request.form.get(
-            "destination_location",
-            ""
-        ).strip()
-
-        notes = request.form.get(
-            "notes",
-            ""
-        ).strip()
-
-        if not pickup or not destination:
-
-            flash(
-                "Pickup and destination are required."
-            )
-
-            return redirect(
-                request.url
-            )
-
-        data = {
-            "id":
-                str(uuid.uuid4()),
-
-            "customer_id":
-                current_user()["id"],
-
-            "driver_id":
-                driver_id,
-
-            "pickup_location":
-                pickup,
-
-            "delivery_location":
-                destination,
-
-            "destination_location":
-                destination,
-
-            "pickup_latitude":
-                None,
-
-            "pickup_longitude":
-                None,
-
-            "destination_latitude":
-                None,
-
-            "destination_longitude":
-                None,
-
-            "latitude":
-                driver.get("latitude"),
-
-            "longitude":
-                driver.get("longitude"),
-
-            "status":
-                "pending",
-
-            "notes":
-                notes,
-
-            "service_type":
-                "delivery",
-
-            "requested_at":
-                now_iso()
-        }
-
-        result, error = db_insert(
-            "delivery_requests",
-            data
-        )
-
-        if error:
-
-            flash(
-                "Delivery request failed: "
-                + str(error)
-            )
-
-            return redirect(
-                request.url
-            )
-
-        flash(
-            "Delivery request submitted successfully."
-        )
-
-        return redirect(
-            url_for("my_deliveries")
-        )
-
-    content = f"""
-
-<div class="card animate">
-
-<h2>
-Request Driver
-</h2>
-
-<p>
-Driver:
-<strong>
-{driver.get("full_name") or ""}
-</strong>
-</p>
-
-<p>
-Vehicle:
-{driver.get("vehicle_type") or ""}
-</p>
-
-<p>
-Current location:
-{driver.get("location_name") or "Live GPS"}
-</p>
-
-<form method="POST">
-
-<label>
-Pickup Location
-</label>
-
-<input
-    name="pickup_location"
-    placeholder="Enter pickup location"
-    required
->
-
-<label>
-Destination
-</label>
-
-<input
-    name="destination_location"
-    placeholder="Enter destination"
-    required
->
-
-<label>
-Instructions
-</label>
-
-<textarea
-    name="notes"
-    placeholder="Additional delivery instructions"
-></textarea>
-
-<button
-    type="submit"
-    class="btn-green"
->
-Request Driver
-</button>
-
-</form>
-
-</div>
-
-"""
-
-    return render_page(
-        content,
-        "Request Driver"
-    )
-
-
-# ============================================================
-# CUSTOMER DELIVERIES
-# ============================================================
-
-@app.route("/deliveries")
-@login_required
-def my_deliveries():
-
-    uid = current_user()["id"]
-
-    rows, error = db_get(
-        "delivery_requests",
-        {
-            "customer_id":
-                f"eq.{uid}",
-
-            "select":
-                "*",
-
-            "order":
-                "created_at.desc"
-        }
-    )
-
-    if error:
-        rows = []
-
-    cards = ""
-
-    for delivery in rows or []:
-
-        status = (
-            delivery.get("status")
-            or
-            "pending"
-        )
-
-        cards += f"""
-
-<div class="card">
-
-<h3>
-Delivery Request
-</h3>
-
-<p>
-Pickup:
-<strong>
-{delivery.get("pickup_location") or ""}
-</strong>
-</p>
-
-<p>
-Destination:
-<strong>
-{delivery.get("destination_location") or ""}
-</strong>
-</p>
-
-<p>
-Status:
-
-<span class="status">
-{status}
-</span>
-
-</p>
-
-<a class="btn btn-green"
-   href="/delivery/{delivery.get("id")}">
-Track Delivery
-</a>
-
-</div>
-
-"""
-
-    content = f"""
-
-<div class="hero">
-
-<div class="hero-content">
-
-<h1>
-My Deliveries
-</h1>
-
-<p>
-Track your active driver and view
-delivery history.
-</p>
-
-</div>
-
-</div>
-
-
-<div class="grid">
-
-{cards or
-'<div class="card">You have no delivery requests.</div>'}
-
-</div>
-
-"""
-
-    return render_page(
-        content,
-        "My Deliveries"
-    )
-
-
-# ============================================================
-# LIVE DELIVERY TRACKING
-# ============================================================
-
-@app.route(
-    "/delivery/<delivery_id>"
-)
-@login_required
-def track_delivery(
-    delivery_id
-):
-
-    uid = current_user()["id"]
-
-    params = {
-        "id":
-            f"eq.{delivery_id}",
-
-        "select":
-            "*"
-    }
-
-    if not is_admin():
-
-        params["customer_id"] = (
-            f"eq.{uid}"
-        )
-
-    rows, error = db_get(
-        "delivery_requests",
-        params
-    )
-
-    if error or not rows:
-
-        flash(
-            "Delivery not found."
-        )
-
-        return redirect(
-            url_for("my_deliveries")
-        )
-
-    delivery = rows[0]
-
-    driver_id = (
-        delivery.get("driver_id")
-    )
-
-    driver = None
-
-    if driver_id:
-
-        driver_rows, _ = db_get(
-            "driver_profiles",
-            {
-                "id":
-                    f"eq.{driver_id}",
-
-                "select":
-                    "*"
-            }
-        )
-
-        if driver_rows:
-            driver = driver_rows[0]
-
-    driver_name = (
-        driver.get("full_name")
-        if driver
-        else
-        "Waiting for driver"
-    )
-
-    content = f"""
-
-<div class="hero">
-
-<div class="hero-content">
-
-<h1>
-Live Delivery Tracking
-</h1>
-
-<p>
-Follow the assigned driver on the live map.
-</p>
-
-</div>
-
-</div>
-
-
-<div class="grid">
-
-<div class="card">
-
-<h3>
-Delivery Status
-</h3>
-
-<p>
-
-<span id="deliveryStatus"
-      class="status">
-
-{delivery.get("status") or "pending"}
-
-</span>
-
-</p>
-
-<p>
-Pickup:
-<strong>
-{delivery.get("pickup_location") or ""}
-</strong>
-</p>
-
-<p>
-Destination:
-<strong>
-{delivery.get("destination_location") or ""}
-</strong>
-</p>
-
-</div>
-
-
-<div class="card">
-
-<h3>
-Driver
-</h3>
-
-<p id="driverName">
-{driver_name}
-</p>
-
-<p id="driverLocation">
-Waiting for live GPS...
-</p>
-
-<div class="tracking-status">
-
-<span class="live-dot">
-</span>
-
-<span>
-Live tracking
-</span>
-
-</div>
-
-</div>
-
-</div>
-
-
-<div class="card">
-
-<h2>
-Live Map
-</h2>
-
-<div id="map">
-</div>
-
-</div>
-
-
-<script>
-
-const deliveryId =
-    "{{ delivery_id }}";
-
-let map = null;
-
-let driverMarker = null;
-
-let pickupMarker = null;
-
-let destinationMarker = null;
-
-
-function initMap(){
-
-    map =
-        L.map(
-            "map"
-        ).setView(
-            [-12.8000,28.2000],
-            12
-        );
-
-    L.tileLayer(
-        "https://{{{{s}}}}.tile.openstreetmap.org/{{{{z}}}}/{{{{x}}}}/{{{{y}}}}.png",
-        {{
-            maxZoom:19,
-            attribution:
-                "&copy; OpenStreetMap contributors"
-        }}
-    ).addTo(
-        map
-    );
-}
-
-
-function setDriverMarker(
-    latitude,
-    longitude
-){
-
-    const position = [
-        latitude,
-        longitude
-    ];
-
-    if(!driverMarker){
-
-        driverMarker =
-            L.marker(
-                position
-            ).addTo(
-                map
-            );
-
-        driverMarker.bindPopup(
-            "Driver live location"
-        );
-
-    }else{
-
-        driverMarker.setLatLng(
-            position
-        );
-    }
-
-    map.setView(
-        position,
-        15
-    );
-}
-
-
-function loadTracking(){
-
-    fetch(
-        "/api/delivery/"
-        + deliveryId
-        + "/tracking"
-    )
-
-    .then(
-        response =>
-            response.json()
-    )
-
-    .then(
-        data => {
-
-            if(!data.success){
-                return;
-            }
-
-            document.getElementById(
-                "deliveryStatus"
-            ).textContent =
-                data.delivery.status;
-
-            document.getElementById(
-                "driverName"
-            ).textContent =
-                data.driver_name ||
-                "Waiting for driver";
-
-            if(
-                data.latitude !== null &&
-                data.longitude !== null
-            ){
-
-                setDriverMarker(
-                    data.latitude,
-                    data.longitude
-                );
-
-                document.getElementById(
-                    "driverLocation"
-                ).textContent =
-                    "Live GPS: "
-                    +
-                    data.latitude.toFixed(6)
-                    +
-                    ", "
-                    +
-                    data.longitude.toFixed(6);
-
-            }else{
-
-                document.getElementById(
-                    "driverLocation"
-                ).textContent =
-                    "Waiting for driver GPS...";
-            }
-
-        }
-    )
-
-    .catch(
-        () => {}
-    );
-}
-
-
-window.addEventListener(
-    "load",
-    () => {
-
-        initMap();
-
-        loadTracking();
-
-        setInterval(
-            loadTracking,
-            5000
-        );
-
-    }
-);
-
-</script>
-
-"""
-
-    return render_page(
-        content,
-        "Live Delivery Tracking"
-    )
-
-
-# ============================================================
-# TRACKING API
-# ============================================================
-
-@app.route(
-    "/api/delivery/<delivery_id>/tracking"
-)
-@login_required
-def delivery_tracking_api(
-    delivery_id
-):
-
-    uid = current_user()["id"]
-
-    params = {
-        "id":
-            f"eq.{delivery_id}",
-
-        "select":
-            "*"
-    }
-
-    if not is_admin():
-
-        params["customer_id"] = (
-            f"eq.{uid}"
-        )
-
-    rows, error = db_get(
-        "delivery_requests",
-        params
-    )
-
-    if error or not rows:
-
-        return jsonify({
-            "success":
-                False,
-
-            "message":
-                "Delivery not found."
-        }), 404
-
-    delivery = rows[0]
-
-    driver = None
-
-    driver_id = delivery.get(
-        "driver_id"
-    )
-
-    if driver_id:
-
-        driver_rows, _ = db_get(
-            "driver_profiles",
-            {
-                "id":
-                    f"eq.{driver_id}",
-
-                "select":
-                    "*"
-            }
-        )
-
-        if driver_rows:
-            driver = driver_rows[0]
-
-    return jsonify({
-
-        "success":
-            True,
-
-        "delivery": {
-            "id":
-                delivery.get("id"),
-
-            "status":
-                delivery.get("status"),
-
-            "pickup":
-                delivery.get(
-                    "pickup_location"
-                ),
-
-            "destination":
-                delivery.get(
-                    "destination_location"
-                )
-        },
-
-        "driver_name":
-            driver.get("full_name")
-            if driver
-            else None,
-
-        "latitude":
-            driver.get("latitude")
-            if driver
-            else None,
-
-        "longitude":
-            driver.get("longitude")
-            if driver
-            else None,
-
-        "location_name":
-            driver.get("location_name")
-            if driver
-            else None,
-
-        "last_update":
-            driver.get(
-                "last_location_update"
-            )
-            if driver
-            else None
-
-    })
-
-
-# ============================================================
-# ADMIN DRIVER MANAGEMENT
+# ADMIN DRIVERS
 # ============================================================
 
 @app.route("/admin/drivers")
@@ -4399,13 +5364,14 @@ def admin_drivers():
     rows, error = db_get(
         "driver_profiles",
         {
-            "select":
-                "*",
-
+            "select": "*",
             "order":
                 "created_at.desc"
         }
     )
+
+    if error:
+        rows = []
 
     cards = ""
 
@@ -4416,49 +5382,43 @@ def admin_drivers():
 <div class="card">
 
 <h3>
-{driver.get("full_name") or ""}
+{esc(
+    driver.get("vehicle_type")
+)}
 </h3>
 
 <p>
-Email:
-{driver.get("email") or ""}
-</p>
-
-<p>
-Phone:
-{driver.get("phone") or ""}
-</p>
-
-<p>
 Vehicle:
-{driver.get("vehicle_type") or ""}
-</p>
-
-<p>
-Vehicle Number:
-{driver.get("vehicle_number") or ""}
+{esc(
+    driver.get("vehicle_number")
+)}
 </p>
 
 <p>
 License:
-{driver.get("license_number") or ""}
+{esc(
+    driver.get("license_number")
+)}
+</p>
+
+<p>
+Location:
+{esc(
+    driver.get("location_name")
+)}
 </p>
 
 <p>
 Status:
-
 <span class="status">
-{driver.get("status") or "pending"}
+{esc(
+    driver.get("status")
+)}
 </span>
-
 </p>
 
 <form method="POST"
       action="/admin/drivers/{driver.get("id")}">
-
-<label>
-Approval
-</label>
 
 <select name="status">
 
@@ -4476,10 +5436,7 @@ Rejected
 
 </select>
 
-<button
-    type="submit"
-    class="btn-green"
->
+<button>
 Save
 </button>
 
@@ -4506,7 +5463,11 @@ Driver Management
 <div class="grid">
 
 {cards or
-'<div class="card">No drivers.</div>'}
+'''
+<div class="card">
+No drivers.
+</div>
+'''}
 
 </div>
 
@@ -4514,7 +5475,7 @@ Driver Management
 
     return render_page(
         content,
-        "Driver Management"
+        "Admin Drivers"
     )
 
 
@@ -4541,14 +5502,13 @@ def admin_driver_update(
         {
             "status":
                 status,
-
             "updated_at":
                 now_iso()
         }
     )
 
     flash(
-        "Driver updated successfully."
+        "Driver updated."
         if not error
         else
         "Driver update failed."
@@ -4560,7 +5520,7 @@ def admin_driver_update(
 
 
 # ============================================================
-# ADMIN DELIVERY MANAGEMENT
+# ADMIN DELIVERIES
 # ============================================================
 
 @app.route("/admin/deliveries")
@@ -4570,13 +5530,14 @@ def admin_deliveries():
     rows, error = db_get(
         "delivery_requests",
         {
-            "select":
-                "*",
-
+            "select": "*",
             "order":
                 "created_at.desc"
         }
     )
+
+    if error:
+        rows = []
 
     cards = ""
 
@@ -4591,38 +5552,47 @@ Delivery
 </h3>
 
 <p>
-Customer:
-{delivery.get("customer_id") or ""}
-</p>
-
-<p>
-Driver:
-{delivery.get("driver_id") or "Not assigned"}
-</p>
-
-<p>
 Pickup:
-{delivery.get("pickup_location") or ""}
+{esc(
+    delivery.get(
+        "pickup_location"
+    )
+)}
 </p>
 
 <p>
 Destination:
-{delivery.get("destination_location") or ""}
+{esc(
+    delivery.get(
+        "destination_location"
+    )
+)}
+</p>
+
+<p>
+Driver:
+{esc(
+    delivery.get(
+        "driver_id"
+    )
+    or
+    "Not assigned"
+)}
 </p>
 
 <p>
 Status:
 <span class="status">
-{delivery.get("status") or "pending"}
+{esc(
+    delivery.get(
+        "status"
+    )
+)}
 </span>
 </p>
 
 <form method="POST"
       action="/admin/deliveries/{delivery.get("id")}">
-
-<label>
-Status
-</label>
 
 <select name="status">
 
@@ -4630,24 +5600,16 @@ Status
 Pending
 </option>
 
-<option value="assigned">
-Assigned
-</option>
-
 <option value="accepted">
 Accepted
 </option>
 
-<option value="picked_up">
-Picked Up
+<option value="started">
+Started
 </option>
 
-<option value="in_transit">
-In Transit
-</option>
-
-<option value="delivered">
-Delivered
+<option value="completed">
+Completed
 </option>
 
 <option value="cancelled">
@@ -4656,10 +5618,7 @@ Cancelled
 
 </select>
 
-<button
-    type="submit"
-    class="btn-green"
->
+<button class="btn-green">
 Update
 </button>
 
@@ -4686,7 +5645,11 @@ Delivery Management
 <div class="grid">
 
 {cards or
-'<div class="card">No delivery requests.</div>'}
+'''
+<div class="card">
+No delivery requests.
+</div>
+'''}
 
 </div>
 
@@ -4694,7 +5657,7 @@ Delivery Management
 
     return render_page(
         content,
-        "Delivery Management"
+        "Admin Deliveries"
     )
 
 
@@ -4715,7 +5678,6 @@ def admin_delivery_update(
     data = {
         "status":
             status,
-
         "updated_at":
             now_iso()
     }
@@ -4723,13 +5685,10 @@ def admin_delivery_update(
     if status == "accepted":
         data["accepted_at"] = now_iso()
 
-    elif status == "picked_up":
-        data["picked_up_at"] = now_iso()
-
-    elif status == "in_transit":
+    elif status == "started":
         data["started_at"] = now_iso()
 
-    elif status == "delivered":
+    elif status == "completed":
         data["completed_at"] = now_iso()
 
     result, error = db_update(
@@ -4742,7 +5701,7 @@ def admin_delivery_update(
     )
 
     flash(
-        "Delivery updated successfully."
+        "Delivery updated."
         if not error
         else
         "Delivery update failed."
@@ -4754,929 +5713,7 @@ def admin_delivery_update(
 
 
 # ============================================================
-# CV SERVICE
-#
-# TWO METHODS
-# 1. USER CREATES CV
-# 2. ADMIN CREATES CV FOR USER
-# ============================================================
-
-@app.route("/cv")
-@login_required
-def cv_home():
-
-    content = """
-
-<div class="hero">
-
-<div class="hero-content">
-
-<h1>
-CV Services
-</h1>
-
-<p>
-Create a professional CV yourself or submit
-your information for administrator preparation.
-</p>
-
-</div>
-
-</div>
-
-
-<div class="grid">
-
-
-<div class="card service-card">
-
-<div class="service-number">
-A
-</div>
-
-<h2>
-Create My CV
-</h2>
-
-<p>
-Enter your personal details, education,
-experience, skills and references. KOJA
-will generate a professional PDF CV.
-</p>
-
-<a class="btn btn-orange"
-   href="/cv/create">
-Create My CV
-</a>
-
-</div>
-
-
-<div class="card service-card">
-
-<div class="service-number">
-B
-</div>
-
-<h2>
-Admin CV Service
-</h2>
-
-<p>
-Submit your CV information to KOJA.
-The administrator can review your information
-and generate the final CV.
-</p>
-
-<a class="btn btn-dark"
-   href="/cv/admin-request">
-Request Admin CV
-</a>
-
-</div>
-
-
-</div>
-
-"""
-
-    return render_page(
-        content,
-        "CV Services"
-    )
-
-
-# ============================================================
-# CV FORM
-# ============================================================
-
-@app.route(
-    "/cv/create",
-    methods=["GET", "POST"]
-)
-@login_required
-def cv_create():
-
-    if request.method == "POST":
-
-        uid = current_user()["id"]
-
-        data = {
-
-            "id":
-                str(uuid.uuid4()),
-
-            "user_id":
-                uid,
-
-            "full_name":
-                request.form.get(
-                    "full_name",
-                    ""
-                ).strip(),
-
-            "phone":
-                request.form.get(
-                    "phone",
-                    ""
-                ).strip(),
-
-            "email":
-                request.form.get(
-                    "email",
-                    current_user()["email"]
-                ).strip(),
-
-            "address":
-                request.form.get(
-                    "address",
-                    ""
-                ).strip(),
-
-            "professional_summary":
-                request.form.get(
-                    "professional_summary",
-                    ""
-                ).strip(),
-
-            "education":
-                request.form.get(
-                    "education",
-                    ""
-                ).strip(),
-
-            "experience":
-                request.form.get(
-                    "experience",
-                    ""
-                ).strip(),
-
-            "skills":
-                request.form.get(
-                    "skills",
-                    ""
-                ).strip(),
-
-            "certificates":
-                request.form.get(
-                    "certificates",
-                    ""
-                ).strip(),
-
-            "references":
-                request.form.get(
-                    "references",
-                    ""
-                ).strip(),
-
-            "target_job":
-                request.form.get(
-                    "target_job",
-                    ""
-                ).strip(),
-
-            "status":
-                "self_generated",
-
-            "created_at":
-                now_iso(),
-
-            "updated_at":
-                now_iso()
-        }
-
-        if not data["full_name"]:
-
-            flash(
-                "Full name is required."
-            )
-
-            return redirect(
-                request.url
-            )
-
-        if not data["email"]:
-
-            data["email"] = (
-                current_user()["email"]
-            )
-
-        result, error = db_insert(
-            "cv_profiles",
-            data
-        )
-
-        if error:
-
-            flash(
-                "CV could not be saved: "
-                + str(error)
-            )
-
-            return redirect(
-                request.url
-            )
-
-        cv_id = (
-            result[0].get("id")
-            if result
-            else
-            data["id"]
-        )
-
-        return redirect(
-            url_for(
-                "cv_pdf",
-                cv_id=cv_id
-            )
-        )
-
-    content = """
-
-<div class="card animate">
-
-<h2>
-Create Professional CV
-</h2>
-
-<form method="POST">
-
-<label>
-Full Name
-</label>
-
-<input
-    name="full_name"
-    required
->
-
-<label>
-Phone
-</label>
-
-<input
-    name="phone"
->
-
-<label>
-Email
-</label>
-
-<input
-    type="email"
-    name="email"
-    required
->
-
-<label>
-Address
-</label>
-
-<input
-    name="address"
->
-
-<label>
-Target Job
-</label>
-
-<input
-    name="target_job"
-    placeholder="Position you are applying for"
->
-
-<label>
-Professional Summary
-</label>
-
-<textarea
-    name="professional_summary"
-    placeholder="Write a short professional profile"
-></textarea>
-
-<label>
-Education
-</label>
-
-<textarea
-    name="education"
-    placeholder="School, qualification, year"
-></textarea>
-
-<label>
-Work Experience
-</label>
-
-<textarea
-    name="experience"
-    placeholder="Employer, position, responsibilities and dates"
-></textarea>
-
-<label>
-Skills
-</label>
-
-<textarea
-    name="skills"
-    placeholder="Communication, computer skills, leadership..."
-></textarea>
-
-<label>
-Certificates
-</label>
-
-<textarea
-    name="certificates"
-></textarea>
-
-<label>
-References
-</label>
-
-<textarea
-    name="references"
-></textarea>
-
-<button
-    type="submit"
-    class="btn-orange"
->
-Generate My CV
-</button>
-
-</form>
-
-</div>
-
-"""
-
-    return render_page(
-        content,
-        "Create CV"
-    )
-
-
-# ============================================================
-# ADMIN CV REQUEST
-# ============================================================
-
-@app.route(
-    "/cv/admin-request",
-    methods=["GET", "POST"]
-)
-@login_required
-def cv_admin_request():
-
-    if request.method == "POST":
-
-        uid = current_user()["id"]
-
-        data = {
-
-            "id":
-                str(uuid.uuid4()),
-
-            "user_id":
-                uid,
-
-            "full_name":
-                request.form.get(
-                    "full_name",
-                    ""
-                ).strip(),
-
-            "phone":
-                request.form.get(
-                    "phone",
-                    ""
-                ).strip(),
-
-            "email":
-                current_user()["email"],
-
-            "address":
-                request.form.get(
-                    "address",
-                    ""
-                ).strip(),
-
-            "professional_summary":
-                request.form.get(
-                    "professional_summary",
-                    ""
-                ).strip(),
-
-            "education":
-                request.form.get(
-                    "education",
-                    ""
-                ).strip(),
-
-            "experience":
-                request.form.get(
-                    "experience",
-                    ""
-                ).strip(),
-
-            "skills":
-                request.form.get(
-                    "skills",
-                    ""
-                ).strip(),
-
-            "certificates":
-                request.form.get(
-                    "certificates",
-                    ""
-                ).strip(),
-
-            "references":
-                request.form.get(
-                    "references",
-                    ""
-                ).strip(),
-
-            "target_job":
-                request.form.get(
-                    "target_job",
-                    ""
-                ).strip(),
-
-            "status":
-                "admin_requested",
-
-            "created_at":
-                now_iso(),
-
-            "updated_at":
-                now_iso()
-        }
-
-        if not data["full_name"]:
-
-            flash(
-                "Full name is required."
-            )
-
-            return redirect(
-                request.url
-            )
-
-        result, error = db_insert(
-            "cv_profiles",
-            data
-        )
-
-        if error:
-
-            flash(
-                "CV request failed: "
-                + str(error)
-            )
-
-            return redirect(
-                request.url
-            )
-
-        flash(
-            "CV request submitted to the administrator."
-        )
-
-        return redirect(
-            url_for("cv")
-        )
-
-    content = """
-
-<div class="card animate">
-
-<h2>
-Request Administrator CV
-</h2>
-
-<p>
-Provide your information. The administrator
-can review it and generate the final CV.
-</p>
-
-<form method="POST">
-
-<label>
-Full Name
-</label>
-
-<input
-    name="full_name"
-    required
->
-
-<label>
-Phone
-</label>
-
-<input
-    name="phone"
->
-
-<label>
-Address
-</label>
-
-<input
-    name="address"
->
-
-<label>
-Target Job
-</label>
-
-<input
-    name="target_job"
->
-
-<label>
-Professional Summary
-</label>
-
-<textarea
-    name="professional_summary"
-></textarea>
-
-<label>
-Education
-</label>
-
-<textarea
-    name="education"
-></textarea>
-
-<label>
-Work Experience
-</label>
-
-<textarea
-    name="experience"
-></textarea>
-
-<label>
-Skills
-</label>
-
-<textarea
-    name="skills"
-></textarea>
-
-<label>
-Certificates
-</label>
-
-<textarea
-    name="certificates"
-></textarea>
-
-<label>
-References
-</label>
-
-<textarea
-    name="references"
-></textarea>
-
-<button
-    type="submit"
-    class="btn-orange"
->
-Submit CV Request
-</button>
-
-</form>
-
-</div>
-
-"""
-
-    return render_page(
-        content,
-        "Admin CV Request"
-    )
-
-
-# ============================================================
-# CV PDF GENERATION
-# ============================================================
-
-def generate_cv_pdf(cv):
-
-    try:
-
-        from reportlab.lib.pagesizes import A4
-
-        from reportlab.lib import colors
-
-        from reportlab.lib.styles import (
-            getSampleStyleSheet,
-            ParagraphStyle
-        )
-
-        from reportlab.lib.enums import (
-            TA_LEFT,
-            TA_CENTER
-        )
-
-        from reportlab.platypus import (
-            SimpleDocTemplate,
-            Paragraph,
-            Spacer,
-            Table,
-            TableStyle,
-            KeepTogether
-        )
-
-    except Exception as exc:
-
-        raise RuntimeError(
-            "ReportLab is required for CV PDF generation."
-        ) from exc
-
-    buffer = BytesIO()
-
-    document = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        rightMargin=42,
-        leftMargin=42,
-        topMargin=42,
-        bottomMargin=42
-    )
-
-    styles = getSampleStyleSheet()
-
-    name_style = ParagraphStyle(
-        "CVName",
-        parent=styles["Title"],
-        fontSize=24,
-        leading=28,
-        alignment=TA_CENTER,
-        spaceAfter=7
-    )
-
-    contact_style = ParagraphStyle(
-        "Contact",
-        parent=styles["Normal"],
-        fontSize=9,
-        leading=13,
-        alignment=TA_CENTER,
-        spaceAfter=18
-    )
-
-    section_style = ParagraphStyle(
-        "Section",
-        parent=styles["Heading2"],
-        fontSize=12,
-        leading=15,
-        spaceBefore=12,
-        spaceAfter=7,
-        textColor=colors.HexColor(
-            "#1e3a8a"
-        )
-    )
-
-    body_style = ParagraphStyle(
-        "Body",
-        parent=styles["BodyText"],
-        fontSize=9.5,
-        leading=14,
-        spaceAfter=5
-    )
-
-    story = []
-
-    full_name = (
-        cv.get("full_name")
-        or
-        "Professional CV"
-    )
-
-    story.append(
-        Paragraph(
-            full_name,
-            name_style
-        )
-    )
-
-    contact_parts = []
-
-    if cv.get("phone"):
-        contact_parts.append(
-            cv["phone"]
-        )
-
-    if cv.get("email"):
-        contact_parts.append(
-            cv["email"]
-        )
-
-    if cv.get("address"):
-        contact_parts.append(
-            cv["address"]
-        )
-
-    story.append(
-        Paragraph(
-            " | ".join(contact_parts),
-            contact_style
-        )
-    )
-
-    if cv.get("target_job"):
-
-        story.append(
-            Paragraph(
-                cv["target_job"],
-                ParagraphStyle(
-                    "Target",
-                    parent=section_style,
-                    alignment=TA_CENTER
-                )
-            )
-        )
-
-    sections = [
-
-        (
-            "PROFESSIONAL SUMMARY",
-            cv.get(
-                "professional_summary"
-            )
-        ),
-
-        (
-            "EDUCATION",
-            cv.get(
-                "education"
-            )
-        ),
-
-        (
-            "WORK EXPERIENCE",
-            cv.get(
-                "experience"
-            )
-        ),
-
-        (
-            "SKILLS",
-            cv.get(
-                "skills"
-            )
-        ),
-
-        (
-            "CERTIFICATES",
-            cv.get(
-                "certificates"
-            )
-        ),
-
-        (
-            "REFERENCES",
-            cv.get(
-                "references"
-            )
-        )
-    ]
-
-    for title, text in sections:
-
-        if not text:
-            continue
-
-        story.append(
-            Paragraph(
-                title,
-                section_style
-            )
-        )
-
-        clean_text = (
-            str(text)
-            .replace(
-                "\n",
-                "<br/>"
-            )
-        )
-
-        story.append(
-            Paragraph(
-                clean_text,
-                body_style
-            )
-        )
-
-    story.append(
-        Spacer(
-            1,
-            20
-        )
-    )
-
-    story.append(
-        Paragraph(
-            "Generated by KOJA AFRICA",
-            ParagraphStyle(
-                "Footer",
-                parent=styles["Normal"],
-                fontSize=8,
-                alignment=TA_CENTER,
-                textColor=colors.grey
-            )
-        )
-    )
-
-    document.build(
-        story
-    )
-
-    buffer.seek(0)
-
-    return buffer
-
-
-@app.route(
-    "/cv/<cv_id>/pdf"
-)
-@login_required
-def cv_pdf(cv_id):
-
-    params = {
-        "id":
-            f"eq.{cv_id}",
-
-        "select":
-            "*"
-    }
-
-    if not is_admin():
-
-        params["user_id"] = (
-            f"eq.{current_user()['id']}"
-        )
-
-    rows, error = db_get(
-        "cv_profiles",
-        params
-    )
-
-    if error or not rows:
-
-        flash(
-            "CV not found."
-        )
-
-        return redirect(
-            url_for("cv")
-        )
-
-    cv = rows[0]
-
-    try:
-
-        pdf = generate_cv_pdf(
-            cv
-        )
-
-    except Exception as exc:
-
-        logger.exception(
-            "CV PDF generation error"
-        )
-
-        flash(
-            "Unable to generate CV PDF: "
-            + str(exc)
-        )
-
-        return redirect(
-            url_for("cv")
-        )
-
-    return send_file(
-        pdf,
-        mimetype="application/pdf",
-        download_name=(
-            secure_filename(
-                cv.get("full_name")
-                or
-                "KOJA_CV"
-            )
-            + "_CV.pdf"
-        ),
-        as_attachment=True
-    )
-
-
-# ============================================================
-# ADMIN CV MANAGEMENT
+# ADMIN CV REQUESTS
 # ============================================================
 
 @app.route("/admin/cv")
@@ -5684,56 +5721,110 @@ def cv_pdf(cv_id):
 def admin_cv():
 
     rows, error = db_get(
-        "cv_profiles",
+        "assignments",
         {
-            "select":
-                "*",
-
+            "select": "*",
             "order":
                 "created_at.desc"
         }
     )
 
+    if error:
+        rows = []
+
+    cv_requests = []
+
+    for assignment in rows or []:
+
+        note = str(
+            assignment.get(
+                "admin_note"
+            )
+            or
+            ""
+        )
+
+        if note.startswith(
+            "CV_ADMIN_REQUEST"
+        ):
+
+            cv_requests.append(
+                assignment
+            )
+
     cards = ""
 
-    for cv in rows or []:
+    for cv in cv_requests:
 
         cards += f"""
 
 <div class="card">
 
 <h3>
-{cv.get("full_name") or ""}
+CV Creation Request
 </h3>
 
 <p>
-Email:
-{cv.get("email") or ""}
-</p>
-
-<p>
-Target job:
-{cv.get("target_job") or ""}
+Customer:
+{esc(
+    cv.get("student_id")
+)}
 </p>
 
 <p>
 Status:
-
 <span class="status">
-{cv.get("status") or ""}
+{esc(
+    cv.get("status")
+)}
 </span>
-
 </p>
 
-<a class="btn btn-orange"
-   href="/admin/cv/{cv.get("id")}">
-Open CV
-</a>
+<div class="divider"></div>
 
-<a class="btn btn-dark"
-   href="/cv/{cv.get("id")}/pdf">
-Generate PDF
-</a>
+<pre style="
+white-space:pre-wrap;
+font-family:Arial;
+line-height:1.6;
+">{esc(
+    cv.get("description")
+)}</pre>
+
+<form method="POST"
+      action="/admin/cv/{cv.get("id")}">
+
+<label>
+Administrator Response
+</label>
+
+<textarea
+    name="answer_text"
+    required
+>{esc(
+    cv.get("answer_text")
+)}</textarea>
+
+<label>
+Status
+</label>
+
+<select name="status">
+
+<option value="in_progress">
+In Progress
+</option>
+
+<option value="completed">
+Completed
+</option>
+
+</select>
+
+<button class="btn-orange">
+Save CV
+</button>
+
+</form>
 
 </div>
 
@@ -5746,23 +5837,25 @@ Generate PDF
 <div class="hero-content">
 
 <h1>
-CV Management
+CV Requests
 </h1>
 
 <p>
-Review CV requests and generate professional
-CV documents for users.
+Administrator-assisted CV creation.
 </p>
 
 </div>
 
 </div>
 
-
 <div class="grid">
 
 {cards or
-'<div class="card">No CV requests.</div>'}
+'''
+<div class="card">
+No CV requests.
+</div>
+'''}
 
 </div>
 
@@ -5770,291 +5863,78 @@ CV documents for users.
 
     return render_page(
         content,
-        "CV Management"
+        "Admin CV"
     )
 
 
 @app.route(
     "/admin/cv/<cv_id>",
-    methods=["GET", "POST"]
+    methods=["POST"]
 )
 @admin_required
-def admin_cv_detail(cv_id):
+def admin_cv_update(cv_id):
 
-    rows, error = db_get(
-        "cv_profiles",
-        {
-            "id":
-                f"eq.{cv_id}",
+    answer_text = request.form.get(
+        "answer_text",
+        ""
+    ).strip()
 
-            "select":
-                "*"
-        }
+    status = request.form.get(
+        "status",
+        "completed"
     )
 
-    if error or not rows:
-
-        flash(
-            "CV not found."
-        )
-
-        return redirect(
-            url_for("admin_cv")
-        )
-
-    cv = rows[0]
-
-    if request.method == "POST":
-
-        data = {
-
-            "full_name":
-                request.form.get(
-                    "full_name",
-                    ""
-                ).strip(),
-
-            "phone":
-                request.form.get(
-                    "phone",
-                    ""
-                ).strip(),
-
-            "address":
-                request.form.get(
-                    "address",
-                    ""
-                ).strip(),
-
-            "target_job":
-                request.form.get(
-                    "target_job",
-                    ""
-                ).strip(),
-
-            "professional_summary":
-                request.form.get(
-                    "professional_summary",
-                    ""
-                ).strip(),
-
-            "education":
-                request.form.get(
-                    "education",
-                    ""
-                ).strip(),
-
-            "experience":
-                request.form.get(
-                    "experience",
-                    ""
-                ).strip(),
-
-            "skills":
-                request.form.get(
-                    "skills",
-                    ""
-                ).strip(),
-
-            "certificates":
-                request.form.get(
-                    "certificates",
-                    ""
-                ).strip(),
-
-            "references":
-                request.form.get(
-                    "references",
-                    ""
-                ).strip(),
-
+    result, error = db_update(
+        "assignments",
+        {
+            "id":
+                cv_id
+        },
+        {
+            "answer_text":
+                answer_text,
             "status":
-                "admin_completed",
-
+                status,
             "updated_at":
                 now_iso()
         }
+    )
 
-        result, update_error = db_update(
-            "cv_profiles",
-            {
-                "id":
-                    cv_id
-            },
-            data
-        )
+    flash(
+        "CV request updated."
+        if not error
+        else
+        "CV update failed."
+    )
 
-        if update_error:
-
-            flash(
-                "CV update failed: "
-                + str(update_error)
-            )
-
-        else:
-
-            flash(
-                "CV updated successfully."
-            )
-
-        return redirect(
-            url_for(
-                "admin_cv_detail",
-                cv_id=cv_id
-            )
-        )
-
-    content = f"""
-
-<div class="card">
-
-<h2>
-Administrator CV Editor
-</h2>
-
-<form method="POST">
-
-<label>
-Full Name
-</label>
-
-<input
-    name="full_name"
-    value="{cv.get("full_name") or ""}"
-    required
->
-
-<label>
-Phone
-</label>
-
-<input
-    name="phone"
-    value="{cv.get("phone") or ""}"
->
-
-<label>
-Address
-</label>
-
-<input
-    name="address"
-    value="{cv.get("address") or ""}"
->
-
-<label>
-Target Job
-</label>
-
-<input
-    name="target_job"
-    value="{cv.get("target_job") or ""}"
->
-
-<label>
-Professional Summary
-</label>
-
-<textarea
-    name="professional_summary"
->{cv.get("professional_summary") or ""}</textarea>
-
-<label>
-Education
-</label>
-
-<textarea
-    name="education"
->{cv.get("education") or ""}</textarea>
-
-<label>
-Work Experience
-</label>
-
-<textarea
-    name="experience"
->{cv.get("experience") or ""}</textarea>
-
-<label>
-Skills
-</label>
-
-<textarea
-    name="skills"
->{cv.get("skills") or ""}</textarea>
-
-<label>
-Certificates
-</label>
-
-<textarea
-    name="certificates"
->{cv.get("certificates") or ""}</textarea>
-
-<label>
-References
-</label>
-
-<textarea
-    name="references"
->{cv.get("references") or ""}</textarea>
-
-<button
-    type="submit"
-    class="btn-orange"
->
-Save & Complete CV
-</button>
-
-<a class="btn btn-dark"
-   href="/cv/{cv_id}/pdf">
-Generate PDF
-</a>
-
-</form>
-
-</div>
-
-"""
-
-    return render_page(
-        content,
-        "CV Editor"
+    return redirect(
+        url_for("admin_cv")
     )
 
 
 # ============================================================
-# HEALTH CHECK
+# HEALTH
 # ============================================================
 
 @app.route("/health")
 def health():
 
     return jsonify({
-
-        "status":
-            "ok",
-
+        "status": "ok",
         "application":
             "KOJA AFRICA",
-
         "services": [
-
             "assignments",
-
             "driver_delivery_live_tracking",
-
-            "cv_generation"
+            "cv_services"
         ],
-
         "database_configured":
             configuration_ok()
-
     })
 
 
 # ============================================================
-# 404
+# ERROR HANDLERS
 # ============================================================
 
 @app.errorhandler(404)
@@ -6069,7 +5949,7 @@ def error_404(error):
 Page Not Found
 </h2>
 
-<p>
+<p class="muted">
 The page you requested does not exist.
 </p>
 
@@ -6081,13 +5961,9 @@ Return Home
 </div>
 
 """,
-        "Page Not Found"
+        "Not Found"
     ), 404
 
-
-# ============================================================
-# 500
-# ============================================================
 
 @app.errorhandler(500)
 def error_500(error):
@@ -6105,8 +5981,8 @@ def error_500(error):
 Server Error
 </h2>
 
-<p>
-The server encountered an unexpected error.
+<p class="muted">
+An unexpected server error occurred.
 Check the Render logs for the exact error.
 </p>
 
@@ -6123,7 +5999,7 @@ Return Home
 
 
 # ============================================================
-# START APPLICATION
+# START
 # ============================================================
 
 if __name__ == "__main__":
