@@ -325,8 +325,7 @@ def supabase_auth_headers():
     }
 
 
-def supabase_auth_signup(email, password, full_name="", phone="",
-                         role="student"):
+def supabase_auth_signup(email, password, full_name="", phone="", role="student"):
     """ Create a real Supabase Auth account. Uses the admin endpoint when SERVICE KEY is available so the account is immediately confirmed. Falls back to public signup when only an anon key is available. """
     if not SUPABASE_URL:
         return None, "SUPABASE_URL is not configured."
@@ -582,8 +581,7 @@ def password_matches(user, password):
         return False
 
 
-def insert_profile_compatible(user_id, email, full_name="", phone="",
-                              role="student"):
+def insert_profile_compatible(user_id, email, full_name="", phone="", role="student"):
     """ Tries several profile payloads because existing KOJA databases may have different profile columns. Password is deliberately NOT inserted into profiles. """
 
     if not table_exists("profiles"):
@@ -667,8 +665,7 @@ def insert_profile_compatible(user_id, email, full_name="", phone="",
     return None, " | ".join(errors[-2:])
 
 
-def create_local_profile(user_id, email, full_name="", phone="",
-                         role="student"):
+def create_local_profile(user_id, email, full_name="", phone="", role="student"):
     return insert_profile_compatible(
         user_id=user_id,
         email=email,
@@ -764,7 +761,7 @@ def delete_storage(path):
 # ============================================================
 
 def login_required(fn):
-    @wraps(fn)
+@wraps(fn)
     def wrapper(*args, **kwargs):
         if not current_user():
             flash("Please log in first.", "warning")
@@ -780,7 +777,7 @@ def login_required(fn):
 
 
 def admin_required(fn):
-    @wraps(fn)
+@wraps(fn)
     def wrapper(*args, **kwargs):
         user = current_user()
 
@@ -804,7 +801,7 @@ def admin_required(fn):
 
 
 def driver_required(fn):
-    @wraps(fn)
+@wraps(fn)
     def wrapper(*args, **kwargs):
         user = current_user()
 
@@ -1320,7 +1317,7 @@ def dashboard():
 def services():
     return render_page(
         "Services",
-        r""" <div class="card"> <h2>KOJA Services</h2> <div class="grid"> <a class="btn" href="{{ url_for('questions') }}">Academic Questions</a> <a class="btn" href="{{ url_for('assignments') }}">Assignments</a> <a class="btn" href="{{ url_for('service_responses') }}">My Completed Service Files</a> <a class="btn" href="{{ url_for('cv') }}">CV</a> <a class="btn" href="{{ url_for('universities') }}">University Applications</a> <a class="btn" href="{{ url_for('farmer') }}">Farmer Registration</a> <a class="btn" href="{{ url_for('doctors') }}">Doctors</a> <a class="btn" href="{{ url_for('teachers') }}">Teachers</a> <a class="btn" href="{{ url_for('deliveries') }}">Deliveries</a> </div> </div> """
+        r""" <div class="card"> <h2>KOJA Services</h2> <div class="grid"> <a class="btn" href="{{ url_for('questions') }}">Academic Questions</a> <a class="btn" href="{{ url_for('assignments') }}">Assignments</a> <a class="btn" href="{{ url_for('cv') }}">CV</a> <a class="btn" href="{{ url_for('universities') }}">University Applications</a> <a class="btn" href="{{ url_for('farmer') }}">Farmer Registration</a> <a class="btn" href="{{ url_for('doctors') }}">Doctors</a> <a class="btn" href="{{ url_for('teachers') }}">Teachers</a> <a class="btn" href="{{ url_for('deliveries') }}">Deliveries</a> </div> </div> """
     )
 
 
@@ -1938,18 +1935,12 @@ def doctors():
 
     return render_page(
         "Doctors",
-        r""" <div class="card"> <h2>Find a Doctor</h2> <p>Choose a specific doctor and request an appointment.</p> </div> {% for d in doctors %} <div class="card"> <h3> {{ d.get("full_name") or d.get("doctor_name") or "Doctor" }} </h3> <p> <strong>Specialty:</strong> {{ d.get("specialty") or "General" }} </p> <p> <strong>Hospital/Clinic:</strong> {{ d.get("hospital_clinic") or "Not specified" }} </p> {% if d.get("consultation_fee") %} <p> <strong>Fee:</strong> {{ d.get("currency") or "ZMW" }} {{ d.get("consultation_fee") }} </p> {% endif %} <a class="btn" href="{{ url_for(
-       'book_doctor',
-       provider_id=d.get('provider_id')
-   ) }}"> Book This Doctor </a> </div> {% else %} <div class="card"> <p>No doctor profiles have been registered yet.</p> </div> {% endfor %} """,
+        r""" <div class="card"> <h2>Find a Doctor</h2> <p>Choose a specific doctor and request an appointment.</p> </div> {% for d in doctors %} <div class="card"> <h3> {{ d.get("full_name") or d.get("doctor_name") or "Doctor" }} </h3> <p> <strong>Specialty:</strong> {{ d.get("specialty") or "General" }} </p> <p> <strong>Hospital/Clinic:</strong> {{ d.get("hospital_clinic") or "Not specified" }} </p> {% if d.get("consultation_fee") %} <p> <strong>Fee:</strong> {{ d.get("currency") or "ZMW" }} {{ d.get("consultation_fee") }} </p> {% endif %} <a class="btn" href="{{ url_for( 'book_doctor', provider_id=d.get('provider_id') ) }}"> Book This Doctor </a> </div> {% else %} <div class="card"> <p>No doctor profiles have been registered yet.</p> </div> {% endfor %} """,
         doctors=doctors_rows,
     )
 
 
-@app.route(
-    "/doctor/book/<provider_id>",
-    methods=["GET", "POST"]
-)
+@app.route( "/doctor/book/<provider_id>", methods=["GET", "POST"] )
 @login_required
 def book_doctor(provider_id):
     user = current_user()
@@ -2031,18 +2022,12 @@ def teachers():
 
     return render_page(
         "Teachers",
-        r""" <div class="card"> <h2>Find a Teacher / Tutor</h2> <p>Choose a teacher for tutoring.</p> </div> {% for t in teachers %} <div class="card"> <h3> {{ t.get("full_name") or t.get("teacher_name") or "Teacher" }} </h3> <p> <strong>Subjects:</strong> {{ t.get("subjects") or "Not specified" }} </p> <p> <strong>Grades:</strong> {{ t.get("grade_levels") or "Not specified" }} </p> <p> <strong>Qualification:</strong> {{ t.get("qualification") or "Not specified" }} </p> {% if t.get("hourly_rate") %} <p> <strong>Rate:</strong> {{ t.get("currency") or "ZMW" }} {{ t.get("hourly_rate") }}/hour </p> {% endif %} <a class="btn" href="{{ url_for(
-       'book_teacher',
-       provider_id=t.get('provider_id')
-   ) }}"> Book Teacher </a> </div> {% else %} <div class="card"> <p>No teacher profiles have been registered yet.</p> </div> {% endfor %} """,
+        r""" <div class="card"> <h2>Find a Teacher / Tutor</h2> <p>Choose a teacher for tutoring.</p> </div> {% for t in teachers %} <div class="card"> <h3> {{ t.get("full_name") or t.get("teacher_name") or "Teacher" }} </h3> <p> <strong>Subjects:</strong> {{ t.get("subjects") or "Not specified" }} </p> <p> <strong>Grades:</strong> {{ t.get("grade_levels") or "Not specified" }} </p> <p> <strong>Qualification:</strong> {{ t.get("qualification") or "Not specified" }} </p> {% if t.get("hourly_rate") %} <p> <strong>Rate:</strong> {{ t.get("currency") or "ZMW" }} {{ t.get("hourly_rate") }}/hour </p> {% endif %} <a class="btn" href="{{ url_for( 'book_teacher', provider_id=t.get('provider_id') ) }}"> Book Teacher </a> </div> {% else %} <div class="card"> <p>No teacher profiles have been registered yet.</p> </div> {% endfor %} """,
         teachers=teachers_rows,
     )
 
 
-@app.route(
-    "/teacher/book/<provider_id>",
-    methods=["GET", "POST"]
-)
+@app.route( "/teacher/book/<provider_id>", methods=["GET", "POST"] )
 @login_required
 def book_teacher(provider_id):
     user = current_user()
@@ -2120,14 +2105,8 @@ DRIVER_PROFILE_COLUMNS = (
 )
 
 
-@app.route(
-    "/driver/register",
-    methods=["GET", "POST"]
-)
-@app.route(
-    "/drivers/register",
-    methods=["GET", "POST"]
-)
+@app.route( "/driver/register", methods=["GET", "POST"] )
+@app.route( "/drivers/register", methods=["GET", "POST"] )
 @login_required
 def driver_register():
     user = current_user()
@@ -2364,45 +2343,16 @@ def driver_dashboard():
 
     return render_page(
         "Driver Dashboard",
-        r""" <div class="card"> <h2>Driver Dashboard</h2> <p> <strong>{{ user.name }}</strong> — {{ profile.get("vehicle_type") or "Vehicle" }} {{ profile.get("vehicle_registration") or "" }} </p> <p> Verification: <strong> {{ profile.get("verification_status") or "pending" }} </strong> </p> </div> <div class="card"> <h3>GPS / Availability</h3> <p> Current status: <strong> {{ "ONLINE" if latest and latest.get("is_online") else "OFFLINE" }} </strong> </p> <a class="btn" href="{{ url_for('tracking') }}"> Open GPS & Go Online </a> </div> <div class="card"> <h3>Delivery Requests / Jobs</h3> {% for d in requests_rows %} <div class="card"> <strong>{{ d.get("tracking_code") }}</strong> <p> {{ d.get("pickup_location") }} → {{ d.get("destination") }} </p> <p> Status: <strong>{{ d.get("status") or "requested" }}</strong> </p> {% if d.get("status") == "requested" %} <form method="post" action="{{ url_for(
-          'driver_delivery_action',
-          delivery_id=d.get('id'),
-          action='accept'
-      ) }}"> <button type="submit">Accept</button> </form> <form method="post" action="{{ url_for(
-          'driver_delivery_action',
-          delivery_id=d.get('id'),
-          action='reject'
-      ) }}"> <button type="submit">Reject</button> </form> {% elif d.get("status") == "accepted" %} <form method="post" action="{{ url_for(
-          'driver_delivery_action',
-          delivery_id=d.get('id'),
-          action='picked_up'
-      ) }}"> <button type="submit">Picked Up</button> </form> {% elif d.get("status") == "picked_up" %} <form method="post" action="{{ url_for(
-          'driver_delivery_action',
-          delivery_id=d.get('id'),
-          action='in_transit'
-      ) }}"> <button type="submit">In Transit</button> </form> {% elif d.get("status") == "in_transit" %} <form method="post" action="{{ url_for(
-          'driver_delivery_action',
-          delivery_id=d.get('id'),
-          action='delivered'
-      ) }}"> <button type="submit">Delivered</button> </form> {% endif %} {% if d.get("tracking_code") %} <a class="btn" href="{{ url_for(
-       'track_delivery',
-       tracking_code=d.get('tracking_code')
-   ) }}"> Track Map </a> {% endif %} </div> {% else %} <p>No delivery requests yet.</p> {% endfor %} </div> """,
+        r""" <div class="card"> <h2>Driver Dashboard</h2> <p> <strong>{{ user.name }}</strong> — {{ profile.get("vehicle_type") or "Vehicle" }} {{ profile.get("vehicle_registration") or "" }} </p> <p> Verification: <strong> {{ profile.get("verification_status") or "pending" }} </strong> </p> </div> <div class="card"> <h3>GPS / Availability</h3> <p> Current status: <strong> {{ "ONLINE" if latest and latest.get("is_online") else "OFFLINE" }} </strong> </p> <a class="btn" href="{{ url_for('tracking') }}"> Open GPS & Go Online </a> </div> <div class="card"> <h3>Delivery Requests / Jobs</h3> {% for d in requests_rows %} <div class="card"> <strong>{{ d.get("tracking_code") }}</strong> <p> {{ d.get("pickup_location") }} → {{ d.get("destination") }} </p> <p> Status: <strong>{{ d.get("status") or "requested" }}</strong> </p> {% if d.get("status") == "requested" %} <form method="post" action="{{ url_for( 'driver_delivery_action', delivery_id=d.get('id'), action='accept' ) }}"> <button type="submit">Accept</button> </form> <form method="post" action="{{ url_for( 'driver_delivery_action', delivery_id=d.get('id'), action='reject' ) }}"> <button type="submit">Reject</button> </form> {% elif d.get("status") == "accepted" %} <form method="post" action="{{ url_for( 'driver_delivery_action', delivery_id=d.get('id'), action='picked_up' ) }}"> <button type="submit">Picked Up</button> </form> {% elif d.get("status") == "picked_up" %} <form method="post" action="{{ url_for( 'driver_delivery_action', delivery_id=d.get('id'), action='in_transit' ) }}"> <button type="submit">In Transit</button> </form> {% elif d.get("status") == "in_transit" %} <form method="post" action="{{ url_for( 'driver_delivery_action', delivery_id=d.get('id'), action='delivered' ) }}"> <button type="submit">Delivered</button> </form> {% endif %} {% if d.get("tracking_code") %} <a class="btn" href="{{ url_for( 'track_delivery', tracking_code=d.get('tracking_code') ) }}"> Track Map </a> {% endif %} </div> {% else %} <p>No delivery requests yet.</p> {% endfor %} </div> """,
         profile=profile,
         latest=latest,
         requests_rows=requests_rows,
     )
 
 
-@app.route(
-    "/driver/delivery/<delivery_id>/<action>",
-    methods=["POST"]
-)
+@app.route( "/driver/delivery/<delivery_id>/<action>", methods=["POST"] )
 @driver_required
-def driver_delivery_action(
-    delivery_id,
-    action
-):
+def driver_delivery_action( delivery_id, action ):
     user = current_user()
 
     provider = get_driver_provider(
@@ -2509,10 +2459,7 @@ def tracking():
     )
 
 
-@app.route(
-    "/api/driver/location",
-    methods=["POST"]
-)
+@app.route( "/api/driver/location", methods=["POST"] )
 @driver_required
 def driver_location_update():
     if not table_exists("driver_locations"):
@@ -2632,10 +2579,7 @@ def driver_location_update():
     })
 
 
-@app.route(
-    "/api/driver/offline",
-    methods=["POST"]
-)
+@app.route( "/api/driver/offline", methods=["POST"] )
 @driver_required
 def driver_offline():
     if not table_exists("driver_locations"):
@@ -2723,115 +2667,155 @@ def driver_offline():
 def drivers():
     return render_page(
         "Nearby Drivers",
-        r""" <div class="card"> <h2>Nearby Delivery Drivers</h2> <p> Share your pickup/shop location and KOJA will calculate distances to online drivers. </p> <label>Your Latitude</label> <input id="latitude"> <label>Your Longitude</label> <input id="longitude"> <button onclick="useMyLocation()"> Use My Current Location </button> <button onclick="findDrivers()"> Find Nearby Drivers </button> <div id="results"></div> </div> <script> function useMyLocation() { navigator.geolocation.getCurrentPosition( function(position) { document.getElementById("latitude").value = position.coords.latitude; document.getElementById("longitude").value = position.coords.longitude; }, function(error) { alert("Location error: " + error.message); }, { enableHighAccuracy: true, timeout: 20000 } ); } async function findDrivers() { const lat = document.getElementById("latitude").value; const lon = document.getElementById("longitude").value; if (!lat || !lon) { alert("Enter or detect your location first."); return; } const response = await fetch( "{{ url_for('nearby_drivers') }}" + "?latitude=" + encodeURIComponent(lat) + "&longitude=" + encodeURIComponent(lon) ); const data = await response.json(); if (!data.ok) { document.getElementById("results").innerHTML = "<div class='danger'>" + data.message + "</div>";
-        return;
-    }
+        r""" <div class="card"> <h2>Nearby Delivery Drivers</h2> <p> Share your pickup/shop location and KOJA will calculate distances to online drivers. </p> <label>Your Latitude</label> <input id="latitude"> <label>Your Longitude</label> <input id="longitude"> <button onclick="useMyLocation()"> Use My Current Location </button> <button onclick="findDrivers()"> Find Nearby Drivers </button> <div id="results"></div> </div> <script> function useMyLocation() { navigator.geolocation.getCurrentPosition( function(position) { document.getElementById("latitude").value = position.coords.latitude; document.getElementById("longitude").value = position.coords.longitude; }, function(error) { alert("Location error: " + error.message); }, { enableHighAccuracy: true, timeout: 20000 } ); } async function findDrivers() { const lat = document.getElementById("latitude").value; const lon = document.getElementById("longitude").value; if (!lat || !lon) { alert("Enter or detect your location first."); return; } const response = await fetch( "{{ url_for('nearby_drivers') }}" + "?latitude=" + encodeURIComponent(lat) + "&longitude=" + encodeURIComponent(lon) ); const data = await response.json(); if (!data.ok) { document.getElementById("results").innerHTML = "<div class='danger'>" + data.message + "</div>"; return; } if (!data.drivers.length) { document.getElementById("results").innerHTML = "<div class='card'>" + "No online drivers found nearby." + "</div>"; return; } let html = "<h3>Available Drivers</h3>"; data.drivers.forEach(function(d) { html += "<div class='card'>" + "<h3>" + escapeHtml(d.name) + "</h3>" + "<p>Vehicle: " + escapeHtml(d.vehicle_type || "") + "</p>" + "<p>Registration: " + escapeHtml(d.vehicle_registration || "") + "</p>" + "<p>Distance: " + d.distance_km + " km</p>" + "<button onclick='sendRequest(" + JSON.stringify(d.driver_id) + ")'>" + "Send Delivery Request" + "</button>" + "</div>"; }); document.getElementById("results").innerHTML = html; } async function sendRequest(driverId) { const pickup = prompt("Pickup / shop location:"); if (!pickup) return; const destination = prompt("Destination:"); if (!destination) return; const recipientName = prompt("Recipient name:"); const recipientPhone = prompt("Recipient phone:"); const packageDescription = prompt("Package description:"); const lat = document.getElementById("latitude").value; const lon = document.getElementById("longitude").value; const response = await fetch( "{{ url_for('create_delivery_request') }}", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ driver_id: driverId, pickup_location: pickup, destination: destination, pickup_latitude: lat, pickup_longitude: lon, recipient_name: recipientName, recipient_phone: recipientPhone, package_description: packageDescription, delivery_fee: 0 }) } ); const data = await response.json(); if (data.ok) { alert(data.message); window.location.href = "{{ url_for('deliveries') }}"; } else { alert( data.message || "Delivery request failed." ); } } function escapeHtml(value) { return String(value || "") .replace(/&/g, "&amp;") .replace(/</g, "&lt;") .replace(/>/g, "&gt;") .replace(/"/g, "&quot;") .replace(/'/g, "&#039;"); } </script> """
+    )
 
-    if (!data.drivers.length) {
-        document.getElementById("results").innerHTML =
-            "<div class='card'>" +
-            "No online drivers found nearby." +
-            "</div>";
-        return;
-    }
 
-    let html = "<h3>Available Drivers</h3>";
+@app.route("/api/nearby-drivers")
+@login_required
+def nearby_drivers():
+    lat = safe_float(
+        request.args.get("latitude")
+    )
+    lon = safe_float(
+        request.args.get("longitude")
+    )
 
-    data.drivers.forEach(function(d) {
-        html +=
-            "<div class='card'>" +
-            "<h3>" + escapeHtml(d.name) + "</h3>" +
-            "<p>Vehicle: " +
-            escapeHtml(d.vehicle_type || "") +
-            "</p>" +
-            "<p>Registration: " +
-            escapeHtml(d.vehicle_registration || "") +
-            "</p>" +
-            "<p>Distance: " +
-            d.distance_km +
-            " km</p>" +
-            "<button onclick='sendRequest(" +
-            JSON.stringify(d.driver_id) +
-            ")'>" +
-            "Send Delivery Request" +
-            "</button>" +
-            "</div>";
-    });
+    radius = safe_float(
+        request.args.get("radius_km")
+    ) or 50
 
-    document.getElementById("results").innerHTML =
-        html;
-}
+    radius = max(
+        1,
+        min(radius, 200)
+    )
 
-async function sendRequest(driverId) {
-    const pickup =
-        prompt("Pickup / shop location:");
+    if (
+        lat is None
+        or lon is None
+        or not (-90 <= lat <= 90)
+        or not (-180 <= lon <= 180)
+    ):
+        return jsonify({
+            "ok": False,
+            "message": (
+                "Valid latitude and longitude are required."
+            )
+        }), 400
 
-    if (!pickup) return;
+    if not table_exists("driver_locations"):
+        return jsonify({
+            "ok": False,
+            "message": (
+                "The driver_locations table is not installed."
+            )
+        }), 503
 
-    const destination =
-        prompt("Destination:");
+    latest = latest_driver_locations()
+    results = []
 
-    if (!destination) return;
+    now = datetime.now(timezone.utc)
 
-    const recipientName =
-        prompt("Recipient name:");
+    for driver_id, loc in latest.items():
+        if not loc.get("is_online"):
+            continue
 
-    const recipientPhone =
-        prompt("Recipient phone:");
+        dlat = safe_float(
+            loc.get("latitude")
+        )
+        dlon = safe_float(
+            loc.get("longitude")
+        )
 
-    const packageDescription =
-        prompt("Package description:");
+        if dlat is None or dlon is None:
+            continue
 
-    const lat =
-        document.getElementById("latitude").value;
+        created = loc.get(
+            "created_at"
+        )
 
-    const lon =
-        document.getElementById("longitude").value;
+        # Do not show stale drivers older than 10 minutes.
+        if created:
+            try:
+                dt = datetime.fromisoformat(
+                    str(created).replace(
+                        "Z",
+                        "+00:00"
+                    )
+                )
 
-    const response = await fetch(
-        "{{ url_for('create_delivery_request') }}",
-        {
-            method: "POST", headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-                driver_id: driverId,
-                pickup_location: pickup,
-                destination: destination,
-                pickup_latitude: lat,
-                pickup_longitude: lon,
-                recipient_name: recipientName,
-                recipient_phone: recipientPhone,
-                package_description:
-                    packageDescription,
-                delivery_fee: 0
-            })
-        }
-    );
+                if (
+                    now - dt
+                ).total_seconds() > 600:
+                    continue
 
-    const data = await response.json();
+            except Exception:
+                pass
 
-    if (data.ok) {
-        alert(data.message);
-        window.location.href =
-            "{{ url_for('deliveries') }}";
-    } else {
-        alert(
-            data.message ||
-            "Delivery request failed."
-        );
-    }
-}
+        distance = haversine_km(
+            lat,
+            lon,
+            dlat,
+            dlon
+        )
 
-function escapeHtml(value) {
-    return String(value || "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
-}
-</script> """ ) @app.route("/api/nearby-drivers") @login_required def nearby_drivers(): lat = safe_float( request.args.get("latitude") ) lon = safe_float( request.args.get("longitude") ) radius = safe_float( request.args.get("radius_km") ) or 50 radius = max( 1, min(radius, 200) ) if ( lat is None or lon is None or not (-90 <= lat <= 90) or not (-180 <= lon <= 180) ): return jsonify({ "ok": False, "message": ( "Valid latitude and longitude are required." ) }), 400 if not table_exists("driver_locations"): return jsonify({ "ok": False, "message": ( "The driver_locations table is not installed." ) }), 503 latest = latest_driver_locations() results = [] now = datetime.now(timezone.utc) for driver_id, loc in latest.items(): if not loc.get("is_online"): continue dlat = safe_float( loc.get("latitude") ) dlon = safe_float( loc.get("longitude") ) if dlat is None or dlon is None: continue created = loc.get( "created_at" ) # Do not show stale drivers older than 10 minutes. if created: try: dt = datetime.fromisoformat( str(created).replace( "Z", "+00:00" ) ) if ( now - dt ).total_seconds() > 600: continue except Exception: pass distance = haversine_km( lat, lon, dlat, dlon ) if distance > radius: continue profile = first_row( "driver_profiles", {"provider_id": driver_id} ) provider = first_row( "service_providers", {"id": driver_id} ) or {} results.append({ "driver_id": str(driver_id), "name": first_nonempty( provider.get("full_name"), provider.get("name"), "Driver", ), "phone": first_nonempty( provider.get("phone") ), "vehicle_type": first_nonempty( profile.get("vehicle_type") if profile else "" ), "vehicle_registration": first_nonempty( profile.get("vehicle_registration") if profile else "" ), "latitude": dlat, "longitude": dlon, "accuracy": loc.get( "accuracy" ), "distance_km": round( distance, 2 ), "updated_at": loc.get( "created_at" ), }) results.sort( key=lambda x: x["distance_km"] ) return jsonify({ "ok": True, "drivers": results }) # ============================================================ # DELIVERY REQUESTS / TRACKING
+        if distance > radius:
+            continue
+
+        profile = first_row(
+            "driver_profiles",
+            {"provider_id": driver_id}
+        )
+
+        provider = first_row(
+            "service_providers",
+            {"id": driver_id}
+        ) or {}
+
+        results.append({
+            "driver_id": str(driver_id),
+            "name": first_nonempty(
+                provider.get("full_name"),
+                provider.get("name"),
+                "Driver",
+            ),
+            "phone": first_nonempty(
+                provider.get("phone")
+            ),
+            "vehicle_type": first_nonempty(
+                profile.get("vehicle_type")
+                if profile else ""
+            ),
+            "vehicle_registration": first_nonempty(
+                profile.get("vehicle_registration")
+                if profile else ""
+            ),
+            "latitude": dlat,
+            "longitude": dlon,
+            "accuracy": loc.get(
+                "accuracy"
+            ),
+            "distance_km": round(
+                distance,
+                2
+            ),
+            "updated_at": loc.get(
+                "created_at"
+            ),
+        })
+
+    results.sort(
+        key=lambda x: x["distance_km"]
+    )
+
+    return jsonify({
+        "ok": True,
+        "drivers": results
+    })
+
+
+# ============================================================
+# DELIVERY REQUESTS / TRACKING
 # ============================================================
 
 def make_tracking_code():
@@ -2843,10 +2827,7 @@ def make_tracking_code():
     )
 
 
-@app.route(
-    "/api/delivery/request",
-    methods=["POST"]
-)
+@app.route( "/api/delivery/request", methods=["POST"] )
 @login_required
 def create_delivery_request():
     user = current_user()
@@ -2978,10 +2959,7 @@ def create_delivery_request():
     })
 
 
-@app.route(
-    "/deliveries",
-    methods=["GET", "POST"]
-)
+@app.route( "/deliveries", methods=["GET", "POST"] )
 @login_required
 def deliveries():
     user = current_user()
@@ -3084,17 +3062,12 @@ def deliveries():
 
     return render_page(
         "Deliveries",
-        r""" <div class="card"> <h2>Delivery Service</h2> <p> Use Nearby Drivers to see drivers around your shop/pickup location. </p> <a class="btn" href="{{ url_for('drivers') }}"> Find Nearby Drivers </a> </div> <div class="card"> <h2>Create Delivery Without Selecting Driver Yet</h2> <form method="post"> <label>Pickup / Shop Location</label> <input name="pickup_location"> <label>Destination</label> <input name="destination"> <label>Recipient Name</label> <input name="recipient_name"> <label>Recipient Phone</label> <input name="recipient_phone"> <label>Package Description</label> <input name="package_description"> <label>Package Weight (kg)</label> <input name="package_weight"> <label>Delivery Fee (ZMW)</label> <input name="delivery_fee"> <label>Requested Date</label> <input type="date" name="requested_date"> <label>Requested Time</label> <input type="time" name="requested_time"> <label>Notes</label> <textarea name="notes"></textarea> <button type="submit"> Create Delivery Request </button> </form> </div> <div class="card"> <h2>My Deliveries</h2> {% for d in rows %} <div class="card"> <strong>{{ d.get("tracking_code") }}</strong> <p> {{ d.get("pickup_location") }} → {{ d.get("destination") }} </p> <p> Status: <strong>{{ d.get("status") or "requested" }}</strong> </p> <p> Driver: {{ d.get("driver_id") or "Not selected" }} </p> <a class="btn" href="{{ url_for(
-       'track_delivery',
-       tracking_code=d.get('tracking_code')
-   ) }}"> Track Delivery </a> {% if not d.get("driver_id") %} <a class="btn" href="{{ url_for('drivers') }}"> Find Driver </a> {% endif %} </div> {% else %} <p>No deliveries registered.</p> {% endfor %} </div> """,
+        r""" <div class="card"> <h2>Delivery Service</h2> <p> Use Nearby Drivers to see drivers around your shop/pickup location. </p> <a class="btn" href="{{ url_for('drivers') }}"> Find Nearby Drivers </a> </div> <div class="card"> <h2>Create Delivery Without Selecting Driver Yet</h2> <form method="post"> <label>Pickup / Shop Location</label> <input name="pickup_location"> <label>Destination</label> <input name="destination"> <label>Recipient Name</label> <input name="recipient_name"> <label>Recipient Phone</label> <input name="recipient_phone"> <label>Package Description</label> <input name="package_description"> <label>Package Weight (kg)</label> <input name="package_weight"> <label>Delivery Fee (ZMW)</label> <input name="delivery_fee"> <label>Requested Date</label> <input type="date" name="requested_date"> <label>Requested Time</label> <input type="time" name="requested_time"> <label>Notes</label> <textarea name="notes"></textarea> <button type="submit"> Create Delivery Request </button> </form> </div> <div class="card"> <h2>My Deliveries</h2> {% for d in rows %} <div class="card"> <strong>{{ d.get("tracking_code") }}</strong> <p> {{ d.get("pickup_location") }} → {{ d.get("destination") }} </p> <p> Status: <strong>{{ d.get("status") or "requested" }}</strong> </p> <p> Driver: {{ d.get("driver_id") or "Not selected" }} </p> <a class="btn" href="{{ url_for( 'track_delivery', tracking_code=d.get('tracking_code') ) }}"> Track Delivery </a> {% if not d.get("driver_id") %} <a class="btn" href="{{ url_for('drivers') }}"> Find Driver </a> {% endif %} </div> {% else %} <p>No deliveries registered.</p> {% endfor %} </div> """,
         rows=rows,
     )
 
 
-@app.route(
-    "/track/<tracking_code>"
-)
+@app.route( "/track/<tracking_code>" )
 @login_required
 def track_delivery(tracking_code):
     delivery = first_row(
@@ -3107,73 +3080,139 @@ def track_delivery(tracking_code):
 
     return render_page(
         "Track Delivery",
-        r""" <div class="card"> <h2>Delivery Tracking</h2> <p> Tracking code: <strong>{{ delivery.get("tracking_code") }}</strong> </p> <p> <strong>Pickup:</strong> {{ delivery.get("pickup_location") }} </p> <p> <strong>Destination:</strong> {{ delivery.get("destination") }} </p> <p> <strong>Status:</strong> <span id="status"> {{ delivery.get("status") }} </span> </p> <div id="location"> Waiting for driver's location... </div> </div> <script> async function updateLocation() { try { const response = await fetch( "{{ url_for(
-                'delivery_location',
-                tracking_code=delivery.get('tracking_code')
-            ) }}" ); const data = await response.json(); if (data.ok) { document.getElementById("status") .textContent = data.status || ""; document.getElementById("location") .innerHTML = "<p>Latitude: " + data.latitude + "</p>" + "<p>Longitude: " + data.longitude + "</p>" + "<p>Last update: " + data.updated_at + "</p>"; } } catch (e) {} } updateLocation(); setInterval(updateLocation, 10000); </script>
-""", delivery=delivery, ) @app.route( "/api/delivery/<tracking_code>/location" ) @login_required def delivery_location(tracking_code): delivery = first_row( "deliveries", {"tracking_code": tracking_code} ) if not delivery: return jsonify({ "ok": False, "message": "Delivery not found." }), 404 driver_id = delivery.get( "driver_id" ) locations = [] if driver_id: locations = db_select( "driver_locations", filters={ "driver_id": driver_id }, order="created_at.desc", limit=1 ) if not locations: return jsonify({ "ok": False, "message": ( "Driver has not shared a GPS location yet." ), "status": delivery.get( "status" ), }) loc = locations[0] return jsonify({ "ok": True, "latitude": loc.get("latitude"), "longitude": loc.get("longitude"), "accuracy": loc.get("accuracy"), "speed": loc.get("speed"), "heading": loc.get("heading"), "updated_at": loc.get("created_at"), "status": delivery.get("status"), }) # ============================================================ # PROVIDER LOCATION # ============================================================ @app.route( "/provider-map/<provider_id>" ) @login_required def provider_map(provider_id): provider_type = request.args.get( "provider_type", "provider" ) return render_page( "Provider Location", r"""
-<div class="card"> <h2> {{ provider_type|title }} Location
-</h2> <p> Latest GPS position shared by this provider. </p>
+        r""" <div class="card"> <h2>Delivery Tracking</h2> <p> Tracking code: <strong>{{ delivery.get("tracking_code") }}</strong> </p> <p> <strong>Pickup:</strong> {{ delivery.get("pickup_location") }} </p> <p> <strong>Destination:</strong> {{ delivery.get("destination") }} </p> <p> <strong>Status:</strong> <span id="status"> {{ delivery.get("status") }} </span> </p> <div id="location"> Waiting for driver's location... </div> </div> <script> async function updateLocation() { try { const response = await fetch( "{{ url_for( 'delivery_location', tracking_code=delivery.get('tracking_code') ) }}" ); const data = await response.json(); if (data.ok) { document.getElementById("status") .textContent = data.status || ""; document.getElementById("location") .innerHTML = "<p>Latitude: " + data.latitude + "</p>" + "<p>Longitude: " + data.longitude + "</p>" + "<p>Last update: " + data.updated_at + "</p>"; } } catch (e) {} } updateLocation(); setInterval(updateLocation, 10000); </script> """,
+        delivery=delivery,
+    )
 
-<div id="location">
-Loading provider location...
-</div> </div>
 
-<script>
-async function loadLocation() {
-    try {
-        const response = await fetch(
-            "{{ url_for( 'provider_location', provider_id=provider_id ) }}"
-        );
+@app.route( "/api/delivery/<tracking_code>/location" )
+@login_required
+def delivery_location(tracking_code):
+    delivery = first_row(
+        "deliveries",
+        {"tracking_code": tracking_code}
+    )
 
-        const data = await response.json();
+    if not delivery:
+        return jsonify({
+            "ok": False,
+            "message": "Delivery not found."
+        }), 404
 
-        if (data.ok) {
-            document.getElementById("location")
-                .innerHTML =
-                "<p>Latitude: " +
-                data.latitude +
-                "</p>" +
-                "<p>Longitude: " +
-                data.longitude +
-                "</p>" +
-                "<p>Updated: " +
-                data.updated_at +
-                "</p>";
-        } else {
-            document.getElementById("location")
-                .textContent =
-                data.message || "No location.";
-        }
-    } catch (e) {
-        document.getElementById("location")
-            .textContent =
-            "Could not load provider location.";
-    }
-}
+    driver_id = delivery.get(
+        "driver_id"
+    )
 
-loadLocation();
-setInterval(loadLocation, 10000);
-</script> """, provider_id=provider_id, provider_type=provider_type, ) @app.route( "/api/provider/<provider_id>/location" ) @login_required def provider_location(provider_id): rows = db_select( "driver_locations", filters={ "driver_id": provider_id }, order="created_at.desc", limit=1 ) if not rows: return jsonify({ "ok": False, "message": ( "This provider has not shared " "a GPS location." ) }) loc = rows[0] return jsonify({ "ok": True, "latitude": loc.get("latitude"), "longitude": loc.get("longitude"), "accuracy": loc.get("accuracy"), "updated_at": loc.get("created_at"), }) # ============================================================ # UNIVERSITIES # ============================================================ @app.route("/universities") @login_required def universities(): universities_rows = db_select( "universities", order="name.asc", limit=200 ) return render_page( "Universities", r"""
-<div class="card"> <h2>University Applications</h2> <p> Select the university, programme, intake/year and review requirements. </p> </div> {% if universities %}
-{% for university in universities %}
-<div class="card"> <h3> {{ university.get("name")
-   or university.get("university_name")
-   or "University" }}
-</h3> <p> {{ university.get("location") or university.get("description") or "" }} </p>
+    locations = []
 
-<a class="btn" href="{{ url_for(
-       'university_apply',
-       university_id=university.get('id')
-   ) }}"> Apply </a> </div> {% endfor %} {% else %} <div class="card"> <p> No universities are currently loaded into the universities table. </p> </div> {% endif %} """,
+    if driver_id:
+        locations = db_select(
+            "driver_locations",
+            filters={
+                "driver_id": driver_id
+            },
+            order="created_at.desc",
+            limit=1
+        )
+
+    if not locations:
+        return jsonify({
+            "ok": False,
+            "message": (
+                "Driver has not shared a GPS location yet."
+            ),
+            "status": delivery.get(
+                "status"
+            ),
+        })
+
+    loc = locations[0]
+
+    return jsonify({
+        "ok": True,
+        "latitude": loc.get("latitude"),
+        "longitude": loc.get("longitude"),
+        "accuracy": loc.get("accuracy"),
+        "speed": loc.get("speed"),
+        "heading": loc.get("heading"),
+        "updated_at": loc.get("created_at"),
+        "status": delivery.get("status"),
+    })
+
+
+# ============================================================
+# PROVIDER LOCATION
+# ============================================================
+
+@app.route( "/provider-map/<provider_id>" )
+@login_required
+def provider_map(provider_id):
+    provider_type = request.args.get(
+        "provider_type",
+        "provider"
+    )
+
+    return render_page(
+        "Provider Location",
+        r""" <div class="card"> <h2> {{ provider_type|title }} Location </h2> <p> Latest GPS position shared by this provider. </p> <div id="location"> Loading provider location... </div> </div> <script> async function loadLocation() { try { const response = await fetch( "{{ url_for( 'provider_location', provider_id=provider_id ) }}" ); const data = await response.json(); if (data.ok) { document.getElementById("location") .innerHTML = "<p>Latitude: " + data.latitude + "</p>" + "<p>Longitude: " + data.longitude + "</p>" + "<p>Updated: " + data.updated_at + "</p>"; } else { document.getElementById("location") .textContent = data.message || "No location."; } } catch (e) { document.getElementById("location") .textContent = "Could not load provider location."; } } loadLocation(); setInterval(loadLocation, 10000); </script> """,
+        provider_id=provider_id,
+        provider_type=provider_type,
+    )
+
+
+@app.route( "/api/provider/<provider_id>/location" )
+@login_required
+def provider_location(provider_id):
+    rows = db_select(
+        "driver_locations",
+        filters={
+            "driver_id": provider_id
+        },
+        order="created_at.desc",
+        limit=1
+    )
+
+    if not rows:
+        return jsonify({
+            "ok": False,
+            "message": (
+                "This provider has not shared "
+                "a GPS location."
+            )
+        })
+
+    loc = rows[0]
+
+    return jsonify({
+        "ok": True,
+        "latitude": loc.get("latitude"),
+        "longitude": loc.get("longitude"),
+        "accuracy": loc.get("accuracy"),
+        "updated_at": loc.get("created_at"),
+    })
+
+
+# ============================================================
+# UNIVERSITIES
+# ============================================================
+
+@app.route("/universities")
+@login_required
+def universities():
+    universities_rows = db_select(
+        "universities",
+        order="name.asc",
+        limit=200
+    )
+
+    return render_page(
+        "Universities",
+        r""" <div class="card"> <h2>University Applications</h2> <p> Select the university, programme, intake/year and review requirements. </p> </div> {% if universities %} {% for university in universities %} <div class="card"> <h3> {{ university.get("name") or university.get("university_name") or "University" }} </h3> <p> {{ university.get("location") or university.get("description") or "" }} </p> <a class="btn" href="{{ url_for( 'university_apply', university_id=university.get('id') ) }}"> Apply </a> </div> {% endfor %} {% else %} <div class="card"> <p> No universities are currently loaded into the universities table. </p> </div> {% endif %} """,
         universities=universities_rows,
     )
 
 
-@app.route(
-    "/university/apply/<university_id>",
-    methods=["GET", "POST"]
-)
+@app.route( "/university/apply/<university_id>", methods=["GET", "POST"] )
 @login_required
 def university_apply(university_id):
     user = current_user()
@@ -3310,7 +3349,7 @@ def admin():
 
     return render_page(
         "Admin Dashboard",
-        r""" <div class="card"> <h2>KOJA Administrator</h2> <p>System management dashboard.</p> </div> <div class="grid"> {% for name, count in counts.items() %} <div class="card"> <div class="stat">{{ count }}</div> <p>{{ name }}</p> </div> {% endfor %} </div> <div class="card"> <h3>Management</h3> <a class="btn" href="{{ url_for('admin_assignments') }}">Assignments</a> <a class="btn" href="{{ url_for('admin_service_responses') }}">Service Responses</a> <a class="btn" href="{{ url_for('admin_users') }}"> Users </a> <a class="btn" href="{{ url_for('admin_drivers') }}"> Drivers </a> <a class="btn" href="{{ url_for('admin_deliveries') }}"> Deliveries </a> <a class="btn" href="{{ url_for('admin_appointments') }}"> Appointments </a> </div> """,
+        r""" <div class="card"> <h2>KOJA Administrator</h2> <p>System management dashboard.</p> </div> <div class="grid"> {% for name, count in counts.items() %} <div class="card"> <div class="stat">{{ count }}</div> <p>{{ name }}</p> </div> {% endfor %} </div> <div class="card"> <h3>Management</h3> <a class="btn" href="{{ url_for('admin_assignments') }}">Assignments</a> <a class="btn" href="{{ url_for('admin_users') }}"> Users </a> <a class="btn" href="{{ url_for('admin_drivers') }}"> Drivers </a> <a class="btn" href="{{ url_for('admin_deliveries') }}"> Deliveries </a> <a class="btn" href="{{ url_for('admin_appointments') }}"> Appointments </a> </div> """,
         counts=counts,
     )
 
@@ -3415,13 +3454,7 @@ def admin_assignment(aid):
 
     return render_page(
         "Process Assignment",
-        r""" <div class="card"> <h2>{{ assignment.get("title") or "Assignment" }}</h2> <p><b>Student:</b> {{ student }}</p> <p><b>Email:</b> {{ assignment.get("student_email") or assignment.get("email") or "" }}</p> <p><b>Subject:</b> {{ assignment.get("subject") or "Not specified" }}</p> <p><b>Course:</b> {{ assignment.get("course") or "Not specified" }}</p> <p><b>Class:</b> {{ assignment.get("class_level") or "Not specified" }}</p> <p><b>Status:</b> <span class="badge">{{ assignment.get("status") or "submitted" }}</span></p> {% if assignment.get("file_url") %} <a class="btn" href="{{ assignment.get('file_url') }}" target="_blank">Open Student Assignment</a> {% elif assignment.get("file_path") %} <a class="btn" href="{{ url_for('assignment_download', aid=assignment.get('id')) }}">Download Student Assignment</a> {% endif %} </div> <div class="card"> <h2>Student's Question</h2> <div class="answer" style="white-space:pre-wrap;background:#f7f7f7;padding:18px;border-radius:10px;">{{ question }}</div>
-</div> <div class="card"> <h2>Administrator Answer</h2>
-<p>Write the complete academic answer. KOJA will generate a PDF and publish it to the student.</p> <form method="post" action="{{ url_for('admin_save_assignment_answer', aid=assignment.get('id')) }}"> <textarea name="answer" required style="width:100%;min-height:420px;padding:15px;font-size:16px;line-height:1.6;box-sizing:border-box;">{{ existing }}</textarea>
-<br><br>
-<button type="submit" class="btn">Save Answer &amp; Generate PDF</button> </form>
-</div> <div class="card"> <h2>Assignment Status</h2>
-<form method="post" action="{{ url_for('admin_update_assignment', aid=assignment.get('id')) }}"> <label>Status</label> <select name="status"> {% for s in statuses %}<option value="{{ s }}" {% if s == assignment.get("status") %}selected{% endif %}>{{ s|title }}</option>{% endfor %} </select> <label>Admin Comment</label> <textarea name="admin_comment" style="width:100%;min-height:120px;box-sizing:border-box;">{{ assignment.get("admin_comment") or "" }}</textarea> <br> <button type="submit" class="btn">Update Assignment</button> </form> </div> """,
+        r""" <div class="card"> <h2>{{ assignment.get("title") or "Assignment" }}</h2> <p><b>Student:</b> {{ student }}</p> <p><b>Email:</b> {{ assignment.get("student_email") or assignment.get("email") or "" }}</p> <p><b>Subject:</b> {{ assignment.get("subject") or "Not specified" }}</p> <p><b>Course:</b> {{ assignment.get("course") or "Not specified" }}</p> <p><b>Class:</b> {{ assignment.get("class_level") or "Not specified" }}</p> <p><b>Status:</b> <span class="badge">{{ assignment.get("status") or "submitted" }}</span></p> {% if assignment.get("file_url") %} <a class="btn" href="{{ assignment.get('file_url') }}" target="_blank">Open Student Assignment</a> {% elif assignment.get("file_path") %} <a class="btn" href="{{ url_for('assignment_download', aid=assignment.get('id')) }}">Download Student Assignment</a> {% endif %} </div> <div class="card"> <h2>Student's Question</h2> <div class="answer" style="white-space:pre-wrap;background:#f7f7f7;padding:18px;border-radius:10px;">{{ question }}</div> </div> <div class="card"> <h2>Administrator Answer</h2> <p>Write the complete academic answer. KOJA will generate a PDF and publish it to the student.</p> <form method="post" enctype="multipart/form-data" action="{{ url_for('admin_save_assignment_answer', aid=assignment.get('id')) }}"> <textarea name="answer" style="width:100%;min-height:420px;padding:15px;font-size:16px;line-height:1.6;box-sizing:border-box;">{{ existing }}</textarea> <label>Or Upload Completed Answer File</label> <input type="file" name="answer_file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp"> <p class="small">You can type the answer, upload a completed file, or use both.</p> <br> <button type="submit" class="btn">Publish Answer</button> </form> </div> <div class="card"> <h2>Assignment Status</h2> <form method="post" action="{{ url_for('admin_update_assignment', aid=assignment.get('id')) }}"> <label>Status</label> <select name="status"> {% for s in statuses %}<option value="{{ s }}" {% if s == assignment.get("status") %}selected{% endif %}>{{ s|title }}</option>{% endfor %} </select> <label>Admin Comment</label> <textarea name="admin_comment" style="width:100%;min-height:120px;box-sizing:border-box;">{{ assignment.get("admin_comment") or "" }}</textarea> <br> <button type="submit" class="btn">Update Assignment</button> </form> </div> """,
         assignment=assignment,
         student=student,
         question=question,
@@ -3471,8 +3504,11 @@ def admin_save_assignment_answer(aid):
         abort(404)
 
     answer_text = clean(request.form.get("answer"))
-    if not answer_text:
-        flash("Please write an answer before saving.", "danger")
+    answer_file = request.files.get("answer_file")
+
+    # Admin may either type an answer, upload a completed file, or do both.
+    if not answer_text and not (answer_file and answer_file.filename):
+        flash("Write an answer or upload a completed answer file.", "danger")
         return redirect(url_for("admin_assignment", aid=aid))
 
     if not table_exists("assignment_answers"):
@@ -3486,35 +3522,55 @@ def admin_save_assignment_answer(aid):
     admin_user = current_user() or {}
 
     try:
-        pdf_bytes = build_answer_pdf(
-            assignment.get("title") or "Assignment",
-            assignment.get("subject") or "",
-            assignment.get("student_name") or assignment.get("email") or "Student",
-            assignment.get("question") or assignment.get("description") or "",
-            answer_text,
-        )
+        # If the admin supplied a completed file, publish that file directly.
+        # Otherwise generate a PDF from the typed answer.
+        answer_file_name = None
+        answer_file_path = None
+        answer_file_url = None
 
-        filename = secure_filename(
-            (assignment.get("title") or "assignment") + "_answered.pdf"
-        ) or "assignment_answered.pdf"
-        storage_path = f"answer-pdfs/{aid}/{uuid.uuid4().hex}_{filename}"
+        if answer_file and answer_file.filename:
+            uploaded_answer, upload_error = upload_storage(
+                answer_file, "answer-files"
+            )
+            if upload_error:
+                raise RuntimeError(
+                    "Completed answer upload failed: " + str(upload_error)
+                )
+            answer_file_name = uploaded_answer.get("file_name")
+            answer_file_path = uploaded_answer.get("path")
+            answer_file_url = uploaded_answer.get("url")
+        else:
+            pdf_bytes = build_answer_pdf(
+                assignment.get("title") or "Assignment",
+                assignment.get("subject") or "",
+                assignment.get("student_name") or assignment.get("email") or "Student",
+                assignment.get("question") or assignment.get("description") or "",
+                answer_text,
+            )
 
-        public_url, upload_error = upload_bytes_storage(
-            pdf_bytes,
-            storage_path,
-            "application/pdf",
-        )
-        if upload_error:
-            raise RuntimeError("Answer PDF upload failed: " + str(upload_error))
+            answer_file_name = secure_filename(
+                (assignment.get("title") or "assignment") + "_answered.pdf"
+            ) or "assignment_answered.pdf"
+            answer_file_path = f"answer-pdfs/{aid}/{uuid.uuid4().hex}_{answer_file_name}"
+
+            answer_file_url, upload_error = upload_bytes_storage(
+                pdf_bytes,
+                answer_file_path,
+                "application/pdf",
+            )
+            if upload_error:
+                raise RuntimeError(
+                    "Answer PDF upload failed: " + str(upload_error)
+                )
 
         existing = get_assignment_answer(aid)
         answer_payload = {
             "assignment_id": aid,
             "student_id": assignment.get("student_id"),
             "answer_text": answer_text,
-            "answer_file_name": filename,
-            "answer_file_path": storage_path,
-            "answer_file_url": public_url,
+            "answer_file_name": answer_file_name,
+            "answer_file_path": answer_file_path,
+            "answer_file_url": answer_file_url,
             "generated_by": admin_user.get("id") or "admin",
             "status": "published",
             "updated_at": utc_now(),
@@ -3562,9 +3618,9 @@ def admin_save_assignment_answer(aid):
         # absent, at minimum the status is still changed to answered.
         full_assignment_update = {
             "status": "answered",
-            "answer_file_name": filename,
-            "answer_file_path": storage_path,
-            "answer_file_url": public_url,
+            "answer_file_name": answer_file_name,
+            "answer_file_path": answer_file_path,
+            "answer_file_url": answer_file_url,
             "answered_at": utc_now(),
             "updated_at": utc_now(),
         }
@@ -3605,258 +3661,6 @@ def admin_save_assignment_answer(aid):
         flash("Answer failed: " + str(exc)[:1200], "danger")
 
     return redirect(url_for("admin_assignment", aid=aid))
-
-
-
-# ============================================================
-# UNIVERSAL SERVICE RESPONSE / ANSWER FILE SYSTEM
-# ============================================================
-
-# This module is deliberately independent of individual service tables.
-# It allows an administrator to return a completed file for ANY KOJA service
-# (CV, farmer, university, teacher, doctor, delivery, academic question,
-# assignment, or future services) without requiring every service table to
-# have identical answer columns.
-
-UNIVERSAL_SERVICE_TABLE = "service_responses"
-
-
-def service_response_for(source_table, source_id, user_id=None):
-    filters = {
-        "source_table": source_table,
-        "source_id": source_id,
-    }
-    if user_id:
-        filters["user_id"] = user_id
-    return first_row(
-        UNIVERSAL_SERVICE_TABLE,
-        filters,
-    )
-
-
-def create_universal_response(source_table, source_id, user_id,
-                               service_name, response_text="",
-                               uploaded=None, admin_id=None,
-                               status="published"):
-    payload = {
-        "id": str(uuid.uuid4()),
-        "source_table": clean(source_table),
-        "source_id": str(source_id),
-        "user_id": user_id,
-        "service_name": clean(service_name) or "KOJA Service",
-        "response_text": response_text or "",
-        "status": status,
-        "created_by": admin_id,
-        "created_at": utc_now(),
-        "updated_at": utc_now(),
-    }
-
-    if uploaded:
-        payload.update({
-            "file_name": uploaded.get("file_name"),
-            "file_path": uploaded.get("path"),
-            "file_url": uploaded.get("url"),
-            "file_size": uploaded.get("file_size", 0),
-            "mime_type": uploaded.get("mime_type"),
-        })
-
-    existing = service_response_for(
-        source_table,
-        source_id,
-        user_id,
-    )
-
-    if existing and existing.get("id"):
-        data, error = db_update(
-            UNIVERSAL_SERVICE_TABLE,
-            {"id": existing["id"]},
-            {k: v for k, v in payload.items() if k != "id"},
-        )
-        return data, error
-
-    return db_insert(
-        UNIVERSAL_SERVICE_TABLE,
-        payload,
-    )
-
-
-def universal_service_rows_for_user(user_id):
-    if not user_id or not table_exists(UNIVERSAL_SERVICE_TABLE):
-        return []
-    return db_select(
-        UNIVERSAL_SERVICE_TABLE,
-        filters={"user_id": user_id},
-        order="created_at.desc",
-        limit=100,
-    )
-
-
-@app.route("/service-responses")
-@login_required
-def service_responses():
-    user = current_user() or {}
-    rows = universal_service_rows_for_user(user.get("id"))
-
-    return render_page(
-        "My Service Responses",
-        r""" <div class="card"> <h2>My Completed Service Files</h2> <p> When KOJA AFRICA completes a service, the administrator can upload and publish the completed document here. </p> </div> {% for item in rows %} <div class="card"> <h3>{{ item.get("service_name") or "KOJA Service" }}</h3> <p><b>Status:</b> {{ item.get("status") or "published" }}</p> <p>{{ item.get("response_text") or "Your completed service is ready." }}</p> {% if item.get("file_url") %} <a class="btn" href="{{ item.get('file_url') }}" target="_blank"> Open Completed File </a> {% elif item.get("file_path") %} <a class="btn" href="{{ url_for('service_response_download', response_id=item.get('id')) }}"> Download Completed File </a> {% endif %} </div> {% else %} <div class="card"> <p>No completed service files are available yet.</p> </div> {% endfor %} """,
-        rows=rows,
-    )
-
-
-@app.route("/service-response/<response_id>/download")
-@login_required
-def service_response_download(response_id):
-    response_row = first_row(
-        UNIVERSAL_SERVICE_TABLE,
-        {"id": response_id},
-    )
-
-    if not response_row:
-        abort(404)
-
-    user = current_user() or {}
-    owner = response_row.get("user_id")
-
-    if not user.get("is_admin") and str(owner) != str(user.get("id")):
-        abort(403)
-
-    if response_row.get("file_url"):
-        return redirect(response_row["file_url"])
-
-    if response_row.get("file_path"):
-        return redirect(sb_storage_url(response_row["file_path"]))
-
-    abort(404)
-
-
-@app.route("/admin/service-responses")
-@admin_required
-def admin_service_responses():
-    rows = db_select(
-        UNIVERSAL_SERVICE_TABLE,
-        order="created_at.desc",
-        limit=200,
-    ) if table_exists(UNIVERSAL_SERVICE_TABLE) else []
-
-    return render_page(
-        "Service Responses",
-        r""" <div class="card"> <h2>Universal Service Responses</h2> <p> Upload completed documents for any KOJA AFRICA service. </p> </div> {% if not rows %} <div class="card"> <p>No universal service responses have been created yet.</p> </div> {% endif %} {% for item in rows %} <div class="card"> <h3>{{ item.get("service_name") or "KOJA Service" }}</h3> <p><b>Customer:</b> {{ item.get("user_id") or "Not specified" }}</p> <p><b>Source:</b> {{ item.get("source_table") }} / {{ item.get("source_id") }}</p> <p><b>Status:</b> {{ item.get("status") or "draft" }}</p> {% if item.get("file_url") %} <a class="btn" href="{{ item.get('file_url') }}" target="_blank">Open Published File</a> {% endif %} <a class="btn" href="{{ url_for('admin_service_response', response_id=item.get('id')) }}"> Open / Edit Response </a> </div> {% endfor %} """,
-        rows=rows,
-    )
-
-
-@app.route("/admin/service-response/new")
-@admin_required
-def admin_new_service_response():
-    return render_page(
-        "New Service Response",
-        r""" <div class="card"> <h2>Create Service Response</h2> <form method="post" enctype="multipart/form-data" action="{{ url_for('admin_create_service_response') }}"> <label>Service Name</label> <input name="service_name" required placeholder="CV, Farmer Registration, University Application, Doctor Booking..."> <label>Source Table</label> <input name="source_table" required placeholder="e.g. cv_requests"> <label>Request ID</label> <input name="source_id" required placeholder="The original service request ID"> <label>Customer / Student User ID</label> <input name="user_id" required placeholder="User UUID"> <label>Admin Message / Response</label> <textarea name="response_text" placeholder="Your message to the customer..."></textarea> <label>Completed File</label> <input type="file" name="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp"> <button type="submit" class="btn btn-success">Publish Service Response</button> </form> </div> """,
-    )
-
-
-@app.route("/admin/service-response/create", methods=["POST"])
-@admin_required
-def admin_create_service_response():
-    source_table = clean(request.form.get("source_table"))
-    source_id = clean(request.form.get("source_id"))
-    user_id = clean(request.form.get("user_id"))
-    service_name = clean(request.form.get("service_name"))
-    response_text = clean(request.form.get("response_text"))
-
-    if not source_table or not source_id or not user_id or not service_name:
-        flash("Service name, source table, request ID and user ID are required.", "danger")
-        return redirect(url_for("admin_new_service_response"))
-
-    uploaded = None
-    f = request.files.get("file")
-    if f and f.filename:
-        uploaded, error = upload_storage(f, "service-responses")
-        if error:
-            flash("Completed file upload failed: " + str(error)[:1000], "danger")
-            return redirect(url_for("admin_new_service_response"))
-
-    admin = current_user() or {}
-    row, error = create_universal_response(
-        source_table=source_table,
-        source_id=source_id,
-        user_id=user_id,
-        service_name=service_name,
-        response_text=response_text,
-        uploaded=uploaded,
-        admin_id=admin.get("id"),
-        status="published",
-    )
-
-    if error:
-        if uploaded:
-            delete_storage(uploaded.get("path"))
-        flash("Service response could not be saved: " + str(error)[:1200], "danger")
-    else:
-        flash("Service response published successfully.", "success")
-        log_activity("service_response_published", f"Published {service_name} response for {source_id}.")
-
-    return redirect(url_for("admin_service_responses"))
-
-
-@app.route("/admin/service-response/<response_id>", methods=["GET", "POST"])
-@admin_required
-def admin_service_response(response_id):
-    response_row = first_row(
-        UNIVERSAL_SERVICE_TABLE,
-        {"id": response_id},
-    )
-
-    if not response_row:
-        abort(404)
-
-    if request.method == "POST":
-        response_text = clean(request.form.get("response_text"))
-        status = clean(request.form.get("status")) or "published"
-        uploaded = None
-
-        f = request.files.get("file")
-        if f and f.filename:
-            uploaded, error = upload_storage(f, "service-responses")
-            if error:
-                flash("Completed file upload failed: " + str(error)[:1000], "danger")
-                return redirect(url_for("admin_service_response", response_id=response_id))
-
-        payload = {
-            "response_text": response_text,
-            "status": status,
-            "updated_at": utc_now(),
-        }
-
-        if uploaded:
-            payload.update({
-                "file_name": uploaded.get("file_name"),
-                "file_path": uploaded.get("path"),
-                "file_url": uploaded.get("url"),
-                "file_size": uploaded.get("file_size", 0),
-                "mime_type": uploaded.get("mime_type"),
-            })
-
-        _, error = db_update(
-            UNIVERSAL_SERVICE_TABLE,
-            {"id": response_id},
-            payload,
-        )
-
-        if error:
-            if uploaded:
-                delete_storage(uploaded.get("path"))
-            flash("Service response update failed: " + str(error)[:1200], "danger")
-        else:
-            flash("Service response updated and published.", "success")
-
-        return redirect(url_for("admin_service_response", response_id=response_id))
-
-    return render_page(
-        "Edit Service Response",
-        r""" <div class="card"> <h2>{{ response_row.get("service_name") or "KOJA Service" }}</h2> <p><b>Source:</b> {{ response_row.get("source_table") }} / {{ response_row.get("source_id") }}</p> <p><b>User:</b> {{ response_row.get("user_id") }}</p> {% if response_row.get("file_url") %} <a class="btn" href="{{ response_row.get('file_url') }}" target="_blank">Open Current File</a> {% endif %} </div> <div class="card"> <h2>Upload / Replace Completed Response</h2> <form method="post" enctype="multipart/form-data"> <label>Response Message</label> <textarea name="response_text" style="width:100%;min-height:180px;box-sizing:border-box;">{{ response_row.get("response_text") or "" }}</textarea> <label>Status</label> <select name="status"> <option value="draft" {% if response_row.get("status") == "draft" %}selected{% endif %}>Draft</option> <option value="published" {% if response_row.get("status") == "published" %}selected{% endif %}>Published</option> <option value="completed" {% if response_row.get("status") == "completed" %}selected{% endif %}>Completed</option> </select> <label>Completed File</label> <input type="file" name="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp"> <button type="submit" class="btn btn-success">Save &amp; Publish</button> </form> </div> """,
-        response_row=response_row,
-    )
 
 
 # ============================================================
