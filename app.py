@@ -1,11 +1,15 @@
 import os
-import secrets
+import io
+import uuid
+import json
 import logging
-from datetime import timedelta
+from datetime import datetime, timezone
 from functools import wraps
+from urllib.parse import quote
 
 import requests
 from dotenv import load_dotenv
+
 from flask import (
     Flask,
     request,
@@ -14,50 +18,79 @@ from flask import (
     session,
     flash,
     jsonify,
-    get_flashed_messages,
+    send_file,
+    render_template_string,
 )
+
 
 # ============================================================
 # KOJA AFRICA
-# Complete Fresh Flask Foundation
+# COMPLETE FLASK APPLICATION
+# ============================================================
 #
-# Stack:
+# Architecture:
 #   Flask
 #   Supabase Auth
-#   Supabase REST API
+#   Supabase PostgreSQL REST API
+#   Supabase Storage
 #   Render
 #
-# No SQLite
-# No psycopg
-# No psycopg2
+# Authentication:
+#   Email + password
+#
+# Main modules:
+#   Authentication
+#   Profiles
+#   Dashboard
+#   Assignments
+#   Questions
+#   Answers
+#   Documents
+#   Farmer services
+#   Driver registration
+#   Driver online status
+#   Driver GPS
+#   Nearby drivers
+#   Delivery requests
+#   Delivery tracking
+#   Notifications
+#   Admin dashboard
+#   Health monitoring
+#
+# IMPORTANT:
+# The application does NOT use psycopg or psycopg2.
 # ============================================================
+
 
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("koja-africa")
+logging.basicConfig(
+    level=logging.INFO
+)
+
+logger = logging.getLogger(
+    "koja-africa"
+)
+
+
+# ============================================================
+# FLASK
+# ============================================================
 
 app = Flask(__name__)
 
-# ============================================================
-# APPLICATION CONFIGURATION
-# ============================================================
-
 app.secret_key = (
     os.getenv("SECRET_KEY")
-    or secrets.token_hex(32)
+    or "change-this-secret-key"
 )
 
-app.permanent_session_lifetime = timedelta(days=7)
-
-app.config["MAX_CONTENT_LENGTH"] = 15 * 1024 * 1024
-
-APP_NAME = "KOJA AFRICA"
-APP_TAGLINE = "Knowledge • Questions • Answers"
+app.config["MAX_CONTENT_LENGTH"] = (
+    15 * 1024 * 1024
+)
 
 
 # ============================================================
-# SUPABASE CONFIGURATION
+# ENVIRONMENT
 # ============================================================
 
 SUPABASE_URL = os.getenv(
@@ -75,31 +108,103 @@ SUPABASE_SERVICE_KEY = os.getenv(
     ""
 ).strip()
 
+STORAGE_BUCKET = os.getenv(
+    "SUPABASE_STORAGE_BUCKET",
+    "koja-files"
+)
+
+APP_NAME = "KOJA AFRICA"
+
+APP_TAGLINE = (
+    "Knowledge • Questions • Answers"
+)
+
 
 # ============================================================
-# SUPABASE HELPERS
+# TABLE NAMES
 # ============================================================
 
-def supabase_configured():
-    """
-    Check whether the minimum Supabase configuration exists.
-    """
+TABLE_PROFILES = "profiles"
+
+TABLE_ASSIGNMENTS = "assignments"
+
+TABLE_ASSIGNMENT_ANSWERS = (
+    "assignment_answers"
+)
+
+TABLE_QUESTIONS = "questions"
+
+TABLE_ANSWERS = "answers"
+
+TABLE_DOCUMENTS = "documents"
+
+TABLE_FARMERS = "farmers"
+
+TABLE_DRIVERS = "drivers"
+
+TABLE_DRIVER_LOCATIONS = (
+    "driver_locations"
+)
+
+TABLE_DELIVERY_REQUESTS = (
+    "delivery_requests"
+)
+
+TABLE_NOTIFICATIONS = (
+    "notifications"
+)
+
+TABLE_ACTIVITY_LOGS = (
+    "activity_logs"
+)
+
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+DEFAULT_ANSWER_PRICE = os.getenv(
+    "KOJA_PAYMENT_AMOUNT",
+    "10.00"
+)
+
+PAYMENT_CURRENCY = os.getenv(
+    "PAYMENT_CURRENCY",
+    "ZMW"
+)
+
+
+# ============================================================
+# BASIC HELPERS
+# ============================================================
+
+def utc_now():
+
+    return datetime.now(
+        timezone.utc
+    ).isoformat()
+
+
+def configured():
 
     return bool(
         SUPABASE_URL
         and (
-            SUPABASE_ANON_KEY
-            or SUPABASE_SERVICE_KEY
+            SUPABASE_SERVICE_KEY
+            or SUPABASE_ANON_KEY
         )
     )
 
 
-def public_key():
-    """
-    Key used for Supabase Auth.
+def database_key():
 
-    Prefer the anon key.
-    """
+    return (
+        SUPABASE_SERVICE_KEY
+        or SUPABASE_ANON_KEY
+    )
+
+
+def auth_key():
 
     return (
         SUPABASE_ANON_KEY
@@ -107,22 +212,20 @@ def public_key():
     )
 
 
-def auth_headers(access_token=None):
-    """
-    Headers for Supabase Auth requests.
-    """
+def auth_headers(token=None):
 
-    key = public_key()
+    key = auth_key()
 
     headers = {
         "apikey": key,
-        "Content-Type": "application/json",
+        "Content-Type":
+            "application/json",
     }
 
-    if access_token:
+    if token:
 
         headers["Authorization"] = (
-            f"Bearer {access_token}"
+            f"Bearer {token}"
         )
 
     else:
@@ -134,28 +237,20 @@ def auth_headers(access_token=None):
     return headers
 
 
-def rest_headers(access_token=None):
-    """
-    Headers for Supabase REST requests.
+def db_headers(token=None):
 
-    Service key is preferred for server-side
-    database operations.
-    """
-
-    key = (
-        SUPABASE_SERVICE_KEY
-        or SUPABASE_ANON_KEY
-    )
+    key = database_key()
 
     headers = {
         "apikey": key,
-        "Content-Type": "application/json",
+        "Content-Type":
+            "application/json",
     }
 
-    if access_token:
+    if token:
 
         headers["Authorization"] = (
-            f"Bearer {access_token}"
+            f"Bearer {token}"
         )
 
     else:
@@ -168,59 +263,139 @@ def rest_headers(access_token=None):
 
 
 def auth_url(path):
+
     return (
         f"{SUPABASE_URL}/auth/v1/"
         f"{path.lstrip('/')}"
     )
 
 
-def rest_url(table):
+def table_url(table):
+
     return (
         f"{SUPABASE_URL}/rest/v1/"
         f"{table}"
     )
 
 
-def supabase_error(response):
+def storage_url(path):
+
+    return (
+        f"{SUPABASE_URL}"
+        f"/storage/v1/object/"
+        f"{path.lstrip('/')}"
+    )
+
+
+def safe_json(response):
 
     try:
-        data = response.json()
+
+        return response.json()
+
     except Exception:
-        data = {}
+
+        return {}
+
+
+def error_text(response):
+
+    data = safe_json(
+        response
+    )
 
     if isinstance(data, dict):
 
         return (
-            data.get("msg")
-            or data.get("message")
-            or data.get("error_description")
+            data.get("message")
+            or data.get("msg")
+            or data.get(
+                "error_description"
+            )
             or data.get("error")
-            or f"Supabase error {response.status_code}"
+            or (
+                f"HTTP "
+                f"{response.status_code}"
+            )
         )
 
     return (
-        f"Supabase error {response.status_code}"
+        f"HTTP "
+        f"{response.status_code}"
     )
 
 
 # ============================================================
-# SESSION / AUTHENTICATION
+# SESSION
 # ============================================================
 
-def current_user():
+def user():
+
     return session.get("user")
 
 
-def current_access_token():
-    return session.get("access_token")
+def user_id():
+
+    current = user()
+
+    if not current:
+        return None
+
+    return current.get("id")
 
 
-def login_required(function):
+def token():
 
-    @wraps(function)
+    return session.get(
+        "access_token"
+    )
+
+
+def admin_user():
+
+    current = user()
+
+    if not current:
+        return False
+
+    role = (
+        current.get("role")
+        or current.get(
+            "user_metadata",
+            {}
+        ).get("role")
+        or current.get(
+            "app_metadata",
+            {}
+        ).get("role")
+    )
+
+    admin_emails = {
+        x.strip().lower()
+        for x in os.getenv(
+            "KOJA_ADMIN_EMAILS",
+            ""
+        ).split(",")
+        if x.strip()
+    }
+
+    email = (
+        current.get("email")
+        or ""
+    ).lower()
+
+    return (
+        role == "admin"
+        or email in admin_emails
+    )
+
+
+def login_required(fn):
+
+    @wraps(fn)
     def wrapper(*args, **kwargs):
 
-        if not current_user():
+        if not user():
 
             flash(
                 "Please log in first.",
@@ -231,7 +406,40 @@ def login_required(function):
                 url_for("login")
             )
 
-        return function(*args, **kwargs)
+        return fn(
+            *args,
+            **kwargs
+        )
+
+    return wrapper
+
+
+def admin_required(fn):
+
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+
+        if not user():
+
+            return redirect(
+                url_for("login")
+            )
+
+        if not admin_user():
+
+            flash(
+                "Administrator access required.",
+                "error"
+            )
+
+            return redirect(
+                url_for("dashboard")
+            )
+
+        return fn(
+            *args,
+            **kwargs
+        )
 
     return wrapper
 
@@ -240,7 +448,7 @@ def login_required(function):
 # SUPABASE AUTH
 # ============================================================
 
-def signup_user(
+def signup(
     email,
     password,
     full_name
@@ -256,15 +464,16 @@ def signup_user(
             "email": email,
             "password": password,
             "data": {
-                "full_name": full_name
+                "full_name":
+                    full_name
             },
         },
 
-        timeout=20,
+        timeout=25
     )
 
 
-def login_user(
+def signin(
     email,
     password
 ):
@@ -282,13 +491,16 @@ def login_user(
             "password": password,
         },
 
-        timeout=20,
+        timeout=25
     )
 
 
-def logout_user(
-    access_token
-):
+def auth_logout():
+
+    current_token = token()
+
+    if not current_token:
+        return
 
     try:
 
@@ -297,83 +509,85 @@ def logout_user(
             auth_url("logout"),
 
             headers=auth_headers(
-                access_token
+                current_token
             ),
 
-            timeout=10,
+            timeout=10
         )
 
-    except requests.RequestException:
+    except Exception:
 
         logger.exception(
-            "Supabase logout request failed"
+            "Logout request failed"
         )
 
 
 # ============================================================
-# BASIC SUPABASE REST FUNCTIONS
+# SUPABASE REST
 # ============================================================
 
-def supabase_select(
+def db_select(
     table,
     params=None,
-    access_token=None
+    token_value=None
 ):
 
-    if not supabase_configured():
-        return None, "Supabase is not configured."
+    if not configured():
+
+        return None, (
+            "Supabase is not configured."
+        )
 
     try:
 
         response = requests.get(
 
-            rest_url(table),
+            table_url(table),
 
-            headers=rest_headers(
-                access_token
+            headers=db_headers(
+                token_value
             ),
 
             params=params or {},
 
-            timeout=20,
+            timeout=25
         )
 
         if response.status_code >= 400:
 
-            return None, supabase_error(
+            return None, error_text(
                 response
             )
 
-        try:
+        return safe_json(
+            response
+        ), None
 
-            return response.json(), None
-
-        except Exception:
-
-            return [], None
-
-    except requests.RequestException as exc:
+    except Exception as exc:
 
         logger.exception(
-            "Supabase SELECT failed"
+            "Database SELECT failed"
         )
 
         return None, str(exc)
 
 
-def supabase_insert(
+def db_insert(
     table,
-    payload,
-    access_token=None
+    data,
+    token_value=None
 ):
 
-    if not supabase_configured():
-        return None, "Supabase is not configured."
+    if not configured():
+
+        return None, (
+            "Supabase is not configured."
+        )
 
     try:
 
-        headers = rest_headers(
-            access_token
+        headers = db_headers(
+            token_value
         )
 
         headers["Prefer"] = (
@@ -382,52 +596,51 @@ def supabase_insert(
 
         response = requests.post(
 
-            rest_url(table),
+            table_url(table),
 
             headers=headers,
 
-            json=payload,
+            json=data,
 
-            timeout=20,
+            timeout=25
         )
 
         if response.status_code >= 400:
 
-            return None, supabase_error(
+            return None, error_text(
                 response
             )
 
-        try:
+        return safe_json(
+            response
+        ), None
 
-            return response.json(), None
-
-        except Exception:
-
-            return [], None
-
-    except requests.RequestException as exc:
+    except Exception as exc:
 
         logger.exception(
-            "Supabase INSERT failed"
+            "Database INSERT failed"
         )
 
         return None, str(exc)
 
 
-def supabase_update(
+def db_update(
     table,
     params,
-    payload,
-    access_token=None
+    data,
+    token_value=None
 ):
 
-    if not supabase_configured():
-        return None, "Supabase is not configured."
+    if not configured():
+
+        return None, (
+            "Supabase is not configured."
+        )
 
     try:
 
-        headers = rest_headers(
-            access_token
+        headers = db_headers(
+            token_value
         )
 
         headers["Prefer"] = (
@@ -436,152 +649,298 @@ def supabase_update(
 
         response = requests.patch(
 
-            rest_url(table),
+            table_url(table),
 
             headers=headers,
 
             params=params,
 
-            json=payload,
+            json=data,
 
-            timeout=20,
+            timeout=25
         )
 
         if response.status_code >= 400:
 
-            return None, supabase_error(
+            return None, error_text(
                 response
             )
 
-        try:
+        return safe_json(
+            response
+        ), None
 
-            return response.json(), None
-
-        except Exception:
-
-            return [], None
-
-    except requests.RequestException as exc:
+    except Exception as exc:
 
         logger.exception(
-            "Supabase UPDATE failed"
+            "Database UPDATE failed"
         )
 
         return None, str(exc)
 
 
-def supabase_delete(
+def db_delete(
     table,
     params,
-    access_token=None
+    token_value=None
 ):
 
-    if not supabase_configured():
-        return None, "Supabase is not configured."
+    if not configured():
+
+        return None, (
+            "Supabase is not configured."
+        )
 
     try:
 
         response = requests.delete(
 
-            rest_url(table),
+            table_url(table),
 
-            headers=rest_headers(
-                access_token
+            headers=db_headers(
+                token_value
             ),
 
             params=params,
 
-            timeout=20,
+            timeout=25
         )
 
         if response.status_code >= 400:
 
-            return None, supabase_error(
+            return None, error_text(
                 response
             )
 
         return True, None
 
-    except requests.RequestException as exc:
+    except Exception as exc:
 
         logger.exception(
-            "Supabase DELETE failed"
+            "Database DELETE failed"
         )
 
         return None, str(exc)
 
 
 # ============================================================
-# KOJA SERVICES
+# FLEXIBLE DATABASE INSERT
 # ============================================================
 
-KOJA_SERVICES = [
+def flexible_insert(
+    table,
+    candidates
+):
 
-    {
-        "id": "assignments",
-        "name": "Assignments",
-        "description": (
-            "Submit assignments and "
-            "academic questions."
-        ),
-        "icon": "📚",
-    },
+    """
+    Attempts candidate payloads in sequence.
 
-    {
-        "id": "farmer",
-        "name": "Farmer Services",
-        "description": (
-            "Register farmers and "
-            "access agricultural services."
-        ),
-        "icon": "🌾",
-    },
+    This allows the application to work with
+    existing tables whose exact optional columns
+    differ.
+    """
 
-    {
-        "id": "driver",
-        "name": "Driver & Delivery",
-        "description": (
-            "Find nearby drivers and "
-            "request deliveries."
-        ),
-        "icon": "🚚",
-    },
+    last_error = None
 
-    {
-        "id": "university",
-        "name": "University Services",
-        "description": (
-            "University and college "
-            "academic services."
-        ),
-        "icon": "🎓",
-    },
+    for payload in candidates:
 
-    {
-        "id": "cv",
-        "name": "CV & Jobs",
-        "description": (
-            "Create CVs and manage "
-            "job applications."
-        ),
-        "icon": "💼",
-    },
+        result, error = db_insert(
+            table,
+            payload
+        )
 
-    {
-        "id": "tpin",
-        "name": "TPIN Services",
-        "description": (
-            "Access TPIN-related "
-            "services."
-        ),
-        "icon": "🧾",
-    },
+        if error is None:
 
-]
+            return result, None
+
+        last_error = error
+
+        logger.warning(
+            "Insert attempt failed for %s: %s",
+            table,
+            error
+        )
+
+    return None, last_error
 
 
 # ============================================================
-# CSS
+# STORAGE
+# ============================================================
+
+def storage_upload(
+    file_bytes,
+    path,
+    content_type
+):
+
+    if not SUPABASE_SERVICE_KEY:
+
+        return None, (
+            "SUPABASE_SERVICE_KEY "
+            "is required for storage uploads."
+        )
+
+    try:
+
+        url = storage_url(
+            f"{STORAGE_BUCKET}/{path}"
+        )
+
+        headers = {
+            "Authorization":
+                f"Bearer "
+                f"{SUPABASE_SERVICE_KEY}",
+            "apikey":
+                SUPABASE_SERVICE_KEY,
+            "Content-Type":
+                content_type,
+            "x-upsert":
+                "true",
+        }
+
+        response = requests.post(
+
+            url,
+
+            headers=headers,
+
+            data=file_bytes,
+
+            timeout=60
+        )
+
+        if response.status_code >= 400:
+
+            return None, error_text(
+                response
+            )
+
+        public_path = (
+            f"{SUPABASE_URL}"
+            f"/storage/v1/object/public/"
+            f"{STORAGE_BUCKET}/{path}"
+        )
+
+        return public_path, None
+
+    except Exception as exc:
+
+        logger.exception(
+            "Storage upload failed"
+        )
+
+        return None, str(exc)
+
+
+# ============================================================
+# ACTIVITY LOG
+# ============================================================
+
+def activity(
+    action,
+    description=""
+):
+
+    uid = user_id()
+
+    if not uid:
+        return
+
+    candidates = [
+
+        {
+            "user_id": uid,
+            "action": action,
+            "description":
+                description,
+            "ip_address":
+                request.remote_addr,
+            "user_agent":
+                request.headers.get(
+                    "User-Agent",
+                    ""
+                ),
+        },
+
+        {
+            "user_id": uid,
+            "action": action,
+            "description":
+                description,
+        },
+
+    ]
+
+    try:
+
+        flexible_insert(
+            TABLE_ACTIVITY_LOGS,
+            candidates
+        )
+
+    except Exception:
+
+        logger.exception(
+            "Activity log failed"
+        )
+
+
+# ============================================================
+# PROFILE CREATION
+# ============================================================
+
+def create_profile(
+    auth_user,
+    full_name
+):
+
+    uid = auth_user.get("id")
+
+    if not uid:
+        return
+
+    candidates = [
+
+        {
+            "id": uid,
+            "full_name":
+                full_name,
+            "email":
+                auth_user.get(
+                    "email"
+                ),
+        },
+
+        {
+            "user_id": uid,
+            "full_name":
+                full_name,
+            "email":
+                auth_user.get(
+                    "email"
+                ),
+        },
+
+    ]
+
+    result, error = (
+        flexible_insert(
+            TABLE_PROFILES,
+            candidates
+        )
+    )
+
+    if error:
+
+        logger.warning(
+            "Profile creation skipped: %s",
+            error
+        )
+
+
+# ============================================================
+# HTML / CSS
 # ============================================================
 
 CSS = """
@@ -590,488 +949,302 @@ CSS = """
     box-sizing: border-box;
 }
 
-html {
-    scroll-behavior: smooth;
-}
-
 body {
-
     margin: 0;
-
-    background: #f5f7fa;
-
+    background: #f4f7f5;
     color: #172033;
-
-    font-family:
-        Arial,
-        Helvetica,
-        sans-serif;
-
+    font-family: Arial, Helvetica, sans-serif;
 }
 
 .nav {
-
-    background:
-        linear-gradient(
-            135deg,
-            #14532d,
-            #166534
-        );
-
+    background: #14532d;
     color: white;
-
 }
 
 .nav-inner {
-
-    width:
-        min(
-            1100px,
-            calc(100% - 28px)
-        );
-
+    width: min(1150px, calc(100% - 28px));
     margin: auto;
-
-    padding:
-        14px 0;
-
+    min-height: 64px;
     display: flex;
-
     align-items: center;
-
-    justify-content:
-        space-between;
-
+    justify-content: space-between;
     gap: 15px;
-
 }
 
 .logo {
-
     color: white;
-
     text-decoration: none;
-
     font-size: 21px;
-
     font-weight: 800;
-
-    letter-spacing: .4px;
-
 }
 
 .navlinks {
-
     display: flex;
-
     flex-wrap: wrap;
-
-    gap: 5px;
-
+    gap: 4px;
 }
 
 .navlinks a {
-
     color: white;
-
     text-decoration: none;
-
-    padding:
-        8px 10px;
-
+    padding: 9px 11px;
     border-radius: 8px;
-
 }
 
 .navlinks a:hover {
-
-    background:
-        rgba(
-            255,
-            255,
-            255,
-            .12
-        );
-
+    background: rgba(255,255,255,.12);
 }
 
 .container {
-
-    width:
-        min(
-            1100px,
-            calc(100% - 28px)
-        );
-
-    margin:
-        25px auto 50px;
-
+    width: min(1150px, calc(100% - 28px));
+    margin: 25px auto 55px;
 }
 
 .hero {
-
     background:
         linear-gradient(
             135deg,
             #14532d,
             #166534
         );
-
     color: white;
-
-    padding: 32px 25px;
-
+    padding: 34px 25px;
     border-radius: 18px;
-
-    box-shadow:
-        0 8px 25px
-        rgba(
-            16,
-            24,
-            40,
-            .10
-        );
-
 }
 
 .hero h1 {
-
     margin-top: 0;
-
     font-size: 38px;
-
 }
 
 .hero p {
-
     line-height: 1.6;
-
 }
 
 .card {
-
     background: white;
-
-    border:
-        1px solid
-        #e4e7ec;
-
+    border: 1px solid #e3e8e5;
     border-radius: 16px;
-
-    padding: 24px;
-
+    padding: 23px;
     box-shadow:
-        0 4px 18px
-        rgba(
-            16,
-            24,
-            40,
-            .04
-        );
-
+        0 5px 18px
+        rgba(0,0,0,.04);
 }
 
 .grid {
-
     display: grid;
-
     grid-template-columns:
-        repeat(
-            3,
-            1fr
-        );
-
+        repeat(3, 1fr);
     gap: 16px;
-
 }
 
 .service {
-
     background: white;
-
-    border:
-        1px solid
-        #e4e7ec;
-
-    border-radius: 14px;
-
+    border: 1px solid #e3e8e5;
+    border-radius: 15px;
     padding: 20px;
-
-    box-shadow:
-        0 4px 15px
-        rgba(
-            16,
-            24,
-            40,
-            .03
-        );
-
 }
 
 .service h2 {
-
     margin-top: 0;
-
 }
 
 .form {
-
-    max-width: 560px;
-
+    width: min(570px, 100%);
     margin: auto;
-
 }
 
 label {
-
     display: block;
-
-    margin:
-        14px 0 6px;
-
     font-weight: 700;
-
+    margin: 14px 0 6px;
 }
 
 input,
 textarea,
 select {
-
     width: 100%;
-
     padding: 12px;
-
     border:
         1px solid
-        #d0d5dd;
-
+        #cfd8d3;
     border-radius: 9px;
-
     font: inherit;
-
     background: white;
-
-}
-
-input:focus,
-textarea:focus,
-select:focus {
-
-    outline:
-        2px solid
-        #86efac;
-
-    border-color:
-        #16a34a;
-
 }
 
 textarea {
-
-    min-height: 120px;
-
+    min-height: 140px;
     resize: vertical;
-
 }
 
+button,
 .btn {
-
     display: inline-block;
-
     border: 0;
-
     background: #14532d;
-
     color: white;
-
-    padding:
-        11px 17px;
-
+    padding: 11px 17px;
     border-radius: 9px;
-
     text-decoration: none;
-
     cursor: pointer;
-
     font-weight: 700;
-
 }
 
-.btn:hover {
-
+.btn:hover,
+button:hover {
     background: #166534;
-
 }
 
-.btn.light {
-
+.btn-light {
     background: white;
-
     color: #14532d;
-
-}
-
-.btn.light:hover {
-
-    background: #f0fdf4;
-
 }
 
 .actions {
-
     display: flex;
-
     flex-wrap: wrap;
-
-    gap: 10px;
-
-    margin-top: 20px;
-
+    gap: 9px;
+    margin-top: 18px;
 }
 
 .alert {
-
-    padding:
-        12px 14px;
-
+    padding: 12px 14px;
     border-radius: 9px;
-
     margin-bottom: 14px;
-
-    border: 1px solid;
-
 }
 
 .alert.error {
-
     background: #fef3f2;
-
     color: #b42318;
-
-    border-color: #fecdca;
-
+    border: 1px solid #fecdca;
 }
 
 .alert.success {
-
     background: #ecfdf3;
-
     color: #067647;
+    border: 1px solid #abefc6;
+}
 
-    border-color: #abefc6;
-
+.alert.info {
+    background: #eff8ff;
+    color: #175cd3;
+    border: 1px solid #b2ddff;
 }
 
 .muted {
-
     color: #667085;
-
 }
 
 .badge {
-
     display: inline-block;
-
-    padding:
-        5px 9px;
-
+    padding: 5px 10px;
     border-radius: 20px;
-
-    background:
-        #ecfdf3;
-
-    color:
-        #067647;
-
+    background: #ecfdf3;
+    color: #067647;
     font-size: 13px;
-
     font-weight: 700;
+}
 
+.stat {
+    text-align: center;
+    padding: 20px;
+    background: white;
+    border: 1px solid #e3e8e5;
+    border-radius: 14px;
+}
+
+.stat-number {
+    font-size: 30px;
+    font-weight: 800;
+}
+
+.table-wrap {
+    overflow-x: auto;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+th,
+td {
+    padding: 11px;
+    border-bottom:
+        1px solid
+        #e5e7eb;
+    text-align: left;
 }
 
 .footer {
-
     text-align: center;
-
     color: #667085;
-
-    padding: 25px;
-
+    padding: 28px;
 }
 
-@media (max-width: 760px) {
+@media (max-width: 800px) {
 
     .grid {
-
         grid-template-columns: 1fr;
-
     }
 
     .nav-inner {
-
         flex-direction: column;
-
         align-items: flex-start;
-
+        padding: 12px 0;
     }
 
     .hero h1 {
-
         font-size: 30px;
-
     }
-
 }
 
 """
 
 
 # ============================================================
-# PAGE BUILDER
+# PAGE
 # ============================================================
 
-def page(title, body):
+def page(
+    title,
+    body
+):
 
-    user = current_user()
+    current = user()
 
-    if user:
+    if current:
 
         navigation = f"""
-
-        <a
-            href="{url_for('dashboard')}"
-        >
+        <a href="{url_for('dashboard')}">
             Dashboard
         </a>
 
-        <a
-            href="{url_for('services')}"
-        >
+        <a href="{url_for('services')}">
             Services
         </a>
 
-        <a
-            href="{url_for('profile')}"
-        >
+        <a href="{url_for('profile')}">
             Profile
         </a>
 
-        <a
-            href="{url_for('logout')}"
-        >
-            Logout
+        <a href="{url_for('notifications')}">
+            Notifications
         </a>
 
+        <a href="{url_for('logout')}">
+            Logout
+        </a>
         """
 
-        home_url = url_for(
+        home = url_for(
             "dashboard"
         )
 
     else:
 
         navigation = f"""
-
         <a href="{url_for('home')}">
             Home
         </a>
@@ -1081,12 +1254,11 @@ def page(title, body):
         </a>
 
         <a href="{url_for('register')}">
-            Create Account
+            Register
         </a>
-
         """
 
-        home_url = url_for(
+        home = url_for(
             "home"
         )
 
@@ -1099,15 +1271,24 @@ def page(title, body):
     ):
 
         flashes += f"""
-
         <div class="alert {category}">
             {message}
         </div>
-
         """
 
-    return f"""
+    admin_link = ""
 
+    if admin_user():
+
+        admin_link = f"""
+        <a href="{url_for('admin_dashboard')}">
+            Admin
+        </a>
+        """
+
+    navigation += admin_link
+
+    return f"""
 <!DOCTYPE html>
 
 <html lang="en">
@@ -1126,7 +1307,9 @@ def page(title, body):
 {title} | {APP_NAME}
 </title>
 
+<style>
 {CSS}
+</style>
 
 </head>
 
@@ -1138,15 +1321,13 @@ def page(title, body):
 
 <a
     class="logo"
-    href="{home_url}"
+    href="{home}"
 >
 {APP_NAME}
 </a>
 
 <div class="navlinks">
-
 {navigation}
-
 </div>
 
 </div>
@@ -1176,7 +1357,6 @@ def page(title, body):
 </body>
 
 </html>
-
 """
 
 
@@ -1192,7 +1372,6 @@ def home():
         "Home",
 
         """
-
 <section class="hero">
 
 <h1>
@@ -1204,22 +1383,22 @@ Knowledge • Questions • Answers
 </p>
 
 <p>
-A single platform for academic
-support, service requests,
-farmer services and delivery.
+A digital platform connecting
+students, farmers, drivers,
+businesses and service users.
 </p>
 
 <div class="actions">
 
 <a
-    class="btn light"
+    class="btn btn-light"
     href="/register"
 >
 Create Account
 </a>
 
 <a
-    class="btn light"
+    class="btn btn-light"
     href="/login"
 >
 Login
@@ -1234,61 +1413,39 @@ Login
 <section class="grid">
 
 <div class="service">
-
 <h2>📚</h2>
-
-<h3>
-Assignments
-</h3>
-
+<h3>Academic Services</h3>
 <p class="muted">
-Submit assignments and
-academic questions.
+Assignments, questions,
+answers and documents.
 </p>
-
 </div>
 
-
 <div class="service">
-
 <h2>🌾</h2>
-
-<h3>
-Farmer Services
-</h3>
-
+<h3>Farmer Services</h3>
 <p class="muted">
-Access farmer registration
-and agricultural services.
+Farmer registration and
+agricultural services.
 </p>
-
 </div>
 
-
 <div class="service">
-
 <h2>🚚</h2>
-
-<h3>
-Delivery
-</h3>
-
+<h3>Delivery</h3>
 <p class="muted">
-Connect customers with
-nearby drivers.
+Nearby drivers, requests
+and delivery tracking.
 </p>
-
 </div>
 
 </section>
-
 """
-
     )
 
 
 # ============================================================
-# HEALTH CHECK
+# HEALTH
 # ============================================================
 
 @app.route("/health")
@@ -1301,11 +1458,17 @@ def health():
         "application":
             APP_NAME,
 
-        "version":
-            "fresh-foundation",
+        "supabase":
+            configured(),
 
-        "supabase_configured":
-            supabase_configured(),
+        "database":
+            "supabase_rest",
+
+        "authentication":
+            "supabase_auth",
+
+        "version":
+            "koja-full-v1",
 
     })
 
@@ -1320,7 +1483,7 @@ def health():
 )
 def register():
 
-    if current_user():
+    if user():
 
         return redirect(
             url_for("dashboard")
@@ -1328,22 +1491,28 @@ def register():
 
     if request.method == "POST":
 
-        full_name = request.form.get(
-            "full_name",
-            ""
-        ).strip()
-
-        email = request.form.get(
-            "email",
-            ""
-        ).strip().lower()
-
-        password = request.form.get(
-            "password",
-            ""
+        full_name = (
+            request.form.get(
+                "full_name",
+                ""
+            ).strip()
         )
 
-        confirm_password = (
+        email = (
+            request.form.get(
+                "email",
+                ""
+            ).strip().lower()
+        )
+
+        password = (
+            request.form.get(
+                "password",
+                ""
+            )
+        )
+
+        confirm = (
             request.form.get(
                 "confirm_password",
                 ""
@@ -1364,20 +1533,6 @@ def register():
                 "error"
             )
 
-        elif not password:
-
-            flash(
-                "Password is required.",
-                "error"
-            )
-
-        elif password != confirm_password:
-
-            flash(
-                "Passwords do not match.",
-                "error"
-            )
-
         elif len(password) < 6:
 
             flash(
@@ -1385,10 +1540,17 @@ def register():
                 "error"
             )
 
-        elif not supabase_configured():
+        elif password != confirm:
 
             flash(
-                "Supabase is not configured on Render.",
+                "Passwords do not match.",
+                "error"
+            )
+
+        elif not configured():
+
+            flash(
+                "Supabase environment variables are missing.",
                 "error"
             )
 
@@ -1396,14 +1558,10 @@ def register():
 
             try:
 
-                response = signup_user(
-
+                response = signup(
                     email,
-
                     password,
-
                     full_name
-
                 )
 
                 if response.status_code not in (
@@ -1412,7 +1570,7 @@ def register():
                 ):
 
                     flash(
-                        supabase_error(
+                        error_text(
                             response
                         ),
                         "error"
@@ -1420,9 +1578,11 @@ def register():
 
                 else:
 
-                    data = response.json()
+                    data = safe_json(
+                        response
+                    )
 
-                    user = (
+                    auth_user = (
                         data.get("user")
                         or {}
                     )
@@ -1430,12 +1590,6 @@ def register():
                     access_token = (
                         data.get(
                             "access_token"
-                        )
-                    )
-
-                    refresh_token = (
-                        data.get(
-                            "refresh_token"
                         )
                     )
 
@@ -1449,17 +1603,21 @@ def register():
 
                         session[
                             "refresh_token"
-                        ] = refresh_token
+                        ] = data.get(
+                            "refresh_token"
+                        )
 
-                        session["user"] = {
+                        session[
+                            "user"
+                        ] = {
 
                             "id":
-                                user.get(
+                                auth_user.get(
                                     "id"
                                 ),
 
                             "email":
-                                user.get(
+                                auth_user.get(
                                     "email",
                                     email
                                 ),
@@ -1468,6 +1626,16 @@ def register():
                                 full_name,
 
                         }
+
+                        create_profile(
+                            auth_user,
+                            full_name
+                        )
+
+                        activity(
+                            "register",
+                            "New account created."
+                        )
 
                         flash(
                             "Account created successfully.",
@@ -1481,7 +1649,7 @@ def register():
                         )
 
                     flash(
-                        "Account created. Check your email for confirmation, then log in.",
+                        "Account created. Check your email for confirmation before logging in.",
                         "success"
                     )
 
@@ -1489,14 +1657,14 @@ def register():
                         url_for("login")
                     )
 
-            except requests.RequestException:
+            except Exception:
 
                 logger.exception(
                     "Registration failed"
                 )
 
                 flash(
-                    "Could not connect to Supabase.",
+                    "Registration failed. Check the Render logs.",
                     "error"
                 )
 
@@ -1505,7 +1673,6 @@ def register():
         "Create Account",
 
         """
-
 <section class="card form">
 
 <h1>
@@ -1513,21 +1680,19 @@ Create KOJA Account
 </h1>
 
 <p class="muted">
-Create an account using your
-email and password.
+Use your email and password.
 </p>
 
 <form method="POST">
 
 <label>
-Full name
+Full Name
 </label>
 
 <input
     type="text"
     name="full_name"
     required
-    autocomplete="name"
 >
 
 <label>
@@ -1548,48 +1713,38 @@ Password
 <input
     type="password"
     name="password"
-    required
     minlength="6"
-    autocomplete="new-password"
+    required
 >
 
 <label>
-Confirm password
+Confirm Password
 </label>
 
 <input
     type="password"
     name="confirm_password"
-    required
     minlength="6"
-    autocomplete="new-password"
+    required
 >
 
-<br><br>
+<br>
 
-<button
-    class="btn"
-    type="submit"
->
+<button type="submit">
 Create Account
 </button>
 
 </form>
 
 <p class="muted">
-
-Already have an account?
-
+Already registered?
 <a href="/login">
 Login
 </a>
-
 </p>
 
 </section>
-
 """
-
     )
 
 
@@ -1603,7 +1758,7 @@ Login
 )
 def login():
 
-    if current_user():
+    if user():
 
         return redirect(
             url_for("dashboard")
@@ -1611,14 +1766,18 @@ def login():
 
     if request.method == "POST":
 
-        email = request.form.get(
-            "email",
-            ""
-        ).strip().lower()
+        email = (
+            request.form.get(
+                "email",
+                ""
+            ).strip().lower()
+        )
 
-        password = request.form.get(
-            "password",
-            ""
+        password = (
+            request.form.get(
+                "password",
+                ""
+            )
         )
 
         if not email or not password:
@@ -1628,10 +1787,10 @@ def login():
                 "error"
             )
 
-        elif not supabase_configured():
+        elif not configured():
 
             flash(
-                "Supabase is not configured on Render.",
+                "Supabase environment variables are missing.",
                 "error"
             )
 
@@ -1639,18 +1798,15 @@ def login():
 
             try:
 
-                response = login_user(
-
+                response = signin(
                     email,
-
                     password
-
                 )
 
                 if response.status_code != 200:
 
                     flash(
-                        supabase_error(
+                        error_text(
                             response
                         ),
                         "error"
@@ -1658,15 +1814,17 @@ def login():
 
                 else:
 
-                    data = response.json()
+                    data = safe_json(
+                        response
+                    )
 
-                    user = (
+                    auth_user = (
                         data.get("user")
                         or {}
                     )
 
                     metadata = (
-                        user.get(
+                        auth_user.get(
                             "user_metadata"
                         )
                         or {}
@@ -1686,15 +1844,17 @@ def login():
                         "refresh_token"
                     )
 
-                    session["user"] = {
+                    session[
+                        "user"
+                    ] = {
 
                         "id":
-                            user.get(
+                            auth_user.get(
                                 "id"
                             ),
 
                         "email":
-                            user.get(
+                            auth_user.get(
                                 "email",
                                 email
                             ),
@@ -1703,16 +1863,30 @@ def login():
                             metadata.get(
                                 "full_name"
                             )
-                            or user.get(
+                            or auth_user.get(
                                 "email",
                                 email
                             ),
 
+                        "role":
+                            metadata.get(
+                                "role"
+                            ),
+
+                        "user_metadata":
+                            metadata,
+
+                        "app_metadata":
+                            auth_user.get(
+                                "app_metadata"
+                            )
+                            or {},
+
                     }
 
-                    flash(
-                        "Login successful.",
-                        "success"
+                    activity(
+                        "login",
+                        "User logged in."
                     )
 
                     return redirect(
@@ -1721,14 +1895,14 @@ def login():
                         )
                     )
 
-            except requests.RequestException:
+            except Exception:
 
                 logger.exception(
-                    "Login request failed"
+                    "Login failed"
                 )
 
                 flash(
-                    "Could not connect to Supabase.",
+                    "Login failed. Check the Render logs.",
                     "error"
                 )
 
@@ -1737,17 +1911,11 @@ def login():
         "Login",
 
         """
-
 <section class="card form">
 
 <h1>
 KOJA Login
 </h1>
-
-<p class="muted">
-Login with your email
-and password.
-</p>
 
 <form method="POST">
 
@@ -1773,31 +1941,23 @@ Password
     autocomplete="current-password"
 >
 
-<br><br>
+<br>
 
-<button
-    class="btn"
-    type="submit"
->
+<button type="submit">
 Login
 </button>
 
 </form>
 
 <p class="muted">
-
-Don't have an account?
-
+No account?
 <a href="/register">
 Create Account
 </a>
-
 </p>
 
 </section>
-
 """
-
     )
 
 
@@ -1808,15 +1968,7 @@ Create Account
 @app.route("/logout")
 def logout():
 
-    access_token = (
-        current_access_token()
-    )
-
-    if access_token:
-
-        logout_user(
-            access_token
-        )
+    auth_logout()
 
     session.clear()
 
@@ -1838,11 +1990,11 @@ def logout():
 @login_required
 def dashboard():
 
-    user = current_user()
+    current = user()
 
     name = (
-        user.get("full_name")
-        or user.get("email")
+        current.get("full_name")
+        or current.get("email")
         or "User"
     )
 
@@ -1851,7 +2003,6 @@ def dashboard():
         "Dashboard",
 
         f"""
-
 <section class="hero">
 
 <h1>
@@ -1859,12 +2010,8 @@ Welcome, {name}
 </h1>
 
 <p>
-KOJA AFRICA is ready.
+Your KOJA AFRICA dashboard.
 </p>
-
-<span class="badge">
-Account Active
-</span>
 
 </section>
 
@@ -1874,9 +2021,7 @@ Account Active
 
 <div class="service">
 
-<h2>
-📚 Assignments
-</h2>
+<h2>📚 Assignments</h2>
 
 <p class="muted">
 Submit assignments and
@@ -1885,49 +2030,94 @@ academic questions.
 
 <a
     class="btn"
-    href="/service/assignments"
+    href="/assignments"
 >
 Open
 </a>
 
 </div>
 
-
 <div class="service">
 
-<h2>
-🌾 Farmer
-</h2>
+<h2>🌾 Farmers</h2>
 
 <p class="muted">
-Farmer registration and
-agricultural services.
+Register and manage
+farmer services.
 </p>
 
 <a
     class="btn"
-    href="/service/farmer"
+    href="/farmer"
 >
 Open
 </a>
 
 </div>
 
-
 <div class="service">
 
-<h2>
-🚚 Delivery
-</h2>
+<h2>🚚 Delivery</h2>
 
 <p class="muted">
-Nearby drivers and
-delivery requests.
+Drivers, GPS and delivery
+requests.
 </p>
 
 <a
     class="btn"
-    href="/service/driver"
+    href="/driver"
+>
+Open
+</a>
+
+</div>
+
+<div class="service">
+
+<h2>📄 Documents</h2>
+
+<p class="muted">
+Browse KOJA documents.
+</p>
+
+<a
+    class="btn"
+    href="/documents"
+>
+Open
+</a>
+
+</div>
+
+<div class="service">
+
+<h2>🔔 Notifications</h2>
+
+<p class="muted">
+View your notifications.
+</p>
+
+<a
+    class="btn"
+    href="/notifications"
+>
+Open
+</a>
+
+</div>
+
+<div class="service">
+
+<h2>👤 Profile</h2>
+
+<p class="muted">
+View your account details.
+</p>
+
+<a
+    class="btn"
+    href="/profile"
 >
 Open
 </a>
@@ -1935,9 +2125,7 @@ Open
 </div>
 
 </section>
-
 """
-
     )
 
 
@@ -1949,28 +2137,82 @@ Open
 @login_required
 def services():
 
+    services_list = [
+
+        (
+            "📚",
+            "Assignments",
+            "Academic questions and assignments.",
+            "assignments"
+        ),
+
+        (
+            "🌾",
+            "Farmer Services",
+            "Farmer registration and services.",
+            "farmer"
+        ),
+
+        (
+            "🚚",
+            "Driver & Delivery",
+            "Drivers, GPS and delivery requests.",
+            "driver"
+        ),
+
+        (
+            "📄",
+            "Documents",
+            "Academic and service documents.",
+            "documents"
+        ),
+
+        (
+            "🎓",
+            "University",
+            "University and college services.",
+            "university"
+        ),
+
+        (
+            "💼",
+            "CV & Jobs",
+            "CV and job application services.",
+            "cv"
+        ),
+
+        (
+            "🧾",
+            "TPIN",
+            "TPIN-related services.",
+            "tpin"
+        ),
+
+    ]
+
     cards = ""
 
-    for item in KOJA_SERVICES:
+    for icon, name, description, route_name in (
+        services_list
+    ):
 
         cards += f"""
 
 <div class="service">
 
 <h2>
-{item["icon"]}
-{item["name"]}
+{icon} {name}
 </h2>
 
 <p class="muted">
-{item["description"]}
+{description}
 </p>
 
 <a
     class="btn"
-    href="/service/{item["id"]}"
+    href="/service/{route_name}"
 >
-Open Service
+Open
 </a>
 
 </div>
@@ -1978,11 +2220,8 @@ Open Service
 """
 
     return page(
-
         "Services",
-
         f"""
-
 <section class="card">
 
 <h1>
@@ -2002,9 +2241,7 @@ Select the service you need.
 {cards}
 
 </section>
-
 """
-
     )
 
 
@@ -2013,95 +2250,55 @@ Select the service you need.
 # ============================================================
 
 @app.route(
-    "/service/<service_id>"
+    "/service/<service_name>"
 )
 @login_required
-def service(service_id):
+def service_router(
+    service_name
+):
 
-    selected = None
+    routes = {
 
-    for item in KOJA_SERVICES:
+        "assignments":
+            "assignments",
 
-        if item["id"] == service_id:
+        "farmer":
+            "farmer",
 
-            selected = item
+        "driver":
+            "driver",
 
-            break
+        "documents":
+            "documents",
 
-    if not selected:
+        "university":
+            "university",
 
-        flash(
-            "Service not found.",
-            "error"
-        )
+        "cv":
+            "cv",
 
-        return redirect(
-            url_for("services")
-        )
+        "tpin":
+            "tpin",
 
-    if service_id == "assignments":
+    }
 
-        return redirect(
-            url_for(
-                "assignments_home"
-            )
-        )
+    endpoint = routes.get(
+        service_name
+    )
 
-    if service_id == "farmer":
-
-        return redirect(
-            url_for(
-                "farmer_home"
-            )
-        )
-
-    if service_id == "driver":
+    if endpoint:
 
         return redirect(
-            url_for(
-                "driver_home"
-            )
+            url_for(endpoint)
         )
 
-    return page(
+    flash(
+        "Service not found.",
+        "error"
+    )
 
-        selected["name"],
-
-        f"""
-
-<section class="card">
-
-<h1>
-{selected["icon"]}
-{selected["name"]}
-</h1>
-
-<p>
-{selected["description"]}
-</p>
-
-<div class="alert success">
-
-This KOJA module is ready
-for database integration.
-
-</div>
-
-<div class="actions">
-
-<a
-    class="btn"
-    href="/services"
->
-Back to Services
-</a>
-
-</div>
-
-</section>
-
-"""
-
+    return redirect(
+        url_for("services")
     )
 
 
@@ -2109,26 +2306,221 @@ Back to Services
 # ASSIGNMENTS
 # ============================================================
 
-@app.route("/assignments")
+@app.route(
+    "/assignments",
+    methods=["GET", "POST"]
+)
 @login_required
-def assignments_home():
+def assignments():
+
+    if request.method == "POST":
+
+        question = (
+            request.form.get(
+                "question",
+                ""
+            ).strip()
+        )
+
+        subject = (
+            request.form.get(
+                "subject",
+                ""
+            ).strip()
+        )
+
+        if not question:
+
+            flash(
+                "Please enter your question.",
+                "error"
+            )
+
+        else:
+
+            uid = user_id()
+
+            candidates = [
+
+                {
+                    "student_id": uid,
+                    "student_name":
+                        user().get(
+                            "full_name"
+                        )
+                        or user().get(
+                            "email"
+                        ),
+                    "question":
+                        question,
+                    "subject":
+                        subject,
+                    "status":
+                        "pending",
+                },
+
+                {
+                    "user_id": uid,
+                    "question":
+                        question,
+                    "subject":
+                        subject,
+                    "status":
+                        "pending",
+                },
+
+                {
+                    "user_id": uid,
+                    "question":
+                        question,
+                },
+
+            ]
+
+            result, error = (
+                flexible_insert(
+                    TABLE_QUESTIONS,
+                    candidates
+                )
+            )
+
+            if error:
+
+                flash(
+                    "Could not submit question: "
+                    + error,
+                    "error"
+                )
+
+            else:
+
+                activity(
+                    "question_created",
+                    "Academic question submitted."
+                )
+
+                flash(
+                    "Question submitted successfully.",
+                    "success"
+                )
+
+                return redirect(
+                    url_for(
+                        "assignments"
+                    )
+                )
 
     return page(
 
         "Assignments",
 
         """
-
 <section class="hero">
 
 <h1>
-📚 Assignments
+📚 Academic Assignments
 </h1>
 
 <p>
-Submit assignments, ask
-academic questions and
-receive answers.
+Submit your academic question
+to KOJA.
+</p>
+
+</section>
+
+<br>
+
+<section class="card form">
+
+<h2>
+Ask a Question
+</h2>
+
+<form method="POST">
+
+<label>
+Subject
+</label>
+
+<input
+    type="text"
+    name="subject"
+    placeholder="e.g. Biology"
+>
+
+<label>
+Question
+</label>
+
+<textarea
+    name="question"
+    required
+    placeholder="Write your question here..."
+></textarea>
+
+<br>
+
+<button type="submit">
+Submit Question
+</button>
+
+</form>
+
+</section>
+"""
+    )
+
+
+# ============================================================
+# DOCUMENTS
+# ============================================================
+
+@app.route("/documents")
+@login_required
+def documents():
+
+    rows, error = db_select(
+
+        TABLE_DOCUMENTS,
+
+        params={
+            "select":
+                "*",
+            "is_active":
+                "eq.true",
+            "order":
+                "created_at.desc",
+            "limit":
+                "50",
+        }
+
+    )
+
+    if error:
+
+        rows = []
+
+        flash(
+            "Documents could not be loaded: "
+            + error,
+            "error"
+        )
+
+    return page(
+
+        "Documents",
+
+        render_template_string(
+
+            """
+<section class="card">
+
+<h1>
+📄 KOJA Document Library
+</h1>
+
+<p class="muted">
+Available academic and service documents.
 </p>
 
 </section>
@@ -2137,123 +2529,415 @@ receive answers.
 
 <section class="grid">
 
+{% if rows %}
+
+{% for row in rows %}
+
 <div class="service">
 
-<h2>
-My Assignments
-</h2>
+<h3>
+{{ row.get("title") or "Untitled Document" }}
+</h3>
 
 <p class="muted">
-View assignments submitted
-to KOJA.
+{{ row.get("description") or "" }}
+</p>
+
+<p>
+<strong>
+Subject:
+</strong>
+
+{{ row.get("subject") or "-" }}
+
+</p>
+
+{% if row.get("file_url") %}
+
+<a
+    class="btn"
+    href="{{ row.get("file_url") }}"
+    target="_blank"
+>
+Open Document
+</a>
+
+{% elif row.get("file_path") %}
+
+<a
+    class="btn"
+    href="{{ url_for(
+        'document_download',
+        document_id=row.get('id')
+    ) }}"
+>
+Open Document
+</a>
+
+{% endif %}
+
+</div>
+
+{% endfor %}
+
+{% else %}
+
+<div class="service">
+
+<h3>
+No documents yet
+</h3>
+
+<p class="muted">
+Documents will appear here after
+they are uploaded.
 </p>
 
 </div>
 
-
-<div class="service">
-
-<h2>
-Ask a Question
-</h2>
-
-<p class="muted">
-Submit an academic question.
-</p>
-
-</div>
-
-
-<div class="service">
-
-<h2>
-My Answers
-</h2>
-
-<p class="muted">
-View answers provided
-by KOJA.
-</p>
-
-</div>
+{% endif %}
 
 </section>
+""",
 
-<br>
+            rows=rows or []
 
-<section class="card">
-
-<h2>
-Assignment Module
-</h2>
-
-<p class="muted">
-The next stage will connect
-this interface to the existing
-Supabase assignment tables.
-</p>
-
-</section>
-
-"""
+        )
 
     )
+
+
+# ============================================================
+# DOCUMENT DOWNLOAD
+# ============================================================
+
+@app.route(
+    "/documents/<document_id>/download"
+)
+@login_required
+def document_download(
+    document_id
+):
+
+    rows, error = db_select(
+
+        TABLE_DOCUMENTS,
+
+        params={
+            "select":
+                "*",
+            "id":
+                f"eq.{document_id}",
+            "limit":
+                "1",
+        }
+
+    )
+
+    if error or not rows:
+
+        flash(
+            "Document not found.",
+            "error"
+        )
+
+        return redirect(
+            url_for("documents")
+        )
+
+    document = rows[0]
+
+    file_url = document.get(
+        "file_url"
+    )
+
+    if file_url:
+
+        return redirect(
+            file_url
+        )
+
+    file_path = document.get(
+        "file_path"
+    )
+
+    if not file_path:
+
+        flash(
+            "Document file is unavailable.",
+            "error"
+        )
+
+        return redirect(
+            url_for("documents")
+        )
+
+    url = storage_url(
+        f"{STORAGE_BUCKET}/{file_path}"
+    )
+
+    try:
+
+        response = requests.get(
+
+            url,
+
+            headers={
+                "Authorization":
+                    f"Bearer "
+                    f"{database_key()}",
+                "apikey":
+                    database_key(),
+            },
+
+            timeout=60
+        )
+
+        if response.status_code >= 400:
+
+            flash(
+                error_text(
+                    response
+                ),
+                "error"
+            )
+
+            return redirect(
+                url_for("documents")
+            )
+
+        filename = (
+            document.get(
+                "file_name"
+            )
+            or "document"
+        )
+
+        return send_file(
+
+            io.BytesIO(
+                response.content
+            ),
+
+            as_attachment=True,
+
+            download_name=filename,
+
+            mimetype=(
+                document.get(
+                    "mime_type"
+                )
+                or "application/octet-stream"
+            )
+
+        )
+
+    except Exception:
+
+        logger.exception(
+            "Document download failed"
+        )
+
+        flash(
+            "Document download failed.",
+            "error"
+        )
+
+        return redirect(
+            url_for("documents")
+        )
 
 
 # ============================================================
 # FARMER
 # ============================================================
 
-@app.route("/farmer")
+@app.route(
+    "/farmer",
+    methods=["GET", "POST"]
+)
 @login_required
-def farmer_home():
+def farmer():
+
+    if request.method == "POST":
+
+        full_name = (
+            request.form.get(
+                "full_name",
+                ""
+            ).strip()
+        )
+
+        phone = (
+            request.form.get(
+                "phone",
+                ""
+            ).strip()
+        )
+
+        location = (
+            request.form.get(
+                "location",
+                ""
+            ).strip()
+        )
+
+        farming_type = (
+            request.form.get(
+                "farming_type",
+                ""
+            ).strip()
+        )
+
+        if not full_name or not phone:
+
+            flash(
+                "Name and phone are required.",
+                "error"
+            )
+
+        else:
+
+            uid = user_id()
+
+            candidates = [
+
+                {
+                    "user_id": uid,
+                    "full_name":
+                        full_name,
+                    "phone":
+                        phone,
+                    "location":
+                        location,
+                    "farming_type":
+                        farming_type,
+                    "status":
+                        "pending",
+                },
+
+                {
+                    "user_id": uid,
+                    "full_name":
+                        full_name,
+                    "phone":
+                        phone,
+                    "location":
+                        location,
+                },
+
+                {
+                    "full_name":
+                        full_name,
+                    "phone":
+                        phone,
+                },
+
+            ]
+
+            result, error = (
+                flexible_insert(
+                    TABLE_FARMERS,
+                    candidates
+                )
+            )
+
+            if error:
+
+                flash(
+                    "Farmer registration failed: "
+                    + error,
+                    "error"
+                )
+
+            else:
+
+                activity(
+                    "farmer_registered",
+                    "Farmer registration submitted."
+                )
+
+                flash(
+                    "Farmer registration submitted successfully.",
+                    "success"
+                )
+
+                return redirect(
+                    url_for("farmer")
+                )
 
     return page(
 
         "Farmer Services",
 
         """
-
 <section class="hero">
 
 <h1>
-🌾 Farmer Services
+🌾 Farmer Registration
 </h1>
 
 <p>
-KOJA agricultural and
-farmer services.
+Register for KOJA farmer services.
 </p>
 
 </section>
 
 <br>
 
-<section class="card">
+<section class="card form">
 
-<h2>
-Farmer Registration
-</h2>
+<form method="POST">
 
-<p class="muted">
-The farmer form will be
-connected to your existing
-Supabase farmer table using
-its actual column names.
-</p>
+<label>
+Full Name
+</label>
 
-<div class="alert success">
+<input
+    type="text"
+    name="full_name"
+    required
+>
 
-Authentication is already
-separate from the farmer
-database.
+<label>
+Phone
+</label>
 
-</div>
+<input
+    type="tel"
+    name="phone"
+    required
+>
+
+<label>
+Location
+</label>
+
+<input
+    type="text"
+    name="location"
+>
+
+<label>
+Type of Farming
+</label>
+
+<input
+    type="text"
+    name="farming_type"
+    placeholder="e.g. crops, livestock"
+>
+
+<br>
+
+<button type="submit">
+Register Farmer
+</button>
+
+</form>
 
 </section>
-
 """
-
     )
 
 
@@ -2261,16 +2945,161 @@ database.
 # DRIVER
 # ============================================================
 
-@app.route("/driver")
+@app.route(
+    "/driver",
+    methods=["GET", "POST"]
+)
 @login_required
-def driver_home():
+def driver():
+
+    if request.method == "POST":
+
+        full_name = (
+            request.form.get(
+                "full_name",
+                ""
+            ).strip()
+        )
+
+        phone = (
+            request.form.get(
+                "phone",
+                ""
+            ).strip()
+        )
+
+        vehicle_type = (
+            request.form.get(
+                "vehicle_type",
+                ""
+            ).strip()
+        )
+
+        vehicle_number = (
+            request.form.get(
+                "vehicle_number",
+                ""
+            ).strip()
+        )
+
+        license_number = (
+            request.form.get(
+                "license_number",
+                ""
+            ).strip()
+        )
+
+        if not full_name:
+
+            flash(
+                "Full name is required.",
+                "error"
+            )
+
+        elif not phone:
+
+            flash(
+                "Phone is required.",
+                "error"
+            )
+
+        else:
+
+            uid = user_id()
+
+            candidates = [
+
+                {
+                    "user_id": uid,
+                    "full_name":
+                        full_name,
+                    "phone":
+                        phone,
+                    "email":
+                        user().get(
+                            "email"
+                        ),
+                    "vehicle_type":
+                        vehicle_type,
+                    "vehicle_number":
+                        vehicle_number,
+                    "license_number":
+                        license_number,
+                    "status":
+                        "pending",
+                    "is_online":
+                        False,
+                },
+
+                {
+                    "user_id": uid,
+                    "full_name":
+                        full_name,
+                    "phone":
+                        phone,
+                    "vehicle_type":
+                        vehicle_type,
+                    "vehicle_number":
+                        vehicle_number,
+                    "license_number":
+                        license_number,
+                    "status":
+                        "pending",
+                    "is_online":
+                        False,
+                },
+
+                {
+                    "full_name":
+                        full_name,
+                    "phone":
+                        phone,
+                    "vehicle_type":
+                        vehicle_type,
+                    "vehicle_number":
+                        vehicle_number,
+                    "license_number":
+                        license_number,
+                },
+
+            ]
+
+            result, error = (
+                flexible_insert(
+                    TABLE_DRIVERS,
+                    candidates
+                )
+            )
+
+            if error:
+
+                flash(
+                    "Driver registration failed: "
+                    + error,
+                    "error"
+                )
+
+            else:
+
+                activity(
+                    "driver_registered",
+                    "Driver registration submitted."
+                )
+
+                flash(
+                    "Driver registration submitted successfully.",
+                    "success"
+                )
+
+                return redirect(
+                    url_for("driver")
+                )
 
     return page(
 
-        "Driver & Delivery",
+        "Driver Registration",
 
         """
-
 <section class="hero">
 
 <h1>
@@ -2278,57 +3107,92 @@ def driver_home():
 </h1>
 
 <p>
-Find nearby drivers and
-request deliveries.
+Register as a KOJA delivery driver.
 </p>
 
 </section>
 
 <br>
 
-<section class="grid">
+<section class="card form">
 
-<div class="service">
+<form method="POST">
 
-<h2>
-Nearby Drivers
-</h2>
+<label>
+Full Name
+</label>
 
-<p class="muted">
-Online drivers sharing their
-current GPS location will
-appear here.
-</p>
+<input
+    type="text"
+    name="full_name"
+    required
+>
 
-</div>
+<label>
+Phone
+</label>
 
+<input
+    type="tel"
+    name="phone"
+    required
+>
 
-<div class="service">
+<label>
+Vehicle Type
+</label>
 
-<h2>
-Request Delivery
-</h2>
+<select
+    name="vehicle_type"
+>
 
-<p class="muted">
-Select a nearby driver and
-send a delivery request.
-</p>
+<option value="">
+Select vehicle
+</option>
 
-</div>
+<option value="motorbike">
+Motorbike
+</option>
 
+<option value="car">
+Car
+</option>
 
-<div class="service">
+<option value="van">
+Van
+</option>
 
-<h2>
-Track Delivery
-</h2>
+<option value="truck">
+Truck
+</option>
 
-<p class="muted">
-Track an accepted delivery
-using GPS.
-</p>
+</select>
 
-</div>
+<label>
+Vehicle Number
+</label>
+
+<input
+    type="text"
+    name="vehicle_number"
+>
+
+<label>
+License Number
+</label>
+
+<input
+    type="text"
+    name="license_number"
+>
+
+<br>
+
+<button type="submit">
+Register as Driver
+</button>
+
+</form>
 
 </section>
 
@@ -2337,21 +3201,805 @@ using GPS.
 <section class="card">
 
 <h2>
-Driver Module
+Driver GPS
 </h2>
 
 <p class="muted">
-The next stage will connect
-driver registration, online
-status, GPS locations,
-delivery requests and tracking
-to the existing Supabase
-tables.
+After driver approval, the driver can
+go online and share their location so
+customers can find nearby drivers.
+</p>
+
+<div class="actions">
+
+<a
+    class="btn"
+    href="/driver/online"
+>
+Driver Online
+</a>
+
+<a
+    class="btn"
+    href="/driver/nearby"
+>
+Nearby Drivers
+</a>
+
+</div>
+
+</section>
+"""
+    )
+
+
+# ============================================================
+# DRIVER ONLINE
+# ============================================================
+
+@app.route(
+    "/driver/online",
+    methods=["GET", "POST"]
+)
+@login_required
+def driver_online():
+
+    uid = user_id()
+
+    if request.method == "POST":
+
+        is_online = (
+            request.form.get(
+                "is_online"
+            )
+            == "true"
+        )
+
+        candidates = [
+
+            {
+                "is_online":
+                    is_online
+            }
+
+        ]
+
+        result, error = (
+            db_update(
+
+                TABLE_DRIVERS,
+
+                {
+                    "user_id":
+                        f"eq.{uid}"
+                },
+
+                candidates[0]
+
+            )
+        )
+
+        if error:
+
+            flash(
+                "Could not update driver status: "
+                + error,
+                "error"
+            )
+
+        else:
+
+            flash(
+                "Driver status updated.",
+                "success"
+            )
+
+        return redirect(
+            url_for(
+                "driver_online"
+            )
+        )
+
+    drivers, error = db_select(
+
+        TABLE_DRIVERS,
+
+        params={
+            "select":
+                "*",
+            "user_id":
+                f"eq.{uid}",
+            "limit":
+                "1",
+        }
+
+    )
+
+    driver_record = (
+        drivers[0]
+        if drivers
+        else {}
+    )
+
+    online = bool(
+        driver_record.get(
+            "is_online",
+            False
+        )
+    )
+
+    return page(
+
+        "Driver Online",
+
+        f"""
+<section class="card">
+
+<h1>
+Driver Online Status
+</h1>
+
+<p>
+
+Current status:
+
+<span class="badge">
+
+{"ONLINE" if online else "OFFLINE"}
+
+</span>
+
+</p>
+
+<form method="POST">
+
+<input
+    type="hidden"
+    name="is_online"
+    value="{"false" if online else "true"}"
+>
+
+<button type="submit">
+
+{"Go Offline" if online else "Go Online"}
+
+</button>
+
+</form>
+
+</section>
+
+<br>
+
+<section class="card">
+
+<h2>
+GPS Location
+</h2>
+
+<p class="muted">
+Use the location endpoint to send the
+driver's current latitude and longitude.
+</p>
+
+</section>
+"""
+    )
+
+
+# ============================================================
+# DRIVER GPS API
+# ============================================================
+
+@app.route(
+    "/api/driver/location",
+    methods=["POST"]
+)
+@login_required
+def driver_location():
+
+    uid = user_id()
+
+    data = request.get_json(
+        silent=True
+    ) or {}
+
+    latitude = data.get(
+        "latitude"
+    )
+
+    longitude = data.get(
+        "longitude"
+    )
+
+    accuracy = data.get(
+        "accuracy"
+    )
+
+    if latitude is None or longitude is None:
+
+        return jsonify({
+
+            "success":
+                False,
+
+            "message":
+                "Latitude and longitude are required."
+
+        }), 400
+
+    candidates = [
+
+        {
+            "driver_id":
+                uid,
+            "user_id":
+                uid,
+            "latitude":
+                latitude,
+            "longitude":
+                longitude,
+            "accuracy":
+                accuracy,
+            "updated_at":
+                utc_now(),
+        },
+
+        {
+            "driver_id":
+                uid,
+            "latitude":
+                latitude,
+            "longitude":
+                longitude,
+        },
+
+        {
+            "user_id":
+                uid,
+            "latitude":
+                latitude,
+            "longitude":
+                longitude,
+        },
+
+    ]
+
+    result, error = (
+        flexible_insert(
+            TABLE_DRIVER_LOCATIONS,
+            candidates
+        )
+    )
+
+    if error:
+
+        return jsonify({
+
+            "success":
+                False,
+
+            "message":
+                error
+
+        }), 400
+
+    return jsonify({
+
+        "success":
+            True,
+
+        "message":
+            "Location updated."
+
+    })
+
+
+# ============================================================
+# NEARBY DRIVERS
+# ============================================================
+
+@app.route(
+    "/driver/nearby"
+)
+@login_required
+def nearby_drivers():
+
+    rows, error = db_select(
+
+        TABLE_DRIVERS,
+
+        params={
+            "select":
+                "*",
+            "is_online":
+                "eq.true",
+            "status":
+                "eq.approved",
+            "limit":
+                "50",
+        }
+
+    )
+
+    if error:
+
+        rows = []
+
+        flash(
+            "Nearby drivers could not be loaded: "
+            + error,
+            "error"
+        )
+
+    return page(
+
+        "Nearby Drivers",
+
+        render_template_string(
+
+            """
+<section class="hero">
+
+<h1>
+🚚 Nearby Drivers
+</h1>
+
+<p>
+Drivers currently available for
+delivery requests.
 </p>
 
 </section>
 
+<br>
+
+<section class="grid">
+
+{% if rows %}
+
+{% for driver in rows %}
+
+<div class="service">
+
+<h2>
+🚚
+</h2>
+
+<h3>
+{{ driver.get("full_name") or "Driver" }}
+</h3>
+
+<p>
+Vehicle:
+{{ driver.get("vehicle_type") or "-" }}
+</p>
+
+<p>
+Vehicle No:
+{{ driver.get("vehicle_number") or "-" }}
+</p>
+
+<span class="badge">
+ONLINE
+</span>
+
+<br><br>
+
+<a
+    class="btn"
+    href="{{ url_for(
+        'request_delivery',
+        driver_id=driver.get('id')
+    ) }}"
+>
+Request Delivery
+</a>
+
+</div>
+
+{% endfor %}
+
+{% else %}
+
+<div class="service">
+
+<h3>
+No approved drivers online
+</h3>
+
+<p class="muted">
+Nearby available drivers will
+appear here.
+</p>
+
+</div>
+
+{% endif %}
+
+</section>
+""",
+
+            rows=rows or []
+
+        )
+
+    )
+
+
+# ============================================================
+# DELIVERY REQUEST
+# ============================================================
+
+@app.route(
+    "/delivery/request/<driver_id>",
+    methods=["GET", "POST"]
+)
+@login_required
+def request_delivery(
+    driver_id
+):
+
+    if request.method == "POST":
+
+        pickup = (
+            request.form.get(
+                "pickup",
+                ""
+            ).strip()
+        )
+
+        destination = (
+            request.form.get(
+                "destination",
+                ""
+            ).strip()
+        )
+
+        notes = (
+            request.form.get(
+                "notes",
+                ""
+            ).strip()
+        )
+
+        if not pickup or not destination:
+
+            flash(
+                "Pickup and destination are required.",
+                "error"
+            )
+
+        else:
+
+            uid = user_id()
+
+            candidates = [
+
+                {
+                    "customer_id":
+                        uid,
+                    "user_id":
+                        uid,
+                    "driver_id":
+                        driver_id,
+                    "pickup_location":
+                        pickup,
+                    "destination":
+                        destination,
+                    "notes":
+                        notes,
+                    "status":
+                        "pending",
+                },
+
+                {
+                    "user_id":
+                        uid,
+                    "driver_id":
+                        driver_id,
+                    "pickup":
+                        pickup,
+                    "destination":
+                        destination,
+                    "notes":
+                        notes,
+                    "status":
+                        "pending",
+                },
+
+            ]
+
+            result, error = (
+                flexible_insert(
+                    TABLE_DELIVERY_REQUESTS,
+                    candidates
+                )
+            )
+
+            if error:
+
+                flash(
+                    "Delivery request failed: "
+                    + error,
+                    "error"
+                )
+
+            else:
+
+                activity(
+                    "delivery_requested",
+                    "Delivery request submitted."
+                )
+
+                flash(
+                    "Delivery request sent.",
+                    "success"
+                )
+
+                return redirect(
+                    url_for(
+                        "delivery_requests"
+                    )
+                )
+
+    return page(
+
+        "Request Delivery",
+
+        f"""
+<section class="card form">
+
+<h1>
+Request Delivery
+</h1>
+
+<form method="POST">
+
+<label>
+Pickup Location
+</label>
+
+<input
+    type="text"
+    name="pickup"
+    required
+    placeholder="Where should the driver collect?"
+>
+
+<label>
+Destination
+</label>
+
+<input
+    type="text"
+    name="destination"
+    required
+    placeholder="Where should the driver deliver?"
+>
+
+<label>
+Notes
+</label>
+
+<textarea
+    name="notes"
+    placeholder="Additional instructions"
+></textarea>
+
+<br>
+
+<button type="submit">
+Send Delivery Request
+</button>
+
+</form>
+
+</section>
 """
+    )
+
+
+# ============================================================
+# DELIVERY REQUESTS
+# ============================================================
+
+@app.route(
+    "/delivery/requests"
+)
+@login_required
+def delivery_requests():
+
+    uid = user_id()
+
+    rows, error = db_select(
+
+        TABLE_DELIVERY_REQUESTS,
+
+        params={
+            "select":
+                "*",
+            "user_id":
+                f"eq.{uid}",
+            "order":
+                "created_at.desc",
+            "limit":
+                "50",
+        }
+
+    )
+
+    if error:
+
+        rows = []
+
+    return page(
+
+        "Delivery Requests",
+
+        render_template_string(
+
+            """
+<section class="card">
+
+<h1>
+🚚 My Delivery Requests
+</h1>
+
+</section>
+
+<br>
+
+<section class="grid">
+
+{% for row in rows %}
+
+<div class="service">
+
+<h3>
+Delivery
+</h3>
+
+<p>
+Pickup:
+{{ row.get("pickup_location")
+   or row.get("pickup")
+   or "-" }}
+</p>
+
+<p>
+Destination:
+{{ row.get("destination")
+   or "-" }}
+</p>
+
+<p>
+Status:
+<strong>
+{{ row.get("status") or "pending" }}
+</strong>
+</p>
+
+</div>
+
+{% else %}
+
+<div class="service">
+
+<h3>
+No delivery requests
+</h3>
+
+</div>
+
+{% endfor %}
+
+</section>
+""",
+
+            rows=rows or []
+
+        )
+
+    )
+
+
+# ============================================================
+# NOTIFICATIONS
+# ============================================================
+
+@app.route(
+    "/notifications"
+)
+@login_required
+def notifications():
+
+    uid = user_id()
+
+    rows, error = db_select(
+
+        TABLE_NOTIFICATIONS,
+
+        params={
+            "select":
+                "*",
+            "user_id":
+                f"eq.{uid}",
+            "order":
+                "created_at.desc",
+            "limit":
+                "50",
+        }
+
+    )
+
+    if error:
+
+        rows = []
+
+    return page(
+
+        "Notifications",
+
+        render_template_string(
+
+            """
+<section class="card">
+
+<h1>
+🔔 Notifications
+</h1>
+
+</section>
+
+<br>
+
+<section class="grid">
+
+{% for row in rows %}
+
+<div class="service">
+
+<h3>
+{{ row.get("title")
+   or "Notification" }}
+</h3>
+
+<p>
+{{ row.get("message")
+   or row.get("description")
+   or "" }}
+</p>
+
+<p class="muted">
+{{ row.get("created_at")
+   or "" }}
+</p>
+
+</div>
+
+{% else %}
+
+<div class="service">
+
+<h3>
+No notifications
+</h3>
+
+<p class="muted">
+Your notifications will appear here.
+</p>
+
+</div>
+
+{% endfor %}
+
+</section>
+""",
+
+            rows=rows or []
+
+        )
 
     )
 
@@ -2364,18 +4012,17 @@ tables.
 @login_required
 def profile():
 
-    user = current_user()
+    current = user()
 
     return page(
 
         "Profile",
 
         f"""
-
 <section class="card">
 
 <h1>
-My Profile
+👤 My Profile
 </h1>
 
 <p>
@@ -2383,7 +4030,10 @@ My Profile
 Name:
 </strong>
 
-{user.get("full_name", "")}
+{current.get(
+    "full_name",
+    ""
+)}
 
 </p>
 
@@ -2392,7 +4042,10 @@ Name:
 Email:
 </strong>
 
-{user.get("email", "")}
+{current.get(
+    "email",
+    ""
+)}
 
 </p>
 
@@ -2401,54 +4054,39 @@ Email:
 User ID:
 </strong>
 
-{user.get("id", "")}
+{current.get(
+    "id",
+    ""
+)}
 
-</p>
-
-<p class="muted">
-Your login is handled by
-Supabase Auth.
 </p>
 
 </section>
-
 """
-
     )
 
 
 # ============================================================
-# API: CURRENT USER
+# API CURRENT USER
 # ============================================================
 
 @app.route("/api/me")
 @login_required
 def api_me():
 
-    user = current_user()
-
     return jsonify({
 
-        "success": True,
+        "success":
+            True,
 
-        "user": {
-
-            "id":
-                user.get("id"),
-
-            "email":
-                user.get("email"),
-
-            "full_name":
-                user.get("full_name"),
-
-        }
+        "user":
+            user(),
 
     })
 
 
 # ============================================================
-# API: SERVICES
+# API SERVICES
 # ============================================================
 
 @app.route("/api/services")
@@ -2457,16 +4095,46 @@ def api_services():
 
     return jsonify({
 
-        "success": True,
+        "success":
+            True,
 
-        "services":
-            KOJA_SERVICES,
+        "services": [
+
+            {
+                "id":
+                    "assignments",
+                "name":
+                    "Assignments"
+            },
+
+            {
+                "id":
+                    "farmer",
+                "name":
+                    "Farmer Services"
+            },
+
+            {
+                "id":
+                    "driver",
+                "name":
+                    "Driver & Delivery"
+            },
+
+            {
+                "id":
+                    "documents",
+                "name":
+                    "Documents"
+            },
+
+        ]
 
     })
 
 
 # ============================================================
-# API: SUPABASE STATUS
+# API SYSTEM
 # ============================================================
 
 @app.route("/api/system")
@@ -2474,81 +4142,614 @@ def api_system():
 
     return jsonify({
 
-        "success": True,
-
         "application":
             APP_NAME,
 
-        "supabase_configured":
-            supabase_configured(),
+        "version":
+            "koja-full-v1",
+
+        "flask":
+            True,
+
+        "supabase":
+            configured(),
 
         "authentication":
-            "supabase_auth",
+            "Supabase Auth",
 
         "database":
-            "supabase_rest",
+            "Supabase REST",
 
-        "server":
-            "flask",
+        "storage":
+            STORAGE_BUCKET,
 
     })
 
 
 # ============================================================
-# ERROR: 404
+# ADMIN DASHBOARD
 # ============================================================
 
-@app.errorhandler(404)
-def not_found(error):
+@app.route("/admin")
+@admin_required
+def admin_dashboard():
+
+    counts = {}
+
+    tables = [
+
+        "profiles",
+        "questions",
+        "documents",
+        "farmers",
+        "drivers",
+        "delivery_requests",
+        "notifications",
+
+    ]
+
+    for table in tables:
+
+        rows, error = db_select(
+
+            table,
+
+            params={
+                "select":
+                    "id",
+                "limit":
+                    "1000",
+            }
+
+        )
+
+        if isinstance(rows, list):
+
+            counts[table] = len(rows)
+
+        else:
+
+            counts[table] = 0
 
     return page(
 
-        "Page Not Found",
+        "Admin Dashboard",
 
-        """
+        f"""
+<section class="hero">
+
+<h1>
+Admin Dashboard
+</h1>
+
+<p>
+KOJA AFRICA administration.
+</p>
+
+</section>
+
+<br>
+
+<section class="grid">
+
+<div class="stat">
+<div class="stat-number">
+{counts.get("profiles", 0)}
+</div>
+Profiles
+</div>
+
+<div class="stat">
+<div class="stat-number">
+{counts.get("questions", 0)}
+</div>
+Questions
+</div>
+
+<div class="stat">
+<div class="stat-number">
+{counts.get("documents", 0)}
+</div>
+Documents
+</div>
+
+<div class="stat">
+<div class="stat-number">
+{counts.get("farmers", 0)}
+</div>
+Farmers
+</div>
+
+<div class="stat">
+<div class="stat-number">
+{counts.get("drivers", 0)}
+</div>
+Drivers
+</div>
+
+<div class="stat">
+<div class="stat-number">
+{counts.get("delivery_requests", 0)}
+</div>
+Deliveries
+</div>
+
+</section>
+
+<br>
 
 <section class="card">
 
-<h1>
-Page Not Found
-</h1>
-
-<p class="muted">
-The page you requested
-does not exist.
-</p>
+<h2>
+Administration
+</h2>
 
 <div class="actions">
 
 <a
     class="btn"
-    href="/"
+    href="/admin/drivers"
 >
-Go Home
+Drivers
+</a>
+
+<a
+    class="btn"
+    href="/admin/questions"
+>
+Questions
+</a>
+
+<a
+    class="btn"
+    href="/admin/farmers"
+>
+Farmers
 </a>
 
 </div>
 
 </section>
-
 """
+    )
 
+
+# ============================================================
+# ADMIN DRIVERS
+# ============================================================
+
+@app.route(
+    "/admin/drivers"
+)
+@admin_required
+def admin_drivers():
+
+    rows, error = db_select(
+
+        TABLE_DRIVERS,
+
+        params={
+            "select":
+                "*",
+            "order":
+                "created_at.desc",
+            "limit":
+                "100",
+        }
+
+    )
+
+    if error:
+
+        rows = []
+
+    return page(
+
+        "Admin Drivers",
+
+        render_template_string(
+
+            """
+<section class="card">
+
+<h1>
+Driver Management
+</h1>
+
+<div class="table-wrap">
+
+<table>
+
+<thead>
+
+<tr>
+<th>Name</th>
+<th>Phone</th>
+<th>Vehicle</th>
+<th>Status</th>
+<th>Online</th>
+</tr>
+
+</thead>
+
+<tbody>
+
+{% for row in rows %}
+
+<tr>
+
+<td>
+{{ row.get("full_name") or "-" }}
+</td>
+
+<td>
+{{ row.get("phone") or "-" }}
+</td>
+
+<td>
+{{ row.get("vehicle_type") or "-" }}
+</td>
+
+<td>
+{{ row.get("status") or "-" }}
+</td>
+
+<td>
+{{ row.get("is_online") }}
+</td>
+
+</tr>
+
+{% endfor %}
+
+</tbody>
+
+</table>
+
+</div>
+
+</section>
+""",
+
+            rows=rows or []
+
+        )
+
+    )
+
+
+# ============================================================
+# ADMIN QUESTIONS
+# ============================================================
+
+@app.route(
+    "/admin/questions"
+)
+@admin_required
+def admin_questions():
+
+    rows, error = db_select(
+
+        TABLE_QUESTIONS,
+
+        params={
+            "select":
+                "*",
+            "order":
+                "created_at.desc",
+            "limit":
+                "100",
+        }
+
+    )
+
+    if error:
+
+        rows = []
+
+    return page(
+
+        "Admin Questions",
+
+        render_template_string(
+
+            """
+<section class="card">
+
+<h1>
+Academic Questions
+</h1>
+
+<div class="table-wrap">
+
+<table>
+
+<thead>
+
+<tr>
+<th>Subject</th>
+<th>Question</th>
+<th>Status</th>
+<th>Created</th>
+</tr>
+
+</thead>
+
+<tbody>
+
+{% for row in rows %}
+
+<tr>
+
+<td>
+{{ row.get("subject") or "-" }}
+</td>
+
+<td>
+{{ row.get("question") or "-" }}
+</td>
+
+<td>
+{{ row.get("status") or "-" }}
+</td>
+
+<td>
+{{ row.get("created_at") or "-" }}
+</td>
+
+</tr>
+
+{% endfor %}
+
+</tbody>
+
+</table>
+
+</div>
+
+</section>
+""",
+
+            rows=rows or []
+
+        )
+
+    )
+
+
+# ============================================================
+# ADMIN FARMERS
+# ============================================================
+
+@app.route(
+    "/admin/farmers"
+)
+@admin_required
+def admin_farmers():
+
+    rows, error = db_select(
+
+        TABLE_FARMERS,
+
+        params={
+            "select":
+                "*",
+            "order":
+                "created_at.desc",
+            "limit":
+                "100",
+        }
+
+    )
+
+    if error:
+
+        rows = []
+
+    return page(
+
+        "Admin Farmers",
+
+        render_template_string(
+
+            """
+<section class="card">
+
+<h1>
+Farmer Registrations
+</h1>
+
+<div class="table-wrap">
+
+<table>
+
+<thead>
+
+<tr>
+<th>Name</th>
+<th>Phone</th>
+<th>Location</th>
+<th>Status</th>
+</tr>
+
+</thead>
+
+<tbody>
+
+{% for row in rows %}
+
+<tr>
+
+<td>
+{{ row.get("full_name") or "-" }}
+</td>
+
+<td>
+{{ row.get("phone") or "-" }}
+</td>
+
+<td>
+{{ row.get("location") or "-" }}
+</td>
+
+<td>
+{{ row.get("status") or "-" }}
+</td>
+
+</tr>
+
+{% endfor %}
+
+</tbody>
+
+</table>
+
+</div>
+
+</section>
+""",
+
+            rows=rows or []
+
+        )
+
+    )
+
+
+# ============================================================
+# UNIVERSITY
+# ============================================================
+
+@app.route("/university")
+@login_required
+def university():
+
+    return page(
+
+        "University Services",
+
+        """
+<section class="card">
+
+<h1>
+🎓 University Services
+</h1>
+
+<p class="muted">
+University and college services
+will be connected to the relevant
+KOJA tables.
+</p>
+
+</section>
+"""
+    )
+
+
+# ============================================================
+# CV
+# ============================================================
+
+@app.route("/cv")
+@login_required
+def cv():
+
+    return page(
+
+        "CV & Jobs",
+
+        """
+<section class="card">
+
+<h1>
+💼 CV & Jobs
+</h1>
+
+<p class="muted">
+CV creation and job application
+services.
+</p>
+
+</section>
+"""
+    )
+
+
+# ============================================================
+# TPIN
+# ============================================================
+
+@app.route("/tpin")
+@login_required
+def tpin():
+
+    return page(
+
+        "TPIN Services",
+
+        """
+<section class="card">
+
+<h1>
+🧾 TPIN Services
+</h1>
+
+<p class="muted">
+TPIN-related services will be
+connected here.
+</p>
+
+</section>
+"""
+    )
+
+
+# ============================================================
+# 404
+# ============================================================
+
+@app.errorhandler(404)
+def error_404(error):
+
+    return page(
+
+        "Not Found",
+
+        """
+<section class="card">
+
+<h1>
+404
+</h1>
+
+<p>
+The page does not exist.
+</p>
+
+<a
+    class="btn"
+    href="/"
+>
+Home
+</a>
+
+</section>
+"""
     ), 404
 
 
 # ============================================================
-# ERROR: 413
+# 413
 # ============================================================
 
 @app.errorhandler(413)
-def file_too_large(error):
+def error_413(error):
 
     return page(
 
         "File Too Large",
 
         """
-
 <section class="card">
 
 <h1>
@@ -2556,26 +4757,23 @@ File Too Large
 </h1>
 
 <p>
-The maximum upload size
-is 15 MB.
+The maximum upload size is 15 MB.
 </p>
 
 </section>
-
 """
-
     ), 413
 
 
 # ============================================================
-# ERROR: 500
+# 500
 # ============================================================
 
 @app.errorhandler(500)
-def internal_error(error):
+def error_500(error):
 
     logger.exception(
-        "Unhandled server error"
+        "Unhandled application error"
     )
 
     return page(
@@ -2583,7 +4781,6 @@ def internal_error(error):
         "Server Error",
 
         """
-
 <section class="card">
 
 <h1>
@@ -2591,24 +4788,22 @@ Server Error
 </h1>
 
 <p>
-The server encountered an
-unexpected error.
+KOJA encountered an unexpected
+server error.
 </p>
 
 <p class="muted">
-Check the Render logs for
-the exact error.
+Check the Render logs for the
+exact traceback.
 </p>
 
 </section>
-
 """
-
     ), 500
 
 
 # ============================================================
-# START APPLICATION
+# START
 # ============================================================
 
 if __name__ == "__main__":
