@@ -1177,157 +1177,216 @@ def book_teacher(provider_id):
 # DRIVER REGISTRATION / PROFILE
 # ============================================================
 
-@app.route("/driver/register",methods=["GET","POST"])
+DRIVER_PROFILE_COLUMNS = (
+    "id,provider_id,vehicle_type,vehicle_make,vehicle_model,"
+    "vehicle_registration,driving_license_number,service_area,"
+    "verification_status,created_at"
+)
+
+
+def get_driver_provider(user_id):
+    """Return the service_providers row belonging to the logged-in profile."""
+    if not user_id:
+        return None
+    return first_row("service_providers", {"user_id": user_id, "provider_type": "driver"})
+
+
+def ensure_driver_provider(user):
+    """Create the provider record first; driver_profiles.provider_id points to it."""
+    provider = get_driver_provider(user.get("id"))
+    if provider:
+        return provider, None
+
+    payload = {
+        "id": str(uuid.uuid4()),
+        "user_id": user.get("id"),
+        "provider_type": "driver",
+        "full_name": user.get("name") or user.get("full_name") or "Driver",
+        "phone": user.get("phone") or None,
+        "email": user.get("email") or None,
+        "verification_status": "pending",
+        "is_available": False,
+        "is_active": True,
+    }
+    provider, error = db_insert("service_providers", payload)
+    if error:
+        return None, error
+    return provider or payload, None
+
+
+@app.route("/driver/register", methods=["GET", "POST"])
+@app.route("/drivers/register", methods=["GET", "POST"])
 @login_required
 def driver_register():
-    user=current_user()
-    if request.method=="POST":
-        data={
-            "id":str(uuid.uuid4()),
-            "provider_id":user["id"],
-            "user_id":user["id"],
-            "full_name":user["name"],
-            "phone":clean(request.form.get("phone")) or user.get("phone"),
-            "vehicle_type":clean(request.form.get("vehicle_type")),
-            "vehicle_number":clean(request.form.get("vehicle_number")),
-            "vehicle_model":clean(request.form.get("vehicle_model")),
-            "license_number":clean(request.form.get("license_number")),
-            "status":"approved",
-            "is_available":False,
-            "created_at":utc_now()
+    user = current_user() or {}
+    provider = get_driver_provider(user.get("id"))
+    existing = None
+    if provider:
+        existing = first_row("driver_profiles", {"provider_id": provider.get("id")})
+
+    if request.method == "POST":
+        vehicle_type = clean(request.form.get("vehicle_type"))
+        vehicle_make = clean(request.form.get("vehicle_make"))
+        vehicle_model = clean(request.form.get("vehicle_model"))
+        vehicle_registration = clean(request.form.get("vehicle_registration"))
+        driving_license_number = clean(request.form.get("driving_license_number"))
+        service_area = clean(request.form.get("service_area"))
+
+        if not vehicle_type or not vehicle_registration or not driving_license_number:
+            flash("Vehicle type, vehicle registration and driving licence number are required.", "danger")
+            return redirect(url_for("driver_register"))
+
+        provider, provider_error = ensure_driver_provider(user)
+        if provider_error or not provider or not provider.get("id"):
+            logger.error("Driver provider creation failed: %s", provider_error)
+            flash("Driver registration failed while creating the service provider record. " + str(provider_error or "Unknown database error")[:700], "danger")
+            return redirect(url_for("driver_register"))
+
+        provider_id = str(provider["id"])
+        existing = first_row("driver_profiles", {"provider_id": provider_id})
+
+        # IMPORTANT: these are the exact confirmed driver_profiles columns.
+        payload = {
+            "provider_id": provider_id,
+            "vehicle_type": vehicle_type,
+            "vehicle_make": vehicle_make or None,
+            "vehicle_model": vehicle_model or None,
+            "vehicle_registration": vehicle_registration,
+            "driving_license_number": driving_license_number,
+            "service_area": service_area or None,
+            "verification_status": "pending",
         }
-        row,error=db_insert("driver_profiles",data)
-        if error:
-            minimal={
-                "id":data["id"],"provider_id":user["id"],
-                "full_name":data["full_name"],"phone":data["phone"],
-                "vehicle_type":data["vehicle_type"],
-                "vehicle_number":data["vehicle_number"]
-            }
-            row,error=db_insert("driver_profiles",minimal)
-        if error:
-            flash("Driver profile could not be saved. Check driver_profiles columns.","danger")
+
+        if existing and existing.get("id"):
+            row, error = db_update("driver_profiles", {"id": existing["id"]}, payload)
         else:
-            db_update("profiles",{"id":user["id"]},{"role":"driver"})
-            session["user"]["role"]="driver"
-            session["user"]["vehicle_type"]=data["vehicle_type"]
-            session["user"]["vehicle_number"]=data["vehicle_number"]
-            flash("Driver profile registered. You can now go online.","success")
+            payload["id"] = str(uuid.uuid4())
+            row, error = db_insert("driver_profiles", payload)
+
+        if error:
+            logger.error("Exact driver_profiles insert/update failed: %s", error)
+            flash("Driver registration failed: " + str(error)[:900], "danger")
+            return redirect(url_for("driver_register"))
+
+        # A successful driver profile makes the account a driver, but verification
+        # remains pending until an administrator approves the profile.
+        db_update("profiles", {"id": user["id"]}, {"role": "driver"})
+        session["user"]["role"] = "driver"
+        session["user"]["driver_provider_id"] = provider_id
+        session["user"]["vehicle_type"] = vehicle_type
+        session["user"]["vehicle_registration"] = vehicle_registration
+        session["user"]["driving_license_number"] = driving_license_number
+        log_activity("driver_registration", "Driver profile submitted for verification.")
+        flash("Driver registration submitted successfully. Your profile is pending admin verification.", "success")
         return redirect(url_for("driver_dashboard"))
 
-    existing=first_row("driver_profiles",{"provider_id":user["id"]}) or first_row("driver_profiles",{"user_id":user["id"]})
-    return render_page("Driver Registration",r"""
-<div class="card"><h2>Driver Profile</h2>
-{% if existing %}<p class="online">A driver profile already exists.</p>{% endif %}
+    return render_page("Driver Registration", r"""
+<div class="hero"><h2>Driver Registration</h2>
+<p>Complete your driver and vehicle information. A KOJA administrator must verify your registration before customers can request you.</p></div>
+<div class="card">
 <form method="post">
-<label>Phone</label><input name="phone" value="{{ existing.get('phone') if existing else (user.phone or '') }}">
-<label>Vehicle Type</label><select name="vehicle_type"><option>Motorcycle</option><option>Car</option><option>Van</option><option>Pickup</option><option>Truck</option><option>Bicycle</option></select>
-<label>Vehicle Number / Registration</label><input name="vehicle_number" value="{{ existing.get('vehicle_number') if existing else '' }}">
-<label>Vehicle Model</label><input name="vehicle_model" value="{{ existing.get('vehicle_model') if existing else '' }}">
-<label>Driver Licence Number</label><input name="license_number">
-<button type="submit">Save Driver Profile</button>
-</form></div>
-""",existing=existing)
+<label>Vehicle Type</label>
+<select name="vehicle_type" required>
+<option value="">Select vehicle type</option>
+<option>Motorcycle</option><option>Car</option><option>Van</option><option>Pickup</option><option>Truck</option><option>Bicycle</option>
+</select>
+<label>Vehicle Make</label><input name="vehicle_make" value="{{ existing.get('vehicle_make','') if existing else '' }}" placeholder="Toyota, Honda, etc.">
+<label>Vehicle Model</label><input name="vehicle_model" value="{{ existing.get('vehicle_model','') if existing else '' }}" placeholder="Model">
+<label>Vehicle Registration</label><input name="vehicle_registration" value="{{ existing.get('vehicle_registration','') if existing else '' }}" required placeholder="ABC 1234">
+<label>Driving Licence Number</label><input name="driving_license_number" value="{{ existing.get('driving_license_number','') if existing else '' }}" required>
+<label>Service Area</label><input name="service_area" value="{{ existing.get('service_area','') if existing else '' }}" placeholder="e.g. Kitwe CBD, Chimwemwe">
+{% if existing %}<p class="small">Current verification status: <strong>{{ existing.get('verification_status') or 'pending' }}</strong></p>{% endif %}
+<button type="submit">Submit Driver Registration</button>
+</form>
+</div>
+""", existing=existing)
 
 # ============================================================
+
 # DRIVER DASHBOARD / ONLINE STATUS / REQUESTS
 # ============================================================
 
 @app.route("/driver")
 @login_required
 def driver_dashboard():
-    user=current_user()
-    profile=first_row("driver_profiles",{"provider_id":user["id"]}) or first_row("driver_profiles",{"user_id":user["id"]})
+    user = current_user()
+    provider = get_driver_provider(user.get("id"))
+    profile = first_row("driver_profiles", {"provider_id": provider.get("id")}) if provider else None
     if not profile:
         return redirect(url_for("driver_register"))
 
-    locations=db_select("driver_locations",filters={"driver_id":user["id"]},order="created_at.desc",limit=1)
-    latest=locations[0] if locations else None
-    requests_rows=db_select("deliveries",filters={"driver_id":user["id"]},order="created_at.desc",limit=100)
-    return render_page("Driver Dashboard",r"""
-<div class="hero"><h2>Driver Dashboard</h2><p>{{ user.name }} — {{ profile.get("vehicle_type") or "Vehicle" }} {{ profile.get("vehicle_number") or "" }}</p></div>
-<div class="card">
-<h3>GPS / Availability</h3>
+    provider_id = str(provider.get("id"))
+    locations = db_select("driver_locations", filters={"driver_id": provider_id}, order="created_at.desc", limit=1)
+    latest = locations[0] if locations else None
+    requests_rows = db_select("deliveries", filters={"driver_id": provider_id}, order="created_at.desc", limit=100)
+
+    return render_page("Driver Dashboard", r"""
+<div class="hero"><h2>Driver Dashboard</h2>
+<p>{{ user.name }} — {{ profile.get('vehicle_type') or 'Vehicle' }} {{ profile.get('vehicle_registration') or '' }}</p>
+<p>Verification: <strong>{{ profile.get('verification_status') or 'pending' }}</strong></p></div>
+<div class="card"><h3>GPS / Availability</h3>
 <p>Current status:
 <span id="online-status" class="{{ 'online' if latest and latest.get('is_online') else 'offline' }}">
-{{ "ONLINE" if latest and latest.get("is_online") else "OFFLINE" }}
-</span></p>
+{{ 'ONLINE' if latest and latest.get('is_online') else 'OFFLINE' }}</span></p>
 <div class="actions">
 <a class="btn success" href="{{ url_for('tracking') }}">Open GPS & Go Online</a>
 <button class="btn danger" onclick="goOffline()">Go Offline</button>
-</div>
-<p id="offline-status" class="small"></p>
-</div>
+</div><p id="offline-status" class="small"></p></div>
 <div class="card"><h3>Delivery Requests / Jobs</h3>
-{% for d in requests_rows %}
-<div class="card">
-<strong>{{ d.get("tracking_code") }}</strong>
-<p>{{ d.get("pickup_location") }} → {{ d.get("destination") }}</p>
-<p>Status: <span class="badge">{{ d.get("status") or "requested" }}</span></p>
-<p>Customer: {{ d.get("customer_id") }}</p>
+{% for d in requests_rows %}<div class="card">
+<strong>{{ d.get('tracking_code') }}</strong>
+<p>{{ d.get('pickup_location') }} → {{ d.get('destination') }}</p>
+<p>Status: <span class="badge">{{ d.get('status') or 'requested' }}</span></p>
 <div class="actions">
-{% if d.get("status") == "requested" %}
+{% if d.get('status') == 'requested' %}
 <form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.get('id'),action='accept') }}"><button class="btn success">Accept</button></form>
 <form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.get('id'),action='reject') }}"><button class="btn danger">Reject</button></form>
-{% elif d.get("status") == "accepted" %}
-<form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.get('id'),action='picked_up') }}"><button class="btn">Picked Up</button></form>
-{% elif d.get("status") == "picked_up" %}
-<form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.get('id'),action='in_transit') }}"><button class="btn">In Transit</button></form>
-{% elif d.get("status") == "in_transit" %}
-<form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.get('id'),action='delivered') }}"><button class="btn success">Delivered</button></form>
-{% endif %}
+{% elif d.get('status') == 'accepted' %}<form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.get('id'),action='picked_up') }}"><button class="btn">Picked Up</button></form>
+{% elif d.get('status') == 'picked_up' %}<form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.get('id'),action='in_transit') }}"><button class="btn">In Transit</button></form>
+{% elif d.get('status') == 'in_transit' %}<form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.get('id'),action='delivered') }}"><button class="btn success">Delivered</button></form>{% endif %}
 <a class="btn secondary" href="{{ url_for('track_delivery',tracking_code=d.get('tracking_code')) }}">Track Map</a>
 </div></div>
 {% else %}<p>No delivery requests yet.</p>{% endfor %}
 </div>
 <script>
-async function goOffline(){
- try{
-  const r=await fetch("/api/driver/offline",{method:"POST",headers:{"Content-Type":"application/json"}});
-  const d=await r.json();
-  document.getElementById("offline-status").textContent=d.message||"Driver is offline.";
-  document.getElementById("online-status").textContent="OFFLINE";
- }catch(e){document.getElementById("offline-status").textContent="Unable to change status."}
-}
+async function goOffline(){try{const r=await fetch('/api/driver/offline',{method:'POST'});const d=await r.json();document.getElementById('offline-status').textContent=d.message||'Driver is offline.';document.getElementById('online-status').textContent='OFFLINE';}catch(e){document.getElementById('offline-status').textContent='Unable to change status.'}}
 </script>
-""",profile=profile,latest=latest,requests_rows=requests_rows)
+""", profile=profile, latest=latest, requests_rows=requests_rows)
 
-@app.route("/driver/delivery/<delivery_id>/<action>",methods=["POST"])
+@app.route("/driver/delivery/<delivery_id>/<action>", methods=["POST"])
 @driver_required
-def driver_delivery_action(delivery_id,action):
-    user=current_user()
-    delivery=first_row("deliveries",{"id":delivery_id})
-    if not delivery: abort(404)
+def driver_delivery_action(delivery_id, action):
+    user = current_user()
+    provider = get_driver_provider(user.get("id"))
+    if not provider:
+        flash("Driver provider record not found.", "danger")
+        return redirect(url_for("driver_register"))
+    provider_id = str(provider["id"])
+    delivery = first_row("deliveries", {"id": delivery_id})
+    if not delivery:
+        abort(404)
 
-    if action in ("accept","reject"):
-        if delivery.get("driver_id") and str(delivery.get("driver_id")) != str(user["id"]):
-            flash("This delivery is assigned to another driver.","danger")
+    if action in ("accept", "reject"):
+        assigned = delivery.get("driver_id")
+        if assigned and str(assigned) != provider_id:
+            flash("This delivery is assigned to another driver.", "danger")
             return redirect(url_for("driver_dashboard"))
 
-    statuses={
-        "accept":"accepted",
-        "reject":"rejected",
-        "picked_up":"picked_up",
-        "in_transit":"in_transit",
-        "delivered":"delivered"
-    }
+    statuses = {"accept":"accepted", "reject":"rejected", "picked_up":"picked_up", "in_transit":"in_transit", "delivered":"delivered"}
     if action not in statuses:
         abort(400)
-
-    status=statuses[action]
-    payload={"status":status,"updated_at":utc_now()}
-    if action=="accept":
-        payload["driver_id"]=user["id"]
-
-    row,error=db_update("deliveries",{"id":delivery_id},payload)
+    status = statuses[action]
+    payload = {"status": status, "updated_at": utc_now()}
+    if action == "accept":
+        payload["driver_id"] = provider_id
+    row, error = db_update("deliveries", {"id": delivery_id}, payload)
     if error:
-        flash("Could not update delivery status: "+str(error)[:500],"danger")
+        flash("Could not update delivery status: " + str(error)[:700], "danger")
     else:
-        log_activity("delivery_status",f"Delivery {delivery.get('tracking_code')} changed to {status}.")
-        flash(f"Delivery status changed to {status}.","success")
+        log_activity("delivery_status", f"Delivery {delivery.get('tracking_code')} changed to {status}.")
+        flash(f"Delivery status changed to {status}.", "success")
     return redirect(url_for("driver_dashboard"))
 
-# ============================================================
 # DRIVER GPS
 # ============================================================
 
@@ -1383,64 +1442,66 @@ function stopTracking(){
 </script>
 """)
 
-@app.route("/api/driver/location",methods=["POST"])
+@app.route("/api/driver/location", methods=["POST"])
 @driver_required
 def driver_location_update():
     if not table_exists("driver_locations"):
-        return jsonify({"ok":False,"message":"Create public.driver_locations in Supabase first."}),503
-
-    body=request.get_json(silent=True) or {}
-    lat=safe_float(body.get("latitude")); lon=safe_float(body.get("longitude"))
-    if lat is None or lon is None or not (-90<=lat<=90) or not (-180<=lon<=180):
+        return jsonify({"ok":False,"message":"driver_locations table is not available."}),503
+    user = current_user()
+    provider = get_driver_provider(user.get("id"))
+    if not provider:
+        return jsonify({"ok":False,"message":"Driver provider profile not found."}),404
+    provider_id = str(provider["id"])
+    body = request.get_json(silent=True) or {}
+    lat = safe_float(body.get("latitude")); lon = safe_float(body.get("longitude"))
+    if lat is None or lon is None or not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
         return jsonify({"ok":False,"message":"Invalid latitude or longitude."}),400
+    payload = {
+        "id": str(uuid.uuid4()), "driver_id": provider_id,
+        "latitude": lat, "longitude": lon,
+        "accuracy": safe_float(body.get("accuracy")),
+        "speed": safe_float(body.get("speed")),
+        "heading": safe_float(body.get("heading")),
+        "is_online": True, "created_at": utc_now()
+    }
+    row, error = db_insert("driver_locations", payload)
+    if error:
+        logger.error("driver_locations insert failed: %s", error)
+        return jsonify({"ok":False,"message":"GPS location could not be saved.","error":str(error)[:700]}),500
+    delivery_id = clean(body.get("delivery_id"))
+    if delivery_id:
+        delivery = first_row("deliveries", {"id": delivery_id})
+        if delivery and str(delivery.get("driver_id") or "") in ("", provider_id):
+            db_update("deliveries", {"id":delivery_id}, {"driver_id":provider_id,"updated_at":utc_now()})
+    return jsonify({"ok":True,"latitude":lat,"longitude":lon,"created_at":utc_now()})
 
-    user=current_user()
-    payload={
-        "id":str(uuid.uuid4()),
-        "driver_id":user["id"],
-        "user_id":user["id"],
-        "latitude":lat,"longitude":lon,
-        "accuracy":body.get("accuracy"),
-        "speed":body.get("speed"),
-        "heading":body.get("heading"),
-        "altitude":body.get("altitude"),
-        "is_online":True,
+@app.route("/api/driver/offline", methods=["POST"])
+@driver_required
+def driver_offline():
+    user = current_user()
+    provider = get_driver_provider(user.get("id"))
+    if not provider:
+        return jsonify({"ok":False,"message":"Driver provider profile not found."}),404
+    provider_id = str(provider["id"])
+    latest = first_row("driver_locations", {"driver_id":provider_id})
+    payload = {
+        "id":str(uuid.uuid4()), "driver_id":provider_id,
+        "latitude": latest.get("latitude") if latest else None,
+        "longitude": latest.get("longitude") if latest else None,
+        "accuracy": latest.get("accuracy") if latest else None,
+        "speed": None, "heading": None, "is_online":False,
         "created_at":utc_now()
     }
     row,error=db_insert("driver_locations",payload)
     if error:
-        return jsonify({"ok":False,"message":"GPS location could not be saved.","error":str(error)[:500]}),500
-
-    delivery_id=body.get("delivery_id")
-    if delivery_id:
-        delivery=first_row("deliveries",{"id":delivery_id})
-        if delivery and str(delivery.get("driver_id") or "") in ("",str(user["id"])):
-            db_update("deliveries",{"id":delivery_id},{"driver_id":user["id"],"updated_at":utc_now()})
-
-    return jsonify({"ok":True,"latitude":lat,"longitude":lon,"created_at":utc_now()})
-
-@app.route("/api/driver/offline",methods=["POST"])
-@driver_required
-def driver_offline():
-    if not table_exists("driver_locations"):
-        return jsonify({"ok":False,"message":"driver_locations table is not installed."}),503
-    user=current_user()
-    latest=first_row("driver_locations",{"driver_id":user["id"]})
-    payload={
-        "id":str(uuid.uuid4()),"driver_id":user["id"],"user_id":user["id"],
-        "latitude":latest.get("latitude") if latest else None,
-        "longitude":latest.get("longitude") if latest else None,
-        "accuracy":latest.get("accuracy") if latest else None,
-        "speed":None,"heading":None,"altitude":None,
-        "is_online":False,"created_at":utc_now()
-    }
-    row,error=db_insert("driver_locations",payload)
-    if error:
-        return jsonify({"ok":False,"message":"Could not mark driver offline."}),500
+        return jsonify({"ok":False,"message":"Could not mark driver offline.","error":str(error)[:700]}),500
     return jsonify({"ok":True,"message":"Driver is now offline."})
 
 # ============================================================
 # NEARBY DRIVERS
+# ============================================================
+
+
 # ============================================================
 
 @app.route("/drivers")
@@ -1493,7 +1554,7 @@ async function findDrivers(){
    const m=L.marker([driver.latitude,driver.longitude]).addTo(map).bindPopup(`<b>${escapeHtml(driver.name)}</b><br>${escapeHtml(driver.vehicle_type||"Vehicle")}<br>${driver.distance_km} km away`);
    markers.push(m);
    const div=document.createElement("div");div.className="card driver-card";
-   div.innerHTML=`<h3>${escapeHtml(driver.name)}</h3><p class="online">ONLINE</p><p><b>Vehicle:</b> ${escapeHtml(driver.vehicle_type||"Not specified")} ${escapeHtml(driver.vehicle_number||"")}</p><p><b>Distance:</b> ${driver.distance_km} km</p><p><b>Phone:</b> ${escapeHtml(driver.phone||"")}</p><div class="actions"><button class="btn success" onclick="requestDriver('${driver.driver_id}')">Request Delivery</button><button class="btn secondary" onclick="map.setView([${driver.latitude},${driver.longitude}],16)">View on Map</button></div>`;
+   div.innerHTML=`<h3>${escapeHtml(driver.name)}</h3><p class="online">ONLINE</p><p><b>Vehicle:</b> ${escapeHtml(driver.vehicle_type||"Not specified")} ${escapeHtml(driver.vehicle_registration||"")}</p><p><b>Distance:</b> ${driver.distance_km} km</p><p><b>Phone:</b> ${escapeHtml(driver.phone||"")}</p><div class="actions"><button class="btn success" onclick="requestDriver('${driver.driver_id}')">Request Delivery</button><button class="btn secondary" onclick="map.setView([${driver.latitude},${driver.longitude}],16)">View on Map</button></div>`;
    list.appendChild(div);
   });
   map.setView([lat,lon],13);
@@ -1563,14 +1624,14 @@ def nearby_drivers():
         if distance>radius:
             continue
 
-        profile=first_row("driver_profiles",{"provider_id":driver_id}) or first_row("driver_profiles",{"user_id":driver_id})
-        user=find_user_by_id(driver_id) or {}
+        profile=first_row("driver_profiles",{"provider_id":driver_id})
+        provider=first_row("service_providers",{"id":driver_id}) or {}
         results.append({
             "driver_id":str(driver_id),
-            "name":first_nonempty(profile.get("full_name") if profile else "",user.get("full_name"),user.get("name"),"Driver"),
-            "phone":first_nonempty(profile.get("phone") if profile else "",user.get("phone")),
-            "vehicle_type":first_nonempty(profile.get("vehicle_type") if profile else "",user.get("vehicle_type")),
-            "vehicle_number":first_nonempty(profile.get("vehicle_number") if profile else "",user.get("vehicle_number")),
+            "name":first_nonempty(provider.get("full_name"),provider.get("name"),"Driver"),
+            "phone":first_nonempty(provider.get("phone")),
+            "vehicle_type":first_nonempty(profile.get("vehicle_type") if profile else ""),
+            "vehicle_registration":first_nonempty(profile.get("vehicle_registration") if profile else ""),
             "latitude":dlat,"longitude":dlon,
             "accuracy":loc.get("accuracy"),
             "distance_km":round(distance,2),
@@ -1596,7 +1657,7 @@ def create_delivery_request():
     if not driver_id:
         return jsonify({"ok":False,"message":"Select a driver first."}),400
 
-    driver=first_row("driver_profiles",{"provider_id":driver_id}) or first_row("driver_profiles",{"user_id":driver_id})
+    driver=first_row("driver_profiles",{"provider_id":driver_id})
     if not driver:
         return jsonify({"ok":False,"message":"Driver profile not found."}),404
 
@@ -1790,8 +1851,6 @@ update();setInterval(update,10000);
 @login_required
 def provider_location(provider_id):
     rows=db_select("driver_locations",filters={"driver_id":provider_id},order="created_at.desc",limit=1)
-    if not rows:
-        rows=db_select("driver_locations",filters={"user_id":provider_id},order="created_at.desc",limit=1)
     if not rows:
         return jsonify({"ok":False,"message":"This provider has not shared a GPS location."})
     loc=rows[0]
