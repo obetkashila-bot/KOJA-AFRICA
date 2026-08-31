@@ -1,6 +1,4 @@
 import os
-import io
-import json
 import uuid
 import secrets
 import logging
@@ -19,12 +17,14 @@ from flask import (
     session,
     render_template_string,
     flash,
-    send_file,
     abort,
-    jsonify,
 )
 
-from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.security import (
+    generate_password_hash,
+    check_password_hash,
+)
+
 from werkzeug.utils import secure_filename
 
 
@@ -32,798 +32,280 @@ from werkzeug.utils import secure_filename
 # KOJA AFRICA
 # Knowledge • Questions • Answers
 #
-# Flask + Supabase REST API
+# SUPABASE REST VERSION
 #
-# Modules:
-#   - Authentication
-#   - Student dashboard
-#   - Universities
-#   - Programmes
-#   - Admission requirements
-#   - University applications
-#   - Academic questions
-#   - Learning resources
-#   - CV builder
-#   - Assignments
-#   - Farmer registration
-#   - Doctor booking
-#   - Delivery requests
-#   - Notifications
-#   - Activity logs
-#   - Administrator dashboard
+# IMPORTANT:
+# This version does NOT use SQLite.
+#
+# Authentication:
+#   public.koja_users
+#
+# User profile / role:
+#   public.profiles
+#
+# Existing password hashes such as:
+#   scrypt:32768:8:1$...
+#
+# are verified with Werkzeug check_password_hash().
 # ============================================================
+
 
 load_dotenv()
 
-app = Flask(__name__)
-
-app.secret_key = os.getenv(
-    "SECRET_KEY",
-    secrets.token_hex(32)
-)
-
-app.config["MAX_CONTENT_LENGTH"] = (
-    int(os.getenv("MAX_UPLOAD_MB", "20")) * 1024 * 1024
-)
-
-SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
-
-SUPABASE_KEY = (
-    os.getenv("SUPABASE_SERVICE_KEY")
-    or os.getenv("SUPABASE_KEY", "")
-).strip()
-
-SUPABASE_BUCKET = os.getenv(
-    "SUPABASE_BUCKET",
-    "koja-files"
-).strip()
-
-ADMIN_EMAIL = os.getenv(
-    "ADMIN_EMAIL",
-    ""
-).strip().lower()
-
-ADMIN_PASSWORD = os.getenv(
-    "ADMIN_PASSWORD",
-    ""
-)
-
-ADMIN_NAME = os.getenv(
-    "ADMIN_NAME",
-    "KOJA Administrator"
-).strip()
-
-PORT = int(os.getenv("PORT", "5000"))
-
-MAX_UPLOAD_MB = int(
-    os.getenv("MAX_UPLOAD_MB", "20")
-)
-
-ALLOWED_EXTENSIONS = {
-    "pdf",
-    "doc",
-    "docx",
-    "xls",
-    "xlsx",
-    "ppt",
-    "pptx",
-    "txt",
-    "jpg",
-    "jpeg",
-    "png",
-    "webp",
-    "csv",
-}
-
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    format="%(asctime)s %(levelname)s %(message)s"
 )
 
-log = logging.getLogger("koja")
+logger = logging.getLogger("koja")
 
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
 
-def configured():
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
+
+SUPABASE_SERVICE_KEY = os.environ.get(
+    "SUPABASE_SERVICE_KEY",
+    ""
+).strip()
+
+SECRET_KEY = os.environ.get(
+    "SECRET_KEY",
+    ""
+).strip()
+
+if not SECRET_KEY:
+    SECRET_KEY = secrets.token_hex(32)
+
+
+app = Flask(__name__)
+
+app.secret_key = SECRET_KEY
+
+app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
+
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+
+if os.environ.get("RENDER"):
+    app.config["SESSION_COOKIE_SECURE"] = True
+
+
+# ============================================================
+# SUPABASE CHECK
+# ============================================================
+
+def supabase_configured():
     return bool(
-        SUPABASE_URL
-        and SUPABASE_KEY
+        SUPABASE_URL and
+        SUPABASE_SERVICE_KEY
     )
 
 
-def require_config():
-    if not configured():
+def require_supabase():
+    if not supabase_configured():
         raise RuntimeError(
-            "Supabase is not configured. "
-            "Set SUPABASE_URL and SUPABASE_SERVICE_KEY "
-            "in Render Environment Variables."
+            "SUPABASE_URL and SUPABASE_SERVICE_KEY "
+            "must be configured in Render environment variables."
         )
 
 
-def headers(extra=None):
-    require_config()
+def supabase_headers():
+    require_supabase()
 
-    h = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
+    return {
+        "apikey": SUPABASE_SERVICE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
         "Content-Type": "application/json",
     }
 
-    if extra:
-        h.update(extra)
 
-    return h
+# ============================================================
+# SUPABASE REST HELPERS
+# ============================================================
+
+def supabase_get(
+    table,
+    params=None,
+    timeout=20
+):
+    """
+    GET rows from Supabase PostgREST.
+    """
+
+    url = f"{SUPABASE_URL}/rest/v1/{quote(table, safe='')}"
+
+    response = requests.get(
+        url,
+        headers=supabase_headers(),
+        params=params or {},
+        timeout=timeout,
+    )
+
+    if not response.ok:
+        logger.error(
+            "Supabase GET %s failed: %s",
+            table,
+            response.text[:1000]
+        )
+
+        raise RuntimeError(
+            f"Supabase error while reading {table}: "
+            f"{response.status_code} {response.text[:500]}"
+        )
+
+    try:
+        return response.json()
+    except Exception:
+        return []
+
+
+def supabase_insert(
+    table,
+    data,
+    select="*",
+    timeout=20
+):
+    """
+    INSERT one row into Supabase.
+    """
+
+    url = f"{SUPABASE_URL}/rest/v1/{quote(table, safe='')}"
+
+    headers = supabase_headers()
+
+    headers["Prefer"] = (
+        f"return=representation"
+    )
+
+    response = requests.post(
+        url,
+        headers=headers,
+        params={
+            "select": select
+        },
+        json=data,
+        timeout=timeout,
+    )
+
+    if not response.ok:
+        logger.error(
+            "Supabase INSERT %s failed: %s",
+            table,
+            response.text[:1500]
+        )
+
+        raise RuntimeError(
+            f"Supabase insert error in {table}: "
+            f"{response.status_code} "
+            f"{response.text[:800]}"
+        )
+
+    try:
+        return response.json()
+    except Exception:
+        return []
+
+
+def supabase_update(
+    table,
+    filters,
+    data,
+    timeout=20
+):
+    """
+    UPDATE rows.
+    """
+
+    url = f"{SUPABASE_URL}/rest/v1/{quote(table, safe='')}"
+
+    response = requests.patch(
+        url,
+        headers=supabase_headers(),
+        params=filters,
+        json=data,
+        timeout=timeout,
+    )
+
+    if not response.ok:
+        logger.error(
+            "Supabase UPDATE %s failed: %s",
+            table,
+            response.text[:1000]
+        )
+
+        raise RuntimeError(
+            f"Supabase update error in {table}: "
+            f"{response.status_code} "
+            f"{response.text[:500]}"
+        )
+
+    try:
+        return response.json()
+    except Exception:
+        return []
+
+
+def supabase_delete(
+    table,
+    filters,
+    timeout=20
+):
+    url = f"{SUPABASE_URL}/rest/v1/{quote(table, safe='')}"
+
+    response = requests.delete(
+        url,
+        headers=supabase_headers(),
+        params=filters,
+        timeout=timeout,
+    )
+
+    if not response.ok:
+        logger.error(
+            "Supabase DELETE %s failed: %s",
+            table,
+            response.text[:1000]
+        )
+
+        raise RuntimeError(
+            f"Supabase delete error in {table}: "
+            f"{response.status_code}"
+        )
+
+    return True
 
 
 # ============================================================
 # GENERAL HELPERS
 # ============================================================
 
-def clean(value):
-    if value is None:
-        return ""
-
-    return str(value).strip()
-
-
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
+def clean(value):
+    return (value or "").strip()
+
+
 def current_user():
-    return session.get("user")
+    """
+    Retrieve the authenticated user from koji_users.
 
+    The session stores only the UUID.
+    """
 
-def is_admin():
-    user = current_user()
+    user_id = session.get("user_id")
 
-    return bool(
-        user
-        and user.get("is_admin") is True
-    )
-
-
-def safe_json(value, fallback=None):
-    if fallback is None:
-        fallback = {}
-
-    if value is None or value == "":
-        return fallback
-
-    if isinstance(value, (dict, list)):
-        return value
-
-    try:
-        return json.loads(value)
-    except Exception:
-        return fallback
-
-
-def json_text(value):
-    try:
-        return json.dumps(
-            value,
-            ensure_ascii=False
-        )
-    except Exception:
-        return "{}"
-
-
-def uuid_string():
-    return str(uuid.uuid4())
-
-
-def valid_uuid(value):
-    try:
-        uuid.UUID(str(value))
-        return True
-    except Exception:
-        return False
-
-
-# ============================================================
-# SUPABASE REST API
-# ============================================================
-
-def sb_get(
-    table,
-    params=None,
-    single=False
-):
-    require_config()
-
-    r = requests.get(
-        f"{SUPABASE_URL}/rest/v1/{table}",
-        headers=headers({
-            "Accept": "application/json"
-        }),
-        params=params or {},
-        timeout=30,
-    )
-
-    if r.status_code >= 400:
-        log.error(
-            "GET %s %s: %s",
-            table,
-            r.status_code,
-            r.text
-        )
-
-        raise RuntimeError(
-            f"Supabase GET {table} failed: {r.text}"
-        )
-
-    try:
-        data = r.json()
-    except Exception:
-        data = []
-
-    if single:
-        return data[0] if data else None
-
-    return data
-
-
-def sb_insert(
-    table,
-    data,
-    select="*"
-):
-    require_config()
-
-    r = requests.post(
-        f"{SUPABASE_URL}/rest/v1/{table}",
-        headers=headers({
-            "Prefer": "return=representation",
-            "Accept": "application/json",
-        }),
-        params={
-            "select": select
-        },
-        json=data,
-        timeout=30,
-    )
-
-    if r.status_code >= 400:
-        log.error(
-            "INSERT %s %s: %s",
-            table,
-            r.status_code,
-            r.text
-        )
-
-        raise RuntimeError(
-            f"Supabase INSERT {table} failed: {r.text}"
-        )
-
-    try:
-        body = r.json()
-    except Exception:
-        return data
-
-    if isinstance(body, list):
-        return body[0] if body else data
-
-    return body
-
-
-def sb_update(
-    table,
-    filters,
-    data,
-    select="*"
-):
-    require_config()
-
-    params = dict(filters or {})
-
-    params["select"] = select
-
-    r = requests.patch(
-        f"{SUPABASE_URL}/rest/v1/{table}",
-        headers=headers({
-            "Prefer": "return=representation",
-            "Accept": "application/json",
-        }),
-        params=params,
-        json=data,
-        timeout=30,
-    )
-
-    if r.status_code >= 400:
-        log.error(
-            "UPDATE %s %s: %s",
-            table,
-            r.status_code,
-            r.text
-        )
-
-        raise RuntimeError(
-            f"Supabase UPDATE {table} failed: {r.text}"
-        )
-
-    try:
-        body = r.json()
-    except Exception:
-        return data
-
-    if isinstance(body, list):
-        return body[0] if body else data
-
-    return body
-
-
-def sb_delete(
-    table,
-    filters
-):
-    require_config()
-
-    r = requests.delete(
-        f"{SUPABASE_URL}/rest/v1/{table}",
-        headers=headers({
-            "Prefer": "return=minimal"
-        }),
-        params=filters or {},
-        timeout=30,
-    )
-
-    if r.status_code >= 400:
-        log.error(
-            "DELETE %s %s: %s",
-            table,
-            r.status_code,
-            r.text
-        )
-
-        raise RuntimeError(
-            f"Supabase DELETE {table} failed: {r.text}"
-        )
-
-    return True
-
-
-def count_rows(
-    table,
-    params=None
-):
-    if not configured():
-        return 0
-
-    p = dict(params or {})
-
-    try:
-        r = requests.get(
-            f"{SUPABASE_URL}/rest/v1/{table}",
-            headers=headers({
-                "Prefer": "count=exact",
-                "Range": "0-0",
-                "Accept": "application/json",
-            }),
-            params=p,
-            timeout=20,
-        )
-
-        if r.status_code >= 400:
-            return 0
-
-        content_range = r.headers.get(
-            "Content-Range",
-            ""
-        )
-
-        if "/" in content_range:
-            value = content_range.split("/")[-1]
-
-            if value != "*":
-                return int(value)
-
-        try:
-            return len(r.json())
-        except Exception:
-            return 0
-
-    except Exception:
-        return 0
-
-
-# ============================================================
-# OPTIONAL TABLE HELPERS
-# ============================================================
-
-def table_available(table):
-    if not configured():
-        return False
-
-    try:
-        requests.get(
-            f"{SUPABASE_URL}/rest/v1/{table}",
-            headers=headers({
-                "Accept": "application/json",
-                "Range": "0-0",
-            }),
-            timeout=10,
-        )
-
-        # A 401/403 means the table may exist but the key has
-        # a policy problem. It is still considered unavailable
-        # to the application.
-        r = requests.get(
-            f"{SUPABASE_URL}/rest/v1/{table}",
-            headers=headers({
-                "Accept": "application/json",
-                "Range": "0-0",
-            }),
-            timeout=10,
-        )
-
-        return r.status_code < 400
-
-    except Exception:
-        return False
-
-
-def optional_get(
-    table,
-    params=None
-):
-    try:
-        return sb_get(
-            table,
-            params or {}
-        )
-    except Exception as e:
-        log.warning(
-            "Optional table %s unavailable: %s",
-            table,
-            e
-        )
-
-        return []
-
-
-def optional_insert(
-    table,
-    data
-):
-    try:
-        return sb_insert(
-            table,
-            data
-        )
-    except Exception as e:
-        log.warning(
-            "Optional insert %s failed: %s",
-            table,
-            e
-        )
-
-        return None
-
-
-# ============================================================
-# STORAGE
-# ============================================================
-
-def storage_upload(
-    file_storage,
-    folder="uploads"
-):
-    require_config()
-
-    original = secure_filename(
-        file_storage.filename or ""
-    )
-
-    if not original:
-        raise ValueError(
-            "Invalid filename."
-        )
-
-    if "." not in original:
-        raise ValueError(
-            "File extension is required."
-        )
-
-    ext = original.rsplit(
-        ".",
-        1
-    )[-1].lower()
-
-    if ext not in ALLOWED_EXTENSIONS:
-        raise ValueError(
-            "This file type is not allowed."
-        )
-
-    data = file_storage.read()
-
-    if not data:
-        raise ValueError(
-            "The uploaded file is empty."
-        )
-
-    if len(data) > (
-        MAX_UPLOAD_MB * 1024 * 1024
-    ):
-        raise ValueError(
-            f"File exceeds {MAX_UPLOAD_MB} MB."
-        )
-
-    month_path = datetime.now(
-        timezone.utc
-    ).strftime("%Y/%m")
-
-    path = (
-        f"{folder}/"
-        f"{month_path}/"
-        f"{uuid.uuid4()}-{original}"
-    )
-
-    content_type = (
-        file_storage.mimetype
-        or "application/octet-stream"
-    )
-
-    url_path = quote(
-        path,
-        safe="/"
-    )
-
-    bucket = quote(
-        SUPABASE_BUCKET,
-        safe=""
-    )
-
-    r = requests.post(
-        f"{SUPABASE_URL}/storage/v1/object/"
-        f"{bucket}/{url_path}",
-        headers=headers({
-            "Content-Type": content_type,
-            "x-upsert": "false",
-        }),
-        data=data,
-        timeout=90,
-    )
-
-    if r.status_code >= 400:
-        log.error(
-            "Storage upload failed: %s %s",
-            r.status_code,
-            r.text
-        )
-
-        raise RuntimeError(
-            f"Storage upload failed: {r.text}"
-        )
-
-    public_url = (
-        f"{SUPABASE_URL}"
-        f"/storage/v1/object/public/"
-        f"{bucket}/{url_path}"
-    )
-
-    return (
-        path,
-        public_url,
-        original,
-        len(data),
-        content_type
-    )
-
-
-def storage_download(path):
-    require_config()
-
-    bucket = quote(
-        SUPABASE_BUCKET,
-        safe=""
-    )
-
-    safe_path = quote(
-        path,
-        safe="/"
-    )
-
-    r = requests.get(
-        f"{SUPABASE_URL}/storage/v1/object/"
-        f"{bucket}/{safe_path}",
-        headers=headers(),
-        timeout=90,
-    )
-
-    if r.status_code >= 400:
-        abort(404)
-
-    return (
-        r.content,
-        r.headers.get(
-            "Content-Type",
-            "application/octet-stream"
-        )
-    )
-
-
-# ============================================================
-# ACTIVITY / NOTIFICATIONS
-# ============================================================
-
-def log_activity(
-    action,
-    description="",
-    user_id=None,
-    email=None
-):
-    try:
-        data = {
-            "user_id": user_id,
-            "action": action,
-            "description": description,
-            "ip_address": request.remote_addr,
-            "user_agent": request.headers.get(
-                "User-Agent",
-                ""
-            ),
-        }
-
-        # Some installations have an email column and
-        # some don't. First try the richer record.
-        if email:
-            data["email"] = email
-
-        try:
-            sb_insert(
-                "activity_logs",
-                data
-            )
-        except Exception:
-            data.pop(
-                "email",
-                None
-            )
-
-            sb_insert(
-                "activity_logs",
-                data
-            )
-
-    except Exception as e:
-        log.warning(
-            "Activity log skipped: %s",
-            e
-        )
-
-
-def notify(
-    email,
-    title,
-    message,
-    request_id=None
-):
-    if not email:
-        return
-
-    try:
-        data = {
-            "client_email": email,
-            "title": title,
-            "message": message,
-        }
-
-        if request_id:
-            data["request_id"] = request_id
-
-        try:
-            sb_insert(
-                "koja_notifications",
-                data
-            )
-        except Exception:
-            data.pop(
-                "request_id",
-                None
-            )
-
-            sb_insert(
-                "koja_notifications",
-                data
-            )
-
-    except Exception as e:
-        log.warning(
-            "Notification skipped: %s",
-            e
-        )
-
-
-# ============================================================
-# AUTHENTICATION
-# ============================================================
-
-def find_profile_user(email):
-    email = clean(email).lower()
-
-    if not email:
+    if not user_id:
         return None
 
     try:
-        rows = sb_get(
-            "profiles",
-            {
-                "select": "*",
-                "email": f"eq.{email}",
-                "limit": "1",
-            }
-        )
-
-        if not rows:
-            return None
-
-        u = rows[0]
-
-        return {
-            "id": u.get("id"),
-            "name": (
-                u.get("full_name")
-                or u.get("name")
-                or email
-            ),
-            "email": (
-                u.get("email")
-                or email
-            ),
-            "phone": u.get("phone"),
-            "institution": u.get(
-                "institution",
-                ""
-            ),
-            "student_number": u.get(
-                "student_number",
-                ""
-            ),
-            "password_hash": u.get(
-                "password_hash"
-            ),
-            "role": (
-                u.get("role")
-                or (
-                    "admin"
-                    if u.get("is_admin")
-                    else "student"
-                )
-            ),
-            "is_admin": bool(
-                u.get("is_admin")
-            ) or u.get("role") == "admin",
-            "is_active": (
-                u.get("is_active", True)
-            ),
-            "table": "profiles",
-        }
-
-    except Exception as e:
-        log.warning(
-            "profiles authentication lookup failed: %s",
-            e
-        )
-
-        return None
-
-
-def find_koja_user(email):
-    email = clean(email).lower()
-
-    if not email:
-        return None
-
-    try:
-        rows = sb_get(
+        rows = supabase_get(
             "koja_users",
             {
-                "select": "*",
-                "email": f"eq.{email}",
+                "id": f"eq.{user_id}",
                 "limit": "1",
             }
         )
@@ -831,173 +313,84 @@ def find_koja_user(email):
         if not rows:
             return None
 
-        u = rows[0]
+        return rows[0]
 
-        return {
-            "id": u.get("id"),
-            "name": (
-                u.get("full_name")
-                or u.get("name")
-                or email
-            ),
-            "email": (
-                u.get("email")
-                or email
-            ),
-            "phone": u.get("phone"),
-            "institution": u.get(
-                "institution",
-                ""
-            ),
-            "student_number": u.get(
-                "student_number",
-                ""
-            ),
-            "password_hash": u.get(
-                "password_hash"
-            ),
-            "role": "student",
-            "is_admin": False,
-            "is_active": True,
-            "table": "koja_users",
-        }
-
-    except Exception as e:
-        log.warning(
-            "koja_users authentication lookup failed: %s",
-            e
+    except Exception as exc:
+        logger.exception(
+            "Unable to load current user: %s",
+            exc
         )
 
         return None
 
 
-def find_user(email):
-    email = clean(email).lower()
+def current_profile():
+    """
+    Load profile using the same UUID as koji_users.id.
+    """
 
-    if not email:
+    user = current_user()
+
+    if not user:
         return None
-
-    user = find_profile_user(
-        email
-    )
-
-    if user:
-        return user
-
-    return find_koja_user(
-        email
-    )
-
-
-def ensure_env_admin():
-    """
-    The environment administrator is deliberately supported
-    without depending on the exact columns in profiles.
-
-    This is important because an inconsistent profiles schema
-    must not prevent ADMIN_EMAIL / ADMIN_PASSWORD from working.
-    """
-
-    if not ADMIN_EMAIL or not ADMIN_PASSWORD:
-        return
 
     try:
-        existing = find_profile_user(
-            ADMIN_EMAIL
+        rows = supabase_get(
+            "profiles",
+            {
+                "id": f"eq.{user['id']}",
+                "limit": "1",
+            }
         )
 
-        password_hash = (
-            generate_password_hash(
-                ADMIN_PASSWORD
-            )
+        if rows:
+            return rows[0]
+
+    except Exception as exc:
+        logger.warning(
+            "Profile lookup failed: %s",
+            exc
         )
 
-        if existing:
-            try:
-                sb_update(
-                    "profiles",
-                    {
-                        "id": (
-                            f"eq.{existing['id']}"
-                        )
-                    },
-                    {
-                        "full_name": ADMIN_NAME,
-                        "password_hash": password_hash,
-                        "role": "admin",
-                        "is_admin": True,
-                        "is_active": True,
-                    }
-                )
-
-                return
-
-            except Exception as e:
-                log.warning(
-                    "Could not update existing "
-                    "profile admin: %s",
-                    e
-                )
-
-        # If profiles is unavailable, do not stop the app.
-        try:
-            sb_insert(
-                "profiles",
-                {
-                    "full_name": ADMIN_NAME,
-                    "name": ADMIN_NAME,
-                    "email": ADMIN_EMAIL,
-                    "password_hash": password_hash,
-                    "role": "admin",
-                    "is_admin": True,
-                    "is_active": True,
-                }
-            )
-
-            log.info(
-                "Environment administrator created."
-            )
-
-        except Exception as e:
-            log.warning(
-                "Could not create database admin: %s",
-                e
-            )
-
-    except Exception as e:
-        log.warning(
-            "Admin bootstrap failed: %s",
-            e
-        )
+    return None
 
 
-def login_environment_admin(
-    email,
-    password
-):
+def get_user_role():
+    profile = current_profile()
+
+    if not profile:
+        return "student"
+
+    return profile.get(
+        "role",
+        "student"
+    )
+
+
+def is_admin_user():
+    profile = current_profile()
+
+    if not profile:
+        return False
+
     return bool(
-        ADMIN_EMAIL
-        and ADMIN_PASSWORD
-        and email == ADMIN_EMAIL
-        and secrets.compare_digest(
-            password,
-            ADMIN_PASSWORD
-        )
+        profile.get("is_admin", False)
     )
 
 
 # ============================================================
-# DECORATORS
+# AUTH DECORATORS
 # ============================================================
 
-def login_required(fn):
-    @wraps(fn)
+def login_required(view):
+
+    @wraps(view)
     def wrapped(*args, **kwargs):
 
-        if not current_user():
+        if not session.get("user_id"):
             flash(
                 "Please log in first.",
-                "warning"
+                "error"
             )
 
             return redirect(
@@ -1007,483 +400,628 @@ def login_required(fn):
                 )
             )
 
-        return fn(
-            *args,
-            **kwargs
-        )
+        user = current_user()
+
+        if not user:
+            session.clear()
+
+            flash(
+                "Your session has expired. Please log in again.",
+                "error"
+            )
+
+            return redirect(
+                url_for("login")
+            )
+
+        return view(*args, **kwargs)
 
     return wrapped
 
 
-def admin_required(fn):
-    @wraps(fn)
+def admin_required(view):
+
+    @wraps(view)
     def wrapped(*args, **kwargs):
 
-        if not current_user():
+        if not session.get("user_id"):
+            return redirect(
+                url_for("login")
+            )
+
+        if not is_admin_user():
             flash(
-                "Administrator login required.",
-                "warning"
+                "Administrator access required.",
+                "error"
             )
 
             return redirect(
-                url_for(
-                    "login",
-                    next=request.path
-                )
+                url_for("dashboard")
             )
 
-        if not is_admin():
-            abort(403)
-
-        return fn(
-            *args,
-            **kwargs
-        )
+        return view(*args, **kwargs)
 
     return wrapped
 
 
 # ============================================================
-# BASE HTML
+# AUDIT LOG
 # ============================================================
 
-BASE = r"""
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
+def activity_log(
+    action,
+    description="",
+    user_id=None
+):
 
-<meta
- name="viewport"
- content="width=device-width,initial-scale=1"
->
+    try:
 
-<meta
- name="theme-color"
- content="#0b5ed7"
->
+        data = {
+            "action": action,
+            "description": description,
+            "user_id": user_id,
+            "created_at": now_iso(),
+        }
 
-<title>{{ title or "KOJA Africa" }}</title>
+        # Your activity_logs table has these core fields.
+        supabase_insert(
+            "activity_logs",
+            data
+        )
 
+    except Exception as exc:
+
+        # Logging must never destroy a normal user request.
+        logger.warning(
+            "Activity log failed: %s",
+            exc
+        )
+
+
+# ============================================================
+# HTML / CSS
+# ============================================================
+
+CSS = """
 <style>
 
 :root{
- --primary:#0b5ed7;
- --primary-dark:#084298;
- --dark:#102033;
- --bg:#f5f7fb;
- --card:#ffffff;
- --text:#182230;
- --muted:#667085;
- --border:#e4e7ec;
- --success:#198754;
- --danger:#dc3545;
- --warning:#ffc107;
- --info:#0dcaf0;
+    --blue:#1756a8;
+    --blue2:#0f3f80;
+    --green:#16834b;
+    --green2:#0f6739;
+    --ink:#162235;
+    --muted:#667085;
+    --bg:#f4f7fb;
+    --card:#ffffff;
+    --line:#dfe5ec;
+    --danger:#c62828;
+    --warning:#a66a00;
 }
 
 *{
- box-sizing:border-box;
+    box-sizing:border-box;
 }
 
 body{
- margin:0;
- background:var(--bg);
- color:var(--text);
- font-family:
- Arial,
- Helvetica,
- sans-serif;
- line-height:1.5;
+    margin:0;
+    background:var(--bg);
+    color:var(--ink);
+    font-family:
+        Arial,
+        Helvetica,
+        sans-serif;
 }
 
 a{
- color:var(--primary);
- text-decoration:none;
+    text-decoration:none;
+    color:inherit;
 }
 
-a:hover{
- text-decoration:underline;
+.nav{
+    background:#fff;
+    border-bottom:1px solid var(--line);
+    position:sticky;
+    top:0;
+    z-index:100;
 }
 
-nav{
- background:var(--dark);
- color:#fff;
- padding:13px 4%;
- display:flex;
- align-items:center;
- gap:12px;
- flex-wrap:wrap;
+.nav-inner{
+    max-width:1150px;
+    margin:auto;
+    padding:15px 18px;
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    gap:15px;
 }
 
-nav a{
- color:#fff;
- font-weight:600;
+.logo{
+    color:var(--blue);
+    font-size:25px;
+    font-weight:900;
+    letter-spacing:-.7px;
 }
 
-.brand{
- font-size:21px;
- margin-right:auto;
+.navlinks{
+    display:flex;
+    flex-wrap:wrap;
+    gap:5px;
+    justify-content:flex-end;
+}
+
+.navlinks a{
+    padding:9px 11px;
+    border-radius:9px;
+    color:#344054;
+    font-size:14px;
+}
+
+.navlinks a:hover{
+    background:#edf4ff;
 }
 
 .container{
- width:min(1200px,94%);
- margin:24px auto;
+    max-width:1150px;
+    margin:auto;
+    padding:30px 18px 55px;
 }
 
 .hero{
- background:
- linear-gradient(
- 135deg,
- #0b5ed7,
- #17365d
- );
- color:#fff;
- border-radius:18px;
- padding:30px;
+    background:
+        linear-gradient(
+            135deg,
+            #eaf3ff,
+            #ffffff
+        );
+    border:1px solid #d8e7fa;
+    border-radius:24px;
+    padding:38px 28px;
+    margin-bottom:22px;
 }
 
-.hero a{
- color:#fff;
+.hero h1{
+    color:var(--blue);
+    font-size:42px;
+    margin:0 0 10px;
 }
 
-.grid{
- display:grid;
- grid-template-columns:
- repeat(
- auto-fit,
- minmax(260px,1fr)
- );
- gap:16px;
+.hero p{
+    color:var(--muted);
+    line-height:1.6;
+    font-size:18px;
 }
 
 .card{
- background:var(--card);
- border:1px solid var(--border);
- border-radius:14px;
- padding:18px;
- box-shadow:
- 0 2px 8px
- rgba(0,0,0,.04);
- margin-bottom:16px;
+    background:var(--card);
+    border:1px solid var(--line);
+    border-radius:19px;
+    padding:25px;
+    margin-bottom:20px;
+    box-shadow:
+        0 5px 20px
+        rgba(20,40,70,.05);
 }
 
-.card .card{
- box-shadow:none;
+.card h2{
+    margin-top:0;
 }
 
-h1,
-h2,
-h3{
- margin-top:0;
+.grid{
+    display:grid;
+    grid-template-columns:
+        repeat(
+            2,
+            minmax(0,1fr)
+        );
+    gap:17px;
 }
 
-.muted{
- color:var(--muted);
+.grid3{
+    display:grid;
+    grid-template-columns:
+        repeat(
+            3,
+            minmax(0,1fr)
+        );
+    gap:17px;
 }
 
-.small{
- font-size:13px;
+.field{
+    margin-bottom:17px;
 }
 
-.stat{
- font-size:30px;
- font-weight:800;
-}
-
-.actions{
- display:flex;
- gap:8px;
- flex-wrap:wrap;
- align-items:center;
-}
-
-.btn,
-button{
- display:inline-block;
- border:0;
- border-radius:9px;
- background:var(--primary);
- color:#fff;
- padding:10px 15px;
- cursor:pointer;
- font-weight:700;
-}
-
-.btn:hover{
- text-decoration:none;
- background:var(--primary-dark);
-}
-
-.btn.secondary{
- background:#475467;
-}
-
-.btn.success{
- background:var(--success);
-}
-
-.btn.danger{
- background:var(--danger);
-}
-
-.btn.warning{
- background:#b58100;
+label{
+    display:block;
+    font-weight:700;
+    margin-bottom:7px;
 }
 
 input,
 select,
 textarea{
- width:100%;
- padding:11px;
- border:
- 1px solid #cfd5dd;
- border-radius:8px;
- margin:5px 0 14px;
- background:#fff;
- font:inherit;
+    width:100%;
+    padding:13px 14px;
+    border:
+        1px solid #cfd7e2;
+    border-radius:10px;
+    background:#fff;
+    color:var(--ink);
+    font-size:16px;
 }
 
 textarea{
- min-height:120px;
- resize:vertical;
+    min-height:130px;
+    resize:vertical;
 }
 
-label{
- font-weight:600;
- font-size:14px;
+.btn{
+    display:inline-block;
+    border:0;
+    cursor:pointer;
+    padding:12px 17px;
+    border-radius:10px;
+    background:var(--blue);
+    color:#fff;
+    font-size:15px;
+    font-weight:700;
+}
+
+.btn:hover{
+    background:var(--blue2);
+}
+
+.btn.green{
+    background:var(--green);
+}
+
+.btn.green:hover{
+    background:var(--green2);
+}
+
+.btn.light{
+    background:#edf4ff;
+    color:var(--blue);
+}
+
+.btn.danger{
+    background:var(--danger);
+}
+
+.actions{
+    display:flex;
+    gap:10px;
+    flex-wrap:wrap;
+    margin-top:15px;
+}
+
+.service{
+    background:#fff;
+    border:
+        1px solid var(--line);
+    border-radius:16px;
+    padding:21px;
+}
+
+.service h3{
+    margin-top:0;
+}
+
+.service p{
+    color:var(--muted);
+    line-height:1.5;
+}
+
+.alert{
+    padding:13px 15px;
+    border-radius:10px;
+    margin-bottom:17px;
+}
+
+.alert.success{
+    background:#e8f7ee;
+    color:#126a3c;
+}
+
+.alert.error{
+    background:#fdecec;
+    color:#a12424;
+}
+
+.alert.info{
+    background:#eaf2fc;
+    color:#24508e;
+}
+
+.stat{
+    font-size:31px;
+    font-weight:900;
+    margin-top:7px;
+}
+
+.small{
+    color:var(--muted);
+    font-size:13px;
+}
+
+.status{
+    display:inline-block;
+    padding:7px 10px;
+    border-radius:999px;
+    background:#eaf2fc;
+    color:#24508e;
+    font-weight:700;
+    font-size:13px;
+}
+
+.footer{
+    text-align:center;
+    color:#7a8798;
+    padding:30px 18px;
+}
+
+.admin-bar{
+    background:#14263d;
+    color:#fff;
+    padding:14px 18px;
+}
+
+.admin-inner{
+    max-width:1150px;
+    margin:auto;
+    display:flex;
+    justify-content:space-between;
+    gap:15px;
+    align-items:center;
 }
 
 table{
- width:100%;
- border-collapse:collapse;
- background:#fff;
+    width:100%;
+    border-collapse:collapse;
 }
 
 th,
 td{
- padding:10px;
- border-bottom:
- 1px solid var(--border);
- text-align:left;
- vertical-align:top;
+    padding:11px 9px;
+    border-bottom:
+        1px solid var(--line);
+    text-align:left;
+}
+
+th{
+    color:var(--muted);
+    font-size:13px;
 }
 
 .badge{
- display:inline-block;
- padding:4px 9px;
- border-radius:999px;
- background:#eef2ff;
- font-size:12px;
- font-weight:700;
+    display:inline-block;
+    background:#edf4ff;
+    color:var(--blue);
+    padding:6px 9px;
+    border-radius:8px;
+    font-size:12px;
+    font-weight:700;
 }
 
-.alert{
- padding:12px 14px;
- border-radius:9px;
- margin:10px 0;
- background:#fff3cd;
-}
+@media(max-width:760px){
 
-.alert.success{
- background:#d1e7dd;
-}
+    .nav-inner{
+        flex-direction:column;
+        align-items:flex-start;
+    }
 
-.alert.danger{
- background:#f8d7da;
-}
+    .navlinks{
+        justify-content:flex-start;
+    }
 
-.alert.warning{
- background:#fff3cd;
-}
+    .grid,
+    .grid3{
+        grid-template-columns:1fr;
+    }
 
-.alert.info{
- background:#cff4fc;
-}
+    .hero h1{
+        font-size:31px;
+    }
 
-hr{
- border:0;
- border-top:
- 1px solid var(--border);
- margin:20px 0;
-}
+    .container{
+        padding:
+            22px 13px 45px;
+    }
 
-.stat-card{
- min-height:120px;
-}
+    .card{
+        padding:20px;
+    }
 
-.feature-icon{
- font-size:30px;
- margin-bottom:8px;
-}
-
-.form-grid{
- display:grid;
- grid-template-columns:
- repeat(
- auto-fit,
- minmax(230px,1fr)
- );
- gap:12px;
-}
-
-.form-grid > div{
- min-width:0;
-}
-
-footer{
- padding:30px 4%;
- color:var(--muted);
- text-align:center;
-}
-
-@media(max-width:650px){
-
- nav{
-  padding:12px 3%;
- }
-
- .brand{
-  width:100%;
-  margin-bottom:5px;
- }
-
- .container{
-  width:96%;
-  margin:15px auto;
- }
-
- .hero{
-  padding:22px;
- }
-
- table{
-  display:block;
-  overflow-x:auto;
-  white-space:nowrap;
- }
+    table{
+        display:block;
+        overflow-x:auto;
+    }
 
 }
 
 </style>
+"""
+
+
+# ============================================================
+# PAGE WRAPPER
+# ============================================================
+
+def page(
+    title,
+    body,
+    admin=False
+):
+
+    user = current_user()
+
+    if admin:
+
+        nav = """
+        <div class="admin-bar">
+            <div class="admin-inner">
+                <strong>
+                    KOJA AFRICA — ADMIN
+                </strong>
+
+                <a
+                    href="/logout"
+                    style="color:white"
+                >
+                    Logout
+                </a>
+            </div>
+        </div>
+        """
+
+    elif user:
+
+        nav = f"""
+        <nav class="nav">
+            <div class="nav-inner">
+
+                <a
+                    class="logo"
+                    href="/dashboard"
+                >
+                    KOJA AFRICA
+                </a>
+
+                <div class="navlinks">
+
+                    <a href="/dashboard">
+                        Dashboard
+                    </a>
+
+                    <a href="/services">
+                        Services
+                    </a>
+
+                    <a href="/questions">
+                        Questions
+                    </a>
+
+                    <a href="/assignments">
+                        Assignments
+                    </a>
+
+                    <a href="/universities">
+                        Universities
+                    </a>
+
+                    <a href="/profile">
+                        Profile
+                    </a>
+
+                    <a href="/logout">
+                        Logout
+                    </a>
+
+                </div>
+
+            </div>
+        </nav>
+        """
+
+    else:
+
+        nav = """
+        <nav class="nav">
+            <div class="nav-inner">
+
+                <a
+                    class="logo"
+                    href="/"
+                >
+                    KOJA AFRICA
+                </a>
+
+                <div class="navlinks">
+
+                    <a href="/">
+                        Home
+                    </a>
+
+                    <a href="/login">
+                        Login
+                    </a>
+
+                    <a href="/register">
+                        Create Account
+                    </a>
+
+                </div>
+
+            </div>
+        </nav>
+        """
+
+    messages = ""
+
+    from flask import get_flashed_messages
+
+    for category, message in get_flashed_messages(
+        with_categories=True
+    ):
+
+        messages += (
+            f'<div class="alert {category}">'
+            f'{message}'
+            f'</div>'
+        )
+
+    return f"""
+<!doctype html>
+
+<html lang="en">
+
+<head>
+
+<meta charset="utf-8">
+
+<meta
+    name="viewport"
+    content="width=device-width,initial-scale=1"
+>
+
+<title>
+    {title} | KOJA AFRICA
+</title>
+
+{CSS}
+
 </head>
 
 <body>
 
-<nav>
+{nav}
 
-<a
- class="brand"
- href="{{ url_for('home') }}"
->
-KOJA AFRICA
-</a>
+<main class="container">
 
-<a href="{{ url_for('universities') }}">
-Universities
-</a>
+{messages}
 
-<a href="{{ url_for('programmes') }}">
-Programmes
-</a>
+{body}
 
-<a href="{{ url_for('documents') }}">
-Resources
-</a>
+</main>
 
-{% if user %}
-<a href="{{ url_for('questions') }}">
-Questions
-</a>
+<footer class="footer">
 
-<a href="{{ url_for('cv_builder') }}">
-CV
-</a>
+<strong>KOJA AFRICA</strong>
 
-<a href="{{ url_for('assignments') }}">
-Assignments
-</a>
+<br>
 
-<a href="{{ url_for('services') }}">
-Services
-</a>
-
-<a href="{{ url_for('dashboard') }}">
-Dashboard
-</a>
-
-{% if user.is_admin %}
-<a href="{{ url_for('admin') }}">
-Admin
-</a>
-{% endif %}
-
-<a href="{{ url_for('logout') }}">
-Logout
-</a>
-
-{% else %}
-
-<a href="{{ url_for('login') }}">
-Login
-</a>
-
-<a href="{{ url_for('register') }}">
-Register
-</a>
-
-{% endif %}
-
-</nav>
-
-<div class="container">
-
-{% with messages =
- get_flashed_messages(
-  with_categories=true
- )
-%}
-
-{% for category,message in messages %}
-
-<div class="alert {{ category }}">
-{{ message }}
-</div>
-
-{% endfor %}
-
-{% endwith %}
-
-{{ body|safe }}
-
-</div>
-
-<footer>
-KOJA AFRICA —
 Knowledge • Questions • Answers
+
+<br>
+
+Assignments • Services • Learning • Support
+
 </footer>
 
 </body>
+
 </html>
 """
-
-
-def page(
-    title,
-    template,
-    **ctx
-):
-    body = render_template_string(
-        template,
-        **ctx
-    )
-
-    return render_template_string(
-        BASE,
-        title=title,
-        body=body,
-        user=current_user()
-    )
 
 
 # ============================================================
@@ -1493,220 +1031,85 @@ def page(
 @app.route("/")
 def home():
 
-    stats = {}
-
-    tables = [
-        "universities",
-        "university_programmes",
-        "university_applications",
-        "documents",
-        "questions",
-        "profiles",
-    ]
-
-    for table in tables:
-        stats[table] = count_rows(
-            table
+    if session.get("user_id"):
+        return redirect(
+            url_for("dashboard")
         )
 
+    body = """
+    <section class="hero">
+
+        <h1>KOJA AFRICA</h1>
+
+        <p>
+            Knowledge • Questions • Answers
+        </p>
+
+        <p>
+            Access academic support, assignments,
+            university information and KOJA services
+            from one platform.
+        </p>
+
+        <div class="actions">
+
+            <a
+                class="btn"
+                href="/login"
+            >
+                Login
+            </a>
+
+            <a
+                class="btn green"
+                href="/register"
+            >
+                Create Account
+            </a>
+
+        </div>
+
+    </section>
+
+
+    <section class="card">
+
+        <h2>KOJA Services</h2>
+
+        <div class="grid3">
+
+            <div class="service">
+                <h3>Academic Support</h3>
+                <p>
+                    Questions, assignments and
+                    learning resources.
+                </p>
+            </div>
+
+            <div class="service">
+                <h3>University Applications</h3>
+                <p>
+                    Explore universities and
+                    application information.
+                </p>
+            </div>
+
+            <div class="service">
+                <h3>KOJA Services</h3>
+                <p>
+                    Farmer, CV, doctor, delivery
+                    and other service requests.
+                </p>
+            </div>
+
+        </div>
+
+    </section>
+    """
+
     return page(
-        "KOJA Africa",
-        r"""
-
-<div class="hero">
-
-<h1>
-KOJA AFRICA
-</h1>
-
-<p>
-Knowledge • Questions • Answers
-</p>
-
-<p>
-A Zambian digital platform for
-education, admissions, academic
-services, agriculture, healthcare,
-documents, assignments and deliveries.
-</p>
-
-<div class="actions">
-
-<a
- class="btn"
- href="{{ url_for('universities') }}"
->
-Explore Universities
-</a>
-
-<a
- class="btn secondary"
- href="{{ url_for('programmes') }}"
->
-Find a Programme
-</a>
-
-{% if not user %}
-
-<a
- class="btn success"
- href="{{ url_for('register') }}"
->
-Create Account
-</a>
-
-{% endif %}
-
-</div>
-
-</div>
-
-<br>
-
-<div class="grid">
-
-<div class="card stat-card">
-<div class="stat">
-{{ stats.universities }}
-</div>
-<div class="muted">
-Universities
-</div>
-</div>
-
-<div class="card stat-card">
-<div class="stat">
-{{ stats.university_programmes }}
-</div>
-<div class="muted">
-Programmes
-</div>
-</div>
-
-<div class="card stat-card">
-<div class="stat">
-{{ stats.university_applications }}
-</div>
-<div class="muted">
-Applications
-</div>
-</div>
-
-<div class="card stat-card">
-<div class="stat">
-{{ stats.documents }}
-</div>
-<div class="muted">
-Learning resources
-</div>
-</div>
-
-</div>
-
-<br>
-
-<div class="grid">
-
-<div class="card">
-
-<div class="feature-icon">
-🎓
-</div>
-
-<h2>
-University Admissions
-</h2>
-
-<p>
-Search Zambian universities,
-programmes, entry requirements
-and application information.
-</p>
-
-<a
- class="btn"
- href="{{ url_for('universities') }}"
->
-Explore
-</a>
-
-</div>
-
-<div class="card">
-
-<div class="feature-icon">
-📚
-</div>
-
-<h2>
-Academic Support
-</h2>
-
-<p>
-Ask questions, submit assignments
-and access learning resources.
-</p>
-
-<a
- class="btn"
- href="{{ url_for('questions') if user else url_for('login') }}"
->
-Academic Support
-</a>
-
-</div>
-
-<div class="card">
-
-<div class="feature-icon">
-📄
-</div>
-
-<h2>
-CV Builder
-</h2>
-
-<p>
-Create your professional CV and
-download it as a PDF.
-</p>
-
-<a
- class="btn"
- href="{{ url_for('cv_builder') if user else url_for('login') }}"
->
-Build CV
-</a>
-
-</div>
-
-<div class="card">
-
-<div class="feature-icon">
-🚚
-</div>
-
-<h2>
-KOJA Services
-</h2>
-
-<p>
-Farmer registration, doctor booking
-and delivery requests.
-</p>
-
-<a
- class="btn"
- href="{{ url_for('services') if user else url_for('login') }}"
->
-Services
-</a>
-
-</div>
-
-</div>
-
-"""
+        "Home",
+        body
     )
 
 
@@ -1722,34 +1125,16 @@ def register():
 
     if request.method == "POST":
 
-        name = clean(
-            request.form.get(
-                "full_name"
-            )
+        full_name = clean(
+            request.form.get("full_name")
         )
 
         email = clean(
-            request.form.get(
-                "email"
-            )
+            request.form.get("email")
         ).lower()
 
         phone = clean(
-            request.form.get(
-                "phone"
-            )
-        )
-
-        institution = clean(
-            request.form.get(
-                "institution"
-            )
-        )
-
-        student_number = clean(
-            request.form.get(
-                "student_number"
-            )
+            request.form.get("phone")
         )
 
         password = request.form.get(
@@ -1757,256 +1142,240 @@ def register():
             ""
         )
 
-        confirm = request.form.get(
+        confirmation = request.form.get(
             "confirm_password",
             ""
         )
 
-        if not name or not email or not password:
+        if not full_name:
             flash(
-                "Name, email and password are required.",
-                "danger"
+                "Full name is required.",
+                "error"
             )
 
-            return redirect(
-                url_for("register")
+        elif not email:
+            flash(
+                "Email is required.",
+                "error"
             )
 
-        if len(password) < 6:
+        elif not password:
+            flash(
+                "Password is required.",
+                "error"
+            )
+
+        elif len(password) < 6:
             flash(
                 "Password must contain at least 6 characters.",
-                "danger"
+                "error"
             )
 
-            return redirect(
-                url_for("register")
-            )
-
-        if password != confirm:
+        elif password != confirmation:
             flash(
                 "Passwords do not match.",
-                "danger"
+                "error"
             )
 
-            return redirect(
-                url_for("register")
-            )
+        else:
 
-        if login_environment_admin(
-            email,
-            password
-        ):
-            flash(
-                "That email is reserved for the administrator.",
-                "danger"
-            )
-
-            return redirect(
-                url_for("login")
-            )
-
-        try:
-
-            if find_user(email):
-
-                flash(
-                    "An account with that email already exists.",
-                    "danger"
-                )
-
-                return redirect(
-                    url_for("login")
-                )
-
-            password_hash = (
-                generate_password_hash(
-                    password
-                )
-            )
-
-            # Primary registration table.
             try:
 
-                user = sb_insert(
+                existing = supabase_get(
                     "koja_users",
                     {
-                        "full_name": name,
-                        "email": email,
-                        "phone": phone,
-                        "password_hash": password_hash,
+                        "email": f"eq.{email}",
+                        "limit": "1",
                     }
                 )
 
-                user_id = user.get(
-                    "id"
+                if existing:
+
+                    flash(
+                        "An account with this email already exists.",
+                        "error"
+                    )
+
+                else:
+
+                    user_id = str(
+                        uuid.uuid4()
+                    )
+
+                    password_hash = (
+                        generate_password_hash(
+                            password
+                        )
+                    )
+
+                    user_rows = supabase_insert(
+                        "koja_users",
+                        {
+                            "id": user_id,
+                            "full_name": full_name,
+                            "email": email,
+                            "phone": phone or None,
+                            "password_hash": password_hash,
+                            "created_at": now_iso(),
+                            "updated_at": now_iso(),
+                        }
+                    )
+
+                    # Create matching profile.
+                    try:
+
+                        supabase_insert(
+                            "profiles",
+                            {
+                                "id": user_id,
+                                "name": full_name,
+                                "full_name": full_name,
+                                "email": email,
+                                "phone": phone or None,
+                                "role": "student",
+                                "is_admin": False,
+                                "is_active": True,
+                                "created_at": now_iso(),
+                                "updated_at": now_iso(),
+                            }
+                        )
+
+                    except Exception as profile_error:
+
+                        logger.warning(
+                            "Profile creation failed: %s",
+                            profile_error
+                        )
+
+                    activity_log(
+                        "register",
+                        f"New KOJA account registered: {email}",
+                        user_id
+                    )
+
+                    flash(
+                        "Account created successfully. You can now log in.",
+                        "success"
+                    )
+
+                    return redirect(
+                        url_for("login")
+                    )
+
+            except Exception as exc:
+
+                logger.exception(
+                    "Registration error"
                 )
 
-                table_used = "koja_users"
-
-            except Exception as e:
-
-                log.warning(
-                    "koja_users registration failed: %s",
-                    e
+                flash(
+                    f"Registration failed: {str(exc)}",
+                    "error"
                 )
 
-                user = sb_insert(
-                    "profiles",
-                    {
-                        "full_name": name,
-                        "name": name,
-                        "email": email,
-                        "phone": phone,
-                        "institution": institution,
-                        "student_number": student_number,
-                        "password_hash": password_hash,
-                        "role": "student",
-                        "is_admin": False,
-                        "is_active": True,
-                    }
-                )
+    body = """
+    <section class="card">
 
-                user_id = user.get(
-                    "id"
-                )
+        <h2>Create KOJA Account</h2>
 
-                table_used = "profiles"
+        <p class="small">
+            Create your KOJA Africa account.
+        </p>
 
-            session["user"] = {
-                "id": user_id,
-                "name": name,
-                "email": email,
-                "phone": phone,
-                "institution": institution,
-                "student_number": student_number,
-                "role": "student",
-                "is_admin": False,
-            }
+        <form method="post">
 
-            log_activity(
-                "register",
-                "New student registration",
-                user_id,
-                email
-            )
+            <div class="field">
 
-            flash(
-                "Account created successfully.",
-                "success"
-            )
+                <label>
+                    Full Name
+                </label>
 
-            return redirect(
-                url_for("dashboard")
-            )
+                <input
+                    name="full_name"
+                    autocomplete="name"
+                    required
+                >
 
-        except Exception as e:
+            </div>
 
-            log.exception(
-                "Registration error"
-            )
 
-            flash(
-                f"Registration failed: {e}",
-                "danger"
-            )
+            <div class="field">
+
+                <label>
+                    Email
+                </label>
+
+                <input
+                    type="email"
+                    name="email"
+                    autocomplete="email"
+                    required
+                >
+
+            </div>
+
+
+            <div class="field">
+
+                <label>
+                    Phone
+                </label>
+
+                <input
+                    name="phone"
+                    autocomplete="tel"
+                >
+
+            </div>
+
+
+            <div class="field">
+
+                <label>
+                    Password
+                </label>
+
+                <input
+                    type="password"
+                    name="password"
+                    autocomplete="new-password"
+                    required
+                >
+
+            </div>
+
+
+            <div class="field">
+
+                <label>
+                    Confirm Password
+                </label>
+
+                <input
+                    type="password"
+                    name="confirm_password"
+                    autocomplete="new-password"
+                    required
+                >
+
+            </div>
+
+
+            <button
+                class="btn green"
+                type="submit"
+            >
+                Create Account
+            </button>
+
+        </form>
+
+    </section>
+    """
 
     return page(
-        "Register",
-        r"""
-
-<div class="card">
-
-<h1>
-Create KOJA Account
-</h1>
-
-<form method="post">
-
-<label>
-Full name
-</label>
-
-<input
- name="full_name"
- required
- autocomplete="name"
->
-
-<label>
-Email
-</label>
-
-<input
- type="email"
- name="email"
- required
- autocomplete="email"
->
-
-<label>
-Phone
-</label>
-
-<input
- name="phone"
->
-
-<label>
-Institution
-</label>
-
-<input
- name="institution"
->
-
-<label>
-Student number
-</label>
-
-<input
- name="student_number"
->
-
-<label>
-Password
-</label>
-
-<input
- type="password"
- name="password"
- minlength="6"
- required
- autocomplete="new-password"
->
-
-<label>
-Confirm password
-</label>
-
-<input
- type="password"
- name="confirm_password"
- minlength="6"
- required
- autocomplete="new-password"
->
-
-<button>
-Create Account
-</button>
-
-</form>
-
-<p>
-Already have an account?
-<a href="{{ url_for('login') }}">
-Login
-</a>
-</p>
-
-</div>
-
-"""
+        "Create Account",
+        body
     )
 
 
@@ -2023,9 +1392,7 @@ def login():
     if request.method == "POST":
 
         email = clean(
-            request.form.get(
-                "email"
-            )
+            request.form.get("email")
         ).lower()
 
         password = request.form.get(
@@ -2033,237 +1400,289 @@ def login():
             ""
         )
 
-        next_url = (
-            request.form.get(
-                "next"
-            )
-            or url_for("dashboard")
+        next_url = clean(
+            request.form.get("next")
         )
 
         if not email or not password:
 
             flash(
-                "Email and password are required.",
-                "danger"
+                "Enter your email and password.",
+                "error"
             )
 
-            return redirect(
-                url_for(
-                    "login",
-                    next=next_url
-                )
-            )
-
-        # ====================================================
-        # IMPORTANT:
-        # Environment administrator is authenticated directly.
-        #
-        # This prevents "Invalid login credentials" when the
-        # profiles table has a different schema.
-        # ====================================================
-
-        if login_environment_admin(
-            email,
-            password
-        ):
-
-            session["user"] = {
-                "id": "environment-admin",
-                "name": ADMIN_NAME,
-                "email": ADMIN_EMAIL,
-                "phone": "",
-                "institution": "KOJA AFRICA",
-                "student_number": "",
-                "role": "admin",
-                "is_admin": True,
-            }
+        else:
 
             try:
-                ensure_env_admin()
-            except Exception:
-                pass
 
-            log_activity(
-                "admin_login",
-                "Environment administrator login",
-                None,
-                ADMIN_EMAIL
-            )
+                # =================================================
+                # THIS IS THE IMPORTANT FIX.
+                #
+                # We search public.koja_users.
+                #
+                # We DO NOT use:
+                #   SQLite
+                #   Supabase Auth signInWithPassword
+                #   public.users
+                #
+                # The existing account has a Werkzeug scrypt hash.
+                # =================================================
 
-            return redirect(
-                next_url
-            )
+                users = supabase_get(
+                    "koja_users",
+                    {
+                        "email": f"eq.{email}",
+                        "limit": "1",
+                    }
+                )
 
-        try:
+                if not users:
 
-            user = find_user(
-                email
-            )
+                    flash(
+                        "Invalid email or password.",
+                        "error"
+                    )
 
-        except Exception as e:
+                else:
 
-            log.exception(
-                "Login lookup error"
-            )
+                    user = users[0]
 
-            flash(
-                f"Login service error: {e}",
-                "danger"
-            )
+                    stored_hash = user.get(
+                        "password_hash"
+                    )
 
-            return redirect(
-                url_for("login")
-            )
+                    if not stored_hash:
 
-        if not user:
+                        logger.error(
+                            "User %s has no password_hash.",
+                            user.get("id")
+                        )
 
-            flash(
-                "Invalid login credentials.",
-                "danger"
-            )
+                        flash(
+                            "This account has no valid password configured.",
+                            "error"
+                        )
 
-            return redirect(
-                url_for("login")
-            )
+                    else:
 
-        password_hash = user.get(
-            "password_hash"
-        )
+                        try:
 
-        if not password_hash:
+                            password_ok = (
+                                check_password_hash(
+                                    stored_hash,
+                                    password
+                                )
+                            )
 
-            flash(
-                "This account does not have a valid password. "
-                "Please register again or contact the administrator.",
-                "danger"
-            )
+                        except Exception as hash_error:
 
-            return redirect(
-                url_for("login")
-            )
+                            logger.exception(
+                                "Password verification error: %s",
+                                hash_error
+                            )
 
-        if user.get(
-            "is_active",
-            True
-        ) is False:
+                            password_ok = False
 
-            flash(
-                "This account is inactive. Contact the administrator.",
-                "danger"
-            )
+                        if not password_ok:
 
-            return redirect(
-                url_for("login")
-            )
+                            flash(
+                                "Invalid email or password.",
+                                "error"
+                            )
 
-        try:
+                        else:
 
-            valid = check_password_hash(
-                password_hash,
-                password
-            )
+                            # -----------------------------------------
+                            # Profile lookup
+                            # -----------------------------------------
 
-        except Exception:
+                            profiles = supabase_get(
+                                "profiles",
+                                {
+                                    "id": f"eq.{user['id']}",
+                                    "limit": "1",
+                                }
+                            )
 
-            valid = False
+                            profile = (
+                                profiles[0]
+                                if profiles
+                                else {}
+                            )
 
-        if not valid:
+                            # -----------------------------------------
+                            # Active account check
+                            # -----------------------------------------
 
-            flash(
-                "Invalid login credentials.",
-                "danger"
-            )
+                            if (
+                                profile and
+                                profile.get(
+                                    "is_active"
+                                ) is False
+                            ):
 
-            return redirect(
-                url_for("login")
-            )
+                                flash(
+                                    "Your account is inactive. Please contact KOJA.",
+                                    "error"
+                                )
 
-        session["user"] = {
-            "id": user.get("id"),
-            "name": user.get("name"),
-            "email": user.get("email"),
-            "phone": user.get("phone"),
-            "institution": user.get("institution"),
-            "student_number": user.get("student_number"),
-            "role": user.get("role"),
-            "is_admin": bool(
-                user.get("is_admin")
-            ),
-        }
+                            else:
 
-        log_activity(
-            "login",
-            "User login",
-            user.get("id"),
-            user.get("email")
-        )
+                                # -------------------------------------
+                                # SUCCESS
+                                # -------------------------------------
 
-        return redirect(
-            next_url
-        )
+                                session.clear()
+
+                                session["user_id"] = (
+                                    user["id"]
+                                )
+
+                                session["user_email"] = (
+                                    user.get(
+                                        "email"
+                                    )
+                                )
+
+                                session["user_name"] = (
+                                    user.get(
+                                        "full_name"
+                                    )
+                                    or profile.get(
+                                        "full_name"
+                                    )
+                                    or profile.get(
+                                        "name"
+                                    )
+                                    or "KOJA User"
+                                )
+
+                                session["role"] = (
+                                    profile.get(
+                                        "role",
+                                        "student"
+                                    )
+                                )
+
+                                session["is_admin"] = bool(
+                                    profile.get(
+                                        "is_admin",
+                                        False
+                                    )
+                                )
+
+                                activity_log(
+                                    "login",
+                                    f"Successful login: {email}",
+                                    user["id"]
+                                )
+
+                                # Prevent unsafe external redirects.
+                                if (
+                                    next_url.startswith("/")
+                                    and not next_url.startswith("//")
+                                ):
+
+                                    return redirect(
+                                        next_url
+                                    )
+
+                                return redirect(
+                                    url_for("dashboard")
+                                )
+
+            except Exception as exc:
+
+                logger.exception(
+                    "LOGIN ERROR"
+                )
+
+                flash(
+                    "Unable to connect to the KOJA database. "
+                    "Please try again.",
+                    "error"
+                )
+
+    next_value = clean(
+        request.args.get("next")
+    )
+
+    body = f"""
+    <section class="card">
+
+        <h2>KOJA Africa Login</h2>
+
+        <p class="small">
+            Sign in using your KOJA account.
+        </p>
+
+        <form method="post">
+
+            <input
+                type="hidden"
+                name="next"
+                value="{next_value}"
+            >
+
+            <div class="field">
+
+                <label>
+                    Email
+                </label>
+
+                <input
+                    type="email"
+                    name="email"
+                    autocomplete="email"
+                    required
+                >
+
+            </div>
+
+
+            <div class="field">
+
+                <label>
+                    Password
+                </label>
+
+                <input
+                    type="password"
+                    name="password"
+                    autocomplete="current-password"
+                    required
+                >
+
+            </div>
+
+
+            <button
+                class="btn"
+                type="submit"
+            >
+                Login
+            </button>
+
+        </form>
+
+
+        <div class="actions">
+
+            <a
+                href="/register"
+                class="btn light"
+            >
+                Create Account
+            </a>
+
+        </div>
+
+    </section>
+    """
 
     return page(
         "Login",
-        r"""
-
-<div class="card">
-
-<h1>
-Login
-</h1>
-
-<p class="muted">
-Students use their registered email and password.
-</p>
-
-<form method="post">
-
-<input
- type="hidden"
- name="next"
- value="{{ request.args.get('next','') }}"
->
-
-<label>
-Email
-</label>
-
-<input
- type="email"
- name="email"
- required
- autocomplete="email"
->
-
-<label>
-Password
-</label>
-
-<input
- type="password"
- name="password"
- required
- autocomplete="current-password"
->
-
-<button>
-Login
-</button>
-
-</form>
-
-<hr>
-
-<p>
-New student?
-<a href="{{ url_for('register') }}">
-Create an account
-</a>
-</p>
-
-</div>
-
-"""
+        body
     )
 
 
@@ -2274,23 +1693,19 @@ Create an account
 @app.route("/logout")
 def logout():
 
-    user = current_user()
+    user_id = session.get(
+        "user_id"
+    )
 
-    if user:
+    if user_id:
 
-        log_activity(
+        activity_log(
             "logout",
-            "User logout",
-            user.get("id"),
-            user.get("email")
+            "User logged out.",
+            user_id
         )
 
     session.clear()
-
-    flash(
-        "You have been logged out.",
-        "success"
-    )
 
     return redirect(
         url_for("home")
@@ -2306,2249 +1721,672 @@ def logout():
 def dashboard():
 
     user = current_user()
+    profile = current_profile()
 
-    applications = []
-    questions_ = []
-    notifications_ = []
-
-    assignments_ = []
-    services_ = []
-
-    try:
-
-        applications = sb_get(
-            "university_applications",
-            {
-                "select": "*",
-                "user_id": (
-                    f"eq.{user['id']}"
-                ),
-                "order": "created_at.desc",
-            }
+    role = (
+        profile.get(
+            "role",
+            "student"
         )
-
-    except Exception:
-        pass
-
-    try:
-
-        questions_ = sb_get(
-            "questions",
-            {
-                "select": "*",
-                "student_id": (
-                    f"eq.{user['id']}"
-                ),
-                "order": "created_at.desc",
-            }
-        )
-
-    except Exception:
-        pass
-
-    try:
-
-        notifications_ = sb_get(
-            "koja_notifications",
-            {
-                "select": "*",
-                "client_email": (
-                    f"eq.{user['email']}"
-                ),
-                "order": "created_at.desc",
-                "limit": "20",
-            }
-        )
-
-    except Exception:
-        pass
-
-    assignments_ = optional_get(
-        "koja_assignments",
-        {
-            "select": "*",
-            "student_id": (
-                f"eq.{user['id']}"
-            ),
-            "order": "created_at.desc",
-        }
+        if profile
+        else "student"
     )
 
-    services_ = optional_get(
-        "koja_service_requests",
-        {
-            "select": "*",
-            "client_email": (
-                f"eq.{user['email']}"
-            ),
-            "order": "created_at.desc",
-        }
+    admin = (
+        bool(
+            profile.get(
+                "is_admin",
+                False
+            )
+        )
+        if profile
+        else False
     )
+
+    body = f"""
+    <section class="hero">
+
+        <h1>
+            Welcome,
+            {user.get('full_name', 'KOJA User')}
+        </h1>
+
+        <p>
+            KOJA AFRICA — Knowledge • Questions • Answers
+        </p>
+
+        <div class="actions">
+
+            <a
+                class="btn green"
+                href="/services"
+            >
+                KOJA Services
+            </a>
+
+            <a
+                class="btn"
+                href="/questions"
+            >
+                Ask a Question
+            </a>
+
+        </div>
+
+    </section>
+
+
+    <div class="grid3">
+
+        <div class="service">
+
+            <h3>
+                Academic Support
+            </h3>
+
+            <p>
+                Submit questions and academic
+                requests.
+            </p>
+
+            <a
+                class="btn light"
+                href="/questions"
+            >
+                Open
+            </a>
+
+        </div>
+
+
+        <div class="service">
+
+            <h3>
+                Assignments
+            </h3>
+
+            <p>
+                Submit and track assignment
+                requests.
+            </p>
+
+            <a
+                class="btn light"
+                href="/assignments"
+            >
+                Open
+            </a>
+
+        </div>
+
+
+        <div class="service">
+
+            <h3>
+                University
+            </h3>
+
+            <p>
+                Explore universities and
+                application information.
+            </p>
+
+            <a
+                class="btn light"
+                href="/universities"
+            >
+                Open
+            </a>
+
+        </div>
+
+    </div>
+
+
+    <section class="card">
+
+        <h2>Your Account</h2>
+
+        <p>
+            <strong>Email:</strong>
+            {user.get('email', '')}
+        </p>
+
+        <p>
+            <strong>Role:</strong>
+            <span class="badge">
+                {role}
+            </span>
+        </p>
+
+        <p>
+            <strong>Administrator:</strong>
+            {'Yes' if admin else 'No'}
+        </p>
+
+    </section>
+    """
 
     return page(
         "Dashboard",
-        r"""
-
-<h1>
-Student Dashboard
-</h1>
-
-<div class="card">
-
-<h2>
-Welcome, {{ user.name }}
-</h2>
-
-<p>
-{{ user.email }}
-</p>
-
-{% if user.institution %}
-<p>
-<b>Institution:</b>
-{{ user.institution }}
-</p>
-{% endif %}
-
-</div>
-
-<div class="grid">
-
-<div class="card">
-
-<h3>
-University Applications
-</h3>
-
-<div class="stat">
-{{ applications|length }}
-</div>
-
-<a href="{{ url_for('my_applications') }}">
-View applications
-</a>
-
-</div>
-
-<div class="card">
-
-<h3>
-Academic Questions
-</h3>
-
-<div class="stat">
-{{ questions|length }}
-</div>
-
-<a href="{{ url_for('questions') }}">
-View questions
-</a>
-
-</div>
-
-<div class="card">
-
-<h3>
-Assignments
-</h3>
-
-<div class="stat">
-{{ assignments|length }}
-</div>
-
-<a href="{{ url_for('assignments') }}">
-My assignments
-</a>
-
-</div>
-
-<div class="card">
-
-<h3>
-Service Requests
-</h3>
-
-<div class="stat">
-{{ services|length }}
-</div>
-
-<a href="{{ url_for('services') }}">
-My services
-</a>
-
-</div>
-
-<div class="card">
-
-<h3>
-Notifications
-</h3>
-
-<div class="stat">
-{{ notifications|length }}
-</div>
-
-</div>
-
-</div>
-
-<br>
-
-<div class="card">
-
-<h2>
-Quick Actions
-</h2>
-
-<div class="actions">
-
-<a
- class="btn"
- href="{{ url_for('universities') }}"
->
-Find University
-</a>
-
-<a
- class="btn"
- href="{{ url_for('programmes') }}"
->
-Find Programme
-</a>
-
-<a
- class="btn"
- href="{{ url_for('new_application') }}"
->
-University Application
-</a>
-
-<a
- class="btn"
- href="{{ url_for('new_question') }}"
->
-Ask Question
-</a>
-
-<a
- class="btn"
- href="{{ url_for('cv_builder') }}"
->
-Create CV
-</a>
-
-<a
- class="btn"
- href="{{ url_for('new_assignment') }}"
->
-Submit Assignment
-</a>
-
-<a
- class="btn"
- href="{{ url_for('farmer_registration') }}"
->
-Farmer Registration
-</a>
-
-<a
- class="btn"
- href="{{ url_for('doctor_booking') }}"
->
-Book Doctor
-</a>
-
-<a
- class="btn"
- href="{{ url_for('delivery_request') }}"
->
-Request Delivery
-</a>
-
-</div>
-
-</div>
-
-<br>
-
-<div class="card">
-
-<h2>
-Recent Notifications
-</h2>
-
-{% for n in notifications %}
-
-<div class="card">
-
-<h3>
-{{ n.title }}
-</h3>
-
-<p>
-{{ n.message }}
-</p>
-
-<p class="muted small">
-{{ n.created_at }}
-</p>
-
-</div>
-
-{% else %}
-
-<p>
-No notifications yet.
-</p>
-
-{% endfor %}
-
-</div>
-
-""",
-        applications=applications,
-        questions=questions_,
-        notifications=notifications_,
-        assignments=assignments_,
-        services=services_,
+        body
     )
 
 
 # ============================================================
-# UNIVERSITIES
-# ============================================================
-
-@app.route("/universities")
-def universities():
-
-    q = clean(
-        request.args.get("q")
-    )
-
-    params = {
-        "select": "*",
-        "order": "name.asc",
-        "limit": "500",
-    }
-
-    if q:
-        params["name"] = (
-            f"ilike.*{q}*"
-        )
-
-    try:
-
-        rows = sb_get(
-            "universities",
-            params
-        )
-
-    except Exception as e:
-
-        rows = []
-
-        flash(
-            f"Could not load universities: {e}",
-            "danger"
-        )
-
-    counts = {}
-
-    try:
-
-        programmes = sb_get(
-            "university_programmes",
-            {
-                "select": "university_id",
-                "is_active": "eq.true",
-                "limit": "5000",
-            }
-        )
-
-        for p in programmes:
-
-            uid = p.get(
-                "university_id"
-            )
-
-            counts[uid] = (
-                counts.get(uid, 0) + 1
-            )
-
-    except Exception:
-        pass
-
-    return page(
-        "Universities",
-        r"""
-
-<div class="card">
-
-<h1>
-Zambian Universities & Institutions
-</h1>
-
-<form method="get">
-
-<input
- name="q"
- value="{{ q }}"
- placeholder="Search university"
->
-
-<button>
-Search
-</button>
-
-</form>
-
-</div>
-
-<div class="grid">
-
-{% for u in rows %}
-
-<div class="card">
-
-<h2>
-{{ u.name }}
-</h2>
-
-<p class="muted">
-
-{{ u.abbreviation or "" }}
-
-{% if u.province %}
-•
-{{ u.province }}
-{% endif %}
-
-</p>
-
-<p>
-{{ u.description or
-"University information and admissions." }}
-</p>
-
-<p>
-
-<span class="badge">
-{{ counts.get(u.id,0) }}
-programmes
-</span>
-
-</p>
-
-<div class="actions">
-
-<a
- class="btn"
- href="{{ url_for(
- 'university_detail',
- university_id=u.id
- ) }}"
->
-View university
-</a>
-
-{% if u.application_url %}
-
-<a
- class="btn secondary"
- target="_blank"
- href="{{ u.application_url }}"
->
-Official application
-</a>
-
-{% endif %}
-
-</div>
-
-</div>
-
-{% else %}
-
-<div class="card">
-
-<p>
-No universities found.
-</p>
-
-</div>
-
-{% endfor %}
-
-</div>
-
-""",
-        rows=rows,
-        q=q,
-        counts=counts
-    )
-
-
-# ============================================================
-# UNIVERSITY DETAIL
+# PROFILE
 # ============================================================
 
 @app.route(
-    "/universities/<uuid:university_id>"
-)
-def university_detail(
-    university_id
-):
-
-    try:
-
-        university = sb_get(
-            "universities",
-            {
-                "select": "*",
-                "id": (
-                    f"eq.{university_id}"
-                ),
-                "limit": "1",
-            },
-            single=True
-        )
-
-        if not university:
-            abort(404)
-
-        programmes_ = sb_get(
-            "university_programmes",
-            {
-                "select": "*",
-                "university_id": (
-                    f"eq.{university_id}"
-                ),
-                "is_active": "eq.true",
-                "order": "programme_name.asc",
-                "limit": "1000",
-            }
-        )
-
-    except Exception as e:
-
-        flash(
-            str(e),
-            "danger"
-        )
-
-        return redirect(
-            url_for("universities")
-        )
-
-    return page(
-        university["name"],
-        r"""
-
-<div class="hero">
-
-<h1>
-{{ u.name }}
-</h1>
-
-<p>
-{{ u.description or
-"University admissions and programme information." }}
-</p>
-
-<div class="actions">
-
-{% if u.application_url %}
-
-<a
- class="btn"
- target="_blank"
- href="{{ u.application_url }}"
->
-Apply on official website
-</a>
-
-{% endif %}
-
-{% if u.admissions_url %}
-
-<a
- class="btn secondary"
- target="_blank"
- href="{{ u.admissions_url }}"
->
-Admissions Information
-</a>
-
-{% endif %}
-
-</div>
-
-</div>
-
-<br>
-
-<div class="card">
-
-<h2>
-University Information
-</h2>
-
-<table>
-
-<tr>
-<th>Institution type</th>
-<td>{{ u.institution_type or "-" }}</td>
-</tr>
-
-<tr>
-<th>Ownership</th>
-<td>{{ u.ownership or "-" }}</td>
-</tr>
-
-<tr>
-<th>Province</th>
-<td>{{ u.province or "-" }}</td>
-</tr>
-
-<tr>
-<th>District</th>
-<td>{{ u.district or "-" }}</td>
-</tr>
-
-<tr>
-<th>Campus</th>
-<td>{{ u.campus or "-" }}</td>
-</tr>
-
-<tr>
-<th>Location</th>
-<td>{{ u.location or "-" }}</td>
-</tr>
-
-<tr>
-<th>Application status</th>
-<td>{{ u.application_status or "Unknown" }}</td>
-</tr>
-
-<tr>
-<th>Deadline</th>
-<td>{{ u.deadline or "-" }}</td>
-</tr>
-
-<tr>
-<th>Application fee</th>
-<td>
-{{ u.application_fee_zmw or "-" }}
-ZMW
-</td>
-</tr>
-
-<tr>
-<th>Accreditation</th>
-<td>
-{{ u.accreditation_status or "-" }}
-</td>
-</tr>
-
-</table>
-
-</div>
-
-<br>
-
-<div class="card">
-
-<h2>
-Programmes
-({{ programmes|length }})
-</h2>
-
-<div class="grid">
-
-{% for p in programmes %}
-
-<div class="card">
-
-<h3>
-{{ p.programme_name }}
-</h3>
-
-<p class="muted">
-{{ p.qualification
-or p.qualification_level
-or "" }}
-</p>
-
-<p>
-<b>Duration:</b>
-{{ p.duration
-or p.study_duration
-or "-" }}
-</p>
-
-<p>
-<b>Required subjects:</b>
-{{ p.required_subjects
-or "Not specified" }}
-</p>
-
-<p>
-<b>Minimum grade:</b>
-{{ p.minimum_grade
-or p.minimum_points
-or "Not specified" }}
-</p>
-
-<p>
-<b>Status:</b>
-{{ p.application_status
-or "Unknown" }}
-</p>
-
-<a
- class="btn"
- href="{{ url_for(
- 'programme_detail',
- programme_id=p.id
- ) }}"
->
-View Requirements
-</a>
-
-</div>
-
-{% else %}
-
-<p>
-No programmes have been entered.
-</p>
-
-{% endfor %}
-
-</div>
-
-</div>
-
-""",
-        u=university,
-        programmes=programmes_
-    )
-
-
-# ============================================================
-# PROGRAMMES
-# ============================================================
-
-@app.route("/programmes")
-def programmes():
-
-    q = clean(
-        request.args.get("q")
-    )
-
-    university_id = clean(
-        request.args.get(
-            "university_id"
-        )
-    )
-
-    universities_ = optional_get(
-        "universities",
-        {
-            "select": "id,name",
-            "order": "name.asc",
-            "limit": "500",
-        }
-    )
-
-    params = {
-        "select": "*",
-        "order": "programme_name.asc",
-        "limit": "1000",
-    }
-
-    if q:
-        params["programme_name"] = (
-            f"ilike.*{q}*"
-        )
-
-    if university_id:
-        params["university_id"] = (
-            f"eq.{university_id}"
-        )
-
-    try:
-
-        rows = sb_get(
-            "university_programmes",
-            params
-        )
-
-    except Exception as e:
-
-        rows = []
-
-        flash(
-            f"Could not load programmes: {e}",
-            "danger"
-        )
-
-    names = {
-        str(x.get("id")):
-        x.get("name")
-        for x in universities_
-    }
-
-    for row in rows:
-
-        row["_university_name"] = names.get(
-            str(row.get("university_id")),
-            "Unknown"
-        )
-
-    return page(
-        "Programmes",
-        r"""
-
-<div class="card">
-
-<h1>
-Find a University Programme
-</h1>
-
-<form method="get">
-
-<label>
-Programme
-</label>
-
-<input
- name="q"
- value="{{ q }}"
- placeholder="e.g. Computer Science"
->
-
-<label>
-University
-</label>
-
-<select name="university_id">
-
-<option value="">
-All universities
-</option>
-
-{% for u in universities %}
-
-<option
- value="{{ u.id }}"
- {% if university_id ==
- u.id|string %}
- selected
- {% endif %}
->
-
-{{ u.name }}
-
-</option>
-
-{% endfor %}
-
-</select>
-
-<button>
-Search
-</button>
-
-</form>
-
-</div>
-
-<div class="card">
-
-<b>
-{{ rows|length }}
-</b>
-programme(s) found.
-
-</div>
-
-<div class="grid">
-
-{% for p in rows %}
-
-<div class="card">
-
-<h3>
-{{ p.programme_name }}
-</h3>
-
-<p>
-<b>
-{{ p._university_name }}
-</b>
-</p>
-
-<p class="muted">
-{{ p.qualification
-or p.qualification_level
-or p.programme_type
-or "" }}
-</p>
-
-<p>
-<b>Subjects:</b>
-{{ p.required_subjects
-or "Not specified" }}
-</p>
-
-<p>
-<b>Minimum:</b>
-{{ p.minimum_grade
-or p.minimum_points
-or "Not specified" }}
-</p>
-
-<p>
-<b>Fee:</b>
-{{ p.application_fee
-if p.application_fee is not none
-else "Not specified" }}
-{{ p.currency or "ZMW" }}
-</p>
-
-<a
- class="btn"
- href="{{ url_for(
- 'programme_detail',
- programme_id=p.id
- ) }}"
->
-Details
-</a>
-
-</div>
-
-{% else %}
-
-<div class="card">
-No programmes found.
-</div>
-
-{% endfor %}
-
-</div>
-
-""",
-        rows=rows,
-        q=q,
-        university_id=university_id,
-        universities=universities_
-    )
-
-
-# ============================================================
-# PROGRAMME DETAIL
-# ============================================================
-
-@app.route(
-    "/programmes/<uuid:programme_id>"
-)
-def programme_detail(
-    programme_id
-):
-
-    try:
-
-        p = sb_get(
-            "university_programmes",
-            {
-                "select": "*",
-                "id": (
-                    f"eq.{programme_id}"
-                ),
-                "limit": "1",
-            },
-            single=True
-        )
-
-        if not p:
-            abort(404)
-
-        u = sb_get(
-            "universities",
-            {
-                "select": "*",
-                "id": (
-                    f"eq.{p['university_id']}"
-                ),
-                "limit": "1",
-            },
-            single=True
-        )
-
-        requirements = optional_get(
-            "university_application_requirements",
-            {
-                "select": "*",
-                "programme_id": (
-                    f"eq.{programme_id}"
-                ),
-                "order": "created_at.asc",
-            }
-        )
-
-    except Exception as e:
-
-        flash(
-            str(e),
-            "danger"
-        )
-
-        return redirect(
-            url_for("programmes")
-        )
-
-    return page(
-        p["programme_name"],
-        r"""
-
-<div class="hero">
-
-<h1>
-{{ p.programme_name }}
-</h1>
-
-<p>
-{{ u.name if u else "University" }}
-</p>
-
-<div class="actions">
-
-{% if user %}
-
-<a
- class="btn"
- href="{{ url_for(
- 'new_application',
- programme_id=p.id
- ) }}"
->
-Start Application
-</a>
-
-{% else %}
-
-<a
- class="btn"
- href="{{ url_for(
- 'login',
- next=url_for(
- 'new_application',
- programme_id=p.id
- )
- ) }}"
->
-Login to Apply
-</a>
-
-{% endif %}
-
-{% if p.application_url %}
-
-<a
- class="btn secondary"
- target="_blank"
- href="{{ p.application_url }}"
->
-Official Application
-</a>
-
-{% endif %}
-
-</div>
-
-</div>
-
-<br>
-
-<div class="card">
-
-<h2>
-Programme Details
-</h2>
-
-<table>
-
-<tr>
-<th>Qualification</th>
-<td>
-{{ p.qualification
-or p.qualification_level
-or "-" }}
-</td>
-</tr>
-
-<tr>
-<th>Faculty</th>
-<td>{{ p.faculty or "-" }}</td>
-</tr>
-
-<tr>
-<th>School</th>
-<td>{{ p.school or "-" }}</td>
-</tr>
-
-<tr>
-<th>Duration</th>
-<td>
-{{ p.duration
-or p.study_duration
-or "-" }}
-</td>
-</tr>
-
-<tr>
-<th>Study mode</th>
-<td>{{ p.study_mode or "-" }}</td>
-</tr>
-
-<tr>
-<th>Entry level</th>
-<td>{{ p.entry_level or "-" }}</td>
-</tr>
-
-<tr>
-<th>Required subjects</th>
-<td>
-{{ p.required_subjects or "-" }}
-</td>
-</tr>
-
-<tr>
-<th>Minimum grade</th>
-<td>
-{{ p.minimum_grade or "-" }}
-</td>
-</tr>
-
-<tr>
-<th>Minimum points</th>
-<td>
-{{ p.minimum_points or "-" }}
-</td>
-</tr>
-
-<tr>
-<th>Entry requirements</th>
-<td>
-{{ p.entry_requirements
-or p.requirements
-or "-" }}
-</td>
-</tr>
-
-<tr>
-<th>Application requirements</th>
-<td>
-{{ p.application_requirements or "-" }}
-</td>
-</tr>
-
-<tr>
-<th>Application fee</th>
-<td>
-{{ p.application_fee
-if p.application_fee is not none
-else "-" }}
-{{ p.currency or "ZMW" }}
-</td>
-</tr>
-
-<tr>
-<th>Deadline</th>
-<td>
-{{ p.deadline or "-" }}
-</td>
-</tr>
-
-<tr>
-<th>Status</th>
-<td>
-{{ p.application_status or "Unknown" }}
-</td>
-</tr>
-
-</table>
-
-</div>
-
-<br>
-
-<div class="card">
-
-<h2>
-Specific Application Requirements
-</h2>
-
-{% for r in requirements %}
-
-<div class="card">
-
-<h3>
-{{ r.requirement_title }}
-</h3>
-
-<p>
-{{ r.requirement_description or "" }}
-</p>
-
-{% if r.document_type %}
-
-<p>
-<b>Document:</b>
-{{ r.document_type }}
-</p>
-
-{% endif %}
-
-{% if r.applicant_type %}
-
-<p>
-<b>Applicant:</b>
-{{ r.applicant_type }}
-</p>
-
-{% endif %}
-
-<p>
-<b>Required:</b>
-{{ "Yes" if r.required else "No" }}
-</p>
-
-{% if r.source_url %}
-
-<a
- target="_blank"
- href="{{ r.source_url }}"
->
-Source / Verify
-</a>
-
-{% endif %}
-
-</div>
-
-{% else %}
-
-<p>
-No programme-specific requirements have
-been entered yet. Applicants should verify
-current requirements with the institution.
-</p>
-
-{% endfor %}
-
-</div>
-
-""",
-        p=p,
-        u=u,
-        requirements=requirements
-    )
-
-
-# ============================================================
-# UNIVERSITY APPLICATIONS
-# ============================================================
-
-@app.route("/applications")
-@login_required
-def my_applications():
-
-    user = current_user()
-
-    try:
-
-        rows = sb_get(
-            "university_applications",
-            {
-                "select": "*",
-                "user_id": (
-                    f"eq.{user['id']}"
-                ),
-                "order": "created_at.desc",
-            }
-        )
-
-    except Exception as e:
-
-        rows = []
-
-        flash(
-            str(e),
-            "danger"
-        )
-
-    return page(
-        "My Applications",
-        r"""
-
-<div class="actions">
-
-<h1 style="margin-right:auto">
-My Applications
-</h1>
-
-<a
- class="btn"
- href="{{ url_for('new_application') }}"
->
-New Application
-</a>
-
-</div>
-
-<div class="card">
-
-<table>
-
-<tr>
-<th>Application</th>
-<th>University</th>
-<th>Programme</th>
-<th>Status</th>
-<th>Payment</th>
-<th>Date</th>
-</tr>
-
-{% for a in rows %}
-
-<tr>
-
-<td>
-
-<a
- href="{{ url_for(
- 'application_detail',
- application_id=a.id
- ) }}"
->
-
-{{ a.application_number
-or a.id }}
-
-</a>
-
-</td>
-
-<td>
-{{ a.university }}
-</td>
-
-<td>
-{{ a.programme }}
-</td>
-
-<td>
-
-<span class="badge">
-{{ a.application_status
-or a.status }}
-</span>
-
-</td>
-
-<td>
-{{ a.payment_status or "unpaid" }}
-</td>
-
-<td>
-{{ a.created_at }}
-</td>
-
-</tr>
-
-{% else %}
-
-<tr>
-
-<td colspan="6">
-No applications yet.
-</td>
-
-</tr>
-
-{% endfor %}
-
-</table>
-
-</div>
-
-""",
-        rows=rows
-    )
-
-
-# ============================================================
-# NEW UNIVERSITY APPLICATION
-# ============================================================
-
-@app.route(
-    "/applications/new",
+    "/profile",
     methods=["GET", "POST"]
 )
 @login_required
-def new_application():
+def profile():
 
     user = current_user()
 
-    selected_programme_id = (
-        clean(
-            request.args.get(
-                "programme_id"
-            )
+    if not user:
+        return redirect(
+            url_for("login")
         )
-        or clean(
-            request.form.get(
-                "programme_id"
-            )
-        )
-    )
-
-    selected_university_id = clean(
-        request.form.get(
-            "university_id"
-        )
-    )
-
-    programme = None
-    university = None
-
-    universities_ = optional_get(
-        "universities",
-        {
-            "select": "id,name",
-            "order": "name.asc",
-            "limit": "500",
-        }
-    )
-
-    # --------------------------------------------------------
-    # GET programme correctly.
-    # --------------------------------------------------------
-
-    if selected_programme_id:
-
-        try:
-
-            programme = sb_get(
-                "university_programmes",
-                {
-                    "select": "*",
-                    "id": (
-                        f"eq.{selected_programme_id}"
-                    ),
-                    "limit": "1",
-                },
-                single=True
-            )
-
-            if programme:
-
-                selected_university_id = str(
-                    programme.get(
-                        "university_id"
-                    )
-                )
-
-        except Exception:
-            programme = None
-
-    if selected_university_id:
-
-        try:
-
-            university = sb_get(
-                "universities",
-                {
-                    "select": "*",
-                    "id": (
-                        f"eq.{selected_university_id}"
-                    ),
-                    "limit": "1",
-                },
-                single=True
-            )
-
-        except Exception:
-            university = None
-
-    # --------------------------------------------------------
-    # POST
-    # --------------------------------------------------------
 
     if request.method == "POST":
 
-        university_id = clean(
-            request.form.get(
-                "university_id"
-            )
+        full_name = clean(
+            request.form.get("full_name")
         )
 
-        programme_id = clean(
-            request.form.get(
-                "programme_id"
-            )
+        phone = clean(
+            request.form.get("phone")
         )
 
-        if not university_id or not programme_id:
+        if not full_name:
 
             flash(
-                "Select both a university and a programme.",
-                "danger"
+                "Full name is required.",
+                "error"
             )
 
-            return redirect(
-                url_for(
-                    "new_application"
-                )
-            )
+        else:
 
-        try:
+            try:
 
-            university = sb_get(
-                "universities",
-                {
-                    "select": "*",
-                    "id": (
-                        f"eq.{university_id}"
-                    ),
-                    "limit": "1",
-                },
-                single=True
-            )
-
-            programme = sb_get(
-                "university_programmes",
-                {
-                    "select": "*",
-                    "id": (
-                        f"eq.{programme_id}"
-                    ),
-                    "limit": "1",
-                },
-                single=True
-            )
-
-            if not university:
-                raise ValueError(
-                    "Selected university was not found."
+                supabase_update(
+                    "koja_users",
+                    {
+                        "id": f"eq.{user['id']}"
+                    },
+                    {
+                        "full_name": full_name,
+                        "phone": phone or None,
+                        "updated_at": now_iso(),
+                    }
                 )
 
-            if not programme:
-                raise ValueError(
-                    "Selected programme was not found."
+                # Keep profile synchronized.
+                try:
+
+                    supabase_update(
+                        "profiles",
+                        {
+                            "id": f"eq.{user['id']}"
+                        },
+                        {
+                            "name": full_name,
+                            "full_name": full_name,
+                            "phone": phone or None,
+                            "updated_at": now_iso(),
+                        }
+                    )
+
+                except Exception as exc:
+
+                    logger.warning(
+                        "Profile synchronization failed: %s",
+                        exc
+                    )
+
+                flash(
+                    "Profile updated successfully.",
+                    "success"
                 )
 
-            if str(
-                programme.get(
-                    "university_id"
-                )
-            ) != str(university_id):
+            except Exception as exc:
 
-                raise ValueError(
-                    "The selected programme does not belong "
-                    "to the selected university."
+                logger.exception(
+                    "Profile update failed"
                 )
 
-            first = clean(
-                request.form.get(
-                    "first_name"
+                flash(
+                    "Unable to update profile.",
+                    "error"
                 )
-            )
 
-            middle = clean(
-                request.form.get(
-                    "middle_names"
-                )
-            )
+    user = current_user()
 
-            last = clean(
-                request.form.get(
-                    "last_name"
-                )
-            )
+    body = f"""
+    <section class="card">
 
-            full_name = " ".join(
-                x for x in [
-                    first,
-                    middle,
-                    last
-                ]
-                if x
-            )
+        <h2>My Profile</h2>
 
-            applicant_email = clean(
-                request.form.get(
-                    "email"
-                )
-            ).lower()
+        <form method="post">
 
-            application = sb_insert(
-                "university_applications",
-                {
-                    "user_id": user["id"],
-                    "university_id": university_id,
-                    "programme_id": programme_id,
+            <div class="field">
 
-                    "university":
-                        university.get("name"),
+                <label>
+                    Full Name
+                </label>
 
-                    "programme":
-                        programme.get(
-                            "programme_name"
-                        ),
+                <input
+                    name="full_name"
+                    value="{user.get('full_name', '')}"
+                    required
+                >
 
-                    "intake":
-                        clean(
-                            request.form.get(
-                                "intake"
-                            )
-                        ),
+            </div>
 
-                    "applicant_first_name":
-                        first,
 
-                    "applicant_middle_names":
-                        middle,
+            <div class="field">
 
-                    "applicant_last_name":
-                        last,
+                <label>
+                    Email
+                </label>
 
-                    "full_name":
-                        full_name,
+                <input
+                    type="email"
+                    value="{user.get('email', '')}"
+                    disabled
+                >
 
-                    "date_of_birth":
-                        request.form.get(
-                            "date_of_birth"
-                        )
-                        or None,
+            </div>
 
-                    "gender":
-                        clean(
-                            request.form.get(
-                                "gender"
-                            )
-                        ),
 
-                    "nrc_number":
-                        clean(
-                            request.form.get(
-                                "nrc_number"
-                            )
-                        ),
+            <div class="field">
 
-                    "phone":
-                        clean(
-                            request.form.get(
-                                "phone"
-                            )
-                        ),
+                <label>
+                    Phone
+                </label>
 
-                    "email":
-                        applicant_email,
+                <input
+                    name="phone"
+                    value="{user.get('phone') or ''}"
+                >
 
-                    "address":
-                        clean(
-                            request.form.get(
-                                "address"
-                            )
-                        ),
+            </div>
 
-                    "province":
-                        clean(
-                            request.form.get(
-                                "province"
-                            )
-                        ),
 
-                    "district":
-                        clean(
-                            request.form.get(
-                                "district"
-                            )
-                        ),
+            <button
+                class="btn green"
+                type="submit"
+            >
+                Save Changes
+            </button>
 
-                    "previous_school":
-                        clean(
-                            request.form.get(
-                                "previous_school"
-                            )
-                        ),
+        </form>
 
-                    "qualification":
-                        clean(
-                            request.form.get(
-                                "qualification"
-                            )
-                        ),
-
-                    "application_information":
-                        clean(
-                            request.form.get(
-                                "application_information"
-                            )
-                        ),
-
-                    "applicant_notes":
-                        clean(
-                            request.form.get(
-                                "applicant_notes"
-                            )
-                        ),
-
-                    "status":
-                        "submitted",
-
-                    "application_status":
-                        "submitted",
-
-                    "payment_status":
-                        "unpaid",
-
-                    "application_fee":
-                        programme.get(
-                            "application_fee"
-                        )
-                        or university.get(
-                            "application_fee_zmw"
-                        )
-                        or 0,
-
-                    "currency":
-                        programme.get(
-                            "currency"
-                        )
-                        or "ZMW",
-
-                    "submitted_at":
-                        now_iso(),
-                }
-            )
-
-            notify(
-                applicant_email,
-                "University application submitted",
-                (
-                    "Your application for "
-                    f"{programme['programme_name']} "
-                    f"at {university['name']} "
-                    "has been submitted."
-                )
-            )
-
-            log_activity(
-                "university_application",
-                f"Application {application.get('id')}",
-                user["id"],
-                user["email"]
-            )
-
-            flash(
-                "University application submitted successfully.",
-                "success"
-            )
-
-            return redirect(
-                url_for(
-                    "application_detail",
-                    application_id=application["id"]
-                )
-            )
-
-        except Exception as e:
-
-            log.exception(
-                "Application error"
-            )
-
-            flash(
-                f"Application failed: {e}",
-                "danger"
-            )
-
-    programmes_ = []
-
-    if university:
-
-        programmes_ = optional_get(
-            "university_programmes",
-            {
-                "select": "*",
-                "university_id": (
-                    f"eq.{university['id']}"
-                ),
-                "is_active": "eq.true",
-                "order": "programme_name.asc",
-                "limit": "1000",
-            }
-        )
+    </section>
+    """
 
     return page(
-        "University Application",
-        r"""
-
-<div class="card">
-
-<h1>
-University Application
-</h1>
-
-<form method="post">
-
-<label>
-University
-</label>
-
-<select
- name="university_id"
- onchange="this.form.submit()"
- required
->
-
-<option value="">
-Select university
-</option>
-
-{% for x in universities %}
-
-<option
- value="{{ x.id }}"
- {% if university
- and university.id|string ==
- x.id|string %}
- selected
- {% endif %}
->
-
-{{ x.name }}
-
-</option>
-
-{% endfor %}
-
-</select>
-
-<noscript>
-<button>
-Load University
-</button>
-</noscript>
-
-<label>
-Programme
-</label>
-
-<select
- name="programme_id"
- required
->
-
-<option value="">
-Select programme
-</option>
-
-{% for x in programmes %}
-
-<option
- value="{{ x.id }}"
- {% if programme
- and programme.id|string ==
- x.id|string %}
- selected
- {% endif %}
->
-
-{{ x.programme_name }}
-
-</option>
-
-{% endfor %}
-
-</select>
-
-{% if not programmes %}
-
-<p class="muted">
-Select a university to load its programmes.
-</p>
-
-{% endif %}
-
-<hr>
-
-<h3>
-Applicant Details
-</h3>
-
-<div class="form-grid">
-
-<div>
-
-<label>
-First name
-</label>
-
-<input
- name="first_name"
- required
->
-
-</div>
-
-<div>
-
-<label>
-Middle names
-</label>
-
-<input
- name="middle_names"
->
-
-</div>
-
-<div>
-
-<label>
-Last name
-</label>
-
-<input
- name="last_name"
- required
->
-
-</div>
-
-<div>
-
-<label>
-Date of birth
-</label>
-
-<input
- type="date"
- name="date_of_birth"
->
-
-</div>
-
-<div>
-
-<label>
-Gender
-</label>
-
-<select name="gender">
-
-<option value="">
-Select
-</option>
-
-<option>
-Male
-</option>
-
-<option>
-Female
-</option>
-
-<option>
-Other
-</option>
-
-</select>
-
-</div>
-
-<div>
-
-<label>
-NRC number
-</label>
-
-<input
- name="nrc_number"
->
-
-</div>
-
-<div>
-
-<label>
-Phone
-</label>
-
-<input
- name="phone"
- value="{{ user.phone or '' }}"
->
-
-</div>
-
-<div>
-
-<label>
-Email
-</label>
-
-<input
- type="email"
- name="email"
- value="{{ user.email }}"
- required
->
-
-</div>
-
-<div>
-
-<label>
-Province
-</label>
-
-<input
- name="province"
->
-
-</div>
-
-<div>
-
-<label>
-District
-</label>
-
-<input
- name="district"
->
-
-</div>
-
-</div>
-
-<label>
-Address
-</label>
-
-<textarea
- name="address"
-></textarea>
-
-<label>
-Previous school
-</label>
-
-<input
- name="previous_school"
->
-
-<label>
-Previous qualification
-</label>
-
-<input
- name="qualification"
->
-
-<label>
-Intake
-</label>
-
-<input
- name="intake"
- placeholder="e.g. 2027"
->
-
-<label>
-Additional application information
-</label>
-
-<textarea
- name="application_information"
-></textarea>
-
-<label>
-Applicant notes
-</label>
-
-<textarea
- name="applicant_notes"
-></textarea>
-
-<button>
-Submit Application
-</button>
-
-</form>
-
-</div>
-
-""",
-        universities=universities_,
-        university=university,
-        programme=programme,
-        programmes=programmes_
+        "Profile",
+        body
     )
 
 
 # ============================================================
-# APPLICATION DETAIL
+# SERVICES
+# ============================================================
+
+SERVICES = [
+
+    (
+        "assignment",
+        "Assignments",
+        "Submit an assignment or academic work request."
+    ),
+
+    (
+        "cv",
+        "CV & Job Application",
+        "Request CV creation, editing or formatting."
+    ),
+
+    (
+        "farmer",
+        "Farmer Registration",
+        "Submit a farmer registration request."
+    ),
+
+    (
+        "doctor",
+        "Doctor Booking",
+        "Request a non-emergency medical appointment."
+    ),
+
+    (
+        "delivery",
+        "Delivery",
+        "Request delivery or driver services."
+    ),
+
+    (
+        "university",
+        "University Application",
+        "Get help with university applications."
+    ),
+
+    (
+        "lawyer",
+        "Lawyer",
+        "Request legal service assistance."
+    ),
+
+    (
+        "teacher",
+        "Teacher / Tutor",
+        "Request a teacher or tutor."
+    ),
+
+    (
+        "tpin",
+        "TPIN Services",
+        "Submit a TPIN-related request."
+    ),
+
+]
+
+
+@app.route("/services")
+@login_required
+def services():
+
+    cards = ""
+
+    for key, name, description in SERVICES:
+
+        cards += f"""
+        <div class="service">
+
+            <h3>
+                {name}
+            </h3>
+
+            <p>
+                {description}
+            </p>
+
+            <a
+                class="btn green"
+                href="/service/{key}"
+            >
+                Open Service
+            </a>
+
+        </div>
+        """
+
+    body = f"""
+    <section class="card">
+
+        <h2>
+            KOJA Africa Services
+        </h2>
+
+        <p class="small">
+            Select the service you need.
+        </p>
+
+        <div class="grid">
+
+            {cards}
+
+        </div>
+
+    </section>
+    """
+
+    return page(
+        "Services",
+        body
+    )
+
+
+# ============================================================
+# GENERIC SERVICE REQUEST
 # ============================================================
 
 @app.route(
-    "/applications/<uuid:application_id>"
+    "/service/<service_type>",
+    methods=["GET", "POST"]
 )
 @login_required
-def application_detail(
-    application_id
-):
+def service_request(service_type):
+
+    allowed = {
+        x[0]: x[1]
+        for x in SERVICES
+    }
+
+    if service_type not in allowed:
+        abort(404)
+
+    service_name = allowed[
+        service_type
+    ]
 
     user = current_user()
 
-    try:
+    if request.method == "POST":
 
-        a = sb_get(
-            "university_applications",
-            {
-                "select": "*",
-                "id": (
-                    f"eq.{application_id}"
-                ),
-                "limit": "1",
-            },
-            single=True
+        subject = clean(
+            request.form.get("subject")
         )
 
-    except Exception:
-        a = None
+        message = clean(
+            request.form.get("message")
+        )
 
-    if not a:
-        abort(404)
+        phone = clean(
+            request.form.get("phone")
+        )
 
-    if (
-        not user["is_admin"]
-        and str(a.get("user_id"))
-        != str(user["id"])
-    ):
-        abort(403)
+        if not subject or not message:
+
+            flash(
+                "Subject and description are required.",
+                "error"
+            )
+
+        else:
+
+            # ----------------------------------------------------
+            # We try the existing generic KOJA request tables.
+            #
+            # The application does not create another SQLite
+            # database.
+            # ----------------------------------------------------
+
+            request_id = str(
+                uuid.uuid4()
+            )
+
+            request_no = (
+                "KOJA-"
+                + datetime.now(
+                    timezone.utc
+                ).strftime("%Y%m%d")
+                + "-"
+                + secrets.token_hex(4).upper()
+            )
+
+            payload = {
+                "id": request_id,
+                "request_no": request_no,
+                "user_id": user["id"],
+                "service_type": service_type,
+                "service_name": service_name,
+                "subject": subject,
+                "message": message,
+                "description": message,
+                "phone": phone or user.get("phone"),
+                "status": "Request Received",
+                "created_at": now_iso(),
+                "updated_at": now_iso(),
+            }
+
+            inserted = False
+
+            # First try koja_service_requests.
+            try:
+
+                supabase_insert(
+                    "koja_service_requests",
+                    payload
+                )
+
+                inserted = True
+
+            except Exception as first_error:
+
+                logger.warning(
+                    "koja_service_requests insert failed: %s",
+                    first_error
+                )
+
+            # Second option: service_requests.
+            if not inserted:
+
+                try:
+
+                    supabase_insert(
+                        "service_requests",
+                        payload
+                    )
+
+                    inserted = True
+
+                except Exception as second_error:
+
+                    logger.warning(
+                        "service_requests insert failed: %s",
+                        second_error
+                    )
+
+            # Third option: requests.
+            if not inserted:
+
+                try:
+
+                    supabase_insert(
+                        "requests",
+                        payload
+                    )
+
+                    inserted = True
+
+                except Exception as third_error:
+
+                    logger.warning(
+                        "requests insert failed: %s",
+                        third_error
+                    )
+
+            if inserted:
+
+                activity_log(
+                    "service_request",
+                    f"{service_name}: {request_no}",
+                    user["id"]
+                )
+
+                flash(
+                    f"Your {service_name} request "
+                    f"{request_no} has been submitted.",
+                    "success"
+                )
+
+                return redirect(
+                    url_for("dashboard")
+                )
+
+            flash(
+                "The service request could not be saved. "
+                "Please contact KOJA administration.",
+                "error"
+            )
+
+    body = f"""
+    <section class="card">
+
+        <h2>
+            {service_name}
+        </h2>
+
+        <p class="small">
+            Submit your request and KOJA will review it.
+        </p>
+
+        <form method="post">
+
+            <div class="field">
+
+                <label>
+                    Subject
+                </label>
+
+                <input
+                    name="subject"
+                    required
+                >
+
+            </div>
+
+
+            <div class="field">
+
+                <label>
+                    Phone
+                </label>
+
+                <input
+                    name="phone"
+                    value="{user.get('phone') or ''}"
+                >
+
+            </div>
+
+
+            <div class="field">
+
+                <label>
+                    Description
+                </label>
+
+                <textarea
+                    name="message"
+                    required
+                    placeholder="Describe what you need..."
+                ></textarea>
+
+            </div>
+
+
+            <button
+                class="btn green"
+                type="submit"
+            >
+                Submit Request
+            </button>
+
+        </form>
+
+    </section>
+    """
 
     return page(
-        "Application",
-        r"""
-
-<div class="card">
-
-<h1>
-University Application
-</h1>
-
-<table>
-
-<tr>
-<th>Application number</th>
-<td>
-{{ a.application_number
-or a.id }}
-</td>
-</tr>
-
-<tr>
-<th>University</th>
-<td>
-{{ a.university }}
-</td>
-</tr>
-
-<tr>
-<th>Programme</th>
-<td>
-{{ a.programme }}
-</td>
-</tr>
-
-<tr>
-<th>Applicant</th>
-<td>
-{{ a.full_name }}
-</td>
-</tr>
-
-<tr>
-<th>Email</th>
-<td>
-{{ a.email }}
-</td>
-</tr>
-
-<tr>
-<th>Phone</th>
-<td>
-{{ a.phone }}
-</td>
-</tr>
-
-<tr>
-<th>Status</th>
-<td>
-<span class="badge">
-{{ a.application_status
-or a.status }}
-</span>
-</td>
-</tr>
-
-<tr>
-<th>Payment</th>
-<td>
-{{ a.payment_status }}
-—
-{{ a.application_fee }}
-{{ a.currency }}
-</td>
-</tr>
-
-<tr>
-<th>Admin notes</th>
-<td>
-{{ a.admin_notes or "-" }}
-</td>
-</tr>
-
-<tr>
-<th>Rejection reason</th>
-<td>
-{{ a.rejection_reason or "-" }}
-</td>
-</tr>
-
-<tr>
-<th>Submitted</th>
-<td>
-{{ a.submitted_at
-or a.created_at }}
-</td>
-</tr>
-
-</table>
-
-</div>
-
-"""
-        ,
-        a=a
+        service_name,
+        body
     )
 
 
@@ -4560,114 +2398,112 @@ or a.created_at }}
 @login_required
 def questions():
 
-    user = current_user()
+    rows = []
 
     try:
 
-        if user["is_admin"]:
-
-            rows = sb_get(
-                "questions",
-                {
-                    "select": "*",
-                    "order": "created_at.desc",
-                    "limit": "500",
-                }
-            )
-
-        else:
-
-            rows = sb_get(
-                "questions",
-                {
-                    "select": "*",
-                    "student_id": (
-                        f"eq.{user['id']}"
-                    ),
-                    "order": "created_at.desc",
-                    "limit": "500",
-                }
-            )
-
-    except Exception as e:
-
-        rows = []
-
-        flash(
-            str(e),
-            "danger"
+        rows = supabase_get(
+            "questions",
+            {
+                "select": "*",
+                "order": "created_at.desc",
+                "limit": "30",
+            }
         )
+
+    except Exception as exc:
+
+        logger.warning(
+            "Questions load failed: %s",
+            exc
+        )
+
+    table_rows = ""
+
+    for row in rows:
+
+        title = (
+            row.get("title")
+            or row.get("question")
+            or row.get("subject")
+            or "Question"
+        )
+
+        status = (
+            row.get("status")
+            or "Submitted"
+        )
+
+        table_rows += f"""
+        <tr>
+
+            <td>
+                {title}
+            </td>
+
+            <td>
+                <span class="badge">
+                    {status}
+                </span>
+            </td>
+
+        </tr>
+        """
+
+    body = f"""
+    <section class="card">
+
+        <div style="
+            display:flex;
+            justify-content:space-between;
+            gap:10px;
+            flex-wrap:wrap;
+        ">
+
+            <div>
+
+                <h2>
+                    Questions
+                </h2>
+
+                <p class="small">
+                    Academic questions and answers.
+                </p>
+
+            </div>
+
+            <a
+                class="btn green"
+                href="/questions/new"
+            >
+                Ask Question
+            </a>
+
+        </div>
+
+        <table>
+
+            <tr>
+                <th>Question</th>
+                <th>Status</th>
+            </tr>
+
+            {table_rows or '''
+            <tr>
+                <td colspan="2">
+                    No questions found.
+                </td>
+            </tr>
+            '''}
+
+        </table>
+
+    </section>
+    """
 
     return page(
         "Questions",
-        r"""
-
-<div class="actions">
-
-<h1 style="margin-right:auto">
-Academic Questions
-</h1>
-
-<a
- class="btn"
- href="{{ url_for('new_question') }}"
->
-Ask Question
-</a>
-
-</div>
-
-<div class="grid">
-
-{% for q in rows %}
-
-<div class="card">
-
-<h3>
-{{ q.subject or
-"Academic question" }}
-</h3>
-
-<p>
-{{ q.question }}
-</p>
-
-<p>
-
-<span class="badge">
-{{ q.status or "pending" }}
-</span>
-
-</p>
-
-{% if q.answer %}
-
-<hr>
-
-<h3>
-Answer
-</h3>
-
-<p>
-{{ q.answer }}
-</p>
-
-{% endif %}
-
-</div>
-
-{% else %}
-
-<div class="card">
-No questions found.
-</div>
-
-{% endfor %}
-
-</div>
-
-""",
-        rows=rows
+        body
     )
 
 
@@ -4682,938 +2518,120 @@ def new_question():
 
     if request.method == "POST":
 
-        question = clean(
-            request.form.get(
-                "question"
-            )
+        question_text = clean(
+            request.form.get("question")
         )
 
-        if not question:
+        subject = clean(
+            request.form.get("subject")
+        )
+
+        if not question_text:
 
             flash(
-                "Question is required.",
-                "danger"
+                "Please enter your question.",
+                "error"
             )
 
-            return redirect(
-                url_for("new_question")
-            )
+        else:
 
-        try:
+            payload = {
+                "id": str(uuid.uuid4()),
+                "user_id": user["id"],
+                "question": question_text,
+                "subject": subject or None,
+                "created_at": now_iso(),
+            }
 
-            q = sb_insert(
-                "questions",
-                {
-                    "student_id":
-                        user["id"],
+            try:
 
-                    "student_name":
-                        user["name"],
+                supabase_insert(
+                    "questions",
+                    payload
+                )
 
-                    "question":
-                        question,
+                activity_log(
+                    "question_created",
+                    "New academic question submitted.",
+                    user["id"]
+                )
 
-                    "subject":
-                        clean(
-                            request.form.get(
-                                "subject"
-                            )
-                        ),
+                flash(
+                    "Question submitted successfully.",
+                    "success"
+                )
 
-                    "course":
-                        clean(
-                            request.form.get(
-                                "course"
-                            )
-                        ),
+                return redirect(
+                    url_for("questions")
+                )
 
-                    "class_level":
-                        clean(
-                            request.form.get(
-                                "class_level"
-                            )
-                        ),
+            except Exception as exc:
 
-                    "status":
-                        "pending",
-                }
-            )
+                logger.warning(
+                    "Question insert failed: %s",
+                    exc
+                )
 
-            log_activity(
-                "question",
-                "Academic question submitted",
-                user["id"],
-                user["email"]
-            )
+                flash(
+                    "The question could not be submitted. "
+                    "Your current questions table may require "
+                    "additional fields.",
+                    "error"
+                )
 
-            flash(
-                "Question submitted.",
-                "success"
-            )
+    body = """
+    <section class="card">
 
-            return redirect(
-                url_for("questions")
-            )
+        <h2>
+            Ask an Academic Question
+        </h2>
 
-        except Exception as e:
+        <form method="post">
 
-            flash(
-                f"Could not submit question: {e}",
-                "danger"
-            )
+            <div class="field">
+
+                <label>
+                    Subject
+                </label>
+
+                <input
+                    name="subject"
+                    placeholder="e.g. Biology"
+                >
+
+            </div>
+
+
+            <div class="field">
+
+                <label>
+                    Question
+                </label>
+
+                <textarea
+                    name="question"
+                    required
+                    placeholder="Write your question..."
+                ></textarea>
+
+            </div>
+
+
+            <button
+                class="btn green"
+                type="submit"
+            >
+                Submit Question
+            </button>
+
+        </form>
+
+    </section>
+    """
 
     return page(
         "Ask Question",
-        r"""
-
-<div class="card">
-
-<h1>
-Ask an Academic Question
-</h1>
-
-<form method="post">
-
-<label>
-Subject
-</label>
-
-<input name="subject">
-
-<label>
-Course
-</label>
-
-<input name="course">
-
-<label>
-Class / Level
-</label>
-
-<input name="class_level">
-
-<label>
-Question
-</label>
-
-<textarea
- name="question"
- required
-></textarea>
-
-<button>
-Submit Question
-</button>
-
-</form>
-
-</div>
-
-"""
-    )
-
-
-# ============================================================
-# DOCUMENTS
-# ============================================================
-
-@app.route("/documents")
-def documents():
-
-    q = clean(
-        request.args.get("q")
-    )
-
-    params = {
-        "select": "*",
-        "order": "created_at.desc",
-        "limit": "300",
-    }
-
-    if q:
-        params["title"] = (
-            f"ilike.*{q}*"
-        )
-
-    source_table = "documents"
-
-    try:
-
-        rows = sb_get(
-            "documents",
-            params
-        )
-
-    except Exception:
-
-        source_table = "document_library"
-
-        try:
-
-            rows = sb_get(
-                "document_library",
-                {
-                    "select": "*",
-                    "order": "created_at.desc",
-                    "limit": "300",
-                }
-            )
-
-        except Exception as e:
-
-            rows = []
-
-            flash(
-                f"Could not load documents: {e}",
-                "danger"
-            )
-
-    return page(
-        "Learning Resources",
-        r"""
-
-<div class="card">
-
-<h1>
-Learning Resources
-</h1>
-
-<form method="get">
-
-<input
- name="q"
- value="{{ q }}"
- placeholder="Search documents"
->
-
-<button>
-Search
-</button>
-
-</form>
-
-</div>
-
-<div class="grid">
-
-{% for d in rows %}
-
-<div class="card">
-
-<h3>
-{{ d.title }}
-</h3>
-
-<p>
-{{ d.description or "" }}
-</p>
-
-<p class="muted">
-
-{{ d.subject or "" }}
-
-{{ d.course or "" }}
-
-{{ d.class_level or "" }}
-
-</p>
-
-{% if d.file_url %}
-
-<a
- class="btn"
- target="_blank"
- href="{{ d.file_url }}"
->
-Open
-</a>
-
-{% elif d.file_path %}
-
-<a
- class="btn"
- href="{{ url_for(
- 'download_storage',
- path=d.file_path
- ) }}"
->
-Download
-</a>
-
-{% endif %}
-
-</div>
-
-{% else %}
-
-<div class="card">
-No documents available.
-</div>
-
-{% endfor %}
-
-</div>
-
-""",
-        rows=rows,
-        q=q,
-        source_table=source_table
-    )
-
-
-@app.route(
-    "/storage/<path:path>"
-)
-@login_required
-def download_storage(path):
-
-    data, content_type = (
-        storage_download(path)
-    )
-
-    user = current_user()
-
-    log_activity(
-        "download",
-        path,
-        user["id"],
-        user["email"]
-    )
-
-    return send_file(
-        io.BytesIO(data),
-        mimetype=content_type,
-        download_name=os.path.basename(
-            path
-        )
-    )
-
-
-# ============================================================
-# CV BUILDER
-# ============================================================
-
-@app.route(
-    "/cv",
-    methods=["GET", "POST"]
-)
-@login_required
-def cv_builder():
-
-    user = current_user()
-
-    existing = None
-
-    try:
-
-        rows = sb_get(
-            "koja_cvs",
-            {
-                "select": "*",
-                "user_id": (
-                    f"eq.{user['id']}"
-                ),
-                "order": "created_at.desc",
-                "limit": "1",
-            }
-        )
-
-        if rows:
-            existing = rows[0]
-
-    except Exception:
-        pass
-
-    if request.method == "POST":
-
-        data = {
-            "user_id":
-                user["id"],
-
-            "full_name":
-                clean(
-                    request.form.get(
-                        "full_name"
-                    )
-                ),
-
-            "professional_title":
-                clean(
-                    request.form.get(
-                        "professional_title"
-                    )
-                ),
-
-            "email":
-                clean(
-                    request.form.get(
-                        "email"
-                    )
-                ).lower(),
-
-            "phone":
-                clean(
-                    request.form.get(
-                        "phone"
-                    )
-                ),
-
-            "address":
-                clean(
-                    request.form.get(
-                        "address"
-                    )
-                ),
-
-            "profile":
-                clean(
-                    request.form.get(
-                        "profile"
-                    )
-                ),
-
-            "education":
-                clean(
-                    request.form.get(
-                        "education"
-                    )
-                ),
-
-            "experience":
-                clean(
-                    request.form.get(
-                        "experience"
-                    )
-                ),
-
-            "skills":
-                clean(
-                    request.form.get(
-                        "skills"
-                    )
-                ),
-
-            "certifications":
-                clean(
-                    request.form.get(
-                        "certifications"
-                    )
-                ),
-
-            "languages":
-                clean(
-                    request.form.get(
-                        "languages"
-                    )
-                ),
-
-            "references":
-                clean(
-                    request.form.get(
-                        "references"
-                    )
-                ),
-
-            "updated_at":
-                now_iso(),
-        }
-
-        try:
-
-            if existing:
-
-                cv = sb_update(
-                    "koja_cvs",
-                    {
-                        "id": (
-                            f"eq.{existing['id']}"
-                        )
-                    },
-                    data
-                )
-
-            else:
-
-                data["created_at"] = (
-                    now_iso()
-                )
-
-                cv = sb_insert(
-                    "koja_cvs",
-                    data
-                )
-
-            existing = cv
-
-            flash(
-                "CV saved successfully.",
-                "success"
-            )
-
-        except Exception as e:
-
-            flash(
-                "CV could not be saved. "
-                "Make sure the koja_cvs table exists. "
-                f"Details: {e}",
-                "danger"
-            )
-
-    return page(
-        "CV Builder",
-        r"""
-
-<div class="card">
-
-<h1>
-Professional CV Builder
-</h1>
-
-<p class="muted">
-Complete the information below.
-Your CV can be saved for later use.
-</p>
-
-<form method="post">
-
-<div class="form-grid">
-
-<div>
-
-<label>
-Full name
-</label>
-
-<input
- name="full_name"
- value="{{ existing.full_name if existing else user.name }}"
- required
->
-
-</div>
-
-<div>
-
-<label>
-Professional title
-</label>
-
-<input
- name="professional_title"
- value="{{ existing.professional_title if existing else '' }}"
- placeholder="e.g. Teacher, Accountant, Student"
->
-
-</div>
-
-<div>
-
-<label>
-Email
-</label>
-
-<input
- type="email"
- name="email"
- value="{{ existing.email if existing else user.email }}"
->
-
-</div>
-
-<div>
-
-<label>
-Phone
-</label>
-
-<input
- name="phone"
- value="{{ existing.phone if existing else user.phone or '' }}"
->
-
-</div>
-
-</div>
-
-<label>
-Address
-</label>
-
-<input
- name="address"
- value="{{ existing.address if existing else '' }}"
->
-
-<label>
-Professional Profile
-</label>
-
-<textarea
- name="profile"
- placeholder="Short professional summary"
->{{ existing.profile if existing else '' }}</textarea>
-
-<label>
-Education
-</label>
-
-<textarea
- name="education"
- placeholder="One qualification per line"
->{{ existing.education if existing else '' }}</textarea>
-
-<label>
-Work Experience
-</label>
-
-<textarea
- name="experience"
- placeholder="Position, organisation, dates and responsibilities"
->{{ existing.experience if existing else '' }}</textarea>
-
-<label>
-Skills
-</label>
-
-<textarea
- name="skills"
- placeholder="List your skills"
->{{ existing.skills if existing else '' }}</textarea>
-
-<label>
-Certifications
-</label>
-
-<textarea
- name="certifications"
->{{ existing.certifications if existing else '' }}</textarea>
-
-<label>
-Languages
-</label>
-
-<textarea
- name="languages"
->{{ existing.languages if existing else '' }}</textarea>
-
-<label>
-References
-</label>
-
-<textarea
- name="references"
->{{ existing.references if existing else '' }}</textarea>
-
-<button>
-Save CV
-</button>
-
-{% if existing %}
-
-<a
- class="btn success"
- href="{{ url_for(
- 'cv_pdf',
- cv_id=existing.id
- ) }}"
->
-Download CV PDF
-</a>
-
-{% endif %}
-
-</form>
-
-</div>
-
-"""
-        ,
-        existing=existing
-    )
-
-
-# ============================================================
-# CV PDF
-# ============================================================
-
-@app.route(
-    "/cv/<uuid:cv_id>/pdf"
-)
-@login_required
-def cv_pdf(cv_id):
-
-    user = current_user()
-
-    try:
-
-        cv = sb_get(
-            "koja_cvs",
-            {
-                "select": "*",
-                "id": (
-                    f"eq.{cv_id}"
-                ),
-                "limit": "1",
-            },
-            single=True
-        )
-
-    except Exception as e:
-
-        flash(
-            f"Could not load CV: {e}",
-            "danger"
-        )
-
-        return redirect(
-            url_for("cv_builder")
-        )
-
-    if not cv:
-        abort(404)
-
-    if (
-        not user["is_admin"]
-        and str(cv.get("user_id"))
-        != str(user["id"])
-    ):
-        abort(403)
-
-    try:
-
-        from reportlab.lib.pagesizes import A4
-        from reportlab.lib.styles import (
-            getSampleStyleSheet,
-            ParagraphStyle
-        )
-        from reportlab.lib.enums import TA_CENTER
-        from reportlab.platypus import (
-            SimpleDocTemplate,
-            Paragraph,
-            Spacer,
-            HRFlowable,
-        )
-        from reportlab.lib.units import cm
-
-    except Exception:
-
-        flash(
-            "ReportLab is not installed. "
-            "Add reportlab to requirements.txt.",
-            "danger"
-        )
-
-        return redirect(
-            url_for("cv_builder")
-        )
-
-    buffer = io.BytesIO()
-
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        rightMargin=1.7 * cm,
-        leftMargin=1.7 * cm,
-        topMargin=1.5 * cm,
-        bottomMargin=1.5 * cm,
-        title="KOJA Africa CV"
-    )
-
-    styles = getSampleStyleSheet()
-
-    name_style = ParagraphStyle(
-        "CVName",
-        parent=styles["Title"],
-        alignment=TA_CENTER,
-        fontSize=20,
-        leading=24,
-        spaceAfter=5,
-    )
-
-    title_style = ParagraphStyle(
-        "CVTitle",
-        parent=styles["Normal"],
-        alignment=TA_CENTER,
-        fontSize=11,
-        leading=14,
-        spaceAfter=10,
-    )
-
-    section_style = ParagraphStyle(
-        "CVSection",
-        parent=styles["Heading2"],
-        fontSize=12,
-        leading=15,
-        spaceBefore=10,
-        spaceAfter=5,
-    )
-
-    body_style = ParagraphStyle(
-        "CVBody",
-        parent=styles["BodyText"],
-        fontSize=9.5,
-        leading=13,
-        spaceAfter=5,
-    )
-
-    story = []
-
-    full_name = (
-        cv.get("full_name")
-        or "Curriculum Vitae"
-    )
-
-    story.append(
-        Paragraph(
-            full_name,
-            name_style
-        )
-    )
-
-    if cv.get(
-        "professional_title"
-    ):
-
-        story.append(
-            Paragraph(
-                cv["professional_title"],
-                title_style
-            )
-        )
-
-    contact = " | ".join(
-        x
-        for x in [
-            cv.get("email"),
-            cv.get("phone"),
-            cv.get("address"),
-        ]
-        if x
-    )
-
-    if contact:
-
-        story.append(
-            Paragraph(
-                contact,
-                title_style
-            )
-        )
-
-    story.append(
-        HRFlowable(
-            width="100%",
-            thickness=1,
-            spaceAfter=8
-        )
-    )
-
-    sections = [
-        (
-            "PROFESSIONAL PROFILE",
-            cv.get("profile")
-        ),
-        (
-            "EDUCATION",
-            cv.get("education")
-        ),
-        (
-            "WORK EXPERIENCE",
-            cv.get("experience")
-        ),
-        (
-            "SKILLS",
-            cv.get("skills")
-        ),
-        (
-            "CERTIFICATIONS",
-            cv.get("certifications")
-        ),
-        (
-            "LANGUAGES",
-            cv.get("languages")
-        ),
-        (
-            "REFERENCES",
-            cv.get("references")
-        ),
-    ]
-
-    for heading, value in sections:
-
-        if not value:
-            continue
-
-        story.append(
-            Paragraph(
-                heading,
-                section_style
-            )
-        )
-
-        paragraphs = str(
-            value
-        ).splitlines()
-
-        for paragraph in paragraphs:
-
-            paragraph = clean(
-                paragraph
-            )
-
-            if not paragraph:
-                continue
-
-            paragraph = (
-                paragraph
-                .replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-            )
-
-            story.append(
-                Paragraph(
-                    paragraph,
-                    body_style
-                )
-            )
-
-    story.append(
-        Spacer(
-            1,
-            15
-        )
-    )
-
-    story.append(
-        Paragraph(
-            "Generated by KOJA AFRICA",
-            body_style
-        )
-    )
-
-    doc.build(story)
-
-    buffer.seek(0)
-
-    log_activity(
-        "cv_pdf",
-        f"Generated CV {cv_id}",
-        user["id"],
-        user["email"]
-    )
-
-    return send_file(
-        buffer,
-        mimetype="application/pdf",
-        as_attachment=True,
-        download_name=(
-            secure_filename(
-                full_name
-            )
-            or "KOJA_CV"
-        )
-        + ".pdf"
+        body
     )
 
 
@@ -5625,1622 +2643,210 @@ def cv_pdf(cv_id):
 @login_required
 def assignments():
 
-    user = current_user()
-
-    rows = optional_get(
-        "koja_assignments",
-        {
-            "select": "*",
-            "student_id": (
-                f"eq.{user['id']}"
-            ),
-            "order": "created_at.desc",
-            "limit": "500",
-        }
-    )
-
-    return page(
-        "Assignments",
-        r"""
-
-<div class="actions">
-
-<h1 style="margin-right:auto">
-My Assignments
-</h1>
-
-<a
- class="btn"
- href="{{ url_for('new_assignment') }}"
->
-Submit Assignment
-</a>
-
-</div>
-
-<div class="grid">
-
-{% for a in rows %}
-
-<div class="card">
-
-<h3>
-{{ a.title }}
-</h3>
-
-<p>
-<b>Subject:</b>
-{{ a.subject or "-" }}
-</p>
-
-<p>
-<b>Course:</b>
-{{ a.course or "-" }}
-</p>
-
-<p>
-<b>Status:</b>
-
-<span class="badge">
-{{ a.status or "submitted" }}
-</span>
-
-</p>
-
-{% if a.description %}
-
-<p>
-{{ a.description }}
-</p>
-
-{% endif %}
-
-{% if a.answer or a.admin_response %}
-
-<hr>
-
-<h3>
-Administrator Response
-</h3>
-
-<p>
-{{ a.answer
-or a.admin_response }}
-</p>
-
-{% endif %}
-
-{% if a.file_url %}
-
-<a
- class="btn"
- target="_blank"
- href="{{ a.file_url }}"
->
-Open Assignment
-</a>
-
-{% elif a.file_path %}
-
-<a
- class="btn"
- href="{{ url_for(
- 'download_storage',
- path=a.file_path
- ) }}"
->
-Download Assignment
-</a>
-
-{% endif %}
-
-</div>
-
-{% else %}
-
-<div class="card">
-
-<p>
-No assignments submitted yet.
-</p>
-
-<a
- class="btn"
- href="{{ url_for('new_assignment') }}"
->
-Submit Assignment
-</a>
-
-</div>
-
-{% endfor %}
-
-</div>
-
-""",
-        rows=rows
-    )
-
-
-@app.route(
-    "/assignments/new",
-    methods=["GET", "POST"]
-)
-@login_required
-def new_assignment():
-
-    user = current_user()
-
-    if request.method == "POST":
-
-        title = clean(
-            request.form.get(
-                "title"
-            )
-        )
-
-        if not title:
-
-            flash(
-                "Assignment title is required.",
-                "danger"
-            )
-
-            return redirect(
-                url_for("new_assignment")
-            )
-
-        file = request.files.get(
-            "file"
-        )
-
-        file_path = None
-        file_url = None
-        file_name = None
-        file_size = 0
-        mime_type = None
-
-        try:
-
-            if file and file.filename:
-
-                (
-                    file_path,
-                    file_url,
-                    file_name,
-                    file_size,
-                    mime_type
-                ) = storage_upload(
-                    file,
-                    "assignments"
-                )
-
-            data = {
-                "student_id":
-                    user["id"],
-
-                "student_name":
-                    user["name"],
-
-                "student_email":
-                    user["email"],
-
-                "title":
-                    title,
-
-                "subject":
-                    clean(
-                        request.form.get(
-                            "subject"
-                        )
-                    ),
-
-                "course":
-                    clean(
-                        request.form.get(
-                            "course"
-                        )
-                    ),
-
-                "class_level":
-                    clean(
-                        request.form.get(
-                            "class_level"
-                        )
-                    ),
-
-                "description":
-                    clean(
-                        request.form.get(
-                            "description"
-                        )
-                    ),
-
-                "status":
-                    "submitted",
-
-                "file_path":
-                    file_path,
-
-                "file_url":
-                    file_url,
-
-                "file_name":
-                    file_name,
-
-                "file_size":
-                    file_size,
-
-                "mime_type":
-                    mime_type,
-
-                "created_at":
-                    now_iso(),
-            }
-
-            assignment = sb_insert(
-                "koja_assignments",
-                data
-            )
-
-            log_activity(
-                "assignment",
-                (
-                    "Assignment submitted: "
-                    f"{title}"
-                ),
-                user["id"],
-                user["email"]
-            )
-
-            notify(
-                ADMIN_EMAIL,
-                "New assignment submitted",
-                (
-                    f"{user['name']} submitted "
-                    f"an assignment: {title}."
-                )
-            )
-
-            flash(
-                "Assignment submitted successfully.",
-                "success"
-            )
-
-            return redirect(
-                url_for("assignments")
-            )
-
-        except Exception as e:
-
-            log.exception(
-                "Assignment submission failed"
-            )
-
-            flash(
-                "Assignment submission failed. "
-                "Make sure the koja_assignments table "
-                "exists and the storage bucket is configured. "
-                f"Details: {e}",
-                "danger"
-            )
-
-    return page(
-        "Submit Assignment",
-        r"""
-
-<div class="card">
-
-<h1>
-Submit Assignment
-</h1>
-
-<form
- method="post"
- enctype="multipart/form-data"
->
-
-<label>
-Assignment title
-</label>
-
-<input
- name="title"
- required
->
-
-<label>
-Subject
-</label>
-
-<input
- name="subject"
->
-
-<label>
-Course
-</label>
-
-<input
- name="course"
->
-
-<label>
-Class / Level
-</label>
-
-<input
- name="class_level"
->
-
-<label>
-Description / instructions
-</label>
-
-<textarea
- name="description"
-></textarea>
-
-<label>
-Assignment file
-</label>
-
-<input
- type="file"
- name="file"
- accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.jpg,.jpeg,.png"
->
-
-<p class="muted small">
-Maximum configured file size:
-{{ max_upload_mb }} MB.
-</p>
-
-<button>
-Submit Assignment
-</button>
-
-</form>
-
-</div>
-
-""",
-        max_upload_mb=MAX_UPLOAD_MB
-    )
-
-
-# ============================================================
-# SERVICES HOME
-# ============================================================
-
-@app.route("/services")
-@login_required
-def services():
-
-    user = current_user()
-
-    rows = optional_get(
-        "koja_service_requests",
-        {
-            "select": "*",
-            "client_email": (
-                f"eq.{user['email']}"
-            ),
-            "order": "created_at.desc",
-            "limit": "500",
-        }
-    )
-
-    return page(
-        "KOJA Services",
-        r"""
-
-<div class="hero">
-
-<h1>
-KOJA Services
-</h1>
-
-<p>
-Access additional services through
-your KOJA account.
-</p>
-
-<div class="actions">
-
-<a
- class="btn"
- href="{{ url_for('farmer_registration') }}"
->
-Farmer Registration
-</a>
-
-<a
- class="btn"
- href="{{ url_for('doctor_booking') }}"
->
-Doctor Booking
-</a>
-
-<a
- class="btn"
- href="{{ url_for('delivery_request') }}"
->
-Delivery Request
-</a>
-
-</div>
-
-</div>
-
-<br>
-
-<div class="card">
-
-<h2>
-My Service Requests
-</h2>
-
-<table>
-
-<tr>
-<th>Type</th>
-<th>Title</th>
-<th>Status</th>
-<th>Date</th>
-</tr>
-
-{% for r in rows %}
-
-<tr>
-
-<td>
-{{ r.request_type
-or r.type
-or "-" }}
-</td>
-
-<td>
-{{ r.title or "-" }}
-</td>
-
-<td>
-
-<span class="badge">
-{{ r.status or "submitted" }}
-</span>
-
-</td>
-
-<td>
-{{ r.created_at or "-" }}
-</td>
-
-</tr>
-
-{% else %}
-
-<tr>
-<td colspan="4">
-No service requests.
-</td>
-</tr>
-
-{% endfor %}
-
-</table>
-
-</div>
-
-"""
-        ,
-        rows=rows
-    )
-
-
-# ============================================================
-# GENERIC SERVICE INSERT
-# ============================================================
-
-def create_service_request(
-    request_type,
-    title,
-    description,
-    user,
-    metadata=None
-):
-    """
-    Uses koja_service_requests as the common service queue.
-
-    The richer metadata field is attempted first. If the
-    installation does not have metadata, the core request is
-    inserted without it.
-    """
-
-    base = {
-        "client_email":
-            user["email"],
-
-        "title":
-            title,
-
-        "description":
-            description,
-
-        "status":
-            "submitted",
-
-        "created_at":
-            now_iso(),
-    }
-
-    # request_type is expected in the newer schema.
-    # If it does not exist, retry without it.
-    if request_type:
-        base["request_type"] = (
-            request_type
-        )
-
-    if metadata is not None:
-        base["metadata"] = (
-            json_text(metadata)
-        )
+    rows = []
 
     try:
 
-        return sb_insert(
-            "koja_service_requests",
-            base
+        rows = supabase_get(
+            "assignments",
+            {
+                "select": "*",
+                "order": "created_at.desc",
+                "limit": "30",
+            }
         )
 
-    except Exception as first_error:
+    except Exception as exc:
 
-        retry = dict(base)
-
-        retry.pop(
-            "metadata",
-            None
+        logger.warning(
+            "Assignments load failed: %s",
+            exc
         )
 
-        try:
+    table_rows = ""
 
-            return sb_insert(
-                "koja_service_requests",
-                retry
-            )
+    for row in rows:
 
-        except Exception:
-
-            retry.pop(
-                "request_type",
-                None
-            )
-
-            return sb_insert(
-                "koja_service_requests",
-                retry
-            )
-
-
-# ============================================================
-# FARMER REGISTRATION
-# ============================================================
-
-@app.route(
-    "/farmer-registration",
-    methods=["GET", "POST"]
-)
-@login_required
-def farmer_registration():
-
-    user = current_user()
-
-    if request.method == "POST":
-
-        farmer_name = clean(
-            request.form.get(
-                "farmer_name"
-            )
+        title = (
+            row.get("title")
+            or row.get("assignment_title")
+            or row.get("subject")
+            or "Assignment"
         )
 
-        if not farmer_name:
+        status = (
+            row.get("status")
+            or "Submitted"
+        )
 
-            flash(
-                "Farmer name is required.",
-                "danger"
-            )
+        table_rows += f"""
+        <tr>
 
-            return redirect(
-                url_for(
-                    "farmer_registration"
-                )
-            )
+            <td>
+                {title}
+            </td>
 
-        metadata = {
-            "farmer_name":
-                farmer_name,
+            <td>
+                <span class="badge">
+                    {status}
+                </span>
+            </td>
 
-            "phone":
-                clean(
-                    request.form.get(
-                        "phone"
-                    )
-                ),
+        </tr>
+        """
 
-            "nrc":
-                clean(
-                    request.form.get(
-                        "nrc"
-                    )
-                ),
+    body = f"""
+    <section class="card">
 
-            "province":
-                clean(
-                    request.form.get(
-                        "province"
-                    )
-                ),
+        <h2>
+            Assignments
+        </h2>
 
-            "district":
-                clean(
-                    request.form.get(
-                        "district"
-                    )
-                ),
+        <p class="small">
+            Submit and track academic assignments.
+        </p>
 
-            "chiefdom":
-                clean(
-                    request.form.get(
-                        "chiefdom"
-                    )
-                ),
+        <div class="actions">
 
-            "camp":
-                clean(
-                    request.form.get(
-                        "camp"
-                    )
-                ),
+            <a
+                class="btn green"
+                href="/service/assignment"
+            >
+                Submit Assignment Request
+            </a>
 
-            "farm_location":
-                clean(
-                    request.form.get(
-                        "farm_location"
-                    )
-                ),
+        </div>
 
-            "farm_size":
-                clean(
-                    request.form.get(
-                        "farm_size"
-                    )
-                ),
+        <br>
 
-            "crops":
-                clean(
-                    request.form.get(
-                        "crops"
-                    )
-                ),
+        <table>
 
-            "livestock":
-                clean(
-                    request.form.get(
-                        "livestock"
-                    )
-                ),
+            <tr>
+                <th>Assignment</th>
+                <th>Status</th>
+            </tr>
 
-            "farmer_type":
-                clean(
-                    request.form.get(
-                        "farmer_type"
-                    )
-                ),
+            {table_rows or '''
+            <tr>
+                <td colspan="2">
+                    No assignment records found.
+                </td>
+            </tr>
+            '''}
 
-            "additional_information":
-                clean(
-                    request.form.get(
-                        "additional_information"
-                    )
-                ),
-        }
+        </table>
 
-        try:
-
-            result = create_service_request(
-                "farmer_registration",
-                "Farmer Registration",
-                (
-                    f"Farmer registration for "
-                    f"{farmer_name}"
-                ),
-                user,
-                metadata
-            )
-
-            log_activity(
-                "farmer_registration",
-                farmer_name,
-                user["id"],
-                user["email"]
-            )
-
-            notify(
-                ADMIN_EMAIL,
-                "New farmer registration",
-                (
-                    f"{farmer_name} submitted "
-                    "a farmer registration."
-                )
-            )
-
-            flash(
-                "Farmer registration submitted successfully.",
-                "success"
-            )
-
-            return redirect(
-                url_for("services")
-            )
-
-        except Exception as e:
-
-            flash(
-                f"Farmer registration failed: {e}",
-                "danger"
-            )
+    </section>
+    """
 
     return page(
-        "Farmer Registration",
-        r"""
-
-<div class="card">
-
-<h1>
-Farmer Registration
-</h1>
-
-<p>
-Register your farming details with KOJA.
-</p>
-
-<form method="post">
-
-<label>
-Farmer full name
-</label>
-
-<input
- name="farmer_name"
- value="{{ user.name }}"
- required
->
-
-<label>
-Phone
-</label>
-
-<input
- name="phone"
- value="{{ user.phone or '' }}"
->
-
-<label>
-NRC
-</label>
-
-<input
- name="nrc"
->
-
-<div class="form-grid">
-
-<div>
-
-<label>
-Province
-</label>
-
-<input
- name="province"
->
-
-</div>
-
-<div>
-
-<label>
-District
-</label>
-
-<input
- name="district"
->
-
-</div>
-
-<div>
-
-<label>
-Chiefdom
-</label>
-
-<input
- name="chiefdom"
->
-
-</div>
-
-<div>
-
-<label>
-Agricultural camp
-</label>
-
-<input
- name="camp"
->
-
-</div>
-
-</div>
-
-<label>
-Farm location
-</label>
-
-<input
- name="farm_location"
->
-
-<div class="form-grid">
-
-<div>
-
-<label>
-Farm size
-</label>
-
-<input
- name="farm_size"
- placeholder="e.g. 5 hectares"
->
-
-</div>
-
-<div>
-
-<label>
-Farmer type
-</label>
-
-<select name="farmer_type">
-
-<option>
-Small-scale
-</option>
-
-<option>
-Commercial
-</option>
-
-<option>
-Emerging
-</option>
-
-<option>
-Cooperative
-</option>
-
-</select>
-
-</div>
-
-</div>
-
-<label>
-Crops
-</label>
-
-<textarea
- name="crops"
- placeholder="e.g. maize, soya beans, groundnuts"
-></textarea>
-
-<label>
-Livestock
-</label>
-
-<textarea
- name="livestock"
- placeholder="e.g. cattle, goats, chickens"
-></textarea>
-
-<label>
-Additional information
-</label>
-
-<textarea
- name="additional_information"
-></textarea>
-
-<button>
-Register Farmer
-</button>
-
-</form>
-
-</div>
-
-"""
+        "Assignments",
+        body
     )
 
 
 # ============================================================
-# DOCTOR BOOKING
+# UNIVERSITIES
 # ============================================================
 
-@app.route(
-    "/doctor-booking",
-    methods=["GET", "POST"]
-)
+@app.route("/universities")
 @login_required
-def doctor_booking():
+def universities():
 
-    user = current_user()
+    rows = []
 
-    if request.method == "POST":
+    try:
 
-        doctor_name = clean(
-            request.form.get(
-                "doctor_name"
-            )
+        rows = supabase_get(
+            "universities",
+            {
+                "select": "*",
+                "limit": "100",
+            }
         )
 
-        booking_date = clean(
-            request.form.get(
-                "booking_date"
-            )
+    except Exception as exc:
+
+        logger.warning(
+            "Universities load failed: %s",
+            exc
         )
 
-        booking_time = clean(
-            request.form.get(
-                "booking_time"
-            )
+    cards = ""
+
+    for row in rows:
+
+        name = (
+            row.get("name")
+            or row.get("university_name")
+            or row.get("title")
+            or "University"
         )
 
-        if not booking_date:
+        location = (
+            row.get("location")
+            or row.get("city")
+            or row.get("province")
+            or "Zambia"
+        )
 
-            flash(
-                "Booking date is required.",
-                "danger"
-            )
+        cards += f"""
+        <div class="service">
 
-            return redirect(
-                url_for(
-                    "doctor_booking"
-                )
-            )
+            <h3>
+                {name}
+            </h3>
 
-        metadata = {
-            "patient_name":
-                clean(
-                    request.form.get(
-                        "patient_name"
-                    )
-                ) or user["name"],
+            <p>
+                {location}
+            </p>
 
-            "patient_phone":
-                clean(
-                    request.form.get(
-                        "patient_phone"
-                    )
-                ) or user.get(
-                    "phone",
-                    ""
-                ),
+            <a
+                class="btn light"
+                href="/service/university"
+            >
+                Request Application Help
+            </a>
 
-            "doctor_name":
-                doctor_name,
+        </div>
+        """
 
-            "facility":
-                clean(
-                    request.form.get(
-                        "facility"
-                    )
-                ),
+    body = f"""
+    <section class="card">
 
-            "booking_date":
-                booking_date,
+        <h2>
+            Universities
+        </h2>
 
-            "booking_time":
-                booking_time,
+        <p class="small">
+            Universities available in the KOJA database.
+        </p>
 
-            "service":
-                clean(
-                    request.form.get(
-                        "service"
-                    )
-                ),
+        <div class="grid">
 
-            "reason":
-                clean(
-                    request.form.get(
-                        "reason"
-                    )
-                ),
+            {cards or '''
+            <div class="service">
+                <h3>University Application</h3>
+                <p>
+                    University records are currently unavailable.
+                </p>
+                <a
+                    class="btn green"
+                    href="/service/university"
+                >
+                    Request University Help
+                </a>
+            </div>
+            '''}
 
-            "additional_information":
-                clean(
-                    request.form.get(
-                        "additional_information"
-                    )
-                ),
-        }
+        </div>
 
-        try:
-
-            create_service_request(
-                "doctor_booking",
-                "Doctor Booking",
-                (
-                    f"Doctor booking for "
-                    f"{metadata['patient_name']} "
-                    f"on {booking_date} "
-                    f"{booking_time}"
-                ),
-                user,
-                metadata
-            )
-
-            log_activity(
-                "doctor_booking",
-                "Doctor appointment request",
-                user["id"],
-                user["email"]
-            )
-
-            notify(
-                ADMIN_EMAIL,
-                "New doctor booking",
-                (
-                    f"{metadata['patient_name']} "
-                    "submitted a doctor booking."
-                )
-            )
-
-            flash(
-                "Doctor booking request submitted.",
-                "success"
-            )
-
-            return redirect(
-                url_for("services")
-            )
-
-        except Exception as e:
-
-            flash(
-                f"Doctor booking failed: {e}",
-                "danger"
-            )
+    </section>
+    """
 
     return page(
-        "Doctor Booking",
-        r"""
-
-<div class="card">
-
-<h1>
-Book a Doctor
-</h1>
-
-<p>
-Submit a healthcare appointment request.
-The administrator can review and confirm it.
-</p>
-
-<form method="post">
-
-<label>
-Patient name
-</label>
-
-<input
- name="patient_name"
- value="{{ user.name }}"
- required
->
-
-<label>
-Patient phone
-</label>
-
-<input
- name="patient_phone"
- value="{{ user.phone or '' }}"
->
-
-<label>
-Doctor name
-</label>
-
-<input
- name="doctor_name"
- placeholder="Preferred doctor, if known"
->
-
-<label>
-Clinic / Hospital
-</label>
-
-<input
- name="facility"
->
-
-<div class="form-grid">
-
-<div>
-
-<label>
-Appointment date
-</label>
-
-<input
- type="date"
- name="booking_date"
- required
->
-
-</div>
-
-<div>
-
-<label>
-Preferred time
-</label>
-
-<input
- type="time"
- name="booking_time"
->
-
-</div>
-
-</div>
-
-<label>
-Service
-</label>
-
-<select name="service">
-
-<option>
-General consultation
-</option>
-
-<option>
-Follow-up
-</option>
-
-<option>
-Dental
-</option>
-
-<option>
-Eye clinic
-</option>
-
-<option>
-Maternal health
-</option>
-
-<option>
-Child health
-</option>
-
-<option>
-Other
-</option>
-
-</select>
-
-<label>
-Reason for appointment
-</label>
-
-<textarea
- name="reason"
-></textarea>
-
-<label>
-Additional information
-</label>
-
-<textarea
- name="additional_information"
-></textarea>
-
-<button>
-Submit Booking
-</button>
-
-</form>
-
-</div>
-
-"""
-    )
-
-
-# ============================================================
-# DELIVERY REQUEST
-# ============================================================
-
-@app.route(
-    "/delivery",
-    methods=["GET", "POST"]
-)
-@login_required
-def delivery_request():
-
-    user = current_user()
-
-    if request.method == "POST":
-
-        sender = clean(
-            request.form.get(
-                "sender_name"
-            )
-        ) or user["name"]
-
-        receiver = clean(
-            request.form.get(
-                "receiver_name"
-            )
-        )
-
-        pickup = clean(
-            request.form.get(
-                "pickup_location"
-            )
-        )
-
-        destination = clean(
-            request.form.get(
-                "delivery_location"
-            )
-        )
-
-        if not receiver:
-            flash(
-                "Receiver name is required.",
-                "danger"
-            )
-
-            return redirect(
-                url_for(
-                    "delivery_request"
-                )
-            )
-
-        if not pickup or not destination:
-
-            flash(
-                "Pickup and delivery locations are required.",
-                "danger"
-            )
-
-            return redirect(
-                url_for(
-                    "delivery_request"
-                )
-            )
-
-        metadata = {
-
-            "sender_name":
-                sender,
-
-            "sender_phone":
-                clean(
-                    request.form.get(
-                        "sender_phone"
-                    )
-                ) or user.get(
-                    "phone",
-                    ""
-                ),
-
-            "receiver_name":
-                receiver,
-
-            "receiver_phone":
-                clean(
-                    request.form.get(
-                        "receiver_phone"
-                    )
-                ),
-
-            "pickup_location":
-                pickup,
-
-            "delivery_location":
-                destination,
-
-            "package_description":
-                clean(
-                    request.form.get(
-                        "package_description"
-                    )
-                ),
-
-            "package_size":
-                clean(
-                    request.form.get(
-                        "package_size"
-                    )
-                ),
-
-            "preferred_date":
-                clean(
-                    request.form.get(
-                        "preferred_date"
-                    )
-                ),
-
-            "preferred_time":
-                clean(
-                    request.form.get(
-                        "preferred_time"
-                    )
-                ),
-
-            "delivery_notes":
-                clean(
-                    request.form.get(
-                        "delivery_notes"
-                    )
-                ),
-        }
-
-        try:
-
-            create_service_request(
-                "delivery",
-                "Delivery Request",
-                (
-                    f"Delivery from "
-                    f"{pickup} to "
-                    f"{destination}"
-                ),
-                user,
-                metadata
-            )
-
-            log_activity(
-                "delivery_request",
-                (
-                    f"{pickup} -> "
-                    f"{destination}"
-                ),
-                user["id"],
-                user["email"]
-            )
-
-            notify(
-                ADMIN_EMAIL,
-                "New delivery request",
-                (
-                    f"New delivery request from "
-                    f"{sender}."
-                )
-            )
-
-            flash(
-                "Delivery request submitted successfully.",
-                "success"
-            )
-
-            return redirect(
-                url_for("services")
-            )
-
-        except Exception as e:
-
-            flash(
-                f"Delivery request failed: {e}",
-                "danger"
-            )
-
-    return page(
-        "Delivery Request",
-        r"""
-
-<div class="card">
-
-<h1>
-Request a Delivery
-</h1>
-
-<form method="post">
-
-<label>
-Sender name
-</label>
-
-<input
- name="sender_name"
- value="{{ user.name }}"
->
-
-<label>
-Sender phone
-</label>
-
-<input
- name="sender_phone"
- value="{{ user.phone or '' }}"
->
-
-<label>
-Receiver name
-</label>
-
-<input
- name="receiver_name"
- required
->
-
-<label>
-Receiver phone
-</label>
-
-<input
- name="receiver_phone"
->
-
-<label>
-Pickup location
-</label>
-
-<textarea
- name="pickup_location"
- required
-></textarea>
-
-<label>
-Delivery location
-</label>
-
-<textarea
- name="delivery_location"
- required
-></textarea>
-
-<label>
-Package description
-</label>
-
-<textarea
- name="package_description"
- placeholder="What is being delivered?"
-></textarea>
-
-<label>
-Package size
-</label>
-
-<select name="package_size">
-
-<option>
-Small
-</option>
-
-<option>
-Medium
-</option>
-
-<option>
-Large
-</option>
-
-<option>
-Very large
-</option>
-
-</select>
-
-<div class="form-grid">
-
-<div>
-
-<label>
-Preferred date
-</label>
-
-<input
- type="date"
- name="preferred_date"
->
-
-</div>
-
-<div>
-
-<label>
-Preferred time
-</label>
-
-<input
- type="time"
- name="preferred_time"
->
-
-</div>
-
-</div>
-
-<label>
-Delivery notes
-</label>
-
-<textarea
- name="delivery_notes"
-></textarea>
-
-<button>
-Request Delivery
-</button>
-
-</form>
-
-</div>
-
-"""
-    )
-
-
-# ============================================================
-# ALIASES
-# ============================================================
-
-@app.route(
-    "/farmer"
-)
-@login_required
-def farmer_alias():
-
-    return redirect(
-        url_for(
-            "farmer_registration"
-        )
-    )
-
-
-@app.route(
-    "/doctor"
-)
-@login_required
-def doctor_alias():
-
-    return redirect(
-        url_for(
-            "doctor_booking"
-        )
-    )
-
-
-@app.route(
-    "/deliveries"
-)
-@login_required
-def deliveries_alias():
-
-    return redirect(
-        url_for(
-            "delivery_request"
-        )
+        "Universities",
+        body
     )
 
 
@@ -7250,2375 +2856,242 @@ def deliveries_alias():
 
 @app.route("/admin")
 @admin_required
-def admin():
+def admin_dashboard():
 
-    stats = {
+    users_count = 0
+    questions_count = 0
+    universities_count = 0
 
-        "Universities":
-            count_rows(
-                "universities"
-            ),
+    try:
 
-        "Programmes":
-            count_rows(
-                "university_programmes"
-            ),
+        result = supabase_get(
+            "koja_users",
+            {
+                "select": "id",
+                "limit": "1000",
+            }
+        )
 
-        "Applications":
-            count_rows(
-                "university_applications"
-            ),
+        users_count = len(result)
 
-        "Questions":
-            count_rows(
-                "questions"
-            ),
+    except Exception:
+        pass
 
-        "Documents":
-            count_rows(
-                "documents"
-            ),
+    try:
 
-        "Users":
-            count_rows(
-                "profiles"
-            ),
+        result = supabase_get(
+            "questions",
+            {
+                "select": "id",
+                "limit": "1000",
+            }
+        )
 
-        "CVs":
-            count_rows(
-                "koja_cvs"
-            ),
+        questions_count = len(result)
 
-        "Assignments":
-            count_rows(
-                "koja_assignments"
-            ),
+    except Exception:
+        pass
 
-        "Service requests":
-            count_rows(
-                "koja_service_requests"
-            ),
-    }
+    try:
 
-    applications = optional_get(
-        "university_applications",
-        {
-            "select": "*",
-            "order": "created_at.desc",
-            "limit": "20",
-        }
-    )
+        result = supabase_get(
+            "universities",
+            {
+                "select": "id",
+                "limit": "1000",
+            }
+        )
 
-    services_ = optional_get(
-        "koja_service_requests",
-        {
-            "select": "*",
-            "order": "created_at.desc",
-            "limit": "20",
-        }
-    )
+        universities_count = len(result)
 
-    assignments_ = optional_get(
-        "koja_assignments",
-        {
-            "select": "*",
-            "order": "created_at.desc",
-            "limit": "20",
-        }
-    )
+    except Exception:
+        pass
+
+    body = f"""
+    <section class="hero">
+
+        <h1>
+            KOJA AFRICA ADMIN
+        </h1>
+
+        <p>
+            Administrator control panel.
+        </p>
+
+    </section>
+
+
+    <div class="grid3">
+
+        <div class="service">
+
+            <h3>
+                Users
+            </h3>
+
+            <div class="stat">
+                {users_count}
+            </div>
+
+        </div>
+
+
+        <div class="service">
+
+            <h3>
+                Questions
+            </h3>
+
+            <div class="stat">
+                {questions_count}
+            </div>
+
+        </div>
+
+
+        <div class="service">
+
+            <h3>
+                Universities
+            </h3>
+
+            <div class="stat">
+                {universities_count}
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <section class="card">
+
+        <h2>
+            Administration
+        </h2>
+
+        <div class="actions">
+
+            <a
+                class="btn"
+                href="/admin/users"
+            >
+                Users
+            </a>
+
+            <a
+                class="btn"
+                href="/admin/questions"
+            >
+                Questions
+            </a>
+
+            <a
+                class="btn"
+                href="/admin/logs"
+            >
+                Activity Logs
+            </a>
+
+        </div>
+
+    </section>
+    """
 
     return page(
         "Admin Dashboard",
-        r"""
-
-<div class="hero">
-
-<h1>
-KOJA Administrator
-</h1>
-
-<p>
-Manage KOJA Africa.
-</p>
-
-<div class="actions">
-
-<a
- class="btn"
- href="{{ url_for(
- 'admin_universities'
- ) }}"
->
-Universities
-</a>
-
-<a
- class="btn"
- href="{{ url_for(
- 'admin_programmes'
- ) }}"
->
-Programmes
-</a>
-
-<a
- class="btn"
- href="{{ url_for(
- 'admin_applications'
- ) }}"
->
-Applications
-</a>
-
-<a
- class="btn"
- href="{{ url_for(
- 'admin_questions'
- ) }}"
->
-Questions
-</a>
-
-<a
- class="btn"
- href="{{ url_for(
- 'admin_services'
- ) }}"
->
-Services
-</a>
-
-<a
- class="btn"
- href="{{ url_for(
- 'admin_assignments'
- ) }}"
->
-Assignments
-</a>
-
-</div>
-
-</div>
-
-<br>
-
-<div class="grid">
-
-{% for name,value in stats.items() %}
-
-<div class="card">
-
-<div class="stat">
-{{ value }}
-</div>
-
-<div class="muted">
-{{ name }}
-</div>
-
-</div>
-
-{% endfor %}
-
-</div>
-
-<br>
-
-<div class="grid">
-
-<div class="card">
-
-<h2>
-Admissions
-</h2>
-
-<a
- class="btn"
- href="{{ url_for(
- 'admin_applications'
- ) }}"
->
-Manage Applications
-</a>
-
-</div>
-
-<div class="card">
-
-<h2>
-Academic
-</h2>
-
-<a
- class="btn"
- href="{{ url_for(
- 'admin_questions'
- ) }}"
->
-Manage Questions
-</a>
-
-<a
- class="btn secondary"
- href="{{ url_for(
- 'admin_assignments'
- ) }}"
->
-Assignments
-</a>
-
-</div>
-
-<div class="card">
-
-<h2>
-Services
-</h2>
-
-<a
- class="btn"
- href="{{ url_for(
- 'admin_services'
- ) }}"
->
-Manage Service Requests
-</a>
-
-</div>
-
-<div class="card">
-
-<h2>
-System
-</h2>
-
-<a
- class="btn secondary"
- href="{{ url_for('health') }}"
->
-System Health
-</a>
-
-</div>
-
-</div>
-
-<br>
-
-<div class="card">
-
-<h2>
-Recent Applications
-</h2>
-
-<table>
-
-<tr>
-
-<th>
-Applicant
-</th>
-
-<th>
-University
-</th>
-
-<th>
-Programme
-</th>
-
-<th>
-Status
-</th>
-
-</tr>
-
-{% for a in applications %}
-
-<tr>
-
-<td>
-{{ a.full_name }}
-</td>
-
-<td>
-{{ a.university }}
-</td>
-
-<td>
-{{ a.programme }}
-</td>
-
-<td>
-{{ a.application_status
-or a.status }}
-</td>
-
-</tr>
-
-{% else %}
-
-<tr>
-<td colspan="4">
-No applications.
-</td>
-</tr>
-
-{% endfor %}
-
-</table>
-
-</div>
-
-<br>
-
-<div class="card">
-
-<h2>
-Recent Service Requests
-</h2>
-
-<table>
-
-<tr>
-
-<th>
-Type
-</th>
-
-<th>
-Title
-</th>
-
-<th>
-Email
-</th>
-
-<th>
-Status
-</th>
-
-</tr>
-
-{% for r in services %}
-
-<tr>
-
-<td>
-{{ r.request_type
-or r.type
-or "-" }}
-</td>
-
-<td>
-{{ r.title }}
-</td>
-
-<td>
-{{ r.client_email }}
-</td>
-
-<td>
-{{ r.status
-or "submitted" }}
-</td>
-
-</tr>
-
-{% else %}
-
-<tr>
-<td colspan="4">
-No service requests.
-</td>
-</tr>
-
-{% endfor %}
-
-</table>
-
-</div>
-
-"""
-        ,
-        stats=stats,
-        applications=applications,
-        services=services_,
-        assignments=assignments_
+        body,
+        admin=True
     )
 
 
 # ============================================================
-# ADMIN UNIVERSITIES
+# ADMIN USERS
 # ============================================================
 
-@app.route("/admin/universities")
+@app.route("/admin/users")
 @admin_required
-def admin_universities():
-
-    rows = optional_get(
-        "universities",
-        {
-            "select": "*",
-            "order": "name.asc",
-            "limit": "1000",
-        }
-    )
-
-    return page(
-        "Manage Universities",
-        r"""
-
-<div class="actions">
-
-<h1 style="margin-right:auto">
-Universities
-</h1>
-
-<a
- class="btn"
- href="{{ url_for(
- 'admin_university_new'
- ) }}"
->
-Add University
-</a>
-
-</div>
-
-<div class="card">
-
-<table>
-
-<tr>
-
-<th>
-Name
-</th>
-
-<th>
-Province
-</th>
-
-<th>
-Status
-</th>
-
-<th>
-Actions
-</th>
-
-</tr>
-
-{% for u in rows %}
-
-<tr>
-
-<td>
-{{ u.name }}
-</td>
-
-<td>
-{{ u.province or "-" }}
-</td>
-
-<td>
-{{ "Active" if u.is_active else "Inactive" }}
-</td>
-
-<td>
-
-<a
- class="btn"
- href="{{ url_for(
- 'admin_university_edit',
- university_id=u.id
- ) }}"
->
-Edit
-</a>
-
-</td>
-
-</tr>
-
-{% endfor %}
-
-</table>
-
-</div>
-
-"""
-        ,
-        rows=rows
-    )
-
-
-def university_form_data():
-
-    return {
-
-        "name":
-            clean(
-                request.form.get(
-                    "name"
-                )
-            ),
-
-        "abbreviation":
-            clean(
-                request.form.get(
-                    "abbreviation"
-                )
-            ),
-
-        "institution_type":
-            clean(
-                request.form.get(
-                    "institution_type"
-                )
-            ),
-
-        "ownership":
-            clean(
-                request.form.get(
-                    "ownership"
-                )
-            ),
-
-        "province":
-            clean(
-                request.form.get(
-                    "province"
-                )
-            ),
-
-        "district":
-            clean(
-                request.form.get(
-                    "district"
-                )
-            ),
-
-        "campus":
-            clean(
-                request.form.get(
-                    "campus"
-                )
-            ),
-
-        "location":
-            clean(
-                request.form.get(
-                    "location"
-                )
-            ),
-
-        "description":
-            clean(
-                request.form.get(
-                    "description"
-                )
-            ),
-
-        "website":
-            clean(
-                request.form.get(
-                    "website"
-                )
-            ),
-
-        "application_url":
-            clean(
-                request.form.get(
-                    "application_url"
-                )
-            ),
-
-        "admissions_url":
-            clean(
-                request.form.get(
-                    "admissions_url"
-                )
-            ),
-
-        "admissions_email":
-            clean(
-                request.form.get(
-                    "admissions_email"
-                )
-            ),
-
-        "admissions_phone":
-            clean(
-                request.form.get(
-                    "admissions_phone"
-                )
-            ),
-
-        "application_fee_zmw":
-            request.form.get(
-                "application_fee_zmw"
-            )
-            or None,
-
-        "intake":
-            clean(
-                request.form.get(
-                    "intake"
-                )
-            ),
-
-        "application_status":
-            clean(
-                request.form.get(
-                    "application_status"
-                )
-            )
-            or "unknown",
-
-        "deadline":
-            request.form.get(
-                "deadline"
-            )
-            or None,
-
-        "accreditation_status":
-            clean(
-                request.form.get(
-                    "accreditation_status"
-                )
-            ),
-
-        "general_requirements":
-            clean(
-                request.form.get(
-                    "general_requirements"
-                )
-            ),
-
-        "required_documents":
-            clean(
-                request.form.get(
-                    "required_documents"
-                )
-            ),
-
-        "application_instructions":
-            clean(
-                request.form.get(
-                    "application_instructions"
-                )
-            ),
-
-        "undergraduate_admissions_url":
-            clean(
-                request.form.get(
-                    "undergraduate_admissions_url"
-                )
-            ),
-
-        "postgraduate_admissions_url":
-            clean(
-                request.form.get(
-                    "postgraduate_admissions_url"
-                )
-            ),
-
-        "contact_person":
-            clean(
-                request.form.get(
-                    "contact_person"
-                )
-            ),
-
-        "is_active":
-            request.form.get(
-                "is_active"
-            ) == "on",
-
-        "last_verified_at":
-            now_iso(),
-
-        "last_admissions_check":
-            now_iso(),
-    }
-
-
-def university_form_page(
-    title,
-    university=None
-):
-
-    return page(
-        title,
-        r"""
-
-<div class="card">
-
-<h1>
-{{ title }}
-</h1>
-
-<form method="post">
-
-<div class="form-grid">
-
-{% for field,label in [
-
-("name","University name"),
-
-("abbreviation","Abbreviation"),
-
-("institution_type","Institution type"),
-
-("ownership","Ownership"),
-
-("province","Province"),
-
-("district","District"),
-
-("campus","Campus"),
-
-("location","Location"),
-
-("website","Website"),
-
-("application_url","Application URL"),
-
-("admissions_url","Admissions URL"),
-
-("admissions_email","Admissions email"),
-
-("admissions_phone","Admissions phone"),
-
-("application_fee_zmw","Application fee ZMW"),
-
-("intake","Intake"),
-
-("deadline","Deadline"),
-
-("accreditation_status","Accreditation status"),
-
-("undergraduate_admissions_url",
-"Undergraduate admissions URL"),
-
-("postgraduate_admissions_url",
-"Postgraduate admissions URL"),
-
-("contact_person","Contact person")
-
-] %}
-
-<div>
-
-<label>
-{{ label }}
-</label>
-
-<input
- name="{{ field }}"
- value="{{ university.get(field,'') if university else '' }}"
->
-
-</div>
-
-{% endfor %}
-
-</div>
-
-<label>
-Description
-</label>
-
-<textarea
- name="description"
->{{ university.get('description','') if university else '' }}</textarea>
-
-<label>
-General requirements
-</label>
-
-<textarea
- name="general_requirements"
->{{ university.get('general_requirements','') if university else '' }}</textarea>
-
-<label>
-Required documents
-</label>
-
-<textarea
- name="required_documents"
->{{ university.get('required_documents','') if university else '' }}</textarea>
-
-<label>
-Application instructions
-</label>
-
-<textarea
- name="application_instructions"
->{{ university.get('application_instructions','') if university else '' }}</textarea>
-
-<label>
-Application status
-</label>
-
-<select name="application_status">
-
-{% for x in [
-'unknown',
-'open',
-'closed',
-'active',
-'not_open'
-] %}
-
-<option
- value="{{ x }}"
- {% if university
- and university.application_status ==
- x %}
- selected
- {% endif %}
->
-
-{{ x }}
-
-</option>
-
-{% endfor %}
-
-</select>
-
-<label>
-
-<input
- type="checkbox"
- name="is_active"
- {% if not university
- or university.is_active %}
- checked
- {% endif %}
->
-
-Active
-
-</label>
-
-<br>
-
-<button>
-Save University
-</button>
-
-</form>
-
-</div>
-
-"""
-        ,
-        title=title,
-        university=university
-    )
-
-
-@app.route(
-    "/admin/universities/new",
-    methods=["GET", "POST"]
-)
-@admin_required
-def admin_university_new():
-
-    if request.method == "POST":
-
-        try:
-
-            sb_insert(
-                "universities",
-                university_form_data()
-            )
-
-            flash(
-                "University added.",
-                "success"
-            )
-
-            return redirect(
-                url_for(
-                    "admin_universities"
-                )
-            )
-
-        except Exception as e:
-
-            flash(
-                f"Could not add university: {e}",
-                "danger"
-            )
-
-    return university_form_page(
-        "Add University"
-    )
-
-
-@app.route(
-    "/admin/universities/<uuid:university_id>/edit",
-    methods=["GET", "POST"]
-)
-@admin_required
-def admin_university_edit(
-    university_id
-):
-
-    university = sb_get(
-        "universities",
-        {
-            "select": "*",
-            "id": (
-                f"eq.{university_id}"
-            ),
-            "limit": "1",
-        },
-        single=True
-    )
-
-    if not university:
-        abort(404)
-
-    if request.method == "POST":
-
-        try:
-
-            sb_update(
-                "universities",
-                {
-                    "id": (
-                        f"eq.{university_id}"
-                    )
-                },
-                university_form_data()
-            )
-
-            flash(
-                "University updated.",
-                "success"
-            )
-
-            return redirect(
-                url_for(
-                    "admin_universities"
-                )
-            )
-
-        except Exception as e:
-
-            flash(
-                f"Could not update university: {e}",
-                "danger"
-            )
-
-    return university_form_page(
-        "Edit University",
-        university
-    )
-
-
-# ============================================================
-# ADMIN PROGRAMMES
-# ============================================================
-
-@app.route("/admin/programmes")
-@admin_required
-def admin_programmes():
-
-    university_id = clean(
-        request.args.get(
-            "university_id"
-        )
-    )
-
-    us = optional_get(
-        "universities",
-        {
-            "select": "id,name",
-            "order": "name.asc",
-            "limit": "1000",
-        }
-    )
-
-    params = {
-        "select": "*",
-        "order": "programme_name.asc",
-        "limit": "2000",
-    }
-
-    if university_id:
-
-        params["university_id"] = (
-            f"eq.{university_id}"
+def admin_users():
+
+    try:
+
+        users = supabase_get(
+            "koja_users",
+            {
+                "select": "id,full_name,email,phone,created_at",
+                "order": "created_at.desc",
+                "limit": "200",
+            }
         )
 
-    ps = optional_get(
-        "university_programmes",
-        params
-    )
+    except Exception as exc:
 
-    names = {
-        str(u.get("id")):
-        u.get("name")
-        for u in us
-    }
-
-    for p in ps:
-
-        p["_university_name"] = names.get(
-            str(
-                p.get(
-                    "university_id"
-                )
-            ),
-            "Unknown"
+        logger.warning(
+            "Admin users error: %s",
+            exc
         )
 
-    return page(
-        "Manage Programmes",
-        r"""
+        users = []
 
-<div class="actions">
+    rows = ""
 
-<h1 style="margin-right:auto">
-Programmes
-</h1>
+    for user in users:
 
-<a
- class="btn"
- href="{{ url_for(
- 'admin_programme_new'
- ) }}"
->
-Add Programme
-</a>
+        rows += f"""
+        <tr>
 
-</div>
+            <td>
+                {user.get('full_name', '')}
+            </td>
 
-<div class="card">
+            <td>
+                {user.get('email', '')}
+            </td>
 
-<form method="get">
+            <td>
+                {user.get('phone') or ''}
+            </td>
 
-<select
- name="university_id"
->
+            <td>
+                {user.get('created_at') or ''}
+            </td>
 
-<option value="">
-All universities
-</option>
+        </tr>
+        """
 
-{% for u in us %}
+    body = f"""
+    <section class="card">
 
-<option
- value="{{ u.id }}"
- {% if university_id ==
- u.id|string %}
- selected
- {% endif %}
->
+        <h2>
+            KOJA Users
+        </h2>
 
-{{ u.name }}
+        <table>
 
-</option>
+            <tr>
+                <th>Name</th>
+                <th>Email</th>
+                <th>Phone</th>
+                <th>Created</th>
+            </tr>
 
-{% endfor %}
+            {rows or '''
+            <tr>
+                <td colspan="4">
+                    No users found.
+                </td>
+            </tr>
+            '''}
 
-</select>
+        </table>
 
-<button>
-Filter
-</button>
-
-</form>
-
-</div>
-
-<div class="card">
-
-<table>
-
-<tr>
-
-<th>
-Programme
-</th>
-
-<th>
-University
-</th>
-
-<th>
-Subjects
-</th>
-
-<th>
-Minimum
-</th>
-
-<th>
-Status
-</th>
-
-<th>
-Actions
-</th>
-
-</tr>
-
-{% for p in ps %}
-
-<tr>
-
-<td>
-{{ p.programme_name }}
-</td>
-
-<td>
-{{ p._university_name }}
-</td>
-
-<td>
-{{ p.required_subjects or "-" }}
-</td>
-
-<td>
-{{ p.minimum_grade
-or p.minimum_points
-or "-" }}
-</td>
-
-<td>
-{{ p.application_status
-or "-" }}
-</td>
-
-<td>
-
-<a
- class="btn"
- href="{{ url_for(
- 'admin_programme_edit',
- programme_id=p.id
- ) }}"
->
-Edit
-</a>
-
-<a
- class="btn secondary"
- href="{{ url_for(
- 'admin_requirements',
- programme_id=p.id
- ) }}"
->
-Requirements
-</a>
-
-</td>
-
-</tr>
-
-{% endfor %}
-
-</table>
-
-</div>
-
-"""
-        ,
-        us=us,
-        ps=ps,
-        university_id=university_id
-    )
-
-
-def programme_form_data():
-
-    return {
-
-        "university_id":
-            request.form.get(
-                "university_id"
-            )
-            or None,
-
-        "programme_name":
-            clean(
-                request.form.get(
-                    "programme_name"
-                )
-            ),
-
-        "programme_code":
-            clean(
-                request.form.get(
-                    "programme_code"
-                )
-            ),
-
-        "qualification_level":
-            clean(
-                request.form.get(
-                    "qualification_level"
-                )
-            ),
-
-        "qualification":
-            clean(
-                request.form.get(
-                    "qualification"
-                )
-            ),
-
-        "faculty":
-            clean(
-                request.form.get(
-                    "faculty"
-                )
-            ),
-
-        "school":
-            clean(
-                request.form.get(
-                    "school"
-                )
-            ),
-
-        "duration":
-            clean(
-                request.form.get(
-                    "duration"
-                )
-            ),
-
-        "study_mode":
-            clean(
-                request.form.get(
-                    "study_mode"
-                )
-            ),
-
-        "entry_level":
-            clean(
-                request.form.get(
-                    "entry_level"
-                )
-            ),
-
-        "requirements":
-            clean(
-                request.form.get(
-                    "requirements"
-                )
-            ),
-
-        "entry_requirements":
-            clean(
-                request.form.get(
-                    "entry_requirements"
-                )
-            ),
-
-        "application_requirements":
-            clean(
-                request.form.get(
-                    "application_requirements"
-                )
-            ),
-
-        "required_subjects":
-            clean(
-                request.form.get(
-                    "required_subjects"
-                )
-            ),
-
-        "minimum_grade":
-            clean(
-                request.form.get(
-                    "minimum_grade"
-                )
-            ),
-
-        "application_url":
-            clean(
-                request.form.get(
-                    "application_url"
-                )
-            ),
-
-        "application_status":
-            clean(
-                request.form.get(
-                    "application_status"
-                )
-            )
-            or "unknown",
-
-        "deadline":
-            request.form.get(
-                "deadline"
-            )
-            or None,
-
-        "application_fee":
-            request.form.get(
-                "application_fee"
-            )
-            or None,
-
-        "currency":
-            clean(
-                request.form.get(
-                    "currency"
-                )
-            )
-            or "ZMW",
-
-        "description":
-            clean(
-                request.form.get(
-                    "description"
-                )
-            ),
-
-        "programme_type":
-            clean(
-                request.form.get(
-                    "programme_type"
-                )
-            ),
-
-        "campus":
-            clean(
-                request.form.get(
-                    "campus"
-                )
-            ),
-
-        "study_duration":
-            clean(
-                request.form.get(
-                    "study_duration"
-                )
-            ),
-
-        "minimum_points":
-            request.form.get(
-                "minimum_points"
-            )
-            or None,
-
-        "admissions_url":
-            clean(
-                request.form.get(
-                    "admissions_url"
-                )
-            ),
-
-        "last_verified_at":
-            now_iso(),
-
-        "is_active":
-            request.form.get(
-                "is_active"
-            ) == "on",
-    }
-
-
-def programme_form_page(
-    title,
-    programme=None
-):
-
-    us = optional_get(
-        "universities",
-        {
-            "select": "id,name",
-            "order": "name.asc",
-            "limit": "1000",
-        }
-    )
+    </section>
+    """
 
     return page(
-        title,
-        r"""
-
-<div class="card">
-
-<h1>
-{{ title }}
-</h1>
-
-<form method="post">
-
-<label>
-University
-</label>
-
-<select
- name="university_id"
- required
->
-
-<option value="">
-Select university
-</option>
-
-{% for u in us %}
-
-<option
- value="{{ u.id }}"
- {% if programme
- and programme.university_id|string ==
- u.id|string %}
- selected
- {% endif %}
->
-
-{{ u.name }}
-
-</option>
-
-{% endfor %}
-
-</select>
-
-<div class="form-grid">
-
-{% for field,label in [
-
-("programme_name","Programme name"),
-
-("programme_code","Programme code"),
-
-("qualification_level","Qualification level"),
-
-("qualification","Qualification"),
-
-("faculty","Faculty"),
-
-("school","School"),
-
-("duration","Duration"),
-
-("study_mode","Study mode"),
-
-("entry_level","Entry level"),
-
-("required_subjects","Required subjects"),
-
-("minimum_grade","Minimum grade"),
-
-("application_url","Application URL"),
-
-("deadline","Deadline"),
-
-("application_fee","Application fee"),
-
-("currency","Currency"),
-
-("programme_type","Programme type"),
-
-("campus","Campus"),
-
-("study_duration","Study duration"),
-
-("minimum_points","Minimum points"),
-
-("admissions_url","Admissions URL")
-
-] %}
-
-<div>
-
-<label>
-{{ label }}
-</label>
-
-<input
- name="{{ field }}"
- value="{{ programme.get(field,'') if programme else '' }}"
->
-
-</div>
-
-{% endfor %}
-
-</div>
-
-<label>
-Requirements
-</label>
-
-<textarea
- name="requirements"
->{{ programme.get('requirements','') if programme else '' }}</textarea>
-
-<label>
-Entry requirements
-</label>
-
-<textarea
- name="entry_requirements"
->{{ programme.get('entry_requirements','') if programme else '' }}</textarea>
-
-<label>
-Application requirements
-</label>
-
-<textarea
- name="application_requirements"
->{{ programme.get('application_requirements','') if programme else '' }}</textarea>
-
-<label>
-Description
-</label>
-
-<textarea
- name="description"
->{{ programme.get('description','') if programme else '' }}</textarea>
-
-<label>
-Application status
-</label>
-
-<select name="application_status">
-
-{% for x in [
-'unknown',
-'active',
-'open',
-'closed'
-] %}
-
-<option
- value="{{ x }}"
- {% if programme
- and programme.application_status ==
- x %}
- selected
- {% endif %}
->
-
-{{ x }}
-
-</option>
-
-{% endfor %}
-
-</select>
-
-<label>
-
-<input
- type="checkbox"
- name="is_active"
- {% if not programme
- or programme.is_active %}
- checked
- {% endif %}
->
-
-Active
-
-</label>
-
-<br>
-
-<button>
-Save Programme
-</button>
-
-</form>
-
-</div>
-
-"""
-        ,
-        title=title,
-        programme=programme,
-        us=us
-    )
-
-
-@app.route(
-    "/admin/programmes/new",
-    methods=["GET", "POST"]
-)
-@admin_required
-def admin_programme_new():
-
-    if request.method == "POST":
-
-        try:
-
-            sb_insert(
-                "university_programmes",
-                programme_form_data()
-            )
-
-            flash(
-                "Programme added.",
-                "success"
-            )
-
-            return redirect(
-                url_for(
-                    "admin_programmes"
-                )
-            )
-
-        except Exception as e:
-
-            flash(
-                f"Could not add programme: {e}",
-                "danger"
-            )
-
-    return programme_form_page(
-        "Add Programme"
-    )
-
-
-@app.route(
-    "/admin/programmes/<uuid:programme_id>/edit",
-    methods=["GET", "POST"]
-)
-@admin_required
-def admin_programme_edit(
-    programme_id
-):
-
-    programme = sb_get(
-        "university_programmes",
-        {
-            "select": "*",
-            "id": (
-                f"eq.{programme_id}"
-            ),
-            "limit": "1",
-        },
-        single=True
-    )
-
-    if not programme:
-        abort(404)
-
-    if request.method == "POST":
-
-        try:
-
-            sb_update(
-                "university_programmes",
-                {
-                    "id": (
-                        f"eq.{programme_id}"
-                    )
-                },
-                programme_form_data()
-            )
-
-            flash(
-                "Programme updated.",
-                "success"
-            )
-
-            return redirect(
-                url_for(
-                    "admin_programmes"
-                )
-            )
-
-        except Exception as e:
-
-            flash(
-                f"Could not update programme: {e}",
-                "danger"
-            )
-
-    return programme_form_page(
-        "Edit Programme",
-        programme
-    )
-
-
-# ============================================================
-# ADMIN REQUIREMENTS
-# ============================================================
-
-@app.route(
-    "/admin/programmes/<uuid:programme_id>/requirements",
-    methods=["GET", "POST"]
-)
-@admin_required
-def admin_requirements(
-    programme_id
-):
-
-    p = sb_get(
-        "university_programmes",
-        {
-            "select": "*",
-            "id": (
-                f"eq.{programme_id}"
-            ),
-            "limit": "1",
-        },
-        single=True
-    )
-
-    if not p:
-        abort(404)
-
-    if request.method == "POST":
-
-        try:
-
-            sb_insert(
-                "university_application_requirements",
-                {
-                    "university_id":
-                        p["university_id"],
-
-                    "programme_id":
-                        programme_id,
-
-                    "applicant_type":
-                        clean(
-                            request.form.get(
-                                "applicant_type"
-                            )
-                        ),
-
-                    "requirement_title":
-                        clean(
-                            request.form.get(
-                                "requirement_title"
-                            )
-                        ),
-
-                    "requirement_description":
-                        clean(
-                            request.form.get(
-                                "requirement_description"
-                            )
-                        ),
-
-                    "required":
-                        request.form.get(
-                            "required"
-                        ) == "on",
-
-                    "source_url":
-                        clean(
-                            request.form.get(
-                                "source_url"
-                            )
-                        ),
-
-                    "category":
-                        clean(
-                            request.form.get(
-                                "category"
-                            )
-                        ),
-
-                    "document_type":
-                        clean(
-                            request.form.get(
-                                "document_type"
-                            )
-                        ),
-
-                    "applicant_instruction":
-                        clean(
-                            request.form.get(
-                                "applicant_instruction"
-                            )
-                        ),
-
-                    "last_verified_at":
-                        now_iso(),
-                }
-            )
-
-            flash(
-                "Requirement added.",
-                "success"
-            )
-
-        except Exception as e:
-
-            flash(
-                f"Could not add requirement: {e}",
-                "danger"
-            )
-
-    rows = optional_get(
-        "university_application_requirements",
-        {
-            "select": "*",
-            "programme_id": (
-                f"eq.{programme_id}"
-            ),
-            "order": "created_at.asc",
-        }
-    )
-
-    return page(
-        "Programme Requirements",
-        r"""
-
-<div class="card">
-
-<h1>
-{{ p.programme_name }}
-</h1>
-
-<p>
-Add the documents and conditions
-applicants must meet.
-</p>
-
-</div>
-
-<div class="card">
-
-<h2>
-Add Requirement
-</h2>
-
-<form method="post">
-
-<label>
-Requirement title
-</label>
-
-<input
- name="requirement_title"
- required
->
-
-<label>
-Description
-</label>
-
-<textarea
- name="requirement_description"
-></textarea>
-
-<label>
-Applicant type
-</label>
-
-<input
- name="applicant_type"
- placeholder="e.g. School leaver"
->
-
-<label>
-Category
-</label>
-
-<input
- name="category"
- placeholder="e.g. Academic"
->
-
-<label>
-Document type
-</label>
-
-<input
- name="document_type"
- placeholder="e.g. Grade 12 certificate"
->
-
-<label>
-Applicant instruction
-</label>
-
-<textarea
- name="applicant_instruction"
-></textarea>
-
-<label>
-Source URL
-</label>
-
-<input
- name="source_url"
->
-
-<label>
-
-<input
- type="checkbox"
- name="required"
- checked
->
-
-Required
-
-</label>
-
-<br>
-
-<button>
-Add Requirement
-</button>
-
-</form>
-
-</div>
-
-<div class="grid">
-
-{% for r in rows %}
-
-<div class="card">
-
-<h3>
-{{ r.requirement_title }}
-</h3>
-
-<p>
-{{ r.requirement_description }}
-</p>
-
-<p>
-<b>Required:</b>
-{{ r.required }}
-</p>
-
-</div>
-
-{% else %}
-
-<div class="card">
-No requirements added.
-</div>
-
-{% endfor %}
-
-</div>
-
-"""
-        ,
-        p=p,
-        rows=rows
-    )
-
-
-# ============================================================
-# ADMIN APPLICATIONS
-# ============================================================
-
-@app.route("/admin/applications")
-@admin_required
-def admin_applications():
-
-    rows = optional_get(
-        "university_applications",
-        {
-            "select": "*",
-            "order": "created_at.desc",
-            "limit": "1000",
-        }
-    )
-
-    return page(
-        "Manage Applications",
-        r"""
-
-<div class="card">
-
-<h1>
-University Applications
-</h1>
-
-<table>
-
-<tr>
-
-<th>
-Number
-</th>
-
-<th>
-Applicant
-</th>
-
-<th>
-University
-</th>
-
-<th>
-Programme
-</th>
-
-<th>
-Status
-</th>
-
-<th>
-Payment
-</th>
-
-<th>
-Action
-</th>
-
-</tr>
-
-{% for a in rows %}
-
-<tr>
-
-<td>
-{{ a.application_number
-or a.id }}
-</td>
-
-<td>
-{{ a.full_name }}
-<br>
-{{ a.email }}
-</td>
-
-<td>
-{{ a.university }}
-</td>
-
-<td>
-{{ a.programme }}
-</td>
-
-<td>
-{{ a.application_status
-or a.status }}
-</td>
-
-<td>
-{{ a.payment_status }}
-</td>
-
-<td>
-
-<a
- class="btn"
- href="{{ url_for(
- 'admin_application',
- application_id=a.id
- ) }}"
->
-Open
-</a>
-
-</td>
-
-</tr>
-
-{% endfor %}
-
-</table>
-
-</div>
-
-"""
-        ,
-        rows=rows
-    )
-
-
-@app.route(
-    "/admin/applications/<uuid:application_id>",
-    methods=["GET", "POST"]
-)
-@admin_required
-def admin_application(
-    application_id
-):
-
-    a = sb_get(
-        "university_applications",
-        {
-            "select": "*",
-            "id": (
-                f"eq.{application_id}"
-            ),
-            "limit": "1",
-        },
-        single=True
-    )
-
-    if not a:
-        abort(404)
-
-    if request.method == "POST":
-
-        try:
-
-            status = clean(
-                request.form.get(
-                    "application_status"
-                )
-            ) or "submitted"
-
-            payment_status = clean(
-                request.form.get(
-                    "payment_status"
-                )
-            ) or (
-                a.get(
-                    "payment_status"
-                )
-                or "unpaid"
-            )
-
-            sb_update(
-                "university_applications",
-                {
-                    "id": (
-                        f"eq.{application_id}"
-                    )
-                },
-                {
-                    "application_status":
-                        status,
-
-                    "status":
-                        status,
-
-                    "payment_status":
-                        payment_status,
-
-                    "admin_notes":
-                        clean(
-                            request.form.get(
-                                "admin_notes"
-                            )
-                        ),
-
-                    "rejection_reason":
-                        clean(
-                            request.form.get(
-                                "rejection_reason"
-                            )
-                        ),
-
-                    "reviewed_at":
-                        now_iso(),
-
-                    "reviewed_by":
-                        current_user()["id"],
-                }
-            )
-
-            notify(
-                a.get("email"),
-                "Application status updated",
-                (
-                    "Your university application "
-                    f"status is now: {status}."
-                )
-            )
-
-            flash(
-                "Application updated.",
-                "success"
-            )
-
-        except Exception as e:
-
-            flash(
-                f"Update failed: {e}",
-                "danger"
-            )
-
-    return page(
-        "Review Application",
-        r"""
-
-<div class="card">
-
-<h1>
-Review Application
-</h1>
-
-<table>
-
-{% for k,v in [
-
-("Application number",
-a.application_number or a.id),
-
-("Applicant",
-a.full_name),
-
-("Email",
-a.email),
-
-("Phone",
-a.phone),
-
-("University",
-a.university),
-
-("Programme",
-a.programme),
-
-("DOB",
-a.date_of_birth),
-
-("Gender",
-a.gender),
-
-("NRC",
-a.nrc_number),
-
-("Previous school",
-a.previous_school),
-
-("Qualification",
-a.qualification),
-
-("Address",
-a.address),
-
-("Province",
-a.province),
-
-("District",
-a.district),
-
-("Information",
-a.application_information)
-
-] %}
-
-<tr>
-
-<th>
-{{ k }}
-</th>
-
-<td>
-{{ v or "-" }}
-</td>
-
-</tr>
-
-{% endfor %}
-
-</table>
-
-</div>
-
-<div class="card">
-
-<form method="post">
-
-<label>
-Application status
-</label>
-
-<select
- name="application_status"
->
-
-{% for x in [
-'draft',
-'submitted',
-'under_review',
-'approved',
-'rejected',
-'completed',
-'cancelled'
-] %}
-
-<option
- value="{{ x }}"
- {% if a.application_status == x
- or a.status == x %}
- selected
- {% endif %}
->
-
-{{ x }}
-
-</option>
-
-{% endfor %}
-
-</select>
-
-<label>
-Payment status
-</label>
-
-<select
- name="payment_status"
->
-
-{% for x in [
-'unpaid',
-'pending',
-'paid',
-'failed',
-'refunded'
-] %}
-
-<option
- value="{{ x }}"
- {% if a.payment_status == x %}
- selected
- {% endif %}
->
-
-{{ x }}
-
-</option>
-
-{% endfor %}
-
-</select>
-
-<label>
-Admin notes
-</label>
-
-<textarea
- name="admin_notes"
->{{ a.admin_notes or '' }}</textarea>
-
-<label>
-Rejection reason
-</label>
-
-<textarea
- name="rejection_reason"
->{{ a.rejection_reason or '' }}</textarea>
-
-<button>
-Save Review
-</button>
-
-</form>
-
-</div>
-
-"""
-        ,
-        a=a
+        "Admin Users",
+        body,
+        admin=True
     )
 
 
@@ -9630,623 +3103,310 @@ Save Review
 @admin_required
 def admin_questions():
 
-    rows = optional_get(
-        "questions",
-        {
-            "select": "*",
-            "order": "created_at.desc",
-            "limit": "1000",
-        }
-    )
+    try:
 
-    return page(
-        "Manage Questions",
-        r"""
-
-<div class="card">
-
-<h1>
-Academic Questions
-</h1>
-
-<table>
-
-<tr>
-
-<th>
-Student
-</th>
-
-<th>
-Question
-</th>
-
-<th>
-Status
-</th>
-
-<th>
-Action
-</th>
-
-</tr>
-
-{% for q in rows %}
-
-<tr>
-
-<td>
-{{ q.student_name }}
-</td>
-
-<td>
-{{ q.question }}
-</td>
-
-<td>
-{{ q.status }}
-</td>
-
-<td>
-
-<a
- class="btn"
- href="{{ url_for(
- 'admin_question',
- question_id=q.id
- ) }}"
->
-Answer
-</a>
-
-</td>
-
-</tr>
-
-{% endfor %}
-
-</table>
-
-</div>
-
-"""
-        ,
-        rows=rows
-    )
-
-
-@app.route(
-    "/admin/questions/<uuid:question_id>",
-    methods=["GET", "POST"]
-)
-@admin_required
-def admin_question(
-    question_id
-):
-
-    q = sb_get(
-        "questions",
-        {
-            "select": "*",
-            "id": (
-                f"eq.{question_id}"
-            ),
-            "limit": "1",
-        },
-        single=True
-    )
-
-    if not q:
-        abort(404)
-
-    if request.method == "POST":
-
-        answer = clean(
-            request.form.get(
-                "answer"
-            )
+        rows = supabase_get(
+            "questions",
+            {
+                "select": "*",
+                "order": "created_at.desc",
+                "limit": "100",
+            }
         )
 
-        status = clean(
-            request.form.get(
-                "status"
-            )
-        ) or "answered"
+    except Exception as exc:
 
-        try:
+        logger.warning(
+            "Admin questions error: %s",
+            exc
+        )
 
-            sb_update(
-                "questions",
-                {
-                    "id": (
-                        f"eq.{question_id}"
-                    )
-                },
-                {
-                    "answer":
-                        answer,
+        rows = []
 
-                    "answer_by":
-                        current_user()["name"],
+    table = ""
 
-                    "answered_by":
-                        current_user()["id"],
+    for row in rows:
 
-                    "answered_at":
-                        now_iso(),
+        question = (
+            row.get("question")
+            or row.get("title")
+            or row.get("subject")
+            or "Question"
+        )
 
-                    "status":
-                        status,
+        table += f"""
+        <tr>
 
-                    "updated_at":
-                        now_iso(),
-                }
-            )
+            <td>
+                {question}
+            </td>
 
-            flash(
-                "Answer saved.",
-                "success"
-            )
+            <td>
+                {row.get('created_at') or ''}
+            </td>
 
-            return redirect(
-                url_for(
-                    "admin_question",
-                    question_id=question_id
-                )
-            )
+        </tr>
+        """
 
-        except Exception as e:
+    body = f"""
+    <section class="card">
 
-            flash(
-                f"Could not save answer: {e}",
-                "danger"
-            )
+        <h2>
+            Questions
+        </h2>
+
+        <table>
+
+            <tr>
+                <th>Question</th>
+                <th>Date</th>
+            </tr>
+
+            {table or '''
+            <tr>
+                <td colspan="2">
+                    No questions found.
+                </td>
+            </tr>
+            '''}
+
+        </table>
+
+    </section>
+    """
 
     return page(
-        "Answer Question",
-        r"""
-
-<div class="card">
-
-<h1>
-Answer Question
-</h1>
-
-<p>
-<b>
-{{ q.student_name }}
-</b>
-</p>
-
-<div class="card">
-
-{{ q.question }}
-
-</div>
-
-<form method="post">
-
-<label>
-Answer
-</label>
-
-<textarea
- name="answer"
- required
->{{ q.answer or '' }}</textarea>
-
-<label>
-Status
-</label>
-
-<select name="status">
-
-<option>
-answered
-</option>
-
-<option>
-pending
-</option>
-
-<option>
-closed
-</option>
-
-</select>
-
-<button>
-Save Answer
-</button>
-
-</form>
-
-</div>
-
-"""
-        ,
-        q=q
+        "Admin Questions",
+        body,
+        admin=True
     )
 
 
 # ============================================================
-# ADMIN ASSIGNMENTS
+# ADMIN ACTIVITY LOGS
 # ============================================================
 
-@app.route("/admin/assignments")
+@app.route("/admin/logs")
 @admin_required
-def admin_assignments():
+def admin_logs():
 
-    rows = optional_get(
-        "koja_assignments",
-        {
-            "select": "*",
-            "order": "created_at.desc",
-            "limit": "1000",
-        }
-    )
+    try:
 
-    return page(
-        "Manage Assignments",
-        r"""
+        logs = supabase_get(
+            "activity_logs",
+            {
+                "select": "*",
+                "order": "created_at.desc",
+                "limit": "100",
+            }
+        )
 
-<div class="card">
+    except Exception as exc:
 
-<h1>
-Assignments
-</h1>
+        logger.warning(
+            "Logs error: %s",
+            exc
+        )
 
-<table>
+        logs = []
 
-<tr>
+    rows = ""
 
-<th>
-Student
-</th>
+    for log in logs:
 
-<th>
-Title
-</th>
+        rows += f"""
+        <tr>
 
-<th>
-Subject
-</th>
+            <td>
+                {log.get('action') or ''}
+            </td>
 
-<th>
-Status
-</th>
+            <td>
+                {log.get('description') or ''}
+            </td>
 
-<th>
-Date
-</th>
+            <td>
+                {log.get('created_at') or ''}
+            </td>
 
-</tr>
+        </tr>
+        """
 
-{% for a in rows %}
+    body = f"""
+    <section class="card">
 
-<tr>
+        <h2>
+            Activity Logs
+        </h2>
 
-<td>
-{{ a.student_name or a.student_email }}
-</td>
+        <table>
 
-<td>
-{{ a.title }}
-</td>
+            <tr>
+                <th>Action</th>
+                <th>Description</th>
+                <th>Date</th>
+            </tr>
 
-<td>
-{{ a.subject or "-" }}
-</td>
+            {rows or '''
+            <tr>
+                <td colspan="3">
+                    No logs found.
+                </td>
+            </tr>
+            '''}
 
-<td>
-{{ a.status or "submitted" }}
-</td>
+        </table>
 
-<td>
-{{ a.created_at or "-" }}
-</td>
-
-</tr>
-
-{% else %}
-
-<tr>
-
-<td colspan="5">
-No assignments found.
-</td>
-
-</tr>
-
-{% endfor %}
-
-</table>
-
-</div>
-
-"""
-        ,
-        rows=rows
-    )
-
-
-# ============================================================
-# ADMIN SERVICES
-# ============================================================
-
-@app.route("/admin/services")
-@admin_required
-def admin_services():
-
-    rows = optional_get(
-        "koja_service_requests",
-        {
-            "select": "*",
-            "order": "created_at.desc",
-            "limit": "1000",
-        }
-    )
+    </section>
+    """
 
     return page(
-        "Manage Services",
-        r"""
-
-<div class="card">
-
-<h1>
-Service Requests
-</h1>
-
-<table>
-
-<tr>
-
-<th>
-Type
-</th>
-
-<th>
-Client
-</th>
-
-<th>
-Title
-</th>
-
-<th>
-Description
-</th>
-
-<th>
-Status
-</th>
-
-<th>
-Date
-</th>
-
-</tr>
-
-{% for r in rows %}
-
-<tr>
-
-<td>
-{{ r.request_type
-or r.type
-or "-" }}
-</td>
-
-<td>
-{{ r.client_email or "-" }}
-</td>
-
-<td>
-{{ r.title or "-" }}
-</td>
-
-<td>
-{{ r.description or "-" }}
-</td>
-
-<td>
-{{ r.status or "submitted" }}
-</td>
-
-<td>
-{{ r.created_at or "-" }}
-</td>
-
-</tr>
-
-{% else %}
-
-<tr>
-
-<td colspan="6">
-No service requests.
-</td>
-
-</tr>
-
-{% endfor %}
-
-</table>
-
-</div>
-
-"""
-        ,
-        rows=rows
+        "Activity Logs",
+        body,
+        admin=True
     )
 
 
 # ============================================================
-# HEALTH
+# HEALTH CHECK
 # ============================================================
 
 @app.route("/health")
 def health():
 
-    result = {
-        "app": "ok",
-        "supabase_configured":
-            configured(),
-        "time":
-            now_iso(),
-    }
+    if not supabase_configured():
 
-    if not configured():
-
-        result["database"] = (
-            "not_configured"
-        )
-
-        return jsonify(
-            result
-        )
+        return {
+            "status": "error",
+            "message": (
+                "SUPABASE_URL or "
+                "SUPABASE_SERVICE_KEY is missing."
+            )
+        }, 500
 
     try:
 
-        result["universities"] = (
-            count_rows(
-                "universities"
-            )
+        supabase_get(
+            "koja_users",
+            {
+                "select": "id",
+                "limit": "1",
+            }
         )
 
-        result["programmes"] = (
-            count_rows(
-                "university_programmes"
-            )
+        return {
+            "status": "ok",
+            "database": "connected",
+            "authentication": "koja_users"
+        }
+
+    except Exception as exc:
+
+        logger.exception(
+            "Health check failed"
         )
 
-        result["database"] = "ok"
-
-    except Exception as e:
-
-        result["database"] = "error"
-
-        result["error"] = str(e)
-
-    return jsonify(
-        result
-    )
+        return {
+            "status": "error",
+            "message": str(exc)
+        }, 500
 
 
 # ============================================================
 # ERROR HANDLERS
 # ============================================================
 
-@app.errorhandler(403)
-def forbidden(error):
+@app.errorhandler(413)
+def too_large(error):
 
     return page(
-        "Forbidden",
-        r"""
+        "File Too Large",
+        """
+        <section class="card">
 
-<div class="card">
+            <h2>
+                File Too Large
+            </h2>
 
-<h1>
-403
-</h1>
+            <p>
+                The maximum upload size is 10 MB.
+            </p>
 
-<p>
-You do not have permission to access this page.
-</p>
+            <a
+                class="btn"
+                href="/dashboard"
+            >
+                Back to Dashboard
+            </a>
 
-<a
- class="btn"
- href="{{ url_for('home') }}"
->
-Return Home
-</a>
-
-</div>
-
-"""
-    ), 403
+        </section>
+        """
+    ), 413
 
 
 @app.errorhandler(404)
 def not_found(error):
 
     return page(
-        "Not Found",
-        r"""
+        "Page Not Found",
+        """
+        <section class="card">
 
-<div class="card">
+            <h2>
+                Page Not Found
+            </h2>
 
-<h1>
-404
-</h1>
+            <p>
+                The page you requested does not exist.
+            </p>
 
-<p>
-The requested page was not found.
-</p>
+            <a
+                class="btn"
+                href="/dashboard"
+            >
+                Dashboard
+            </a>
 
-<a
- class="btn"
- href="{{ url_for('home') }}"
->
-Return Home
-</a>
-
-</div>
-
-"""
+        </section>
+        """
     ), 404
 
 
-@app.errorhandler(413)
-def too_large(error):
-
-    return page(
-        "File Too Large",
-        r"""
-
-<div class="card">
-
-<h1>
-File Too Large
-</h1>
-
-<p>
-The uploaded file exceeds the configured
-maximum of {{ max_upload_mb }} MB.
-</p>
-
-</div>
-
-""",
-        max_upload_mb=MAX_UPLOAD_MB
-    ), 413
-
-
 @app.errorhandler(500)
-def server_error(error):
+def internal_error(error):
 
-    log.exception(
+    logger.exception(
         "Unhandled server error"
     )
 
     return page(
         "Server Error",
-        r"""
+        """
+        <section class="card">
 
-<div class="card">
+            <h2>
+                KOJA AFRICA Server Error
+            </h2>
 
-<h1>
-Server Error
-</h1>
+            <p>
+                The server encountered an unexpected
+                error while processing your request.
+            </p>
 
-<p>
-The server encountered an unexpected error.
-Please check the Render logs.
-</p>
+            <p class="small">
+                Check the Render logs for the technical
+                traceback.
+            </p>
 
-</div>
+            <a
+                class="btn"
+                href="/"
+            >
+                Return Home
+            </a>
 
-"""
+        </section>
+        """
     ), 500
 
 
@@ -10254,49 +3414,25 @@ Please check the Render logs.
 # STARTUP
 # ============================================================
 
-def startup():
+@app.before_request
+def before_request():
 
-    log.info(
-        "Starting KOJA AFRICA"
-    )
+    # Do not make every request dependent on Supabase.
+    # The health endpoint will report configuration errors.
+    pass
 
-    log.info(
-        "Supabase configured: %s",
-        configured()
-    )
-
-    if configured():
-
-        try:
-
-            ensure_env_admin()
-
-        except Exception as e:
-
-            log.warning(
-                "Admin startup check failed: %s",
-                e
-            )
-
-    else:
-
-        log.warning(
-            "SUPABASE_URL or SUPABASE_SERVICE_KEY "
-            "is missing."
-        )
-
-
-startup()
-
-
-# ============================================================
-# RENDER ENTRY POINT
-# ============================================================
 
 if __name__ == "__main__":
 
+    port = int(
+        os.environ.get(
+            "PORT",
+            "5000"
+        )
+    )
+
     app.run(
         host="0.0.0.0",
-        port=PORT,
+        port=port,
         debug=False
     )
