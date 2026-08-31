@@ -7,9 +7,6 @@ from datetime import datetime, timezone
 from functools import wraps
 from urllib.parse import quote
 
-import requests
-from dotenv import load_dotenv
-
 from flask import (
     Flask,
     request,
@@ -17,11 +14,11 @@ from flask import (
     url_for,
     session,
     flash,
+    get_flashed_messages,
     jsonify,
     send_file,
     render_template_string,
 )
-
 
 # ============================================================
 # KOJA AFRICA
