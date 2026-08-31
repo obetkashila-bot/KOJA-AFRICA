@@ -794,7 +794,7 @@ def logout():
 @login_required
 def dashboard():
     user = current_user()
-    questions_count = len(db_select("questions",filters={"user_id":user["id"]},limit=1000))
+    questions_count = len(db_select("questions",filters={"student_id":user["id"]},limit=1000))
     deliveries_count = len(db_select("deliveries",filters={"customer_id":user["id"]},limit=1000))
     appointments_count = len(db_select("appointments",filters={"client_id":user["id"]},limit=1000))
     return render_page("Dashboard", r"""
@@ -850,16 +850,17 @@ def questions():
             return redirect(url_for("questions"))
 
         payload = {
-            "id":str(uuid.uuid4()),"user_id":user["id"],
-            "question":question_text,"subject":subject or None,
-            "status":"submitted","created_at":utc_now()
+            "id": str(uuid.uuid4()),
+            "student_id": str(user["id"]),
+            "student_name": user.get("name") or "KOJA Student",
+            "question": question_text,
+            "answer": "",
+            "answer_by": "",
+            "subject": subject or None,
+            "status": "pending",
+            "created_at": utc_now()
         }
-        row,error = db_insert("questions",payload)
-        if error:
-            row,error = db_insert("questions",{
-                "id":str(uuid.uuid4()),"user_id":user["id"],
-                "question":question_text
-            })
+        row, error = db_insert("questions", payload)
         if error:
             flash("Question could not be submitted. Check your questions table columns.","danger")
         else:
@@ -867,7 +868,7 @@ def questions():
             log_activity("question_created","Student submitted an academic question.")
         return redirect(url_for("questions"))
 
-    rows = db_select("questions",filters={"user_id":user["id"]},order="created_at.desc",limit=100)
+    rows = db_select("questions",filters={"student_id":user["id"]},order="created_at.desc",limit=100)
     return render_page("Questions",r"""
 <div class="card"><h2>Ask an Academic Question</h2>
 <form method="post">
