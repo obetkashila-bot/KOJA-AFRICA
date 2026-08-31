@@ -1397,111 +1397,252 @@ def questions():
 
 
 # ============================================================
-# ASSIGNMENTS
-# ============================================================
-
 @app.route("/assignments", methods=["GET", "POST"])
 @login_required
 def assignments():
-    user = current_user()
+    user = current_user() or {}
 
     if request.method == "POST":
-        title = clean(
-            request.form.get("title")
-        )
-        description = clean(
-            request.form.get("description")
-        )
+        title = clean(request.form.get("title"))
+        description = clean(request.form.get("description"))
+        subject = clean(request.form.get("subject"))
+        course = clean(request.form.get("course"))
+        class_level = clean(request.form.get("class_level"))
+        question = clean(request.form.get("question"))
 
-        file = request.files.get("file")
         uploaded = None
+        f = request.files.get("file")
 
-        if file and file.filename:
-            uploaded, error = upload_storage(
-                file,
-                "assignments"
-            )
+        if not title:
+            flash("Assignment title is required.", "danger")
+            return redirect(url_for("assignments"))
 
-            if error:
+        # Upload file first, if supplied
+        if f and f.filename:
+            uploaded, upload_error = upload_storage(f, "assignments")
+
+            if upload_error:
                 flash(
-                    f"Upload failed: {error}",
+                    "Assignment file upload failed: " +
+                    str(upload_error)[:500],
                     "danger"
                 )
-                return redirect(
-                    url_for("assignments")
-                )
+                return redirect(url_for("assignments"))
 
+        # Build only columns supported by the KOJA assignments schema
         payload = {
-            "id": str(uuid.uuid4()),
-            "student_id": user["id"],
-            "user_id": user["id"],
+            "student_id": user.get("id"),
             "title": title,
             "description": description,
+            "subject": subject,
+            "course": course,
+            "class_level": class_level,
             "status": "submitted",
+            "email": user.get("email"),
+            "student_name": (
+                user.get("student_name")
+                or user.get("full_name")
+                or user.get("name")
+            ),
+            "student_email": user.get("email"),
+            "institution": user.get("institution"),
+            "question": question or description,
             "created_at": utc_now(),
+            "updated_at": utc_now()
         }
 
         if uploaded:
             payload.update({
-                "file_name": uploaded["file_name"],
-                "file_path": uploaded["path"],
-                "file_url": uploaded["url"],
-                "file_size": uploaded["file_size"],
-                "mime_type": uploaded["mime_type"],
+                "file_name": uploaded.get("file_name"),
+                "file_path": uploaded.get("path"),
+                "file_url": uploaded.get("url"),
+                "file_size": uploaded.get("file_size", 0),
+                "mime_type": uploaded.get(
+                    "mime_type",
+                    "application/octet-stream"
+                )
             })
 
-        row, error = db_insert(
-            "assignments",
-            payload
-        )
+        try:
+            row, error = db_insert("assignments", payload)
 
-        if error:
-            minimal = {
-                "id": payload["id"],
-                "title": title,
-                "description": description,
-            }
+            if error:
+                logger.error(
+                    "ASSIGNMENT INSERT ERROR: %s",
+                    str(error)
+                )
 
-            if uploaded:
-                minimal.update({
-                    "file_name": uploaded["file_name"],
-                    "file_path": uploaded["path"],
-                    "file_url": uploaded["url"],
-                })
+                flash(
+                    "Assignment could not be saved: " +
+                    str(error)[:700],
+                    "danger"
+                )
+                return redirect(url_for("assignments"))
 
-            row, error = db_insert(
-                "assignments",
-                minimal
-            )
-
-        if error:
-            flash(
-                "Assignment could not be saved: "
-                + str(error)[:1000],
-                "danger"
-            )
-        else:
             flash(
                 "Assignment uploaded successfully.",
                 "success"
             )
 
-        return redirect(
-            url_for("assignments")
-        )
+        except Exception as e:
+            logger.exception("ASSIGNMENT SAVE ERROR")
 
-    rows = db_select(
-        "assignments",
-        order="created_at.desc",
-        limit=100
-    )
+            flash(
+                "Assignment could not be saved: " +
+                str(e)[:700],
+                "danger"
+            )
+
+        return redirect(url_for("assignments"))
+
+    # GET
+    try:
+        rows = db_select(
+            "assignments",
+            order="created_at.desc",
+            limit=100
+        )
+    except Exception as e:
+        logger.exception("ASSIGNMENT LIST ERROR")
+        rows = []
+        flash(
+            "Could not load assignments: " +
+            str(e)[:500],
+            "danger"
+        )
 
     return render_page(
         "Assignments",
-        r""" <div class="card"> <h2>Upload Assignment</h2> <form method="post" enctype="multipart/form-data"> <label>Assignment Title</label> <input name="title"> <label>Description / Question</label> <textarea name="description"></textarea> <label>Assignment File</label> <input type="file" name="file"> <button type="submit">Upload Assignment</button> </form> </div> <div class="card"> <h2>Assignments</h2> {% for item in rows %} <div class="card"> <h3>{{ item.get("title") or "Assignment" }}</h3> <p>{{ item.get("description") or "" }}</p> {% if item.get("file_url") %} <a class="btn" href="{{ item.get('file_url') }}" target="_blank"> Download File </a> {% endif %} {% if item.get("answer_file_url") %} <a class="btn" href="{{ item.get('answer_file_url') }}" target="_blank"> Download Answer </a> {% endif %} {% if item.get("answered_file_url") %} <a class="btn" href="{{ item.get('answered_file_url') }}" target="_blank"> Download Answered File </a> {% endif %} </div> {% else %} <p>No assignments found.</p> {% endfor %} </div> """,
-        rows=rows,
-    )
+        r"""
+        <div class="card">
+            <h2>Upload Assignment</h2>
 
+            <form method="post"
+                  enctype="multipart/form-data">
+
+                <label>Assignment Title</label>
+                <input
+                    name="title"
+                    required
+                    placeholder="e.g. Biology Assignment 1">
+
+                <label>Subject</label>
+                <input
+                    name="subject"
+                    placeholder="Biology, Chemistry, Mathematics...">
+
+                <label>Course</label>
+                <input
+                    name="course"
+                    placeholder="Course name">
+
+                <label>Class Level</label>
+                <input
+                    name="class_level"
+                    placeholder="Grade 12 / Year 1 / Diploma...">
+
+                <label>Description / Question</label>
+                <textarea
+                    name="description"
+                    placeholder="Enter assignment instructions or description"></textarea>
+
+                <label>Question</label>
+                <textarea
+                    name="question"
+                    placeholder="Enter the actual question if applicable"></textarea>
+
+                <label>Assignment File</label>
+                <input
+                    type="file"
+                    name="file"
+                    accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png">
+
+                <button type="submit">
+                    Upload Assignment
+                </button>
+            </form>
+        </div>
+
+        <div class="card">
+            <h2>Assignments</h2>
+
+            {% for item in rows %}
+
+            <div class="card">
+                <h3>
+                    {{ item.get("title") or "Assignment" }}
+                </h3>
+
+                {% if item.get("subject") %}
+                <p>
+                    <strong>Subject:</strong>
+                    {{ item.get("subject") }}
+                </p>
+                {% endif %}
+
+                {% if item.get("course") %}
+                <p>
+                    <strong>Course:</strong>
+                    {{ item.get("course") }}
+                </p>
+                {% endif %}
+
+                <p>
+                    {{ item.get("question")
+                       or item.get("description")
+                       or "" }}
+                </p>
+
+                <p>
+                    <span class="badge">
+                        {{ item.get("status") or "Submitted" }}
+                    </span>
+                </p>
+
+                {% if item.get("file_url") %}
+                <a
+                    class="btn"
+                    href="{{ item.get('file_url') }}"
+                    target="_blank">
+                    Open Assignment File
+                </a>
+                {% elif item.get("file_path") %}
+                <a
+                    class="btn"
+                    href="/assignment/{{ item.get('id') }}/download">
+                    Download Assignment
+                </a>
+                {% endif %}
+
+                {% if item.get("answer_file_url") %}
+                <a
+                    class="btn success"
+                    href="{{ item.get('answer_file_url') }}"
+                    target="_blank">
+                    Download Answer
+                </a>
+                {% endif %}
+
+                {% if item.get("answered_file_url") %}
+                <a
+                    class="btn success"
+                    href="{{ item.get('answered_file_url') }}"
+                    target="_blank">
+                    Download Answered File
+                </a>
+                {% endif %}
+            </div>
+
+            {% else %}
+
+            <p>No assignments found.</p>
+
+            {% endfor %}
+        </div>
+        """,
+        rows=rows
+    )
+    
 
 # ============================================================
 # CV
