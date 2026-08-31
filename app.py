@@ -620,7 +620,7 @@ def home():
 <div class="hero">
 <h1>KOJA AFRICA</h1>
 <p>Knowledge • Questions • Answers</p>
-<p>Academic services, university applications, CV creation, farmer registration, professional bookings and delivery services.</p>
+<p>Academic services, CV creation, farmer registration, professional bookings and delivery services.</p>
 {% if not user %}
 <div class="actions">
 <a class="btn" href="{{ url_for('register') }}">Create Account</a>
@@ -630,7 +630,6 @@ def home():
 </div>
 <div class="grid">
 <div class="card"><h3>Academic</h3><p>Questions, assignments and learning resources.</p><a class="btn" href="{{ url_for('questions') }}">Questions</a></div>
-<div class="card"><h3>University</h3><p>Choose a university, programme and academic year.</p><a class="btn" href="{{ url_for('universities') }}">Universities</a></div>
 <div class="card"><h3>CV</h3><p>Create a professional CV.</p><a class="btn" href="{{ url_for('cv') }}">Create CV</a></div>
 <div class="card"><h3>Farmers</h3><p>Submit agricultural registration information.</p><a class="btn" href="{{ url_for('farmer') }}">Farmer Portal</a></div>
 <div class="card"><h3>Doctors</h3><p>Find a doctor and request an appointment.</p><a class="btn" href="{{ url_for('doctors') }}">Doctors</a></div>
@@ -657,81 +656,75 @@ def health():
 
 @app.route("/register", methods=["GET","POST"])
 def register():
+    """Create a KOJA account using ONLY email and password."""
     if request.method == "POST":
-        full_name = clean(request.form.get("full_name"))
         email = clean(request.form.get("email")).lower()
-        phone = clean(request.form.get("phone"))
-        password = request.form.get("password","")
-        role = clean(request.form.get("role")) or "student"
-
-        if role not in ("student","driver","teacher","doctor"):
-            role = "student"
-
-        if not full_name or not email or not password:
-            flash("Full name, email and password are required.","danger")
+        password = request.form.get("password", "")
+        if not email or not password:
+            flash("Email and password are required.", "danger")
             return redirect(url_for("register"))
         if len(password) < 6:
-            flash("Password must contain at least 6 characters.","danger")
+            flash("Password must be at least 6 characters.", "danger")
             return redirect(url_for("register"))
         if find_user_by_email(email):
-            flash("An account with this email already exists. Please log in.","warning")
+            flash("An account with this email already exists. Please log in.", "warning")
             return redirect(url_for("login"))
 
         user_id = str(uuid.uuid4())
-        payload = {
-            "id": user_id,
-            "name": full_name,
-            "full_name": full_name,
-            "email": email,
-            "phone": phone or None,
-            "password_hash": generate_password_hash(password),
-            "role": role,
-            "is_admin": False,
-            "is_active": True,
-            "created_at": utc_now(),
-        }
+        password_hash = generate_password_hash(password)
+        # No personal details are collected during account creation.
+        # A derived display name keeps older profiles schemas happy.
+        display_name = email.split("@", 1)[0] or "KOJA User"
+        attempts = [
+            {"id": user_id, "name": display_name, "full_name": display_name,
+             "email": email, "password_hash": password_hash,
+             "role": "customer", "is_admin": False, "is_active": True,
+             "created_at": utc_now()},
+            {"id": user_id, "full_name": display_name, "email": email,
+             "password_hash": password_hash, "role": "student",
+             "is_admin": False, "is_active": True},
+            {"id": user_id, "full_name": display_name, "email": email,
+             "password_hash": password_hash},
+            {"id": user_id, "email": email, "password_hash": password_hash},
+        ]
+        row = None
+        error = None
+        for payload in attempts:
+            row, error = db_insert("profiles", payload)
+            if not error:
+                break
+            text = str(error).lower()
+            if "duplicate" in text or "already exists" in text:
+                row = find_user_by_email(email)
+                error = None if row else error
+                break
 
-        row, error = db_insert("profiles", payload)
         if error:
-            old = {
-                "id": user_id,
-                "full_name": full_name,
-                "email": email,
-                "phone": phone or None,
-                "password_hash": payload["password_hash"],
-            }
-            row, error = db_insert("KOJA ZM", old)
-
-        if error:
-            flash("Registration failed. Check Render logs for the exact Supabase column error.","danger")
+            logger.error("Email/password registration failed: %s", error)
+            flash("Registration failed. Check Render logs for the exact Supabase error.", "danger")
             return redirect(url_for("register"))
 
-        login_user(row or payload)
-        log_activity("registration","New KOJA account registered.")
-        flash("Account created successfully.","success")
+        login_user(row or {"id": user_id, "name": display_name, "full_name": display_name,
+                               "email": email, "role": "customer", "is_admin": False,
+                               "is_active": True, "password_hash": password_hash})
+        log_activity("registration", "New KOJA email/password account registered.")
+        flash("Account created successfully.", "success")
         return redirect(url_for("dashboard"))
 
-    return render_page("Register", r"""
-<div class="card" style="max-width:600px;margin:auto">
+    return render_page("Create Account", r"""
+<div class="card" style="max-width:500px;margin:auto">
 <h2>Create KOJA Account</h2>
+<p class="small">Create your account with only your email and password.</p>
 <form method="post">
-<label>Full Name</label><input name="full_name" required>
-<label>Email</label><input name="email" type="email" required>
-<label>Phone</label><input name="phone">
-<label>Account Type</label>
-<select name="role">
-<option value="student">Student / Customer</option>
-<option value="driver">Delivery Driver</option>
-<option value="teacher">Teacher / Tutor</option>
-<option value="doctor">Doctor</option>
-</select>
-<label>Password</label><input name="password" type="password" minlength="6" required>
+<label>Email</label>
+<input name="email" type="email" autocomplete="email" required>
+<label>Password</label>
+<input name="password" type="password" minlength="6" autocomplete="new-password" required>
 <button type="submit">Create Account</button>
 </form>
-<p>Already registered? <a href="{{ url_for('login') }}">Login</a></p>
+<p>Already have an account? <a href="{{ url_for('login') }}">Login</a></p>
 </div>
 """)
-
 @app.route("/login", methods=["GET","POST"])
 def login():
     if request.method == "POST":
@@ -808,7 +801,6 @@ def dashboard():
 <div class="card"><h3>KOJA Services</h3>
 <div class="grid">
 <a class="btn" href="{{ url_for('cv') }}">Create CV</a>
-<a class="btn" href="{{ url_for('universities') }}">University Application</a>
 <a class="btn" href="{{ url_for('farmer') }}">Farmer Registration</a>
 <a class="btn" href="{{ url_for('doctors') }}">Doctor Booking</a>
 <a class="btn" href="{{ url_for('teachers') }}">Teacher Booking</a>
@@ -826,11 +818,11 @@ def services():
 <div class="card"><h3>Academic Questions</h3><a class="btn" href="{{ url_for('questions') }}">Open</a></div>
 <div class="card"><h3>Assignments</h3><a class="btn" href="{{ url_for('assignments') }}">Open</a></div>
 <div class="card"><h3>CV</h3><a class="btn" href="{{ url_for('cv') }}">Open</a></div>
-<div class="card"><h3>University Applications</h3><a class="btn" href="{{ url_for('universities') }}">Open</a></div>
 <div class="card"><h3>Farmer Registration</h3><a class="btn" href="{{ url_for('farmer') }}">Open</a></div>
 <div class="card"><h3>Doctors</h3><a class="btn" href="{{ url_for('doctors') }}">Open</a></div>
 <div class="card"><h3>Teachers</h3><a class="btn" href="{{ url_for('teachers') }}">Open</a></div>
 <div class="card"><h3>Deliveries</h3><a class="btn" href="{{ url_for('deliveries') }}">Open</a></div>
+<div class="card"><h3>Driver Registration</h3><p>Register to provide delivery driving services.</p><a class="btn" href="{{ url_for('driver_register') }}">Register as Driver</a></div>
 </div>
 """)
 
@@ -1857,77 +1849,13 @@ def provider_location(provider_id):
     return jsonify({"ok":True,"latitude":loc.get("latitude"),"longitude":loc.get("longitude"),"accuracy":loc.get("accuracy"),"updated_at":loc.get("created_at")})
 
 # ============================================================
-# UNIVERSITIES
-# ============================================================
-
-@app.route("/universities")
-@login_required
-def universities():
-    universities=db_select("universities",order="name.asc",limit=200)
-    return render_page("Universities",r"""
-<div class="hero"><h2>University Applications</h2><p>Select the university, programme, intake/year and review requirements.</p></div>
-<div class="card">
-{% if universities %}<div class="grid">
-{% for university in universities %}
-<div class="card"><h3>{{ university.get("name") or university.get("university_name") or "University" }}</h3>
-<p>{{ university.get("location") or university.get("description") or "" }}</p>
-<a class="btn" href="{{ url_for('university_apply',university_id=university.get('id')) }}">Apply</a></div>
-{% endfor %}
-</div>{% else %}<p>No universities are currently loaded into the universities table.</p>{% endif %}
-</div>
-""",universities=universities)
-
-@app.route("/university/apply/<university_id>",methods=["GET","POST"])
-@login_required
-def university_apply(university_id):
-    user=current_user()
-    university=first_row("universities",{"id":university_id})
-    if not university: abort(404)
-    programmes=db_select("university_programmes",filters={"university_id":university_id},order="name.asc",limit=500)
-    requirements=db_select("university_application_requirements",filters={"university_id":university_id},limit=500)
-
-    if request.method=="POST":
-        programme_id=request.form.get("programme_id")
-        year=request.form.get("academic_year")
-        intake=clean(request.form.get("intake"))
-        payload={
-            "id":str(uuid.uuid4()),"user_id":user["id"],"university_id":university_id,
-            "programme_id":programme_id,"academic_year":year,"intake":intake or None,
-            "full_name":user["name"],"email":user["email"],"phone":user.get("phone"),
-            "status":"draft","created_at":utc_now()
-        }
-        row,error=db_insert("university_applications",payload)
-        if error:
-            minimal={k:payload[k] for k in ("id","user_id","university_id","programme_id","academic_year")}
-            row,error=db_insert("university_applications",minimal)
-        if error: flash("Application could not be created: "+str(error)[:600],"danger")
-        else: flash("University application started successfully.","success")
-        return redirect(url_for("universities"))
-
-    return render_page("University Application",r"""
-<div class="card"><h2>{{ university.get("name") or university.get("university_name") }}</h2>
-<form method="post">
-<label>Programme</label><select name="programme_id" required><option value="">Select programme</option>
-{% for p in programmes %}<option value="{{ p.get('id') }}">{{ p.get("name") or p.get("programme_name") or p.get("title") }}</option>{% endfor %}
-</select>
-<label>Academic Year</label><select name="academic_year"><option>2026/2027</option><option>2027/2028</option></select>
-<label>Intake</label><select name="intake"><option>January</option><option>May</option><option>September</option><option>Other</option></select>
-<button type="submit">Start Application</button>
-</form></div>
-<div class="card"><h3>Application Requirements</h3>
-{% for r in requirements %}<div class="card"><strong>{{ r.get("title") or r.get("requirement") or "Requirement" }}</strong><p>{{ r.get("description") or r.get("details") or "" }}</p></div>
-{% else %}<p>No specific requirements have been entered for this university yet.</p>{% endfor %}
-</div>
-""",university=university,programmes=programmes,requirements=requirements)
-
-# ============================================================
 # ADMIN
 # ============================================================
 
 @app.route("/admin")
 @admin_required
 def admin():
-    tables=["profiles","questions","assignments","farmer_registrations","doctor_profiles","teacher_profiles","driver_profiles","driver_locations","deliveries","appointments","universities","university_applications","activity_logs"]
+    tables=["profiles","questions","assignments","farmer_registrations","doctor_profiles","teacher_profiles","driver_profiles","driver_locations","deliveries","appointments","activity_logs"]
     counts={}
     for table in tables:
         counts[table]=len(db_select(table,limit=1000))
