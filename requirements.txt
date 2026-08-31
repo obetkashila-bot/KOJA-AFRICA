@@ -1,8 +1,5 @@
-Flask
-requests
-python-dotenv
-gunicorn
-Werkzeug
-reportlab
-python-docx
-openpyxl
+Flask>=3.0,<4
+requests>=2.31,<3
+python-dotenv>=1.0,<2
+gunicorn>=22,<24
+Werkzeug>=3.0,<4
