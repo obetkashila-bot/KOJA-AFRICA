@@ -1,41 +1,47 @@
 import os
-import uuid
+import math
 import logging
+from datetime import datetime, timezone
 from functools import wraps
 
 import requests
-from dotenv import load_dotenv
+
 from flask import (
     Flask,
     request,
     redirect,
     url_for,
     session,
-    flash,
     render_template_string,
-    send_file,
+    flash,
+    jsonify,
+    abort
 )
+
+from dotenv import load_dotenv
 from werkzeug.utils import secure_filename
 
-load_dotenv()
 
 # ============================================================
 # KOJA AFRICA
-# Foundation + Assignments
+# Fresh Flask Application
 # ============================================================
+
+load_dotenv()
 
 app = Flask(__name__)
 
 app.secret_key = os.getenv(
     "SECRET_KEY",
-    "change-this-secret-key"
+    "CHANGE_THIS_SECRET_KEY"
 )
 
-logging.basicConfig(
-    level=logging.INFO
-)
+app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
 
-logger = logging.getLogger("KOJA")
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
 
 SUPABASE_URL = os.getenv(
     "SUPABASE_URL",
@@ -47,114 +53,136 @@ SUPABASE_SERVICE_KEY = os.getenv(
     ""
 )
 
+SUPABASE_ANON_KEY = os.getenv(
+    "SUPABASE_ANON_KEY",
+    SUPABASE_SERVICE_KEY
+)
+
 STORAGE_BUCKET = os.getenv(
     "KOJA_STORAGE_BUCKET",
     "koja-files"
 )
 
-MAX_FILE_SIZE = 10 * 1024 * 1024
+NOMINATIM_URL = (
+    "https://nominatim.openstreetmap.org/reverse"
+)
 
-ALLOWED_EXTENSIONS = {
-    "pdf",
-    "doc",
-    "docx",
-    "jpg",
-    "jpeg",
-    "png",
+NOMINATIM_HEADERS = {
+    "User-Agent": "KOJA-AFRICA/1.0"
 }
 
 
 # ============================================================
-# SUPABASE
+# LOGGING
 # ============================================================
 
-def check_config():
-    if not SUPABASE_URL:
-        raise RuntimeError(
-            "SUPABASE_URL is missing."
-        )
+logging.basicConfig(
+    level=logging.INFO
+)
 
-    if not SUPABASE_SERVICE_KEY:
-        raise RuntimeError(
-            "SUPABASE_SERVICE_KEY is missing."
-        )
+logger = logging.getLogger("koja")
 
 
-def supabase_headers(content_type=True):
-    headers = {
-        "apikey": SUPABASE_SERVICE_KEY,
-        "Authorization": (
-            f"Bearer {SUPABASE_SERVICE_KEY}"
-        ),
-    }
+# ============================================================
+# BASIC CHECK
+# ============================================================
 
-    if content_type:
-        headers["Content-Type"] = (
-            "application/json"
-        )
+def configuration_ok():
+    return bool(
+        SUPABASE_URL
+        and SUPABASE_SERVICE_KEY
+    )
 
-    return headers
 
+# ============================================================
+# SUPABASE REST
+# ============================================================
 
 def supabase_request(
     method,
-    path,
+    endpoint,
     **kwargs
 ):
-    check_config()
 
-    url = f"{SUPABASE_URL}{path}"
+    if not configuration_ok():
+        raise RuntimeError(
+            "SUPABASE_URL or "
+            "SUPABASE_SERVICE_KEY is missing."
+        )
 
-    custom_headers = kwargs.pop(
+    url = (
+        SUPABASE_URL
+        + endpoint
+    )
+
+    headers = kwargs.pop(
         "headers",
         {}
     )
 
-    headers = supabase_headers()
+    headers.setdefault(
+        "apikey",
+        SUPABASE_SERVICE_KEY
+    )
 
-    headers.update(custom_headers)
+    headers.setdefault(
+        "Authorization",
+        "Bearer "
+        + SUPABASE_SERVICE_KEY
+    )
 
-    response = requests.request(
+    headers.setdefault(
+        "Content-Type",
+        "application/json"
+    )
+
+    return requests.request(
         method,
         url,
         headers=headers,
-        timeout=40,
+        timeout=30,
         **kwargs
     )
 
-    return response
-
 
 def response_error(response):
+
     try:
+
         data = response.json()
 
         return (
             data.get("message")
-            or data.get("msg")
             or data.get("error_description")
             or data.get("error")
             or response.text
         )
 
     except Exception:
+
         return response.text
 
 
 # ============================================================
-# USER
+# AUTH
 # ============================================================
 
 def current_user():
-    return session.get("user")
+
+    user = session.get(
+        "user"
+    )
+
+    return user
 
 
-def login_required(view):
+def login_required(function):
 
-    @wraps(view)
-    def wrapped(*args, **kwargs):
+    @wraps(function)
+    def wrapper(*args, **kwargs):
 
         if not current_user():
+
             flash(
                 "Please log in first.",
                 "warning"
@@ -164,26 +192,22 @@ def login_required(view):
                 url_for("login")
             )
 
-        return view(
+        return function(
             *args,
             **kwargs
         )
 
-    return wrapped
+    return wrapper
 
 
-def admin_required(view):
+def admin_required(function):
 
-    @wraps(view)
-    def wrapped(*args, **kwargs):
+    @wraps(function)
+    def wrapper(*args, **kwargs):
 
         user = current_user()
 
         if not user:
-            flash(
-                "Please log in first.",
-                "warning"
-            )
 
             return redirect(
                 url_for("login")
@@ -191,21 +215,14 @@ def admin_required(view):
 
         if user.get("role") != "admin":
 
-            flash(
-                "Administrator access required.",
-                "danger"
-            )
+            abort(403)
 
-            return redirect(
-                url_for("dashboard")
-            )
-
-        return view(
+        return function(
             *args,
             **kwargs
         )
 
-    return wrapped
+    return wrapper
 
 
 # ============================================================
@@ -216,18 +233,19 @@ def get_profile(user_id):
 
     response = supabase_request(
         "GET",
-        "/rest/v1/profiles",
+        "/rest/v1/koja_profiles",
         params={
-            "id": f"eq.{user_id}",
+            "user_id":
+                f"eq.{user_id}",
             "select": "*",
-            "limit": "1",
+            "limit": "1"
         }
     )
 
     if response.status_code != 200:
 
         logger.error(
-            "Profile error: %s",
+            "Profile lookup failed: %s",
             response.text
         )
 
@@ -241,24 +259,25 @@ def get_profile(user_id):
 def create_profile(
     user_id,
     full_name,
-    email,
-    phone=""
+    phone,
+    email
 ):
 
     payload = {
-        "id": user_id,
+        "user_id": user_id,
         "full_name": full_name,
-        "email": email,
         "phone": phone,
-        "role": "student",
+        "email": email,
+        "role": "student"
     }
 
     response = supabase_request(
         "POST",
-        "/rest/v1/profiles",
+        "/rest/v1/koja_profiles",
         json=payload,
         headers={
-            "Prefer": "return=representation"
+            "Prefer":
+                "return=representation"
         }
     )
 
@@ -268,23 +287,3552 @@ def create_profile(
     ):
 
         logger.error(
-            "Profile creation error: %s",
+            "Profile creation failed: %s",
             response.text
         )
 
-        return False
+        return None
 
-    return True
+    data = response.json()
+
+    return data[0] if data else None
 
 
 # ============================================================
-# HTML
+# PASSWORD AUTH
 # ============================================================
 
-BASE_HTML = """
+@app.route(
+    "/register",
+    methods=["GET", "POST"]
+)
+def register():
+
+    if current_user():
+
+        return redirect(
+            url_for("dashboard")
+        )
+
+    if request.method == "POST":
+
+        full_name = request.form.get(
+            "full_name",
+            ""
+        ).strip()
+
+        phone = request.form.get(
+            "phone",
+            ""
+        ).strip()
+
+        email = request.form.get(
+            "email",
+            ""
+        ).strip().lower()
+
+        password = request.form.get(
+            "password",
+            ""
+        )
+
+        if not full_name:
+            flash(
+                "Full name is required.",
+                "danger"
+            )
+            return redirect(
+                url_for("register")
+            )
+
+        if not email:
+            flash(
+                "Email is required.",
+                "danger"
+            )
+            return redirect(
+                url_for("register")
+            )
+
+        if len(password) < 6:
+
+            flash(
+                "Password must contain at least 6 characters.",
+                "danger"
+            )
+
+            return redirect(
+                url_for("register")
+            )
+
+        # Supabase Auth admin creation.
+        response = supabase_request(
+            "POST",
+            "/auth/v1/admin/users",
+            json={
+                "email": email,
+                "password": password,
+                "email_confirm": True
+            }
+        )
+
+        if response.status_code not in (
+            200,
+            201
+        ):
+
+            logger.error(
+                "Auth registration failed: %s",
+                response.text
+            )
+
+            flash(
+                "Account creation failed: "
+                + response_error(response),
+                "danger"
+            )
+
+            return redirect(
+                url_for("register")
+            )
+
+        try:
+
+            auth_user = response.json()
+
+            user_id = auth_user.get(
+                "id"
+            )
+
+        except Exception:
+
+            user_id = None
+
+        if not user_id:
+
+            flash(
+                "Account was created but user ID was not returned.",
+                "danger"
+            )
+
+            return redirect(
+                url_for("login")
+            )
+
+        profile = create_profile(
+            user_id,
+            full_name,
+            phone,
+            email
+        )
+
+        if not profile:
+
+            flash(
+                "Account created, but profile could not be saved.",
+                "danger"
+            )
+
+            return redirect(
+                url_for("login")
+            )
+
+        flash(
+            "KOJA account created successfully. You can now log in.",
+            "success"
+        )
+
+        return redirect(
+            url_for("login")
+        )
+
+    body = """
+
+<div class="card">
+
+<h1>Create KOJA Account</h1>
+
+<form method="POST">
+
+<label>Full name</label>
+
+<input
+    name="full_name"
+    required
+>
+
+<label>Phone number</label>
+
+<input
+    name="phone"
+    type="tel"
+>
+
+<label>Email</label>
+
+<input
+    name="email"
+    type="email"
+    required
+>
+
+<label>Password</label>
+
+<input
+    name="password"
+    type="password"
+    minlength="6"
+    required
+>
+
+<button>
+Create Account
+</button>
+
+</form>
+
+<p>
+Already have an account?
+<a href="{{ url_for('login') }}">
+Log in
+</a>
+</p>
+
+</div>
+
+"""
+
+    return page(
+        "Create Account",
+        body
+    )
+
+
+@app.route(
+    "/login",
+    methods=["GET", "POST"]
+)
+def login():
+
+    if current_user():
+
+        return redirect(
+            url_for("dashboard")
+        )
+
+    if request.method == "POST":
+
+        email = request.form.get(
+            "email",
+            ""
+        ).strip().lower()
+
+        password = request.form.get(
+            "password",
+            ""
+        )
+
+        response = requests.post(
+            SUPABASE_URL
+            + "/auth/v1/token"
+            + "?grant_type=password",
+            headers={
+                "apikey":
+                    SUPABASE_ANON_KEY,
+                "Content-Type":
+                    "application/json"
+            },
+            json={
+                "email": email,
+                "password": password
+            },
+            timeout=30
+        )
+
+        if response.status_code != 200:
+
+            logger.error(
+                "Login failed: %s",
+                response.text
+            )
+
+            flash(
+                "Invalid email or password.",
+                "danger"
+            )
+
+            return redirect(
+                url_for("login")
+            )
+
+        data = response.json()
+
+        auth_user = data.get(
+            "user",
+            {}
+        )
+
+        user_id = auth_user.get(
+            "id"
+        )
+
+        profile = get_profile(
+            user_id
+        )
+
+        if not profile:
+
+            flash(
+                "Your account profile could not be loaded.",
+                "danger"
+            )
+
+            return redirect(
+                url_for("login")
+            )
+
+        session["user"] = {
+            "id": user_id,
+            "email": email,
+            "full_name":
+                profile.get(
+                    "full_name",
+                    ""
+                ),
+            "role":
+                profile.get(
+                    "role",
+                    "student"
+                )
+        }
+
+        session["access_token"] = data.get(
+            "access_token"
+        )
+
+        flash(
+            "Welcome to KOJA AFRICA.",
+            "success"
+        )
+
+        return redirect(
+            url_for("dashboard")
+        )
+
+    body = """
+
+<div class="card">
+
+<h1>KOJA AFRICA</h1>
+
+<p>
+Knowledge • Questions • Answers
+</p>
+
+<form method="POST">
+
+<label>Email</label>
+
+<input
+    type="email"
+    name="email"
+    required
+>
+
+<label>Password</label>
+
+<input
+    type="password"
+    name="password"
+    required
+>
+
+<button>
+Login
+</button>
+
+</form>
+
+<p>
+No account?
+<a href="{{ url_for('register') }}">
+Create one
+</a>
+</p>
+
+</div>
+
+"""
+
+    return page(
+        "Login",
+        body
+    )
+
+
+@app.route("/logout")
+def logout():
+
+    session.clear()
+
+    flash(
+        "You have been logged out.",
+        "success"
+    )
+
+    return redirect(
+        url_for("login")
+    )
+
+
+# ============================================================
+# DASHBOARD
+# ============================================================
+
+@app.route("/")
+def home():
+
+    if current_user():
+
+        return redirect(
+            url_for("dashboard")
+        )
+
+    body = """
+
+<div class="hero">
+
+<h1>KOJA AFRICA</h1>
+
+<p>
+Knowledge • Questions • Answers
+</p>
+
+<p>
+Assignments, CV services, universities,
+rides, deliveries and professional services.
+</p>
+
+<a class="button"
+   href="{{ url_for('login') }}">
+Login
+</a>
+
+<a class="button secondary"
+   href="{{ url_for('register') }}">
+Create Account
+</a>
+
+</div>
+
+"""
+
+    return page(
+        "KOJA AFRICA",
+        body
+    )
+
+
+@app.route("/dashboard")
+@login_required
+def dashboard():
+
+    user = current_user()
+
+    body = """
+
+<div class="hero">
+
+<h1>
+Welcome, {{ user.full_name }}
+</h1>
+
+<p>
+KOJA AFRICA services
+</p>
+
+</div>
+
+<div class="grid">
+
+<a class="service" href="{{ url_for('assignments') }}">
+📚
+<strong>Assignments</strong>
+<span>Ask questions and submit files.</span>
+</a>
+
+<a class="service" href="{{ url_for('cv_service') }}">
+📄
+<strong>CV Services</strong>
+<span>Submit CV requirements.</span>
+</a>
+
+<a class="service" href="{{ url_for('universities') }}">
+🎓
+<strong>Universities</strong>
+<span>Research universities and requirements.</span>
+</a>
+
+<a class="service" href="{{ url_for('nearby_drivers') }}">
+🚗
+<strong>Rides & Delivery</strong>
+<span>Find nearby drivers.</span>
+</a>
+
+<a class="service" href="{{ url_for('farmer_register') }}">
+🌾
+<strong>Farmers</strong>
+<span>Register as a farmer.</span>
+</a>
+
+<a class="service" href="{{ url_for('professionals') }}">
+👨‍⚕️
+<strong>Professionals</strong>
+<span>Doctors, lawyers, teachers and specialists.</span>
+</a>
+
+<a class="service" href="{{ url_for('driver_dashboard') }}">
+🚘
+<strong>Driver Centre</strong>
+<span>Register and manage your driver account.</span>
+</a>
+
+{% if user.role == "admin" %}
+
+<a class="service admin"
+   href="{{ url_for('admin_dashboard') }}">
+⚙️
+<strong>Admin</strong>
+<span>Manage KOJA.</span>
+</a>
+
+{% endif %}
+
+</div>
+
+"""
+
+    return page(
+        "Dashboard",
+        body,
+        user=user
+    )
+
+
+# ============================================================
+# ASSIGNMENTS
+# ============================================================
+
+@app.route(
+    "/assignments",
+    methods=["GET", "POST"]
+)
+@login_required
+def assignments():
+
+    user = current_user()
+
+    if request.method == "POST":
+
+        title = request.form.get(
+            "title",
+            ""
+        ).strip()
+
+        subject = request.form.get(
+            "subject",
+            ""
+        ).strip()
+
+        question = request.form.get(
+            "question",
+            ""
+        ).strip()
+
+        if not title or not question:
+
+            flash(
+                "Title and question are required.",
+                "danger"
+            )
+
+            return redirect(
+                url_for("assignments")
+            )
+
+        response = supabase_request(
+            "POST",
+            "/rest/v1/koja_assignments",
+            json={
+                "student_id":
+                    user["id"],
+                "title":
+                    title,
+                "subject":
+                    subject,
+                "question":
+                    question,
+                "status":
+                    "pending"
+            },
+            headers={
+                "Prefer":
+                    "return=representation"
+            }
+        )
+
+        if response.status_code not in (
+            200,
+            201
+        ):
+
+            logger.error(
+                "Assignment save error: %s",
+                response.text
+            )
+
+            flash(
+                "Assignment could not be saved: "
+                + response_error(response),
+                "danger"
+            )
+
+        else:
+
+            flash(
+                "Assignment sent to admin.",
+                "success"
+            )
+
+        return redirect(
+            url_for("assignments")
+        )
+
+    response = supabase_request(
+        "GET",
+        "/rest/v1/koja_assignments",
+        params={
+            "student_id":
+                f"eq.{user['id']}",
+            "select": "*",
+            "order":
+                "created_at.desc"
+        }
+    )
+
+    records = []
+
+    if response.status_code == 200:
+
+        records = response.json()
+
+    body = """
+
+<div class="card">
+
+<h1>Assignments</h1>
+
+<form method="POST">
+
+<label>Assignment title</label>
+
+<input
+    name="title"
+    required
+>
+
+<label>Subject</label>
+
+<input
+    name="subject"
+>
+
+<label>Question</label>
+
+<textarea
+    name="question"
+    rows="8"
+    required
+></textarea>
+
+<button>
+Send to Admin
+</button>
+
+</form>
+
+</div>
+
+<div class="card">
+
+<h2>My Assignments</h2>
+
+{% for item in records %}
+
+<div class="item">
+
+<strong>
+{{ item.title }}
+</strong>
+
+<p>
+{{ item.subject }}
+</p>
+
+<p>
+Status:
+<strong>
+{{ item.status }}
+</strong>
+</p>
+
+<p>
+{{ item.question }}
+</p>
+
+</div>
+
+{% else %}
+
+<p>
+No assignments submitted yet.
+</p>
+
+{% endfor %}
+
+</div>
+
+"""
+
+    return page(
+        "Assignments",
+        body,
+        records=records
+    )
+
+
+# ============================================================
+# CV
+# ============================================================
+
+@app.route(
+    "/cv",
+    methods=["GET", "POST"]
+)
+@login_required
+def cv_service():
+
+    if request.method == "POST":
+
+        description = request.form.get(
+            "description",
+            ""
+        ).strip()
+
+        response = supabase_request(
+            "POST",
+            "/rest/v1/koja_cv_requests",
+            json={
+                "user_id":
+                    current_user()["id"],
+                "description":
+                    description,
+                "status":
+                    "pending"
+            },
+            headers={
+                "Prefer":
+                    "return=representation"
+            }
+        )
+
+        if response.status_code not in (
+            200,
+            201
+        ):
+
+            logger.error(
+                "CV request error: %s",
+                response.text
+            )
+
+            flash(
+                "CV request failed: "
+                + response_error(response),
+                "danger"
+            )
+
+        else:
+
+            flash(
+                "CV request sent to KOJA admin.",
+                "success"
+            )
+
+        return redirect(
+            url_for("cv_service")
+        )
+
+    body = """
+
+<div class="card">
+
+<h1>CV Services</h1>
+
+<p>
+Upload your CV requirements or tell the KOJA
+administrator what you need.
+</p>
+
+<form method="POST">
+
+<label>
+CV requirements
+</label>
+
+<textarea
+    name="description"
+    rows="10"
+    placeholder="Example: I need a CV for a teaching position..."
+    required
+></textarea>
+
+<button>
+Send to Admin
+</button>
+
+</form>
+
+</div>
+
+"""
+
+    return page(
+        "CV Services",
+        body
+    )
+
+
+# ============================================================
+# UNIVERSITIES
+# ============================================================
+
+@app.route("/universities")
+@login_required
+def universities():
+
+    response = supabase_request(
+        "GET",
+        "/rest/v1/koja_universities",
+        params={
+            "select": "*",
+            "order":
+                "name.asc"
+        }
+    )
+
+    schools = []
+
+    if response.status_code == 200:
+
+        schools = response.json()
+
+    body = """
+
+<div class="card">
+
+<h1>
+University Research
+</h1>
+
+<p>
+Research universities, programmes and
+application requirements.
+</p>
+
+</div>
+
+{% for school in schools %}
+
+<div class="card">
+
+<h2>
+{{ school.name }}
+</h2>
+
+<p>
+{{ school.location or "" }}
+</p>
+
+<p>
+{{ school.description or "" }}
+</p>
+
+{% if school.requirements %}
+
+<h3>
+Requirements
+</h3>
+
+<p>
+{{ school.requirements }}
+</p>
+
+{% endif %}
+
+</div>
+
+{% else %}
+
+<div class="card">
+
+<p>
+University information is being prepared.
+</p>
+
+</div>
+
+{% endfor %}
+
+"""
+
+    return page(
+        "Universities",
+        body,
+        schools=schools
+    )
+
+
+# ============================================================
+# DRIVER HELPERS
+# ============================================================
+
+def reverse_geocode(
+    latitude,
+    longitude
+):
+
+    try:
+
+        response = requests.get(
+            NOMINATIM_URL,
+            params={
+                "lat":
+                    latitude,
+                "lon":
+                    longitude,
+                "format":
+                    "jsonv2",
+                "zoom":
+                    18,
+                "addressdetails":
+                    1
+            },
+            headers=NOMINATIM_HEADERS,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+
+            return "Location unavailable"
+
+        data = response.json()
+
+        address = data.get(
+            "address",
+            {}
+        )
+
+        place = (
+            address.get("amenity")
+            or address.get("building")
+            or address.get("shop")
+            or address.get("road")
+        )
+
+        area = (
+            address.get("neighbourhood")
+            or address.get("suburb")
+            or address.get("quarter")
+        )
+
+        city = (
+            address.get("city")
+            or address.get("town")
+            or address.get("municipality")
+            or address.get("village")
+        )
+
+        country = address.get(
+            "country"
+        )
+
+        parts = []
+
+        for value in (
+            place,
+            area,
+            city,
+            country
+        ):
+
+            if value and value not in parts:
+
+                parts.append(value)
+
+        if parts:
+
+            return ", ".join(parts)
+
+        return data.get(
+            "display_name",
+            "Location unavailable"
+        )
+
+    except Exception as exc:
+
+        logger.exception(
+            "Reverse geocoding error: %s",
+            exc
+        )
+
+        return "Location unavailable"
+
+
+def distance_km(
+    lat1,
+    lon1,
+    lat2,
+    lon2
+):
+
+    try:
+
+        lat1 = float(lat1)
+        lon1 = float(lon1)
+        lat2 = float(lat2)
+        lon2 = float(lon2)
+
+    except Exception:
+
+        return None
+
+    radius = 6371.0
+
+    p1 = math.radians(
+        lat1
+    )
+
+    p2 = math.radians(
+        lat2
+    )
+
+    dp = math.radians(
+        lat2 - lat1
+    )
+
+    dl = math.radians(
+        lon2 - lon1
+    )
+
+    a = (
+        math.sin(dp / 2) ** 2
+        +
+        math.cos(p1)
+        *
+        math.cos(p2)
+        *
+        math.sin(dl / 2) ** 2
+    )
+
+    return radius * (
+        2
+        * math.atan2(
+            math.sqrt(a),
+            math.sqrt(1 - a)
+        )
+    )
+
+
+def get_driver(driver_id):
+
+    response = supabase_request(
+        "GET",
+        "/rest/v1/koja_drivers",
+        params={
+            "id":
+                f"eq.{driver_id}",
+            "select":
+                "*",
+            "limit":
+                "1"
+        }
+    )
+
+    if response.status_code != 200:
+
+        return None
+
+    data = response.json()
+
+    return data[0] if data else None
+
+
+def get_my_driver():
+
+    user = current_user()
+
+    if not user:
+
+        return None
+
+    response = supabase_request(
+        "GET",
+        "/rest/v1/koja_drivers",
+        params={
+            "user_id":
+                f"eq.{user['id']}",
+            "select":
+                "*",
+            "limit":
+                "1"
+        }
+    )
+
+    if response.status_code != 200:
+
+        return None
+
+    data = response.json()
+
+    return data[0] if data else None
+
+
+# ============================================================
+# DRIVER REGISTRATION
+# ============================================================
+
+@app.route(
+    "/driver/register",
+    methods=["GET", "POST"]
+)
+@login_required
+def driver_register():
+
+    existing = get_my_driver()
+
+    if existing:
+
+        return redirect(
+            url_for(
+                "driver_dashboard"
+            )
+        )
+
+    if request.method == "POST":
+
+        user = current_user()
+
+        full_name = request.form.get(
+            "full_name",
+            ""
+        ).strip()
+
+        phone = request.form.get(
+            "phone",
+            ""
+        ).strip()
+
+        vehicle_type = request.form.get(
+            "vehicle_type",
+            ""
+        ).strip()
+
+        vehicle_number = request.form.get(
+            "vehicle_number",
+            ""
+        ).strip()
+
+        license_number = request.form.get(
+            "license_number",
+            ""
+        ).strip()
+
+        if not full_name or not phone:
+
+            flash(
+                "Name and phone are required.",
+                "danger"
+            )
+
+            return redirect(
+                url_for("driver_register")
+            )
+
+        response = supabase_request(
+            "POST",
+            "/rest/v1/koja_drivers",
+            json={
+                "user_id":
+                    user["id"],
+                "full_name":
+                    full_name,
+                "phone":
+                    phone,
+                "email":
+                    user.get("email"),
+                "vehicle_type":
+                    vehicle_type,
+                "vehicle_number":
+                    vehicle_number,
+                "license_number":
+                    license_number,
+                "status":
+                    "pending",
+                "is_online":
+                    False
+            },
+            headers={
+                "Prefer":
+                    "return=representation"
+            }
+        )
+
+        if response.status_code not in (
+            200,
+            201
+        ):
+
+            logger.error(
+                "Driver registration error: %s",
+                response.text
+            )
+
+            flash(
+                "Driver registration failed: "
+                + response_error(response),
+                "danger"
+            )
+
+        else:
+
+            flash(
+                "Driver application submitted. "
+                "Wait for admin approval.",
+                "success"
+            )
+
+        return redirect(
+            url_for(
+                "driver_dashboard"
+            )
+        )
+
+    body = """
+
+<div class="card">
+
+<h1>
+Driver Registration
+</h1>
+
+<form method="POST">
+
+<label>Full name</label>
+
+<input
+    name="full_name"
+    value="{{ user.full_name }}"
+    required
+>
+
+<label>Phone</label>
+
+<input
+    name="phone"
+    required
+>
+
+<label>Vehicle type</label>
+
+<select
+    name="vehicle_type"
+    required
+>
+
+<option value="">
+Select vehicle
+</option>
+
+<option>Car</option>
+<option>Taxi</option>
+<option>Minibus</option>
+<option>Motorcycle</option>
+<option>Bicycle</option>
+<option>Van</option>
+<option>Truck</option>
+
+</select>
+
+<label>Vehicle number</label>
+
+<input
+    name="vehicle_number"
+>
+
+<label>Driver licence number</label>
+
+<input
+    name="license_number"
+>
+
+<button>
+Submit Driver Registration
+</button>
+
+</form>
+
+</div>
+
+"""
+
+    return page(
+        "Driver Registration",
+        body,
+        user=current_user()
+    )
+
+
+# ============================================================
+# DRIVER DASHBOARD
+# ============================================================
+
+@app.route("/driver")
+@login_required
+def driver_dashboard():
+
+    driver = get_my_driver()
+
+    if not driver:
+
+        body = """
+
+<div class="card">
+
+<h1>
+Become a KOJA Driver
+</h1>
+
+<p>
+Provide rides and delivery services through KOJA.
+</p>
+
+<a class="button"
+   href="{{ url_for('driver_register') }}">
+Register as Driver
+</a>
+
+</div>
+
+"""
+
+        return page(
+            "Driver",
+            body
+        )
+
+    body = """
+
+<div class="card">
+
+<h1>
+Driver Centre
+</h1>
+
+<h2>
+{{ driver.full_name }}
+</h2>
+
+<p>
+{{ driver.vehicle_type }}
+{% if driver.vehicle_number %}
+• {{ driver.vehicle_number }}
+{% endif %}
+</p>
+
+<p>
+Approval:
+<strong>
+{{ driver.status }}
+</strong>
+</p>
+
+{% if driver.status == "approved" %}
+
+{% if driver.is_online %}
+
+<p class="online">
+🟢 ONLINE
+</p>
+
+<form method="POST"
+      action="{{ url_for('driver_offline') }}">
+
+<button>
+Go Offline
+</button>
+
+</form>
+
+{% else %}
+
+<p>
+⚪ OFFLINE
+</p>
+
+<form method="POST"
+      action="{{ url_for('driver_online') }}">
+
+<button>
+Go Online
+</button>
+
+</form>
+
+{% endif %}
+
+{% else %}
+
+<p>
+Admin approval is required before you can go online.
+</p>
+
+{% endif %}
+
+</div>
+
+<div class="card">
+
+<h2>
+Current location
+</h2>
+
+<p id="driver-location">
+Waiting for GPS...
+</p>
+
+</div>
+
+<div class="card">
+
+<a class="button"
+   href="{{ url_for('driver_requests') }}">
+Ride & Delivery Requests
+</a>
+
+</div>
+
+<script>
+
+function sendLocation() {
+
+    if (!navigator.geolocation) {
+
+        document.getElementById(
+            "driver-location"
+        ).innerText =
+            "GPS is not supported.";
+
+        return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+        function(position) {
+
+            fetch(
+                "{{ url_for(
+                    'driver_location'
+                ) }}",
+                {
+                    method: "POST",
+
+                    headers: {
+                        "Content-Type":
+                            "application/json"
+                    },
+
+                    body: JSON.stringify({
+                        latitude:
+                            position.coords.latitude,
+
+                        longitude:
+                            position.coords.longitude
+                    })
+                }
+            )
+            .then(
+                response => response.json()
+            )
+            .then(
+                data => {
+
+                    if (data.success) {
+
+                        document.getElementById(
+                            "driver-location"
+                        ).innerText =
+                            "📍 "
+                            + data.location_name;
+
+                    } else {
+
+                        document.getElementById(
+                            "driver-location"
+                        ).innerText =
+                            data.error;
+
+                    }
+
+                }
+            );
+
+        },
+        function() {
+
+            document.getElementById(
+                "driver-location"
+            ).innerText =
+                "Please allow GPS access.";
+
+        },
+        {
+            enableHighAccuracy: true,
+            timeout: 15000,
+            maximumAge: 10000
+        }
+    );
+}
+
+{% if driver.is_online %}
+
+sendLocation();
+
+setInterval(
+    sendLocation,
+    30000
+);
+
+{% endif %}
+
+</script>
+
+"""
+
+    return page(
+        "Driver Centre",
+        body,
+        driver=driver
+    )
+
+
+# ============================================================
+# DRIVER ONLINE
+# ============================================================
+
+@app.route(
+    "/driver/online",
+    methods=["POST"]
+)
+@login_required
+def driver_online():
+
+    driver = get_my_driver()
+
+    if not driver:
+
+        flash(
+            "Driver account not found.",
+            "danger"
+        )
+
+        return redirect(
+            url_for("driver_dashboard")
+        )
+
+    if driver["status"] != "approved":
+
+        flash(
+            "Admin approval is required.",
+            "danger"
+        )
+
+        return redirect(
+            url_for("driver_dashboard")
+        )
+
+    response = supabase_request(
+        "PATCH",
+        "/rest/v1/koja_drivers",
+        params={
+            "id":
+                f"eq.{driver['id']}"
+        },
+        json={
+            "is_online":
+                True
+        }
+    )
+
+    if response.status_code not in (
+        200,
+        204
+    ):
+
+        flash(
+            "Could not go online.",
+            "danger"
+        )
+
+    else:
+
+        flash(
+            "You are now online.",
+            "success"
+        )
+
+    return redirect(
+        url_for("driver_dashboard")
+    )
+
+
+# ============================================================
+# DRIVER OFFLINE
+# ============================================================
+
+@app.route(
+    "/driver/offline",
+    methods=["POST"]
+)
+@login_required
+def driver_offline():
+
+    driver = get_my_driver()
+
+    if not driver:
+
+        return redirect(
+            url_for("driver_dashboard")
+        )
+
+    response = supabase_request(
+        "PATCH",
+        "/rest/v1/koja_drivers",
+        params={
+            "id":
+                f"eq.{driver['id']}"
+        },
+        json={
+            "is_online":
+                False
+        }
+    )
+
+    if response.status_code not in (
+        200,
+        204
+    ):
+
+        flash(
+            "Could not go offline.",
+            "danger"
+        )
+
+    else:
+
+        flash(
+            "You are now offline.",
+            "success"
+        )
+
+    return redirect(
+        url_for("driver_dashboard")
+    )
+
+
+# ============================================================
+# DRIVER GPS
+# ============================================================
+
+@app.route(
+    "/driver/location",
+    methods=["POST"]
+)
+@login_required
+def driver_location():
+
+    driver = get_my_driver()
+
+    if not driver:
+
+        return jsonify({
+            "success":
+                False,
+            "error":
+                "Driver account not found."
+        }), 404
+
+    if driver["status"] != "approved":
+
+        return jsonify({
+            "success":
+                False,
+            "error":
+                "Driver not approved."
+        }), 403
+
+    if not driver["is_online"]:
+
+        return jsonify({
+            "success":
+                False,
+            "error":
+                "Driver is offline."
+        }), 400
+
+    data = request.get_json(
+        silent=True
+    ) or {}
+
+    latitude = data.get(
+        "latitude"
+    )
+
+    longitude = data.get(
+        "longitude"
+    )
+
+    try:
+
+        latitude = float(
+            latitude
+        )
+
+        longitude = float(
+            longitude
+        )
+
+        if not -90 <= latitude <= 90:
+            raise ValueError()
+
+        if not -180 <= longitude <= 180:
+            raise ValueError()
+
+    except Exception:
+
+        return jsonify({
+            "success":
+                False,
+            "error":
+                "Invalid GPS location."
+        }), 400
+
+    location_name = reverse_geocode(
+        latitude,
+        longitude
+    )
+
+    now = datetime.now(
+        timezone.utc
+    ).isoformat()
+
+    response = supabase_request(
+        "PATCH",
+        "/rest/v1/koja_drivers",
+        params={
+            "id":
+                f"eq.{driver['id']}"
+        },
+        json={
+            "latitude":
+                latitude,
+            "longitude":
+                longitude,
+            "location_name":
+                location_name,
+            "last_location_update":
+                now
+        }
+    )
+
+    if response.status_code not in (
+        200,
+        204
+    ):
+
+        logger.error(
+            "GPS save failed: %s",
+            response.text
+        )
+
+        return jsonify({
+            "success":
+                False,
+            "error":
+                "Location could not be saved."
+        }), 500
+
+    return jsonify({
+        "success":
+            True,
+        "location_name":
+            location_name
+    })
+
+
+# ============================================================
+# NEARBY DRIVERS
+# ============================================================
+
+@app.route("/drivers")
+@login_required
+def nearby_drivers():
+
+    latitude = request.args.get(
+        "latitude",
+        type=float
+    )
+
+    longitude = request.args.get(
+        "longitude",
+        type=float
+    )
+
+    if latitude is None or longitude is None:
+
+        body = """
+
+<div class="card">
+
+<h1>
+Nearby Drivers
+</h1>
+
+<p id="message">
+Getting your location...
+</p>
+
+</div>
+
+<script>
+
+navigator.geolocation.getCurrentPosition(
+    function(position) {
+
+        const lat =
+            position.coords.latitude;
+
+        const lon =
+            position.coords.longitude;
+
+        window.location.href =
+            "{{ url_for('nearby_drivers') }}"
+            + "?latitude="
+            + encodeURIComponent(lat)
+            + "&longitude="
+            + encodeURIComponent(lon);
+
+    },
+    function() {
+
+        document.getElementById(
+            "message"
+        ).innerText =
+            "Please allow location access.";
+
+    },
+    {
+        enableHighAccuracy: true,
+        timeout: 15000
+    }
+);
+
+</script>
+
+"""
+
+        return page(
+            "Nearby Drivers",
+            body
+        )
+
+    response = supabase_request(
+        "GET",
+        "/rest/v1/koja_drivers",
+        params={
+            "status":
+                "eq.approved",
+            "is_online":
+                "eq.true",
+            "select":
+                "*"
+        }
+    )
+
+    drivers = []
+
+    if response.status_code == 200:
+
+        for driver in response.json():
+
+            dlat = driver.get(
+                "latitude"
+            )
+
+            dlon = driver.get(
+                "longitude"
+            )
+
+            if dlat is None or dlon is None:
+
+                continue
+
+            distance = distance_km(
+                latitude,
+                longitude,
+                dlat,
+                dlon
+            )
+
+            if distance is None:
+
+                continue
+
+            if distance <= 20:
+
+                driver[
+                    "distance_km"
+                ] = round(
+                    distance,
+                    1
+                )
+
+                drivers.append(
+                    driver
+                )
+
+    drivers.sort(
+        key=lambda x:
+            x["distance_km"]
+    )
+
+    body = """
+
+<div class="card">
+
+<h1>
+Nearby Drivers
+</h1>
+
+<p>
+Drivers are shown by distance from your current
+location.
+</p>
+
+</div>
+
+{% for driver in drivers %}
+
+<div class="card">
+
+<h2>
+🚗 {{ driver.full_name }}
+</h2>
+
+<p>
+{{ driver.vehicle_type }}
+{% if driver.vehicle_number %}
+• {{ driver.vehicle_number }}
+{% endif %}
+</p>
+
+<p>
+📍
+{{ driver.location_name or
+"Location updating..." }}
+</p>
+
+<p>
+{{ driver.distance_km }} km away
+</p>
+
+<a class="button"
+   href="{{ url_for(
+       'service_request',
+       driver_id=driver.id,
+       service='ride'
+   ) }}">
+Request Ride
+</a>
+
+<a class="button secondary"
+   href="{{ url_for(
+       'service_request',
+       driver_id=driver.id,
+       service='delivery'
+   ) }}">
+Request Delivery
+</a>
+
+</div>
+
+{% else %}
+
+<div class="card">
+
+<h2>
+No nearby drivers
+</h2>
+
+<p>
+No approved online drivers were found within
+20 km.
+</p>
+
+</div>
+
+{% endfor %}
+
+"""
+
+    return page(
+        "Nearby Drivers",
+        body,
+        drivers=drivers
+    )
+
+
+# ============================================================
+# RIDE / DELIVERY REQUEST
+# ============================================================
+
+@app.route(
+    "/service/<driver_id>/<service>",
+    methods=["GET", "POST"]
+)
+@login_required
+def service_request(
+    driver_id,
+    service
+):
+
+    if service not in (
+        "ride",
+        "delivery"
+    ):
+
+        abort(404)
+
+    driver = get_driver(
+        driver_id
+    )
+
+    if not driver:
+
+        flash(
+            "Driver not found.",
+            "danger"
+        )
+
+        return redirect(
+            url_for("nearby_drivers")
+        )
+
+    if driver["status"] != "approved":
+
+        flash(
+            "Driver is not approved.",
+            "danger"
+        )
+
+        return redirect(
+            url_for("nearby_drivers")
+        )
+
+    if not driver["is_online"]:
+
+        flash(
+            "Driver is offline.",
+            "danger"
+        )
+
+        return redirect(
+            url_for("nearby_drivers")
+        )
+
+    if request.method == "POST":
+
+        pickup = request.form.get(
+            "pickup",
+            ""
+        ).strip()
+
+        destination = request.form.get(
+            "destination",
+            ""
+        ).strip()
+
+        pickup_latitude = request.form.get(
+            "pickup_latitude"
+        )
+
+        pickup_longitude = request.form.get(
+            "pickup_longitude"
+        )
+
+        destination_latitude = request.form.get(
+            "destination_latitude"
+        )
+
+        destination_longitude = request.form.get(
+            "destination_longitude"
+        )
+
+        notes = request.form.get(
+            "notes",
+            ""
+        ).strip()
+
+        response = supabase_request(
+            "POST",
+            "/rest/v1/koja_service_requests",
+            json={
+                "customer_id":
+                    current_user()["id"],
+                "driver_id":
+                    driver["id"],
+                "service_type":
+                    service,
+                "pickup_location":
+                    pickup,
+                "destination_location":
+                    destination,
+                "pickup_latitude":
+                    pickup_latitude or None,
+                "pickup_longitude":
+                    pickup_longitude or None,
+                "destination_latitude":
+                    destination_latitude or None,
+                "destination_longitude":
+                    destination_longitude or None,
+                "notes":
+                    notes,
+                "status":
+                    "pending"
+            },
+            headers={
+                "Prefer":
+                    "return=representation"
+            }
+        )
+
+        if response.status_code not in (
+            200,
+            201
+        ):
+
+            logger.error(
+                "Service request error: %s",
+                response.text
+            )
+
+            flash(
+                "Request failed: "
+                + response_error(response),
+                "danger"
+            )
+
+        else:
+
+            flash(
+                "Your request has been sent to the driver.",
+                "success"
+            )
+
+        return redirect(
+            url_for("my_service_requests")
+        )
+
+    body = """
+
+<div class="card">
+
+<h1>
+
+{% if service == "ride" %}
+Request Ride
+{% else %}
+Request Delivery
+{% endif %}
+
+</h1>
+
+<h2>
+🚗 {{ driver.full_name }}
+</h2>
+
+<p>
+{{ driver.vehicle_type }}
+</p>
+
+<p>
+📍 {{ driver.location_name }}
+</p>
+
+<form method="POST">
+
+<label>
+Pickup location
+</label>
+
+<input
+    id="pickup"
+    name="pickup"
+    placeholder="Example: Chisokone Market, Kitwe"
+    required
+>
+
+<input
+    type="hidden"
+    name="pickup_latitude"
+    id="pickup_latitude"
+>
+
+<input
+    type="hidden"
+    name="pickup_longitude"
+    id="pickup_longitude"
+>
+
+<label>
+Destination
+</label>
+
+<input
+    name="destination"
+    placeholder="Example: Riverside, Kitwe"
+    required
+>
+
+<label>
+Details
+</label>
+
+<textarea
+    name="notes"
+    placeholder="Additional information"
+></textarea>
+
+<button>
+Send Request
+</button>
+
+</form>
+
+</div>
+
+<script>
+
+navigator.geolocation.getCurrentPosition(
+    function(position) {
+
+        document.getElementById(
+            "pickup_latitude"
+        ).value =
+            position.coords.latitude;
+
+        document.getElementById(
+            "pickup_longitude"
+        ).value =
+            position.coords.longitude;
+
+    }
+);
+
+</script>
+
+"""
+
+    return page(
+        "Request Service",
+        body,
+        driver=driver,
+        service=service
+    )
+
+
+# ============================================================
+# CUSTOMER REQUESTS
+# ============================================================
+
+@app.route("/my-requests")
+@login_required
+def my_service_requests():
+
+    response = supabase_request(
+        "GET",
+        "/rest/v1/koja_service_requests",
+        params={
+            "customer_id":
+                f"eq.{current_user()['id']}",
+            "select":
+                "*",
+            "order":
+                "created_at.desc"
+        }
+    )
+
+    records = []
+
+    if response.status_code == 200:
+
+        records = response.json()
+
+    body = """
+
+<div class="card">
+
+<h1>
+My Ride & Delivery Requests
+</h1>
+
+</div>
+
+{% for item in records %}
+
+<div class="card">
+
+<h2>
+
+{% if item.service_type == "ride" %}
+🚗 Ride
+{% else %}
+📦 Delivery
+{% endif %}
+
+</h2>
+
+<p>
+Pickup:
+<br>
+📍 {{ item.pickup_location }}
+</p>
+
+<p>
+Destination:
+<br>
+📍 {{ item.destination_location }}
+</p>
+
+<p>
+Status:
+<strong>
+{{ item.status }}
+</strong>
+</p>
+
+{% if item.status == "accepted" %}
+
+<a class="button"
+   href="{{ url_for(
+       'track_service',
+       request_id=item.id
+   ) }}">
+Track Driver
+</a>
+
+{% endif %}
+
+</div>
+
+{% else %}
+
+<div class="card">
+
+<p>
+No requests yet.
+</p>
+
+<a class="button"
+   href="{{ url_for('nearby_drivers') }}">
+Find Drivers
+</a>
+
+</div>
+
+{% endfor %}
+
+"""
+
+    return page(
+        "My Requests",
+        body,
+        records=records
+    )
+
+
+# ============================================================
+# DRIVER REQUESTS
+# ============================================================
+
+@app.route("/driver/requests")
+@login_required
+def driver_requests():
+
+    driver = get_my_driver()
+
+    if not driver:
+
+        return redirect(
+            url_for("driver_dashboard")
+        )
+
+    response = supabase_request(
+        "GET",
+        "/rest/v1/koja_service_requests",
+        params={
+            "driver_id":
+                f"eq.{driver['id']}",
+            "select":
+                "*",
+            "order":
+                "created_at.desc"
+        }
+    )
+
+    records = []
+
+    if response.status_code == 200:
+
+        records = response.json()
+
+    body = """
+
+<div class="card">
+
+<h1>
+Driver Requests
+</h1>
+
+</div>
+
+{% for item in records %}
+
+<div class="card">
+
+<h2>
+
+{% if item.service_type == "ride" %}
+🚗 Ride Request
+{% else %}
+📦 Delivery Request
+{% endif %}
+
+</h2>
+
+<p>
+Pickup:
+<br>
+📍 {{ item.pickup_location }}
+</p>
+
+<p>
+Destination:
+<br>
+📍 {{ item.destination_location }}
+</p>
+
+{% if item.notes %}
+
+<p>
+{{ item.notes }}
+</p>
+
+{% endif %}
+
+<p>
+Status:
+<strong>
+{{ item.status }}
+</strong>
+</p>
+
+{% if item.status == "pending" %}
+
+<form method="POST"
+      action="{{ url_for(
+          'accept_service',
+          request_id=item.id
+      ) }}">
+
+<button>
+Accept
+</button>
+
+</form>
+
+<form method="POST"
+      action="{{ url_for(
+          'reject_service',
+          request_id=item.id
+      ) }}">
+
+<button>
+Reject
+</button>
+
+</form>
+
+{% elif item.status == "accepted" %}
+
+<form method="POST"
+      action="{{ url_for(
+          'complete_service',
+          request_id=item.id
+      ) }}">
+
+<button>
+Mark Completed
+</button>
+
+</form>
+
+{% endif %}
+
+</div>
+
+{% else %}
+
+<div class="card">
+
+<p>
+No requests.
+</p>
+
+</div>
+
+{% endfor %}
+
+"""
+
+    return page(
+        "Driver Requests",
+        body,
+        records=records
+    )
+
+
+@app.route(
+    "/driver/request/<request_id>/accept",
+    methods=["POST"]
+)
+@login_required
+def accept_service(
+    request_id
+):
+
+    driver = get_my_driver()
+
+    if not driver:
+
+        abort(403)
+
+    response = supabase_request(
+        "PATCH",
+        "/rest/v1/koja_service_requests",
+        params={
+            "id":
+                f"eq.{request_id}",
+            "driver_id":
+                f"eq.{driver['id']}",
+            "status":
+                "eq.pending"
+        },
+        json={
+            "status":
+                "accepted",
+            "accepted_at":
+                datetime.now(
+                    timezone.utc
+                ).isoformat()
+        }
+    )
+
+    if response.status_code not in (
+        200,
+        204
+    ):
+
+        flash(
+            "Unable to accept request.",
+            "danger"
+        )
+
+    else:
+
+        flash(
+            "Request accepted.",
+            "success"
+        )
+
+    return redirect(
+        url_for("driver_requests")
+    )
+
+
+@app.route(
+    "/driver/request/<request_id>/reject",
+    methods=["POST"]
+)
+@login_required
+def reject_service(
+    request_id
+):
+
+    driver = get_my_driver()
+
+    if not driver:
+
+        abort(403)
+
+    response = supabase_request(
+        "PATCH",
+        "/rest/v1/koja_service_requests",
+        params={
+            "id":
+                f"eq.{request_id}",
+            "driver_id":
+                f"eq.{driver['id']}",
+            "status":
+                "eq.pending"
+        },
+        json={
+            "status":
+                "rejected"
+        }
+    )
+
+    if response.status_code not in (
+        200,
+        204
+    ):
+
+        flash(
+            "Unable to reject request.",
+            "danger"
+        )
+
+    return redirect(
+        url_for("driver_requests")
+    )
+
+
+@app.route(
+    "/driver/request/<request_id>/complete",
+    methods=["POST"]
+)
+@login_required
+def complete_service(
+    request_id
+):
+
+    driver = get_my_driver()
+
+    if not driver:
+
+        abort(403)
+
+    response = supabase_request(
+        "PATCH",
+        "/rest/v1/koja_service_requests",
+        params={
+            "id":
+                f"eq.{request_id}",
+            "driver_id":
+                f"eq.{driver['id']}",
+            "status":
+                "eq.accepted"
+        },
+        json={
+            "status":
+                "completed",
+            "completed_at":
+                datetime.now(
+                    timezone.utc
+                ).isoformat()
+        }
+    )
+
+    if response.status_code not in (
+        200,
+        204
+    ):
+
+        flash(
+            "Unable to complete request.",
+            "danger"
+        )
+
+    else:
+
+        flash(
+            "Service completed.",
+            "success"
+        )
+
+    return redirect(
+        url_for("driver_requests")
+    )
+
+
+# ============================================================
+# LIVE TRACKING
+# ============================================================
+
+@app.route(
+    "/track/<request_id>"
+)
+@login_required
+def track_service(
+    request_id
+):
+
+    response = supabase_request(
+        "GET",
+        "/rest/v1/koja_service_requests",
+        params={
+            "id":
+                f"eq.{request_id}",
+            "customer_id":
+                f"eq.{current_user()['id']}",
+            "select":
+                "*",
+            "limit":
+                "1"
+        }
+    )
+
+    if response.status_code != 200:
+
+        abort(404)
+
+    records = response.json()
+
+    if not records:
+
+        abort(404)
+
+    item = records[0]
+
+    body = """
+
+<div class="card">
+
+<h1>
+Live Driver Tracking
+</h1>
+
+<p>
+Pickup:
+<br>
+📍 {{ item.pickup_location }}
+</p>
+
+<p>
+Destination:
+<br>
+📍 {{ item.destination_location }}
+</p>
+
+<p id="driver-location">
+Loading driver location...
+</p>
+
+</div>
+
+<script>
+
+function updateTracking() {
+
+    fetch(
+        "{{ url_for(
+            'tracking_location',
+            request_id=item.id
+        ) }}"
+    )
+    .then(
+        response => response.json()
+    )
+    .then(
+        data => {
+
+            document.getElementById(
+                "driver-location"
+            ).innerText =
+                data.location_name
+                || "Location updating...";
+
+        }
+    );
+
+}
+
+updateTracking();
+
+setInterval(
+    updateTracking,
+    10000
+);
+
+</script>
+
+"""
+
+    return page(
+        "Live Tracking",
+        body,
+        item=item
+    )
+
+
+@app.route(
+    "/track/<request_id>/location"
+)
+@login_required
+def tracking_location(
+    request_id
+):
+
+    response = supabase_request(
+        "GET",
+        "/rest/v1/koja_service_requests",
+        params={
+            "id":
+                f"eq.{request_id}",
+            "customer_id":
+                f"eq.{current_user()['id']}",
+            "select":
+                "driver_id,status",
+            "limit":
+                "1"
+        }
+    )
+
+    if response.status_code != 200:
+
+        return jsonify({
+            "success":
+                False,
+            "error":
+                "Request not found."
+        }), 404
+
+    records = response.json()
+
+    if not records:
+
+        return jsonify({
+            "success":
+                False,
+            "error":
+                "Request not found."
+        }), 404
+
+    item = records[0]
+
+    if item["status"] != "accepted":
+
+        return jsonify({
+            "success":
+                False,
+            "error":
+                "Tracking is not active."
+        })
+
+    driver = get_driver(
+        item["driver_id"]
+    )
+
+    if not driver:
+
+        return jsonify({
+            "success":
+                False,
+            "error":
+                "Driver not found."
+        }), 404
+
+    return jsonify({
+        "success":
+            True,
+        "location_name":
+            driver.get(
+                "location_name"
+            ),
+        "latitude":
+            driver.get(
+                "latitude"
+            ),
+        "longitude":
+            driver.get(
+                "longitude"
+            )
+    })
+
+
+# ============================================================
+# FARMER
+# ============================================================
+
+@app.route(
+    "/farmer/register",
+    methods=["GET", "POST"]
+)
+@login_required
+def farmer_register():
+
+    if request.method == "POST":
+
+        user = current_user()
+
+        response = supabase_request(
+            "POST",
+            "/rest/v1/koja_farmers",
+            json={
+                "user_id":
+                    user["id"],
+                "full_name":
+                    request.form.get(
+                        "full_name",
+                        ""
+                    ).strip(),
+                "phone":
+                    request.form.get(
+                        "phone",
+                        ""
+                    ).strip(),
+                "farm_location":
+                    request.form.get(
+                        "farm_location",
+                        ""
+                    ).strip(),
+                "products":
+                    request.form.get(
+                        "products",
+                        ""
+                    ).strip(),
+                "status":
+                    "pending"
+            },
+            headers={
+                "Prefer":
+                    "return=representation"
+            }
+        )
+
+        if response.status_code not in (
+            200,
+            201
+        ):
+
+            flash(
+                "Farmer registration failed: "
+                + response_error(response),
+                "danger"
+            )
+
+        else:
+
+            flash(
+                "Farmer registration submitted.",
+                "success"
+            )
+
+        return redirect(
+            url_for("dashboard")
+        )
+
+    body = """
+
+<div class="card">
+
+<h1>
+Farmer Registration
+</h1>
+
+<form method="POST">
+
+<label>Full name</label>
+
+<input
+    name="full_name"
+    required
+>
+
+<label>Phone</label>
+
+<input
+    name="phone"
+    required
+>
+
+<label>Farm location</label>
+
+<input
+    name="farm_location"
+    placeholder="Example: Kitwe"
+>
+
+<label>
+Products / crops / livestock
+</label>
+
+<textarea
+    name="products"
+></textarea>
+
+<button>
+Register Farmer
+</button>
+
+</form>
+
+</div>
+
+"""
+
+    return page(
+        "Farmer Registration",
+        body
+    )
+
+
+# ============================================================
+# PROFESSIONALS
+# ============================================================
+
+@app.route("/professionals")
+@login_required
+def professionals():
+
+    response = supabase_request(
+        "GET",
+        "/rest/v1/koja_professionals",
+        params={
+            "status":
+                "eq.approved",
+            "select":
+                "*",
+            "order":
+                "full_name.asc"
+        }
+    )
+
+    professionals_data = []
+
+    if response.status_code == 200:
+
+        professionals_data = response.json()
+
+    body = """
+
+<div class="card">
+
+<h1>
+Professional Services
+</h1>
+
+<p>
+Find doctors, lawyers, teachers and other
+approved specialists.
+</p>
+
+</div>
+
+{% for person in professionals_data %}
+
+<div class="card">
+
+<h2>
+{{ person.full_name }}
+</h2>
+
+<p>
+<strong>
+{{ person.profession }}
+</strong>
+</p>
+
+<p>
+Speciality:
+{{ person.speciality or "General" }}
+</p>
+
+<p>
+Phone:
+{{ person.phone }}
+</p>
+
+<a class="button"
+   href="{{ url_for(
+       'book_professional',
+       professional_id=person.id
+   ) }}">
+Request Booking
+</a>
+
+</div>
+
+{% else %}
+
+<div class="card">
+
+<p>
+No approved professionals are currently listed.
+</p>
+
+</div>
+
+{% endfor %}
+
+"""
+
+    return page(
+        "Professionals",
+        body,
+        professionals_data=professionals_data
+    )
+
+
+@app.route(
+    "/professional/book/<professional_id>",
+    methods=["GET", "POST"]
+)
+@login_required
+def book_professional(
+    professional_id
+):
+
+    response = supabase_request(
+        "GET",
+        "/rest/v1/koja_professionals",
+        params={
+            "id":
+                f"eq.{professional_id}",
+            "status":
+                "eq.approved",
+            "select":
+                "*",
+            "limit":
+                "1"
+        }
+    )
+
+    if response.status_code != 200:
+
+        abort(404)
+
+    records = response.json()
+
+    if not records:
+
+        abort(404)
+
+    professional = records[0]
+
+    if request.method == "POST":
+
+        response = supabase_request(
+            "POST",
+            "/rest/v1/koja_bookings",
+            json={
+                "client_id":
+                    current_user()["id"],
+                "professional_id":
+                    professional_id,
+                "requested_date":
+                    request.form.get(
+                        "date"
+                    ),
+                "requested_time":
+                    request.form.get(
+                        "time"
+                    ),
+                "notes":
+                    request.form.get(
+                        "notes",
+                        ""
+                    ),
+                "status":
+                    "pending"
+            }
+        )
+
+        if response.status_code not in (
+            200,
+            201
+        ):
+
+            flash(
+                "Booking request failed.",
+                "danger"
+            )
+
+        else:
+
+            flash(
+                "Booking request sent.",
+                "success"
+            )
+
+        return redirect(
+            url_for("professionals")
+        )
+
+    body = """
+
+<div class="card">
+
+<h1>
+Book {{ professional.full_name }}
+</h1>
+
+<p>
+{{ professional.profession }}
+</p>
+
+<form method="POST">
+
+<label>Date</label>
+
+<input
+    type="date"
+    name="date"
+    required
+>
+
+<label>Time</label>
+
+<input
+    type="time"
+    name="time"
+    required
+>
+
+<label>Message</label>
+
+<textarea
+    name="notes"
+></textarea>
+
+<button>
+Send Booking Request
+</button>
+
+</form>
+
+</div>
+
+"""
+
+    return page(
+        "Book Professional",
+        body,
+        professional=professional
+    )
+
+
+# ============================================================
+# ADMIN DASHBOARD
+# ============================================================
+
+@app.route("/admin")
+@admin_required
+def admin_dashboard():
+
+    response = supabase_request(
+        "GET",
+        "/rest/v1/koja_drivers",
+        params={
+            "select":
+                "*",
+            "order":
+                "created_at.desc"
+        }
+    )
+
+    drivers = []
+
+    if response.status_code == 200:
+
+        drivers = response.json()
+
+    body = """
+
+<div class="card">
+
+<h1>
+KOJA Admin
+</h1>
+
+<p>
+Driver applications
+</p>
+
+</div>
+
+{% for driver in drivers %}
+
+<div class="card">
+
+<h2>
+{{ driver.full_name }}
+</h2>
+
+<p>
+Phone: {{ driver.phone }}
+</p>
+
+<p>
+Vehicle:
+{{ driver.vehicle_type }}
+{{ driver.vehicle_number or "" }}
+</p>
+
+<p>
+License:
+{{ driver.license_number or "" }}
+</p>
+
+<p>
+Status:
+<strong>
+{{ driver.status }}
+</strong>
+</p>
+
+{% if driver.status == "pending" %}
+
+<form method="POST"
+      action="{{ url_for(
+          'approve_driver',
+          driver_id=driver.id
+      ) }}">
+
+<button>
+Approve Driver
+</button>
+
+</form>
+
+<form method="POST"
+      action="{{ url_for(
+          'reject_driver',
+          driver_id=driver.id
+      ) }}">
+
+<button>
+Reject Driver
+</button>
+
+</form>
+
+{% endif %}
+
+</div>
+
+{% else %}
+
+<div class="card">
+
+<p>
+No driver applications.
+</p>
+
+</div>
+
+{% endfor %}
+
+"""
+
+    return page(
+        "Admin",
+        body,
+        drivers=drivers
+    )
+
+
+@app.route(
+    "/admin/driver/<driver_id>/approve",
+    methods=["POST"]
+)
+@admin_required
+def approve_driver(
+    driver_id
+):
+
+    response = supabase_request(
+        "PATCH",
+        "/rest/v1/koja_drivers",
+        params={
+            "id":
+                f"eq.{driver_id}"
+        },
+        json={
+            "status":
+                "approved",
+            "is_online":
+                False
+        }
+    )
+
+    if response.status_code not in (
+        200,
+        204
+    ):
+
+        flash(
+            "Driver approval failed.",
+            "danger"
+        )
+
+    else:
+
+        flash(
+            "Driver approved.",
+            "success"
+        )
+
+    return redirect(
+        url_for("admin_dashboard")
+    )
+
+
+@app.route(
+    "/admin/driver/<driver_id>/reject",
+    methods=["POST"]
+)
+@admin_required
+def reject_driver(
+    driver_id
+):
+
+    response = supabase_request(
+        "PATCH",
+        "/rest/v1/koja_drivers",
+        params={
+            "id":
+                f"eq.{driver_id}"
+        },
+        json={
+            "status":
+                "rejected",
+            "is_online":
+                False
+        }
+    )
+
+    if response.status_code not in (
+        200,
+        204
+    ):
+
+        flash(
+            "Driver rejection failed.",
+            "danger"
+        )
+
+    else:
+
+        flash(
+            "Driver rejected.",
+            "success"
+        )
+
+    return redirect(
+        url_for("admin_dashboard")
+    )
+
+
+# ============================================================
+# ERROR HANDLERS
+# ============================================================
+
+@app.errorhandler(403)
+def forbidden(error):
+
+    return page(
+        "Access Denied",
+        """
+        <div class="card">
+        <h1>Access Denied</h1>
+        <p>You do not have permission to access this page.</p>
+        </div>
+        """
+    ), 403
+
+
+@app.errorhandler(404)
+def not_found(error):
+
+    return page(
+        "Not Found",
+        """
+        <div class="card">
+        <h1>Page Not Found</h1>
+        <p>The requested page does not exist.</p>
+        </div>
+        """
+    ), 404
+
+
+@app.errorhandler(500)
+def server_error(error):
+
+    logger.exception(
+        "Internal server error"
+    )
+
+    return page(
+        "Server Error",
+        """
+        <div class="card">
+        <h1>Server Error</h1>
+        <p>
+        KOJA encountered an internal error.
+        Check the Render logs for the technical details.
+        </p>
+        </div>
+        """
+    ), 500
+
+
+# ============================================================
+# MAIN PAGE TEMPLATE
+# ============================================================
+
+def page(
+    title,
+    body,
+    **context
+):
+
+    user = current_user()
+
+    template = """
+
 <!DOCTYPE html>
 
-<html lang="en">
+<html>
 
 <head>
 
@@ -293,11 +3841,11 @@ BASE_HTML = """
 <meta
     name="viewport"
     content="width=device-width,
-    initial-scale=1.0"
+             initial-scale=1.0"
 >
 
 <title>
-    {{ title }} - KOJA AFRICA
+{{ title }} - KOJA AFRICA
 </title>
 
 <style>
@@ -307,191 +3855,315 @@ BASE_HTML = """
 }
 
 body {
+
     margin: 0;
-    background: #f4f7fb;
-    color: #172033;
+
     font-family:
         Arial,
         Helvetica,
         sans-serif;
+
+    background:
+        #f1f5f9;
+
+    color:
+        #0f172a;
 }
 
 nav {
-    background: #102a43;
-    color: white;
-    padding: 15px 20px;
-    display: flex;
+
+    background:
+        #0f172a;
+
+    color:
+        white;
+
+    padding:
+        14px;
+
+    display:
+        flex;
+
     justify-content:
         space-between;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 10px;
-}
 
-.brand {
-    font-size: 21px;
-    font-weight: bold;
+    align-items:
+        center;
+
+    gap:
+        10px;
+
+    flex-wrap:
+        wrap;
 }
 
 nav a {
-    color: white;
-    text-decoration: none;
-    margin-left: 12px;
+
+    color:
+        white;
+
+    text-decoration:
+        none;
+
+    margin:
+        4px 8px;
 }
 
 .container {
-    width: min(1100px, 94%);
-    margin: 25px auto;
+
+    width:
+        min(1100px, 94%);
+
+    margin:
+        25px auto;
+}
+
+.hero {
+
+    background:
+        white;
+
+    padding:
+        35px;
+
+    border-radius:
+        18px;
+
+    margin-bottom:
+        20px;
+
+    box-shadow:
+        0 4px 20px
+        rgba(0,0,0,.06);
 }
 
 .card {
-    background: white;
-    padding: 22px;
-    border-radius: 12px;
-    margin-bottom: 18px;
+
+    background:
+        white;
+
+    padding:
+        22px;
+
+    margin:
+        15px 0;
+
+    border-radius:
+        16px;
+
     box-shadow:
         0 3px 15px
-        rgba(0,0,0,.07);
+        rgba(0,0,0,.05);
 }
 
 .grid {
-    display: grid;
+
+    display:
+        grid;
+
     grid-template-columns:
         repeat(
             auto-fit,
-            minmax(220px, 1fr)
+            minmax(
+                220px,
+                1fr
+            )
         );
-    gap: 16px;
+
+    gap:
+        15px;
 }
 
 .service {
-    background: white;
-    padding: 20px;
-    border-radius: 12px;
-    border: 1px solid #e1e7ef;
+
+    background:
+        white;
+
+    padding:
+        22px;
+
+    border-radius:
+        16px;
+
+    text-decoration:
+        none;
+
+    color:
+        #0f172a;
+
+    display:
+        flex;
+
+    flex-direction:
+        column;
+
+    gap:
+        8px;
+
+    box-shadow:
+        0 3px 15px
+        rgba(0,0,0,.05);
+}
+
+.service strong {
+
+    font-size:
+        18px;
+}
+
+.service span {
+
+    color:
+        #64748b;
+}
+
+form {
+
+    display:
+        flex;
+
+    flex-direction:
+        column;
+
+    gap:
+        10px;
+
+}
+
+label {
+
+    font-weight:
+        bold;
+
+    margin-top:
+        5px;
 }
 
 input,
 textarea,
 select {
-    width: 100%;
-    padding: 12px;
-    margin-top: 6px;
-    margin-bottom: 15px;
-    border: 1px solid #ccd5df;
-    border-radius: 8px;
-    font-size: 16px;
+
+    width:
+        100%;
+
+    padding:
+        13px;
+
+    border:
+        1px solid
+        #cbd5e1;
+
+    border-radius:
+        10px;
+
+    font-size:
+        16px;
+
+    background:
+        white;
 }
 
 textarea {
-    min-height: 130px;
-    resize: vertical;
+
+    resize:
+        vertical;
 }
 
 button,
 .button {
-    display: inline-block;
-    border: 0;
-    border-radius: 8px;
-    padding: 12px 18px;
-    background: #1677ff;
-    color: white;
-    text-decoration: none;
-    cursor: pointer;
-    font-size: 15px;
+
+    display:
+        inline-block;
+
+    border:
+        none;
+
+    border-radius:
+        10px;
+
+    padding:
+        12px 18px;
+
+    background:
+        #2563eb;
+
+    color:
+        white;
+
+    text-decoration:
+        none;
+
+    cursor:
+        pointer;
+
+    font-size:
+        15px;
+
+    margin:
+        4px 0;
 }
 
-.button.secondary {
-    background: #52606d;
+.secondary {
+
+    background:
+        #475569;
 }
 
-.button.success {
-    background: #16803c;
+.success {
+
+    background:
+        #16a34a;
 }
 
-.button.warning {
-    background: #d97706;
-}
+.online {
 
-.button.danger {
-    background: #c53030;
-}
+    color:
+        #16a34a;
 
-.flash {
-    padding: 13px 15px;
-    border-radius: 8px;
-    margin-bottom: 12px;
-    background: #e8f1ff;
-}
-
-.flash.danger {
-    background: #ffe5e5;
-}
-
-.flash.warning {
-    background: #fff3cd;
-}
-
-.flash.success-message {
-    background: #e2f7e8;
+    font-weight:
+        bold;
 }
 
 .status {
-    display: inline-block;
-    padding: 6px 10px;
-    border-radius: 20px;
-    background: #edf2f7;
-    font-size: 13px;
-    font-weight: bold;
+
+    font-weight:
+        bold;
 }
 
-.status.pending {
-    background: #fff3cd;
-}
+.flash {
 
-.status.in_progress {
-    background: #dbeafe;
-}
+    padding:
+        13px;
 
-.status.completed {
-    background: #dcfce7;
-}
+    border-radius:
+        10px;
 
-.status.approved {
-    background: #bbf7d0;
-}
+    background:
+        #e2e8f0;
 
-.status.rejected {
-    background: #fee2e2;
-}
-
-.message {
-    padding: 12px;
-    border-radius: 10px;
-    margin-bottom: 10px;
-    background: #f1f5f9;
-}
-
-.message.mine {
-    background: #e0edff;
-}
-
-.small {
-    color: #64748b;
-    font-size: 14px;
-}
-
-.file {
-    padding: 12px;
-    border: 1px solid #e2e8f0;
-    border-radius: 8px;
-    margin: 8px 0;
+    margin-bottom:
+        10px;
 }
 
 footer {
-    text-align: center;
-    color: #718096;
-    padding: 30px;
+
+    text-align:
+        center;
+
+    padding:
+        30px;
+
+    color:
+        #64748b;
+}
+
+.small {
+
+    color:
+        #64748b;
+
+    font-size:
+        13px;
 }
 
 </style>
@@ -502,8 +4174,10 @@ footer {
 
 <nav>
 
-<div class="brand">
-    KOJA AFRICA
+<div>
+<strong>
+KOJA AFRICA
+</strong>
 </div>
 
 <div>
@@ -511,33 +4185,29 @@ footer {
 {% if user %}
 
 <a href="{{ url_for('dashboard') }}">
-    Dashboard
+Home
 </a>
 
 <a href="{{ url_for('assignments') }}">
-    Assignments
+Assignments
 </a>
 
-{% if user.get("role") == "admin" %}
-
-<a href="{{ url_for('admin_dashboard') }}">
-    Admin
+<a href="{{ url_for('nearby_drivers') }}">
+Drivers
 </a>
-
-{% endif %}
 
 <a href="{{ url_for('logout') }}">
-    Logout
+Logout
 </a>
 
 {% else %}
 
 <a href="{{ url_for('login') }}">
-    Login
+Login
 </a>
 
 <a href="{{ url_for('register') }}">
-    Register
+Register
 </a>
 
 {% endif %}
@@ -556,15 +4226,15 @@ footer {
 
 {% for category, message in messages %}
 
-<div class="flash {{ category }}">
-    {{ message }}
+<div class="flash">
+{{ message }}
 </div>
 
 {% endfor %}
 
 {% endwith %}
 
-{{ body|safe }}
+""" + body + """
 
 </div>
 
@@ -581,2616 +4251,30 @@ Knowledge • Questions • Answers
 </body>
 
 </html>
+
 """
-
-
-def page(
-    title,
-    body,
-    **kwargs
-):
 
     return render_template_string(
-        BASE_HTML,
+        template,
         title=title,
-        body=render_template_string(
-            body,
-            **kwargs
-        ),
-        user=current_user()
+        user=user,
+        **context
     )
 
 
 # ============================================================
-# HOME
-# ============================================================
-
-@app.route("/")
-def home():
-
-    body = """
-
-<div class="card">
-
-<h1>KOJA AFRICA</h1>
-
-<p>
-A digital platform connecting people with
-academic assistance, CV services, universities,
-transport, delivery, farmers and professionals.
-</p>
-
-<a class="button"
-   href="{{ url_for('register') }}">
-Create Account
-</a>
-
-<a class="button secondary"
-   href="{{ url_for('login') }}">
-Login
-</a>
-
-</div>
-
-<div class="grid">
-
-<div class="service">
-
-<h2>Assignments</h2>
-
-<p>
-Upload academic questions and receive
-answers from KOJA.
-</p>
-
-</div>
-
-<div class="service">
-
-<h2>CV Services</h2>
-
-<p>
-Submit your CV requirements for processing.
-</p>
-
-</div>
-
-<div class="service">
-
-<h2>Universities</h2>
-
-<p>
-Research universities and application
-requirements.
-</p>
-
-</div>
-
-<div class="service">
-
-<h2>Drivers & Delivery</h2>
-
-<p>
-Find nearby drivers and request rides
-or deliveries.
-</p>
-
-</div>
-
-<div class="service">
-
-<h2>Farmers</h2>
-
-<p>
-Connect farmers and customers.
-</p>
-
-</div>
-
-<div class="service">
-
-<h2>Professionals</h2>
-
-<p>
-Find doctors, lawyers, teachers and
-other professionals.
-</p>
-
-</div>
-
-</div>
-
-"""
-
-    return page(
-        "Home",
-        body
-    )
-
-
-# ============================================================
-# REGISTER
-# ============================================================
-
-@app.route(
-    "/register",
-    methods=["GET", "POST"]
-)
-def register():
-
-    if request.method == "POST":
-
-        full_name = request.form.get(
-            "full_name",
-            ""
-        ).strip()
-
-        email = request.form.get(
-            "email",
-            ""
-        ).strip().lower()
-
-        phone = request.form.get(
-            "phone",
-            ""
-        ).strip()
-
-        password = request.form.get(
-            "password",
-            ""
-        )
-
-        if not full_name:
-
-            flash(
-                "Full name is required.",
-                "danger"
-            )
-
-            return redirect(
-                url_for("register")
-            )
-
-        if not email:
-
-            flash(
-                "Email is required.",
-                "danger"
-            )
-
-            return redirect(
-                url_for("register")
-            )
-
-        if len(password) < 6:
-
-            flash(
-                "Password must contain at least 6 characters.",
-                "danger"
-            )
-
-            return redirect(
-                url_for("register")
-            )
-
-        payload = {
-            "email": email,
-            "password": password,
-            "data": {
-                "full_name": full_name,
-                "phone": phone,
-            }
-        }
-
-        try:
-
-            response = supabase_request(
-                "POST",
-                "/auth/v1/signup",
-                json=payload
-            )
-
-            if response.status_code not in (
-                200,
-                201
-            ):
-
-                error = response_error(
-                    response
-                )
-
-                logger.error(
-                    "Signup error: %s",
-                    response.text
-                )
-
-                flash(
-                    error,
-                    "danger"
-                )
-
-                return redirect(
-                    url_for("register")
-                )
-
-            data = response.json()
-
-            user_data = data.get(
-                "user"
-            )
-
-            if user_data:
-
-                user_id = user_data.get(
-                    "id"
-                )
-
-                # The database trigger should normally
-                # create this profile automatically.
-                #
-                # We only create it here if it does
-                # not already exist.
-
-                existing = get_profile(
-                    user_id
-                )
-
-                if not existing:
-
-                    create_profile(
-                        user_id,
-                        full_name,
-                        email,
-                        phone
-                    )
-
-            flash(
-                "Account created successfully. "
-                "You can now log in.",
-                "success-message"
-            )
-
-            return redirect(
-                url_for("login")
-            )
-
-        except Exception as exc:
-
-            logger.exception(
-                "Registration exception"
-            )
-
-            flash(
-                f"Registration error: {exc}",
-                "danger"
-            )
-
-            return redirect(
-                url_for("register")
-            )
-
-    body = """
-
-<div class="card">
-
-<h1>Create KOJA Account</h1>
-
-<form method="POST">
-
-<label>
-Full Name
-</label>
-
-<input
-    type="text"
-    name="full_name"
-    required
->
-
-<label>
-Email
-</label>
-
-<input
-    type="email"
-    name="email"
-    required
->
-
-<label>
-Phone
-</label>
-
-<input
-    type="tel"
-    name="phone"
->
-
-<label>
-Password
-</label>
-
-<input
-    type="password"
-    name="password"
-    minlength="6"
-    required
->
-
-<button type="submit">
-Create Account
-</button>
-
-</form>
-
-<p>
-Already have an account?
-
-<a href="{{ url_for('login') }}">
-Login
-</a>
-
-</p>
-
-</div>
-
-"""
-
-    return page(
-        "Register",
-        body
-    )
-
-
-# ============================================================
-# LOGIN
-# ============================================================
-
-@app.route(
-    "/login",
-    methods=["GET", "POST"]
-)
-def login():
-
-    if request.method == "POST":
-
-        email = request.form.get(
-            "email",
-            ""
-        ).strip().lower()
-
-        password = request.form.get(
-            "password",
-            ""
-        )
-
-        if not email or not password:
-
-            flash(
-                "Email and password are required.",
-                "danger"
-            )
-
-            return redirect(
-                url_for("login")
-            )
-
-        try:
-
-            response = supabase_request(
-                "POST",
-                "/auth/v1/token?grant_type=password",
-                json={
-                    "email": email,
-                    "password": password
-                }
-            )
-
-            if response.status_code != 200:
-
-                error = response_error(
-                    response
-                )
-
-                logger.error(
-                    "Login error: %s",
-                    response.text
-                )
-
-                flash(
-                    error,
-                    "danger"
-                )
-
-                return redirect(
-                    url_for("login")
-                )
-
-            data = response.json()
-
-            user_data = data.get(
-                "user"
-            )
-
-            if not user_data:
-
-                flash(
-                    "Unable to identify account.",
-                    "danger"
-                )
-
-                return redirect(
-                    url_for("login")
-                )
-
-            user_id = user_data.get(
-                "id"
-            )
-
-            profile = get_profile(
-                user_id
-            )
-
-            if not profile:
-
-                metadata = user_data.get(
-                    "user_metadata",
-                    {}
-                )
-
-                create_profile(
-                    user_id,
-                    metadata.get(
-                        "full_name",
-                        ""
-                    ),
-                    email,
-                    metadata.get(
-                        "phone",
-                        ""
-                    )
-                )
-
-                profile = get_profile(
-                    user_id
-                )
-
-            role = "student"
-
-            full_name = ""
-
-            if profile:
-
-                role = profile.get(
-                    "role",
-                    "student"
-                )
-
-                full_name = profile.get(
-                    "full_name",
-                    ""
-                )
-
-            session["user"] = {
-                "id": user_id,
-                "email": email,
-                "role": role,
-                "full_name": full_name
-            }
-
-            session["access_token"] = data.get(
-                "access_token"
-            )
-
-            flash(
-                "Login successful.",
-                "success-message"
-            )
-
-            return redirect(
-                url_for("dashboard")
-            )
-
-        except Exception as exc:
-
-            logger.exception(
-                "Login exception"
-            )
-
-            flash(
-                f"Login error: {exc}",
-                "danger"
-            )
-
-            return redirect(
-                url_for("login")
-            )
-
-    body = """
-
-<div class="card">
-
-<h1>KOJA Login</h1>
-
-<form method="POST">
-
-<label>
-Email
-</label>
-
-<input
-    type="email"
-    name="email"
-    required
->
-
-<label>
-Password
-</label>
-
-<input
-    type="password"
-    name="password"
-    required
->
-
-<button type="submit">
-Login
-</button>
-
-</form>
-
-<p>
-Don't have an account?
-
-<a href="{{ url_for('register') }}">
-Create Account
-</a>
-
-</p>
-
-</div>
-
-"""
-
-    return page(
-        "Login",
-        body
-    )
-
-
-# ============================================================
-# DASHBOARD
-# ============================================================
-
-@app.route("/dashboard")
-@login_required
-def dashboard():
-
-    user = current_user()
-
-    body = """
-
-<div class="card">
-
-<h1>
-Welcome,
-{{ user.full_name or user.email }}
-</h1>
-
-<p>
-Your KOJA account is active.
-</p>
-
-<p class="small">
-Email: {{ user.email }}
-<br>
-Role: {{ user.role }}
-</p>
-
-</div>
-
-<div class="grid">
-
-<div class="service">
-
-<h2>Assignments</h2>
-
-<p>
-Submit academic questions and documents.
-</p>
-
-<a class="button"
-   href="{{ url_for('assignments') }}">
-Open Assignments
-</a>
-
-</div>
-
-<div class="service">
-
-<h2>CV</h2>
-
-<p>
-Submit CV requirements.
-</p>
-
-<span class="small">
-Coming next
-</span>
-
-</div>
-
-<div class="service">
-
-<h2>Universities</h2>
-
-<p>
-Research universities and applications.
-</p>
-
-<span class="small">
-Coming next
-</span>
-
-</div>
-
-<div class="service">
-
-<h2>Drivers & Delivery</h2>
-
-<p>
-Find nearby drivers and request services.
-</p>
-
-<span class="small">
-Coming next
-</span>
-
-</div>
-
-<div class="service">
-
-<h2>Farmers</h2>
-
-<p>
-Register and manage farming information.
-</p>
-
-<span class="small">
-Coming next
-</span>
-
-</div>
-
-<div class="service">
-
-<h2>Professionals</h2>
-
-<p>
-Doctors, lawyers, teachers and others.
-</p>
-
-<span class="small">
-Coming next
-</span>
-
-</div>
-
-</div>
-
-"""
-
-    return page(
-        "Dashboard",
-        body,
-        user=user
-    )
-
-
-# ============================================================
-# ASSIGNMENT LIST
-# ============================================================
-
-@app.route("/assignments")
-@login_required
-def assignments():
-
-    user = current_user()
-
-    response = supabase_request(
-        "GET",
-        "/rest/v1/assignments",
-        params={
-            "student_id": (
-                f"eq.{user['id']}"
-            ),
-            "select": "*",
-            "order": "created_at.desc"
-        }
-    )
-
-    if response.status_code != 200:
-
-        logger.error(
-            "Assignment list error: %s",
-            response.text
-        )
-
-        items = []
-
-        flash(
-            "Unable to load assignments.",
-            "danger"
-        )
-
-    else:
-
-        items = response.json()
-
-    body = """
-
-<div class="card">
-
-<h1>My Assignments</h1>
-
-<a class="button"
-   href="{{ url_for('new_assignment') }}">
-+ New Assignment
-</a>
-
-</div>
-
-{% if items %}
-
-{% for item in items %}
-
-<div class="card">
-
-<h2>
-{{ item.title }}
-</h2>
-
-<p>
-Subject:
-{{ item.subject or "Not specified" }}
-</p>
-
-<p>
-
-Status:
-
-<span class="status {{ item.status }}">
-{{ item.status.replace("_", " ") }}
-</span>
-
-</p>
-
-<p class="small">
-Submitted:
-{{ item.created_at }}
-</p>
-
-<a class="button"
-   href="{{ url_for(
-       'assignment_detail',
-       assignment_id=item.id
-   ) }}">
-Open
-</a>
-
-</div>
-
-{% endfor %}
-
-{% else %}
-
-<div class="card">
-
-<h2>
-No assignments yet
-</h2>
-
-<p>
-Submit your first academic question.
-</p>
-
-</div>
-
-{% endif %}
-
-"""
-
-    return page(
-        "Assignments",
-        body,
-        items=items
-    )
-
-
-# ============================================================
-# NEW ASSIGNMENT
-# ============================================================
-
-@app.route(
-    "/assignments/new",
-    methods=["GET", "POST"]
-)
-@login_required
-def new_assignment():
-
-    if request.method == "POST":
-
-        user = current_user()
-
-        title = request.form.get(
-            "title",
-            ""
-        ).strip()
-
-        subject = request.form.get(
-            "subject",
-            ""
-        ).strip()
-
-        description = request.form.get(
-            "description",
-            ""
-        ).strip()
-
-        if not title:
-
-            flash(
-                "Assignment title is required.",
-                "danger"
-            )
-
-            return redirect(
-                url_for("new_assignment")
-            )
-
-        if not description and not request.files.get(
-            "question_file"
-        ):
-
-            flash(
-                "Type a question or upload a question file.",
-                "danger"
-            )
-
-            return redirect(
-                url_for("new_assignment")
-            )
-
-        payload = {
-            "student_id": user["id"],
-            "title": title,
-            "subject": subject,
-            "description": description,
-            "status": "pending"
-        }
-
-        response = supabase_request(
-            "POST",
-            "/rest/v1/assignments",
-            json=payload,
-            headers={
-                "Prefer": "return=representation"
-            }
-        )
-
-        if response.status_code not in (
-            200,
-            201
-        ):
-
-            logger.error(
-                "Assignment creation error: %s",
-                response.text
-            )
-
-            flash(
-                response_error(response),
-                "danger"
-            )
-
-            return redirect(
-                url_for("new_assignment")
-            )
-
-        data = response.json()
-
-        if not data:
-
-            flash(
-                "Assignment ID was not returned.",
-                "danger"
-            )
-
-            return redirect(
-                url_for("assignments")
-            )
-
-        assignment_id = data[0]["id"]
-
-        uploaded_file = request.files.get(
-            "question_file"
-        )
-
-        if uploaded_file and uploaded_file.filename:
-
-            success = upload_assignment_file(
-                assignment_id,
-                uploaded_file,
-                user["id"],
-                "question"
-            )
-
-            if not success:
-
-                # Remove assignment if its only
-                # purpose was an invalid upload.
-                supabase_request(
-                    "DELETE",
-                    "/rest/v1/assignments",
-                    params={
-                        "id":
-                            f"eq.{assignment_id}"
-                    }
-                )
-
-                return redirect(
-                    url_for("new_assignment")
-                )
-
-        flash(
-            "Assignment submitted successfully.",
-            "success-message"
-        )
-
-        return redirect(
-            url_for(
-                "assignment_detail",
-                assignment_id=assignment_id
-            )
-        )
-
-    body = """
-
-<div class="card">
-
-<h1>New Assignment</h1>
-
-<form
-    method="POST"
-    enctype="multipart/form-data"
->
-
-<label>
-Title
-</label>
-
-<input
-    type="text"
-    name="title"
-    placeholder="Example: Biology Assignment"
-    required
->
-
-<label>
-Subject
-</label>
-
-<input
-    type="text"
-    name="subject"
-    placeholder="Example: Biology"
->
-
-<label>
-Question
-</label>
-
-<textarea
-    name="description"
-    placeholder="Type your question here..."
-></textarea>
-
-<label>
-Upload Question
-</label>
-
-<input
-    type="file"
-    name="question_file"
-    accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
->
-
-<p class="small">
-Maximum file size: 10 MB.
-<br>
-Supported: PDF, Word and images.
-</p>
-
-<button type="submit">
-Submit Assignment
-</button>
-
-</form>
-
-</div>
-
-"""
-
-    return page(
-        "New Assignment",
-        body
-    )
-
-
-# ============================================================
-# UPLOAD FILE
-# ============================================================
-
-def upload_assignment_file(
-    assignment_id,
-    uploaded_file,
-    user_id,
-    file_type
-):
-
-    filename = secure_filename(
-        uploaded_file.filename
-    )
-
-    if not filename:
-
-        flash(
-            "Invalid file name.",
-            "danger"
-        )
-
-        return False
-
-    extension = ""
-
-    if "." in filename:
-
-        extension = filename.rsplit(
-            ".",
-            1
-        )[1].lower()
-
-    if extension not in ALLOWED_EXTENSIONS:
-
-        flash(
-            "Unsupported file type.",
-            "danger"
-        )
-
-        return False
-
-    file_bytes = uploaded_file.read()
-
-    if len(file_bytes) > MAX_FILE_SIZE:
-
-        flash(
-            "File is larger than 10 MB.",
-            "danger"
-        )
-
-        return False
-
-    storage_path = (
-        f"assignments/"
-        f"{assignment_id}/"
-        f"{file_type}/"
-        f"{uuid.uuid4()}-{filename}"
-    )
-
-    response = supabase_request(
-        "POST",
-        (
-            "/storage/v1/object/"
-            f"{STORAGE_BUCKET}/"
-            f"{storage_path}"
-        ),
-        data=file_bytes,
-        headers={
-            "Content-Type":
-                uploaded_file.mimetype
-                or "application/octet-stream"
-        }
-    )
-
-    if response.status_code not in (
-        200,
-        201
-    ):
-
-        logger.error(
-            "Storage upload error: %s",
-            response.text
-        )
-
-        flash(
-            "File upload failed: "
-            + response_error(response),
-            "danger"
-        )
-
-        return False
-
-    metadata = {
-        "assignment_id": assignment_id,
-        "uploaded_by": user_id,
-        "file_name": filename,
-        "file_path": storage_path,
-        "mime_type":
-            uploaded_file.mimetype
-            or "application/octet-stream",
-        "file_size": len(file_bytes),
-        "file_type": file_type,
-        "storage_bucket": STORAGE_BUCKET
-    }
-
-    db_response = supabase_request(
-        "POST",
-        "/rest/v1/assignment_files",
-        json=metadata,
-        headers={
-            "Prefer": "return=minimal"
-        }
-    )
-
-    if db_response.status_code not in (
-        200,
-        201
-    ):
-
-        logger.error(
-            "File metadata error: %s",
-            db_response.text
-        )
-
-        # Attempt to remove orphaned storage file.
-        supabase_request(
-            "DELETE",
-            (
-                "/storage/v1/object/"
-                f"{STORAGE_BUCKET}/"
-                f"{storage_path}"
-            )
-        )
-
-        flash(
-            "File database record failed.",
-            "danger"
-        )
-
-        return False
-
-    return True
-
-
-# ============================================================
-# ASSIGNMENT DETAIL
-# ============================================================
-
-@app.route(
-    "/assignments/<assignment_id>"
-)
-@login_required
-def assignment_detail(
-    assignment_id
-):
-
-    user = current_user()
-
-    response = supabase_request(
-        "GET",
-        "/rest/v1/assignments",
-        params={
-            "id":
-                f"eq.{assignment_id}",
-            "select": "*",
-            "limit": "1"
-        }
-    )
-
-    if response.status_code != 200:
-
-        flash(
-            "Unable to load assignment.",
-            "danger"
-        )
-
-        return redirect(
-            url_for("assignments")
-        )
-
-    data = response.json()
-
-    if not data:
-
-        flash(
-            "Assignment not found.",
-            "danger"
-        )
-
-        return redirect(
-            url_for("assignments")
-        )
-
-    assignment = data[0]
-
-    if (
-        assignment["student_id"]
-        != user["id"]
-        and user.get("role")
-        != "admin"
-    ):
-
-        flash(
-            "You cannot access this assignment.",
-            "danger"
-        )
-
-        return redirect(
-            url_for("assignments")
-        )
-
-    files_response = supabase_request(
-        "GET",
-        "/rest/v1/assignment_files",
-        params={
-            "assignment_id":
-                f"eq.{assignment_id}",
-            "select": "*",
-            "order": "created_at.asc"
-        }
-    )
-
-    files = []
-
-    if files_response.status_code == 200:
-
-        files = files_response.json()
-
-    messages_response = supabase_request(
-        "GET",
-        "/rest/v1/assignment_messages",
-        params={
-            "assignment_id":
-                f"eq.{assignment_id}",
-            "select": "*",
-            "order": "created_at.asc"
-        }
-    )
-
-    messages = []
-
-    if messages_response.status_code == 200:
-
-        messages = messages_response.json()
-
-    body = """
-
-<div class="card">
-
-<h1>
-{{ assignment.title }}
-</h1>
-
-<p>
-<strong>Subject:</strong>
-{{ assignment.subject or "Not specified" }}
-</p>
-
-<p>
-
-<strong>Status:</strong>
-
-<span class="status {{ assignment.status }}">
-{{ assignment.status.replace("_", " ") }}
-</span>
-
-</p>
-
-<p class="small">
-Created:
-{{ assignment.created_at }}
-</p>
-
-</div>
-
-
-<div class="card">
-
-<h2>Question</h2>
-
-{% if assignment.description %}
-
-<p>
-{{ assignment.description }}
-</p>
-
-{% else %}
-
-<p class="small">
-No typed question.
-See uploaded files below.
-</p>
-
-{% endif %}
-
-</div>
-
-
-<div class="card">
-
-<h2>Files</h2>
-
-{% for file in files %}
-
-<div class="file">
-
-<strong>
-{{ file.file_name }}
-</strong>
-
-<br>
-
-<span class="small">
-{{ file.file_type }}
-•
-{{ file.file_size }} bytes
-</span>
-
-<br><br>
-
-<a class="button secondary"
-   href="{{ url_for(
-       'download_assignment_file',
-       file_id=file.id
-   ) }}">
-Download
-</a>
-
-</div>
-
-{% else %}
-
-<p class="small">
-No files attached.
-</p>
-
-{% endfor %}
-
-</div>
-
-
-{% if assignment.answer_text %}
-
-<div class="card">
-
-<h2>KOJA Answer</h2>
-
-<p>
-{{ assignment.answer_text }}
-</p>
-
-</div>
-
-{% endif %}
-
-
-<div class="card">
-
-<h2>Chat</h2>
-
-{% for message in messages %}
-
-<div class="message
-{% if message.sender_id == user.id %}
-mine
-{% endif %}
-">
-
-<p>
-{{ message.message }}
-</p>
-
-<span class="small">
-{{ message.created_at }}
-</span>
-
-</div>
-
-{% else %}
-
-<p class="small">
-No messages yet.
-</p>
-
-{% endfor %}
-
-<form method="POST"
-      action="{{ url_for(
-          'assignment_message',
-          assignment_id=assignment.id
-      ) }}">
-
-<textarea
-    name="message"
-    placeholder="Write a message..."
-    required
-></textarea>
-
-<button type="submit">
-Send Message
-</button>
-
-</form>
-
-</div>
-
-
-{% if assignment.status == "approved" %}
-
-<div class="card">
-
-<h2>
-Answer Ready
-</h2>
-
-<p>
-Your assignment has been approved.
-</p>
-
-{% for file in files %}
-
-{% if file.file_type == "answer" %}
-
-<a class="button success"
-   href="{{ url_for(
-       'download_assignment_file',
-       file_id=file.id
-   ) }}">
-Download Answer
-</a>
-
-{% endif %}
-
-{% endfor %}
-
-</div>
-
-{% endif %}
-
-"""
-
-    return page(
-        "Assignment",
-        body,
-        assignment=assignment,
-        files=files,
-        messages=messages,
-        user=user
-    )
-
-
-# ============================================================
-# ASSIGNMENT CHAT
-# ============================================================
-
-@app.route(
-    "/assignments/<assignment_id>/message",
-    methods=["POST"]
-)
-@login_required
-def assignment_message(
-    assignment_id
-):
-
-    user = current_user()
-
-    message = request.form.get(
-        "message",
-        ""
-    ).strip()
-
-    if not message:
-
-        flash(
-            "Message cannot be empty.",
-            "danger"
-        )
-
-        return redirect(
-            url_for(
-                "assignment_detail",
-                assignment_id=assignment_id
-            )
-        )
-
-    response = supabase_request(
-        "GET",
-        "/rest/v1/assignments",
-        params={
-            "id":
-                f"eq.{assignment_id}",
-            "select":
-                "id,student_id",
-            "limit": "1"
-        }
-    )
-
-    if response.status_code != 200:
-
-        flash(
-            "Assignment could not be found.",
-            "danger"
-        )
-
-        return redirect(
-            url_for("assignments")
-        )
-
-    data = response.json()
-
-    if not data:
-
-        flash(
-            "Assignment not found.",
-            "danger"
-        )
-
-        return redirect(
-            url_for("assignments")
-        )
-
-    assignment = data[0]
-
-    if (
-        assignment["student_id"]
-        != user["id"]
-        and user.get("role")
-        != "admin"
-    ):
-
-        flash(
-            "You cannot message this assignment.",
-            "danger"
-        )
-
-        return redirect(
-            url_for("assignments")
-        )
-
-    payload = {
-        "assignment_id": assignment_id,
-        "sender_id": user["id"],
-        "message": message
-    }
-
-    response = supabase_request(
-        "POST",
-        "/rest/v1/assignment_messages",
-        json=payload,
-        headers={
-            "Prefer": "return=minimal"
-        }
-    )
-
-    if response.status_code not in (
-        200,
-        201
-    ):
-
-        logger.error(
-            "Message error: %s",
-            response.text
-        )
-
-        flash(
-            "Message could not be sent.",
-            "danger"
-        )
-
-    else:
-
-        flash(
-            "Message sent.",
-            "success-message"
-        )
-
-    return redirect(
-        url_for(
-            "assignment_detail",
-            assignment_id=assignment_id
-        )
-    )
-
-
-# ============================================================
-# ADMIN DASHBOARD
-# ============================================================
-
-@app.route("/admin")
-@admin_required
-def admin_dashboard():
-
-    response = supabase_request(
-        "GET",
-        "/rest/v1/assignments",
-        params={
-            "select": "*",
-            "order": "created_at.desc"
-        }
-    )
-
-    if response.status_code != 200:
-
-        assignments_data = []
-
-        flash(
-            "Unable to load assignments.",
-            "danger"
-        )
-
-    else:
-
-        assignments_data = response.json()
-
-    body = """
-
-<div class="card">
-
-<h1>
-KOJA AFRICA ADMIN
-</h1>
-
-<p>
-Assignment management centre.
-</p>
-
-</div>
-
-
-<div class="grid">
-
-<div class="service">
-
-<h2>
-Pending
-</h2>
-
-<strong>
-{{ counts.pending }}
-</strong>
-
-</div>
-
-<div class="service">
-
-<h2>
-In Progress
-</h2>
-
-<strong>
-{{ counts.in_progress }}
-</strong>
-
-</div>
-
-<div class="service">
-
-<h2>
-Completed
-</h2>
-
-<strong>
-{{ counts.completed }}
-</strong>
-
-</div>
-
-<div class="service">
-
-<h2>
-Approved
-</h2>
-
-<strong>
-{{ counts.approved }}
-</strong>
-
-</div>
-
-</div>
-
-
-{% for item in assignments_data %}
-
-<div class="card">
-
-<h2>
-{{ item.title }}
-</h2>
-
-<p>
-Subject:
-{{ item.subject or "Not specified" }}
-</p>
-
-<p>
-Student:
-{{ item.student_id }}
-</p>
-
-<p>
-
-<span class="status {{ item.status }}">
-{{ item.status.replace("_", " ") }}
-</span>
-
-</p>
-
-<a class="button"
-   href="{{ url_for(
-       'admin_assignment',
-       assignment_id=item.id
-   ) }}">
-Manage Assignment
-</a>
-
-</div>
-
-{% else %}
-
-<div class="card">
-
-<h2>
-No assignments
-</h2>
-
-</div>
-
-{% endfor %}
-
-"""
-
-    counts = {
-        "pending": 0,
-        "in_progress": 0,
-        "completed": 0,
-        "approved": 0,
-        "rejected": 0
-    }
-
-    for item in assignments_data:
-
-        status = item.get(
-            "status"
-        )
-
-        if status in counts:
-
-            counts[status] += 1
-
-    return page(
-        "Admin",
-        body,
-        assignments_data=assignments_data,
-        counts=counts
-    )
-
-
-# ============================================================
-# ADMIN ASSIGNMENT
-# ============================================================
-
-@app.route(
-    "/admin/assignments/<assignment_id>",
-    methods=["GET", "POST"]
-)
-@admin_required
-def admin_assignment(
-    assignment_id
-):
-
-    if request.method == "POST":
-
-        action = request.form.get(
-            "action",
-            ""
-        )
-
-        answer_text = request.form.get(
-            "answer_text",
-            ""
-        ).strip()
-
-        if action == "update":
-
-            status = request.form.get(
-                "status",
-                "pending"
-            )
-
-            allowed_statuses = {
-                "pending",
-                "in_progress",
-                "completed",
-                "approved",
-                "rejected"
-            }
-
-            if status not in allowed_statuses:
-
-                flash(
-                    "Invalid assignment status.",
-                    "danger"
-                )
-
-                return redirect(
-                    url_for(
-                        "admin_assignment",
-                        assignment_id=assignment_id
-                    )
-                )
-
-            payload = {
-                "status": status
-            }
-
-            if answer_text:
-
-                payload["answer_text"] = (
-                    answer_text
-                )
-
-            response = supabase_request(
-                "PATCH",
-                "/rest/v1/assignments",
-                params={
-                    "id":
-                        f"eq.{assignment_id}"
-                },
-                json=payload
-            )
-
-            if response.status_code not in (
-                200,
-                204
-            ):
-
-                logger.error(
-                    "Admin update error: %s",
-                    response.text
-                )
-
-                flash(
-                    "Assignment update failed.",
-                    "danger"
-                )
-
-            else:
-
-                flash(
-                    "Assignment updated.",
-                    "success-message"
-                )
-
-        elif action == "upload_answer":
-
-            uploaded_file = request.files.get(
-                "answer_file"
-            )
-
-            if not uploaded_file or not uploaded_file.filename:
-
-                flash(
-                    "Select an answer file.",
-                    "danger"
-                )
-
-            else:
-
-                success = upload_assignment_file(
-                    assignment_id,
-                    uploaded_file,
-                    current_user()["id"],
-                    "answer"
-                )
-
-                if success:
-
-                    flash(
-                        "Answer file uploaded.",
-                        "success-message"
-                    )
-
-        return redirect(
-            url_for(
-                "admin_assignment",
-                assignment_id=assignment_id
-            )
-        )
-
-    response = supabase_request(
-        "GET",
-        "/rest/v1/assignments",
-        params={
-            "id":
-                f"eq.{assignment_id}",
-            "select": "*",
-            "limit": "1"
-        }
-    )
-
-    if response.status_code != 200:
-
-        flash(
-            "Unable to load assignment.",
-            "danger"
-        )
-
-        return redirect(
-            url_for("admin_dashboard")
-        )
-
-    data = response.json()
-
-    if not data:
-
-        flash(
-            "Assignment not found.",
-            "danger"
-        )
-
-        return redirect(
-            url_for("admin_dashboard")
-        )
-
-    assignment = data[0]
-
-    files_response = supabase_request(
-        "GET",
-        "/rest/v1/assignment_files",
-        params={
-            "assignment_id":
-                f"eq.{assignment_id}",
-            "select": "*",
-            "order": "created_at.asc"
-        }
-    )
-
-    files = []
-
-    if files_response.status_code == 200:
-
-        files = files_response.json()
-
-    messages_response = supabase_request(
-        "GET",
-        "/rest/v1/assignment_messages",
-        params={
-            "assignment_id":
-                f"eq.{assignment_id}",
-            "select": "*",
-            "order": "created_at.asc"
-        }
-    )
-
-    messages = []
-
-    if messages_response.status_code == 200:
-
-        messages = messages_response.json()
-
-    body = """
-
-<div class="card">
-
-<h1>
-Manage Assignment
-</h1>
-
-<h2>
-{{ assignment.title }}
-</h2>
-
-<p>
-Subject:
-{{ assignment.subject or "Not specified" }}
-</p>
-
-<p>
-Student:
-{{ assignment.student_id }}
-</p>
-
-<p>
-Status:
-
-<span class="status {{ assignment.status }}">
-{{ assignment.status.replace("_", " ") }}
-</span>
-
-</p>
-
-</div>
-
-
-<div class="card">
-
-<h2>
-Question
-</h2>
-
-<p>
-{{ assignment.description or
-   "No typed question." }}
-</p>
-
-<h3>
-Files
-</h3>
-
-{% for file in files %}
-
-<div class="file">
-
-<strong>
-{{ file.file_name }}
-</strong>
-
-<br>
-
-<span class="small">
-{{ file.file_type }}
-</span>
-
-<br><br>
-
-<a class="button secondary"
-   href="{{ url_for(
-       'download_assignment_file',
-       file_id=file.id
-   ) }}">
-Open / Download
-</a>
-
-</div>
-
-{% endfor %}
-
-</div>
-
-
-<div class="card">
-
-<h2>
-Process Assignment
-</h2>
-
-<form method="POST">
-
-<input
-    type="hidden"
-    name="action"
-    value="update"
->
-
-<label>
-Status
-</label>
-
-<select name="status">
-
-<option
-{% if assignment.status == "pending" %}
-selected
-{% endif %}
-value="pending">
-Pending
-</option>
-
-<option
-{% if assignment.status == "in_progress" %}
-selected
-{% endif %}
-value="in_progress">
-In Progress
-</option>
-
-<option
-{% if assignment.status == "completed" %}
-selected
-{% endif %}
-value="completed">
-Completed
-</option>
-
-<option
-{% if assignment.status == "approved" %}
-selected
-{% endif %}
-value="approved">
-Approved
-</option>
-
-<option
-{% if assignment.status == "rejected" %}
-selected
-{% endif %}
-value="rejected">
-Rejected
-</option>
-
-</select>
-
-<label>
-Written Answer
-</label>
-
-<textarea
-    name="answer_text"
-    placeholder="Write the answer here..."
->{{ assignment.answer_text or "" }}</textarea>
-
-<button type="submit">
-Save / Update
-</button>
-
-</form>
-
-</div>
-
-
-<div class="card">
-
-<h2>
-Upload Answer
-</h2>
-
-<form
-    method="POST"
-    enctype="multipart/form-data"
->
-
-<input
-    type="hidden"
-    name="action"
-    value="upload_answer"
->
-
-<input
-    type="file"
-    name="answer_file"
-    accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
-    required
->
-
-<button type="submit">
-Upload Answer
-</button>
-
-</form>
-
-</div>
-
-
-<div class="card">
-
-<h2>
-Chat
-</h2>
-
-{% for message in messages %}
-
-<div class="message">
-
-<p>
-{{ message.message }}
-</p>
-
-<span class="small">
-{{ message.created_at }}
-</span>
-
-</div>
-
-{% else %}
-
-<p class="small">
-No messages yet.
-</p>
-
-{% endfor %}
-
-<form
-    method="POST"
-    action="{{ url_for(
-        'assignment_message',
-        assignment_id=assignment.id
-    ) }}"
->
-
-<textarea
-    name="message"
-    placeholder="Message the student..."
-    required
-></textarea>
-
-<button type="submit">
-Send Message
-</button>
-
-</form>
-
-</div>
-
-"""
-
-    return page(
-        "Manage Assignment",
-        body,
-        assignment=assignment,
-        files=files,
-        messages=messages
-    )
-
-
-# ============================================================
-# SECURE FILE DOWNLOAD
-# ============================================================
-
-@app.route(
-    "/assignment-files/<file_id>/download"
-)
-@login_required
-def download_assignment_file(
-    file_id
-):
-
-    user = current_user()
-
-    response = supabase_request(
-        "GET",
-        "/rest/v1/assignment_files",
-        params={
-            "id":
-                f"eq.{file_id}",
-            "select": "*",
-            "limit": "1"
-        }
-    )
-
-    if response.status_code != 200:
-
-        flash(
-            "Unable to find file.",
-            "danger"
-        )
-
-        return redirect(
-            url_for("dashboard")
-        )
-
-    data = response.json()
-
-    if not data:
-
-        flash(
-            "File not found.",
-            "danger"
-        )
-
-        return redirect(
-            url_for("dashboard")
-        )
-
-    file_record = data[0]
-
-    assignment_id = file_record[
-        "assignment_id"
-    ]
-
-    assignment_response = supabase_request(
-        "GET",
-        "/rest/v1/assignments",
-        params={
-            "id":
-                f"eq.{assignment_id}",
-            "select":
-                "id,student_id,status",
-            "limit": "1"
-        }
-    )
-
-    if assignment_response.status_code != 200:
-
-        flash(
-            "Unable to verify file access.",
-            "danger"
-        )
-
-        return redirect(
-            url_for("dashboard")
-        )
-
-    assignments_data = (
-        assignment_response.json()
-    )
-
-    if not assignments_data:
-
-        flash(
-            "Assignment not found.",
-            "danger"
-        )
-
-        return redirect(
-            url_for("dashboard")
-        )
-
-    assignment = assignments_data[0]
-
-    authorized = (
-        assignment["student_id"]
-        == user["id"]
-        or user.get("role")
-        == "admin"
-    )
-
-    if not authorized:
-
-        flash(
-            "You are not authorized to download this file.",
-            "danger"
-        )
-
-        return redirect(
-            url_for("dashboard")
-        )
-
-    # --------------------------------------------------------
-    # Generate a short-lived signed URL
-    # --------------------------------------------------------
-
-    bucket = file_record.get(
-        "storage_bucket"
-    ) or STORAGE_BUCKET
-
-    path = file_record[
-        "file_path"
-    ]
-
-    signed_response = supabase_request(
-        "POST",
-        (
-            "/storage/v1/object/sign/"
-            f"{bucket}/{path}"
-        ),
-        json={
-            "expiresIn": 300
-        }
-    )
-
-    if signed_response.status_code != 200:
-
-        logger.error(
-            "Signed URL error: %s",
-            signed_response.text
-        )
-
-        # Fallback to direct authenticated download.
-        download_response = supabase_request(
-            "GET",
-            (
-                "/storage/v1/object/"
-                f"{bucket}/{path}"
-            ),
-            headers={}
-        )
-
-        if download_response.status_code != 200:
-
-            flash(
-                "File download failed.",
-                "danger"
-            )
-
-            return redirect(
-                url_for(
-                    "assignment_detail",
-                    assignment_id=assignment_id
-                )
-            )
-
-        from io import BytesIO
-
-        return send_file(
-            BytesIO(
-                download_response.content
-            ),
-            mimetype=(
-                file_record.get(
-                    "mime_type"
-                )
-                or "application/octet-stream"
-            ),
-            as_attachment=True,
-            download_name=file_record[
-                "file_name"
-            ]
-        )
-
-    signed_data = signed_response.json()
-
-    signed_url = (
-        signed_data.get("signedURL")
-        or signed_data.get("signedUrl")
-    )
-
-    if not signed_url:
-
-        flash(
-            "Secure download URL was not generated.",
-            "danger"
-        )
-
-        return redirect(
-            url_for(
-                "assignment_detail",
-                assignment_id=assignment_id
-            )
-        )
-
-    if signed_url.startswith("/"):
-
-        signed_url = (
-            f"{SUPABASE_URL}/storage/v1"
-            f"{signed_url}"
-        )
-
-    file_response = requests.get(
-        signed_url,
-        timeout=40
-    )
-
-    if file_response.status_code != 200:
-
-        flash(
-            "Unable to download file.",
-            "danger"
-        )
-
-        return redirect(
-            url_for(
-                "assignment_detail",
-                assignment_id=assignment_id
-            )
-        )
-
-    from io import BytesIO
-
-    return send_file(
-        BytesIO(
-            file_response.content
-        ),
-        mimetype=(
-            file_record.get(
-                "mime_type"
-            )
-            or "application/octet-stream"
-        ),
-        as_attachment=True,
-        download_name=file_record[
-            "file_name"
-        ]
-    )
-
-
-# ============================================================
-# LOGOUT
-# ============================================================
-
-@app.route("/logout")
-def logout():
-
-    session.clear()
-
-    flash(
-        "You have been logged out.",
-        "success-message"
-    )
-
-    return redirect(
-        url_for("home")
-    )
-
-
-# ============================================================
-# HEALTH
+# HEALTH CHECK
 # ============================================================
 
 @app.route("/health")
 def health():
 
-    return {
-        "status": "ok",
-        "application": "KOJA AFRICA",
-        "version": "2.0"
-    }
-
-
-# ============================================================
-# ERROR HANDLERS
-# ============================================================
-
-@app.errorhandler(404)
-def not_found(error):
-
-    return page(
-        "Not Found",
-        """
-<div class="card">
-
-<h1>
-Page Not Found
-</h1>
-
-<p>
-The requested page does not exist.
-</p>
-
-<a class="button"
-   href="/">
-Return Home
-</a>
-
-</div>
-"""
-    ), 404
-
-
-@app.errorhandler(500)
-def server_error(error):
-
-    logger.exception(
-        "Internal server error"
-    )
-
-    return page(
-        "Server Error",
-        """
-<div class="card">
-
-<h1>
-KOJA Server Error
-</h1>
-
-<p>
-An unexpected server error occurred.
-</p>
-
-<p class="small">
-Check the Render logs for the exact
-technical error.
-</p>
-
-<a class="button"
-   href="/">
-Return Home
-</a>
-
-</div>
-"""
-    ), 500
+    return jsonify({
+        "status":
+            "ok",
+        "app":
+            "KOJA AFRICA"
+    })
 
 
 # ============================================================
@@ -3208,6 +4292,5 @@ if __name__ == "__main__":
 
     app.run(
         host="0.0.0.0",
-        port=port,
-        debug=False
+        port=port
     )
