@@ -27,7 +27,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY", os.getenv("SUPABASE_SERVICE_ROLE_KEY", os.getenv("SUPABASE_PUBLISHABLE_KEY", "")))
 STORAGE_BUCKET = os.getenv("KOJA_STORAGE_BUCKET", "koja-files")
 ADMIN_EMAILS = {x.strip().lower() for x in os.getenv("KOJA_ADMIN_EMAILS", "admin@koja.africa").split(",") if x.strip()}
-ADMIN_PASSWORD_HASH = os.getenv("KOJA_ADMIN_PASSWORD_HASH", "")
+ADMIN_PASSWORD = os.getenv("KOJA_ADMIN_PASSWORD", "")
 ADMIN_SESSION_SECONDS = int(os.getenv("KOJA_ADMIN_SESSION_SECONDS", "28800"))
 ADMIN_MAX_LOGIN_ATTEMPTS = int(os.getenv("KOJA_ADMIN_MAX_LOGIN_ATTEMPTS", "5"))
 ADMIN_LOCKOUT_SECONDS = int(os.getenv("KOJA_ADMIN_LOCKOUT_SECONDS", "900"))
@@ -863,7 +863,7 @@ def admin_login():
         email=request.form.get("email","").strip().lower()
         password=request.form.get("password","")
         valid_email=email in ADMIN_EMAILS
-        valid_password=bool(ADMIN_PASSWORD_HASH) and check_password_hash(ADMIN_PASSWORD_HASH, password)
+        valid_password=bool(ADMIN_PASSWORD) and secrets.compare_digest(password, ADMIN_PASSWORD)
         if not valid_email or not valid_password:
             _admin_login_failed(ip)
             flash("Invalid administrator credentials.")
