@@ -297,6 +297,27 @@ BASE = """
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="anonymous"><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="anonymous"></script>
 <style>
 *{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;background:#f4f7fb;color:#172033}nav{background:#101827;color:#fff;padding:14px 4%;display:flex;gap:14px;align-items:center;flex-wrap:wrap}nav a{color:#fff;text-decoration:none}nav .brand{font-size:21px;font-weight:800;margin-right:auto}.wrap{max-width:1150px;margin:22px auto;padding:0 15px}.hero{background:linear-gradient(135deg,#0f172a,#164e63);color:#fff;padding:32px;border-radius:20px;margin-bottom:20px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}.card{background:#fff;border-radius:16px;padding:18px;box-shadow:0 5px 20px #0000000d;margin-bottom:16px}input,textarea,select{width:100%;padding:12px;border:1px solid #d5dbe5;border-radius:10px;margin:6px 0 12px}button,.btn{background:#0f766e;color:#fff;border:0;padding:11px 16px;border-radius:10px;text-decoration:none;display:inline-block;cursor:pointer}button.secondary,.btn.secondary{background:#334155}button.danger,.btn.danger{background:#b91c1c}.muted{color:#64748b}.ok{color:#15803d}.error{color:#b91c1c}.pill{display:inline-block;padding:5px 9px;border-radius:999px;background:#e2e8f0;margin:3px}.map{height:430px;border-radius:15px;background:#dbeafe;overflow:hidden}.leaflet-map{height:430px;width:100%;border-radius:15px}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.stat{font-size:28px;font-weight:800}.flash{padding:12px;border-radius:10px;background:#fff3cd;margin-bottom:10px}.small{font-size:13px}.driver{border:1px solid #e2e8f0;border-radius:12px;padding:12px;margin:8px 0}.table{width:100%;border-collapse:collapse}.table td,.table th{padding:9px;border-bottom:1px solid #e5e7eb;text-align:left}@media(max-width:600px){.hero{padding:22px}.map{height:350px}}
+
+/* Google-friendly lightweight animations: CSS only, no external animation library. */
+@media (prefers-reduced-motion: no-preference){
+  body{animation:pageFade .35s ease-out both}
+  .hero{animation:heroIn .55s ease-out both}
+  .card,.driver,.flash,.table{animation:contentIn .45s ease-out both}
+  .grid>.card:nth-child(2){animation-delay:.05s}
+  .grid>.card:nth-child(3){animation-delay:.1s}
+  .grid>.card:nth-child(4){animation-delay:.15s}
+  nav a{transition:opacity .2s ease,transform .2s ease}
+  nav a:hover{opacity:.85;transform:translateY(-1px)}
+  .btn,button{transition:transform .2s ease,box-shadow .2s ease,opacity .2s ease}
+  .btn:hover,button:hover{transform:translateY(-2px);box-shadow:0 5px 14px #0002}
+  .btn:active,button:active{transform:translateY(0)}
+}
+@keyframes pageFade{from{opacity:.96}to{opacity:1}}
+@keyframes heroIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes contentIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+@media(max-width:600px){
+  @media (prefers-reduced-motion: no-preference){.hero{animation-duration:.4s}.card,.driver,.flash,.table{animation-duration:.35s}}
+}
 </style></head><body><nav><a class=brand href="{{url_for('home')}}">KOJA AFRICA</a><a href="{{url_for('home')}}">Home</a><a href="{{url_for('assignments')}}">Assignments</a><a href="{{url_for('services')}}">Services</a><a href="{{url_for('documents')}}">Documents</a><a href="{{url_for('delivery')}}">Delivery</a>{% if user %}<a href="{{url_for('dashboard')}}">Dashboard</a><a href="{{url_for('driver_register')}}">Driver</a>{% if admin %}<a href="{{url_for('admin')}}">Admin</a>{% endif %}<a href="{{url_for('logout')}}">Logout</a>{% else %}<a href="{{url_for('login')}}">Login</a><a href="{{url_for('register')}}">Create Account</a>{% endif %}<a class="btn secondary" href="{{url_for('admin_login')}}">Admin</a></nav><main class=wrap>{% with messages=get_flashed_messages() %}{% for m in messages %}<div class=flash>{{m}}</div>{% endfor %}{% endwith %}{{body|safe}}</main></body></html>
 """
 
