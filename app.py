@@ -15,6 +15,10 @@ from werkzeug.utils import secure_filename
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 app.secret_key = os.getenv("KOJA_SECRET_KEY", os.getenv("SECRET_KEY", secrets.token_hex(32)))
+app.config['SESSION_COOKIE_SECURE'] = os.getenv('SESSION_COOKIE_SECURE','true').lower() == 'true'
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.permanent_session_lifetime = __import__('datetime').timedelta(days=30)
 app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
@@ -89,13 +93,18 @@ def storage_delete(path):
 def now_iso(): return datetime.now(timezone.utc).isoformat()
 
 
-def current_user(): return session.get("user")
+def current_user():
+    # Public KOJA mode: every browser receives a stable guest UUID.
+    # No login or account creation is required for customer/driver workflows.
+    if not session.get("guest_id"):
+        session["guest_id"] = str(uuid.uuid4())
+    return session.setdefault("user", {"id": session["guest_id"], "email": "", "full_name": "Guest", "role": "customer"})
 
 
 def login_required(fn):
     @wraps(fn)
     def wrapped(*a, **kw):
-        if not current_user(): return redirect(url_for("login", next=request.path))
+        current_user()
         return fn(*a, **kw)
     return wrapped
 
@@ -103,8 +112,10 @@ def login_required(fn):
 def admin_required(fn):
     @wraps(fn)
     def wrapped(*a, **kw):
-        u = current_user()
-        if not u or not is_admin(u): return redirect(url_for("login"))
+        secret = os.getenv("KOJA_ADMIN_SECRET", "")
+        supplied = request.args.get("admin_key", "") or request.headers.get("X-KOJA-ADMIN", "")
+        if not secret or supplied != secret:
+            return jsonify(error="Admin access denied. Set KOJA_ADMIN_SECRET and provide admin_key."), 403
         return fn(*a, **kw)
     return wrapped
 
@@ -145,9 +156,17 @@ def get_driver_for_user(user_id):
 def active_driver_locations():
     rows, _ = sb_select("driver_locations", {"is_online":"eq.true", "order":"created_at.desc", "limit":"500"})
     latest = {}
+    now = datetime.now(timezone.utc)
     for r in rows or []:
         key = r.get("driver_id") or r.get("user_id")
-        if key and key not in latest: latest[key] = r
+        if not key or key in latest: continue
+        try:
+            ts = datetime.fromisoformat(str(r.get("created_at")).replace("Z", "+00:00"))
+            if (now - ts).total_seconds() > 120:
+                continue
+        except Exception:
+            pass
+        latest[key] = r
     return list(latest.values())
 
 # ------------------------------------------------------------
@@ -171,16 +190,36 @@ create index if not exists driver_locations_driver_id_idx on public.driver_locat
 create index if not exists driver_locations_created_at_idx on public.driver_locations(created_at desc);
 create index if not exists driver_locations_online_idx on public.driver_locations(is_online);
 """
+DELIVERY_SETUP_SQL = DRIVER_LOCATION_SQL + """
+create table if not exists public.deliveries (
+ id uuid primary key default gen_random_uuid(),
+ customer_id uuid,
+ driver_id uuid,
+ pickup_address text not null,
+ delivery_address text not null,
+ pickup_latitude double precision,
+ pickup_longitude double precision,
+ status text not null default 'requested',
+ tracking_code text unique not null,
+ created_at timestamptz default now(),
+ updated_at timestamptz default now()
+);
+create index if not exists deliveries_driver_id_idx on public.deliveries(driver_id);
+create index if not exists deliveries_customer_id_idx on public.deliveries(customer_id);
+create index if not exists deliveries_tracking_code_idx on public.deliveries(tracking_code);
+create index if not exists deliveries_status_idx on public.deliveries(status);
+"""
+
 
 # ------------------------------------------------------------
 # UI
 # ------------------------------------------------------------
 BASE = """
 <!doctype html><html><head><meta name=viewport content='width=device-width,initial-scale=1'>
-<title>{{title}} · KOJA AFRICA</title>
+<title>{{title}} · KOJA AFRICA</title><link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="anonymous"><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="anonymous"></script>
 <style>
-*{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;background:#f4f7fb;color:#172033}nav{background:#101827;color:#fff;padding:14px 4%;display:flex;gap:14px;align-items:center;flex-wrap:wrap}nav a{color:#fff;text-decoration:none}nav .brand{font-size:21px;font-weight:800;margin-right:auto}.wrap{max-width:1150px;margin:22px auto;padding:0 15px}.hero{background:linear-gradient(135deg,#0f172a,#164e63);color:#fff;padding:32px;border-radius:20px;margin-bottom:20px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}.card{background:#fff;border-radius:16px;padding:18px;box-shadow:0 5px 20px #0000000d;margin-bottom:16px}input,textarea,select{width:100%;padding:12px;border:1px solid #d5dbe5;border-radius:10px;margin:6px 0 12px}button,.btn{background:#0f766e;color:#fff;border:0;padding:11px 16px;border-radius:10px;text-decoration:none;display:inline-block;cursor:pointer}button.secondary,.btn.secondary{background:#334155}button.danger,.btn.danger{background:#b91c1c}.muted{color:#64748b}.ok{color:#15803d}.error{color:#b91c1c}.pill{display:inline-block;padding:5px 9px;border-radius:999px;background:#e2e8f0;margin:3px}.map{height:430px;border-radius:15px;background:#dbeafe;overflow:hidden}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.stat{font-size:28px;font-weight:800}.flash{padding:12px;border-radius:10px;background:#fff3cd;margin-bottom:10px}.small{font-size:13px}.driver{border:1px solid #e2e8f0;border-radius:12px;padding:12px;margin:8px 0}.table{width:100%;border-collapse:collapse}.table td,.table th{padding:9px;border-bottom:1px solid #e5e7eb;text-align:left}@media(max-width:600px){.hero{padding:22px}.map{height:350px}}
-</style></head><body><nav><a class=brand href="{{url_for('home')}}">KOJA AFRICA</a><a href="{{url_for('home')}}">Home</a><a href="{{url_for('delivery')}}">Delivery</a><a href="{{url_for('assignments')}}">Assignments</a><a href="{{url_for('services')}}">Services</a>{% if user %}<a href="{{url_for('dashboard')}}">Dashboard</a>{% if admin %}<a href="{{url_for('admin')}}">Admin</a>{% endif %}<a href="{{url_for('logout')}}">Logout</a>{% else %}<a href="{{url_for('login')}}">Login</a><a href="{{url_for('register')}}">Create account</a>{% endif %}</nav><main class=wrap>{% with messages=get_flashed_messages() %}{% for m in messages %}<div class=flash>{{m}}</div>{% endfor %}{% endwith %}{{body|safe}}</main></body></html>
+*{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;background:#f4f7fb;color:#172033}nav{background:#101827;color:#fff;padding:14px 4%;display:flex;gap:14px;align-items:center;flex-wrap:wrap}nav a{color:#fff;text-decoration:none}nav .brand{font-size:21px;font-weight:800;margin-right:auto}.wrap{max-width:1150px;margin:22px auto;padding:0 15px}.hero{background:linear-gradient(135deg,#0f172a,#164e63);color:#fff;padding:32px;border-radius:20px;margin-bottom:20px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}.card{background:#fff;border-radius:16px;padding:18px;box-shadow:0 5px 20px #0000000d;margin-bottom:16px}input,textarea,select{width:100%;padding:12px;border:1px solid #d5dbe5;border-radius:10px;margin:6px 0 12px}button,.btn{background:#0f766e;color:#fff;border:0;padding:11px 16px;border-radius:10px;text-decoration:none;display:inline-block;cursor:pointer}button.secondary,.btn.secondary{background:#334155}button.danger,.btn.danger{background:#b91c1c}.muted{color:#64748b}.ok{color:#15803d}.error{color:#b91c1c}.pill{display:inline-block;padding:5px 9px;border-radius:999px;background:#e2e8f0;margin:3px}.map{height:430px;border-radius:15px;background:#dbeafe;overflow:hidden}.leaflet-map{height:430px;width:100%;border-radius:15px}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.stat{font-size:28px;font-weight:800}.flash{padding:12px;border-radius:10px;background:#fff3cd;margin-bottom:10px}.small{font-size:13px}.driver{border:1px solid #e2e8f0;border-radius:12px;padding:12px;margin:8px 0}.table{width:100%;border-collapse:collapse}.table td,.table th{padding:9px;border-bottom:1px solid #e5e7eb;text-align:left}@media(max-width:600px){.hero{padding:22px}.map{height:350px}}
+</style></head><body><nav><a class=brand href="{{url_for('home')}}">KOJA AFRICA</a><a href="{{url_for('home')}}">Home</a><a href="{{url_for('delivery')}}">Delivery</a><a href="{{url_for('assignments')}}">Assignments</a><a href="{{url_for('services')}}">Services</a><a href="{{url_for('dashboard')}}">Dashboard</a><a href="{{url_for('driver_register')}}">Become a Driver</a></nav><main class=wrap>{% with messages=get_flashed_messages() %}{% for m in messages %}<div class=flash>{{m}}</div>{% endfor %}{% endwith %}{{body|safe}}</main></body></html>
 """
 
 def page(title, body, **ctx):
@@ -192,49 +231,20 @@ def page(title, body, **ctx):
 @app.route("/")
 def home():
     return page("Home", """
-    <section class=hero><h1>KOJA AFRICA</h1><p>Knowledge • Questions • Answers • Services • Delivery</p><div class=row><a class=btn href='{{url_for("delivery")}}'>Start Delivery</a><a class='btn secondary' href='{{url_for("assignments")}}'>Assignments</a></div></section>
+    <section class=hero><h1>KOJA AFRICA</h1><p>Knowledge • Questions • Answers • Services • Live Delivery</p><p>No login or account creation required.</p><div class=row><a class=btn href='{{url_for("delivery")}}'>Start Delivery</a><a class='btn secondary' href='{{url_for("assignments")}}'>Assignments</a></div></section>
     <div class=grid><div class=card><h3>Live Delivery</h3><p>Find nearby online drivers, request delivery and track an accepted driver.</p></div><div class=card><h3>Academic</h3><p>Submit assignments and manage answered files.</p></div><div class=card><h3>Professional Services</h3><p>Doctors, teachers/tutors and CV support.</p></div><div class=card><h3>Business & Farmers</h3><p>Registration and service workflows in one portal.</p></div></div>
     """)
 
-@app.route("/register", methods=["GET","POST"])
-def register():
-    if request.method == "POST":
-        email=request.form.get("email","").strip().lower(); password=request.form.get("password",""); name=request.form.get("full_name","").strip(); phone=request.form.get("phone","").strip()
-        if not email or len(password)<6 or not name:
-            flash("Enter your name, email and a password of at least 6 characters."); return redirect(url_for("register"))
-        auth,err=supabase_auth("signup",{"email":email,"password":password,"data":{"full_name":name,"phone":phone}})
-        if err: flash("Registration failed: "+err); return redirect(url_for("register"))
-        au=auth.get("user") or {}; uid=au.get("id")
-        if not uid: flash("Registration failed: Supabase did not return a user ID."); return redirect(url_for("register"))
-        row={"id":uid,"full_name":name,"email":email,"phone":phone,"role":"customer","created_at":now_iso()}
-        data,err=sb_insert("profiles",row)
-        if err: flash("Account created, but profile setup failed: "+err); return redirect(url_for("login"))
-        if auth.get("access_token"):
-            session["user"]={"id":uid,"email":email,"full_name":name,"role":"customer"}; session["supabase_access_token"]=auth["access_token"]; return redirect(url_for("dashboard"))
-        flash("Account created. Check your email if confirmation is required, then log in."); return redirect(url_for("login"))
-    return page("Create account", """<div class=card><h2>Create account</h2><form method=post><label>Full name</label><input name=full_name required><label>Phone</label><input name=phone><label>Email</label><input type=email name=email required><label>Password</label><input type=password name=password minlength=6 required><button>Create account</button></form></div>""")
-
-@app.route("/login", methods=["GET","POST"])
-def login():
-    if request.method == "POST":
-        email=request.form.get("email","").strip().lower(); password=request.form.get("password","")
-        auth,err=supabase_auth("token?grant_type=password",{"email":email,"password":password})
-        if err: flash("Invalid email or password."); return redirect(url_for("login"))
-        au=auth.get("user") or {}; uid=au.get("id")
-        if not uid: flash("Login failed."); return redirect(url_for("login"))
-        profile=user_profile(uid)
-        session["user"]={"id":uid,"email":au.get("email",email),"full_name":profile.get("full_name") or email,"role":profile.get("role","customer")}; session["supabase_access_token"]=auth.get("access_token")
-        return redirect(request.args.get("next") or url_for("dashboard"))
-    return page("Login", """<div class=card><h2>Login</h2><form method=post><label>Email</label><input type=email name=email required><label>Password</label><input type=password name=password required><button>Login</button></form><p>No account? <a href='{{url_for("register")}}'>Create one</a></p></div>""")
-
+# Login and account creation are intentionally removed. KOJA uses public browser sessions.
 @app.route("/logout")
-def logout(): session.clear(); return redirect(url_for("home"))
+def logout():
+    session.clear()
+    return redirect(url_for("home"))
 
 @app.route("/dashboard")
-@login_required
 def dashboard():
     u=current_user(); d=get_driver_for_user(u["id"])
-    return page("Dashboard", """<div class=hero><h2>Welcome, {{user.full_name}}</h2><p>{{user.email}}</p></div><div class=grid><div class=card><h3>Delivery</h3><a class=btn href='{{url_for("delivery")}}'>Open delivery</a></div><div class=card><h3>Driver</h3>{% if driver %}<p>Status: <b>{{driver.get('status','pending')}}</b></p><a class=btn href='{{url_for("driver_panel")}}'>Driver panel</a>{% else %}<p>Register to become a driver.</p><a class=btn href='{{url_for("driver_register")}}'>Register driver</a>{% endif %}</div><div class=card><h3>Assignments</h3><a class=btn href='{{url_for("assignments")}}'>Open assignments</a></div></div>""", user=u, driver=d)
+    return page("Dashboard", """<div class=hero><h2>KOJA AFRICA Dashboard</h2><p>No login required. Start a service immediately.</p></div><div class=grid><div class=card><h3>Live Delivery</h3><p>Find online drivers and track deliveries live.</p><a class=btn href='{{url_for("delivery")}}'>Start Delivery</a></div><div class=card><h3>Driver</h3>{% if driver %}<p>Status: <b>{{driver.get('status','pending')}}</b></p><a class=btn href='{{url_for("driver_panel")}}'>Driver panel</a>{% else %}<p>Register this device as a driver.</p><a class=btn href='{{url_for("driver_register")}}'>Become a Driver</a>{% endif %}</div><div class=card><h3>Assignments</h3><a class=btn href='{{url_for("assignments")}}'>Submit Assignment</a></div><div class=card><h3>Services</h3><a class=btn href='{{url_for("services")}}'>Open Services</a></div></div>""", user=u, driver=d)
 
 # ------------------------------------------------------------
 # Driver registration / GPS
@@ -259,13 +269,15 @@ def driver_register():
 def driver_panel():
     d=get_driver_for_user(current_user()["id"])
     if not d: return redirect(url_for("driver_register"))
-    return page("Driver panel", """<div class=card><h2>Driver panel</h2><p>Vehicle: {{driver.get('vehicle_type','')}} {{driver.get('vehicle_number','')}}</p><p>Approval: <b>{{driver.get('status','pending')}}</b></p>{% if driver.get('status','pending')|lower in ['approved','active'] %}<div class=row><button id=online onclick='setOnline(true)'>Go Online</button><button class=secondary onclick='setOnline(false)'>Go Offline</button></div><p id=state class=muted>GPS is waiting.</p><div id=map class=map></div>{% else %}<p class=muted>Admin approval is required before accepting deliveries.</p>{% endif %}</div>
+    return page("Driver panel", """<div class=card><h2>Driver panel</h2><p>Vehicle: {{driver.get('vehicle_type','')}} {{driver.get('vehicle_number','')}}</p><p>Approval: <b>{{driver.get('status','pending')}}</b></p>{% if driver.get('status','pending')|lower in ['approved','active'] %}<div class=row><button id=online onclick='setOnline(true)'>Go Online</button><button class=secondary onclick='setOnline(false)'>Go Offline</button></div><p id=state class=muted>GPS is waiting.</p><div id=map class='map leaflet-map'></div>{% else %}<p class=muted>Admin approval is required before accepting deliveries.</p>{% endif %}</div>
     <div class=card><h3>Incoming deliveries</h3><div id=reqs>Loading...</div></div>
     <script>
     let watch=null, online=false;
     async function setOnline(v){const r=await fetch('/api/driver/online',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({online:v})}); const j=await r.json(); if(!r.ok){alert(j.error||'Failed');return} online=v; document.getElementById('state').textContent=v?'Online — sharing GPS when permission is granted.':'Offline'; if(v) startGPS(); else if(watch!==null){navigator.geolocation.clearWatch(watch);watch=null}}
-    function startGPS(){if(!navigator.geolocation){alert('This browser does not support GPS');return} watch=navigator.geolocation.watchPosition(async p=>{const c=p.coords; await fetch('/api/driver/location',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({latitude:c.latitude,longitude:c.longitude,accuracy:c.accuracy,speed:c.speed,heading:c.heading,altitude:c.altitude})}); document.getElementById('map').innerHTML='<div style="padding:20px"><b>Current GPS</b><br>Latitude: '+c.latitude.toFixed(6)+'<br>Longitude: '+c.longitude.toFixed(6)+'<br>Accuracy: '+Math.round(c.accuracy||0)+' m</div>'},e=>document.getElementById('state').textContent='GPS error: '+e.message,{enableHighAccuracy:true,maximumAge:5000,timeout:15000})}
-    async function loadReqs(){let r=await fetch('/api/driver/requests');let j=await r.json();let el=document.getElementById('reqs'); if(!j.requests||!j.requests.length){el.innerHTML='<p class=muted>No delivery requests.</p>';return} el.innerHTML=j.requests.map(x=>'<div class=driver><b>'+x.tracking_code+'</b><br>'+x.pickup_address+' → '+x.delivery_address+'<br>Status: '+x.status+'<br><button onclick="act(\''+x.id+'\',\'accepted\')">Accept</button> <button class=secondary onclick="act(\''+x.id+'\',\'rejected\')">Reject</button></div>').join('')}
+    let driverMap=null, driverMarker=null;
+function initDriverMap(){ if(!driverMap){driverMap=L.map('map').setView([-15.4167,28.2833],12); L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(driverMap);} }
+function startGPS(){initDriverMap();if(!navigator.geolocation){alert('This browser does not support GPS');return} watch=navigator.geolocation.watchPosition(async p=>{const c=p.coords; const r=await fetch('/api/driver/location',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({latitude:c.latitude,longitude:c.longitude,accuracy:c.accuracy,speed:c.speed,heading:c.heading,altitude:c.altitude})}); if(!r.ok){document.getElementById('state').textContent='GPS upload failed';return} if(driverMarker) driverMarker.setLatLng([c.latitude,c.longitude]); else {driverMarker=L.marker([c.latitude,c.longitude]).addTo(driverMap).bindPopup('Your live location');} driverMap.setView([c.latitude,c.longitude],15); document.getElementById('state').textContent='LIVE GPS • '+c.latitude.toFixed(6)+', '+c.longitude.toFixed(6)+' • accuracy '+Math.round(c.accuracy||0)+' m'},e=>document.getElementById('state').textContent='GPS error: '+e.message,{enableHighAccuracy:true,maximumAge:3000,timeout:15000})}
+    async function loadReqs(){let r=await fetch('/api/driver/requests');let j=await r.json();let el=document.getElementById('reqs');if(!j.requests||!j.requests.length){el.innerHTML='<p class=muted>No delivery requests.</p>';return}el.innerHTML=j.requests.map(x=>{let b='';if(x.status==='requested')b='<button onclick="act(\''+x.id+'\',\'accepted\')">Accept</button> <button class=secondary onclick="act(\''+x.id+'\',\'rejected\')">Reject</button>';else if(x.status==='accepted')b='<button onclick="act(\''+x.id+'\',\'picked_up\')">Pick Up</button>';else if(x.status==='picked_up')b='<button onclick="act(\''+x.id+'\',\'in_transit\')">Start In Transit</button>';else if(x.status==='in_transit')b='<button onclick="act(\''+x.id+'\',\'delivered\')">Mark Delivered</button>';return '<div class=driver><b>'+x.tracking_code+'</b><br>'+x.pickup_address+' → '+x.delivery_address+'<br>Status: <b>'+x.status+'</b><br>'+b+'</div>'}).join('')}
     async function act(id,status){await fetch('/api/deliveries/'+id+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});loadReqs()} loadReqs(); setInterval(loadReqs,7000);
     </script>""", driver=d)
 
@@ -321,15 +333,16 @@ DELIVERY_STATUSES={"requested","accepted","rejected","picked_up","in_transit","d
 
 @app.route("/delivery")
 def delivery():
-    return page("Delivery", """<div class=hero><h2>KOJA Live Delivery</h2><p>Use your current location to discover nearby online drivers.</p></div><div class=card><label>Pickup address</label><input id=pickup placeholder='Shop / pickup location'><label>Delivery address</label><input id=drop placeholder='Customer destination'><div class=row><button onclick='locate()'>Use Current Location</button><button class=secondary onclick='findDrivers()'>Find Nearby Drivers</button></div><p id=msg class=muted></p><div id=drivers></div></div><div class=card><h3>Live map</h3><div id=map class=map><div style="padding:20px">GPS map view will appear here.</div></div></div><div class=card><h3>Track delivery</h3><input id=code placeholder='Enter tracking code'><button onclick='track()'>Track</button><div id=track></div></div><script>
-let pos=null, chosen=null, timer=null;
-function locate(){if(!navigator.geolocation){msg('GPS unavailable');return}navigator.geolocation.getCurrentPosition(p=>{pos=p.coords;document.getElementById('pickup').value='Current GPS: '+p.coords.latitude.toFixed(6)+', '+p.coords.longitude.toFixed(6);msg('Location acquired.');findDrivers()},e=>msg('GPS error: '+e.message),{enableHighAccuracy:true,timeout:15000,maximumAge:5000})}
+    return page("Delivery", """<div class=hero><h2>KOJA Live Delivery</h2><p>Use your current location to discover nearby online drivers.</p></div><div class=card><label>Pickup address</label><input id=pickup placeholder='Shop / pickup location'><label>Delivery address</label><input id=drop placeholder='Customer destination'><div class=row><button onclick='locate()'>Use Current Location</button><button class=secondary onclick='findDrivers()'>Find Nearby Drivers</button></div><p id=msg class=muted></p><div id=drivers></div></div><div class=card><h3>Live map</h3><div id=map class='map leaflet-map'></div></div><div class=card><h3>Track delivery</h3><input id=code placeholder='Enter tracking code'><button onclick='track()'>Track</button><div id=track></div></div><script>
+let pos=null, chosen=null, timer=null, liveMap=null, liveMarker=null, driverMarkers=[];
+function locate(){if(!navigator.geolocation){msg('GPS unavailable');return}navigator.geolocation.getCurrentPosition(p=>{pos=p.coords;if(!liveMap){liveMap=L.map('map').setView([p.coords.latitude,p.coords.longitude],14);L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap contributors'}).addTo(liveMap);}else liveMap.setView([p.coords.latitude,p.coords.longitude],14);if(liveMarker)liveMarker.setLatLng([p.coords.latitude,p.coords.longitude]);else liveMarker=L.marker([p.coords.latitude,p.coords.longitude]).addTo(liveMap).bindPopup('Pickup location').openPopup();document.getElementById('pickup').value='Current GPS: '+p.coords.latitude.toFixed(6)+', '+p.coords.longitude.toFixed(6);msg('Location acquired.');findDrivers()},e=>msg('GPS error: '+e.message),{enableHighAccuracy:true,timeout:15000,maximumAge:5000})}
 function msg(x){document.getElementById('msg').textContent=x}
-async function findDrivers(){if(!pos){msg('Use Current Location first.');return}let r=await fetch('/api/drivers/nearby?lat='+pos.latitude+'&lon='+pos.longitude+'&radius=30');let j=await r.json();let el=document.getElementById('drivers');if(!j.drivers.length){el.innerHTML='<p class=muted>No online drivers found within 30 km.</p>';return}el.innerHTML=j.drivers.map(d=>'<div class=driver><b>'+d.name+'</b> · '+d.distance_km+' km<br>'+d.vehicle_type+'<br><button onclick="choose(\''+d.driver_id+'\',\''+d.name+'\')">Select driver</button></div>').join('')}
+async function findDrivers(){if(!pos){msg('Use Current Location first.');return}let r=await fetch('/api/drivers/nearby?lat='+pos.latitude+'&lon='+pos.longitude+'&radius=30');let j=await r.json();let el=document.getElementById('drivers');driverMarkers.forEach(m=>liveMap&&liveMap.removeLayer(m));driverMarkers=[];if(!j.drivers||!j.drivers.length){el.innerHTML='<p class=muted>No online drivers found within 30 km.</p>';return}j.drivers.forEach(d=>{if(liveMap){let m=L.marker([Number(d.latitude),Number(d.longitude)]).addTo(liveMap).bindPopup(d.name+' • '+d.distance_km+' km');driverMarkers.push(m);}});el.innerHTML=j.drivers.map(d=>'<div class=driver><b>'+d.name+'</b> · '+d.distance_km+' km<br>'+d.vehicle_type+'<br><button onclick="choose(\''+d.driver_id+'\',\''+d.name.replace(/\'/g,"\\'")+"\')">Select driver</button></div>').join('')}
 function choose(id,name){chosen=id;document.getElementById('drivers').insertAdjacentHTML('afterbegin','<p class=ok>Selected driver: <b>'+name+'</b></p><button onclick="requestDelivery()">Request Delivery</button>')}
 async function requestDelivery(){if(!chosen){msg('Select a driver first');return}let r=await fetch('/api/deliveries',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({driver_id:chosen,pickup_address:document.getElementById('pickup').value,delivery_address:document.getElementById('drop').value,pickup_latitude:pos.latitude,pickup_longitude:pos.longitude})});let j=await r.json();if(!r.ok){alert(j.error||'Request failed');return}document.getElementById('code').value=j.tracking_code;document.getElementById('track').innerHTML='<p class=ok>Delivery requested. Tracking code: <b>'+j.tracking_code+'</b></p>';startTrack(j.tracking_code)}
 async function track(){startTrack(document.getElementById('code').value.trim())}
-function startTrack(code){if(!code)return;if(timer)clearInterval(timer);async function x(){let r=await fetch('/api/deliveries/track/'+encodeURIComponent(code));let j=await r.json();let el=document.getElementById('track');if(!r.ok){el.innerHTML='<p class=error>'+j.error+'</p>';return}el.innerHTML='<p><b>Status:</b> '+j.delivery.status+'<br><b>Driver:</b> '+(j.driver?.name||'Assigned')+'</p><div class=map><div style="padding:20px">'+(j.location?('Driver GPS: '+Number(j.location.latitude).toFixed(6)+', '+Number(j.location.longitude).toFixed(6)+'<br>Last update: '+j.location.created_at):'Waiting for driver GPS...')+'</div></div>'}x();timer=setInterval(x,5000)}
+let liveMap=null, liveMarker=null;
+function startTrack(code){if(!code)return;if(timer)clearInterval(timer);if(!liveMap){liveMap=L.map('map').setView([-15.4167,28.2833],12);L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap contributors'}).addTo(liveMap);}async function x(){let r=await fetch('/api/deliveries/track/'+encodeURIComponent(code));let j=await r.json();let el=document.getElementById('track');if(!r.ok){el.innerHTML='<p class=error>'+j.error+'</p>';return}el.innerHTML='<p><b>Status:</b> '+j.delivery.status+'<br><b>Driver:</b> '+(j.driver?.name||'Assigned')+'</p>';if(j.location){const ll=[Number(j.location.latitude),Number(j.location.longitude)];if(liveMarker)liveMarker.setLatLng(ll);else liveMarker=L.marker(ll).addTo(liveMap).bindPopup('KOJA Driver');liveMap.setView(ll,15);}}x();timer=setInterval(x,3000)}
 </script>""")
 
 @app.post("/api/deliveries")
@@ -369,6 +382,10 @@ def delivery_status(delivery_id):
     delivery_row=get_delivery(delivery_id)
     if delivery_row and delivery_row.get("customer_id")==u["id"] and status in ("cancelled",): allowed=True
     if not allowed:return jsonify(error="Not authorised"),403
+    old_status = (delivery_row or {}).get("status", "requested")
+    transitions = {"requested":{"accepted","rejected","cancelled"},"accepted":{"picked_up","cancelled"},"picked_up":{"in_transit"},"in_transit":{"delivered"},"rejected":set(),"delivered":set(),"cancelled":set()}
+    if status not in transitions.get(old_status, set()):
+        return jsonify(error=f"Cannot change delivery from {old_status} to {status}"),409
     data,err=sb_update("deliveries",{"id":f"eq.{delivery_id}"},{"status":status,"updated_at":now_iso()})
     if err:
         data,err=sb_update("delivery_requests",{"id":f"eq.{delivery_id}"},{"status":status})
@@ -500,12 +517,12 @@ def approve_driver(driver_id):
 # ------------------------------------------------------------
 @app.get("/health")
 def health():
-    return jsonify(status="ok",service="KOJA AFRICA",time=now_iso(),supabase_configured=bool(SUPABASE_URL and SUPABASE_KEY))
+    return jsonify(status="ok",service="KOJA AFRICA",mode="public-live",live_gps=True,time=now_iso(),supabase_configured=bool(SUPABASE_URL and SUPABASE_KEY))
 
 @app.get("/setup/driver-sql")
 def driver_sql():
     # Convenient page for copying the required SQL. It does not execute SQL through REST.
-    return "<pre style='white-space:pre-wrap'>"+DRIVER_LOCATION_SQL.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")+"</pre>"
+    return "<pre style='white-space:pre-wrap'>"+DELIVERY_SETUP_SQL.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")+"</pre>"
 
 @app.errorhandler(413)
 def too_large(e): return "File too large. Maximum upload size is 20 MB.",413
