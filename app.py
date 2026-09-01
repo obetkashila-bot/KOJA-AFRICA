@@ -1,1328 +1,516 @@
-import os
-import io
-import uuid
-import math
-import secrets
-import logging
+import os, math, uuid, hashlib, secrets, mimetypes, logging
 from datetime import datetime, timezone
 from functools import wraps
-from urllib.parse import quote
+from io import BytesIO
 
 import requests
-from dotenv import load_dotenv
-from flask import (
-    Flask, request, redirect, url_for, session,
-    render_template_string, flash, send_file, jsonify, abort
-)
-from werkzeug.security import generate_password_hash, check_password_hash
+from flask import Flask, request, redirect, url_for, session, jsonify, render_template_string, flash, send_file
 from werkzeug.utils import secure_filename
+from werkzeug.security import generate_password_hash, check_password_hash
 
 # ============================================================
-# KOJA AFRICA
-# Knowledge • Questions • Answers
-#
-# Complete single-file Flask application
-# Flask + Supabase REST + Supabase Storage
-#
-# Important:
-# - No psycopg / psycopg2
-# - No mandatory ReportLab dependency
-# - No database connection at startup
-# - Works with existing KOJA tables where possible
-# - Driver GPS uses public.driver_locations
-# - Customer can find nearby online drivers
-# - Customer can select a driver and send a delivery request
-# - Driver can accept/reject and share live GPS
+# KOJA AFRICA - SINGLE FILE FLASK APPLICATION
+# Supabase REST + Storage, Render compatible, no psycopg.
 # ============================================================
-
-load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("koja-africa")
-
 app = Flask(__name__)
-app.secret_key = os.getenv(
-    "SECRET_KEY",
-    os.getenv("FLASK_SECRET_KEY", secrets.token_hex(32))
-)
-app.config["MAX_CONTENT_LENGTH"] = 15 * 1024 * 1024
+app.secret_key = os.getenv("KOJA_SECRET_KEY", os.getenv("SECRET_KEY", secrets.token_hex(32)))
+app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
-SUPABASE_SERVICE_KEY = (
-    os.getenv("SUPABASE_SERVICE_KEY", "")
-    or os.getenv("SUPABASE_KEY", "")
-)
-SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY", os.getenv("SUPABASE_SERVICE_ROLE_KEY", os.getenv("SUPABASE_PUBLISHABLE_KEY", "")))
+STORAGE_BUCKET = os.getenv("KOJA_STORAGE_BUCKET", "koja-files")
+ADMIN_EMAILS = {x.strip().lower() for x in os.getenv("KOJA_ADMIN_EMAILS", "admin@koja.africa").split(",") if x.strip()}
 
-STORAGE_BUCKET = os.getenv(
-    "SUPABASE_STORAGE_BUCKET",
-    "koja-files"
-)
+if not SUPABASE_URL or not SUPABASE_KEY:
+    logging.warning("SUPABASE_URL/SUPABASE_SERVICE_KEY are not configured.")
 
-APP_NAME = "KOJA AFRICA"
-APP_TAGLINE = "Knowledge • Questions • Answers"
-MAX_UPLOAD_MB = 15
 
-ALLOWED_EXTENSIONS = {
-    "pdf", "doc", "docx", "txt",
-    "jpg", "jpeg", "png", "webp"
-}
-
-# ============================================================
-# GENERAL HELPERS
-# ============================================================
-
-def utc_now():
-    return datetime.now(timezone.utc).isoformat()
-
-def supabase_configured():
-    return bool(SUPABASE_URL and SUPABASE_SERVICE_KEY)
-
-def sb_headers(extra=None, auth_key=None):
-    key = auth_key or SUPABASE_SERVICE_KEY
-    h = {
-        "apikey": key,
-        "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json",
-    }
-    if extra:
-        h.update(extra)
+def sb_headers(extra=None):
+    h = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"}
+    if extra: h.update(extra)
     return h
 
-def sb_rest_url(table):
-    return f"{SUPABASE_URL}/rest/v1/{quote(table, safe='')}"
 
-def sb_storage_url(path):
-    return (
-        f"{SUPABASE_URL}/storage/v1/object/"
-        f"{quote(STORAGE_BUCKET, safe='')}/"
-        f"{quote(path, safe='/')}"
-    )
-
-def json_or_empty(response):
+def sb_request(method, table, params=None, payload=None, timeout=20, headers=None):
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return None, "Supabase is not configured"
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
     try:
-        return response.json()
-    except Exception:
-        return {}
+        r = requests.request(method, url, params=params, json=payload, headers=sb_headers(headers), timeout=timeout)
+        if r.status_code >= 400:
+            return None, f"Supabase {r.status_code}: {r.text[:1000]}"
+        if not r.text: return [], None
+        try: return r.json(), None
+        except Exception: return [], None
+    except Exception as e:
+        return None, str(e)
 
-def clean(value):
-    return str(value or "").strip()
 
-def first_nonempty(*values):
-    for value in values:
-        if value is not None and str(value).strip():
-            return value
-    return ""
+def sb_select(table, params=None, single=False):
+    data, err = sb_request("GET", table, params=params)
+    if err: return None, err
+    if single: return (data[0] if data else None), None
+    return data or [], None
 
-# ============================================================
-# SUPABASE REST
-# ============================================================
 
-def db_select(table, filters=None, select="*", order=None, limit=None):
-    if not supabase_configured():
-        logger.error("Supabase is not configured.")
-        return []
+def sb_insert(table, row, select="*"):
+    return sb_request("POST", table, params={"select": select}, payload=row, headers={"Prefer": "return=representation"})
 
-    params = {"select": select}
-    if filters:
-        for key, value in filters.items():
-            if value is None:
-                params[key] = "is.null"
-            elif isinstance(value, str) and value.startswith(("eq.", "neq.", "gt.", "gte.", "lt.", "lte.", "in.", "is.", "like.", "ilike.")):
-                params[key] = value
-            else:
-                params[key] = f"eq.{value}"
 
-    if order:
-        params["order"] = order
-    if limit:
-        params["limit"] = str(limit)
+def sb_update(table, filters, row, select="*"):
+    p = dict(filters); p["select"] = select
+    return sb_request("PATCH", table, params=p, payload=row, headers={"Prefer": "return=representation"})
 
+
+def sb_delete(table, filters):
+    return sb_request("DELETE", table, params=filters, headers={"Prefer": "return=representation"})
+
+
+def storage_upload(path, data, content_type):
+    if not SUPABASE_URL or not SUPABASE_KEY: return None, "Supabase is not configured"
+    url = f"{SUPABASE_URL}/storage/v1/object/{STORAGE_BUCKET}/{path.lstrip('/')}"
+    h = {"Authorization": f"Bearer {SUPABASE_KEY}", "apikey": SUPABASE_KEY, "Content-Type": content_type, "x-upsert": "true"}
     try:
-        r = requests.get(
-            sb_rest_url(table),
-            headers=sb_headers(),
-            params=params,
-            timeout=20,
-        )
-        if not r.ok:
-            logger.error(
-                "SELECT %s failed: %s %s",
-                table, r.status_code, r.text[:1000]
-            )
-            return []
-        data = json_or_empty(r)
-        return data if isinstance(data, list) else []
-    except Exception as exc:
-        logger.exception("SELECT error: %s", exc)
-        return []
+        r = requests.post(url, data=data, headers=h, timeout=30)
+        if r.status_code >= 400: return None, r.text[:1000]
+        return f"{SUPABASE_URL}/storage/v1/object/public/{STORAGE_BUCKET}/{path.lstrip('/')}", None
+    except Exception as e: return None, str(e)
 
-def db_insert(table, payload, returning="representation"):
-    if not supabase_configured():
-        return None, "Supabase is not configured."
 
+def storage_delete(path):
+    if not SUPABASE_URL or not SUPABASE_KEY: return
+    url = f"{SUPABASE_URL}/storage/v1/object/{STORAGE_BUCKET}"
     try:
-        r = requests.post(
-            sb_rest_url(table),
-            headers=sb_headers({"Prefer": f"return={returning}"}),
-            json=payload,
-            timeout=20,
-        )
-        if not r.ok:
-            logger.error(
-                "INSERT %s failed: %s %s",
-                table, r.status_code, r.text[:1800]
-            )
-            return None, r.text
-        data = json_or_empty(r)
-        if isinstance(data, list):
-            return (data[0] if data else None), None
-        return data, None
-    except Exception as exc:
-        logger.exception("INSERT error: %s", exc)
-        return None, str(exc)
+        requests.delete(url, json={"prefixes":[path.lstrip('/')]}, headers=sb_headers(), timeout=20)
+    except Exception: pass
 
-def db_update(table, filters, payload):
-    if not supabase_configured():
-        return None, "Supabase is not configured."
 
-    params = {}
-    for key, value in filters.items():
-        params[key] = f"eq.{value}"
+def now_iso(): return datetime.now(timezone.utc).isoformat()
 
-    try:
-        r = requests.patch(
-            sb_rest_url(table),
-            headers=sb_headers({"Prefer": "return=representation"}),
-            params=params,
-            json=payload,
-            timeout=20,
-        )
-        if not r.ok:
-            logger.error(
-                "UPDATE %s failed: %s %s",
-                table, r.status_code, r.text[:1800]
-            )
-            return None, r.text
-        return json_or_empty(r), None
-    except Exception as exc:
-        logger.exception("UPDATE error: %s", exc)
-        return None, str(exc)
 
-def db_delete(table, filters):
-    if not supabase_configured():
-        return False, "Supabase is not configured."
+def current_user(): return session.get("user")
 
-    params = {}
-    for key, value in filters.items():
-        params[key] = f"eq.{value}"
-
-    try:
-        r = requests.delete(
-            sb_rest_url(table),
-            headers=sb_headers(),
-            params=params,
-            timeout=20,
-        )
-        if not r.ok:
-            return False, r.text
-        return True, None
-    except Exception as exc:
-        logger.exception("DELETE error: %s", exc)
-        return False, str(exc)
-
-def table_exists(table):
-    if not supabase_configured():
-        return False
-    try:
-        r = requests.get(
-            sb_rest_url(table),
-            headers=sb_headers(),
-            params={"select": "*", "limit": "1"},
-            timeout=10,
-        )
-        return r.status_code < 400
-    except Exception:
-        return False
-
-def first_row(table, filters):
-    rows = db_select(table, filters=filters, limit=1)
-    return rows[0] if rows else None
-
-# ============================================================
-# AUTHENTICATION
-# ============================================================
-
-def current_user():
-    return session.get("user")
-
-def login_user(user, auth_session=None):
-    session.clear()
-    session["user"] = {
-        "id": str(user.get("id")),
-        "name": first_nonempty(
-            user.get("full_name"),
-            user.get("name"),
-            user.get("email"),
-            "KOJA User"
-        ),
-        "email": user.get("email"),
-        "phone": user.get("phone"),
-        "role": user.get("role") or "student",
-        "is_admin": bool(user.get("is_admin", False)),
-        "institution": user.get("institution"),
-        "student_number": user.get("student_number"),
-        "vehicle_type": user.get("vehicle_type"),
-        "vehicle_number": user.get("vehicle_number"),
-    }
-    if auth_session:
-        session["supabase_access_token"] = auth_session.get("access_token")
-        session["supabase_refresh_token"] = auth_session.get("refresh_token")
-    session.permanent = True
-
-def find_user_by_email(email):
-    email = clean(email).lower()
-    if not email:
-        return None
-
-    for table in ("profiles", "koja_users", "users", "KOJA ZM"):
-        rows = db_select(table, filters={"email": email}, limit=1)
-        if rows:
-            return rows[0]
-    return None
-
-def find_user_by_id(user_id):
-    if not user_id:
-        return None
-    for table in ("profiles", "koja_users", "users", "KOJA ZM"):
-        rows = db_select(table, filters={"id": user_id}, limit=1)
-        if rows:
-            return rows[0]
-    return None
-
-def password_matches(user, password):
-    stored = first_nonempty(
-        user.get("password_hash"),
-        user.get("encrypted_password")
-    )
-    if not stored or not password:
-        return False
-    try:
-        return check_password_hash(stored, password)
-    except Exception:
-        return False
-
-def supabase_auth_login(email, password):
-    """ Optional compatibility path for accounts created in Supabase Auth. Set SUPABASE_ANON_KEY in Render for this path. """
-    if not SUPABASE_URL:
-        return None
-
-    key = SUPABASE_ANON_KEY or SUPABASE_SERVICE_KEY
-    if not key:
-        return None
-
-    try:
-        r = requests.post(
-            f"{SUPABASE_URL}/auth/v1/token",
-            params={"grant_type": "password"},
-            headers={
-                "apikey": key,
-                "Content-Type": "application/json",
-            },
-            json={"email": email, "password": password},
-            timeout=20,
-        )
-        if not r.ok:
-            logger.warning(
-                "Supabase Auth password login failed: %s %s",
-                r.status_code, r.text[:500]
-            )
-            return None
-        return json_or_empty(r)
-    except Exception as exc:
-        logger.exception("Supabase Auth login error: %s", exc)
-        return None
-
-def create_local_profile(user_id, email, full_name="", phone=""):
-    payload = {
-        "id": str(user_id),
-        "email": email,
-        "full_name": full_name or email,
-        "name": full_name or email,
-        "phone": phone or None,
-        "role": "student",
-        "is_admin": False,
-        "is_active": True,
-    }
-    row, error = db_insert("profiles", payload)
-    return row or payload, error
-
-# ============================================================
-# STORAGE
-# ============================================================
-
-def upload_storage(file_storage, folder="uploads"):
-    if not file_storage or not file_storage.filename:
-        return None, "No file supplied."
-    if not supabase_configured():
-        return None, "Supabase is not configured."
-
-    filename = secure_filename(file_storage.filename)
-    if not filename:
-        return None, "Invalid filename."
-
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    if ext not in ALLOWED_EXTENSIONS:
-        return None, f"File type .{ext} is not allowed."
-
-    data = file_storage.read()
-    if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
-        return None, f"Maximum file size is {MAX_UPLOAD_MB} MB."
-
-    path = f"{folder.strip('/')}/{uuid.uuid4().hex}_{filename}"
-    mime = file_storage.mimetype or "application/octet-stream"
-
-    try:
-        r = requests.post(
-            sb_storage_url(path),
-            headers=sb_headers({
-                "Content-Type": mime,
-                "x-upsert": "true",
-            }),
-            data=data,
-            timeout=60,
-        )
-        if not r.ok:
-            return None, r.text[:1200]
-
-        public_url = (
-            f"{SUPABASE_URL}/storage/v1/object/public/"
-            f"{quote(STORAGE_BUCKET, safe='')}/"
-            f"{quote(path, safe='/')}"
-        )
-        return {
-            "path": path,
-            "url": public_url,
-            "file_name": filename,
-            "file_size": len(data),
-            "mime_type": mime,
-        }, None
-    except Exception as exc:
-        logger.exception("Storage upload error: %s", exc)
-        return None, str(exc)
-
-def delete_storage(path):
-    if not path or not supabase_configured():
-        return False
-    try:
-        r = requests.delete(
-            sb_storage_url(path),
-            headers=sb_headers(),
-            timeout=20,
-        )
-        return r.ok
-    except Exception:
-        return False
-
-# ============================================================
-# DECORATORS / LOGGING
-# ============================================================
 
 def login_required(fn):
     @wraps(fn)
-    def wrapper(*args, **kwargs):
-        if not current_user():
-            flash("Please log in first.", "warning")
-            return redirect(url_for("login", next=request.path))
-        return fn(*args, **kwargs)
-    return wrapper
+    def wrapped(*a, **kw):
+        if not current_user(): return redirect(url_for("login", next=request.path))
+        return fn(*a, **kw)
+    return wrapped
+
 
 def admin_required(fn):
     @wraps(fn)
-    def wrapper(*args, **kwargs):
-        user = current_user()
-        if not user:
-            flash("Administrator login required.", "warning")
-            return redirect(url_for("login"))
-        if not user.get("is_admin"):
-            flash("Administrator access required.", "danger")
-            return redirect(url_for("dashboard"))
-        return fn(*args, **kwargs)
-    return wrapper
+    def wrapped(*a, **kw):
+        u = current_user()
+        if not u or not is_admin(u): return redirect(url_for("login"))
+        return fn(*a, **kw)
+    return wrapped
 
-def driver_required(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        user = current_user()
-        if not user:
-            flash("Driver login required.", "warning")
-            return redirect(url_for("login"))
-        if user.get("role") not in ("driver", "admin") and not user.get("is_admin"):
-            flash("Driver account required.", "danger")
-            return redirect(url_for("dashboard"))
-        return fn(*args, **kwargs)
-    return wrapper
 
-def log_activity(action, description="", user_id=None):
-    uid = user_id or (current_user() or {}).get("id")
-    payload = {"action": action, "description": description}
-    if uid:
-        payload["user_id"] = uid
-    try:
-        db_insert("activity_logs", payload)
-    except Exception:
-        pass
+def is_admin(u):
+    return (u.get("role") == "admin") or (u.get("email", "").lower() in ADMIN_EMAILS)
 
-# ============================================================
-# GEOLOCATION
-# ============================================================
 
-def haversine_km(lat1, lon1, lat2, lon2):
-    r = 6371.0088
-    p1 = math.radians(lat1)
-    p2 = math.radians(lat2)
-    dp = math.radians(lat2 - lat1)
-    dl = math.radians(lon2 - lon1)
-    a = (
-        math.sin(dp / 2) ** 2
-        + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    )
-    return r * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+def haversine(lat1, lon1, lat2, lon2):
+    R = 6371.0088
+    p1, p2 = math.radians(float(lat1)), math.radians(float(lat2))
+    dp = math.radians(float(lat2)-float(lat1)); dl = math.radians(float(lon2)-float(lon1))
+    a = math.sin(dp/2)**2 + math.cos(p1)*math.cos(p2)*math.sin(dl/2)**2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
-def safe_float(value):
-    try:
-        return float(value)
-    except Exception:
-        return None
 
-def latest_driver_locations():
-    rows = db_select(
-        "driver_locations",
-        order="created_at.desc",
-        limit=1000
-    )
+def user_profile(user_id):
+    data, err = sb_select("profiles", {"id": f"eq.{user_id}", "limit":"1"}, True)
+    return data or {}
+
+
+def get_user_by_email(email):
+    # Local profiles first. Passwords are stored as password_hash in this application.
+    data, err = sb_select("profiles", {"email": f"eq.{email.lower()}", "limit":"1"}, True)
+    return data
+
+
+def find_driver_profile(driver_id):
+    data, _ = sb_select("driver_profiles", {"id": f"eq.{driver_id}", "limit":"1"}, True)
+    return data
+
+
+def get_driver_for_user(user_id):
+    data, _ = sb_select("driver_profiles", {"user_id": f"eq.{user_id}", "limit":"1"}, True)
+    return data
+
+
+def active_driver_locations():
+    rows, _ = sb_select("driver_locations", {"is_online":"eq.true", "order":"created_at.desc", "limit":"500"})
     latest = {}
-    for row in rows:
-        uid = row.get("driver_id") or row.get("user_id")
-        if uid and uid not in latest:
-            latest[str(uid)] = row
-    return latest
+    for r in rows or []:
+        key = r.get("driver_id") or r.get("user_id")
+        if key and key not in latest: latest[key] = r
+    return list(latest.values())
 
-def provider_profile(provider_id):
-    for table in ("driver_profiles", "doctor_profiles", "teacher_profiles", "profiles"):
-        row = first_row(table, {"provider_id": provider_id})
-        if row:
-            return row
-    return None
+# ------------------------------------------------------------
+# Database bootstrap helper. It does not alter existing driver_profiles.
+# ------------------------------------------------------------
+DRIVER_LOCATION_SQL = """
+create table if not exists public.driver_locations (
+ id uuid primary key default gen_random_uuid(),
+ driver_id uuid,
+ user_id uuid,
+ latitude double precision not null,
+ longitude double precision not null,
+ accuracy double precision,
+ speed double precision,
+ heading double precision,
+ altitude double precision,
+ is_online boolean default true,
+ created_at timestamptz default now()
+);
+create index if not exists driver_locations_driver_id_idx on public.driver_locations(driver_id);
+create index if not exists driver_locations_created_at_idx on public.driver_locations(created_at desc);
+create index if not exists driver_locations_online_idx on public.driver_locations(is_online);
+"""
 
-# ============================================================
-# TEMPLATE
-# ============================================================
+# ------------------------------------------------------------
+# UI
+# ------------------------------------------------------------
+BASE = """
+<!doctype html><html><head><meta name=viewport content='width=device-width,initial-scale=1'>
+<title>{{title}} · KOJA AFRICA</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;background:#f4f7fb;color:#172033}nav{background:#101827;color:#fff;padding:14px 4%;display:flex;gap:14px;align-items:center;flex-wrap:wrap}nav a{color:#fff;text-decoration:none}nav .brand{font-size:21px;font-weight:800;margin-right:auto}.wrap{max-width:1150px;margin:22px auto;padding:0 15px}.hero{background:linear-gradient(135deg,#0f172a,#164e63);color:#fff;padding:32px;border-radius:20px;margin-bottom:20px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}.card{background:#fff;border-radius:16px;padding:18px;box-shadow:0 5px 20px #0000000d;margin-bottom:16px}input,textarea,select{width:100%;padding:12px;border:1px solid #d5dbe5;border-radius:10px;margin:6px 0 12px}button,.btn{background:#0f766e;color:#fff;border:0;padding:11px 16px;border-radius:10px;text-decoration:none;display:inline-block;cursor:pointer}button.secondary,.btn.secondary{background:#334155}button.danger,.btn.danger{background:#b91c1c}.muted{color:#64748b}.ok{color:#15803d}.error{color:#b91c1c}.pill{display:inline-block;padding:5px 9px;border-radius:999px;background:#e2e8f0;margin:3px}.map{height:430px;border-radius:15px;background:#dbeafe;overflow:hidden}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.stat{font-size:28px;font-weight:800}.flash{padding:12px;border-radius:10px;background:#fff3cd;margin-bottom:10px}.small{font-size:13px}.driver{border:1px solid #e2e8f0;border-radius:12px;padding:12px;margin:8px 0}.table{width:100%;border-collapse:collapse}.table td,.table th{padding:9px;border-bottom:1px solid #e5e7eb;text-align:left}@media(max-width:600px){.hero{padding:22px}.map{height:350px}}
+</style></head><body><nav><a class=brand href="{{url_for('home')}}">KOJA AFRICA</a><a href="{{url_for('home')}}">Home</a><a href="{{url_for('delivery')}}">Delivery</a><a href="{{url_for('assignments')}}">Assignments</a><a href="{{url_for('services')}}">Services</a>{% if user %}<a href="{{url_for('dashboard')}}">Dashboard</a>{% if admin %}<a href="{{url_for('admin')}}">Admin</a>{% endif %}<a href="{{url_for('logout')}}">Logout</a>{% else %}<a href="{{url_for('login')}}">Login</a><a href="{{url_for('register')}}">Create account</a>{% endif %}</nav><main class=wrap>{% with messages=get_flashed_messages() %}{% for m in messages %}<div class=flash>{{m}}</div>{% endfor %}{% endwith %}{{body|safe}}</main></body></html>
+"""
 
-BASE_HTML = r""" <!doctype html> <html lang="en"> <head> <meta charset="utf-8"> <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"> <title>{{ title or "KOJA AFRICA" }}</title> <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"> <style> *{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f5f7fb;color:#172033} nav{background:#10233f;color:#fff;padding:12px 15px;position:sticky;top:0;z-index:1000} .nav-inner{max-width:1250px;margin:auto;display:flex;align-items:center;gap:7px;flex-wrap:wrap} .brand{font-weight:800;font-size:19px;margin-right:auto} nav a{color:#fff;text-decoration:none;padding:8px 9px;border-radius:7px} nav a:hover{background:rgba(255,255,255,.12)} .container{width:min(1250px,calc(100% - 24px));margin:20px auto 50px} .card{background:#fff;border-radius:13px;padding:18px;margin-bottom:16px;box-shadow:0 3px 14px rgba(0,0,0,.06)} .hero{background:linear-gradient(135deg,#10233f,#176b87);color:#fff;padding:28px 20px;border-radius:15px;margin-bottom:18px} h1,h2,h3{margin-top:0} .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:15px} input,select,textarea,button{width:100%;padding:11px 12px;margin-top:6px;margin-bottom:12px;border-radius:8px;border:1px solid #ccd3df;font:inherit} textarea{min-height:120px} button,.btn{display:inline-block;background:#176b87;color:#fff;border:0;text-decoration:none;cursor:pointer;padding:10px 14px;border-radius:8px} .btn.secondary{background:#5f6b7a}.btn.success{background:#177245}.btn.danger{background:#a62d2d}.btn.warning{background:#9b6b00} table{width:100%;border-collapse:collapse} th,td{border-bottom:1px solid #e4e7ec;padding:9px;text-align:left;vertical-align:top} .alert{padding:12px;border-radius:8px;margin-bottom:10px;background:#eaf2ff} .stat{padding:18px;background:#fff;border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,.05)} .big{font-size:28px;font-weight:800} .small{color:#667085;font-size:13px}.badge{display:inline-block;padding:4px 8px;border-radius:20px;background:#e7eef5;font-size:12px} #map{height:430px;border-radius:12px;overflow:hidden} .map-small{height:300px!important} .driver-card{border:2px solid #e4e7ec} .driver-card.selected{border-color:#176b87} .online{color:#177245;font-weight:700} .offline{color:#a62d2d;font-weight:700} footer{text-align:center;color:#667085;padding:30px} .actions{display:flex;gap:8px;flex-wrap:wrap}.actions .btn,.actions button{width:auto} @media(max-width:650px){nav a{font-size:12px}.container{width:min(100% - 14px,1250px)}table{display:block;overflow-x:auto}#map{height:350px}.actions .btn,.actions button{width:100%}} </style> </head> <body> <nav> <div class="nav-inner"> <div class="brand">KOJA AFRICA</div> <a href="{{ url_for('home') }}">Home</a> {% if user %} <a href="{{ url_for('dashboard') }}">Dashboard</a> <a href="{{ url_for('services') }}">Services</a> <a href="{{ url_for('questions') }}">Questions</a> <a href="{{ url_for('assignments') }}">Assignments</a> <a href="{{ url_for('universities') }}">Universities</a> <a href="{{ url_for('deliveries') }}">Deliveries</a> <a href="{{ url_for('drivers') }}">Drivers</a> {% if user.role in ['driver','admin'] or user.is_admin %} <a href="{{ url_for('driver_dashboard') }}">Driver</a> {% endif %} <a href="{{ url_for('logout') }}">Logout</a> {% else %} <a href="{{ url_for('login') }}">Login</a> <a href="{{ url_for('register') }}">Register</a> {% endif %} {% if user and user.is_admin %}<a href="{{ url_for('admin') }}">Admin</a>{% endif %} </div> </nav> <div class="container"> {% with messages=get_flashed_messages(with_categories=true) %} {% for category,message in messages %}<div class="alert">{{ message }}</div>{% endfor %} {% endwith %} {{ body|safe }} </div> <footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Agricultural • Health • Transport Services</footer> <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script> </body> </html> """
+def page(title, body, **ctx):
+    return render_template_string(BASE, title=title, body=render_template_string(body, **ctx), user=current_user(), admin=is_admin(current_user() or {}))
 
-def render_page(title, body_template, **context):
-    context["user"] = current_user()
-    body = render_template_string(body_template, **context)
-    return render_template_string(
-        BASE_HTML,
-        title=title,
-        body=body,
-        user=current_user()
-    )
-
-# ============================================================
-# HOME / HEALTH
-# ============================================================
-
+# ------------------------------------------------------------
+# Home / auth
+# ------------------------------------------------------------
 @app.route("/")
 def home():
-    return render_page("KOJA AFRICA", r""" <div class="hero"> <h1>KOJA AFRICA</h1> <p>Knowledge • Questions • Answers</p> <p>Academic services, university applications, CV creation, farmer registration, professional bookings and delivery services.</p> {% if not user %} <div class="actions"> <a class="btn" href="{{ url_for('register') }}">Create Account</a> <a class="btn secondary" href="{{ url_for('login') }}">Login</a> </div> {% endif %} </div> <div class="grid"> <div class="card"><h3>Academic</h3><p>Questions, assignments and learning resources.</p><a class="btn" href="{{ url_for('questions') }}">Questions</a></div> <div class="card"><h3>University</h3><p>Choose a university, programme and academic year.</p><a class="btn" href="{{ url_for('universities') }}">Universities</a></div> <div class="card"><h3>CV</h3><p>Create a professional CV.</p><a class="btn" href="{{ url_for('cv') }}">Create CV</a></div> <div class="card"><h3>Farmers</h3><p>Submit agricultural registration information.</p><a class="btn" href="{{ url_for('farmer') }}">Farmer Portal</a></div> <div class="card"><h3>Doctors</h3><p>Find a doctor and request an appointment.</p><a class="btn" href="{{ url_for('doctors') }}">Doctors</a></div> <div class="card"><h3>Teachers</h3><p>Find teachers/tutors by subject and grade.</p><a class="btn" href="{{ url_for('teachers') }}">Teachers</a></div> <div class="card"><h3>Deliveries</h3><p>Find nearby drivers and send delivery requests.</p><a class="btn" href="{{ url_for('deliveries') }}">Delivery</a></div> <div class="card"><h3>Live GPS</h3><p>Drivers can share their live location.</p><a class="btn" href="{{ url_for('tracking') }}">Driver GPS</a></div> </div> """)
-
-@app.route("/health")
-def health():
-    return jsonify({
-        "status": "ok",
-        "application": APP_NAME,
-        "supabase_configured": supabase_configured(),
-        "gps_table_available": table_exists("driver_locations"),
-        "timestamp": utc_now(),
-        "python": os.sys.version.split()[0],
-    })
-
-# ============================================================
-# REGISTER / LOGIN
-# ============================================================
+    return page("Home", """
+    <section class=hero><h1>KOJA AFRICA</h1><p>Knowledge • Questions • Answers • Services • Delivery</p><div class=row><a class=btn href='{{url_for("delivery")}}'>Start Delivery</a><a class='btn secondary' href='{{url_for("assignments")}}'>Assignments</a></div></section>
+    <div class=grid><div class=card><h3>Live Delivery</h3><p>Find nearby online drivers, request delivery and track an accepted driver.</p></div><div class=card><h3>Academic</h3><p>Submit assignments and manage answered files.</p></div><div class=card><h3>Professional Services</h3><p>Doctors, teachers/tutors and CV support.</p></div><div class=card><h3>Business & Farmers</h3><p>Registration and service workflows in one portal.</p></div></div>
+    """)
 
 @app.route("/register", methods=["GET","POST"])
 def register():
     if request.method == "POST":
-        full_name = clean(request.form.get("full_name"))
-        email = clean(request.form.get("email")).lower()
-        phone = clean(request.form.get("phone"))
-        password = request.form.get("password","")
-        role = clean(request.form.get("role")) or "student"
-
-        if role not in ("student","driver","teacher","doctor"):
-            role = "student"
-
-        if not full_name or not email or not password:
-            flash("Full name, email and password are required.","danger")
-            return redirect(url_for("register"))
-        if len(password) < 6:
-            flash("Password must contain at least 6 characters.","danger")
-            return redirect(url_for("register"))
-        if find_user_by_email(email):
-            flash("An account with this email already exists. Please log in.","warning")
-            return redirect(url_for("login"))
-
-        user_id = str(uuid.uuid4())
-        payload = {
-            "id": user_id,
-            "name": full_name,
-            "full_name": full_name,
-            "email": email,
-            "phone": phone or None,
-            "password_hash": generate_password_hash(password),
-            "role": role,
-            "is_admin": False,
-            "is_active": True,
-            "created_at": utc_now(),
-        }
-
-        row, error = db_insert("profiles", payload)
-        if error:
-            old = {
-                "id": user_id,
-                "full_name": full_name,
-                "email": email,
-                "phone": phone or None,
-                "password_hash": payload["password_hash"],
-            }
-            row, error = db_insert("KOJA ZM", old)
-
-        if error:
-            flash("Registration failed. Check Render logs for the exact Supabase column error.","danger")
-            return redirect(url_for("register"))
-
-        login_user(row or payload)
-        log_activity("registration","New KOJA account registered.")
-        flash("Account created successfully.","success")
-        return redirect(url_for("dashboard"))
-
-    return render_page("Register", r""" <div class="card" style="max-width:600px;margin:auto"> <h2>Create KOJA Account</h2> <form method="post"> <label>Full Name</label><input name="full_name" required> <label>Email</label><input name="email" type="email" required> <label>Phone</label><input name="phone"> <label>Account Type</label> <select name="role"> <option value="student">Student / Customer</option> <option value="driver">Delivery Driver</option> <option value="teacher">Teacher / Tutor</option> <option value="doctor">Doctor</option> </select> <label>Password</label><input name="password" type="password" minlength="6" required> <button type="submit">Create Account</button> </form> <p>Already registered? <a href="{{ url_for('login') }}">Login</a></p> </div> """)
+        email=request.form.get("email","").strip().lower(); password=request.form.get("password","")
+        name=request.form.get("full_name","").strip(); phone=request.form.get("phone","").strip()
+        if not email or len(password)<6 or not name:
+            flash("Enter your name, email and a password of at least 6 characters."); return redirect(url_for("register"))
+        if get_user_by_email(email): flash("An account with this email already exists."); return redirect(url_for("login"))
+        row={"id":str(uuid.uuid4()),"full_name":name,"email":email,"phone":phone,"password_hash":generate_password_hash(password),"role":"customer","created_at":now_iso()}
+        data,err=sb_insert("profiles",row)
+        if err:
+            flash("Registration failed: "+err); return redirect(url_for("register"))
+        flash("Account created. You can now log in."); return redirect(url_for("login"))
+    return page("Create account", """<div class=card><h2>Create account</h2><form method=post><label>Full name</label><input name=full_name required><label>Phone</label><input name=phone><label>Email</label><input type=email name=email required><label>Password</label><input type=password name=password minlength=6 required><button>Create account</button></form></div>""")
 
 @app.route("/login", methods=["GET","POST"])
 def login():
     if request.method == "POST":
-        email = clean(request.form.get("email")).lower()
-        password = request.form.get("password","")
-        user = find_user_by_email(email)
-
-        # First: existing KOJA profile password.
-        if user and password_matches(user,password):
-            if user.get("is_active") is False:
-                flash("This account is inactive.","danger")
-                return redirect(url_for("login"))
-            login_user(user)
-            log_activity("login","User logged into KOJA.")
-            return redirect(request.args.get("next") if request.args.get("next","").startswith("/") else url_for("dashboard"))
-
-        # Second: Supabase Auth compatibility.
-        auth = supabase_auth_login(email,password)
-        if auth and auth.get("user"):
-            au = auth["user"]
-            profile = find_user_by_id(au.get("id"))
-            if not profile:
-                profile, _ = create_local_profile(
-                    au.get("id"), au.get("email") or email,
-                    au.get("user_metadata",{}).get("full_name","")
-                )
-            login_user(profile, auth)
-            log_activity("login","User logged in through Supabase Auth.")
-            return redirect(request.args.get("next") if request.args.get("next","").startswith("/") else url_for("dashboard"))
-
-        flash("Invalid login credentials. Use the same email and password used to create the KOJA account.","danger")
-        return redirect(url_for("login"))
-
-    return render_page("Login", r""" <div class="card" style="max-width:500px;margin:auto"> <h2>KOJA Login</h2> <p class="small">KOJA supports its local profile password and, when configured, Supabase Auth accounts.</p> <form method="post"> <label>Email</label><input name="email" type="email" autocomplete="email" required> <label>Password</label><input name="password" type="password" autocomplete="current-password" required> <button type="submit">Login</button> </form> <p>No account? <a href="{{ url_for('register') }}">Create one</a></p> </div> """)
+        email=request.form.get("email","").strip().lower(); password=request.form.get("password","")
+        u=get_user_by_email(email)
+        if not u or not check_password_hash(u.get("password_hash", ""), password):
+            flash("Invalid email or password."); return redirect(url_for("login"))
+        session["user"]={"id":u["id"],"email":u.get("email",email),"full_name":u.get("full_name",email),"role":u.get("role","customer")}
+        return redirect(request.args.get("next") or url_for("dashboard"))
+    return page("Login", """<div class=card><h2>Login</h2><form method=post><label>Email</label><input type=email name=email required><label>Password</label><input type=password name=password required><button>Login</button></form><p>No account? <a href='{{url_for("register")}}'>Create one</a></p></div>""")
 
 @app.route("/logout")
-def logout():
-    if current_user():
-        log_activity("logout","User logged out.")
-    session.clear()
-    flash("You have been logged out.","success")
-    return redirect(url_for("home"))
-
-# ============================================================
-# DASHBOARD / SERVICES
-# ============================================================
+def logout(): session.clear(); return redirect(url_for("home"))
 
 @app.route("/dashboard")
 @login_required
 def dashboard():
-    user = current_user()
-    questions_count = len(db_select("questions",filters={"user_id":user["id"]},limit=1000))
-    deliveries_count = len(db_select("deliveries",filters={"customer_id":user["id"]},limit=1000))
-    appointments_count = len(db_select("appointments",filters={"client_id":user["id"]},limit=1000))
-    return render_page("Dashboard", r""" <div class="hero"><h2>Welcome, {{ user.name }}</h2><p>{{ user.email }}</p></div> <div class="grid"> <div class="stat"><div class="big">{{ questions_count }}</div>Academic Questions</div> <div class="stat"><div class="big">{{ deliveries_count }}</div>Deliveries</div> <div class="stat"><div class="big">{{ appointments_count }}</div>Appointments</div> <div class="stat"><div class="big">{{ "ADMIN" if user.is_admin else user.role|upper }}</div>Account</div> </div> <div class="card"><h3>KOJA Services</h3> <div class="grid"> <a class="btn" href="{{ url_for('cv') }}">Create CV</a> <a class="btn" href="{{ url_for('universities') }}">University Application</a> <a class="btn" href="{{ url_for('farmer') }}">Farmer Registration</a> <a class="btn" href="{{ url_for('doctors') }}">Doctor Booking</a> <a class="btn" href="{{ url_for('teachers') }}">Teacher Booking</a> <a class="btn" href="{{ url_for('deliveries') }}">Find Driver / Delivery</a> {% if user.role in ['driver','admin'] or user.is_admin %}<a class="btn" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %} </div></div> """,questions_count=questions_count,deliveries_count=deliveries_count,appointments_count=appointments_count)
+    u=current_user(); d=get_driver_for_user(u["id"])
+    return page("Dashboard", """<div class=hero><h2>Welcome, {{user.full_name}}</h2><p>{{user.email}}</p></div><div class=grid><div class=card><h3>Delivery</h3><a class=btn href='{{url_for("delivery")}}'>Open delivery</a></div><div class=card><h3>Driver</h3>{% if driver %}<p>Status: <b>{{driver.get('status','pending')}}</b></p><a class=btn href='{{url_for("driver_panel")}}'>Driver panel</a>{% else %}<p>Register to become a driver.</p><a class=btn href='{{url_for("driver_register")}}'>Register driver</a>{% endif %}</div><div class=card><h3>Assignments</h3><a class=btn href='{{url_for("assignments")}}'>Open assignments</a></div></div>""", user=u, driver=d)
 
-@app.route("/services")
+# ------------------------------------------------------------
+# Driver registration / GPS
+# ------------------------------------------------------------
+@app.route("/driver/register", methods=["GET","POST"])
 @login_required
-def services():
-    return render_page("Services", r""" <div class="hero"><h2>KOJA Services</h2><p>Choose a service.</p></div> <div class="grid"> <div class="card"><h3>Academic Questions</h3><a class="btn" href="{{ url_for('questions') }}">Open</a></div> <div class="card"><h3>Assignments</h3><a class="btn" href="{{ url_for('assignments') }}">Open</a></div> <div class="card"><h3>CV</h3><a class="btn" href="{{ url_for('cv') }}">Open</a></div> <div class="card"><h3>University Applications</h3><a class="btn" href="{{ url_for('universities') }}">Open</a></div> <div class="card"><h3>Farmer Registration</h3><a class="btn" href="{{ url_for('farmer') }}">Open</a></div> <div class="card"><h3>Doctors</h3><a class="btn" href="{{ url_for('doctors') }}">Open</a></div> <div class="card"><h3>Teachers</h3><a class="btn" href="{{ url_for('teachers') }}">Open</a></div> <div class="card"><h3>Deliveries</h3><a class="btn" href="{{ url_for('deliveries') }}">Open</a></div> </div> """)
+def driver_register():
+    u=current_user()
+    if request.method=="POST":
+        row={"user_id":u["id"],"full_name":request.form.get("full_name",u.get("full_name","")),"phone":request.form.get("phone",""),"email":u.get("email"),"vehicle_type":request.form.get("vehicle_type",""),"vehicle_number":request.form.get("vehicle_number",""),"license_number":request.form.get("license_number",""),"status":"pending","is_online":False}
+        # Existing schemas sometimes require an id; include one only if creating a new record.
+        existing=get_driver_for_user(u["id"])
+        if existing: data,err=sb_update("driver_profiles",{"id":f"eq.{existing['id']}"},row)
+        else: data,err=sb_insert("driver_profiles",row)
+        if err: flash("Driver registration failed: "+err)
+        else: flash("Driver registration submitted.")
+        return redirect(url_for("driver_panel"))
+    return page("Driver registration", """<div class=card><h2>Register as a driver</h2><form method=post><label>Name</label><input name=full_name value='{{user.full_name}}' required><label>Phone</label><input name=phone><label>Vehicle type</label><input name=vehicle_type placeholder='Car, motorcycle, van'><label>Vehicle number</label><input name=vehicle_number><label>License number</label><input name=license_number><button>Submit registration</button></form></div>""", user=u)
 
-# ============================================================
-# QUESTIONS / ASSIGNMENTS
-# ============================================================
-
-@app.route("/questions", methods=["GET","POST"])
+@app.route("/driver")
 @login_required
-def questions():
-    user = current_user()
-    if request.method == "POST":
-        question_text = clean(request.form.get("question"))
-        subject = clean(request.form.get("subject"))
-        if not question_text:
-            flash("Enter your question.","danger")
-            return redirect(url_for("questions"))
+def driver_panel():
+    d=get_driver_for_user(current_user()["id"])
+    if not d: return redirect(url_for("driver_register"))
+    return page("Driver panel", """<div class=card><h2>Driver panel</h2><p>Vehicle: {{driver.get('vehicle_type','')}} {{driver.get('vehicle_number','')}}</p><p>Approval: <b>{{driver.get('status','pending')}}</b></p>{% if driver.get('status','pending')|lower in ['approved','active'] %}<div class=row><button id=online onclick='setOnline(true)'>Go Online</button><button class=secondary onclick='setOnline(false)'>Go Offline</button></div><p id=state class=muted>GPS is waiting.</p><div id=map class=map></div>{% else %}<p class=muted>Admin approval is required before accepting deliveries.</p>{% endif %}</div>
+    <div class=card><h3>Incoming deliveries</h3><div id=reqs>Loading...</div></div>
+    <script>
+    let watch=null, online=false;
+    async function setOnline(v){const r=await fetch('/api/driver/online',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({online:v})}); const j=await r.json(); if(!r.ok){alert(j.error||'Failed');return} online=v; document.getElementById('state').textContent=v?'Online — sharing GPS when permission is granted.':'Offline'; if(v) startGPS(); else if(watch!==null){navigator.geolocation.clearWatch(watch);watch=null}}
+    function startGPS(){if(!navigator.geolocation){alert('This browser does not support GPS');return} watch=navigator.geolocation.watchPosition(async p=>{const c=p.coords; await fetch('/api/driver/location',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({latitude:c.latitude,longitude:c.longitude,accuracy:c.accuracy,speed:c.speed,heading:c.heading,altitude:c.altitude})}); document.getElementById('map').innerHTML='<div style="padding:20px"><b>Current GPS</b><br>Latitude: '+c.latitude.toFixed(6)+'<br>Longitude: '+c.longitude.toFixed(6)+'<br>Accuracy: '+Math.round(c.accuracy||0)+' m</div>'},e=>document.getElementById('state').textContent='GPS error: '+e.message,{enableHighAccuracy:true,maximumAge:5000,timeout:15000})}
+    async function loadReqs(){let r=await fetch('/api/driver/requests');let j=await r.json();let el=document.getElementById('reqs'); if(!j.requests||!j.requests.length){el.innerHTML='<p class=muted>No delivery requests.</p>';return} el.innerHTML=j.requests.map(x=>'<div class=driver><b>'+x.tracking_code+'</b><br>'+x.pickup_address+' → '+x.delivery_address+'<br>Status: '+x.status+'<br><button onclick="act(\''+x.id+'\',\'accepted\')">Accept</button> <button class=secondary onclick="act(\''+x.id+'\',\'rejected\')">Reject</button></div>').join('')}
+    async function act(id,status){await fetch('/api/deliveries/'+id+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});loadReqs()} loadReqs(); setInterval(loadReqs,7000);
+    </script>""", driver=d)
 
-        payload = {
-            "id":str(uuid.uuid4()),"user_id":user["id"],
-            "question":question_text,"subject":subject or None,
-            "status":"submitted","created_at":utc_now()
-        }
-        row,error = db_insert("questions",payload)
-        if error:
-            row,error = db_insert("questions",{
-                "id":str(uuid.uuid4()),"user_id":user["id"],
-                "question":question_text
-            })
-        if error:
-            flash("Question could not be submitted. Check your questions table columns.","danger")
-        else:
-            flash("Question submitted.","success")
-            log_activity("question_created","Student submitted an academic question.")
-        return redirect(url_for("questions"))
+@app.post("/api/driver/online")
+@login_required
+def driver_online():
+    d=get_driver_for_user(current_user()["id"])
+    if not d: return jsonify(error="Driver profile not found"),404
+    if str(d.get("status","pending")).lower() not in ("approved","active"):
+        return jsonify(error="Driver is not approved"),403
+    online=bool(request.json.get("online"))
+    _,err=sb_update("driver_profiles",{"id":f"eq.{d['id']}"},{"is_online":online})
+    if err: return jsonify(error=err),500
+    # Mark the latest location offline/online when possible.
+    latest,_=sb_select("driver_locations",{"driver_id":f"eq.{d['id']}","order":"created_at.desc","limit":"1"},True)
+    if latest: sb_update("driver_locations",{"id":f"eq.{latest['id']}"},{"is_online":online})
+    return jsonify(ok=True,online=online)
 
-    rows = db_select("questions",filters={"user_id":user["id"]},order="created_at.desc",limit=100)
-    return render_page("Questions",r""" <div class="card"><h2>Ask an Academic Question</h2> <form method="post"> <label>Subject</label><input name="subject" placeholder="Mathematics, Biology, Chemistry..."> <label>Question</label><textarea name="question" required></textarea> <button type="submit">Submit Question</button> </form></div> <div class="card"><h2>My Questions</h2> {% for q in rows %} <div class="card"><strong>{{ q.get("subject") or "Academic" }}</strong> <p>{{ q.get("question") or q.get("question_text") }}</p> {% if q.get("answer") %}<hr><strong>Answer</strong><p>{{ q.get("answer") }}</p>{% endif %} <span class="badge">{{ q.get("status") or "Submitted" }}</span></div> {% else %}<p>No questions submitted yet.</p>{% endfor %} </div> """,rows=rows)
+@app.post("/api/driver/location")
+@login_required
+def driver_location():
+    d=get_driver_for_user(current_user()["id"])
+    if not d: return jsonify(error="Driver profile not found"),404
+    try: lat=float(request.json["latitude"]); lon=float(request.json["longitude"])
+    except Exception: return jsonify(error="latitude and longitude are required"),400
+    if not (-90<=lat<=90 and -180<=lon<=180): return jsonify(error="Invalid coordinates"),400
+    body=request.json
+    row={"driver_id":d["id"],"user_id":current_user()["id"],"latitude":lat,"longitude":lon,"accuracy":body.get("accuracy"),"speed":body.get("speed"),"heading":body.get("heading"),"altitude":body.get("altitude"),"is_online":True,"created_at":now_iso()}
+    data,err=sb_insert("driver_locations",row)
+    if err: return jsonify(error=err),500
+    sb_update("driver_profiles",{"id":f"eq.{d['id']}"},{"is_online":True})
+    return jsonify(ok=True,location=row)
 
+@app.get("/api/drivers/nearby")
+@login_required
+def nearby_drivers():
+    try: lat=float(request.args["lat"]); lon=float(request.args["lon"]); radius=float(request.args.get("radius",20))
+    except Exception: return jsonify(error="lat and lon are required"),400
+    out=[]
+    for loc in active_driver_locations():
+        try: dist=haversine(lat,lon,loc["latitude"],loc["longitude"])
+        except Exception: continue
+        if dist<=radius:
+            d=find_driver_profile(loc.get("driver_id")) or {}
+            out.append({"driver_id":loc.get("driver_id"),"user_id":loc.get("user_id"),"latitude":loc["latitude"],"longitude":loc["longitude"],"accuracy":loc.get("accuracy"),"distance_km":round(dist,2),"name":d.get("full_name","Driver"),"vehicle_type":d.get("vehicle_type","")})
+    out.sort(key=lambda x:x["distance_km"])
+    return jsonify(drivers=out)
+
+# ------------------------------------------------------------
+# Delivery workflow
+# ------------------------------------------------------------
+DELIVERY_STATUSES={"requested","accepted","rejected","picked_up","in_transit","delivered","cancelled"}
+
+@app.route("/delivery")
+def delivery():
+    return page("Delivery", """<div class=hero><h2>KOJA Live Delivery</h2><p>Use your current location to discover nearby online drivers.</p></div><div class=card><label>Pickup address</label><input id=pickup placeholder='Shop / pickup location'><label>Delivery address</label><input id=drop placeholder='Customer destination'><div class=row><button onclick='locate()'>Use Current Location</button><button class=secondary onclick='findDrivers()'>Find Nearby Drivers</button></div><p id=msg class=muted></p><div id=drivers></div></div><div class=card><h3>Live map</h3><div id=map class=map><div style="padding:20px">GPS map view will appear here.</div></div></div><div class=card><h3>Track delivery</h3><input id=code placeholder='Enter tracking code'><button onclick='track()'>Track</button><div id=track></div></div><script>
+let pos=null, chosen=null, timer=null;
+function locate(){if(!navigator.geolocation){msg('GPS unavailable');return}navigator.geolocation.getCurrentPosition(p=>{pos=p.coords;document.getElementById('pickup').value='Current GPS: '+p.coords.latitude.toFixed(6)+', '+p.coords.longitude.toFixed(6);msg('Location acquired.');findDrivers()},e=>msg('GPS error: '+e.message),{enableHighAccuracy:true,timeout:15000,maximumAge:5000})}
+function msg(x){document.getElementById('msg').textContent=x}
+async function findDrivers(){if(!pos){msg('Use Current Location first.');return}let r=await fetch('/api/drivers/nearby?lat='+pos.latitude+'&lon='+pos.longitude+'&radius=30');let j=await r.json();let el=document.getElementById('drivers');if(!j.drivers.length){el.innerHTML='<p class=muted>No online drivers found within 30 km.</p>';return}el.innerHTML=j.drivers.map(d=>'<div class=driver><b>'+d.name+'</b> · '+d.distance_km+' km<br>'+d.vehicle_type+'<br><button onclick="choose(\''+d.driver_id+'\',\''+d.name+'\')">Select driver</button></div>').join('')}
+function choose(id,name){chosen=id;document.getElementById('drivers').insertAdjacentHTML('afterbegin','<p class=ok>Selected driver: <b>'+name+'</b></p><button onclick="requestDelivery()">Request Delivery</button>')}
+async function requestDelivery(){if(!chosen){msg('Select a driver first');return}let r=await fetch('/api/deliveries',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({driver_id:chosen,pickup_address:document.getElementById('pickup').value,delivery_address:document.getElementById('drop').value,pickup_latitude:pos.latitude,pickup_longitude:pos.longitude})});let j=await r.json();if(!r.ok){alert(j.error||'Request failed');return}document.getElementById('code').value=j.tracking_code;document.getElementById('track').innerHTML='<p class=ok>Delivery requested. Tracking code: <b>'+j.tracking_code+'</b></p>';startTrack(j.tracking_code)}
+async function track(){startTrack(document.getElementById('code').value.trim())}
+function startTrack(code){if(!code)return;if(timer)clearInterval(timer);async function x(){let r=await fetch('/api/deliveries/track/'+encodeURIComponent(code));let j=await r.json();let el=document.getElementById('track');if(!r.ok){el.innerHTML='<p class=error>'+j.error+'</p>';return}el.innerHTML='<p><b>Status:</b> '+j.delivery.status+'<br><b>Driver:</b> '+(j.driver?.name||'Assigned')+'</p><div class=map><div style="padding:20px">'+(j.location?('Driver GPS: '+Number(j.location.latitude).toFixed(6)+', '+Number(j.location.longitude).toFixed(6)+'<br>Last update: '+j.location.created_at):'Waiting for driver GPS...')+'</div></div>'}x();timer=setInterval(x,5000)}
+</script>""")
+
+@app.post("/api/deliveries")
+@login_required
+def create_delivery():
+    b=request.get_json(silent=True) or {}; uid=current_user()["id"]
+    required=["driver_id","pickup_address","delivery_address"]
+    if any(not b.get(k) for k in required): return jsonify(error="driver_id, pickup_address and delivery_address are required"),400
+    d=find_driver_profile(b["driver_id"])
+    if not d: return jsonify(error="Driver not found"),404
+    row={"id":str(uuid.uuid4()),"customer_id":uid,"driver_id":b["driver_id"],"pickup_address":b["pickup_address"],"delivery_address":b["delivery_address"],"pickup_latitude":b.get("pickup_latitude"),"pickup_longitude":b.get("pickup_longitude"),"status":"requested","tracking_code":"KOJA-"+secrets.token_hex(4).upper(),"created_at":now_iso(),"updated_at":now_iso()}
+    data,err=sb_insert("deliveries",row)
+    if err:
+        # A schema-tolerant fallback for deployments using delivery_requests.
+        row.pop("updated_at",None); data,err=sb_insert("delivery_requests",row)
+    if err:return jsonify(error=err),500
+    return jsonify(ok=True,delivery=(data[0] if isinstance(data,list) and data else row),tracking_code=row["tracking_code"])
+
+@app.get("/api/driver/requests")
+@login_required
+def driver_requests():
+    d=get_driver_for_user(current_user()["id"])
+    if not d:return jsonify(requests=[])
+    rows,err=sb_select("deliveries",{"driver_id":f"eq.{d['id']}","status":"in.(requested,accepted,picked_up,in_transit)","order":"created_at.desc","limit":"50"})
+    if err:return jsonify(error=err),500
+    return jsonify(requests=rows or [])
+
+@app.post("/api/deliveries/<delivery_id>/status")
+@login_required
+def delivery_status(delivery_id):
+    b=request.get_json(silent=True) or {}; status=b.get("status")
+    if status not in DELIVERY_STATUSES:return jsonify(error="Invalid status"),400
+    d=find_driver_profile_for_delivery(delivery_id)
+    u=current_user(); allowed=False
+    if d and d.get("user_id")==u["id"]: allowed=True
+    if is_admin(u): allowed=True
+    delivery_row=get_delivery(delivery_id)
+    if delivery_row and delivery_row.get("customer_id")==u["id"] and status in ("cancelled",): allowed=True
+    if not allowed:return jsonify(error="Not authorised"),403
+    data,err=sb_update("deliveries",{"id":f"eq.{delivery_id}"},{"status":status,"updated_at":now_iso()})
+    if err:
+        data,err=sb_update("delivery_requests",{"id":f"eq.{delivery_id}"},{"status":status})
+    if err:return jsonify(error=err),500
+    return jsonify(ok=True,status=status)
+
+
+def get_delivery(delivery_id):
+    x,_=sb_select("deliveries",{"id":f"eq.{delivery_id}","limit":"1"},True)
+    return x
+
+
+def find_driver_profile_for_delivery(delivery_id):
+    x=get_delivery(delivery_id)
+    if not x:return None
+    return find_driver_profile(x.get("driver_id"))
+
+@app.get("/api/deliveries/track/<tracking_code>")
+def track_delivery(tracking_code):
+    x,_=sb_select("deliveries",{"tracking_code":f"eq.{tracking_code}","limit":"1"},True)
+    if not x:
+        x,_=sb_select("delivery_requests",{"tracking_code":f"eq.{tracking_code}","limit":"1"},True)
+    if not x:return jsonify(error="Tracking code not found"),404
+    d=find_driver_profile(x.get("driver_id")) or {}
+    loc,_=sb_select("driver_locations",{"driver_id":f"eq.{x.get('driver_id')}","order":"created_at.desc","limit":"1"},True)
+    return jsonify(delivery=x,driver={"name":d.get("full_name"),"vehicle_type":d.get("vehicle_type")},location=loc)
+
+# ------------------------------------------------------------
+# Assignments / answers / files
+# ------------------------------------------------------------
 @app.route("/assignments", methods=["GET","POST"])
 @login_required
 def assignments():
-    user=current_user()
     if request.method=="POST":
-        title=clean(request.form.get("title"))
-        description=clean(request.form.get("description"))
-        file=request.files.get("file")
-        uploaded=None
-        if file and file.filename:
-            uploaded,error=upload_storage(file,"assignments")
-            if error:
-                flash(f"Upload failed: {error}","danger")
-                return redirect(url_for("assignments"))
-
-        payload={
-            "id":str(uuid.uuid4()),
-            "student_id":user["id"],"user_id":user["id"],
-            "title":title,"description":description,
-            "status":"submitted","created_at":utc_now()
-        }
-        if uploaded:
-            payload.update({
-                "file_name":uploaded["file_name"],
-                "file_path":uploaded["path"],
-                "file_url":uploaded["url"],
-                "file_size":uploaded["file_size"],
-                "mime_type":uploaded["mime_type"]
-            })
-        row,error=db_insert("assignments",payload)
-        if error:
-            minimal={"id":str(uuid.uuid4()),"title":title,"description":description}
-            if uploaded:
-                minimal.update({"file_name":uploaded["file_name"],"file_path":uploaded["path"],"file_url":uploaded["url"]})
-            row,error=db_insert("assignments",minimal)
-        if error:
-            flash("Assignment could not be saved. Check assignments table columns.","danger")
-        else:
-            flash("Assignment uploaded successfully.","success")
+        f=request.files.get("file"); q=request.form.get("question","").strip(); subject=request.form.get("subject","").strip()
+        if not q:return page("Assignments","<div class=card><p class=error>Question is required.</p></div>")
+        file_url=None; file_path=None
+        if f and f.filename:
+            name=secure_filename(f.filename); path=f"assignments/{current_user()['id']}/{uuid.uuid4()}-{name}"; content=f.read();
+            file_url,err=storage_upload(path,content,f.mimetype or "application/octet-stream")
+            if err: flash("File upload failed: "+err); return redirect(url_for("assignments"))
+            file_path=path
+        row={"id":str(uuid.uuid4()),"student_id":current_user()["id"],"question":q,"subject":subject,"file_name":f.filename if f else None,"file_path":file_path,"file_url":file_url,"status":"submitted","created_at":now_iso()}
+        data,err=sb_insert("assignments",row)
+        if err:flash("Assignment saving failed: "+err)
+        else:flash("Assignment submitted successfully.")
         return redirect(url_for("assignments"))
+    rows,_=sb_select("assignments",{"student_id":f"eq.{current_user()['id']}","order":"created_at.desc","limit":"50"})
+    return page("Assignments", """<div class=card><h2>Submit assignment</h2><form method=post enctype=multipart/form-data><label>Subject</label><input name=subject><label>Question / assignment</label><textarea name=question rows=7 required></textarea><label>File</label><input type=file name=file><button>Submit</button></form></div><div class=card><h3>My submissions</h3>{% for x in rows %}<div class=driver><b>{{x.get('subject','')}}</b><br>{{x.get('question','')[:300]}}<br>Status: {{x.get('status','submitted')}}{% if x.get('answer_file_url') %}<br><a href='{{x.answer_file_url}}' target=_blank>Download answered file</a>{% endif %}</div>{% else %}<p class=muted>No submissions yet.</p>{% endfor %}</div>""", rows=rows or [])
 
-    rows=db_select("assignments",order="created_at.desc",limit=100)
-    return render_page("Assignments",r""" <div class="card"><h2>Upload Assignment</h2> <form method="post" enctype="multipart/form-data"> <label>Assignment Title</label><input name="title" required> <label>Description / Question</label><textarea name="description"></textarea> <label>Assignment File</label><input type="file" name="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png"> <button type="submit">Upload Assignment</button> </form></div> <div class="card"><h2>Assignments</h2> {% for item in rows %} <div class="card"><h3>{{ item.get("title") or "Assignment" }}</h3> <p>{{ item.get("description") or "" }}</p> {% if item.get("file_url") %}<a class="btn" href="{{ item.get('file_url') }}" target="_blank">Download File</a>{% endif %} {% if item.get("answer_file_url") %}<a class="btn success" href="{{ item.get('answer_file_url') }}" target="_blank">Download Answer</a>{% endif %} {% if item.get("answered_file_url") %}<a class="btn success" href="{{ item.get('answered_file_url') }}" target="_blank">Download Answered File</a>{% endif %} </div> {% else %}<p>No assignments found.</p>{% endfor %} </div> """,rows=rows)
+# ------------------------------------------------------------
+# Services: doctors, tutors, CV, university, farmers
+# ------------------------------------------------------------
+@app.route("/services")
+def services():
+    return page("Services", """<div class=hero><h2>KOJA Services</h2><p>Professional and community services.</p></div><div class=grid><div class=card><h3>Doctors</h3><a class=btn href='{{url_for("doctors")}}'>Doctor profiles</a></div><div class=card><h3>Teachers / Tutors</h3><a class=btn href='{{url_for("tutors")}}'>Find tutors</a></div><div class=card><h3>CV Builder</h3><a class=btn href='{{url_for("cv")}}'>Build CV</a></div><div class=card><h3>University</h3><a class=btn href='{{url_for("university")}}'>Programmes & requirements</a></div><div class=card><h3>Farmers</h3><a class=btn href='{{url_for("farmer")}}'>Register farmer</a></div></div>""")
 
-# ============================================================
-# CV
-# ============================================================
+@app.route("/doctors")
+def doctors():
+    rows,_=sb_select("doctor_profiles",{"is_active":"eq.true","order":"created_at.desc","limit":"100"})
+    return page("Doctors", """<div class=card><h2>Doctor profiles</h2>{% for x in rows %}<div class=driver><b>{{x.get('full_name','Doctor')}}</b><br>{{x.get('specialty',x.get('specialisation',''))}}<br>{{x.get('location','')}}<br><a class=btn href='{{url_for("book_service",service="doctor",provider_id=x.get("id"))}}'>Book</a></div>{% else %}<p class=muted>No doctor profiles published.</p>{% endfor %}</div>""", rows=rows or [])
+
+@app.route("/tutors")
+def tutors():
+    rows,_=sb_select("teacher_profiles",{"is_active":"eq.true","order":"created_at.desc","limit":"100"})
+    return page("Teachers / Tutors", """<div class=card><h2>Teachers & tutors</h2>{% for x in rows %}<div class=driver><b>{{x.get('full_name','Teacher')}}</b><br>{{x.get('subject','')}}<br>{{x.get('location','')}}<br><a class=btn href='{{url_for("book_service",service="tutor",provider_id=x.get("id"))}}'>Book</a></div>{% else %}<p class=muted>No tutors published.</p>{% endfor %}</div>""", rows=rows or [])
+
+@app.route("/book/<service>/<provider_id>", methods=["GET","POST"])
+@login_required
+def book_service(service,provider_id):
+    if request.method=="POST":
+        row={"id":str(uuid.uuid4()),"customer_id":current_user()["id"],"provider_id":provider_id,"service_type":service,"booking_date":request.form.get("booking_date"),"notes":request.form.get("notes"),"status":"pending","created_at":now_iso()}
+        data,err=sb_insert("professional_bookings",row)
+        if err:flash("Booking failed: "+err)
+        else:flash("Booking submitted.")
+        return redirect(url_for("dashboard"))
+    return page("Booking", """<div class=card><h2>Book {{service}}</h2><form method=post><label>Date/time</label><input type=datetime-local name=booking_date required><label>Notes</label><textarea name=notes></textarea><button>Submit booking</button></form></div>""",service=service,provider_id=provider_id)
 
 @app.route("/cv",methods=["GET","POST"])
 @login_required
 def cv():
-    user=current_user()
     if request.method=="POST":
-        data={
-            "full_name":clean(request.form.get("full_name")),
-            "phone":clean(request.form.get("phone")),
-            "email":clean(request.form.get("email")),
-            "address":clean(request.form.get("address")),
-            "profile":clean(request.form.get("profile")),
-            "education":clean(request.form.get("education")),
-            "experience":clean(request.form.get("experience")),
-            "skills":clean(request.form.get("skills")),
-            "references":clean(request.form.get("references")),
-        }
-        return render_page("CV Preview",r""" <div class="card"> <h1>{{ data.full_name }}</h1><p>{{ data.phone }} | {{ data.email }} | {{ data.address }}</p> {% if data.profile %}<h2>Professional Profile</h2><p>{{ data.profile }}</p>{% endif %} {% if data.education %}<h2>Education</h2><p style="white-space:pre-wrap">{{ data.education }}</p>{% endif %} {% if data.experience %}<h2>Work Experience</h2><p style="white-space:pre-wrap">{{ data.experience }}</p>{% endif %} {% if data.skills %}<h2>Skills</h2><p style="white-space:pre-wrap">{{ data.skills }}</p>{% endif %} {% if data.references %}<h2>References</h2><p style="white-space:pre-wrap">{{ data.references }}</p>{% endif %} <hr><button onclick="window.print()">Print / Save as PDF</button> </div> """,data=data)
+        row={"id":str(uuid.uuid4()),"user_id":current_user()["id"],"full_name":request.form.get("full_name"),"phone":request.form.get("phone"),"email":request.form.get("email"),"summary":request.form.get("summary"),"education":request.form.get("education"),"experience":request.form.get("experience"),"skills":request.form.get("skills"),"created_at":now_iso()}
+        data,err=sb_insert("cvs",row)
+        if err:flash("CV could not be saved: "+err)
+        else:flash("CV saved.")
+        return redirect(url_for("cv"))
+    return page("CV Builder", """<div class=card><h2>CV Builder</h2><form method=post><input name=full_name value='{{user.full_name}}' placeholder='Full name' required><input name=phone placeholder='Phone'><input name=email value='{{user.email}}' placeholder='Email'><textarea name=summary placeholder='Professional summary'></textarea><textarea name=education placeholder='Education'></textarea><textarea name=experience placeholder='Experience'></textarea><textarea name=skills placeholder='Skills'></textarea><button>Save CV</button></form></div>""")
 
-    return render_page("CV Builder",r""" <div class="card"><h2>CV Builder</h2> <form method="post"> <label>Full Name</label><input name="full_name" value="{{ user.name }}" required> <label>Phone</label><input name="phone" value="{{ user.phone or '' }}"> <label>Email</label><input name="email" value="{{ user.email or '' }}" required> <label>Address</label><input name="address"> <label>Professional Profile</label><textarea name="profile"></textarea> <label>Education</label><textarea name="education"></textarea> <label>Work Experience</label><textarea name="experience"></textarea> <label>Skills</label><textarea name="skills"></textarea> <label>References</label><textarea name="references"></textarea> <button type="submit">Generate CV</button> </form> <p class="small">Use Print / Save as PDF in the Android browser. No ReportLab package is required.</p> </div> """)
-
-# ============================================================
-# FARMER
-# ============================================================
+@app.route("/university")
+def university():
+    rows,_=sb_select("university_programmes",{"is_active":"eq.true","order":"university.asc","limit":"200"})
+    return page("University", """<div class=card><h2>University → Programme → Academic year → Intake → Requirements</h2>{% for x in rows %}<div class=driver><b>{{x.get('university','University')}}</b><br>{{x.get('programme','Programme')}}<br>Year: {{x.get('academic_year','')}} · Intake: {{x.get('intake','')}}<br>{{x.get('requirements','')}}</div>{% else %}<p class=muted>No programme data has been published yet.</p>{% endfor %}</div>""", rows=rows or [])
 
 @app.route("/farmer",methods=["GET","POST"])
 @login_required
 def farmer():
-    user=current_user()
     if request.method=="POST":
-        data={
-            "id":str(uuid.uuid4()),"user_id":user["id"],
-            "nrc":clean(request.form.get("nrc")),
-            "date_of_birth":request.form.get("date_of_birth") or None,
-            "first_name":clean(request.form.get("first_name")),
-            "middle_names":clean(request.form.get("middle_names")),
-            "last_name":clean(request.form.get("last_name")),
-            "gender":clean(request.form.get("gender")),
-            "phone":clean(request.form.get("phone")),
-            "location":clean(request.form.get("location")),
-            "payment_method":clean(request.form.get("payment_method")),
-            "provider":clean(request.form.get("provider")),
-            "branch":clean(request.form.get("branch")),
-            "account_number":clean(request.form.get("account_number")),
-            "account_name":clean(request.form.get("account_name")),
-            "status":"submitted","created_at":utc_now()
-        }
-        f=request.files.get("nrc_document")
-        if f and f.filename:
-            uploaded,error=upload_storage(f,"farmer-nrc")
-            if error:
-                flash(error,"danger"); return redirect(url_for("farmer"))
-            data["nrc_document_url"]=uploaded["url"]
-            data["nrc_document_path"]=uploaded["path"]
-
-        row,error=db_insert("farmer_registrations",data)
-        if error:
-            minimal={k:data[k] for k in ("id","user_id","nrc","first_name","middle_names","last_name","gender","phone","location")}
-            row,error=db_insert("farmer_registrations",minimal)
-        if error:
-            flash("Farmer registration could not be submitted. Check the farmer_registrations columns.","danger")
-        else:
-            flash("Farmer registration submitted successfully.","success")
-            log_activity("farmer_registration","Farmer registration submitted.")
+        row={"id":str(uuid.uuid4()),"user_id":current_user()["id"],"full_name":request.form.get("full_name"),"phone":request.form.get("phone"),"farm_location":request.form.get("farm_location"),"crops":request.form.get("crops"),"created_at":now_iso()}
+        data,err=sb_insert("farmers",row)
+        if err:flash("Farmer registration failed: "+err)
+        else:flash("Farmer registration submitted.")
         return redirect(url_for("farmer"))
+    return page("Farmer registration", """<div class=card><h2>Farmer registration</h2><form method=post><input name=full_name value='{{user.full_name}}' required><input name=phone placeholder='Phone'><input name=farm_location placeholder='Farm location'><textarea name=crops placeholder='Crops / farming activities'></textarea><button>Register</button></form></div>""")
 
-    return render_page("Farmer Registration",r""" <div class="hero"><h2>KOJA Farmer Registration</h2><p>Register your agricultural service request.</p></div> <div class="card"><form method="post" enctype="multipart/form-data"> <h3>Personal Details</h3> <label>NRC</label><input name="nrc" required> <label>Date of Birth</label><input name="date_of_birth" type="date"> <label>First Name</label><input name="first_name" required> <label>Middle Names</label><input name="middle_names"> <label>Last Name</label><input name="last_name" required> <label>Gender</label><select name="gender"><option value="">Select</option><option>Male</option><option>Female</option></select> <label>Phone</label><input name="phone" required> <label>NRC Card</label><input type="file" name="nrc_document" accept=".jpg,.jpeg,.png,.pdf"> <h3>Farming Location</h3><label>Location</label><input name="location" placeholder="Province / District / Chiefdom / Camp"> <h3>Payment Details</h3> <label>Payment Method</label><select name="payment_method"><option>Bank Account</option><option>Mobile Money (MNO)</option><option>Wallet</option></select> <label>Provider</label><input name="provider" placeholder="Bank or mobile-money provider"> <label>Branch</label><input name="branch"> <label>Account / Mobile Number</label><input name="account_number"> <label>Account Name</label><input name="account_name"> <button type="submit">Submit Farmer Registration</button> </form></div> """)
-
-# ============================================================
-# DOCTORS / TEACHERS
-# ============================================================
-
-@app.route("/doctors")
-@login_required
-def doctors():
-    doctors=db_select("doctor_profiles",order="created_at.desc",limit=100)
-    return render_page("Doctors",r""" <div class="hero"><h2>Find a Doctor</h2><p>Choose a specific doctor and request an appointment.</p></div> <div class="grid"> {% for d in doctors %} <div class="card"> <h3>{{ d.get("full_name") or d.get("doctor_name") or "Doctor" }}</h3> <p><strong>Specialty:</strong> {{ d.get("specialty") or "General" }}</p> <p><strong>Hospital/Clinic:</strong> {{ d.get("hospital_clinic") or "Not specified" }}</p> {% if d.get("consultation_fee") %}<p><strong>Fee:</strong> {{ d.get("currency") or "ZMW" }} {{ d.get("consultation_fee") }}</p>{% endif %} <div class="actions"> <a class="btn" href="{{ url_for('book_doctor',provider_id=d.get('provider_id')) }}">Book This Doctor</a> <a class="btn secondary" href="{{ url_for('provider_map',provider_id=d.get('provider_id'),provider_type='doctor') }}">View Location</a> </div></div> {% else %}<div class="card"><p>No doctor profiles have been registered yet.</p></div>{% endfor %} </div> """,doctors=doctors)
-
-@app.route("/doctor/book/<provider_id>",methods=["GET","POST"])
-@login_required
-def book_doctor(provider_id):
-    user=current_user()
-    doctor=first_row("doctor_profiles",{"provider_id":provider_id})
-    if not doctor: abort(404)
-    if request.method=="POST":
-        payload={
-            "id":str(uuid.uuid4()),"client_id":user["id"],"provider_id":provider_id,
-            "appointment_type":"doctor","appointment_date":request.form.get("appointment_date"),
-            "start_time":request.form.get("start_time"),"end_time":request.form.get("end_time"),
-            "location":clean(request.form.get("location")),"status":"requested",
-            "notes":clean(request.form.get("notes")),"created_at":utc_now(),"updated_at":utc_now()
-        }
-        row,error=db_insert("appointments",payload)
-        if error: flash("Appointment could not be created: "+str(error)[:500],"danger")
-        else: flash("Doctor booking request submitted.","success")
-        return redirect(url_for("dashboard"))
-    return render_page("Book Doctor",r""" <div class="card"><h2>Book {{ doctor.get("full_name") or doctor.get("doctor_name") or "Doctor" }}</h2> <p><strong>Specialty:</strong> {{ doctor.get("specialty") or "General" }}</p> <form method="post"> <label>Date</label><input type="date" name="appointment_date" required> <label>Start Time</label><input type="time" name="start_time" required> <label>End Time</label><input type="time" name="end_time"> <label>Location</label><input name="location" placeholder="Hospital, clinic or online"> <label>Notes</label><textarea name="notes"></textarea> <button type="submit">Request Appointment</button> </form></div> """,doctor=doctor)
-
-@app.route("/teachers")
-@login_required
-def teachers():
-    teachers=db_select("teacher_profiles",order="created_at.desc",limit=100)
-    return render_page("Teachers",r""" <div class="hero"><h2>Find a Teacher / Tutor</h2><p>Choose a specific teacher for tutoring.</p></div> <div class="grid"> {% for t in teachers %} <div class="card"> <h3>{{ t.get("full_name") or t.get("teacher_name") or "Teacher" }}</h3> <p><strong>Subjects:</strong> {{ t.get("subjects") or "Not specified" }}</p> <p><strong>Grades:</strong> {{ t.get("grade_levels") or "Not specified" }}</p> <p><strong>Qualification:</strong> {{ t.get("qualification") or "Not specified" }}</p> {% if t.get("hourly_rate") %}<p><strong>Rate:</strong> {{ t.get("currency") or "ZMW" }} {{ t.get("hourly_rate") }}/hour</p>{% endif %} <a class="btn" href="{{ url_for('book_teacher',provider_id=t.get('provider_id')) }}">Book Teacher</a> <a class="btn secondary" href="{{ url_for('provider_map',provider_id=t.get('provider_id'),provider_type='teacher') }}">View Location</a> </div> {% else %}<div class="card"><p>No teacher profiles have been registered yet.</p></div>{% endfor %} </div> """,teachers=teachers)
-
-@app.route("/teacher/book/<provider_id>",methods=["GET","POST"])
-@login_required
-def book_teacher(provider_id):
-    user=current_user()
-    teacher=first_row("teacher_profiles",{"provider_id":provider_id})
-    if not teacher: abort(404)
-    if request.method=="POST":
-        payload={
-            "id":str(uuid.uuid4()),"client_id":user["id"],"provider_id":provider_id,
-            "appointment_type":"teacher","appointment_date":request.form.get("appointment_date"),
-            "start_time":request.form.get("start_time"),"end_time":request.form.get("end_time"),
-            "location":clean(request.form.get("location")),"status":"requested",
-            "notes":clean(request.form.get("notes")),"created_at":utc_now(),"updated_at":utc_now()
-        }
-        row,error=db_insert("appointments",payload)
-        if error: flash("Teacher booking failed: "+str(error)[:500],"danger")
-        else: flash("Teacher booking request submitted.","success")
-        return redirect(url_for("dashboard"))
-    return render_page("Book Teacher",r""" <div class="card"><h2>Book {{ teacher.get("full_name") or teacher.get("teacher_name") or "Teacher" }}</h2> <p>{{ teacher.get("subjects") or "" }}</p> <form method="post"> <label>Date</label><input type="date" name="appointment_date" required> <label>Start Time</label><input type="time" name="start_time" required> <label>End Time</label><input type="time" name="end_time"> <label>Location / Online</label><input name="location"> <label>Notes</label><textarea name="notes"></textarea> <button type="submit">Book Teacher</button> </form></div> """,teacher=teacher)
-
-# ============================================================
-# DRIVER REGISTRATION / PROFILE
-# ============================================================
-
-@app.route("/driver/register",methods=["GET","POST"])
-@login_required
-def driver_register():
-    user=current_user()
-    if request.method=="POST":
-        data={
-            "id":str(uuid.uuid4()),
-            "provider_id":user["id"],
-            "user_id":user["id"],
-            "full_name":user["name"],
-            "phone":clean(request.form.get("phone")) or user.get("phone"),
-            "vehicle_type":clean(request.form.get("vehicle_type")),
-            "vehicle_number":clean(request.form.get("vehicle_number")),
-            "vehicle_model":clean(request.form.get("vehicle_model")),
-            "license_number":clean(request.form.get("license_number")),
-            "status":"approved",
-            "is_available":False,
-            "created_at":utc_now()
-        }
-        row,error=db_insert("driver_profiles",data)
-        if error:
-            minimal={
-                "id":data["id"],"provider_id":user["id"],
-                "full_name":data["full_name"],"phone":data["phone"],
-                "vehicle_type":data["vehicle_type"],
-                "vehicle_number":data["vehicle_number"]
-            }
-            row,error=db_insert("driver_profiles",minimal)
-        if error:
-            flash("Driver profile could not be saved. Check driver_profiles columns.","danger")
-        else:
-            db_update("profiles",{"id":user["id"]},{"role":"driver"})
-            session["user"]["role"]="driver"
-            session["user"]["vehicle_type"]=data["vehicle_type"]
-            session["user"]["vehicle_number"]=data["vehicle_number"]
-            flash("Driver profile registered. You can now go online.","success")
-        return redirect(url_for("driver_dashboard"))
-
-    existing=first_row("driver_profiles",{"provider_id":user["id"]}) or first_row("driver_profiles",{"user_id":user["id"]})
-    return render_page("Driver Registration",r""" <div class="card"><h2>Driver Profile</h2> {% if existing %}<p class="online">A driver profile already exists.</p>{% endif %} <form method="post"> <label>Phone</label><input name="phone" value="{{ existing.get('phone') if existing else (user.phone or '') }}"> <label>Vehicle Type</label><select name="vehicle_type"><option>Motorcycle</option><option>Car</option><option>Van</option><option>Pickup</option><option>Truck</option><option>Bicycle</option></select> <label>Vehicle Number / Registration</label><input name="vehicle_number" value="{{ existing.get('vehicle_number') if existing else '' }}"> <label>Vehicle Model</label><input name="vehicle_model" value="{{ existing.get('vehicle_model') if existing else '' }}"> <label>Driver Licence Number</label><input name="license_number"> <button type="submit">Save Driver Profile</button> </form></div> """,existing=existing)
-
-# ============================================================
-# DRIVER DASHBOARD / ONLINE STATUS / REQUESTS
-# ============================================================
-
-@app.route("/driver")
-@login_required
-def driver_dashboard():
-    user=current_user()
-    profile=first_row("driver_profiles",{"provider_id":user["id"]}) or first_row("driver_profiles",{"user_id":user["id"]})
-    if not profile:
-        return redirect(url_for("driver_register"))
-
-    locations=db_select("driver_locations",filters={"driver_id":user["id"]},order="created_at.desc",limit=1)
-    latest=locations[0] if locations else None
-    requests_rows=db_select("deliveries",filters={"driver_id":user["id"]},order="created_at.desc",limit=100)
-    return render_page("Driver Dashboard",r""" <div class="hero"><h2>Driver Dashboard</h2><p>{{ user.name }} — {{ profile.get("vehicle_type") or "Vehicle" }} {{ profile.get("vehicle_number") or "" }}</p></div> <div class="card"> <h3>GPS / Availability</h3> <p>Current status: <span id="online-status" class="{{ 'online' if latest and latest.get('is_online') else 'offline' }}"> {{ "ONLINE" if latest and latest.get("is_online") else "OFFLINE" }} </span></p> <div class="actions"> <a class="btn success" href="{{ url_for('tracking') }}">Open GPS & Go Online</a> <button class="btn danger" onclick="goOffline()">Go Offline</button> </div> <p id="offline-status" class="small"></p> </div> <div class="card"><h3>Delivery Requests / Jobs</h3> {% for d in requests_rows %} <div class="card"> <strong>{{ d.get("tracking_code") }}</strong> <p>{{ d.get("pickup_location") }} → {{ d.get("destination") }}</p> <p>Status: <span class="badge">{{ d.get("status") or "requested" }}</span></p> <p>Customer: {{ d.get("customer_id") }}</p> <div class="actions"> {% if d.get("status") == "requested" %} <form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.get('id'),action='accept') }}"><button class="btn success">Accept</button></form> <form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.get('id'),action='reject') }}"><button class="btn danger">Reject</button></form> {% elif d.get("status") == "accepted" %} <form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.get('id'),action='picked_up') }}"><button class="btn">Picked Up</button></form> {% elif d.get("status") == "picked_up" %} <form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.get('id'),action='in_transit') }}"><button class="btn">In Transit</button></form> {% elif d.get("status") == "in_transit" %} <form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.get('id'),action='delivered') }}"><button class="btn success">Delivered</button></form> {% endif %} <a class="btn secondary" href="{{ url_for('track_delivery',tracking_code=d.get('tracking_code')) }}">Track Map</a> </div></div> {% else %}<p>No delivery requests yet.</p>{% endfor %} </div> <script> async function goOffline(){ try{ const r=await fetch("/api/driver/offline",{method:"POST",headers:{"Content-Type":"application/json"}}); const d=await r.json(); document.getElementById("offline-status").textContent=d.message||"Driver is offline."; document.getElementById("online-status").textContent="OFFLINE"; }catch(e){document.getElementById("offline-status").textContent="Unable to change status."} } </script> """,profile=profile,latest=latest,requests_rows=requests_rows)
-
-@app.route("/driver/delivery/<delivery_id>/<action>",methods=["POST"])
-@driver_required
-def driver_delivery_action(delivery_id,action):
-    user=current_user()
-    delivery=first_row("deliveries",{"id":delivery_id})
-    if not delivery: abort(404)
-
-    if action in ("accept","reject"):
-        if delivery.get("driver_id") and str(delivery.get("driver_id")) != str(user["id"]):
-            flash("This delivery is assigned to another driver.","danger")
-            return redirect(url_for("driver_dashboard"))
-
-    statuses={
-        "accept":"accepted",
-        "reject":"rejected",
-        "picked_up":"picked_up",
-        "in_transit":"in_transit",
-        "delivered":"delivered"
-    }
-    if action not in statuses:
-        abort(400)
-
-    status=statuses[action]
-    payload={"status":status,"updated_at":utc_now()}
-    if action=="accept":
-        payload["driver_id"]=user["id"]
-
-    row,error=db_update("deliveries",{"id":delivery_id},payload)
-    if error:
-        flash("Could not update delivery status: "+str(error)[:500],"danger")
-    else:
-        log_activity("delivery_status",f"Delivery {delivery.get('tracking_code')} changed to {status}.")
-        flash(f"Delivery status changed to {status}.","success")
-    return redirect(url_for("driver_dashboard"))
-
-# ============================================================
-# DRIVER GPS
-# ============================================================
-
-@app.route("/tracking")
-@login_required
-def tracking():
-    user=current_user()
-    return render_page("Live GPS Tracking",r""" <div class="hero"><h2>Live Driver GPS</h2><p>Allow browser location permission. Keep this page open while driving.</p></div> <div class="card"> <label>Delivery ID (optional)</label> <input id="delivery_id" placeholder="Paste delivery UUID if this is an assigned delivery"> <div class="actions"> <button class="btn success" onclick="startTracking()">Go Online / Start GPS</button> <button class="btn danger" onclick="stopTracking()">Stop GPS / Go Offline</button> </div> <p id="gps-status">GPS not started.</p> <div id="map"></div> </div> <script> let watchId=null,marker=null; const map=L.map("map").setView([-13.9626,28.3228],6); L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap contributors"}).addTo(map); function status(t){document.getElementById("gps-status").textContent=t} function startTracking(){ if(!navigator.geolocation){status("This browser does not support GPS.");return} status("Requesting GPS permission..."); watchId=navigator.geolocation.watchPosition(sendPosition,gpsError,{enableHighAccuracy:true,maximumAge:3000,timeout:15000}); } async function sendPosition(position){ const c=position.coords, lat=c.latitude, lon=c.longitude; if(!marker){marker=L.marker([lat,lon]).addTo(map).bindPopup("Your live driver location");} else marker.setLatLng([lat,lon]); map.setView([lat,lon],16); const deliveryId=document.getElementById("delivery_id").value.trim(); try{ const r=await fetch("/api/driver/location",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ latitude:lat,longitude:lon,accuracy:c.accuracy,speed:c.speed,heading:c.heading,altitude:c.altitude,delivery_id:deliveryId||null })}); const d=await r.json(); status(d.ok?"ONLINE — GPS updated "+new Date().toLocaleTimeString():(d.message||"GPS update failed.")); }catch(e){status("Network error while sending GPS.");} } function gpsError(e){ if(e.code===1)status("Location permission denied. Allow location permission in browser settings."); else if(e.code===2)status("Device could not determine location."); else if(e.code===3)status("GPS timed out."); else status("GPS error."); } function stopTracking(){ if(watchId!==null){navigator.geolocation.clearWatch(watchId);watchId=null;} fetch("/api/driver/offline",{method:"POST",headers:{"Content-Type":"application/json"}}).then(r=>r.json()).then(d=>status(d.message||"GPS sharing stopped.")).catch(()=>status("GPS stopped locally.")); } </script> """)
-
-@app.route("/api/driver/location",methods=["POST"])
-@driver_required
-def driver_location_update():
-    if not table_exists("driver_locations"):
-        return jsonify({"ok":False,"message":"Create public.driver_locations in Supabase first."}),503
-
-    body=request.get_json(silent=True) or {}
-    lat=safe_float(body.get("latitude")); lon=safe_float(body.get("longitude"))
-    if lat is None or lon is None or not (-90<=lat<=90) or not (-180<=lon<=180):
-        return jsonify({"ok":False,"message":"Invalid latitude or longitude."}),400
-
-    user=current_user()
-    payload={
-        "id":str(uuid.uuid4()),
-        "driver_id":user["id"],
-        "user_id":user["id"],
-        "latitude":lat,"longitude":lon,
-        "accuracy":body.get("accuracy"),
-        "speed":body.get("speed"),
-        "heading":body.get("heading"),
-        "altitude":body.get("altitude"),
-        "is_online":True,
-        "created_at":utc_now()
-    }
-    row,error=db_insert("driver_locations",payload)
-    if error:
-        return jsonify({"ok":False,"message":"GPS location could not be saved.","error":str(error)[:500]}),500
-
-    delivery_id=body.get("delivery_id")
-    if delivery_id:
-        delivery=first_row("deliveries",{"id":delivery_id})
-        if delivery and str(delivery.get("driver_id") or "") in ("",str(user["id"])):
-            db_update("deliveries",{"id":delivery_id},{"driver_id":user["id"],"updated_at":utc_now()})
-
-    return jsonify({"ok":True,"latitude":lat,"longitude":lon,"created_at":utc_now()})
-
-@app.route("/api/driver/offline",methods=["POST"])
-@driver_required
-def driver_offline():
-    if not table_exists("driver_locations"):
-        return jsonify({"ok":False,"message":"driver_locations table is not installed."}),503
-    user=current_user()
-    latest=first_row("driver_locations",{"driver_id":user["id"]})
-    payload={
-        "id":str(uuid.uuid4()),"driver_id":user["id"],"user_id":user["id"],
-        "latitude":latest.get("latitude") if latest else None,
-        "longitude":latest.get("longitude") if latest else None,
-        "accuracy":latest.get("accuracy") if latest else None,
-        "speed":None,"heading":None,"altitude":None,
-        "is_online":False,"created_at":utc_now()
-    }
-    row,error=db_insert("driver_locations",payload)
-    if error:
-        return jsonify({"ok":False,"message":"Could not mark driver offline."}),500
-    return jsonify({"ok":True,"message":"Driver is now offline."})
-
-# ============================================================
-# NEARBY DRIVERS
-# ============================================================
-
-@app.route("/drivers")
-@login_required
-def drivers():
-    return render_page("Nearby Drivers",r""" <div class="hero"><h2>Nearby Delivery Drivers</h2><p>Share your pickup/shop location and KOJA will calculate distances to online drivers.</p></div> <div class="card"> <div class="grid"> <div><label>Your Latitude</label><input id="lat" type="number" step="any" placeholder="-13.96"></div> <div><label>Your Longitude</label><input id="lon" type="number" step="any" placeholder="28.32"></div> </div> <div class="actions"> <button class="btn" onclick="locateMe()">Use My Current Location</button> <button class="btn success" onclick="findDrivers()">Find Nearby Drivers</button> </div> <p id="status" class="small"></p> </div> <div class="card"><div id="map"></div></div> <div class="card"><h3>Available Drivers</h3><div id="driver-list">Enter your location and search.</div></div> <script> let map=L.map("map").setView([-13.9626,28.3228],6),me=null,markers=[]; L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap contributors"}).addTo(map); function locateMe(){ if(!navigator.geolocation){document.getElementById("status").textContent="GPS is not supported.";return} document.getElementById("status").textContent="Requesting your location..."; navigator.geolocation.getCurrentPosition(p=>{ document.getElementById("lat").value=p.coords.latitude; document.getElementById("lon").value=p.coords.longitude; if(me)me.setLatLng([p.coords.latitude,p.coords.longitude]);else me=L.marker([p.coords.latitude,p.coords.longitude]).addTo(map).bindPopup("Your pickup/shop location"); map.setView([p.coords.latitude,p.coords.longitude],14); document.getElementById("status").textContent="Location obtained."; findDrivers(); },()=>document.getElementById("status").textContent="Location permission denied or unavailable.",{enableHighAccuracy:true,timeout:15000}); } async function findDrivers(){ const lat=parseFloat(document.getElementById("lat").value),lon=parseFloat(document.getElementById("lon").value); if(!Number.isFinite(lat)||!Number.isFinite(lon)){document.getElementById("status").textContent="Enter or obtain a valid location first.";return} document.getElementById("status").textContent="Searching for online drivers..."; try{ const r=await fetch(`/api/nearby-drivers?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lon)}&radius_km=50`); const d=await r.json(); markers.forEach(m=>map.removeLayer(m));markers=[]; const list=document.getElementById("driver-list"); if(!d.ok){list.textContent=d.message||"Search failed.";return} if(me)me.setLatLng([lat,lon]);else me=L.marker([lat,lon]).addTo(map).bindPopup("Your pickup/shop location"); if(!d.drivers.length){list.innerHTML="<p>No online drivers found within 50 km.</p>";document.getElementById("status").textContent="No nearby drivers are online.";return} list.innerHTML=""; d.drivers.forEach(driver=>{ const m=L.marker([driver.latitude,driver.longitude]).addTo(map).bindPopup(`<b>${escapeHtml(driver.name)}</b><br>${escapeHtml(driver.vehicle_type||"Vehicle")}<br>${driver.distance_km} km away`); markers.push(m); const div=document.createElement("div");div.className="card driver-card"; div.innerHTML=`<h3>${escapeHtml(driver.name)}</h3><p class="online">ONLINE</p><p><b>Vehicle:</b> ${escapeHtml(driver.vehicle_type||"Not specified")} ${escapeHtml(driver.vehicle_number||"")}</p><p><b>Distance:</b> ${driver.distance_km} km</p><p><b>Phone:</b> ${escapeHtml(driver.phone||"")}</p><div class="actions"><button class="btn success" onclick="requestDriver('${driver.driver_id}')">Request Delivery</button><button class="btn secondary" onclick="map.setView([${driver.latitude},${driver.longitude}],16)">View on Map</button></div>`; list.appendChild(div); }); map.setView([lat,lon],13); document.getElementById("status").textContent=`Found ${d.drivers.length} online driver(s).`; }catch(e){document.getElementById("status").textContent="Unable to search drivers."} } function escapeHtml(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]))}
-async function requestDriver(driverId){
- const lat=parseFloat(document.getElementById("lat").value),lon=parseFloat(document.getElementById("lon").value);
- const pickup=prompt("Pickup / shop location description:","My current location");
- if(pickup===null)return;
- const destination=prompt("Delivery destination:");
- if(!destination)return;
- const recipient=prompt("Recipient name:","");
- const phone=prompt("Recipient phone:","");
- const description=prompt("Package description:","");
- try{
-  const r=await fetch("/api/delivery/request",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
-   driver_id:driverId,pickup_location:pickup,destination:destination,
-   pickup_latitude:lat,pickup_longitude:lon,recipient_name:recipient||"",
-   recipient_phone:phone||"",package_description:description||""
-  })});
-  const d=await r.json();
-  alert(d.message||"Delivery request submitted.");
-  if(d.ok)window.location.href="/deliveries";
- }catch(e){alert("Unable to send delivery request.")}
-}
-</script> """) @app.route("/api/nearby-drivers") @login_required def nearby_drivers(): lat=safe_float(request.args.get("latitude")) lon=safe_float(request.args.get("longitude")) radius=safe_float(request.args.get("radius_km")) or 50 radius=max(1,min(radius,200)) if lat is None or lon is None or not (-90<=lat<=90) or not (-180<=lon<=180): return jsonify({"ok":False,"message":"Valid latitude and longitude are required."}),400 if not table_exists("driver_locations"): return jsonify({"ok":False,"message":"The driver_locations table is not installed."}),503 latest=latest_driver_locations() results=[] now=datetime.now(timezone.utc) for driver_id,loc in latest.items(): if not loc.get("is_online"): continue dlat=safe_float(loc.get("latitude")); dlon=safe_float(loc.get("longitude")) if dlat is None or dlon is None: continue created=loc.get("created_at") # Do not show stale drivers older than 10 minutes. if created: try: dt=datetime.fromisoformat(str(created).replace("Z","+00:00")) if (now-dt).total_seconds()>600: continue except Exception: pass distance=haversine_km(lat,lon,dlat,dlon) if distance>radius: continue profile=first_row("driver_profiles",{"provider_id":driver_id}) or first_row("driver_profiles",{"user_id":driver_id}) user=find_user_by_id(driver_id) or {} results.append({ "driver_id":str(driver_id), "name":first_nonempty(profile.get("full_name") if profile else "",user.get("full_name"),user.get("name"),"Driver"), "phone":first_nonempty(profile.get("phone") if profile else "",user.get("phone")), "vehicle_type":first_nonempty(profile.get("vehicle_type") if profile else "",user.get("vehicle_type")), "vehicle_number":first_nonempty(profile.get("vehicle_number") if profile else "",user.get("vehicle_number")), "latitude":dlat,"longitude":dlon, "accuracy":loc.get("accuracy"), "distance_km":round(distance,2), "updated_at":loc.get("created_at") }) results.sort(key=lambda x:x["distance_km"]) return jsonify({"ok":True,"drivers":results}) # ============================================================ # DELIVERY REQUEST / TRACKING
-# ============================================================
-
-def make_tracking_code():
-    return "KOJA-" + datetime.now().strftime("%Y%m%d") + "-" + secrets.token_hex(3).upper()
-
-@app.route("/api/delivery/request",methods=["POST"])
-@login_required
-def create_delivery_request():
-    user=current_user()
-    body=request.get_json(silent=True) or {}
-    driver_id=clean(body.get("driver_id"))
-    if not driver_id:
-        return jsonify({"ok":False,"message":"Select a driver first."}),400
-
-    driver=first_row("driver_profiles",{"provider_id":driver_id}) or first_row("driver_profiles",{"user_id":driver_id})
-    if not driver:
-        return jsonify({"ok":False,"message":"Driver profile not found."}),404
-
-    lat=safe_float(body.get("pickup_latitude")); lon=safe_float(body.get("pickup_longitude"))
-    tracking=make_tracking_code()
-
-    payload={
-        "id":str(uuid.uuid4()),
-        "customer_id":user["id"],
-        "user_id":user["id"],
-        "driver_id":driver_id,
-        "pickup_location":clean(body.get("pickup_location")),
-        "destination":clean(body.get("destination")),
-        "pickup_latitude":lat,
-        "pickup_longitude":lon,
-        "recipient_name":clean(body.get("recipient_name")),
-        "recipient_phone":clean(body.get("recipient_phone")),
-        "package_description":clean(body.get("package_description")),
-        "package_weight":body.get("package_weight"),
-        "delivery_fee":body.get("delivery_fee") or 0,
-        "currency":"ZMW",
-        "status":"requested",
-        "tracking_code":tracking,
-        "notes":clean(body.get("notes")),
-        "created_at":utc_now(),"updated_at":utc_now()
-    }
-
-    row,error=db_insert("deliveries",payload)
-    if error:
-        minimal={
-            "id":payload["id"],"customer_id":user["id"],"driver_id":driver_id,
-            "pickup_location":payload["pickup_location"],
-            "destination":payload["destination"],
-            "recipient_name":payload["recipient_name"],
-            "recipient_phone":payload["recipient_phone"],
-            "package_description":payload["package_description"],
-            "status":"requested","tracking_code":tracking
-        }
-        row,error=db_insert("deliveries",minimal)
-
-    if error:
-        return jsonify({"ok":False,"message":"Delivery request could not be created.","error":str(error)[:600]}),500
-
-    log_activity("delivery_requested",f"Delivery {tracking} requested from driver {driver_id}.")
-    return jsonify({"ok":True,"tracking_code":tracking,"message":f"Delivery request sent to the driver. Tracking code: {tracking}."})
-
-@app.route("/deliveries",methods=["GET","POST"])
-@login_required
-def deliveries():
-    user=current_user()
-
-    if request.method=="POST":
-        # Legacy/manual request. It creates an unassigned delivery,
-        # after which the customer can search for a driver.
-        tracking=make_tracking_code()
-        payload={
-            "id":str(uuid.uuid4()),"customer_id":user["id"],
-            "pickup_location":clean(request.form.get("pickup_location")),
-            "destination":clean(request.form.get("destination")),
-            "recipient_name":clean(request.form.get("recipient_name")),
-            "recipient_phone":clean(request.form.get("recipient_phone")),
-            "package_description":clean(request.form.get("package_description")),
-            "package_weight":request.form.get("package_weight") or None,
-            "delivery_fee":request.form.get("delivery_fee") or 0,
-            "currency":"ZMW","requested_date":request.form.get("requested_date") or None,
-            "requested_time":request.form.get("requested_time") or None,
-            "status":"requested","tracking_code":tracking,
-            "notes":clean(request.form.get("notes")),"created_at":utc_now(),"updated_at":utc_now()
-        }
-        row,error=db_insert("deliveries",payload)
-        if error:
-            flash("Delivery could not be registered: "+str(error)[:600],"danger")
-        else:
-            flash(f"Delivery registered. Tracking code: {tracking}. Now choose a nearby driver.","success")
-            return redirect(url_for("drivers"))
-        return redirect(url_for("deliveries"))
-
-    rows=db_select("deliveries",filters={"customer_id":user["id"]},order="created_at.desc",limit=100)
-    return render_page("Deliveries",r""" <div class="hero"><h2>Delivery Service</h2><p>Use Nearby Drivers to see drivers around your shop/pickup location.</p><a class="btn success" href="{{ url_for('drivers') }}">Find Nearby Drivers</a></div> <div class="card"><h2>Create Delivery Without Selecting Driver Yet</h2> <form method="post"> <label>Pickup / Shop Location</label><input name="pickup_location" required> <label>Destination</label><input name="destination" required> <label>Recipient Name</label><input name="recipient_name" required> <label>Recipient Phone</label><input name="recipient_phone" required> <label>Package Description</label><textarea name="package_description"></textarea> <label>Package Weight (kg)</label><input type="number" step="0.01" name="package_weight"> <label>Delivery Fee (ZMW)</label><input type="number" step="0.01" name="delivery_fee"> <label>Requested Date</label><input type="date" name="requested_date"> <label>Requested Time</label><input type="time" name="requested_time"> <label>Notes</label><textarea name="notes"></textarea> <button type="submit">Create Delivery Request</button> </form></div> <div class="card"><h2>My Deliveries</h2> {% for d in rows %} <div class="card"><strong>{{ d.get("tracking_code") }}</strong> <p>{{ d.get("pickup_location") }} → {{ d.get("destination") }}</p> <p>Status: <span class="badge">{{ d.get("status") or "requested" }}</span></p> <p>Driver: {{ d.get("driver_id") or "Not selected" }}</p> <a class="btn" href="{{ url_for('track_delivery',tracking_code=d.get('tracking_code')) }}">Track Delivery</a> {% if not d.get("driver_id") %}<a class="btn success" href="{{ url_for('drivers') }}">Find Driver</a>{% endif %} </div> {% else %}<p>No deliveries registered.</p>{% endfor %} </div> """,rows=rows)
-
-@app.route("/track/<tracking_code>")
-@login_required
-def track_delivery(tracking_code):
-    delivery=first_row("deliveries",{"tracking_code":tracking_code})
-    if not delivery: abort(404)
-    return render_page("Track Delivery",r""" <div class="hero"><h2>Delivery Tracking</h2><p>Tracking code: <strong>{{ delivery.get("tracking_code") }}</strong></p></div> <div class="card"> <p><strong>Pickup:</strong> {{ delivery.get("pickup_location") }}</p> <p><strong>Destination:</strong> {{ delivery.get("destination") }}</p> <p><strong>Status:</strong> <span id="delivery-status">{{ delivery.get("status") }}</span></p> <div id="map"></div><p id="tracking-status" class="small">Waiting for driver's location...</p> </div> <script> const trackingCode={{ delivery.get("tracking_code")|tojson }}; let map=L.map("map").setView([-13.9626,28.3228],6),marker=null; L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap contributors"}).addTo(map); async function load(){ try{ const r=await fetch("/api/delivery/"+encodeURIComponent(trackingCode)+"/location"); const d=await r.json(); document.getElementById("delivery-status").textContent=d.status||""; if(!d.ok){document.getElementById("tracking-status").textContent=d.message||"No driver GPS available.";return} const p=[d.latitude,d.longitude]; if(!marker){marker=L.marker(p).addTo(map).bindPopup("Driver location");map.setView(p,15)}else marker.setLatLng(p); document.getElementById("tracking-status").textContent="Driver location updated: "+(d.updated_at||"recently"); }catch(e){document.getElementById("tracking-status").textContent="Unable to obtain driver location."} } load();setInterval(load,10000); </script> """,delivery=delivery)
-
-@app.route("/api/delivery/<tracking_code>/location")
-@login_required
-def delivery_location(tracking_code):
-    delivery=first_row("deliveries",{"tracking_code":tracking_code})
-    if not delivery:
-        return jsonify({"ok":False,"message":"Delivery not found."}),404
-
-    driver_id=delivery.get("driver_id")
-    locations=[]
-    if driver_id:
-        locations=db_select("driver_locations",filters={"driver_id":driver_id},order="created_at.desc",limit=1)
-    if not locations:
-        return jsonify({"ok":False,"message":"Driver has not shared a GPS location yet.","status":delivery.get("status")})
-
-    loc=locations[0]
-    return jsonify({
-        "ok":True,"latitude":loc.get("latitude"),"longitude":loc.get("longitude"),
-        "accuracy":loc.get("accuracy"),"speed":loc.get("speed"),
-        "heading":loc.get("heading"),"updated_at":loc.get("created_at"),
-        "status":delivery.get("status")
-    })
-
-# ============================================================
-# PROVIDER LOCATION / DOCTOR & TEACHER MAP
-# ============================================================
-
-@app.route("/provider-map/<provider_id>")
-@login_required
-def provider_map(provider_id):
-    provider_type=request.args.get("provider_type","provider")
-    return render_page("Provider Location",r""" <div class="hero"><h2>{{ provider_type|title }} Location</h2><p>Latest GPS position shared by this provider.</p></div> <div class="card"><div id="map"></div><p id="status">Loading provider location...</p></div> <script> const providerId={{ provider_id|tojson }},map=L.map("map").setView([-13.9626,28.3228],6); L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap contributors"}).addTo(map); let marker=null; async function update(){ try{ const r=await fetch("/api/provider/"+encodeURIComponent(providerId)+"/location"),d=await r.json(); if(!d.ok){document.getElementById("status").textContent=d.message||"No location available.";return} const p=[d.latitude,d.longitude]; if(!marker){marker=L.marker(p).addTo(map).bindPopup("Provider location");map.setView(p,15)}else marker.setLatLng(p); document.getElementById("status").textContent="Last update: "+d.updated_at; }catch(e){document.getElementById("status").textContent="Unable to load GPS position."} } update();setInterval(update,10000); </script> """,provider_id=provider_id,provider_type=provider_type)
-
-@app.route("/api/provider/<provider_id>/location")
-@login_required
-def provider_location(provider_id):
-    rows=db_select("driver_locations",filters={"driver_id":provider_id},order="created_at.desc",limit=1)
-    if not rows:
-        rows=db_select("driver_locations",filters={"user_id":provider_id},order="created_at.desc",limit=1)
-    if not rows:
-        return jsonify({"ok":False,"message":"This provider has not shared a GPS location."})
-    loc=rows[0]
-    return jsonify({"ok":True,"latitude":loc.get("latitude"),"longitude":loc.get("longitude"),"accuracy":loc.get("accuracy"),"updated_at":loc.get("created_at")})
-
-# ============================================================
-# UNIVERSITIES
-# ============================================================
-
-@app.route("/universities")
-@login_required
-def universities():
-    universities=db_select("universities",order="name.asc",limit=200)
-    return render_page("Universities",r""" <div class="hero"><h2>University Applications</h2><p>Select the university, programme, intake/year and review requirements.</p></div> <div class="card"> {% if universities %}<div class="grid"> {% for university in universities %} <div class="card"><h3>{{ university.get("name") or university.get("university_name") or "University" }}</h3> <p>{{ university.get("location") or university.get("description") or "" }}</p> <a class="btn" href="{{ url_for('university_apply',university_id=university.get('id')) }}">Apply</a></div> {% endfor %} </div>{% else %}<p>No universities are currently loaded into the universities table.</p>{% endif %} </div> """,universities=universities)
-
-@app.route("/university/apply/<university_id>",methods=["GET","POST"])
-@login_required
-def university_apply(university_id):
-    user=current_user()
-    university=first_row("universities",{"id":university_id})
-    if not university: abort(404)
-    programmes=db_select("university_programmes",filters={"university_id":university_id},order="name.asc",limit=500)
-    requirements=db_select("university_application_requirements",filters={"university_id":university_id},limit=500)
-
-    if request.method=="POST":
-        programme_id=request.form.get("programme_id")
-        year=request.form.get("academic_year")
-        intake=clean(request.form.get("intake"))
-        payload={
-            "id":str(uuid.uuid4()),"user_id":user["id"],"university_id":university_id,
-            "programme_id":programme_id,"academic_year":year,"intake":intake or None,
-            "full_name":user["name"],"email":user["email"],"phone":user.get("phone"),
-            "status":"draft","created_at":utc_now()
-        }
-        row,error=db_insert("university_applications",payload)
-        if error:
-            minimal={k:payload[k] for k in ("id","user_id","university_id","programme_id","academic_year")}
-            row,error=db_insert("university_applications",minimal)
-        if error: flash("Application could not be created: "+str(error)[:600],"danger")
-        else: flash("University application started successfully.","success")
-        return redirect(url_for("universities"))
-
-    return render_page("University Application",r""" <div class="card"><h2>{{ university.get("name") or university.get("university_name") }}</h2> <form method="post"> <label>Programme</label><select name="programme_id" required><option value="">Select programme</option> {% for p in programmes %}<option value="{{ p.get('id') }}">{{ p.get("name") or p.get("programme_name") or p.get("title") }}</option>{% endfor %} </select> <label>Academic Year</label><select name="academic_year"><option>2026/2027</option><option>2027/2028</option></select> <label>Intake</label><select name="intake"><option>January</option><option>May</option><option>September</option><option>Other</option></select> <button type="submit">Start Application</button> </form></div> <div class="card"><h3>Application Requirements</h3> {% for r in requirements %}<div class="card"><strong>{{ r.get("title") or r.get("requirement") or "Requirement" }}</strong><p>{{ r.get("description") or r.get("details") or "" }}</p></div> {% else %}<p>No specific requirements have been entered for this university yet.</p>{% endfor %} </div> """,university=university,programmes=programmes,requirements=requirements)
-
-# ============================================================
-# ADMIN
-# ============================================================
-
+# ------------------------------------------------------------
+# Admin
+# ------------------------------------------------------------
 @app.route("/admin")
 @admin_required
 def admin():
-    tables=["profiles","questions","assignments","farmer_registrations","doctor_profiles","teacher_profiles","driver_profiles","driver_locations","deliveries","appointments","universities","university_applications","activity_logs"]
+    tables=["profiles","driver_profiles","driver_locations","deliveries","assignments","professional_bookings","farmers"]
     counts={}
-    for table in tables:
-        counts[table]=len(db_select(table,limit=1000))
-    return render_page("Admin Dashboard",r""" <div class="hero"><h2>KOJA Administrator</h2><p>System management dashboard.</p></div> <div class="grid">{% for name,count in counts.items() %}<div class="stat"><div class="big">{{ count }}</div>{{ name }}</div>{% endfor %}</div> <div class="card"><h3>Management</h3> <div class="actions"> <a class="btn" href="{{ url_for('admin_users') }}">Users</a> <a class="btn" href="{{ url_for('admin_drivers') }}">Drivers</a> <a class="btn" href="{{ url_for('admin_deliveries') }}">Deliveries</a> <a class="btn" href="{{ url_for('admin_appointments') }}">Appointments</a> </div></div> """,counts=counts)
+    for t in tables:
+        x,_=sb_select(t,{"select":"id","limit":"1000"}); counts[t]=len(x or [])
+    drivers,_=sb_select("driver_profiles",{"order":"created_at.desc","limit":"100"})
+    return page("Admin", """<div class=hero><h2>Admin dashboard</h2></div><div class=grid>{% for k,v in counts.items() %}<div class=card><div class=stat>{{v}}</div><div>{{k}}</div></div>{% endfor %}</div><div class=card><h3>Driver approvals</h3><table class=table><tr><th>Name</th><th>Vehicle</th><th>Status</th><th>Action</th></tr>{% for d in drivers %}<tr><td>{{d.get('full_name','')}}</td><td>{{d.get('vehicle_type','')}} {{d.get('vehicle_number','')}}</td><td>{{d.get('status','pending')}}</td><td>{% if d.get('status')!='approved' %}<form method=post action='{{url_for("approve_driver",driver_id=d.get("id"))}}'><button>Approve</button></form>{% endif %}</td></tr>{% endfor %}</table></div>""", counts=counts,drivers=drivers or [])
 
-@app.route("/admin/users")
+@app.post("/admin/driver/<driver_id>/approve")
 @admin_required
-def admin_users():
-    rows=db_select("profiles",order="created_at.desc",limit=300)
-    return render_page("Admin Users",r""" <div class="card"><h2>Users</h2><table><tr><th>Name</th><th>Email</th><th>Phone</th><th>Role</th><th>Admin</th></tr> {% for u in rows %}<tr><td>{{ u.get("full_name") or u.get("name") }}</td><td>{{ u.get("email") }}</td><td>{{ u.get("phone") or "" }}</td><td>{{ u.get("role") or "" }}</td><td>{{ "Yes" if u.get("is_admin") else "No" }}</td></tr>{% endfor %} </table></div> """,rows=rows)
+def approve_driver(driver_id):
+    data,err=sb_update("driver_profiles",{"id":f"eq.{driver_id}"},{"status":"approved"})
+    if err:flash("Approval failed: "+err)
+    else:flash("Driver approved.")
+    return redirect(url_for("admin"))
 
-@app.route("/admin/drivers")
-@admin_required
-def admin_drivers():
-    rows=db_select("driver_profiles",order="created_at.desc",limit=300)
-    return render_page("Admin Drivers",r""" <div class="card"><h2>Drivers</h2><table><tr><th>Name</th><th>Phone</th><th>Vehicle</th><th>Number</th><th>Provider ID</th></tr> {% for d in rows %}<tr><td>{{ d.get("full_name") or d.get("driver_name") }}</td><td>{{ d.get("phone") }}</td><td>{{ d.get("vehicle_type") }}</td><td>{{ d.get("vehicle_number") }}</td><td>{{ d.get("provider_id") or d.get("user_id") }}</td></tr>{% endfor %} </table></div> """,rows=rows)
+# ------------------------------------------------------------
+# Health / setup
+# ------------------------------------------------------------
+@app.get("/health")
+def health():
+    return jsonify(status="ok",service="KOJA AFRICA",time=now_iso(),supabase_configured=bool(SUPABASE_URL and SUPABASE_KEY))
 
-@app.route("/admin/deliveries")
-@admin_required
-def admin_deliveries():
-    rows=db_select("deliveries",order="created_at.desc",limit=300)
-    return render_page("Admin Deliveries",r""" <div class="card"><h2>Deliveries</h2><table><tr><th>Tracking</th><th>Customer</th><th>Pickup</th><th>Destination</th><th>Driver</th><th>Status</th></tr> {% for d in rows %}<tr><td>{{ d.get("tracking_code") }}</td><td>{{ d.get("customer_id") }}</td><td>{{ d.get("pickup_location") }}</td><td>{{ d.get("destination") }}</td><td>{{ d.get("driver_id") or "Unassigned" }}</td><td>{{ d.get("status") }}</td></tr>{% endfor %} </table></div> """,rows=rows)
-
-@app.route("/admin/appointments")
-@admin_required
-def admin_appointments():
-    rows=db_select("appointments",order="created_at.desc",limit=300)
-    return render_page("Admin Appointments",r""" <div class="card"><h2>Appointments</h2><table><tr><th>Date</th><th>Client</th><th>Provider</th><th>Type</th><th>Status</th></tr> {% for a in rows %}<tr><td>{{ a.get("appointment_date") }}</td><td>{{ a.get("client_id") }}</td><td>{{ a.get("provider_id") }}</td><td>{{ a.get("appointment_type") }}</td><td>{{ a.get("status") }}</td></tr>{% endfor %} </table></div> """,rows=rows)
-
-# ============================================================
-# ERROR HANDLERS
-# ============================================================
-
-@app.errorhandler(404)
-def not_found(error):
-    return render_page("Not Found",r""" <div class="card"><h2>Page Not Found</h2><p>The requested page does not exist.</p><a class="btn" href="{{ url_for('home') }}">Return Home</a></div> """),404
+@app.get("/setup/driver-sql")
+def driver_sql():
+    # Convenient page for copying the required SQL. It does not execute SQL through REST.
+    return "<pre style='white-space:pre-wrap'>"+DRIVER_LOCATION_SQL.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")+"</pre>"
 
 @app.errorhandler(413)
-def too_large(error):
-    return render_page("File Too Large",r""" <div class="card"><h2>File Too Large</h2><p>The maximum upload size is {{ max_mb }} MB.</p></div> """,max_mb=MAX_UPLOAD_MB),413
+def too_large(e): return "File too large. Maximum upload size is 20 MB.",413
 
-@app.errorhandler(500)
-def internal_error(error):
-    logger.exception("Unhandled application error")
-    return render_page("Server Error",r""" <div class="card"><h2>KOJA AFRICA Server Error</h2><p>The server encountered an unexpected error. Check Render logs for details.</p><a class="btn" href="{{ url_for('home') }}">Return Home</a></div> """),500
+@app.errorhandler(Exception)
+def handle_error(e):
+    logging.exception("Unhandled error")
+    if request.path.startswith("/api/"): return jsonify(error="Internal server error"),500
+    return "Internal server error. Check Render logs.",500
 
-@app.before_request
-def before_request():
-    # Deliberately empty. Never connect to Supabase at startup.
-    pass
-
-@app.context_processor
-def inject_globals():
-    return {"APP_NAME":APP_NAME,"APP_TAGLINE":APP_TAGLINE}
-
-# ============================================================
-# LOCAL / RENDER START
-# ============================================================
-
-if __name__=="__main__":
-    port=int(os.getenv("PORT","5000"))
-    app.run(host="0.0.0.0",port=port,debug=False)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT","10000")), debug=False)
