@@ -1,4 +1,4 @@
-import os, math, uuid, hashlib, secrets, mimetypes, logging
+import os, math, uuid, hashlib, secrets, mimetypes, logging, time
 from datetime import datetime, timezone
 from functools import wraps
 from io import BytesIO
@@ -20,6 +20,7 @@ app.config['SESSION_COOKIE_SECURE'] = os.getenv('SESSION_COOKIE_SECURE','true').
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.permanent_session_lifetime = __import__('datetime').timedelta(days=30)
+app.config["SESSION_REFRESH_EACH_REQUEST"] = True
 app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
@@ -28,6 +29,9 @@ STORAGE_BUCKET = os.getenv("KOJA_STORAGE_BUCKET", "koja-files")
 ADMIN_EMAILS = {x.strip().lower() for x in os.getenv("KOJA_ADMIN_EMAILS", "admin@koja.africa").split(",") if x.strip()}
 ADMIN_PASSWORD_HASH = os.getenv("KOJA_ADMIN_PASSWORD_HASH", "")
 ADMIN_SESSION_SECONDS = int(os.getenv("KOJA_ADMIN_SESSION_SECONDS", "28800"))
+ADMIN_MAX_LOGIN_ATTEMPTS = int(os.getenv("KOJA_ADMIN_MAX_LOGIN_ATTEMPTS", "5"))
+ADMIN_LOCKOUT_SECONDS = int(os.getenv("KOJA_ADMIN_LOCKOUT_SECONDS", "900"))
+_admin_login_attempts = {}
 
 
 if not SUPABASE_URL or not SUPABASE_KEY:
@@ -130,16 +134,27 @@ def login_required(fn):
 def admin_required(fn):
     @wraps(fn)
     def wrapped(*a, **kw):
-        u=current_user()
-        if not u:
+        # Admin access is independent from the normal student/customer session.
+        # If the protected admin session is missing or expired, send the visitor
+        # directly to the dedicated Admin Login page.
+        if not is_admin():
             if request.path.startswith("/api/"):
                 return jsonify(error="Admin login required"),401
-            return redirect(url_for("login", next=request.path))
-        if not is_admin(u):
-            return jsonify(error="Admin access denied"),403
+            return redirect(url_for("admin_login", next=request.path))
         return fn(*a, **kw)
     return wrapped
 
+
+def csrf_token():
+    token=session.get("_csrf_token")
+    if not token:
+        token=secrets.token_urlsafe(32)
+        session["_csrf_token"]=token
+    return token
+
+def verify_csrf():
+    sent=request.form.get("csrf_token") or (request.get_json(silent=True) or {}).get("csrf_token")
+    return bool(sent) and secrets.compare_digest(str(sent), str(session.get("_csrf_token", "")))
 
 def is_admin(u=None):
     a=session.get("koja_admin")
@@ -148,12 +163,37 @@ def is_admin(u=None):
     try:
         created=float(a.get("created",0))
         if datetime.now(timezone.utc).timestamp()-created > ADMIN_SESSION_SECONDS:
-            session.pop("koja_admin",None)
+            session.clear()
             return False
     except Exception:
-        session.pop("koja_admin",None)
+        session.clear()
         return False
-    return str(a.get("email","")).lower() in ADMIN_EMAILS
+    email=str(a.get("email","")).lower().strip()
+    return bool(email) and email in ADMIN_EMAILS
+
+
+def _admin_login_allowed(ip):
+    now=time.time()
+    item=_admin_login_attempts.get(ip)
+    if not item:
+        return True
+    if now-item["first"] > ADMIN_LOCKOUT_SECONDS:
+        _admin_login_attempts.pop(ip,None)
+        return True
+    return item["count"] < ADMIN_MAX_LOGIN_ATTEMPTS
+
+
+def _admin_login_failed(ip):
+    now=time.time()
+    item=_admin_login_attempts.get(ip)
+    if not item or now-item["first"] > ADMIN_LOCKOUT_SECONDS:
+        _admin_login_attempts[ip]={"first":now,"count":1}
+    else:
+        item["count"] += 1
+
+
+def _admin_login_success(ip):
+    _admin_login_attempts.pop(ip,None)
 
 
 def admin_session_required(fn):
@@ -286,7 +326,7 @@ BASE = """
 <title>{{title}} · KOJA AFRICA</title><link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="anonymous"><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="anonymous"></script>
 <style>
 *{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;background:#f4f7fb;color:#172033}nav{background:#101827;color:#fff;padding:14px 4%;display:flex;gap:14px;align-items:center;flex-wrap:wrap}nav a{color:#fff;text-decoration:none}nav .brand{font-size:21px;font-weight:800;margin-right:auto}.wrap{max-width:1150px;margin:22px auto;padding:0 15px}.hero{background:linear-gradient(135deg,#0f172a,#164e63);color:#fff;padding:32px;border-radius:20px;margin-bottom:20px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}.card{background:#fff;border-radius:16px;padding:18px;box-shadow:0 5px 20px #0000000d;margin-bottom:16px}input,textarea,select{width:100%;padding:12px;border:1px solid #d5dbe5;border-radius:10px;margin:6px 0 12px}button,.btn{background:#0f766e;color:#fff;border:0;padding:11px 16px;border-radius:10px;text-decoration:none;display:inline-block;cursor:pointer}button.secondary,.btn.secondary{background:#334155}button.danger,.btn.danger{background:#b91c1c}.muted{color:#64748b}.ok{color:#15803d}.error{color:#b91c1c}.pill{display:inline-block;padding:5px 9px;border-radius:999px;background:#e2e8f0;margin:3px}.map{height:430px;border-radius:15px;background:#dbeafe;overflow:hidden}.leaflet-map{height:430px;width:100%;border-radius:15px}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.stat{font-size:28px;font-weight:800}.flash{padding:12px;border-radius:10px;background:#fff3cd;margin-bottom:10px}.small{font-size:13px}.driver{border:1px solid #e2e8f0;border-radius:12px;padding:12px;margin:8px 0}.table{width:100%;border-collapse:collapse}.table td,.table th{padding:9px;border-bottom:1px solid #e5e7eb;text-align:left}@media(max-width:600px){.hero{padding:22px}.map{height:350px}}
-</style></head><body><nav><a class=brand href="{{url_for('home')}}">KOJA AFRICA</a><a href="{{url_for('home')}}">Home</a><a href="{{url_for('assignments')}}">Assignments</a><a href="{{url_for('services')}}">Services</a><a href="{{url_for('documents')}}">Documents</a><a href="{{url_for('delivery')}}">Delivery</a>{% if user %}<a href="{{url_for('dashboard')}}">Dashboard</a><a href="{{url_for('driver_register')}}">Driver</a>{% if admin %}<a href="{{url_for('admin')}}">Admin</a>{% endif %}<a href="{{url_for('logout')}}">Logout</a>{% else %}<a href="{{url_for('login')}}">Login</a><a href="{{url_for('register')}}">Create Account</a>{% endif %}</nav><main class=wrap>{% with messages=get_flashed_messages() %}{% for m in messages %}<div class=flash>{{m}}</div>{% endfor %}{% endwith %}{{body|safe}}</main></body></html>
+</style></head><body><nav><a class=brand href="{{url_for('home')}}">KOJA AFRICA</a><a href="{{url_for('home')}}">Home</a><a href="{{url_for('assignments')}}">Assignments</a><a href="{{url_for('services')}}">Services</a><a href="{{url_for('documents')}}">Documents</a><a href="{{url_for('delivery')}}">Delivery</a>{% if user %}<a href="{{url_for('dashboard')}}">Dashboard</a><a href="{{url_for('driver_register')}}">Driver</a>{% if admin %}<a href="{{url_for('admin')}}">Admin</a>{% endif %}<a href="{{url_for('logout')}}">Logout</a>{% else %}<a href="{{url_for('login')}}">Login</a><a href="{{url_for('register')}}">Create Account</a>{% endif %}<a class="btn secondary" href="{{url_for('admin_login')}}">Admin</a></nav><main class=wrap>{% with messages=get_flashed_messages() %}{% for m in messages %}<div class=flash>{{m}}</div>{% endfor %}{% endwith %}{{body|safe}}</main></body></html>
 """
 
 def page(title, body, **ctx):
@@ -297,7 +337,7 @@ def page(title, body, **ctx):
 # ------------------------------------------------------------
 @app.route("/")
 def home():
-    return page("Home", """<section class=hero><h1>KOJA AFRICA</h1><p>Knowledge • Questions • Answers • Professional Services • Documents • Live Delivery</p><div class=row>{% if user %}<a class=btn href='{{url_for("dashboard")}}'>Dashboard</a><a class='btn secondary' href='{{url_for("logout")}}'>Logout</a>{% else %}<a class=btn href='{{url_for("register")}}'>Create Account</a><a class='btn secondary' href='{{url_for("login")}}'>Login</a>{% endif %}</div></section><div class=grid><div class=card><h3>📚 Assignments</h3><p>Ask questions, upload PDF/Word assignments and receive administrator answers.</p><a class=btn href='{{url_for("assignments")}}'>Assignments</a></div><div class=card><h3>👨‍⚕️ Professional Services</h3><p>Register as a doctor or tutor and allow customers/students to book you.</p><a class=btn href='{{url_for("services")}}'>Open Services</a></div><div class=card><h3>📄 Documents</h3><p>Search academic and research documents or upload documents.</p><a class=btn href='{{url_for("documents")}}'>Documents</a></div><div class=card><h3>🚚 Live Delivery</h3><p>Drivers can go online and share browser GPS. Customers can request and track deliveries.</p><a class=btn href='{{url_for("delivery")}}'>Delivery</a></div></div>""")
+    return page("Home", """<section class=hero><h1>KOJA AFRICA</h1><p>Knowledge • Questions • Answers • Professional Services • Documents • Live Delivery</p><div class=row>{% if user %}<a class=btn href='{{url_for("dashboard")}}'>Dashboard</a><a class='btn secondary' href='{{url_for("logout")}}'>Logout</a>{% else %}<a class=btn href='{{url_for("register")}}'>Create Account</a><a class='btn secondary' href='{{url_for("login")}}'>Login</a>{% endif %}<a class='btn secondary' href='{{url_for("admin_login")}}'>🔐 Admin</a></div></section><div class=grid><div class=card><h3>📚 Assignments</h3><p>Ask questions, upload PDF/Word assignments and receive administrator answers.</p><a class=btn href='{{url_for("assignments")}}'>Assignments</a></div><div class=card><h3>👨‍⚕️ Professional Services</h3><p>Register as a doctor or tutor and allow customers/students to book you.</p><a class=btn href='{{url_for("services")}}'>Open Services</a></div><div class=card><h3>📄 Documents</h3><p>Search academic and research documents or upload documents.</p><a class=btn href='{{url_for("documents")}}'>Documents</a></div><div class=card><h3>🚚 Live Delivery</h3><p>Drivers can go online and share browser GPS. Customers can request and track deliveries.</p><a class=btn href='{{url_for("delivery")}}'>Delivery</a></div></div>""")
 
 @app.route("/register", methods=["GET","POST"])
 def register():
@@ -774,15 +814,18 @@ def admin_assignments():
     return page("Admin Assignments", """<div class=hero><h2>Assignment Management</h2></div>
     {% for x in rows %}<div class=card><h3>{{x.get('subject','Assignment')}}</h3><p><b>Student:</b> {{x.get('student_name',x.get('student_id',''))}}</p>
     <p>{{x.get('question','')}}</p>{% if x.get('file_url') %}<a class=btn href="{{x.get('file_url')}}" target=_blank>Download Student Assignment</a>{% endif %}
-    <form method=post action="{{url_for('admin_answer_assignment',assignment_id=x.get('id'))}}" enctype=multipart/form-data>
+    <form method=post action="{{url_for('admin_answer_assignment',assignment_id=x.get('id'))}}" enctype=multipart/form-data><input type=hidden name=csrf_token value="{{csrf_token}}">
     <textarea name=answer placeholder="Write answer">{{x.get('answer','')}}</textarea>
     <input type=file name=answer_file accept=".pdf,.doc,.docx,.txt"><button>Save Answer</button></form>
     {% if x.get('answer_file_url') %}<a class=btn href="{{x.get('answer_file_url')}}" target=_blank>Download Answer File</a>{% endif %}
-    </div>{% else %}<div class=card><p>No assignments.</p></div>{% endfor %}""", rows=rows or [])
+    </div>{% else %}<div class=card><p>No assignments.</p></div>{% endfor %}""", rows=rows or [], csrf_token=csrf_token(), admin=True)
 
 @app.route("/admin/assignments/<assignment_id>/answer",methods=["POST"])
 @admin_required
 def admin_answer_assignment(assignment_id):
+    if not verify_csrf():
+        flash("Security check failed. Please refresh the page.")
+        return redirect(url_for("admin_assignments"))
     answer=request.form.get("answer","").strip()
     f=request.files.get("answer_file")
     update={"answer":answer,"status":"answered","answered_at":now_iso(),"answer_by":"admin"}
@@ -810,22 +853,32 @@ def admin_answer_assignment(assignment_id):
 @app.route("/admin/login", methods=["GET","POST"])
 def admin_login():
     if request.method == "POST":
+        if not verify_csrf():
+            flash("Security check failed. Please refresh the page.")
+            return redirect(url_for("admin_login"))
+        ip=request.headers.get("X-Forwarded-For", request.remote_addr or "unknown").split(",")[0].strip()
+        if not _admin_login_allowed(ip):
+            flash("Too many failed Admin login attempts. Please try again later.")
+            return redirect(url_for("admin_login"))
         email=request.form.get("email","").strip().lower()
         password=request.form.get("password","")
-        if email not in ADMIN_EMAILS:
+        valid_email=email in ADMIN_EMAILS
+        valid_password=bool(ADMIN_PASSWORD_HASH) and check_password_hash(ADMIN_PASSWORD_HASH, password)
+        if not valid_email or not valid_password:
+            _admin_login_failed(ip)
             flash("Invalid administrator credentials.")
             return redirect(url_for("admin_login"))
-        if not ADMIN_PASSWORD_HASH or not check_password_hash(ADMIN_PASSWORD_HASH, password):
-            flash("Invalid administrator credentials.")
-            return redirect(url_for("admin_login"))
-        session["koja_admin"]={"email":email,"created":datetime.now(timezone.utc).timestamp()}
+        _admin_login_success(ip)
+        session.clear()
         session.permanent=True
+        session["koja_admin"]={"email":email,"created":datetime.now(timezone.utc).timestamp(),"session_id":secrets.token_urlsafe(24)}
+        csrf_token()
         return redirect(request.args.get("next") or url_for("admin"))
-    return page("Admin Login", """<div class=card><h2>🔐 KOJA ADMIN</h2><p>Secure administrator access.</p><form method=post><label>Admin email</label><input type=email name=email required><label>Admin password</label><input type=password name=password required><button>Enter Admin Control Centre</button></form></div>""")
+    return page("Admin Login", """<div class=card><h2>🔐 KOJA ADMIN</h2><p>Secure administrator access.</p><form method=post><input type=hidden name=csrf_token value="{{csrf_token}}"><label>Admin email</label><input type=email name=email required><label>Admin password</label><input type=password name=password required><button>Enter Admin Control Centre</button></form></div>""", csrf_token=csrf_token())
 
 @app.route("/admin/logout")
 def admin_logout():
-    session.pop("koja_admin",None)
+    session.clear()
     return redirect(url_for("home"))
 
 @app.route("/admin")
@@ -845,16 +898,25 @@ def admin():
     return page("Admin Control Centre", """<div class=hero><h2>🧑‍💼 KOJA ADMIN CONTROL CENTRE</h2><p>Secure management and approval of every core request.</p><a class='btn secondary' href='{{url_for("admin_logout")}}'>Admin Logout</a></div>
     <div class=grid>{% for k,v in counts.items() %}<div class=card><div class=stat>{{v}}</div><div>{{k.replace('_',' ')|title}}</div></div>{% endfor %}</div>
     <div class=card><h3>📚 Assignments</h3><a class=btn href='{{url_for("admin_assignments")}}'>Open Assignment Requests</a></div>
-    <div class=card><h3>🚚 Driver Requests</h3><table class=table><tr><th>Name</th><th>Vehicle</th><th>Status</th><th>Action</th></tr>{% for d in drivers %}<tr><td>{{d.get('full_name','')}}</td><td>{{d.get('vehicle_type','')}} {{d.get('vehicle_number','')}}</td><td>{{d.get('status','pending')}}</td><td><form method=post action='{{url_for("admin_driver_status",driver_id=d.get("id"))}}'><select name=status><option>pending</option><option>approved</option><option>rejected</option><option>suspended</option></select><button>Update</button></form></td></tr>{% endfor %}</table></div>
-    <div class=card><h3>👨‍⚕️ Doctor Requests</h3><table class=table><tr><th>Name</th><th>Specialty</th><th>Status</th><th>Action</th></tr>{% for x in doctors %}<tr><td>{{x.get('full_name','')}}</td><td>{{x.get('specialty',x.get('specialisation',''))}}</td><td>{{x.get('status','pending')}}</td><td><form method=post action='{{url_for("admin_doctor_status",doctor_id=x.get("id"))}}'><select name=status><option>pending</option><option>approved</option><option>rejected</option><option>suspended</option></select><button>Update</button></form></td></tr>{% endfor %}</table></div>
-    <div class=card><h3>👨‍🏫 Tutor Requests</h3><table class=table><tr><th>Name</th><th>Subject</th><th>Status</th><th>Action</th></tr>{% for x in tutors %}<tr><td>{{x.get('full_name','')}}</td><td>{{x.get('subject','')}}</td><td>{{x.get('status','pending')}}</td><td><form method=post action='{{url_for("admin_tutor_status",tutor_id=x.get("id"))}}'><select name=status><option>pending</option><option>approved</option><option>rejected</option><option>suspended</option></select><button>Update</button></form></td></tr>{% endfor %}</table></div>
-    <div class=card><h3>📅 Bookings</h3><table class=table><tr><th>Service</th><th>Date</th><th>Status</th><th>Action</th></tr>{% for x in bookings %}<tr><td>{{x.get('service_type','')}}</td><td>{{x.get('booking_date','')}}</td><td>{{x.get('status','pending')}}</td><td><form method=post action='{{url_for("admin_booking_status",booking_id=x.get("id"))}}'><select name=status><option>pending</option><option>approved</option><option>rejected</option><option>completed</option><option>cancelled</option></select><button>Update</button></form></td></tr>{% endfor %}</table></div>
-    <div class=card><h3>🚛 Deliveries</h3><table class=table><tr><th>Tracking</th><th>Status</th><th>Action</th></tr>{% for x in deliveries %}<tr><td>{{x.get('tracking_code','')}}</td><td>{{x.get('status','')}}</td><td><form method=post action='{{url_for("admin_delivery_status",delivery_id=x.get("id"))}}'><select name=status>{% for st in ['requested','accepted','rejected','picked_up','in_transit','delivered','cancelled'] %}<option>{{st}}</option>{% endfor %}</select><button>Update</button></form></td></tr>{% endfor %}</table></div>
-    <div class=card><h3>📄 Documents</h3><table class=table><tr><th>Title</th><th>Type</th><th>Published</th><th>Action</th></tr>{% for x in documents_rows %}<tr><td>{{x.get('title','')}}</td><td>{{x.get('document_type','')}}</td><td>{{x.get('is_active',True)}}</td><td><form method=post action='{{url_for("admin_document_status",document_id=x.get("id"))}}'><input type=hidden name=status value='{{"false" if x.get("is_active",True) else "true"}}'><button>{{"Unpublish" if x.get("is_active",True) else "Publish"}}</button></form></td></tr>{% endfor %}</table></div>""",counts=counts,drivers=drivers or [],doctors=doctors or [],tutors=tutors or [],bookings=bookings or [],deliveries=deliveries or [],assignments_rows=assignments_rows or [],documents_rows=documents_rows or [])
+    <div class=card><h3>🚚 Driver Requests</h3><table class=table><tr><th>Name</th><th>Vehicle</th><th>Status</th><th>Action</th></tr>{% for d in drivers %}<tr><td>{{d.get('full_name','')}}</td><td>{{d.get('vehicle_type','')}} {{d.get('vehicle_number','')}}</td><td>{{d.get('status','pending')}}</td><td><form method=post action='{{url_for("admin_driver_status",driver_id=d.get("id"))}}'><input type=hidden name=csrf_token value="{{csrf_token}}"><select name=status><option>pending</option><option>approved</option><option>rejected</option><option>suspended</option></select><button>Update</button></form></td></tr>{% endfor %}</table></div>
+    <div class=card><h3>👨‍⚕️ Doctor Requests</h3><table class=table><tr><th>Name</th><th>Specialty</th><th>Status</th><th>Action</th></tr>{% for x in doctors %}<tr><td>{{x.get('full_name','')}}</td><td>{{x.get('specialty',x.get('specialisation',''))}}</td><td>{{x.get('status','pending')}}</td><td><form method=post action='{{url_for("admin_doctor_status",doctor_id=x.get("id"))}}'><input type=hidden name=csrf_token value="{{csrf_token}}"><select name=status><option>pending</option><option>approved</option><option>rejected</option><option>suspended</option></select><button>Update</button></form></td></tr>{% endfor %}</table></div>
+    <div class=card><h3>👨‍🏫 Tutor Requests</h3><table class=table><tr><th>Name</th><th>Subject</th><th>Status</th><th>Action</th></tr>{% for x in tutors %}<tr><td>{{x.get('full_name','')}}</td><td>{{x.get('subject','')}}</td><td>{{x.get('status','pending')}}</td><td><form method=post action='{{url_for("admin_tutor_status",tutor_id=x.get("id"))}}'><input type=hidden name=csrf_token value="{{csrf_token}}"><select name=status><option>pending</option><option>approved</option><option>rejected</option><option>suspended</option></select><button>Update</button></form></td></tr>{% endfor %}</table></div>
+    <div class=card><h3>📅 Bookings</h3><table class=table><tr><th>Service</th><th>Date</th><th>Status</th><th>Action</th></tr>{% for x in bookings %}<tr><td>{{x.get('service_type','')}}</td><td>{{x.get('booking_date','')}}</td><td>{{x.get('status','pending')}}</td><td><form method=post action='{{url_for("admin_booking_status",booking_id=x.get("id"))}}'><input type=hidden name=csrf_token value="{{csrf_token}}"><select name=status><option>pending</option><option>approved</option><option>rejected</option><option>completed</option><option>cancelled</option></select><button>Update</button></form></td></tr>{% endfor %}</table></div>
+    <div class=card><h3>🚛 Deliveries</h3><table class=table><tr><th>Tracking</th><th>Status</th><th>Action</th></tr>{% for x in deliveries %}<tr><td>{{x.get('tracking_code','')}}</td><td>{{x.get('status','')}}</td><td><form method=post action='{{url_for("admin_delivery_status",delivery_id=x.get("id"))}}'><input type=hidden name=csrf_token value="{{csrf_token}}"><select name=status>{% for st in ['requested','accepted','rejected','picked_up','in_transit','delivered','cancelled'] %}<option>{{st}}</option>{% endfor %}</select><button>Update</button></form></td></tr>{% endfor %}</table></div>
+    <div class=card><h3>📄 Documents</h3><table class=table><tr><th>Title</th><th>Type</th><th>Published</th><th>Action</th></tr>{% for x in documents_rows %}<tr><td>{{x.get('title','')}}</td><td>{{x.get('document_type','')}}</td><td>{{x.get('is_active',True)}}</td><td><form method=post action='{{url_for("admin_document_status",document_id=x.get("id"))}}'><input type=hidden name=csrf_token value="{{csrf_token}}"><input type=hidden name=status value='{{"false" if x.get("is_active",True) else "true"}}'><button>{{"Unpublish" if x.get("is_active",True) else "Publish"}}</button></form></td></tr>{% endfor %}</table></div>""",counts=counts,drivers=drivers or [],doctors=doctors or [],tutors=tutors or [],bookings=bookings or [],deliveries=deliveries or [],assignments_rows=assignments_rows or [],documents_rows=documents_rows or [], csrf_token=csrf_token(), admin=True)
+
+
+@app.get("/admin/requests")
+@admin_required
+def admin_requests():
+    return redirect(url_for("admin"))
 
 @app.post("/admin/driver/<driver_id>/approve")
 @admin_required
 def approve_driver(driver_id):
+    if not verify_csrf():
+        flash("Security check failed. Please refresh the page.")
+        return redirect(url_for("admin"))
     data,err=sb_update("driver_profiles",{"id":f"eq.{driver_id}"},{"status":"approved"})
     flash("Driver approved." if not err else "Approval failed: "+err)
     return redirect(url_for("admin"))
@@ -862,15 +924,21 @@ def approve_driver(driver_id):
 @app.post("/admin/driver/<driver_id>/status")
 @admin_required
 def admin_driver_status(driver_id):
+    if not verify_csrf():
+        flash("Security check failed. Please refresh the page.")
+        return redirect(url_for("admin"))
     status=request.form.get("status","pending")
     if status not in {"pending","approved","rejected","suspended"}: status="pending"
-    _,err=sb_update("driver_profiles",{"id":f"eq.{driver_id}"},{"status":status,"is_online":False if status!="approved" else None})
+    _,err=sb_update("driver_profiles",{"id":f"eq.{driver_id}"},{"status":status,"is_online":False if status!="approved" else False})
     flash("Driver updated." if not err else "Driver update failed: "+err)
     return redirect(url_for("admin"))
 
 @app.post("/admin/doctor/<doctor_id>/status")
 @admin_required
 def admin_doctor_status(doctor_id):
+    if not verify_csrf():
+        flash("Security check failed. Please refresh the page.")
+        return redirect(url_for("admin"))
     status=request.form.get("status","pending")
     if status not in {"pending","approved","rejected","suspended"}: status="pending"
     _,err=sb_update("doctor_profiles",{"id":f"eq.{doctor_id}"},{"status":status,"is_active":status=="approved"})
@@ -880,6 +948,9 @@ def admin_doctor_status(doctor_id):
 @app.post("/admin/tutor/<tutor_id>/status")
 @admin_required
 def admin_tutor_status(tutor_id):
+    if not verify_csrf():
+        flash("Security check failed. Please refresh the page.")
+        return redirect(url_for("admin"))
     status=request.form.get("status","pending")
     if status not in {"pending","approved","rejected","suspended"}: status="pending"
     _,err=sb_update("teacher_profiles",{"id":f"eq.{tutor_id}"},{"status":status,"is_active":status=="approved"})
@@ -889,6 +960,9 @@ def admin_tutor_status(tutor_id):
 @app.post("/admin/booking/<booking_id>/status")
 @admin_required
 def admin_booking_status(booking_id):
+    if not verify_csrf():
+        flash("Security check failed. Please refresh the page.")
+        return redirect(url_for("admin"))
     status=request.form.get("status","pending")
     if status not in {"pending","approved","rejected","completed","cancelled"}: status="pending"
     _,err=sb_update("professional_bookings",{"id":f"eq.{booking_id}"},{"status":status})
@@ -898,6 +972,9 @@ def admin_booking_status(booking_id):
 @app.post("/admin/delivery/<delivery_id>/status")
 @admin_required
 def admin_delivery_status(delivery_id):
+    if not verify_csrf():
+        flash("Security check failed. Please refresh the page.")
+        return redirect(url_for("admin"))
     status=request.form.get("status","requested")
     if status not in DELIVERY_STATUSES: status="requested"
     _,err=sb_update("deliveries",{"id":f"eq.{delivery_id}"},{"status":status,"updated_at":now_iso()})
@@ -907,6 +984,9 @@ def admin_delivery_status(delivery_id):
 @app.post("/admin/document/<document_id>/status")
 @admin_required
 def admin_document_status(document_id):
+    if not verify_csrf():
+        flash("Security check failed. Please refresh the page.")
+        return redirect(url_for("admin"))
     value=request.form.get("status","false").lower()=="true"
     _,err=sb_update("documents",{"id":f"eq.{document_id}"},{"is_active":value,"is_public":value,"updated_at":now_iso()})
     flash("Document visibility updated." if not err else "Document update failed: "+err)
