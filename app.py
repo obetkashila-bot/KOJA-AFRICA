@@ -26,9 +26,7 @@ ASSIGNMENT_EXT = {"pdf", "doc", "docx", "txt", "jpg", "jpeg", "png"}
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY", os.getenv("SUPABASE_SERVICE_ROLE_KEY", os.getenv("SUPABASE_PUBLISHABLE_KEY", "")))
 STORAGE_BUCKET = os.getenv("KOJA_STORAGE_BUCKET", "koja-files")
-ADMIN_EMAIL = os.getenv("KOJA_ADMIN_EMAIL", "obetkashila@gmail.com").strip().lower()
-ADMIN_USERNAME = os.getenv("KOJA_ADMIN_USERNAME", "OBERT_KASHILA").strip()
-ADMIN_EMAILS = {x.strip().lower() for x in os.getenv("KOJA_ADMIN_EMAILS", ADMIN_EMAIL).split(",") if x.strip()}
+ADMIN_EMAILS = {x.strip().lower() for x in os.getenv("KOJA_ADMIN_EMAILS", "admin@koja.africa").split(",") if x.strip()}
 ADMIN_PASSWORD_HASH = os.getenv("KOJA_ADMIN_PASSWORD_HASH", "")
 ADMIN_SESSION_SECONDS = int(os.getenv("KOJA_ADMIN_SESSION_SECONDS", "28800"))
 
@@ -286,18 +284,25 @@ create index if not exists deliveries_status_idx on public.deliveries(status);
 # ------------------------------------------------------------
 BASE = """
 <!doctype html><html><head><meta name=viewport content='width=device-width,initial-scale=1'>
-<title>{{title}} · KOJA AFRICA</title>
-<meta name="description" content="{% if title == 'Home' %}KOJA AFRICA provides assignment services, academic and research documents, professional doctor and tutor services, and live delivery tracking.{% else %}{{title}} — KOJA AFRICA{% endif %}">
-<meta name="robots" content="index, follow, max-image-preview:large">
-<meta name="googlebot" content="index, follow">
-{% if title == "Home" %}<link rel="canonical" href="https://koja-africa.onrender.com/">{% endif %}
+<title>{% if title == 'Home' %}KOJA AFRICA | Assignments, Documents, Tutors, Doctors & Delivery{% else %}{{title}} | KOJA AFRICA{% endif %}</title>
+<meta name="description" content="{% if title == 'Home' %}KOJA AFRICA connects students and customers with assignment support, academic and research documents, tutors, doctors, CV tools and live delivery tracking in Africa.{% else %}{{title}} — KOJA AFRICA: assignments, academic documents, professional services and live delivery.{% endif %}">
+<meta name="keywords" content="KOJA AFRICA, assignments, academic answers, research documents, tutors, doctors, CV builder, delivery tracking, Zambia, Africa">
+<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
+<meta name="googlebot" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
+<meta name="theme-color" content="#0f172a">
+<link rel="canonical" href="https://koja-africa.onrender.com{% if request.path != '/' %}{{request.path}}{% endif %}">
 <meta property="og:type" content="website">
-<meta property="og:title" content="{{title}} · KOJA AFRICA">
-<meta property="og:description" content="Assignments, academic and research documents, professional services, and live delivery tracking.">
-<meta property="og:url" content="https://koja-africa.onrender.com/">
+<meta property="og:site_name" content="KOJA AFRICA">
+<meta property="og:title" content="{% if title == 'Home' %}KOJA AFRICA | Knowledge • Questions • Answers{% else %}{{title}} | KOJA AFRICA{% endif %}">
+<meta property="og:description" content="Assignments, academic and research documents, professional services, CV support and live delivery tracking.">
+<meta property="og:url" content="https://koja-africa.onrender.com{{request.path}}">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="{{title}} | KOJA AFRICA">
+<meta name="twitter:description" content="Assignments, documents, professional services and live delivery tracking.">
+{% if title == 'Home' %}<script type="application/ld+json">{{ {'@context':'https://schema.org','@type':'WebSite','name':'KOJA AFRICA','url':'https://koja-africa.onrender.com/','description':'Assignments, academic and research documents, professional services and live delivery tracking.'}|tojson }}</script>{% endif %}
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="anonymous"><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="anonymous"></script>
 <style>
-*{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;background:#f4f7fb;color:#172033}nav{background:#101827;color:#fff;padding:14px 4%;display:flex;gap:14px;align-items:center;flex-wrap:wrap}nav a{color:#fff;text-decoration:none}nav .brand{font-size:21px;font-weight:800;margin-right:auto}.wrap{max-width:1150px;margin:22px auto;padding:0 15px}.hero{background:linear-gradient(135deg,#0f172a,#164e63);color:#fff;padding:32px;border-radius:20px;margin-bottom:20px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}.card{background:#fff;border-radius:16px;padding:18px;box-shadow:0 5px 20px #0000000d;margin-bottom:16px}input,textarea,select{width:100%;padding:12px;border:1px solid #d5dbe5;border-radius:10px;margin:6px 0 12px}button,.btn{background:#0f766e;color:#fff;border:0;padding:11px 16px;border-radius:10px;text-decoration:none;display:inline-block;cursor:pointer}button.secondary,.btn.secondary{background:#334155}button.danger,.btn.danger{background:#b91c1c}.muted{color:#64748b}.ok{color:#15803d}.error{color:#b91c1c}.pill{display:inline-block;padding:5px 9px;border-radius:999px;background:#e2e8f0;margin:3px}.map{height:430px;border-radius:15px;background:#dbeafe;overflow:hidden}.leaflet-map{height:430px;width:100%;border-radius:15px}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.stat{font-size:28px;font-weight:800}.flash{padding:12px;border-radius:10px;background:#fff3cd;margin-bottom:10px}.small{font-size:13px}.driver{border:1px solid #e2e8f0;border-radius:12px;padding:12px;margin:8px 0}.table{width:100%;border-collapse:collapse}.table td,.table th{padding:9px;border-bottom:1px solid #e5e7eb;text-align:left}@media(max-width:600px){.hero{padding:22px}.map{height:350px}}
+*{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;background:#f4f7fb;color:#172033}nav{background:#101827;color:#fff;padding:14px 4%;display:flex;gap:14px;align-items:center;flex-wrap:wrap}nav a{color:#fff;text-decoration:none}nav .brand{font-size:21px;font-weight:800;margin-right:auto}.wrap{max-width:1150px;margin:22px auto;padding:0 15px}.hero{background:linear-gradient(135deg,#0f172a,#164e63);color:#fff;padding:32px;border-radius:20px;margin-bottom:20px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}.card{background:#fff;border-radius:16px;padding:18px;box-shadow:0 5px 20px #0000000d;margin-bottom:16px}input,textarea,select{width:100%;padding:12px;border:1px solid #d5dbe5;border-radius:10px;margin:6px 0 12px}button,.btn{background:#0f766e;color:#fff;border:0;padding:11px 16px;border-radius:10px;text-decoration:none;display:inline-block;cursor:pointer}button.secondary,.btn.secondary{background:#334155}button.danger,.btn.danger{background:#b91c1c}.muted{color:#64748b}.ok{color:#15803d}.error{color:#b91c1c}.pill{display:inline-block;padding:5px 9px;border-radius:999px;background:#e2e8f0;margin:3px}.map{height:430px;border-radius:15px;background:#dbeafe;overflow:hidden}.leaflet-map{height:430px;width:100%;border-radius:15px}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.stat{font-size:28px;font-weight:800}.flash{padding:12px;border-radius:10px;background:#fff3cd;margin-bottom:10px}.small{font-size:13px}.driver{border:1px solid #e2e8f0;border-radius:12px;padding:12px;margin:8px 0}.table{width:100%;border-collapse:collapse}.table td,.table th{padding:9px;border-bottom:1px solid #e5e7eb;text-align:left}@keyframes kojaFadeUp{from{opacity:0;transform:translateY(22px)}to{opacity:1;transform:translateY(0)}}@keyframes kojaFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-7px)}}@keyframes kojaPulse{0%,100%{box-shadow:0 0 0 0 #0f766e33}50%{box-shadow:0 0 0 10px #0f766e00}}.hero{position:relative;overflow:hidden;animation:kojaFadeUp .65s ease both}.hero:before,.hero:after{content:"";position:absolute;border-radius:50%;pointer-events:none;opacity:.14}.hero:before{width:180px;height:180px;right:-60px;top:-80px;background:#fff;animation:kojaFloat 5s ease-in-out infinite}.hero:after{width:110px;height:110px;left:-45px;bottom:-55px;background:#fff;animation:kojaFloat 6s ease-in-out infinite reverse}.hero h1,.hero h2{animation:kojaFadeUp .7s ease .08s both}.hero p{animation:kojaFadeUp .7s ease .16s both}.card{animation:kojaFadeUp .55s ease both;transition:transform .25s ease,box-shadow .25s ease}.grid .card:nth-child(2){animation-delay:.08s}.grid .card:nth-child(3){animation-delay:.16s}.grid .card:nth-child(4){animation-delay:.24s}.card:hover{transform:translateY(-4px);box-shadow:0 12px 30px #00000014}.btn,button{transition:transform .2s ease,filter .2s ease}.btn:hover,button:hover{transform:translateY(-2px);filter:brightness(1.06)}nav .brand{animation:kojaPulse 3s ease-in-out infinite}@media(max-width:600px){.hero{padding:22px}.map{height:350px}.card:hover{transform:none}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition:none!important}}
 </style></head><body><nav><a class=brand href="{{url_for('home')}}">KOJA AFRICA</a><a href="{{url_for('home')}}">Home</a><a href="{{url_for('assignments')}}">Assignments</a><a href="{{url_for('services')}}">Services</a><a href="{{url_for('documents')}}">Documents</a><a href="{{url_for('delivery')}}">Delivery</a>{% if user %}<a href="{{url_for('dashboard')}}">Dashboard</a><a href="{{url_for('driver_register')}}">Driver</a>{% if admin %}<a href="{{url_for('admin')}}">Admin</a>{% endif %}<a href="{{url_for('logout')}}">Logout</a>{% else %}<a href="{{url_for('login')}}">Login</a><a href="{{url_for('register')}}">Create Account</a>{% endif %}<a class="btn secondary" href="{{url_for('admin_login')}}">Admin</a></nav><main class=wrap>{% with messages=get_flashed_messages() %}{% for m in messages %}<div class=flash>{{m}}</div>{% endfor %}{% endwith %}{{body|safe}}</main></body></html>
 """
 
@@ -853,19 +858,18 @@ def admin_answer_assignment(assignment_id):
 @app.route("/admin/login", methods=["GET","POST"])
 def admin_login():
     if request.method == "POST":
-        identifier=request.form.get("identifier",request.form.get("email","")).strip()
+        email=request.form.get("email","").strip().lower()
         password=request.form.get("password","")
-        identifier_ok = (identifier.lower() == ADMIN_EMAIL or identifier.lower() == ADMIN_USERNAME.lower() or identifier.lower() in ADMIN_EMAILS)
-        if not identifier_ok:
+        if email not in ADMIN_EMAILS:
             flash("Invalid administrator credentials.")
             return redirect(url_for("admin_login"))
         if not ADMIN_PASSWORD_HASH or not check_password_hash(ADMIN_PASSWORD_HASH, password):
             flash("Invalid administrator credentials.")
             return redirect(url_for("admin_login"))
-        session["koja_admin"]={"email":ADMIN_EMAIL,"username":ADMIN_USERNAME,"created":datetime.now(timezone.utc).timestamp()}
+        session["koja_admin"]={"email":email,"created":datetime.now(timezone.utc).timestamp()}
         session.permanent=True
         return redirect(request.args.get("next") or url_for("admin"))
-    return page("Admin Login", """<div class=card><h2>🔐 KOJA ADMIN</h2><p>Secure administrator access.</p><form method=post><label>Admin username or email</label><input type=text name=identifier autocomplete=username required><label>Admin password</label><input type=password name=password required><button>Enter Admin Control Centre</button></form></div>""")
+    return page("Admin Login", """<div class=card><h2>🔐 KOJA ADMIN</h2><p>Secure administrator access.</p><form method=post><label>Admin email</label><input type=email name=email required><label>Admin password</label><input type=password name=password required><button>Enter Admin Control Centre</button></form></div>""")
 
 @app.route("/admin/logout")
 def admin_logout():
