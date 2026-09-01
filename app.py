@@ -6,7 +6,6 @@ from io import BytesIO
 import requests
 from flask import Flask, request, redirect, url_for, session, jsonify, render_template_string, flash, send_file
 from werkzeug.utils import secure_filename
-from werkzeug.security import generate_password_hash, check_password_hash
 
 # ============================================================
 # KOJA AFRICA - SINGLE FILE FLASK APPLICATION
@@ -200,26 +199,31 @@ def home():
 @app.route("/register", methods=["GET","POST"])
 def register():
     if request.method == "POST":
-        email=request.form.get("email","").strip().lower(); password=request.form.get("password","")
-        name=request.form.get("full_name","").strip(); phone=request.form.get("phone","").strip()
+        email=request.form.get("email","").strip().lower(); password=request.form.get("password",""); name=request.form.get("full_name","").strip(); phone=request.form.get("phone","").strip()
         if not email or len(password)<6 or not name:
             flash("Enter your name, email and a password of at least 6 characters."); return redirect(url_for("register"))
-        if get_user_by_email(email): flash("An account with this email already exists."); return redirect(url_for("login"))
-        row={"id":str(uuid.uuid4()),"full_name":name,"email":email,"phone":phone,"password_hash":generate_password_hash(password),"role":"customer","created_at":now_iso()}
+        auth,err=supabase_auth("signup",{"email":email,"password":password,"data":{"full_name":name,"phone":phone}})
+        if err: flash("Registration failed: "+err); return redirect(url_for("register"))
+        au=auth.get("user") or {}; uid=au.get("id")
+        if not uid: flash("Registration failed: Supabase did not return a user ID."); return redirect(url_for("register"))
+        row={"id":uid,"full_name":name,"email":email,"phone":phone,"role":"customer","created_at":now_iso()}
         data,err=sb_insert("profiles",row)
-        if err:
-            flash("Registration failed: "+err); return redirect(url_for("register"))
-        flash("Account created. You can now log in."); return redirect(url_for("login"))
+        if err: flash("Account created, but profile setup failed: "+err); return redirect(url_for("login"))
+        if auth.get("access_token"):
+            session["user"]={"id":uid,"email":email,"full_name":name,"role":"customer"}; session["supabase_access_token"]=auth["access_token"]; return redirect(url_for("dashboard"))
+        flash("Account created. Check your email if confirmation is required, then log in."); return redirect(url_for("login"))
     return page("Create account", """<div class=card><h2>Create account</h2><form method=post><label>Full name</label><input name=full_name required><label>Phone</label><input name=phone><label>Email</label><input type=email name=email required><label>Password</label><input type=password name=password minlength=6 required><button>Create account</button></form></div>""")
 
 @app.route("/login", methods=["GET","POST"])
 def login():
     if request.method == "POST":
         email=request.form.get("email","").strip().lower(); password=request.form.get("password","")
-        u=get_user_by_email(email)
-        if not u or not check_password_hash(u.get("password_hash", ""), password):
-            flash("Invalid email or password."); return redirect(url_for("login"))
-        session["user"]={"id":u["id"],"email":u.get("email",email),"full_name":u.get("full_name",email),"role":u.get("role","customer")}
+        auth,err=supabase_auth("token?grant_type=password",{"email":email,"password":password})
+        if err: flash("Invalid email or password."); return redirect(url_for("login"))
+        au=auth.get("user") or {}; uid=au.get("id")
+        if not uid: flash("Login failed."); return redirect(url_for("login"))
+        profile=user_profile(uid)
+        session["user"]={"id":uid,"email":au.get("email",email),"full_name":profile.get("full_name") or email,"role":profile.get("role","customer")}; session["supabase_access_token"]=auth.get("access_token")
         return redirect(request.args.get("next") or url_for("dashboard"))
     return page("Login", """<div class=card><h2>Login</h2><form method=post><label>Email</label><input type=email name=email required><label>Password</label><input type=password name=password required><button>Login</button></form><p>No account? <a href='{{url_for("register")}}'>Create one</a></p></div>""")
 
