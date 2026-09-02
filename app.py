@@ -743,6 +743,47 @@ input:focus,textarea:focus,select:focus{border-color:#4f8cff;box-shadow:0 0 0 3p
 @keyframes kojaBlueFade{0%,100%{box-shadow:0 0 0 rgba(79,140,255,0)}50%{box-shadow:0 0 20px rgba(79,140,255,.18)}}
 @media (prefers-reduced-motion:no-preference){.hero{animation:kojaFadeUp .45s ease both}.card{animation:kojaFadeUp .45s ease both}.hero h1,.hero h2{animation:kojaFadeIn .6s ease both}.btn,button{animation:kojaBlueFade 3s ease-in-out infinite}.nav a:hover{color:#4f8cff;transition:color .2s ease}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;}}
+
+/* KOJA AFRICA — visible background + dotted boxes (visual only) */
+html,body{min-height:100%;}
+body{
+  background-color:#050505;
+  background-image:radial-gradient(rgba(79,140,255,.28) 1px,transparent 1px);
+  background-size:22px 22px;
+  color:#fff;
+  position:relative;
+}
+body::before{
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:-1;
+  background:radial-gradient(circle at 15% 15%,rgba(79,140,255,.18),transparent 30%),radial-gradient(circle at 85% 70%,rgba(79,140,255,.12),transparent 32%);
+}
+.card,.panel,.hero,.stat,form{
+  background:rgba(5,5,5,.82);
+  color:#fff;
+  border:1px dotted rgba(79,140,255,.7);
+  box-shadow:0 0 0 1px rgba(255,255,255,.03),0 12px 35px rgba(0,0,0,.28);
+  backdrop-filter:blur(5px);
+}
+.card .card{background:rgba(10,10,10,.72);border-style:dotted;}
+input,textarea,select{
+  background:rgba(255,255,255,.06)!important;
+  color:#fff!important;
+  border:1px dotted rgba(255,255,255,.35)!important;
+}
+input::placeholder,textarea::placeholder{color:rgba(255,255,255,.55);}
+input:focus,textarea:focus,select:focus{border-color:#4f8cff!important;box-shadow:0 0 0 3px rgba(79,140,255,.13),0 0 18px rgba(79,140,255,.12)!important;}
+a{color:#8ab8ff;}
+.btn,button{background:#000;color:#fff;border:1px solid rgba(79,140,255,.65);}
+.btn:hover,button:hover{background:#4f8cff;color:#fff;border-color:#8ab8ff;}
+.badge{border:1px dotted rgba(79,140,255,.75);}
+@keyframes kojaDotGlow{0%,100%{opacity:.72}50%{opacity:1}}
+@media (prefers-reduced-motion:no-preference){
+  body::before{animation:kojaDotGlow 5s ease-in-out infinite;}
+  .card,.panel,.hero,.stat,form{transition:border-color .3s ease,box-shadow .3s ease,transform .25s ease;}
+  .card:hover,.panel:hover,.stat:hover{border-color:#8ab8ff;box-shadow:0 0 24px rgba(79,140,255,.12);}
+}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;}}
+
 </style>
 <script>
 (function(){
