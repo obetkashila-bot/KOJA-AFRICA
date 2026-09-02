@@ -60,7 +60,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.01-LIVE-GPS-V2"
+APP_VERSION = "2026.09.02-PUBLISHING-FIXED"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -451,7 +451,7 @@ def admin_required(fn):
         if not user:
             flash("Administrator login required.", "warning")
             return redirect(url_for("login"))
-        if not (user.get("is_admin") or str(user.get("role") or "").lower() == "admin"):
+        if not user.get("is_admin"):
             flash("Administrator access required.", "danger")
             return redirect(url_for("dashboard"))
         return fn(*args, **kwargs)
@@ -526,7 +526,7 @@ def provider_profile(provider_id):
 # TEMPLATE
 # ============================================================
 
-BASE_HTML = r""" <!doctype html> <html lang="en"> <head> <meta charset="utf-8"> <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"> <meta name="description" content="KOJA AFRICA — academic questions, assignments, documents, professional services and live delivery services in Africa."> <meta name="robots" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] %}noindex,nofollow{% else %}index,follow,max-image-preview:large{% endif %}"> <meta name="googlebot" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] %}noindex,nofollow{% else %}index,follow{% endif %}"> <meta name="google-site-verification" content="u4nfIf5MfXm0iVvECSQeYAov4Tz4601ayY5kYzNc4ko"> <link rel="canonical" href="{{ SITE_URL }}{{ request.path }}"> <meta property="og:type" content="website"> <meta property="og:site_name" content="KOJA AFRICA"> <meta property="og:title" content="{{ title or 'KOJA AFRICA' }}"> <meta property="og:description" content="Academic questions, assignments, documents, professional services and live delivery services."> <meta property="og:url" content="{{ SITE_URL }}{{ request.path }}"> <title>{{ title or "KOJA AFRICA" }}</title> <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"> <style> *{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f5f7fb;color:#172033} nav{background:#10233f;color:#fff;padding:12px 15px;position:sticky;top:0;z-index:1000} .nav-inner{max-width:1250px;margin:auto;display:flex;align-items:center;gap:7px;flex-wrap:wrap} .brand{font-weight:800;font-size:19px;margin-right:auto} nav a{color:#fff;text-decoration:none;padding:8px 9px;border-radius:7px} nav a:hover{background:rgba(255,255,255,.12)} .container{width:min(1250px,calc(100% - 24px));margin:20px auto 50px} .card{background:#fff;border-radius:13px;padding:18px;margin-bottom:16px;box-shadow:0 3px 14px rgba(0,0,0,.06)} .hero{background:linear-gradient(135deg,#10233f,#176b87);color:#fff;padding:28px 20px;border-radius:15px;margin-bottom:18px} h1,h2,h3{margin-top:0} .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:15px} input,select,textarea,button{width:100%;padding:11px 12px;margin-top:6px;margin-bottom:12px;border-radius:8px;border:1px solid #ccd3df;font:inherit} textarea{min-height:120px} button,.btn{display:inline-block;background:#176b87;color:#fff;border:0;text-decoration:none;cursor:pointer;padding:10px 14px;border-radius:8px} .btn.secondary{background:#5f6b7a}.btn.success{background:#177245}.btn.danger{background:#a62d2d}.btn.warning{background:#9b6b00} table{width:100%;border-collapse:collapse} th,td{border-bottom:1px solid #e4e7ec;padding:9px;text-align:left;vertical-align:top} .alert{padding:12px;border-radius:8px;margin-bottom:10px;background:#eaf2ff} .stat{padding:18px;background:#fff;border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,.05)} .big{font-size:28px;font-weight:800} .small{color:#667085;font-size:13px}.badge{display:inline-block;padding:4px 8px;border-radius:20px;background:#e7eef5;font-size:12px} #map{height:430px;border-radius:12px;overflow:hidden} .map-small{height:300px!important} .driver-card{border:2px solid #e4e7ec} .driver-card.selected{border-color:#176b87} .online{color:#177245;font-weight:700} .offline{color:#a62d2d;font-weight:700} footer{text-align:center;color:#667085;padding:30px} .actions{display:flex;gap:8px;flex-wrap:wrap}.actions .btn,.actions button{width:auto} @media(max-width:650px){nav a{font-size:12px}.container{width:min(100% - 14px,1250px)}table{display:block;overflow-x:auto}#map{height:350px}.actions .btn,.actions button{width:100%}} </style> </head> <body> <nav> <div class="nav-inner"> <div class="brand">KOJA AFRICA</div> <a href="{{ url_for('home') }}">Home</a> {% if user %} <a href="{{ url_for('dashboard') }}">Dashboard</a> <a href="{{ url_for('services') }}">Services</a> <a href="{{ url_for('questions') }}">Questions</a> <a href="{{ url_for('assignments') }}">Assignments</a> <a href="{{ url_for('universities') }}">Universities</a> <a href="{{ url_for('deliveries') }}">Deliveries</a> <a href="{{ url_for('drivers') }}">Drivers</a> {% if user.role in ['driver','admin'] or user.is_admin %} <a href="{{ url_for('driver_dashboard') }}">Driver</a> {% endif %} <a href="{{ url_for('logout') }}">Logout</a> {% else %} <a href="{{ url_for('login') }}">Login</a> <a href="{{ url_for('register') }}">Register</a> {% endif %} {% if user and (user.is_admin or user.role == "admin") %}<a href="{{ url_for('admin') }}">Admin</a>{% endif %} </div> </nav> <div class="container"> {% with messages=get_flashed_messages(with_categories=true) %} {% for category,message in messages %}<div class="alert">{{ message }}</div>{% endfor %} {% endwith %} {{ body|safe }} </div> <footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Agricultural • Health • Transport Services</footer> <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script> </body> </html> """
+BASE_HTML = r""" <!doctype html> <html lang="en"> <head> <meta charset="utf-8"> <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"> <meta name="description" content="KOJA AFRICA — academic questions, assignments, documents, professional services and live delivery services in Africa."> <meta name="robots" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] %}noindex,nofollow{% else %}index,follow,max-image-preview:large{% endif %}"> <meta name="googlebot" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] %}noindex,nofollow{% else %}index,follow{% endif %}"> <meta name="google-site-verification" content="u4nfIf5MfXm0iVvECSQeYAov4Tz4601ayY5kYzNc4ko"> <link rel="canonical" href="{{ SITE_URL }}{{ request.path }}"> <meta property="og:type" content="website"> <meta property="og:site_name" content="KOJA AFRICA"> <meta property="og:title" content="{{ title or 'KOJA AFRICA' }}"> <meta property="og:description" content="Academic questions, assignments, documents, professional services and live delivery services."> <meta property="og:url" content="{{ SITE_URL }}{{ request.path }}"> <title>{{ title or "KOJA AFRICA" }}</title> <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"> <style> *{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f5f7fb;color:#172033} nav{background:#10233f;color:#fff;padding:12px 15px;position:sticky;top:0;z-index:1000} .nav-inner{max-width:1250px;margin:auto;display:flex;align-items:center;gap:7px;flex-wrap:wrap} .brand{font-weight:800;font-size:19px;margin-right:auto} nav a{color:#fff;text-decoration:none;padding:8px 9px;border-radius:7px} nav a:hover{background:rgba(255,255,255,.12)} .container{width:min(1250px,calc(100% - 24px));margin:20px auto 50px} .card{background:#fff;border-radius:13px;padding:18px;margin-bottom:16px;box-shadow:0 3px 14px rgba(0,0,0,.06)} .hero{background:linear-gradient(135deg,#10233f,#176b87);color:#fff;padding:28px 20px;border-radius:15px;margin-bottom:18px} h1,h2,h3{margin-top:0} .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:15px} input,select,textarea,button{width:100%;padding:11px 12px;margin-top:6px;margin-bottom:12px;border-radius:8px;border:1px solid #ccd3df;font:inherit} textarea{min-height:120px} button,.btn{display:inline-block;background:#176b87;color:#fff;border:0;text-decoration:none;cursor:pointer;padding:10px 14px;border-radius:8px} .btn.secondary{background:#5f6b7a}.btn.success{background:#177245}.btn.danger{background:#a62d2d}.btn.warning{background:#9b6b00} table{width:100%;border-collapse:collapse} th,td{border-bottom:1px solid #e4e7ec;padding:9px;text-align:left;vertical-align:top} .alert{padding:12px;border-radius:8px;margin-bottom:10px;background:#eaf2ff} .stat{padding:18px;background:#fff;border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,.05)} .big{font-size:28px;font-weight:800} .small{color:#667085;font-size:13px}.badge{display:inline-block;padding:4px 8px;border-radius:20px;background:#e7eef5;font-size:12px} #map{height:430px;border-radius:12px;overflow:hidden} .map-small{height:300px!important} .driver-card{border:2px solid #e4e7ec} .driver-card.selected{border-color:#176b87} .online{color:#177245;font-weight:700} .offline{color:#a62d2d;font-weight:700} footer{text-align:center;color:#667085;padding:30px} .actions{display:flex;gap:8px;flex-wrap:wrap}.actions .btn,.actions button{width:auto} @media(max-width:650px){nav a{font-size:12px}.container{width:min(100% - 14px,1250px)}table{display:block;overflow-x:auto}#map{height:350px}.actions .btn,.actions button{width:100%}} </style> </head> <body> <nav> <div class="nav-inner"> <div class="brand">KOJA AFRICA</div> <a href="{{ url_for('home') }}">Home</a> {% if user %} <a href="{{ url_for('dashboard') }}">Dashboard</a> <a href="{{ url_for('services') }}">Services</a> <a href="{{ url_for('questions') }}">Questions</a> <a href="{{ url_for('assignments') }}">Assignments</a> <a href="{{ url_for('universities') }}">Universities</a> <a href="{{ url_for('deliveries') }}">Deliveries</a> <a href="{{ url_for('drivers') }}">Drivers</a> {% if user.role in ['driver','admin'] or user.is_admin %} <a href="{{ url_for('driver_dashboard') }}">Driver</a> {% endif %} <a href="{{ url_for('logout') }}">Logout</a> {% else %} <a href="{{ url_for('login') }}">Login</a> <a href="{{ url_for('register') }}">Register</a> {% endif %} {% if user and user.is_admin %}<a href="{{ url_for('admin') }}">Admin</a>{% endif %} </div> </nav> <div class="container"> {% with messages=get_flashed_messages(with_categories=true) %} {% for category,message in messages %}<div class="alert">{{ message }}</div>{% endfor %} {% endwith %} {{ body|safe }} </div> <footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Agricultural • Health • Transport Services</footer> <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script> </body> </html> """
 
 def render_page(title, body_template, **context):
     context["user"] = current_user()
@@ -899,38 +899,64 @@ DRIVER_PROFILE_COLUMNS = (
 
 
 def get_driver_provider(user_id):
-    """Return the service_providers row belonging to the logged-in profile."""
+    """Return the driver's service provider; supports old/new schemas."""
     if not user_id:
         return None
-    return first_row("service_providers", {"user_id": user_id, "provider_type": "driver"})
+    try:
+        provider = first_row("service_providers", {"user_id": user_id, "provider_type": "driver"})
+        if provider:
+            return provider
+    except Exception:
+        pass
+    try:
+        return first_row("service_providers", {"user_id": user_id})
+    except Exception:
+        return None
 
 
 def ensure_driver_provider(user):
-    """Create the provider record first; driver_profiles.provider_id points to it."""
-    provider = get_driver_provider(user.get("id"))
-    if provider:
-        return provider, None
+    """Create/reuse a driver provider and tolerate legacy schemas."""
+    if not user:
+        return None, "User information is missing."
+    user_id = user.get("id")
+    if not user_id:
+        return None, "User ID is missing."
 
+    existing = get_driver_provider(user_id)
+    if existing:
+        return existing, None
+
+    full_name = user.get("full_name") or user.get("name") or "Driver"
     payload = {
         "id": str(uuid.uuid4()),
-        "user_id": user.get("id"),
+        "user_id": user_id,
         "provider_type": "driver",
-        "full_name": user.get("name") or user.get("full_name") or "Driver",
+        "full_name": full_name,
+        "name": full_name,
         "phone": user.get("phone") or None,
         "email": user.get("email") or None,
         "verification_status": "pending",
         "is_available": False,
-        "is_active": True,
+        "is_active": True
     }
-    provider, error = db_insert("service_providers", payload)
-    if error:
-        return None, error
-    return provider or payload, None
 
+    try:
+        provider, error = db_insert("service_providers", payload)
+    except Exception as exc:
+        provider, error = None, str(exc)
+    if not error:
+        return provider or payload, None
 
-@app.route("/driver/register", methods=["GET", "POST"])
-@app.route("/drivers/register", methods=["GET", "POST"])
-@login_required
+    legacy = dict(payload)
+    legacy.pop("provider_type", None)
+    try:
+        provider2, error2 = db_insert("service_providers", legacy)
+    except Exception as exc:
+        provider2, error2 = None, str(exc)
+    if not error2:
+        return provider2 or legacy, None
+    return None, error
+
 def driver_register():
     user = current_user() or {}
     provider = get_driver_provider(user.get("id"))
