@@ -1,11 +1,17 @@
-KOJA AFRICA - FINAL ASSIGNMENT FIX
-Date: 2026-09-03
+KOJA AFRICA ASSIGNMENT FIX - 2026-09-03
 
-Fixes:
-1. Defines log_activity() before any route can call it.
-2. Defines create_notification() before the assignment route can call it.
-3. Assignment submission uses profiles.id for student_id/user_id.
-4. Assignment status uses submitted.
-5. Assignment upload/database failures are handled without a 500 caused by missing helpers.
+Database repair required:
+assignments.student_id must reference public.profiles(id).
+The assignments status constraint must allow 'submitted'.
 
-Deploy app.py and requirements.txt to the Render service.
+The included app.py:
+- uses profiles.id for student_id and user_id
+- validates the logged-in user ID
+- inserts submitted assignments using the live schema
+- stores assignment file metadata
+- logs assignment creation
+- creates a student notification
+- falls back to user_id when loading assignments
+- logs the exact database error instead of hiding it
+
+Before deploying, confirm the Supabase SQL repair has been run successfully.

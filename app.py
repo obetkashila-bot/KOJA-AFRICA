@@ -384,42 +384,6 @@ def driver_required(fn):
         return fn(*args, **kwargs)
     return wrapper
 
-def log_activity(action, description="", user_id=None):
-    """Record a non-blocking audit/activity event."""
-    try:
-        uid = user_id or (current_user() or {}).get("id")
-        payload = {
-            "action": clean(action)[:120],
-            "description": clean(description)[:2000],
-        }
-        if uid:
-            payload["user_id"] = str(uid)
-        db_insert("activity_logs", payload)
-    except Exception:
-        logger.exception("Activity logging failed")
-
-def create_notification(user_id, title, message, category="general", link=""):
-    """Create an in-app notification without ever breaking the main request."""
-    try:
-        payload = {
-            "id": str(uuid.uuid4()),
-            "user_id": str(user_id),
-            "title": clean(title)[:200],
-            "message": clean(message)[:5000],
-            "category": clean(category)[:80] or "general",
-            "link": clean(link)[:500],
-            "is_read": False,
-            "created_at": utc_now(),
-        }
-        row, error = db_insert("notifications", payload)
-        if error:
-            logger.error("Notification insert failed: %s", error)
-            return None
-        return row
-    except Exception:
-        logger.exception("Notification creation failed")
-        return None
-
 def load_user_settings(user_id):
     row=first_row("user_settings", {"user_id": user_id})
     return row or {"user_id":user_id,"theme":"system","language":"en","notify_assignments":True,"notify_delivery":True,"notify_help":True,"notify_announcements":False,"allow_location":True,"allow_research":True,"allow_device_storage":True}
@@ -766,6 +730,19 @@ footer{text-align:center;color:#667085;padding:30px}
   @media (prefers-reduced-motion:no-preference){.hero{animation-duration:.5s}.card,.stat,.alert,.driver-card,table{animation-duration:.4s}.card:hover,.stat:hover,.driver-card:hover{transform:translateY(-2px)}}
 }
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}}
+
+/* KOJA AFRICA — White & Black + Fading Blue visual theme */
+:root{--koja-black:#000;--koja-white:#fff;--koja-blue:#4f8cff;--koja-blue-soft:#8ab8ff;--koja-border:#e5e5e5;}
+body{background:#fff;color:#000;}
+.card,.panel,.hero,.stat,form{background:#fff;border-color:#e5e5e5;}
+a{color:#4f8cff;}
+.btn,button{background:#000;color:#fff;border-color:#000;transition:background-color .25s ease,box-shadow .25s ease,transform .2s ease;}
+.btn:hover,button:hover{background:#4f8cff;border-color:#4f8cff;box-shadow:0 0 18px rgba(79,140,255,.22);}
+input,textarea,select{background:#fff;color:#000;border-color:#d8d8d8;}
+input:focus,textarea:focus,select:focus{border-color:#4f8cff;box-shadow:0 0 0 3px rgba(79,140,255,.12);outline:none;}
+@keyframes kojaBlueFade{0%,100%{box-shadow:0 0 0 rgba(79,140,255,0)}50%{box-shadow:0 0 20px rgba(79,140,255,.18)}}
+@media (prefers-reduced-motion:no-preference){.hero{animation:kojaFadeUp .45s ease both}.card{animation:kojaFadeUp .45s ease both}.hero h1,.hero h2{animation:kojaFadeIn .6s ease both}.btn,button{animation:kojaBlueFade 3s ease-in-out infinite}.nav a:hover{color:#4f8cff;transition:color .2s ease}}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;}}
 </style>
 <script>
 (function(){
