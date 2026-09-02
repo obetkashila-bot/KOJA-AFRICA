@@ -731,18 +731,15 @@ footer{text-align:center;color:#667085;padding:30px}
 }
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}}
 
-/* KOJA AFRICA — White & Black + Fading Blue visual theme */
-:root{--koja-black:#000;--koja-white:#fff;--koja-blue:#4f8cff;--koja-blue-soft:#8ab8ff;--koja-border:#e5e5e5;}
-body{background:#fff;color:#000;}
-.card,.panel,.hero,.stat,form{background:#fff;border-color:#e5e5e5;}
-a{color:#4f8cff;}
-.btn,button{background:#000;color:#fff;border-color:#000;transition:background-color .25s ease,box-shadow .25s ease,transform .2s ease;}
-.btn:hover,button:hover{background:#4f8cff;border-color:#4f8cff;box-shadow:0 0 18px rgba(79,140,255,.22);}
-input,textarea,select{background:#fff;color:#000;border-color:#d8d8d8;}
-input:focus,textarea:focus,select:focus{border-color:#4f8cff;box-shadow:0 0 0 3px rgba(79,140,255,.12);outline:none;}
-@keyframes kojaBlueFade{0%,100%{box-shadow:0 0 0 rgba(79,140,255,0)}50%{box-shadow:0 0 20px rgba(79,140,255,.18)}}
-@media (prefers-reduced-motion:no-preference){.hero{animation:kojaFadeUp .45s ease both}.card{animation:kojaFadeUp .45s ease both}.hero h1,.hero h2{animation:kojaFadeIn .6s ease both}.btn,button{animation:kojaBlueFade 3s ease-in-out infinite}.nav a:hover{color:#4f8cff;transition:color .2s ease}}
-@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;}}
+/* KOJA AFRICA eye-friendly accessibility layer */
+html{scroll-behavior:smooth;}
+body{background:#050505;color:#f5f7fa;line-height:1.6;}
+body a{color:#8ab8ff;}
+button,.btn{transition:background-color .2s ease,border-color .2s ease,box-shadow .2s ease,transform .2s ease;}
+button:focus-visible,.btn:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{outline:3px solid #4f8cff;outline-offset:3px;}
+input,textarea,select{background:#101010;color:#f5f7fa;}
+::selection{background:#4f8cff;color:#fff;}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto!important;}*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;}}
 </style>
 <script>
 (function(){
@@ -1080,98 +1077,64 @@ def questions():
 @app.route("/assignments", methods=["GET","POST"])
 @login_required
 def assignments():
-    user = current_user()
-    if not user or not user.get("id"):
-        flash("Your account session is invalid. Please log in again.", "danger")
-        return redirect(url_for("login"))
-
-    if request.method == "POST":
-        title = clean(request.form.get("title"))
-        description = clean(request.form.get("description"))
-        file = request.files.get("file")
-
-        if not title:
-            flash("Assignment title is required.", "danger")
-            return redirect(url_for("assignments"))
-
-        uploaded = None
+    user=current_user()
+    if request.method=="POST":
+        title=clean(request.form.get("title"))
+        description=clean(request.form.get("description"))
+        file=request.files.get("file")
+        uploaded=None
         if file and file.filename:
-            uploaded, error = upload_storage(file, "assignments")
+            uploaded,error=upload_storage(file,"assignments")
             if error:
-                flash(f"Upload failed: {error}", "danger")
+                flash(f"Upload failed: {error}","danger")
                 return redirect(url_for("assignments"))
 
-        # The live KOJA database uses profiles.id as the student's UUID.
-        # assignments.student_id has a foreign key to profiles(id).
-        student_id = str(user["id"])
-        payload = {
-            "id": str(uuid.uuid4()),
-            "student_id": student_id,
-            "user_id": student_id,
-            "title": title,
-            "description": description,
-            "status": "submitted",
-            "created_at": utc_now(),
-            "updated_at": utc_now(),
+        payload={
+            "id":str(uuid.uuid4()),
+            "student_id":user["id"],"user_id":user["id"],
+            "title":title,"description":description,
+            "status":"submitted","created_at":utc_now()
         }
         if uploaded:
             payload.update({
-                "file_name": uploaded["file_name"],
-                "file_path": uploaded["path"],
-                "file_url": uploaded["url"],
-                "file_size": uploaded["file_size"],
-                "mime_type": uploaded["mime_type"],
+                "file_name":uploaded["file_name"],
+                "file_path":uploaded["path"],
+                "file_url":uploaded["url"],
+                "file_size":uploaded["file_size"],
+                "mime_type":uploaded["mime_type"]
             })
-
-        row, error = db_insert("assignments", payload)
+        row,error=db_insert("assignments",payload)
         if error:
-            logger.error("Assignment insert failed for student %s: %s", student_id, error)
+            minimal={"id":str(uuid.uuid4()),"title":title,"description":description}
             if uploaded:
-                try:
-                    delete_storage(uploaded["path"])
-                except Exception:
-                    logger.exception("Could not clean up assignment upload after database failure")
-            flash("Assignment could not be saved. Please try again. If it continues, check the Render logs for the exact database error.", "danger")
+                minimal.update({"file_name":uploaded["file_name"],"file_path":uploaded["path"],"file_url":uploaded["url"]})
+            row,error=db_insert("assignments",minimal)
+        if error:
+            flash("Assignment could not be saved. Check assignments table columns.","danger")
         else:
-            log_activity("assignment_created", f"Student submitted assignment: {title}")
-            try:
-                create_notification(
-                    student_id,
-                    "Assignment submitted",
-                    f"Your assignment '{title}' was submitted successfully and is awaiting review.",
-                    "assignment",
-                    "/assignments",
-                )
-            except Exception:
-                logger.exception("Assignment notification failed")
-            flash("Assignment uploaded successfully.", "success")
+            flash("Assignment uploaded successfully.","success")
         return redirect(url_for("assignments"))
 
-    rows = db_select("assignments", filters={"student_id": str(user["id"])}, order="created_at.desc", limit=100)
-    if not rows:
-        rows = db_select("assignments", filters={"user_id": str(user["id"])}, order="created_at.desc", limit=100)
-
-    return render_page("Assignments", r"""
+    rows=db_select("assignments",filters={"student_id":user["id"]},order="created_at.desc",limit=100)
+    return render_page("Assignments",r"""
 <div class="card"><h2>Upload Assignment</h2>
 <form method="post" enctype="multipart/form-data">
-<label>Assignment Title</label><input name="title" required maxlength="250">
-<label>Description / Question</label><textarea name="description" maxlength="10000"></textarea>
-<label>Assignment File</label><input type="file" name="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp">
+<label>Assignment Title</label><input name="title" required>
+<label>Description / Question</label><textarea name="description"></textarea>
+<label>Assignment File</label><input type="file" name="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png">
 <button type="submit">Upload Assignment</button>
 </form></div>
 <div class="card"><h2>Assignments</h2>
 {% for item in rows %}
 <div class="card"><h3>{{ item.get("title") or "Assignment" }}</h3>
-<p>{{ item.get("description") or item.get("question") or "" }}</p>
-<span class="badge">{{ item.get("status") or "submitted" }}</span>
+<p>{{ item.get("description") or "" }}</p>
 {% if item.get("file_url") %}<a class="btn" href="{{ item.get('file_url') }}" target="_blank">Download File</a>{% endif %}
 {% if item.get("answer_file_url") %}<a class="btn success" href="{{ item.get('answer_file_url') }}" target="_blank">Download Answer</a>{% endif %}
 {% if item.get("answered_file_url") %}<a class="btn success" href="{{ item.get('answered_file_url') }}" target="_blank">Download Answered File</a>{% endif %}
-{% if item.get("answer_text") %}<hr><strong>Admin Answer</strong><p>{{ item.get("answer_text") }}</p>{% endif %}
 </div>
 {% else %}<p>No assignments found.</p>{% endfor %}
 </div>
-""", rows=rows)
+""",rows=rows)
 
 # ============================================================
 # CV
@@ -2522,14 +2485,6 @@ def admin_search_distribution():
 @app.route("/robots.txt")
 def robots_txt():
     lines = [
-        "User-agent: Googlebot",
-        "Allow: /",
-        "Disallow: /admin",
-        "Disallow: /login",
-        "Disallow: /register",
-        "Disallow: /dashboard",
-        "Disallow: /api/",
-        "",
         "User-agent: *",
         "Allow: /",
         "Disallow: /admin",
@@ -2537,7 +2492,6 @@ def robots_txt():
         "Disallow: /register",
         "Disallow: /dashboard",
         "Disallow: /api/",
-        "",
         f"Sitemap: {SITE_URL}/sitemap.xml",
     ]
     return ("\n".join(lines) + "\n", 200, {"Content-Type": "text/plain; charset=utf-8"})
