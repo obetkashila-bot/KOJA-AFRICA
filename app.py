@@ -1,6 +1,4 @@
 import os
-import smtplib
-from email.message import EmailMessage
 import io
 import uuid
 import math
@@ -83,7 +81,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.02-FINAL-SECURE-GPS"
+APP_VERSION = "2026.09.03-FINAL-UNIFIED-SEARCH-NOTIFICATIONS"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -350,42 +348,6 @@ def first_row(table, filters):
 def current_user():
     return session.get("user")
 
-# Authentication decorators are defined before any route decorators use them.
-def login_required(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        if not current_user():
-            flash("Please log in first.", "warning")
-            return redirect(url_for("login", next=request.path))
-        return fn(*args, **kwargs)
-    return wrapper
-
-def admin_required(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        user = current_user()
-        if not user:
-            flash("Administrator login required.", "warning")
-            return redirect(url_for("login"))
-        if not user.get("is_admin"):
-            flash("Administrator access required.", "danger")
-            return redirect(url_for("dashboard"))
-        return fn(*args, **kwargs)
-    return wrapper
-
-def driver_required(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        user = current_user()
-        if not user:
-            flash("Driver login required.", "warning")
-            return redirect(url_for("login"))
-        if not user.get("is_admin") and user.get("role") != "driver":
-            flash("Driver access required.", "danger")
-            return redirect(url_for("dashboard"))
-        return fn(*args, **kwargs)
-    return wrapper
-
 def load_user_settings(user_id):
     row=first_row("user_settings", {"user_id": user_id})
     return row or {"user_id":user_id,"theme":"system","language":"en","notify_assignments":True,"notify_delivery":True,"notify_help":True,"notify_announcements":False,"allow_location":True,"allow_research":True,"allow_device_storage":True}
@@ -542,67 +504,9 @@ def secure_file(storage_path):
         logger.exception("Secure file download failed")
         abort(404)
 
-
-@app.route("/view-file/<path:storage_path>")
-@login_required
-def view_file(storage_path):
-    storage_path=storage_path.strip("/")
-    if not storage_path or ".." in storage_path.split("/") or not _file_owner_allowed(storage_path,current_user()):
-        abort(403)
-    ext=storage_path.rsplit(".",1)[-1].lower() if "." in storage_path else ""
-    if ext in ("doc","docx"):
-        return redirect(url_for("view_docx", storage_path=storage_path))
-    return render_page("View File", r"""
-<div class="card"><div class="actions"><a class="btn secondary" href="{{ url_for('documents') }}">Back</a><a class="btn" href="{{ url_for('secure_file', storage_path=storage_path) }}">Open / Download</a></div>
-{% if ext in ['pdf','txt'] %}<iframe src="{{ url_for('secure_file', storage_path=storage_path) }}" style="width:100%;height:75vh;border:0"></iframe>
-{% elif ext in ['png','jpg','jpeg','webp'] %}<img src="{{ url_for('secure_file', storage_path=storage_path) }}" style="max-width:100%;height:auto">
-{% else %}<p>This file type is not rendered in-browser. Use Open / Download.</p>{% endif %}</div>
-""", storage_path=storage_path, ext=ext)
-
-@app.route("/view-docx/<path:storage_path>")
-@login_required
-def view_docx(storage_path):
-    storage_path=storage_path.strip("/")
-    if not storage_path or ".." in storage_path.split("/") or not _file_owner_allowed(storage_path,current_user()):
-        abort(403)
-    try:
-        r=requests.get(sb_storage_url(storage_path),headers=sb_headers(),timeout=60)
-        if not r.ok: abort(404)
-        with zipfile.ZipFile(io.BytesIO(r.content)) as z:
-            xml=z.read("word/document.xml").decode("utf-8","ignore")
-        xml=re.sub(r"</w:p>", "\n", xml)
-        text=re.sub(r"<[^>]+>", "", xml)
-        text=html.unescape(text)
-        return render_page("Word Document Preview", r"""
-<div class="card"><div class="actions"><a class="btn secondary" href="{{ url_for('documents') }}">Back</a><a class="btn" href="{{ url_for('secure_file', storage_path=storage_path) }}">Download</a></div><h2>Word Document Preview</h2><pre style="white-space:pre-wrap;line-height:1.6">{{ text }}</pre></div>
-""", storage_path=storage_path, text=text)
-    except Exception:
-        logger.exception("DOCX preview failed")
-        return render_page("Word Document", r"""<div class="card"><h2>Word Document</h2><p>This Word file could not be previewed. Please open or download it.</p><a class="btn" href="{{ url_for('secure_file', storage_path=storage_path) }}">Open / Download</a></div>""", storage_path=storage_path)
-
 # ============================================================
 # STORAGE
 # ============================================================
-
-
-def scan_uploaded_bytes(filename, data):
-    """Run optional ClamAV scanning when clamdscan is installed."""
-    try:
-        import subprocess, tempfile
-        if shutil.which("clamdscan"):
-            with tempfile.NamedTemporaryFile(prefix="koja_", suffix="_" + secure_filename(filename), delete=False) as tmp:
-                tmp.write(data); tmp_path=tmp.name
-            try:
-                result=subprocess.run(["clamdscan","--no-summary",tmp_path],capture_output=True,text=True,timeout=45)
-                if result.returncode != 0:
-                    return False, "File security scan rejected the upload."
-            finally:
-                try: os.unlink(tmp_path)
-                except OSError: pass
-        return True, None
-    except Exception as exc:
-        logger.exception("Malware scan error: %s", exc)
-        return False, "File security scan failed."
 
 def upload_storage(file_storage, folder="uploads"):
     if not file_storage or not file_storage.filename:
@@ -622,9 +526,6 @@ def upload_storage(file_storage, folder="uploads"):
     if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
         return None, f"Maximum file size is {MAX_UPLOAD_MB} MB."
 
-    clean_ok, clean_err = scan_uploaded_bytes(filename, data)
-    if not clean_ok:
-        return None, clean_err
     path = f"{folder.strip('/')}/{uuid.uuid4().hex}_{filename}"
     mime = file_storage.mimetype or "application/octet-stream"
 
@@ -665,6 +566,62 @@ def delete_storage(path):
         return r.ok
     except Exception:
         return False
+
+# ============================================================
+# DECORATORS / LOGGING
+# ============================================================
+
+def login_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not current_user():
+            flash("Please log in first.", "warning")
+            return redirect(url_for("login", next=request.path))
+        return fn(*args, **kwargs)
+    return wrapper
+
+def admin_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        user = current_user()
+        if not user:
+            flash("Administrator login required.", "warning")
+            return redirect(url_for("login"))
+        if not user.get("is_admin"):
+            flash("Administrator access required.", "danger")
+            return redirect(url_for("dashboard"))
+        return fn(*args, **kwargs)
+    return wrapper
+
+def driver_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        user = current_user()
+        if not user:
+            flash("Driver login required.", "warning")
+            return redirect(url_for("login"))
+        if user.get("role") not in ("driver", "admin") and not user.get("is_admin"):
+            flash("Driver account required.", "danger")
+            return redirect(url_for("dashboard"))
+        return fn(*args, **kwargs)
+    return wrapper
+
+def log_activity(action, description="", user_id=None):
+    uid = user_id or (current_user() or {}).get("id")
+    payload = {"action": action, "description": description}
+    if uid:
+        payload["user_id"] = uid
+    try:
+        db_insert("activity_logs", payload)
+    except Exception:
+        pass
+
+def create_notification(user_id, title, message, category="general", link=""):
+    if not user_id: return False
+    payload={"id":str(uuid.uuid4()),"user_id":str(user_id),"title":clean(title)[:200],"message":clean(message)[:2000],"category":clean(category)[:50] or "general","link":clean(link)[:500] or None,"is_read":False,"created_at":utc_now()}
+    _,err=db_insert("notifications",payload)
+    return not bool(err)
+
 
 # ============================================================
 # GEOLOCATION
@@ -764,43 +721,15 @@ footer{text-align:center;color:#667085;padding:30px}
 .actions{display:flex;gap:8px;flex-wrap:wrap}.actions .btn,.actions button{width:auto}
 @media(max-width:650px){nav a{font-size:12px}.container{width:min(100% - 14px,1250px)}table{display:block;overflow-x:auto}#map{height:350px}.actions .btn,.actions button{width:100%}}
 
-/* KOJA AFRICA motion system: polished, lightweight, mobile-friendly and reduced-motion safe. */
-@keyframes kojaPageIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
-@keyframes kojaHeroIn{from{opacity:0;transform:translateY(18px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)}}
-@keyframes kojaCardIn{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
-@keyframes kojaShimmer{from{background-position:200% 0}to{background-position:-200% 0}}
-@keyframes kojaPulse{0%,100%{box-shadow:0 0 0 0 rgba(23,107,135,0)}50%{box-shadow:0 0 0 7px rgba(23,107,135,.10)}}
-@media (prefers-reduced-motion:no-preference){
-  html{scroll-behavior:smooth}
-  body{animation:kojaPageIn .42s cubic-bezier(.22,1,.36,1) both}
-  .hero{animation:kojaHeroIn .65s cubic-bezier(.22,1,.36,1) both;position:relative;overflow:hidden}
-  .hero:after{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(110deg,transparent 20%,rgba(255,255,255,.10) 45%,transparent 70%);background-size:220% 100%;animation:kojaShimmer 5s ease-in-out 1 both}
-  .card,.stat,.alert,.driver-card,table{animation:kojaCardIn .5s cubic-bezier(.22,1,.36,1) both}
-  .grid>.card:nth-child(2){animation-delay:.06s}.grid>.card:nth-child(3){animation-delay:.12s}.grid>.card:nth-child(4){animation-delay:.18s}.grid>.card:nth-child(5){animation-delay:.24s}.grid>.card:nth-child(6){animation-delay:.30s}
-  nav{transition:box-shadow .25s ease,background .25s ease}
-  nav a{transition:transform .2s ease,background .2s ease,color .2s ease}
-  nav a:hover{transform:translateY(-2px);background:rgba(255,255,255,.13)}
-  .btn,button{transition:transform .2s cubic-bezier(.22,1,.36,1),box-shadow .2s ease,filter .2s ease}
-  .btn:hover,button:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(16,35,63,.18);filter:brightness(1.04)}
-  .btn:active,button:active{transform:translateY(0) scale(.98);box-shadow:none}
-  .card,.stat,.driver-card{transition:transform .25s cubic-bezier(.22,1,.36,1),box-shadow .25s ease,border-color .25s ease}
-  .card:hover,.stat:hover,.driver-card:hover{transform:translateY(-4px);box-shadow:0 12px 30px rgba(16,35,63,.11)}
-  input,select,textarea{transition:border-color .2s ease,box-shadow .2s ease,transform .2s ease}
-  input:focus,select:focus,textarea:focus{outline:none;border-color:#176b87;box-shadow:0 0 0 4px rgba(23,107,135,.12);transform:translateY(-1px)}
-  .online{animation:kojaPulse 2.2s ease-in-out infinite}
-}
-@media(max-width:650px){
-  @media (prefers-reduced-motion:no-preference){.hero{animation-duration:.5s}.card,.stat,.alert,.driver-card,table{animation-duration:.4s}.card:hover,.stat:hover,.driver-card:hover{transform:translateY(-2px)}}
-}
-@keyframes kojaFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
-@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}}
+@keyframes kojaFadeUp{from{opacity:.0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+@media (prefers-reduced-motion:no-preference){.hero,.card{animation:kojaFadeUp .45s ease both}.card{transition:transform .2s ease,box-shadow .2s ease}.card:hover{transform:translateY(-2px)}}
 </style>
 <script>
 (function(){
  const token={{ session.get('csrf_token','')|tojson }};
  const nativeFetch=window.fetch;
  window.fetch=function(input,init){init=init||{};const m=(init.method||'GET').toUpperCase();if(token&&['POST','PUT','PATCH','DELETE'].includes(m)){init.headers=new Headers(init.headers||{});init.headers.set('X-CSRF-Token',token);}return nativeFetch(input,init);};
- function theme(){let t=localStorage.getItem('koja_theme')||'system';let dark=t==='dark'||(t==='system'&&matchMedia('(prefers-color-scheme: dark)').matches);let x=document.getElementById('kojaGlobalTheme');if(!x){x=document.createElement('style');x.id='kojaGlobalTheme';document.head.appendChild(x);}let themes={light:'body{background:#f5f7fb!important;color:#172033!important}body .card,body .stat{background:#fff!important;color:#172033!important}',dark:'body{background:#111827!important;color:#e5e7eb!important}body .card,body .stat{background:#1f2937!important;color:#e5e7eb!important}body input,body select,body textarea{background:#111827!important;color:#e5e7eb!important;border-color:#4b5563!important}body th,body td{border-color:#374151!important}body a{color:#7dd3fc}',ocean:'body{background:#eaf8fb!important;color:#12333f!important}body .card,body .stat{background:#fff!important;border-color:#b8dfe7!important;color:#12333f!important}body nav{background:linear-gradient(135deg,#075985,#0e7490)!important}body a{color:#0369a1}',sunset:'body{background:#fff7ed!important;color:#431407!important}body .card,body .stat{background:#fff!important;border-color:#fed7aa!important;color:#431407!important}body nav{background:linear-gradient(135deg,#9a3412,#c2410c)!important}body a{color:#c2410c}',emerald:'body{background:#ecfdf5!important;color:#052e16!important}body .card,body .stat{background:#fff!important;border-color:#a7f3d0!important;color:#052e16!important}body nav{background:linear-gradient(135deg,#065f46,#047857)!important}body a{color:#047857}'};x.textContent=themes[t]||themes.light;if(t==='system')x.textContent=dark?themes.dark:themes.light;document.documentElement.dataset.kojaTheme=t;}
+ function theme(){let t=localStorage.getItem('koja_theme')||'system';let dark=t==='dark'||(t==='system'&&matchMedia('(prefers-color-scheme: dark)').matches);let x=document.getElementById('kojaGlobalTheme');if(!x){x=document.createElement('style');x.id='kojaGlobalTheme';document.head.appendChild(x);}x.textContent=dark?'body{background:#111827!important;color:#e5e7eb!important}body .card,body .stat{background:#1f2937!important;color:#e5e7eb!important}body input,body select,body textarea{background:#111827!important;color:#e5e7eb!important;border-color:#4b5563!important}body th,body td{border-color:#374151!important}body a{color:#7dd3fc}':'body{background:#f5f7fb;color:#172033}';}
  theme();addEventListener('storage',theme);
 })();
 </script>
@@ -812,10 +741,8 @@ footer{text-align:center;color:#667085;padding:30px}
 <a href="{{ url_for('home') }}">Home</a>
 {% if user %}
 <a href="{{ url_for('dashboard') }}">Dashboard</a>
-<a href="{{ url_for('settings') }}">Settings</a>
-<a href="{{ url_for('invite_friends') }}">Invite Friends</a>
+<a href="{{ url_for('settings') }}">Settings</a><a href="{{ url_for('notifications') }}">🔔 Notifications</a>
 <a href="{{ url_for('services') }}">Services</a><a href="{{ url_for('research') }}">Research</a>
-<a href="{{ url_for('search') }}">Search</a><a href="{{ url_for('documents') }}">Documents</a>
 <a href="{{ url_for('questions') }}">Questions</a>
 <a href="{{ url_for('assignments') }}">Assignments</a>
 <a href="{{ url_for('deliveries') }}">Deliveries</a>
@@ -893,92 +820,6 @@ def health():
 # REGISTER / LOGIN
 # ============================================================
 
-
-# ============================================================
-# EMAIL, VERIFICATION, PASSWORD RESET & EMAIL 2FA
-# ============================================================
-
-def smtp_configured():
-    return bool(os.getenv("SMTP_HOST") and os.getenv("SMTP_USER") and os.getenv("SMTP_PASSWORD"))
-
-def send_email(to_email, subject, body):
-    if not smtp_configured():
-        return False, "SMTP is not configured."
-    try:
-        host = os.getenv("SMTP_HOST")
-        port = int(os.getenv("SMTP_PORT", "587"))
-        sender = os.getenv("SMTP_FROM") or os.getenv("SMTP_USER")
-        msg = EmailMessage()
-        msg["From"] = sender
-        msg["To"] = to_email
-        msg["Subject"] = subject
-        msg.set_content(body)
-        with smtplib.SMTP(host, port, timeout=20) as smtp:
-            if os.getenv("SMTP_TLS", "1") != "0":
-                smtp.starttls()
-            smtp.login(os.getenv("SMTP_USER"), os.getenv("SMTP_PASSWORD"))
-            smtp.send_message(msg)
-        return True, None
-    except Exception as exc:
-        logger.exception("Email send failed: %s", exc)
-        return False, str(exc)
-
-def create_email_token(user_id, purpose, lifetime_seconds):
-    raw = secrets.token_urlsafe(32)
-    token_hash = hashlib.sha256(raw.encode()).hexdigest()
-    expires = datetime.now(timezone.utc) + timedelta(seconds=lifetime_seconds)
-    _, err = db_insert("email_tokens", {
-        "user_id": str(user_id),
-        "token_hash": token_hash,
-        "purpose": purpose,
-        "expires_at": expires.isoformat(),
-        "created_at": utc_now(),
-    })
-    return raw if not err else None
-
-def consume_email_token(raw, purpose):
-    if not raw:
-        return None
-    token_hash = hashlib.sha256(raw.encode()).hexdigest()
-    rows = db_select("email_tokens", filters={"token_hash": token_hash, "purpose": purpose}, limit=1)
-    if not rows:
-        return None
-    row = rows[0]
-    try:
-        exp = datetime.fromisoformat(str(row.get("expires_at")).replace("Z","+00:00"))
-        if exp < datetime.now(timezone.utc):
-            return None
-    except Exception:
-        return None
-    db_delete("email_tokens", {"id": row.get("id")})
-    return row.get("user_id")
-
-def generate_otp():
-    return f"{secrets.randbelow(1000000):06d}"
-
-def two_factor_enabled(user):
-    return bool(user and user.get("two_factor_enabled"))
-
-def require_2fa_after_password_login(user, next_url):
-    if not two_factor_enabled(user):
-        return False
-    if not smtp_configured():
-        logger.warning("2FA is enabled but SMTP is not configured.")
-        return False
-    otp = generate_otp()
-    session["pending_2fa"] = {
-        "user_id": str(user.get("id")),
-        "otp_hash": hashlib.sha256(otp.encode()).hexdigest(),
-        "expires": time.time() + 600,
-        "next": next_url if str(next_url).startswith("/") else url_for("dashboard"),
-    }
-    sent, _ = send_email(
-        user.get("email"),
-        "Your KOJA AFRICA security code",
-        f"Your KOJA AFRICA login verification code is {otp}. It expires in 10 minutes."
-    )
-    return sent
-
 @app.route("/register", methods=["GET","POST"])
 def register():
     if request.method == "POST":
@@ -1004,6 +845,7 @@ def register():
         user_id = str(uuid.uuid4())
         payload = {
             "id": user_id,
+            "name": full_name,
             "full_name": full_name,
             "email": email,
             "phone": phone or None,
@@ -1011,34 +853,24 @@ def register():
             "role": role,
             "is_admin": False,
             "is_active": True,
-            "email_verified": False,
             "created_at": utc_now(),
         }
 
         row, error = db_insert("profiles", payload)
         if error:
-            logger.error("Registration database insert failed: %s", error)
-            flash("Registration could not be completed. Please try again later.","danger")
+            old = {
+                "id": user_id,
+                "full_name": full_name,
+                "email": email,
+                "phone": phone or None,
+                "password_hash": payload["password_hash"],
+            }
+            row, error = db_insert("KOJA ZM", old)
+
+        if error:
+            flash("Registration failed. Check Render logs for the exact Supabase column error.","danger")
             return redirect(url_for("register"))
 
-        # If SMTP is configured, require email verification and send the token.
-        if smtp_configured():
-            token = create_email_token(user_id, "verify", 24 * 3600)
-            if token:
-                sent, _ = send_email(
-                    email,
-                    "Verify your KOJA AFRICA account",
-                    f"Welcome to KOJA AFRICA, {full_name}. Verify your email here: "
-                    f"{SITE_URL}/verify-email?token={token}"
-                )
-                if sent:
-                    flash("Account created. Check your email to verify your account before logging in.","success")
-                    return redirect(url_for("login"))
-            flash("Account created, but the verification email could not be sent. Please contact the administrator.","warning")
-            return redirect(url_for("login"))
-
-        # Development/no-SMTP mode: email verification is automatically satisfied.
-        db_update("profiles", {"id": user_id}, {"email_verified": True})
         login_user(row or payload)
         log_activity("registration","New KOJA account registered.")
         flash("Account created successfully.","success")
@@ -1073,27 +905,21 @@ def login():
         password = request.form.get("password","")
         user = find_user_by_email(email) if email else None
         if not user and identifier:
+            # Admin username login. A missing username column is treated as a normal lookup miss.
             for table in ("profiles", "koja_users", "users"):
-                rows, _ = db_select(table, filters={"username": f"eq.{identifier}"}, limit=2)
+                rows = db_select(table, filters={"username": identifier}, limit=2)
                 if rows and any(bool(r.get("is_admin")) for r in rows):
-                    user = rows[0]
+                    user = next((r for r in rows if bool(r.get("is_admin"))), rows[0])
                     break
 
         # First: existing KOJA profile password.
         if user and password_matches(user,password):
-            if smtp_configured() and user.get("email_verified") is False:
-                flash("Please verify your email before logging in.","warning")
-                return redirect(url_for("login"))
             if user.get("is_active") is False:
                 flash("This account is inactive.","danger")
                 return redirect(url_for("login"))
-            next_url = request.args.get("next") if request.args.get("next","").startswith("/") else url_for("dashboard")
-            if smtp_configured() and two_factor_enabled(user):
-                if require_2fa_after_password_login(user, next_url):
-                    return redirect(url_for("verify_2fa"))
             login_user(user)
             log_activity("login","User logged into KOJA.")
-            return redirect(next_url)
+            return redirect(request.args.get("next") if request.args.get("next","").startswith("/") else url_for("dashboard"))
 
         # Second: Supabase Auth compatibility.
         auth = supabase_auth_login(email,password)
@@ -1125,109 +951,13 @@ def login():
 </div>
 """)
 
-
-@app.route("/verify-email")
-def verify_email():
-    token = clean(request.args.get("token"))
-    user_id = consume_email_token(token, "verify")
-    if not user_id:
-        flash("This verification link is invalid or has expired.","danger")
-        return redirect(url_for("login"))
-    _, err = db_update("profiles", {"id": user_id}, {"email_verified": True})
-    if err:
-        flash("Email verification could not be completed.","danger")
-    else:
-        flash("Email verified successfully. You can now log in.","success")
-    return redirect(url_for("login"))
-
-@app.route("/forgot-password", methods=["GET","POST"])
-def forgot_password():
-    if request.method == "POST":
-        email = clean(request.form.get("email")).lower()
-        user = find_user_by_email(email) if email else None
-        # Always show the same public response to avoid account enumeration.
-        if user and user.get("id") and user.get("email"):
-            token = create_email_token(user["id"], "reset", 1800)
-            if token:
-                send_email(
-                    user["email"],
-                    "KOJA AFRICA password reset",
-                    f"Reset your KOJA AFRICA password here: {SITE_URL}/reset-password?token={token}\n"
-                    "This link expires in 30 minutes."
-                )
-        flash("If that email belongs to a KOJA account, a password-reset link has been sent.","success")
-        return redirect(url_for("login"))
-    return render_page("Forgot Password", r"""
-<div class="card" style="max-width:520px;margin:auto">
-<h2>Reset your password</h2>
-<p>Enter your account email. If it exists, KOJA will send a secure reset link.</p>
-<form method="post"><label>Email</label><input name="email" type="email" required autocomplete="email"><button>Send Reset Link</button></form>
-<p><a href="{{ url_for('login') }}">Back to login</a></p>
-</div>""")
-
-@app.route("/reset-password", methods=["GET","POST"])
-def reset_password():
-    token = clean(request.args.get("token") or request.form.get("token"))
-    if request.method == "POST":
-        user_id = consume_email_token(token, "reset")
-        new = request.form.get("password","")
-        confirm = request.form.get("confirm_password","")
-        if not user_id:
-            flash("This reset link is invalid or has expired.","danger")
-            return redirect(url_for("forgot_password"))
-        if not password_is_strong(new) or new != confirm:
-            flash("Use a strong password and make sure both passwords match.","danger")
-            return redirect(url_for("reset_password", token=token))
-        _, err = db_update("profiles", {"id": user_id}, {"password_hash": generate_password_hash(new)})
-        if err:
-            flash("Password could not be reset.","danger")
-        else:
-            flash("Password reset successfully. Please log in.","success")
-        return redirect(url_for("login"))
-    return render_page("Set New Password", r"""
-<div class="card" style="max-width:520px;margin:auto">
-<h2>Set a new password</h2>
-<form method="post">
-<input type="hidden" name="token" value="{{ request.args.get('token','') }}">
-<label>New password</label><input name="password" type="password" minlength="10" required>
-<label>Confirm password</label><input name="confirm_password" type="password" minlength="10" required>
-<button>Update Password</button>
-</form></div>""")
-
-@app.route("/verify-2fa", methods=["GET","POST"])
-def verify_2fa():
-    pending = session.get("pending_2fa")
-    if not pending:
-        return redirect(url_for("login"))
-    if time.time() > float(pending.get("expires", 0)):
-        session.pop("pending_2fa", None)
-        flash("The verification code has expired. Please log in again.","danger")
-        return redirect(url_for("login"))
-    if request.method == "POST":
-        code = clean(request.form.get("code"))
-        if hashlib.sha256(code.encode()).hexdigest() != pending.get("otp_hash"):
-            flash("Invalid verification code.","danger")
-            return redirect(url_for("verify_2fa"))
-        user = find_user_by_id(pending.get("user_id"))
-        next_url = pending.get("next") or url_for("dashboard")
-        session.pop("pending_2fa", None)
-        if not user or user.get("is_active") is False:
-            flash("Account is unavailable.","danger")
-            return redirect(url_for("login"))
-        login_user(user)
-        log_activity("login_2fa","User completed email two-factor authentication.")
-        return redirect(next_url)
-    return render_page("Two-Factor Verification", r"""
-<div class="card" style="max-width:520px;margin:auto">
-<h2>Security verification</h2>
-<p>Enter the 6-digit code sent to your email.</p>
-<form method="post"><label>Verification code</label><input name="code" inputmode="numeric" maxlength="6" required><button>Verify</button></form>
-</div>""")
-
 @app.route("/logout")
 def logout():
-    if current_user():
-        log_activity("logout","User logged out.")
+    try:
+        if current_user():
+            log_activity("logout","User logged out.")
+    except Exception:
+        logger.exception("Logout activity logging failed")
     session.clear()
     flash("You have been logged out.","success")
     return redirect(url_for("home"))
@@ -1262,58 +992,6 @@ def dashboard():
 {% if user.role in ['driver','admin'] or user.is_admin %}<a class="btn" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}
 </div></div>
 """,questions_count=questions_count,deliveries_count=deliveries_count,appointments_count=appointments_count)
-
-
-@app.route("/search")
-def search():
-    q = clean(request.args.get("q"))
-    results=[]
-    if q:
-        needle=q.lower()
-        for table, label, path_key in [
-            ("documents","Document","documents"),
-            ("document_records","Research Document","documents"),
-            ("questions","Question","questions"),
-            ("assignments","Assignment","assignments")
-        ]:
-            rows=db_select(table, limit=250, order="created_at.desc")
-            for row in rows:
-                text=" ".join(str(row.get(k,"")) for k in ("title","name","description","question","subject","topic","content","file_name"))
-                if needle in text.lower():
-                    results.append({"type":label,"title":first_nonempty(row.get("title"),row.get("name"),row.get("question"),row.get("topic"),"KOJA result"),"description":first_nonempty(row.get("description"),row.get("subject"),row.get("content"),"")[:300],"id":row.get("id")})
-    return render_page("Search", r"""
-<div class="hero"><h1>KOJA Search</h1><p>Search documents, research, questions and assignments.</p>
-<form method="get" action="{{ url_for('search') }}"><input name="q" value="{{ q }}" placeholder="Search KOJA..." autocomplete="off"><button>Search</button></form></div>
-{% if q %}<h2>Results for “{{ q }}”</h2>{% endif %}
-<div class="grid">{% for r in results %}<div class="card"><span class="small">{{ r.type }}</span><h3>{{ r.title }}</h3><p>{{ r.description }}</p>{% if r.type in ['Document','Research Document'] %}<a class="btn" href="{{ url_for('documents') }}">Open Documents</a>{% endif %}</div>{% else %}{% if q %}<div class="card"><p>No results found.</p></div>{% endif %}{% endfor %}</div>
-""", q=q, results=results)
-
-@app.route("/documents", methods=["GET","POST"])
-@login_required
-def documents():
-    user=current_user()
-    if request.method=="POST":
-        f=request.files.get("file")
-        title=clean(request.form.get("title")) or (secure_filename(f.filename) if f else "Document")
-        description=clean(request.form.get("description"))
-        path,err=upload_storage(f,"documents")
-        if err:
-            flash("Document upload failed.","danger")
-        else:
-            row,derr=db_insert("documents",{"title":title,"description":description,"file_path":path,"uploaded_by":user["id"],"created_at":utc_now()})
-            if derr:
-                delete_storage(path)
-                flash("Document record could not be saved.","danger")
-            else:
-                flash("Document uploaded successfully.","success")
-        return redirect(url_for("documents"))
-    rows=db_select("documents",order="created_at.desc",limit=100)
-    return render_page("Documents", r"""
-<div class="hero"><h1>Documents</h1><p>Upload, search, view and access KOJA documents.</p>
-<form method="get" action="{{ url_for('search') }}"><input name="q" placeholder="Search documents and research"><button>Search</button></form></div>
-<div class="card"><h2>Upload Document</h2><form method="post" enctype="multipart/form-data"><label>Title</label><input name="title" required><label>Description</label><textarea name="description"></textarea><label>File</label><input type="file" name="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp" required><button>Upload</button></form></div>
-<div class="grid">{% for d in rows %}<div class="card"><h3>{{ d.title or 'Document' }}</h3><p>{{ d.description or '' }}</p>{% if d.file_path %}<a class="btn" href="{{ url_for('view_file', storage_path=d.file_path) }}">View</a><a class="btn secondary" href="{{ url_for('secure_file', storage_path=d.file_path) }}">Open</a>{% endif %}</div>{% else %}<div class="card"><p>No documents uploaded yet.</p></div>{% endfor %}</div>
-""", rows=rows)
 
 @app.route("/services")
 @login_required
@@ -1540,73 +1218,55 @@ def cv():
 # RESEARCH / KOJA HELP
 # ============================================================
 
+def web_search_engine(base_url, query, parser_name):
+    """Best-effort public web search. No private/social account data is accessed."""
+    try:
+        params={"q":query}
+        if parser_name == "google": params["num"]=10
+        elif parser_name == "bing": params["count"]=10
+        r=requests.get(base_url,params=params,headers={"User-Agent":"Mozilla/5.0 (compatible; KOJA-AFRICA/2026.09)"},timeout=12)
+        if not r.ok: return []
+        html=r.text; from html import unescape; found=[]
+        if parser_name == "google":
+            blocks=re.findall(r'<a href="(/url\\?q=|https?://[^"&]+)[^>]*>(.*?)</a>',html,re.I|re.S)
+            for href,title in blocks:
+                title=re.sub(r'<.*?>','',unescape(title)).strip()
+                if title and href.startswith('http') and 'google.' not in href: found.append({"title":title[:220],"url":unescape(href),"snippet":"Google web result"})
+        else:
+            blocks=re.findall(r'<li class="b_algo".*?<h2><a href="([^"]+)"[^>]*>(.*?)</a>.*?</li>',html,re.I|re.S)
+            for href,title in blocks:
+                found.append({"title":re.sub(r'<.*?>','',unescape(title)).strip()[:220],"url":unescape(href),"snippet":"Bing web result"})
+        return found[:10]
+    except requests.RequestException: return []
+
+def public_social_search_links(query):
+    q=quote(query)
+    return [{"name":"Google","url":f"https://www.google.com/search?q={q}"},{"name":"Bing","url":f"https://www.bing.com/search?q={q}"},{"name":"DuckDuckGo","url":f"https://duckduckgo.com/?q={q}"},{"name":"Facebook","url":f"https://www.facebook.com/search/top?q={q}"},{"name":"TikTok","url":f"https://www.tiktok.com/search?q={q}"},{"name":"YouTube","url":f"https://www.youtube.com/results?search_query={q}"},{"name":"Instagram","url":f"https://www.instagram.com/explore/search/keyword/?q={q}"},{"name":"X","url":f"https://x.com/search?q={q}&src=typed_query"},{"name":"LinkedIn","url":f"https://www.linkedin.com/search/results/all/?keywords={q}"}]
+
+
 @app.route("/research",methods=["GET","POST"])
 def research():
-    q=clean(request.values.get("q"))[:200]
-    results=[]
-    error=""
-    providers=[]
+    q=clean(request.values.get("q"))[:200]; results=[]; sources=[]; error=""
     if q:
-        import re as _re
-        from html import unescape
-        from urllib.parse import quote_plus, unquote
-        headers={"User-Agent":"Mozilla/5.0 (compatible; KOJA-AFRICA/1.0; +https://koja-africa.onrender.com/)"}
-
-        # Provider 1: Wikipedia REST search. This is a stable fallback when a
-        # general search engine blocks server-side requests from cloud hosts.
+        results += web_search_engine("https://www.google.com/search",q,"google")
+        results += web_search_engine("https://www.bing.com/search",q,"bing")
         try:
-            wr=requests.get("https://en.wikipedia.org/w/api.php",params={
-                "action":"query","list":"search","srsearch":q,"format":"json","utf8":1,"srlimit":6
-            },headers=headers,timeout=8)
-            if wr.ok:
-                data=wr.json()
-                for item in data.get("query",{}).get("search",[])[:6]:
-                    title=unescape(item.get("title","")).strip()
-                    snippet=_re.sub(r"<.*?>","",unescape(item.get("snippet","")).strip())
-                    if title:
-                        results.append({"title":title,"url":"https://en.wikipedia.org/wiki/"+quote_plus(title.replace(" ","_")),"snippet":snippet,"source":"Wikipedia"})
-                if results: providers.append("Wikipedia")
-        except (requests.RequestException, ValueError):
-            pass
-
-        # Provider 2: DuckDuckGo HTML search, with a more browser-like request.
-        if len(results)<10:
-            try:
-                r=requests.get("https://html.duckduckgo.com/html/",params={"q":q,"kl":"wt-wt"},headers=headers,timeout=10)
-                if r.ok:
-                    html=r.text
-                    blocks=_re.findall(r'<a[^>]+class=["\']result__a["\'][^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',html,_re.I|_re.S)
-                    snippets=_re.findall(r'<(?:a|div)[^>]+class=["\']result__snippet["\'][^>]*>(.*?)</(?:a|div)>',html,_re.I|_re.S)
-                    for i,(href,title) in enumerate(blocks[:10]):
-                        title=_re.sub(r'<.*?>','',unescape(title)).strip()
-                        href=unescape(href)
-                        if href.startswith("//"): href="https:"+href
-                        # DDG may return a redirect URL; extract its target when possible.
-                        m=_re.search(r"uddg=([^&]+)",href)
-                        if m: href=unquote(m.group(1))
-                        sn=_re.sub(r'<.*?>','',unescape(snippets[i] if i<len(snippets) else '')).strip()
-                        if title and href and not any(x.get("url")==href for x in results):
-                            results.append({"title":title,"url":href,"snippet":sn,"source":"Web"})
-                    if blocks: providers.append("Web search")
-            except requests.RequestException:
-                pass
-
-        # If cloud-hosted outbound search is unavailable, keep the feature useful
-        # by giving the user direct browser search options instead of a dead page.
-        if not results:
-            error="Live search providers could not be reached from the server. Use one of the direct search options below; they open in your browser."
-            results=[
-                {"title":"Search Google","url":"https://www.google.com/search?q="+quote_plus(q),"snippet":"Open this research topic in Google Search.","source":"Google"},
-                {"title":"Search Bing","url":"https://www.bing.com/search?q="+quote_plus(q),"snippet":"Open this research topic in Bing Search.","source":"Bing"},
-                {"title":"Search DuckDuckGo","url":"https://duckduckgo.com/?q="+quote_plus(q),"snippet":"Open this research topic in DuckDuckGo.","source":"DuckDuckGo"}
-            ]
+            r=requests.get("https://html.duckduckgo.com/html/",params={"q":q},headers={"User-Agent":"Mozilla/5.0 (compatible; KOJA-AFRICA/2026.09)"},timeout=12)
+            if r.ok:
+                html=r.text; from html import unescape
+                blocks=re.findall(r'<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',html,re.I|re.S); snippets=re.findall(r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',html,re.I|re.S)
+                for i,(href,title) in enumerate(blocks[:10]): results.append({"title":re.sub(r'<.*?>','',unescape(title)).strip(),"url":unescape(href),"snippet":re.sub(r'<.*?>','',unescape(snippets[i] if i<len(snippets) else '')).strip() or "DuckDuckGo web result"})
+        except requests.RequestException: pass
+        seen=set(); results=[x for x in results if x.get("url") and not (x["url"] in seen or seen.add(x["url"]))][:25]
+        sources=public_social_search_links(q)
+        if not results: error="No public web results were returned. Use the source search buttons below."
     return render_page("Internet Research",r"""
-<div class="hero"><h2>🔎 Internet Research</h2><p>Search current public information on the internet. Verify important information with the original source.</p></div>
+<div class="hero"><h2>🔎 KOJA Web Research</h2><p>Search multiple public web sources and open social-platform searches. Private or restricted content is never accessed.</p></div>
 <div class="card"><form method="get"><label>Research topic</label><input name="q" value="{{ q }}" placeholder="e.g. renewable energy in Zambia" required><button type="submit">Search Internet</button></form></div>
-{% if providers %}<div class="card"><p class="small">Sources searched: {{ providers|join(', ') }}</p></div>{% endif %}
+{% if sources %}<div class="card"><h3>🌐 Search everywhere</h3><div class="actions">{% for x in sources %}<a class="btn secondary" href="{{ x.url }}" target="_blank" rel="noopener noreferrer">{{ x.name }}</a>{% endfor %}</div><p class="small">Google, Facebook, TikTok and other platforms may require their own login, permissions or API approval for deeper access.</p></div>{% endif %}
 {% if error %}<div class="card"><p>{{ error }}</p></div>{% endif %}
-{% for x in results %}<div class="card"><h3>{{ x.title }}</h3><p>{{ x.snippet }}</p><p class="small">{{ x.source }}</p><a class="btn" href="{{ x.url }}" target="_blank" rel="noopener noreferrer">Open Source</a></div>{% else %}{% if q and not error %}<div class="card"><p>No results found. Try a different search phrase.</p></div>{% endif %}{% endfor %}
-""",q=q,results=results,error=error,providers=providers)
+{% for x in results %}<div class="card"><h3>{{ x.title }}</h3><p>{{ x.snippet }}</p><a class="btn" href="{{ x.url }}" target="_blank" rel="noopener noreferrer">Open Source</a></div>{% else %}{% if q and not error %}<div class="card"><p>No results found.</p></div>{% endif %}{% endfor %}
+""",q=q,results=results,error=error,sources=sources)
 
 
 @app.route("/help",methods=["GET","POST"])
@@ -2885,7 +2545,9 @@ def admin_help_answer(question_id):
         flash("Enter a response.","danger"); return redirect(url_for("admin_help"))
     _,error=db_update("questions",{"id":question_id},{"answer":answer,"answer_by":(current_user() or {}).get("name","Admin"),"answered_at":utc_now(),"status":"help_answered"})
     if error: flash("Help response could not be saved.","danger")
-    else: flash("Help response sent to the user.","success")
+    else:
+        create_notification(question_id and first_row("questions", {"id":question_id}).get("user_id") if first_row("questions", {"id":question_id}) else None, "KOJA Help response", "An administrator responded to your KOJA Help request.", "help", url_for("help_request"))
+        flash("Help response sent to the user.","success")
     return redirect(url_for("admin_help"))
 
 # ============================================================
@@ -2912,6 +2574,7 @@ def admin():
 <a class="btn success" href="{{ url_for('admin_live_tracking') }}">🚚 Live GPS Tracking</a>
 <a class="btn" href="{{ url_for('admin_appointments') }}">Appointments</a>
 <a class="btn success" href="{{ url_for('admin_search_distribution') }}">🔎 Google Search & Distribution</a>
+<a class="btn" href="{{ url_for('admin_settings') }}">⚙️ Admin Settings</a>
 </div></div>
 """,counts=counts)
 
@@ -3012,17 +2675,33 @@ def admin_appointments():
 """,rows=rows)
 
 # ============================================================
-# INVITE FRIENDS
+# USER NOTIFICATIONS
 # ============================================================
 
-@app.route("/invite")
+@app.route("/notifications")
 @login_required
-def invite_friends():
-    user=current_user() or {}
-    base=SITE_URL.rstrip("/")
-    code=str(user.get("id") or "").replace("-","")[:10] or "KOJA"
-    invite_url=f"{base}/register?ref={code}"
-    return render_page("Invite Friends", r'''<div class="hero"><h1>Invite Friends</h1><p>Share KOJA AFRICA with friends, classmates, colleagues and family.</p></div><div class="grid"><div class="card" style="text-align:center"><div style="font-size:48px;animation:kojaFloat 2.8s ease-in-out infinite">🤝</div><h2>Grow KOJA AFRICA</h2><p>Invite people to create a free KOJA account and use assignments, documents, research, professional services and delivery.</p><div class="card" style="background:var(--soft,#f5f7fb);word-break:break-all"><strong>Your invitation link</strong><p id="inviteLink">{{ invite_url }}</p></div><div class="actions"><button type="button" onclick="copyInvite()">Copy Link</button><button type="button" class="secondary" onclick="shareInvite()">Share</button><a class="btn" target="_blank" rel="noopener" href="https://wa.me/?text={{ ('Join me on KOJA AFRICA: '+invite_url)|urlencode }}">WhatsApp</a></div><p id="inviteStatus" class="muted"></p></div><div class="card"><h2>Quick Share</h2><p>Send your invitation through the apps on your phone.</p><div class="actions"><a class="btn" href="sms:?&body={{ ('Join me on KOJA AFRICA: '+invite_url)|urlencode }}">SMS</a><a class="btn secondary" href="mailto:?subject=Join KOJA AFRICA&body={{ ('Join me on KOJA AFRICA: '+invite_url)|urlencode }}">Email</a></div><hr><p><strong>Invitation code:</strong> {{ code }}</p></div></div><script>const INV={{ invite_url|tojson }};async function copyInvite(){try{await navigator.clipboard.writeText(INV);document.getElementById('inviteStatus').textContent='Invitation link copied.'}catch(e){document.getElementById('inviteStatus').textContent='Copy failed. Long-press the link to copy it.'}}async function shareInvite(){if(navigator.share){try{await navigator.share({title:'Join KOJA AFRICA',text:'Join me on KOJA AFRICA',url:INV})}catch(e){}}else{copyInvite()}}</script>''',invite_url=invite_url,code=code)
+def notifications():
+    uid=(current_user() or {}).get("id"); rows=db_select("notifications",filters={"user_id":uid},order="created_at.desc",limit=100); unread=sum(1 for x in rows if not x.get("is_read"))
+    return render_page("Notifications",r"""<div class="hero"><h2>🔔 Notifications</h2><p>{{ unread }} unread notification(s).</p></div><div class="actions"><form method="post" action="{{ url_for('notifications_read_all') }}"><button>Mark all as read</button></form></div>{% for n in rows %}<div class="card"><h3>{{ n.get('title') }}</h3><p style="white-space:pre-wrap">{{ n.get('message') }}</p><p class="small">{{ n.get('created_at') }} · {{ n.get('category') }}</p>{% if n.get('link') %}<a class="btn secondary" href="{{ n.get('link') }}">Open</a>{% endif %}{% if not n.get('is_read') %}<form method="post" action="{{ url_for('notification_read',notification_id=n.get('id')) }}"><button class="btn">Mark read</button></form>{% endif %}</div>{% else %}<div class="card"><p>No notifications yet.</p></div>{% endfor %}""",rows=rows,unread=unread)
+
+@app.route("/notifications/<notification_id>/read",methods=["POST"])
+@login_required
+def notification_read(notification_id):
+    uid=(current_user() or {}).get("id"); db_update("notifications",{"id":notification_id,"user_id":uid},{"is_read":True,"read_at":utc_now()}); return redirect(url_for("notifications"))
+
+@app.route("/notifications/read-all",methods=["POST"])
+@login_required
+def notifications_read_all():
+    uid=(current_user() or {}).get("id"); rows=db_select("notifications",filters={"user_id":uid,"is_read":False},limit=200)
+    for n in rows: db_update("notifications",{"id":n.get("id"),"user_id":uid},{"is_read":True,"read_at":utc_now()})
+    return redirect(url_for("notifications"))
+
+
+@app.route("/admin/settings", methods=["GET","POST"])
+@admin_required
+def admin_settings():
+    return render_page("Admin Settings",r"""<div class="hero"><h2>⚙️ Administrator Settings</h2><p>System controls and service configuration.</p></div><div class="card"><h3>System status</h3><p><b>Application:</b> {{ APP_NAME }}</p><p><b>Version:</b> {{ version }}</p><p><b>Supabase:</b> {{ 'Configured' if supabase else 'Not configured' }}</p><p><b>Google Search Console:</b> {{ 'Configured' if gsc else 'Not configured' }}</p><p><b>Storage bucket:</b> {{ bucket }}</p></div><div class="card"><h3>Management</h3><div class="actions"><a class="btn" href="{{ url_for('admin') }}">Admin Dashboard</a><a class="btn" href="{{ url_for('admin_users') }}">Users</a><a class="btn" href="{{ url_for('admin_deliveries') }}">Deliveries</a><a class="btn" href="{{ url_for('admin_search_distribution') }}">Google Search</a></div></div>""",version=APP_VERSION,supabase=supabase_configured(),gsc=bool(GSC_SERVICE_ACCOUNT_JSON),bucket=STORAGE_BUCKET)
+
 
 # ============================================================
 # SETTINGS / ACCOUNT CONTROL
@@ -3038,7 +2717,7 @@ def settings():
             name=clean(request.form.get("full_name"),250); phone=clean(request.form.get("phone"),100)
             if not name: flash("Full name is required.","danger")
             else:
-                _,err=db_update("profiles",{"id":user.get("id")},{"full_name":name,"phone":phone or None})
+                _,err=db_update("profiles",{"id":user.get("id")},{"full_name":name,"name":name,"phone":phone or None})
                 if err: flash("Could not update your profile.","danger")
                 else: login_user({**fresh,"full_name":name,"name":name,"phone":phone or None}); flash("Profile settings saved.","success")
             return redirect(url_for("settings"))
@@ -3052,15 +2731,9 @@ def settings():
                 if err: flash("Password could not be changed.","danger")
                 else: log_activity("password_change","User changed account password."); flash("Password changed successfully.","success")
             return redirect(url_for("settings"))
-        if action=="two_factor":
-            enabled = bool(request.form.get("enabled"))
-            _,err=db_update("profiles",{"id":user.get("id")},{"two_factor_enabled":enabled})
-            if err: flash("Two-factor authentication could not be changed. Run the updated migration SQL.","danger")
-            else: flash(("Email 2FA enabled." if enabled else "Email 2FA disabled."),"success")
-            return redirect(url_for("settings"))
         if action=="preferences":
             payload={"theme":clean(request.form.get("theme")) or "system","language":clean(request.form.get("language")) or "en","notify_assignments":bool(request.form.get("notify_assignments")),"notify_delivery":bool(request.form.get("notify_delivery")),"notify_help":bool(request.form.get("notify_help")),"notify_announcements":bool(request.form.get("notify_announcements")),"allow_location":bool(request.form.get("allow_location")),"allow_research":bool(request.form.get("allow_research")),"allow_device_storage":bool(request.form.get("allow_device_storage")),"updated_at":utc_now()}
-            if payload["theme"] not in ("system","light","dark","ocean","sunset","emerald"): payload["theme"]="system"
+            if payload["theme"] not in ("system","light","dark"): payload["theme"]="system"
             if payload["language"] not in ("en","bem","ny"): payload["language"]="en"
             _,err=save_user_settings(user.get("id"),payload)
             if err: flash("Preferences could not be saved. Run the production migration SQL.","danger")
@@ -3075,7 +2748,7 @@ def settings():
             return redirect(url_for("settings"))
         flash("Unknown settings action.","danger"); return redirect(url_for("settings"))
     prefs=load_user_settings(user.get("id"))
-    return render_page("Settings", r'''<div class="hero"><h1>Settings</h1><p>Manage your account, security, appearance, notifications, privacy and data.</p></div><div class="grid"><div class="card"><h2>Account</h2><form method="post"><input type="hidden" name="action" value="profile"><label>Full name</label><input name="full_name" value="{{ user.name or '' }}" required><label>Email</label><input value="{{ user.email or '' }}" disabled><label>Phone</label><input name="phone" value="{{ user.phone or '' }}" autocomplete="tel"><button>Save Profile</button></form></div><div class="card"><h2>Security</h2><form method="post"><input type="hidden" name="action" value="password"><label>Current password</label><input name="current_password" type="password" required><label>New password</label><input name="new_password" type="password" minlength="10" required><label>Confirm new password</label><input name="confirm_password" type="password" minlength="10" required><button>Change Password</button></form></div><form class="card" method="post"><input type="hidden" name="action" value="preferences"><h2>Appearance & Language</h2><label>Theme</label><select name="theme" id="themeSelect" onchange="previewKojaTheme(this.value)"><option value="system" {% if prefs.theme=='system' %}selected{% endif %}>System default</option><option value="light" {% if prefs.theme=='light' %}selected{% endif %}>Light</option><option value="dark" {% if prefs.theme=='dark' %}selected{% endif %}>Dark</option><option value="ocean" {% if prefs.theme=='ocean' %}selected{% endif %}>Ocean</option><option value="sunset" {% if prefs.theme=='sunset' %}selected{% endif %}>Sunset</option><option value="emerald" {% if prefs.theme=='emerald' %}selected{% endif %}>Emerald</option></select><p class="muted">Choose a KOJA theme. Your selection is saved to your account and this device.</p><label>Language</label><select name="language"><option value="en" {% if prefs.language=='en' %}selected{% endif %}>English</option><option value="bem" {% if prefs.language=='bem' %}selected{% endif %}>Bemba</option><option value="ny" {% if prefs.language=='ny' %}selected{% endif %}>Nyanja</option></select><h3>Notifications</h3><label><input name="notify_assignments" type="checkbox" value="1" style="width:auto" {% if prefs.notify_assignments %}checked{% endif %}> Assignment updates</label><label><input name="notify_delivery" type="checkbox" value="1" style="width:auto" {% if prefs.notify_delivery %}checked{% endif %}> Delivery updates</label><label><input name="notify_help" type="checkbox" value="1" style="width:auto" {% if prefs.notify_help %}checked{% endif %}> Help responses</label><label><input name="notify_announcements" type="checkbox" value="1" style="width:auto" {% if prefs.notify_announcements %}checked{% endif %}> KOJA announcements</label><h3>Privacy</h3><label><input name="allow_location" type="checkbox" value="1" style="width:auto" {% if prefs.allow_location %}checked{% endif %}> Allow location for GPS/delivery</label><label><input name="allow_research" type="checkbox" value="1" style="width:auto" {% if prefs.allow_research %}checked{% endif %}> Allow external research sources</label><label><input name="allow_device_storage" type="checkbox" value="1" style="width:auto" {% if prefs.allow_device_storage %}checked{% endif %}> Allow preference storage on this device</label><button>Save All Settings</button></form><div class="card"><h2>Security</h2><p>Email verification: <strong>{{ 'Verified' if user.email_verified else 'Not verified' }}</strong></p><p>Email 2FA adds a one-time code after password login when SMTP is configured.</p><form method="post"><input type="hidden" name="action" value="two_factor"><label><input name="enabled" type="checkbox" value="1" style="width:auto" {% if user.two_factor_enabled %}checked{% endif %}> Enable email two-factor authentication</label><button>Save 2FA</button></form><p><a href="{{ url_for('forgot_password') }}">Reset password by email</a></p></div><div class="card"><h2>Data & Account</h2><div class="actions"><a class="btn secondary" href="{{ url_for('logout') }}">Log Out</a><a class="btn" href="{{ url_for('help_request') }}">Contact KOJA Help</a></div><hr><h3>Deactivate Account</h3><form method="post" onsubmit="return confirm('Deactivate your KOJA account?');"><input type="hidden" name="action" value="deactivate"><input name="deactivate_password" type="password" required placeholder="Confirm password"><button class="btn danger">Deactivate Account</button></form></div>{% if user.is_admin %}<div class="card"><h2>Administrator</h2><div class="actions"><a class="btn" href="{{ url_for('admin') }}">Admin Dashboard</a><a class="btn" href="{{ url_for('admin_assignments') }}">Assignment Answers</a><a class="btn" href="{{ url_for('admin_help') }}">Help Centre</a></div></div>{% endif %}</div><script>localStorage.setItem('koja_theme',{{ prefs.theme|tojson }});function previewKojaTheme(v){localStorage.setItem('koja_theme',v);location.reload();}</script>''',prefs=prefs)
+    return render_page("Settings", r'''<div class="hero"><h1>Settings</h1><p>Manage your account, security, appearance, notifications, privacy and data.</p></div><div class="grid"><div class="card"><h2>Account</h2><form method="post"><input type="hidden" name="action" value="profile"><label>Full name</label><input name="full_name" value="{{ user.name or '' }}" required><label>Email</label><input value="{{ user.email or '' }}" disabled><label>Phone</label><input name="phone" value="{{ user.phone or '' }}" autocomplete="tel"><button>Save Profile</button></form></div><div class="card"><h2>Security</h2><form method="post"><input type="hidden" name="action" value="password"><label>Current password</label><input name="current_password" type="password" required><label>New password</label><input name="new_password" type="password" minlength="10" required><label>Confirm new password</label><input name="confirm_password" type="password" minlength="10" required><button>Change Password</button></form></div><form class="card" method="post"><input type="hidden" name="action" value="preferences"><h2>Appearance & Language</h2><label>Theme</label><select name="theme"><option value="system" {% if prefs.theme=='system' %}selected{% endif %}>System default</option><option value="light" {% if prefs.theme=='light' %}selected{% endif %}>Light</option><option value="dark" {% if prefs.theme=='dark' %}selected{% endif %}>Dark</option></select><label>Language</label><select name="language"><option value="en" {% if prefs.language=='en' %}selected{% endif %}>English</option><option value="bem" {% if prefs.language=='bem' %}selected{% endif %}>Bemba</option><option value="ny" {% if prefs.language=='ny' %}selected{% endif %}>Nyanja</option></select><h3>Notifications</h3><label><input name="notify_assignments" type="checkbox" value="1" style="width:auto" {% if prefs.notify_assignments %}checked{% endif %}> Assignment updates</label><label><input name="notify_delivery" type="checkbox" value="1" style="width:auto" {% if prefs.notify_delivery %}checked{% endif %}> Delivery updates</label><label><input name="notify_help" type="checkbox" value="1" style="width:auto" {% if prefs.notify_help %}checked{% endif %}> Help responses</label><label><input name="notify_announcements" type="checkbox" value="1" style="width:auto" {% if prefs.notify_announcements %}checked{% endif %}> KOJA announcements</label><h3>Privacy</h3><label><input name="allow_location" type="checkbox" value="1" style="width:auto" {% if prefs.allow_location %}checked{% endif %}> Allow location for GPS/delivery</label><label><input name="allow_research" type="checkbox" value="1" style="width:auto" {% if prefs.allow_research %}checked{% endif %}> Allow external research sources</label><label><input name="allow_device_storage" type="checkbox" value="1" style="width:auto" {% if prefs.allow_device_storage %}checked{% endif %}> Allow preference storage on this device</label><button>Save All Settings</button></form><div class="card"><h2>Data & Account</h2><div class="actions"><a class="btn secondary" href="{{ url_for('logout') }}">Log Out</a><a class="btn" href="{{ url_for('help_request') }}">Contact KOJA Help</a></div><hr><h3>Deactivate Account</h3><form method="post" onsubmit="return confirm('Deactivate your KOJA account?');"><input type="hidden" name="action" value="deactivate"><input name="deactivate_password" type="password" required placeholder="Confirm password"><button class="btn danger">Deactivate Account</button></form></div>{% if user.is_admin %}<div class="card"><h2>Administrator</h2><div class="actions"><a class="btn" href="{{ url_for('admin') }}">Admin Dashboard</a><a class="btn" href="{{ url_for('admin_assignments') }}">Assignment Answers</a><a class="btn" href="{{ url_for('admin_help') }}">Help Centre</a><a class="btn" href="{{ url_for('admin_settings') }}">Admin Settings</a></div></div>{% endif %}</div><script>localStorage.setItem('koja_theme',{{ prefs.theme|tojson }});</script>''',prefs=prefs)
 
 # ============================================================
 # ERROR HANDLERS
