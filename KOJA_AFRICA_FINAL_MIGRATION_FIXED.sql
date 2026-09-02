@@ -278,3 +278,8 @@ alter table public.profiles add column if not exists email_verified boolean defa
 
 -- Keep private uploaded files; access is through KOJA's authenticated viewer.
 update storage.buckets set public = false where id = 'koja-files';
+
+
+-- Account security additions
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS two_factor_enabled boolean DEFAULT false;
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS email_verified boolean DEFAULT false;
