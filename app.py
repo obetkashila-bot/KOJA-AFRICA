@@ -524,6 +524,39 @@ def _file_owner_allowed(storage_path, user):
             return True
     return False
 
+@app.route("/view-file/<path:storage_path>")
+@login_required
+def view_file(storage_path):
+    """Secure in-browser viewer for uploaded KOJA files."""
+    storage_path = storage_path.strip("/")
+    if not storage_path or ".." in storage_path.split("/"):
+        abort(404)
+    user=current_user()
+    if not _file_owner_allowed(storage_path, user):
+        abort(403)
+    filename=storage_path.rsplit("/",1)[-1]
+    ext=filename.rsplit(".",1)[-1].lower() if "." in filename else ""
+    viewable=ext in {"pdf","png","jpg","jpeg","webp","txt"}
+    file_url=url_for("secure_file", storage_path=storage_path)
+    return render_page("View Uploaded File",r"""
+<div class="hero"><h2>📄 Uploaded File</h2><p>{{ filename }}</p></div>
+<div class="card" style="padding:8px;overflow:hidden">
+{% if viewable and ext == 'pdf' %}
+<iframe src="{{ file_url }}" title="{{ filename }}" style="width:100%;height:78vh;border:0;border-radius:12px;background:#fff"></iframe>
+{% elif viewable and ext in ['png','jpg','jpeg','webp'] %}
+<div style="text-align:center;overflow:auto"><img src="{{ file_url }}" alt="{{ filename }}" style="max-width:100%;max-height:78vh;object-fit:contain;border-radius:10px"></div>
+{% elif viewable and ext == 'txt' %}
+<iframe src="{{ file_url }}" title="{{ filename }}" style="width:100%;height:60vh;border:0;border-radius:12px;background:#fff"></iframe>
+{% else %}
+<div class="card"><h3>Preview not available</h3><p>This file type cannot be displayed directly in the browser. You can open it with the appropriate app.</p></div>
+{% endif %}
+<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+<a class="btn" href="{{ file_url }}" target="_blank" rel="noopener">Open File</a>
+<a class="btn secondary" href="{{ file_url }}" download>Download</a>
+<a class="btn secondary" href="javascript:history.back()">Back</a>
+</div></div>
+""",filename=filename,ext=ext,viewable=viewable,file_url=file_url)
+
 @app.route("/files/<path:storage_path>")
 @login_required
 def secure_file(storage_path):
@@ -1118,9 +1151,9 @@ def assignments():
 {% for item in rows %}
 <div class="card"><h3>{{ item.get("title") or "Assignment" }}</h3>
 <p>{{ item.get("description") or "" }}</p>
-{% if item.get("file_url") %}<a class="btn" href="{{ item.get('file_url') }}" target="_blank">Download File</a>{% endif %}
-{% if item.get("answer_file_url") %}<a class="btn success" href="{{ item.get('answer_file_url') }}" target="_blank">Download Answer</a>{% endif %}
-{% if item.get("answered_file_url") %}<a class="btn success" href="{{ item.get('answered_file_url') }}" target="_blank">Download Answered File</a>{% endif %}
+{% if item.get("file_path") %}<a class="btn" href="{{ url_for('view_file', storage_path=item.get('file_path')) }}">👁️ View File</a><a class="btn secondary" href="{{ url_for('secure_file', storage_path=item.get('file_path')) }}" target="_blank">Download</a>{% elif item.get("file_url") %}<a class="btn" href="{{ item.get('file_url') }}" target="_blank">👁️ View File</a>{% endif %}
+{% if item.get("answer_file_path") %}<a class="btn success" href="{{ url_for('view_file', storage_path=item.get('answer_file_path')) }}">👁️ View Answer</a><a class="btn secondary" href="{{ url_for('secure_file', storage_path=item.get('answer_file_path')) }}" target="_blank">Download Answer</a>{% elif item.get("answer_file_url") %}<a class="btn success" href="{{ item.get('answer_file_url') }}" target="_blank">👁️ View Answer</a>{% endif %}
+{% if item.get("answered_file_path") %}<a class="btn success" href="{{ url_for('view_file', storage_path=item.get('answered_file_path')) }}">👁️ View Answered File</a><a class="btn secondary" href="{{ url_for('secure_file', storage_path=item.get('answered_file_path')) }}" target="_blank">Download</a>{% elif item.get("answered_file_url") %}<a class="btn success" href="{{ item.get('answered_file_url') }}" target="_blank">👁️ View Answered File</a>{% endif %}
 </div>
 {% else %}<p>No assignments found.</p>{% endfor %}
 </div>
@@ -1226,28 +1259,69 @@ def research():
     q=clean(request.values.get("q"))[:200]
     results=[]
     error=""
+    providers=[]
     if q:
+        import re as _re
+        from html import unescape
+        from urllib.parse import quote_plus, unquote
+        headers={"User-Agent":"Mozilla/5.0 (compatible; KOJA-AFRICA/1.0; +https://koja-africa.onrender.com/)"}
+
+        # Provider 1: Wikipedia REST search. This is a stable fallback when a
+        # general search engine blocks server-side requests from cloud hosts.
         try:
-            r=requests.get("https://html.duckduckgo.com/html/",params={"q":q},headers={"User-Agent":"KOJA-AFRICA/1.0 research"},timeout=12)
-            if r.ok:
-                import re as _re
-                html=r.text
-                blocks=_re.findall(r'<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',html,re.I|re.S)
-                snippets=_re.findall(r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',html,re.I|re.S)
-                from html import unescape
-                for i,(href,title) in enumerate(blocks[:10]):
-                    title=_re.sub(r'<.*?>','',unescape(title)).strip()
-                    href=unescape(href)
-                    sn=_re.sub(r'<.*?>','',unescape(snippets[i] if i<len(snippets) else '')).strip()
-                    results.append({"title":title,"url":href,"snippet":sn})
-            else:error="Internet research service is temporarily unavailable."
-        except requests.RequestException:error="Could not connect to the internet research service."
+            wr=requests.get("https://en.wikipedia.org/w/api.php",params={
+                "action":"query","list":"search","srsearch":q,"format":"json","utf8":1,"srlimit":6
+            },headers=headers,timeout=8)
+            if wr.ok:
+                data=wr.json()
+                for item in data.get("query",{}).get("search",[])[:6]:
+                    title=unescape(item.get("title","")).strip()
+                    snippet=_re.sub(r"<.*?>","",unescape(item.get("snippet","")).strip())
+                    if title:
+                        results.append({"title":title,"url":"https://en.wikipedia.org/wiki/"+quote_plus(title.replace(" ","_")),"snippet":snippet,"source":"Wikipedia"})
+                if results: providers.append("Wikipedia")
+        except (requests.RequestException, ValueError):
+            pass
+
+        # Provider 2: DuckDuckGo HTML search, with a more browser-like request.
+        if len(results)<10:
+            try:
+                r=requests.get("https://html.duckduckgo.com/html/",params={"q":q,"kl":"wt-wt"},headers=headers,timeout=10)
+                if r.ok:
+                    html=r.text
+                    blocks=_re.findall(r'<a[^>]+class=["\']result__a["\'][^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',html,_re.I|_re.S)
+                    snippets=_re.findall(r'<(?:a|div)[^>]+class=["\']result__snippet["\'][^>]*>(.*?)</(?:a|div)>',html,_re.I|_re.S)
+                    for i,(href,title) in enumerate(blocks[:10]):
+                        title=_re.sub(r'<.*?>','',unescape(title)).strip()
+                        href=unescape(href)
+                        if href.startswith("//"): href="https:"+href
+                        # DDG may return a redirect URL; extract its target when possible.
+                        m=_re.search(r"uddg=([^&]+)",href)
+                        if m: href=unquote(m.group(1))
+                        sn=_re.sub(r'<.*?>','',unescape(snippets[i] if i<len(snippets) else '')).strip()
+                        if title and href and not any(x.get("url")==href for x in results):
+                            results.append({"title":title,"url":href,"snippet":sn,"source":"Web"})
+                    if blocks: providers.append("Web search")
+            except requests.RequestException:
+                pass
+
+        # If cloud-hosted outbound search is unavailable, keep the feature useful
+        # by giving the user direct browser search options instead of a dead page.
+        if not results:
+            error="Live search providers could not be reached from the server. Use one of the direct search options below; they open in your browser."
+            results=[
+                {"title":"Search Google","url":"https://www.google.com/search?q="+quote_plus(q),"snippet":"Open this research topic in Google Search.","source":"Google"},
+                {"title":"Search Bing","url":"https://www.bing.com/search?q="+quote_plus(q),"snippet":"Open this research topic in Bing Search.","source":"Bing"},
+                {"title":"Search DuckDuckGo","url":"https://duckduckgo.com/?q="+quote_plus(q),"snippet":"Open this research topic in DuckDuckGo.","source":"DuckDuckGo"}
+            ]
     return render_page("Internet Research",r"""
 <div class="hero"><h2>🔎 Internet Research</h2><p>Search current public information on the internet. Verify important information with the original source.</p></div>
 <div class="card"><form method="get"><label>Research topic</label><input name="q" value="{{ q }}" placeholder="e.g. renewable energy in Zambia" required><button type="submit">Search Internet</button></form></div>
+{% if providers %}<div class="card"><p class="small">Sources searched: {{ providers|join(', ') }}</p></div>{% endif %}
 {% if error %}<div class="card"><p>{{ error }}</p></div>{% endif %}
-{% for x in results %}<div class="card"><h3>{{ x.title }}</h3><p>{{ x.snippet }}</p><a class="btn" href="{{ x.url }}" target="_blank" rel="noopener noreferrer">Open Source</a></div>{% else %}{% if q and not error %}<div class="card"><p>No results found. Try a different search phrase.</p></div>{% endif %}{% endfor %}
-""",q=q,results=results,error=error)
+{% for x in results %}<div class="card"><h3>{{ x.title }}</h3><p>{{ x.snippet }}</p><p class="small">{{ x.source }}</p><a class="btn" href="{{ x.url }}" target="_blank" rel="noopener noreferrer">Open Source</a></div>{% else %}{% if q and not error %}<div class="card"><p>No results found. Try a different search phrase.</p></div>{% endif %}{% endfor %}
+""",q=q,results=results,error=error,providers=providers)
+
 
 @app.route("/help",methods=["GET","POST"])
 @login_required
@@ -2466,13 +2540,13 @@ def admin_assignments():
 <div class="hero"><h2>Assignment Answer Centre</h2><p>Review student assignments, write answers, attach answer files and publish responses.</p></div>
 {% for x in rows %}
 <div class="card"><h3>{{ x.get('title') or 'Assignment' }}</h3><p><b>Student:</b> {{ x.get('student_id') }}</p><p>{{ x.get('description') or '' }}</p>
-{% if x.get('file_url') %}<a class="btn secondary" href="{{ url_for('secure_file', storage_path=x.get('file_path')) if x.get('file_path') else x.get('file_url') }}" target="_blank">Open Student File</a>{% endif %}
+{% if x.get('file_path') %}<a class="btn secondary" href="{{ url_for('view_file', storage_path=x.get('file_path')) }}">👁️ View Student File</a>{% elif x.get('file_url') %}<a class="btn secondary" href="{{ x.get('file_url') }}" target="_blank">👁️ View Student File</a>{% endif %}
 <form method="post" action="{{ url_for('admin_answer_assignment',assignment_id=x.get('id')) }}" enctype="multipart/form-data">
 <label>Administrator Answer</label><textarea name="answer" placeholder="Write the complete answer...">{{ x.get('answer') or '' }}</textarea>
 <label>Answer PDF / Word / Text (optional)</label><input type="file" name="answer_file" accept=".pdf,.doc,.docx,.txt">
 <button type="submit">Save Answer &amp; Publish</button>
 </form>
-{% if x.get('answer_file_url') %}<a class="btn success" href="{{ url_for('secure_file', storage_path=x.get('answer_file_path')) if x.get('answer_file_path') else x.get('answer_file_url') }}" target="_blank">Open Answer File</a>{% endif %}
+{% if x.get('answer_file_path') %}<a class="btn success" href="{{ url_for('view_file', storage_path=x.get('answer_file_path')) }}">👁️ View Answer File</a>{% elif x.get('answer_file_url') %}<a class="btn success" href="{{ x.get('answer_file_url') }}" target="_blank">👁️ View Answer File</a>{% endif %}
 {% if x.get('answer') %}<div class="card"><strong>Current Answer</strong><p style="white-space:pre-wrap">{{ x.get('answer') }}</p></div>{% endif %}
 </div>
 {% else %}<div class="card"><p>No assignments submitted.</p></div>{% endfor %}
