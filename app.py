@@ -536,7 +536,6 @@ def log_activity(action, description="", user_id=None):
     except Exception:
         pass
 
-# ============================================================
 
 @app.route("/files/<path:storage_path>")
 @login_required
@@ -617,6 +616,7 @@ def delete_storage(path):
     except Exception:
         return False
 
+# ============================================================
 # ============================================================
 # GEOLOCATION
 # ============================================================
@@ -1283,11 +1283,15 @@ def _research_provider_google(q):
             return []
         html=r.text
         out=[]
-        # Google markup changes frequently, so use several lightweight patterns.
-        for href,title in _re.findall(r'<a href="(/url\?q=|)(https?://[^"&]+)[^>]*>.*?<h3[^>]*>(.*?)</h3>',html,re.I|re.S):
+        # Google markup changes frequently. Extract direct result URLs from links
+        # surrounding h3 headings, and also support Google's /url?q= redirect format.
+        for raw_href,title in _re.findall(r'<a[^>]+href="([^"]+)"[^>]*>.*?<h3[^>]*>(.*?)</h3>',html,re.I|re.S):
             title=_re.sub(r'<.*?>','',unescape(title)).strip()
-            if title and href is not None:
-                out.append({"title":title,"url":unescape(title and href),"snippet":"","source":"Google"})
+            href=unescape(raw_href)
+            if href.startswith('/url?q='):
+                href=href.split('/url?q=',1)[1].split('&',1)[0]
+            if href.startswith('http') and title:
+                out.append({"title":title,"url":href,"snippet":"","source":"Google"})
         # Fallback pattern for direct result links.
         if not out:
             for href,title in _re.findall(r'<a[^>]+href="(https?://[^" ]+)"[^>]*>.*?<h3[^>]*>(.*?)</h3>',html,re.I|re.S):
@@ -1298,6 +1302,29 @@ def _research_provider_google(q):
     except requests.RequestException:
         return []
 
+
+
+def _research_provider_wikipedia(q):
+    """Reliable public knowledge fallback using Wikipedia's public API."""
+    try:
+        r=requests.get(
+            "https://en.wikipedia.org/w/api.php",
+            params={"action":"query","list":"search","srsearch":q,"format":"json","utf8":1,"srlimit":8},
+            headers={"User-Agent":"KOJA-AFRICA/2026.09 research"},
+            timeout=(5,10),
+        )
+        if not r.ok:
+            return []
+        data=r.json()
+        out=[]
+        for item in data.get("query",{}).get("search",[]):
+            title=item.get("title","").strip()
+            if not title:
+                continue
+            out.append({"title":title,"url":"https://en.wikipedia.org/wiki/"+title.replace(" ","_"),"snippet":item.get("snippet",""),"source":"Wikipedia"})
+        return out
+    except Exception:
+        return []
 
 def _merge_research_results(groups, limit=25):
     """Deduplicate public search results by URL/title."""
@@ -1328,6 +1355,7 @@ def research():
             ("Google",_research_provider_google),
             ("Bing",_research_provider_bing),
             ("DuckDuckGo",_research_provider_duckduckgo),
+            ("Wikipedia",_research_provider_wikipedia),
         ]
         groups=[]
         for name,provider in provider_calls:
