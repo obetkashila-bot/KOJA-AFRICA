@@ -488,56 +488,6 @@ def _file_owner_allowed(storage_path, user):
             return True
     return False
 
-# ============================================================
-# DECORATORS / LOGGING
-# ============================================================
-
-def login_required(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        if not current_user():
-            flash("Please log in first.", "warning")
-            return redirect(url_for("login", next=request.path))
-        return fn(*args, **kwargs)
-    return wrapper
-
-def admin_required(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        user = current_user()
-        if not user:
-            flash("Administrator login required.", "warning")
-            return redirect(url_for("login"))
-        if not user.get("is_admin"):
-            flash("Administrator access required.", "danger")
-            return redirect(url_for("dashboard"))
-        return fn(*args, **kwargs)
-    return wrapper
-
-def driver_required(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        user = current_user()
-        if not user:
-            flash("Driver login required.", "warning")
-            return redirect(url_for("login"))
-        if user.get("role") not in ("driver", "admin") and not user.get("is_admin"):
-            flash("Driver account required.", "danger")
-            return redirect(url_for("dashboard"))
-        return fn(*args, **kwargs)
-    return wrapper
-
-def log_activity(action, description="", user_id=None):
-    uid = user_id or (current_user() or {}).get("id")
-    payload = {"action": action, "description": description}
-    if uid:
-        payload["user_id"] = uid
-    try:
-        db_insert("activity_logs", payload)
-    except Exception:
-        pass
-
-
 @app.route("/files/<path:storage_path>")
 @login_required
 def secure_file(storage_path):
@@ -616,6 +566,55 @@ def delete_storage(path):
         return r.ok
     except Exception:
         return False
+
+# ============================================================
+# DECORATORS / LOGGING
+# ============================================================
+
+def login_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not current_user():
+            flash("Please log in first.", "warning")
+            return redirect(url_for("login", next=request.path))
+        return fn(*args, **kwargs)
+    return wrapper
+
+def admin_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        user = current_user()
+        if not user:
+            flash("Administrator login required.", "warning")
+            return redirect(url_for("login"))
+        if not user.get("is_admin"):
+            flash("Administrator access required.", "danger")
+            return redirect(url_for("dashboard"))
+        return fn(*args, **kwargs)
+    return wrapper
+
+def driver_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        user = current_user()
+        if not user:
+            flash("Driver login required.", "warning")
+            return redirect(url_for("login"))
+        if user.get("role") not in ("driver", "admin") and not user.get("is_admin"):
+            flash("Driver account required.", "danger")
+            return redirect(url_for("dashboard"))
+        return fn(*args, **kwargs)
+    return wrapper
+
+def log_activity(action, description="", user_id=None):
+    uid = user_id or (current_user() or {}).get("id")
+    payload = {"action": action, "description": description}
+    if uid:
+        payload["user_id"] = uid
+    try:
+        db_insert("activity_logs", payload)
+    except Exception:
+        pass
 
 # ============================================================
 # GEOLOCATION
@@ -715,8 +714,14 @@ footer{text-align:center;color:#667085;padding:30px}
 .actions{display:flex;gap:8px;flex-wrap:wrap}.actions .btn,.actions button{width:auto}
 @media(max-width:650px){nav a{font-size:12px}.container{width:min(100% - 14px,1250px)}table{display:block;overflow-x:auto}#map{height:350px}.actions .btn,.actions button{width:100%}}
 
-@keyframes kojaFadeUp{from{opacity:.0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
-@media (prefers-reduced-motion:no-preference){.hero,.card{animation:kojaFadeUp .45s ease both}.card{transition:transform .2s ease,box-shadow .2s ease}.card:hover{transform:translateY(-2px)}}
+@keyframes kojaFadeUp{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:translateY(0)}}
+@keyframes kojaFadeIn{from{opacity:0}to{opacity:1}}
+@keyframes kojaScaleIn{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}
+@keyframes kojaFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
+@keyframes kojaPulse{0%,100%{box-shadow:0 0 0 0 rgba(37,99,235,.12)}50%{box-shadow:0 0 0 8px rgba(37,99,235,0)}}
+@keyframes kojaSpin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:no-preference){body{animation:kojaFadeIn .35s ease both}.hero{animation:kojaFadeUp .6s cubic-bezier(.22,1,.36,1) both}.card,.panel,.table-wrap,form{animation:kojaScaleIn .5s cubic-bezier(.22,1,.36,1) both}.card,.panel,.btn,button,a,input,select,textarea{transition:transform .2s ease,box-shadow .2s ease,opacity .2s ease,background-color .2s ease,border-color .2s ease,color .2s ease}.card:hover,.panel:hover{transform:translateY(-3px);box-shadow:0 10px 28px rgba(16,24,40,.10)}.btn:hover,button:hover{transform:translateY(-1px)}.btn:active,button:active{transform:translateY(0) scale(.98)}nav a{transition:color .2s ease,transform .2s ease}nav a:hover{transform:translateY(-1px)}.hero h1,.hero h2{animation:kojaFadeUp .7s ease both}.hero .btn{animation:kojaFadeUp .8s ease .12s both}.logo,.brand{animation:kojaFloat 4s ease-in-out infinite}.status-online,.online,.live{animation:kojaPulse 2s ease-in-out infinite}.spinner,.loading-spinner{animation:kojaSpin .8s linear infinite}}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
 </style>
 <script>
 (function(){
@@ -1208,33 +1213,140 @@ def cv():
 # RESEARCH / KOJA HELP
 # ============================================================
 
+def _research_provider_duckduckgo(q):
+    """Return public DuckDuckGo HTML results. Never raises for network errors."""
+    import re as _re
+    from html import unescape
+    try:
+        r=requests.get(
+            "https://html.duckduckgo.com/html/",
+            params={"q":q},
+            headers={"User-Agent":"Mozilla/5.0 (compatible; KOJA-AFRICA/2026.09)"},
+            timeout=(5,10),
+        )
+        if not r.ok:
+            return []
+        html=r.text
+        blocks=_re.findall(r'<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',html,re.I|re.S)
+        snippets=_re.findall(r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',html,re.I|re.S)
+        out=[]
+        for i,(href,title) in enumerate(blocks[:12]):
+            title=_re.sub(r'<.*?>','',unescape(title)).strip()
+            href=unescape(href)
+            sn=_re.sub(r'<.*?>','',unescape(snippets[i] if i<len(snippets) else '')).strip()
+            if title and href:
+                out.append({"title":title,"url":href,"snippet":sn,"source":"DuckDuckGo"})
+        return out
+    except requests.RequestException:
+        return []
+
+
+def _research_provider_bing(q):
+    """Best-effort Bing public HTML search; returns [] if unavailable."""
+    import re as _re
+    from html import unescape
+    try:
+        r=requests.get(
+            "https://www.bing.com/search",
+            params={"q":q},
+            headers={"User-Agent":"Mozilla/5.0 (compatible; KOJA-AFRICA/2026.09)"},
+            timeout=(5,10),
+        )
+        if not r.ok:
+            return []
+        html=r.text
+        blocks=_re.findall(r'<li[^>]*class="b_algo"[^>]*>.*?<h2>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>',html,re.I|re.S)
+        out=[]
+        for href,title in blocks[:12]:
+            title=_re.sub(r'<.*?>','',unescape(title)).strip()
+            href=unescape(href)
+            if title and href:
+                out.append({"title":title,"url":href,"snippet":"","source":"Bing"})
+        return out
+    except requests.RequestException:
+        return []
+
+
+def _research_provider_google(q):
+    """Best-effort Google public HTML search; returns [] if blocked/unavailable."""
+    import re as _re
+    from html import unescape
+    try:
+        r=requests.get(
+            "https://www.google.com/search",
+            params={"q":q,"num":10},
+            headers={"User-Agent":"Mozilla/5.0 (compatible; KOJA-AFRICA/2026.09)"},
+            timeout=(5,10),
+        )
+        if not r.ok:
+            return []
+        html=r.text
+        out=[]
+        # Google markup changes frequently, so use several lightweight patterns.
+        for href,title in _re.findall(r'<a href="(/url\?q=|)(https?://[^"&]+)[^>]*>.*?<h3[^>]*>(.*?)</h3>',html,re.I|re.S):
+            title=_re.sub(r'<.*?>','',unescape(title)).strip()
+            if title and href is not None:
+                out.append({"title":title,"url":unescape(title and href),"snippet":"","source":"Google"})
+        # Fallback pattern for direct result links.
+        if not out:
+            for href,title in _re.findall(r'<a[^>]+href="(https?://[^" ]+)"[^>]*>.*?<h3[^>]*>(.*?)</h3>',html,re.I|re.S):
+                title=_re.sub(r'<.*?>','',unescape(title)).strip()
+                if title:
+                    out.append({"title":title,"url":unescape(href),"snippet":"","source":"Google"})
+        return out[:12]
+    except requests.RequestException:
+        return []
+
+
+def _merge_research_results(groups, limit=25):
+    """Deduplicate public search results by URL/title."""
+    merged=[]
+    seen=set()
+    for group in groups:
+        for item in group:
+            url=(item.get("url") or "").strip()
+            key=url.lower().split("#",1)[0] if url else (item.get("title") or "").lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+            if len(merged)>=limit:
+                return merged
+    return merged
+
+
 @app.route("/research",methods=["GET","POST"])
 def research():
     q=clean(request.values.get("q"))[:200]
     results=[]
     error=""
+    providers_used=[]
     if q:
-        try:
-            r=requests.get("https://html.duckduckgo.com/html/",params={"q":q},headers={"User-Agent":"KOJA-AFRICA/1.0 research"},timeout=12)
-            if r.ok:
-                import re as _re
-                html=r.text
-                blocks=_re.findall(r'<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',html,re.I|re.S)
-                snippets=_re.findall(r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',html,re.I|re.S)
-                from html import unescape
-                for i,(href,title) in enumerate(blocks[:10]):
-                    title=_re.sub(r'<.*?>','',unescape(title)).strip()
-                    href=unescape(href)
-                    sn=_re.sub(r'<.*?>','',unescape(snippets[i] if i<len(snippets) else '')).strip()
-                    results.append({"title":title,"url":href,"snippet":sn})
-            else:error="Internet research service is temporarily unavailable."
-        except requests.RequestException:error="Could not connect to the internet research service."
+        # Do not let one provider failure make the whole research service fail.
+        provider_calls=[
+            ("Google",_research_provider_google),
+            ("Bing",_research_provider_bing),
+            ("DuckDuckGo",_research_provider_duckduckgo),
+        ]
+        groups=[]
+        for name,provider in provider_calls:
+            try:
+                found=provider(q)
+                if found:
+                    providers_used.append(name)
+                    groups.append(found)
+            except Exception:
+                logger.exception("Research provider %s failed",name)
+        results=_merge_research_results(groups,25)
+        if not results:
+            error="Internet search providers are unavailable right now. You can still use Search everywhere below to open public search services directly."
     return render_page("Internet Research",r"""
-<div class="hero"><h2>🔎 Internet Research</h2><p>Search current public information on the internet. Verify important information with the original source.</p></div>
-<div class="card"><form method="get"><label>Research topic</label><input name="q" value="{{ q }}" placeholder="e.g. renewable energy in Zambia" required><button type="submit">Search Internet</button></form></div>
-{% if error %}<div class="card"><p>{{ error }}</p></div>{% endif %}
-{% for x in results %}<div class="card"><h3>{{ x.title }}</h3><p>{{ x.snippet }}</p><a class="btn" href="{{ x.url }}" target="_blank" rel="noopener noreferrer">Open Source</a></div>{% else %}{% if q and not error %}<div class="card"><p>No results found. Try a different search phrase.</p></div>{% endif %}{% endfor %}
-""",q=q,results=results,error=error)
+<div class="hero"><h2>🔎 Internet Research</h2><p>Search current public information on the internet. KOJA tries multiple search providers and keeps working when one is unavailable.</p></div>
+<div class="card"><form method="get"><label>Research topic</label><input name="q" value="{{ q }}" placeholder="e.g. renewable energy in Zambia" required><button type="submit">Search Internet</button></form>
+{% if q %}<p class="muted">Providers responding: {{ providers_used|join(', ') if providers_used else 'none' }}</p>{% endif %}</div>
+{% if error %}<div class="card"><p>{{ error }}</p><div class="actions"><a class="btn" target="_blank" rel="noopener noreferrer" href="https://www.google.com/search?q={{ q|urlencode }}">Google</a><a class="btn" target="_blank" rel="noopener noreferrer" href="https://www.bing.com/search?q={{ q|urlencode }}">Bing</a><a class="btn" target="_blank" rel="noopener noreferrer" href="https://duckduckgo.com/?q={{ q|urlencode }}">DuckDuckGo</a></div></div>{% endif %}
+{% for x in results %}<div class="card"><h3>{{ x.title }}</h3><p>{{ x.snippet }}</p><small>Source: {{ x.source }}</small><br><a class="btn" href="{{ x.url }}" target="_blank" rel="noopener noreferrer">Open Source</a></div>{% else %}{% if q and not error %}<div class="card"><p>No results found. Try a different search phrase.</p></div>{% endif %}{% endfor %}
+""",q=q,results=results,error=error,providers_used=providers_used)
 
 @app.route("/help",methods=["GET","POST"])
 @login_required
