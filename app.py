@@ -6,6 +6,12 @@ import secrets
 import logging
 import re
 import time
+import smtplib
+import zipfile
+import xml.etree.ElementTree as ET
+from email.message import EmailMessage
+from html import escape as html_escape
+import subprocess
 from datetime import datetime, timezone, timedelta
 from functools import wraps
 from urllib.parse import quote
@@ -81,7 +87,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.02-FINAL-SECURE-GPS"
+APP_VERSION = "2026.09.02-FINAL-COMPLETE"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -90,6 +96,13 @@ SITE_URL = os.getenv("SITE_URL", "https://koja-africa.onrender.com").rstrip("/")
 GSC_SITE_URL = os.getenv("GSC_SITE_URL", SITE_URL)
 GSC_SERVICE_ACCOUNT_JSON = os.getenv("GSC_SERVICE_ACCOUNT_JSON", "").strip()
 
+SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587") or "587")
+SMTP_USER = os.getenv("SMTP_USER", "").strip()
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "").strip()
+SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USER).strip()
+SMTP_TLS = os.getenv("SMTP_TLS", "1") != "0"
+REQUIRE_EMAIL_VERIFICATION = os.getenv("REQUIRE_EMAIL_VERIFICATION", "1") != "0"
 
 ALLOWED_EXTENSIONS = {
     "pdf", "doc", "docx", "txt",
@@ -342,6 +355,79 @@ def first_row(table, filters):
     return rows[0] if rows else None
 
 # ============================================================
+# ADMIN ERROR LOGGING / NOTIFICATIONS / EMAIL / FILE SAFETY
+# ============================================================
+
+def safe_error_message(exc):
+    try: return f"{type(exc).__name__}: {str(exc)[:1800]}"
+    except Exception: return "Unhandled application exception"
+
+def record_error(exc, context="application", request_id=None):
+    detail=safe_error_message(exc)
+    logger.exception("KOJA ERROR [%s] %s", context, detail)
+    try:
+        if table_exists("app_errors"):
+            db_insert("app_errors", {"id":str(uuid.uuid4()),"context":clean(context)[:120],"path":clean(request.path)[:500],"method":clean(request.method)[:20],"user_id":str((current_user() or {}).get("id") or "") or None,"message":detail,"request_id":request_id,"created_at":utc_now(),"resolved":False})
+    except Exception: logger.exception("Could not persist app error")
+    return detail
+
+def notify_user(user_id,title,message,kind="system",link=None):
+    if not user_id or not table_exists("notifications"): return False
+    _,err=db_insert("notifications", {"id":str(uuid.uuid4()),"user_id":str(user_id),"title":clean(title)[:180],"message":clean(message)[:2000],"kind":clean(kind)[:60] or "system","link":link,"is_read":False,"created_at":utc_now()})
+    return not bool(err)
+
+def notify_user_preference(user_id,pref,title,message,kind="system",link=None):
+    try:
+        if not load_user_settings(user_id).get(pref,True): return False
+    except Exception: pass
+    return notify_user(user_id,title,message,kind,link)
+
+def send_email(to_email,subject,text_body,html_body=None):
+    if not (SMTP_HOST and SMTP_FROM and to_email): return False,"SMTP is not configured."
+    try:
+        msg=EmailMessage(); msg["Subject"]=subject; msg["From"]=SMTP_FROM; msg["To"]=to_email; msg.set_content(text_body)
+        if html_body: msg.add_alternative(html_body,subtype="html")
+        with smtplib.SMTP(SMTP_HOST,SMTP_PORT,timeout=20) as smtp:
+            smtp.ehlo()
+            if SMTP_TLS: smtp.starttls(); smtp.ehlo()
+            if SMTP_USER: smtp.login(SMTP_USER,SMTP_PASSWORD)
+            smtp.send_message(msg)
+        return True,None
+    except Exception as exc:
+        record_error(exc,"smtp_send"); return False,"Email service unavailable."
+
+def make_token(): return secrets.token_urlsafe(48)
+def token_hash(token):
+    import hashlib; return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+def scan_uploaded_bytes(filename,content):
+    ext=filename.rsplit(".",1)[-1].lower() if "." in filename else ""
+    if ext not in ALLOWED_EXTENSIONS: return False,"File type is not allowed."
+    if len(content)>MAX_UPLOAD_MB*1024*1024: return False,"File is too large."
+    if ext=="docx":
+        try:
+            with zipfile.ZipFile(io.BytesIO(content)) as z:
+                infos=z.infolist()
+                if len(infos)>3000 or sum(i.file_size for i in infos)>80*1024*1024: return False,"Document archive is unsafe."
+        except zipfile.BadZipFile: return False,"The Word document is damaged or invalid."
+    try:
+        proc=subprocess.run(["clamdscan","--no-summary","-"],input=content,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30)
+        if proc.returncode==1: return False,"The uploaded file was rejected by the malware scanner."
+    except (FileNotFoundError,subprocess.TimeoutExpired,OSError): pass
+    return True,None
+
+def docx_to_html(content,filename):
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as z: xml=z.read("word/document.xml")
+        root=ET.fromstring(xml); ns={"w":"http://schemas.openxmlformats.org/wordprocessingml/2006/main"}; paragraphs=[]
+        for pnode in root.findall(".//w:p",ns):
+            text="".join((t.text or "") for t in pnode.findall(".//w:t",ns)).strip()
+            if text: paragraphs.append("<p>"+html_escape(text)+"</p>")
+        if not paragraphs: paragraphs=["<p>No readable text was found in this Word document.</p>"]
+        return "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>"+html_escape(filename)+"</title><style>body{font-family:Arial,sans-serif;line-height:1.6;padding:24px;max-width:900px;margin:auto;color:#172033}p{margin:0 0 12px}</style></head><body>"+"".join(paragraphs)+"</body></html>"
+    except Exception as exc: record_error(exc,"docx_preview"); return "<p>Word preview is temporarily unavailable.</p>"
+
+# ============================================================
 # AUTHENTICATION
 # ============================================================
 
@@ -524,39 +610,6 @@ def _file_owner_allowed(storage_path, user):
             return True
     return False
 
-@app.route("/view-file/<path:storage_path>")
-@login_required
-def view_file(storage_path):
-    """Secure in-browser viewer for uploaded KOJA files."""
-    storage_path = storage_path.strip("/")
-    if not storage_path or ".." in storage_path.split("/"):
-        abort(404)
-    user=current_user()
-    if not _file_owner_allowed(storage_path, user):
-        abort(403)
-    filename=storage_path.rsplit("/",1)[-1]
-    ext=filename.rsplit(".",1)[-1].lower() if "." in filename else ""
-    viewable=ext in {"pdf","png","jpg","jpeg","webp","txt"}
-    file_url=url_for("secure_file", storage_path=storage_path)
-    return render_page("View Uploaded File",r"""
-<div class="hero"><h2>📄 Uploaded File</h2><p>{{ filename }}</p></div>
-<div class="card" style="padding:8px;overflow:hidden">
-{% if viewable and ext == 'pdf' %}
-<iframe src="{{ file_url }}" title="{{ filename }}" style="width:100%;height:78vh;border:0;border-radius:12px;background:#fff"></iframe>
-{% elif viewable and ext in ['png','jpg','jpeg','webp'] %}
-<div style="text-align:center;overflow:auto"><img src="{{ file_url }}" alt="{{ filename }}" style="max-width:100%;max-height:78vh;object-fit:contain;border-radius:10px"></div>
-{% elif viewable and ext == 'txt' %}
-<iframe src="{{ file_url }}" title="{{ filename }}" style="width:100%;height:60vh;border:0;border-radius:12px;background:#fff"></iframe>
-{% else %}
-<div class="card"><h3>Preview not available</h3><p>This file type cannot be displayed directly in the browser. You can open it with the appropriate app.</p></div>
-{% endif %}
-<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
-<a class="btn" href="{{ file_url }}" target="_blank" rel="noopener">Open File</a>
-<a class="btn secondary" href="{{ file_url }}" download>Download</a>
-<a class="btn secondary" href="javascript:history.back()">Back</a>
-</div></div>
-""",filename=filename,ext=ext,viewable=viewable,file_url=file_url)
-
 @app.route("/files/<path:storage_path>")
 @login_required
 def secure_file(storage_path):
@@ -572,6 +625,30 @@ def secure_file(storage_path):
     except Exception:
         logger.exception("Secure file download failed")
         abort(404)
+
+@app.route("/view-docx/<path:storage_path>")
+@login_required
+def view_docx(storage_path):
+    storage_path=storage_path.strip("/")
+    if not storage_path or ".." in storage_path.split("/"): abort(404)
+    if not _file_owner_allowed(storage_path,current_user()): abort(403)
+    try:
+        r=requests.get(sb_storage_url(storage_path),headers=sb_headers(),timeout=60)
+        if not r.ok: abort(404)
+        return docx_to_html(r.content,storage_path.rsplit("/",1)[-1])
+    except Exception as exc:
+        record_error(exc,"docx_fetch"); abort(404)
+
+@app.route("/view-file/<path:storage_path>")
+@login_required
+def view_file(storage_path):
+    storage_path=storage_path.strip("/")
+    if not storage_path or ".." in storage_path.split("/"): abort(404)
+    if not _file_owner_allowed(storage_path,current_user()): abort(403)
+    filename=storage_path.rsplit("/",1)[-1]
+    ext=filename.rsplit(".",1)[-1].lower() if "." in filename else ""
+    file_url=url_for("secure_file",storage_path=storage_path)
+    return render_page("View Uploaded File",r'''<div class="hero"><h2>📄 Uploaded File</h2><p>{{ filename }}</p></div><div class="card" style="padding:8px;overflow:hidden">{% if ext == 'pdf' %}<iframe src="{{ file_url }}" title="{{ filename }}" style="width:100%;height:78vh;border:0;border-radius:12px;background:#fff"></iframe>{% elif ext in ['png','jpg','jpeg','webp'] %}<div style="text-align:center;overflow:auto"><img src="{{ file_url }}" alt="{{ filename }}" style="max-width:100%;max-height:78vh;object-fit:contain;border-radius:10px">{% elif ext == 'docx' %}<iframe src="{{ url_for('view_docx',storage_path=storage_path) }}" title="{{ filename }}" style="width:100%;height:78vh;border:0;border-radius:12px;background:#fff"></iframe>{% elif ext == 'txt' %}<iframe src="{{ file_url }}" title="{{ filename }}" style="width:100%;height:60vh;border:0;border-radius:12px;background:#fff"></iframe>{% else %}<div class="card"><h3>Preview not available</h3><p>This file type can be opened or downloaded with the appropriate app.</p></div>{% endif %}<div class="actions" style="margin-top:12px"><a class="btn" href="{{ file_url }}" target="_blank" rel="noopener">Open File</a><a class="btn secondary" href="{{ file_url }}" download>Download</a><a class="btn secondary" href="javascript:history.back()">Back</a></div></div>''',filename=filename,ext=ext,file_url=file_url,storage_path=storage_path)
 
 # ============================================================
 # STORAGE
@@ -594,6 +671,9 @@ def upload_storage(file_storage, folder="uploads"):
     data = file_storage.read()
     if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
         return None, f"Maximum file size is {MAX_UPLOAD_MB} MB."
+    ok, scan_error = scan_uploaded_bytes(filename, data)
+    if not ok:
+        return None, scan_error
 
     path = f"{folder.strip('/')}/{uuid.uuid4().hex}_{filename}"
     mime = file_storage.mimetype or "application/octet-stream"
@@ -780,7 +860,7 @@ footer{text-align:center;color:#667085;padding:30px}
 <div class="brand">KOJA AFRICA</div>
 <a href="{{ url_for('home') }}">Home</a>
 {% if user %}
-<a href="{{ url_for('dashboard') }}">Dashboard</a>
+<a href="{{ url_for('dashboard') }}">Dashboard</a><a href="{{ url_for('notifications') }}">🔔 Notifications</a>
 <a href="{{ url_for('settings') }}">Settings</a>
 <a href="{{ url_for('services') }}">Services</a><a href="{{ url_for('research') }}">Research</a>
 <a href="{{ url_for('questions') }}">Questions</a>
@@ -860,6 +940,43 @@ def health():
 # REGISTER / LOGIN
 # ============================================================
 
+@app.route("/verify-email")
+def verify_email():
+    token=clean(request.args.get("token")); row=first_row("email_tokens",{"token_hash":token_hash(token),"purpose":"verify"}) if token else None
+    try: valid=bool(row) and datetime.fromisoformat(str(row.get("expires_at")).replace("Z","+00:00"))>datetime.now(timezone.utc)
+    except Exception: valid=False
+    if not valid: return render_page("Email Verification","<div class='card'><h2>Verification link is invalid or expired.</h2></div>"),400
+    _,err=db_update("profiles",{"id":row.get("user_id")},{"email_verified":True}); db_delete("email_tokens",{"id":row.get("id")})
+    if err: record_error(Exception(err),"email_verify"); return render_page("Email Verification","<div class='card'><h2>Verification could not be completed.</h2></div>"),500
+    flash("Email verified successfully.","success"); return redirect(url_for("login"))
+
+@app.route("/forgot-password",methods=["GET","POST"])
+def forgot_password():
+    if request.method=="POST":
+        email=clean(request.form.get("email")).lower(); user=find_user_by_email(email)
+        if user and user.get("id"):
+            token=make_token(); db_insert("email_tokens",{"id":str(uuid.uuid4()),"user_id":user.get("id"),"token_hash":token_hash(token),"purpose":"reset","expires_at":(datetime.now(timezone.utc)+timedelta(minutes=30)).isoformat(),"created_at":utc_now()})
+            link=f"{SITE_URL}/reset-password?token={quote(token)}"; ok,_=send_email(email,"KOJA AFRICA password reset",f"Reset your password within 30 minutes: {link}",f"<p><a href='{html_escape(link)}'>Reset your KOJA AFRICA password</a></p><p>This link expires in 30 minutes.</p>")
+            if not ok: record_error(Exception("Reset email could not be sent"),"password_reset_email")
+        flash("If that email belongs to a KOJA account, a password-reset link has been sent.","success"); return redirect(url_for("login"))
+    return render_page("Forgot Password",r'''<div class="card" style="max-width:520px;margin:auto"><h2>Reset Password</h2><form method="post"><label>Email</label><input name="email" type="email" autocomplete="email" required><button>Send Reset Link</button></form></div>''')
+
+@app.route("/reset-password",methods=["GET","POST"])
+def reset_password():
+    token=clean(request.values.get("token")); row=first_row("email_tokens",{"token_hash":token_hash(token),"purpose":"reset"}) if token else None
+    try: valid=bool(row) and datetime.fromisoformat(str(row.get("expires_at")).replace("Z","+00:00"))>datetime.now(timezone.utc)
+    except Exception: valid=False
+    if not valid: return render_page("Reset Password","<div class='card'><h2>Reset link invalid or expired.</h2></div>"),400
+    if request.method=="POST":
+        new=request.form.get("password",""); confirm=request.form.get("confirm_password","")
+        if not password_is_strong(new): flash("Password must be at least 10 characters and contain a letter and a number.","danger")
+        elif new!=confirm: flash("Passwords do not match.","danger")
+        else:
+            _,err=db_update("profiles",{"id":row.get("user_id")},{"password_hash":generate_password_hash(new)})
+            if err: record_error(Exception(err),"password_reset"); flash("Password could not be reset. Please try again later.","danger")
+            else: db_delete("email_tokens",{"id":row.get("id")}); flash("Password reset successfully.","success"); return redirect(url_for("login"))
+    return render_page("Reset Password",r'''<div class="card" style="max-width:520px;margin:auto"><h2>Choose a New Password</h2><form method="post"><input type="hidden" name="token" value="{{ token }}"><label>New password</label><input name="password" type="password" minlength="10" required><label>Confirm password</label><input name="confirm_password" type="password" minlength="10" required><button>Reset Password</button></form></div>''',token=token)
+
 @app.route("/register", methods=["GET","POST"])
 def register():
     if request.method == "POST":
@@ -893,6 +1010,7 @@ def register():
             "role": role,
             "is_admin": False,
             "is_active": True,
+            "email_verified": False,
             "created_at": utc_now(),
         }
 
@@ -908,13 +1026,16 @@ def register():
             row, error = db_insert("KOJA ZM", old)
 
         if error:
-            flash("Registration failed. Check Render logs for the exact Supabase column error.","danger")
+            flash("Registration could not be completed. Please try again later.","danger"); record_error(Exception(str(error)),"registration")
             return redirect(url_for("register"))
 
-        login_user(row or payload)
-        log_activity("registration","New KOJA account registered.")
-        flash("Account created successfully.","success")
-        return redirect(url_for("dashboard"))
+        created=row or payload
+        if SMTP_HOST and REQUIRE_EMAIL_VERIFICATION:
+            token=make_token(); db_insert("email_tokens",{"id":str(uuid.uuid4()),"user_id":user_id,"token_hash":token_hash(token),"purpose":"verify","expires_at":(datetime.now(timezone.utc)+timedelta(hours=24)).isoformat(),"created_at":utc_now()})
+            link=f"{SITE_URL}/verify-email?token={quote(token)}"; ok,_=send_email(email,"Verify your KOJA AFRICA email",f"Verify your KOJA account: {link}",f"<p><a href='{html_escape(link)}'>Verify your KOJA AFRICA email</a></p><p>This link expires in 24 hours.</p>")
+            flash("Account created. Check your email to verify the account before logging in." if ok else "Account created, but verification email could not be sent. Contact KOJA Help.","success" if ok else "warning")
+            return redirect(url_for("login"))
+        db_update("profiles",{"id":user_id},{"email_verified":True}); login_user(created); log_activity("registration","New KOJA account registered."); flash("Account created successfully.","success"); return redirect(url_for("dashboard"))
 
     return render_page("Register", r"""
 <div class="card" style="max-width:600px;margin:auto">
@@ -1109,7 +1230,7 @@ def assignments():
         if file and file.filename:
             uploaded,error=upload_storage(file,"assignments")
             if error:
-                flash(f"Upload failed: {error}","danger")
+                flash("Upload failed. Please try again later.","danger"); record_error(Exception(str(error)),"upload")
                 return redirect(url_for("assignments"))
 
         payload={
@@ -1151,9 +1272,9 @@ def assignments():
 {% for item in rows %}
 <div class="card"><h3>{{ item.get("title") or "Assignment" }}</h3>
 <p>{{ item.get("description") or "" }}</p>
-{% if item.get("file_path") %}<a class="btn" href="{{ url_for('view_file', storage_path=item.get('file_path')) }}">👁️ View File</a><a class="btn secondary" href="{{ url_for('secure_file', storage_path=item.get('file_path')) }}" target="_blank">Download</a>{% elif item.get("file_url") %}<a class="btn" href="{{ item.get('file_url') }}" target="_blank">👁️ View File</a>{% endif %}
-{% if item.get("answer_file_path") %}<a class="btn success" href="{{ url_for('view_file', storage_path=item.get('answer_file_path')) }}">👁️ View Answer</a><a class="btn secondary" href="{{ url_for('secure_file', storage_path=item.get('answer_file_path')) }}" target="_blank">Download Answer</a>{% elif item.get("answer_file_url") %}<a class="btn success" href="{{ item.get('answer_file_url') }}" target="_blank">👁️ View Answer</a>{% endif %}
-{% if item.get("answered_file_path") %}<a class="btn success" href="{{ url_for('view_file', storage_path=item.get('answered_file_path')) }}">👁️ View Answered File</a><a class="btn secondary" href="{{ url_for('secure_file', storage_path=item.get('answered_file_path')) }}" target="_blank">Download</a>{% elif item.get("answered_file_url") %}<a class="btn success" href="{{ item.get('answered_file_url') }}" target="_blank">👁️ View Answered File</a>{% endif %}
+{% if item.get("file_url") %}<a class="btn" href="{{ item.get('file_url') }}" target="_blank">Download File</a>{% endif %}
+{% if item.get("answer_file_url") %}<a class="btn success" href="{{ item.get('answer_file_url') }}" target="_blank">Download Answer</a>{% endif %}
+{% if item.get("answered_file_url") %}<a class="btn success" href="{{ item.get('answered_file_url') }}" target="_blank">Download Answered File</a>{% endif %}
 </div>
 {% else %}<p>No assignments found.</p>{% endfor %}
 </div>
@@ -1393,7 +1514,7 @@ def book_doctor(provider_id):
             "notes":clean(request.form.get("notes")),"created_at":utc_now(),"updated_at":utc_now()
         }
         row,error=db_insert("appointments",payload)
-        if error: flash("Appointment could not be created: "+str(error)[:500],"danger")
+        if error: flash("Appointment could not be created. Please try again later.","danger"); record_error(Exception(str(error)),"appointment")
         else: flash("Doctor booking request submitted.","success")
         return redirect(url_for("dashboard"))
     return render_page("Book Doctor",r"""
@@ -1445,7 +1566,7 @@ def book_teacher(provider_id):
             "notes":clean(request.form.get("notes")),"created_at":utc_now(),"updated_at":utc_now()
         }
         row,error=db_insert("appointments",payload)
-        if error: flash("Teacher booking failed: "+str(error)[:500],"danger")
+        if error: flash("Teacher booking failed. Please try again later.","danger"); record_error(Exception(str(error)),"teacher_booking")
         else: flash("Teacher booking request submitted.","success")
         return redirect(url_for("dashboard"))
     return render_page("Book Teacher",r"""
@@ -1527,7 +1648,7 @@ def driver_register():
         provider, provider_error = ensure_driver_provider(user)
         if provider_error or not provider or not provider.get("id"):
             logger.error("Driver provider creation failed: %s", provider_error)
-            flash("Driver registration failed while creating the service provider record. " + str(provider_error or "Unknown database error")[:700], "danger")
+            flash("Driver registration could not be completed. Please try again later.", "danger"); record_error(Exception(str(provider_error or "provider error")),"driver_registration")
             return redirect(url_for("driver_register"))
 
         provider_id = str(provider["id"])
@@ -1553,7 +1674,7 @@ def driver_register():
 
         if error:
             logger.error("Exact driver_profiles insert/update failed: %s", error)
-            flash("Driver registration failed: " + str(error)[:900], "danger")
+            flash("Driver registration could not be completed. Please try again later.", "danger"); record_error(Exception(str(error)),"driver_registration")
             return redirect(url_for("driver_register"))
 
         # A successful driver profile makes the account a driver, but verification
@@ -1669,9 +1790,10 @@ def driver_delivery_action(delivery_id, action):
         payload["driver_id"] = provider_id
     row, error = db_update("deliveries", {"id": delivery_id}, payload)
     if error:
-        flash("Could not update delivery status: " + str(error)[:700], "danger")
+        flash("Could not update delivery status. Please try again later.", "danger"); record_error(Exception(str(error)),"delivery_status")
     else:
         log_activity("delivery_status", f"Delivery {delivery.get('tracking_code')} changed to {status}.")
+        notify_user_preference(delivery.get("customer_id") or delivery.get("user_id"),"notify_delivery","Delivery update",f"Your delivery is now {status.replace('_',' ')}.","delivery",url_for("track_delivery",tracking_code=delivery.get("tracking_code")))
         flash(f"Delivery status changed to {status}.", "success")
     return redirect(url_for("driver_dashboard"))
 
@@ -1756,7 +1878,7 @@ def driver_location_update():
     row, error = db_insert("driver_locations", payload)
     if error:
         logger.error("driver_locations insert failed: %s", error)
-        return jsonify({"ok":False,"message":"GPS location could not be saved.","error":str(error)[:700]}),500
+        return jsonify({"ok":False,"message":"GPS location could not be saved.","error":"Request failed. The administrator has been notified."}),500
     delivery_id = clean(body.get("delivery_id"))
     if delivery_id:
         delivery = first_row("deliveries", {"id": delivery_id})
@@ -1783,7 +1905,7 @@ def driver_offline():
     }
     row,error=db_insert("driver_locations",payload)
     if error:
-        return jsonify({"ok":False,"message":"Could not mark driver offline.","error":str(error)[:700]}),500
+        return jsonify({"ok":False,"message":"Could not mark driver offline.","error":"Request failed. The administrator has been notified."}),500
     return jsonify({"ok":True,"message":"Driver is now offline."})
 
 # ============================================================
@@ -1988,7 +2110,7 @@ def create_delivery_request():
         row,error=db_insert("deliveries",minimal)
 
     if error:
-        return jsonify({"ok":False,"message":"Delivery request could not be created.","error":str(error)[:600]}),500
+        return jsonify({"ok":False,"message":"Delivery request could not be created.","error":"Request failed. The administrator has been notified."}),500
 
     log_activity("delivery_requested",f"Delivery {tracking} requested from driver {driver_id}.")
     return jsonify({"ok":True,"tracking_code":tracking,"message":f"Delivery request sent to the driver. Tracking code: {tracking}."})
@@ -2018,7 +2140,7 @@ def deliveries():
         }
         row,error=db_insert("deliveries",payload)
         if error:
-            flash("Delivery could not be registered: "+str(error)[:600],"danger")
+            flash("Delivery could not be registered. Please try again later.","danger"); record_error(Exception(str(error)),"delivery_registration")
         else:
             flash(f"Delivery registered. Tracking code: {tracking}. Now choose a nearby driver.","success")
             return redirect(url_for("drivers"))
@@ -2173,7 +2295,7 @@ def delivery_route():
         return jsonify({"ok":False,"message":"Routing service is temporarily unavailable."}),503
     except Exception as exc:
         logger.exception("Route lookup failed")
-        return jsonify({"ok":False,"message":"Could not calculate route.","error":str(exc)[:200]}),500
+        return jsonify({"ok":False,"message":"Could not calculate route.","error":"Request failed. The administrator has been notified."}),500
 
 @app.route("/api/delivery/<tracking_code>/location")
 @login_required
@@ -2540,13 +2662,13 @@ def admin_assignments():
 <div class="hero"><h2>Assignment Answer Centre</h2><p>Review student assignments, write answers, attach answer files and publish responses.</p></div>
 {% for x in rows %}
 <div class="card"><h3>{{ x.get('title') or 'Assignment' }}</h3><p><b>Student:</b> {{ x.get('student_id') }}</p><p>{{ x.get('description') or '' }}</p>
-{% if x.get('file_path') %}<a class="btn secondary" href="{{ url_for('view_file', storage_path=x.get('file_path')) }}">👁️ View Student File</a>{% elif x.get('file_url') %}<a class="btn secondary" href="{{ x.get('file_url') }}" target="_blank">👁️ View Student File</a>{% endif %}
+{% if x.get('file_url') %}<a class="btn secondary" href="{{ url_for('secure_file', storage_path=x.get('file_path')) if x.get('file_path') else x.get('file_url') }}" target="_blank">Open Student File</a>{% endif %}
 <form method="post" action="{{ url_for('admin_answer_assignment',assignment_id=x.get('id')) }}" enctype="multipart/form-data">
 <label>Administrator Answer</label><textarea name="answer" placeholder="Write the complete answer...">{{ x.get('answer') or '' }}</textarea>
 <label>Answer PDF / Word / Text (optional)</label><input type="file" name="answer_file" accept=".pdf,.doc,.docx,.txt">
 <button type="submit">Save Answer &amp; Publish</button>
 </form>
-{% if x.get('answer_file_path') %}<a class="btn success" href="{{ url_for('view_file', storage_path=x.get('answer_file_path')) }}">👁️ View Answer File</a>{% elif x.get('answer_file_url') %}<a class="btn success" href="{{ x.get('answer_file_url') }}" target="_blank">👁️ View Answer File</a>{% endif %}
+{% if x.get('answer_file_url') %}<a class="btn success" href="{{ url_for('secure_file', storage_path=x.get('answer_file_path')) if x.get('answer_file_path') else x.get('answer_file_url') }}" target="_blank">Open Answer File</a>{% endif %}
 {% if x.get('answer') %}<div class="card"><strong>Current Answer</strong><p style="white-space:pre-wrap">{{ x.get('answer') }}</p></div>{% endif %}
 </div>
 {% else %}<div class="card"><p>No assignments submitted.</p></div>{% endfor %}
@@ -2567,7 +2689,7 @@ def admin_answer_assignment(assignment_id):
     if f and f.filename:
         uploaded,error=upload_storage(f,f"assignment-answers/{assignment_id}")
         if error:
-            flash(f"Answer upload failed: {error}","danger")
+            flash("Answer upload failed. Please try again later.","danger"); record_error(Exception(str(error)),"answer_upload")
             return redirect(url_for("admin_assignments"))
         update.update({"answer_file_name":uploaded["file_name"],"answer_file_path":uploaded["path"],"answer_file_url":uploaded["url"],"answer_file_size":uploaded["file_size"],"answer_mime_type":uploaded["mime_type"]})
     _,error=db_update("assignments",{"id":assignment_id},update)
@@ -2579,6 +2701,7 @@ def admin_answer_assignment(assignment_id):
     else:
         flash("Assignment answer saved and published to the student.","success")
         log_activity("assignment_answered","Administrator answered an assignment.")
+        notify_user_preference(assignment.get("student_id") or assignment.get("user_id"),"notify_assignments","Assignment answered","Your assignment has been answered by KOJA.","assignment",url_for("assignments"))
     return redirect(url_for("admin_assignments"))
 
 @app.route("/admin/help")
@@ -2599,8 +2722,22 @@ def admin_help_answer(question_id):
         flash("Enter a response.","danger"); return redirect(url_for("admin_help"))
     _,error=db_update("questions",{"id":question_id},{"answer":answer,"answer_by":(current_user() or {}).get("name","Admin"),"answered_at":utc_now(),"status":"help_answered"})
     if error: flash("Help response could not be saved.","danger")
-    else: flash("Help response sent to the user.","success")
+    else:
+        q=first_row("questions",{"id":question_id})
+        notify_user_preference((q or {}).get("user_id"),"notify_help","KOJA Help Response","An administrator responded to your help request.","help",url_for("dashboard"))
+        flash("Help response sent to the user.","success")
     return redirect(url_for("admin_help"))
+
+@app.route("/notifications")
+@login_required
+def notifications():
+    rows=db_select("notifications",filters={"user_id":(current_user() or {}).get("id")},order="created_at.desc",limit=100)
+    return render_page("Notifications",r'''<div class="hero"><h2>🔔 Notifications</h2><p>Updates from KOJA AFRICA.</p></div>{% for n in rows %}<div class="card"><h3>{{ n.get('title') }}</h3><p>{{ n.get('message') }}</p><p class="small">{{ n.get('created_at') }}</p>{% if n.get('link') %}<a class="btn secondary" href="{{ n.get('link') }}">Open</a>{% endif %}</div>{% else %}<div class="card"><p>No notifications yet.</p></div>{% endfor %}''',rows=rows)
+
+@app.route("/notifications/read",methods=["POST"])
+@login_required
+def notifications_read():
+    db_update("notifications",{"user_id":(current_user() or {}).get("id")},{"is_read":True,"read_at":utc_now()}); return redirect(url_for("notifications"))
 
 # ============================================================
 # ADMIN
@@ -2625,17 +2762,34 @@ def admin():
 <a class="btn" href="{{ url_for('admin_deliveries') }}">Deliveries</a>
 <a class="btn success" href="{{ url_for('admin_live_tracking') }}">🚚 Live GPS Tracking</a>
 <a class="btn" href="{{ url_for('admin_appointments') }}">Appointments</a>
-<a class="btn success" href="{{ url_for('admin_search_distribution') }}">🔎 Google Search & Distribution</a>
+<a class="btn success" href="{{ url_for('admin_search_distribution') }}">🔎 Google Search & Distribution</a><a class="btn danger" href="{{ url_for('admin_errors') }}">🛠️ Error Centre</a>
 </div></div>
 """,counts=counts)
+
+@app.route("/admin/errors")
+@admin_required
+def admin_errors():
+    rows=db_select("app_errors",order="created_at.desc",limit=300)
+    return render_page("Admin Error Centre",r'''<div class="hero"><h2>🛠️ Error Centre</h2><p>Technical errors are recorded here. Users receive only safe generic messages.</p></div>{% for e in rows %}<div class="card"><p><b>{{ e.get('created_at') }}</b> · {{ e.get('method') }} {{ e.get('path') }} · {{ e.get('context') }}</p><p><b>User:</b> {{ e.get('user_id') or 'Guest' }}</p><pre style="white-space:pre-wrap;overflow:auto">{{ e.get('message') }}</pre></div>{% else %}<div class="card"><p>No recorded errors.</p></div>{% endfor %}''',rows=rows)
+
+@app.route("/admin/users/<user_id>/status",methods=["POST"])
+@admin_required
+def admin_user_status(user_id):
+    active=request.form.get("is_active")=="1"
+    if str(user_id)==str((current_user() or {}).get("id")) and not active: flash("You cannot deactivate your own administrator account here.","warning")
+    else:
+        _,err=db_update("profiles",{"id":user_id},{"is_active":active})
+        if err: record_error(Exception(err),"admin_user_status"); flash("User status could not be changed.","danger")
+        else: flash("User status updated.","success")
+    return redirect(url_for("admin_users"))
 
 @app.route("/admin/users")
 @admin_required
 def admin_users():
     rows=db_select("profiles",order="created_at.desc",limit=300)
     return render_page("Admin Users",r"""
-<div class="card"><h2>Users</h2><table><tr><th>Name</th><th>Email</th><th>Phone</th><th>Role</th><th>Admin</th></tr>
-{% for u in rows %}<tr><td>{{ u.get("full_name") or u.get("name") }}</td><td>{{ u.get("email") }}</td><td>{{ u.get("phone") or "" }}</td><td>{{ u.get("role") or "" }}</td><td>{{ "Yes" if u.get("is_admin") else "No" }}</td></tr>{% endfor %}
+<div class="card"><h2>Users</h2><table><tr><th>Name</th><th>Email</th><th>Phone</th><th>Role</th><th>Admin</th><th>Status</th><th>Action</th></tr>
+{% for u in rows %}<tr><td>{{ u.get("full_name") or u.get("name") }}</td><td>{{ u.get("email") }}</td><td>{{ u.get("phone") or "" }}</td><td>{{ u.get("role") or "" }}</td><td>{{ "Yes" if u.get("is_admin") else "No" }}</td><td>{{ "Active" if u.get("is_active",True) else "Inactive" }}</td><td><form method="post" action="{{ url_for('admin_user_status',user_id=u.get('id')) }}"><input type="hidden" name="is_active" value="{{ '0' if u.get('is_active',True) else '1' }}"><button>{{ 'Deactivate' if u.get('is_active',True) else 'Reactivate' }}</button></form></td></tr>{% endfor %}
 </table></div>
 """,rows=rows)
 
@@ -2790,7 +2944,7 @@ def too_large(error):
 
 @app.errorhandler(500)
 def internal_error(error):
-    logger.exception("Unhandled application error")
+    record_error(error,"http_500")
     return render_page("Server Error",r"""
 <div class="card"><h2>KOJA AFRICA Server Error</h2><p>The server encountered an unexpected error. Check Render logs for details.</p><a class="btn" href="{{ url_for('home') }}">Return Home</a></div>
 """),500
