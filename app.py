@@ -348,6 +348,42 @@ def first_row(table, filters):
 def current_user():
     return session.get("user")
 
+# Authentication decorators are defined before any route decorators use them.
+def login_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not current_user():
+            flash("Please log in first.", "warning")
+            return redirect(url_for("login", next=request.path))
+        return fn(*args, **kwargs)
+    return wrapper
+
+def admin_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        user = current_user()
+        if not user:
+            flash("Administrator login required.", "warning")
+            return redirect(url_for("login"))
+        if not user.get("is_admin"):
+            flash("Administrator access required.", "danger")
+            return redirect(url_for("dashboard"))
+        return fn(*args, **kwargs)
+    return wrapper
+
+def driver_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        user = current_user()
+        if not user:
+            flash("Driver login required.", "warning")
+            return redirect(url_for("login"))
+        if not user.get("is_admin") and user.get("role") != "driver":
+            flash("Driver access required.", "danger")
+            return redirect(url_for("dashboard"))
+        return fn(*args, **kwargs)
+    return wrapper
+
 def load_user_settings(user_id):
     row=first_row("user_settings", {"user_id": user_id})
     return row or {"user_id":user_id,"theme":"system","language":"en","notify_assignments":True,"notify_delivery":True,"notify_help":True,"notify_announcements":False,"allow_location":True,"allow_research":True,"allow_device_storage":True}
@@ -568,55 +604,6 @@ def delete_storage(path):
         return False
 
 # ============================================================
-# DECORATORS / LOGGING
-# ============================================================
-
-def login_required(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        if not current_user():
-            flash("Please log in first.", "warning")
-            return redirect(url_for("login", next=request.path))
-        return fn(*args, **kwargs)
-    return wrapper
-
-def admin_required(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        user = current_user()
-        if not user:
-            flash("Administrator login required.", "warning")
-            return redirect(url_for("login"))
-        if not user.get("is_admin"):
-            flash("Administrator access required.", "danger")
-            return redirect(url_for("dashboard"))
-        return fn(*args, **kwargs)
-    return wrapper
-
-def driver_required(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        user = current_user()
-        if not user:
-            flash("Driver login required.", "warning")
-            return redirect(url_for("login"))
-        if user.get("role") not in ("driver", "admin") and not user.get("is_admin"):
-            flash("Driver account required.", "danger")
-            return redirect(url_for("dashboard"))
-        return fn(*args, **kwargs)
-    return wrapper
-
-def log_activity(action, description="", user_id=None):
-    uid = user_id or (current_user() or {}).get("id")
-    payload = {"action": action, "description": description}
-    if uid:
-        payload["user_id"] = uid
-    try:
-        db_insert("activity_logs", payload)
-    except Exception:
-        pass
-
-# ============================================================
 # GEOLOCATION
 # ============================================================
 
@@ -714,8 +701,35 @@ footer{text-align:center;color:#667085;padding:30px}
 .actions{display:flex;gap:8px;flex-wrap:wrap}.actions .btn,.actions button{width:auto}
 @media(max-width:650px){nav a{font-size:12px}.container{width:min(100% - 14px,1250px)}table{display:block;overflow-x:auto}#map{height:350px}.actions .btn,.actions button{width:100%}}
 
-@keyframes kojaFadeUp{from{opacity:.0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
-@media (prefers-reduced-motion:no-preference){.hero,.card{animation:kojaFadeUp .45s ease both}.card{transition:transform .2s ease,box-shadow .2s ease}.card:hover{transform:translateY(-2px)}}
+/* KOJA AFRICA motion system: polished, lightweight, mobile-friendly and reduced-motion safe. */
+@keyframes kojaPageIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes kojaHeroIn{from{opacity:0;transform:translateY(18px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)}}
+@keyframes kojaCardIn{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+@keyframes kojaShimmer{from{background-position:200% 0}to{background-position:-200% 0}}
+@keyframes kojaPulse{0%,100%{box-shadow:0 0 0 0 rgba(23,107,135,0)}50%{box-shadow:0 0 0 7px rgba(23,107,135,.10)}}
+@media (prefers-reduced-motion:no-preference){
+  html{scroll-behavior:smooth}
+  body{animation:kojaPageIn .42s cubic-bezier(.22,1,.36,1) both}
+  .hero{animation:kojaHeroIn .65s cubic-bezier(.22,1,.36,1) both;position:relative;overflow:hidden}
+  .hero:after{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(110deg,transparent 20%,rgba(255,255,255,.10) 45%,transparent 70%);background-size:220% 100%;animation:kojaShimmer 5s ease-in-out 1 both}
+  .card,.stat,.alert,.driver-card,table{animation:kojaCardIn .5s cubic-bezier(.22,1,.36,1) both}
+  .grid>.card:nth-child(2){animation-delay:.06s}.grid>.card:nth-child(3){animation-delay:.12s}.grid>.card:nth-child(4){animation-delay:.18s}.grid>.card:nth-child(5){animation-delay:.24s}.grid>.card:nth-child(6){animation-delay:.30s}
+  nav{transition:box-shadow .25s ease,background .25s ease}
+  nav a{transition:transform .2s ease,background .2s ease,color .2s ease}
+  nav a:hover{transform:translateY(-2px);background:rgba(255,255,255,.13)}
+  .btn,button{transition:transform .2s cubic-bezier(.22,1,.36,1),box-shadow .2s ease,filter .2s ease}
+  .btn:hover,button:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(16,35,63,.18);filter:brightness(1.04)}
+  .btn:active,button:active{transform:translateY(0) scale(.98);box-shadow:none}
+  .card,.stat,.driver-card{transition:transform .25s cubic-bezier(.22,1,.36,1),box-shadow .25s ease,border-color .25s ease}
+  .card:hover,.stat:hover,.driver-card:hover{transform:translateY(-4px);box-shadow:0 12px 30px rgba(16,35,63,.11)}
+  input,select,textarea{transition:border-color .2s ease,box-shadow .2s ease,transform .2s ease}
+  input:focus,select:focus,textarea:focus{outline:none;border-color:#176b87;box-shadow:0 0 0 4px rgba(23,107,135,.12);transform:translateY(-1px)}
+  .online{animation:kojaPulse 2.2s ease-in-out infinite}
+}
+@media(max-width:650px){
+  @media (prefers-reduced-motion:no-preference){.hero{animation-duration:.5s}.card,.stat,.alert,.driver-card,table{animation-duration:.4s}.card:hover,.stat:hover,.driver-card:hover{transform:translateY(-2px)}}
+}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}}
 </style>
 <script>
 (function(){
