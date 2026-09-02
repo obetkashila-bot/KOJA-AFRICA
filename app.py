@@ -384,6 +384,42 @@ def driver_required(fn):
         return fn(*args, **kwargs)
     return wrapper
 
+def log_activity(action, description="", user_id=None):
+    """Record a non-blocking audit/activity event."""
+    try:
+        uid = user_id or (current_user() or {}).get("id")
+        payload = {
+            "action": clean(action)[:120],
+            "description": clean(description)[:2000],
+        }
+        if uid:
+            payload["user_id"] = str(uid)
+        db_insert("activity_logs", payload)
+    except Exception:
+        logger.exception("Activity logging failed")
+
+def create_notification(user_id, title, message, category="general", link=""):
+    """Create an in-app notification without ever breaking the main request."""
+    try:
+        payload = {
+            "id": str(uuid.uuid4()),
+            "user_id": str(user_id),
+            "title": clean(title)[:200],
+            "message": clean(message)[:5000],
+            "category": clean(category)[:80] or "general",
+            "link": clean(link)[:500],
+            "is_read": False,
+            "created_at": utc_now(),
+        }
+        row, error = db_insert("notifications", payload)
+        if error:
+            logger.error("Notification insert failed: %s", error)
+            return None
+        return row
+    except Exception:
+        logger.exception("Notification creation failed")
+        return None
+
 def load_user_settings(user_id):
     row=first_row("user_settings", {"user_id": user_id})
     return row or {"user_id":user_id,"theme":"system","language":"en","notify_assignments":True,"notify_delivery":True,"notify_help":True,"notify_announcements":False,"allow_location":True,"allow_research":True,"allow_device_storage":True}
