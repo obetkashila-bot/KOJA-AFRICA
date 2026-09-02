@@ -1113,10 +1113,27 @@ def login():
 
 @app.route("/logout")
 def logout():
-    if current_user():
-        log_activity("logout","User logged out.")
-    session.clear()
-    flash("You have been logged out.","success")
+    # Logout must never fail just because activity logging/database is unavailable.
+    # Capture the user before clearing the session, then make session termination
+    # the primary operation. Any logging failure is kept server-side only.
+    try:
+        user = current_user()
+    except Exception:
+        user = None
+
+    if user:
+        try:
+            log_activity("logout", "User logged out.")
+        except Exception:
+            logger.exception("Logout activity logging failed")
+
+    try:
+        session.clear()
+        session.permanent = False
+    except Exception:
+        logger.exception("Session clearing failed during logout")
+
+    flash("You have been logged out.", "success")
     return redirect(url_for("home"))
 
 # ============================================================
