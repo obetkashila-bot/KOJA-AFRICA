@@ -4,6 +4,8 @@ import uuid
 import math
 import secrets
 import logging
+import re
+import time
 from datetime import datetime, timezone, timedelta
 from functools import wraps
 from urllib.parse import quote
@@ -16,6 +18,7 @@ from flask import (
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 # ============================================================
 # KOJA AFRICA
@@ -41,11 +44,22 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("koja-africa")
 
 app = Flask(__name__)
-app.secret_key = os.getenv(
-    "SECRET_KEY",
-    os.getenv("FLASK_SECRET_KEY", secrets.token_hex(32))
+SECRET_KEY = os.getenv("SECRET_KEY", os.getenv("FLASK_SECRET_KEY", "")).strip()
+if len(SECRET_KEY) < 32:
+    SECRET_KEY = secrets.token_hex(32)
+    logger.warning("SECRET_KEY is not set to a strong persistent value; set SECRET_KEY in Render for persistent sessions.")
+app.secret_key = SECRET_KEY
+app.config.update(
+    MAX_CONTENT_LENGTH=15 * 1024 * 1024,
+    MAX_FORM_MEMORY_SIZE=512 * 1024,
+    MAX_FORM_PARTS=100,
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SECURE=os.getenv("COOKIE_SECURE", "1") != "0",
+    SESSION_COOKIE_SAMESITE="Lax",
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
+    SESSION_REFRESH_EACH_REQUEST=True,
 )
-app.config["MAX_CONTENT_LENGTH"] = 15 * 1024 * 1024
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_SERVICE_KEY = (
@@ -60,7 +74,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.02-PUBLISHING-FIXED"
+APP_VERSION = "2026.09.02-FINAL-SECURE-GPS"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -74,6 +88,63 @@ ALLOWED_EXTENSIONS = {
     "pdf", "doc", "docx", "txt",
     "jpg", "jpeg", "png", "webp"
 }
+
+# Security controls
+RATE_LIMITS = {
+    "/login": (10, 900),
+    "/register": (5, 900),
+    "/api/driver/location": (120, 60),
+    "/api/delivery/request": (20, 60),
+    "/api/nearby-drivers": (60, 60),
+}
+_rate_store = {}
+_failed_logins = {}
+
+def client_ip():
+    return request.remote_addr or "unknown"
+
+def rate_limited(key, limit, window):
+    now = time.time()
+    bucket = _rate_store.get(key, [])
+    bucket = [t for t in bucket if now - t < window]
+    if len(bucket) >= limit:
+        _rate_store[key] = bucket
+        return True
+    bucket.append(now)
+    _rate_store[key] = bucket
+    return False
+
+def password_is_strong(password):
+    return bool(re.fullmatch(r"(?=.*[A-Za-z])(?=.*\d).{10,128}", password or ""))
+
+def audit_security(event, detail=""):
+    logger.info("SECURITY event=%s ip=%s detail=%s", event, client_ip(), detail[:300])
+
+@app.before_request
+def security_gate():
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        limit = RATE_LIMITS.get(request.path)
+        if limit and rate_limited(f"rl:{request.path}:{client_ip()}", *limit):
+            return jsonify({"error": "Too many requests. Please try again later."}), 429
+    if request.path.startswith("/api/") and request.method != "GET":
+        token = session.get("csrf_token")
+        supplied = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token")
+        if not token or not supplied or not secrets.compare_digest(str(token), str(supplied)):
+            return jsonify({"error": "Security validation failed."}), 403
+
+@app.after_request
+def security_headers(response):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "geolocation=(self), camera=(), microphone=()"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: blob: https://*.tile.openstreetmap.org https://*.openstreetmap.org; connect-src 'self' https://*.supabase.co https://nominatim.openstreetmap.org https://router.project-osrm.org; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+    if request.is_secure:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    if request.path.startswith(("/admin", "/dashboard", "/login", "/register", "/api/")):
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
+        response.headers["Cache-Control"] = "no-store"
+    return response
 
 # ============================================================
 # GENERAL HELPERS
@@ -579,6 +650,9 @@ th,td{border-bottom:1px solid #e4e7ec;padding:9px;text-align:left;vertical-align
 footer{text-align:center;color:#667085;padding:30px}
 .actions{display:flex;gap:8px;flex-wrap:wrap}.actions .btn,.actions button{width:auto}
 @media(max-width:650px){nav a{font-size:12px}.container{width:min(100% - 14px,1250px)}table{display:block;overflow-x:auto}#map{height:350px}.actions .btn,.actions button{width:100%}}
+
+@keyframes kojaFadeUp{from{opacity:.0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+@media (prefers-reduced-motion:no-preference){.hero,.card{animation:kojaFadeUp .45s ease both}.card{transition:transform .2s ease,box-shadow .2s ease}.card:hover{transform:translateY(-2px)}}
 </style>
 </head>
 <body>
@@ -637,7 +711,7 @@ def home():
 <div class="hero">
 <h1>KOJA AFRICA</h1>
 <p>Knowledge • Questions • Answers</p>
-<p>Academic services, university applications, CV creation, farmer registration, professional bookings and delivery services.</p>
+<p>Assignments, documents, professional services, CV creation and delivery services.</p>
 {% if not user %}
 <div class="actions">
 <a class="btn" href="{{ url_for('register') }}">Create Account</a>
@@ -647,9 +721,7 @@ def home():
 </div>
 <div class="grid">
 <div class="card"><h3>Academic</h3><p>Questions, assignments and learning resources.</p><a class="btn" href="{{ url_for('questions') }}">Questions</a></div>
-<div class="card"><h3>University</h3><p>Choose a university, programme and academic year.</p><a class="btn" href="{{ url_for('universities') }}">Universities</a></div>
 <div class="card"><h3>CV</h3><p>Create a professional CV.</p><a class="btn" href="{{ url_for('cv') }}">Create CV</a></div>
-<div class="card"><h3>Farmers</h3><p>Submit agricultural registration information.</p><a class="btn" href="{{ url_for('farmer') }}">Farmer Portal</a></div>
 <div class="card"><h3>Doctors</h3><p>Find a doctor and request an appointment.</p><a class="btn" href="{{ url_for('doctors') }}">Doctors</a></div>
 <div class="card"><h3>Teachers</h3><p>Find teachers/tutors by subject and grade.</p><a class="btn" href="{{ url_for('teachers') }}">Teachers</a></div>
 <div class="card"><h3>Deliveries</h3><p>Find nearby drivers and send delivery requests.</p><a class="btn" href="{{ url_for('deliveries') }}">Delivery</a></div>
@@ -659,14 +731,7 @@ def home():
 
 @app.route("/health")
 def health():
-    return jsonify({
-        "status": "ok",
-        "application": APP_NAME,
-        "supabase_configured": supabase_configured(),
-        "gps_table_available": table_exists("driver_locations"),
-        "timestamp": utc_now(),
-        "python": os.sys.version.split()[0],
-    })
+    return jsonify({"status": "ok", "application": APP_NAME, "version": APP_VERSION})
 
 # ============================================================
 # REGISTER / LOGIN
@@ -687,8 +752,8 @@ def register():
         if not full_name or not email or not password:
             flash("Full name, email and password are required.","danger")
             return redirect(url_for("register"))
-        if len(password) < 6:
-            flash("Password must contain at least 6 characters.","danger")
+        if not password_is_strong(password):
+            flash("Password must contain at least 10 characters and include a letter and a number.","danger")
             return redirect(url_for("register"))
         if find_user_by_email(email):
             flash("An account with this email already exists. Please log in.","warning")
@@ -733,7 +798,7 @@ def register():
 <h2>Create KOJA Account</h2>
 <form method="post">
 <label>Full Name</label><input name="full_name" required>
-<label>Email</label><input name="email" type="email" required>
+<label>Email</label><input name="identifier" type="text" autocomplete="username" required placeholder="Email or admin username">
 <label>Phone</label><input name="phone">
 <label>Account Type</label>
 <select name="role">
@@ -742,7 +807,7 @@ def register():
 <option value="teacher">Teacher / Tutor</option>
 <option value="doctor">Doctor</option>
 </select>
-<label>Password</label><input name="password" type="password" minlength="6" required>
+<label>Password</label><input name="password" type="password" minlength="10" required>
 <button type="submit">Create Account</button>
 </form>
 <p>Already registered? <a href="{{ url_for('login') }}">Login</a></p>
@@ -752,9 +817,16 @@ def register():
 @app.route("/login", methods=["GET","POST"])
 def login():
     if request.method == "POST":
-        email = clean(request.form.get("email")).lower()
+        identifier = clean(request.form.get("identifier") or request.form.get("email")).strip()
+        email = identifier.lower() if "@" in identifier else ""
         password = request.form.get("password","")
-        user = find_user_by_email(email)
+        user = find_user_by_email(email) if email else None
+        if not user and identifier:
+            for table in ("profiles", "koja_users", "users"):
+                rows, _ = db_select(table, filters={"username": f"eq.{identifier}"}, limit=2)
+                if rows and any(bool(r.get("is_admin")) for r in rows):
+                    user = rows[0]
+                    break
 
         # First: existing KOJA profile password.
         if user and password_matches(user,password):
@@ -1202,64 +1274,38 @@ DRIVER_PROFILE_COLUMNS = (
 
 
 def get_driver_provider(user_id):
-    """Return the driver's service provider; supports old/new schemas."""
+    """Return the service_providers row belonging to the logged-in profile."""
     if not user_id:
         return None
-    try:
-        provider = first_row("service_providers", {"user_id": user_id, "provider_type": "driver"})
-        if provider:
-            return provider
-    except Exception:
-        pass
-    try:
-        return first_row("service_providers", {"user_id": user_id})
-    except Exception:
-        return None
+    return first_row("service_providers", {"user_id": user_id, "provider_type": "driver"})
 
 
 def ensure_driver_provider(user):
-    """Create/reuse a driver provider and tolerate legacy schemas."""
-    if not user:
-        return None, "User information is missing."
-    user_id = user.get("id")
-    if not user_id:
-        return None, "User ID is missing."
+    """Create the provider record first; driver_profiles.provider_id points to it."""
+    provider = get_driver_provider(user.get("id"))
+    if provider:
+        return provider, None
 
-    existing = get_driver_provider(user_id)
-    if existing:
-        return existing, None
-
-    full_name = user.get("full_name") or user.get("name") or "Driver"
     payload = {
         "id": str(uuid.uuid4()),
-        "user_id": user_id,
+        "user_id": user.get("id"),
         "provider_type": "driver",
-        "full_name": full_name,
-        "name": full_name,
+        "full_name": user.get("name") or user.get("full_name") or "Driver",
         "phone": user.get("phone") or None,
         "email": user.get("email") or None,
         "verification_status": "pending",
         "is_available": False,
-        "is_active": True
+        "is_active": True,
     }
+    provider, error = db_insert("service_providers", payload)
+    if error:
+        return None, error
+    return provider or payload, None
 
-    try:
-        provider, error = db_insert("service_providers", payload)
-    except Exception as exc:
-        provider, error = None, str(exc)
-    if not error:
-        return provider or payload, None
 
-    legacy = dict(payload)
-    legacy.pop("provider_type", None)
-    try:
-        provider2, error2 = db_insert("service_providers", legacy)
-    except Exception as exc:
-        provider2, error2 = None, str(exc)
-    if not error2:
-        return provider2 or legacy, None
-    return None, error
-
+@app.route("/driver/register", methods=["GET", "POST"])
+@app.route("/drivers/register", methods=["GET", "POST"])
+@login_required
 def driver_register():
     user = current_user() or {}
     provider = get_driver_provider(user.get("id"))
