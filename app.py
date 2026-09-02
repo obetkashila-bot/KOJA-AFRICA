@@ -348,6 +348,42 @@ def first_row(table, filters):
 def current_user():
     return session.get("user")
 
+# Authentication decorators are defined before any route decorators use them.
+def login_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not current_user():
+            flash("Please log in first.", "warning")
+            return redirect(url_for("login", next=request.path))
+        return fn(*args, **kwargs)
+    return wrapper
+
+def admin_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        user = current_user()
+        if not user:
+            flash("Administrator login required.", "warning")
+            return redirect(url_for("login"))
+        if not user.get("is_admin"):
+            flash("Administrator access required.", "danger")
+            return redirect(url_for("dashboard"))
+        return fn(*args, **kwargs)
+    return wrapper
+
+def driver_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        user = current_user()
+        if not user:
+            flash("Driver login required.", "warning")
+            return redirect(url_for("login"))
+        if not user.get("is_admin") and user.get("role") != "driver":
+            flash("Driver access required.", "danger")
+            return redirect(url_for("dashboard"))
+        return fn(*args, **kwargs)
+    return wrapper
+
 def load_user_settings(user_id):
     row=first_row("user_settings", {"user_id": user_id})
     return row or {"user_id":user_id,"theme":"system","language":"en","notify_assignments":True,"notify_delivery":True,"notify_help":True,"notify_announcements":False,"allow_location":True,"allow_research":True,"allow_device_storage":True}
@@ -488,55 +524,6 @@ def _file_owner_allowed(storage_path, user):
             return True
     return False
 
-# DECORATORS / LOGGING
-# ============================================================
-
-def login_required(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        if not current_user():
-            flash("Please log in first.", "warning")
-            return redirect(url_for("login", next=request.path))
-        return fn(*args, **kwargs)
-    return wrapper
-
-def admin_required(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        user = current_user()
-        if not user:
-            flash("Administrator login required.", "warning")
-            return redirect(url_for("login"))
-        if not user.get("is_admin"):
-            flash("Administrator access required.", "danger")
-            return redirect(url_for("dashboard"))
-        return fn(*args, **kwargs)
-    return wrapper
-
-def driver_required(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        user = current_user()
-        if not user:
-            flash("Driver login required.", "warning")
-            return redirect(url_for("login"))
-        if user.get("role") not in ("driver", "admin") and not user.get("is_admin"):
-            flash("Driver account required.", "danger")
-            return redirect(url_for("dashboard"))
-        return fn(*args, **kwargs)
-    return wrapper
-
-def log_activity(action, description="", user_id=None):
-    uid = user_id or (current_user() or {}).get("id")
-    payload = {"action": action, "description": description}
-    if uid:
-        payload["user_id"] = uid
-    try:
-        db_insert("activity_logs", payload)
-    except Exception:
-        pass
-
-
 @app.route("/files/<path:storage_path>")
 @login_required
 def secure_file(storage_path):
@@ -616,7 +603,6 @@ def delete_storage(path):
     except Exception:
         return False
 
-# ============================================================
 # ============================================================
 # GEOLOCATION
 # ============================================================
@@ -715,14 +701,35 @@ footer{text-align:center;color:#667085;padding:30px}
 .actions{display:flex;gap:8px;flex-wrap:wrap}.actions .btn,.actions button{width:auto}
 @media(max-width:650px){nav a{font-size:12px}.container{width:min(100% - 14px,1250px)}table{display:block;overflow-x:auto}#map{height:350px}.actions .btn,.actions button{width:100%}}
 
-@keyframes kojaFadeUp{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:translateY(0)}}
-@keyframes kojaFadeIn{from{opacity:0}to{opacity:1}}
-@keyframes kojaScaleIn{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}
-@keyframes kojaFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
-@keyframes kojaPulse{0%,100%{box-shadow:0 0 0 0 rgba(37,99,235,.12)}50%{box-shadow:0 0 0 8px rgba(37,99,235,0)}}
-@keyframes kojaSpin{to{transform:rotate(360deg)}}
-@media (prefers-reduced-motion:no-preference){body{animation:kojaFadeIn .35s ease both}.hero{animation:kojaFadeUp .6s cubic-bezier(.22,1,.36,1) both}.card,.panel,.table-wrap,form{animation:kojaScaleIn .5s cubic-bezier(.22,1,.36,1) both}.card,.panel,.btn,button,a,input,select,textarea{transition:transform .2s ease,box-shadow .2s ease,opacity .2s ease,background-color .2s ease,border-color .2s ease,color .2s ease}.card:hover,.panel:hover{transform:translateY(-3px);box-shadow:0 10px 28px rgba(16,24,40,.10)}.btn:hover,button:hover{transform:translateY(-1px)}.btn:active,button:active{transform:translateY(0) scale(.98)}nav a{transition:color .2s ease,transform .2s ease}nav a:hover{transform:translateY(-1px)}.hero h1,.hero h2{animation:kojaFadeUp .7s ease both}.hero .btn{animation:kojaFadeUp .8s ease .12s both}.logo,.brand{animation:kojaFloat 4s ease-in-out infinite}.status-online,.online,.live{animation:kojaPulse 2s ease-in-out infinite}.spinner,.loading-spinner{animation:kojaSpin .8s linear infinite}}
-@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
+/* KOJA AFRICA motion system: polished, lightweight, mobile-friendly and reduced-motion safe. */
+@keyframes kojaPageIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes kojaHeroIn{from{opacity:0;transform:translateY(18px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)}}
+@keyframes kojaCardIn{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+@keyframes kojaShimmer{from{background-position:200% 0}to{background-position:-200% 0}}
+@keyframes kojaPulse{0%,100%{box-shadow:0 0 0 0 rgba(23,107,135,0)}50%{box-shadow:0 0 0 7px rgba(23,107,135,.10)}}
+@media (prefers-reduced-motion:no-preference){
+  html{scroll-behavior:smooth}
+  body{animation:kojaPageIn .42s cubic-bezier(.22,1,.36,1) both}
+  .hero{animation:kojaHeroIn .65s cubic-bezier(.22,1,.36,1) both;position:relative;overflow:hidden}
+  .hero:after{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(110deg,transparent 20%,rgba(255,255,255,.10) 45%,transparent 70%);background-size:220% 100%;animation:kojaShimmer 5s ease-in-out 1 both}
+  .card,.stat,.alert,.driver-card,table{animation:kojaCardIn .5s cubic-bezier(.22,1,.36,1) both}
+  .grid>.card:nth-child(2){animation-delay:.06s}.grid>.card:nth-child(3){animation-delay:.12s}.grid>.card:nth-child(4){animation-delay:.18s}.grid>.card:nth-child(5){animation-delay:.24s}.grid>.card:nth-child(6){animation-delay:.30s}
+  nav{transition:box-shadow .25s ease,background .25s ease}
+  nav a{transition:transform .2s ease,background .2s ease,color .2s ease}
+  nav a:hover{transform:translateY(-2px);background:rgba(255,255,255,.13)}
+  .btn,button{transition:transform .2s cubic-bezier(.22,1,.36,1),box-shadow .2s ease,filter .2s ease}
+  .btn:hover,button:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(16,35,63,.18);filter:brightness(1.04)}
+  .btn:active,button:active{transform:translateY(0) scale(.98);box-shadow:none}
+  .card,.stat,.driver-card{transition:transform .25s cubic-bezier(.22,1,.36,1),box-shadow .25s ease,border-color .25s ease}
+  .card:hover,.stat:hover,.driver-card:hover{transform:translateY(-4px);box-shadow:0 12px 30px rgba(16,35,63,.11)}
+  input,select,textarea{transition:border-color .2s ease,box-shadow .2s ease,transform .2s ease}
+  input:focus,select:focus,textarea:focus{outline:none;border-color:#176b87;box-shadow:0 0 0 4px rgba(23,107,135,.12);transform:translateY(-1px)}
+  .online{animation:kojaPulse 2.2s ease-in-out infinite}
+}
+@media(max-width:650px){
+  @media (prefers-reduced-motion:no-preference){.hero{animation-duration:.5s}.card,.stat,.alert,.driver-card,table{animation-duration:.4s}.card:hover,.stat:hover,.driver-card:hover{transform:translateY(-2px)}}
+}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}}
 </style>
 <script>
 (function(){
@@ -1057,66 +1064,90 @@ def questions():
 </div>
 """,rows=rows)
 
+@app.route("/assignment/<assignment_id>/download")
+@login_required
+def download_assignment_file(assignment_id):
+    assignment=first_row("assignments",{"id":assignment_id}); user=current_user() or {}
+    if not assignment: abort(404)
+    owner=str(assignment.get("student_id") or assignment.get("user_id") or "")
+    if not user.get("is_admin") and owner != str(user.get("id")): abort(403)
+    path=assignment.get("file_path")
+    if not path: abort(404)
+    try:
+        r=requests.get(sb_storage_url(path),headers=sb_headers(),timeout=60)
+        if not r.ok: abort(404)
+        return send_file(io.BytesIO(r.content),as_attachment=True,download_name=assignment.get("file_name") or "assignment",mimetype=assignment.get("mime_type") or r.headers.get("Content-Type","application/octet-stream"))
+    except Exception:
+        logger.exception("Assignment download failed"); abort(404)
+
+@app.route("/assignment/<assignment_id>/answer/download")
+@login_required
+def download_assignment_answer(assignment_id):
+    assignment=first_row("assignments",{"id":assignment_id}); user=current_user() or {}
+    if not assignment: abort(404)
+    owner=str(assignment.get("student_id") or assignment.get("user_id") or "")
+    if not user.get("is_admin") and owner != str(user.get("id")): abort(403)
+    path=assignment.get("answer_file_path") or assignment.get("answered_file_path")
+    if not path: abort(404)
+    filename=assignment.get("answer_file_name") or assignment.get("answered_file_name") or "assignment-answer"
+    try:
+        r=requests.get(sb_storage_url(path),headers=sb_headers(),timeout=60)
+        if not r.ok: abort(404)
+        return send_file(io.BytesIO(r.content),as_attachment=True,download_name=filename,mimetype=assignment.get("answer_mime_type") or r.headers.get("Content-Type","application/octet-stream"))
+    except Exception:
+        logger.exception("Answer download failed"); abort(404)
+
+@app.route("/assignment/<assignment_id>/view")
+@login_required
+def view_assignment_file(assignment_id):
+    assignment=first_row("assignments",{"id":assignment_id}); user=current_user() or {}
+    if not assignment: abort(404)
+    owner=str(assignment.get("student_id") or assignment.get("user_id") or "")
+    if not user.get("is_admin") and owner != str(user.get("id")): abort(403)
+    path=assignment.get("file_path")
+    if not path: abort(404)
+    try:
+        r=requests.get(sb_storage_url(path),headers=sb_headers(),timeout=60)
+        if not r.ok: abort(404)
+        return send_file(io.BytesIO(r.content),as_attachment=False,download_name=assignment.get("file_name") or "assignment",mimetype=assignment.get("mime_type") or r.headers.get("Content-Type","application/octet-stream"))
+    except Exception:
+        logger.exception("Assignment preview failed"); abort(404)
+
 @app.route("/assignments", methods=["GET","POST"])
 @login_required
 def assignments():
     user=current_user()
     if request.method=="POST":
-        title=clean(request.form.get("title"))
-        description=clean(request.form.get("description"))
-        file=request.files.get("file")
+        title=clean(request.form.get("title")); description=clean(request.form.get("description")); file=request.files.get("file")
+        if not title:
+            flash("Assignment title is required.","danger"); return redirect(url_for("assignments"))
         uploaded=None
         if file and file.filename:
             uploaded,error=upload_storage(file,"assignments")
             if error:
-                flash(f"Upload failed: {error}","danger")
-                return redirect(url_for("assignments"))
-
-        payload={
-            "id":str(uuid.uuid4()),
-            "student_id":user["id"],"user_id":user["id"],
-            "title":title,"description":description,
-            "status":"submitted","created_at":utc_now()
-        }
+                flash(f"Assignment upload failed: {error}","danger"); return redirect(url_for("assignments"))
+        payload={"id":str(uuid.uuid4()),"student_id":str(user["id"]),"user_id":str(user["id"]),"title":title,"description":description,"status":"submitted"}
         if uploaded:
-            payload.update({
-                "file_name":uploaded["file_name"],
-                "file_path":uploaded["path"],
-                "file_url":uploaded["url"],
-                "file_size":uploaded["file_size"],
-                "mime_type":uploaded["mime_type"]
-            })
+            payload.update({"file_name":uploaded["file_name"],"file_path":uploaded["path"],"file_url":uploaded["url"],"file_size":uploaded["file_size"],"mime_type":uploaded["mime_type"]})
         row,error=db_insert("assignments",payload)
         if error:
-            minimal={"id":str(uuid.uuid4()),"title":title,"description":description}
-            if uploaded:
-                minimal.update({"file_name":uploaded["file_name"],"file_path":uploaded["path"],"file_url":uploaded["url"]})
-            row,error=db_insert("assignments",minimal)
+            logger.error("Assignment insert failed: %s",error)
+            core={k:payload[k] for k in ("id","student_id","user_id","title","description","status")}
+            row,error=db_insert("assignments",core)
         if error:
-            flash("Assignment could not be saved. Check assignments table columns.","danger")
+            if uploaded: delete_storage(uploaded["path"])
+            flash("Assignment could not be saved. Please run the KOJA assignments database migration in Supabase.","danger")
         else:
             flash("Assignment uploaded successfully.","success")
+            try: create_notification(user["id"],"Assignment submitted",f"Your assignment '{title}' was submitted successfully.","assignment",url_for("assignments"))
+            except Exception: pass
         return redirect(url_for("assignments"))
-
     rows=db_select("assignments",filters={"student_id":user["id"]},order="created_at.desc",limit=100)
+    if not rows: rows=db_select("assignments",filters={"user_id":user["id"]},order="created_at.desc",limit=100)
     return render_page("Assignments",r"""
-<div class="card"><h2>Upload Assignment</h2>
-<form method="post" enctype="multipart/form-data">
-<label>Assignment Title</label><input name="title" required>
-<label>Description / Question</label><textarea name="description"></textarea>
-<label>Assignment File</label><input type="file" name="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png">
-<button type="submit">Upload Assignment</button>
-</form></div>
-<div class="card"><h2>Assignments</h2>
-{% for item in rows %}
-<div class="card"><h3>{{ item.get("title") or "Assignment" }}</h3>
-<p>{{ item.get("description") or "" }}</p>
-{% if item.get("file_url") %}<a class="btn" href="{{ item.get('file_url') }}" target="_blank">Download File</a>{% endif %}
-{% if item.get("answer_file_url") %}<a class="btn success" href="{{ item.get('answer_file_url') }}" target="_blank">Download Answer</a>{% endif %}
-{% if item.get("answered_file_url") %}<a class="btn success" href="{{ item.get('answered_file_url') }}" target="_blank">Download Answered File</a>{% endif %}
-</div>
-{% else %}<p>No assignments found.</p>{% endfor %}
-</div>
+<div class="hero"><h2>Assignments</h2><p>Upload assignments, track answers, and download completed answer files.</p></div>
+<div class="card"><h2>Upload Assignment</h2><form method="post" enctype="multipart/form-data"><label>Assignment Title</label><input name="title" required placeholder="e.g. Biology Assignment 1"><label>Description / Question</label><textarea name="description"></textarea><label>Assignment File</label><input type="file" name="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp"><p class="muted">PDF is recommended for direct browser viewing.</p><button type="submit">Upload Assignment</button></form></div>
+<div class="card"><h2>My Assignments</h2>{% for item in rows %}<div class="card"><h3>{{ item.get('title') or 'Assignment' }}</h3><p>{{ item.get('description') or '' }}</p><p><span class="badge">{{ item.get('status') or 'Submitted' }}</span></p>{% if item.get('file_path') %}<a class="btn" href="{{ url_for('view_assignment_file',assignment_id=item.get('id')) }}" target="_blank">View Assignment / PDF</a> <a class="btn secondary" href="{{ url_for('download_assignment_file',assignment_id=item.get('id')) }}">Download Assignment</a>{% elif item.get('file_url') %}<a class="btn" href="{{ item.get('file_url') }}" target="_blank">Open Assignment</a>{% endif %}{% if item.get('answer') %}<div class="card"><strong>Administrator Answer</strong><p style="white-space:pre-wrap">{{ item.get('answer') }}</p></div>{% endif %}{% if item.get('answer_file_path') or item.get('answered_file_path') %}<a class="btn success" href="{{ url_for('download_assignment_answer',assignment_id=item.get('id')) }}">Download Answer</a>{% elif item.get('answer_file_url') %}<a class="btn success" href="{{ item.get('answer_file_url') }}" target="_blank">Download Answer</a>{% endif %}</div>{% else %}<p>No assignments found.</p>{% endfor %}</div>
 """,rows=rows)
 
 # ============================================================
@@ -1214,168 +1245,74 @@ def cv():
 # RESEARCH / KOJA HELP
 # ============================================================
 
-def _research_provider_duckduckgo(q):
-    """Return public DuckDuckGo HTML results. Never raises for network errors."""
-    import re as _re
-    from html import unescape
-    try:
-        r=requests.get(
-            "https://html.duckduckgo.com/html/",
-            params={"q":q},
-            headers={"User-Agent":"Mozilla/5.0 (compatible; KOJA-AFRICA/2026.09)"},
-            timeout=(5,10),
-        )
-        if not r.ok:
-            return []
-        html=r.text
-        blocks=_re.findall(r'<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',html,re.I|re.S)
-        snippets=_re.findall(r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',html,re.I|re.S)
-        out=[]
-        for i,(href,title) in enumerate(blocks[:12]):
-            title=_re.sub(r'<.*?>','',unescape(title)).strip()
-            href=unescape(href)
-            sn=_re.sub(r'<.*?>','',unescape(snippets[i] if i<len(snippets) else '')).strip()
-            if title and href:
-                out.append({"title":title,"url":href,"snippet":sn,"source":"DuckDuckGo"})
-        return out
-    except requests.RequestException:
-        return []
-
-
-def _research_provider_bing(q):
-    """Best-effort Bing public HTML search; returns [] if unavailable."""
-    import re as _re
-    from html import unescape
-    try:
-        r=requests.get(
-            "https://www.bing.com/search",
-            params={"q":q},
-            headers={"User-Agent":"Mozilla/5.0 (compatible; KOJA-AFRICA/2026.09)"},
-            timeout=(5,10),
-        )
-        if not r.ok:
-            return []
-        html=r.text
-        blocks=_re.findall(r'<li[^>]*class="b_algo"[^>]*>.*?<h2>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>',html,re.I|re.S)
-        out=[]
-        for href,title in blocks[:12]:
-            title=_re.sub(r'<.*?>','',unescape(title)).strip()
-            href=unescape(href)
-            if title and href:
-                out.append({"title":title,"url":href,"snippet":"","source":"Bing"})
-        return out
-    except requests.RequestException:
-        return []
-
-
-def _research_provider_google(q):
-    """Best-effort Google public HTML search; returns [] if blocked/unavailable."""
-    import re as _re
-    from html import unescape
-    try:
-        r=requests.get(
-            "https://www.google.com/search",
-            params={"q":q,"num":10},
-            headers={"User-Agent":"Mozilla/5.0 (compatible; KOJA-AFRICA/2026.09)"},
-            timeout=(5,10),
-        )
-        if not r.ok:
-            return []
-        html=r.text
-        out=[]
-        # Google markup changes frequently. Extract direct result URLs from links
-        # surrounding h3 headings, and also support Google's /url?q= redirect format.
-        for raw_href,title in _re.findall(r'<a[^>]+href="([^"]+)"[^>]*>.*?<h3[^>]*>(.*?)</h3>',html,re.I|re.S):
-            title=_re.sub(r'<.*?>','',unescape(title)).strip()
-            href=unescape(raw_href)
-            if href.startswith('/url?q='):
-                href=href.split('/url?q=',1)[1].split('&',1)[0]
-            if href.startswith('http') and title:
-                out.append({"title":title,"url":href,"snippet":"","source":"Google"})
-        # Fallback pattern for direct result links.
-        if not out:
-            for href,title in _re.findall(r'<a[^>]+href="(https?://[^" ]+)"[^>]*>.*?<h3[^>]*>(.*?)</h3>',html,re.I|re.S):
-                title=_re.sub(r'<.*?>','',unescape(title)).strip()
-                if title:
-                    out.append({"title":title,"url":unescape(href),"snippet":"","source":"Google"})
-        return out[:12]
-    except requests.RequestException:
-        return []
-
-
-
-def _research_provider_wikipedia(q):
-    """Reliable public knowledge fallback using Wikipedia's public API."""
-    try:
-        r=requests.get(
-            "https://en.wikipedia.org/w/api.php",
-            params={"action":"query","list":"search","srsearch":q,"format":"json","utf8":1,"srlimit":8},
-            headers={"User-Agent":"KOJA-AFRICA/2026.09 research"},
-            timeout=(5,10),
-        )
-        if not r.ok:
-            return []
-        data=r.json()
-        out=[]
-        for item in data.get("query",{}).get("search",[]):
-            title=item.get("title","").strip()
-            if not title:
-                continue
-            out.append({"title":title,"url":"https://en.wikipedia.org/wiki/"+title.replace(" ","_"),"snippet":item.get("snippet",""),"source":"Wikipedia"})
-        return out
-    except Exception:
-        return []
-
-def _merge_research_results(groups, limit=25):
-    """Deduplicate public search results by URL/title."""
-    merged=[]
-    seen=set()
-    for group in groups:
-        for item in group:
-            url=(item.get("url") or "").strip()
-            key=url.lower().split("#",1)[0] if url else (item.get("title") or "").lower()
-            if not key or key in seen:
-                continue
-            seen.add(key)
-            merged.append(item)
-            if len(merged)>=limit:
-                return merged
-    return merged
-
-
 @app.route("/research",methods=["GET","POST"])
 def research():
     q=clean(request.values.get("q"))[:200]
     results=[]
     error=""
-    providers_used=[]
+    providers=[]
     if q:
-        # Do not let one provider failure make the whole research service fail.
-        provider_calls=[
-            ("Google",_research_provider_google),
-            ("Bing",_research_provider_bing),
-            ("DuckDuckGo",_research_provider_duckduckgo),
-            ("Wikipedia",_research_provider_wikipedia),
-        ]
-        groups=[]
-        for name,provider in provider_calls:
+        import re as _re
+        from html import unescape
+        from urllib.parse import quote_plus, unquote
+        headers={"User-Agent":"Mozilla/5.0 (compatible; KOJA-AFRICA/1.0; +https://koja-africa.onrender.com/)"}
+
+        # Provider 1: Wikipedia REST search. This is a stable fallback when a
+        # general search engine blocks server-side requests from cloud hosts.
+        try:
+            wr=requests.get("https://en.wikipedia.org/w/api.php",params={
+                "action":"query","list":"search","srsearch":q,"format":"json","utf8":1,"srlimit":6
+            },headers=headers,timeout=8)
+            if wr.ok:
+                data=wr.json()
+                for item in data.get("query",{}).get("search",[])[:6]:
+                    title=unescape(item.get("title","")).strip()
+                    snippet=_re.sub(r"<.*?>","",unescape(item.get("snippet","")).strip())
+                    if title:
+                        results.append({"title":title,"url":"https://en.wikipedia.org/wiki/"+quote_plus(title.replace(" ","_")),"snippet":snippet,"source":"Wikipedia"})
+                if results: providers.append("Wikipedia")
+        except (requests.RequestException, ValueError):
+            pass
+
+        # Provider 2: DuckDuckGo HTML search, with a more browser-like request.
+        if len(results)<10:
             try:
-                found=provider(q)
-                if found:
-                    providers_used.append(name)
-                    groups.append(found)
-            except Exception:
-                logger.exception("Research provider %s failed",name)
-        results=_merge_research_results(groups,25)
+                r=requests.get("https://html.duckduckgo.com/html/",params={"q":q,"kl":"wt-wt"},headers=headers,timeout=10)
+                if r.ok:
+                    html=r.text
+                    blocks=_re.findall(r'<a[^>]+class=["\']result__a["\'][^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',html,_re.I|_re.S)
+                    snippets=_re.findall(r'<(?:a|div)[^>]+class=["\']result__snippet["\'][^>]*>(.*?)</(?:a|div)>',html,_re.I|_re.S)
+                    for i,(href,title) in enumerate(blocks[:10]):
+                        title=_re.sub(r'<.*?>','',unescape(title)).strip()
+                        href=unescape(href)
+                        if href.startswith("//"): href="https:"+href
+                        # DDG may return a redirect URL; extract its target when possible.
+                        m=_re.search(r"uddg=([^&]+)",href)
+                        if m: href=unquote(m.group(1))
+                        sn=_re.sub(r'<.*?>','',unescape(snippets[i] if i<len(snippets) else '')).strip()
+                        if title and href and not any(x.get("url")==href for x in results):
+                            results.append({"title":title,"url":href,"snippet":sn,"source":"Web"})
+                    if blocks: providers.append("Web search")
+            except requests.RequestException:
+                pass
+
+        # If cloud-hosted outbound search is unavailable, keep the feature useful
+        # by giving the user direct browser search options instead of a dead page.
         if not results:
-            error="Internet search providers are unavailable right now. You can still use Search everywhere below to open public search services directly."
+            error="Live search providers could not be reached from the server. Use one of the direct search options below; they open in your browser."
+            results=[
+                {"title":"Search Google","url":"https://www.google.com/search?q="+quote_plus(q),"snippet":"Open this research topic in Google Search.","source":"Google"},
+                {"title":"Search Bing","url":"https://www.bing.com/search?q="+quote_plus(q),"snippet":"Open this research topic in Bing Search.","source":"Bing"},
+                {"title":"Search DuckDuckGo","url":"https://duckduckgo.com/?q="+quote_plus(q),"snippet":"Open this research topic in DuckDuckGo.","source":"DuckDuckGo"}
+            ]
     return render_page("Internet Research",r"""
-<div class="hero"><h2>🔎 Internet Research</h2><p>Search current public information on the internet. KOJA tries multiple search providers and keeps working when one is unavailable.</p></div>
-<div class="card"><form method="get"><label>Research topic</label><input name="q" value="{{ q }}" placeholder="e.g. renewable energy in Zambia" required><button type="submit">Search Internet</button></form>
-{% if q %}<p class="muted">Providers responding: {{ providers_used|join(', ') if providers_used else 'none' }}</p>{% endif %}</div>
-{% if error %}<div class="card"><p>{{ error }}</p><div class="actions"><a class="btn" target="_blank" rel="noopener noreferrer" href="https://www.google.com/search?q={{ q|urlencode }}">Google</a><a class="btn" target="_blank" rel="noopener noreferrer" href="https://www.bing.com/search?q={{ q|urlencode }}">Bing</a><a class="btn" target="_blank" rel="noopener noreferrer" href="https://duckduckgo.com/?q={{ q|urlencode }}">DuckDuckGo</a></div></div>{% endif %}
-{% for x in results %}<div class="card"><h3>{{ x.title }}</h3><p>{{ x.snippet }}</p><small>Source: {{ x.source }}</small><br><a class="btn" href="{{ x.url }}" target="_blank" rel="noopener noreferrer">Open Source</a></div>{% else %}{% if q and not error %}<div class="card"><p>No results found. Try a different search phrase.</p></div>{% endif %}{% endfor %}
-""",q=q,results=results,error=error,providers_used=providers_used)
+<div class="hero"><h2>🔎 Internet Research</h2><p>Search current public information on the internet. Verify important information with the original source.</p></div>
+<div class="card"><form method="get"><label>Research topic</label><input name="q" value="{{ q }}" placeholder="e.g. renewable energy in Zambia" required><button type="submit">Search Internet</button></form></div>
+{% if providers %}<div class="card"><p class="small">Sources searched: {{ providers|join(', ') }}</p></div>{% endif %}
+{% if error %}<div class="card"><p>{{ error }}</p></div>{% endif %}
+{% for x in results %}<div class="card"><h3>{{ x.title }}</h3><p>{{ x.snippet }}</p><p class="small">{{ x.source }}</p><a class="btn" href="{{ x.url }}" target="_blank" rel="noopener noreferrer">Open Source</a></div>{% else %}{% if q and not error %}<div class="card"><p>No results found. Try a different search phrase.</p></div>{% endif %}{% endfor %}
+""",q=q,results=results,error=error,providers=providers)
+
 
 @app.route("/help",methods=["GET","POST"])
 @login_required
@@ -2591,19 +2528,8 @@ def sitemap_xml():
 def admin_assignments():
     rows=db_select("assignments",order="created_at.desc",limit=500)
     return render_page("Admin Assignments",r"""
-<div class="hero"><h2>Assignment Answer Centre</h2><p>Review student assignments, write answers, attach answer files and publish responses.</p></div>
-{% for x in rows %}
-<div class="card"><h3>{{ x.get('title') or 'Assignment' }}</h3><p><b>Student:</b> {{ x.get('student_id') }}</p><p>{{ x.get('description') or '' }}</p>
-{% if x.get('file_url') %}<a class="btn secondary" href="{{ url_for('secure_file', storage_path=x.get('file_path')) if x.get('file_path') else x.get('file_url') }}" target="_blank">Open Student File</a>{% endif %}
-<form method="post" action="{{ url_for('admin_answer_assignment',assignment_id=x.get('id')) }}" enctype="multipart/form-data">
-<label>Administrator Answer</label><textarea name="answer" placeholder="Write the complete answer...">{{ x.get('answer') or '' }}</textarea>
-<label>Answer PDF / Word / Text (optional)</label><input type="file" name="answer_file" accept=".pdf,.doc,.docx,.txt">
-<button type="submit">Save Answer &amp; Publish</button>
-</form>
-{% if x.get('answer_file_url') %}<a class="btn success" href="{{ url_for('secure_file', storage_path=x.get('answer_file_path')) if x.get('answer_file_path') else x.get('answer_file_url') }}" target="_blank">Open Answer File</a>{% endif %}
-{% if x.get('answer') %}<div class="card"><strong>Current Answer</strong><p style="white-space:pre-wrap">{{ x.get('answer') }}</p></div>{% endif %}
-</div>
-{% else %}<div class="card"><p>No assignments submitted.</p></div>{% endfor %}
+<div class="hero"><h2>Assignment Answer Centre</h2><p>Review user submissions, view PDFs, download assignments, answer them and publish answer files.</p></div>
+{% for x in rows %}<div class="card"><h3>{{ x.get('title') or 'Assignment' }}</h3><p><b>Student ID:</b> {{ x.get('student_id') or x.get('user_id') or 'Unknown' }}</p><p>{{ x.get('description') or '' }}</p><p><span class="badge">{{ x.get('status') or 'Submitted' }}</span></p>{% if x.get('file_path') %}<a class="btn" href="{{ url_for('view_assignment_file',assignment_id=x.get('id')) }}" target="_blank">View Student PDF / File</a> <a class="btn secondary" href="{{ url_for('download_assignment_file',assignment_id=x.get('id')) }}">Download Student Assignment</a>{% elif x.get('file_url') %}<a class="btn" href="{{ x.get('file_url') }}" target="_blank">Open Student File</a>{% endif %}<form method="post" action="{{ url_for('admin_answer_assignment',assignment_id=x.get('id')) }}" enctype="multipart/form-data"><label>Administrator Answer</label><textarea name="answer" placeholder="Write the complete answer...">{{ x.get('answer') or '' }}</textarea><label>Answer PDF / Word / Text</label><input type="file" name="answer_file" accept=".pdf,.doc,.docx,.txt"><button type="submit">Save Answer &amp; Publish</button></form>{% if x.get('answer') %}<div class="card"><strong>Current Answer</strong><p style="white-space:pre-wrap">{{ x.get('answer') }}</p></div>{% endif %}{% if x.get('answer_file_path') or x.get('answered_file_path') %}<a class="btn success" href="{{ url_for('download_assignment_answer',assignment_id=x.get('id')) }}">Download Answer File</a>{% elif x.get('answer_file_url') %}<a class="btn success" href="{{ x.get('answer_file_url') }}" target="_blank">Open Answer File</a>{% endif %}</div>{% else %}<div class="card"><p>No assignments submitted.</p></div>{% endfor %}
 """,rows=rows)
 
 @app.route("/admin/assignments/<assignment_id>/answer",methods=["POST"])
@@ -2611,27 +2537,27 @@ def admin_assignments():
 def admin_answer_assignment(assignment_id):
     assignment=first_row("assignments",{"id":assignment_id})
     if not assignment: abort(404)
-    answer=clean(request.form.get("answer"))
-    f=request.files.get("answer_file")
-    if not answer and not (f and f.filename):
-        flash("Write an answer or attach an answer file.","danger")
-        return redirect(url_for("admin_assignments"))
-    update={"status":"answered","answered_at":utc_now(),"answer_by":(current_user() or {}).get("name","Admin")}
-    if answer:update["answer"]=answer
+    answer=clean(request.form.get("answer")); f=request.files.get("answer_file")
+    if not answer and not (f and f.filename): flash("Write an answer or attach an answer file.","danger"); return redirect(url_for("admin_assignments"))
+    admin=current_user() or {}; update={"status":"answered","answered_at":utc_now(),"answered_by":admin.get("id")}
+    if answer: update["answer"]=answer
+    uploaded=None
     if f and f.filename:
         uploaded,error=upload_storage(f,f"assignment-answers/{assignment_id}")
-        if error:
-            flash(f"Answer upload failed: {error}","danger")
-            return redirect(url_for("admin_assignments"))
-        update.update({"answer_file_name":uploaded["file_name"],"answer_file_path":uploaded["path"],"answer_file_url":uploaded["url"],"answer_file_size":uploaded["file_size"],"answer_mime_type":uploaded["mime_type"]})
+        if error: flash(f"Answer upload failed: {error}","danger"); return redirect(url_for("admin_assignments"))
+        update.update({"answer_file_name":uploaded["file_name"],"answer_file_path":uploaded["path"],"answer_file_url":uploaded["url"],"answered_file_name":uploaded["file_name"],"answered_file_path":uploaded["path"],"answered_file_url":uploaded["url"]})
     _,error=db_update("assignments",{"id":assignment_id},update)
     if error:
-        # retry with only broadly expected columns
-        minimal={k:update[k] for k in ("status","answered_at","answer") if k in update}
+        minimal={k:update[k] for k in ("status","answered_at","answered_by","answer") if k in update}
         _,error=db_update("assignments",{"id":assignment_id},minimal)
-    if error: flash("Could not save assignment answer.","danger")
+        if error and "answered_by" in minimal:
+            minimal.pop("answered_by",None); _,error=db_update("assignments",{"id":assignment_id},minimal)
+        if error and uploaded: delete_storage(uploaded["path"])
+    if error: flash("Could not save assignment answer. Check the assignments table columns.","danger")
     else:
         flash("Assignment answer saved and published to the student.","success")
+        try: create_notification(assignment.get("student_id") or assignment.get("user_id"),"Assignment answered",f"Your assignment '{assignment.get('title') or 'Assignment'}' has been answered.","assignment",url_for("assignments"))
+        except Exception: pass
         log_activity("assignment_answered","Administrator answered an assignment.")
     return redirect(url_for("admin_assignments"))
 
