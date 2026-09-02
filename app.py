@@ -2485,6 +2485,14 @@ def admin_search_distribution():
 @app.route("/robots.txt")
 def robots_txt():
     lines = [
+        "User-agent: Googlebot",
+        "Allow: /",
+        "Disallow: /admin",
+        "Disallow: /login",
+        "Disallow: /register",
+        "Disallow: /dashboard",
+        "Disallow: /api/",
+        "",
         "User-agent: *",
         "Allow: /",
         "Disallow: /admin",
@@ -2492,6 +2500,7 @@ def robots_txt():
         "Disallow: /register",
         "Disallow: /dashboard",
         "Disallow: /api/",
+        "",
         f"Sitemap: {SITE_URL}/sitemap.xml",
     ]
     return ("\n".join(lines) + "\n", 200, {"Content-Type": "text/plain; charset=utf-8"})
