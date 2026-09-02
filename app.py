@@ -1064,91 +1064,101 @@ def questions():
 </div>
 """,rows=rows)
 
-@app.route("/assignment/<assignment_id>/download")
-@login_required
-def download_assignment_file(assignment_id):
-    assignment=first_row("assignments",{"id":assignment_id}); user=current_user() or {}
-    if not assignment: abort(404)
-    owner=str(assignment.get("student_id") or assignment.get("user_id") or "")
-    if not user.get("is_admin") and owner != str(user.get("id")): abort(403)
-    path=assignment.get("file_path")
-    if not path: abort(404)
-    try:
-        r=requests.get(sb_storage_url(path),headers=sb_headers(),timeout=60)
-        if not r.ok: abort(404)
-        return send_file(io.BytesIO(r.content),as_attachment=True,download_name=assignment.get("file_name") or "assignment",mimetype=assignment.get("mime_type") or r.headers.get("Content-Type","application/octet-stream"))
-    except Exception:
-        logger.exception("Assignment download failed"); abort(404)
-
-@app.route("/assignment/<assignment_id>/answer/download")
-@login_required
-def download_assignment_answer(assignment_id):
-    assignment=first_row("assignments",{"id":assignment_id}); user=current_user() or {}
-    if not assignment: abort(404)
-    owner=str(assignment.get("student_id") or assignment.get("user_id") or "")
-    if not user.get("is_admin") and owner != str(user.get("id")): abort(403)
-    path=assignment.get("answer_file_path") or assignment.get("answered_file_path")
-    if not path: abort(404)
-    filename=assignment.get("answer_file_name") or assignment.get("answered_file_name") or "assignment-answer"
-    try:
-        r=requests.get(sb_storage_url(path),headers=sb_headers(),timeout=60)
-        if not r.ok: abort(404)
-        return send_file(io.BytesIO(r.content),as_attachment=True,download_name=filename,mimetype=assignment.get("answer_mime_type") or r.headers.get("Content-Type","application/octet-stream"))
-    except Exception:
-        logger.exception("Answer download failed"); abort(404)
-
-@app.route("/assignment/<assignment_id>/view")
-@login_required
-def view_assignment_file(assignment_id):
-    assignment=first_row("assignments",{"id":assignment_id}); user=current_user() or {}
-    if not assignment: abort(404)
-    owner=str(assignment.get("student_id") or assignment.get("user_id") or "")
-    if not user.get("is_admin") and owner != str(user.get("id")): abort(403)
-    path=assignment.get("file_path")
-    if not path: abort(404)
-    try:
-        r=requests.get(sb_storage_url(path),headers=sb_headers(),timeout=60)
-        if not r.ok: abort(404)
-        return send_file(io.BytesIO(r.content),as_attachment=False,download_name=assignment.get("file_name") or "assignment",mimetype=assignment.get("mime_type") or r.headers.get("Content-Type","application/octet-stream"))
-    except Exception:
-        logger.exception("Assignment preview failed"); abort(404)
-
 @app.route("/assignments", methods=["GET","POST"])
 @login_required
 def assignments():
-    user=current_user()
-    if request.method=="POST":
-        title=clean(request.form.get("title")); description=clean(request.form.get("description")); file=request.files.get("file")
+    user = current_user()
+    if not user or not user.get("id"):
+        flash("Your account session is invalid. Please log in again.", "danger")
+        return redirect(url_for("login"))
+
+    if request.method == "POST":
+        title = clean(request.form.get("title"))
+        description = clean(request.form.get("description"))
+        file = request.files.get("file")
+
         if not title:
-            flash("Assignment title is required.","danger"); return redirect(url_for("assignments"))
-        uploaded=None
+            flash("Assignment title is required.", "danger")
+            return redirect(url_for("assignments"))
+
+        uploaded = None
         if file and file.filename:
-            uploaded,error=upload_storage(file,"assignments")
+            uploaded, error = upload_storage(file, "assignments")
             if error:
-                flash(f"Assignment upload failed: {error}","danger"); return redirect(url_for("assignments"))
-        payload={"id":str(uuid.uuid4()),"student_id":str(user["id"]),"user_id":str(user["id"]),"title":title,"description":description,"status":"submitted"}
+                flash(f"Upload failed: {error}", "danger")
+                return redirect(url_for("assignments"))
+
+        # The live KOJA database uses profiles.id as the student's UUID.
+        # assignments.student_id has a foreign key to profiles(id).
+        student_id = str(user["id"])
+        payload = {
+            "id": str(uuid.uuid4()),
+            "student_id": student_id,
+            "user_id": student_id,
+            "title": title,
+            "description": description,
+            "status": "submitted",
+            "created_at": utc_now(),
+            "updated_at": utc_now(),
+        }
         if uploaded:
-            payload.update({"file_name":uploaded["file_name"],"file_path":uploaded["path"],"file_url":uploaded["url"],"file_size":uploaded["file_size"],"mime_type":uploaded["mime_type"]})
-        row,error=db_insert("assignments",payload)
+            payload.update({
+                "file_name": uploaded["file_name"],
+                "file_path": uploaded["path"],
+                "file_url": uploaded["url"],
+                "file_size": uploaded["file_size"],
+                "mime_type": uploaded["mime_type"],
+            })
+
+        row, error = db_insert("assignments", payload)
         if error:
-            logger.error("Assignment insert failed: %s",error)
-            core={k:payload[k] for k in ("id","student_id","user_id","title","description","status")}
-            row,error=db_insert("assignments",core)
-        if error:
-            if uploaded: delete_storage(uploaded["path"])
-            flash("Assignment could not be saved. Please run the KOJA assignments database migration in Supabase.","danger")
+            logger.error("Assignment insert failed for student %s: %s", student_id, error)
+            if uploaded:
+                try:
+                    delete_storage(uploaded["path"])
+                except Exception:
+                    logger.exception("Could not clean up assignment upload after database failure")
+            flash("Assignment could not be saved. Please try again. If it continues, check the Render logs for the exact database error.", "danger")
         else:
-            flash("Assignment uploaded successfully.","success")
-            try: create_notification(user["id"],"Assignment submitted",f"Your assignment '{title}' was submitted successfully.","assignment",url_for("assignments"))
-            except Exception: pass
+            log_activity("assignment_created", f"Student submitted assignment: {title}")
+            try:
+                create_notification(
+                    student_id,
+                    "Assignment submitted",
+                    f"Your assignment '{title}' was submitted successfully and is awaiting review.",
+                    "assignment",
+                    "/assignments",
+                )
+            except Exception:
+                logger.exception("Assignment notification failed")
+            flash("Assignment uploaded successfully.", "success")
         return redirect(url_for("assignments"))
-    rows=db_select("assignments",filters={"student_id":user["id"]},order="created_at.desc",limit=100)
-    if not rows: rows=db_select("assignments",filters={"user_id":user["id"]},order="created_at.desc",limit=100)
-    return render_page("Assignments",r"""
-<div class="hero"><h2>Assignments</h2><p>Upload assignments, track answers, and download completed answer files.</p></div>
-<div class="card"><h2>Upload Assignment</h2><form method="post" enctype="multipart/form-data"><label>Assignment Title</label><input name="title" required placeholder="e.g. Biology Assignment 1"><label>Description / Question</label><textarea name="description"></textarea><label>Assignment File</label><input type="file" name="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp"><p class="muted">PDF is recommended for direct browser viewing.</p><button type="submit">Upload Assignment</button></form></div>
-<div class="card"><h2>My Assignments</h2>{% for item in rows %}<div class="card"><h3>{{ item.get('title') or 'Assignment' }}</h3><p>{{ item.get('description') or '' }}</p><p><span class="badge">{{ item.get('status') or 'Submitted' }}</span></p>{% if item.get('file_path') %}<a class="btn" href="{{ url_for('view_assignment_file',assignment_id=item.get('id')) }}" target="_blank">View Assignment / PDF</a> <a class="btn secondary" href="{{ url_for('download_assignment_file',assignment_id=item.get('id')) }}">Download Assignment</a>{% elif item.get('file_url') %}<a class="btn" href="{{ item.get('file_url') }}" target="_blank">Open Assignment</a>{% endif %}{% if item.get('answer') %}<div class="card"><strong>Administrator Answer</strong><p style="white-space:pre-wrap">{{ item.get('answer') }}</p></div>{% endif %}{% if item.get('answer_file_path') or item.get('answered_file_path') %}<a class="btn success" href="{{ url_for('download_assignment_answer',assignment_id=item.get('id')) }}">Download Answer</a>{% elif item.get('answer_file_url') %}<a class="btn success" href="{{ item.get('answer_file_url') }}" target="_blank">Download Answer</a>{% endif %}</div>{% else %}<p>No assignments found.</p>{% endfor %}</div>
-""",rows=rows)
+
+    rows = db_select("assignments", filters={"student_id": str(user["id"])}, order="created_at.desc", limit=100)
+    if not rows:
+        rows = db_select("assignments", filters={"user_id": str(user["id"])}, order="created_at.desc", limit=100)
+
+    return render_page("Assignments", r"""
+<div class="card"><h2>Upload Assignment</h2>
+<form method="post" enctype="multipart/form-data">
+<label>Assignment Title</label><input name="title" required maxlength="250">
+<label>Description / Question</label><textarea name="description" maxlength="10000"></textarea>
+<label>Assignment File</label><input type="file" name="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp">
+<button type="submit">Upload Assignment</button>
+</form></div>
+<div class="card"><h2>Assignments</h2>
+{% for item in rows %}
+<div class="card"><h3>{{ item.get("title") or "Assignment" }}</h3>
+<p>{{ item.get("description") or item.get("question") or "" }}</p>
+<span class="badge">{{ item.get("status") or "submitted" }}</span>
+{% if item.get("file_url") %}<a class="btn" href="{{ item.get('file_url') }}" target="_blank">Download File</a>{% endif %}
+{% if item.get("answer_file_url") %}<a class="btn success" href="{{ item.get('answer_file_url') }}" target="_blank">Download Answer</a>{% endif %}
+{% if item.get("answered_file_url") %}<a class="btn success" href="{{ item.get('answered_file_url') }}" target="_blank">Download Answered File</a>{% endif %}
+{% if item.get("answer_text") %}<hr><strong>Admin Answer</strong><p>{{ item.get("answer_text") }}</p>{% endif %}
+</div>
+{% else %}<p>No assignments found.</p>{% endfor %}
+</div>
+""", rows=rows)
 
 # ============================================================
 # CV
@@ -2528,8 +2538,19 @@ def sitemap_xml():
 def admin_assignments():
     rows=db_select("assignments",order="created_at.desc",limit=500)
     return render_page("Admin Assignments",r"""
-<div class="hero"><h2>Assignment Answer Centre</h2><p>Review user submissions, view PDFs, download assignments, answer them and publish answer files.</p></div>
-{% for x in rows %}<div class="card"><h3>{{ x.get('title') or 'Assignment' }}</h3><p><b>Student ID:</b> {{ x.get('student_id') or x.get('user_id') or 'Unknown' }}</p><p>{{ x.get('description') or '' }}</p><p><span class="badge">{{ x.get('status') or 'Submitted' }}</span></p>{% if x.get('file_path') %}<a class="btn" href="{{ url_for('view_assignment_file',assignment_id=x.get('id')) }}" target="_blank">View Student PDF / File</a> <a class="btn secondary" href="{{ url_for('download_assignment_file',assignment_id=x.get('id')) }}">Download Student Assignment</a>{% elif x.get('file_url') %}<a class="btn" href="{{ x.get('file_url') }}" target="_blank">Open Student File</a>{% endif %}<form method="post" action="{{ url_for('admin_answer_assignment',assignment_id=x.get('id')) }}" enctype="multipart/form-data"><label>Administrator Answer</label><textarea name="answer" placeholder="Write the complete answer...">{{ x.get('answer') or '' }}</textarea><label>Answer PDF / Word / Text</label><input type="file" name="answer_file" accept=".pdf,.doc,.docx,.txt"><button type="submit">Save Answer &amp; Publish</button></form>{% if x.get('answer') %}<div class="card"><strong>Current Answer</strong><p style="white-space:pre-wrap">{{ x.get('answer') }}</p></div>{% endif %}{% if x.get('answer_file_path') or x.get('answered_file_path') %}<a class="btn success" href="{{ url_for('download_assignment_answer',assignment_id=x.get('id')) }}">Download Answer File</a>{% elif x.get('answer_file_url') %}<a class="btn success" href="{{ x.get('answer_file_url') }}" target="_blank">Open Answer File</a>{% endif %}</div>{% else %}<div class="card"><p>No assignments submitted.</p></div>{% endfor %}
+<div class="hero"><h2>Assignment Answer Centre</h2><p>Review student assignments, write answers, attach answer files and publish responses.</p></div>
+{% for x in rows %}
+<div class="card"><h3>{{ x.get('title') or 'Assignment' }}</h3><p><b>Student:</b> {{ x.get('student_id') }}</p><p>{{ x.get('description') or '' }}</p>
+{% if x.get('file_url') %}<a class="btn secondary" href="{{ url_for('secure_file', storage_path=x.get('file_path')) if x.get('file_path') else x.get('file_url') }}" target="_blank">Open Student File</a>{% endif %}
+<form method="post" action="{{ url_for('admin_answer_assignment',assignment_id=x.get('id')) }}" enctype="multipart/form-data">
+<label>Administrator Answer</label><textarea name="answer" placeholder="Write the complete answer...">{{ x.get('answer') or '' }}</textarea>
+<label>Answer PDF / Word / Text (optional)</label><input type="file" name="answer_file" accept=".pdf,.doc,.docx,.txt">
+<button type="submit">Save Answer &amp; Publish</button>
+</form>
+{% if x.get('answer_file_url') %}<a class="btn success" href="{{ url_for('secure_file', storage_path=x.get('answer_file_path')) if x.get('answer_file_path') else x.get('answer_file_url') }}" target="_blank">Open Answer File</a>{% endif %}
+{% if x.get('answer') %}<div class="card"><strong>Current Answer</strong><p style="white-space:pre-wrap">{{ x.get('answer') }}</p></div>{% endif %}
+</div>
+{% else %}<div class="card"><p>No assignments submitted.</p></div>{% endfor %}
 """,rows=rows)
 
 @app.route("/admin/assignments/<assignment_id>/answer",methods=["POST"])
@@ -2537,27 +2558,27 @@ def admin_assignments():
 def admin_answer_assignment(assignment_id):
     assignment=first_row("assignments",{"id":assignment_id})
     if not assignment: abort(404)
-    answer=clean(request.form.get("answer")); f=request.files.get("answer_file")
-    if not answer and not (f and f.filename): flash("Write an answer or attach an answer file.","danger"); return redirect(url_for("admin_assignments"))
-    admin=current_user() or {}; update={"status":"answered","answered_at":utc_now(),"answered_by":admin.get("id")}
-    if answer: update["answer"]=answer
-    uploaded=None
+    answer=clean(request.form.get("answer"))
+    f=request.files.get("answer_file")
+    if not answer and not (f and f.filename):
+        flash("Write an answer or attach an answer file.","danger")
+        return redirect(url_for("admin_assignments"))
+    update={"status":"answered","answered_at":utc_now(),"answer_by":(current_user() or {}).get("name","Admin")}
+    if answer:update["answer"]=answer
     if f and f.filename:
         uploaded,error=upload_storage(f,f"assignment-answers/{assignment_id}")
-        if error: flash(f"Answer upload failed: {error}","danger"); return redirect(url_for("admin_assignments"))
-        update.update({"answer_file_name":uploaded["file_name"],"answer_file_path":uploaded["path"],"answer_file_url":uploaded["url"],"answered_file_name":uploaded["file_name"],"answered_file_path":uploaded["path"],"answered_file_url":uploaded["url"]})
+        if error:
+            flash(f"Answer upload failed: {error}","danger")
+            return redirect(url_for("admin_assignments"))
+        update.update({"answer_file_name":uploaded["file_name"],"answer_file_path":uploaded["path"],"answer_file_url":uploaded["url"],"answer_file_size":uploaded["file_size"],"answer_mime_type":uploaded["mime_type"]})
     _,error=db_update("assignments",{"id":assignment_id},update)
     if error:
-        minimal={k:update[k] for k in ("status","answered_at","answered_by","answer") if k in update}
+        # retry with only broadly expected columns
+        minimal={k:update[k] for k in ("status","answered_at","answer") if k in update}
         _,error=db_update("assignments",{"id":assignment_id},minimal)
-        if error and "answered_by" in minimal:
-            minimal.pop("answered_by",None); _,error=db_update("assignments",{"id":assignment_id},minimal)
-        if error and uploaded: delete_storage(uploaded["path"])
-    if error: flash("Could not save assignment answer. Check the assignments table columns.","danger")
+    if error: flash("Could not save assignment answer.","danger")
     else:
         flash("Assignment answer saved and published to the student.","success")
-        try: create_notification(assignment.get("student_id") or assignment.get("user_id"),"Assignment answered",f"Your assignment '{assignment.get('title') or 'Assignment'}' has been answered.","assignment",url_for("assignments"))
-        except Exception: pass
         log_activity("assignment_answered","Administrator answered an assignment.")
     return redirect(url_for("admin_assignments"))
 
