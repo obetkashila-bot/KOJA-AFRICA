@@ -619,6 +619,7 @@ footer{text-align:center;color:#667085;padding:30px}
 <a href="{{ url_for('research') }}">Research</a>
 {% if user %}
 <a href="{{ url_for('dashboard') }}">Dashboard</a>
+<a href="{{ url_for('settings') }}">⚙️ Settings</a>
 <a href="{{ url_for('services') }}">Services</a>
 <a href="{{ url_for('questions') }}">Questions</a>
 <a href="{{ url_for('assignments') }}">Assignments</a>
@@ -637,7 +638,7 @@ footer{text-align:center;color:#667085;padding:30px}
 <div class="mobile-drawer" id="kojaDrawer">
 <a href="{{ url_for('home') }}">🏠 Home</a>
 <a href="{{ url_for('research') }}">🔎 Research Engine</a>
-{% if user %}<a href="{{ url_for('dashboard') }}">📊 Dashboard</a><a href="{{ url_for('services') }}">🧩 Services</a><a href="{{ url_for('questions') }}">❓ Questions</a><a href="{{ url_for('assignments') }}">📝 Assignments</a><a href="{{ url_for('deliveries') }}">🚚 Deliveries</a><a href="{{ url_for('drivers') }}">📍 Drivers</a>{% if user.role in ['driver','admin'] or user.is_admin %}<a href="{{ url_for('driver_dashboard') }}">🚗 Driver</a>{% endif %}<a href="{{ url_for('logout') }}">↪ Logout</a>{% else %}<a href="{{ url_for('login') }}">🔐 Login</a><a href="{{ url_for('register') }}">👤 Register</a>{% endif %}
+{% if user %}<a href="{{ url_for('dashboard') }}">📊 Dashboard</a><a href="{{ url_for('settings') }}">⚙️ Settings</a><a href="{{ url_for('services') }}">🧩 Services</a><a href="{{ url_for('questions') }}">❓ Questions</a><a href="{{ url_for('assignments') }}">📝 Assignments</a><a href="{{ url_for('deliveries') }}">🚚 Deliveries</a><a href="{{ url_for('drivers') }}">📍 Drivers</a>{% if user.role in ['driver','admin'] or user.is_admin %}<a href="{{ url_for('driver_dashboard') }}">🚗 Driver</a>{% endif %}<a href="{{ url_for('logout') }}">↪ Logout</a>{% else %}<a href="{{ url_for('login') }}">🔐 Login</a><a href="{{ url_for('register') }}">👤 Register</a>{% endif %}
 {% if user and user.is_admin %}<a href="{{ url_for('admin') }}">🛠 Admin</a>{% endif %}
 </div>
 </div>
@@ -879,6 +880,69 @@ def dashboard():
 {% if user.role in ['driver','admin'] or user.is_admin %}<a class="btn" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}
 </div></div>
 """,questions_count=questions_count,deliveries_count=deliveries_count,appointments_count=appointments_count)
+
+# ============================================================
+# SETTINGS
+# ============================================================
+
+@app.route("/settings", methods=["GET", "POST"])
+@login_required
+def settings():
+    user = current_user()
+    prefs = session.get("koja_settings", {})
+    if request.method == "POST":
+        action = request.form.get("action", "preferences")
+        if action == "preferences":
+            prefs.update({
+                "theme": request.form.get("theme", "light"),
+                "notifications": request.form.get("notifications", "on"),
+                "gps_sharing": request.form.get("gps_sharing", "off"),
+                "reduced_motion": request.form.get("reduced_motion", "off"),
+                "language": request.form.get("language", "English"),
+                "currency": request.form.get("currency", "ZMW"),
+            })
+            session["koja_settings"] = prefs
+            flash("Settings saved successfully.", "success")
+        elif action == "reset":
+            session.pop("koja_settings", None)
+            flash("KOJA settings have been reset to defaults.", "success")
+        return redirect(url_for("settings"))
+    return render_page("Settings", r"""
+<div class="hero"><h2>⚙️ Settings</h2><p>Manage your KOJA AFRICA account and app preferences.</p></div>
+<div class="card">
+<h3>👤 Profile</h3>
+<div class="grid">
+<div><strong>Name</strong><br>{{ user.name or 'KOJA User' }}</div>
+<div><strong>Email</strong><br>{{ user.email or 'Not provided' }}</div>
+<div><strong>Phone</strong><br>{{ user.phone or 'Not provided' }}</div>
+<div><strong>Account</strong><br>{{ 'Administrator' if user.is_admin else (user.role or 'Student')|title }}</div>
+</div></div>
+
+<form method="post" class="card">
+<input type="hidden" name="action" value="preferences">
+<h3>🎛️ App Preferences</h3>
+<div class="grid">
+<div><label>Theme</label><select name="theme"><option value="light" {{ 'selected' if prefs.get('theme','light')=='light' else '' }}>Light</option><option value="dark" {{ 'selected' if prefs.get('theme')=='dark' else '' }}>Dark</option><option value="system" {{ 'selected' if prefs.get('theme')=='system' else '' }}>System</option></select></div>
+<div><label>Notifications</label><select name="notifications"><option value="on" {{ 'selected' if prefs.get('notifications','on')=='on' else '' }}>On</option><option value="off" {{ 'selected' if prefs.get('notifications')=='off' else '' }}>Off</option></select></div>
+<div><label>GPS / Location Sharing</label><select name="gps_sharing"><option value="off" {{ 'selected' if prefs.get('gps_sharing','off')=='off' else '' }}>Off</option><option value="on" {{ 'selected' if prefs.get('gps_sharing')=='on' else '' }}>On — only when I start sharing</option></select></div>
+<div><label>Animations</label><select name="reduced_motion"><option value="off" {{ 'selected' if prefs.get('reduced_motion','off')=='off' else '' }}>Normal</option><option value="on" {{ 'selected' if prefs.get('reduced_motion')=='on' else '' }}>Reduce motion</option></select></div>
+<div><label>Language</label><select name="language"><option>English</option><option>Bemba</option><option>Nyanja</option></select></div>
+<div><label>Currency</label><select name="currency"><option value="ZMW">ZMW — Zambian Kwacha</option></select></div>
+</div>
+<button class="btn success" type="submit">💾 Save Settings</button>
+</form>
+
+<div class="card"><h3>🔐 Security & Privacy</h3>
+<p>Your account remains protected by KOJA authentication. GPS sharing is opt-in and can be stopped from the Live GPS page.</p>
+<div class="actions"><a class="btn secondary" href="{{ url_for('tracking') }}">📍 Live GPS</a><a class="btn secondary" href="{{ url_for('dashboard') }}">📊 Dashboard</a></div>
+</div>
+
+<form method="post" class="card" onsubmit="return confirm('Reset KOJA app preferences?')">
+<input type="hidden" name="action" value="reset">
+<h3>↺ Reset Preferences</h3><p class="small">This resets only your KOJA app preferences in this browser session.</p>
+<button class="btn danger" type="submit">Reset Preferences</button>
+</form>
+""", prefs=prefs)
 
 # ============================================================
 # KOJA RESEARCH ENGINE V2
