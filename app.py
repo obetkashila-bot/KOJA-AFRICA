@@ -540,6 +540,9 @@ BASE_HTML = r"""
 <meta name="googlebot" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] %}noindex,nofollow{% else %}index,follow{% endif %}">
 <meta name="google-site-verification" content="u4nfIf5MfXm0iVvECSQeYAov4Tz4601ayY5kYzNc4ko">
 <link rel="canonical" href="{{ SITE_URL }}{{ request.path }}">
+<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
+<link rel="icon" type="image/png" sizes="192x192" href="{{ url_for('static', filename='favicon-192.png') }}">
+<link rel="apple-touch-icon" href="{{ url_for('static', filename='favicon-192.png') }}">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="KOJA AFRICA">
 <meta property="og:title" content="{{ title or 'KOJA AFRICA' }}">
@@ -552,17 +555,17 @@ BASE_HTML = r"""
 body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f5f7fb;color:#172033}
 nav{background:#10233f;color:#fff;padding:12px 15px;position:sticky;top:0;z-index:1000}
 .nav-inner{max-width:1250px;margin:auto;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
-.brand{font-weight:800;font-size:19px;margin-right:auto}
+.brand{font-weight:800;font-size:19px;margin-right:auto;display:flex;align-items:center;gap:8px;letter-spacing:.2px}.brand-mark{width:32px;height:32px;border-radius:9px;display:inline-grid;place-items:center;background:linear-gradient(135deg,#19a7b8,#f2b84b);box-shadow:0 5px 18px rgba(0,0,0,.22);animation:logoFloat 4s ease-in-out infinite}.brand-mark svg{width:22px;height:22px}.brand-name{white-space:nowrap}
 nav a{color:#fff;text-decoration:none;padding:8px 9px;border-radius:7px}
-nav a:hover{background:rgba(255,255,255,.12)}
+nav a{transition:background .2s ease,transform .2s ease}nav a:hover{background:rgba(255,255,255,.12);transform:translateY(-1px)}
 .container{width:min(1250px,calc(100% - 24px));margin:20px auto 50px}
-.card{background:#fff;border-radius:13px;padding:18px;margin-bottom:16px;box-shadow:0 3px 14px rgba(0,0,0,.06)}
+.card{background:#fff;border-radius:13px;padding:18px;margin-bottom:16px;box-shadow:0 3px 14px rgba(0,0,0,.06);animation:fadeUp .45s ease both}.card:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.09);transition:transform .2s ease,box-shadow .2s ease}
 .hero{background:linear-gradient(135deg,#10233f,#176b87);color:#fff;padding:28px 20px;border-radius:15px;margin-bottom:18px}
 h1,h2,h3{margin-top:0}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:15px}
 input,select,textarea,button{width:100%;padding:11px 12px;margin-top:6px;margin-bottom:12px;border-radius:8px;border:1px solid #ccd3df;font:inherit}
 textarea{min-height:120px}
-button,.btn{display:inline-block;background:#176b87;color:#fff;border:0;text-decoration:none;cursor:pointer;padding:10px 14px;border-radius:8px}
+button,.btn{display:inline-block;background:#176b87;color:#fff;border:0;text-decoration:none;cursor:pointer;padding:10px 14px;border-radius:8px;transition:transform .2s ease,box-shadow .2s ease,filter .2s ease}button:hover,.btn:hover{transform:translateY(-2px);box-shadow:0 7px 18px rgba(0,0,0,.12);filter:brightness(1.04)}button:active,.btn:active{transform:translateY(0)}
 .btn.secondary{background:#5f6b7a}.btn.success{background:#177245}.btn.danger{background:#a62d2d}.btn.warning{background:#9b6b00}
 table{width:100%;border-collapse:collapse}
 th,td{border-bottom:1px solid #e4e7ec;padding:9px;text-align:left;vertical-align:top}
@@ -578,19 +581,21 @@ th,td{border-bottom:1px solid #e4e7ec;padding:9px;text-align:left;vertical-align
 .offline{color:#a62d2d;font-weight:700}
 footer{text-align:center;color:#667085;padding:30px}
 .actions{display:flex;gap:8px;flex-wrap:wrap}.actions .btn,.actions button{width:auto}
-@media(max-width:650px){nav a{font-size:12px}.container{width:min(100% - 14px,1250px)}table{display:block;overflow-x:auto}#map{height:350px}.actions .btn,.actions button{width:100%}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}@keyframes logoFloat{0%,100%{transform:translateY(0) rotate(0deg)}50%{transform:translateY(-2px) rotate(1deg)}}@keyframes pulseSoft{0%,100%{box-shadow:0 0 0 0 rgba(25,167,184,.18)}50%{box-shadow:0 0 0 7px rgba(25,167,184,0)}}:focus-visible{outline:3px solid #f2b84b;outline-offset:2px}.hero{animation:fadeUp .55s ease both}.stat{animation:fadeUp .5s ease both}.online{animation:pulseSoft 2.4s ease-in-out infinite}@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition:none!important;transform:none!important}}@media(max-width:650px){nav a{font-size:12px}.container{width:min(100% - 14px,1250px)}table{display:block;overflow-x:auto}#map{height:350px}.actions .btn,.actions button{width:100%}}
 </style>
 </head>
 <body>
 <nav>
 <div class="nav-inner">
-<div class="brand">KOJA AFRICA</div>
+<div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 18V6h7.2a5.3 5.3 0 0 1 0 10.6H8.5" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 9.1h3.4a1.9 1.9 0 0 1 0 3.8H8.5" stroke="white" stroke-width="2.2" stroke-linecap="round"/></svg></span><span class="brand-name">KOJA AFRICA</span></div>
 <a href="{{ url_for('home') }}">Home</a>
 {% if user %}
 <a href="{{ url_for('dashboard') }}">Dashboard</a>
 <a href="{{ url_for('services') }}">Services</a>
 <a href="{{ url_for('questions') }}">Questions</a>
 <a href="{{ url_for('assignments') }}">Assignments</a>
+<a href="{{ url_for('research') }}">🔎 Research</a>
+<a href="{{ url_for('settings') }}">⚙️ Settings</a>
 <a href="{{ url_for('universities') }}">Universities</a>
 <a href="{{ url_for('deliveries') }}">Deliveries</a>
 <a href="{{ url_for('drivers') }}">Drivers</a>
@@ -626,6 +631,36 @@ def render_page(title, body_template, **context):
         body=body,
         user=current_user()
     )
+
+# ============================================================
+# USER SETTINGS
+# ============================================================
+
+@app.route('/settings', methods=['GET', 'POST'])
+@login_required
+def settings():
+    user = current_user() or {}
+    if request.method == 'POST':
+        action = clean(request.form.get('action', 'preferences'))
+        if action == 'preferences':
+            theme = clean(request.form.get('theme', 'system')).lower()
+            if theme not in ('system', 'light', 'dark'):
+                theme = 'system'
+            research = bool(request.form.get('allow_research'))
+            session['koja_settings'] = {'theme': theme, 'allow_research': research}
+            session.modified = True
+            flash('Settings saved successfully.', 'success')
+            return redirect(url_for('settings'))
+        flash('Unknown settings action.', 'danger')
+        return redirect(url_for('settings'))
+    prefs = session.get('koja_settings', {'theme': 'system', 'allow_research': True})
+    return render_page('Settings', r'''<div class="hero"><h2>⚙️ KOJA Settings</h2><p>Manage your KOJA appearance, research access and account preferences.</p></div>
+<div class="grid">
+<div class="card"><h3>Account</h3><p><strong>Name:</strong> {{ user.name or "KOJA User" }}</p><p><strong>Email:</strong> {{ user.email or "Not provided" }}</p><p><strong>Role:</strong> {{ user.role or "student" }}</p></div>
+<div class="card"><h3>Appearance & Research</h3><form method="post"><input type="hidden" name="action" value="preferences"><label>Theme</label><select name="theme"><option value="system" {% if prefs.theme == 'system' %}selected{% endif %}>System</option><option value="light" {% if prefs.theme == 'light' %}selected{% endif %}>Light</option><option value="dark" {% if prefs.theme == 'dark' %}selected{% endif %}>Dark</option></select><label style="display:block;margin-top:12px"><input type="checkbox" name="allow_research" value="1" style="width:auto" {% if prefs.allow_research %}checked{% endif %}> Allow external research sources</label><button class="btn" type="submit">Save Settings</button></form></div>
+<div class="card"><h3>Research</h3><p>Search scholarly literature, web sources, Wikipedia and KOJA documents, then create structured research notes and references.</p><a class="btn" href="{{ url_for('research') }}">🔎 Open Research Engine</a></div>
+<div class="card"><h3>Security</h3><p>Use the Logout button to end the current session.</p><a class="btn secondary" href="{{ url_for('logout') }}">Log Out</a></div>
+</div><script>localStorage.setItem('koja_theme', {{ prefs.theme|tojson }}); document.documentElement.dataset.kojaTheme={{ prefs.theme|tojson }};</script>''', prefs=prefs)
 
 # ============================================================
 # HOME / HEALTH
