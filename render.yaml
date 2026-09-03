@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: koja-africa
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    healthCheckPath: /

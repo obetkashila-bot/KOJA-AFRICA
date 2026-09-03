@@ -1,0 +1,5 @@
+REQUIRED: Download google-services.json from your Firebase Android app and place it here as:
+
+android/app/google-services.json
+
+Do not commit this file if your project policy requires keeping Firebase configuration private.
