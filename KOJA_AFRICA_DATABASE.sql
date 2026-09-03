@@ -116,6 +116,8 @@ ALTER TABLE public.service_providers ADD COLUMN IF NOT EXISTS service_descriptio
 ALTER TABLE public.service_providers ADD COLUMN IF NOT EXISTS hourly_rate numeric DEFAULT 0;
 ALTER TABLE public.service_providers ADD COLUMN IF NOT EXISTS currency text DEFAULT 'ZMW';
 ALTER TABLE public.service_providers ADD COLUMN IF NOT EXISTS approval_status text DEFAULT 'pending';
+ALTER TABLE public.service_providers ADD COLUMN IF NOT EXISTS last_seen_at timestamptz;
+CREATE INDEX IF NOT EXISTS idx_service_providers_last_seen ON public.service_providers(last_seen_at DESC);
 CREATE INDEX IF NOT EXISTS idx_service_providers_profession ON public.service_providers(profession);
 CREATE INDEX IF NOT EXISTS idx_service_providers_approval ON public.service_providers(approval_status);
 

@@ -1898,6 +1898,45 @@ def book_professional(provider_id):
 </div>
 """, provider=provider, purpose=purpose, title=labels[purpose])
 
+def professional_is_connected(provider):
+    """Return True when an approved professional has an active recent presence."""
+    if not provider:
+        return False
+    status = str(provider.get("approval_status") or provider.get("verification_status") or "pending").lower()
+    if status not in {"approved", "active", "verified"}:
+        return False
+    if provider.get("is_available") is False:
+        return False
+    seen = provider.get("last_seen_at")
+    if not seen:
+        return False
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(str(seen).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - dt).total_seconds() <= 30
+    except Exception:
+        return False
+
+
+@app.route("/api/professional/presence", methods=["POST"])
+@login_required
+def professional_presence():
+    me = current_user() or {}
+    provider = first_row("service_providers", {"user_id": me.get("id")})
+    if not provider:
+        return jsonify({"connected": False, "error": "Professional profile not found"}), 404
+    data = request.get_json(silent=True) or {}
+    online = bool(data.get("online", True))
+    now = utc_now()
+    updates = {"last_seen_at": now, "is_available": online, "updated_at": now}
+    _, error = db_update("service_providers", {"id": provider.get("id")}, updates)
+    if error:
+        return jsonify({"connected": False, "error": str(error)[:400]}), 500
+    return jsonify({"ok": True, "connected": online})
+
+
 @app.route("/professional/contact/<provider_id>")
 @login_required
 def professional_contact(provider_id):
@@ -1905,6 +1944,7 @@ def professional_contact(provider_id):
     if not provider or str(provider.get("provider_type") or "").lower() in {"driver","doctor","teacher","tutor"}:
         return "Professional provider not found.", 404
     status = str(provider.get("approval_status") or provider.get("verification_status") or "pending").lower()
+    connected = professional_is_connected(provider)
     if status not in {"approved","active","verified"} and str((current_user() or {}).get("id")) != str(provider.get("user_id")):
         return "This professional is not currently available.", 403
     return render_page("Contact Professional", r"""
@@ -1914,11 +1954,11 @@ def professional_contact(provider_id):
 <div class="card"><h3>💡 Professional Advice</h3><p>Ask a question and request advice from this profession.</p><a class="btn" href="{{ url_for('book_professional', provider_id=provider.id, purpose='advice') }}">Ask for Advice</a></div>
 <div class="card"><h3>🧠 Counselling</h3><p>Request a counselling or consultation session where appropriate.</p><a class="btn" href="{{ url_for('book_professional', provider_id=provider.id, purpose='counselling') }}">Request Counselling</a></div>
 <div class="card"><h3>💬 Chat</h3><p>Send and receive text messages.</p><a class="btn" href="{{ url_for('professional_chat', provider_id=provider.id) }}">Open Chat</a></div>
-<div class="card"><h3>📞 Voice Call</h3><p>Start an internet voice call with this professional.</p><a class="btn" href="{{ url_for('professional_call', provider_id=provider.id, mode='voice') }}">Start Voice Call</a></div>
-<div class="card"><h3>🎥 Video Call</h3><p>Start an internet video call with this professional.</p><a class="btn" href="{{ url_for('professional_call', provider_id=provider.id, mode='video') }}">Start Video Call</a></div><div class="card"><h3>📲 Incoming Calls</h3><p>Professionals can open their call inbox to receive calls.</p><a class="btn secondary" href="{{ url_for('professional_calls') }}">Open Call Inbox</a></div>
+<div class="card"><h3>📞 Voice Call</h3>{% if connected %}<p>🟢 Connected — you can call this professional now.</p><a class="btn" href="{{ url_for('professional_call', provider_id=provider.id, mode='voice') }}">Start Voice Call</a>{% else %}<p>🔴 This professional is not connected right now.</p><button class="btn secondary" disabled>Voice Call Unavailable</button>{% endif %}</div>
+<div class="card"><h3>🎥 Video Call</h3>{% if connected %}<p>🟢 Connected — you can start a video call now.</p><a class="btn" href="{{ url_for('professional_call', provider_id=provider.id, mode='video') }}">Start Video Call</a>{% else %}<p>🔴 This professional is not connected right now.</p><button class="btn secondary" disabled>Video Call Unavailable</button>{% endif %}</div><div class="card"><h3>📲 Incoming Calls</h3><p>Professionals can open their call inbox to receive calls.</p><a class="btn secondary" href="{{ url_for('professional_calls') }}">Open Call Inbox</a></div>
 {% if provider.get('phone') %}<div class="card"><h3>📱 Phone</h3><a class="btn secondary" href="tel:{{ provider.get('phone') }}">Call {{ provider.get('phone') }}</a></div>{% endif %}
 </div>
-""", provider=provider)
+""", provider=provider, connected=connected)
 
 @app.route("/professional/chat/<provider_id>")
 @login_required
@@ -1968,6 +2008,8 @@ def professional_call(provider_id):
     if not provider: return "Professional provider not found.",404
     mode=clean(request.args.get("mode")).lower()
     if mode not in {"voice","video"}: mode="video"
+    if not professional_is_connected(provider):
+        return "This professional is not connected right now. Please try again when they are online.", 409
     return render_page("Professional Call", r"""
 <div class="hero"><h2>{{ '🎥 Video Call' if mode=='video' else '📞 Voice Call' }}</h2><p>With {{ provider.get('full_name') or provider.get('name') or 'Professional' }} · {{ provider.get('profession') or 'Professional Service' }}</p></div>
 <div class="card"><div id="incoming" style="display:none"></div><div id="callState">Preparing call…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:12px;{% if mode=='voice' %}display:none{% endif %}"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:12px;{% if mode=='voice' %}display:none{% endif %}"></video></div><audio id="remoteAudio" autoplay {% if mode!='voice' %}style="display:none"{% endif %}></audio><div class="actions" style="margin-top:14px"><button class="btn success" id="start">Start {{ mode.title() }} Call</button><button class="btn danger" id="hang">End Call</button><a class="btn secondary" href="{{ url_for('professional_contact', provider_id=provider.id) }}">Back</a></div><p class="small">Allow microphone/camera access. Both people must have an internet connection and keep this page open during the call.</p></div>
@@ -1975,9 +2017,13 @@ def professional_call(provider_id):
 const providerId={{ provider.id|tojson }}, mode={{ mode|tojson }}; let callId=null, pc=null, poll=null; const uid={{ (user.get('id') if user else '')|tojson }};
 const state=t=>document.getElementById('callState').textContent=t;
 async function media(){return navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'})}
-async function startCall(){try{const stream=await media(); document.getElementById('local').srcObject=stream; pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]}); stream.getTracks().forEach(t=>pc.addTrack(t,stream)); pc.ontrack=e=>{document.getElementById('remote').srcObject=e.streams[0];document.getElementById('remoteAudio').srcObject=e.streams[0]}; pc.onicecandidate=e=>{if(e.candidate)fetch('/api/professional/call/'+callId+'/ice',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate.toJSON(),side:'caller'})})}; const offer=await pc.createOffer(); await pc.setLocalDescription(offer); const r=await fetch('/api/professional/call/'+providerId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode,offer:offer.sdp})}); const d=await r.json(); if(!r.ok)throw Error(d.error||'Call failed'); callId=d.call_id; state('Calling professional…'); poll=setInterval(checkCall,1000)}catch(e){state('Could not start call: '+e.message)}}
-async function checkCall(){if(!callId)return; const r=await fetch('/api/professional/call/'+callId); if(!r.ok)return; const d=await r.json(); if(d.answer && pc && !pc.currentRemoteDescription){await pc.setRemoteDescription({type:'answer',sdp:d.answer}); state('Connected');} for(const c of (d.callee_ice||[])){try{await pc.addIceCandidate(c)}catch(e){}}}
-async function hang(){if(poll)clearInterval(poll); if(pc)pc.close(); if(callId)await fetch('/api/professional/call/'+callId+'/hangup',{method:'POST'}); state('Call ended')}
+let callTimer=null;
+function tellUnavailable(){const msg='This contact is not available. The call could not reach the professional. Please check your internet connection and try again later.'; state('🔴 '+msg); try{if('speechSynthesis' in window){speechSynthesis.cancel(); const u=new SpeechSynthesisUtterance(msg); u.lang='en-US'; speechSynthesis.speak(u)}}catch(e){}}
+function failCall(){if(poll)clearInterval(poll); if(callTimer)clearTimeout(callTimer); if(pc){pc.getSenders().forEach(s=>{try{s.track&&s.track.stop()}catch(e){}}); pc.close(); pc=null} if(callId){fetch('/api/professional/call/'+callId+'/hangup',{method:'POST'}).catch(()=>{}); callId=null} tellUnavailable()}
+async function startCall(){try{if(!navigator.onLine)throw Error('No internet connection'); const stream=await media(); document.getElementById('local').srcObject=stream; pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]}); pc.onconnectionstatechange=()=>{if(pc && ['failed','disconnected'].includes(pc.connectionState)) failCall()}; stream.getTracks().forEach(t=>pc.addTrack(t,stream)); pc.ontrack=e=>{document.getElementById('remote').srcObject=e.streams[0];document.getElementById('remoteAudio').srcObject=e.streams[0]}; pc.onicecandidate=e=>{if(e.candidate && callId)fetch('/api/professional/call/'+callId+'/ice',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate.toJSON(),side:'caller'})}).catch(()=>{})}; const offer=await pc.createOffer(); await pc.setLocalDescription(offer); const r=await fetch('/api/professional/call/'+providerId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode,offer:offer.sdp})}); const d=await r.json(); if(!r.ok)throw Error(d.error||'Call failed'); callId=d.call_id; state('Calling professional…'); callTimer=setTimeout(failCall,30000); poll=setInterval(checkCall,1000)}catch(e){if(e.message&&(/internet|network|failed|available/i.test(e.message))) tellUnavailable(); else state('Could not start call: '+e.message)}}
+async function checkCall(){if(!callId)return; try{const r=await fetch('/api/professional/call/'+callId,{cache:'no-store'}); if(!r.ok)throw Error('Network error'); const d=await r.json(); if(d.call && ['ended','declined','failed'].includes(d.call.status)){failCall();return} if(d.answer && pc && !pc.currentRemoteDescription){await pc.setRemoteDescription({type:'answer',sdp:d.answer}); if(callTimer)clearTimeout(callTimer); state('🟢 Connected');} for(const c of (d.callee_ice||[])){try{await pc.addIceCandidate(c)}catch(e){}}}catch(e){if(!navigator.onLine)failCall()}}
+window.addEventListener('offline',()=>{if(callId)failCall()});
+async function hang(){if(poll)clearInterval(poll); if(callTimer)clearTimeout(callTimer); if(pc){pc.getSenders().forEach(s=>{try{s.track&&s.track.stop()}catch(e){}});pc.close();pc=null} if(callId){await fetch('/api/professional/call/'+callId+'/hangup',{method:'POST'}).catch(()=>{});callId=null} state('Call ended')}
 document.getElementById('start').onclick=startCall; document.getElementById('hang').onclick=hang;
 </script>
 """, provider=provider, mode=mode)
@@ -1989,6 +2035,7 @@ def professional_call_create(provider_id):
     if not provider:return jsonify({"error":"Provider not found"}),404
     data=request.get_json(silent=True) or {}; mode=clean(data.get("mode")).lower(); offer=data.get("offer")
     if mode not in {"voice","video"} or not offer:return jsonify({"error":"Invalid call request"}),400
+    if not professional_is_connected(provider): return jsonify({"error":"This professional is not connected right now."}),409
     payload={"id":str(uuid.uuid4()),"caller_id":me.get("id"),"callee_id":provider.get("user_id"),"provider_id":provider_id,"mode":mode,"status":"ringing","offer":offer,"created_at":utc_now()}
     row,error=db_insert("professional_calls",payload)
     if error:return jsonify({"error":str(error)[:500]}),500
@@ -2045,6 +2092,8 @@ def professional_calls():
 async function check(){const r=await fetch('/api/professional/incoming-calls'); if(!r.ok)return; const d=await r.json(); const box=document.getElementById('calls'); box.innerHTML=(d.calls||[]).map(c=>`<div class="card"><h3>Incoming ${c.mode==='video'?'🎥 Video':'📞 Voice'} Call</h3><p>From ${esc(c.caller_name||'User')}</p><a class="btn success" href="/professional/answer-call/${c.id}">Accept</a><button class="btn danger" onclick="rejectCall('${c.id}')">Reject</button></div>`).join('') || '<div class="card"><p>No incoming calls.</p></div>';}
 function esc(v){return String(v??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));}
 async function rejectCall(id){await fetch('/api/professional/call/'+id+'/hangup',{method:'POST'});check();} check();setInterval(check,2000);
+async function presence(online=true){try{await fetch('/api/professional/presence',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({online})})}catch(e){}}
+presence(true); setInterval(()=>presence(true),10000); window.addEventListener('pagehide',()=>navigator.sendBeacon('/api/professional/presence',new Blob([JSON.stringify({online:false})],{type:'application/json'})));
 </script>
 """)
 
