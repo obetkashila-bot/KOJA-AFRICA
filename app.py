@@ -1828,7 +1828,7 @@ def public_feed():
 <div class="card"><h2>📰 News & Updates</h2><p class="small">Public feed · newest first</p></div>
 {% for p in posts %}<article class="card" id="post-{{ p.id }}"><strong>👤 {{ p.author_name }}</strong><div class="small">{{ p.post_type|title }} · {{ p.created_at }}</div>
 {% if p.title %}<h2 style="margin-top:10px">{{ p.title }}</h2>{% endif %}<p style="white-space:pre-wrap;line-height:1.7">{{ p.body }}</p>
-{% if p.media_url %}<img src="{{ p.media_url }}" alt="Public KOJA post image" loading="lazy" style="width:100%;max-height:620px;object-fit:cover;border-radius:12px;margin-top:8px">{% endif %}
+{% if p.media_url %}<a href="{{ url_for('public_post_media', post_id=p.id) }}" target="_blank" rel="noopener"><img src="{{ url_for('public_post_media', post_id=p.id) }}" alt="KOJA Public post image" loading="lazy" style="display:block;width:100%;max-height:620px;object-fit:contain;border-radius:12px;margin-top:8px;background:var(--bg);cursor:pointer"></a>{% endif %}
 <div class="actions" style="margin-top:12px">{% if user %}<form method="post" action="{{ url_for('public_toggle_like', post_id=p.id) }}" style="display:inline"><button class="btn secondary" type="submit">{{ '❤️ Liked' if p.liked else '🤍 Like' }} · {{ p.like_count }}</button></form>{% else %}<a class="btn secondary" href="{{ url_for('login', next='/public') }}">🤍 Like · {{ p.like_count }}</a>{% endif %}<span class="btn secondary" style="cursor:default">💬 {{ p.comments|length }} Comments</span></div>
 {% for c in p.comments %}<div style="padding:9px 0;border-top:1px solid var(--border);margin-top:9px"><strong>{{ c.author_name }}</strong><div>{{ c.body }}</div><div class="small">{{ c.created_at }}</div></div>{% endfor %}
 {% if user %}<form method="post" action="{{ url_for('public_comment', post_id=p.id) }}"><input name="body" maxlength="1000" placeholder="Write a comment..." required><button class="btn" type="submit">Comment</button></form>{% else %}<p class="small"><a href="{{ url_for('login', next='/public') }}">Login</a> to comment.</p>{% endif %}
@@ -1853,6 +1853,40 @@ def public_feed_create():
     _,err=db_insert('koja_public_posts',payload)
     flash('Published to KOJA Public.' if not err else 'Public post could not be published. Run the updated KOJA_CONNECT.sql first.','success' if not err else 'danger')
     return redirect(url_for('public_feed'))
+
+@app.route('/public/media/<post_id>')
+def public_post_media(post_id):
+    """Serve public-feed media through KOJA so images work even when the Supabase bucket is private."""
+    post = first_row('koja_public_posts', {'id': post_id}) or {}
+    if not post or not post.get('is_published') or not post.get('media_url'):
+        abort(404)
+    media_url = clean(post.get('media_url'))
+    storage_path = ''
+    public_prefix = f"{SUPABASE_URL}/storage/v1/object/public/"
+    if public_prefix and media_url.startswith(public_prefix):
+        rem = media_url[len(public_prefix):]
+        bucket_prefix = f"{STORAGE_BUCKET}/"
+        if rem.startswith(bucket_prefix):
+            storage_path = rem[len(bucket_prefix):]
+    if not storage_path:
+        marker = f"/storage/v1/object/"
+        if marker in media_url:
+            rem = media_url.split(marker,1)[1]
+            bucket_prefix = f"{STORAGE_BUCKET}/"
+            if rem.startswith(bucket_prefix):
+                storage_path = rem[len(bucket_prefix):]
+    if not storage_path:
+        abort(404)
+    try:
+        r = requests.get(sb_storage_url(storage_path), headers=sb_headers(), timeout=30)
+        if not r.ok:
+            abort(404)
+        mime = post.get('media_type') == 'image' and (r.headers.get('Content-Type') or 'image/jpeg') or (r.headers.get('Content-Type') or 'application/octet-stream')
+        from flask import Response
+        return Response(r.content, status=200, mimetype=mime.split(';',1)[0], headers={'Cache-Control':'public, max-age=3600'})
+    except Exception:
+        logger.exception('Public media delivery failed')
+        abort(404)
 
 @app.route('/public/like/<post_id>', methods=['POST'])
 @login_required
