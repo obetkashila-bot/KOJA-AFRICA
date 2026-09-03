@@ -293,3 +293,36 @@ CREATE INDEX IF NOT EXISTS idx_delivery_participant_locations_delivery_role_crea
  ON public.delivery_participant_locations(delivery_id, role, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_delivery_participant_locations_user_created
  ON public.delivery_participant_locations(user_id, created_at DESC);
+
+-- ============================================================
+-- KOJA PROFESSIONAL COMMUNICATION: CHAT + VOICE/VIDEO CALL SIGNALING
+-- ============================================================
+CREATE TABLE IF NOT EXISTS public.professional_messages (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ sender_id uuid,
+ receiver_id uuid,
+ provider_id uuid,
+ message text NOT NULL,
+ created_at timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_professional_messages_pair ON public.professional_messages(sender_id, receiver_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_professional_messages_provider ON public.professional_messages(provider_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS public.professional_calls (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ caller_id uuid,
+ callee_id uuid,
+ provider_id uuid,
+ mode text NOT NULL DEFAULT 'video',
+ status text NOT NULL DEFAULT 'ringing',
+ offer text,
+ answer text,
+ caller_ice jsonb DEFAULT '[]'::jsonb,
+ callee_ice jsonb DEFAULT '[]'::jsonb,
+ created_at timestamptz DEFAULT now(),
+ answered_at timestamptz,
+ ended_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_professional_calls_callee ON public.professional_calls(callee_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_professional_calls_caller ON public.professional_calls(caller_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_professional_calls_provider ON public.professional_calls(provider_id, created_at DESC);

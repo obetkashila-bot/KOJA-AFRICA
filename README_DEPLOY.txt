@@ -26,3 +26,13 @@ DEPLOY TO RENDER
 DATABASE
 Run KOJA_AFRICA_DATABASE.sql in Supabase SQL Editor if its latest tables/columns have not already been applied.
 Do not delete existing production data just to apply this package.
+
+NEW PROFESSIONAL SERVICES FEATURES (2026-09-03)
+- All-profession registration: Lawyer, Accountant, Engineer, Architect, ICT/Developer, Designer, Consultant, Counsellor, Nurse, Pharmacist, Dentist, Nutritionist, Physiotherapist, Real Estate, Insurance, Financial Adviser, Teacher/Tutor, Doctor, Electrician, Plumber, Mechanic, Builder, Carpenter, Welder, Tailor, Beauty, Photographer, Writer/Editor/Translator, Marketing, Business Consultant and Other.
+- Professional directory search by profession, name, qualification, service and service area.
+- Professional profiles are visible in the directory only after approval.
+- Each approved professional has buttons for Book, Ask Advice, Counselling, Chat, Voice Call and Video Call.
+- Professional chat uses the KOJA database and refreshes messages automatically.
+- Voice/video calls use browser WebRTC signaling. Users must allow microphone/camera permissions and both sides must keep the call page open.
+- Run the updated KOJA_AFRICA_DATABASE.sql in Supabase to create professional_messages and professional_calls.
+- If the database already has the tables, CREATE TABLE IF NOT EXISTS / CREATE INDEX IF NOT EXISTS will leave them in place.
