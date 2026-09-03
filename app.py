@@ -622,7 +622,6 @@ footer{text-align:center;color:var(--muted);padding:30px}
 <div class="menu-group">
 <button type="button" id="moreMenuButton" aria-expanded="false" aria-haspopup="true">More ▾</button>
 <div class="dropdown" id="moreMenu" role="menu">
-<a role="menuitem" href="{{ url_for('universities') }}">Universities</a>
 <a role="menuitem" href="{{ url_for('deliveries') }}">Deliveries</a>
 <a role="menuitem" href="{{ url_for('drivers') }}">Drivers</a>
 {% if user.role in ['driver','admin'] or user.is_admin %}<a role="menuitem" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}
@@ -710,7 +709,7 @@ def home():
 <div class="hero">
 <h1>KOJA AFRICA</h1>
 <p>Knowledge • Questions • Answers</p>
-<p>Academic services, university applications, CV creation, farmer registration, professional bookings and delivery services.</p>
+<p>Research, academic questions, assignments, professional services, documents and delivery services.</p>
 {% if not user %}
 <div class="actions">
 <a class="btn" href="{{ url_for('register') }}">Create Account</a>
@@ -720,9 +719,7 @@ def home():
 </div>
 <div class="grid">
 <div class="card"><h3>Academic</h3><p>Questions, assignments and learning resources.</p><a class="btn" href="{{ url_for('questions') }}">Questions</a></div>
-<div class="card"><h3>University</h3><p>Choose a university, programme and academic year.</p><a class="btn" href="{{ url_for('universities') }}">Universities</a></div>
 <div class="card"><h3>CV</h3><p>Create a professional CV.</p><a class="btn" href="{{ url_for('cv') }}">Create CV</a></div>
-<div class="card"><h3>Farmers</h3><p>Submit agricultural registration information.</p><a class="btn" href="{{ url_for('farmer') }}">Farmer Portal</a></div>
 <div class="card"><h3>Doctors</h3><p>Find a doctor and request an appointment.</p><a class="btn" href="{{ url_for('doctors') }}">Doctors</a></div>
 <div class="card"><h3>Teachers</h3><p>Find teachers/tutors by subject and grade.</p><a class="btn" href="{{ url_for('teachers') }}">Teachers</a></div>
 <div class="card"><h3>Deliveries</h3><p>Find nearby drivers and send delivery requests.</p><a class="btn" href="{{ url_for('deliveries') }}">Delivery</a></div>
@@ -898,8 +895,6 @@ def dashboard():
 <div class="card"><h3>KOJA Services</h3>
 <div class="grid">
 <a class="btn" href="{{ url_for('cv') }}">Create CV</a>
-<a class="btn" href="{{ url_for('universities') }}">University Application</a>
-<a class="btn" href="{{ url_for('farmer') }}">Farmer Registration</a>
 <a class="btn" href="{{ url_for('doctors') }}">Doctor Booking</a>
 <a class="btn" href="{{ url_for('teachers') }}">Teacher Booking</a>
 <a class="btn" href="{{ url_for('deliveries') }}">Find Driver / Delivery</a>
@@ -1067,8 +1062,8 @@ def _research_deduplicate(results, query):
 def _research_filter(results, source='all', year=None, sort='relevance'):
     source=(source or 'all').lower(); source=source if source in ('all','web','wikipedia','academic','koja') else 'all'
     if source!='all':
-        if source_filter=='academic': results=[r for r in results if any(x in str(r.get('source','')).lower() for x in ('openalex','crossref'))]
-        elif source_filter=='koja': results=[r for r in results if 'koja documents' in str(r.get('source','')).lower()]
+        if source=='academic': results=[r for r in results if any(x in str(r.get('source','')).lower() for x in ('openalex','crossref'))]
+        elif source=='koja': results=[r for r in results if 'koja documents' in str(r.get('source','')).lower()]
         else: results=[r for r in results if str(r.get('source','')).lower()==source]
     if year: results=[r for r in results if str(r.get('year') or '')==str(year)]
     if sort=='date': results.sort(key=lambda r:r.get('year') or 0,reverse=True)
@@ -1076,22 +1071,44 @@ def _research_filter(results, source='all', year=None, sort='relevance'):
     else: results.sort(key=lambda r:r.get('_relevance',0),reverse=True)
     return results
 
+def _openai_text(prompt, system_prompt, max_output_tokens=900, timeout=40):
+    api_key=os.getenv("AI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return ""
+    endpoint=os.getenv("AI_API_URL","https://api.openai.com/v1/responses")
+    model=os.getenv("AI_MODEL","gpt-5.6-luna")
+    payload={"model":model,"input":[{"role":"system","content":[{"type":"input_text","text":system_prompt}]},{"role":"user","content":[{"type":"input_text","text":prompt}]}],"max_output_tokens":max_output_tokens}
+    try:
+        r=requests.post(endpoint,json=payload,timeout=timeout,headers={"Authorization":"Bearer "+api_key,"Content-Type":"application/json"})
+        if not r.ok:
+            logger.warning("OpenAI request failed: %s", r.text[:500])
+            return ""
+        data=r.json()
+        text=clean(data.get("output_text") or "")
+        if text: return text
+        parts=[]
+        for item in data.get("output") or []:
+            for content in item.get("content") or []:
+                if content.get("type") in ("output_text","text") and content.get("text"):
+                    parts.append(content["text"])
+        return clean("\n".join(parts))
+    except Exception as exc:
+        logger.warning("OpenAI request failed: %s", exc)
+        return ""
+
 def research_ai_summary(query, results):
     if not results: return ''
-    api_key=os.getenv('AI_API_KEY') or os.getenv('OPENAI_API_KEY'); endpoint=os.getenv('AI_API_URL','https://api.openai.com/v1/chat/completions'); model=os.getenv('AI_MODEL','gpt-4o-mini')
     source_text='\n\n'.join(f"[{i+1}] {r.get('title','')} ({r.get('source','')})\n{r.get('snippet','')[:1200]}" for i,r in enumerate(results[:10]))
-    if api_key:
-        try:
-            payload={'model':model,'temperature':0.2,'max_tokens':500,'messages':[{'role':'system','content':'You are KOJA Research. Summarize only the supplied sources. Do not invent facts. Cite source numbers like [1] [2]. State when evidence is limited.'},{'role':'user','content':f'Question: {query}\n\nSources:\n{source_text}\n\nWrite a concise research summary with 3-5 key findings and a short evidence note.'}]}
-            r=requests.post(endpoint,json=payload,timeout=25,headers={'Authorization':'Bearer '+api_key,'Content-Type':'application/json'})
-            if r.ok:
-                text=((r.json().get('choices') or [{}])[0].get('message') or {}).get('content','').strip()
-                if text: return text
-        except Exception as exc: logger.warning('AI research summary failed: %s',exc)
+    text=_openai_text(
+        f"Question: {query}\n\nSources:\n{source_text}\n\nWrite a concise research summary with 3-5 key findings and a short evidence note.",
+        'You are KOJA Research. Summarize only the supplied sources. Do not invent facts. Cite source numbers like [1] [2]. State when evidence is limited.',
+        700, 30
+    )
+    if text: return text
     highlights=[]
     for r in results[:5]:
-        s=clean(r.get('snippet','')).replace('\n',' ')
-        if s: highlights.append(f"{r.get('title','Source')}: {s[:300]}")
+        ss=clean(r.get('snippet','')).replace('\n',' ')
+        if ss: highlights.append(f"{r.get('title','Source')}: {ss[:300]}")
     return 'AI summary is not configured. Source-based highlights:\n\n'+'\n\n'.join(highlights)
 
 
@@ -1130,27 +1147,19 @@ def make_intext(r,style,n):
 def make_bibliography(results,style): return [(i+1,make_reference(r,style,i+1)) for i,r in enumerate(results)]
 def research_ai_notes(query, results, style='apa'):
     if not results: return 'No sufficiently relevant evidence was retrieved for this topic.'
-    api_key=os.getenv('AI_API_KEY') or os.getenv('OPENAI_API_KEY')
-    endpoint=os.getenv('AI_API_URL','https://api.openai.com/v1/chat/completions')
-    model=os.getenv('AI_MODEL','gpt-4o-mini')
     bundle=[]
     for i,r in enumerate(results[:12],1):
         bundle.append(f"[{i}] {r.get('title','')} | {r.get('source','')} | {r.get('year') or 'n.d.'}\nAuthors: {', '.join(_names(r))}\nEvidence: {clean(r.get('snippet',''))[:1600]}\nURL: {r.get('url','')}")
     prompt=(f'Write high-quality research notes on: {query}\n\nUse ONLY the evidence supplied below. Do not invent facts, figures, quotations, authors, dates, references or conclusions. Every substantive factual claim must have one or more source-number citations such as [1] immediately after the claim. If evidence is insufficient, say so.\n\nStructure the notes with: Title; Introduction; Key concepts/background; Main findings/themes; Evidence and discussion; Implications; Conclusion; Research gaps/limitations only if supported. Write connected explanatory paragraphs, like strong academic study notes, not disconnected bullet fragments. Use the selected citation style for the reference list: {CITATION_STYLES.get(style,style)}.\n\nSOURCES:\n' + '\n\n'.join(bundle))
-    if api_key:
-        try:
-            payload={'model':model,'temperature':0.2,'max_tokens':2200,'messages':[{'role':'system','content':'You are KOJA Research Notes. Be evidence-bound, clear, academic and concise.'},{'role':'user','content':prompt}]}
-            rr=requests.post(endpoint,json=payload,timeout=40,headers={'Authorization':'Bearer '+api_key,'Content-Type':'application/json'})
-            if rr.ok:
-                text=((rr.json().get('choices') or [{}])[0].get('message') or {}).get('content','').strip()
-                if text: return text
-        except Exception as exc: logger.warning('AI notes failed: %s',exc)
+    text=_openai_text(prompt,'You are KOJA Research Notes. Be evidence-bound, clear, academic and concise. Never fabricate citations or source details.',2200,45)
+    if text: return text
     lines=[f"# Research Notes: {query}","","## Introduction",f"The search retrieved {len(results)} relevant records. The notes below are limited to the evidence contained in those records.",""]
     for i,r in enumerate(results[:8],1):
         evidence=clean(r.get('snippet',''))
         if evidence: lines += [f"## {i}. {r.get('title','Untitled')} [{i}]",evidence,""]
     lines += ["## Conclusion","The available evidence is source-dependent and should be checked against the original publications before formal submission."]
     return '\n'.join(lines)
+
 
 @app.route('/research/notes')
 def research_notes():
@@ -1198,8 +1207,6 @@ def services():
 <div class="card"><h3>Academic Questions</h3><a class="btn" href="{{ url_for('questions') }}">Open</a></div>
 <div class="card"><h3>Assignments</h3><a class="btn" href="{{ url_for('assignments') }}">Open</a></div>
 <div class="card"><h3>CV</h3><a class="btn" href="{{ url_for('cv') }}">Open</a></div>
-<div class="card"><h3>University Applications</h3><a class="btn" href="{{ url_for('universities') }}">Open</a></div>
-<div class="card"><h3>Farmer Registration</h3><a class="btn" href="{{ url_for('farmer') }}">Open</a></div>
 <div class="card"><h3>Doctors</h3><a class="btn" href="{{ url_for('doctors') }}">Open</a></div>
 <div class="card"><h3>Teachers</h3><a class="btn" href="{{ url_for('teachers') }}">Open</a></div>
 <div class="card"><h3>Deliveries</h3><a class="btn" href="{{ url_for('deliveries') }}">Open</a></div>
@@ -1367,74 +1374,6 @@ def cv():
 </form>
 <p class="small">Use Print / Save as PDF in the Android browser. No ReportLab package is required.</p>
 </div>
-""")
-
-# ============================================================
-# FARMER
-# ============================================================
-
-@app.route("/farmer",methods=["GET","POST"])
-@login_required
-def farmer():
-    user=current_user()
-    if request.method=="POST":
-        data={
-            "id":str(uuid.uuid4()),"user_id":user["id"],
-            "nrc":clean(request.form.get("nrc")),
-            "date_of_birth":request.form.get("date_of_birth") or None,
-            "first_name":clean(request.form.get("first_name")),
-            "middle_names":clean(request.form.get("middle_names")),
-            "last_name":clean(request.form.get("last_name")),
-            "gender":clean(request.form.get("gender")),
-            "phone":clean(request.form.get("phone")),
-            "location":clean(request.form.get("location")),
-            "payment_method":clean(request.form.get("payment_method")),
-            "provider":clean(request.form.get("provider")),
-            "branch":clean(request.form.get("branch")),
-            "account_number":clean(request.form.get("account_number")),
-            "account_name":clean(request.form.get("account_name")),
-            "status":"submitted","created_at":utc_now()
-        }
-        f=request.files.get("nrc_document")
-        if f and f.filename:
-            uploaded,error=upload_storage(f,"farmer-nrc")
-            if error:
-                flash(error,"danger"); return redirect(url_for("farmer"))
-            data["nrc_document_url"]=uploaded["url"]
-            data["nrc_document_path"]=uploaded["path"]
-
-        row,error=db_insert("farmer_registrations",data)
-        if error:
-            minimal={k:data[k] for k in ("id","user_id","nrc","first_name","middle_names","last_name","gender","phone","location")}
-            row,error=db_insert("farmer_registrations",minimal)
-        if error:
-            flash("Farmer registration could not be submitted. Check the farmer_registrations columns.","danger")
-        else:
-            flash("Farmer registration submitted successfully.","success")
-            log_activity("farmer_registration","Farmer registration submitted.")
-        return redirect(url_for("farmer"))
-
-    return render_page("Farmer Registration",r"""
-<div class="hero"><h2>KOJA Farmer Registration</h2><p>Register your agricultural service request.</p></div>
-<div class="card"><form method="post" enctype="multipart/form-data">
-<h3>Personal Details</h3>
-<label>NRC</label><input name="nrc" required>
-<label>Date of Birth</label><input name="date_of_birth" type="date">
-<label>First Name</label><input name="first_name" required>
-<label>Middle Names</label><input name="middle_names">
-<label>Last Name</label><input name="last_name" required>
-<label>Gender</label><select name="gender"><option value="">Select</option><option>Male</option><option>Female</option></select>
-<label>Phone</label><input name="phone" required>
-<label>NRC Card</label><input type="file" name="nrc_document" accept=".jpg,.jpeg,.png,.pdf">
-<h3>Farming Location</h3><label>Location</label><input name="location" placeholder="Province / District / Chiefdom / Camp">
-<h3>Payment Details</h3>
-<label>Payment Method</label><select name="payment_method"><option>Bank Account</option><option>Mobile Money (MNO)</option><option>Wallet</option></select>
-<label>Provider</label><input name="provider" placeholder="Bank or mobile-money provider">
-<label>Branch</label><input name="branch">
-<label>Account / Mobile Number</label><input name="account_number">
-<label>Account Name</label><input name="account_name">
-<button type="submit">Submit Farmer Registration</button>
-</form></div>
 """)
 
 # ============================================================
@@ -2361,77 +2300,13 @@ def provider_location(provider_id):
     return jsonify({"ok":True,"latitude":loc.get("latitude"),"longitude":loc.get("longitude"),"accuracy":loc.get("accuracy"),"updated_at":loc.get("created_at")})
 
 # ============================================================
-# UNIVERSITIES
-# ============================================================
-
-@app.route("/universities")
-@login_required
-def universities():
-    universities=db_select("universities",order="name.asc",limit=200)
-    return render_page("Universities",r"""
-<div class="hero"><h2>University Applications</h2><p>Select the university, programme, intake/year and review requirements.</p></div>
-<div class="card">
-{% if universities %}<div class="grid">
-{% for university in universities %}
-<div class="card"><h3>{{ university.get("name") or university.get("university_name") or "University" }}</h3>
-<p>{{ university.get("location") or university.get("description") or "" }}</p>
-<a class="btn" href="{{ url_for('university_apply',university_id=university.get('id')) }}">Apply</a></div>
-{% endfor %}
-</div>{% else %}<p>No universities are currently loaded into the universities table.</p>{% endif %}
-</div>
-""",universities=universities)
-
-@app.route("/university/apply/<university_id>",methods=["GET","POST"])
-@login_required
-def university_apply(university_id):
-    user=current_user()
-    university=first_row("universities",{"id":university_id})
-    if not university: abort(404)
-    programmes=db_select("university_programmes",filters={"university_id":university_id},order="name.asc",limit=500)
-    requirements=db_select("university_application_requirements",filters={"university_id":university_id},limit=500)
-
-    if request.method=="POST":
-        programme_id=request.form.get("programme_id")
-        year=request.form.get("academic_year")
-        intake=clean(request.form.get("intake"))
-        payload={
-            "id":str(uuid.uuid4()),"user_id":user["id"],"university_id":university_id,
-            "programme_id":programme_id,"academic_year":year,"intake":intake or None,
-            "full_name":user["name"],"email":user["email"],"phone":user.get("phone"),
-            "status":"draft","created_at":utc_now()
-        }
-        row,error=db_insert("university_applications",payload)
-        if error:
-            minimal={k:payload[k] for k in ("id","user_id","university_id","programme_id","academic_year")}
-            row,error=db_insert("university_applications",minimal)
-        if error: flash("Application could not be created: "+str(error)[:600],"danger")
-        else: flash("University application started successfully.","success")
-        return redirect(url_for("universities"))
-
-    return render_page("University Application",r"""
-<div class="card"><h2>{{ university.get("name") or university.get("university_name") }}</h2>
-<form method="post">
-<label>Programme</label><select name="programme_id" required><option value="">Select programme</option>
-{% for p in programmes %}<option value="{{ p.get('id') }}">{{ p.get("name") or p.get("programme_name") or p.get("title") }}</option>{% endfor %}
-</select>
-<label>Academic Year</label><select name="academic_year"><option>2026/2027</option><option>2027/2028</option></select>
-<label>Intake</label><select name="intake"><option>January</option><option>May</option><option>September</option><option>Other</option></select>
-<button type="submit">Start Application</button>
-</form></div>
-<div class="card"><h3>Application Requirements</h3>
-{% for r in requirements %}<div class="card"><strong>{{ r.get("title") or r.get("requirement") or "Requirement" }}</strong><p>{{ r.get("description") or r.get("details") or "" }}</p></div>
-{% else %}<p>No specific requirements have been entered for this university yet.</p>{% endfor %}
-</div>
-""",university=university,programmes=programmes,requirements=requirements)
-
-# ============================================================
 # GOOGLE SEARCH & DISTRIBUTION
 # ============================================================
 
 PUBLIC_INDEX_ROUTES = [
     "/",
     "/research",
-    "/questions",
+    "/research/notes",
 ]
 
 GSC_SCOPE = "https://www.googleapis.com/auth/webmasters.readonly"
@@ -2705,7 +2580,7 @@ def sitemap_xml():
 @app.route("/admin")
 @admin_required
 def admin():
-    tables=["profiles","questions","assignments","farmer_registrations","doctor_profiles","teacher_profiles","driver_profiles","driver_locations","deliveries","appointments","universities","university_applications","activity_logs"]
+    tables=["profiles","questions","assignments","documents","document_records","service_providers","doctor_profiles","teacher_profiles","driver_profiles","driver_locations","deliveries","appointments","cv_records","activity_logs"]
     counts={}
     for table in tables:
         counts[table]=len(db_select(table,limit=1000))
