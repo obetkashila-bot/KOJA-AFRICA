@@ -4,6 +4,8 @@ import uuid
 import math
 import secrets
 import logging
+import smtplib
+from email.message import EmailMessage
 import json
 import re
 from datetime import datetime, timezone, timedelta
@@ -65,6 +67,15 @@ APP_NAME = "KOJA AFRICA"
 APP_VERSION = "2026.09.03-RESEARCH-V2"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
+
+# Email delivery (server-side only; never expose SMTP passwords to the browser)
+EMAIL_PROVIDER = os.getenv("EMAIL_PROVIDER", "smtp").strip().lower()
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com").strip()
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587") or 587)
+SMTP_USERNAME = os.getenv("SMTP_USERNAME", "").strip()
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "").strip()
+SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USERNAME).strip()
+SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "true").strip().lower() not in ("0", "false", "no")
 
 # Google Search & Distribution
 SITE_URL = os.getenv("SITE_URL", "https://koja-africa.onrender.com").rstrip("/")
@@ -422,6 +433,76 @@ def upload_storage(file_storage, folder="uploads"):
     except Exception as exc:
         logger.exception("Storage upload error: %s", exc)
         return None, str(exc)
+
+def email_configured():
+    return bool(SMTP_HOST and SMTP_USERNAME and SMTP_PASSWORD and SMTP_FROM)
+
+def send_email_with_attachment(to_email, subject, body, attachment_bytes, filename, mime_type="application/pdf"):
+    """Send a server-side email with an assignment answer PDF attached.
+
+    Supports normal SMTP and Gmail SMTP. Gmail accounts should use a Google
+    App Password, not the normal Gmail account password.
+    """
+    to_email = clean(to_email).lower()
+    if not to_email or "@" not in to_email:
+        return False, "A valid recipient email address is required."
+    if not email_configured():
+        return False, "Email is not configured. Set SMTP_USERNAME, SMTP_PASSWORD and SMTP_FROM in Render environment variables."
+    if not attachment_bytes:
+        return False, "The answer PDF is empty or missing."
+    try:
+        msg = EmailMessage()
+        msg["From"] = SMTP_FROM
+        msg["To"] = to_email
+        msg["Subject"] = subject or "KOJA AFRICA Assignment Answer"
+        msg.set_content(body or "Please find your KOJA AFRICA assignment answer attached as a PDF.")
+        maintype, subtype = (mime_type or "application/pdf").split("/", 1) if "/" in (mime_type or "") else ("application", "pdf")
+        msg.add_attachment(attachment_bytes, maintype=maintype, subtype=subtype, filename=filename or "KOJA-Answer.pdf")
+
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as server:
+            server.ehlo()
+            if SMTP_USE_TLS:
+                server.starttls()
+                server.ehlo()
+            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            server.send_message(msg)
+        return True, None
+    except Exception as exc:
+        logger.exception("Assignment email send failed")
+        return False, str(exc)
+
+def send_plain_email(to_email, subject, body):
+    to_email = clean(to_email)
+    if not to_email or "@" not in to_email:
+        return False, "A valid recipient email is required."
+    if not email_configured():
+        return False, "Email is not configured on the server."
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = subject or "KOJA AFRICA Notification"
+        msg["From"] = SMTP_FROM
+        msg["To"] = to_email
+        msg.set_content(body or "KOJA AFRICA notification")
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as smtp:
+            if SMTP_USE_TLS:
+                smtp.starttls()
+            smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
+            smtp.send_message(msg)
+        return True, None
+    except Exception as exc:
+        logger.exception("Plain email failed")
+        return False, str(exc)
+
+def get_assignment_recipient(assignment):
+    """Resolve the assignment owner's email from the profile table."""
+    owner_id = assignment_owner_id(assignment)
+    if owner_id:
+        user = first_row("profiles", {"id": owner_id})
+        if user and clean(user.get("email")):
+            return clean(user.get("email")).lower(), user
+    # Fallback for legacy assignments where only an email was retained.
+    email = clean(assignment.get("email") or assignment.get("student_email"))
+    return (email.lower() if email else ""), None
 
 def delete_storage(path):
     if not path or not supabase_configured():
@@ -2649,6 +2730,9 @@ def admin():
 <div class="card"><h3>Management</h3>
 <div class="actions">
 <a class="btn" href="{{ url_for('admin_users') }}">Users</a>
+<a class="btn success" href="{{ url_for('admin_assignments') }}">📚 Assignments & Answers</a>
+<a class="btn success" href="{{ url_for('admin_approvals') }}">✅ Approval Centre</a>
+<a class="btn" href="{{ url_for('admin_email_settings') }}">📧 Email Management</a>
 <a class="btn" href="{{ url_for('admin_drivers') }}">Drivers</a>
 <a class="btn" href="{{ url_for('admin_deliveries') }}">Deliveries</a>
 <a class="btn success" href="{{ url_for('admin_live_tracking') }}">🚚 Live GPS Tracking</a>
@@ -2666,6 +2750,253 @@ def admin_users():
 {% for u in rows %}<tr><td>{{ u.get("full_name") or u.get("name") }}</td><td>{{ u.get("email") }}</td><td>{{ u.get("phone") or "" }}</td><td>{{ u.get("role") or "" }}</td><td>{{ "Yes" if u.get("is_admin") else "No" }}</td></tr>{% endfor %}
 </table></div>
 """,rows=rows)
+
+@app.route("/admin/assignments", methods=["GET"])
+@admin_required
+def admin_assignments():
+    rows = db_select("assignments", order="created_at.desc", limit=300)
+    enriched = []
+    for item in rows:
+        email, profile = get_assignment_recipient(item)
+        copy = dict(item)
+        copy["recipient_email"] = email
+        copy["recipient_name"] = (profile or {}).get("full_name") or (profile or {}).get("name") or "User"
+        enriched.append(copy)
+    return render_page("Admin Assignments", r"""
+<div class="hero"><h2>📚 Assignment Answer Management</h2>
+<p>Write an answer, upload the answer PDF, save it to the specific assignment owner, and send the PDF by email.</p></div>
+<div class="card"><p><strong>Email status:</strong> {{ "Configured" if email_configured else "Not configured" }} · <a class="btn secondary" href="{{ url_for('admin_email_settings') }}">Manage Email</a></p>
+<p class="small">For Gmail, use a Google App Password in the server environment. Never place the password in this page.</p></div>
+{% for item in rows %}
+<div class="card">
+<h3>{{ item.get("title") or "Assignment" }}</h3>
+<p>{{ item.get("description") or "" }}</p>
+<p class="small"><strong>Owner/Sender:</strong> {{ item.get("recipient_name") }} · <strong>Email:</strong> {{ item.get("recipient_email") or "No email found" }} · <strong>Tracking:</strong> {{ item.get("tracking_code") or "—" }}</p>
+<p><span class="badge">{{ item.get("status") or "Submitted" }}</span>{% if item.get("answer_file_path") %} <span class="badge">PDF Answer Uploaded</span>{% endif %}</p>
+<div class="actions">
+<a class="btn" href="{{ url_for('admin_assignment_answer', assignment_id=item.get('id')) }}">✍️ Write / Upload Answer</a>
+{% if item.get("answer_file_path") %}<a class="btn success" href="{{ url_for('assignment_file', assignment_id=item.get('id'), kind='answer') }}">View PDF</a>{% endif %}
+</div>
+</div>
+{% else %}<div class="card"><p>No assignments found.</p></div>{% endfor %}
+""", rows=enriched, email_configured=email_configured())
+
+@app.route("/admin/assignments/<assignment_id>/answer", methods=["GET", "POST"])
+@admin_required
+def admin_assignment_answer(assignment_id):
+    item = first_row("assignments", {"id": assignment_id})
+    if not item:
+        return "Assignment not found.", 404
+    recipient_email, recipient = get_assignment_recipient(item)
+    if request.method == "POST":
+        answer_text = clean(request.form.get("answer"))
+        pdf = request.files.get("answer_pdf")
+        if not answer_text and not (pdf and pdf.filename):
+            flash("Write an answer or upload an answer PDF.", "danger")
+            return redirect(url_for("admin_assignment_answer", assignment_id=assignment_id))
+
+        updates = {
+            "answer": answer_text or item.get("answer") or None,
+            "answered_by": current_user().get("id"),
+            "answered_at": utc_now(),
+            "status": "answered",
+        }
+        if pdf and pdf.filename:
+            if not pdf.filename.lower().endswith(".pdf"):
+                flash("The answer file must be a PDF.", "danger")
+                return redirect(url_for("admin_assignment_answer", assignment_id=assignment_id))
+            uploaded, error = upload_storage(pdf, "assignment-answers")
+            if error:
+                flash(f"PDF upload failed: {error}", "danger")
+                return redirect(url_for("admin_assignment_answer", assignment_id=assignment_id))
+            updates.update({
+                "answer_file_name": uploaded["file_name"],
+                "answer_file_path": uploaded["path"],
+                "answer_file_url": uploaded["url"],
+            })
+        row, error = db_update("assignments", {"id": assignment_id}, updates)
+        if error:
+            flash("Answer could not be saved. Check the assignments table columns.", "danger")
+        else:
+            flash("Answer saved successfully. The PDF is linked to the specific assignment owner.", "success")
+            log_activity("assignment_answered", f"Admin answered assignment {item.get('tracking_code') or assignment_id}.")
+        return redirect(url_for("admin_assignment_answer", assignment_id=assignment_id))
+
+    item = first_row("assignments", {"id": assignment_id}) or item
+    return render_page("Write Assignment Answer", r"""
+<div class="hero"><h2>✍️ Answer Assignment</h2><p>{{ item.get("title") or "Assignment" }} · {{ item.get("tracking_code") or "No tracking code" }}</p></div>
+<div class="card"><p><strong>Specific user:</strong> {{ recipient_name }}</p><p><strong>Email:</strong> {{ recipient_email or "No email found" }}</p><p class="small">The answer belongs only to this assignment owner. Admin can send the uploaded PDF directly to this email.</p></div>
+<div class="card"><form method="post" enctype="multipart/form-data">
+<label>Written Answer / User Message</label><textarea name="answer" placeholder="Write the answer or explanation for the user...">{{ item.get("answer") or "" }}</textarea>
+<label>Answer PDF</label><input type="file" name="answer_pdf" accept="application/pdf">
+<p class="small">Upload the final PDF answer here. Maximum {{ max_upload_mb }} MB.</p>
+<button type="submit">Save Answer & PDF</button>
+</form></div>
+<div class="card"><h3>Send PDF to User</h3>
+{% if item.get("answer_file_path") and item.get("answer_approval_status") == "approved" %}
+<form method="post" action="{{ url_for('admin_send_assignment_email', assignment_id=item.get('id')) }}">
+<label>Recipient Email</label><input type="email" name="recipient_email" value="{{ recipient_email }}" required>
+<label>Email Subject</label><input name="subject" value="KOJA AFRICA — Assignment Answer {{ item.get('tracking_code') or '' }}">
+<label>Email Message</label><textarea name="message">Hello {{ recipient_name }},\n\nYour KOJA AFRICA assignment answer is attached as a PDF.\n\nTracking code: {{ item.get('tracking_code') or '—' }}\n\nKOJA AFRICA</textarea>
+<button class="btn success" type="submit">📧 Send Answer PDF</button>
+</form>
+{% elif item.get("answer_file_path") %}<p>Answer PDF is uploaded, but it must be <strong>approved</strong> in the Approval Centre before it can be emailed.</p>{% else %}<p>Upload and save an answer PDF first.</p>{% endif %}
+</div>
+""", item=item, recipient_name=(recipient or {}).get("full_name") or (recipient or {}).get("name") or "User", recipient_email=recipient_email, max_upload_mb=MAX_UPLOAD_MB)
+
+@app.route("/admin/assignments/<assignment_id>/send-email", methods=["POST"])
+@admin_required
+def admin_send_assignment_email(assignment_id):
+    item = first_row("assignments", {"id": assignment_id})
+    if not item:
+        return "Assignment not found.", 404
+    path = item.get("answer_file_path")
+    if item.get("answer_approval_status") != "approved":
+        flash("This answer must be approved in the Approval Centre before it can be emailed.", "danger")
+        return redirect(url_for("admin_assignment_answer", assignment_id=assignment_id))
+    if not path:
+        flash("No answer PDF has been uploaded for this assignment.", "danger")
+        return redirect(url_for("admin_assignment_answer", assignment_id=assignment_id))
+    recipient_email, recipient = get_assignment_recipient(item)
+    recipient_email = clean(request.form.get("recipient_email")) or recipient_email
+    subject = clean(request.form.get("subject")) or f"KOJA AFRICA — Assignment Answer {item.get('tracking_code') or ''}".strip()
+    message = request.form.get("message") or f"Hello {(recipient or {}).get('full_name') or 'User'},\n\nYour KOJA AFRICA assignment answer is attached as a PDF.\n\nTracking code: {item.get('tracking_code') or '—'}\n\nKOJA AFRICA"
+    try:
+        r = requests.get(sb_storage_url(path), headers=sb_headers(), timeout=60)
+        if not r.ok:
+            flash("The stored answer PDF could not be retrieved.", "danger")
+            return redirect(url_for("admin_assignment_answer", assignment_id=assignment_id))
+        filename = item.get("answer_file_name") or "KOJA-Assignment-Answer.pdf"
+        ok, error = send_email_with_attachment(recipient_email, subject, message, r.content, filename, "application/pdf")
+        if ok:
+            db_update("assignments", {"id": assignment_id}, {"status": "answer_sent"})
+            log_activity("assignment_answer_email_sent", f"Assignment {item.get('tracking_code') or assignment_id} answer PDF emailed to {recipient_email}.")
+            flash(f"Answer PDF sent successfully to {recipient_email}.", "success")
+        else:
+            flash(f"Email could not be sent: {error}", "danger")
+    except Exception as exc:
+        logger.exception("Assignment PDF email failed")
+        flash(f"Email could not be sent: {exc}", "danger")
+    return redirect(url_for("admin_assignment_answer", assignment_id=assignment_id))
+
+@app.route("/admin/email", methods=["GET"])
+@admin_required
+def admin_email_settings():
+    gmail_mode = SMTP_HOST.lower() == "smtp.gmail.com"
+    return render_page("Admin Email Settings", r"""
+<div class="hero"><h2>📧 KOJA Email Management</h2><p>Server-side email delivery for assignment answer PDFs.</p></div>
+<div class="card">
+<h3>Current configuration</h3>
+<table><tr><th>Provider</th><td>{{ "Gmail SMTP" if gmail_mode else "SMTP" }}</td></tr><tr><th>SMTP host</th><td>{{ smtp_host }}</td></tr><tr><th>SMTP port</th><td>{{ smtp_port }}</td></tr><tr><th>From</th><td>{{ smtp_from or "Not configured" }}</td></tr><tr><th>Status</th><td>{{ "Ready" if configured else "Not configured" }}</td></tr></table>
+</div>
+<div class="card"><h3>How to configure</h3><p>Set these as <strong>Render Environment Variables</strong> — not in the database and not in browser code:</p>
+<pre>EMAIL_PROVIDER=smtp
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USERNAME=yourgmail@gmail.com
+SMTP_PASSWORD=your-16-character-google-app-password
+SMTP_FROM=yourgmail@gmail.com
+SMTP_USE_TLS=true</pre>
+<p class="small">For Gmail, enable 2-Step Verification and create a Google App Password. Do not use your normal Gmail password.</p>
+<a class="btn" href="{{ url_for('admin_assignments') }}">Back to Assignment Management</a>
+</div>
+""", gmail_mode=gmail_mode, smtp_host=SMTP_HOST, smtp_port=SMTP_PORT, smtp_from=SMTP_FROM, configured=email_configured())
+
+@app.route("/admin/approvals")
+@admin_required
+def admin_approvals():
+    sections = []
+    configs = [
+        ("Assignments", "assignments", "approval_status", "title", "assignment"),
+        ("Assignment Answers", "assignments", "answer_approval_status", "title", "assignment_answer"),
+        ("Doctors", "doctor_profiles", "approval_status", "full_name", "doctor"),
+        ("Tutors / Teachers", "teacher_profiles", "approval_status", "full_name", "teacher"),
+        ("Drivers", "driver_profiles", "approval_status", "full_name", "driver"),
+        ("Professional Providers", "service_providers", "approval_status", "full_name", "provider"),
+        ("Documents", "documents", "approval_status", "title", "document"),
+        ("Deliveries", "deliveries", "approval_status", "tracking_code", "delivery"),
+        ("Appointments", "appointments", "approval_status", "appointment_type", "appointment"),
+    ]
+    for label, table, status_field, title_field, kind in configs:
+        rows = db_select(table, order="created_at.desc", limit=300)
+        pending = []
+        for row in rows:
+            if kind == "assignment_answer":
+                if not row.get("answer_file_path") and not row.get("answer"):
+                    continue
+            status = str(row.get(status_field) or "pending").lower()
+            if status in ("pending", "submitted", "requested", "under_review"):
+                pending.append(row)
+        if pending:
+            sections.append({"label": label, "table": table, "kind": kind, "rows": pending, "title_field": title_field})
+    return render_page("Admin Approvals", r"""
+<div class="hero"><h2>✅ Approval & Review Centre</h2><p>Review submissions before they become active, published, approved or sent to users.</p></div>
+<div class="card"><p><strong>Workflow:</strong> User submits → Pending review → Admin approves/rejects → KOJA updates status → optional email notification.</p><p class="small">All approval actions are restricted to administrators and recorded in the activity log.</p></div>
+{% for sec in sections %}
+<div class="card"><h3>{{ sec.label }} <span class="badge">{{ sec.rows|length }} pending</span></h3>
+{% for item in sec.rows %}
+<div style="border-top:1px solid var(--border);padding:14px 0">
+<strong>{{ item.get(sec.title_field) or item.get('name') or item.get('driver_name') or item.get('doctor_name') or item.get('teacher_name') or 'Submission' }}</strong>
+<p class="small">Status: {{ item.get('approval_status') or item.get('answer_approval_status') or 'pending' }}{% if item.get('tracking_code') %} · Tracking: {{ item.get('tracking_code') }}{% endif %}</p>
+<form method="post" action="{{ url_for('admin_approval_action', table=sec.table, item_id=item.get('id'), kind=sec.kind) }}" style="display:inline">
+<input type="hidden" name="kind" value="{{ sec.kind }}"><input type="hidden" name="action" value="approve"><button class="btn success" type="submit">✓ Approve</button>
+</form>
+<form method="post" action="{{ url_for('admin_approval_action', table=sec.table, item_id=item.get('id'), kind=sec.kind) }}" style="display:inline;margin-left:8px">
+<input type="hidden" name="kind" value="{{ sec.kind }}"><input type="hidden" name="action" value="reject"><input name="note" placeholder="Reason (optional)" style="max-width:260px"><button class="btn danger" type="submit">✕ Reject</button>
+</form>
+</div>
+{% endfor %}</div>
+{% else %}<div class="card"><h3>🎉 No pending approvals</h3><p>Everything currently in the approval queue has been reviewed.</p></div>{% endfor %}
+""", sections=sections)
+
+@app.route("/admin/approvals/<table>/<item_id>", methods=["POST"])
+@admin_required
+def admin_approval_action(table, item_id):
+    allowed = {"assignments", "doctor_profiles", "teacher_profiles", "driver_profiles", "service_providers", "documents", "deliveries", "appointments"}
+    if table not in allowed:
+        return "Invalid approval target.", 400
+    action = clean(request.form.get("action")).lower()
+    if action not in ("approve", "reject"):
+        flash("Invalid approval action.", "danger")
+        return redirect(url_for("admin_approvals"))
+    kind = clean(request.args.get("kind")) or clean(request.form.get("kind"))
+    # Answer approval is a separate field on assignments.
+    if table == "assignments" and kind == "assignment_answer":
+        field = "answer_approval_status"
+        event = "assignment_answer_approved" if action == "approve" else "assignment_answer_rejected"
+    else:
+        field = "approval_status"
+        event = f"{table}_approved" if action == "approve" else f"{table}_rejected"
+    note = clean(request.form.get("note"))
+    updates = {field: "approved" if action == "approve" else "rejected", "approved_by": current_user().get("id"), "approved_at": utc_now(), "approval_note": note or None}
+    row, error = db_update(table, {"id": item_id}, updates)
+    if error:
+        flash("Approval could not be saved. Run the latest KOJA approval SQL migration in Supabase first.", "danger")
+        return redirect(url_for("admin_approvals"))
+    log_activity(event, f"Admin {action} {table} record {item_id}." + (f" Note: {note}" if note else ""))
+    # Optional notification to the owner/provider when an email can be resolved.
+    recipient = None
+    name = "User"
+    if table == "assignments":
+        recipient, profile = get_assignment_recipient(row or first_row(table, {"id": item_id}) or {})
+        name = (profile or {}).get("full_name") or "User"
+    else:
+        current = row or first_row(table, {"id": item_id}) or {}
+        uid = current.get("user_id") or current.get("owner_id") or current.get("client_id")
+        if uid:
+            profile = first_row("profiles", {"id": uid}) or {}
+            recipient = profile.get("email")
+            name = profile.get("full_name") or "User"
+        recipient = recipient or current.get("email")
+    if recipient and email_configured():
+        subject = f"KOJA AFRICA — {table.replace('_',' ').title()} {action.title()}"
+        body = f"Hello {name},\\n\\nYour KOJA AFRICA submission has been {action}."
+        if note: body += f"\\n\\nAdmin note: {note}"
+        body += "\\n\\nKOJA AFRICA"
+        ok, err = send_plain_email(recipient, subject, body)
+        if not ok: logger.warning("Approval notification email failed: %s", err)
+    flash(f"{table.replace('_',' ').title()} {'approved' if action == 'approve' else 'rejected'} successfully.", "success")
+    return redirect(url_for("admin_approvals"))
 
 @app.route("/admin/drivers")
 @admin_required
