@@ -637,6 +637,10 @@ BASE_HTML = r"""
 <meta name="twitter:title" content="{{ title or 'KOJA AFRICA' }}">
 <meta name="twitter:description" content="{{ meta_description or 'KOJA AFRICA — knowledge, questions, answers, research, assignments, documents, professional services and delivery services.' }}">
 <meta property="og:url" content="{{ SITE_URL }}{{ request.path }}">
+<meta name="author" content="KOJA AFRICA">
+<meta name="application-name" content="KOJA AFRICA">
+<meta name="theme-color" content="#0b1220">
+{% if seo_jsonld %}<script type="application/ld+json">{{ seo_jsonld|safe }}</script>{% endif %}
 <title>{{ title or "KOJA AFRICA" }}</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
 <script>
@@ -751,7 +755,56 @@ def render_page(title, body_template, **context):
         "Assignments": "KOJA AFRICA assignments — ask questions, upload assignments and access academic resources.",
         "Documents": "KOJA AFRICA documents and research resources for learning and academic work.",
     }
-    return render_template_string(BASE_HTML, title=title, body=body, user=current_user(), theme=theme, meta_description=descriptions.get(title, "KOJA AFRICA — knowledge, questions, answers, research, academic resources, professional services and delivery services."))
+    # Google-friendly structured data for public pages. This improves entity/page
+    # understanding and can enable eligible search enhancements; it does not
+    # guarantee a rich result. Private/account pages intentionally get no JSON-LD.
+    public_paths = {"/", "/research", "/research/notes"}
+    seo_jsonld = ""
+    if request.path in public_paths:
+        page_title = title or "KOJA AFRICA"
+        page_description = descriptions.get(title, "KOJA AFRICA — knowledge, questions, answers, research, academic resources, professional services and delivery services.")
+        graph = [
+            {
+                "@type": "Organization",
+                "@id": SITE_URL + "#organization",
+                "name": "KOJA AFRICA",
+                "url": SITE_URL,
+                "description": "Knowledge, research, academic resources, professional services and delivery services."
+            },
+            {
+                "@type": "WebPage",
+                "@id": SITE_URL + request.path + "#webpage",
+                "url": SITE_URL + request.path,
+                "name": page_title,
+                "description": page_description,
+                "isPartOf": {"@id": SITE_URL + "#website"},
+                "about": {"@id": SITE_URL + "#organization"}
+            },
+            {
+                "@type": "BreadcrumbList",
+                "itemListElement": [
+                    {"@type": "ListItem", "position": 1, "name": "KOJA AFRICA", "item": SITE_URL},
+                    *([] if request.path == "/" else [{"@type": "ListItem", "position": 2, "name": "Research", "item": SITE_URL + "/research"}] if request.path == "/research" else [{"@type": "ListItem", "position": 2, "name": "Research", "item": SITE_URL + "/research"}, {"@type": "ListItem", "position": 3, "name": "Research Notes", "item": SITE_URL + "/research/notes"}])
+                ]
+            }
+        ]
+        website = {
+            "@type": "WebSite",
+            "@id": SITE_URL + "#website",
+            "name": "KOJA AFRICA",
+            "url": SITE_URL,
+            "publisher": {"@id": SITE_URL + "#organization"}
+        }
+        if request.path in ("/research", "/research/notes"):
+            website["potentialAction"] = {
+                "@type": "SearchAction",
+                "target": SITE_URL + "/research?q={search_term_string}",
+                "query-input": "required name=search_term_string"
+            }
+        graph.insert(0, website)
+        seo_jsonld = json.dumps({"@context": "https://schema.org", "@graph": graph}, ensure_ascii=False)
+
+    return render_template_string(BASE_HTML, title=title, body=body, user=current_user(), theme=theme, meta_description=descriptions.get(title, "KOJA AFRICA — knowledge, questions, answers, research, academic resources, professional services and delivery services."), seo_jsonld=seo_jsonld)
 
 # ============================================================
 # USER SETTINGS
@@ -1272,7 +1325,6 @@ def research():
 <div class="research-shell"><div class="hero"><h2>🔎 KOJA Research Engine</h2><p>Search the web, scholarly literature and your KOJA document collection from one research workspace.</p><form method="get" action="{{ url_for('research') }}" class="research-search" style="margin-top:18px"><input name="q" value="{{ q }}" placeholder="Ask a question, topic, paper, author or subject…" aria-label="Research search"><button class="btn" type="submit">Search</button></form>
 <div class="research-filters"><label>Source<select name="source" form="research-filter-form"><option value="all" {% if source_filter=='all' %}selected{% endif %}>All sources</option><option value="academic" {% if source_filter=='academic' %}selected{% endif %}>Academic</option><option value="web" {% if source_filter=='web' %}selected{% endif %}>Web</option><option value="wikipedia" {% if source_filter=='wikipedia' %}selected{% endif %}>Wikipedia</option><option value="koja" {% if source_filter=='koja' %}selected{% endif %}>KOJA Documents</option></select></label><label>Year<input name="year" form="research-filter-form" value="{{ year or '' }}" placeholder="e.g. 2025" inputmode="numeric"></label><label>Author<input name="author" form="research-filter-form" value="{{ author }}" placeholder="Academic author"></label><label>Citation style<select name="style" form="research-filter-form">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Source type<select name="source_type" form="research-filter-form"><option value="all">All source types</option>{% for k,v in source_types.items() %}<option value="{{k}}" {% if source_type==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Sort<select name="sort" form="research-filter-form"><option value="relevance" {% if sort=='relevance' %}selected{% endif %}>Relevance</option><option value="date" {% if sort=='date' %}selected{% endif %}>Newest first</option><option value="citations" {% if sort=='citations' %}selected{% endif %}>Most cited</option></select></label></div><form id="research-filter-form" method="get" action="{{ url_for('research') }}"><input type="hidden" name="q" value="{{ q }}"></form></div>
 {% if q %}<div class="note-actions"><a class="btn" href="{{ url_for('research_notes',q=q,style=style) }}">📝 Write Research Notes from this topic</a></div><div class="research-tabs"><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}">🎓 Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}">🌐 Web</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}">📁 KOJA Documents</a></div><div class="card"><span class="research-count">{{ results|length }} results</span> for <strong>“{{ q }}”</strong></div>{% if summary %}<div class="card research-summary"><h3>🧠 Research Summary</h3><pre>{{ summary }}</pre><p class="small">AI summaries use configured AI credentials when available; otherwise KOJA shows source-based highlights. Verify important claims against original sources.</p></div>{% endif %}{% for r in results %}<div class="card research-result"><span class="source-badge">{{ r.source }}</span><h3><a href="{{ r.url or '#' }}" {% if r.url %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a></h3>{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p><p><strong>In-text:</strong> {{ make_intext(r,style,loop.index) }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open original source ↗</a>{% endif %}</div>{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endfor %}{% if bibliography %}<div class="card"><h2>References</h2><p class="small">Generated from available source metadata. Verify against the original source.</p>{% for n,ref in bibliography %}<p style="padding-left:28px;text-indent:-28px;line-height:1.6">{{ ref|safe }}</p>{% endfor %}</div>{% endif %}{% else %}<div class="grid"><div class="card"><h3>🌐 Web Discovery</h3><p>Discover general web knowledge.</p></div><div class="card"><h3>🎓 Academic Search</h3><p>OpenAlex and Crossref provide scholarly metadata, authors, years and citation information.</p></div><div class="card"><h3>📁 KOJA Documents</h3><p>Search documents already connected to your KOJA Supabase database.</p></div><div class="card"><h3>🧠 AI Research Summary</h3><p>Configure an AI API key to synthesize retrieved evidence with source-number citations.</p></div></div>{% endif %}</div>
-<script type="application/ld+json">{{ {"@context":"https://schema.org","@type":"WebSite","name":"KOJA AFRICA Research","url":SITE_URL+"/research","potentialAction":{"@type":"SearchAction","target":SITE_URL+"/research?q={search_term_string}","query-input":"required name=search_term_string"}}|tojson }}</script>
 ''',q=q,results=results,summary=summary,source_filter=source_filter,sort=sort,year=year,author=author,style=style,source_type=source_type,citation_styles=CITATION_STYLES,source_types=SOURCE_TYPES,bibliography=bibliography,make_intext=make_intext,SITE_URL=SITE_URL)
 
 
@@ -2748,8 +2800,9 @@ def robots_txt():
 @app.route("/sitemap.xml")
 def sitemap_xml():
     urls = []
+    lastmod = datetime.now(timezone.utc).date().isoformat()
     for route in PUBLIC_INDEX_ROUTES:
-        urls.append(f"<url><loc>{SITE_URL}{route}</loc><changefreq>weekly</changefreq><priority>{'1.0' if route == '/' else '0.7'}</priority></url>")
+        urls.append(f"<url><loc>{SITE_URL}{route}</loc><lastmod>{lastmod}</lastmod><changefreq>weekly</changefreq><priority>{'1.0' if route == '/' else '0.7'}</priority></url>")
     xml = '<?xml version="1.0" encoding="UTF-8"?>' + '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' + ''.join(urls) + '</urlset>'
     return (xml, 200, {"Content-Type": "application/xml; charset=utf-8"})
 
