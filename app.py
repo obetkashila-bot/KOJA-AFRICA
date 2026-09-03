@@ -711,6 +711,12 @@ window.addEventListener('resize',()=>{if(window.innerWidth>850)toggleKojaMenu(fa
 
 def render_page(title, body_template, description=None, **context):
     context["user"] = current_user()
+    # The page body is rendered separately from BASE_HTML, so values normally
+    # supplied by the context processor must also be passed explicitly here.
+    context.setdefault("SITE_URL", SITE_URL)
+    context.setdefault("APP_NAME", APP_NAME)
+    context.setdefault("APP_TAGLINE", APP_TAGLINE)
+    context.setdefault("csrf_token", csrf_token())
     # Use the Jinja environment directly so template context keys such as
     # "source" cannot collide with render_template_string(source, ...).
     body = app.jinja_env.from_string(body_template).render(**context)
@@ -728,8 +734,18 @@ def render_page(title, body_template, description=None, **context):
 
 @app.route("/favicon.png")
 def favicon_png():
+    # Serve the packaged favicon when the static directory is present.
+    # The embedded fallback keeps this endpoint safe even when only app.py
+    # is uploaded to a deployment service such as Render.
     favicon_path = os.path.join(os.path.dirname(__file__), "static", "favicon.png")
-    return send_file(favicon_path, mimetype="image/png", max_age=604800)
+    if os.path.isfile(favicon_path):
+        return send_file(favicon_path, mimetype="image/png", max_age=604800)
+    import base64
+    from flask import Response
+    fallback = base64.b64decode("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")
+    response = Response(fallback, mimetype="image/png")
+    response.headers["Cache-Control"] = "public, max-age=604800"
+    return response
 
 @app.route("/")
 def home():
@@ -1019,60 +1035,163 @@ def dashboard():
 @app.route("/settings", methods=["GET", "POST"])
 @login_required
 def settings():
+    """Account preferences. Settings are intentionally kept user/session scoped."""
     user = current_user()
-    prefs = session.get("koja_settings", {})
+    defaults = {
+        "theme": "system",
+        "notifications": "on",
+        "gps_sharing": "off",
+        "reduced_motion": "off",
+        "language": "English",
+        "currency": "ZMW",
+    }
+    prefs = dict(defaults)
+    prefs.update(session.get("koja_settings", {}))
+
     if request.method == "POST":
-        action = request.form.get("action", "preferences")
+        action = clean(request.form.get("action", "preferences"))
         if action == "preferences":
+            theme = clean(request.form.get("theme", "system")).lower()
+            notifications = clean(request.form.get("notifications", "on")).lower()
+            gps_sharing = clean(request.form.get("gps_sharing", "off")).lower()
+            reduced_motion = clean(request.form.get("reduced_motion", "off")).lower()
+            language = clean(request.form.get("language", "English"))
+
+            if theme not in {"system", "light", "dark"}:
+                theme = "system"
+            if notifications not in {"on", "off"}:
+                notifications = "on"
+            if gps_sharing not in {"on", "off"}:
+                gps_sharing = "off"
+            if reduced_motion not in {"on", "off"}:
+                reduced_motion = "off"
+            if language not in {"English", "Bemba", "Nyanja"}:
+                language = "English"
+
             prefs.update({
-                "theme": request.form.get("theme", "light"),
-                "notifications": request.form.get("notifications", "on"),
-                "gps_sharing": request.form.get("gps_sharing", "off"),
-                "reduced_motion": request.form.get("reduced_motion", "off"),
-                "language": request.form.get("language", "English"),
-                "currency": request.form.get("currency", "ZMW"),
+                "theme": theme,
+                "notifications": notifications,
+                "gps_sharing": gps_sharing,
+                "reduced_motion": reduced_motion,
+                "language": language,
+                "currency": "ZMW",
             })
             session["koja_settings"] = prefs
+            session.modified = True
             flash("Settings saved successfully.", "success")
-        elif action == "reset":
+            return redirect(url_for("settings"))
+
+        if action == "reset":
             session.pop("koja_settings", None)
             flash("KOJA settings have been reset to defaults.", "success")
-        return redirect(url_for("settings"))
-    return render_page("Settings", r"""
-<div class="hero"><h2>⚙️ Settings</h2><p>Manage your KOJA AFRICA account and app preferences.</p></div>
-<div class="card">
-<h3>👤 Profile</h3>
-<div class="grid">
-<div><strong>Name</strong><br>{{ user.name or 'KOJA User' }}</div>
-<div><strong>Email</strong><br>{{ user.email or 'Not provided' }}</div>
-<div><strong>Phone</strong><br>{{ user.phone or 'Not provided' }}</div>
-<div><strong>Account</strong><br>{{ 'Administrator' if user.is_admin else (user.role or 'Student')|title }}</div>
-</div></div>
+            return redirect(url_for("settings"))
 
-<form method="post" class="card">
-<input type="hidden" name="action" value="preferences">
-<h3>🎛️ App Preferences</h3>
-<div class="grid">
-<div><label>Theme</label><select name="theme"><option value="light" {{ 'selected' if prefs.get('theme','light')=='light' else '' }}>Light</option><option value="dark" {{ 'selected' if prefs.get('theme')=='dark' else '' }}>Dark</option><option value="system" {{ 'selected' if prefs.get('theme')=='system' else '' }}>System</option></select></div>
-<div><label>Notifications</label><select name="notifications"><option value="on" {{ 'selected' if prefs.get('notifications','on')=='on' else '' }}>On</option><option value="off" {{ 'selected' if prefs.get('notifications')=='off' else '' }}>Off</option></select></div>
-<div><label>GPS / Location Sharing</label><select name="gps_sharing"><option value="off" {{ 'selected' if prefs.get('gps_sharing','off')=='off' else '' }}>Off</option><option value="on" {{ 'selected' if prefs.get('gps_sharing')=='on' else '' }}>On — only when I start sharing</option></select></div>
-<div><label>Animations</label><select name="reduced_motion"><option value="off" {{ 'selected' if prefs.get('reduced_motion','off')=='off' else '' }}>Normal</option><option value="on" {{ 'selected' if prefs.get('reduced_motion')=='on' else '' }}>Reduce motion</option></select></div>
-<div><label>Language</label><select name="language"><option>English</option><option>Bemba</option><option>Nyanja</option></select></div>
-<div><label>Currency</label><select name="currency"><option value="ZMW">ZMW — Zambian Kwacha</option></select></div>
+        flash("Unknown settings action.", "danger")
+        return redirect(url_for("settings"))
+
+    return render_page("Settings", r"""
+<div class="hero">
+  <h1>⚙️ Settings</h1>
+  <p>Manage your KOJA AFRICA preferences, notifications, privacy and appearance.</p>
 </div>
-<button class="btn success" type="submit">💾 Save Settings</button>
+
+<div class="card">
+  <h2>👤 Account</h2>
+  <div class="grid">
+    <div><strong>Full name</strong><br>{{ user.name or 'KOJA User' }}</div>
+    <div><strong>Email</strong><br>{{ user.email or 'Not provided' }}</div>
+    <div><strong>Phone</strong><br>{{ user.phone or 'Not provided' }}</div>
+    <div><strong>Account type</strong><br>{{ 'Administrator' if user.is_admin else (user.role or 'Student')|title }}</div>
+  </div>
+</div>
+
+<form method="post" class="card" id="kojaSettingsForm">
+  <input type="hidden" name="action" value="preferences">
+  <h2>🎛️ App Preferences</h2>
+  <div class="grid">
+    <div>
+      <label for="theme"><strong>Theme</strong></label>
+      <select id="theme" name="theme">
+        <option value="system" {% if prefs.get('theme','system')=='system' %}selected{% endif %}>System default</option>
+        <option value="light" {% if prefs.get('theme')=='light' %}selected{% endif %}>Light</option>
+        <option value="dark" {% if prefs.get('theme')=='dark' %}selected{% endif %}>Dark</option>
+      </select>
+    </div>
+    <div>
+      <label for="notifications"><strong>Notifications</strong></label>
+      <select id="notifications" name="notifications">
+        <option value="on" {% if prefs.get('notifications','on')=='on' %}selected{% endif %}>On</option>
+        <option value="off" {% if prefs.get('notifications')=='off' %}selected{% endif %}>Off</option>
+      </select>
+    </div>
+    <div>
+      <label for="gps_sharing"><strong>GPS / Location Sharing</strong></label>
+      <select id="gps_sharing" name="gps_sharing">
+        <option value="off" {% if prefs.get('gps_sharing','off')=='off' %}selected{% endif %}>Off</option>
+        <option value="on" {% if prefs.get('gps_sharing')=='on' %}selected{% endif %}>On — only when I start sharing</option>
+      </select>
+    </div>
+    <div>
+      <label for="reduced_motion"><strong>Animations</strong></label>
+      <select id="reduced_motion" name="reduced_motion">
+        <option value="off" {% if prefs.get('reduced_motion','off')=='off' %}selected{% endif %}>Normal</option>
+        <option value="on" {% if prefs.get('reduced_motion')=='on' %}selected{% endif %}>Reduce motion</option>
+      </select>
+    </div>
+    <div>
+      <label for="language"><strong>Language</strong></label>
+      <select id="language" name="language">
+        <option value="English" {% if prefs.get('language','English')=='English' %}selected{% endif %}>English</option>
+        <option value="Bemba" {% if prefs.get('language')=='Bemba' %}selected{% endif %}>Bemba</option>
+        <option value="Nyanja" {% if prefs.get('language')=='Nyanja' %}selected{% endif %}>Nyanja</option>
+      </select>
+    </div>
+    <div>
+      <label for="currency"><strong>Currency</strong></label>
+      <select id="currency" name="currency" disabled>
+        <option selected>ZMW — Zambian Kwacha</option>
+      </select>
+      <div class="small">KOJA AFRICA currently uses ZMW.</div>
+    </div>
+  </div>
+  <button class="btn success" type="submit">💾 Save Settings</button>
 </form>
 
-<div class="card"><h3>🔐 Security & Privacy</h3>
-<p>Your account remains protected by KOJA authentication. GPS sharing is opt-in and can be stopped from the Live GPS page.</p>
-<div class="actions"><a class="btn secondary" href="{{ url_for('tracking') }}">📍 Live GPS</a><a class="btn secondary" href="{{ url_for('dashboard') }}">📊 Dashboard</a></div>
+<div class="card">
+  <h2>🔐 Security & Privacy</h2>
+  <p>GPS sharing is opt-in. Location is only used for delivery features when you choose to share it.</p>
+  <div class="actions">
+    <a class="btn secondary" href="{{ url_for('tracking') }}">📍 Live GPS</a>
+    <a class="btn secondary" href="{{ url_for('dashboard') }}">📊 Dashboard</a>
+  </div>
 </div>
 
 <form method="post" class="card" onsubmit="return confirm('Reset KOJA app preferences?')">
-<input type="hidden" name="action" value="reset">
-<h3>↺ Reset Preferences</h3><p class="small">This resets only your KOJA app preferences in this browser session.</p>
-<button class="btn danger" type="submit">Reset Preferences</button>
+  <input type="hidden" name="action" value="reset">
+  <h2>↺ Reset Preferences</h2>
+  <p class="small">Resets appearance, notification, GPS, animation and language preferences to their defaults.</p>
+  <button class="btn danger" type="submit">Reset Preferences</button>
 </form>
+
+<script>
+(function(){
+  const themeSelect=document.getElementById('theme');
+  const motionSelect=document.getElementById('reduced_motion');
+  function applyPreferences(){
+    const theme=(themeSelect && themeSelect.value) || 'system';
+    const dark=theme==='dark' || (theme==='system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    let style=document.getElementById('kojaSettingsTheme');
+    if(!style){ style=document.createElement('style'); style.id='kojaSettingsTheme'; document.head.appendChild(style); }
+    style.textContent=dark ? 'body{background:#111827!important;color:#e5e7eb!important} body .card,body .stat{background:#1f2937!important;color:#e5e7eb!important} body input,body select,body textarea{background:#111827!important;color:#e5e7eb!important;border-color:#4b5563!important} body th,body td{border-color:#374151!important} body a{color:#7dd3fc}' : 'body{background:#f5f7fb;color:#172033}';
+    document.documentElement.dataset.kojaTheme=theme;
+    document.documentElement.classList.toggle('koja-reduced-motion', motionSelect && motionSelect.value==='on');
+    try { localStorage.setItem('koja_theme',theme); localStorage.setItem('koja_reduced_motion',motionSelect ? motionSelect.value : 'off'); } catch(e) {}
+  }
+  if(themeSelect) themeSelect.addEventListener('change',applyPreferences);
+  if(motionSelect) motionSelect.addEventListener('change',applyPreferences);
+  applyPreferences();
+})();
+</script>
 """, prefs=prefs)
 
 # ============================================================
