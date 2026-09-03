@@ -1,5 +1,18 @@
-KOJA AFRICA — Complete Production Build
-Build date: 2026-09-03
-Base: existing Google-ready KOJA build
-Google/Search configuration preserved.
-All existing application features preserved.
+KOJA AFRICA - RESEARCH PORTAL UPGRADE
+Version: 2026.09.03-RESEARCH-PORTAL
+
+Includes:
+- Supabase Auth/profile trigger registration fix
+- Doctor routing/provider identifier fix
+- Google-friendly public research architecture
+- Permanent indexable research topic pages
+- Dynamic sitemap including research topic pages
+- Search-result URLs remain noindex to avoid duplicate/faceted indexing
+- Research source verification language and polished fallback highlights
+- JSON-LD WebSite/SearchAction on the research hub
+- JSON-LD CollectionPage on research topic pages
+
+File entrypoint:
+app.py
+Render start command:
+gunicorn app:app

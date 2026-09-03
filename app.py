@@ -1401,7 +1401,18 @@ def research_ai_summary(query, results):
     for r in results[:5]:
         s=clean(r.get('snippet','')).replace('\n',' ')
         if s: highlights.append(f"{r.get('title','Source')}: {s[:300]}")
-    return 'AI summary is not configured. Source-based highlights:\n\n'+'\n\n'.join(highlights)
+    return 'Source-based research highlights:\n\n'+'\n\n'.join(highlights)
+
+RESEARCH_TOPICS = {
+    "education": ("Education Research in Africa", "Explore research sources on education, learning, schools, teachers, students and education policy in Africa.", ["education Africa", "education policy Africa"]),
+    "zambia": ("Zambia Research and Academic Sources", "Research sources about Zambia, including education, development, public policy, environment, health and society.", ["Zambia research", "Zambia education development"]),
+    "technology": ("Technology Research and Innovation", "Explore research on technology, digital transformation, artificial intelligence, computing and innovation.", ["technology innovation research", "artificial intelligence research"]),
+    "health": ("Health Research and Public Health Sources", "Explore research sources covering public health, healthcare, disease prevention and health systems.", ["public health research Africa", "health systems Africa"]),
+    "agriculture": ("Agriculture Research in Africa", "Explore scholarly and public sources on agriculture, food systems, crops, farming and agricultural development in Africa.", ["agriculture Africa research", "food security Africa"]),
+    "climate": ("Climate and Environment Research", "Explore research on climate change, environmental science, water, biodiversity and sustainability.", ["climate change Africa research", "environmental sustainability Africa"]),
+    "business": ("Business and Economics Research", "Explore research on business, economics, entrepreneurship, markets, finance and development.", ["business Africa research", "economic development Africa"]),
+    "social-sciences": ("Social Sciences Research", "Explore research in sociology, political science, development studies, anthropology and related social sciences.", ["social sciences Africa research", "development studies Africa"]),
+}
 
 @app.route('/research')
 def research():
@@ -1417,9 +1428,9 @@ def research():
 </style>
 <div class="research-shell"><div class="hero"><h1>KOJA Research Engine</h1><p>Search general web information, scholarly literature and KOJA document records from one research workspace.</p><p class="small" style="color:#dbeafe">Use specific keywords, a research topic, paper title or author name. Open the original source to verify important claims.</p><form method="get" action="{{ url_for('research') }}" class="research-search" style="margin-top:18px"><input name="q" value="{{ q }}" placeholder="Ask a question, topic, paper, author or subject…" aria-label="Research search"><button class="btn" type="submit">Search</button></form>
 <div class="research-filters"><label>Source<select name="source" form="research-filter-form"><option value="all" {% if source=='all' %}selected{% endif %}>All sources</option><option value="academic" {% if source=='academic' %}selected{% endif %}>Academic</option><option value="web" {% if source=='web' %}selected{% endif %}>Web</option><option value="wikipedia" {% if source=='wikipedia' %}selected{% endif %}>Wikipedia</option><option value="koja" {% if source=='koja' %}selected{% endif %}>KOJA Documents</option></select></label><label>Year<input name="year" form="research-filter-form" value="{{ year or '' }}" placeholder="e.g. 2025" inputmode="numeric"></label><label>Author<input name="author" form="research-filter-form" value="{{ author }}" placeholder="Academic author"></label><label>Sort<select name="sort" form="research-filter-form"><option value="relevance" {% if sort=='relevance' %}selected{% endif %}>Relevance</option><option value="date" {% if sort=='date' %}selected{% endif %}>Newest first</option><option value="citations" {% if sort=='citations' %}selected{% endif %}>Most cited</option></select></label></div><form id="research-filter-form" method="get" action="{{ url_for('research') }}"><input type="hidden" name="q" value="{{ q }}"></form></div>
-{% if q %}<div class="research-tabs"><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}">🎓 Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}">🌐 Web</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}">📁 KOJA Documents</a></div><div class="card"><span class="research-count">{{ results|length }} results</span> for <strong>“{{ q }}”</strong></div>{% if summary %}<div class="card research-summary"><h3>🧠 Research Summary</h3><pre>{{ summary }}</pre><p class="small">AI summaries use configured AI credentials when available; otherwise KOJA shows source-based highlights. Verify important claims against original sources.</p></div>{% endif %}{% for r in results %}<div class="card research-result"><span class="source-badge">{{ r.source }}</span><h3><a href="{{ r.url or '#' }}" {% if r.url %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a></h3>{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open original source ↗</a>{% endif %}</div>{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endfor %}{% else %}<div class="grid"><div class="card"><h3>🌐 Web Discovery</h3><p>Discover general web knowledge.</p></div><div class="card"><h3>🎓 Academic Search</h3><p>OpenAlex and Crossref provide scholarly metadata, authors, years and citation information.</p></div><div class="card"><h3>📁 KOJA Documents</h3><p>Search documents already connected to your KOJA Supabase database.</p></div><div class="card"><h3>🧠 AI Research Summary</h3><p>Configure an AI API key to synthesize retrieved evidence with source-number citations.</p></div></div>{% endif %}</div>
+{% if q %}<div class="research-tabs"><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}">🎓 Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}">🌐 Web</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}">📁 KOJA Documents</a></div><div class="card"><span class="research-count">{{ results|length }} results</span> for <strong>“{{ q }}”</strong></div>{% if summary %}<div class="card research-summary"><h3>🧠 Research Summary</h3><pre>{{ summary }}</pre><p class="small">Highlights are based on the retrieved sources. Verify important claims against the original publication or website before citing them.</p></div>{% endif %}{% for r in results %}<div class="card research-result"><span class="source-badge">{{ r.source }}</span><h3><a href="{{ r.url or '#' }}" {% if r.url %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a></h3>{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open original source ↗</a>{% endif %}</div>{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endfor %}{% else %}<div class="grid"><div class="card"><h3>🌐 Web Discovery</h3><p>Discover general web knowledge.</p></div><div class="card"><h3>🎓 Academic Search</h3><p>OpenAlex and Crossref provide scholarly metadata, authors, years and citation information.</p></div><div class="card"><h3>📁 KOJA Documents</h3><p>Search documents already connected to your KOJA Supabase database.</p></div><div class="card"><h3>🧠 AI Research Summary</h3><p>Configure an AI API key to synthesize retrieved evidence with source-number citations.</p></div></div>{% endif %}</div>
 <script type="application/ld+json">{{ {"@context":"https://schema.org","@type":"WebSite","name":"KOJA AFRICA Research","url":SITE_URL+"/research","potentialAction":{"@type":"SearchAction","target":SITE_URL+"/research?q={search_term_string}","query-input":"required name=search_term_string"}}|tojson }}</script>
-''',q=q,results=results,summary=summary,source=source,sort=sort,year=year,author=author,SITE_URL=SITE_URL, description="KOJA Research Engine — search web information, scholarly literature and KOJA document records, with source links for verification.")
+''',q=q,results=results,summary=summary,source=source,sort=sort,year=year,author=author,SITE_URL=SITE_URL,topics=RESEARCH_TOPICS, description="KOJA Research Engine — search web information, scholarly literature and KOJA document records, with source links for verification.")
 
 
 @app.route("/services")
@@ -1437,6 +1448,27 @@ def services():
 <div class="card"><h3>Deliveries</h3><a class="btn" href="{{ url_for('deliveries') }}">Open</a></div>
 </div>
 """)
+
+
+@app.route('/research/topics/<slug>')
+def research_topic(slug):
+    slug=clean(slug).lower()
+    topic=RESEARCH_TOPICS.get(slug)
+    if not topic:
+        abort(404)
+    title, description, queries=topic
+    results=[]; seen=set()
+    for query in queries:
+        candidates=research_openalex(query,None,4)+research_crossref(query,None,'',4)+research_wikipedia(query,4)
+        for r in candidates:
+            key=(r.get('url') or r.get('title') or '').strip().lower()
+            if key and key not in seen:
+                seen.add(key); results.append(r)
+            if len(results)>=10: break
+        if len(results)>=10: break
+    return render_page(title, r"""
+<div class="research-shell"><div class="card"><p><a href="{{ url_for('research') }}">Research</a> / {{ title }}</p><h1>{{ title }}</h1><p>{{ description }}</p><p class="small">KOJA is a research discovery workspace. Verify important claims against the original publication or website before citing them.</p></div><div class="card"><h2>Search this topic</h2>{% for q in queries %}<a class="btn secondary" href="{{ url_for('research',q=q) }}">Search “{{ q }}”</a> {% endfor %}</div><h2>Selected sources</h2>{% for r in results %}<article class="card research-result"><span class="source-badge">{{ r.source }}</span><h2><a href="{{ r.url or '#' }}" target="_blank" rel="noopener noreferrer">{{ r.title }}</a></h2>{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open original source ↗</a>{% endif %}</article>{% else %}<div class="card"><p>Live source discovery is temporarily unavailable. Use the topic searches above.</p></div>{% endfor %}</div><script type="application/ld+json">{{ {"@context":"https://schema.org","@type":"CollectionPage","name":title,"description":description,"url":SITE_URL+"/research/topics/"+slug}|tojson }}</script>
+""",title=title,description=description,queries=queries,results=results,slug=slug,SITE_URL=SITE_URL)
 
 # ============================================================
 # QUESTIONS / ASSIGNMENTS
@@ -2538,7 +2570,7 @@ def provider_location(provider_id):
 PUBLIC_INDEX_ROUTES = [
     "/",
     "/research",
-]
+] + [f"/research/topics/{slug}" for slug in RESEARCH_TOPICS]
 
 GSC_SCOPE = "https://www.googleapis.com/auth/webmasters.readonly"
 GSC_WRITE_SCOPE = "https://www.googleapis.com/auth/webmasters"

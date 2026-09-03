@@ -1,8 +1,12 @@
-KOJA AFRICA AUTH + DOCTOR ROUTING FIX
+KOJA AFRICA - FINAL RESEARCH PORTAL + AUTH + DOCTOR FIX
 
-- Fixed /doctors BuildError when doctor_profiles rows do not contain provider_id.
-- Doctor links now use provider_id, falling back to id.
-- book_doctor accepts provider_id or the profile id as the lookup identifier.
-- Provider map lookup also accepts provider_id or profile id.
-- Supabase Auth/profile trigger changes are preserved.
-- app.py remains the required filename for gunicorn app:app.
+1. Preserved the Supabase Auth-first registration flow and existing auth trigger architecture.
+2. Preserved the /doctors provider_id -> id fallback fix.
+3. Added eight permanent public research topic pages under /research/topics/<slug>.
+4. Added topic-page internal linking and direct topic search links.
+5. Added topic pages to the XML sitemap automatically.
+6. Kept /research?q=... search-result URLs noindex to avoid indexing large numbers of query/filter variants.
+7. Improved source-summary wording so non-AI fallback output is presented as research highlights, not as an AI summary.
+8. Added structured data for the research hub and topic pages.
+9. No database SQL changes are required for this upgrade.
+10. app.py remains the required Render entrypoint for gunicorn app:app.
