@@ -72,3 +72,29 @@ MARKETPLACE PAYOUTS
 - Sellers can request Airtel Money, MTN, Zamtel or Bank payouts from /marketplace/payout.
 - Admin reviews requests in /admin/marketplace and moves them through Approved -> Processing -> Paid, or Rejects them.
 - KOJA does not expose payment PINs, OTPs or passwords. Admin should independently verify the actual transfer before marking a payout Paid.
+
+COMMUNICATION UPDATE - 2026-09-03
+---------------------------------
+Marketplace and Delivery now use KOJA Connect for contextual private communication.
+
+Marketplace:
+- Message Seller from a product page.
+- Voice Call Seller / Video Call Seller from a product page.
+- Buyer and seller can open chat from an order.
+- Seller can chat with a buyer from Sales / Orders.
+- Buyer can chat with a seller from My Purchases.
+- Existing KOJA Connect text and voice-message functions are reused.
+- New-message notifications are created for the other conversation participant.
+
+Delivery:
+- Customer can chat with the assigned driver from delivery tracking/my deliveries.
+- Driver can chat with the delivery customer from the Driver Dashboard.
+- Customer and driver can start voice/video calls for an assigned delivery.
+- Access is restricted to the delivery customer and the assigned driver.
+- The recipient's phone number is not exposed as a chat account; communication stays inside KOJA.
+
+DATABASE:
+- No new communication tables are required beyond KOJA_CONNECT.sql because the feature reuses
+  koja_conversations, koja_conversation_members, koja_messages, koja_calls and notifications.
+- Run KOJA_CONNECT.sql in Supabase if those tables are not already installed.
+- Run MARKETPLACE.sql for the marketplace commission/payout schema.
