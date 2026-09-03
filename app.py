@@ -1796,13 +1796,14 @@ create index if not exists koja_public_comments_post_idx on public.koja_public_c
 
 @app.route('/public')
 def public_feed():
-    rows, error = db_select('koja_public_posts', {'is_published':'eq.true'}, order='created_at.desc', limit=50)
-    if error: rows=[]
+    # db_select returns a list (not a (rows, error) tuple).
+    # Keep the public page resilient: an unavailable/missing table simply shows an empty feed.
+    rows = db_select('koja_public_posts', {'is_published':'eq.true'}, order='created_at.desc', limit=50) or []
     enriched=[]
     for post in rows or []:
         author=first_row('profiles', {'id':post.get('author_id')}) or {}
-        likes,_=db_select('koja_public_likes', {'post_id':post.get('id')}, select='user_id', limit=500)
-        comments,_=db_select('koja_public_comments', {'post_id':post.get('id')}, order='created_at.asc', limit=100)
+        likes = db_select('koja_public_likes', {'post_id':post.get('id')}, select='user_id', limit=500) or []
+        comments = db_select('koja_public_comments', {'post_id':post.get('id')}, order='created_at.asc', limit=100) or []
         comment_rows=[]
         for c in comments or []:
             ca=first_row('profiles', {'id':c.get('author_id')}) or {}
