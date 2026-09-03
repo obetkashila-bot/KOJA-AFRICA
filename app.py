@@ -550,31 +550,11 @@ BASE_HTML = r"""
 <style>
 *{box-sizing:border-box}
 body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f5f7fb;color:#172033}
-nav{background:#0b1f3a;color:#f5f7fa;padding:10px 14px;position:sticky;top:0;z-index:1000;box-shadow:0 2px 14px rgba(11,31,58,.16)}
+nav{background:#10233f;color:#fff;padding:12px 15px;position:sticky;top:0;z-index:1000}
 .nav-inner{max-width:1250px;margin:auto;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
-.brand{font-weight:850;font-size:19px;margin-right:auto;letter-spacing:.2px}
-nav a{color:#f5f7fa;text-decoration:none;padding:8px 10px;border-radius:8px;transition:background .2s ease,transform .2s ease}
-nav a:hover{background:rgba(100,181,246,.18);transform:translateY(-1px)}
-.mobile-menu-btn{display:none;background:#1565c0;color:#fff;border:0;width:auto;margin:0;padding:10px 13px;border-radius:10px;font-weight:750;box-shadow:0 4px 12px rgba(21,101,192,.24)}
-.drawer-overlay{display:none;position:fixed;inset:0;background:rgba(4,15,29,.52);z-index:1998;opacity:0;transition:opacity .25s ease}
-.drawer{position:fixed;top:0;left:0;bottom:0;width:min(88vw,350px);background:#0b1f3a;color:#f5f7fa;z-index:1999;transform:translateX(-105%);transition:transform .32s cubic-bezier(.22,.61,.36,1);box-shadow:8px 0 30px rgba(0,0,0,.24);overflow-y:auto}
-.drawer.open{transform:translateX(0)}
-.drawer-overlay.open{display:block;opacity:1}
-.drawer-header{padding:23px 20px 18px;background:linear-gradient(145deg,#0b1f3a,#102a4a);border-bottom:1px solid rgba(255,255,255,.1)}
-.drawer-logo{font-size:23px;font-weight:900;letter-spacing:.4px}
-.drawer-tagline{margin-top:4px;color:#b9d7f3;font-size:13px}
-.drawer-version{margin-top:8px;color:#8fb6d9;font-size:11px}
-.drawer-section{padding:13px 12px 5px;color:#64b5f6;font-size:11px;font-weight:850;letter-spacing:1px;text-transform:uppercase}
-.drawer a{display:flex;align-items:center;gap:12px;margin:3px 10px;padding:12px 13px;border-radius:10px;color:#f5f7fa;text-decoration:none;transition:background .2s ease,transform .2s ease}
-.drawer a:hover,.drawer a:focus{background:rgba(100,181,246,.14);transform:translateX(3px);outline:none}
-.drawer-icon{width:22px;text-align:center;color:#90caf9;font-size:17px}
-.drawer-close{position:absolute;right:12px;top:12px;width:auto;margin:0;background:rgba(255,255,255,.08);color:#fff;border:0;border-radius:8px;padding:7px 10px;cursor:pointer}
-.drawer-footer{padding:18px 20px 25px;color:#8fa9c2;font-size:11px}
-@keyframes drawerItemIn{from{opacity:0;transform:translateX(-12px)}to{opacity:1;transform:translateX(0)}}
-.drawer.open a{animation:drawerItemIn .3s ease both}
-.drawer.open a:nth-of-type(2){animation-delay:.03s}.drawer.open a:nth-of-type(3){animation-delay:.06s}.drawer.open a:nth-of-type(4){animation-delay:.09s}.drawer.open a:nth-of-type(5){animation-delay:.12s}.drawer.open a:nth-of-type(6){animation-delay:.15s}.drawer.open a:nth-of-type(7){animation-delay:.18s}
-@media(max-width:760px){nav{padding:9px 12px}.nav-inner{flex-wrap:nowrap}.nav-desktop{display:none!important}.mobile-menu-btn{display:block}.brand{font-size:18px}.drawer{display:block}}
-@media(prefers-reduced-motion:reduce){nav a,.drawer,.drawer-overlay,.drawer a{transition:none!important;animation:none!important}}
+.brand{font-weight:800;font-size:19px;margin-right:auto}
+nav a{color:#fff;text-decoration:none;padding:8px 9px;border-radius:7px}
+nav a:hover{background:rgba(255,255,255,.12)}
 .container{width:min(1250px,calc(100% - 24px));margin:20px auto 50px}
 .card{background:#fff;border-radius:13px;padding:18px;margin-bottom:16px;box-shadow:0 3px 14px rgba(0,0,0,.06)}
 .hero{background:linear-gradient(135deg,#10233f,#176b87);color:#fff;padding:28px 20px;border-radius:15px;margin-bottom:18px}
@@ -605,44 +585,26 @@ footer{text-align:center;color:#667085;padding:30px}
 <nav>
 <div class="nav-inner">
 <div class="brand">KOJA AFRICA</div>
-<button class="mobile-menu-btn" type="button" aria-label="Open menu" aria-expanded="false" onclick="openKojaDrawer()">☰ Menu</button>
-<div class="nav-desktop">
 <a href="{{ url_for('home') }}">Home</a>
 {% if user %}
 <a href="{{ url_for('dashboard') }}">Dashboard</a>
 <a href="{{ url_for('services') }}">Services</a>
 <a href="{{ url_for('questions') }}">Questions</a>
 <a href="{{ url_for('assignments') }}">Assignments</a>
+<a href="{{ url_for('universities') }}">Universities</a>
 <a href="{{ url_for('deliveries') }}">Deliveries</a>
 <a href="{{ url_for('drivers') }}">Drivers</a>
-{% if user.role in ['driver','admin'] or user.is_admin %}<a href="{{ url_for('driver_dashboard') }}">Driver</a>{% endif %}
-{% if user and user.is_admin %}<a href="{{ url_for('admin') }}">Admin</a>{% endif %}
+{% if user.role in ['driver','admin'] or user.is_admin %}
+<a href="{{ url_for('driver_dashboard') }}">Driver</a>
+{% endif %}
 <a href="{{ url_for('logout') }}">Logout</a>
 {% else %}
 <a href="{{ url_for('login') }}">Login</a>
 <a href="{{ url_for('register') }}">Register</a>
 {% endif %}
-</div>
+{% if user and user.is_admin %}<a href="{{ url_for('admin') }}">Admin</a>{% endif %}
 </div>
 </nav>
-<div id="kojaDrawerOverlay" class="drawer-overlay" onclick="closeKojaDrawer()"></div>
-<aside id="kojaDrawer" class="drawer" aria-hidden="true" aria-label="KOJA AFRICA menu">
-<button class="drawer-close" type="button" aria-label="Close menu" onclick="closeKojaDrawer()">✕</button>
-<div class="drawer-header"><div class="drawer-logo">KOJA AFRICA</div><div class="drawer-tagline">Knowledge • Questions • Answers</div><div class="drawer-version">Version 1.0</div></div>
-<div class="drawer-section">Main Menu</div>
-<a href="{{ url_for('home') }}"><span class="drawer-icon">⌂</span><span>Home</span></a>
-<a href="{{ url_for('assignments') }}"><span class="drawer-icon">📝</span><span>Assignments &amp; Questions</span></a>
-<a href="{{ url_for('services') }}"><span class="drawer-icon">📚</span><span>Documents &amp; Research</span></a>
-<a href="{{ url_for('services') }}"><span class="drawer-icon">◉</span><span>Professional Services</span></a>
-<a href="{{ url_for('deliveries') }}"><span class="drawer-icon">🚚</span><span>Drivers &amp; Delivery</span></a>
-<div class="drawer-section">Account</div>
-{% if user %}<a href="{{ url_for('dashboard') }}"><span class="drawer-icon">◫</span><span>Dashboard</span></a><a href="{{ url_for('logout') }}"><span class="drawer-icon">↪</span><span>Logout</span></a>{% else %}<a href="{{ url_for('login') }}"><span class="drawer-icon">🔐</span><span>Login</span></a><a href="{{ url_for('register') }}"><span class="drawer-icon">＋</span><span>Create Account</span></a>{% endif %}
-{% if user and user.is_admin %}<div class="drawer-section">Administration</div><a href="{{ url_for('admin') }}"><span class="drawer-icon">⚙</span><span>Admin</span></a>{% endif %}
-<div class="drawer-section">Support</div>
-<a href="#" onclick="alert('KOJA AFRICA support will be connected here.');return false;"><span class="drawer-icon">💬</span><span>Contact KOJA AFRICA</span></a>
-<a href="#" onclick="alert('Thank you for supporting KOJA AFRICA.');return false;"><span class="drawer-icon">★</span><span>Rate This App</span></a>
-<div class="drawer-footer">KOJA AFRICA<br>Academic • Professional • Documents • Delivery</div>
-</aside>
 <div class="container">
 {% with messages=get_flashed_messages(with_categories=true) %}
 {% for category,message in messages %}<div class="alert">{{ message }}</div>{% endfor %}
@@ -650,11 +612,6 @@ footer{text-align:center;color:#667085;padding:30px}
 {{ body|safe }}
 </div>
 <footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Agricultural • Health • Transport Services</footer>
-<script>
-function openKojaDrawer(){const d=document.getElementById('kojaDrawer'),o=document.getElementById('kojaDrawerOverlay'),b=document.querySelector('.mobile-menu-btn');if(!d||!o)return;d.classList.add('open');o.classList.add('open');d.setAttribute('aria-hidden','false');if(b)b.setAttribute('aria-expanded','true');document.body.style.overflow='hidden';}
-function closeKojaDrawer(){const d=document.getElementById('kojaDrawer'),o=document.getElementById('kojaDrawerOverlay'),b=document.querySelector('.mobile-menu-btn');if(!d||!o)return;d.classList.remove('open');o.classList.remove('open');d.setAttribute('aria-hidden','true');if(b)b.setAttribute('aria-expanded','false');document.body.style.overflow='';}
-document.addEventListener('keydown',e=>{if(e.key==='Escape')closeKojaDrawer();});
-</script>
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 </body>
 </html>
@@ -876,6 +833,67 @@ def dashboard():
 {% if user.role in ['driver','admin'] or user.is_admin %}<a class="btn" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}
 </div></div>
 """,questions_count=questions_count,deliveries_count=deliveries_count,appointments_count=appointments_count)
+
+# ============================================================
+# RESEARCH ENGINE
+# ============================================================
+
+def research_web(query, limit=8):
+    q=clean(query)
+    if not q: return []
+    out=[]
+    try:
+        r=requests.get('https://api.duckduckgo.com/',params={'q':q,'format':'json','no_html':1},timeout=10,headers={'User-Agent':'KOJA-AFRICA-Research/1.0'})
+        if r.ok:
+            d=r.json()
+            if d.get('AbstractText'):
+                out.append({'source':'Web','title':d.get('Heading') or q,'url':d.get('AbstractURL') or 'https://duckduckgo.com/?q='+quote(q),'snippet':d.get('AbstractText')})
+            for item in d.get('RelatedTopics',[]):
+                if item.get('FirstURL') and item.get('Text'):
+                    out.append({'source':'Web','title':item.get('Text'),'url':item.get('FirstURL'),'snippet':item.get('Text')})
+    except Exception as exc:
+        logger.warning('Web research failed: %s',exc)
+    return out[:limit]
+
+def research_wikipedia(query):
+    try:
+        r=requests.get('https://en.wikipedia.org/w/api.php',params={'action':'query','list':'search','srsearch':query,'srlimit':5,'format':'json','utf8':1},timeout=10,headers={'User-Agent':'KOJA-AFRICA-Research/1.0'})
+        if not r.ok: return []
+        out=[]
+        for x in r.json().get('query',{}).get('search',[]):
+            title=x.get('title','')
+            out.append({'source':'Wikipedia','title':title,'url':'https://en.wikipedia.org/wiki/'+quote(title.replace(' ','_')),'snippet':clean(x.get('snippet','')).replace('<span class="searchmatch">','').replace('</span>','')})
+        return out
+    except Exception as exc:
+        logger.warning('Wikipedia research failed: %s',exc)
+        return []
+
+def research_scholar(query):
+    try:
+        r=requests.get('https://api.crossref.org/works',params={'query.bibliographic':query,'rows':8,'select':'title,author,published,URL,DOI'},timeout=12,headers={'User-Agent':'KOJA-AFRICA-Research/1.0'})
+        if not r.ok: return []
+        out=[]
+        for x in r.json().get('message',{}).get('items',[]):
+            title=clean((x.get('title') or [''])[0])
+            if not title: continue
+            authors=[]
+            for a in x.get('author') or []:
+                name=clean(' '.join(filter(None,[a.get('given'),a.get('family')])))
+                if name: authors.append(name)
+            parts=(x.get('published') or {}).get('date-parts') or []
+            year=parts[0][0] if parts and parts[0] else ''
+            url=x.get('URL') or (('https://doi.org/'+x.get('DOI')) if x.get('DOI') else '')
+            out.append({'source':'Scholarly','title':title,'url':url,'snippet':('Authors: '+', '.join(authors)+(' • ' if authors else '')+str(year)).strip()})
+        return out
+    except Exception as exc:
+        logger.warning('Scholarly research failed: %s',exc)
+        return []
+
+@app.route('/research')
+def research():
+    q=clean(request.args.get('q',''))
+    results=(research_web(q)+research_wikipedia(q)+research_scholar(q)) if q else []
+    return render_page('Research', r'''<div class="hero"><h2>🔎 KOJA Research</h2><p>Search web knowledge, reference material and scholarly publications from one place.</p><form method="get" action="{{ url_for('research') }}" class="actions" style="margin-top:18px"><input name="q" value="{{ q }}" placeholder="Search a topic, question, paper, author or subject..." style="flex:1;min-width:220px"><button class="btn" type="submit">Research</button></form></div>{% if q %}<div class="card"><h3>Results for “{{ q }}”</h3><p class="small">Web, Wikipedia and scholarly publication sources.</p></div>{% for r in results %}<div class="card"><div class="small">{{ r.source }}</div><h3 style="margin:6px 0"><a href="{{ r.url }}" target="_blank" rel="noopener">{{ r.title }}</a></h3><p>{{ r.snippet|safe }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener">Open source</a>{% endif %}</div>{% else %}<div class="card"><p>No results found. Try a broader search.</p></div>{% endfor %}{% else %}<div class="grid"><div class="card"><h3>🌐 Web Research</h3><p>Search general web knowledge and discover sources.</p></div><div class="card"><h3>📚 Scholarly Research</h3><p>Find papers, authors, publication years and DOI links.</p></div><div class="card"><h3>🧠 Knowledge Search</h3><p>Explore Wikipedia reference material.</p></div></div>{% endif %}<script type="application/ld+json">{{ {"@context":"https://schema.org","@type":"WebSite","name":"KOJA AFRICA Research","url":SITE_URL+"/research","potentialAction":{"@type":"SearchAction","target":SITE_URL+"/research?q={search_term_string}","query-input":"required name=search_term_string"}}|tojson }}</script>''',q=q,results=results,SITE_URL=SITE_URL)
 
 @app.route("/services")
 @login_required
