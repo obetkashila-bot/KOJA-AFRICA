@@ -13,12 +13,6 @@ from functools import wraps
 from urllib.parse import quote, unquote
 
 import requests
-try:
-    from google.oauth2 import service_account
-    from google.auth.transport.requests import Request as GoogleAuthRequest
-except Exception:
-    service_account = None
-    GoogleAuthRequest = None
 from dotenv import load_dotenv
 from flask import (
     Flask, request, redirect, url_for, session,
@@ -4505,179 +4499,38 @@ def _direct_conversation(a,b):
         return None
     return c
 
-def _firebase_credentials():
-    if service_account is None:
-        return None
-    raw=clean(os.getenv('FIREBASE_SERVICE_ACCOUNT_JSON'))
-    try:
-        if raw:
-            info=json.loads(raw)
-            return service_account.Credentials.from_service_account_info(info, scopes=['https://www.googleapis.com/auth/firebase.messaging'])
-        path=clean(os.getenv('FIREBASE_SERVICE_ACCOUNT_PATH'))
-        if path:
-            return service_account.Credentials.from_service_account_file(path, scopes=['https://www.googleapis.com/auth/firebase.messaging'])
-    except Exception as exc:
-        logger.error('Firebase credentials error: %s', exc)
-    return None
-
 def _firebase_project_id():
-    pid=clean(os.getenv('FIREBASE_PROJECT_ID'))
-    if pid: return pid
-    raw=clean(os.getenv('FIREBASE_SERVICE_ACCOUNT_JSON'))
-    if raw:
-        try: return clean(json.loads(raw).get('project_id'))
-        except Exception: pass
-    return ''
+    return clean(os.getenv('FIREBASE_PROJECT_ID'))
 
 def _send_fcm_to_user(user_id, data):
-    """Send a high-priority data message to all enabled Android tokens for a user."""
-    creds=_firebase_credentials(); project=_firebase_project_id()
-    if not creds or not project:
-        logger.info('FCM not configured; stored in-app notification only for user %s', user_id)
-        return {'sent':0,'configured':False}
+    """Send incoming-call push through the keyless Firebase Cloud Function relay.
+
+    Render never holds a Google service-account private key. The relay runs inside
+    Firebase/Google Cloud and uses its attached service identity/ADC to call FCM.
+    Render authenticates to the relay with a separate HMAC-style shared secret.
+    """
+    relay=clean(os.getenv('FCM_RELAY_URL'))
+    secret=clean(os.getenv('FCM_RELAY_SECRET'))
+    if not relay or not secret:
+        logger.info('FCM relay not configured; stored in-app notification only for user %s', user_id)
+        return {'sent':0,'configured':False,'mode':'keyless-relay'}
     try:
-        creds.refresh(GoogleAuthRequest())
-        access=creds.token
         tokens=db_select('koja_push_tokens',filters={'user_id':str(user_id),'enabled':True},limit=50)
-        sent=0
-        for row in tokens:
-            token=clean(row.get('token'))
-            if not token: continue
-            payload={'message':{'token':token,'data':{str(k):clean(v) for k,v in data.items()},'android':{'priority':'HIGH'}}}
-            r=requests.post(f'https://fcm.googleapis.com/v1/projects/{project}/messages:send',headers={'Authorization':f'Bearer {access}','Content-Type':'application/json'},json=payload,timeout=15)
-            if r.ok:
-                sent+=1
-            else:
-                logger.warning('FCM send failed for token %s: %s %s', token[:12], r.status_code, r.text[:500])
-                if r.status_code in (404,410):
-                    db_update('koja_push_tokens',{'id':row.get('id')},{'enabled':False,'updated_at':utc_now()})
-        return {'sent':sent,'configured':True}
+        tokens=[clean(x.get('token')) for x in tokens if clean(x.get('token'))]
+        if not tokens:
+            return {'sent':0,'configured':True,'mode':'keyless-relay','tokens':0}
+        payload={'tokens':tokens,'data':{str(k):clean(v) for k,v in data.items()}}
+        r=requests.post(relay,headers={'X-KOJA-Relay-Secret':secret,'Content-Type':'application/json'},json=payload,timeout=20)
+        if not r.ok:
+            logger.warning('FCM relay failed: %s %s',r.status_code,r.text[:500])
+            return {'sent':0,'configured':True,'mode':'keyless-relay','error':'relay request failed','status':r.status_code}
+        result=r.json() if r.content else {}
+        for token in result.get('invalid_tokens',[]) or []:
+            db_update('koja_push_tokens',{'token':token},{'enabled':False,'updated_at':utc_now()})
+        return {'sent':int(result.get('sent',0) or 0),'configured':True,'mode':'keyless-relay','tokens':len(tokens),'invalid':len(result.get('invalid_tokens',[]) or [])}
     except Exception as exc:
-        logger.exception('FCM send error: %s', exc)
-        return {'sent':0,'configured':True,'error':str(exc)}
-
-@app.route('/connect')
-@login_required
-def connect():
-    uid=current_user()['id']; members=db_select('koja_conversation_members',filters={'user_id':uid},limit=100); conversations=[]
-    for m in members:
-        c=first_row('koja_conversations',{'id':m.get('conversation_id')})
-        if not c: continue
-        others=db_select('koja_conversation_members',filters={'conversation_id':c['id']},limit=10); other=next((x for x in others if str(x.get('user_id'))!=str(uid)),None)
-        c['_other_name']=_profile_name(other['user_id']) if other else (c.get('name') or 'Group'); last=db_select('koja_messages',filters={'conversation_id':c['id']},order='created_at.desc',limit=1); c['_last']=(last[0].get('body') or last[0].get('message_type','')) if last else 'No messages yet'; conversations.append(c)
-    return render_page('KOJA Connect',r'''<div class="hero"><h2>💬 KOJA Connect</h2><p>Chat, voice messages, voice calls, video calls, photos, files, groups and status updates with other KOJA users.</p></div><div class="grid"><div class="card"><h3>👥 Find People</h3><p>Search KOJA users and start a conversation.</p><a class="btn" href="{{ url_for('connect_people') }}">Find People</a></div><div class="card"><h3>🟢 Status</h3><p>Share a 24-hour status.</p><a class="btn" href="{{ url_for('connect_status') }}">My Status</a></div><div class="card"><h3>📞 Calls</h3><p>Voice and video calls separate from Professional Services.</p><a class="btn" href="{{ url_for('connect_calls') }}">Call History</a></div></div><div class="card"><h3>Recent Chats</h3>{% for c in conversations %}<a class="card" style="display:block;text-decoration:none;color:inherit" href="{{ url_for('connect_chat',conversation_id=c.id) }}"><strong>{{ c._other_name }}</strong><div class="small">{{ c._last }}</div></a>{% else %}<p>No chats yet. Find a KOJA user to start.</p>{% endfor %}</div>''',conversations=conversations)
-
-@app.route('/connect/people',methods=['GET','POST'])
-@login_required
-def connect_people():
-    uid=current_user()['id']
-    if request.method=='POST':
-        target=clean(request.form.get('user_id')); existing=first_row('koja_contacts',{'requester_id':uid,'addressee_id':target}) or first_row('koja_contacts',{'requester_id':target,'addressee_id':uid})
-        if target and target!=uid and find_user_by_id(target) and not existing:
-            db_insert('koja_contacts',{'id':str(uuid.uuid4()),'requester_id':uid,'addressee_id':target,'status':'pending','created_at':utc_now(),'updated_at':utc_now()}); db_insert('koja_notifications',{'user_id':target,'notification_type':'friend_request','title':'New KOJA connection request','body':f'{_profile_name(uid)} wants to connect on KOJA.','related_id':uid}); flash('Connection request sent.','success')
-        else: flash('User not found or request already exists.','warning')
-        return redirect(url_for('connect_people'))
-    q=clean(request.args.get('q')); people=[]
-    if q:
-        for col in ('email','full_name','name'):
-            for x in db_select('profiles',filters={col:f'ilike.*{q}*'},limit=30):
-                if str(x.get('id'))!=str(uid) and not any(str(p.get('id'))==str(x.get('id')) for p in people): people.append(x)
-    incoming=db_select('koja_contacts',filters={'addressee_id':uid,'status':'pending'},limit=50)
-    return render_page('KOJA People',r'''<div class="card"><h2>Find KOJA People</h2><form><input name="q" value="{{ q }}" placeholder="Search name or email"><button>Search</button></form></div><div class="grid">{% for p in people %}<div class="card"><h3>{{ p.get('full_name') or p.get('name') or p.get('email') }}</h3><p>{{ p.get('email') or '' }}</p><form method="post"><input type="hidden" name="user_id" value="{{ p.id }}"><button>➕ Connect</button></form><a class="btn secondary" href="{{ url_for('connect_new',user_id=p.id) }}">Message</a></div>{% endfor %}</div><div class="card"><h3>Incoming Requests</h3>{% for r in incoming %}<div class="card"><strong>{{ _profile_name(r.requester_id) }}</strong><form method="post" action="{{ url_for('connect_accept',contact_id=r.id) }}"><button>Accept</button></form></div>{% else %}<p>No pending requests.</p>{% endfor %}</div>''',people=people,q=q,incoming=incoming,_profile_name=_profile_name)
-
-@app.route('/connect/accept/<contact_id>',methods=['POST'])
-@login_required
-def connect_accept(contact_id):
-    uid=current_user()['id']; r=first_row('koja_contacts',{'id':contact_id})
-    if not r or str(r.get('addressee_id'))!=str(uid): abort(404)
-    db_update('koja_contacts',{'id':contact_id},{'status':'accepted','updated_at':utc_now()}); _direct_conversation(uid,r['requester_id']); flash('Connection accepted.','success'); return redirect(url_for('connect_people'))
-
-@app.route('/connect/new/<user_id>')
-@login_required
-def connect_new(user_id):
-    uid=current_user()['id']
-    if user_id==uid or not find_user_by_id(user_id): abort(404)
-    c=_direct_conversation(uid,user_id)
-    if not c: flash('Could not start chat. Run the KOJA Connect SQL first.','danger'); return redirect(url_for('connect'))
-    return redirect(url_for('connect_chat',conversation_id=c['id']))
-
-@app.route('/connect/chat/<conversation_id>')
-@login_required
-def connect_chat(conversation_id):
-    uid=current_user()['id'];
-    if not _conversation_member(conversation_id,uid): abort(403)
-    members=db_select('koja_conversation_members',filters={'conversation_id':conversation_id},limit=100); other=next((m for m in members if str(m.get('user_id'))!=str(uid)),None); other_id=other.get('user_id') if other else None; c=first_row('koja_conversations',{'id':conversation_id}) or {}
-    return render_page('KOJA Chat',r'''<div class="card"><a href="{{ url_for('connect') }}">← Connect</a><h2>💬 {{ name }}</h2></div><div class="card" id="messages" style="min-height:300px;max-height:55vh;overflow:auto"></div><div class="card"><form id="sendForm"><input id="text" autocomplete="off" placeholder="Write a message…"><button>Send</button></form><div class="grid"><button type="button" id="voiceNote">🎙️ Voice message</button><a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='voice') }}">📞 Voice Call</a><a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='video') }}">🎥 Video Call</a></div></div><script>const cid={{ conversation_id|tojson }};const box=document.getElementById('messages');const text=document.getElementById('text');async function load(){let r=await fetch('/api/connect/messages/'+cid);if(!r.ok)return;let d=await r.json();box.innerHTML=d.messages.map(m=>'<div class="card"><strong>'+m.sender_name+'</strong><div>'+((m.message_type==='text')?(m.body||''):'<a target="_blank" href="'+m.file_url+'">'+m.message_type+'</a>')+'</div><div class="small">'+(m.created_at||'')+'</div></div>').join('');box.scrollTop=box.scrollHeight;}document.getElementById('sendForm').onsubmit=async e=>{e.preventDefault();let v=text.value.trim();if(!v)return;let r=await fetch('/api/connect/messages/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:v})});if(r.ok){text.value='';load();}};load();setInterval(load,2500);let rec,parts=[];document.getElementById('voiceNote').onclick=async()=>{try{let st=await navigator.mediaDevices.getUserMedia({audio:true});rec=new MediaRecorder(st);parts=[];rec.ondataavailable=e=>parts.push(e.data);rec.onstop=async()=>{let b=new Blob(parts,{type:'audio/webm'});let fd=new FormData();fd.append('file',b,'voice.webm');await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});st.getTracks().forEach(t=>t.stop());load();};rec.start();setTimeout(()=>rec&&rec.state==='recording'&&rec.stop(),60000);}catch(e){alert('Microphone permission is required.');}};</script>''',conversation_id=conversation_id,name=_profile_name(other_id) if other_id else c.get('name','KOJA Chat'))
-
-@app.route('/api/connect/messages/<conversation_id>',methods=['GET','POST'])
-@login_required
-def connect_messages(conversation_id):
-    uid=current_user()['id']
-    if not _conversation_member(conversation_id,uid): return jsonify(error='Forbidden'),403
-    if request.method=='POST':
-        d=request.get_json(silent=True) or {}; body=clean(d.get('message'))
-        if not body:return jsonify(error='Empty message'),400
-        row,err=db_insert('koja_messages',{'id':str(uuid.uuid4()),'conversation_id':conversation_id,'sender_id':uid,'message_type':'text','body':body,'created_at':utc_now()})
-        if err:return jsonify(error=err),500
-        return jsonify(message=row)
-    rows=db_select('koja_messages',filters={'conversation_id':conversation_id},order='created_at.asc',limit=300)
-    for m in rows:m['sender_name']=_profile_name(m.get('sender_id'))
-    return jsonify(messages=rows)
-
-@app.route('/api/connect/messages/<conversation_id>/upload',methods=['POST'])
-@login_required
-def connect_upload(conversation_id):
-    uid=current_user()['id']
-    if not _conversation_member(conversation_id,uid):return jsonify(error='Forbidden'),403
-    f=request.files.get('file')
-    if not f:return jsonify(error='No file'),400
-    if not f.filename.lower().endswith('.webm'):return jsonify(error='Only webm voice messages are supported here.'),400
-    data=f.read()
-    if len(data)>5*1024*1024:return jsonify(error='Voice message too large'),413
-    path=f'connect/audio/{uuid.uuid4().hex}.webm'; r=requests.post(sb_storage_url(path),headers=sb_headers({'Content-Type':'audio/webm','x-upsert':'true'}),data=data,timeout=60)
-    if not r.ok:return jsonify(error=r.text[:500]),500
-    row,err=db_insert('koja_messages',{'id':str(uuid.uuid4()),'conversation_id':conversation_id,'sender_id':uid,'message_type':'audio','file_url':sb_storage_url(path),'body':'Voice message','created_at':utc_now()})
-    return jsonify(message=row) if not err else (jsonify(error=err),500)
-
-@app.route('/connect/status',methods=['GET','POST'])
-@login_required
-def connect_status():
-    uid=current_user()['id']
-    if request.method=='POST':
-        body=clean(request.form.get('text'))
-        if body:db_insert('koja_statuses',{'id':str(uuid.uuid4()),'user_id':uid,'text_content':body,'media_type':'text','visibility':'contacts','expires_at':(datetime.now(timezone.utc)+timedelta(hours=24)).isoformat(),'created_at':utc_now()});flash('Status posted for 24 hours.','success')
-        return redirect(url_for('connect_status'))
-    rows=db_select('koja_statuses',filters={'user_id':uid},order='created_at.desc',limit=30)
-    return render_page('KOJA Status',r'''<div class="card"><h2>🟢 My Status</h2><form method="post"><textarea name="text" maxlength="1000" placeholder="Share an update…"></textarea><button>Post Status</button></form></div>{% for s in rows %}<div class="card"><strong>{{ s.text_content }}</strong><div class="small">Expires: {{ s.expires_at }}</div></div>{% endfor %}''',rows=rows)
-
-@app.route('/connect/answer/<call_id>')
-@login_required
-def connect_answer(call_id):
-    uid=current_user()['id']; c=first_row('koja_calls',{'id':call_id})
-    if not c or str(c.get('callee_id'))!=str(uid) or c.get('status')!='ringing': abort(404)
-    return render_page('Answer KOJA Call',r'''<div class="card"><h2>📞 Incoming {{ c.mode|title }} Call</h2><p>From <strong>{{ name }}</strong></p><div id="state">Connecting…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px"></video></div><button id="hang" class="btn danger">End Call</button></div><script>const cid={{ call_id|tojson }},mode={{ c.mode|tojson }};let pc=null,timer=null;async function api(u,o){let r=await fetch(u,o);if(!r.ok)throw 0;return r.json()}async function start(){try{let x=null;for(let i=0;i<20;i++){x=await api('/api/connect/call/check/'+cid);if(x.call.status!=='ringing')throw 0;if(x.call.offer)break;await new Promise(r=>setTimeout(r,500));}if(!x||!x.call.offer)throw 0;pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});let st=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});local.srcObject=st;st.getTracks().forEach(t=>pc.addTrack(t,st));pc.ontrack=e=>remote.srcObject=e.streams[0];pc.onicecandidate=e=>{if(e.candidate)fetch('/api/connect/call/ice/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate})})};await pc.setRemoteDescription({type:'offer',sdp:x.call.offer});let ans=await pc.createAnswer();await pc.setLocalDescription(ans);await api('/api/connect/call/answer/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({answer:ans.sdp})});state.textContent='Connected';timer=setInterval(async()=>{try{let z=await api('/api/connect/call/check/'+cid);if(z.call.status==='ended'||z.call.status==='rejected'){clearInterval(timer);pc.close();state.textContent='Call ended';return}let ir=await api('/api/connect/call/ice/'+cid);for(const cand of (ir.candidates||[])){const key=JSON.stringify(cand);if(!window._iceSeen)window._iceSeen=new Set();if(!window._iceSeen.has(key)){window._iceSeen.add(key);try{await pc.addIceCandidate(cand)}catch(e){}}}}catch(e){}},1500)}catch(e){state.textContent='Could not answer this call.'}}hang.onclick=()=>{fetch('/api/connect/call/end/'+cid,{method:'POST'});clearInterval(timer);if(pc)pc.close();state.textContent='Call ended'};start();</script>''',c=c,call_id=call_id,name=_profile_name(c.get('caller_id')))
-
-@app.route('/api/connect/call/answer/<call_id>',methods=['POST'])
-@login_required
-def connect_call_answer(call_id):
-    uid=current_user()['id'];c=first_row('koja_calls',{'id':call_id})
-    if not c or str(c.get('callee_id'))!=str(uid):return jsonify(error='Forbidden'),403
-    d=request.get_json(silent=True) or {};db_update('koja_calls',{'id':call_id},{'answer':clean(d.get('answer')),'status':'answered','answered_at':utc_now()});return jsonify(ok=True)
-
-@app.route('/connect/calls')
-@login_required
-def connect_calls():
-    uid=current_user()['id']; rows=db_select('koja_calls',filters={'caller_id':uid},order='created_at.desc',limit=50)+db_select('koja_calls',filters={'callee_id':uid},order='created_at.desc',limit=50); rows=sorted(rows,key=lambda x:x.get('created_at',''),reverse=True)[:50]
-    return render_page('KOJA Calls',r'''<div class="card"><h2>📞 KOJA Call History</h2>{% for c in rows %}<div class="card"><strong>{{ c.mode|title }}</strong> — {{ c.status }}<div class="small">{{ c.created_at }}</div>{% if c.callee_id|string == user.id|string and c.status=='ringing' %}<a class="btn" href="{{ url_for('connect_answer',call_id=c.id) }}">Answer</a>{% endif %}</div>{% else %}<p>No calls yet.</p>{% endfor %}</div>''',rows=rows)
-
-@app.route('/connect/call/<user_id>')
-@login_required
-def connect_call(user_id):
-    uid=current_user()['id']; mode=clean(request.args.get('mode','video'))
-    if user_id==uid or not find_user_by_id(user_id) or mode not in ('voice','video'):abort(404)
-    c=_direct_conversation(uid,user_id)
-    if not c:return 'Run KOJA Connect SQL first.',500
-    return render_page('KOJA Call',r'''<div class="card"><h2>📞 KOJA {{ mode|title }} Call</h2><p>Calling <strong>{{ name }}</strong></p><div id="state">Connecting…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px"></video></div><button id="hang" class="btn danger">End Call</button></div><script>const target={{ user_id|tojson }},mode={{ mode|tojson }};let callId=null,pc=null,timer=null,started=Date.now();const state=document.getElementById('state');const unavailable='This contact is not available because the internet or network connection could not be reached.';function speak(){if('speechSynthesis'in window){speechSynthesis.cancel();speechSynthesis.speak(new SpeechSynthesisUtterance(unavailable));}}function fail(msg){state.textContent=msg||unavailable;speak();clearInterval(timer);if(pc)pc.close();}async function api(u,o){let r=await fetch(u,o);if(!r.ok)throw 0;return r.json()}async function start(){try{if(!navigator.onLine)throw 0;let c=await api('/api/connect/call/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({callee_id:target,mode})});callId=c.call.id;pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});let st=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});document.getElementById('local').srcObject=st;st.getTracks().forEach(t=>pc.addTrack(t,st));pc.ontrack=e=>document.getElementById('remote').srcObject=e.streams[0];pc.onicecandidate=e=>{if(e.candidate)fetch('/api/connect/call/ice/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate})}).catch(()=>fail())};pc.onconnectionstatechange=()=>{if(['failed','disconnected'].includes(pc.connectionState))fail()};let offer=await pc.createOffer();await pc.setLocalDescription(offer);await api('/api/connect/call/offer/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({offer:offer.sdp})});state.textContent='Ringing…';timer=setInterval(async()=>{if(Date.now()-started>120000){fail();return}try{let x=await api('/api/connect/call/check/'+callId);if(x.call.status==='ended'||x.call.status==='rejected'){fail();return}if(x.call.answer&&!pc.currentRemoteDescription){await pc.setRemoteDescription({type:'answer',sdp:x.call.answer});state.textContent='Connected'}let ir=await fetch('/api/connect/call/ice/'+callId);if(ir.ok){let iz=await ir.json();for(const cand of (iz.candidates||[])){const key=JSON.stringify(cand);if(!window._iceSeen)window._iceSeen=new Set();if(!window._iceSeen.has(key)){window._iceSeen.add(key);try{await pc.addIceCandidate(cand)}catch(e){}}}}}catch(e){fail()}},1500)}catch(e){fail()}}document.getElementById('hang').onclick=()=>{if(callId)fetch('/api/connect/call/end/'+callId,{method:'POST'});clearInterval(timer);if(pc)pc.close();state.textContent='Call ended'};window.addEventListener('offline',()=>fail());start();</script>''',user_id=user_id,mode=mode,name=_profile_name(user_id))
+        logger.exception('FCM keyless relay error: %s',exc)
+        return {'sent':0,'configured':True,'mode':'keyless-relay','error':'relay unavailable'}
 
 @app.route('/api/connect/push-token',methods=['POST'])
 @login_required

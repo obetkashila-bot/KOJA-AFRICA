@@ -1,49 +1,92 @@
-# KOJA AFRICA — Calling V2 Final Build
+# KOJA AFRICA — Calling V2 (Keyless FCM)
 
-This package contains the latest KOJA Flask application upgraded for direct voice/video calling and Android background incoming-call notifications.
+Version: 2026.09.04-CALLING-V2-KEYLESS
+
+This package upgrades KOJA Calling V2 so the Render Flask server does **not** require a Firebase service-account private-key JSON file.
 
 ## Included
-- app.py — upgraded KOJA Flask app
-- KOJA_CALLING_V2.sql — required Supabase tables/columns/indexes
-- requirements.txt — includes google-auth for Firebase Cloud Messaging HTTP v1
-- render.yaml — Render deployment configuration
-- .env.example — required environment variables
-- android/ — Android wrapper with Firebase Cloud Messaging and incoming-call UI
+- KOJA Flask app with direct voice/video calls without requiring a contact relationship.
+- WebRTC offer/answer and ICE exchange.
+- Accept, reject, end, call history and in-app notifications.
+- Android FCM token registration.
+- Native Android incoming-call screen and high-priority FCM handling.
+- Firebase Cloud Function FCM relay using the function's Google-managed service identity/ADC.
+- HMAC-style shared secret between Render and the relay.
+- Supabase Calling V2 SQL.
+- Render configuration.
 
-## Important
-The Android project needs the Firebase file generated for YOUR Firebase project:
-`android/app/google-services.json`
+## Important architecture
 
-The server needs Firebase service-account credentials through `FIREBASE_SERVICE_ACCOUNT_JSON` (recommended on Render) or `FIREBASE_SERVICE_ACCOUNT_PATH`.
+`KOJA Render Flask -> HTTPS + FCM_RELAY_SECRET -> Firebase Cloud Function -> FCM -> Android KOJA`
 
-The Flask app will still work for browser-to-browser calls without Firebase push. Firebase is what lets the Android client receive the incoming call when KOJA is not the foreground app.
+Render no longer needs `FIREBASE_SERVICE_ACCOUNT_JSON` or `FIREBASE_SERVICE_ACCOUNT_PATH`.
 
-## Supabase
-Run `KOJA_CALLING_V2.sql` in the same Supabase project used by Render. It uses CREATE TABLE IF NOT EXISTS and ALTER TABLE ADD COLUMN IF NOT EXISTS; it does not require deleting existing tables.
+Google documents Workload Identity Federation as a keyless way for external workloads to access Google Cloud resources, but Render's currently documented managed OIDC integrations do not list Google Cloud as a supported provider. Therefore this package uses a Firebase Cloud Function relay: the Google-managed function identity handles FCM, while Render authenticates to the relay with a separate application secret. This avoids a downloadable Google service-account private key on Render.
+
+## Firebase setup
+
+1. Create/register Android app package `com.kojaafrica.app`.
+2. Download `google-services.json`.
+3. Put it at `android/app/google-services.json`.
+4. Do not upload this private project configuration together with secrets to a public repository.
+
+## Deploy the keyless relay
+
+Cloud Functions deployment requires the Firebase project to use the Blaze plan. Firebase documents a no-cost quota for Cloud Functions on Blaze, but billing must be linked.
+
+From the package directory:
+
+`firebase login`
+
+Copy `.firebaserc.example` to `.firebaserc` and set your Firebase project ID.
+
+Then:
+
+`cd functions && npm install && cd ..`
+
+Create the secret:
+
+`firebase functions:secrets:set KOJA_RELAY_SECRET`
+
+Enter a long random value and keep it private.
+
+Deploy:
+
+`firebase deploy --only functions:sendKojaPush`
+
+Copy the function's HTTPS URL.
 
 ## Render
+
 Set:
-- SUPABASE_URL
-- SUPABASE_SERVICE_KEY
-- SUPABASE_BUCKET
-- SECRET_KEY
-- SITE_URL
-- FIREBASE_PROJECT_ID
-- FIREBASE_SERVICE_ACCOUNT_JSON
 
-Use `gunicorn app:app` as the start command.
+`FCM_RELAY_URL=<your deployed sendKojaPush HTTPS URL>`
 
-## Firebase Android
-1. Create/select a Firebase project.
-2. Add Android app package: `com.kojaafrica.app`.
-3. Download `google-services.json`.
-4. Put it at `android/app/google-services.json`.
-5. Build the Android project with Android Studio/Gradle.
-6. Install KOJA and grant notifications, microphone and camera permissions.
-7. On Android 14+, allow full-screen notifications for KOJA when Android presents the setting, because full-screen intents are restricted to eligible calling/alarm apps.
+`FCM_RELAY_SECRET=<the same secret entered into Firebase Secret Manager>`
+
+Do not set:
+
+`FIREBASE_SERVICE_ACCOUNT_JSON`
+
+`FIREBASE_SERVICE_ACCOUNT_PATH`
+
+Redeploy the KOJA service.
 
 ## Calling flow
-Caller creates a call without requiring a contact relationship. KOJA creates the direct conversation and call record, stores an in-app notification, then sends an FCM high-priority data message to the callee's registered Android devices. The Android client displays an incoming-call UI. Answer opens `/connect/answer/<call_id>` and the existing WebRTC page completes the call.
 
-## Limitations that are controlled by Android/network
-Android and device manufacturers can restrict background activity, battery optimization, notification permissions, and full-screen intents. A user can also force-stop an app, in which case background delivery may not work until the app is opened again. WebRTC can require TURN on some NAT/mobile networks; the current build includes Google STUN and the architecture can be extended with TURN by changing the RTCPeerConnection ICE server list.
+1. User A calls User B.
+2. KOJA creates a direct conversation/call record even if A and B are not connected.
+3. KOJA sends B's FCM token(s) to the relay over HTTPS.
+4. The relay verifies the secret.
+5. Firebase Admin SDK sends the high-priority FCM data message using the function's Google-managed identity.
+6. The Android app can show the native incoming-call UI according to Android notification and full-screen rules.
+7. Answer opens the KOJA WebRTC answer flow.
+
+## Limitations
+
+- Android OS/OEM policies can restrict background delivery or full-screen notifications.
+- Android 13+ notification permission must be granted.
+- Android 14+ restricts full-screen intent use to eligible use cases and user settings.
+- WebRTC may need TURN for reliable calls across difficult mobile NATs.
+- This package does not claim to bypass Android force-stop behavior.
+- A Firebase project may need Blaze billing to deploy Cloud Functions.
