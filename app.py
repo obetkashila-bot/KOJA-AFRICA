@@ -82,6 +82,9 @@ SUPABASE_SERVICE_KEY = (
     or os.getenv("SUPABASE_KEY", "")
 )
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
+FLW_SECRET_KEY = os.getenv("FLW_SECRET_KEY", "").strip()
+FLW_BASE_URL = "https://api.flutterwave.com/v3"
+
 
 STORAGE_BUCKET = os.getenv(
     "SUPABASE_STORAGE_BUCKET",
@@ -1902,6 +1905,7 @@ create table if not exists public.koja_marketplace_orders (
  status text not null default 'pending',
  payment_method text,
  payment_reference text,
+ payment_transaction_id text,
  created_at timestamptz not null default now(),
  updated_at timestamptz not null default now()
 );
@@ -1959,22 +1963,74 @@ def marketplace_product_view(product_id):
     if not product or not product.get('is_published'): abort(404)
     seller=marketplace_seller_name(product.get('seller_id')); uid=(current_user() or {}).get('id') if current_user() else None
     return render_page(product.get('title') or 'Digital Product',r'''
-<div class="card"><div class="small">{{ product.category }} · Seller: {{ seller }}</div><h1>{{ product.title }}</h1>{% if product.cover_url %}<img src="{{ url_for('marketplace_cover', product_id=product.id) }}" alt="{{ product.title }}" style="display:block;width:100%;max-height:520px;object-fit:contain;border-radius:12px;background:var(--bg)">{% endif %}<p style="white-space:pre-wrap;line-height:1.75">{{ product.description }}</p><h2>{{ 'FREE' if product.price|float<=0 else money(product.price, product.currency) }}</h2>{% if user %}{% if access %}<a class="btn success" href="{{ url_for('marketplace_download', product_id=product.id) }}">⬇️ Download / Access</a>{% elif product.price|float<=0 %}<form method="post" action="{{ url_for('marketplace_buy', product_id=product.id) }}"><button class="btn success" type="submit">🎁 Get Free Product</button></form>{% else %}<form method="post" action="{{ url_for('marketplace_buy', product_id=product.id) }}"><button class="btn" type="submit">🛒 Request Purchase · {{ money(product.price, product.currency) }}</button></form><p class="small">Payment processing is not connected in this build; paid orders remain pending until a payment provider is integrated and verified.</p>{% endif %}{% else %}<a class="btn" href="{{ url_for('login', next=request.path) }}">Login to Purchase / Download</a>{% endif %}</div>
+<div class="card"><div class="small">{{ product.category }} · Seller: {{ seller }}</div><h1>{{ product.title }}</h1>{% if product.cover_url %}<img src="{{ url_for('marketplace_cover', product_id=product.id) }}" alt="{{ product.title }}" style="display:block;width:100%;max-height:520px;object-fit:contain;border-radius:12px;background:var(--bg)">{% endif %}<p style="white-space:pre-wrap;line-height:1.75">{{ product.description }}</p><h2>{{ 'FREE' if product.price|float<=0 else money(product.price, product.currency) }}</h2>{% if user %}{% if access %}<a class="btn success" href="{{ url_for('marketplace_download', product_id=product.id) }}">⬇️ Download / Access</a>{% elif product.price|float<=0 %}<form method="post" action="{{ url_for('marketplace_buy', product_id=product.id) }}"><button class="btn success" type="submit">🎁 Get Free Product</button></form>{% else %}<form method="post" action="{{ url_for('marketplace_buy', product_id=product.id) }}"><button class="btn" type="submit">🛒 Request Purchase · {{ money(product.price, product.currency) }}</button></form><p class="small">Secure checkout is handled by Flutterwave when FLW_SECRET_KEY is configured. KOJA verifies the transaction on the server before releasing the digital file.</p>{% endif %}{% else %}<a class="btn" href="{{ url_for('login', next=request.path) }}">Login to Purchase / Download</a>{% endif %}</div>
 ''',product=product,seller=seller,access=marketplace_has_access(product,uid),money=marketplace_money)
 
 @app.route('/marketplace/buy/<product_id>',methods=['POST'])
 @login_required
 def marketplace_buy(product_id):
-    product=marketplace_product(product_id)
+    product=marketplace_product(product_id); user=current_user() or {}; uid=user.get('id')
     if not product or not product.get('is_published'): abort(404)
-    uid=(current_user() or {}).get('id')
-    if marketplace_has_access(product,uid): flash('You already have access to this product.','success'); return redirect(url_for('marketplace_product_view',product_id=product_id))
     try: amount=float(product.get('price') or 0)
     except Exception: amount=0
-    payload={'product_id':product_id,'buyer_id':uid,'seller_id':product.get('seller_id'),'amount':amount,'currency':product.get('currency') or 'ZMW','status':'paid' if amount<=0 else 'pending','payment_method':'free' if amount<=0 else 'pending_payment'}
-    _,err=db_insert('koja_marketplace_orders',payload)
-    flash(('Free product added. You can download it now.' if amount<=0 else 'Purchase request created. Payment processing is not connected yet, so the order remains pending.') if not err else 'Marketplace order could not be created. Run MARKETPLACE.sql in Supabase first.', 'success' if not err and amount<=0 else ('warning' if not err else 'danger'))
+    if amount<=0:
+        existing=first_row('koja_marketplace_orders',{'product_id':product_id,'buyer_id':uid,'status':'eq.paid'})
+        if not existing:
+            _,err=db_insert('koja_marketplace_orders',{'product_id':product_id,'buyer_id':uid,'seller_id':product.get('seller_id'),'amount':0,'currency':product.get('currency') or 'ZMW','status':'paid','payment_method':'free','payment_reference':'FREE-'+secrets.token_hex(8),'updated_at':utc_now()})
+            if err: flash('Could not create the free-product order. Run MARKETPLACE.sql in Supabase first.','danger'); return redirect(url_for('marketplace_product_view',product_id=product_id))
+        flash('Free product added to your purchases.','success')
+        return redirect(url_for('marketplace_download',product_id=product_id))
+
+    if not FLW_SECRET_KEY:
+        flash('Online payment is not configured yet. Add FLW_SECRET_KEY to Render Environment Variables.','warning')
+        return redirect(url_for('marketplace_product_view',product_id=product_id))
+    email=clean(user.get('email')).lower()
+    if not email:
+        flash('Your account needs an email address before payment can start.','warning')
+        return redirect(url_for('marketplace_product_view',product_id=product_id))
+    tx_ref='KOJA-MKT-'+uuid.uuid4().hex[:24]
+    order,err=db_insert('koja_marketplace_orders',{'product_id':product_id,'buyer_id':uid,'seller_id':product.get('seller_id'),'amount':amount,'currency':product.get('currency') or 'ZMW','status':'pending','payment_method':'flutterwave','payment_reference':tx_ref,'updated_at':utc_now()})
+    if err or not order:
+        flash('Marketplace order could not be created. Run MARKETPLACE.sql in Supabase first.','danger')
+        return redirect(url_for('marketplace_product_view',product_id=product_id))
+    payload={'tx_ref':tx_ref,'amount':amount,'currency':product.get('currency') or 'ZMW','redirect_url':url_for('marketplace_payment_callback',_external=True),'customer':{'email':email,'name':first_nonempty(user.get('name'),email),'phonenumber':user.get('phone') or ''},'customizations':{'title':'KOJA AFRICA Marketplace','description':product.get('title') or 'Digital product'}}
+    try:
+        r=requests.post(FLW_BASE_URL+'/payments',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json'},json=payload,timeout=30)
+        data=json_or_empty(r)
+        link=((data.get('data') or {}).get('link')) if isinstance(data,dict) else None
+        if r.ok and link:
+            return redirect(link)
+        logger.error('Flutterwave checkout creation failed: %s %s',r.status_code,str(data)[:1500])
+    except Exception as exc:
+        logger.exception('Flutterwave checkout error: %s',exc)
+    flash('Payment checkout could not be started. Please try again.','danger')
     return redirect(url_for('marketplace_product_view',product_id=product_id))
+
+@app.route('/marketplace/payment/callback')
+@login_required
+def marketplace_payment_callback():
+    tx_ref=clean(request.args.get('tx_ref')); transaction_id=clean(request.args.get('transaction_id')); status=clean(request.args.get('status')).lower(); uid=(current_user() or {}).get('id')
+    if not tx_ref or not transaction_id:
+        flash('Payment response was incomplete.','danger'); return redirect(url_for('marketplace_my'))
+    order=first_row('koja_marketplace_orders',{'payment_reference':tx_ref,'buyer_id':uid})
+    if not order:
+        flash('Marketplace payment order could not be found.','danger'); return redirect(url_for('marketplace_my'))
+    if not FLW_SECRET_KEY:
+        flash('Payment verification is not configured.','danger'); return redirect(url_for('marketplace_my'))
+    try:
+        r=requests.get(FLW_BASE_URL+'/transactions/'+transaction_id+'/verify',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json'},timeout=30)
+        body=json_or_empty(r); tx=(body.get('data') or {}) if isinstance(body,dict) else {}
+        expected_amount=float(order.get('amount') or 0); paid_amount=float(tx.get('amount') or 0); expected_currency=str(order.get('currency') or 'ZMW').upper(); paid_currency=str(tx.get('currency') or '').upper()
+        valid=(r.ok and tx.get('status')=='successful' and str(tx.get('tx_ref'))==tx_ref and paid_currency==expected_currency and paid_amount>=expected_amount)
+        if valid:
+            db_update('koja_marketplace_orders',{'id':order.get('id')},{'status':'paid','payment_method':'flutterwave','payment_reference':tx_ref,'payment_transaction_id':str(tx.get('id') or transaction_id),'updated_at':utc_now()})
+            flash('Payment verified successfully. Your digital product is now available.','success')
+            return redirect(url_for('marketplace_download',product_id=order.get('product_id')))
+        db_update('koja_marketplace_orders',{'id':order.get('id')},{'status':'failed' if status in ('failed','cancelled') else 'pending','updated_at':utc_now()})
+    except Exception as exc:
+        logger.exception('Flutterwave verification error: %s',exc)
+    flash('Payment was not verified, so the digital product has not been released.','warning')
+    return redirect(url_for('marketplace_my'))
 
 @app.route('/marketplace/cover/<product_id>')
 def marketplace_cover(product_id):

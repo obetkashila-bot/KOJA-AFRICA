@@ -30,6 +30,7 @@ create table if not exists public.koja_marketplace_orders (
  status text not null default 'pending',
  payment_method text,
  payment_reference text,
+ payment_transaction_id text,
  created_at timestamptz not null default now(),
  updated_at timestamptz not null default now()
 );
