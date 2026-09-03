@@ -20,6 +20,7 @@ from flask import (
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 # ============================================================
 # KOJA AFRICA
@@ -45,11 +46,35 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("koja-africa")
 
 app = Flask(__name__)
+# Render terminates HTTPS at the proxy; trust forwarded host/proto headers.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 app.secret_key = os.getenv(
     "SECRET_KEY",
     os.getenv("FLASK_SECRET_KEY", secrets.token_hex(32))
 )
 app.config["MAX_CONTENT_LENGTH"] = 15 * 1024 * 1024
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = os.getenv("SESSION_COOKIE_SECURE", "true").lower() not in ("0", "false", "no")
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
+
+# Lightweight production rate limiting without an extra dependency.
+_rate_hits = {}
+def _rate_limited(key, limit, window=60):
+    now = datetime.now(timezone.utc).timestamp()
+    bucket = _rate_hits.get(key, [])
+    bucket = [t for t in bucket if now - t < window]
+    if len(bucket) >= limit:
+        _rate_hits[key] = bucket
+        return True
+    bucket.append(now)
+    _rate_hits[key] = bucket
+    # Prevent unbounded memory growth on long-running instances.
+    if len(_rate_hits) > 5000:
+        oldest = sorted(_rate_hits.items(), key=lambda kv: kv[1][-1] if kv[1] else 0)[:1000]
+        for k, _ in oldest:
+            _rate_hits.pop(k, None)
+    return False
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_SERVICE_KEY = (
@@ -882,6 +907,8 @@ def health():
 @app.route("/register", methods=["GET","POST"])
 def register():
     if request.method == "POST":
+        if _rate_limited("register:" + (request.remote_addr or "unknown"), 8, 600):
+            return "Too many registration attempts. Please wait and try again.", 429
         full_name = clean(request.form.get("full_name"))
         email = clean(request.form.get("email")).lower()
         phone = clean(request.form.get("phone"))
@@ -953,6 +980,8 @@ def register():
 @app.route("/login", methods=["GET","POST"])
 def login():
     if request.method == "POST":
+        if _rate_limited("login:" + (request.remote_addr or "unknown"), 12, 300):
+            return "Too many login attempts. Please wait a few minutes and try again.", 429
         email = clean(request.form.get("email")).lower()
         password = request.form.get("password","")
         user = find_user_by_email(email)
@@ -2020,7 +2049,7 @@ async function media(){return navigator.mediaDevices.getUserMedia({audio:true,vi
 let callTimer=null;
 function tellUnavailable(){const msg='This contact is not available. The call could not reach the professional. Please check your internet connection and try again later.'; state('🔴 '+msg); try{if('speechSynthesis' in window){speechSynthesis.cancel(); const u=new SpeechSynthesisUtterance(msg); u.lang='en-US'; speechSynthesis.speak(u)}}catch(e){}}
 function failCall(){if(poll)clearInterval(poll); if(callTimer)clearTimeout(callTimer); if(pc){pc.getSenders().forEach(s=>{try{s.track&&s.track.stop()}catch(e){}}); pc.close(); pc=null} if(callId){fetch('/api/professional/call/'+callId+'/hangup',{method:'POST'}).catch(()=>{}); callId=null} tellUnavailable()}
-async function startCall(){try{if(!navigator.onLine)throw Error('No internet connection'); const stream=await media(); document.getElementById('local').srcObject=stream; pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]}); pc.onconnectionstatechange=()=>{if(pc && ['failed','disconnected'].includes(pc.connectionState)) failCall()}; stream.getTracks().forEach(t=>pc.addTrack(t,stream)); pc.ontrack=e=>{document.getElementById('remote').srcObject=e.streams[0];document.getElementById('remoteAudio').srcObject=e.streams[0]}; pc.onicecandidate=e=>{if(e.candidate && callId)fetch('/api/professional/call/'+callId+'/ice',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate.toJSON(),side:'caller'})}).catch(()=>{})}; const offer=await pc.createOffer(); await pc.setLocalDescription(offer); const r=await fetch('/api/professional/call/'+providerId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode,offer:offer.sdp})}); const d=await r.json(); if(!r.ok)throw Error(d.error||'Call failed'); callId=d.call_id; state('Calling professional…'); callTimer=setTimeout(failCall,30000); poll=setInterval(checkCall,1000)}catch(e){if(e.message&&(/internet|network|failed|available/i.test(e.message))) tellUnavailable(); else state('Could not start call: '+e.message)}}
+async function startCall(){try{if(!navigator.onLine)throw Error('No internet connection'); const stream=await media(); document.getElementById('local').srcObject=stream; pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]}); pc.onconnectionstatechange=()=>{if(pc && ['failed','disconnected'].includes(pc.connectionState)) failCall()}; stream.getTracks().forEach(t=>pc.addTrack(t,stream)); pc.ontrack=e=>{document.getElementById('remote').srcObject=e.streams[0];document.getElementById('remoteAudio').srcObject=e.streams[0]}; pc.onicecandidate=e=>{if(e.candidate && callId)fetch('/api/professional/call/'+callId+'/ice',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate.toJSON(),side:'caller'})}).catch(()=>{})}; const offer=await pc.createOffer(); await pc.setLocalDescription(offer); const r=await fetch('/api/professional/call/'+providerId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode,offer:offer.sdp})}); const d=await r.json(); if(!r.ok)throw Error(d.error||'Call failed'); callId=d.call_id; state('Calling professional…'); callTimer=setTimeout(failCall,120000); poll=setInterval(checkCall,1000)}catch(e){if(e.message&&(/internet|network|failed|available/i.test(e.message))) tellUnavailable(); else state('Could not start call: '+e.message)}}
 async function checkCall(){if(!callId)return; try{const r=await fetch('/api/professional/call/'+callId,{cache:'no-store'}); if(!r.ok)throw Error('Network error'); const d=await r.json(); if(d.call && ['ended','declined','failed'].includes(d.call.status)){failCall();return} if(d.answer && pc && !pc.currentRemoteDescription){await pc.setRemoteDescription({type:'answer',sdp:d.answer}); if(callTimer)clearTimeout(callTimer); state('🟢 Connected');} for(const c of (d.callee_ice||[])){try{await pc.addIceCandidate(c)}catch(e){}}}catch(e){if(!navigator.onLine)failCall()}}
 window.addEventListener('offline',()=>{if(callId)failCall()});
 async function hang(){if(poll)clearInterval(poll); if(callTimer)clearTimeout(callTimer); if(pc){pc.getSenders().forEach(s=>{try{s.track&&s.track.stop()}catch(e){}});pc.close();pc=null} if(callId){await fetch('/api/professional/call/'+callId+'/hangup',{method:'POST'}).catch(()=>{});callId=null} state('Call ended')}
@@ -2031,6 +2060,8 @@ document.getElementById('start').onclick=startCall; document.getElementById('han
 @app.route("/api/professional/call/<provider_id>", methods=["POST"])
 @login_required
 def professional_call_create(provider_id):
+    if _rate_limited("call:" + (request.remote_addr or "unknown"), 10, 60):
+        return jsonify({"error":"Too many call attempts. Please wait a moment and try again."}), 429
     provider=first_row("service_providers", {"id":provider_id}); me=current_user() or {}
     if not provider:return jsonify({"error":"Provider not found"}),404
     data=request.get_json(silent=True) or {}; mode=clean(data.get("mode")).lower(); offer=data.get("offer")
@@ -3887,6 +3918,21 @@ def internal_error(error):
     return render_page("Server Error",r"""
 <div class="card"><h2>KOJA AFRICA Server Error</h2><p>The server encountered an unexpected error. Check Render logs for details.</p><a class="btn" href="{{ url_for('home') }}">Return Home</a></div>
 """),500
+
+@app.after_request
+def security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(self), microphone=(self), geolocation=(self)")
+    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin-allow-popups")
+    response.headers.setdefault("X-XSS-Protection", "0")
+    if request.is_secure:
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    if request.path.startswith("/api/"):
+        response.headers.setdefault("Cache-Control", "no-store")
+    response.headers.setdefault("X-KOJA-Version", APP_VERSION)
+    return response
 
 @app.before_request
 def before_request():
