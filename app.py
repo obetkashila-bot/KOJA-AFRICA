@@ -555,6 +555,14 @@ body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",
 @keyframes logoPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.025)}}
 @keyframes drawerIn{from{opacity:0;transform:translateX(-18px)}to{opacity:1;transform:none}}
 @keyframes gpsPulse{0%,100%{transform:scale(1);opacity:.95}50%{transform:scale(1.12);opacity:.65}}
+@keyframes kojaSplashIn{0%{opacity:0;transform:scale(.82) translateY(10px)}55%{opacity:1;transform:scale(1.04) translateY(0)}100%{opacity:1;transform:scale(1)}}
+@keyframes kojaSplashOut{0%{opacity:1}100%{opacity:0;visibility:hidden}}
+.koja-splash{position:fixed;inset:0;z-index:99999;display:grid;place-items:center;background:linear-gradient(145deg,#0b1b33,#102f55 55%,#176b87);animation:kojaSplashOut .45s ease 1.35s forwards;pointer-events:none}
+.koja-splash-inner{text-align:center;animation:kojaSplashIn .8s cubic-bezier(.2,.8,.2,1) both}
+.koja-splash-logo{width:88px;height:88px;margin:0 auto 14px;border-radius:24px;display:grid;place-items:center;font-size:48px;font-weight:950;color:#fff;background:linear-gradient(135deg,#4da3ff,#176b87);box-shadow:0 12px 36px rgba(0,0,0,.3)}
+.koja-splash-title{font-size:25px;font-weight:950;letter-spacing:.8px;color:#fff}
+.koja-splash-tagline{margin-top:5px;color:#d9ecff;font-size:13px}
+@media (prefers-reduced-motion:reduce){.koja-splash{animation:none;opacity:0;visibility:hidden}.koja-splash-inner{animation:none}}
 .koja-live-marker{animation:gpsPulse 1.8s ease-in-out infinite;transform-origin:center bottom;filter:drop-shadow(0 2px 4px rgba(0,0,0,.28))}
 .gps-live-badge{display:inline-flex;align-items:center;gap:6px;padding:5px 9px;border-radius:999px;background:#e9f8ef;color:#177245;font-weight:800;font-size:12px}
 .gps-live-dot{width:8px;height:8px;border-radius:50%;background:#177245;animation:gpsPulse 1.2s infinite}
@@ -592,9 +600,20 @@ th,td{border-bottom:1px solid #e4e7ec;padding:9px;text-align:left;vertical-align
 footer{text-align:center;color:#667085;padding:30px}
 .actions{display:flex;gap:8px;flex-wrap:wrap}.actions .btn,.actions button{width:auto}
 @media(max-width:650px){nav a{font-size:12px}.container{width:min(100% - 14px,1250px)}table{display:block;overflow-x:auto}#map{height:350px}.actions .btn,.actions button{width:100%}}
+.setting-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 0;border-bottom:1px solid rgba(255,255,255,.08)}
+.setting-row input[type=checkbox]{width:48px;height:24px;accent-color:#3b82f6;flex:0 0 auto}
+.koja-light-theme{background:#f4f7fb!important;color:#172033!important}.koja-light-theme .card,.koja-light-theme .hero{background:#fff!important;color:#172033!important;border-color:#d9e2ef!important}.koja-light-theme input,.koja-light-theme textarea,.koja-light-theme select{background:#fff!important;color:#172033!important;border-color:#cbd5e1!important}.koja-light-theme .small{color:#475569!important}
+.koja-reduced-motion *, .koja-reduced-motion *::before, .koja-reduced-motion *::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
 </style>
 </head>
 <body>
+<div class="koja-splash" id="kojaSplash" aria-label="KOJA AFRICA loading" aria-hidden="true">
+  <div class="koja-splash-inner">
+    <div class="koja-splash-logo">K</div>
+    <div class="koja-splash-title">KOJA AFRICA</div>
+    <div class="koja-splash-tagline">Knowledge • Questions • Answers</div>
+  </div>
+</div>
 <nav>
 <div class="nav-inner">
 <div class="brand"><span class="brand-logo">K</span><span class="brand-text">KOJA AFRICA<small>Knowledge • Questions • Answers</small></span></div>
@@ -603,6 +622,7 @@ footer{text-align:center;color:#667085;padding:30px}
 <a href="{{ url_for('research') }}">Research</a>
 {% if user %}
 <a href="{{ url_for('dashboard') }}">Dashboard</a>
+<a href="{{ url_for('settings') }}">Settings</a>
 <a href="{{ url_for('services') }}">Services</a>
 <a href="{{ url_for('questions') }}">Questions</a>
 <a href="{{ url_for('assignments') }}">Assignments</a>
@@ -620,7 +640,7 @@ footer{text-align:center;color:#667085;padding:30px}
 <div class="mobile-drawer" id="kojaDrawer">
 <a href="{{ url_for('home') }}">🏠 Home</a>
 <a href="{{ url_for('research') }}">🔎 Research Engine</a>
-{% if user %}<a href="{{ url_for('dashboard') }}">📊 Dashboard</a><a href="{{ url_for('services') }}">🧩 Services</a><a href="{{ url_for('questions') }}">❓ Questions</a><a href="{{ url_for('assignments') }}">📝 Assignments</a><a href="{{ url_for('deliveries') }}">🚚 Deliveries</a><a href="{{ url_for('drivers') }}">📍 Drivers</a>{% if user.role in ['driver','admin'] or user.is_admin %}<a href="{{ url_for('driver_dashboard') }}">🚗 Driver</a>{% endif %}<a href="{{ url_for('logout') }}">↪ Logout</a>{% else %}<a href="{{ url_for('login') }}">🔐 Login</a><a href="{{ url_for('register') }}">👤 Register</a>{% endif %}
+{% if user %}<a href="{{ url_for('dashboard') }}">📊 Dashboard</a><a href="{{ url_for('settings') }}">⚙️ Settings</a><a href="{{ url_for('services') }}">🧩 Services</a><a href="{{ url_for('questions') }}">❓ Questions</a><a href="{{ url_for('assignments') }}">📝 Assignments</a><a href="{{ url_for('deliveries') }}">🚚 Deliveries</a><a href="{{ url_for('drivers') }}">📍 Drivers</a>{% if user.role in ['driver','admin'] or user.is_admin %}<a href="{{ url_for('driver_dashboard') }}">🚗 Driver</a>{% endif %}<a href="{{ url_for('logout') }}">↪ Logout</a>{% else %}<a href="{{ url_for('login') }}">🔐 Login</a><a href="{{ url_for('register') }}">👤 Register</a>{% endif %}
 {% if user and user.is_admin %}<a href="{{ url_for('admin') }}">🛠 Admin</a>{% endif %}
 </div>
 </div>
@@ -639,6 +659,7 @@ function toggleKojaMenu(force){const d=document.getElementById('kojaDrawer'),o=d
 window.addEventListener('resize',()=>{if(window.innerWidth>850)toggleKojaMenu(false)});
 </script>
 <style>@media(max-width:850px){body{padding-bottom:4px}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition:none!important}}</style>
+<script>window.setTimeout(function(){var s=document.getElementById('kojaSplash');if(s)s.remove()},1900);</script>
 </body>
 </html>
 """
@@ -861,6 +882,73 @@ def dashboard():
 {% if user.role in ['driver','admin'] or user.is_admin %}<a class="btn" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}
 </div></div>
 """,questions_count=questions_count,deliveries_count=deliveries_count,appointments_count=appointments_count)
+
+
+# ============================================================
+# USER SETTINGS
+# ============================================================
+
+@app.route("/settings", methods=["GET", "POST"])
+@login_required
+def settings():
+    user = current_user() or {}
+    if request.method == "POST":
+        action = clean(request.form.get("action")) or "profile"
+        if action == "profile":
+            full_name = clean(request.form.get("full_name"))
+            phone = clean(request.form.get("phone"))
+            institution = clean(request.form.get("institution"))
+            if not full_name:
+                flash("Full name is required.", "danger")
+                return redirect(url_for("settings"))
+            payload = {"full_name": full_name, "name": full_name, "phone": phone or None, "institution": institution or None}
+            _, error = db_update("profiles", {"id": user.get("id")}, payload)
+            if error:
+                payload.pop("institution", None)
+                _, error = db_update("profiles", {"id": user.get("id")}, payload)
+            if error:
+                flash("Profile could not be updated. Check your profiles table.", "danger")
+            else:
+                user.update({"name": full_name, "phone": phone, "institution": institution})
+                session["user"] = user
+                flash("Profile settings saved.", "success")
+        elif action == "password":
+            current_password = request.form.get("current_password", "")
+            new_password = request.form.get("new_password", "")
+            confirm_password = request.form.get("confirm_password", "")
+            db_user = find_user_by_id(user.get("id"))
+            if not db_user or not password_matches(db_user, current_password):
+                flash("Current password is incorrect.", "danger")
+            elif len(new_password) < 6:
+                flash("New password must contain at least 6 characters.", "danger")
+            elif new_password != confirm_password:
+                flash("New passwords do not match.", "danger")
+            else:
+                _, error = db_update("profiles", {"id": user.get("id")}, {"password_hash": generate_password_hash(new_password)})
+                flash("Password changed successfully." if not error else "Password could not be changed. Check your profiles table.", "success" if not error else "danger")
+        return redirect(url_for("settings"))
+
+    return render_page("Settings", r"""
+<div class="hero"><h2>⚙️ KOJA Settings</h2><p>Manage your profile, security, notifications, privacy, GPS sharing and app preferences.</p></div>
+<div class="grid">
+<div class="card"><h3>👤 Profile</h3><form method="post"><input type="hidden" name="action" value="profile"><label>Full name</label><input name="full_name" value="{{ user.name or '' }}" required autocomplete="name"><label>Email</label><input value="{{ user.email or '' }}" readonly autocomplete="email"><label>Phone</label><input name="phone" value="{{ user.phone or '' }}" autocomplete="tel"><label>Institution</label><input name="institution" value="{{ user.institution or '' }}" placeholder="School, college, company or organisation"><button class="btn" type="submit">Save Profile</button></form></div>
+<div class="card"><h3>🔐 Password & Security</h3><form method="post"><input type="hidden" name="action" value="password"><label>Current password</label><input type="password" name="current_password" required autocomplete="current-password"><label>New password</label><input type="password" name="new_password" minlength="6" required autocomplete="new-password"><label>Confirm new password</label><input type="password" name="confirm_password" minlength="6" required autocomplete="new-password"><button class="btn" type="submit">Change Password</button></form><p class="small">Your password is never displayed in the browser.</p></div>
+<div class="card"><h3>🔔 Notifications</h3><label class="setting-row"><span><strong>Browser notifications</strong><br><span class="small">Allow KOJA to request browser notification permission.</span></span><input id="notifyToggle" type="checkbox" onchange="saveKojaSetting('notifications',this.checked)"></label><label class="setting-row"><span><strong>Delivery updates</strong><br><span class="small">Show delivery-status alerts on this device.</span></span><input id="deliveryNotifyToggle" type="checkbox" onchange="saveKojaSetting('delivery_notifications',this.checked)"></label><button class="btn secondary" type="button" onclick="requestKojaNotifications()">Enable Notifications</button></div>
+<div class="card"><h3>📍 GPS & Location Privacy</h3><div class="alert"><strong>Consent required.</strong> KOJA does not secretly track people or phones. GPS sharing starts only when you explicitly start it.</div><label class="setting-row"><span><strong>Allow GPS sharing on this device</strong><br><span class="small">Controls whether the driver GPS page may start location sharing.</span></span><input id="gpsToggle" type="checkbox" onchange="saveKojaSetting('gps_sharing',this.checked)"></label><div class="actions"><a class="btn" href="{{ url_for('tracking') }}">Open Live GPS</a><a class="btn secondary" href="{{ url_for('drivers') }}">Find Drivers</a></div></div>
+<div class="card"><h3>🎨 Appearance</h3><label class="setting-row"><span><strong>Dark theme</strong><br><span class="small">Use KOJA's eye-friendly dark interface.</span></span><input id="darkToggle" type="checkbox" onchange="applyKojaTheme(this.checked)"></label><label class="setting-row"><span><strong>Reduced motion</strong><br><span class="small">Reduce animations for accessibility or slower devices.</span></span><input id="motionToggle" type="checkbox" onchange="applyKojaMotion(this.checked)"></label></div>
+<div class="card"><h3>🌐 Language & Preferences</h3><label>Language</label><select id="languageSetting" onchange="saveKojaSetting('language',this.value)"><option value="en">English</option></select><label>Currency</label><input value="ZMW — Zambian Kwacha" readonly><p class="small">Your current KOJA service currency is ZMW.</p></div>
+<div class="card"><h3>🔒 Privacy & Data</h3><p>Device preferences such as theme, notification prompts and GPS sharing are stored locally in this browser. Account profile changes are saved to your KOJA profile.</p><button class="btn secondary" type="button" onclick="clearKojaPreferences()">Reset Device Preferences</button></div>
+<div class="card"><h3>📱 App</h3><table><tr><th>Application</th><td>KOJA AFRICA</td></tr><tr><th>Version</th><td>{{ app_version }}</td></tr><tr><th>Account</th><td>{{ user.email or 'Signed in' }}</td></tr><tr><th>Role</th><td>{{ user.role or 'student' }}</td></tr></table></div>
+<script>
+function getKojaSetting(k,d){try{const v=localStorage.getItem('koja_'+k);return v===null?d:v==='true'?true:v==='false'?false:v}catch(e){return d}}
+function saveKojaSetting(k,v){try{localStorage.setItem('koja_'+k,String(v))}catch(e){}}
+function applyKojaTheme(on){saveKojaSetting('dark_theme',on);document.body.classList.toggle('koja-light-theme',!on)}
+function applyKojaMotion(reduced){saveKojaSetting('reduced_motion',reduced);document.documentElement.classList.toggle('koja-reduced-motion',reduced)}
+function requestKojaNotifications(){if(!('Notification' in window)){alert('This browser does not support notifications.');return}Notification.requestPermission().then(function(p){saveKojaSetting('notifications',p==='granted');const el=document.getElementById('notifyToggle');if(el)el.checked=p==='granted';alert(p==='granted'?'KOJA notifications enabled on this device.':'Notification permission was not granted.')})}
+function clearKojaPreferences(){['notifications','delivery_notifications','gps_sharing','dark_theme','reduced_motion','language'].forEach(k=>localStorage.removeItem('koja_'+k));location.reload()}
+document.addEventListener('DOMContentLoaded',function(){const n=document.getElementById('notifyToggle'),dn=document.getElementById('deliveryNotifyToggle'),g=document.getElementById('gpsToggle'),d=document.getElementById('darkToggle'),m=document.getElementById('motionToggle'),l=document.getElementById('languageSetting');if(n)n.checked=getKojaSetting('notifications',false);if(dn)dn.checked=getKojaSetting('delivery_notifications',true);if(g)g.checked=getKojaSetting('gps_sharing',true);if(d)d.checked=getKojaSetting('dark_theme',true);if(m)m.checked=getKojaSetting('reduced_motion',false);if(l)l.value=getKojaSetting('language','en');applyKojaTheme(getKojaSetting('dark_theme',true));applyKojaMotion(getKojaSetting('reduced_motion',false))})
+</script>
+""", app_version=APP_VERSION)
 
 # ============================================================
 # KOJA RESEARCH ENGINE V2
