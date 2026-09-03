@@ -76,11 +76,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_assignments_tracking_code ON public.assign
 CREATE INDEX IF NOT EXISTS idx_assignments_user ON public.assignments(user_id);
 CREATE INDEX IF NOT EXISTS idx_assignments_status ON public.assignments(status);
 CREATE INDEX IF NOT EXISTS idx_assignments_created ON public.assignments(created_at DESC);
-ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS approval_status text DEFAULT 'pending';
-ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS approved_by uuid;
-ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS approved_at timestamptz;
-ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS approval_note text;
-ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS answer_approval_status text DEFAULT 'pending';
 
 CREATE TABLE IF NOT EXISTS public.assignment_answers (
  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), assignment_id uuid, admin_id uuid, answer_text text,
@@ -243,42 +238,3 @@ CREATE TRIGGER trg_cv_records_updated_at BEFORE UPDATE ON public.cv_records FOR 
 SELECT id,full_name,email,role,is_admin,is_active FROM public.profiles WHERE lower(email)=lower('obetkashila@gmail.com');
 SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name IN
 ('profiles','questions','assignments','assignment_answers','documents','document_records','service_providers','doctor_profiles','teacher_profiles','appointments','driver_profiles','driver_locations','deliveries','activity_logs','cv_records') ORDER BY table_name;
-
--- KOJA Approval Centre fields (update-only; preserves all existing rows/data)
-ALTER TABLE public.doctor_profiles ADD COLUMN IF NOT EXISTS approval_status text DEFAULT 'pending';
-ALTER TABLE public.doctor_profiles ADD COLUMN IF NOT EXISTS approved_by uuid;
-ALTER TABLE public.doctor_profiles ADD COLUMN IF NOT EXISTS approved_at timestamptz;
-ALTER TABLE public.doctor_profiles ADD COLUMN IF NOT EXISTS approval_note text;
-ALTER TABLE public.teacher_profiles ADD COLUMN IF NOT EXISTS approval_status text DEFAULT 'pending';
-ALTER TABLE public.teacher_profiles ADD COLUMN IF NOT EXISTS approved_by uuid;
-ALTER TABLE public.teacher_profiles ADD COLUMN IF NOT EXISTS approved_at timestamptz;
-ALTER TABLE public.teacher_profiles ADD COLUMN IF NOT EXISTS approval_note text;
-ALTER TABLE public.driver_profiles ADD COLUMN IF NOT EXISTS approval_status text DEFAULT 'pending';
-ALTER TABLE public.driver_profiles ADD COLUMN IF NOT EXISTS approved_by uuid;
-ALTER TABLE public.driver_profiles ADD COLUMN IF NOT EXISTS approved_at timestamptz;
-ALTER TABLE public.driver_profiles ADD COLUMN IF NOT EXISTS approval_note text;
-ALTER TABLE public.service_providers ADD COLUMN IF NOT EXISTS approval_status text DEFAULT 'pending';
-ALTER TABLE public.service_providers ADD COLUMN IF NOT EXISTS approved_by uuid;
-ALTER TABLE public.service_providers ADD COLUMN IF NOT EXISTS approved_at timestamptz;
-ALTER TABLE public.service_providers ADD COLUMN IF NOT EXISTS approval_note text;
-ALTER TABLE public.documents ADD COLUMN IF NOT EXISTS approval_status text DEFAULT 'pending';
-ALTER TABLE public.documents ADD COLUMN IF NOT EXISTS approved_by uuid;
-ALTER TABLE public.documents ADD COLUMN IF NOT EXISTS approved_at timestamptz;
-ALTER TABLE public.documents ADD COLUMN IF NOT EXISTS approval_note text;
-ALTER TABLE public.deliveries ADD COLUMN IF NOT EXISTS approval_status text DEFAULT 'pending';
-ALTER TABLE public.deliveries ADD COLUMN IF NOT EXISTS approved_by uuid;
-ALTER TABLE public.deliveries ADD COLUMN IF NOT EXISTS approved_at timestamptz;
-ALTER TABLE public.deliveries ADD COLUMN IF NOT EXISTS approval_note text;
-ALTER TABLE public.appointments ADD COLUMN IF NOT EXISTS approval_status text DEFAULT 'pending';
-ALTER TABLE public.appointments ADD COLUMN IF NOT EXISTS approved_by uuid;
-ALTER TABLE public.appointments ADD COLUMN IF NOT EXISTS approved_at timestamptz;
-ALTER TABLE public.appointments ADD COLUMN IF NOT EXISTS approval_note text;
-CREATE INDEX IF NOT EXISTS idx_assignments_approval_status ON public.assignments(approval_status);
-CREATE INDEX IF NOT EXISTS idx_assignments_answer_approval_status ON public.assignments(answer_approval_status);
-CREATE INDEX IF NOT EXISTS idx_doctor_profiles_approval_status ON public.doctor_profiles(approval_status);
-CREATE INDEX IF NOT EXISTS idx_teacher_profiles_approval_status ON public.teacher_profiles(approval_status);
-CREATE INDEX IF NOT EXISTS idx_driver_profiles_approval_status ON public.driver_profiles(approval_status);
-CREATE INDEX IF NOT EXISTS idx_service_providers_approval_status ON public.service_providers(approval_status);
-CREATE INDEX IF NOT EXISTS idx_documents_approval_status ON public.documents(approval_status);
-CREATE INDEX IF NOT EXISTS idx_deliveries_approval_status ON public.deliveries(approval_status);
-CREATE INDEX IF NOT EXISTS idx_appointments_approval_status ON public.appointments(approval_status);
