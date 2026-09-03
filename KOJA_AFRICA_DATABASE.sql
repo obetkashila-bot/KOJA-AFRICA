@@ -199,7 +199,7 @@ CREATE INDEX IF NOT EXISTS idx_activity_logs_created ON public.activity_logs(cre
 
 CREATE TABLE IF NOT EXISTS public.cv_records (
  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), user_id uuid, full_name text, phone text, email text, address text,
- profile text, education text, experience text, skills text, references text, file_name text, file_path text, file_url text,
+ profile text, education text, experience text, skills text, reference_text text, file_name text, file_path text, file_url text,
  created_at timestamptz DEFAULT now(), updated_at timestamptz DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_cv_records_user ON public.cv_records(user_id);
