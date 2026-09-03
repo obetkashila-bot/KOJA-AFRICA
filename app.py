@@ -41,17 +41,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("koja-africa")
 
 app = Flask(__name__)
-_configured_secret = os.getenv("SECRET_KEY") or os.getenv("FLASK_SECRET_KEY")
-if not _configured_secret:
-    logger.warning("SECRET_KEY is not configured; sessions will not survive process restarts. Set SECRET_KEY in Render.")
-app.secret_key = _configured_secret or secrets.token_hex(32)
-app.config.update(
-    MAX_CONTENT_LENGTH=15 * 1024 * 1024,
-    SESSION_COOKIE_SECURE=os.getenv("SESSION_COOKIE_SECURE", "true").lower() in {"1", "true", "yes"},
-    SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE=os.getenv("SESSION_COOKIE_SAMESITE", "Lax"),
-    PERMANENT_SESSION_LIFETIME=timedelta(days=7),
+app.secret_key = os.getenv(
+    "SECRET_KEY",
+    os.getenv("FLASK_SECRET_KEY", secrets.token_hex(32))
 )
+app.config["MAX_CONTENT_LENGTH"] = 15 * 1024 * 1024
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_SERVICE_KEY = (
@@ -84,20 +78,6 @@ ALLOWED_EXTENSIONS = {
 # ============================================================
 # GENERAL HELPERS
 # ============================================================
-
-def csrf_token():
-    token = session.get("_csrf_token")
-    if not token:
-        token = secrets.token_urlsafe(32)
-        session["_csrf_token"] = token
-    return token
-
-def validate_csrf():
-    expected = session.get("_csrf_token")
-    supplied = request.form.get("csrf_token") or request.headers.get("X-CSRF-Token")
-    if not expected or not supplied or not secrets.compare_digest(expected, supplied):
-        abort(400, description="Invalid or missing CSRF token.")
-
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
@@ -312,7 +292,7 @@ def find_user_by_email(email):
     if not email:
         return None
 
-    for table in ("profiles",):
+    for table in ("profiles", "koja_users", "users", "KOJA ZM"):
         rows = db_select(table, filters={"email": email}, limit=1)
         if rows:
             return rows[0]
@@ -321,7 +301,7 @@ def find_user_by_email(email):
 def find_user_by_id(user_id):
     if not user_id:
         return None
-    for table in ("profiles",):
+    for table in ("profiles", "koja_users", "users", "KOJA ZM"):
         rows = db_select(table, filters={"id": user_id}, limit=1)
         if rows:
             return rows[0]
@@ -371,32 +351,6 @@ def supabase_auth_login(email, password):
         return json_or_empty(r)
     except Exception as exc:
         logger.exception("Supabase Auth login error: %s", exc)
-        return None
-
-def supabase_auth_signup(email, password, full_name="", phone=""):
-    """Create the account in Supabase Auth and return the auth response."""
-    if not SUPABASE_URL:
-        return None
-    key = SUPABASE_ANON_KEY or SUPABASE_SERVICE_KEY
-    if not key:
-        return None
-    try:
-        metadata = {"full_name": full_name}
-        if phone:
-            metadata["phone"] = phone
-        r = requests.post(
-            f"{SUPABASE_URL}/auth/v1/signup",
-            headers={"apikey": key, "Content-Type": "application/json"},
-            json={"email": email, "password": password, "data": metadata},
-            timeout=20,
-        )
-        if not r.ok:
-            logger.warning("Supabase Auth signup failed: %s %s", r.status_code, r.text[:800])
-            return None
-        data = json_or_empty(r)
-        return data if isinstance(data, dict) and data.get("user") else None
-    except Exception as exc:
-        logger.exception("Supabase Auth signup error: %s", exc)
         return None
 
 def create_local_profile(user_id, email, full_name="", phone=""):
@@ -569,9 +523,6 @@ def provider_profile(provider_id):
         row = first_row(table, {"provider_id": provider_id})
         if row:
             return row
-        row = first_row(table, {"id": provider_id})
-        if row:
-            return row
     return None
 
 # ============================================================
@@ -584,52 +535,26 @@ BASE_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<meta name="description" content="{{ description or 'KOJA AFRICA — academic questions, assignments, research documents, professional services and delivery services.' }}">
-<meta name="robots" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] or (request.path == '/research' and request.args.get('q')) %}noindex,nofollow{% else %}index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1{% endif %}">
-<meta name="googlebot" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] or (request.path == '/research' and request.args.get('q')) %}noindex,nofollow{% else %}index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1{% endif %}">
+<meta name="description" content="KOJA AFRICA — academic questions, assignments, documents, professional services and live delivery services in Africa.">
+<meta name="robots" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] %}noindex,nofollow{% else %}index,follow,max-image-preview:large{% endif %}">
+<meta name="googlebot" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] %}noindex,nofollow{% else %}index,follow{% endif %}">
 <meta name="google-site-verification" content="u4nfIf5MfXm0iVvECSQeYAov4Tz4601ayY5kYzNc4ko">
-<meta name="csrf-token" content="{{ csrf_token }}">
-<link rel="icon" type="image/png" sizes="48x48" href="{{ url_for('favicon_png') }}">
 <link rel="canonical" href="{{ SITE_URL }}{{ request.path }}">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="KOJA AFRICA">
 <meta property="og:title" content="{{ title or 'KOJA AFRICA' }}">
-<meta property="og:description" content="{{ description or 'Academic questions, assignments, research documents, professional services and delivery services.' }}">
+<meta property="og:description" content="Academic questions, assignments, documents, professional services and live delivery services.">
 <meta property="og:url" content="{{ SITE_URL }}{{ request.path }}">
-<meta name="twitter:card" content="summary">
-<meta name="twitter:title" content="{{ title or 'KOJA AFRICA' }}">
-<meta name="twitter:description" content="{{ description or 'Academic questions, assignments, research documents, professional services and delivery services.' }}">
 <title>{{ title or "KOJA AFRICA" }}</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
 <style>
 *{box-sizing:border-box}
-html{scroll-behavior:smooth}
-body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f5f7fb;color:#172033;animation:pageIn .35s ease both}
-@keyframes pageIn{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
-@keyframes logoPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.025)}}
-@keyframes drawerIn{from{opacity:0;transform:translateX(-18px)}to{opacity:1;transform:none}}
-@keyframes gpsPulse{0%,100%{transform:scale(1);opacity:.95}50%{transform:scale(1.12);opacity:.65}}
-@keyframes kojaSplashIn{0%{opacity:0;transform:scale(.82) translateY(10px)}55%{opacity:1;transform:scale(1.04) translateY(0)}100%{opacity:1;transform:scale(1)}}
-@keyframes kojaSplashOut{0%{opacity:1}100%{opacity:0;visibility:hidden}}
-.koja-splash{position:fixed;inset:0;z-index:99999;display:grid;place-items:center;background:linear-gradient(145deg,#0b1b33,#102f55 55%,#176b87);animation:kojaSplashOut .45s ease 1.35s forwards;pointer-events:none}
-.koja-splash-inner{text-align:center;animation:kojaSplashIn .8s cubic-bezier(.2,.8,.2,1) both}
-.koja-splash-logo{width:88px;height:88px;margin:0 auto 14px;border-radius:24px;display:grid;place-items:center;font-size:48px;font-weight:950;color:#fff;background:linear-gradient(135deg,#4da3ff,#176b87);box-shadow:0 12px 36px rgba(0,0,0,.3)}
-.koja-splash-title{font-size:25px;font-weight:950;letter-spacing:.8px;color:#fff}
-.koja-splash-tagline{margin-top:5px;color:#d9ecff;font-size:13px}
-@media (prefers-reduced-motion:reduce){.koja-splash{animation:none;opacity:0;visibility:hidden}.koja-splash-inner{animation:none}}
-.koja-live-marker{animation:gpsPulse 1.8s ease-in-out infinite;transform-origin:center bottom;filter:drop-shadow(0 2px 4px rgba(0,0,0,.28))}
-.gps-live-badge{display:inline-flex;align-items:center;gap:6px;padding:5px 9px;border-radius:999px;background:#e9f8ef;color:#177245;font-weight:800;font-size:12px}
-.gps-live-dot{width:8px;height:8px;border-radius:50%;background:#177245;animation:gpsPulse 1.2s infinite}
-nav{background:#10233f;color:#fff;padding:10px 15px;position:sticky;top:0;z-index:1000;box-shadow:0 2px 16px rgba(0,0,0,.16)}
-.nav-inner{max-width:1250px;margin:auto;display:flex;align-items:center;justify-content:center;gap:7px;flex-wrap:wrap;position:relative}.nav-links{width:100%;display:flex;justify-content:center;align-items:center;gap:3px;flex-wrap:wrap}
-.brand{font-weight:900;font-size:19px;margin:0 auto;display:flex;align-items:center;justify-content:center;gap:9px;letter-spacing:.2px;animation:logoPulse 3s ease-in-out infinite;order:1;width:max-content}
-.brand-logo{width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg,#4da3ff,#176b87);display:grid;place-items:center;font-weight:950;color:#fff;box-shadow:0 3px 10px rgba(0,0,0,.22)}
-.brand-text small{display:block;font-size:9px;font-weight:600;opacity:.75;letter-spacing:.6px}
-nav a{color:#fff;text-decoration:none;padding:8px 9px;border-radius:7px;transition:background .2s ease,transform .2s ease}
-nav a:hover{background:rgba(255,255,255,.12);transform:translateY(-1px)}
-.menu-toggle{display:none;width:auto;margin:0;padding:8px 11px;background:rgba(255,255,255,.1);font-size:20px;order:0;position:absolute;left:0;top:0;z-index:3}
-.drawer-overlay{display:none}
-@media(max-width:850px){nav{padding:8px 12px 10px}.nav-inner{min-height:46px}.brand{font-size:18px}.brand-logo{width:36px;height:36px}.nav-links{display:none}.menu-toggle{display:block}.mobile-drawer{display:none;position:fixed;left:0;right:auto;top:64px;width:100vw;max-width:none;min-height:calc(100vh - 64px);background:#10233f;padding:18px 16px 24px;box-shadow:0 10px 22px rgba(0,0,0,.2);z-index:1001;overflow-y:auto}.mobile-drawer.open{display:block}.mobile-drawer a{display:block;margin:4px 0;animation:drawerIn .25s ease both}.mobile-drawer a:nth-child(2){animation-delay:.03s}.mobile-drawer a:nth-child(3){animation-delay:.06s}.mobile-drawer a:nth-child(4){animation-delay:.09s}.mobile-drawer a:nth-child(5){animation-delay:.12s}.mobile-drawer a:nth-child(6){animation-delay:.15s}.drawer-overlay.open{display:block;position:fixed;inset:0;background:rgba(0,0,0,.28);z-index:900}}
+body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f5f7fb;color:#172033}
+nav{background:#10233f;color:#fff;padding:12px 15px;position:sticky;top:0;z-index:1000}
+.nav-inner{max-width:1250px;margin:auto;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.brand{font-weight:800;font-size:19px;margin-right:auto}
+nav a{color:#fff;text-decoration:none;padding:8px 9px;border-radius:7px}
+nav a:hover{background:rgba(255,255,255,.12)}
 .container{width:min(1250px,calc(100% - 24px));margin:20px auto 50px}
 .card{background:#fff;border-radius:13px;padding:18px;margin-bottom:16px;box-shadow:0 3px 14px rgba(0,0,0,.06)}
 .hero{background:linear-gradient(135deg,#10233f,#176b87);color:#fff;padding:28px 20px;border-radius:15px;margin-bottom:18px}
@@ -657,26 +582,16 @@ footer{text-align:center;color:#667085;padding:30px}
 </style>
 </head>
 <body>
-<div class="koja-splash" id="kojaSplash" aria-label="KOJA AFRICA loading" aria-hidden="true">
-  <div class="koja-splash-inner">
-    <div class="koja-splash-logo">K</div>
-    <div class="koja-splash-title">KOJA AFRICA</div>
-    <div class="koja-splash-tagline">Knowledge • Questions • Answers</div>
-  </div>
-</div>
 <nav>
 <div class="nav-inner">
-<div class="brand"><span class="brand-logo">K</span><span class="brand-text">KOJA AFRICA<small>Knowledge • Questions • Answers</small></span></div>
-<button class="menu-toggle" type="button" aria-label="Open menu" aria-expanded="false" onclick="toggleKojaMenu()">☰</button>
-<div class="nav-links">
+<div class="brand">KOJA AFRICA</div>
 <a href="{{ url_for('home') }}">Home</a>
-<a href="{{ url_for('research') }}">Research</a>
 {% if user %}
 <a href="{{ url_for('dashboard') }}">Dashboard</a>
-<a href="{{ url_for('settings') }}">⚙️ Settings</a>
 <a href="{{ url_for('services') }}">Services</a>
 <a href="{{ url_for('questions') }}">Questions</a>
 <a href="{{ url_for('assignments') }}">Assignments</a>
+<a href="{{ url_for('universities') }}">Universities</a>
 <a href="{{ url_for('deliveries') }}">Deliveries</a>
 <a href="{{ url_for('drivers') }}">Drivers</a>
 {% if user.role in ['driver','admin'] or user.is_admin %}
@@ -689,70 +604,25 @@ footer{text-align:center;color:#667085;padding:30px}
 {% endif %}
 {% if user and user.is_admin %}<a href="{{ url_for('admin') }}">Admin</a>{% endif %}
 </div>
-<div class="mobile-drawer" id="kojaDrawer">
-<a href="{{ url_for('home') }}">🏠 Home</a>
-<a href="{{ url_for('research') }}">🔎 Research Engine</a>
-{% if user %}<a href="{{ url_for('dashboard') }}">📊 Dashboard</a><a href="{{ url_for('settings') }}">⚙️ Settings</a><a href="{{ url_for('services') }}">🧩 Services</a><a href="{{ url_for('questions') }}">❓ Questions</a><a href="{{ url_for('assignments') }}">📝 Assignments</a><a href="{{ url_for('deliveries') }}">🚚 Deliveries</a><a href="{{ url_for('drivers') }}">📍 Drivers</a>{% if user.role in ['driver','admin'] or user.is_admin %}<a href="{{ url_for('driver_dashboard') }}">🚗 Driver</a>{% endif %}<a href="{{ url_for('logout') }}">↪ Logout</a>{% else %}<a href="{{ url_for('login') }}">🔐 Login</a><a href="{{ url_for('register') }}">👤 Register</a>{% endif %}
-{% if user and user.is_admin %}<a href="{{ url_for('admin') }}">🛠 Admin</a>{% endif %}
-</div>
-</div>
 </nav>
-<div class="drawer-overlay" id="kojaOverlay" onclick="toggleKojaMenu(false)"></div>
 <div class="container">
 {% with messages=get_flashed_messages(with_categories=true) %}
 {% for category,message in messages %}<div class="alert">{{ message }}</div>{% endfor %}
 {% endwith %}
 {{ body|safe }}
 </div>
-<footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Research • Professional • Documents • GPS • Transport Services</footer>
+<footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Agricultural • Health • Transport Services</footer>
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
-<script>
-(function(){
-  const meta=document.querySelector('meta[name="csrf-token"]');
-  const token=meta ? meta.getAttribute('content') : '';
-  document.querySelectorAll('form[method="post"],form[method="POST"]').forEach(function(form){
-    if(!form.querySelector('input[name="csrf_token"]')){
-      const input=document.createElement('input'); input.type='hidden'; input.name='csrf_token'; input.value=token; form.prepend(input);
-    }
-  });
-  const originalFetch=window.fetch;
-  window.fetch=function(input, init){
-    init=init || {};
-    const method=(init.method || (input && input.method) || 'GET').toUpperCase();
-    if(method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS' && token){
-      const headers=new Headers(init.headers || (input && input.headers) || {});
-      if(!headers.has('X-CSRF-Token')) headers.set('X-CSRF-Token', token);
-      init.headers=headers;
-    }
-    return originalFetch(input, init);
-  };
-})();
-</script>
-<script>
-function toggleKojaMenu(force){const d=document.getElementById('kojaDrawer'),o=document.getElementById('kojaOverlay'),b=document.querySelector('.menu-toggle');if(!d)return;const open=typeof force==='boolean'?force:!d.classList.contains('open');d.classList.toggle('open',open);o.classList.toggle('open',open);if(b)b.setAttribute('aria-expanded',open?'true':'false')}
-window.addEventListener('resize',()=>{if(window.innerWidth>850)toggleKojaMenu(false)});
-</script>
-<style>@media(max-width:850px){body{padding-bottom:4px}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition:none!important}}</style>
-<script>window.setTimeout(function(){var s=document.getElementById('kojaSplash');if(s)s.remove()},1900);</script>
 </body>
 </html>
 """
 
-def render_page(title, body_template, description=None, **context):
+def render_page(title, body_template, **context):
     context["user"] = current_user()
-    # The page body is rendered separately from BASE_HTML, so values normally
-    # supplied by the context processor must also be passed explicitly here.
-    context.setdefault("SITE_URL", SITE_URL)
-    context.setdefault("APP_NAME", APP_NAME)
-    context.setdefault("APP_TAGLINE", APP_TAGLINE)
-    context.setdefault("csrf_token", csrf_token())
-    # Use the Jinja environment directly so template context keys such as
-    # "source" cannot collide with render_template_string(source, ...).
-    body = app.jinja_env.from_string(body_template).render(**context)
+    body = render_template_string(body_template, **context)
     return render_template_string(
         BASE_HTML,
         title=title,
-        description=description,
         body=body,
         user=current_user()
     )
@@ -761,70 +631,31 @@ def render_page(title, body_template, description=None, **context):
 # HOME / HEALTH
 # ============================================================
 
-@app.route("/favicon.png")
-def favicon_png():
-    # Serve the packaged favicon when the static directory is present.
-    # The embedded fallback keeps this endpoint safe even when only app.py
-    # is uploaded to a deployment service such as Render.
-    favicon_path = os.path.join(os.path.dirname(__file__), "static", "favicon.png")
-    if os.path.isfile(favicon_path):
-        return send_file(favicon_path, mimetype="image/png", max_age=604800)
-    import base64
-    from flask import Response
-    fallback = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAYAAADimHc4AAAF40lEQVR4nO2de0xTVxzHv+VZoKVQniJDhemYEaZ7ucRkj2zZiJl7WESgbosZIWwoNPvDLNkfS8xi9jAbK4vO+Jw6igiUhzB1mxtOZojT6dzEYZjOqUMUeQgIQsv+ICaTID3n3p4czuV8/r7f3m9/n557ob25VxeW9NQIJNzw4V1gqiMFcEYK4IwUwBkpgDNSAGekAM74sd5BYFoa610wZ3D/fmavrWPxj5gWhn4vvC3DqwK0PPixeEuEVwRMpcGPRa0I1SfhqTx8QP37VyVgqg//DmrmoFiAHP7dKJ2HIgFy+OOjZC7UAuTwJ4Z2PlQC5PDJoJmT/CqCM8QC5KefDtJ5yRXAGSIB8tOvDJK5yRXAGSmAMx4FyMOPOjzNj/kPMvdiS86reHH+A0TbvvzZbjS1XlK0n7WWZ5H7zGPE23f09mNZcSnOXG5XtD9auAlgjU4HrFv2PFY++TBxpr2nD+l2B1rarjNsdjeaFKDTAZ9kpmHFovnEmbbuXljsJWi9eoNdsXHQnAAfnQ5FKxYjY2EKceZKZw8sdgfOX+tk2Gx8NCXA10eH4teXYOmjc4kz/3R0w2J34GJHF7tiE6AZAX4+Pti48iUsWZBMnLlwvQuWz0twubOHYbOJ0YQAf19fbH7zFaSlzibOtLbfQLrdgX+7bjJs5hnhBQT4+WJbzlI8Ny+JOHOurQMWewnae/oYNiNDaAF6fz/syLXg6QdnEWear1zDsmIHrt/sZ9iMHGEFBAf4Y1deOhbNmUGcOX3pKjKKS9HZd4thMzqEFGDQB+DrtzKwMCmeOHPqYhsyvihFd/8Aw2b0CCcgNCgQjreX45FZccSZ4+evIGvDHvTcGmTYTBlCCTAF61G2KhMPJcQSZ5paL8G6sQy9A7cZNlOOMALMhiCUrcrEvPgY4kxjy9947cty9N8eYthMHUIIiDSG4KPlLyA5Loo403D2At7YVI6BoWGGzdQjhICiFYth1AcSb3/ozF9YubkSg5N8+IAgAmiGf+D0OeRsqcKQy8WwkfcQQgApdSf/RN72agy53LyrEKMZAdUnmpG/oxbDbnGGD2hEgPOXM1i1sxYut3i3vdDEVRFJ0WYYKM4TkwlNCEhNiEV5QRbCQ4J4V6FGEwIAICU+BhUFWTAbxJKgGQEAMHd6NCoLshFpDOZdhRhNCQCA5LgoVBZmIzo0hHcVIoQQ0NpOd6nInNhIOAutiDEZGDXyHkIIWFN6APWnWqgySTFmOG1WTAszMmrlHYQQMOxyIXdrFfb9epYqlxgVDqfNirjwUEbN1COEAAAYdruRt70GVcebqXIzI8NQZctGvNnEqJk6hBEAjErI/6oGFcf+oMolRIxKSIgIY1NMBUIJAACXewSrd+5DWdPvVLl4swlVtmzMjAxjU0whwgkAAPfICGy76+A4+htVLi48FE6bFYlR4Yya0SOkAGBUwjsl9djVeJIqNy3MiEqbFUkxZjbFKBFWAACMjABrSvdjx+ETVLlYkwHOQitmx0YwakaO0AKAUQnvlh3E1objVLno0BA4C61UvzOzQHgBd3hv77fYdOgYVSbSGIzKgmzMnR7NqJVnNCMAAN6v/B4bvmuiypgNQagoyEIKxeUu3kRTAgBgbdUPsB88SpUJDwlCeUEWUiku+PIWmhMAAOtqGvDpN41UGVOwHntXZ2LBjGmMWo2PJgUAwMd1P2F9/RGqjClIj7LVmVTXnapFswIAYH39EXxYe5gqY9QHYk9+Jh5PJL/yWg2aFgAARQd+xgfVP1JlDPoAOPIz8MT997Ep9T883jdU3qpAPRPdW1TzK2CyIwVwRgrgjBTAGSmAMx4FsHx4wVTA0/zkCuCMFMAZIgHyMKQMkrnJFcAZYgFyFdBBOi+5AjhDJUCuAjJo5kS9AqSEiaGdj6JDkJQwPkrmovgcICXcjdJ5qDoJSwmjqJmD6r+CproEte9fPktSIZPqWZJj0bKISf001fHQggzhnicsIUd+FcEZKYAzUgBnpADOSAGckQI48x9w0ZCDLHW26wAAAABJRU5ErkJggg==")
-    response = Response(fallback, mimetype="image/png")
-    response.headers["Cache-Control"] = "public, max-age=604800"
-    return response
-
 @app.route("/")
 def home():
-    return render_page("KOJA AFRICA | Knowledge, Questions & Answers", r"""
-<section class="hero">
+    return render_page("KOJA AFRICA", r"""
+<div class="hero">
 <h1>KOJA AFRICA</h1>
-<p><strong>Knowledge • Questions • Answers</strong></p>
-<p>A practical online platform for academic questions, assignments, research, documents, professional services and delivery support.</p>
+<p>Knowledge • Questions • Answers</p>
+<p>Academic services, university applications, CV creation, farmer registration, professional bookings and delivery services.</p>
+{% if not user %}
 <div class="actions">
-<a class="btn" href="{{ url_for('research') }}">Explore Research</a>
-<a class="btn secondary" href="{{ url_for('register') }}">Create Account</a>
+<a class="btn" href="{{ url_for('register') }}">Create Account</a>
 <a class="btn secondary" href="{{ url_for('login') }}">Login</a>
 </div>
-</section>
-
-<section class="card">
-<h2>What you can do with KOJA AFRICA</h2>
-<p>KOJA AFRICA brings several practical services into one place. Public information is available without exposing private account or administrative pages to search engines.</p>
-<div class="grid">
-<div class="card"><h3>Academic Questions</h3><p>Submit academic questions and manage answers through your account.</p><a class="btn" href="{{ url_for('login') }}">Ask a Question</a></div>
-<div class="card"><h3>Assignments</h3><p>Submit assignment work and access responses or answer files when available.</p><a class="btn" href="{{ url_for('login') }}">Manage Assignments</a></div>
-<div class="card"><h3>Research &amp; Documents</h3><p>Search general web information, scholarly literature and KOJA document records from the research workspace.</p><a class="btn" href="{{ url_for('research') }}">Search Research</a></div>
-<div class="card"><h3>Professional Services</h3><p>Explore available doctor, teacher/tutor and CV services through the secure client area.</p><a class="btn" href="{{ url_for('login') }}">Open Services</a></div>
-<div class="card"><h3>Drivers &amp; Delivery</h3><p>Request delivery support and use consent-based driver location sharing when a delivery is active.</p><a class="btn" href="{{ url_for('login') }}">Open Delivery</a></div>
+{% endif %}
 </div>
-</section>
-
-<section class="card">
-<h2>Research built for useful discovery</h2>
-<p>The KOJA Research Engine can combine web discovery, Wikipedia, scholarly metadata from OpenAlex and Crossref, and KOJA document records. Search results link back to their original sources so important information can be checked directly.</p>
-<a class="btn" href="{{ url_for('research') }}">Open KOJA Research Engine</a>
-</section>
-
-<section class="card">
-<h2>How KOJA AFRICA works</h2>
 <div class="grid">
-<div><h3>1. Choose</h3><p>Select the service or research tool that matches what you need.</p></div>
-<div><h3>2. Submit</h3><p>Provide the relevant details or search terms. Account-based actions are handled inside the secure client area.</p></div>
-<div><h3>3. Receive</h3><p>Follow your request, answer, document or delivery status from the appropriate KOJA workspace.</p></div>
+<div class="card"><h3>Academic</h3><p>Questions, assignments and learning resources.</p><a class="btn" href="{{ url_for('questions') }}">Questions</a></div>
+<div class="card"><h3>University</h3><p>Choose a university, programme and academic year.</p><a class="btn" href="{{ url_for('universities') }}">Universities</a></div>
+<div class="card"><h3>CV</h3><p>Create a professional CV.</p><a class="btn" href="{{ url_for('cv') }}">Create CV</a></div>
+<div class="card"><h3>Farmers</h3><p>Submit agricultural registration information.</p><a class="btn" href="{{ url_for('farmer') }}">Farmer Portal</a></div>
+<div class="card"><h3>Doctors</h3><p>Find a doctor and request an appointment.</p><a class="btn" href="{{ url_for('doctors') }}">Doctors</a></div>
+<div class="card"><h3>Teachers</h3><p>Find teachers/tutors by subject and grade.</p><a class="btn" href="{{ url_for('teachers') }}">Teachers</a></div>
+<div class="card"><h3>Deliveries</h3><p>Find nearby drivers and send delivery requests.</p><a class="btn" href="{{ url_for('deliveries') }}">Delivery</a></div>
+<div class="card"><h3>Live GPS</h3><p>Drivers can share their live location.</p><a class="btn" href="{{ url_for('tracking') }}">Driver GPS</a></div>
 </div>
-</section>
-
-<section class="card">
-<h2>KOJA AFRICA for students, professionals and everyday users</h2>
-<p>KOJA AFRICA is designed to make common digital tasks easier to find and manage from a mobile-friendly interface. Use the public Research page to discover information, then sign in when you need an account-based service such as questions, assignments, professional services or delivery management.</p>
-</section>
-
-<script type="application/ld+json">{{ {"@context":"https://schema.org","@type":"WebSite","name":"KOJA AFRICA","url":SITE_URL,"description":"A platform for academic questions, assignments, research, documents, professional services and delivery support."}|tojson }}</script>
-<script type="application/ld+json">{{ {"@context":"https://schema.org","@type":"Organization","name":"KOJA AFRICA","url":SITE_URL,"description":"Knowledge, Questions and Answers with research, academic, professional and delivery services."}|tojson }}</script>
-""", description="KOJA AFRICA is a mobile-friendly platform for academic questions, assignments, research, documents, professional services and delivery support.")
+""")
 
 @app.route("/health")
 def health():
@@ -863,40 +694,6 @@ def register():
             flash("An account with this email already exists. Please log in.","warning")
             return redirect(url_for("login"))
 
-        # Prefer Supabase Auth so the account UUID is created in the same
-        # identity store referenced by a typical profiles.id foreign key.
-        auth = supabase_auth_signup(email, password, full_name, phone)
-        if auth and auth.get("user"):
-            au = auth["user"]
-            user_id = str(au.get("id"))
-            payload = {
-                "id": user_id,
-                "name": full_name,
-                "full_name": full_name,
-                "email": email,
-                "phone": phone or None,
-                "role": role,
-                "is_admin": False,
-                "is_active": True,
-                "created_at": utc_now(),
-            }
-            row, error = db_insert("profiles", payload)
-            if error:
-                # Some existing schemas retain a password_hash column. Retry
-                # with it when the first profile insert fails for a column reason.
-                payload["password_hash"] = generate_password_hash(password)
-                row, error = db_insert("profiles", payload)
-            if error:
-                logger.error("Registration profile insert failed after Supabase Auth signup: %s", error)
-                flash("Account was created in authentication, but the profile could not be saved. Check the profiles table schema.","danger")
-                return redirect(url_for("register"))
-            login_user(row or payload, auth)
-            log_activity("registration","New KOJA account registered through Supabase Auth.")
-            flash("Account created successfully.","success")
-            return redirect(url_for("dashboard"))
-
-        # Compatibility fallback for deployments that intentionally use only
-        # the local profiles table and do not expose Supabase Auth signup.
         user_id = str(uuid.uuid4())
         payload = {
             "id": user_id,
@@ -910,11 +707,22 @@ def register():
             "is_active": True,
             "created_at": utc_now(),
         }
+
         row, error = db_insert("profiles", payload)
         if error:
-            logger.error("Local profile registration failed: %s", error)
-            flash("Registration failed. Ensure SUPABASE_ANON_KEY is configured and the profiles table is available.","danger")
+            old = {
+                "id": user_id,
+                "full_name": full_name,
+                "email": email,
+                "phone": phone or None,
+                "password_hash": payload["password_hash"],
+            }
+            row, error = db_insert("KOJA ZM", old)
+
+        if error:
+            flash("Registration failed. Check Render logs for the exact Supabase column error.","danger")
             return redirect(url_for("register"))
+
         login_user(row or payload)
         log_activity("registration","New KOJA account registered.")
         flash("Account created successfully.","success")
@@ -974,73 +782,17 @@ def login():
         flash("Invalid login credentials. Use the same email and password used to create the KOJA account.","danger")
         return redirect(url_for("login"))
 
-    return render_page("Sign in | KOJA AFRICA", r"""
-<style>
-.login-shell{max-width:520px;margin:10px auto 28px}
-.login-card{padding:24px;border:1px solid #e5e9f0}
-.login-brand{text-align:center;margin-bottom:20px}
-.login-mark{width:58px;height:58px;margin:0 auto 10px;border-radius:16px;display:grid;place-items:center;background:linear-gradient(135deg,#4da3ff,#176b87);color:#fff;font-size:30px;font-weight:950;box-shadow:0 8px 22px rgba(16,35,63,.18)}
-.login-brand h1{font-size:25px;margin:0 0 5px}.login-brand p{margin:0;color:#667085}
-.form-group{margin-bottom:14px}.form-group label{display:block;font-weight:750;margin-bottom:4px}
-.password-wrap{position:relative}.password-wrap input{padding-right:76px;margin-bottom:0}.show-password{position:absolute;right:7px;top:7px;width:auto;margin:0;padding:6px 8px;background:transparent;color:#176b87;font-size:12px;font-weight:800}
-.login-submit{margin-top:16px;font-weight:800;min-height:46px}
-.login-help{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:18px 0}.login-help a{display:block;text-align:center;padding:11px;border:1px solid #d9e0ea;border-radius:9px;text-decoration:none;font-weight:700}
-.login-trust{padding:13px 14px;background:#f7f9fc;border-radius:10px;font-size:13px;color:#526071}.login-trust strong{color:#172033}
-.login-footer{text-align:center;margin-top:18px;font-size:14px}.login-footer a{font-weight:750}
-@media(max-width:520px){.login-card{padding:20px}.login-help{grid-template-columns:1fr}}
-</style>
-<div class="login-shell">
-  <section class="card login-card" aria-labelledby="login-title">
-    <div class="login-brand">
-      <div class="login-mark" aria-hidden="true">K</div>
-      <h1 id="login-title">Sign in to KOJA AFRICA</h1>
-      <p>Access your academic, research, document and professional services.</p>
-    </div>
-
-    <form method="post" action="{{ url_for('login') }}" autocomplete="on">
-      <div class="form-group">
-        <label for="login-email">Email address</label>
-        <input id="login-email" name="email" type="email" inputmode="email" autocomplete="username" autocapitalize="none" spellcheck="false" aria-describedby="email-help" required>
-        <div id="email-help" class="small">Use the email address registered with your KOJA account.</div>
-      </div>
-
-      <div class="form-group">
-        <label for="login-password">Password</label>
-        <div class="password-wrap">
-          <input id="login-password" name="password" type="password" autocomplete="current-password" aria-describedby="password-help" required>
-          <button class="show-password" type="button" onclick="toggleLoginPassword()" aria-controls="login-password" aria-label="Show password">Show</button>
-        </div>
-        <div id="password-help" class="small">Your password is used only to authenticate your account.</div>
-      </div>
-
-      <button class="login-submit" type="submit">Sign in securely</button>
-    </form>
-
-    <div class="login-help" aria-label="Account options">
-      <a href="{{ url_for('register') }}">Create an account</a>
-      <a href="{{ url_for('home') }}">Return to KOJA AFRICA</a>
-    </div>
-
-    <div class="login-trust">
-      <strong>KOJA AFRICA</strong> provides access to academic questions, assignments, research, documents, professional services and delivery features. Only sign in through the official KOJA AFRICA website.
-    </div>
-  </section>
-
-  <p class="login-footer">
-    New to KOJA? <a href="{{ url_for('register') }}">Create your account</a>.
-  </p>
+    return render_page("Login", r"""
+<div class="card" style="max-width:500px;margin:auto">
+<h2>KOJA Login</h2>
+<p class="small">KOJA supports its local profile password and, when configured, Supabase Auth accounts.</p>
+<form method="post">
+<label>Email</label><input name="email" type="email" autocomplete="email" required>
+<label>Password</label><input name="password" type="password" autocomplete="current-password" required>
+<button type="submit">Login</button>
+</form>
+<p>No account? <a href="{{ url_for('register') }}">Create one</a></p>
 </div>
-<script>
-function toggleLoginPassword(){
-  const input=document.getElementById('login-password');
-  const button=document.querySelector('.show-password');
-  if(!input||!button)return;
-  const showing=input.type==='text';
-  input.type=showing?'password':'text';
-  button.textContent=showing?'Show':'Hide';
-  button.setAttribute('aria-label',showing?'Show password':'Hide password');
-}
-</script>
 """)
 
 @app.route("/logout")
@@ -1073,178 +825,14 @@ def dashboard():
 <div class="card"><h3>KOJA Services</h3>
 <div class="grid">
 <a class="btn" href="{{ url_for('cv') }}">Create CV</a>
+<a class="btn" href="{{ url_for('universities') }}">University Application</a>
+<a class="btn" href="{{ url_for('farmer') }}">Farmer Registration</a>
 <a class="btn" href="{{ url_for('doctors') }}">Doctor Booking</a>
 <a class="btn" href="{{ url_for('teachers') }}">Teacher Booking</a>
 <a class="btn" href="{{ url_for('deliveries') }}">Find Driver / Delivery</a>
 {% if user.role in ['driver','admin'] or user.is_admin %}<a class="btn" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}
 </div></div>
 """,questions_count=questions_count,deliveries_count=deliveries_count,appointments_count=appointments_count)
-
-# ============================================================
-# SETTINGS
-# ============================================================
-
-@app.route("/settings", methods=["GET", "POST"])
-@login_required
-def settings():
-    """Account preferences. Settings are intentionally kept user/session scoped."""
-    user = current_user()
-    defaults = {
-        "theme": "system",
-        "notifications": "on",
-        "gps_sharing": "off",
-        "reduced_motion": "off",
-        "language": "English",
-        "currency": "ZMW",
-    }
-    prefs = dict(defaults)
-    prefs.update(session.get("koja_settings", {}))
-
-    if request.method == "POST":
-        action = clean(request.form.get("action", "preferences"))
-        if action == "preferences":
-            theme = clean(request.form.get("theme", "system")).lower()
-            notifications = clean(request.form.get("notifications", "on")).lower()
-            gps_sharing = clean(request.form.get("gps_sharing", "off")).lower()
-            reduced_motion = clean(request.form.get("reduced_motion", "off")).lower()
-            language = clean(request.form.get("language", "English"))
-
-            if theme not in {"system", "light", "dark"}:
-                theme = "system"
-            if notifications not in {"on", "off"}:
-                notifications = "on"
-            if gps_sharing not in {"on", "off"}:
-                gps_sharing = "off"
-            if reduced_motion not in {"on", "off"}:
-                reduced_motion = "off"
-            if language not in {"English", "Bemba", "Nyanja"}:
-                language = "English"
-
-            prefs.update({
-                "theme": theme,
-                "notifications": notifications,
-                "gps_sharing": gps_sharing,
-                "reduced_motion": reduced_motion,
-                "language": language,
-                "currency": "ZMW",
-            })
-            session["koja_settings"] = prefs
-            session.modified = True
-            flash("Settings saved successfully.", "success")
-            return redirect(url_for("settings"))
-
-        if action == "reset":
-            session.pop("koja_settings", None)
-            flash("KOJA settings have been reset to defaults.", "success")
-            return redirect(url_for("settings"))
-
-        flash("Unknown settings action.", "danger")
-        return redirect(url_for("settings"))
-
-    return render_page("Settings", r"""
-<div class="hero">
-  <h1>⚙️ Settings</h1>
-  <p>Manage your KOJA AFRICA preferences, notifications, privacy and appearance.</p>
-</div>
-
-<div class="card">
-  <h2>👤 Account</h2>
-  <div class="grid">
-    <div><strong>Full name</strong><br>{{ user.name or 'KOJA User' }}</div>
-    <div><strong>Email</strong><br>{{ user.email or 'Not provided' }}</div>
-    <div><strong>Phone</strong><br>{{ user.phone or 'Not provided' }}</div>
-    <div><strong>Account type</strong><br>{{ 'Administrator' if user.is_admin else (user.role or 'Student')|title }}</div>
-  </div>
-</div>
-
-<form method="post" class="card" id="kojaSettingsForm">
-  <input type="hidden" name="action" value="preferences">
-  <h2>🎛️ App Preferences</h2>
-  <div class="grid">
-    <div>
-      <label for="theme"><strong>Theme</strong></label>
-      <select id="theme" name="theme">
-        <option value="system" {% if prefs.get('theme','system')=='system' %}selected{% endif %}>System default</option>
-        <option value="light" {% if prefs.get('theme')=='light' %}selected{% endif %}>Light</option>
-        <option value="dark" {% if prefs.get('theme')=='dark' %}selected{% endif %}>Dark</option>
-      </select>
-    </div>
-    <div>
-      <label for="notifications"><strong>Notifications</strong></label>
-      <select id="notifications" name="notifications">
-        <option value="on" {% if prefs.get('notifications','on')=='on' %}selected{% endif %}>On</option>
-        <option value="off" {% if prefs.get('notifications')=='off' %}selected{% endif %}>Off</option>
-      </select>
-    </div>
-    <div>
-      <label for="gps_sharing"><strong>GPS / Location Sharing</strong></label>
-      <select id="gps_sharing" name="gps_sharing">
-        <option value="off" {% if prefs.get('gps_sharing','off')=='off' %}selected{% endif %}>Off</option>
-        <option value="on" {% if prefs.get('gps_sharing')=='on' %}selected{% endif %}>On — only when I start sharing</option>
-      </select>
-    </div>
-    <div>
-      <label for="reduced_motion"><strong>Animations</strong></label>
-      <select id="reduced_motion" name="reduced_motion">
-        <option value="off" {% if prefs.get('reduced_motion','off')=='off' %}selected{% endif %}>Normal</option>
-        <option value="on" {% if prefs.get('reduced_motion')=='on' %}selected{% endif %}>Reduce motion</option>
-      </select>
-    </div>
-    <div>
-      <label for="language"><strong>Language</strong></label>
-      <select id="language" name="language">
-        <option value="English" {% if prefs.get('language','English')=='English' %}selected{% endif %}>English</option>
-        <option value="Bemba" {% if prefs.get('language')=='Bemba' %}selected{% endif %}>Bemba</option>
-        <option value="Nyanja" {% if prefs.get('language')=='Nyanja' %}selected{% endif %}>Nyanja</option>
-      </select>
-    </div>
-    <div>
-      <label for="currency"><strong>Currency</strong></label>
-      <select id="currency" name="currency" disabled>
-        <option selected>ZMW — Zambian Kwacha</option>
-      </select>
-      <div class="small">KOJA AFRICA currently uses ZMW.</div>
-    </div>
-  </div>
-  <button class="btn success" type="submit">💾 Save Settings</button>
-</form>
-
-<div class="card">
-  <h2>🔐 Security & Privacy</h2>
-  <p>GPS sharing is opt-in. Location is only used for delivery features when you choose to share it.</p>
-  <div class="actions">
-    <a class="btn secondary" href="{{ url_for('tracking') }}">📍 Live GPS</a>
-    <a class="btn secondary" href="{{ url_for('dashboard') }}">📊 Dashboard</a>
-  </div>
-</div>
-
-<form method="post" class="card" onsubmit="return confirm('Reset KOJA app preferences?')">
-  <input type="hidden" name="action" value="reset">
-  <h2>↺ Reset Preferences</h2>
-  <p class="small">Resets appearance, notification, GPS, animation and language preferences to their defaults.</p>
-  <button class="btn danger" type="submit">Reset Preferences</button>
-</form>
-
-<script>
-(function(){
-  const themeSelect=document.getElementById('theme');
-  const motionSelect=document.getElementById('reduced_motion');
-  function applyPreferences(){
-    const theme=(themeSelect && themeSelect.value) || 'system';
-    const dark=theme==='dark' || (theme==='system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
-    let style=document.getElementById('kojaSettingsTheme');
-    if(!style){ style=document.createElement('style'); style.id='kojaSettingsTheme'; document.head.appendChild(style); }
-    style.textContent=dark ? 'body{background:#111827!important;color:#e5e7eb!important} body .card,body .stat{background:#1f2937!important;color:#e5e7eb!important} body input,body select,body textarea{background:#111827!important;color:#e5e7eb!important;border-color:#4b5563!important} body th,body td{border-color:#374151!important} body a{color:#7dd3fc}' : 'body{background:#f5f7fb;color:#172033}';
-    document.documentElement.dataset.kojaTheme=theme;
-    document.documentElement.classList.toggle('koja-reduced-motion', motionSelect && motionSelect.value==='on');
-    try { localStorage.setItem('koja_theme',theme); localStorage.setItem('koja_reduced_motion',motionSelect ? motionSelect.value : 'off'); } catch(e) {}
-  }
-  if(themeSelect) themeSelect.addEventListener('change',applyPreferences);
-  if(motionSelect) motionSelect.addEventListener('change',applyPreferences);
-  applyPreferences();
-})();
-</script>
-""", prefs=prefs)
 
 # ============================================================
 # KOJA RESEARCH ENGINE V2
@@ -1289,69 +877,56 @@ def research_wikipedia(query, limit=6):
         return out
     except Exception as exc: logger.warning('Wikipedia research failed: %s',exc); return []
 
-def research_openalex(query, year=None, limit=8):
+def research_openalex(query, year=None, limit=10):
     q=clean(query)
     if not q: return []
     try:
-        params={'search':q,'per-page':limit}
+        params={'search':q,'per-page':limit,'mailto':os.getenv('RESEARCH_EMAIL','').strip()}
         if year: params['filter']=f'publication_year:{year}'
-        mail=os.getenv('RESEARCH_EMAIL','').strip()
-        if mail: params['mailto']=mail
-        r=requests.get('https://api.openalex.org/works',params=params,timeout=12,headers={'User-Agent':'KOJA-AFRICA-Research/2.0'})
+        params={k:v for k,v in params.items() if v}
+        r=requests.get('https://api.openalex.org/works',params=params,timeout=12,headers={'User-Agent':'KOJA-AFRICA-Research/6.0'})
         if not r.ok: return []
         out=[]
         for x in r.json().get('results',[]):
             title=clean(x.get('display_name') or '')
             if not title: continue
-            yr=x.get('publication_year'); authors=[]
-            for a in x.get('authorships') or []:
-                n=clean((a.get('author') or {}).get('display_name',''))
-                if n: authors.append(n)
-            abstract=''; inv=x.get('abstract_inverted_index') or {}
-            if inv:
-                words=[]
-                for word,positions in inv.items():
-                    for pos in positions: words.append((pos,word))
-                abstract=' '.join(w for _,w in sorted(words))
-            url=x.get('doi') or (x.get('primary_location') or {}).get('landing_page_url') or x.get('id') or ''
-            meta=[]
-            if authors: meta.append('Authors: '+', '.join(authors[:6]))
-            if yr: meta.append(str(yr))
-            cited=x.get('cited_by_count') or 0
-            if cited: meta.append(f'Citations: {cited}')
-            out.append({'source':'OpenAlex','title':title,'url':url,'snippet':(' • '.join(meta)+('\n'+abstract[:700] if abstract else '')).strip(),'year':yr,'citations':cited})
+            authors=[clean((a.get('author') or {}).get('display_name','')) for a in (x.get('authorships') or [])]
+            authors=[a for a in authors if a]
+            inv=x.get('abstract_inverted_index') or {}; words=[]
+            for word,positions in inv.items():
+                for pos in positions: words.append((pos,word))
+            abstract=' '.join(w for _,w in sorted(words))
+            loc=x.get('primary_location') or {}; source_obj=loc.get('source') or {}
+            journal=clean(source_obj.get('display_name') or '')
+            doi=clean(x.get('doi') or '')
+            url=doi or loc.get('landing_page_url') or x.get('id') or ''
+            cited=x.get('cited_by_count') or 0; yr=x.get('publication_year')
+            out.append({'source':'OpenAlex','title':title,'url':url,'snippet':abstract[:1200],'year':yr,'citations':cited,'authors':authors,'journal':journal,'doi':doi,'source_type':'journal_article' if journal else 'other','_concepts':[clean(c.get('display_name','')) for c in (x.get('concepts') or []) if clean(c.get('display_name',''))]})
         return out
     except Exception as exc: logger.warning('OpenAlex research failed: %s',exc); return []
 
-def research_crossref(query, year=None, author=None, limit=8):
+def research_crossref(query, year=None, author=None, limit=10):
     q=clean(query)
     if not q: return []
     try:
-        params={'query.bibliographic':q,'rows':limit,'select':'title,author,published,URL,DOI,container-title,type,is-referenced-by-count'}
+        params={'query.bibliographic':q,'rows':limit,'select':'title,author,published,URL,DOI,container-title,type,is-referenced-by-count,publisher,volume,issue,page,edition'}
         if year: params['filter']=f'from-pub-date:{year}-01-01,until-pub-date:{year}-12-31'
         if author: params['query.author']=clean(author)
         mail=os.getenv('RESEARCH_EMAIL','').strip()
         if mail: params['mailto']=mail
-        r=requests.get('https://api.crossref.org/works',params=params,timeout=12,headers={'User-Agent':'KOJA-AFRICA-Research/2.0'})
+        r=requests.get('https://api.crossref.org/works',params=params,timeout=12,headers={'User-Agent':'KOJA-AFRICA-Research/6.0'})
         if not r.ok: return []
         out=[]
         for x in r.json().get('message',{}).get('items',[]):
             title=clean((x.get('title') or [''])[0])
             if not title: continue
-            authors=[]
-            for a in x.get('author') or []:
-                n=clean(' '.join(filter(None,[a.get('given'),a.get('family')])))
-                if n: authors.append(n)
-            parts=(x.get('published') or {}).get('date-parts') or []
-            yr=parts[0][0] if parts and parts[0] else None
-            url=x.get('URL') or (('https://doi.org/'+x.get('DOI')) if x.get('DOI') else '')
-            journal=clean((x.get('container-title') or [''])[0]); cited=x.get('is-referenced-by-count') or 0
-            meta=[]
-            if authors: meta.append('Authors: '+', '.join(authors[:6]))
-            if journal: meta.append(journal)
-            if yr: meta.append(str(yr))
-            if cited: meta.append(f'Citations: {cited}')
-            out.append({'source':'Crossref','title':title,'url':url,'snippet':' • '.join(meta),'year':yr,'citations':cited})
+            authors=[clean(' '.join(filter(None,[a.get('given'),a.get('family')]))) for a in (x.get('author') or [])]
+            authors=[a for a in authors if a]
+            parts=(x.get('published') or {}).get('date-parts') or []; yr=parts[0][0] if parts and parts[0] else None
+            doi=clean(x.get('DOI') or ''); url=x.get('URL') or (('https://doi.org/'+doi) if doi else '')
+            journal=clean((x.get('container-title') or [''])[0]); typ=clean(x.get('type') or '')
+            st='journal_article' if typ in ('journal-article','proceedings-article') or journal else ('book' if 'book' in typ else 'other')
+            out.append({'source':'Crossref','title':title,'url':url,'snippet':' • '.join([p for p in [journal,str(yr) if yr else '',f"Citations: {x.get('is-referenced-by-count') or 0}" if x.get('is-referenced-by-count') else ''] if p]),'year':yr,'citations':x.get('is-referenced-by-count') or 0,'authors':authors,'journal':journal,'doi':doi,'publisher':clean(x.get('publisher') or ''),'volume':clean(x.get('volume') or ''),'issue':clean(x.get('issue') or ''),'pages':clean(x.get('page') or ''),'edition':clean(x.get('edition') or ''),'source_type':st})
         return out
     except Exception as exc: logger.warning('Crossref research failed: %s',exc); return []
 
@@ -1374,120 +949,171 @@ def research_local_documents(query, limit=12):
     for r in rows: r.pop('_score',None)
     return rows[:limit]
 
+def _research_tokens(q):
+    return [t for t in re.findall(r"[\w\'-]+", clean(q).lower()) if len(t)>1]
+
+def _research_score(r, query):
+    q=clean(query).lower(); toks=_research_tokens(query)
+    title=clean(r.get('title','')).lower(); snippet=clean(r.get('snippet','')).lower()
+    authors=' '.join(_names(r)).lower(); journal=clean(r.get('journal','')).lower()
+    if not toks: return 0
+    score=0
+    if title==q: score+=100
+    if q and q in title: score+=60
+    for t in toks:
+        if t in title: score+=18
+        if t in authors: score+=12
+        if t in journal: score+=5
+        if t in snippet: score+=2
+    if str(r.get('source','')).lower() in ('openalex','crossref'): score+=8
+    if r.get('doi'): score+=4
+    score+=min(int(r.get('citations') or 0),100)/20
+    r['_relevance']=round(score,2); return r['_relevance']
+
+def _research_key(r):
+    doi=clean(r.get('doi') or '').lower().replace('https://doi.org/','').strip()
+    if doi: return 'doi:'+doi
+    u=clean(r.get('url') or '').lower().rstrip('/')
+    if u: return 'url:'+u
+    title=re.sub(r'[^a-z0-9]+',' ',clean(r.get('title','')).lower()).strip()
+    return 'title:'+title
+
+def _research_deduplicate(results, query):
+    merged={}
+    for r in results:
+        _research_score(r,query); k=_research_key(r)
+        if k not in merged: merged[k]=dict(r); continue
+        old=merged[k]
+        if len(clean(r.get('snippet',''))) > len(clean(old.get('snippet',''))): old['snippet']=r.get('snippet','')
+        for fld in ('authors','journal','doi','publisher','volume','issue','pages','edition','year','citations','source_type'):
+            if not old.get(fld) and r.get(fld): old[fld]=r.get(fld)
+        sources=set(str(old.get('source','')).split(' + ')); sources.add(str(r.get('source',''))); old['source']=' + '.join(sorted(x for x in sources if x))
+        old['_relevance']=max(old.get('_relevance',0),r.get('_relevance',0))
+    return sorted(merged.values(),key=lambda r:(r.get('_relevance',0),r.get('citations') or 0,r.get('year') or 0),reverse=True)
+
 def _research_filter(results, source='all', year=None, sort='relevance'):
     source=(source or 'all').lower(); source=source if source in ('all','web','wikipedia','academic','koja') else 'all'
     if source!='all':
-        if source=='academic': results=[r for r in results if r.get('source') in ('OpenAlex','Crossref')]
-        elif source=='koja': results=[r for r in results if r.get('source')=='KOJA Documents']
-        else: results=[r for r in results if r.get('source','').lower()==source]
+        if source=='academic': results=[r for r in results if any(x in str(r.get('source','')).lower() for x in ('openalex','crossref'))]
+        elif source=='koja': results=[r for r in results if 'koja documents' in str(r.get('source','')).lower()]
+        else: results=[r for r in results if str(r.get('source','')).lower()==source]
     if year: results=[r for r in results if str(r.get('year') or '')==str(year)]
     if sort=='date': results.sort(key=lambda r:r.get('year') or 0,reverse=True)
     elif sort=='citations': results.sort(key=lambda r:r.get('citations') or 0,reverse=True)
+    else: results.sort(key=lambda r:r.get('_relevance',0),reverse=True)
     return results
 
 def research_ai_summary(query, results):
-    """Generate an evidence-grounded research synthesis with the OpenAI Responses API.
-
-    The API key is read only from the server environment. If AI is unavailable,
-    KOJA keeps the existing source-based fallback instead of failing the search.
-    """
-    if not results:
-        return ''
-
-    api_key = os.getenv('OPENAI_API_KEY') or os.getenv('AI_API_KEY')
-    endpoint = os.getenv('AI_API_URL', 'https://api.openai.com/v1/responses')
-    model = os.getenv('AI_MODEL', 'gpt-5.6-sol')
-
-    source_text = '\n\n'.join(
-        f"[{i+1}] {r.get('title','')} ({r.get('source','')})\n"
-        f"Year: {r.get('year') or 'n/a'} | Citations: {r.get('citations') or 0}\n"
-        f"{r.get('snippet','')[:1600]}"
-        for i, r in enumerate(results[:10])
-    )
-
+    if not results: return ''
+    api_key=os.getenv('AI_API_KEY') or os.getenv('OPENAI_API_KEY'); endpoint=os.getenv('AI_API_URL','https://api.openai.com/v1/chat/completions'); model=os.getenv('AI_MODEL','gpt-4o-mini')
+    source_text='\n\n'.join(f"[{i+1}] {r.get('title','')} ({r.get('source','')})\n{r.get('snippet','')[:1200]}" for i,r in enumerate(results[:10]))
     if api_key:
         try:
-            payload = {
-                'model': model,
-                'instructions': (
-                    'You are KOJA Research, an evidence-grounded research assistant. '
-                    'Use only the supplied retrieved sources. Do not invent facts, citations, '
-                    'authors, dates, statistics or conclusions. Cite claims using source numbers '
-                    'such as [1] or [2]. If the evidence is incomplete or conflicting, say so. '
-                    'Return a concise synthesis with: Key findings, Evidence notes, and Research gap.'
-                ),
-                'input': (
-                    f'User research question: {query}\n\n'
-                    f'Retrieved sources:\n{source_text}\n\n'
-                    'Synthesize the evidence for the user. Keep it concise and academically useful.'
-                ),
-                'temperature': 0.2,
-                'max_output_tokens': 700,
-                'store': False,
-            }
-            response = requests.post(
-                endpoint,
-                json=payload,
-                timeout=30,
-                headers={
-                    'Authorization': 'Bearer ' + api_key,
-                    'Content-Type': 'application/json',
-                },
-            )
-            if response.ok:
-                data = response.json()
-                text = (data.get('output_text') or '').strip()
-                if not text:
-                    chunks = []
-                    for item in data.get('output') or []:
-                        if item.get('type') != 'message':
-                            continue
-                        for content in item.get('content') or []:
-                            if content.get('type') == 'output_text' and content.get('text'):
-                                chunks.append(content['text'])
-                    text = '\n'.join(chunks).strip()
-                if text:
-                    return text
-            else:
-                logger.warning('OpenAI Research API returned %s: %s', response.status_code, response.text[:500])
-        except Exception as exc:
-            logger.warning('AI research summary failed: %s', exc)
-
-    highlights = []
+            payload={'model':model,'temperature':0.2,'max_tokens':500,'messages':[{'role':'system','content':'You are KOJA Research. Summarize only the supplied sources. Do not invent facts. Cite source numbers like [1] [2]. State when evidence is limited.'},{'role':'user','content':f'Question: {query}\n\nSources:\n{source_text}\n\nWrite a concise research summary with 3-5 key findings and a short evidence note.'}]}
+            r=requests.post(endpoint,json=payload,timeout=25,headers={'Authorization':'Bearer '+api_key,'Content-Type':'application/json'})
+            if r.ok:
+                text=((r.json().get('choices') or [{}])[0].get('message') or {}).get('content','').strip()
+                if text: return text
+        except Exception as exc: logger.warning('AI research summary failed: %s',exc)
+    highlights=[]
     for r in results[:5]:
-        snippet = clean(r.get('snippet','')).replace('\n', ' ')
-        if snippet:
-            highlights.append(f"{r.get('title','Source')}: {snippet[:300]}")
-    return 'Source-based research highlights:\n\n' + '\n\n'.join(highlights)
+        s=clean(r.get('snippet','')).replace('\n',' ')
+        if s: highlights.append(f"{r.get('title','Source')}: {s[:300]}")
+    return 'AI summary is not configured. Source-based highlights:\n\n'+'\n\n'.join(highlights)
 
-RESEARCH_TOPICS = {
-    "education": ("Education Research in Africa", "Explore research sources on education, learning, schools, teachers, students and education policy in Africa.", ["education Africa", "education policy Africa"]),
-    "zambia": ("Zambia Research and Academic Sources", "Research sources about Zambia, including education, development, public policy, environment, health and society.", ["Zambia research", "Zambia education development"]),
-    "technology": ("Technology Research and Innovation", "Explore research on technology, digital transformation, artificial intelligence, computing and innovation.", ["technology innovation research", "artificial intelligence research"]),
-    "health": ("Health Research and Public Health Sources", "Explore research sources covering public health, healthcare, disease prevention and health systems.", ["public health research Africa", "health systems Africa"]),
-    "agriculture": ("Agriculture Research in Africa", "Explore scholarly and public sources on agriculture, food systems, crops, farming and agricultural development in Africa.", ["agriculture Africa research", "food security Africa"]),
-    "climate": ("Climate and Environment Research", "Explore research on climate change, environmental science, water, biodiversity and sustainability.", ["climate change Africa research", "environmental sustainability Africa"]),
-    "business": ("Business and Economics Research", "Explore research on business, economics, entrepreneurship, markets, finance and development.", ["business Africa research", "economic development Africa"]),
-    "social-sciences": ("Social Sciences Research", "Explore research in sociology, political science, development studies, anthropology and related social sciences.", ["social sciences Africa research", "development studies Africa"]),
-}
+
+# KOJA V4 citation engine: source-type-aware bibliography fields
+CITATION_STYLES={"apa":"APA 7th edition","mla":"MLA 9th edition","chicago":"Chicago Author–Date","harvard":"Harvard","vancouver":"Vancouver","ieee":"IEEE","ama":"AMA","oscola":"OSCOLA"}
+SOURCE_TYPES={"journal_article":"Journal article","book":"Book","book_chapter":"Book chapter","website":"Website","government_report":"Government report","thesis":"Thesis / dissertation","conference_paper":"Conference paper","newspaper":"Newspaper article","dataset":"Dataset","legislation":"Legislation","court_case":"Court case","other":"Other"}
+def _source_type(r):
+    st=str(r.get("source_type") or "").lower().replace("-","_").replace(" ","_")
+    if st in SOURCE_TYPES:return st
+    if r.get("journal"):return "journal_article"
+    if str(r.get("source","")).lower() in ("web","wikipedia"):return "website"
+    return "other"
+def _names(r):
+    a=r.get("authors") or []
+    if isinstance(a,str):a=[x.strip() for x in a.split(",") if x.strip()]
+    return [clean(str(x)) for x in a if clean(str(x))]
+def _apa(n):
+    p=n.split(); return (p[-1]+", "+" ".join(x[0]+"." for x in p[:-1])).strip() if len(p)>1 else n
+def make_reference(r,style="apa",n=1):
+    a=_names(r); auth=", ".join(_apa(x) for x in a) or "KOJA AFRICA"; title=clean(r.get("title") or "Untitled"); year=r.get("year") or "n.d."; journal=clean(r.get("journal") or ""); doi=clean(r.get("doi") or ""); url=clean(r.get("url") or ""); publisher=clean(r.get("publisher") or ""); st=_source_type(r)
+    if style=="apa":
+        if st=="journal_article": return f"{auth} ({year}). {title}. {journal}."+(f" https://doi.org/{doi.replace('https://doi.org/','')}" if doi else (f" {url}" if url else ""))
+        if st=="book": return f"{auth} ({year}). <i>{title}</i>. {publisher}."
+        return f"{auth} ({year}). {title}. {publisher or journal or 'Website'}. {url}".strip()
+    if style=="mla": return f'{auth}. "{title}." {journal or publisher}, {year}. {url}'.strip()
+    if style=="chicago": return f'{auth}. {year}. "{title}." {journal or publisher}. {url}'.strip()
+    if style=="harvard": return f"{auth} ({year}) {title}. {journal or publisher or 'Website'}. Available at: {url}."
+    if style in ("vancouver","ama"): return f"{n}. {auth}. {title}. {journal or publisher or 'Website'}. {year}."+(f" doi:{doi.replace('https://doi.org/','')}" if doi else "")
+    if style=="ieee": return f'[{n}] {auth}, "{title}," {journal or publisher}, {year}.'+(f" doi: {doi.replace('https://doi.org/','')}" if doi else (f" [Online]. Available: {url}" if url else ""))
+    return f'{auth}, "{title}" ({year}) {journal or publisher or url}'
+def make_intext(r,style,n):
+    a=_names(r); short=a[0].split()[-1] if a else "KOJA AFRICA"; y=r.get("year") or "n.d."
+    if style in ("vancouver","ama","ieee"):return f"[{n}]"
+    if style=="mla":return f"({short} {y})"
+    return f"({short}{' et al.' if len(a)>2 else ''}, {y})"
+def make_bibliography(results,style): return [(i+1,make_reference(r,style,i+1)) for i,r in enumerate(results)]
+def research_ai_notes(query, results, style='apa'):
+    if not results: return 'No sufficiently relevant evidence was retrieved for this topic.'
+    api_key=os.getenv('AI_API_KEY') or os.getenv('OPENAI_API_KEY')
+    endpoint=os.getenv('AI_API_URL','https://api.openai.com/v1/chat/completions')
+    model=os.getenv('AI_MODEL','gpt-4o-mini')
+    bundle=[]
+    for i,r in enumerate(results[:12],1):
+        bundle.append(f"[{i}] {r.get('title','')} | {r.get('source','')} | {r.get('year') or 'n.d.'}\nAuthors: {', '.join(_names(r))}\nEvidence: {clean(r.get('snippet',''))[:1600]}\nURL: {r.get('url','')}")
+    prompt=(f'Write high-quality research notes on: {query}\n\nUse ONLY the evidence supplied below. Do not invent facts, figures, quotations, authors, dates, references or conclusions. Every substantive factual claim must have one or more source-number citations such as [1] immediately after the claim. If evidence is insufficient, say so.\n\nStructure the notes with: Title; Introduction; Key concepts/background; Main findings/themes; Evidence and discussion; Implications; Conclusion; Research gaps/limitations only if supported. Write connected explanatory paragraphs, like strong academic study notes, not disconnected bullet fragments. Use the selected citation style for the reference list: {CITATION_STYLES.get(style,style)}.\n\nSOURCES:\n' + '\n\n'.join(bundle))
+    if api_key:
+        try:
+            payload={'model':model,'temperature':0.2,'max_tokens':2200,'messages':[{'role':'system','content':'You are KOJA Research Notes. Be evidence-bound, clear, academic and concise.'},{'role':'user','content':prompt}]}
+            rr=requests.post(endpoint,json=payload,timeout=40,headers={'Authorization':'Bearer '+api_key,'Content-Type':'application/json'})
+            if rr.ok:
+                text=((rr.json().get('choices') or [{}])[0].get('message') or {}).get('content','').strip()
+                if text: return text
+        except Exception as exc: logger.warning('AI notes failed: %s',exc)
+    lines=[f"# Research Notes: {query}","","## Introduction",f"The search retrieved {len(results)} relevant records. The notes below are limited to the evidence contained in those records.",""]
+    for i,r in enumerate(results[:8],1):
+        evidence=clean(r.get('snippet',''))
+        if evidence: lines += [f"## {i}. {r.get('title','Untitled')} [{i}]",evidence,""]
+    lines += ["## Conclusion","The available evidence is source-dependent and should be checked against the original publications before formal submission."]
+    return '\n'.join(lines)
+
+@app.route('/research/notes')
+def research_notes():
+    q=clean(request.args.get('q','')); style=clean(request.args.get('style','apa')).lower() or 'apa'
+    if style not in CITATION_STYLES: style='apa'
+    results=[]
+    if q:
+        raw=research_web(q,6)+research_wikipedia(q,5)+research_openalex(q,None,10)+research_crossref(q,None,None,10)+research_local_documents(q,10)
+        results=_research_deduplicate(raw,q)[:12]
+    notes=research_ai_notes(q,results,style) if q else ''
+    bibliography=make_bibliography(results,style) if results else []
+    return render_page('Research Notes', r'''<style>
+.notes-shell{max-width:1000px;margin:auto}.notes-toolbar{display:grid;grid-template-columns:1fr auto auto;gap:10px}.notes-body{line-height:1.8;font-size:1rem}.notes-body pre{white-space:pre-wrap;font:inherit}.ref{margin:10px 0}.note-actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}@media(max-width:700px){.notes-toolbar{grid-template-columns:1fr}.notes-body{font-size:.97rem}}
+</style><div class="notes-shell"><div class="hero"><h2>📝 KOJA Research Notes</h2><p>Turn ranked research evidence into clear, connected academic notes.</p><form method="get" action="{{ url_for('research_notes') }}" class="notes-toolbar"><input name="q" value="{{ q }}" placeholder="Enter your research topic…" required><select name="style">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select><button class="btn">Write Notes</button></form></div>{% if q %}<div class="note-actions"><button class="btn secondary" type="button" onclick="copyKOJANotes()">Copy Notes</button><button class="btn secondary" type="button" onclick="window.print()">Print</button><a class="btn secondary" href="{{ url_for('research',q=q,style=style) }}">View Evidence</a></div><div class="card"><strong>{{ results|length }} ranked evidence sources</strong></div><div id="koja-notes" class="card notes-body"><pre>{{ notes }}</pre></div>{% if bibliography %}<div class="card"><h3>References</h3>{% for n,ref in bibliography %}<div class="ref">{{ n }}. {{ ref|safe }}</div>{% endfor %}</div>{% endif %}<script>function copyKOJANotes(){const el=document.getElementById('koja-notes');navigator.clipboard.writeText(el.innerText).then(()=>alert('Research notes copied.')).catch(()=>alert('Select and copy the notes manually.'))}</script>{% else %}<div class="card"><h3>How KOJA writes notes</h3><p>1. Searches multiple evidence sources.</p><p>2. Removes duplicates and ranks relevance.</p><p>3. Gives the AI only the strongest evidence.</p><p>4. Produces connected academic paragraphs with source citations.</p><p>5. Generates a bibliography in your selected citation style.</p></div>{% endif %}</div>''',q=q,style=style,citation_styles=CITATION_STYLES,results=results,notes=notes,bibliography=bibliography)
 
 @app.route('/research')
 def research():
-    q=clean(request.args.get('q','')); source=clean(request.args.get('source','all')).lower() or 'all'; sort=clean(request.args.get('sort','relevance')).lower() or 'relevance'; year=_research_year(request.args.get('year','')); author=clean(request.args.get('author',''))
+    q=clean(request.args.get('q','')); source=clean(request.args.get('source','all')).lower() or 'all'; sort=clean(request.args.get('sort','relevance')).lower() or 'relevance'; year=_research_year(request.args.get('year','')); author=clean(request.args.get('author','')); style=clean(request.args.get('style','apa')).lower() or 'apa'; source_type=clean(request.args.get('source_type','all')).lower() or 'all'
+    if style not in CITATION_STYLES: style='apa'
     results=[]
     if q:
-        results += research_web(q,8)+research_wikipedia(q,6)+research_openalex(q,year,8)+research_crossref(q,year,author,8)+research_local_documents(q,12)
+        results += research_web(q,8)+research_wikipedia(q,6)+research_openalex(q,year,10)+research_crossref(q,year,author,10)+research_local_documents(q,12)
+        results=_research_deduplicate(results,q)
         results=_research_filter(results,source,year,sort)
+        if source_type!='all': results=[r for r in results if _source_type(r)==source_type]
     summary=research_ai_summary(q,results) if q else ''
-    return render_page('KOJA Research Engine', r'''
+    bibliography=make_bibliography(results,style) if results else []
+    return render_page('Research', r'''
 <style>
 .research-shell{max-width:1100px;margin:auto}.research-search{display:grid;grid-template-columns:1fr auto;gap:10px}.research-search input{min-width:0}.research-filters{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-top:12px}.research-filters label{font-size:.82rem;font-weight:700}.research-filters select,.research-filters input{width:100%;margin-top:5px}.research-tabs{display:flex;gap:8px;overflow:auto;margin:14px 0}.research-tabs a{white-space:nowrap}.source-badge{display:inline-block;padding:5px 9px;border-radius:999px;background:rgba(80,150,255,.14);font-size:.78rem;font-weight:800}.research-result h3{line-height:1.35}.research-meta{font-size:.82rem;opacity:.8}.research-summary{border-left:4px solid #62a8ff}.research-summary pre{white-space:pre-wrap;font:inherit;line-height:1.6}.research-count{font-weight:700}.research-empty{padding:28px;text-align:center}@media(max-width:700px){.research-search{grid-template-columns:1fr}.research-filters{grid-template-columns:1fr 1fr}.research-result{padding:16px!important}}
 </style>
-<div class="research-shell"><div class="hero"><h1>KOJA Research Engine</h1><p>Search general web information, scholarly literature and KOJA document records from one research workspace.</p><p class="small" style="color:#dbeafe">Use specific keywords, a research topic, paper title or author name. Open the original source to verify important claims.</p><form method="get" action="{{ url_for('research') }}" class="research-search" style="margin-top:18px"><input name="q" value="{{ q }}" placeholder="Ask a question, topic, paper, author or subject…" aria-label="Research search"><button class="btn" type="submit">Search</button></form>
-<div class="research-filters"><label>Source<select name="source" form="research-filter-form"><option value="all" {% if source=='all' %}selected{% endif %}>All sources</option><option value="academic" {% if source=='academic' %}selected{% endif %}>Academic</option><option value="web" {% if source=='web' %}selected{% endif %}>Web</option><option value="wikipedia" {% if source=='wikipedia' %}selected{% endif %}>Wikipedia</option><option value="koja" {% if source=='koja' %}selected{% endif %}>KOJA Documents</option></select></label><label>Year<input name="year" form="research-filter-form" value="{{ year or '' }}" placeholder="e.g. 2025" inputmode="numeric"></label><label>Author<input name="author" form="research-filter-form" value="{{ author }}" placeholder="Academic author"></label><label>Sort<select name="sort" form="research-filter-form"><option value="relevance" {% if sort=='relevance' %}selected{% endif %}>Relevance</option><option value="date" {% if sort=='date' %}selected{% endif %}>Newest first</option><option value="citations" {% if sort=='citations' %}selected{% endif %}>Most cited</option></select></label></div><form id="research-filter-form" method="get" action="{{ url_for('research') }}"><input type="hidden" name="q" value="{{ q }}"></form></div>
-{% if q %}<div class="research-tabs"><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}">🎓 Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}">🌐 Web</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}">📁 KOJA Documents</a></div><div class="card"><span class="research-count">{{ results|length }} results</span> for <strong>“{{ q }}”</strong></div>{% if summary %}<div class="card research-summary"><h3>🧠 Research Summary</h3><pre>{{ summary }}</pre><p class="small">Highlights are based on the retrieved sources. Verify important claims against the original publication or website before citing them.</p></div>{% endif %}{% for r in results %}<div class="card research-result"><span class="source-badge">{{ r.source }}</span><h3><a href="{{ r.url or '#' }}" {% if r.url %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a></h3>{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open original source ↗</a>{% endif %}</div>{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endfor %}{% else %}<div class="grid"><div class="card"><h3>🌐 Web Discovery</h3><p>Discover general web knowledge.</p></div><div class="card"><h3>🎓 Academic Search</h3><p>OpenAlex and Crossref provide scholarly metadata, authors, years and citation information.</p></div><div class="card"><h3>📁 KOJA Documents</h3><p>Search documents already connected to your KOJA Supabase database.</p></div><div class="card"><h3>🧠 AI Research Summary</h3><p>Configure an AI API key to synthesize retrieved evidence with source-number citations.</p></div></div>{% endif %}</div>
+<div class="research-shell"><div class="hero"><h2>🔎 KOJA Research Engine</h2><p>Search the web, scholarly literature and your KOJA document collection from one research workspace.</p><form method="get" action="{{ url_for('research') }}" class="research-search" style="margin-top:18px"><input name="q" value="{{ q }}" placeholder="Ask a question, topic, paper, author or subject…" aria-label="Research search"><button class="btn" type="submit">Search</button></form>
+<div class="research-filters"><label>Source<select name="source" form="research-filter-form"><option value="all" {% if source=='all' %}selected{% endif %}>All sources</option><option value="academic" {% if source=='academic' %}selected{% endif %}>Academic</option><option value="web" {% if source=='web' %}selected{% endif %}>Web</option><option value="wikipedia" {% if source=='wikipedia' %}selected{% endif %}>Wikipedia</option><option value="koja" {% if source=='koja' %}selected{% endif %}>KOJA Documents</option></select></label><label>Year<input name="year" form="research-filter-form" value="{{ year or '' }}" placeholder="e.g. 2025" inputmode="numeric"></label><label>Author<input name="author" form="research-filter-form" value="{{ author }}" placeholder="Academic author"></label><label>Citation style<select name="style" form="research-filter-form">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Source type<select name="source_type" form="research-filter-form"><option value="all">All source types</option>{% for k,v in source_types.items() %}<option value="{{k}}" {% if source_type==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Sort<select name="sort" form="research-filter-form"><option value="relevance" {% if sort=='relevance' %}selected{% endif %}>Relevance</option><option value="date" {% if sort=='date' %}selected{% endif %}>Newest first</option><option value="citations" {% if sort=='citations' %}selected{% endif %}>Most cited</option></select></label></div><form id="research-filter-form" method="get" action="{{ url_for('research') }}"><input type="hidden" name="q" value="{{ q }}"></form></div>
+{% if q %}<div class="note-actions"><a class="btn" href="{{ url_for('research_notes',q=q,style=style) }}">📝 Write Research Notes from this topic</a></div><div class="research-tabs"><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}">🎓 Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}">🌐 Web</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}">📁 KOJA Documents</a></div><div class="card"><span class="research-count">{{ results|length }} results</span> for <strong>“{{ q }}”</strong></div>{% if summary %}<div class="card research-summary"><h3>🧠 Research Summary</h3><pre>{{ summary }}</pre><p class="small">AI summaries use configured AI credentials when available; otherwise KOJA shows source-based highlights. Verify important claims against original sources.</p></div>{% endif %}{% for r in results %}<div class="card research-result"><span class="source-badge">{{ r.source }}</span><h3><a href="{{ r.url or '#' }}" {% if r.url %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a></h3>{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p><p><strong>In-text:</strong> {{ make_intext(r,style,loop.index) }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open original source ↗</a>{% endif %}</div>{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endfor %}{% if bibliography %}<div class="card"><h2>References</h2><p class="small">Generated from available source metadata. Verify against the original source.</p>{% for n,ref in bibliography %}<p style="padding-left:28px;text-indent:-28px;line-height:1.6">{{ ref|safe }}</p>{% endfor %}</div>{% endif %}{% else %}<div class="grid"><div class="card"><h3>🌐 Web Discovery</h3><p>Discover general web knowledge.</p></div><div class="card"><h3>🎓 Academic Search</h3><p>OpenAlex and Crossref provide scholarly metadata, authors, years and citation information.</p></div><div class="card"><h3>📁 KOJA Documents</h3><p>Search documents already connected to your KOJA Supabase database.</p></div><div class="card"><h3>🧠 AI Research Summary</h3><p>Configure an AI API key to synthesize retrieved evidence with source-number citations.</p></div></div>{% endif %}</div>
 <script type="application/ld+json">{{ {"@context":"https://schema.org","@type":"WebSite","name":"KOJA AFRICA Research","url":SITE_URL+"/research","potentialAction":{"@type":"SearchAction","target":SITE_URL+"/research?q={search_term_string}","query-input":"required name=search_term_string"}}|tojson }}</script>
-''',q=q,results=results,summary=summary,source=source,sort=sort,year=year,author=author,SITE_URL=SITE_URL,topics=RESEARCH_TOPICS, description="KOJA Research Engine — search web information, scholarly literature and KOJA document records, with source links for verification.")
+''',q=q,results=results,summary=summary,source=source,sort=sort,year=year,author=author,style=style,source_type=source_type,citation_styles=CITATION_STYLES,source_types=SOURCE_TYPES,bibliography=bibliography,make_intext=make_intext,SITE_URL=SITE_URL)
 
 
 @app.route("/services")
@@ -1498,34 +1124,14 @@ def services():
 <div class="grid">
 <div class="card"><h3>Academic Questions</h3><a class="btn" href="{{ url_for('questions') }}">Open</a></div>
 <div class="card"><h3>Assignments</h3><a class="btn" href="{{ url_for('assignments') }}">Open</a></div>
-<div class="card"><h3>Documents &amp; Research</h3><a class="btn" href="{{ url_for('research') }}">Open Research</a></div>
 <div class="card"><h3>CV</h3><a class="btn" href="{{ url_for('cv') }}">Open</a></div>
+<div class="card"><h3>University Applications</h3><a class="btn" href="{{ url_for('universities') }}">Open</a></div>
+<div class="card"><h3>Farmer Registration</h3><a class="btn" href="{{ url_for('farmer') }}">Open</a></div>
 <div class="card"><h3>Doctors</h3><a class="btn" href="{{ url_for('doctors') }}">Open</a></div>
 <div class="card"><h3>Teachers</h3><a class="btn" href="{{ url_for('teachers') }}">Open</a></div>
 <div class="card"><h3>Deliveries</h3><a class="btn" href="{{ url_for('deliveries') }}">Open</a></div>
 </div>
 """)
-
-
-@app.route('/research/topics/<slug>')
-def research_topic(slug):
-    slug=clean(slug).lower()
-    topic=RESEARCH_TOPICS.get(slug)
-    if not topic:
-        abort(404)
-    title, description, queries=topic
-    results=[]; seen=set()
-    for query in queries:
-        candidates=research_openalex(query,None,4)+research_crossref(query,None,'',4)+research_wikipedia(query,4)
-        for r in candidates:
-            key=(r.get('url') or r.get('title') or '').strip().lower()
-            if key and key not in seen:
-                seen.add(key); results.append(r)
-            if len(results)>=10: break
-        if len(results)>=10: break
-    return render_page(title, r"""
-<div class="research-shell"><div class="card"><p><a href="{{ url_for('research') }}">Research</a> / {{ title }}</p><h1>{{ title }}</h1><p>{{ description }}</p><p class="small">KOJA is a research discovery workspace. Verify important claims against the original publication or website before citing them.</p></div><div class="card"><h2>Search this topic</h2>{% for q in queries %}<a class="btn secondary" href="{{ url_for('research',q=q) }}">Search “{{ q }}”</a> {% endfor %}</div><h2>Selected sources</h2>{% for r in results %}<article class="card research-result"><span class="source-badge">{{ r.source }}</span><h2><a href="{{ r.url or '#' }}" target="_blank" rel="noopener noreferrer">{{ r.title }}</a></h2>{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open original source ↗</a>{% endif %}</article>{% else %}<div class="card"><p>Live source discovery is temporarily unavailable. Use the topic searches above.</p></div>{% endfor %}</div><script type="application/ld+json">{{ {"@context":"https://schema.org","@type":"CollectionPage","name":title,"description":description,"url":SITE_URL+"/research/topics/"+slug}|tojson }}</script>
-""",title=title,description=description,queries=queries,results=results,slug=slug,SITE_URL=SITE_URL)
 
 # ============================================================
 # QUESTIONS / ASSIGNMENTS
@@ -1691,6 +1297,74 @@ def cv():
 """)
 
 # ============================================================
+# FARMER
+# ============================================================
+
+@app.route("/farmer",methods=["GET","POST"])
+@login_required
+def farmer():
+    user=current_user()
+    if request.method=="POST":
+        data={
+            "id":str(uuid.uuid4()),"user_id":user["id"],
+            "nrc":clean(request.form.get("nrc")),
+            "date_of_birth":request.form.get("date_of_birth") or None,
+            "first_name":clean(request.form.get("first_name")),
+            "middle_names":clean(request.form.get("middle_names")),
+            "last_name":clean(request.form.get("last_name")),
+            "gender":clean(request.form.get("gender")),
+            "phone":clean(request.form.get("phone")),
+            "location":clean(request.form.get("location")),
+            "payment_method":clean(request.form.get("payment_method")),
+            "provider":clean(request.form.get("provider")),
+            "branch":clean(request.form.get("branch")),
+            "account_number":clean(request.form.get("account_number")),
+            "account_name":clean(request.form.get("account_name")),
+            "status":"submitted","created_at":utc_now()
+        }
+        f=request.files.get("nrc_document")
+        if f and f.filename:
+            uploaded,error=upload_storage(f,"farmer-nrc")
+            if error:
+                flash(error,"danger"); return redirect(url_for("farmer"))
+            data["nrc_document_url"]=uploaded["url"]
+            data["nrc_document_path"]=uploaded["path"]
+
+        row,error=db_insert("farmer_registrations",data)
+        if error:
+            minimal={k:data[k] for k in ("id","user_id","nrc","first_name","middle_names","last_name","gender","phone","location")}
+            row,error=db_insert("farmer_registrations",minimal)
+        if error:
+            flash("Farmer registration could not be submitted. Check the farmer_registrations columns.","danger")
+        else:
+            flash("Farmer registration submitted successfully.","success")
+            log_activity("farmer_registration","Farmer registration submitted.")
+        return redirect(url_for("farmer"))
+
+    return render_page("Farmer Registration",r"""
+<div class="hero"><h2>KOJA Farmer Registration</h2><p>Register your agricultural service request.</p></div>
+<div class="card"><form method="post" enctype="multipart/form-data">
+<h3>Personal Details</h3>
+<label>NRC</label><input name="nrc" required>
+<label>Date of Birth</label><input name="date_of_birth" type="date">
+<label>First Name</label><input name="first_name" required>
+<label>Middle Names</label><input name="middle_names">
+<label>Last Name</label><input name="last_name" required>
+<label>Gender</label><select name="gender"><option value="">Select</option><option>Male</option><option>Female</option></select>
+<label>Phone</label><input name="phone" required>
+<label>NRC Card</label><input type="file" name="nrc_document" accept=".jpg,.jpeg,.png,.pdf">
+<h3>Farming Location</h3><label>Location</label><input name="location" placeholder="Province / District / Chiefdom / Camp">
+<h3>Payment Details</h3>
+<label>Payment Method</label><select name="payment_method"><option>Bank Account</option><option>Mobile Money (MNO)</option><option>Wallet</option></select>
+<label>Provider</label><input name="provider" placeholder="Bank or mobile-money provider">
+<label>Branch</label><input name="branch">
+<label>Account / Mobile Number</label><input name="account_number">
+<label>Account Name</label><input name="account_name">
+<button type="submit">Submit Farmer Registration</button>
+</form></div>
+""")
+
+# ============================================================
 # DOCTORS / TEACHERS
 # ============================================================
 
@@ -1708,13 +1382,8 @@ def doctors():
 <p><strong>Hospital/Clinic:</strong> {{ d.get("hospital_clinic") or "Not specified" }}</p>
 {% if d.get("consultation_fee") %}<p><strong>Fee:</strong> {{ d.get("currency") or "ZMW" }} {{ d.get("consultation_fee") }}</p>{% endif %}
 <div class="actions">
-{% set doctor_provider_id = d.get("provider_id") or d.get("id") %}
-{% if doctor_provider_id %}
-<a class="btn" href="{{ url_for('book_doctor',provider_id=doctor_provider_id) }}">Book This Doctor</a>
-<a class="btn secondary" href="{{ url_for('provider_map',provider_id=doctor_provider_id,provider_type='doctor') }}">View Location</a>
-{% else %}
-<span class="small">Doctor profile is missing an identifier.</span>
-{% endif %}
+<a class="btn" href="{{ url_for('book_doctor',provider_id=d.get('provider_id')) }}">Book This Doctor</a>
+<a class="btn secondary" href="{{ url_for('provider_map',provider_id=d.get('provider_id'),provider_type='doctor') }}">View Location</a>
 </div></div>
 {% else %}<div class="card"><p>No doctor profiles have been registered yet.</p></div>{% endfor %}
 </div>
@@ -1725,8 +1394,6 @@ def doctors():
 def book_doctor(provider_id):
     user=current_user()
     doctor=first_row("doctor_profiles",{"provider_id":provider_id})
-    if not doctor:
-        doctor=first_row("doctor_profiles",{"id":provider_id})
     if not doctor: abort(404)
     if request.method=="POST":
         payload={
@@ -2453,7 +2120,7 @@ const destination={{ delivery.get("destination")|tojson }};
 let map=L.map("map").setView([-13.9626,28.3228],6);
 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);
 let driverMarker=null,destinationMarker=null,routeLine=null,lastDriver=null,lastDestination=null,lastRouteAt=0;
-let driverIcon=L.divIcon({className:"koja-driver-icon",html:"<div class='koja-live-marker' style='font-size:30px;line-height:30px;transform-origin:center;'>🚚</div>",iconSize:[32,32],iconAnchor:[16,16]});
+let driverIcon=L.divIcon({className:"koja-driver-icon",html:"<div style='font-size:30px;line-height:30px;transform-origin:center;'>🚚</div>",iconSize:[32,32],iconAnchor:[16,16]});
 function setText(id,t){const el=document.getElementById(id);if(el)el.textContent=t}
 function centerDriver(){if(lastDriver)map.setView(lastDriver,17,{animate:true})}
 function fitRoute(){const pts=[];if(lastDriver)pts.push(lastDriver);if(lastDestination)pts.push(lastDestination);if(pts.length===2)map.fitBounds(L.latLngBounds(pts),{padding:[40,40]})}
@@ -2621,13 +2288,82 @@ def provider_location(provider_id):
     return jsonify({"ok":True,"latitude":loc.get("latitude"),"longitude":loc.get("longitude"),"accuracy":loc.get("accuracy"),"updated_at":loc.get("created_at")})
 
 # ============================================================
+# UNIVERSITIES
+# ============================================================
+
+@app.route("/universities")
+@login_required
+def universities():
+    universities=db_select("universities",order="name.asc",limit=200)
+    return render_page("Universities",r"""
+<div class="hero"><h2>University Applications</h2><p>Select the university, programme, intake/year and review requirements.</p></div>
+<div class="card">
+{% if universities %}<div class="grid">
+{% for university in universities %}
+<div class="card"><h3>{{ university.get("name") or university.get("university_name") or "University" }}</h3>
+<p>{{ university.get("location") or university.get("description") or "" }}</p>
+<a class="btn" href="{{ url_for('university_apply',university_id=university.get('id')) }}">Apply</a></div>
+{% endfor %}
+</div>{% else %}<p>No universities are currently loaded into the universities table.</p>{% endif %}
+</div>
+""",universities=universities)
+
+@app.route("/university/apply/<university_id>",methods=["GET","POST"])
+@login_required
+def university_apply(university_id):
+    user=current_user()
+    university=first_row("universities",{"id":university_id})
+    if not university: abort(404)
+    programmes=db_select("university_programmes",filters={"university_id":university_id},order="name.asc",limit=500)
+    requirements=db_select("university_application_requirements",filters={"university_id":university_id},limit=500)
+
+    if request.method=="POST":
+        programme_id=request.form.get("programme_id")
+        year=request.form.get("academic_year")
+        intake=clean(request.form.get("intake"))
+        payload={
+            "id":str(uuid.uuid4()),"user_id":user["id"],"university_id":university_id,
+            "programme_id":programme_id,"academic_year":year,"intake":intake or None,
+            "full_name":user["name"],"email":user["email"],"phone":user.get("phone"),
+            "status":"draft","created_at":utc_now()
+        }
+        row,error=db_insert("university_applications",payload)
+        if error:
+            minimal={k:payload[k] for k in ("id","user_id","university_id","programme_id","academic_year")}
+            row,error=db_insert("university_applications",minimal)
+        if error: flash("Application could not be created: "+str(error)[:600],"danger")
+        else: flash("University application started successfully.","success")
+        return redirect(url_for("universities"))
+
+    return render_page("University Application",r"""
+<div class="card"><h2>{{ university.get("name") or university.get("university_name") }}</h2>
+<form method="post">
+<label>Programme</label><select name="programme_id" required><option value="">Select programme</option>
+{% for p in programmes %}<option value="{{ p.get('id') }}">{{ p.get("name") or p.get("programme_name") or p.get("title") }}</option>{% endfor %}
+</select>
+<label>Academic Year</label><select name="academic_year"><option>2026/2027</option><option>2027/2028</option></select>
+<label>Intake</label><select name="intake"><option>January</option><option>May</option><option>September</option><option>Other</option></select>
+<button type="submit">Start Application</button>
+</form></div>
+<div class="card"><h3>Application Requirements</h3>
+{% for r in requirements %}<div class="card"><strong>{{ r.get("title") or r.get("requirement") or "Requirement" }}</strong><p>{{ r.get("description") or r.get("details") or "" }}</p></div>
+{% else %}<p>No specific requirements have been entered for this university yet.</p>{% endfor %}
+</div>
+""",university=university,programmes=programmes,requirements=requirements)
+
+# ============================================================
 # GOOGLE SEARCH & DISTRIBUTION
 # ============================================================
 
 PUBLIC_INDEX_ROUTES = [
     "/",
     "/research",
-] + [f"/research/topics/{slug}" for slug in RESEARCH_TOPICS]
+    "/services",
+    "/questions",
+    "/assignments",
+    "/tracking",
+    "/drivers",
+]
 
 GSC_SCOPE = "https://www.googleapis.com/auth/webmasters.readonly"
 GSC_WRITE_SCOPE = "https://www.googleapis.com/auth/webmasters"
@@ -2877,14 +2613,6 @@ def robots_txt():
         "Disallow: /login",
         "Disallow: /register",
         "Disallow: /dashboard",
-        "Disallow: /settings",
-        "Disallow: /tracking",
-        "Disallow: /drivers",
-        "Disallow: /deliveries",
-        "Disallow: /driver",
-        "Disallow: /cv",
-        "Disallow: /doctor/",
-        "Disallow: /teacher/",
         "Disallow: /api/",
         f"Sitemap: {SITE_URL}/sitemap.xml",
     ]
@@ -2906,7 +2634,7 @@ def sitemap_xml():
 @app.route("/admin")
 @admin_required
 def admin():
-    tables=["profiles","questions","assignments","documents","document_records","doctor_profiles","teacher_profiles","driver_profiles","driver_locations","deliveries","appointments","activity_logs"]
+    tables=["profiles","questions","assignments","farmer_registrations","doctor_profiles","teacher_profiles","driver_profiles","driver_locations","deliveries","appointments","universities","university_applications","activity_logs"]
     counts={}
     for table in tables:
         counts[table]=len(db_select(table,limit=1000))
@@ -2949,7 +2677,7 @@ def admin_drivers():
 def admin_live_tracking():
     return render_page("Admin Live GPS Tracking", r"""
 <div class="hero"><h2>🚚 Live Delivery GPS</h2>
-<p>Consent-based live monitoring of active KOJA driver phones and vehicles. Location sharing must be started by the driver.</p></div>
+<p>Real-time driver locations received from active KOJA driver phones.</p></div>
 <div class="card"><div id="map" style="height:520px;min-height:420px"></div>
 <p id="status" class="small">Loading live drivers...</p></div>
 <script>
@@ -2964,13 +2692,10 @@ async function refresh(){
   if(!d.ok){document.getElementById("status").textContent=d.message||"Unable to load GPS.";return;}
   const seen={};
   d.drivers.forEach(x=>{
-    seen[x.driver_id]=true; const p=[Number(x.latitude),Number(x.longitude)];
-    const icon=L.divIcon({className:"koja-admin-live-icon",html:"<div class=\"koja-live-marker\" style=\"font-size:30px;line-height:30px;\">🚚</div>",iconSize:[34,34],iconAnchor:[17,30]});
-    if(!markers[x.driver_id]) markers[x.driver_id]=L.marker(p,{icon}).addTo(map);
+    seen[x.driver_id]=true; const p=[x.latitude,x.longitude];
+    if(!markers[x.driver_id]) markers[x.driver_id]=L.marker(p).addTo(map);
     else markers[x.driver_id].setLatLng(p);
-    const speed=(Number.isFinite(Number(x.speed))&&Number(x.speed)>=0)?(Number(x.speed)*3.6).toFixed(0)+" km/h":"—";
-    const age=x.age_seconds!=null?Math.max(0,Math.round(x.age_seconds))+"s ago":"recently";
-    markers[x.driver_id].bindPopup("<b>"+esc(x.name)+"</b><br>"+esc(x.vehicle_type||"Vehicle")+"<br>🚗 Speed: "+esc(speed)+"<br>📍 Accuracy: "+esc(x.accuracy||"—")+" m<br>🕒 Updated: "+esc(age));
+    markers[x.driver_id].bindPopup("<b>"+esc(x.name)+"</b><br>"+esc(x.vehicle_type||"Vehicle")+"<br>Accuracy: "+esc(x.accuracy||"—")+" m<br>Updated: "+esc(x.updated_at||"recently"));
   });
   Object.keys(markers).forEach(id=>{if(!seen[id]){map.removeLayer(markers[id]);delete markers[id];}});
   document.getElementById("status").textContent=d.drivers.length+" driver(s) online. Last refresh: "+new Date().toLocaleTimeString();
@@ -3000,7 +2725,7 @@ def admin_live_drivers_api():
             age=None
         provider=first_row("driver_profiles", {"provider_id":str(loc.get("driver_id"))})
         name=(provider or {}).get("full_name") or (provider or {}).get("driver_name") or "Driver"
-        result.append({"driver_id":str(loc.get("driver_id")),"name":name,"vehicle_type":(provider or {}).get("vehicle_type"),"latitude":loc.get("latitude"),"longitude":loc.get("longitude"),"accuracy":loc.get("accuracy"),"speed":loc.get("speed"),"heading":loc.get("heading"),"updated_at":loc.get("created_at"),"age_seconds":age})
+        result.append({"driver_id":str(loc.get("driver_id")),"name":name,"vehicle_type":(provider or {}).get("vehicle_type"),"latitude":loc.get("latitude"),"longitude":loc.get("longitude"),"accuracy":loc.get("accuracy"),"updated_at":loc.get("created_at"),"age_seconds":age})
     return jsonify({"ok":True,"drivers":result})
 
 @app.route("/admin/deliveries")
@@ -3048,14 +2773,12 @@ def internal_error(error):
 
 @app.before_request
 def before_request():
-    # Generate the session CSRF token lazily; never connect to Supabase at startup.
-    csrf_token()
-    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
-        validate_csrf()
+    # Deliberately empty. Never connect to Supabase at startup.
+    pass
 
 @app.context_processor
 def inject_globals():
-    return {"APP_NAME":APP_NAME,"APP_TAGLINE":APP_TAGLINE,"SITE_URL":SITE_URL,"csrf_token":csrf_token()}
+    return {"APP_NAME":APP_NAME,"APP_TAGLINE":APP_TAGLINE,"SITE_URL":SITE_URL}
 
 # ============================================================
 # LOCAL / RENDER START
