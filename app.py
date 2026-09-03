@@ -553,11 +553,18 @@ BASE_HTML = r"""
 <style>
 *{box-sizing:border-box}
 body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f5f7fb;color:#172033}
-nav{background:#10233f;color:#fff;padding:12px 15px;position:sticky;top:0;z-index:1000}
-.nav-inner{max-width:1250px;margin:auto;display:flex;align-items:center;gap:7px;flex-wrap:wrap}.menu-toggle{display:none;width:auto;margin:0;background:transparent;border:1px solid rgba(255,255,255,.25);font-size:22px;padding:6px 10px}.nav-links{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+nav{background:#10233f;color:#fff;padding:10px 15px;position:sticky;top:0;z-index:1000;box-shadow:0 4px 18px rgba(0,0,0,.12)}
+.nav-inner{max-width:1250px;margin:auto;display:flex;align-items:center;gap:7px}
 .brand{font-weight:800;font-size:19px;margin-right:auto;display:flex;align-items:center;gap:8px;letter-spacing:.2px}.brand-mark{width:32px;height:32px;border-radius:9px;display:inline-grid;place-items:center;background:linear-gradient(135deg,#19a7b8,#f2b84b);box-shadow:0 5px 18px rgba(0,0,0,.22);animation:logoFloat 4s ease-in-out infinite}.brand-mark svg{width:22px;height:22px}.brand-name{white-space:nowrap}
-nav a{color:#fff;text-decoration:none;padding:8px 9px;border-radius:7px}
-nav a{transition:background .2s ease,transform .2s ease}nav a:hover{background:rgba(255,255,255,.12);transform:translateY(-1px)}
+.menu-toggle{display:none;width:auto;margin:0;padding:8px 12px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);color:#fff;border-radius:9px;font-weight:700;cursor:pointer}
+.menu-toggle:hover{background:rgba(255,255,255,.18);transform:none}
+.nav-links{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+nav a{color:#fff;text-decoration:none;padding:8px 9px;border-radius:7px;transition:background .2s ease,transform .2s ease}
+nav a:hover{background:rgba(255,255,255,.12);transform:translateY(-1px)}
+.menu-group{position:relative}.menu-group>button{width:auto;margin:0;padding:8px 10px;background:rgba(255,255,255,.08);color:#fff;border:0;border-radius:7px;cursor:pointer;font:inherit}.menu-group>button:hover{background:rgba(255,255,255,.15);transform:none}
+.dropdown{display:none;position:absolute;right:0;top:calc(100% + 7px);min-width:210px;background:#fff;border-radius:11px;padding:7px;box-shadow:0 12px 35px rgba(0,0,0,.2);border:1px solid #e5e7eb}
+.dropdown.open{display:block;animation:menuDrop .18s ease both}.dropdown a{display:block;color:#172033!important;padding:10px 11px;white-space:nowrap}.dropdown a:hover{background:#eef5f8;transform:none}
+@keyframes menuDrop{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:translateY(0)}}
 .container{width:min(1250px,calc(100% - 24px));margin:20px auto 50px}
 .card{background:#fff;border-radius:13px;padding:18px;margin-bottom:16px;box-shadow:0 3px 14px rgba(0,0,0,.06);animation:fadeUp .45s ease both}.card:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.09);transition:transform .2s ease,box-shadow .2s ease}
 .hero{background:linear-gradient(135deg,#10233f,#176b87);color:#fff;padding:28px 20px;border-radius:15px;margin-bottom:18px}
@@ -581,15 +588,17 @@ th,td{border-bottom:1px solid #e4e7ec;padding:9px;text-align:left;vertical-align
 .offline{color:#a62d2d;font-weight:700}
 footer{text-align:center;color:#667085;padding:30px}
 .actions{display:flex;gap:8px;flex-wrap:wrap}.actions .btn,.actions button{width:auto}
-@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}@keyframes logoFloat{0%,100%{transform:translateY(0) rotate(0deg)}50%{transform:translateY(-2px) rotate(1deg)}}@keyframes pulseSoft{0%,100%{box-shadow:0 0 0 0 rgba(25,167,184,.18)}50%{box-shadow:0 0 0 7px rgba(25,167,184,0)}}:focus-visible{outline:3px solid #f2b84b;outline-offset:2px}.hero{animation:fadeUp .55s ease both}.stat{animation:fadeUp .5s ease both}.online{animation:pulseSoft 2.4s ease-in-out infinite}@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition:none!important;transform:none!important}}@media(max-width:650px){.menu-toggle{display:block}.nav-links{display:none;width:100%;flex-direction:column;align-items:stretch;gap:3px}.nav-links.open{display:flex}.nav-links a{text-align:left;padding:11px 12px}.container{width:min(100% - 14px,1250px)}table{display:block;overflow-x:auto}#map{height:350px}.actions .btn,.actions button{width:100%}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}@keyframes logoFloat{0%,100%{transform:translateY(0) rotate(0deg)}50%{transform:translateY(-2px) rotate(1deg)}}@keyframes pulseSoft{0%,100%{box-shadow:0 0 0 0 rgba(25,167,184,.18)}50%{box-shadow:0 0 0 7px rgba(25,167,184,0)}}:focus-visible{outline:3px solid #f2b84b;outline-offset:2px}.hero{animation:fadeUp .55s ease both}.stat{animation:fadeUp .5s ease both}.online{animation:pulseSoft 2.4s ease-in-out infinite}@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition:none!important;transform:none!important}}
+@media(max-width:760px){nav{padding:9px 12px}.nav-inner{position:relative;flex-wrap:wrap}.menu-toggle{display:block}.nav-links{display:none;width:100%;flex-direction:column;align-items:stretch;gap:3px;padding-top:8px}.nav-links.open{display:flex;animation:fadeUp .2s ease both}.nav-links>a{font-size:14px;padding:11px 12px;background:rgba(255,255,255,.05)}.menu-group{width:100%}.menu-group>button{width:100%;text-align:left;padding:11px 12px}.dropdown{position:static;width:100%;box-shadow:none;margin-top:4px;background:#f8fafc}.dropdown a{font-size:14px}.container{width:min(100% - 14px,1250px)}table{display:block;overflow-x:auto}#map{height:350px}.actions .btn,.actions button{width:100%}}
+@media(min-width:761px){.nav-links{display:flex!important}}
 </style>
 </head>
 <body>
-<nav>
+<nav aria-label="Primary navigation">
 <div class="nav-inner">
 <div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 18V6h7.2a5.3 5.3 0 0 1 0 10.6H8.5" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 9.1h3.4a1.9 1.9 0 0 1 0 3.8H8.5" stroke="white" stroke-width="2.2" stroke-linecap="round"/></svg></span><span class="brand-name">KOJA AFRICA</span></div>
-<button class="menu-toggle" type="button" aria-label="Open menu" aria-expanded="false" onclick="toggleKojamenu(this)">☰</button>
-<div class="nav-links">
+<button class="menu-toggle" id="menuToggle" type="button" aria-expanded="false" aria-controls="navLinks" aria-label="Open menu">☰ Menu</button>
+<div class="nav-links" id="navLinks">
 <a href="{{ url_for('home') }}">Home</a>
 {% if user %}
 <a href="{{ url_for('dashboard') }}">Dashboard</a>
@@ -598,21 +607,32 @@ footer{text-align:center;color:#667085;padding:30px}
 <a href="{{ url_for('assignments') }}">Assignments</a>
 <a href="{{ url_for('research') }}">🔎 Research</a>
 <a href="{{ url_for('settings') }}">⚙️ Settings</a>
-<a href="{{ url_for('universities') }}">Universities</a>
-<a href="{{ url_for('deliveries') }}">Deliveries</a>
-<a href="{{ url_for('drivers') }}">Drivers</a>
-{% if user.role in ['driver','admin'] or user.is_admin %}
-<a href="{{ url_for('driver_dashboard') }}">Driver</a>
-{% endif %}
-<a href="{{ url_for('logout') }}">Logout</a>
+<div class="menu-group">
+<button type="button" id="moreMenuButton" aria-expanded="false" aria-haspopup="true">More ▾</button>
+<div class="dropdown" id="moreMenu" role="menu">
+<a role="menuitem" href="{{ url_for('universities') }}">Universities</a>
+<a role="menuitem" href="{{ url_for('deliveries') }}">Deliveries</a>
+<a role="menuitem" href="{{ url_for('drivers') }}">Drivers</a>
+{% if user.role in ['driver','admin'] or user.is_admin %}<a role="menuitem" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}
+{% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('admin') }}">Admin</a>{% endif %}
+<a role="menuitem" href="{{ url_for('logout') }}">Logout</a>
+</div></div>
 {% else %}
 <a href="{{ url_for('login') }}">Login</a>
 <a href="{{ url_for('register') }}">Register</a>
 {% endif %}
 </div>
-{% if user and user.is_admin %}<a href="{{ url_for('admin') }}">Admin</a>{% endif %}
 </div>
 </nav>
+<script>
+(function(){
+ const toggle=document.getElementById('menuToggle'), links=document.getElementById('navLinks'), more=document.getElementById('moreMenuButton'), drop=document.getElementById('moreMenu');
+ if(toggle){toggle.addEventListener('click',function(){const open=links.classList.toggle('open');toggle.setAttribute('aria-expanded',open);toggle.setAttribute('aria-label',open?'Close menu':'Open menu');toggle.innerHTML=open?'✕ Close':'☰ Menu';});}
+ if(more&&drop){more.addEventListener('click',function(e){e.stopPropagation();const open=drop.classList.toggle('open');more.setAttribute('aria-expanded',open);});document.addEventListener('click',function(e){if(!e.target.closest('.menu-group')){drop.classList.remove('open');more.setAttribute('aria-expanded','false');}});}
+ document.querySelectorAll('#navLinks a').forEach(function(a){a.addEventListener('click',function(){if(window.innerWidth<=760&&links.classList.contains('open')){links.classList.remove('open');toggle.setAttribute('aria-expanded','false');toggle.setAttribute('aria-label','Open menu');toggle.innerHTML='☰ Menu';}});});
+ window.addEventListener('resize',function(){if(window.innerWidth>760){links.classList.remove('open');toggle&&toggle.setAttribute('aria-expanded','false');toggle&&(toggle.innerHTML='☰ Menu');}});
+})();
+</script>
 <div class="container">
 {% with messages=get_flashed_messages(with_categories=true) %}
 {% for category,message in messages %}<div class="alert">{{ message }}</div>{% endfor %}
@@ -620,7 +640,6 @@ footer{text-align:center;color:#667085;padding:30px}
 {{ body|safe }}
 </div>
 <footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Agricultural • Health • Transport Services</footer>
-<script>function toggleKojamenu(b){const m=document.querySelector(".nav-links");const o=m.classList.toggle("open");b.setAttribute("aria-expanded",o?"true":"false");b.setAttribute("aria-label",o?"Close menu":"Open menu");b.textContent=o?"✕":"☰"}document.addEventListener("click",e=>{const m=document.querySelector(".nav-links"),b=document.querySelector(".menu-toggle");if(window.innerWidth<=650&&m&&m.classList.contains("open")&&!m.contains(e.target)&&e.target!==b){m.classList.remove("open");if(b){b.textContent="☰";b.setAttribute("aria-expanded","false")}}});window.addEventListener("resize",()=>{if(window.innerWidth>650){const m=document.querySelector(".nav-links");if(m)m.classList.remove("open")}});</script>
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 </body>
 </html>
@@ -1033,8 +1052,8 @@ def _research_deduplicate(results, query):
 def _research_filter(results, source='all', year=None, sort='relevance'):
     source=(source or 'all').lower(); source=source if source in ('all','web','wikipedia','academic','koja') else 'all'
     if source!='all':
-        if source=='academic': results=[r for r in results if any(x in str(r.get('source','')).lower() for x in ('openalex','crossref'))]
-        elif source=='koja': results=[r for r in results if 'koja documents' in str(r.get('source','')).lower()]
+        if source_filter=='academic': results=[r for r in results if any(x in str(r.get('source','')).lower() for x in ('openalex','crossref'))]
+        elif source_filter=='koja': results=[r for r in results if 'koja documents' in str(r.get('source','')).lower()]
         else: results=[r for r in results if str(r.get('source','')).lower()==source]
     if year: results=[r for r in results if str(r.get('year') or '')==str(year)]
     if sort=='date': results.sort(key=lambda r:r.get('year') or 0,reverse=True)
@@ -1134,13 +1153,13 @@ def research_notes():
 
 @app.route('/research')
 def research():
-    q=clean(request.args.get('q','')); source=clean(request.args.get('source','all')).lower() or 'all'; sort=clean(request.args.get('sort','relevance')).lower() or 'relevance'; year=_research_year(request.args.get('year','')); author=clean(request.args.get('author','')); style=clean(request.args.get('style','apa')).lower() or 'apa'; source_type=clean(request.args.get('source_type','all')).lower() or 'all'
+    q=clean(request.args.get('q','')); source_filter=clean(request.args.get('source','all')).lower() or 'all'; sort=clean(request.args.get('sort','relevance')).lower() or 'relevance'; year=_research_year(request.args.get('year','')); author=clean(request.args.get('author','')); style=clean(request.args.get('style','apa')).lower() or 'apa'; source_type=clean(request.args.get('source_type','all')).lower() or 'all'
     if style not in CITATION_STYLES: style='apa'
     results=[]
     if q:
         results += research_web(q,8)+research_wikipedia(q,6)+research_openalex(q,year,10)+research_crossref(q,year,author,10)+research_local_documents(q,12)
         results=_research_deduplicate(results,q)
-        results=_research_filter(results,source,year,sort)
+        results=_research_filter(results,source_filter,year,sort)
         if source_type!='all': results=[r for r in results if _source_type(r)==source_type]
     summary=research_ai_summary(q,results) if q else ''
     bibliography=make_bibliography(results,style) if results else []
@@ -1149,10 +1168,10 @@ def research():
 .research-shell{max-width:1100px;margin:auto}.research-search{display:grid;grid-template-columns:1fr auto;gap:10px}.research-search input{min-width:0}.research-filters{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-top:12px}.research-filters label{font-size:.82rem;font-weight:700}.research-filters select,.research-filters input{width:100%;margin-top:5px}.research-tabs{display:flex;gap:8px;overflow:auto;margin:14px 0}.research-tabs a{white-space:nowrap}.source-badge{display:inline-block;padding:5px 9px;border-radius:999px;background:rgba(80,150,255,.14);font-size:.78rem;font-weight:800}.research-result h3{line-height:1.35}.research-meta{font-size:.82rem;opacity:.8}.research-summary{border-left:4px solid #62a8ff}.research-summary pre{white-space:pre-wrap;font:inherit;line-height:1.6}.research-count{font-weight:700}.research-empty{padding:28px;text-align:center}@media(max-width:700px){.research-search{grid-template-columns:1fr}.research-filters{grid-template-columns:1fr 1fr}.research-result{padding:16px!important}}
 </style>
 <div class="research-shell"><div class="hero"><h2>🔎 KOJA Research Engine</h2><p>Search the web, scholarly literature and your KOJA document collection from one research workspace.</p><form method="get" action="{{ url_for('research') }}" class="research-search" style="margin-top:18px"><input name="q" value="{{ q }}" placeholder="Ask a question, topic, paper, author or subject…" aria-label="Research search"><button class="btn" type="submit">Search</button></form>
-<div class="research-filters"><label>Source<select name="source" form="research-filter-form"><option value="all" {% if source=='all' %}selected{% endif %}>All sources</option><option value="academic" {% if source=='academic' %}selected{% endif %}>Academic</option><option value="web" {% if source=='web' %}selected{% endif %}>Web</option><option value="wikipedia" {% if source=='wikipedia' %}selected{% endif %}>Wikipedia</option><option value="koja" {% if source=='koja' %}selected{% endif %}>KOJA Documents</option></select></label><label>Year<input name="year" form="research-filter-form" value="{{ year or '' }}" placeholder="e.g. 2025" inputmode="numeric"></label><label>Author<input name="author" form="research-filter-form" value="{{ author }}" placeholder="Academic author"></label><label>Citation style<select name="style" form="research-filter-form">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Source type<select name="source_type" form="research-filter-form"><option value="all">All source types</option>{% for k,v in source_types.items() %}<option value="{{k}}" {% if source_type==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Sort<select name="sort" form="research-filter-form"><option value="relevance" {% if sort=='relevance' %}selected{% endif %}>Relevance</option><option value="date" {% if sort=='date' %}selected{% endif %}>Newest first</option><option value="citations" {% if sort=='citations' %}selected{% endif %}>Most cited</option></select></label></div><form id="research-filter-form" method="get" action="{{ url_for('research') }}"><input type="hidden" name="q" value="{{ q }}"></form></div>
+<div class="research-filters"><label>Source<select name="source" form="research-filter-form"><option value="all" {% if source_filter=='all' %}selected{% endif %}>All sources</option><option value="academic" {% if source_filter=='academic' %}selected{% endif %}>Academic</option><option value="web" {% if source_filter=='web' %}selected{% endif %}>Web</option><option value="wikipedia" {% if source_filter=='wikipedia' %}selected{% endif %}>Wikipedia</option><option value="koja" {% if source_filter=='koja' %}selected{% endif %}>KOJA Documents</option></select></label><label>Year<input name="year" form="research-filter-form" value="{{ year or '' }}" placeholder="e.g. 2025" inputmode="numeric"></label><label>Author<input name="author" form="research-filter-form" value="{{ author }}" placeholder="Academic author"></label><label>Citation style<select name="style" form="research-filter-form">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Source type<select name="source_type" form="research-filter-form"><option value="all">All source types</option>{% for k,v in source_types.items() %}<option value="{{k}}" {% if source_type==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Sort<select name="sort" form="research-filter-form"><option value="relevance" {% if sort=='relevance' %}selected{% endif %}>Relevance</option><option value="date" {% if sort=='date' %}selected{% endif %}>Newest first</option><option value="citations" {% if sort=='citations' %}selected{% endif %}>Most cited</option></select></label></div><form id="research-filter-form" method="get" action="{{ url_for('research') }}"><input type="hidden" name="q" value="{{ q }}"></form></div>
 {% if q %}<div class="note-actions"><a class="btn" href="{{ url_for('research_notes',q=q,style=style) }}">📝 Write Research Notes from this topic</a></div><div class="research-tabs"><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}">🎓 Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}">🌐 Web</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}">📁 KOJA Documents</a></div><div class="card"><span class="research-count">{{ results|length }} results</span> for <strong>“{{ q }}”</strong></div>{% if summary %}<div class="card research-summary"><h3>🧠 Research Summary</h3><pre>{{ summary }}</pre><p class="small">AI summaries use configured AI credentials when available; otherwise KOJA shows source-based highlights. Verify important claims against original sources.</p></div>{% endif %}{% for r in results %}<div class="card research-result"><span class="source-badge">{{ r.source }}</span><h3><a href="{{ r.url or '#' }}" {% if r.url %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a></h3>{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p><p><strong>In-text:</strong> {{ make_intext(r,style,loop.index) }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open original source ↗</a>{% endif %}</div>{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endfor %}{% if bibliography %}<div class="card"><h2>References</h2><p class="small">Generated from available source metadata. Verify against the original source.</p>{% for n,ref in bibliography %}<p style="padding-left:28px;text-indent:-28px;line-height:1.6">{{ ref|safe }}</p>{% endfor %}</div>{% endif %}{% else %}<div class="grid"><div class="card"><h3>🌐 Web Discovery</h3><p>Discover general web knowledge.</p></div><div class="card"><h3>🎓 Academic Search</h3><p>OpenAlex and Crossref provide scholarly metadata, authors, years and citation information.</p></div><div class="card"><h3>📁 KOJA Documents</h3><p>Search documents already connected to your KOJA Supabase database.</p></div><div class="card"><h3>🧠 AI Research Summary</h3><p>Configure an AI API key to synthesize retrieved evidence with source-number citations.</p></div></div>{% endif %}</div>
 <script type="application/ld+json">{{ {"@context":"https://schema.org","@type":"WebSite","name":"KOJA AFRICA Research","url":SITE_URL+"/research","potentialAction":{"@type":"SearchAction","target":SITE_URL+"/research?q={search_term_string}","query-input":"required name=search_term_string"}}|tojson }}</script>
-''',q=q,results=results,summary=summary,source=source,sort=sort,year=year,author=author,style=style,source_type=source_type,citation_styles=CITATION_STYLES,source_types=SOURCE_TYPES,bibliography=bibliography,make_intext=make_intext,SITE_URL=SITE_URL)
+''',q=q,results=results,summary=summary,source_filter=source_filter,sort=sort,year=year,author=author,style=style,source_type=source_type,citation_styles=CITATION_STYLES,source_types=SOURCE_TYPES,bibliography=bibliography,make_intext=make_intext,SITE_URL=SITE_URL)
 
 
 @app.route("/services")
