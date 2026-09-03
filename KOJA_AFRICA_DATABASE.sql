@@ -185,6 +185,16 @@ ALTER TABLE public.deliveries ADD COLUMN IF NOT EXISTS delivery_fee numeric DEFA
 ALTER TABLE public.deliveries ADD COLUMN IF NOT EXISTS requested_date date;
 ALTER TABLE public.deliveries ADD COLUMN IF NOT EXISTS requested_time time;
 ALTER TABLE public.deliveries ADD COLUMN IF NOT EXISTS notes text;
+
+-- Backfill legacy delivery address columns used by existing deployments.
+-- The application writes both address columns and the newer location columns.
+UPDATE public.deliveries
+SET pickup_address = COALESCE(NULLIF(pickup_address, ''), pickup_location)
+WHERE pickup_address IS NULL OR pickup_address = '';
+UPDATE public.deliveries
+SET delivery_address = COALESCE(NULLIF(delivery_address, ''), destination)
+WHERE delivery_address IS NULL OR delivery_address = '';
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_deliveries_tracking_code ON public.deliveries(tracking_code) WHERE tracking_code IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_deliveries_customer ON public.deliveries(customer_id);
 CREATE INDEX IF NOT EXISTS idx_deliveries_driver ON public.deliveries(driver_id);

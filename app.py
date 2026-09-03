@@ -627,7 +627,7 @@ BASE_HTML = r"""
 <meta name="google-site-verification" content="u4nfIf5MfXm0iVvECSQeYAov4Tz4601ayY5kYzNc4ko">
 <link rel="canonical" href="{{ SITE_URL }}{{ request.path }}">
 <link rel="icon" type="image/svg+xml" href="{{ url_for('favicon_svg') }}">
-<link rel="icon" type="image/png" sizes="192x192" href="{{ url_for('favicon_svg') }}">
+<link rel="icon" type="image/svg+xml" sizes="192x192" href="{{ url_for('favicon_svg') }}">
 <link rel="apple-touch-icon" href="{{ url_for('favicon_svg') }}">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="KOJA AFRICA">
@@ -1802,6 +1802,8 @@ def ensure_driver_provider(user):
         return provider2 or legacy, None
     return None, error
 
+@app.route("/driver/register", methods=["GET", "POST"])
+@login_required
 def driver_register():
     user = current_user() or {}
     provider = get_driver_provider(user.get("id"))
@@ -2255,6 +2257,8 @@ def create_delivery_request():
         "customer_id":user["id"],
         "user_id":user["id"],
         "driver_id":driver_id,
+        "pickup_address":clean(body.get("pickup_location")),
+        "delivery_address":clean(body.get("destination")),
         "pickup_location":clean(body.get("pickup_location")),
         "destination":clean(body.get("destination")),
         "pickup_latitude":lat,
@@ -2275,6 +2279,8 @@ def create_delivery_request():
     if error:
         minimal={
             "id":payload["id"],"customer_id":user["id"],"driver_id":driver_id,
+            "pickup_address":payload["pickup_address"],
+            "delivery_address":payload["delivery_address"],
             "pickup_location":payload["pickup_location"],
             "destination":payload["destination"],
             "recipient_name":payload["recipient_name"],
@@ -2301,6 +2307,8 @@ def deliveries():
         tracking=make_tracking_code()
         payload={
             "id":str(uuid.uuid4()),"customer_id":user["id"],
+            "pickup_address":clean(request.form.get("pickup_location")),
+            "delivery_address":clean(request.form.get("destination")),
             "pickup_location":clean(request.form.get("pickup_location")),
             "destination":clean(request.form.get("destination")),
             "recipient_name":clean(request.form.get("recipient_name")),
