@@ -84,8 +84,6 @@ SUPABASE_SERVICE_KEY = (
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
 FLW_SECRET_KEY = os.getenv("FLW_SECRET_KEY", "").strip()
 FLW_BASE_URL = "https://api.flutterwave.com/v3"
-MARKETPLACE_COMMISSION_PERCENT = float(os.getenv("MARKETPLACE_COMMISSION_PERCENT", "10") or 10)
-MARKETPLACE_MIN_PAYOUT = float(os.getenv("MARKETPLACE_MIN_PAYOUT", "20") or 20)
 
 
 STORAGE_BUCKET = os.getenv(
@@ -94,7 +92,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.03-MARKETPLACE-DELIVERY-COMMUNICATION-V1"
+APP_VERSION = "2026.09.03-RESEARCH-V2"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -1873,130 +1871,6 @@ def public_comment(post_id):
     return redirect(url_for('public_feed')+'#post-'+post_id)
 
 
-
-# ============================================================
-# CONTEXTUAL MARKETPLACE + DELIVERY COMMUNICATION
-# Uses KOJA Connect direct conversations so buyers, sellers,
-# customers and drivers can chat/call without creating a second
-# messaging system.
-# ============================================================
-
-def _start_context_chat(target_user_id, context_title='KOJA Chat'):
-    uid=str((current_user() or {}).get('id') or '')
-    target=str(target_user_id or '')
-    if not uid or not target or uid == target or not find_user_by_id(target):
-        return None
-    c=_direct_conversation(uid,target)
-    if not c:
-        return None
-    # Keep the conversation generic/direct so it remains compatible with KOJA Connect.
-    db_update('koja_conversations', {'id':c.get('id')}, {'updated_at':utc_now()})
-    db_insert('koja_notifications', {
-        'user_id':target,
-        'notification_type':'context_chat',
-        'title':context_title,
-        'body':f'{_profile_name(uid)} opened a KOJA conversation with you.',
-        'related_id':c.get('id')
-    })
-    return c
-
-@app.route('/marketplace/message/<product_id>')
-@login_required
-def marketplace_message_seller(product_id):
-    product=marketplace_product(product_id)
-    uid=str((current_user() or {}).get('id') or '')
-    if not product or not product.get('is_published'):
-        abort(404)
-    seller_id=str(product.get('seller_id') or '')
-    if not seller_id or seller_id==uid:
-        flash('You cannot start a buyer chat with yourself.','warning')
-        return redirect(url_for('marketplace_product_view',product_id=product_id))
-    c=_start_context_chat(seller_id, f'Marketplace: {product.get("title") or "Product"}')
-    if not c:
-        flash('Marketplace chat could not be started. Run KOJA Connect SQL first.','danger')
-        return redirect(url_for('marketplace_product_view',product_id=product_id))
-    return redirect(url_for('connect_chat',conversation_id=c.get('id')))
-
-@app.route('/marketplace/order/<order_id>/message')
-@login_required
-def marketplace_order_message(order_id):
-    order=first_row('koja_marketplace_orders',{'id':order_id})
-    uid=str((current_user() or {}).get('id') or '')
-    if not order:
-        abort(404)
-    buyer=str(order.get('buyer_id') or '')
-    seller=str(order.get('seller_id') or '')
-    if uid not in (buyer,seller):
-        abort(403)
-    target=seller if uid==buyer else buyer
-    product=marketplace_product(order.get('product_id')) or {}
-    c=_start_context_chat(target, f'Marketplace Order: {product.get("title") or "Digital product"}')
-    if not c:
-        flash('Order chat could not be started. Run KOJA Connect SQL first.','danger')
-        return redirect(url_for('marketplace_my'))
-    return redirect(url_for('connect_chat',conversation_id=c.get('id')))
-
-@app.route('/delivery/<tracking_code>/message')
-@login_required
-def delivery_message(tracking_code):
-    delivery=first_row('deliveries',{'tracking_code':tracking_code})
-    uid=str((current_user() or {}).get('id') or '')
-    if not delivery:
-        abort(404)
-    customer=str(delivery.get('customer_id') or delivery.get('user_id') or delivery.get('sender_id') or '')
-    assigned_driver=str(delivery.get('driver_id') or '')
-    provider=get_driver_provider(uid)
-    provider_id=str(provider.get('id')) if provider else ''
-    is_customer=customer and uid==customer
-    is_driver=assigned_driver and provider_id==assigned_driver
-    if not (is_customer or is_driver):
-        abort(403)
-    if is_customer:
-        if not assigned_driver:
-            flash('A driver has not been assigned yet.','warning')
-            return redirect(url_for('track_delivery',tracking_code=tracking_code))
-        driver_provider=first_row('service_providers',{'id':assigned_driver}) or {}
-        target=driver_provider.get('user_id')
-        title=f'Delivery {tracking_code}: Driver Chat'
-    else:
-        target=customer
-        title=f'Delivery {tracking_code}: Customer Chat'
-    c=_start_context_chat(target,title)
-    if not c:
-        flash('Delivery chat could not be started. Run KOJA Connect SQL first.','danger')
-        return redirect(url_for('track_delivery',tracking_code=tracking_code))
-    return redirect(url_for('connect_chat',conversation_id=c.get('id')))
-
-@app.route('/delivery/<tracking_code>/call')
-@login_required
-def delivery_call(tracking_code):
-    delivery=first_row('deliveries',{'tracking_code':tracking_code})
-    uid=str((current_user() or {}).get('id') or '')
-    mode=clean(request.args.get('mode','voice'))
-    if not delivery or mode not in ('voice','video'):
-        abort(404)
-    customer=str(delivery.get('customer_id') or delivery.get('user_id') or delivery.get('sender_id') or '')
-    assigned_driver=str(delivery.get('driver_id') or '')
-    provider=get_driver_provider(uid)
-    provider_id=str(provider.get('id')) if provider else ''
-    is_customer=customer and uid==customer
-    is_driver=assigned_driver and provider_id==assigned_driver
-    if not (is_customer or is_driver) or not assigned_driver:
-        abort(403)
-    if is_customer:
-        driver_provider=first_row('service_providers',{'id':assigned_driver}) or {}
-        target=str(driver_provider.get('user_id') or '')
-    else:
-        target=customer
-    if not target or target==uid or not find_user_by_id(target):
-        flash('The other delivery participant is not available for calling.','warning')
-        return redirect(url_for('track_delivery',tracking_code=tracking_code))
-    c=_start_context_chat(target, f'Delivery {tracking_code}: Call')
-    if not c:
-        flash('Delivery call could not be started. Run KOJA Connect SQL first.','danger')
-        return redirect(url_for('track_delivery',tracking_code=tracking_code))
-    return redirect(url_for('connect_call',user_id=target,mode=mode))
-
 # ============================================================
 # KOJA DIGITAL MARKETPLACE
 # ============================================================
@@ -2065,29 +1939,6 @@ MARKETPLACE_FILE_EXTENSIONS = {
     'pdf','doc','docx','txt','zip','csv','xlsx','xls','ppt','pptx',
     'jpg','jpeg','png','webp','mp3','wav','m4a','mp4','webm','py','html','css','js','json'
 }
-
-def marketplace_commission(amount):
-    try: gross=max(float(amount or 0),0.0)
-    except Exception: gross=0.0
-    pct=min(max(MARKETPLACE_COMMISSION_PERCENT,0.0),100.0)
-    fee=round(gross*pct/100.0,2)
-    return fee,round(gross-fee,2)
-
-def marketplace_seller_balance(seller_id):
-    orders=db_select("koja_marketplace_orders",{"seller_id":seller_id,"status":"eq.paid"},limit=1000) or []
-    gross=net=0.0
-    for o in orders:
-        try: amount=float(o.get("amount") or 0)
-        except Exception: amount=0.0
-        fee,seller_net=marketplace_commission(amount); gross+=amount; net+=seller_net
-    payouts=db_select("koja_marketplace_payouts",{"seller_id":seller_id},limit=1000) or []
-    reserved=paid_out=0.0
-    for x in payouts:
-        try: amount=float(x.get("amount") or 0)
-        except Exception: amount=0.0
-        if str(x.get("status") or "").lower() in ("pending","approved","processing","paid"): reserved+=amount
-        if str(x.get("status") or "").lower()=="paid": paid_out+=amount
-    return {"gross":round(gross,2),"net_sales":round(net,2),"reserved":round(reserved,2),"paid_out":round(paid_out,2),"available":round(max(net-reserved,0.0),2)}
 
 def marketplace_product(product_id):
     return first_row('koja_marketplace_products', {'id': product_id})
@@ -2218,7 +2069,7 @@ def marketplace_product_view(product_id):
     if not product or not product.get('is_published'): abort(404)
     seller=marketplace_seller_name(product.get('seller_id')); uid=(current_user() or {}).get('id') if current_user() else None
     return render_page(product.get('title') or 'Digital Product',r'''
-<div class="card"><div class="small">{{ product.category }} · Seller: {{ seller }}</div><h1>{{ product.title }}</h1>{% if product.cover_url %}<img src="{{ url_for('marketplace_cover', product_id=product.id) }}" alt="{{ product.title }}" style="display:block;width:100%;max-height:520px;object-fit:contain;border-radius:12px;background:var(--bg)">{% endif %}<p style="white-space:pre-wrap;line-height:1.75">{{ product.description }}</p><h2>{{ 'FREE' if product.price|float<=0 else money(product.price, product.currency) }}</h2>{% if user %}<div class="actions" style="margin:12px 0">{% if user.id|string != product.seller_id|string %}<a class="btn secondary" href="{{ url_for('marketplace_message_seller', product_id=product.id) }}">💬 Message Seller</a><a class="btn secondary" href="{{ url_for('connect_call', user_id=product.seller_id, mode='voice') }}">📞 Call Seller</a><a class="btn secondary" href="{{ url_for('connect_call', user_id=product.seller_id, mode='video') }}">🎥 Video Call</a>{% endif %}</div>{% if access %}<a class="btn success" href="{{ url_for('marketplace_download', product_id=product.id) }}">⬇️ Download / Access</a>{% elif product.price|float<=0 %}<form method="post" action="{{ url_for('marketplace_buy', product_id=product.id) }}"><button class="btn success" type="submit">🎁 Get Free Product</button></form>{% else %}<form method="post" action="{{ url_for('marketplace_buy', product_id=product.id) }}"><button class="btn" type="submit">🛒 Request Purchase · {{ money(product.price, product.currency) }}</button></form><p class="small">Secure checkout is handled by Flutterwave when FLW_SECRET_KEY is configured. KOJA verifies the transaction on the server before releasing the digital file.</p>{% endif %}{% else %}<a class="btn" href="{{ url_for('login', next=request.path) }}">Login to Purchase / Download</a>{% endif %}</div>
+<div class="card"><div class="small">{{ product.category }} · Seller: {{ seller }}</div><h1>{{ product.title }}</h1>{% if product.cover_url %}<img src="{{ url_for('marketplace_cover', product_id=product.id) }}" alt="{{ product.title }}" style="display:block;width:100%;max-height:520px;object-fit:contain;border-radius:12px;background:var(--bg)">{% endif %}<p style="white-space:pre-wrap;line-height:1.75">{{ product.description }}</p><h2>{{ 'FREE' if product.price|float<=0 else money(product.price, product.currency) }}</h2>{% if user %}{% if access %}<a class="btn success" href="{{ url_for('marketplace_download', product_id=product.id) }}">⬇️ Download / Access</a>{% elif product.price|float<=0 %}<form method="post" action="{{ url_for('marketplace_buy', product_id=product.id) }}"><button class="btn success" type="submit">🎁 Get Free Product</button></form>{% else %}<form method="post" action="{{ url_for('marketplace_buy', product_id=product.id) }}"><button class="btn" type="submit">🛒 Request Purchase · {{ money(product.price, product.currency) }}</button></form><p class="small">Secure checkout is handled by Flutterwave when FLW_SECRET_KEY is configured. KOJA verifies the transaction on the server before releasing the digital file.</p>{% endif %}{% else %}<a class="btn" href="{{ url_for('login', next=request.path) }}">Login to Purchase / Download</a>{% endif %}</div>
 ''',product=product,seller=seller,access=marketplace_has_access(product,uid),money=marketplace_money)
 
 @app.route('/marketplace/buy/<product_id>',methods=['POST'])
@@ -2231,7 +2082,7 @@ def marketplace_buy(product_id):
     if amount<=0:
         existing=first_row('koja_marketplace_orders',{'product_id':product_id,'buyer_id':uid,'status':'eq.paid'})
         if not existing:
-            _,err=db_insert('koja_marketplace_orders',{'product_id':product_id,'buyer_id':uid,'seller_id':product.get('seller_id'),'amount':0,'currency':product.get('currency') or 'ZMW','status':'paid','payment_method':'free','payment_reference':'FREE-'+secrets.token_hex(8),'commission_amount':0,'seller_net_amount':0,'updated_at':utc_now()})
+            _,err=db_insert('koja_marketplace_orders',{'product_id':product_id,'buyer_id':uid,'seller_id':product.get('seller_id'),'amount':0,'currency':product.get('currency') or 'ZMW','status':'paid','payment_method':'free','payment_reference':'FREE-'+secrets.token_hex(8),'updated_at':utc_now()})
             if err: flash('Could not create the free-product order. Run MARKETPLACE.sql in Supabase first.','danger'); return redirect(url_for('marketplace_product_view',product_id=product_id))
         flash('Free product added to your purchases.','success')
         return redirect(url_for('marketplace_download',product_id=product_id))
@@ -2244,7 +2095,7 @@ def marketplace_buy(product_id):
         flash('Your account needs an email address before payment can start.','warning')
         return redirect(url_for('marketplace_product_view',product_id=product_id))
     tx_ref='KOJA-MKT-'+uuid.uuid4().hex[:24]
-    order,err=db_insert('koja_marketplace_orders',{'product_id':product_id,'buyer_id':uid,'seller_id':product.get('seller_id'),'amount':amount,'currency':product.get('currency') or 'ZMW','status':'pending','payment_method':'flutterwave','payment_reference':tx_ref,'commission_amount':marketplace_commission(amount)[0],'seller_net_amount':marketplace_commission(amount)[1],'updated_at':utc_now()})
+    order,err=db_insert('koja_marketplace_orders',{'product_id':product_id,'buyer_id':uid,'seller_id':product.get('seller_id'),'amount':amount,'currency':product.get('currency') or 'ZMW','status':'pending','payment_method':'flutterwave','payment_reference':tx_ref,'updated_at':utc_now()})
     if err or not order:
         flash('Marketplace order could not be created. Run MARKETPLACE.sql in Supabase first.','danger')
         return redirect(url_for('marketplace_product_view',product_id=product_id))
@@ -2368,25 +2219,7 @@ def marketplace_my():
     ids={str(x.get('product_id')) for x in orders+purchases if x.get('product_id')}
     allp=db_select('koja_marketplace_products',{'id':'in.('+','.join(ids)+')'} if ids else {'id':'eq.__none__'},limit=200) or []
     pm={str(p.get('id')):p for p in allp}
-    return render_page('My Marketplace',r'''<div class="hero"><h1>📦 My Marketplace</h1><div class="actions"><a class="btn" href="{{ url_for('marketplace_sell') }}">+ Sell Product</a><a class="btn secondary" href="{{ url_for('marketplace') }}">Browse Marketplace</a><a class="btn success" href="{{ url_for('marketplace_payout') }}">💰 Seller Payouts</a></div></div><div class="card"><h2>My Products</h2><table><tr><th>Product</th><th>Price</th><th>Status</th></tr>{% for p in products %}<tr><td>{{ p.title }}</td><td>{{ money(p.price,p.currency) if p.price|float>0 else 'FREE' }}</td><td>{{ 'Published' if p.is_published else 'Pending review' }}</td></tr>{% else %}<tr><td colspan="3">No products yet.</td></tr>{% endfor %}</table></div><div class="card"><h2>Sales / Orders</h2><table><tr><th>Product</th><th>Amount</th><th>Status</th><th>Communication</th></tr>{% for o in orders %}<tr><td>{{ pm.get(o.product_id,{}).get('title','Digital product') }}</td><td>{{ money(o.amount,o.currency) }}</td><td>{{ o.status }}</td><td><a class="btn secondary" href="{{ url_for('marketplace_order_message',order_id=o.id) }}">💬 Chat Buyer</a></td></tr>{% else %}<tr><td colspan="4">No orders yet.</td></tr>{% endfor %}</table></div><div class="card"><h2>My Purchases</h2><table><tr><th>Product</th><th>Amount</th><th>Status</th><th></th></tr>{% for o in purchases %}{% set pp=pm.get(o.product_id) %}<tr><td>{{ pp.title if pp else 'Digital product' }}</td><td>{{ money(o.amount,o.currency) }}</td><td>{{ o.status }}</td><td>{% if pp and o.status=='paid' %}<a class="btn success" href="{{ url_for('marketplace_download',product_id=pp.id) }}">Download</a>{% endif %} <a class="btn secondary" href="{{ url_for('marketplace_order_message',order_id=o.id) }}">💬 Chat Seller</a></td></tr>{% else %}<tr><td colspan="4">No purchases yet.</td></tr>{% endfor %}</table></div><div class="card"><h2>Seller Payout Requests</h2><table><tr><th>Seller</th><th>Amount</th><th>Method</th><th>Account</th><th>Status</th><th>Action</th></tr>{% for x in payouts %}<tr><td>{{ seller_names.get(x.seller_id,"KOJA Seller") }}</td><td>{{ money(x.amount,x.currency) }}</td><td>{{ x.method }}</td><td>{{ x.account_number }}<br>{{ x.account_name }}</td><td>{{ x.status }}</td><td>{% if x.status=="pending" %}<form method="post"><input type="hidden" name="item_id" value="{{ x.id }}"><button class="btn success" name="action" value="approve_payout">Approve</button><button class="btn danger" name="action" value="reject_payout">Reject</button></form>{% elif x.status=="approved" %}<form method="post"><input type="hidden" name="item_id" value="{{ x.id }}"><button class="btn" name="action" value="processing_payout">Processing</button></form>{% elif x.status=="processing" %}<form method="post"><input type="hidden" name="item_id" value="{{ x.id }}"><button class="btn success" name="action" value="paid_payout">Mark Paid</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="6">No payout requests.</td></tr>{% endfor %}</table><p class="small">Verify the transfer independently before marking a payout Paid.</p></div>''',products=products,orders=orders,purchases=purchases,pm=pm,money=marketplace_money)
-
-@app.route('/marketplace/payout', methods=['GET','POST'])
-@login_required
-def marketplace_payout():
-    user=current_user() or {}; uid=user.get('id'); bal=marketplace_seller_balance(uid)
-    if request.method=='POST':
-        try: amount=round(float(request.form.get('amount') or 0),2)
-        except Exception: amount=0
-        network=clean(request.form.get('network')).upper(); account=clean(request.form.get('account')); account_name=clean(request.form.get('account_name'))
-        if amount < MARKETPLACE_MIN_PAYOUT: flash(f'Minimum payout is {marketplace_money(MARKETPLACE_MIN_PAYOUT)}.','danger'); return redirect(url_for('marketplace_payout'))
-        if amount > bal['available']: flash('Requested payout is greater than your available seller balance.','danger'); return redirect(url_for('marketplace_payout'))
-        if network not in ('AIRTEL','MTN','ZAMTEL','BANK'): flash('Choose Airtel, MTN, Zamtel or Bank.','danger'); return redirect(url_for('marketplace_payout'))
-        if not account or not account_name: flash('Account/phone number and account name are required.','danger'); return redirect(url_for('marketplace_payout'))
-        _,err=db_insert('koja_marketplace_payouts',{'seller_id':uid,'amount':amount,'currency':'ZMW','status':'pending','method':network,'account_number':account,'account_name':account_name,'created_at':utc_now(),'updated_at':utc_now()})
-        flash('Payout request submitted for admin verification.' if not err else 'Payout request could not be saved. Run the updated MARKETPLACE.sql first.','success' if not err else 'danger')
-        return redirect(url_for('marketplace_payout'))
-    payouts=db_select('koja_marketplace_payouts',{'seller_id':uid},order='created_at.desc',limit=100) or []
-    return render_page('Marketplace Payouts',r'''<div class="hero"><h1>💰 Seller Payouts</h1><p>Track your marketplace earnings and request a payout. KOJA keeps a {{ commission }}% marketplace commission on paid digital-product sales.</p></div><div class="grid"><div class="card"><h3>Gross sales</h3><h2>{{ money(balance.gross,'ZMW') }}</h2></div><div class="card"><h3>Your net sales</h3><h2>{{ money(balance.net_sales,'ZMW') }}</h2></div><div class="card"><h3>Available</h3><h2>{{ money(balance.available,'ZMW') }}</h2></div><div class="card"><h3>Paid out</h3><h2>{{ money(balance.paid_out,'ZMW') }}</h2></div></div><div class="card"><h2>Request payout</h2><form method="post"><label>Amount (ZMW)</label><input name="amount" type="number" min="{{ min_payout }}" max="{{ balance.available }}" step="0.01" required><label>Payment method</label><select name="network"><option value="AIRTEL">Airtel Money</option><option value="MTN">MTN Mobile Money</option><option value="ZAMTEL">Zamtel Kwacha</option><option value="BANK">Bank</option></select><label>Phone / account number</label><input name="account" required><label>Account name</label><input name="account_name" required><button class="btn success" type="submit">Request Payout</button></form><p class="small">Payouts are reviewed and processed by KOJA administration. Never submit a password, PIN or OTP.</p></div><div class="card"><h2>Payout history</h2><table><tr><th>Date</th><th>Amount</th><th>Method</th><th>Status</th></tr>{% for x in payouts %}<tr><td>{{ x.created_at }}</td><td>{{ money(x.amount,x.currency) }}</td><td>{{ x.method }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="4">No payout requests yet.</td></tr>{% endfor %}</table></div>''',balance=bal,payouts=payouts,money=marketplace_money,commission=MARKETPLACE_COMMISSION_PERCENT,min_payout=MARKETPLACE_MIN_PAYOUT)
+    return render_page('My Marketplace',r'''<div class="hero"><h1>📦 My Marketplace</h1><div class="actions"><a class="btn" href="{{ url_for('marketplace_sell') }}">+ Sell Product</a><a class="btn secondary" href="{{ url_for('marketplace') }}">Browse Marketplace</a></div></div><div class="card"><h2>My Products</h2><table><tr><th>Product</th><th>Price</th><th>Status</th></tr>{% for p in products %}<tr><td>{{ p.title }}</td><td>{{ money(p.price,p.currency) if p.price|float>0 else 'FREE' }}</td><td>{{ 'Published' if p.is_published else 'Pending review' }}</td></tr>{% else %}<tr><td colspan="3">No products yet.</td></tr>{% endfor %}</table></div><div class="card"><h2>Sales / Orders</h2><table><tr><th>Product</th><th>Amount</th><th>Status</th></tr>{% for o in orders %}<tr><td>{{ pm.get(o.product_id,{}).get('title','Digital product') }}</td><td>{{ money(o.amount,o.currency) }}</td><td>{{ o.status }}</td></tr>{% else %}<tr><td colspan="3">No orders yet.</td></tr>{% endfor %}</table></div><div class="card"><h2>My Purchases</h2><table><tr><th>Product</th><th>Amount</th><th>Status</th><th></th></tr>{% for o in purchases %}{% set pp=pm.get(o.product_id) %}<tr><td>{{ pp.title if pp else 'Digital product' }}</td><td>{{ money(o.amount,o.currency) }}</td><td>{{ o.status }}</td><td>{% if pp and o.status=='paid' %}<a class="btn success" href="{{ url_for('marketplace_download',product_id=pp.id) }}">Download</a>{% endif %}</td></tr>{% else %}<tr><td colspan="4">No purchases yet.</td></tr>{% endfor %}</table></div>''',products=products,orders=orders,purchases=purchases,pm=pm,money=marketplace_money)
 
 @app.route("/professional-communication")
 @login_required
@@ -2993,7 +2826,7 @@ def driver_dashboard():
 {% elif d.get('status') == 'accepted' %}<form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.get('id'),action='picked_up') }}"><button class="btn">Picked Up</button></form>
 {% elif d.get('status') == 'picked_up' %}<form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.get('id'),action='in_transit') }}"><button class="btn">In Transit</button></form>
 {% elif d.get('status') == 'in_transit' %}<form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.get('id'),action='delivered') }}"><button class="btn success">Delivered</button></form>{% endif %}
-<a class="btn secondary" href="{{ url_for('track_delivery',tracking_code=d.get('tracking_code')) }}">Track Map</a><a class="btn secondary" href="{{ url_for('delivery_message',tracking_code=d.get('tracking_code')) }}">💬 Chat Customer</a><a class="btn secondary" href="{{ url_for('delivery_call',tracking_code=d.get('tracking_code'),mode='voice') }}">📞 Call</a><a class="btn secondary" href="{{ url_for('delivery_call',tracking_code=d.get('tracking_code'),mode='video') }}">🎥 Video</a>
+<a class="btn secondary" href="{{ url_for('track_delivery',tracking_code=d.get('tracking_code')) }}">Track Map</a>
 </div></div>
 {% else %}<p>No delivery requests yet.</p>{% endfor %}
 </div>
@@ -3367,7 +3200,9 @@ def deliveries():
         payload={
             "id":str(uuid.uuid4()),"customer_id":user["id"],"sender_id":user["id"],
             "pickup_location":clean(request.form.get("pickup_location")),
+            "pickup_address":clean(request.form.get("pickup_address") or request.form.get("pickup_location")),
             "destination":clean(request.form.get("destination")),
+            "delivery_address":clean(request.form.get("delivery_address") or request.form.get("destination")),
             "recipient_name":clean(request.form.get("recipient_name")),
             "recipient_phone":clean(request.form.get("recipient_phone")),
             "package_description":clean(request.form.get("package_description")),
@@ -3409,7 +3244,7 @@ def deliveries():
 <p>{{ d.get("pickup_location") }} → {{ d.get("destination") }}</p>
 <p>Status: <span class="badge">{{ d.get("status") or "requested" }}</span></p>
 <p>Driver: {{ d.get("driver_id") or "Not selected" }}</p>
-<a class="btn" href="{{ url_for('track_delivery',tracking_code=d.get('tracking_code')) }}">Track Delivery</a>{% if d.get('driver_id') %}<a class="btn secondary" href="{{ url_for('delivery_message',tracking_code=d.get('tracking_code')) }}">💬 Chat Driver</a>{% endif %}
+<a class="btn" href="{{ url_for('track_delivery',tracking_code=d.get('tracking_code')) }}">Track Delivery</a>
 {% if not d.get("driver_id") %}<a class="btn success" href="{{ url_for('drivers') }}">Find Driver</a>{% endif %}
 </div>
 {% else %}<p>No deliveries registered.</p>{% endfor %}
@@ -3426,7 +3261,7 @@ def track_delivery(tracking_code):
 <div class="card">
 <p><strong>Pickup:</strong> {{ delivery.get("pickup_location") }}</p>
 <p><strong>Destination:</strong> <span id="destination-text">{{ delivery.get("destination") }}</span></p>
-<p><strong>Status:</strong> <span id="delivery-status">{{ delivery.get("status") }}</span></p>{% if delivery.get('driver_id') %}<div class="actions" style="margin:12px 0"><a class="btn secondary" href="{{ url_for('delivery_message',tracking_code=delivery.get('tracking_code')) }}">💬 Chat</a><a class="btn secondary" href="{{ url_for('delivery_call',tracking_code=delivery.get('tracking_code'),mode='voice') }}">📞 Voice Call</a><a class="btn secondary" href="{{ url_for('delivery_call',tracking_code=delivery.get('tracking_code'),mode='video') }}">🎥 Video Call</a></div>{% endif %}
+<p><strong>Status:</strong> <span id="delivery-status">{{ delivery.get("status") }}</span></p>
 <div class="grid">
 <div class="stat"><div class="big" id="distance">—</div>Distance</div>
 <div class="stat"><div class="big" id="eta">—</div>ETA</div>
@@ -3906,15 +3741,10 @@ def admin_marketplace():
         elif action=='cancel':
             db_update('koja_marketplace_orders',{'id':item_id},{'status':'cancelled','updated_at':utc_now()})
             flash('Order cancelled.','success')
-        elif action in ('approve_payout','processing_payout','paid_payout','reject_payout'):
-            status_map={'approve_payout':'approved','processing_payout':'processing','paid_payout':'paid','reject_payout':'rejected'}
-            db_update('koja_marketplace_payouts',{'id':item_id},{'status':status_map[action],'updated_at':utc_now()})
-            flash('Payout status updated.','success')
         return redirect(url_for('admin_marketplace'))
     products=db_select('koja_marketplace_products',order='created_at.desc',limit=200) or []
     orders=db_select('koja_marketplace_orders',order='created_at.desc',limit=200) or []
-    payouts=db_select('koja_marketplace_payouts',order='created_at.desc',limit=200) or []
-    return render_page('Marketplace Admin',r'''<div class="hero"><h1>🛡️ Marketplace Admin</h1><p>Review products and manage marketplace orders.</p></div><div class="card"><h2>Products</h2><table><tr><th>Product</th><th>Price</th><th>Seller</th><th>Status</th><th>Action</th></tr>{% for p in products %}<tr><td>{{ p.title }}</td><td>{{ money(p.price,p.currency) }}</td><td>{{ seller_names.get(p.seller_id,'KOJA Seller') }}</td><td>{{ 'Published' if p.is_published else 'Pending' }}</td><td><form method="post" style="display:inline"><input type="hidden" name="item_id" value="{{ p.id }}"><button class="btn {{ 'warning' if p.is_published else 'success' }}" name="action" value="{{ 'unpublish' if p.is_published else 'publish' }}" type="submit">{{ 'Unpublish' if p.is_published else 'Publish' }}</button></form></td></tr>{% else %}<tr><td colspan="5">No products.</td></tr>{% endfor %}</table></div><div class="card"><h2>Orders</h2><table><tr><th>Product</th><th>Amount</th><th>Status</th><th>Action</th></tr>{% for o in orders %}<tr><td>{{ product_names.get(o.product_id,'Digital product') }}</td><td>{{ money(o.amount,o.currency) }}</td><td>{{ o.status }}</td><td>{% if o.status=='pending' %}<form method="post"><input type="hidden" name="item_id" value="{{ o.id }}"><button class="btn success" name="action" value="paid" type="submit">Mark Paid</button><button class="btn danger" name="action" value="cancel" type="submit">Cancel</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="4">No orders.</td></tr>{% endfor %}</table></div>''',products=products,orders=orders,seller_names={str(p.get('seller_id')):marketplace_seller_name(p.get('seller_id')) for p in products},product_names={str(p.get('id')):p.get('title') for p in products},payouts=payouts,money=marketplace_money)
+    return render_page('Marketplace Admin',r'''<div class="hero"><h1>🛡️ Marketplace Admin</h1><p>Review products and manage marketplace orders.</p></div><div class="card"><h2>Products</h2><table><tr><th>Product</th><th>Price</th><th>Seller</th><th>Status</th><th>Action</th></tr>{% for p in products %}<tr><td>{{ p.title }}</td><td>{{ money(p.price,p.currency) }}</td><td>{{ seller_names.get(p.seller_id,'KOJA Seller') }}</td><td>{{ 'Published' if p.is_published else 'Pending' }}</td><td><form method="post" style="display:inline"><input type="hidden" name="item_id" value="{{ p.id }}"><button class="btn {{ 'warning' if p.is_published else 'success' }}" name="action" value="{{ 'unpublish' if p.is_published else 'publish' }}" type="submit">{{ 'Unpublish' if p.is_published else 'Publish' }}</button></form></td></tr>{% else %}<tr><td colspan="5">No products.</td></tr>{% endfor %}</table></div><div class="card"><h2>Orders</h2><table><tr><th>Product</th><th>Amount</th><th>Status</th><th>Action</th></tr>{% for o in orders %}<tr><td>{{ product_names.get(o.product_id,'Digital product') }}</td><td>{{ money(o.amount,o.currency) }}</td><td>{{ o.status }}</td><td>{% if o.status=='pending' %}<form method="post"><input type="hidden" name="item_id" value="{{ o.id }}"><button class="btn success" name="action" value="paid" type="submit">Mark Paid</button><button class="btn danger" name="action" value="cancel" type="submit">Cancel</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="4">No orders.</td></tr>{% endfor %}</table></div>''',products=products,orders=orders,seller_names={str(p.get('seller_id')):marketplace_seller_name(p.get('seller_id')) for p in products},product_names={str(p.get('id')):p.get('title') for p in products},money=marketplace_money)
 
 @app.route("/admin")
 @admin_required
@@ -4694,12 +4524,6 @@ def connect_messages(conversation_id):
         if not body:return jsonify(error='Empty message'),400
         row,err=db_insert('koja_messages',{'id':str(uuid.uuid4()),'conversation_id':conversation_id,'sender_id':uid,'message_type':'text','body':body,'created_at':utc_now()})
         if err:return jsonify(error=err),500
-        members=db_select('koja_conversation_members',filters={'conversation_id':conversation_id},limit=20)
-        for member in members:
-            target=str(member.get('user_id') or '')
-            if target and target!=str(uid):
-                db_insert('koja_notifications',{'user_id':target,'notification_type':'message','title':'New KOJA message','body':f'{_profile_name(uid)} sent you a message.','related_id':conversation_id})
-        db_update('koja_conversations',{'id':conversation_id},{'updated_at':utc_now()})
         return jsonify(message=row)
     rows=db_select('koja_messages',filters={'conversation_id':conversation_id},order='created_at.asc',limit=300)
     for m in rows:m['sender_name']=_profile_name(m.get('sender_id'))
@@ -4718,13 +4542,6 @@ def connect_upload(conversation_id):
     path=f'connect/audio/{uuid.uuid4().hex}.webm'; r=requests.post(sb_storage_url(path),headers=sb_headers({'Content-Type':'audio/webm','x-upsert':'true'}),data=data,timeout=60)
     if not r.ok:return jsonify(error=r.text[:500]),500
     row,err=db_insert('koja_messages',{'id':str(uuid.uuid4()),'conversation_id':conversation_id,'sender_id':uid,'message_type':'audio','file_url':sb_storage_url(path),'body':'Voice message','created_at':utc_now()})
-    if not err:
-        members=db_select('koja_conversation_members',filters={'conversation_id':conversation_id},limit=20)
-        for member in members:
-            target=str(member.get('user_id') or '')
-            if target and target!=str(uid):
-                db_insert('koja_notifications',{'user_id':target,'notification_type':'message','title':'New KOJA voice message','body':f'{_profile_name(uid)} sent you a voice message.','related_id':conversation_id})
-        db_update('koja_conversations',{'id':conversation_id},{'updated_at':utc_now()})
     return jsonify(message=row) if not err else (jsonify(error=err),500)
 
 @app.route('/connect/status',methods=['GET','POST'])
