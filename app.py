@@ -371,7 +371,6 @@ def create_local_profile(user_id, email, full_name="", phone=""):
         "id": str(user_id),
         "email": email,
         "full_name": full_name or email,
-        "name": full_name or email,
         "phone": phone or None,
         "role": "student",
         "is_admin": False,
@@ -848,7 +847,6 @@ def register():
         user_id = str(uuid.uuid4())
         payload = {
             "id": user_id,
-            "name": full_name,
             "full_name": full_name,
             "email": email,
             "phone": phone or None,
@@ -860,18 +858,13 @@ def register():
         }
 
         row, error = db_insert("profiles", payload)
+        # Do not attempt to write to any legacy/nonexistent table after a
+        # profiles insert failure. The current KOJA schema stores accounts in
+        # public.profiles; the original database error must be preserved so it
+        # can be diagnosed correctly.
         if error:
-            old = {
-                "id": user_id,
-                "full_name": full_name,
-                "email": email,
-                "phone": phone or None,
-                "password_hash": payload["password_hash"],
-            }
-            row, error = db_insert("KOJA ZM", old)
-
-        if error:
-            flash("Registration failed. Check Render logs for the exact Supabase column error.","danger")
+            logger.error("Registration failed: %s", error)
+            flash(f"Registration failed: {str(error)[:500]}","danger")
             return redirect(url_for("register"))
 
         login_user(row or payload)
@@ -3054,8 +3047,16 @@ def admin_approval_action(table, item_id):
         recipient, profile = get_assignment_recipient(row or first_row(table, {"id": item_id}) or {})
         name = (profile or {}).get("full_name") or "User"
     else:
+        # Supabase/PostgREST PATCH responses are arrays when
+        # return=representation is used. Normalize to one record before
+        # reading fields so approval notifications never crash with
+        # AttributeError: 'list' object has no attribute 'get'.
         current = row or first_row(table, {"id": item_id}) or {}
-        uid = current.get("user_id") or current.get("owner_id") or current.get("client_id")
+        if isinstance(current, list):
+            current = current[0] if current else {}
+        if not isinstance(current, dict):
+            current = {}
+        uid = current.get("user_id") or current.get("owner_id") or current.get("client_id") or current.get("provider_id")
         if uid:
             profile = first_row("profiles", {"id": uid}) or {}
             recipient = profile.get("email")
