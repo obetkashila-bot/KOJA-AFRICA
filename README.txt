@@ -54,3 +54,13 @@ Run MARKETPLACE.sql once in Supabase SQL Editor.
 
 IMPORTANT PAYMENT NOTE:
 Before taking real money, integrate and verify a payment provider (for example a supported mobile-money/card gateway) and only change an order to paid after a trusted server-side payment confirmation/webhook.
+
+MARKETPLACE MEDIA POSTS — 2026-09-03
+- Marketplace now includes a social-style Marketplace Posts feed.
+- Logged-in users can publish text posts with either one image or one video.
+- Supported post images: JPG, JPEG, PNG, WEBP.
+- Supported post videos: MP4, WEBM, MOV.
+- Posts can optionally link to one of the user's marketplace products.
+- Images/videos are served through KOJA's server-side media proxy, so private Supabase storage buckets work.
+- Run the updated MARKETPLACE.sql in Supabase before using Marketplace Posts.
+- Maximum media upload follows the app's 15 MB limit.

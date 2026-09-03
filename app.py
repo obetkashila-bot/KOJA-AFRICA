@@ -113,7 +113,7 @@ GSC_SERVICE_ACCOUNT_JSON = os.getenv("GSC_SERVICE_ACCOUNT_JSON", "").strip()
 
 ALLOWED_EXTENSIONS = {
     "pdf", "doc", "docx", "txt",
-    "jpg", "jpeg", "png", "webp"
+    "jpg", "jpeg", "png", "webp", "mp4", "webm", "mov"
 }
 
 # ============================================================
@@ -1912,6 +1912,22 @@ create table if not exists public.koja_marketplace_orders (
 create index if not exists koja_marketplace_orders_buyer_idx on public.koja_marketplace_orders(buyer_id, created_at desc);
 create index if not exists koja_marketplace_orders_seller_idx on public.koja_marketplace_orders(seller_id, created_at desc);
 create unique index if not exists koja_marketplace_free_order_unique on public.koja_marketplace_orders(product_id, buyer_id) where amount = 0;
+
+create table if not exists public.koja_marketplace_posts (
+ id uuid primary key default gen_random_uuid(),
+ author_id uuid not null,
+ product_id uuid references public.koja_marketplace_products(id) on delete set null,
+ title text,
+ body text not null,
+ media_url text,
+ media_type text,
+ created_at timestamptz not null default now(),
+ updated_at timestamptz not null default now(),
+ is_published boolean not null default true
+);
+create index if not exists koja_marketplace_posts_feed_idx on public.koja_marketplace_posts(is_published, created_at desc);
+create index if not exists koja_marketplace_posts_author_idx on public.koja_marketplace_posts(author_id, created_at desc);
+create index if not exists koja_marketplace_posts_product_idx on public.koja_marketplace_posts(product_id, created_at desc);
 '''
 
 MARKETPLACE_CATEGORIES = [
@@ -1943,6 +1959,91 @@ def marketplace_has_access(product,user_id):
     except Exception: pass
     return bool(first_row('koja_marketplace_orders',{'product_id':product.get('id'),'buyer_id':user_id,'status':'eq.paid'}))
 
+def marketplace_post_author_name(user_id):
+    return marketplace_seller_name(user_id)
+
+def marketplace_post_storage_path(media_url):
+    media_url=clean(media_url); storage_path=''
+    public_prefix=f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/" if SUPABASE_URL else ''
+    if public_prefix and media_url.startswith(public_prefix):
+        rem=media_url[len(public_prefix):]
+        bp=f"{STORAGE_BUCKET}/"
+        if rem.startswith(bp): storage_path=unquote(rem[len(bp):])
+    if not storage_path:
+        storage_path=media_url.lstrip('/')
+        if storage_path.startswith(f"{STORAGE_BUCKET}/"):
+            storage_path=storage_path[len(STORAGE_BUCKET)+1:]
+    return storage_path
+
+@app.route('/marketplace/post-media/<post_id>')
+def marketplace_post_media(post_id):
+    post=first_row('koja_marketplace_posts', {'id':post_id})
+    if not post or not post.get('is_published') or not post.get('media_url'): abort(404)
+    storage_path=marketplace_post_storage_path(post.get('media_url'))
+    if not storage_path or not supabase_configured(): abort(404)
+    try:
+        r=requests.get(sb_storage_url(storage_path),headers=sb_headers(),timeout=30)
+        if not r.ok: abort(404)
+        response=send_file(io.BytesIO(r.content),mimetype=r.headers.get('Content-Type') or post.get('media_type') or 'application/octet-stream',max_age=3600)
+        response.headers['Cache-Control']='public, max-age=3600'
+        return response
+    except Exception:
+        abort(404)
+
+@app.route('/marketplace/post',methods=['GET','POST'])
+@login_required
+def marketplace_post_create():
+    if request.method=='POST':
+        title=clean(request.form.get('title'))
+        body=clean(request.form.get('body'))
+        product_id=clean(request.form.get('product_id')) or None
+        if not body:
+            flash('Write something for your marketplace post.','danger')
+            return redirect(url_for('marketplace_post_create'))
+        if product_id:
+            product=marketplace_product(product_id)
+            if not product or (not product.get('is_published') and str(product.get('seller_id'))!=str((current_user() or {}).get('id'))):
+                product_id=None
+        image=request.files.get('image')
+        video=request.files.get('video')
+        if image and image.filename and video and video.filename:
+            flash('Choose an image OR a video for one post, not both.','danger')
+            return redirect(url_for('marketplace_post_create'))
+        media_url=None; media_type=None
+        media=image if image and image.filename else video if video and video.filename else None
+        if media:
+            ext=media.filename.lower().rsplit('.',1)[-1] if '.' in media.filename else ''
+            if image and image.filename:
+                if ext not in {'jpg','jpeg','png','webp'}:
+                    flash('Marketplace images must be JPG, JPEG, PNG or WEBP.','danger')
+                    return redirect(url_for('marketplace_post_create'))
+                folder='marketplace/posts/images'; media_type='image'
+            else:
+                if ext not in {'mp4','webm','mov'}:
+                    flash('Marketplace videos must be MP4, WEBM or MOV.','danger')
+                    return redirect(url_for('marketplace_post_create'))
+                folder='marketplace/posts/videos'; media_type='video'
+            uploaded,err=upload_storage(media,folder)
+            if err:
+                flash(f'Media upload failed: {err}','danger')
+                return redirect(url_for('marketplace_post_create'))
+            media_url=(uploaded or {}).get('url')
+        _,err=db_insert('koja_marketplace_posts',{
+            'author_id':(current_user() or {}).get('id'),
+            'product_id':product_id,
+            'title':title or None,
+            'body':body,
+            'media_url':media_url,
+            'media_type':media_type,
+            'is_published':True,
+            'updated_at':utc_now()
+        })
+        flash('Marketplace post published.' if not err else 'Post could not be saved. Run the updated MARKETPLACE.sql in Supabase.','success' if not err else 'danger')
+        return redirect(url_for('marketplace'))
+    uid=(current_user() or {}).get('id')
+    products=db_select('koja_marketplace_products',{'seller_id':uid},order='created_at.desc',limit=100) or []
+    return render_page('Create Marketplace Post',r'''<div class="hero"><h1>📣 Create Marketplace Post</h1><p>Promote a product, announce an offer, share an image, or publish a marketplace video.</p></div><div class="card"><form method="post" enctype="multipart/form-data"><label>Post title (optional)</label><input name="title" maxlength="180" placeholder="e.g. New Grade 12 Revision Guide available"><label>Post</label><textarea name="body" maxlength="10000" required placeholder="Tell buyers what you are offering..."></textarea><label>Link to your product (optional)</label><select name="product_id"><option value="">No product link</option>{% for p in products %}<option value="{{ p.id }}">{{ p.title }}</option>{% endfor %}</select><div class="grid"><div><label>Image (optional)</label><input type="file" name="image" accept="image/jpeg,image/png,image/webp"></div><div><label>Video (optional)</label><input type="file" name="video" accept="video/mp4,video/webm,video/quicktime"></div></div><button class="btn" type="submit">🚀 Publish Post</button></form><p class="small">Maximum media upload: {{ max_mb }} MB. Use either an image or a video per post.</p></div>''',products=products,max_mb=MAX_UPLOAD_MB)
+
 @app.route('/marketplace')
 def marketplace():
     q=clean(request.args.get('q')); category=clean(request.args.get('category'))
@@ -1951,11 +2052,16 @@ def marketplace():
         n=q.lower(); rows=[r for r in rows if n in str(r.get('title') or '').lower() or n in str(r.get('description') or '').lower() or n in str(r.get('category') or '').lower()]
     if category: rows=[r for r in rows if str(r.get('category') or '')==category]
     products=[{**r,'seller_name':marketplace_seller_name(r.get('seller_id')),'price_display':marketplace_money(r.get('price'),r.get('currency') or 'ZMW')} for r in rows]
+    post_rows=db_select('koja_marketplace_posts',{'is_published':'eq.true'},order='created_at.desc',limit=50) or []
+    pids=[str(x.get('product_id')) for x in post_rows if x.get('product_id')]
+    post_products={str(p.get('id')):p for p in (db_select('koja_marketplace_products',{'id':'in.('+','.join(pids)+')'},limit=100) if pids else [])}
+    posts=[{**r,'author_name':marketplace_post_author_name(r.get('author_id')),'product':post_products.get(str(r.get('product_id')))} for r in post_rows]
     return render_page('Marketplace',r'''
 <div class="hero"><h1>🛒 KOJA Digital Marketplace</h1><p>Discover, buy and sell digital products across Africa — ebooks, courses, research resources, templates, software, graphics, audio and more.</p><div class="actions"><a class="btn" href="{{ url_for('marketplace_sell') if user else url_for('login', next='/marketplace/sell') }}">💼 Sell a Digital Product</a>{% if user %}<a class="btn secondary" href="{{ url_for('marketplace_my') }}">📦 My Marketplace</a>{% endif %}</div></div>
 <div class="card"><form method="get"><div class="grid"><div><label>Search</label><input name="q" value="{{ q }}" placeholder="Search digital products..."></div><div><label>Category</label><select name="category"><option value="">All categories</option>{% for c in categories %}<option value="{{ c }}" {% if category==c %}selected{% endif %}>{{ c }}</option>{% endfor %}</select></div></div><button class="btn" type="submit">🔎 Search Marketplace</button></form></div>
+<div class="card"><div class="actions" style="justify-content:space-between"><h2 style="margin:0">📣 Marketplace Posts</h2>{% if user %}<a class="btn" href="{{ url_for('marketplace_post_create') }}">+ Post</a>{% endif %}</div>{% for p in posts %}<article class="card" style="margin-top:14px"><div class="small">👤 {{ p.author_name }} · {{ p.created_at }}</div>{% if p.title %}<h3 style="margin:8px 0">{{ p.title }}</h3>{% endif %}<p style="white-space:pre-wrap;line-height:1.6">{{ p.body }}</p>{% if p.media_url and p.media_type=='image' %}<img src="{{ url_for('marketplace_post_media', post_id=p.id) }}" alt="Marketplace post image" loading="lazy" style="display:block;width:100%;max-height:620px;object-fit:contain;border-radius:12px;background:var(--bg)">{% elif p.media_url and p.media_type=='video' %}<video controls preload="metadata" playsinline style="display:block;width:100%;max-height:620px;border-radius:12px;background:#000"><source src="{{ url_for('marketplace_post_media', post_id=p.id) }}"></video>{% endif %}{% if p.product and p.product.is_published %}<div class="actions" style="margin-top:12px"><a class="btn" href="{{ url_for('marketplace_product_view', product_id=p.product.id) }}">🛒 View {{ p.product.title }}</a></div>{% endif %}</article>{% else %}<p class="small">No marketplace posts yet. Publish the first one.</p>{% endfor %}</div>
 <div class="grid">{% for p in products %}<article class="card"><div style="aspect-ratio:16/9;background:var(--bg);border-radius:10px;overflow:hidden;display:grid;place-items:center">{% if p.cover_url %}<img src="{{ url_for('marketplace_cover', product_id=p.id) }}" alt="{{ p.title }}" loading="lazy" style="width:100%;height:100%;object-fit:cover">{% else %}<div style="font-size:52px">📄</div>{% endif %}</div><div class="small" style="margin-top:10px">{{ p.category }} · by {{ p.seller_name }}</div><h2 style="margin:6px 0">{{ p.title }}</h2><p style="min-height:48px">{{ p.description[:180] }}{% if p.description|length>180 %}…{% endif %}</p><strong style="font-size:20px">{{ p.price_display if p.price|float > 0 else 'FREE' }}</strong><div class="actions" style="margin-top:12px"><a class="btn" href="{{ url_for('marketplace_product_view', product_id=p.id) }}">View Product</a></div></article>{% else %}<div class="card"><h3>No products found yet.</h3><p>Be the first seller to publish a digital product.</p></div>{% endfor %}</div>
-''',products=products,q=q,category=category,categories=MARKETPLACE_CATEGORIES)
+''',products=products,posts=posts,q=q,category=category,categories=MARKETPLACE_CATEGORIES)
 
 @app.route('/marketplace/product/<product_id>')
 def marketplace_product_view(product_id):

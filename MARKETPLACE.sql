@@ -37,3 +37,20 @@ create table if not exists public.koja_marketplace_orders (
 create index if not exists koja_marketplace_orders_buyer_idx on public.koja_marketplace_orders(buyer_id, created_at desc);
 create index if not exists koja_marketplace_orders_seller_idx on public.koja_marketplace_orders(seller_id, created_at desc);
 create unique index if not exists koja_marketplace_free_order_unique on public.koja_marketplace_orders(product_id, buyer_id) where amount = 0;
+
+-- Marketplace social posts: sellers/users can publish product-related image/video posts.
+create table if not exists public.koja_marketplace_posts (
+ id uuid primary key default gen_random_uuid(),
+ author_id uuid not null,
+ product_id uuid references public.koja_marketplace_products(id) on delete set null,
+ title text,
+ body text not null,
+ media_url text,
+ media_type text,
+ created_at timestamptz not null default now(),
+ updated_at timestamptz not null default now(),
+ is_published boolean not null default true
+);
+create index if not exists koja_marketplace_posts_feed_idx on public.koja_marketplace_posts(is_published, created_at desc);
+create index if not exists koja_marketplace_posts_author_idx on public.koja_marketplace_posts(author_id, created_at desc);
+create index if not exists koja_marketplace_posts_product_idx on public.koja_marketplace_posts(product_id, created_at desc);
