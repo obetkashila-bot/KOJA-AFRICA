@@ -1,4 +1,4 @@
-KOJA AFRICA - FINAL RESEARCH PORTAL + AUTH + DOCTOR FIX
+KOJA AFRICA - FINAL RESEARCH PORTAL + AUTH + DOCTOR + AI FIX
 
 1. Preserved the Supabase Auth-first registration flow and existing auth trigger architecture.
 2. Preserved the /doctors provider_id -> id fallback fix.
@@ -8,5 +8,9 @@ KOJA AFRICA - FINAL RESEARCH PORTAL + AUTH + DOCTOR FIX
 6. Kept /research?q=... search-result URLs noindex to avoid indexing large numbers of query/filter variants.
 7. Improved source-summary wording so non-AI fallback output is presented as research highlights, not as an AI summary.
 8. Added structured data for the research hub and topic pages.
-9. No database SQL changes are required for this upgrade.
-10. app.py remains the required Render entrypoint for gunicorn app:app.
+9. Replaced the old Chat Completions research-summary call with the OpenAI Responses API.
+10. AI reads OPENAI_API_KEY from the server environment and never exposes it to the browser.
+11. AI is instructed to synthesize only retrieved sources and use source-number citations.
+12. AI failure or missing credentials automatically falls back to source-based highlights.
+13. No database SQL changes are required for this upgrade.
+14. app.py remains the required Render entrypoint for gunicorn app:app.

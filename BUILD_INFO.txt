@@ -1,5 +1,5 @@
-KOJA AFRICA - RESEARCH PORTAL UPGRADE
-Version: 2026.09.03-RESEARCH-PORTAL
+KOJA AFRICA - RESEARCH PORTAL + AI INTEGRATION
+Version: 2026.09.03-RESEARCH-AI
 
 Includes:
 - Supabase Auth/profile trigger registration fix
@@ -11,6 +11,10 @@ Includes:
 - Research source verification language and polished fallback highlights
 - JSON-LD WebSite/SearchAction on the research hub
 - JSON-LD CollectionPage on research topic pages
+- OpenAI Responses API integration for evidence-grounded research summaries
+- Server-side API key handling through OPENAI_API_KEY
+- Safe AI fallback when the API is unavailable or not configured
+- AI_SETUP.md deployment instructions
 
 File entrypoint:
 app.py

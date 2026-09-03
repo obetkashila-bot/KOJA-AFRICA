@@ -1386,22 +1386,79 @@ def _research_filter(results, source='all', year=None, sort='relevance'):
     return results
 
 def research_ai_summary(query, results):
-    if not results: return ''
-    api_key=os.getenv('AI_API_KEY') or os.getenv('OPENAI_API_KEY'); endpoint=os.getenv('AI_API_URL','https://api.openai.com/v1/chat/completions'); model=os.getenv('AI_MODEL','gpt-4o-mini')
-    source_text='\n\n'.join(f"[{i+1}] {r.get('title','')} ({r.get('source','')})\n{r.get('snippet','')[:1200]}" for i,r in enumerate(results[:10]))
+    """Generate an evidence-grounded research synthesis with the OpenAI Responses API.
+
+    The API key is read only from the server environment. If AI is unavailable,
+    KOJA keeps the existing source-based fallback instead of failing the search.
+    """
+    if not results:
+        return ''
+
+    api_key = os.getenv('OPENAI_API_KEY') or os.getenv('AI_API_KEY')
+    endpoint = os.getenv('AI_API_URL', 'https://api.openai.com/v1/responses')
+    model = os.getenv('AI_MODEL', 'gpt-5.6-sol')
+
+    source_text = '\n\n'.join(
+        f"[{i+1}] {r.get('title','')} ({r.get('source','')})\n"
+        f"Year: {r.get('year') or 'n/a'} | Citations: {r.get('citations') or 0}\n"
+        f"{r.get('snippet','')[:1600]}"
+        for i, r in enumerate(results[:10])
+    )
+
     if api_key:
         try:
-            payload={'model':model,'temperature':0.2,'max_tokens':500,'messages':[{'role':'system','content':'You are KOJA Research. Summarize only the supplied sources. Do not invent facts. Cite source numbers like [1] [2]. State when evidence is limited.'},{'role':'user','content':f'Question: {query}\n\nSources:\n{source_text}\n\nWrite a concise research summary with 3-5 key findings and a short evidence note.'}]}
-            r=requests.post(endpoint,json=payload,timeout=25,headers={'Authorization':'Bearer '+api_key,'Content-Type':'application/json'})
-            if r.ok:
-                text=((r.json().get('choices') or [{}])[0].get('message') or {}).get('content','').strip()
-                if text: return text
-        except Exception as exc: logger.warning('AI research summary failed: %s',exc)
-    highlights=[]
+            payload = {
+                'model': model,
+                'instructions': (
+                    'You are KOJA Research, an evidence-grounded research assistant. '
+                    'Use only the supplied retrieved sources. Do not invent facts, citations, '
+                    'authors, dates, statistics or conclusions. Cite claims using source numbers '
+                    'such as [1] or [2]. If the evidence is incomplete or conflicting, say so. '
+                    'Return a concise synthesis with: Key findings, Evidence notes, and Research gap.'
+                ),
+                'input': (
+                    f'User research question: {query}\n\n'
+                    f'Retrieved sources:\n{source_text}\n\n'
+                    'Synthesize the evidence for the user. Keep it concise and academically useful.'
+                ),
+                'temperature': 0.2,
+                'max_output_tokens': 700,
+                'store': False,
+            }
+            response = requests.post(
+                endpoint,
+                json=payload,
+                timeout=30,
+                headers={
+                    'Authorization': 'Bearer ' + api_key,
+                    'Content-Type': 'application/json',
+                },
+            )
+            if response.ok:
+                data = response.json()
+                text = (data.get('output_text') or '').strip()
+                if not text:
+                    chunks = []
+                    for item in data.get('output') or []:
+                        if item.get('type') != 'message':
+                            continue
+                        for content in item.get('content') or []:
+                            if content.get('type') == 'output_text' and content.get('text'):
+                                chunks.append(content['text'])
+                    text = '\n'.join(chunks).strip()
+                if text:
+                    return text
+            else:
+                logger.warning('OpenAI Research API returned %s: %s', response.status_code, response.text[:500])
+        except Exception as exc:
+            logger.warning('AI research summary failed: %s', exc)
+
+    highlights = []
     for r in results[:5]:
-        s=clean(r.get('snippet','')).replace('\n',' ')
-        if s: highlights.append(f"{r.get('title','Source')}: {s[:300]}")
-    return 'Source-based research highlights:\n\n'+'\n\n'.join(highlights)
+        snippet = clean(r.get('snippet','')).replace('\n', ' ')
+        if snippet:
+            highlights.append(f"{r.get('title','Source')}: {snippet[:300]}")
+    return 'Source-based research highlights:\n\n' + '\n\n'.join(highlights)
 
 RESEARCH_TOPICS = {
     "education": ("Education Research in Africa", "Explore research sources on education, learning, schools, teachers, students and education policy in Africa.", ["education Africa", "education policy Africa"]),
