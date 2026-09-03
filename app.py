@@ -60,7 +60,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.02-PUBLISHING-FIXED"
+APP_VERSION = "2026.09.03-RESEARCH-V2"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -835,42 +835,92 @@ def dashboard():
 """,questions_count=questions_count,deliveries_count=deliveries_count,appointments_count=appointments_count)
 
 # ============================================================
-# RESEARCH ENGINE
+# KOJA RESEARCH ENGINE V2
+# Web + Academic + KOJA Documents + filters + AI-assisted summaries
 # ============================================================
+
+def _research_year(value):
+    try:
+        y=int(value)
+        return y if 1000 <= y <= 2100 else None
+    except Exception:
+        return None
 
 def research_web(query, limit=8):
     q=clean(query)
     if not q: return []
     out=[]
     try:
-        r=requests.get('https://api.duckduckgo.com/',params={'q':q,'format':'json','no_html':1},timeout=10,headers={'User-Agent':'KOJA-AFRICA-Research/1.0'})
+        r=requests.get('https://api.duckduckgo.com/',params={'q':q,'format':'json','no_html':1,'skip_disambig':1},timeout=10,headers={'User-Agent':'KOJA-AFRICA-Research/2.0'})
         if r.ok:
             d=r.json()
             if d.get('AbstractText'):
-                out.append({'source':'Web','title':d.get('Heading') or q,'url':d.get('AbstractURL') or 'https://duckduckgo.com/?q='+quote(q),'snippet':d.get('AbstractText')})
+                out.append({'source':'Web','title':d.get('Heading') or q,'url':d.get('AbstractURL') or 'https://duckduckgo.com/?q='+quote(q),'snippet':d.get('AbstractText'),'year':None})
             for item in d.get('RelatedTopics',[]):
                 if item.get('FirstURL') and item.get('Text'):
-                    out.append({'source':'Web','title':item.get('Text'),'url':item.get('FirstURL'),'snippet':item.get('Text')})
-    except Exception as exc:
-        logger.warning('Web research failed: %s',exc)
+                    out.append({'source':'Web','title':item.get('Text'),'url':item.get('FirstURL'),'snippet':item.get('Text'),'year':None})
+    except Exception as exc: logger.warning('Web research failed: %s',exc)
     return out[:limit]
 
-def research_wikipedia(query):
+def research_wikipedia(query, limit=6):
+    q=clean(query)
+    if not q: return []
     try:
-        r=requests.get('https://en.wikipedia.org/w/api.php',params={'action':'query','list':'search','srsearch':query,'srlimit':5,'format':'json','utf8':1},timeout=10,headers={'User-Agent':'KOJA-AFRICA-Research/1.0'})
+        r=requests.get('https://en.wikipedia.org/w/api.php',params={'action':'query','list':'search','srsearch':q,'srlimit':limit,'format':'json','utf8':1},timeout=10,headers={'User-Agent':'KOJA-AFRICA-Research/2.0'})
         if not r.ok: return []
         out=[]
         for x in r.json().get('query',{}).get('search',[]):
-            title=x.get('title','')
-            out.append({'source':'Wikipedia','title':title,'url':'https://en.wikipedia.org/wiki/'+quote(title.replace(' ','_')),'snippet':clean(x.get('snippet','')).replace('<span class="searchmatch">','').replace('</span>','')})
+            title=clean(x.get('title',''))
+            if title:
+                snippet=clean(x.get('snippet','')).replace('<span class="searchmatch">','').replace('</span>','')
+                out.append({'source':'Wikipedia','title':title,'url':'https://en.wikipedia.org/wiki/'+quote(title.replace(' ','_')),'snippet':snippet,'year':None})
         return out
-    except Exception as exc:
-        logger.warning('Wikipedia research failed: %s',exc)
-        return []
+    except Exception as exc: logger.warning('Wikipedia research failed: %s',exc); return []
 
-def research_scholar(query):
+def research_openalex(query, year=None, limit=8):
+    q=clean(query)
+    if not q: return []
     try:
-        r=requests.get('https://api.crossref.org/works',params={'query.bibliographic':query,'rows':8,'select':'title,author,published,URL,DOI'},timeout=12,headers={'User-Agent':'KOJA-AFRICA-Research/1.0'})
+        params={'search':q,'per-page':limit}
+        if year: params['filter']=f'publication_year:{year}'
+        mail=os.getenv('RESEARCH_EMAIL','').strip()
+        if mail: params['mailto']=mail
+        r=requests.get('https://api.openalex.org/works',params=params,timeout=12,headers={'User-Agent':'KOJA-AFRICA-Research/2.0'})
+        if not r.ok: return []
+        out=[]
+        for x in r.json().get('results',[]):
+            title=clean(x.get('display_name') or '')
+            if not title: continue
+            yr=x.get('publication_year'); authors=[]
+            for a in x.get('authorships') or []:
+                n=clean((a.get('author') or {}).get('display_name',''))
+                if n: authors.append(n)
+            abstract=''; inv=x.get('abstract_inverted_index') or {}
+            if inv:
+                words=[]
+                for word,positions in inv.items():
+                    for pos in positions: words.append((pos,word))
+                abstract=' '.join(w for _,w in sorted(words))
+            url=x.get('doi') or (x.get('primary_location') or {}).get('landing_page_url') or x.get('id') or ''
+            meta=[]
+            if authors: meta.append('Authors: '+', '.join(authors[:6]))
+            if yr: meta.append(str(yr))
+            cited=x.get('cited_by_count') or 0
+            if cited: meta.append(f'Citations: {cited}')
+            out.append({'source':'OpenAlex','title':title,'url':url,'snippet':(' • '.join(meta)+('\n'+abstract[:700] if abstract else '')).strip(),'year':yr,'citations':cited})
+        return out
+    except Exception as exc: logger.warning('OpenAlex research failed: %s',exc); return []
+
+def research_crossref(query, year=None, author=None, limit=8):
+    q=clean(query)
+    if not q: return []
+    try:
+        params={'query.bibliographic':q,'rows':limit,'select':'title,author,published,URL,DOI,container-title,type,is-referenced-by-count'}
+        if year: params['filter']=f'from-pub-date:{year}-01-01,until-pub-date:{year}-12-31'
+        if author: params['query.author']=clean(author)
+        mail=os.getenv('RESEARCH_EMAIL','').strip()
+        if mail: params['mailto']=mail
+        r=requests.get('https://api.crossref.org/works',params=params,timeout=12,headers={'User-Agent':'KOJA-AFRICA-Research/2.0'})
         if not r.ok: return []
         out=[]
         for x in r.json().get('message',{}).get('items',[]):
@@ -878,22 +928,87 @@ def research_scholar(query):
             if not title: continue
             authors=[]
             for a in x.get('author') or []:
-                name=clean(' '.join(filter(None,[a.get('given'),a.get('family')])))
-                if name: authors.append(name)
+                n=clean(' '.join(filter(None,[a.get('given'),a.get('family')])))
+                if n: authors.append(n)
             parts=(x.get('published') or {}).get('date-parts') or []
-            year=parts[0][0] if parts and parts[0] else ''
+            yr=parts[0][0] if parts and parts[0] else None
             url=x.get('URL') or (('https://doi.org/'+x.get('DOI')) if x.get('DOI') else '')
-            out.append({'source':'Scholarly','title':title,'url':url,'snippet':('Authors: '+', '.join(authors)+(' • ' if authors else '')+str(year)).strip()})
+            journal=clean((x.get('container-title') or [''])[0]); cited=x.get('is-referenced-by-count') or 0
+            meta=[]
+            if authors: meta.append('Authors: '+', '.join(authors[:6]))
+            if journal: meta.append(journal)
+            if yr: meta.append(str(yr))
+            if cited: meta.append(f'Citations: {cited}')
+            out.append({'source':'Crossref','title':title,'url':url,'snippet':' • '.join(meta),'year':yr,'citations':cited})
         return out
-    except Exception as exc:
-        logger.warning('Scholarly research failed: %s',exc)
-        return []
+    except Exception as exc: logger.warning('Crossref research failed: %s',exc); return []
+
+def research_local_documents(query, limit=12):
+    q=clean(query).lower()
+    if not q: return []
+    terms=[t for t in q.split() if len(t)>1][:12]; rows=[]
+    for table in ('documents','document_records'):
+        try:
+            for row in db_select(table,limit=500):
+                blob=' '.join(str(row.get(k,'')) for k in row.keys() if k!='id').strip(); low=blob.lower()
+                score=sum(low.count(t) for t in terms)
+                if score<=0: continue
+                title=clean(row.get('title') or row.get('name') or row.get('document_name') or row.get('filename') or 'KOJA Document')
+                desc=clean(row.get('description') or row.get('content') or row.get('text') or row.get('details') or '')
+                url=row.get('url') or row.get('public_url') or row.get('file_url') or row.get('download_url') or ''
+                rows.append({'source':'KOJA Documents','title':title,'url':url,'snippet':desc[:900] or blob[:900],'year':_research_year(row.get('year') or row.get('publication_year')),'_score':score})
+        except Exception as exc: logger.info('Document search skipped for %s: %s',table,exc)
+    rows.sort(key=lambda x:(x.get('_score',0),x.get('year') or 0),reverse=True)
+    for r in rows: r.pop('_score',None)
+    return rows[:limit]
+
+def _research_filter(results, source='all', year=None, sort='relevance'):
+    source=(source or 'all').lower(); source=source if source in ('all','web','wikipedia','academic','koja') else 'all'
+    if source!='all':
+        if source=='academic': results=[r for r in results if r.get('source') in ('OpenAlex','Crossref')]
+        elif source=='koja': results=[r for r in results if r.get('source')=='KOJA Documents']
+        else: results=[r for r in results if r.get('source','').lower()==source]
+    if year: results=[r for r in results if str(r.get('year') or '')==str(year)]
+    if sort=='date': results.sort(key=lambda r:r.get('year') or 0,reverse=True)
+    elif sort=='citations': results.sort(key=lambda r:r.get('citations') or 0,reverse=True)
+    return results
+
+def research_ai_summary(query, results):
+    if not results: return ''
+    api_key=os.getenv('AI_API_KEY') or os.getenv('OPENAI_API_KEY'); endpoint=os.getenv('AI_API_URL','https://api.openai.com/v1/chat/completions'); model=os.getenv('AI_MODEL','gpt-4o-mini')
+    source_text='\n\n'.join(f"[{i+1}] {r.get('title','')} ({r.get('source','')})\n{r.get('snippet','')[:1200]}" for i,r in enumerate(results[:10]))
+    if api_key:
+        try:
+            payload={'model':model,'temperature':0.2,'max_tokens':500,'messages':[{'role':'system','content':'You are KOJA Research. Summarize only the supplied sources. Do not invent facts. Cite source numbers like [1] [2]. State when evidence is limited.'},{'role':'user','content':f'Question: {query}\n\nSources:\n{source_text}\n\nWrite a concise research summary with 3-5 key findings and a short evidence note.'}]}
+            r=requests.post(endpoint,json=payload,timeout=25,headers={'Authorization':'Bearer '+api_key,'Content-Type':'application/json'})
+            if r.ok:
+                text=((r.json().get('choices') or [{}])[0].get('message') or {}).get('content','').strip()
+                if text: return text
+        except Exception as exc: logger.warning('AI research summary failed: %s',exc)
+    highlights=[]
+    for r in results[:5]:
+        s=clean(r.get('snippet','')).replace('\n',' ')
+        if s: highlights.append(f"{r.get('title','Source')}: {s[:300]}")
+    return 'AI summary is not configured. Source-based highlights:\n\n'+'\n\n'.join(highlights)
 
 @app.route('/research')
 def research():
-    q=clean(request.args.get('q',''))
-    results=(research_web(q)+research_wikipedia(q)+research_scholar(q)) if q else []
-    return render_page('Research', r'''<div class="hero"><h2>🔎 KOJA Research</h2><p>Search web knowledge, reference material and scholarly publications from one place.</p><form method="get" action="{{ url_for('research') }}" class="actions" style="margin-top:18px"><input name="q" value="{{ q }}" placeholder="Search a topic, question, paper, author or subject..." style="flex:1;min-width:220px"><button class="btn" type="submit">Research</button></form></div>{% if q %}<div class="card"><h3>Results for “{{ q }}”</h3><p class="small">Web, Wikipedia and scholarly publication sources.</p></div>{% for r in results %}<div class="card"><div class="small">{{ r.source }}</div><h3 style="margin:6px 0"><a href="{{ r.url }}" target="_blank" rel="noopener">{{ r.title }}</a></h3><p>{{ r.snippet|safe }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener">Open source</a>{% endif %}</div>{% else %}<div class="card"><p>No results found. Try a broader search.</p></div>{% endfor %}{% else %}<div class="grid"><div class="card"><h3>🌐 Web Research</h3><p>Search general web knowledge and discover sources.</p></div><div class="card"><h3>📚 Scholarly Research</h3><p>Find papers, authors, publication years and DOI links.</p></div><div class="card"><h3>🧠 Knowledge Search</h3><p>Explore Wikipedia reference material.</p></div></div>{% endif %}<script type="application/ld+json">{{ {"@context":"https://schema.org","@type":"WebSite","name":"KOJA AFRICA Research","url":SITE_URL+"/research","potentialAction":{"@type":"SearchAction","target":SITE_URL+"/research?q={search_term_string}","query-input":"required name=search_term_string"}}|tojson }}</script>''',q=q,results=results,SITE_URL=SITE_URL)
+    q=clean(request.args.get('q','')); source=clean(request.args.get('source','all')).lower() or 'all'; sort=clean(request.args.get('sort','relevance')).lower() or 'relevance'; year=_research_year(request.args.get('year','')); author=clean(request.args.get('author',''))
+    results=[]
+    if q:
+        results += research_web(q,8)+research_wikipedia(q,6)+research_openalex(q,year,8)+research_crossref(q,year,author,8)+research_local_documents(q,12)
+        results=_research_filter(results,source,year,sort)
+    summary=research_ai_summary(q,results) if q else ''
+    return render_page('Research', r'''
+<style>
+.research-shell{max-width:1100px;margin:auto}.research-search{display:grid;grid-template-columns:1fr auto;gap:10px}.research-search input{min-width:0}.research-filters{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-top:12px}.research-filters label{font-size:.82rem;font-weight:700}.research-filters select,.research-filters input{width:100%;margin-top:5px}.research-tabs{display:flex;gap:8px;overflow:auto;margin:14px 0}.research-tabs a{white-space:nowrap}.source-badge{display:inline-block;padding:5px 9px;border-radius:999px;background:rgba(80,150,255,.14);font-size:.78rem;font-weight:800}.research-result h3{line-height:1.35}.research-meta{font-size:.82rem;opacity:.8}.research-summary{border-left:4px solid #62a8ff}.research-summary pre{white-space:pre-wrap;font:inherit;line-height:1.6}.research-count{font-weight:700}.research-empty{padding:28px;text-align:center}@media(max-width:700px){.research-search{grid-template-columns:1fr}.research-filters{grid-template-columns:1fr 1fr}.research-result{padding:16px!important}}
+</style>
+<div class="research-shell"><div class="hero"><h2>🔎 KOJA Research Engine</h2><p>Search the web, scholarly literature and your KOJA document collection from one research workspace.</p><form method="get" action="{{ url_for('research') }}" class="research-search" style="margin-top:18px"><input name="q" value="{{ q }}" placeholder="Ask a question, topic, paper, author or subject…" aria-label="Research search"><button class="btn" type="submit">Search</button></form>
+<div class="research-filters"><label>Source<select name="source" form="research-filter-form"><option value="all" {% if source=='all' %}selected{% endif %}>All sources</option><option value="academic" {% if source=='academic' %}selected{% endif %}>Academic</option><option value="web" {% if source=='web' %}selected{% endif %}>Web</option><option value="wikipedia" {% if source=='wikipedia' %}selected{% endif %}>Wikipedia</option><option value="koja" {% if source=='koja' %}selected{% endif %}>KOJA Documents</option></select></label><label>Year<input name="year" form="research-filter-form" value="{{ year or '' }}" placeholder="e.g. 2025" inputmode="numeric"></label><label>Author<input name="author" form="research-filter-form" value="{{ author }}" placeholder="Academic author"></label><label>Sort<select name="sort" form="research-filter-form"><option value="relevance" {% if sort=='relevance' %}selected{% endif %}>Relevance</option><option value="date" {% if sort=='date' %}selected{% endif %}>Newest first</option><option value="citations" {% if sort=='citations' %}selected{% endif %}>Most cited</option></select></label></div><form id="research-filter-form" method="get" action="{{ url_for('research') }}"><input type="hidden" name="q" value="{{ q }}"></form></div>
+{% if q %}<div class="research-tabs"><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}">🎓 Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}">🌐 Web</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}">📁 KOJA Documents</a></div><div class="card"><span class="research-count">{{ results|length }} results</span> for <strong>“{{ q }}”</strong></div>{% if summary %}<div class="card research-summary"><h3>🧠 Research Summary</h3><pre>{{ summary }}</pre><p class="small">AI summaries use configured AI credentials when available; otherwise KOJA shows source-based highlights. Verify important claims against original sources.</p></div>{% endif %}{% for r in results %}<div class="card research-result"><span class="source-badge">{{ r.source }}</span><h3><a href="{{ r.url or '#' }}" {% if r.url %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a></h3>{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open original source ↗</a>{% endif %}</div>{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endfor %}{% else %}<div class="grid"><div class="card"><h3>🌐 Web Discovery</h3><p>Discover general web knowledge.</p></div><div class="card"><h3>🎓 Academic Search</h3><p>OpenAlex and Crossref provide scholarly metadata, authors, years and citation information.</p></div><div class="card"><h3>📁 KOJA Documents</h3><p>Search documents already connected to your KOJA Supabase database.</p></div><div class="card"><h3>🧠 AI Research Summary</h3><p>Configure an AI API key to synthesize retrieved evidence with source-number citations.</p></div></div>{% endif %}</div>
+<script type="application/ld+json">{{ {"@context":"https://schema.org","@type":"WebSite","name":"KOJA AFRICA Research","url":SITE_URL+"/research","potentialAction":{"@type":"SearchAction","target":SITE_URL+"/research?q={search_term_string}","query-input":"required name=search_term_string"}}|tojson }}</script>
+''',q=q,results=results,summary=summary,source=source,sort=sort,year=year,author=author,SITE_URL=SITE_URL)
+
 
 @app.route("/services")
 @login_required
@@ -2136,6 +2251,7 @@ def university_apply(university_id):
 
 PUBLIC_INDEX_ROUTES = [
     "/",
+    "/research",
     "/services",
     "/questions",
     "/assignments",
