@@ -1840,6 +1840,64 @@ def professional_register():
 </form></div>
 """, categories=PROFESSIONAL_CATEGORIES, user=user)
 
+@app.route("/professional/book/<provider_id>", methods=["GET", "POST"])
+@login_required
+def book_professional(provider_id):
+    """Book an approved universal professional for a service, advice, or counselling."""
+    user = current_user() or {}
+    provider = first_row("service_providers", {"id": provider_id})
+    if not provider or str(provider.get("provider_type") or "").lower() in {"driver", "doctor", "teacher", "tutor"}:
+        abort(404)
+    status = str(provider.get("approval_status") or provider.get("verification_status") or "pending").lower()
+    if status not in {"approved", "active", "verified"}:
+        return "This professional is not currently available for booking.", 403
+
+    purpose = clean(request.args.get("purpose") or request.form.get("purpose") or "booking").lower()
+    if purpose not in {"booking", "advice", "counselling"}:
+        purpose = "booking"
+    labels = {"booking": "Book Service", "advice": "Ask for Professional Advice", "counselling": "Request Counselling"}
+
+    if request.method == "POST":
+        payload = {
+            "id": str(uuid.uuid4()),
+            "client_id": user.get("id"),
+            "provider_id": provider_id,
+            "appointment_type": "professional_" + purpose,
+            "appointment_date": request.form.get("appointment_date"),
+            "start_time": request.form.get("start_time"),
+            "end_time": request.form.get("end_time") or None,
+            "location": clean(request.form.get("location")) or "Online",
+            "status": "requested",
+            "notes": clean(request.form.get("notes")),
+            "created_at": utc_now(),
+            "updated_at": utc_now(),
+        }
+        row, error = db_insert("appointments", payload)
+        if error:
+            flash("Request could not be submitted: " + str(error)[:700], "danger")
+        else:
+            flash("Professional request submitted successfully.", "success")
+        return redirect(url_for("dashboard"))
+
+    return render_page(labels[purpose], r"""
+<div class="hero">
+  <h2>{{ title }}</h2>
+  <p><strong>{{ provider.get('full_name') or provider.get('name') or 'Professional' }}</strong> · {{ provider.get('profession') or 'Professional Service' }}</p>
+  {% if provider.get('specialization') %}<p>{{ provider.get('specialization') }}</p>{% endif %}
+</div>
+<div class="card">
+<form method="post">
+<input type="hidden" name="purpose" value="{{ purpose }}">
+<label>Date</label><input type="date" name="appointment_date" required>
+<label>Start Time</label><input type="time" name="start_time" required>
+<label>End Time</label><input type="time" name="end_time">
+<label>Location / Online</label><input name="location" value="Online" placeholder="Office, home, clinic or online">
+<label>Message / Details</label><textarea name="notes" required placeholder="Explain what you need from the professional"></textarea>
+<button class="btn" type="submit">{{ title }}</button>
+</form>
+</div>
+""", provider=provider, purpose=purpose, title=labels[purpose])
+
 @app.route("/professional/contact/<provider_id>")
 @login_required
 def professional_contact(provider_id):
