@@ -731,6 +731,8 @@ footer{text-align:center;color:var(--muted);padding:30px}
 <a href="{{ url_for('questions') }}">Questions</a>
 <a href="{{ url_for('assignments') }}">Assignments</a>
 <a href="{{ url_for('research') }}">🔎 Research</a>
+<a href="{{ url_for('connect') }}">💬 Communication</a>
+<a href="{{ url_for('professional_communication') }}">👩‍💼 Professional Communication</a>
 <a href="{{ url_for('settings') }}">⚙️ Settings</a>
 <div class="menu-group">
 <button type="button" id="moreMenuButton" aria-expanded="false" aria-haspopup="true">More ▾</button>
@@ -1763,6 +1765,19 @@ PROFESSIONAL_CATEGORIES = [
     "Other Professional Service"
 ]
 
+@app.route("/professional-communication")
+@login_required
+def professional_communication():
+    return render_page("Professional Communication", r"""
+<div class="hero"><h2>👩‍💼 Professional Communication</h2><p>Choose a profession to access its dedicated communication space. Each profession has its own public room, public posts, and professional-to-client private communication.</p></div>
+<div class="card"><div class="actions"><a class="btn" href="{{ url_for('professionals') }}">👥 Find Professionals</a><a class="btn secondary" href="{{ url_for('professional_register') }}">📝 Register as Professional</a></div></div>
+<div class="grid">
+{% for c in categories %}
+<div class="card"><h3>{{ c }}</h3><p class="small">Dedicated {{ c }} communication.</p><div class="actions"><a class="btn" href="{{ url_for('professional_community', profession_slug=profession_slug(c)) }}">🌍 Public Communication</a><a class="btn secondary" href="{{ url_for('professional_public_post', profession_slug=profession_slug(c)) }}">📰 Public Posts</a></div></div>
+{% endfor %}
+</div>
+""", categories=PROFESSIONAL_CATEGORIES)
+
 @app.route("/professionals")
 @login_required
 def professionals():
@@ -1785,7 +1800,7 @@ def professionals():
             continue
         visible.append(x)
     return render_page("Professional Services", r"""
-<div class="hero"><h2>👩‍💼 All Professional Services</h2><p>Find an approved professional, ask for advice or counselling, book a service, chat, or start a voice/video call.</p></div>
+<div class="hero"><h2>👩‍💼 All Professional Services</h2><p>Find an approved professional, ask for advice or counselling, book a service, chat, or start a voice/video call.</p><div class="actions"><a class="btn" href="{{ url_for('professional_communication') }}">💬 Professional Communication</a></div></div>
 <div class="card">
 <form method="get" class="actions">
 <input name="q" value="{{ query }}" placeholder="Search a profession, professional, service or qualification">
