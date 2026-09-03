@@ -54,3 +54,26 @@ create table if not exists public.koja_marketplace_posts (
 create index if not exists koja_marketplace_posts_feed_idx on public.koja_marketplace_posts(is_published, created_at desc);
 create index if not exists koja_marketplace_posts_author_idx on public.koja_marketplace_posts(author_id, created_at desc);
 create index if not exists koja_marketplace_posts_product_idx on public.koja_marketplace_posts(product_id, created_at desc);
+
+-- Seller commission and payout system.
+-- Default KOJA commission is 10%; configure MARKETPLACE_COMMISSION_PERCENT in Render.
+alter table public.koja_marketplace_orders
+  add column if not exists commission_amount numeric(12,2) not null default 0,
+  add column if not exists seller_net_amount numeric(12,2) not null default 0;
+
+create table if not exists public.koja_marketplace_payouts (
+ id uuid primary key default gen_random_uuid(),
+ seller_id uuid not null,
+ amount numeric(12,2) not null check (amount > 0),
+ currency text not null default 'ZMW',
+ status text not null default 'pending',
+ method text not null,
+ account_number text not null,
+ account_name text not null,
+ admin_note text,
+ processed_at timestamptz,
+ created_at timestamptz not null default now(),
+ updated_at timestamptz not null default now()
+);
+create index if not exists koja_marketplace_payouts_seller_idx on public.koja_marketplace_payouts(seller_id, created_at desc);
+create index if not exists koja_marketplace_payouts_status_idx on public.koja_marketplace_payouts(status, created_at desc);

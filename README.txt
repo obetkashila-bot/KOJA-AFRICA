@@ -64,3 +64,11 @@ MARKETPLACE MEDIA POSTS — 2026-09-03
 - Images/videos are served through KOJA's server-side media proxy, so private Supabase storage buckets work.
 - Run the updated MARKETPLACE.sql in Supabase before using Marketplace Posts.
 - Maximum media upload follows the app's 15 MB limit.
+
+MARKETPLACE PAYOUTS
+- Paid digital-product sales use a configurable KOJA marketplace commission.
+- Default commission: 10% (set MARKETPLACE_COMMISSION_PERCENT in Render).
+- Default minimum payout: ZMW 20 (set MARKETPLACE_MIN_PAYOUT in Render).
+- Sellers can request Airtel Money, MTN, Zamtel or Bank payouts from /marketplace/payout.
+- Admin reviews requests in /admin/marketplace and moves them through Approved -> Processing -> Paid, or Rejects them.
+- KOJA does not expose payment PINs, OTPs or passwords. Admin should independently verify the actual transfer before marking a payout Paid.
