@@ -645,7 +645,9 @@ window.addEventListener('resize',()=>{if(window.innerWidth>850)toggleKojaMenu(fa
 
 def render_page(title, body_template, **context):
     context["user"] = current_user()
-    body = render_template_string(body_template, **context)
+    # Use the Jinja environment directly so template context keys such as
+    # "source" cannot collide with render_template_string(source, ...).
+    body = app.jinja_env.from_string(body_template).render(**context)
     return render_template_string(
         BASE_HTML,
         title=title,
