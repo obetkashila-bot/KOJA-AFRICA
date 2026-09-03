@@ -533,11 +533,11 @@ def provider_profile(provider_id):
 
 BASE_HTML = r"""
 <!doctype html>
-<html lang="en">
+<html lang="en" data-koja-theme="system">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<meta name="description" content="KOJA AFRICA — academic questions, assignments, documents, professional services and live delivery services in Africa.">
+<meta name="description" content="{{ meta_description or 'KOJA AFRICA — knowledge, questions, answers, research, assignments, documents, professional services and delivery services.' }}">
 <meta name="robots" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] %}noindex,nofollow{% else %}index,follow,max-image-preview:large{% endif %}">
 <meta name="googlebot" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] %}noindex,nofollow{% else %}index,follow{% endif %}">
 <meta name="google-site-verification" content="u4nfIf5MfXm0iVvECSQeYAov4Tz4601ayY5kYzNc4ko">
@@ -548,13 +548,23 @@ BASE_HTML = r"""
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="KOJA AFRICA">
 <meta property="og:title" content="{{ title or 'KOJA AFRICA' }}">
-<meta property="og:description" content="Academic questions, assignments, documents, professional services and live delivery services.">
+<meta property="og:description" content="{{ meta_description or 'KOJA AFRICA — knowledge, questions, answers, research, assignments, documents, professional services and delivery services.' }}">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="{{ title or 'KOJA AFRICA' }}">
+<meta name="twitter:description" content="{{ meta_description or 'KOJA AFRICA — knowledge, questions, answers, research, assignments, documents, professional services and delivery services.' }}">
 <meta property="og:url" content="{{ SITE_URL }}{{ request.path }}">
 <title>{{ title or "KOJA AFRICA" }}</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<script>
+(function(){try{var t={{ theme|tojson }};var saved=localStorage.getItem("koja_theme");if(saved==="light"||saved==="dark"||saved==="system")t=saved;document.documentElement.dataset.kojaTheme=t||"system";}catch(e){}})();
+</script>
 <style>
 *{box-sizing:border-box}
-body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f5f7fb;color:#172033}
+:root{color-scheme:light;--bg:#f5f7fb;--surface:#fff;--text:#172033;--muted:#667085;--border:#e4e7ec;--nav:#10233f;--accent:#176b87;--focus:#f2b84b}
+html[data-koja-theme="dark"]{color-scheme:dark;--bg:#0f1720;--surface:#17212b;--text:#edf2f7;--muted:#aab7c4;--border:#30404f;--nav:#091522;--accent:#2aa7b8;--focus:#f2c15b}
+@media(prefers-color-scheme:dark){html[data-koja-theme="system"]{color-scheme:dark;--bg:#0f1720;--surface:#17212b;--text:#edf2f7;--muted:#aab7c4;--border:#30404f;--nav:#091522;--accent:#2aa7b8;--focus:#f2c15b}}
+body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);line-height:1.55}
+
 nav{background:#10233f;color:#fff;padding:10px 15px;position:sticky;top:0;z-index:1000;box-shadow:0 4px 18px rgba(0,0,0,.12)}
 .nav-inner{max-width:1250px;margin:auto;display:flex;align-items:center;gap:7px}
 .brand{font-weight:800;font-size:19px;margin-right:auto;display:flex;align-items:center;gap:8px;letter-spacing:.2px}.brand-mark{width:32px;height:32px;border-radius:9px;display:inline-grid;place-items:center;background:linear-gradient(135deg,#19a7b8,#f2b84b);box-shadow:0 5px 18px rgba(0,0,0,.22);animation:logoFloat 4s ease-in-out infinite}.brand-mark svg{width:22px;height:22px}.brand-name{white-space:nowrap}
@@ -564,34 +574,34 @@ nav{background:#10233f;color:#fff;padding:10px 15px;position:sticky;top:0;z-inde
 nav a{color:#fff;text-decoration:none;padding:8px 9px;border-radius:7px;transition:background .2s ease,transform .2s ease}
 nav a:hover{background:rgba(255,255,255,.12);transform:translateY(-1px)}
 .menu-group{position:relative}.menu-group>button{width:auto;margin:0;padding:8px 10px;background:rgba(255,255,255,.08);color:#fff;border:0;border-radius:7px;cursor:pointer;font:inherit}.menu-group>button:hover{background:rgba(255,255,255,.15);transform:none}
-.dropdown{display:none;position:absolute;right:0;top:calc(100% + 7px);min-width:210px;background:#fff;border-radius:11px;padding:7px;box-shadow:0 12px 35px rgba(0,0,0,.2);border:1px solid #e5e7eb}
-.dropdown.open{display:block;animation:menuDrop .18s ease both}.dropdown a{display:block;color:#172033!important;padding:10px 11px;white-space:nowrap}.dropdown a:hover{background:#eef5f8;transform:none}
+.dropdown{display:none;position:absolute;right:0;top:calc(100% + 7px);min-width:210px;background:var(--surface);border-radius:11px;padding:7px;box-shadow:0 12px 35px rgba(0,0,0,.2);border:1px solid #e5e7eb}
+.dropdown.open{display:block;animation:menuDrop .18s ease both}.dropdown a{display:block;color:var(--text)!important;padding:10px 11px;white-space:nowrap}.dropdown a:hover{background:#eef5f8;transform:none}
 @keyframes menuDrop{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:translateY(0)}}
 .container{width:min(1250px,calc(100% - 24px));margin:20px auto 50px}
-.card{background:#fff;border-radius:13px;padding:18px;margin-bottom:16px;box-shadow:0 3px 14px rgba(0,0,0,.06);animation:fadeUp .45s ease both}.card:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.09);transition:transform .2s ease,box-shadow .2s ease}
+.card{background:var(--surface);border-radius:13px;padding:18px;margin-bottom:16px;box-shadow:0 3px 14px rgba(0,0,0,.06);animation:fadeUp .45s ease both}.card:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.09);transition:transform .2s ease,box-shadow .2s ease}
 .hero{background:linear-gradient(135deg,#10233f,#176b87);color:#fff;padding:28px 20px;border-radius:15px;margin-bottom:18px}
 h1,h2,h3{margin-top:0}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:15px}
-input,select,textarea,button{width:100%;padding:11px 12px;margin-top:6px;margin-bottom:12px;border-radius:8px;border:1px solid #ccd3df;font:inherit}
+input,select,textarea,button{width:100%;padding:11px 12px;margin-top:6px;margin-bottom:12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font:inherit}
 textarea{min-height:120px}
 button,.btn{display:inline-block;background:#176b87;color:#fff;border:0;text-decoration:none;cursor:pointer;padding:10px 14px;border-radius:8px;transition:transform .2s ease,box-shadow .2s ease,filter .2s ease}button:hover,.btn:hover{transform:translateY(-2px);box-shadow:0 7px 18px rgba(0,0,0,.12);filter:brightness(1.04)}button:active,.btn:active{transform:translateY(0)}
 .btn.secondary{background:#5f6b7a}.btn.success{background:#177245}.btn.danger{background:#a62d2d}.btn.warning{background:#9b6b00}
 table{width:100%;border-collapse:collapse}
-th,td{border-bottom:1px solid #e4e7ec;padding:9px;text-align:left;vertical-align:top}
+th,td{border-bottom:1px solid var(--border);padding:9px;text-align:left;vertical-align:top}
 .alert{padding:12px;border-radius:8px;margin-bottom:10px;background:#eaf2ff}
-.stat{padding:18px;background:#fff;border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,.05)}
+.stat{padding:18px;background:var(--surface);border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,.05)}
 .big{font-size:28px;font-weight:800}
-.small{color:#667085;font-size:13px}.badge{display:inline-block;padding:4px 8px;border-radius:20px;background:#e7eef5;font-size:12px}
+.small{color:var(--muted);font-size:13px}.badge{display:inline-block;padding:4px 8px;border-radius:20px;background:#e7eef5;font-size:12px}
 #map{height:430px;border-radius:12px;overflow:hidden}
 .map-small{height:300px!important}
 .driver-card{border:2px solid #e4e7ec}
 .driver-card.selected{border-color:#176b87}
 .online{color:#177245;font-weight:700}
 .offline{color:#a62d2d;font-weight:700}
-footer{text-align:center;color:#667085;padding:30px}
+footer{text-align:center;color:var(--muted);padding:30px}
 .actions{display:flex;gap:8px;flex-wrap:wrap}.actions .btn,.actions button{width:auto}
-@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}@keyframes logoFloat{0%,100%{transform:translateY(0) rotate(0deg)}50%{transform:translateY(-2px) rotate(1deg)}}@keyframes pulseSoft{0%,100%{box-shadow:0 0 0 0 rgba(25,167,184,.18)}50%{box-shadow:0 0 0 7px rgba(25,167,184,0)}}:focus-visible{outline:3px solid #f2b84b;outline-offset:2px}.hero{animation:fadeUp .55s ease both}.stat{animation:fadeUp .5s ease both}.online{animation:pulseSoft 2.4s ease-in-out infinite}@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition:none!important;transform:none!important}}
-@media(max-width:760px){nav{padding:9px 12px}.nav-inner{position:relative;flex-wrap:wrap}.menu-toggle{display:block}.nav-links{display:none;width:100%;flex-direction:column;align-items:stretch;gap:3px;padding-top:8px}.nav-links.open{display:flex;animation:fadeUp .2s ease both}.nav-links>a{font-size:14px;padding:11px 12px;background:rgba(255,255,255,.05)}.menu-group{width:100%}.menu-group>button{width:100%;text-align:left;padding:11px 12px}.dropdown{position:static;width:100%;box-shadow:none;margin-top:4px;background:#f8fafc}.dropdown a{font-size:14px}.container{width:min(100% - 14px,1250px)}table{display:block;overflow-x:auto}#map{height:350px}.actions .btn,.actions button{width:100%}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}@keyframes logoFloat{0%,100%{transform:translateY(0) rotate(0deg)}50%{transform:translateY(-2px) rotate(1deg)}}@keyframes pulseSoft{0%,100%{box-shadow:0 0 0 0 rgba(25,167,184,.18)}50%{box-shadow:0 0 0 7px rgba(25,167,184,0)}}:focus-visible{outline:3px solid var(--focus);outline-offset:2px}.hero{animation:fadeUp .55s ease both}.stat{animation:fadeUp .5s ease both}.online{animation:pulseSoft 2.4s ease-in-out infinite}@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition:none!important;transform:none!important}}
+@media(max-width:760px){nav{padding:9px 12px}.nav-inner{position:relative;flex-wrap:wrap}.menu-toggle{display:block}.nav-links{display:none;width:100%;flex-direction:column;align-items:stretch;gap:3px;padding-top:8px}.nav-links.open{display:flex;animation:fadeUp .2s ease both}.nav-links>a{font-size:14px;padding:11px 12px;background:rgba(255,255,255,.05)}.menu-group{width:100%}.menu-group>button{width:100%;text-align:left;padding:11px 12px}.dropdown{position:static;width:100%;box-shadow:none;margin-top:4px;background:var(--surface)}.dropdown a{font-size:14px}.container{width:min(100% - 14px,1250px)}table{display:block;overflow-x:auto}#map{height:350px}.actions .btn,.actions button{width:100%}}
 @media(min-width:761px){.nav-links{display:flex!important}}
 </style>
 </head>
@@ -650,12 +660,15 @@ footer{text-align:center;color:#667085;padding:30px}
 def render_page(title, body_template, **context):
     context["user"] = current_user()
     body = render_template_string(body_template, **context)
-    return render_template_string(
-        BASE_HTML,
-        title=title,
-        body=body,
-        user=current_user()
-    )
+    prefs = session.get("koja_settings", {}) or {}
+    theme = prefs.get("theme", "system") if prefs.get("theme") in ("system", "light", "dark") else "system"
+    descriptions = {
+        "KOJA AFRICA": "KOJA AFRICA — knowledge, questions, answers, research, assignments, documents, professional services and delivery services.",
+        "Research": "KOJA AFRICA Research Engine — search web information, scholarly literature and KOJA documents and create structured research notes and citations.",
+        "Assignments": "KOJA AFRICA assignments — ask questions, upload assignments and access academic resources.",
+        "Documents": "KOJA AFRICA documents and research resources for learning and academic work.",
+    }
+    return render_template_string(BASE_HTML, title=title, body=body, user=current_user(), theme=theme, meta_description=descriptions.get(title, "KOJA AFRICA — knowledge, questions, answers, research, academic resources, professional services and delivery services."))
 
 # ============================================================
 # USER SETTINGS
@@ -2418,11 +2431,7 @@ def university_apply(university_id):
 PUBLIC_INDEX_ROUTES = [
     "/",
     "/research",
-    "/services",
     "/questions",
-    "/assignments",
-    "/tracking",
-    "/drivers",
 ]
 
 GSC_SCOPE = "https://www.googleapis.com/auth/webmasters.readonly"
@@ -2673,6 +2682,8 @@ def robots_txt():
         "Disallow: /login",
         "Disallow: /register",
         "Disallow: /dashboard",
+        "Disallow: /settings",
+        "Disallow: /services",
         "Disallow: /api/",
         f"Sitemap: {SITE_URL}/sitemap.xml",
     ]
