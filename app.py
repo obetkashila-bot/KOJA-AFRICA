@@ -493,7 +493,11 @@ def send_plain_email(to_email, subject, body):
         return False, str(exc)
 
 def get_assignment_recipient(assignment):
-    """Resolve the assignment owner's email from the profile table."""
+    """Resolve the assignment owner's email safely from a dict or list response."""
+    if isinstance(assignment, list):
+        assignment = assignment[0] if assignment else {}
+    if not isinstance(assignment, dict):
+        assignment = {}
     owner_id = assignment_owner_id(assignment)
     if owner_id:
         user = first_row("profiles", {"id": owner_id})
@@ -1343,6 +1347,10 @@ def make_assignment_tracking_code():
     return "KJA-" + secrets.token_hex(5).upper()
 
 def assignment_owner_id(item):
+    if isinstance(item, list):
+        item = item[0] if item else {}
+    if not isinstance(item, dict):
+        return None
     return item.get("owner_id") or item.get("sender_id") or item.get("user_id") or item.get("student_id")
 
 def can_access_assignment(item, user):
@@ -3044,7 +3052,14 @@ def admin_approval_action(table, item_id):
     recipient = None
     name = "User"
     if table == "assignments":
-        recipient, profile = get_assignment_recipient(row or first_row(table, {"id": item_id}) or {})
+        # db_update() returns a PostgREST representation as a list. Normalize it
+        # before resolving the assignment owner so notification code cannot crash.
+        assignment_row = row or first_row(table, {"id": item_id}) or {}
+        if isinstance(assignment_row, list):
+            assignment_row = assignment_row[0] if assignment_row else {}
+        if not isinstance(assignment_row, dict):
+            assignment_row = {}
+        recipient, profile = get_assignment_recipient(assignment_row)
         name = (profile or {}).get("full_name") or "User"
     else:
         # Supabase/PostgREST PATCH responses are arrays when
