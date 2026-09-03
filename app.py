@@ -732,6 +732,7 @@ footer{text-align:center;color:var(--muted);padding:30px}
 <a href="{{ url_for('assignments') }}">Assignments</a>
 <a href="{{ url_for('research') }}">🔎 Research</a>
 <a href="{{ url_for('public_feed') }}">🌍 Public</a>
+<a href="{{ url_for('marketplace') }}">🛒 Marketplace</a>
 <a href="{{ url_for('connect') }}">💬 Communication</a>
 <a href="{{ url_for('professional_communication') }}">👩‍💼 Professional Communication</a>
 <a href="{{ url_for('settings') }}">⚙️ Settings</a>
@@ -741,7 +742,7 @@ footer{text-align:center;color:var(--muted);padding:30px}
 <a role="menuitem" href="{{ url_for('deliveries') }}">Deliveries</a>
 <a role="menuitem" href="{{ url_for('drivers') }}">Drivers</a>
 {% if user.role in ['driver','admin'] or user.is_admin %}<a role="menuitem" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}
-{% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('admin') }}">Admin</a>{% endif %}
+{% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('admin') }}">Admin</a><a role="menuitem" href="{{ url_for('admin_marketplace') }}">Marketplace Admin</a>{% endif %}
 <a role="menuitem" href="{{ url_for('logout') }}">Logout</a>
 </div></div>
 {% else %}
@@ -782,11 +783,12 @@ def render_page(title, body_template, **context):
         "Research": "KOJA AFRICA Research Engine — search web information, scholarly literature and KOJA documents and create structured research notes and citations.",
         "Assignments": "KOJA AFRICA assignments — ask questions, upload assignments and access academic resources.",
         "Documents": "KOJA AFRICA documents and research resources for learning and academic work.",
+        "Marketplace": "KOJA AFRICA Digital Marketplace — discover and sell ebooks, courses, templates, research resources, software, graphics and other digital products.",
     }
     # Google-friendly structured data for public pages. This improves entity/page
     # understanding and can enable eligible search enhancements; it does not
     # guarantee a rich result. Private/account pages intentionally get no JSON-LD.
-    public_paths = {"/", "/research", "/research/notes"}
+    public_paths = {"/", "/research", "/research/notes", "/marketplace"}
     seo_jsonld = ""
     if request.path in public_paths:
         page_title = title or "KOJA AFRICA"
@@ -1824,57 +1826,12 @@ def public_feed():
 <div class="card"><h2>📰 News & Updates</h2><p class="small">Public feed · newest first</p></div>
 {% for p in posts %}<article class="card" id="post-{{ p.id }}"><strong>👤 {{ p.author_name }}</strong><div class="small">{{ p.post_type|title }} · {{ p.created_at }}</div>
 {% if p.title %}<h2 style="margin-top:10px">{{ p.title }}</h2>{% endif %}<p style="white-space:pre-wrap;line-height:1.7">{{ p.body }}</p>
-{% if p.media_url %}<img src="{{ url_for('public_media', post_id=p.id) }}" alt="Public KOJA post image" loading="lazy" style="display:block;width:100%;height:auto;max-height:620px;object-fit:contain;background:var(--surface,#f5f5f5);border-radius:12px;margin-top:8px">{% endif %}
+{% if p.media_url %}<img src="{{ p.media_url }}" alt="Public KOJA post image" loading="lazy" style="width:100%;max-height:620px;object-fit:cover;border-radius:12px;margin-top:8px">{% endif %}
 <div class="actions" style="margin-top:12px">{% if user %}<form method="post" action="{{ url_for('public_toggle_like', post_id=p.id) }}" style="display:inline"><button class="btn secondary" type="submit">{{ '❤️ Liked' if p.liked else '🤍 Like' }} · {{ p.like_count }}</button></form>{% else %}<a class="btn secondary" href="{{ url_for('login', next='/public') }}">🤍 Like · {{ p.like_count }}</a>{% endif %}<span class="btn secondary" style="cursor:default">💬 {{ p.comments|length }} Comments</span></div>
 {% for c in p.comments %}<div style="padding:9px 0;border-top:1px solid var(--border);margin-top:9px"><strong>{{ c.author_name }}</strong><div>{{ c.body }}</div><div class="small">{{ c.created_at }}</div></div>{% endfor %}
 {% if user %}<form method="post" action="{{ url_for('public_comment', post_id=p.id) }}"><input name="body" maxlength="1000" placeholder="Write a comment..." required><button class="btn" type="submit">Comment</button></form>{% else %}<p class="small"><a href="{{ url_for('login', next='/public') }}">Login</a> to comment.</p>{% endif %}
 </article>{% else %}<div class="card"><h3>No public updates yet.</h3><p>Be the first KOJA user to share a public update or news.</p></div>{% endfor %}
 ''', posts=enriched)
-
-@app.route('/public/media/<post_id>')
-def public_media(post_id):
-    """Serve a public-post image through KOJA so it remains visible even when
-    the Supabase Storage bucket is private. This also fixes older posts that
-    stored a public Supabase object URL directly."""
-    post = first_row('koja_public_posts', {'id': post_id}) or {}
-    media_url = (post.get('media_url') or '').strip()
-    if not media_url:
-        abort(404)
-
-    storage_path = ''
-    public_prefix = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/" if SUPABASE_URL else ''
-    if public_prefix and media_url.startswith(public_prefix):
-        remainder = media_url[len(public_prefix):]
-        bucket_prefix = f"{STORAGE_BUCKET}/"
-        if remainder.startswith(bucket_prefix):
-            storage_path = unquote(remainder[len(bucket_prefix):])
-    if not storage_path:
-        # Also accept a raw storage path if a future record stores one.
-        storage_path = media_url.lstrip('/')
-        if storage_path.startswith(f"{STORAGE_BUCKET}/"):
-            storage_path = storage_path[len(STORAGE_BUCKET)+1:]
-
-    if not supabase_configured() or not storage_path:
-        abort(404)
-    try:
-        r = requests.get(
-            sb_storage_url(storage_path),
-            headers=sb_headers(),
-            timeout=30,
-        )
-        if not r.ok:
-            logger.warning("Public media fetch failed: %s %s", r.status_code, r.text[:300])
-            abort(404)
-        content_type = r.headers.get('Content-Type') or post.get('media_type') or 'image/jpeg'
-        if not content_type.startswith('image/'):
-            content_type = 'application/octet-stream'
-        response = send_file(io.BytesIO(r.content), mimetype=content_type, max_age=3600)
-        response.headers['Cache-Control'] = 'public, max-age=3600'
-        return response
-    except Exception as exc:
-        logger.exception("Public media proxy error: %s", exc)
-        abort(404)
-
 
 @app.route('/public/create', methods=['POST'])
 @login_required
@@ -1910,6 +1867,197 @@ def public_comment(post_id):
     if body: db_insert('koja_public_comments', {'post_id':post_id,'author_id':current_user().get('id'),'body':body})
     return redirect(url_for('public_feed')+'#post-'+post_id)
 
+
+# ============================================================
+# KOJA DIGITAL MARKETPLACE
+# ============================================================
+
+MARKETPLACE_SQL = r'''
+create table if not exists public.koja_marketplace_products (
+ id uuid primary key default gen_random_uuid(),
+ seller_id uuid not null,
+ title text not null,
+ description text not null,
+ category text not null default 'Other',
+ price numeric(12,2) not null default 0 check (price >= 0),
+ currency text not null default 'ZMW',
+ cover_url text,
+ file_url text,
+ file_name text,
+ file_size bigint,
+ is_published boolean not null default false,
+ created_at timestamptz not null default now(),
+ updated_at timestamptz not null default now()
+);
+create index if not exists koja_marketplace_products_feed_idx on public.koja_marketplace_products(is_published, created_at desc);
+create index if not exists koja_marketplace_products_seller_idx on public.koja_marketplace_products(seller_id, created_at desc);
+
+create table if not exists public.koja_marketplace_orders (
+ id uuid primary key default gen_random_uuid(),
+ product_id uuid not null references public.koja_marketplace_products(id) on delete cascade,
+ buyer_id uuid not null,
+ seller_id uuid not null,
+ amount numeric(12,2) not null default 0,
+ currency text not null default 'ZMW',
+ status text not null default 'pending',
+ payment_method text,
+ payment_reference text,
+ created_at timestamptz not null default now(),
+ updated_at timestamptz not null default now()
+);
+create index if not exists koja_marketplace_orders_buyer_idx on public.koja_marketplace_orders(buyer_id, created_at desc);
+create index if not exists koja_marketplace_orders_seller_idx on public.koja_marketplace_orders(seller_id, created_at desc);
+create unique index if not exists koja_marketplace_free_order_unique on public.koja_marketplace_orders(product_id, buyer_id) where amount = 0;
+'''
+
+MARKETPLACE_CATEGORIES = [
+    'Ebooks & Books','Courses & Learning','Research & Academic','Templates & Documents',
+    'Software & Code','Graphics & Design','Music & Audio','Video & Media',
+    'Business Resources','Other'
+]
+MARKETPLACE_FILE_EXTENSIONS = {
+    'pdf','doc','docx','txt','zip','csv','xlsx','xls','ppt','pptx',
+    'jpg','jpeg','png','webp','mp3','wav','m4a','mp4','webm','py','html','css','js','json'
+}
+
+def marketplace_product(product_id):
+    return first_row('koja_marketplace_products', {'id': product_id})
+
+def marketplace_seller_name(user_id):
+    u=find_user_by_id(user_id) or {}
+    return first_nonempty(u.get('full_name'),u.get('name'),u.get('email'),'KOJA Seller')
+
+def marketplace_money(value,currency='ZMW'):
+    try: return f"{currency} {float(value or 0):,.2f}"
+    except Exception: return f"{currency} 0.00"
+
+def marketplace_has_access(product,user_id):
+    if not product or not user_id: return False
+    if str(product.get('seller_id'))==str(user_id): return True
+    try:
+        if float(product.get('price') or 0)<=0: return True
+    except Exception: pass
+    return bool(first_row('koja_marketplace_orders',{'product_id':product.get('id'),'buyer_id':user_id,'status':'eq.paid'}))
+
+@app.route('/marketplace')
+def marketplace():
+    q=clean(request.args.get('q')); category=clean(request.args.get('category'))
+    rows=db_select('koja_marketplace_products',{'is_published':'eq.true'},order='created_at.desc',limit=100) or []
+    if q:
+        n=q.lower(); rows=[r for r in rows if n in str(r.get('title') or '').lower() or n in str(r.get('description') or '').lower() or n in str(r.get('category') or '').lower()]
+    if category: rows=[r for r in rows if str(r.get('category') or '')==category]
+    products=[{**r,'seller_name':marketplace_seller_name(r.get('seller_id')),'price_display':marketplace_money(r.get('price'),r.get('currency') or 'ZMW')} for r in rows]
+    return render_page('Marketplace',r'''
+<div class="hero"><h1>🛒 KOJA Digital Marketplace</h1><p>Discover, buy and sell digital products across Africa — ebooks, courses, research resources, templates, software, graphics, audio and more.</p><div class="actions"><a class="btn" href="{{ url_for('marketplace_sell') if user else url_for('login', next='/marketplace/sell') }}">💼 Sell a Digital Product</a>{% if user %}<a class="btn secondary" href="{{ url_for('marketplace_my') }}">📦 My Marketplace</a>{% endif %}</div></div>
+<div class="card"><form method="get"><div class="grid"><div><label>Search</label><input name="q" value="{{ q }}" placeholder="Search digital products..."></div><div><label>Category</label><select name="category"><option value="">All categories</option>{% for c in categories %}<option value="{{ c }}" {% if category==c %}selected{% endif %}>{{ c }}</option>{% endfor %}</select></div></div><button class="btn" type="submit">🔎 Search Marketplace</button></form></div>
+<div class="grid">{% for p in products %}<article class="card"><div style="aspect-ratio:16/9;background:var(--bg);border-radius:10px;overflow:hidden;display:grid;place-items:center">{% if p.cover_url %}<img src="{{ url_for('marketplace_cover', product_id=p.id) }}" alt="{{ p.title }}" loading="lazy" style="width:100%;height:100%;object-fit:cover">{% else %}<div style="font-size:52px">📄</div>{% endif %}</div><div class="small" style="margin-top:10px">{{ p.category }} · by {{ p.seller_name }}</div><h2 style="margin:6px 0">{{ p.title }}</h2><p style="min-height:48px">{{ p.description[:180] }}{% if p.description|length>180 %}…{% endif %}</p><strong style="font-size:20px">{{ p.price_display if p.price|float > 0 else 'FREE' }}</strong><div class="actions" style="margin-top:12px"><a class="btn" href="{{ url_for('marketplace_product_view', product_id=p.id) }}">View Product</a></div></article>{% else %}<div class="card"><h3>No products found yet.</h3><p>Be the first seller to publish a digital product.</p></div>{% endfor %}</div>
+''',products=products,q=q,category=category,categories=MARKETPLACE_CATEGORIES)
+
+@app.route('/marketplace/product/<product_id>')
+def marketplace_product_view(product_id):
+    product=marketplace_product(product_id)
+    if not product or not product.get('is_published'): abort(404)
+    seller=marketplace_seller_name(product.get('seller_id')); uid=(current_user() or {}).get('id') if current_user() else None
+    return render_page(product.get('title') or 'Digital Product',r'''
+<div class="card"><div class="small">{{ product.category }} · Seller: {{ seller }}</div><h1>{{ product.title }}</h1>{% if product.cover_url %}<img src="{{ url_for('marketplace_cover', product_id=product.id) }}" alt="{{ product.title }}" style="display:block;width:100%;max-height:520px;object-fit:contain;border-radius:12px;background:var(--bg)">{% endif %}<p style="white-space:pre-wrap;line-height:1.75">{{ product.description }}</p><h2>{{ 'FREE' if product.price|float<=0 else money(product.price, product.currency) }}</h2>{% if user %}{% if access %}<a class="btn success" href="{{ url_for('marketplace_download', product_id=product.id) }}">⬇️ Download / Access</a>{% elif product.price|float<=0 %}<form method="post" action="{{ url_for('marketplace_buy', product_id=product.id) }}"><button class="btn success" type="submit">🎁 Get Free Product</button></form>{% else %}<form method="post" action="{{ url_for('marketplace_buy', product_id=product.id) }}"><button class="btn" type="submit">🛒 Request Purchase · {{ money(product.price, product.currency) }}</button></form><p class="small">Payment processing is not connected in this build; paid orders remain pending until a payment provider is integrated and verified.</p>{% endif %}{% else %}<a class="btn" href="{{ url_for('login', next=request.path) }}">Login to Purchase / Download</a>{% endif %}</div>
+''',product=product,seller=seller,access=marketplace_has_access(product,uid),money=marketplace_money)
+
+@app.route('/marketplace/buy/<product_id>',methods=['POST'])
+@login_required
+def marketplace_buy(product_id):
+    product=marketplace_product(product_id)
+    if not product or not product.get('is_published'): abort(404)
+    uid=(current_user() or {}).get('id')
+    if marketplace_has_access(product,uid): flash('You already have access to this product.','success'); return redirect(url_for('marketplace_product_view',product_id=product_id))
+    try: amount=float(product.get('price') or 0)
+    except Exception: amount=0
+    payload={'product_id':product_id,'buyer_id':uid,'seller_id':product.get('seller_id'),'amount':amount,'currency':product.get('currency') or 'ZMW','status':'paid' if amount<=0 else 'pending','payment_method':'free' if amount<=0 else 'pending_payment'}
+    _,err=db_insert('koja_marketplace_orders',payload)
+    flash(('Free product added. You can download it now.' if amount<=0 else 'Purchase request created. Payment processing is not connected yet, so the order remains pending.') if not err else 'Marketplace order could not be created. Run MARKETPLACE.sql in Supabase first.', 'success' if not err and amount<=0 else ('warning' if not err else 'danger'))
+    return redirect(url_for('marketplace_product_view',product_id=product_id))
+
+@app.route('/marketplace/cover/<product_id>')
+def marketplace_cover(product_id):
+    product=marketplace_product(product_id)
+    if not product or not product.get('cover_url'): abort(404)
+    media_url=clean(product.get('cover_url')); storage_path=''
+    public_prefix=f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/" if SUPABASE_URL else ''
+    if public_prefix and media_url.startswith(public_prefix):
+        rem=media_url[len(public_prefix):]; bp=f"{STORAGE_BUCKET}/"
+        if rem.startswith(bp): storage_path=unquote(rem[len(bp):])
+    if not storage_path:
+        storage_path=media_url.lstrip('/')
+        if storage_path.startswith(f"{STORAGE_BUCKET}/"): storage_path=storage_path[len(STORAGE_BUCKET)+1:]
+    if not storage_path or not supabase_configured(): abort(404)
+    try:
+        r=requests.get(sb_storage_url(storage_path),headers=sb_headers(),timeout=20)
+        if not r.ok: abort(404)
+        response=send_file(io.BytesIO(r.content),mimetype=r.headers.get('Content-Type') or 'image/jpeg',max_age=3600)
+        response.headers['Cache-Control']='public, max-age=3600'
+        return response
+    except Exception:
+        abort(404)
+
+@app.route('/marketplace/download/<product_id>')
+@login_required
+def marketplace_download(product_id):
+    product=marketplace_product(product_id); uid=(current_user() or {}).get('id')
+    if not product or not product.get('is_published') or not marketplace_has_access(product,uid): abort(404)
+    media_url=clean(product.get('file_url')); storage_path=''
+    public_prefix=f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/" if SUPABASE_URL else ''
+    if public_prefix and media_url.startswith(public_prefix):
+        rem=media_url[len(public_prefix):]; bp=f"{STORAGE_BUCKET}/"
+        if rem.startswith(bp): storage_path=unquote(rem[len(bp):])
+    if not storage_path:
+        storage_path=media_url.lstrip('/')
+        if storage_path.startswith(f"{STORAGE_BUCKET}/"): storage_path=storage_path[len(STORAGE_BUCKET)+1:]
+    if not storage_path or not supabase_configured(): abort(404)
+    try:
+        r=requests.get(sb_storage_url(storage_path),headers=sb_headers(),timeout=30)
+        if not r.ok: abort(404)
+        filename=secure_filename(product.get('file_name') or 'koja-digital-product') or 'koja-digital-product'
+        return send_file(io.BytesIO(r.content),download_name=filename,mimetype=r.headers.get('Content-Type') or 'application/octet-stream',max_age=0)
+    except Exception as exc:
+        logger.exception('Marketplace download failed: %s',exc); abort(404)
+
+@app.route('/marketplace/sell',methods=['GET','POST'])
+@login_required
+def marketplace_sell():
+    if request.method=='POST':
+        title=clean(request.form.get('title')); description=clean(request.form.get('description')); category=clean(request.form.get('category')) or 'Other'
+        try: price=float(request.form.get('price') or 0)
+        except Exception: price=-1
+        if not title or not description or price<0: flash('Title, description and a valid price are required.','danger'); return redirect(url_for('marketplace_sell'))
+        if category not in MARKETPLACE_CATEGORIES: category='Other'
+        digital=request.files.get('digital_file'); cover=request.files.get('cover')
+        if not digital or not digital.filename: flash('Choose the digital product file to sell.','danger'); return redirect(url_for('marketplace_sell'))
+        ext=digital.filename.lower().rsplit('.',1)[-1] if '.' in digital.filename else ''
+        if ext not in MARKETPLACE_FILE_EXTENSIONS: flash('Unsupported digital file type.','danger'); return redirect(url_for('marketplace_sell'))
+        uploaded,err=upload_storage(digital,'marketplace/products')
+        if err: flash(f'Digital file upload failed: {err}','danger'); return redirect(url_for('marketplace_sell'))
+        cover_url=None
+        if cover and cover.filename:
+            cext=cover.filename.lower().rsplit('.',1)[-1] if '.' in cover.filename else ''
+            if cext in {'jpg','jpeg','png','webp'}:
+                cu,cerr=upload_storage(cover,'marketplace/covers')
+                if not cerr: cover_url=(cu or {}).get('url')
+        payload={'seller_id':(current_user() or {}).get('id'),'title':title,'description':description,'category':category,'price':price,'currency':'ZMW','cover_url':cover_url,'file_url':(uploaded or {}).get('url'),'file_name':digital.filename,'file_size':getattr(digital,'content_length',None),'is_published':False}
+        _,err=db_insert('koja_marketplace_products',payload)
+        flash('Product submitted. It is hidden until published/approved.' if not err else 'Product could not be saved. Run MARKETPLACE.sql in Supabase first.','success' if not err else 'danger')
+        return redirect(url_for('marketplace_my'))
+    return render_page('Sell Digital Product',r'''<div class="hero"><h1>💼 Sell a Digital Product</h1><p>Upload a digital file and create a marketplace listing. New listings are unpublished until approved.</p></div><div class="card"><form method="post" enctype="multipart/form-data"><label>Product title</label><input name="title" maxlength="180" required placeholder="e.g. Grade 12 Mathematics Revision Guide"><label>Description</label><textarea name="description" maxlength="10000" required placeholder="Explain what the buyer receives..."></textarea><div class="grid"><div><label>Category</label><select name="category">{% for c in categories %}<option>{{ c }}</option>{% endfor %}</select></div><div><label>Price (ZMW)</label><input name="price" type="number" min="0" step="0.01" value="0" required></div></div><label>Digital product file</label><input type="file" name="digital_file" required><label>Cover image (optional)</label><input type="file" name="cover" accept="image/jpeg,image/png,image/webp"><button class="btn" type="submit">📤 Submit Product</button></form><p class="small">Maximum upload size follows KOJA's 15 MB server limit.</p></div>''',categories=MARKETPLACE_CATEGORIES)
+
+@app.route('/marketplace/my')
+@login_required
+def marketplace_my():
+    uid=(current_user() or {}).get('id')
+    products=db_select('koja_marketplace_products',{'seller_id':uid},order='created_at.desc',limit=100) or []
+    orders=db_select('koja_marketplace_orders',{'seller_id':uid},order='created_at.desc',limit=100) or []
+    purchases=db_select('koja_marketplace_orders',{'buyer_id':uid},order='created_at.desc',limit=100) or []
+    ids={str(x.get('product_id')) for x in orders+purchases if x.get('product_id')}
+    allp=db_select('koja_marketplace_products',{'id':'in.('+','.join(ids)+')'} if ids else {'id':'eq.__none__'},limit=200) or []
+    pm={str(p.get('id')):p for p in allp}
+    return render_page('My Marketplace',r'''<div class="hero"><h1>📦 My Marketplace</h1><div class="actions"><a class="btn" href="{{ url_for('marketplace_sell') }}">+ Sell Product</a><a class="btn secondary" href="{{ url_for('marketplace') }}">Browse Marketplace</a></div></div><div class="card"><h2>My Products</h2><table><tr><th>Product</th><th>Price</th><th>Status</th></tr>{% for p in products %}<tr><td>{{ p.title }}</td><td>{{ money(p.price,p.currency) if p.price|float>0 else 'FREE' }}</td><td>{{ 'Published' if p.is_published else 'Pending review' }}</td></tr>{% else %}<tr><td colspan="3">No products yet.</td></tr>{% endfor %}</table></div><div class="card"><h2>Sales / Orders</h2><table><tr><th>Product</th><th>Amount</th><th>Status</th></tr>{% for o in orders %}<tr><td>{{ pm.get(o.product_id,{}).get('title','Digital product') }}</td><td>{{ money(o.amount,o.currency) }}</td><td>{{ o.status }}</td></tr>{% else %}<tr><td colspan="3">No orders yet.</td></tr>{% endfor %}</table></div><div class="card"><h2>My Purchases</h2><table><tr><th>Product</th><th>Amount</th><th>Status</th><th></th></tr>{% for o in purchases %}{% set pp=pm.get(o.product_id) %}<tr><td>{{ pp.title if pp else 'Digital product' }}</td><td>{{ money(o.amount,o.currency) }}</td><td>{{ o.status }}</td><td>{% if pp and o.status=='paid' %}<a class="btn success" href="{{ url_for('marketplace_download',product_id=pp.id) }}">Download</a>{% endif %}</td></tr>{% else %}<tr><td colspan="4">No purchases yet.</td></tr>{% endfor %}</table></div>''',products=products,orders=orders,purchases=purchases,pm=pm,money=marketplace_money)
 
 @app.route("/professional-communication")
 @login_required
@@ -3413,6 +3561,26 @@ def sitemap_xml():
 # ============================================================
 # ADMIN
 # ============================================================
+
+@app.route('/admin/marketplace', methods=['GET','POST'])
+@login_required
+def admin_marketplace():
+    if not (current_user() or {}).get('is_admin'): abort(403)
+    if request.method=='POST':
+        action=clean(request.form.get('action')); item_id=clean(request.form.get('item_id'))
+        if action in ('publish','unpublish'):
+            db_update('koja_marketplace_products',{'id':item_id},{'is_published':action=='publish','updated_at':utc_now()})
+            flash('Marketplace product status updated.','success')
+        elif action=='paid':
+            db_update('koja_marketplace_orders',{'id':item_id},{'status':'paid','updated_at':utc_now()})
+            flash('Order marked paid. Verify the payment independently before doing this.','success')
+        elif action=='cancel':
+            db_update('koja_marketplace_orders',{'id':item_id},{'status':'cancelled','updated_at':utc_now()})
+            flash('Order cancelled.','success')
+        return redirect(url_for('admin_marketplace'))
+    products=db_select('koja_marketplace_products',order='created_at.desc',limit=200) or []
+    orders=db_select('koja_marketplace_orders',order='created_at.desc',limit=200) or []
+    return render_page('Marketplace Admin',r'''<div class="hero"><h1>🛡️ Marketplace Admin</h1><p>Review products and manage marketplace orders.</p></div><div class="card"><h2>Products</h2><table><tr><th>Product</th><th>Price</th><th>Seller</th><th>Status</th><th>Action</th></tr>{% for p in products %}<tr><td>{{ p.title }}</td><td>{{ money(p.price,p.currency) }}</td><td>{{ seller_names.get(p.seller_id,'KOJA Seller') }}</td><td>{{ 'Published' if p.is_published else 'Pending' }}</td><td><form method="post" style="display:inline"><input type="hidden" name="item_id" value="{{ p.id }}"><button class="btn {{ 'warning' if p.is_published else 'success' }}" name="action" value="{{ 'unpublish' if p.is_published else 'publish' }}" type="submit">{{ 'Unpublish' if p.is_published else 'Publish' }}</button></form></td></tr>{% else %}<tr><td colspan="5">No products.</td></tr>{% endfor %}</table></div><div class="card"><h2>Orders</h2><table><tr><th>Product</th><th>Amount</th><th>Status</th><th>Action</th></tr>{% for o in orders %}<tr><td>{{ product_names.get(o.product_id,'Digital product') }}</td><td>{{ money(o.amount,o.currency) }}</td><td>{{ o.status }}</td><td>{% if o.status=='pending' %}<form method="post"><input type="hidden" name="item_id" value="{{ o.id }}"><button class="btn success" name="action" value="paid" type="submit">Mark Paid</button><button class="btn danger" name="action" value="cancel" type="submit">Cancel</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="4">No orders.</td></tr>{% endfor %}</table></div>''',products=products,orders=orders,seller_names={str(p.get('seller_id')):marketplace_seller_name(p.get('seller_id')) for p in products},product_names={str(p.get('id')):p.get('title') for p in products},money=marketplace_money)
 
 @app.route("/admin")
 @admin_required
