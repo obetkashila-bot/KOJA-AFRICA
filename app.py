@@ -1428,13 +1428,52 @@ def assignments():
 <div class="card"><h3>{{ item.get("title") or "Assignment" }}</h3>
 <p>{{ item.get("description") or "" }}</p>
 <p class="small"><strong>Sender/Owner:</strong> {{ item.get("sender_id") or item.get("owner_id") or item.get("user_id") or item.get("student_id") }}{% if item.get("tracking_code") %} · <strong>Tracking:</strong> {{ item.get("tracking_code") }}{% endif %}</p>
-{% if item.get("file_path") %}<a class="btn" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='original') }}">Download Assignment</a>{% endif %}
-{% if item.get("answer_file_path") %}<a class="btn success" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='answer') }}">Download Answer</a>{% endif %}
+<a class="btn secondary" href="{{ url_for('assignment_question_download',assignment_id=item.get('id')) }}">⬇️ Download Question</a>
+<a class="btn secondary" href="{{ url_for('assignment_question_view',assignment_id=item.get('id')) }}">📖 Read Question</a>
+{% if item.get("file_path") %}<a class="btn" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='original') }}">⬇️ Download Assignment File</a>{% endif %}
+{% if item.get("answer_file_path") %}<a class="btn success" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='answer') }}">⬇️ Download Answer</a>{% endif %}
 {% if item.get("answered_file_path") %}<a class="btn success" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='answered') }}">Download Answered File</a>{% endif %}
 </div>
 {% else %}<p>No assignments found for this account.</p>{% endfor %}
 </div>
 """,rows=rows,current_user=user)
+
+@app.route("/assignments/<assignment_id>/question", methods=["GET"])
+@login_required
+def assignment_question_view(assignment_id):
+    item = first_row("assignments", {"id": assignment_id})
+    if not item:
+        return "Assignment not found.", 404
+    user = current_user()
+    if not can_access_assignment(item, user):
+        return "You are not authorized to access this assignment question.", 403
+    return render_page("Assignment Question", r"""
+<div class="hero"><h2>📖 Assignment Question</h2><p>{{ item.get("title") or "Assignment" }} · {{ item.get("tracking_code") or "No tracking code" }}</p></div>
+<div class="card"><p><strong>Status:</strong> <span class="badge">{{ item.get("status") or "submitted" }}</span></p>
+<h3>{{ item.get("title") or "Assignment Question" }}</h3>
+<div style="white-space:pre-wrap;line-height:1.7">{{ item.get("description") or "No written question was provided." }}</div>
+<div class="actions" style="margin-top:16px"><a class="btn" href="{{ url_for('assignment_question_download',assignment_id=item.get('id')) }}">⬇️ Download Question</a>{% if item.get("file_path") %}<a class="btn secondary" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='original') }}">⬇️ Download Assignment File</a>{% endif %}</div>
+</div>
+{% if item.get("answer") %}<div class="card"><h3>Answer</h3><div style="white-space:pre-wrap;line-height:1.7">{{ item.get("answer") }}</div></div>{% endif %}
+""", item=item)
+
+@app.route("/assignments/<assignment_id>/question/download", methods=["GET"])
+@login_required
+def assignment_question_download(assignment_id):
+    item = first_row("assignments", {"id": assignment_id})
+    if not item:
+        return "Assignment not found.", 404
+    user = current_user()
+    if not can_access_assignment(item, user):
+        return "You are not authorized to download this assignment question.", 403
+    title = item.get("title") or "Assignment"
+    tracking = item.get("tracking_code") or "—"
+    status = item.get("status") or "submitted"
+    question = item.get("description") or "No written question was provided."
+    text = f"KOJA AFRICA — ASSIGNMENT QUESTION\n\nTitle: {title}\nTracking Code: {tracking}\nStatus: {status}\n\nQUESTION / DESCRIPTION\n{question}\n"
+    filename = re.sub(r"[^A-Za-z0-9._-]+", "-", str(title)).strip("-") or "assignment"
+    filename = f"{filename}-question.txt"
+    return send_file(io.BytesIO(text.encode("utf-8")), download_name=filename, mimetype="text/plain", as_attachment=True)
 
 @app.route("/assignments/<assignment_id>/file/<kind>")
 @login_required
@@ -2774,8 +2813,11 @@ def admin_assignments():
 <p class="small"><strong>Owner/Sender:</strong> {{ item.get("recipient_name") }} · <strong>Email:</strong> {{ item.get("recipient_email") or "No email found" }} · <strong>Tracking:</strong> {{ item.get("tracking_code") or "—" }}</p>
 <p><span class="badge">{{ item.get("status") or "Submitted" }}</span>{% if item.get("answer_file_path") %} <span class="badge">PDF Answer Uploaded</span>{% endif %}</p>
 <div class="actions">
-<a class="btn" href="{{ url_for('admin_assignment_answer', assignment_id=item.get('id')) }}">✍️ Write / Upload Answer</a>
-{% if item.get("answer_file_path") %}<a class="btn success" href="{{ url_for('assignment_file', assignment_id=item.get('id'), kind='answer') }}">View PDF</a>{% endif %}
+<a class="btn secondary" href="{{ url_for('assignment_question_view', assignment_id=item.get('id')) }}">📖 Read Question</a>
+<a class="btn secondary" href="{{ url_for('assignment_question_download', assignment_id=item.get('id')) }}">⬇️ Download Question</a>
+{% if item.get("file_path") %}<a class="btn" href="{{ url_for('assignment_file', assignment_id=item.get('id'), kind='original') }}">⬇️ Download Assignment</a>{% endif %}
+<a class="btn" href="{{ url_for('admin_assignment_answer', assignment_id=item.get('id')) }}">✍️ Read Question / Write Answer</a>
+{% if item.get("answer_file_path") %}<a class="btn success" href="{{ url_for('assignment_file', assignment_id=item.get('id'), kind='answer') }}">⬇️ View Answer PDF</a>{% endif %}
 </div>
 </div>
 {% else %}<div class="card"><p>No assignments found.</p></div>{% endfor %}
@@ -2825,7 +2867,9 @@ def admin_assignment_answer(assignment_id):
     item = first_row("assignments", {"id": assignment_id}) or item
     return render_page("Write Assignment Answer", r"""
 <div class="hero"><h2>✍️ Answer Assignment</h2><p>{{ item.get("title") or "Assignment" }} · {{ item.get("tracking_code") or "No tracking code" }}</p></div>
-<div class="card"><p><strong>Specific user:</strong> {{ recipient_name }}</p><p><strong>Email:</strong> {{ recipient_email or "No email found" }}</p><p class="small">The answer belongs only to this assignment owner. Admin can send the uploaded PDF directly to this email.</p></div>
+<div class="card"><p><strong>Specific user:</strong> {{ recipient_name }}</p><p><strong>Email:</strong> {{ recipient_email or "No email found" }}</p><p><strong>Current status:</strong> <span class="badge">{{ item.get("status") or "submitted" }}</span></p><p class="small">The answer belongs only to this assignment owner.</p></div>
+<div class="card"><h3>📖 Read Uploaded Assignment Question</h3><p><strong>{{ item.get("title") or "Assignment" }}</strong></p><div style="white-space:pre-wrap;line-height:1.7">{{ item.get("description") or "No written question was provided." }}</div><div class="actions" style="margin-top:14px"><a class="btn secondary" href="{{ url_for('assignment_question_download',assignment_id=item.get('id')) }}">⬇️ Download Question</a>{% if item.get("file_path") %}<a class="btn" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='original') }}">⬇️ Download Uploaded Assignment</a>{% endif %}</div></div>
+<div class="card"><h3>🔄 Update Assignment Status</h3><form method="post" action="{{ url_for('admin_assignment_status', assignment_id=item.get('id')) }}"><select name="status" required><option value="submitted" {% if item.get('status')=='submitted' %}selected{% endif %}>Submitted</option><option value="under_review" {% if item.get('status')=='under_review' %}selected{% endif %}>Under Review</option><option value="answered" {% if item.get('status')=='answered' %}selected{% endif %}>Answered</option><option value="answer_approved" {% if item.get('status')=='answer_approved' %}selected{% endif %}>Answer Approved</option><option value="answer_sent" {% if item.get('status')=='answer_sent' %}selected{% endif %}>Answer Sent</option><option value="completed" {% if item.get('status')=='completed' %}selected{% endif %}>Completed</option><option value="rejected" {% if item.get('status')=='rejected' %}selected{% endif %}>Rejected</option></select><button class="btn success" type="submit">Update Status</button></form></div>
 <div class="card"><form method="post" enctype="multipart/form-data">
 <label>Written Answer / User Message</label><textarea name="answer" placeholder="Write the answer or explanation for the user...">{{ item.get("answer") or "" }}</textarea>
 <label>Answer PDF</label><input type="file" name="answer_pdf" accept="application/pdf">
@@ -2843,6 +2887,25 @@ def admin_assignment_answer(assignment_id):
 {% elif item.get("answer_file_path") %}<p>Answer PDF is uploaded, but it must be <strong>approved</strong> in the Approval Centre before it can be emailed.</p>{% else %}<p>Upload and save an answer PDF first.</p>{% endif %}
 </div>
 """, item=item, recipient_name=(recipient or {}).get("full_name") or (recipient or {}).get("name") or "User", recipient_email=recipient_email, max_upload_mb=MAX_UPLOAD_MB)
+
+@app.route("/admin/assignments/<assignment_id>/status", methods=["POST"])
+@admin_required
+def admin_assignment_status(assignment_id):
+    item = first_row("assignments", {"id": assignment_id})
+    if not item:
+        return "Assignment not found.", 404
+    allowed_statuses = {"submitted", "under_review", "answered", "answer_approved", "answer_sent", "completed", "rejected"}
+    status = clean(request.form.get("status")).lower()
+    if status not in allowed_statuses:
+        flash("Invalid assignment status.", "danger")
+        return redirect(url_for("admin_assignment_answer", assignment_id=assignment_id))
+    row, error = db_update("assignments", {"id": assignment_id}, {"status": status, "updated_at": utc_now()})
+    if error:
+        flash("Status could not be updated. Check the assignments table.", "danger")
+    else:
+        log_activity("assignment_status_updated", f"Assignment {item.get('tracking_code') or assignment_id} status changed to {status}.")
+        flash(f"Assignment status updated to {status.replace('_', ' ').title()}.", "success")
+    return redirect(url_for("admin_assignment_answer", assignment_id=assignment_id))
 
 @app.route("/admin/assignments/<assignment_id>/send-email", methods=["POST"])
 @admin_required
@@ -2969,6 +3032,9 @@ def admin_approval_action(table, item_id):
         event = f"{table}_approved" if action == "approve" else f"{table}_rejected"
     note = clean(request.form.get("note"))
     updates = {field: "approved" if action == "approve" else "rejected", "approved_by": current_user().get("id"), "approved_at": utc_now(), "approval_note": note or None}
+    if table == "assignments":
+        updates["status"] = ("answer_approved" if kind == "assignment_answer" and action == "approve" else "answered" if kind == "assignment_answer" else "approved" if action == "approve" else "rejected")
+        updates["updated_at"] = utc_now()
     row, error = db_update(table, {"id": item_id}, updates)
     if error:
         flash("Approval could not be saved. Run the latest KOJA approval SQL migration in Supabase first.", "danger")
