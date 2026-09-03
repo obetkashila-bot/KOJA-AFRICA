@@ -626,9 +626,9 @@ BASE_HTML = r"""
 <meta name="googlebot" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] %}noindex,nofollow{% else %}index,follow{% endif %}">
 <meta name="google-site-verification" content="u4nfIf5MfXm0iVvECSQeYAov4Tz4601ayY5kYzNc4ko">
 <link rel="canonical" href="{{ SITE_URL }}{{ request.path }}">
-<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
-<link rel="icon" type="image/png" sizes="192x192" href="{{ url_for('static', filename='favicon-192.png') }}">
-<link rel="apple-touch-icon" href="{{ url_for('static', filename='favicon-192.png') }}">
+<link rel="icon" type="image/svg+xml" href="{{ url_for('favicon_svg') }}">
+<link rel="icon" type="image/png" sizes="192x192" href="{{ url_for('favicon_svg') }}">
+<link rel="apple-touch-icon" href="{{ url_for('favicon_svg') }}">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="KOJA AFRICA">
 <meta property="og:title" content="{{ title or 'KOJA AFRICA' }}">
@@ -639,18 +639,22 @@ BASE_HTML = r"""
 <meta property="og:url" content="{{ SITE_URL }}{{ request.path }}">
 <meta name="author" content="KOJA AFRICA">
 <meta name="application-name" content="KOJA AFRICA">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="{{ url_for('site_manifest') }}">
 <meta name="theme-color" content="#0b1220">
 {% if seo_jsonld %}<script type="application/ld+json">{{ seo_jsonld|safe }}</script>{% endif %}
 <title>{{ title or "KOJA AFRICA" }}</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
 <script>
-(function(){try{var t={{ theme|tojson }};var saved=localStorage.getItem("koja_theme");if(saved==="light"||saved==="dark"||saved==="system")t=saved;document.documentElement.dataset.kojaTheme=t||"system";}catch(e){}})();
+(function(){try{var t={{ theme|tojson }};var saved=localStorage.getItem("koja_theme");if(saved==="light"||saved==="dark"||saved==="system")t=saved;document.documentElement.dataset.kojaTheme=t||"system";var a=localStorage.getItem("koja_animations");document.documentElement.dataset.kojaAnimations=(a==="false"?"false":"true");}catch(e){}})();
 </script>
 <style>
 *{box-sizing:border-box}
 :root{color-scheme:light;--bg:#f5f7fb;--surface:#fff;--text:#172033;--muted:#667085;--border:#e4e7ec;--nav:#10233f;--accent:#176b87;--focus:#f2b84b}
 html[data-koja-theme="dark"]{color-scheme:dark;--bg:#0f1720;--surface:#17212b;--text:#edf2f7;--muted:#aab7c4;--border:#30404f;--nav:#091522;--accent:#2aa7b8;--focus:#f2c15b}
 @media(prefers-color-scheme:dark){html[data-koja-theme="system"]{color-scheme:dark;--bg:#0f1720;--surface:#17212b;--text:#edf2f7;--muted:#aab7c4;--border:#30404f;--nav:#091522;--accent:#2aa7b8;--focus:#f2c15b}}
+html[data-koja-animations="false"] *,html[data-koja-animations="false"] *::before,html[data-koja-animations="false"] *::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
 body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);line-height:1.55}
 
 nav{background:#10233f;color:#fff;padding:10px 15px;position:sticky;top:0;z-index:1000;box-shadow:0 4px 18px rgba(0,0,0,.12)}
@@ -821,20 +825,32 @@ def settings():
             if theme not in ('system', 'light', 'dark'):
                 theme = 'system'
             research = bool(request.form.get('allow_research'))
-            session['koja_settings'] = {'theme': theme, 'allow_research': research}
+            animations = bool(request.form.get('animations'))
+            session['koja_settings'] = {'theme': theme, 'allow_research': research, 'animations': animations}
             session.modified = True
             flash('Settings saved successfully.', 'success')
             return redirect(url_for('settings'))
         flash('Unknown settings action.', 'danger')
         return redirect(url_for('settings'))
-    prefs = session.get('koja_settings', {'theme': 'system', 'allow_research': True})
+    prefs = session.get('koja_settings', {'theme': 'system', 'allow_research': True, 'animations': True})
+    if 'animations' not in prefs:
+        prefs['animations'] = True
     return render_page('Settings', r'''<div class="hero"><h2>⚙️ KOJA Settings</h2><p>Manage your KOJA appearance, research access and account preferences.</p></div>
 <div class="grid">
 <div class="card"><h3>Account</h3><p><strong>Name:</strong> {{ user.name or "KOJA User" }}</p><p><strong>Email:</strong> {{ user.email or "Not provided" }}</p><p><strong>Role:</strong> {{ user.role or "student" }}</p></div>
-<div class="card"><h3>Appearance & Research</h3><form method="post"><input type="hidden" name="action" value="preferences"><label>Theme</label><select name="theme"><option value="system" {% if prefs.theme == 'system' %}selected{% endif %}>System</option><option value="light" {% if prefs.theme == 'light' %}selected{% endif %}>Light</option><option value="dark" {% if prefs.theme == 'dark' %}selected{% endif %}>Dark</option></select><label style="display:block;margin-top:12px"><input type="checkbox" name="allow_research" value="1" style="width:auto" {% if prefs.allow_research %}checked{% endif %}> Allow external research sources</label><button class="btn" type="submit">Save Settings</button></form></div>
+<div class="card"><h3>Appearance & Research</h3><form method="post"><input type="hidden" name="action" value="preferences"><label>Theme</label><select name="theme"><option value="system" {% if prefs.theme == 'system' %}selected{% endif %}>System</option><option value="light" {% if prefs.theme == 'light' %}selected{% endif %}>Light</option><option value="dark" {% if prefs.theme == 'dark' %}selected{% endif %}>Dark</option></select><label style="display:block;margin-top:12px"><input type="checkbox" name="allow_research" value="1" style="width:auto" {% if prefs.allow_research %}checked{% endif %}> Allow external research sources</label><label style="display:block;margin-top:12px"><input type="checkbox" name="animations" value="1" style="width:auto" {% if prefs.animations %}checked{% endif %}> Enable smooth animations</label><button class="btn" type="submit">Save Settings</button></form></div>
 <div class="card"><h3>Research</h3><p>Search scholarly literature, web sources, Wikipedia and KOJA documents, then create structured research notes and references.</p><a class="btn" href="{{ url_for('research') }}">🔎 Open Research Engine</a></div>
 <div class="card"><h3>Security</h3><p>Use the Logout button to end the current session.</p><a class="btn secondary" href="{{ url_for('logout') }}">Log Out</a></div>
-</div><script>localStorage.setItem('koja_theme', {{ prefs.theme|tojson }}); document.documentElement.dataset.kojaTheme={{ prefs.theme|tojson }};</script>''', prefs=prefs)
+</div><script>localStorage.setItem('koja_theme', {{ prefs.theme|tojson }}); localStorage.setItem('koja_animations', {{ prefs.animations|tojson }}); document.documentElement.dataset.kojaTheme={{ prefs.theme|tojson }}; document.documentElement.dataset.kojaAnimations={{ prefs.animations|tojson }};</script>''', prefs=prefs)
+
+@app.route('/favicon.svg')
+def favicon_svg():
+    svg = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192"><rect width="192" height="192" rx="42" fill="#10233f"/><circle cx="96" cy="96" r="70" fill="#176b87"/><path d="M58 142V50h48c25 0 43 16 43 39s-18 39-43 39H77V142H58zm19-33h27c15 0 25-7 25-20s-10-20-25-20H77v40z" fill="white"/><circle cx="143" cy="143" r="17" fill="#f2b84b"/></svg>'''
+    return app.response_class(svg, mimetype='image/svg+xml', headers={'Cache-Control':'public, max-age=31536000, immutable'})
+
+@app.route('/site.webmanifest')
+def site_manifest():
+    return jsonify({"name":"KOJA AFRICA","short_name":"KOJA","start_url":"/","display":"standalone","background_color":"#f5f7fb","theme_color":"#10233f","icons":[{"src":"/favicon.svg","sizes":"192x192","type":"image/svg+xml"}]})
 
 # ============================================================
 # HOME / HEALTH
