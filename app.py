@@ -1889,9 +1889,34 @@ create table if not exists public.koja_marketplace_products (
  file_name text,
  file_size bigint,
  is_published boolean not null default false,
+ contact_phone text,
+ contact_email text,
+ whatsapp_number text,
+ preferred_contact text default 'KOJA Chat',
+ location text,
+ town text,
+ country text,
+ continent text,
+ show_phone_public boolean not null default true,
+ show_email_public boolean not null default false,
+ show_whatsapp_public boolean not null default false,
+ show_location_public boolean not null default true,
  created_at timestamptz not null default now(),
  updated_at timestamptz not null default now()
 );
+alter table public.koja_marketplace_products add column if not exists contact_phone text;
+alter table public.koja_marketplace_products add column if not exists contact_email text;
+alter table public.koja_marketplace_products add column if not exists whatsapp_number text;
+alter table public.koja_marketplace_products add column if not exists preferred_contact text default 'KOJA Chat';
+alter table public.koja_marketplace_products add column if not exists location text;
+alter table public.koja_marketplace_products add column if not exists town text;
+alter table public.koja_marketplace_products add column if not exists country text;
+alter table public.koja_marketplace_products add column if not exists continent text;
+alter table public.koja_marketplace_products add column if not exists show_phone_public boolean not null default true;
+alter table public.koja_marketplace_products add column if not exists show_email_public boolean not null default false;
+alter table public.koja_marketplace_products add column if not exists show_whatsapp_public boolean not null default false;
+alter table public.koja_marketplace_products add column if not exists show_location_public boolean not null default true;
+
 create index if not exists koja_marketplace_products_feed_idx on public.koja_marketplace_products(is_published, created_at desc);
 create index if not exists koja_marketplace_products_seller_idx on public.koja_marketplace_products(seller_id, created_at desc);
 
@@ -2069,7 +2094,7 @@ def marketplace_product_view(product_id):
     if not product or not product.get('is_published'): abort(404)
     seller=marketplace_seller_name(product.get('seller_id')); uid=(current_user() or {}).get('id') if current_user() else None
     return render_page(product.get('title') or 'Digital Product',r'''
-<div class="card"><div class="small">{{ product.category }} · Seller: {{ seller }}</div><h1>{{ product.title }}</h1>{% if product.cover_url %}<img src="{{ url_for('marketplace_cover', product_id=product.id) }}" alt="{{ product.title }}" style="display:block;width:100%;max-height:520px;object-fit:contain;border-radius:12px;background:var(--bg)">{% endif %}<p style="white-space:pre-wrap;line-height:1.75">{{ product.description }}</p><h2>{{ 'FREE' if product.price|float<=0 else money(product.price, product.currency) }}</h2>{% if user %}{% if access %}<a class="btn success" href="{{ url_for('marketplace_download', product_id=product.id) }}">⬇️ Download / Access</a>{% elif product.price|float<=0 %}<form method="post" action="{{ url_for('marketplace_buy', product_id=product.id) }}"><button class="btn success" type="submit">🎁 Get Free Product</button></form>{% else %}<form method="post" action="{{ url_for('marketplace_buy', product_id=product.id) }}"><button class="btn" type="submit">🛒 Request Purchase · {{ money(product.price, product.currency) }}</button></form><p class="small">Secure checkout is handled by Flutterwave when FLW_SECRET_KEY is configured. KOJA verifies the transaction on the server before releasing the digital file.</p>{% endif %}{% else %}<a class="btn" href="{{ url_for('login', next=request.path) }}">Login to Purchase / Download</a>{% endif %}</div>
+<div class="card"><div class="small">{{ product.category }} · Seller: {{ seller }}</div><h1>{{ product.title }}</h1>{% if product.cover_url %}<img src="{{ url_for('marketplace_cover', product_id=product.id) }}" alt="{{ product.title }}" style="display:block;width:100%;max-height:520px;object-fit:contain;border-radius:12px;background:var(--bg)">{% endif %}<p style="white-space:pre-wrap;line-height:1.75">{{ product.description }}</p><div class="card" style="margin-top:18px"><h2>👤 Seller Information</h2><p><strong>Seller:</strong> {{ seller }}</p>{% if product.show_location_public and (product.location or product.town or product.country or product.continent) %}<p>📍 <strong>Location:</strong> {{ product.location or 'Not specified' }}{% if product.town %}, {{ product.town }}{% endif %}{% if product.country %}, {{ product.country }}{% endif %}{% if product.continent %} · {{ product.continent }}{% endif %}</p>{% endif %}{% if product.preferred_contact %}<p>💬 <strong>Preferred contact:</strong> {{ product.preferred_contact }}</p>{% endif %}<div class="actions">{% if product.show_phone_public and product.contact_phone %}<a class="btn secondary" href="tel:{{ product.contact_phone }}">📞 Call Seller</a>{% endif %}{% if product.show_whatsapp_public and product.whatsapp_number %}<a class="btn secondary" target="_blank" rel="noopener" href="https://wa.me/{{ product.whatsapp_number|replace('+','')|replace(' ','')|replace('-','') }}">💬 WhatsApp Seller</a>{% endif %}{% if product.show_email_public and product.contact_email %}<a class="btn secondary" href="mailto:{{ product.contact_email }}">✉️ Email Seller</a>{% endif %}</div></div><h2>{{ 'FREE' if product.price|float<=0 else money(product.price, product.currency) }}</h2>{% if user %}{% if access %}<a class="btn success" href="{{ url_for('marketplace_download', product_id=product.id) }}">⬇️ Download / Access</a>{% elif product.price|float<=0 %}<form method="post" action="{{ url_for('marketplace_buy', product_id=product.id) }}"><button class="btn success" type="submit">🎁 Get Free Product</button></form>{% else %}<form method="post" action="{{ url_for('marketplace_buy', product_id=product.id) }}"><button class="btn" type="submit">🛒 Request Purchase · {{ money(product.price, product.currency) }}</button></form><p class="small">Secure checkout is handled by Flutterwave when FLW_SECRET_KEY is configured. KOJA verifies the transaction on the server before releasing the digital file.</p>{% endif %}{% else %}<a class="btn" href="{{ url_for('login', next=request.path) }}">Login to Purchase / Download</a>{% endif %}</div>
 ''',product=product,seller=seller,access=marketplace_has_access(product,uid),money=marketplace_money)
 
 @app.route('/marketplace/buy/<product_id>',methods=['POST'])
@@ -2203,11 +2228,23 @@ def marketplace_sell():
             if cext in {'jpg','jpeg','png','webp'}:
                 cu,cerr=upload_storage(cover,'marketplace/covers')
                 if not cerr: cover_url=(cu or {}).get('url')
-        payload={'seller_id':(current_user() or {}).get('id'),'title':title,'description':description,'category':category,'price':price,'currency':'ZMW','cover_url':cover_url,'file_url':(uploaded or {}).get('url'),'file_name':digital.filename,'file_size':getattr(digital,'content_length',None),'is_published':False}
+        contact_phone=clean(request.form.get('contact_phone'))
+        contact_email=clean(request.form.get('contact_email')).lower()
+        whatsapp_number=clean(request.form.get('whatsapp_number'))
+        preferred_contact=clean(request.form.get('preferred_contact')) or 'KOJA Chat'
+        location=clean(request.form.get('location'))
+        town=clean(request.form.get('town'))
+        country=clean(request.form.get('country'))
+        continent=clean(request.form.get('continent')) or 'Africa'
+        show_phone_public=request.form.get('show_phone_public')=='on'
+        show_email_public=request.form.get('show_email_public')=='on'
+        show_whatsapp_public=request.form.get('show_whatsapp_public')=='on'
+        show_location_public=request.form.get('show_location_public')=='on'
+        payload={'seller_id':(current_user() or {}).get('id'),'title':title,'description':description,'category':category,'price':price,'currency':'ZMW','cover_url':cover_url,'file_url':(uploaded or {}).get('url'),'file_name':digital.filename,'file_size':getattr(digital,'content_length',None),'is_published':False,'contact_phone':contact_phone or None,'contact_email':contact_email or None,'whatsapp_number':whatsapp_number or None,'preferred_contact':preferred_contact,'location':location or None,'town':town or None,'country':country or None,'continent':continent or None,'show_phone_public':show_phone_public,'show_email_public':show_email_public,'show_whatsapp_public':show_whatsapp_public,'show_location_public':show_location_public}
         _,err=db_insert('koja_marketplace_products',payload)
         flash('Product submitted. It is hidden until published/approved.' if not err else 'Product could not be saved. Run MARKETPLACE.sql in Supabase first.','success' if not err else 'danger')
         return redirect(url_for('marketplace_my'))
-    return render_page('Sell Digital Product',r'''<div class="hero"><h1>💼 Sell a Digital Product</h1><p>Upload a digital file and create a marketplace listing. New listings are unpublished until approved.</p></div><div class="card"><form method="post" enctype="multipart/form-data"><label>Product title</label><input name="title" maxlength="180" required placeholder="e.g. Grade 12 Mathematics Revision Guide"><label>Description</label><textarea name="description" maxlength="10000" required placeholder="Explain what the buyer receives..."></textarea><div class="grid"><div><label>Category</label><select name="category">{% for c in categories %}<option>{{ c }}</option>{% endfor %}</select></div><div><label>Price (ZMW)</label><input name="price" type="number" min="0" step="0.01" value="0" required></div></div><label>Digital product file</label><input type="file" name="digital_file" required><label>Cover image (optional)</label><input type="file" name="cover" accept="image/jpeg,image/png,image/webp"><button class="btn" type="submit">📤 Submit Product</button></form><p class="small">Maximum upload size follows KOJA's 15 MB server limit.</p></div>''',categories=MARKETPLACE_CATEGORIES)
+    return render_page('Sell Digital Product',r'''<div class="hero"><h1>💼 Sell a Digital Product</h1><p>Upload a digital file and create a marketplace listing. New listings are unpublished until approved.</p></div><div class="card"><form method="post" enctype="multipart/form-data"><label>Product title</label><input name="title" maxlength="180" required placeholder="e.g. Grade 12 Mathematics Revision Guide"><label>Description</label><textarea name="description" maxlength="10000" required placeholder="Explain what the buyer receives..."></textarea><div class="grid"><div><label>Category</label><select name="category">{% for c in categories %}<option>{{ c }}</option>{% endfor %}</select></div><div><label>Price (ZMW)</label><input name="price" type="number" min="0" step="0.01" value="0" required></div></div><div class="card" style="margin-top:16px"><h2>📞 Seller Contact & Location</h2><p class="small">Choose what buyers may see on your public Marketplace listing.</p><div class="grid"><div><label>Phone number</label><input name="contact_phone" type="tel" placeholder="097xxxxxxx"></div><div><label>Email address</label><input name="contact_email" type="email" placeholder="seller@example.com"></div><div><label>WhatsApp number</label><input name="whatsapp_number" type="tel" placeholder="+26097xxxxxxx"></div><div><label>Preferred contact method</label><select name="preferred_contact"><option>KOJA Chat</option><option>Phone</option><option>WhatsApp</option><option>Email</option></select></div><div><label>Location / Area</label><input name="location" maxlength="180" placeholder="Area / neighbourhood"></div><div><label>Town / City</label><input name="town" maxlength="120" placeholder="Kitwe"></div><div><label>Country</label><input name="country" maxlength="120" value="Zambia"></div><div><label>Continent</label><select name="continent"><option>Africa</option><option>Asia</option><option>Europe</option><option>North America</option><option>South America</option><option>Oceania</option><option>Antarctica</option></select></div></div><div style="margin-top:12px"><label><input type="checkbox" name="show_phone_public" checked> Show phone publicly</label><label><input type="checkbox" name="show_email_public"> Show email publicly</label><label><input type="checkbox" name="show_whatsapp_public"> Show WhatsApp publicly</label><label><input type="checkbox" name="show_location_public" checked> Show location/town/country publicly</label></div></div><label>Digital product file</label><input type="file" name="digital_file" required><label>Cover image (optional)</label><input type="file" name="cover" accept="image/jpeg,image/png,image/webp"><button class="btn" type="submit">📤 Submit Product</button></form><p class="small">Maximum upload size follows KOJA's 15 MB server limit.</p></div>''',categories=MARKETPLACE_CATEGORIES)
 
 @app.route('/marketplace/my')
 @login_required
