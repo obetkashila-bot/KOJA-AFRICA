@@ -294,7 +294,7 @@ def find_user_by_email(email):
     if not email:
         return None
 
-    for table in ("profiles",):
+    for table in ("profiles", "koja_users", "users", "KOJA ZM"):
         rows = db_select(table, filters={"email": email}, limit=1)
         if rows:
             return rows[0]
@@ -303,7 +303,7 @@ def find_user_by_email(email):
 def find_user_by_id(user_id):
     if not user_id:
         return None
-    for table in ("profiles",):
+    for table in ("profiles", "koja_users", "users", "KOJA ZM"):
         rows = db_select(table, filters={"id": user_id}, limit=1)
         if rows:
             return rows[0]
@@ -779,6 +779,15 @@ def register():
         }
 
         row, error = db_insert("profiles", payload)
+        if error:
+            old = {
+                "id": user_id,
+                "full_name": full_name,
+                "email": email,
+                "phone": phone or None,
+                "password_hash": payload["password_hash"],
+            }
+            row, error = db_insert("KOJA ZM", old)
 
         if error:
             flash("Registration failed. Check Render logs for the exact Supabase column error.","danger")
@@ -1385,8 +1394,8 @@ def doctors():
 <p><strong>Hospital/Clinic:</strong> {{ d.get("hospital_clinic") or "Not specified" }}</p>
 {% if d.get("consultation_fee") %}<p><strong>Fee:</strong> {{ d.get("currency") or "ZMW" }} {{ d.get("consultation_fee") }}</p>{% endif %}
 <div class="actions">
-<a class="btn" href="{{ url_for('book_doctor',provider_id=d.get('provider_id')) }}">Book This Doctor</a>
-<a class="btn secondary" href="{{ url_for('provider_map',provider_id=d.get('provider_id'),provider_type='doctor') }}">View Location</a>
+<a class="btn" href="{{ url_for('book_doctor',provider_id=(d.get('provider_id') or d.get('id'))) }}">Book This Doctor</a>
+<a class="btn secondary" href="{{ url_for('provider_map',provider_id=(d.get('provider_id') or d.get('id')),provider_type='doctor') }}">View Location</a>
 </div></div>
 {% else %}<div class="card"><p>No doctor profiles have been registered yet.</p></div>{% endfor %}
 </div>
@@ -1396,7 +1405,7 @@ def doctors():
 @login_required
 def book_doctor(provider_id):
     user=current_user()
-    doctor=first_row("doctor_profiles",{"provider_id":provider_id})
+    doctor=first_row("doctor_profiles",{"provider_id":provider_id}) or first_row("doctor_profiles",{"id":provider_id})
     if not doctor: abort(404)
     if request.method=="POST":
         payload={
@@ -1437,8 +1446,8 @@ def teachers():
 <p><strong>Grades:</strong> {{ t.get("grade_levels") or "Not specified" }}</p>
 <p><strong>Qualification:</strong> {{ t.get("qualification") or "Not specified" }}</p>
 {% if t.get("hourly_rate") %}<p><strong>Rate:</strong> {{ t.get("currency") or "ZMW" }} {{ t.get("hourly_rate") }}/hour</p>{% endif %}
-<a class="btn" href="{{ url_for('book_teacher',provider_id=t.get('provider_id')) }}">Book Teacher</a>
-<a class="btn secondary" href="{{ url_for('provider_map',provider_id=t.get('provider_id'),provider_type='teacher') }}">View Location</a>
+<a class="btn" href="{{ url_for('book_teacher',provider_id=(t.get('provider_id') or t.get('id'))) }}">Book Teacher</a>
+<a class="btn secondary" href="{{ url_for('provider_map',provider_id=(t.get('provider_id') or t.get('id')),provider_type='teacher') }}">View Location</a>
 </div>
 {% else %}<div class="card"><p>No teacher profiles have been registered yet.</p></div>{% endfor %}
 </div>
@@ -1448,7 +1457,7 @@ def teachers():
 @login_required
 def book_teacher(provider_id):
     user=current_user()
-    teacher=first_row("teacher_profiles",{"provider_id":provider_id})
+    teacher=first_row("teacher_profiles",{"provider_id":provider_id}) or first_row("teacher_profiles",{"id":provider_id})
     if not teacher: abort(404)
     if request.method=="POST":
         payload={

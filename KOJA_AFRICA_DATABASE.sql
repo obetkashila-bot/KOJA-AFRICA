@@ -7,9 +7,6 @@ CREATE TABLE IF NOT EXISTS public.profiles (
  role text DEFAULT 'student', is_admin boolean DEFAULT false, is_active boolean DEFAULT true,
  password_hash text, created_at timestamptz DEFAULT now(), updated_at timestamptz DEFAULT now()
 );
--- KOJA uses its own profiles/password_hash authentication. Remove a legacy
--- profiles -> public.users foreign key if an older installation created it.
-ALTER TABLE public.profiles DROP CONSTRAINT IF EXISTS profiles_id_fkey;
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS full_name text;
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS email text;
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS phone text;
