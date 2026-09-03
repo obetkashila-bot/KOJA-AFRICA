@@ -1,5 +1,15 @@
-KOJA AFRICA — Complete Production Build
-Build date: 2026-09-03
-Base: existing Google-ready KOJA build
-Google/Search configuration preserved.
-All existing application features preserved.
+KOJA AFRICA - AUTH TRIGGER FIXED
+Version: 2026.09.03-AUTH-TRIGGER-FIX
+
+Registration now uses Supabase Auth as the source of truth.
+The public profiles row is created by the existing on_auth_user_created trigger.
+Flask no longer inserts a duplicate profiles row after Auth signup.
+
+Required database relationship:
+public.profiles.id -> auth.users.id ON DELETE CASCADE
+
+File entrypoint:
+app.py
+
+Render start command:
+gunicorn app:app

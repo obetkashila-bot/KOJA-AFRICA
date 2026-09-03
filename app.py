@@ -373,7 +373,7 @@ def supabase_auth_login(email, password):
         logger.exception("Supabase Auth login error: %s", exc)
         return None
 
-def supabase_auth_signup(email, password, full_name="", phone=""):
+def supabase_auth_signup(email, password, full_name="", phone="", role="student"):
     """Create the account in Supabase Auth and return the auth response."""
     if not SUPABASE_URL:
         return None
@@ -381,7 +381,7 @@ def supabase_auth_signup(email, password, full_name="", phone=""):
     if not key:
         return None
     try:
-        metadata = {"full_name": full_name}
+        metadata = {"full_name": full_name, "role": role or "student"}
         if phone:
             metadata["phone"] = phone
         r = requests.post(
@@ -862,34 +862,23 @@ def register():
 
         # Prefer Supabase Auth so the account UUID is created in the same
         # identity store referenced by a typical profiles.id foreign key.
-        auth = supabase_auth_signup(email, password, full_name, phone)
+        auth = supabase_auth_signup(email, password, full_name, phone, role)
         if auth and auth.get("user"):
             au = auth["user"]
             user_id = str(au.get("id"))
-            payload = {
-                "id": user_id,
-                "name": full_name,
-                "full_name": full_name,
-                "email": email,
-                "phone": phone or None,
-                "role": role,
-                "is_admin": False,
-                "is_active": True,
-                "created_at": utc_now(),
-            }
-            row, error = db_insert("profiles", payload)
-            if error:
-                # Some existing schemas retain a password_hash column. Retry
-                # with it when the first profile insert fails for a column reason.
-                payload["password_hash"] = generate_password_hash(password)
-                row, error = db_insert("profiles", payload)
-            if error:
-                logger.error("Registration profile insert failed after Supabase Auth signup: %s", error)
-                flash("Account was created in authentication, but the profile could not be saved. Check the profiles table schema.","danger")
+
+            # Supabase Auth's on_auth_user_created trigger creates the public
+            # profile. Do not insert it again here; the profiles.id foreign key
+            # points to auth.users(id).
+            row = find_user_by_id(user_id)
+            if not row:
+                logger.error("Supabase Auth user %s was created but its profile was not found.", user_id)
+                flash("Account was created in authentication, but the profile trigger did not create the profile. Check Supabase database logs.", "danger")
                 return redirect(url_for("register"))
-            login_user(row or payload, auth)
-            log_activity("registration","New KOJA account registered through Supabase Auth.")
-            flash("Account created successfully.","success")
+
+            login_user(row, auth)
+            log_activity("registration", "New KOJA account registered through Supabase Auth.")
+            flash("Account created successfully.", "success")
             return redirect(url_for("dashboard"))
 
         # Compatibility fallback for deployments that intentionally use only
