@@ -10,7 +10,7 @@ import json
 import re
 from datetime import datetime, timezone, timedelta
 from functools import wraps
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import requests
 from dotenv import load_dotenv
@@ -1824,12 +1824,57 @@ def public_feed():
 <div class="card"><h2>📰 News & Updates</h2><p class="small">Public feed · newest first</p></div>
 {% for p in posts %}<article class="card" id="post-{{ p.id }}"><strong>👤 {{ p.author_name }}</strong><div class="small">{{ p.post_type|title }} · {{ p.created_at }}</div>
 {% if p.title %}<h2 style="margin-top:10px">{{ p.title }}</h2>{% endif %}<p style="white-space:pre-wrap;line-height:1.7">{{ p.body }}</p>
-{% if p.media_url %}<img src="{{ p.media_url }}" alt="Public KOJA post image" loading="lazy" style="width:100%;max-height:620px;object-fit:cover;border-radius:12px;margin-top:8px">{% endif %}
+{% if p.media_url %}<img src="{{ url_for('public_media', post_id=p.id) }}" alt="Public KOJA post image" loading="lazy" style="display:block;width:100%;height:auto;max-height:620px;object-fit:contain;background:var(--surface,#f5f5f5);border-radius:12px;margin-top:8px">{% endif %}
 <div class="actions" style="margin-top:12px">{% if user %}<form method="post" action="{{ url_for('public_toggle_like', post_id=p.id) }}" style="display:inline"><button class="btn secondary" type="submit">{{ '❤️ Liked' if p.liked else '🤍 Like' }} · {{ p.like_count }}</button></form>{% else %}<a class="btn secondary" href="{{ url_for('login', next='/public') }}">🤍 Like · {{ p.like_count }}</a>{% endif %}<span class="btn secondary" style="cursor:default">💬 {{ p.comments|length }} Comments</span></div>
 {% for c in p.comments %}<div style="padding:9px 0;border-top:1px solid var(--border);margin-top:9px"><strong>{{ c.author_name }}</strong><div>{{ c.body }}</div><div class="small">{{ c.created_at }}</div></div>{% endfor %}
 {% if user %}<form method="post" action="{{ url_for('public_comment', post_id=p.id) }}"><input name="body" maxlength="1000" placeholder="Write a comment..." required><button class="btn" type="submit">Comment</button></form>{% else %}<p class="small"><a href="{{ url_for('login', next='/public') }}">Login</a> to comment.</p>{% endif %}
 </article>{% else %}<div class="card"><h3>No public updates yet.</h3><p>Be the first KOJA user to share a public update or news.</p></div>{% endfor %}
 ''', posts=enriched)
+
+@app.route('/public/media/<post_id>')
+def public_media(post_id):
+    """Serve a public-post image through KOJA so it remains visible even when
+    the Supabase Storage bucket is private. This also fixes older posts that
+    stored a public Supabase object URL directly."""
+    post = first_row('koja_public_posts', {'id': post_id}) or {}
+    media_url = (post.get('media_url') or '').strip()
+    if not media_url:
+        abort(404)
+
+    storage_path = ''
+    public_prefix = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/" if SUPABASE_URL else ''
+    if public_prefix and media_url.startswith(public_prefix):
+        remainder = media_url[len(public_prefix):]
+        bucket_prefix = f"{STORAGE_BUCKET}/"
+        if remainder.startswith(bucket_prefix):
+            storage_path = unquote(remainder[len(bucket_prefix):])
+    if not storage_path:
+        # Also accept a raw storage path if a future record stores one.
+        storage_path = media_url.lstrip('/')
+        if storage_path.startswith(f"{STORAGE_BUCKET}/"):
+            storage_path = storage_path[len(STORAGE_BUCKET)+1:]
+
+    if not supabase_configured() or not storage_path:
+        abort(404)
+    try:
+        r = requests.get(
+            sb_storage_url(storage_path),
+            headers=sb_headers(),
+            timeout=30,
+        )
+        if not r.ok:
+            logger.warning("Public media fetch failed: %s %s", r.status_code, r.text[:300])
+            abort(404)
+        content_type = r.headers.get('Content-Type') or post.get('media_type') or 'image/jpeg'
+        if not content_type.startswith('image/'):
+            content_type = 'application/octet-stream'
+        response = send_file(io.BytesIO(r.content), mimetype=content_type, max_age=3600)
+        response.headers['Cache-Control'] = 'public, max-age=3600'
+        return response
+    except Exception as exc:
+        logger.exception("Public media proxy error: %s", exc)
+        abort(404)
+
 
 @app.route('/public/create', methods=['POST'])
 @login_required
