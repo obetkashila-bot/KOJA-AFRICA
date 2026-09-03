@@ -46,6 +46,9 @@ CREATE TABLE IF NOT EXISTS public.assignments (
  created_at timestamptz DEFAULT now(), updated_at timestamptz DEFAULT now()
 );
 ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS student_id uuid;
+ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS owner_id uuid;
+ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS sender_id uuid;
+ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS tracking_code text;
 ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS user_id uuid;
 ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS title text;
 ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS description text;
@@ -67,6 +70,9 @@ ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS answered_at timestamptz;
 ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS created_at timestamptz DEFAULT now();
 ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now();
 CREATE INDEX IF NOT EXISTS idx_assignments_student ON public.assignments(student_id);
+CREATE INDEX IF NOT EXISTS idx_assignments_owner ON public.assignments(owner_id);
+CREATE INDEX IF NOT EXISTS idx_assignments_sender ON public.assignments(sender_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_assignments_tracking_code ON public.assignments(tracking_code) WHERE tracking_code IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_assignments_user ON public.assignments(user_id);
 CREATE INDEX IF NOT EXISTS idx_assignments_status ON public.assignments(status);
 CREATE INDEX IF NOT EXISTS idx_assignments_created ON public.assignments(created_at DESC);

@@ -1264,6 +1264,20 @@ def questions():
 </div>
 """,rows=rows)
 
+def make_assignment_tracking_code():
+    # Short, human-friendly code tied to the assignment owner/sender.
+    return "KJA-" + secrets.token_hex(5).upper()
+
+def assignment_owner_id(item):
+    return item.get("owner_id") or item.get("sender_id") or item.get("user_id") or item.get("student_id")
+
+def can_access_assignment(item, user):
+    if not item or not user:
+        return False
+    if user.get("is_admin"):
+        return True
+    return str(assignment_owner_id(item) or "") == str(user.get("id") or "")
+
 @app.route("/assignments", methods=["GET","POST"])
 @login_required
 def assignments():
@@ -1281,7 +1295,11 @@ def assignments():
 
         payload={
             "id":str(uuid.uuid4()),
-            "student_id":user["id"],"user_id":user["id"],
+            "student_id":user["id"],
+            "user_id":user["id"],
+            "owner_id":user["id"],
+            "sender_id":user["id"],
+            "tracking_code":make_assignment_tracking_code(),
             "title":title,"description":description,
             "status":"submitted","created_at":utc_now()
         }
@@ -1295,7 +1313,10 @@ def assignments():
             })
         row,error=db_insert("assignments",payload)
         if error:
-            minimal={"id":str(uuid.uuid4()),"title":title,"description":description}
+            minimal={"id":payload["id"],"title":title,"description":description,
+                      "student_id":user["id"],"user_id":user["id"],
+                      "owner_id":user["id"],"sender_id":user["id"],
+                      "tracking_code":payload["tracking_code"]}
             if uploaded:
                 minimal.update({"file_name":uploaded["file_name"],"file_path":uploaded["path"],"file_url":uploaded["url"]})
             row,error=db_insert("assignments",minimal)
@@ -1305,26 +1326,64 @@ def assignments():
             flash("Assignment uploaded successfully.","success")
         return redirect(url_for("assignments"))
 
-    rows=db_select("assignments",order="created_at.desc",limit=100)
+    if user.get("is_admin"):
+        rows=db_select("assignments",order="created_at.desc",limit=100)
+    else:
+        # Assignments and their documents are private to their specific sender/owner.
+        rows=db_select("assignments",filters={"owner_id":user["id"]},order="created_at.desc",limit=100)
+        if not rows:
+            rows=db_select("assignments",filters={"user_id":user["id"]},order="created_at.desc",limit=100)
     return render_page("Assignments",r"""
 <div class="card"><h2>Upload Assignment</h2>
+<p class="small">Each assignment is linked to your account as its specific sender and owner. Other users cannot see your assignment documents.</p>
 <form method="post" enctype="multipart/form-data">
 <label>Assignment Title</label><input name="title" required>
 <label>Description / Question</label><textarea name="description"></textarea>
 <label>Assignment File</label><input type="file" name="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png">
 <button type="submit">Upload Assignment</button>
 </form></div>
-<div class="card"><h2>Assignments</h2>
+<div class="card"><h2>{% if current_user and current_user.get("is_admin") %}All Assignments{% else %}My Assignments{% endif %}</h2>
 {% for item in rows %}
 <div class="card"><h3>{{ item.get("title") or "Assignment" }}</h3>
 <p>{{ item.get("description") or "" }}</p>
-{% if item.get("file_url") %}<a class="btn" href="{{ item.get('file_url') }}" target="_blank">Download File</a>{% endif %}
-{% if item.get("answer_file_url") %}<a class="btn success" href="{{ item.get('answer_file_url') }}" target="_blank">Download Answer</a>{% endif %}
-{% if item.get("answered_file_url") %}<a class="btn success" href="{{ item.get('answered_file_url') }}" target="_blank">Download Answered File</a>{% endif %}
+<p class="small"><strong>Sender/Owner:</strong> {{ item.get("sender_id") or item.get("owner_id") or item.get("user_id") or item.get("student_id") }}{% if item.get("tracking_code") %} · <strong>Tracking:</strong> {{ item.get("tracking_code") }}{% endif %}</p>
+{% if item.get("file_path") %}<a class="btn" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='original') }}">Download Assignment</a>{% endif %}
+{% if item.get("answer_file_path") %}<a class="btn success" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='answer') }}">Download Answer</a>{% endif %}
+{% if item.get("answered_file_path") %}<a class="btn success" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='answered') }}">Download Answered File</a>{% endif %}
 </div>
-{% else %}<p>No assignments found.</p>{% endfor %}
+{% else %}<p>No assignments found for this account.</p>{% endfor %}
 </div>
-""",rows=rows)
+""",rows=rows,current_user=user)
+
+@app.route("/assignments/<assignment_id>/file/<kind>")
+@login_required
+def assignment_file(assignment_id, kind):
+    item=first_row("assignments",{"id":assignment_id})
+    if not item:
+        return "Assignment not found.",404
+    user=current_user()
+    if not can_access_assignment(item,user):
+        return "You are not authorized to access this assignment document.",403
+    field_map={
+        "original":("file_path","file_name","mime_type"),
+        "answer":("answer_file_path","answer_file_name","mime_type"),
+        "answered":("answered_file_path","answered_file_name","mime_type"),
+    }
+    if kind not in field_map:
+        return "Invalid file type.",400
+    path_field,name_field,mime_field=field_map[kind]
+    path=item.get(path_field)
+    if not path:
+        return "File not found.",404
+    try:
+        r=requests.get(sb_storage_url(path),headers=sb_headers(),timeout=60)
+        if not r.ok:
+            return "File could not be retrieved.",404
+        return send_file(io.BytesIO(r.content),download_name=item.get(name_field) or "assignment-file",
+                         mimetype=item.get(mime_field) or "application/octet-stream",as_attachment=True)
+    except Exception:
+        logger.exception("Assignment file retrieval failed")
+        return "File could not be retrieved.",503
 
 # ============================================================
 # CV
