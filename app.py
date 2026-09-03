@@ -41,11 +41,17 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("koja-africa")
 
 app = Flask(__name__)
-app.secret_key = os.getenv(
-    "SECRET_KEY",
-    os.getenv("FLASK_SECRET_KEY", secrets.token_hex(32))
+_configured_secret = os.getenv("SECRET_KEY") or os.getenv("FLASK_SECRET_KEY")
+if not _configured_secret:
+    logger.warning("SECRET_KEY is not configured; sessions will not survive process restarts. Set SECRET_KEY in Render.")
+app.secret_key = _configured_secret or secrets.token_hex(32)
+app.config.update(
+    MAX_CONTENT_LENGTH=15 * 1024 * 1024,
+    SESSION_COOKIE_SECURE=os.getenv("SESSION_COOKIE_SECURE", "true").lower() in {"1", "true", "yes"},
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE=os.getenv("SESSION_COOKIE_SAMESITE", "Lax"),
+    PERMANENT_SESSION_LIFETIME=timedelta(days=7),
 )
-app.config["MAX_CONTENT_LENGTH"] = 15 * 1024 * 1024
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_SERVICE_KEY = (
@@ -78,6 +84,20 @@ ALLOWED_EXTENSIONS = {
 # ============================================================
 # GENERAL HELPERS
 # ============================================================
+
+def csrf_token():
+    token = session.get("_csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["_csrf_token"] = token
+    return token
+
+def validate_csrf():
+    expected = session.get("_csrf_token")
+    supplied = request.form.get("csrf_token") or request.headers.get("X-CSRF-Token")
+    if not expected or not supplied or not secrets.compare_digest(expected, supplied):
+        abort(400, description="Invalid or missing CSRF token.")
+
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
@@ -539,6 +559,7 @@ BASE_HTML = r"""
 <meta name="robots" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] %}noindex,nofollow{% else %}index,follow,max-image-preview:large{% endif %}">
 <meta name="googlebot" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] %}noindex,nofollow{% else %}index,follow{% endif %}">
 <meta name="google-site-verification" content="u4nfIf5MfXm0iVvECSQeYAov4Tz4601ayY5kYzNc4ko">
+<meta name="csrf-token" content="{{ csrf_token() }}">
 <link rel="canonical" href="{{ SITE_URL }}{{ request.path }}">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="KOJA AFRICA">
@@ -653,6 +674,28 @@ footer{text-align:center;color:#667085;padding:30px}
 <footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Research • Professional • Documents • GPS • Transport Services</footer>
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
+(function(){
+  const meta=document.querySelector('meta[name="csrf-token"]');
+  const token=meta ? meta.getAttribute('content') : '';
+  document.querySelectorAll('form[method="post"],form[method="POST"]').forEach(function(form){
+    if(!form.querySelector('input[name="csrf_token"]')){
+      const input=document.createElement('input'); input.type='hidden'; input.name='csrf_token'; input.value=token; form.prepend(input);
+    }
+  });
+  const originalFetch=window.fetch;
+  window.fetch=function(input, init){
+    init=init || {};
+    const method=(init.method || (input && input.method) || 'GET').toUpperCase();
+    if(method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS' && token){
+      const headers=new Headers(init.headers || (input && input.headers) || {});
+      if(!headers.has('X-CSRF-Token')) headers.set('X-CSRF-Token', token);
+      init.headers=headers;
+    }
+    return originalFetch(input, init);
+  };
+})();
+</script>
+<script>
 function toggleKojaMenu(force){const d=document.getElementById('kojaDrawer'),o=document.getElementById('kojaOverlay'),b=document.querySelector('.menu-toggle');if(!d)return;const open=typeof force==='boolean'?force:!d.classList.contains('open');d.classList.toggle('open',open);o.classList.toggle('open',open);if(b)b.setAttribute('aria-expanded',open?'true':'false')}
 window.addEventListener('resize',()=>{if(window.innerWidth>850)toggleKojaMenu(false)});
 </script>
@@ -684,7 +727,7 @@ def home():
 <div class="hero">
 <h1>KOJA AFRICA</h1>
 <p>Knowledge • Questions • Answers</p>
-<p>Academic services, university applications, CV creation, farmer registration, professional bookings and delivery services.</p>
+<p>Academic questions, assignments, documents, research, professional services and delivery services.</p>
 {% if not user %}
 <div class="actions">
 <a class="btn" href="{{ url_for('register') }}">Create Account</a>
@@ -694,9 +737,7 @@ def home():
 </div>
 <div class="grid">
 <div class="card"><h3>Academic</h3><p>Questions, assignments and learning resources.</p><a class="btn" href="{{ url_for('questions') }}">Questions</a></div>
-<div class="card"><h3>University</h3><p>Choose a university, programme and academic year.</p><a class="btn" href="{{ url_for('universities') }}">Universities</a></div>
 <div class="card"><h3>CV</h3><p>Create a professional CV.</p><a class="btn" href="{{ url_for('cv') }}">Create CV</a></div>
-<div class="card"><h3>Farmers</h3><p>Submit agricultural registration information.</p><a class="btn" href="{{ url_for('farmer') }}">Farmer Portal</a></div>
 <div class="card"><h3>Doctors</h3><p>Find a doctor and request an appointment.</p><a class="btn" href="{{ url_for('doctors') }}">Doctors</a></div>
 <div class="card"><h3>Teachers</h3><p>Find teachers/tutors by subject and grade.</p><a class="btn" href="{{ url_for('teachers') }}">Teachers</a></div>
 <div class="card"><h3>Deliveries</h3><p>Find nearby drivers and send delivery requests.</p><a class="btn" href="{{ url_for('deliveries') }}">Delivery</a></div>
@@ -872,8 +913,6 @@ def dashboard():
 <div class="card"><h3>KOJA Services</h3>
 <div class="grid">
 <a class="btn" href="{{ url_for('cv') }}">Create CV</a>
-<a class="btn" href="{{ url_for('universities') }}">University Application</a>
-<a class="btn" href="{{ url_for('farmer') }}">Farmer Registration</a>
 <a class="btn" href="{{ url_for('doctors') }}">Doctor Booking</a>
 <a class="btn" href="{{ url_for('teachers') }}">Teacher Booking</a>
 <a class="btn" href="{{ url_for('deliveries') }}">Find Driver / Delivery</a>
@@ -1128,9 +1167,8 @@ def services():
 <div class="grid">
 <div class="card"><h3>Academic Questions</h3><a class="btn" href="{{ url_for('questions') }}">Open</a></div>
 <div class="card"><h3>Assignments</h3><a class="btn" href="{{ url_for('assignments') }}">Open</a></div>
+<div class="card"><h3>Documents &amp; Research</h3><a class="btn" href="{{ url_for('research') }}">Open Research</a></div>
 <div class="card"><h3>CV</h3><a class="btn" href="{{ url_for('cv') }}">Open</a></div>
-<div class="card"><h3>University Applications</h3><a class="btn" href="{{ url_for('universities') }}">Open</a></div>
-<div class="card"><h3>Farmer Registration</h3><a class="btn" href="{{ url_for('farmer') }}">Open</a></div>
 <div class="card"><h3>Doctors</h3><a class="btn" href="{{ url_for('doctors') }}">Open</a></div>
 <div class="card"><h3>Teachers</h3><a class="btn" href="{{ url_for('teachers') }}">Open</a></div>
 <div class="card"><h3>Deliveries</h3><a class="btn" href="{{ url_for('deliveries') }}">Open</a></div>
@@ -1298,74 +1336,6 @@ def cv():
 </form>
 <p class="small">Use Print / Save as PDF in the Android browser. No ReportLab package is required.</p>
 </div>
-""")
-
-# ============================================================
-# FARMER
-# ============================================================
-
-@app.route("/farmer",methods=["GET","POST"])
-@login_required
-def farmer():
-    user=current_user()
-    if request.method=="POST":
-        data={
-            "id":str(uuid.uuid4()),"user_id":user["id"],
-            "nrc":clean(request.form.get("nrc")),
-            "date_of_birth":request.form.get("date_of_birth") or None,
-            "first_name":clean(request.form.get("first_name")),
-            "middle_names":clean(request.form.get("middle_names")),
-            "last_name":clean(request.form.get("last_name")),
-            "gender":clean(request.form.get("gender")),
-            "phone":clean(request.form.get("phone")),
-            "location":clean(request.form.get("location")),
-            "payment_method":clean(request.form.get("payment_method")),
-            "provider":clean(request.form.get("provider")),
-            "branch":clean(request.form.get("branch")),
-            "account_number":clean(request.form.get("account_number")),
-            "account_name":clean(request.form.get("account_name")),
-            "status":"submitted","created_at":utc_now()
-        }
-        f=request.files.get("nrc_document")
-        if f and f.filename:
-            uploaded,error=upload_storage(f,"farmer-nrc")
-            if error:
-                flash(error,"danger"); return redirect(url_for("farmer"))
-            data["nrc_document_url"]=uploaded["url"]
-            data["nrc_document_path"]=uploaded["path"]
-
-        row,error=db_insert("farmer_registrations",data)
-        if error:
-            minimal={k:data[k] for k in ("id","user_id","nrc","first_name","middle_names","last_name","gender","phone","location")}
-            row,error=db_insert("farmer_registrations",minimal)
-        if error:
-            flash("Farmer registration could not be submitted. Check the farmer_registrations columns.","danger")
-        else:
-            flash("Farmer registration submitted successfully.","success")
-            log_activity("farmer_registration","Farmer registration submitted.")
-        return redirect(url_for("farmer"))
-
-    return render_page("Farmer Registration",r"""
-<div class="hero"><h2>KOJA Farmer Registration</h2><p>Register your agricultural service request.</p></div>
-<div class="card"><form method="post" enctype="multipart/form-data">
-<h3>Personal Details</h3>
-<label>NRC</label><input name="nrc" required>
-<label>Date of Birth</label><input name="date_of_birth" type="date">
-<label>First Name</label><input name="first_name" required>
-<label>Middle Names</label><input name="middle_names">
-<label>Last Name</label><input name="last_name" required>
-<label>Gender</label><select name="gender"><option value="">Select</option><option>Male</option><option>Female</option></select>
-<label>Phone</label><input name="phone" required>
-<label>NRC Card</label><input type="file" name="nrc_document" accept=".jpg,.jpeg,.png,.pdf">
-<h3>Farming Location</h3><label>Location</label><input name="location" placeholder="Province / District / Chiefdom / Camp">
-<h3>Payment Details</h3>
-<label>Payment Method</label><select name="payment_method"><option>Bank Account</option><option>Mobile Money (MNO)</option><option>Wallet</option></select>
-<label>Provider</label><input name="provider" placeholder="Bank or mobile-money provider">
-<label>Branch</label><input name="branch">
-<label>Account / Mobile Number</label><input name="account_number">
-<label>Account Name</label><input name="account_name">
-<button type="submit">Submit Farmer Registration</button>
-</form></div>
 """)
 
 # ============================================================
@@ -2292,81 +2262,12 @@ def provider_location(provider_id):
     return jsonify({"ok":True,"latitude":loc.get("latitude"),"longitude":loc.get("longitude"),"accuracy":loc.get("accuracy"),"updated_at":loc.get("created_at")})
 
 # ============================================================
-# UNIVERSITIES
-# ============================================================
-
-@app.route("/universities")
-@login_required
-def universities():
-    universities=db_select("universities",order="name.asc",limit=200)
-    return render_page("Universities",r"""
-<div class="hero"><h2>University Applications</h2><p>Select the university, programme, intake/year and review requirements.</p></div>
-<div class="card">
-{% if universities %}<div class="grid">
-{% for university in universities %}
-<div class="card"><h3>{{ university.get("name") or university.get("university_name") or "University" }}</h3>
-<p>{{ university.get("location") or university.get("description") or "" }}</p>
-<a class="btn" href="{{ url_for('university_apply',university_id=university.get('id')) }}">Apply</a></div>
-{% endfor %}
-</div>{% else %}<p>No universities are currently loaded into the universities table.</p>{% endif %}
-</div>
-""",universities=universities)
-
-@app.route("/university/apply/<university_id>",methods=["GET","POST"])
-@login_required
-def university_apply(university_id):
-    user=current_user()
-    university=first_row("universities",{"id":university_id})
-    if not university: abort(404)
-    programmes=db_select("university_programmes",filters={"university_id":university_id},order="name.asc",limit=500)
-    requirements=db_select("university_application_requirements",filters={"university_id":university_id},limit=500)
-
-    if request.method=="POST":
-        programme_id=request.form.get("programme_id")
-        year=request.form.get("academic_year")
-        intake=clean(request.form.get("intake"))
-        payload={
-            "id":str(uuid.uuid4()),"user_id":user["id"],"university_id":university_id,
-            "programme_id":programme_id,"academic_year":year,"intake":intake or None,
-            "full_name":user["name"],"email":user["email"],"phone":user.get("phone"),
-            "status":"draft","created_at":utc_now()
-        }
-        row,error=db_insert("university_applications",payload)
-        if error:
-            minimal={k:payload[k] for k in ("id","user_id","university_id","programme_id","academic_year")}
-            row,error=db_insert("university_applications",minimal)
-        if error: flash("Application could not be created: "+str(error)[:600],"danger")
-        else: flash("University application started successfully.","success")
-        return redirect(url_for("universities"))
-
-    return render_page("University Application",r"""
-<div class="card"><h2>{{ university.get("name") or university.get("university_name") }}</h2>
-<form method="post">
-<label>Programme</label><select name="programme_id" required><option value="">Select programme</option>
-{% for p in programmes %}<option value="{{ p.get('id') }}">{{ p.get("name") or p.get("programme_name") or p.get("title") }}</option>{% endfor %}
-</select>
-<label>Academic Year</label><select name="academic_year"><option>2026/2027</option><option>2027/2028</option></select>
-<label>Intake</label><select name="intake"><option>January</option><option>May</option><option>September</option><option>Other</option></select>
-<button type="submit">Start Application</button>
-</form></div>
-<div class="card"><h3>Application Requirements</h3>
-{% for r in requirements %}<div class="card"><strong>{{ r.get("title") or r.get("requirement") or "Requirement" }}</strong><p>{{ r.get("description") or r.get("details") or "" }}</p></div>
-{% else %}<p>No specific requirements have been entered for this university yet.</p>{% endfor %}
-</div>
-""",university=university,programmes=programmes,requirements=requirements)
-
-# ============================================================
 # GOOGLE SEARCH & DISTRIBUTION
 # ============================================================
 
 PUBLIC_INDEX_ROUTES = [
     "/",
     "/research",
-    "/services",
-    "/questions",
-    "/assignments",
-    "/tracking",
-    "/drivers",
 ]
 
 GSC_SCOPE = "https://www.googleapis.com/auth/webmasters.readonly"
@@ -2617,6 +2518,14 @@ def robots_txt():
         "Disallow: /login",
         "Disallow: /register",
         "Disallow: /dashboard",
+        "Disallow: /settings",
+        "Disallow: /tracking",
+        "Disallow: /drivers",
+        "Disallow: /deliveries",
+        "Disallow: /driver",
+        "Disallow: /cv",
+        "Disallow: /doctor/",
+        "Disallow: /teacher/",
         "Disallow: /api/",
         f"Sitemap: {SITE_URL}/sitemap.xml",
     ]
@@ -2638,7 +2547,7 @@ def sitemap_xml():
 @app.route("/admin")
 @admin_required
 def admin():
-    tables=["profiles","questions","assignments","farmer_registrations","doctor_profiles","teacher_profiles","driver_profiles","driver_locations","deliveries","appointments","universities","university_applications","activity_logs"]
+    tables=["profiles","questions","assignments","documents","document_records","doctor_profiles","teacher_profiles","driver_profiles","driver_locations","deliveries","appointments","activity_logs"]
     counts={}
     for table in tables:
         counts[table]=len(db_select(table,limit=1000))
@@ -2780,12 +2689,14 @@ def internal_error(error):
 
 @app.before_request
 def before_request():
-    # Deliberately empty. Never connect to Supabase at startup.
-    pass
+    # Generate the session CSRF token lazily; never connect to Supabase at startup.
+    csrf_token()
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        validate_csrf()
 
 @app.context_processor
 def inject_globals():
-    return {"APP_NAME":APP_NAME,"APP_TAGLINE":APP_TAGLINE,"SITE_URL":SITE_URL}
+    return {"APP_NAME":APP_NAME,"APP_TAGLINE":APP_TAGLINE,"SITE_URL":SITE_URL,"csrf_token":csrf_token()}
 
 # ============================================================
 # LOCAL / RENDER START
