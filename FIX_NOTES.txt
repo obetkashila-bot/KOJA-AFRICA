@@ -1,0 +1,8 @@
+KOJA AFRICA AUTH + DOCTOR ROUTING FIX
+
+- Fixed /doctors BuildError when doctor_profiles rows do not contain provider_id.
+- Doctor links now use provider_id, falling back to id.
+- book_doctor accepts provider_id or the profile id as the lookup identifier.
+- Provider map lookup also accepts provider_id or profile id.
+- Supabase Auth/profile trigger changes are preserved.
+- app.py remains the required filename for gunicorn app:app.
