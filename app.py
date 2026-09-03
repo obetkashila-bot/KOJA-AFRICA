@@ -294,7 +294,7 @@ def find_user_by_email(email):
     if not email:
         return None
 
-    for table in ("profiles", "koja_users", "users", "KOJA ZM"):
+    for table in ("profiles",):
         rows = db_select(table, filters={"email": email}, limit=1)
         if rows:
             return rows[0]
@@ -303,7 +303,7 @@ def find_user_by_email(email):
 def find_user_by_id(user_id):
     if not user_id:
         return None
-    for table in ("profiles", "koja_users", "users", "KOJA ZM"):
+    for table in ("profiles",):
         rows = db_select(table, filters={"id": user_id}, limit=1)
         if rows:
             return rows[0]
@@ -779,15 +779,6 @@ def register():
         }
 
         row, error = db_insert("profiles", payload)
-        if error:
-            old = {
-                "id": user_id,
-                "full_name": full_name,
-                "email": email,
-                "phone": phone or None,
-                "password_hash": payload["password_hash"],
-            }
-            row, error = db_insert("KOJA ZM", old)
 
         if error:
             flash("Registration failed. Check Render logs for the exact Supabase column error.","danger")
