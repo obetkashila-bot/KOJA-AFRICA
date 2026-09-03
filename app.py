@@ -64,7 +64,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.03-LIVE-GPS-V3"
+APP_VERSION = "2026.09.03-RESEARCH-V2"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -1977,48 +1977,38 @@ def tracking():
 <div id="map"></div>
 </div>
 <script>
-let watchId=null,marker=null,lastSentAt=0,lastSent=null,sendBusy=false,online=false;
-const SEND_INTERVAL=3000;
+let watchId=null,marker=null;
 const map=L.map("map").setView([-13.9626,28.3228],6);
 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);
 function status(t){document.getElementById("gps-status").textContent=t}
-function distanceM(a,b){const R=6371000,p=Math.PI/180,d1=(b[0]-a[0])*p,d2=(b[1]-a[1])*p,x=Math.sin(d1/2)**2+Math.cos(a[0]*p)*Math.cos(b[0]*p)*Math.sin(d2/2)**2;return 2*R*Math.atan2(Math.sqrt(x),Math.sqrt(1-x))}
 function startTracking(){
  if(!navigator.geolocation){status("This browser does not support GPS.");return}
- if(watchId!==null){status("GPS is already running.");return}
- status("Requesting high-accuracy GPS permission...");
- navigator.geolocation.getCurrentPosition(sendPosition,gpsError,{enableHighAccuracy:true,maximumAge:0,timeout:20000});
- watchId=navigator.geolocation.watchPosition(sendPosition,gpsError,{enableHighAccuracy:true,maximumAge:2000,timeout:20000});
- online=true;
+ status("Requesting GPS permission...");
+ watchId=navigator.geolocation.watchPosition(sendPosition,gpsError,{enableHighAccuracy:true,maximumAge:3000,timeout:15000});
 }
 async function sendPosition(position){
- const c=position.coords,lat=Number(c.latitude),lon=Number(c.longitude),now=Date.now();
- if(!Number.isFinite(lat)||!Number.isFinite(lon))return;
- const accuracy=Number(c.accuracy);
- if(Number.isFinite(accuracy)&&accuracy>200){status("GPS accuracy is poor ("+Math.round(accuracy)+" m). Waiting for a better fix...");return}
- const point=[lat,lon];
- if(lastSent && distanceM(lastSent,point)<5 && now-lastSentAt<SEND_INTERVAL)return;
- if(sendBusy)return;
- if(!marker){marker=L.marker(point).addTo(map).bindPopup("Your live driver location");}else marker.setLatLng(point);
- map.setView(point,16);
+ const c=position.coords, lat=c.latitude, lon=c.longitude;
+ if(!marker){marker=L.marker([lat,lon]).addTo(map).bindPopup("Your live driver location");}
+ else marker.setLatLng([lat,lon]);
+ map.setView([lat,lon],16);
  const deliveryId=document.getElementById("delivery_id").value.trim();
- sendBusy=true;
  try{
-  const r=await fetch("/api/driver/location",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({latitude:lat,longitude:lon,accuracy:Number.isFinite(accuracy)?accuracy:null,speed:Number.isFinite(c.speed)?c.speed:null,heading:Number.isFinite(c.heading)?c.heading:null,altitude:Number.isFinite(c.altitude)?c.altitude:null,delivery_id:deliveryId||null,client_time:new Date(position.timestamp||now).toISOString()})});
+  const r=await fetch("/api/driver/location",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+   latitude:lat,longitude:lon,accuracy:c.accuracy,speed:c.speed,heading:c.heading,altitude:c.altitude,delivery_id:deliveryId||null
+  })});
   const d=await r.json();
-  if(d.ok){lastSent=point;lastSentAt=now;online=true;status("LIVE GPS • "+new Date().toLocaleTimeString()+" • accuracy "+(Number.isFinite(accuracy)?Math.round(accuracy)+" m":"unknown"));}
-  else status(d.message||"GPS update failed.");
- }catch(e){status("Network problem. GPS will retry automatically.");}
- finally{sendBusy=false;}
+  status(d.ok?"ONLINE — GPS updated "+new Date().toLocaleTimeString():(d.message||"GPS update failed."));
+ }catch(e){status("Network error while sending GPS.");}
 }
-function gpsError(e){online=false;if(e.code===1)status("Location permission denied. Allow GPS permission in Chrome.");else if(e.code===2)status("GPS signal unavailable. Turn on Location and try again.");else if(e.code===3)status("GPS timed out. Retrying...");else status("GPS error. Retrying...");}
+function gpsError(e){
+ if(e.code===1)status("Location permission denied. Allow location permission in browser settings.");
+ else if(e.code===2)status("Device could not determine location.");
+ else if(e.code===3)status("GPS timed out."); else status("GPS error.");
+}
 function stopTracking(){
  if(watchId!==null){navigator.geolocation.clearWatch(watchId);watchId=null;}
- online=false;
- fetch("/api/driver/offline",{method:"POST",headers:{"Content-Type":"application/json"}}).then(r=>r.json()).then(d=>status(d.message||"Driver is offline.")).catch(()=>status("GPS stopped locally."));
+ fetch("/api/driver/offline",{method:"POST",headers:{"Content-Type":"application/json"}}).then(r=>r.json()).then(d=>status(d.message||"GPS sharing stopped.")).catch(()=>status("GPS stopped locally."));
 }
-window.addEventListener("pagehide",()=>{if(watchId!==null){navigator.geolocation.clearWatch(watchId);watchId=null;}fetch("/api/driver/offline",{method:"POST",headers:{"Content-Type":"application/json"},keepalive:true}).catch(()=>{});});
-window.addEventListener("pageshow",()=>{if(online&&watchId===null)startTracking();});
 </script>
 """)
 
@@ -2034,20 +2024,14 @@ def driver_location_update():
     provider_id = str(provider["id"])
     body = request.get_json(silent=True) or {}
     lat = safe_float(body.get("latitude")); lon = safe_float(body.get("longitude"))
-    accuracy = safe_float(body.get("accuracy")); speed = safe_float(body.get("speed")); heading = safe_float(body.get("heading")); altitude = safe_float(body.get("altitude"))
     if lat is None or lon is None or not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
         return jsonify({"ok":False,"message":"Invalid latitude or longitude."}),400
-    if accuracy is not None and (accuracy < 0 or accuracy > 1000):
-        return jsonify({"ok":False,"message":"GPS accuracy is outside the accepted range."}),400
-    if speed is not None and (speed < 0 or speed > 100): speed = None
-    if heading is not None and (heading < 0 or heading >= 360): heading = heading % 360
     payload = {
         "id": str(uuid.uuid4()), "driver_id": provider_id,
         "latitude": lat, "longitude": lon,
-        "accuracy": accuracy,
-        "speed": speed,
-        "heading": heading,
-        "altitude": altitude,
+        "accuracy": safe_float(body.get("accuracy")),
+        "speed": safe_float(body.get("speed")),
+        "heading": safe_float(body.get("heading")),
         "is_online": True, "created_at": utc_now()
     }
     row, error = db_insert("driver_locations", payload)
@@ -2254,6 +2238,7 @@ def create_delivery_request():
         "id":str(uuid.uuid4()),
         "customer_id":user["id"],
         "user_id":user["id"],
+        "sender_id":user["id"],
         "driver_id":driver_id,
         "pickup_location":clean(body.get("pickup_location")),
         "destination":clean(body.get("destination")),
@@ -2300,7 +2285,7 @@ def deliveries():
         # after which the customer can search for a driver.
         tracking=make_tracking_code()
         payload={
-            "id":str(uuid.uuid4()),"customer_id":user["id"],
+            "id":str(uuid.uuid4()),"customer_id":user["id"],"sender_id":user["id"],
             "pickup_location":clean(request.form.get("pickup_location")),
             "destination":clean(request.form.get("destination")),
             "recipient_name":clean(request.form.get("recipient_name")),
@@ -2503,13 +2488,11 @@ def delivery_location(tracking_code):
         age_seconds=max(0,(datetime.now(timezone.utc)-dt).total_seconds())
     except Exception:
         pass
-    stale = age_seconds is not None and age_seconds > 20
     return jsonify({
-        "ok":not stale,"latitude":loc.get("latitude"),"longitude":loc.get("longitude"),
+        "ok":True,"latitude":loc.get("latitude"),"longitude":loc.get("longitude"),
         "accuracy":loc.get("accuracy"),"speed":loc.get("speed"),
         "heading":loc.get("heading"),"updated_at":updated,
-        "age_seconds":age_seconds,"stale":stale,"status":delivery.get("status"),
-        "message":"Driver GPS is temporarily stale." if stale else "Live GPS available."
+        "age_seconds":age_seconds,"status":delivery.get("status")
     })
 
 # ============================================================
@@ -3233,6 +3216,234 @@ def admin_deliveries():
 {% for d in rows %}<tr><td>{{ d.get("tracking_code") }}</td><td>{{ d.get("customer_id") }}</td><td>{{ d.get("pickup_location") }}</td><td>{{ d.get("destination") }}</td><td>{{ d.get("driver_id") or "Unassigned" }}</td><td>{{ d.get("status") }}</td><td><a class="btn secondary" href="{{ url_for('track_delivery',tracking_code=d.get('tracking_code')) }}" target="_blank">Track GPS</a></td></tr>{% endfor %}
 </table></div>
 """,rows=rows)
+
+
+# ============================================================
+# SENDER / RECEIVER LIVE GPS SHARING
+# ============================================================
+
+def normalize_phone(value):
+    return ''.join(ch for ch in str(value or '') if ch.isdigit())
+
+def delivery_participant(delivery):
+    user=current_user() or {}
+    uid=str(user.get("id") or "")
+    if uid and str(delivery.get("customer_id") or delivery.get("user_id") or delivery.get("sender_id") or "") == uid:
+        return "sender"
+    up=normalize_phone(user.get("phone")); rp=normalize_phone(delivery.get("recipient_phone"))
+    if up and rp and (up == rp or up.endswith(rp) or rp.endswith(up)):
+        return "receiver"
+    return "admin" if user.get("is_admin") else None
+
+@app.route("/delivery/<tracking_code>/sender-live-map")
+@login_required
+def sender_live_map(tracking_code):
+    delivery=first_row("deliveries",{"tracking_code":tracking_code})
+    if not delivery:return "Delivery not found.",404
+    if delivery_participant(delivery) not in ("sender","admin"):return "Sender access required.",403
+    return render_page("Sender & Receiver Live Map", r"""
+<div class="hero"><h2>📍 Sender Live Map</h2><p>See your own live location, the receiver's live location and the driver on one map.</p></div>
+<div class="card"><div class="actions"><button class="btn success" onclick="startGPS()">Start My GPS</button><button class="btn danger" onclick="stopGPS()">Stop My GPS</button><a class="btn secondary" href="{{ url_for('receiver_live_map',tracking_code=tracking_code) }}">Receiver Screen</a></div><p id="status">Waiting for GPS...</p><div id="map"></div></div>
+<script>
+const trackingCode={{ tracking_code|tojson }},myRole="sender";const map=L.map("map").setView([-13.9626,28.3228],6);L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);const icons={sender:L.divIcon({className:"koja-participant",html:"<div style='font-size:36px'>📤</div>",iconSize:[40,40],iconAnchor:[20,20]}),receiver:L.divIcon({className:"koja-participant",html:"<div style='font-size:36px'>📥</div>",iconSize:[40,40],iconAnchor:[20,20]}),driver:L.divIcon({className:"koja-participant",html:"<div style='font-size:36px'>🚚</div>",iconSize:[40,40],iconAnchor:[20,20]})};let watch=null,markers={};function st(t){document.getElementById("status").textContent=t}function mark(role,p,label){if(!markers[role])markers[role]=L.marker(p,{icon:icons[role]}).addTo(map);markers[role].setLatLng(p).bindPopup(label)}async function send(pos){const c=pos.coords;try{const r=await fetch("/api/delivery/"+encodeURIComponent(trackingCode)+"/participant-location",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({latitude:c.latitude,longitude:c.longitude,accuracy:c.accuracy,speed:c.speed,heading:c.heading,altitude:c.altitude})});const d=await r.json();st(d.ok?"🟢 YOUR GPS LIVE — "+new Date().toLocaleTimeString():(d.message||"GPS update failed"))}catch(e){st("GPS active; network retrying...")}}function startGPS(){if(watch!==null)return;if(!navigator.geolocation){st("GPS is not supported on this device.");return}st("Requesting GPS permission...");watch=navigator.geolocation.watchPosition(p=>{mark("sender",[p.coords.latitude,p.coords.longitude],"📤 YOU — Sender");map.setView([p.coords.latitude,p.coords.longitude],15);send(p)},e=>st(e.code===1?"Allow location permission in browser settings.":"GPS unavailable — retrying..."),{enableHighAccuracy:true,maximumAge:2000,timeout:15000})}function stopGPS(){if(watch!==null){navigator.geolocation.clearWatch(watch);watch=null}fetch("/api/delivery/"+encodeURIComponent(trackingCode)+"/participant-offline",{method:"POST"}).catch(()=>{});st("Your GPS sharing stopped.")}async function refresh(){try{const d=await (await fetch("/api/delivery/"+encodeURIComponent(trackingCode)+"/participant-location",{cache:"no-store"})).json();if(d.ok){if(d.sender)mark("sender",[d.sender.latitude,d.sender.longitude],"📤 Sender");if(d.receiver)mark("receiver",[d.receiver.latitude,d.receiver.longitude],"📥 Receiver");if(d.driver)mark("driver",[d.driver.latitude,d.driver.longitude],"🚚 Driver");st("🟢 LIVE • Sender + Receiver + Driver • "+new Date().toLocaleTimeString())}else st(d.message||"Waiting for live locations...")}catch(e){st("Connection lost — retrying...")}}refresh();setInterval(refresh,3000);
+</script>
+""",tracking_code=tracking_code)
+
+@app.route("/delivery/<tracking_code>/receiver-live-map")
+@login_required
+def receiver_live_map(tracking_code):
+    delivery=first_row("deliveries",{"tracking_code":tracking_code})
+    if not delivery:return "Delivery not found.",404
+    if delivery_participant(delivery) not in ("receiver","admin"):return "Receiver access required. The logged-in phone must match the delivery recipient phone.",403
+    return render_page("Receiver & Sender Live Map", r"""
+<div class="hero"><h2>📍 Receiver Live Map</h2><p>See your own live location, the sender's live location and the driver on one map.</p></div>
+<div class="card"><div class="actions"><button class="btn success" onclick="startGPS()">Start My GPS</button><button class="btn danger" onclick="stopGPS()">Stop My GPS</button><a class="btn secondary" href="{{ url_for('sender_live_map',tracking_code=tracking_code) }}">Sender Screen</a></div><p id="status">Waiting for GPS...</p><div id="map"></div></div>
+<script>
+const trackingCode={{ tracking_code|tojson }},myRole="receiver";const map=L.map("map").setView([-13.9626,28.3228],6);L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);const icons={sender:L.divIcon({className:"koja-participant",html:"<div style='font-size:36px'>📤</div>",iconSize:[40,40],iconAnchor:[20,20]}),receiver:L.divIcon({className:"koja-participant",html:"<div style='font-size:36px'>📥</div>",iconSize:[40,40],iconAnchor:[20,20]}),driver:L.divIcon({className:"koja-participant",html:"<div style='font-size:36px'>🚚</div>",iconSize:[40,40],iconAnchor:[20,20]})};let watch=null,markers={};function st(t){document.getElementById("status").textContent=t}function mark(role,p,label){if(!markers[role])markers[role]=L.marker(p,{icon:icons[role]}).addTo(map);markers[role].setLatLng(p).bindPopup(label)}async function send(pos){const c=pos.coords;try{const r=await fetch("/api/delivery/"+encodeURIComponent(trackingCode)+"/participant-location",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({latitude:c.latitude,longitude:c.longitude,accuracy:c.accuracy,speed:c.speed,heading:c.heading,altitude:c.altitude})});const d=await r.json();st(d.ok?"🟢 YOUR GPS LIVE — "+new Date().toLocaleTimeString():(d.message||"GPS update failed"))}catch(e){st("GPS active; network retrying...")}}function startGPS(){if(watch!==null)return;if(!navigator.geolocation){st("GPS is not supported on this device.");return}st("Requesting GPS permission...");watch=navigator.geolocation.watchPosition(p=>{mark("receiver",[p.coords.latitude,p.coords.longitude],"📥 YOU — Receiver");map.setView([p.coords.latitude,p.coords.longitude],15);send(p)},e=>st(e.code===1?"Allow location permission in browser settings.":"GPS unavailable — retrying..."),{enableHighAccuracy:true,maximumAge:2000,timeout:15000})}function stopGPS(){if(watch!==null){navigator.geolocation.clearWatch(watch);watch=null}fetch("/api/delivery/"+encodeURIComponent(trackingCode)+"/participant-offline",{method:"POST"}).catch(()=>{});st("Your GPS sharing stopped.")}async function refresh(){try{const d=await (await fetch("/api/delivery/"+encodeURIComponent(trackingCode)+"/participant-location",{cache:"no-store"})).json();if(d.ok){if(d.sender)mark("sender",[d.sender.latitude,d.sender.longitude],"📤 Sender");if(d.receiver)mark("receiver",[d.receiver.latitude,d.receiver.longitude],"📥 Receiver");if(d.driver)mark("driver",[d.driver.latitude,d.driver.longitude],"🚚 Driver");st("🟢 LIVE • Sender + Receiver + Driver • "+new Date().toLocaleTimeString())}else st(d.message||"Waiting for live locations...")}catch(e){st("Connection lost — retrying...")}}refresh();setInterval(refresh,3000);
+</script>
+""",tracking_code=tracking_code)
+
+@app.route("/api/delivery/<tracking_code>/participant-location", methods=["GET","POST"])
+@login_required
+def participant_location_api(tracking_code):
+    delivery=first_row("deliveries",{"tracking_code":tracking_code})
+    if not delivery:return jsonify({"ok":False,"message":"Delivery not found."}),404
+    role=delivery_participant(delivery)
+    if role is None:return jsonify({"ok":False,"message":"You are not authorized for this delivery."}),403
+    if not table_exists("delivery_participant_locations"):return jsonify({"ok":False,"message":"Run the updated database SQL to enable sender/receiver live GPS."}),503
+    if request.method=="POST":
+        if role not in ("sender","receiver"):return jsonify({"ok":False,"message":"Only sender or receiver can share GPS."}),403
+        body=request.get_json(silent=True) or {};lat=safe_float(body.get("latitude"));lon=safe_float(body.get("longitude"))
+        if lat is None or lon is None or not(-90<=lat<=90 and -180<=lon<=180):return jsonify({"ok":False,"message":"Invalid GPS coordinates."}),400
+        payload={"id":str(uuid.uuid4()),"delivery_id":str(delivery.get("id")),"user_id":str(current_user().get("id")),"role":role,"latitude":lat,"longitude":lon,"accuracy":safe_float(body.get("accuracy")),"speed":safe_float(body.get("speed")),"heading":safe_float(body.get("heading")),"altitude":safe_float(body.get("altitude")),"is_online":True,"created_at":utc_now()}
+        row,error=db_insert("delivery_participant_locations",payload)
+        if error:return jsonify({"ok":False,"message":"Could not save participant GPS.","error":str(error)[:400]}),500
+        return jsonify({"ok":True,"role":role,"updated_at":payload["created_at"]})
+    rows=db_select("delivery_participant_locations",filters={"delivery_id":str(delivery.get("id"))},order="created_at.desc",limit=100);now=datetime.now(timezone.utc);latest={}
+    for x in rows:
+        rr=x.get("role")
+        if rr in latest or not x.get("is_online"):continue
+        try:
+            ts=datetime.fromisoformat(str(x.get("created_at")).replace("Z","+00:00"));ts=ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+            if (now-ts).total_seconds()>20:continue
+        except Exception:pass
+        latest[rr]=x
+    out={"ok":True,"sender":None,"receiver":None,"driver":None}
+    for rr,x in latest.items():out[rr]={"latitude":x.get("latitude"),"longitude":x.get("longitude"),"accuracy":x.get("accuracy"),"speed":x.get("speed"),"heading":x.get("heading"),"updated_at":x.get("created_at")}
+    driver_id=delivery.get("driver_id")
+    if driver_id:
+        locs=db_select("driver_locations",filters={"driver_id":driver_id},order="created_at.desc",limit=1)
+        if locs:
+            x=locs[0];fresh=True
+            try:
+                ts=datetime.fromisoformat(str(x.get("created_at")).replace("Z","+00:00"));ts=ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc);fresh=(now-ts).total_seconds()<=20
+            except Exception:pass
+            if fresh and x.get("is_online"):out["driver"]={"latitude":x.get("latitude"),"longitude":x.get("longitude"),"accuracy":x.get("accuracy"),"speed":x.get("speed"),"heading":x.get("heading"),"updated_at":x.get("created_at")}
+    return jsonify(out)
+
+@app.route("/api/delivery/<tracking_code>/participant-offline", methods=["POST"])
+@login_required
+def participant_offline_api(tracking_code):
+    delivery=first_row("deliveries",{"tracking_code":tracking_code})
+    if not delivery:return jsonify({"ok":False,"message":"Delivery not found."}),404
+    role=delivery_participant(delivery)
+    if role not in ("sender","receiver"):return jsonify({"ok":False,"message":"Participant access required."}),403
+    if not table_exists("delivery_participant_locations"):return jsonify({"ok":True})
+    rows=db_select("delivery_participant_locations",filters={"delivery_id":str(delivery.get("id")),"user_id":str(current_user().get("id"))},order="created_at.desc",limit=1)
+    if rows:
+        x=rows[0];x["is_online"]=False;x["created_at"]=utc_now();db_insert("delivery_participant_locations",x)
+    return jsonify({"ok":True,"message":"Participant GPS sharing stopped."})
+
+# ============================================================
+# OWNER LIVE LOCATION + SMART TV LIVE MAP
+# ============================================================
+
+@app.route("/owner/live-location")
+@admin_required
+def owner_live_location():
+    return render_page("Owner Live Location", r"""
+<div class="hero"><h2>📍 Owner Live Location</h2>
+<p>Use the owner's phone to share its real GPS position. Keep this page open while sharing.</p></div>
+<div class="card">
+  <div class="actions">
+    <button class="btn success" onclick="startOwnerGPS()">Start Owner GPS</button>
+    <button class="btn danger" onclick="stopOwnerGPS()">Stop GPS</button>
+    <a class="btn secondary" href="{{ url_for('admin_live_tv') }}">Open Smart TV Live Map</a>
+  </div>
+  <p id="owner-status">GPS not started.</p>
+  <div id="map"></div>
+</div>
+<script>
+let ownerWatch=null, ownerMarker=null;
+const map=L.map("map").setView([-13.9626,28.3228],6);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);
+function os(t){document.getElementById("owner-status").textContent=t}
+function startOwnerGPS(){
+ if(!navigator.geolocation){os("This device does not support GPS.");return}
+ if(ownerWatch!==null) return;
+ os("Requesting high-accuracy GPS permission...");
+ ownerWatch=navigator.geolocation.watchPosition(async pos=>{
+   const c=pos.coords;
+   if(!ownerMarker) ownerMarker=L.marker([c.latitude,c.longitude]).addTo(map).bindPopup("Owner LIVE location");
+   else ownerMarker.setLatLng([c.latitude,c.longitude]);
+   map.setView([c.latitude,c.longitude],17,{animate:true});
+   try{
+     const r=await fetch("{{ url_for('owner_location_update') }}",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({latitude:c.latitude,longitude:c.longitude,accuracy:c.accuracy,speed:c.speed,heading:c.heading,altitude:c.altitude})});
+     const d=await r.json(); os(d.ok?"🟢 OWNER LIVE — updated "+new Date().toLocaleTimeString():d.message||"GPS update failed.");
+   }catch(e){os("GPS is active but network update failed — retrying...")}
+ },e=>{os(e.code===1?"Location permission denied.":e.code===2?"Location unavailable.":"GPS timeout — retrying...")},{enableHighAccuracy:true,maximumAge:2000,timeout:15000});
+}
+function stopOwnerGPS(){
+ if(ownerWatch!==null){navigator.geolocation.clearWatch(ownerWatch);ownerWatch=null;}
+ fetch("{{ url_for('owner_location_offline') }}",{method:"POST"}).catch(()=>{});
+ os("Owner GPS sharing stopped.");
+}
+window.addEventListener("pagehide",()=>{if(ownerWatch!==null) navigator.geolocation.clearWatch(ownerWatch);});
+</script>
+""")
+
+@app.route("/api/owner/location", methods=["POST"])
+@admin_required
+def owner_location_update():
+    body=request.get_json(silent=True) or {}
+    lat=safe_float(body.get("latitude")); lon=safe_float(body.get("longitude"))
+    if lat is None or lon is None or not (-90<=lat<=90 and -180<=lon<=180):
+        return jsonify({"ok":False,"message":"Invalid latitude or longitude."}),400
+    if not table_exists("owner_locations"):
+        return jsonify({"ok":False,"message":"owner_locations table is not available. Run the updated database SQL."}),503
+    payload={"id":str(uuid.uuid4()),"owner_id":str(current_user().get("id")),"latitude":lat,"longitude":lon,
+             "accuracy":safe_float(body.get("accuracy")),"speed":safe_float(body.get("speed")),
+             "heading":safe_float(body.get("heading")),"altitude":safe_float(body.get("altitude")),
+             "is_online":True,"created_at":utc_now()}
+    row,error=db_insert("owner_locations",payload)
+    if error:
+        logger.error("owner_locations insert failed: %s",error)
+        return jsonify({"ok":False,"message":"Owner GPS could not be saved.","error":str(error)[:500]}),500
+    return jsonify({"ok":True,"latitude":lat,"longitude":lon,"accuracy":payload["accuracy"],"created_at":payload["created_at"]})
+
+@app.route("/api/owner/offline", methods=["POST"])
+@admin_required
+def owner_location_offline():
+    if not table_exists("owner_locations"):
+        return jsonify({"ok":True,"message":"Owner GPS sharing stopped locally."})
+    latest=db_select("owner_locations",filters={"owner_id":str(current_user().get("id"))},order="created_at.desc",limit=1)
+    x=latest[0] if latest else {}
+    payload={"id":str(uuid.uuid4()),"owner_id":str(current_user().get("id")),"latitude":x.get("latitude"),"longitude":x.get("longitude"),
+             "accuracy":x.get("accuracy"),"speed":None,"heading":None,"altitude":x.get("altitude"),"is_online":False,"created_at":utc_now()}
+    db_insert("owner_locations",payload)
+    return jsonify({"ok":True,"message":"Owner is now offline."})
+
+@app.route("/admin/live-tv")
+@admin_required
+def admin_live_tv():
+    return render_page("KOJA Smart TV Live Map", r"""
+<div style="position:fixed;inset:0;background:#111;z-index:9999">
+  <div id="tvmap" style="position:absolute;inset:0"></div>
+  <div style="position:absolute;top:18px;left:18px;right:18px;display:flex;justify-content:space-between;align-items:center;pointer-events:none">
+    <div style="background:rgba(0,0,0,.78);color:white;padding:12px 18px;border-radius:14px;font-weight:800;font-size:22px">KOJA AFRICA • LIVE</div>
+    <div id="tvstatus" style="background:rgba(0,0,0,.78);color:white;padding:10px 15px;border-radius:12px">Connecting...</div>
+  </div>
+  <div style="position:absolute;bottom:18px;left:18px;background:rgba(0,0,0,.78);color:white;padding:12px 16px;border-radius:14px;pointer-events:none">
+    <b>🟢 LIVE</b> • Drivers + Owner GPS • Auto refresh
+  </div>
+</div>
+<script>
+const tvmap=L.map("tvmap",{zoomControl:false}).setView([-13.9626,28.3228],6);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap contributors"}).addTo(tvmap);
+const tvMarkers={}; let ownerMarker=null;
+const truckIcon=L.divIcon({className:"koja-tv-truck",html:"<div style='font-size:36px'>🚚</div>",iconSize:[40,40],iconAnchor:[20,20]});
+const ownerIcon=L.divIcon({className:"koja-tv-owner",html:"<div style='font-size:36px'>👤</div>",iconSize:[40,40],iconAnchor:[20,20]});
+function esc(v){return String(v??"").replace(/[&<>\"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]));}
+async function refreshTV(){
+ try{
+   const [dr,ow]=await Promise.all([fetch("{{ url_for('admin_live_drivers_api') }}",{cache:"no-store"}),fetch("{{ url_for('owner_live_api') }}",{cache:"no-store"})]);
+   const d=await dr.json(),o=await ow.json(); let count=0;
+   if(d.ok){const seen={}; (d.drivers||[]).forEach(x=>{seen[x.driver_id]=true;count++;const p=[Number(x.latitude),Number(x.longitude)];if(!tvMarkers[x.driver_id])tvMarkers[x.driver_id]=L.marker(p,{icon:truckIcon}).addTo(tvmap);else tvMarkers[x.driver_id].setLatLng(p);tvMarkers[x.driver_id].bindPopup("<b>🚚 "+esc(x.name)+"</b><br>LIVE<br>Accuracy: "+esc(x.accuracy||"—")+" m");});Object.keys(tvMarkers).forEach(id=>{if(!seen[id]){tvmap.removeLayer(tvMarkers[id]);delete tvMarkers[id];}});}
+   if(o.ok&&o.location){const p=[Number(o.location.latitude),Number(o.location.longitude)];if(!ownerMarker)ownerMarker=L.marker(p,{icon:ownerIcon}).addTo(tvmap);else ownerMarker.setLatLng(p);ownerMarker.bindPopup("<b>👤 OWNER</b><br>LIVE location<br>Accuracy: "+esc(o.location.accuracy||"—")+" m");count++;}
+   document.getElementById("tvstatus").textContent="🟢 "+count+" live location(s) • "+new Date().toLocaleTimeString();
+ }catch(e){document.getElementById("tvstatus").textContent="🔴 Connection lost — retrying";}
+}
+async function ownerLive(){return null}
+refreshTV();setInterval(refreshTV,3000);
+</script>
+""")
+
+@app.route("/api/admin/owner-live")
+@admin_required
+def owner_live_api():
+    if not table_exists("owner_locations"):
+        return jsonify({"ok":True,"location":None})
+    rows=db_select("owner_locations",order="created_at.desc",limit=1)
+    if not rows or not rows[0].get("is_online"):
+        return jsonify({"ok":True,"location":None})
+    loc=rows[0]
+    try:
+        ts=datetime.fromisoformat(str(loc.get("created_at")).replace("Z","+00:00"));
+        if ts.tzinfo is None: ts=ts.replace(tzinfo=timezone.utc)
+        age=max(0,(datetime.now(timezone.utc)-ts).total_seconds())
+        if age>30:return jsonify({"ok":True,"location":None})
+    except Exception: pass
+    return jsonify({"ok":True,"location":{"latitude":loc.get("latitude"),"longitude":loc.get("longitude"),"accuracy":loc.get("accuracy"),"speed":loc.get("speed"),"heading":loc.get("heading"),"updated_at":loc.get("created_at")}})
 
 @app.route("/admin/appointments")
 @admin_required

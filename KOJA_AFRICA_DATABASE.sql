@@ -238,3 +238,45 @@ CREATE TRIGGER trg_cv_records_updated_at BEFORE UPDATE ON public.cv_records FOR 
 SELECT id,full_name,email,role,is_admin,is_active FROM public.profiles WHERE lower(email)=lower('obetkashila@gmail.com');
 SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name IN
 ('profiles','questions','assignments','assignment_answers','documents','document_records','service_providers','doctor_profiles','teacher_profiles','appointments','driver_profiles','driver_locations','deliveries','activity_logs','cv_records') ORDER BY table_name;
+
+
+-- OWNER LIVE GPS FOR SMART TV / ADMIN LIVE MAP
+CREATE TABLE IF NOT EXISTS public.owner_locations (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ owner_id uuid,
+ latitude double precision NOT NULL,
+ longitude double precision NOT NULL,
+ accuracy double precision,
+ speed double precision,
+ heading double precision,
+ altitude double precision,
+ is_online boolean DEFAULT false,
+ created_at timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_owner_locations_owner_created
+ ON public.owner_locations(owner_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_owner_locations_online_created
+ ON public.owner_locations(is_online, created_at DESC);
+
+-- SENDER + RECEIVER LIVE GPS FOR DELIVERY TWO-SCREEN MAP
+ALTER TABLE public.deliveries ADD COLUMN IF NOT EXISTS sender_id uuid;
+ALTER TABLE public.deliveries ADD COLUMN IF NOT EXISTS receiver_id uuid;
+
+CREATE TABLE IF NOT EXISTS public.delivery_participant_locations (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ delivery_id uuid NOT NULL,
+ user_id uuid NOT NULL,
+ role text NOT NULL CHECK (role IN ('sender','receiver')),
+ latitude double precision NOT NULL,
+ longitude double precision NOT NULL,
+ accuracy double precision,
+ speed double precision,
+ heading double precision,
+ altitude double precision,
+ is_online boolean DEFAULT false,
+ created_at timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_delivery_participant_locations_delivery_role_created
+ ON public.delivery_participant_locations(delivery_id, role, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_delivery_participant_locations_user_created
+ ON public.delivery_participant_locations(user_id, created_at DESC);
