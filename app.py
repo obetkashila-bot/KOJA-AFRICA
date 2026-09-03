@@ -731,6 +731,7 @@ footer{text-align:center;color:var(--muted);padding:30px}
 <a href="{{ url_for('questions') }}">Questions</a>
 <a href="{{ url_for('assignments') }}">Assignments</a>
 <a href="{{ url_for('research') }}">🔎 Research</a>
+<a href="{{ url_for('public_feed') }}">🌍 Public</a>
 <a href="{{ url_for('connect') }}">💬 Communication</a>
 <a href="{{ url_for('professional_communication') }}">👩‍💼 Professional Communication</a>
 <a href="{{ url_for('settings') }}">⚙️ Settings</a>
@@ -1764,6 +1765,105 @@ PROFESSIONAL_CATEGORIES = [
     "Writer / Editor / Translator", "Marketing / Advertising", "Business Consultant",
     "Other Professional Service"
 ]
+
+# ============================================================
+# PUBLIC KOJA FEED — Facebook-style public wall
+# Everyone can VIEW. Logged-in users can POST, LIKE and COMMENT.
+# Supports text, news/updates and public images.
+# ============================================================
+PUBLIC_FEED_SQL = """
+create extension if not exists pgcrypto;
+create table if not exists public.koja_public_posts (
+ id uuid primary key default gen_random_uuid(), author_id uuid not null,
+ post_type text not null default 'update', title text, body text not null,
+ media_url text, media_type text, created_at timestamptz default now(),
+ updated_at timestamptz default now(), is_published boolean default true
+);
+create index if not exists koja_public_posts_feed_idx on public.koja_public_posts(is_published, created_at desc);
+create index if not exists koja_public_posts_author_idx on public.koja_public_posts(author_id, created_at desc);
+create table if not exists public.koja_public_likes (
+ post_id uuid not null references public.koja_public_posts(id) on delete cascade,
+ user_id uuid not null, created_at timestamptz default now(), primary key(post_id,user_id)
+);
+create index if not exists koja_public_likes_post_idx on public.koja_public_likes(post_id);
+create table if not exists public.koja_public_comments (
+ id uuid primary key default gen_random_uuid(),
+ post_id uuid not null references public.koja_public_posts(id) on delete cascade,
+ author_id uuid not null, body text not null, created_at timestamptz default now()
+);
+create index if not exists koja_public_comments_post_idx on public.koja_public_comments(post_id,created_at);
+"""
+
+@app.route('/public')
+def public_feed():
+    rows, error = db_select('koja_public_posts', {'is_published':'eq.true'}, order='created_at.desc', limit=50)
+    if error: rows=[]
+    enriched=[]
+    for post in rows or []:
+        author=first_row('profiles', {'id':post.get('author_id')}) or {}
+        likes,_=db_select('koja_public_likes', {'post_id':post.get('id')}, select='user_id', limit=500)
+        comments,_=db_select('koja_public_comments', {'post_id':post.get('id')}, order='created_at.asc', limit=100)
+        comment_rows=[]
+        for c in comments or []:
+            ca=first_row('profiles', {'id':c.get('author_id')}) or {}
+            comment_rows.append({**c,'author_name':ca.get('full_name') or ca.get('name') or ca.get('email') or 'KOJA User'})
+        uid=(current_user() or {}).get('id')
+        enriched.append({**post,'author_name':author.get('full_name') or author.get('name') or author.get('email') or 'KOJA User',
+            'like_count':len(likes or []),'liked':bool(uid and any(str(x.get('user_id'))==str(uid) for x in (likes or []))), 'comments':comment_rows})
+    return render_page('KOJA Public — News, Updates & Media', r'''
+<div class="hero"><h1>🌍 KOJA Public</h1><p>News, updates, public messages and images from the KOJA community. Everyone can view this page.</p></div>
+{% if user %}<div class="card"><h3>📝 Share with everyone</h3>
+<form method="post" action="{{ url_for('public_feed_create') }}" enctype="multipart/form-data">
+<div class="grid"><div><label>Type</label><select name="post_type"><option value="update">Community Update</option><option value="news">News</option><option value="announcement">Announcement</option><option value="event">Event</option></select></div><div><label>Title (optional)</label><input name="title" maxlength="180" placeholder="What is this about?"></div></div>
+<label>Message</label><textarea name="body" maxlength="5000" placeholder="Write a public message, update or news..." required></textarea>
+<label>Image / media (optional)</label><input type="file" name="media" accept="image/jpeg,image/png,image/webp">
+<button class="btn" type="submit">🌐 Publish Publicly</button></form>
+<p class="small">Your post is public and may be visible to people who are not logged in.</p></div>
+{% else %}<div class="card"><strong>Want to publish?</strong> <a class="btn" href="{{ url_for('login', next='/public') }}">Login</a> <a class="btn secondary" href="{{ url_for('register', next='/public') }}">Create account</a></div>{% endif %}
+<div class="card"><h2>📰 News & Updates</h2><p class="small">Public feed · newest first</p></div>
+{% for p in posts %}<article class="card" id="post-{{ p.id }}"><strong>👤 {{ p.author_name }}</strong><div class="small">{{ p.post_type|title }} · {{ p.created_at }}</div>
+{% if p.title %}<h2 style="margin-top:10px">{{ p.title }}</h2>{% endif %}<p style="white-space:pre-wrap;line-height:1.7">{{ p.body }}</p>
+{% if p.media_url %}<img src="{{ p.media_url }}" alt="Public KOJA post image" loading="lazy" style="width:100%;max-height:620px;object-fit:cover;border-radius:12px;margin-top:8px">{% endif %}
+<div class="actions" style="margin-top:12px">{% if user %}<form method="post" action="{{ url_for('public_toggle_like', post_id=p.id) }}" style="display:inline"><button class="btn secondary" type="submit">{{ '❤️ Liked' if p.liked else '🤍 Like' }} · {{ p.like_count }}</button></form>{% else %}<a class="btn secondary" href="{{ url_for('login', next='/public') }}">🤍 Like · {{ p.like_count }}</a>{% endif %}<span class="btn secondary" style="cursor:default">💬 {{ p.comments|length }} Comments</span></div>
+{% for c in p.comments %}<div style="padding:9px 0;border-top:1px solid var(--border);margin-top:9px"><strong>{{ c.author_name }}</strong><div>{{ c.body }}</div><div class="small">{{ c.created_at }}</div></div>{% endfor %}
+{% if user %}<form method="post" action="{{ url_for('public_comment', post_id=p.id) }}"><input name="body" maxlength="1000" placeholder="Write a comment..." required><button class="btn" type="submit">Comment</button></form>{% else %}<p class="small"><a href="{{ url_for('login', next='/public') }}">Login</a> to comment.</p>{% endif %}
+</article>{% else %}<div class="card"><h3>No public updates yet.</h3><p>Be the first KOJA user to share a public update or news.</p></div>{% endfor %}
+''', posts=enriched)
+
+@app.route('/public/create', methods=['POST'])
+@login_required
+def public_feed_create():
+    body=clean(request.form.get('body')); title=clean(request.form.get('title'))
+    post_type=clean(request.form.get('post_type')).lower() or 'update'
+    if post_type not in {'update','news','announcement','event'}: post_type='update'
+    if not body: flash('Write a message before publishing.','danger'); return redirect(url_for('public_feed'))
+    media=request.files.get('media'); uploaded=None
+    if media and media.filename:
+        ext=media.filename.lower().rsplit('.',1)[-1] if '.' in media.filename else ''
+        if ext not in {'jpg','jpeg','png','webp'}: flash('Public feed images must be JPG, PNG or WebP.','danger'); return redirect(url_for('public_feed'))
+        uploaded,err=upload_storage(media,'public-feed')
+        if err: flash(f'Image upload failed: {err}','danger'); return redirect(url_for('public_feed'))
+    payload={'author_id':current_user().get('id'),'post_type':post_type,'title':title or None,'body':body,
+             'media_url':(uploaded or {}).get('url'),'media_type':('image' if uploaded else None),'is_published':True}
+    _,err=db_insert('koja_public_posts',payload)
+    flash('Published to KOJA Public.' if not err else 'Public post could not be published. Run the updated KOJA_CONNECT.sql first.','success' if not err else 'danger')
+    return redirect(url_for('public_feed'))
+
+@app.route('/public/like/<post_id>', methods=['POST'])
+@login_required
+def public_toggle_like(post_id):
+    uid=current_user().get('id'); existing=first_row('koja_public_likes', {'post_id':post_id,'user_id':uid})
+    if existing: db_delete('koja_public_likes', {'post_id':post_id,'user_id':uid})
+    else: db_insert('koja_public_likes', {'post_id':post_id,'user_id':uid})
+    return redirect(url_for('public_feed')+'#post-'+post_id)
+
+@app.route('/public/comment/<post_id>', methods=['POST'])
+@login_required
+def public_comment(post_id):
+    body=clean(request.form.get('body'))
+    if body: db_insert('koja_public_comments', {'post_id':post_id,'author_id':current_user().get('id'),'body':body})
+    return redirect(url_for('public_feed')+'#post-'+post_id)
+
 
 @app.route("/professional-communication")
 @login_required
