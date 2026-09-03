@@ -555,17 +555,21 @@ BASE_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<meta name="description" content="KOJA AFRICA — academic questions, assignments, documents, professional services and live delivery services in Africa.">
-<meta name="robots" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] %}noindex,nofollow{% else %}index,follow,max-image-preview:large{% endif %}">
-<meta name="googlebot" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] %}noindex,nofollow{% else %}index,follow{% endif %}">
+<meta name="description" content="{{ description or 'KOJA AFRICA — academic questions, assignments, research documents, professional services and delivery services.' }}">
+<meta name="robots" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] or (request.path == '/research' and request.args.get('q')) %}noindex,nofollow{% else %}index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1{% endif %}">
+<meta name="googlebot" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] or (request.path == '/research' and request.args.get('q')) %}noindex,nofollow{% else %}index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1{% endif %}">
 <meta name="google-site-verification" content="u4nfIf5MfXm0iVvECSQeYAov4Tz4601ayY5kYzNc4ko">
 <meta name="csrf-token" content="{{ csrf_token }}">
+<link rel="icon" type="image/png" sizes="48x48" href="{{ url_for('favicon_png') }}">
 <link rel="canonical" href="{{ SITE_URL }}{{ request.path }}">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="KOJA AFRICA">
 <meta property="og:title" content="{{ title or 'KOJA AFRICA' }}">
-<meta property="og:description" content="Academic questions, assignments, documents, professional services and live delivery services.">
+<meta property="og:description" content="{{ description or 'Academic questions, assignments, research documents, professional services and delivery services.' }}">
 <meta property="og:url" content="{{ SITE_URL }}{{ request.path }}">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="{{ title or 'KOJA AFRICA' }}">
+<meta name="twitter:description" content="{{ description or 'Academic questions, assignments, research documents, professional services and delivery services.' }}">
 <title>{{ title or "KOJA AFRICA" }}</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
 <style>
@@ -705,7 +709,7 @@ window.addEventListener('resize',()=>{if(window.innerWidth>850)toggleKojaMenu(fa
 </html>
 """
 
-def render_page(title, body_template, **context):
+def render_page(title, body_template, description=None, **context):
     context["user"] = current_user()
     # Use the Jinja environment directly so template context keys such as
     # "source" cannot collide with render_template_string(source, ...).
@@ -713,6 +717,7 @@ def render_page(title, body_template, **context):
     return render_template_string(
         BASE_HTML,
         title=title,
+        description=description,
         body=body,
         user=current_user()
     )
@@ -721,29 +726,60 @@ def render_page(title, body_template, **context):
 # HOME / HEALTH
 # ============================================================
 
+@app.route("/favicon.png")
+def favicon_png():
+    favicon_path = os.path.join(os.path.dirname(__file__), "static", "favicon.png")
+    return send_file(favicon_path, mimetype="image/png", max_age=604800)
+
 @app.route("/")
 def home():
-    return render_page("KOJA AFRICA", r"""
-<div class="hero">
+    return render_page("KOJA AFRICA | Knowledge, Questions & Answers", r"""
+<section class="hero">
 <h1>KOJA AFRICA</h1>
-<p>Knowledge • Questions • Answers</p>
-<p>Academic questions, assignments, documents, research, professional services and delivery services.</p>
-{% if not user %}
+<p><strong>Knowledge • Questions • Answers</strong></p>
+<p>A practical online platform for academic questions, assignments, research, documents, professional services and delivery support.</p>
 <div class="actions">
-<a class="btn" href="{{ url_for('register') }}">Create Account</a>
+<a class="btn" href="{{ url_for('research') }}">Explore Research</a>
+<a class="btn secondary" href="{{ url_for('register') }}">Create Account</a>
 <a class="btn secondary" href="{{ url_for('login') }}">Login</a>
 </div>
-{% endif %}
-</div>
+</section>
+
+<section class="card">
+<h2>What you can do with KOJA AFRICA</h2>
+<p>KOJA AFRICA brings several practical services into one place. Public information is available without exposing private account or administrative pages to search engines.</p>
 <div class="grid">
-<div class="card"><h3>Academic</h3><p>Questions, assignments and learning resources.</p><a class="btn" href="{{ url_for('questions') }}">Questions</a></div>
-<div class="card"><h3>CV</h3><p>Create a professional CV.</p><a class="btn" href="{{ url_for('cv') }}">Create CV</a></div>
-<div class="card"><h3>Doctors</h3><p>Find a doctor and request an appointment.</p><a class="btn" href="{{ url_for('doctors') }}">Doctors</a></div>
-<div class="card"><h3>Teachers</h3><p>Find teachers/tutors by subject and grade.</p><a class="btn" href="{{ url_for('teachers') }}">Teachers</a></div>
-<div class="card"><h3>Deliveries</h3><p>Find nearby drivers and send delivery requests.</p><a class="btn" href="{{ url_for('deliveries') }}">Delivery</a></div>
-<div class="card"><h3>Live GPS</h3><p>Drivers can share their live location.</p><a class="btn" href="{{ url_for('tracking') }}">Driver GPS</a></div>
+<div class="card"><h3>Academic Questions</h3><p>Submit academic questions and manage answers through your account.</p><a class="btn" href="{{ url_for('login') }}">Ask a Question</a></div>
+<div class="card"><h3>Assignments</h3><p>Submit assignment work and access responses or answer files when available.</p><a class="btn" href="{{ url_for('login') }}">Manage Assignments</a></div>
+<div class="card"><h3>Research &amp; Documents</h3><p>Search general web information, scholarly literature and KOJA document records from the research workspace.</p><a class="btn" href="{{ url_for('research') }}">Search Research</a></div>
+<div class="card"><h3>Professional Services</h3><p>Explore available doctor, teacher/tutor and CV services through the secure client area.</p><a class="btn" href="{{ url_for('login') }}">Open Services</a></div>
+<div class="card"><h3>Drivers &amp; Delivery</h3><p>Request delivery support and use consent-based driver location sharing when a delivery is active.</p><a class="btn" href="{{ url_for('login') }}">Open Delivery</a></div>
 </div>
-""")
+</section>
+
+<section class="card">
+<h2>Research built for useful discovery</h2>
+<p>The KOJA Research Engine can combine web discovery, Wikipedia, scholarly metadata from OpenAlex and Crossref, and KOJA document records. Search results link back to their original sources so important information can be checked directly.</p>
+<a class="btn" href="{{ url_for('research') }}">Open KOJA Research Engine</a>
+</section>
+
+<section class="card">
+<h2>How KOJA AFRICA works</h2>
+<div class="grid">
+<div><h3>1. Choose</h3><p>Select the service or research tool that matches what you need.</p></div>
+<div><h3>2. Submit</h3><p>Provide the relevant details or search terms. Account-based actions are handled inside the secure client area.</p></div>
+<div><h3>3. Receive</h3><p>Follow your request, answer, document or delivery status from the appropriate KOJA workspace.</p></div>
+</div>
+</section>
+
+<section class="card">
+<h2>KOJA AFRICA for students, professionals and everyday users</h2>
+<p>KOJA AFRICA is designed to make common digital tasks easier to find and manage from a mobile-friendly interface. Use the public Research page to discover information, then sign in when you need an account-based service such as questions, assignments, professional services or delivery management.</p>
+</section>
+
+<script type="application/ld+json">{{ {"@context":"https://schema.org","@type":"WebSite","name":"KOJA AFRICA","url":SITE_URL,"description":"A platform for academic questions, assignments, research, documents, professional services and delivery support."}|tojson }}</script>
+<script type="application/ld+json">{{ {"@context":"https://schema.org","@type":"Organization","name":"KOJA AFRICA","url":SITE_URL,"description":"Knowledge, Questions and Answers with research, academic, professional and delivery services."}|tojson }}</script>
+""", description="KOJA AFRICA is a mobile-friendly platform for academic questions, assignments, research, documents, professional services and delivery support.")
 
 @app.route("/health")
 def health():
@@ -870,17 +906,73 @@ def login():
         flash("Invalid login credentials. Use the same email and password used to create the KOJA account.","danger")
         return redirect(url_for("login"))
 
-    return render_page("Login", r"""
-<div class="card" style="max-width:500px;margin:auto">
-<h2>KOJA Login</h2>
-<p class="small">KOJA supports its local profile password and, when configured, Supabase Auth accounts.</p>
-<form method="post">
-<label>Email</label><input name="email" type="email" autocomplete="email" required>
-<label>Password</label><input name="password" type="password" autocomplete="current-password" required>
-<button type="submit">Login</button>
-</form>
-<p>No account? <a href="{{ url_for('register') }}">Create one</a></p>
+    return render_page("Sign in | KOJA AFRICA", r"""
+<style>
+.login-shell{max-width:520px;margin:10px auto 28px}
+.login-card{padding:24px;border:1px solid #e5e9f0}
+.login-brand{text-align:center;margin-bottom:20px}
+.login-mark{width:58px;height:58px;margin:0 auto 10px;border-radius:16px;display:grid;place-items:center;background:linear-gradient(135deg,#4da3ff,#176b87);color:#fff;font-size:30px;font-weight:950;box-shadow:0 8px 22px rgba(16,35,63,.18)}
+.login-brand h1{font-size:25px;margin:0 0 5px}.login-brand p{margin:0;color:#667085}
+.form-group{margin-bottom:14px}.form-group label{display:block;font-weight:750;margin-bottom:4px}
+.password-wrap{position:relative}.password-wrap input{padding-right:76px;margin-bottom:0}.show-password{position:absolute;right:7px;top:7px;width:auto;margin:0;padding:6px 8px;background:transparent;color:#176b87;font-size:12px;font-weight:800}
+.login-submit{margin-top:16px;font-weight:800;min-height:46px}
+.login-help{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:18px 0}.login-help a{display:block;text-align:center;padding:11px;border:1px solid #d9e0ea;border-radius:9px;text-decoration:none;font-weight:700}
+.login-trust{padding:13px 14px;background:#f7f9fc;border-radius:10px;font-size:13px;color:#526071}.login-trust strong{color:#172033}
+.login-footer{text-align:center;margin-top:18px;font-size:14px}.login-footer a{font-weight:750}
+@media(max-width:520px){.login-card{padding:20px}.login-help{grid-template-columns:1fr}}
+</style>
+<div class="login-shell">
+  <section class="card login-card" aria-labelledby="login-title">
+    <div class="login-brand">
+      <div class="login-mark" aria-hidden="true">K</div>
+      <h1 id="login-title">Sign in to KOJA AFRICA</h1>
+      <p>Access your academic, research, document and professional services.</p>
+    </div>
+
+    <form method="post" action="{{ url_for('login') }}" autocomplete="on">
+      <div class="form-group">
+        <label for="login-email">Email address</label>
+        <input id="login-email" name="email" type="email" inputmode="email" autocomplete="username" autocapitalize="none" spellcheck="false" aria-describedby="email-help" required>
+        <div id="email-help" class="small">Use the email address registered with your KOJA account.</div>
+      </div>
+
+      <div class="form-group">
+        <label for="login-password">Password</label>
+        <div class="password-wrap">
+          <input id="login-password" name="password" type="password" autocomplete="current-password" aria-describedby="password-help" required>
+          <button class="show-password" type="button" onclick="toggleLoginPassword()" aria-controls="login-password" aria-label="Show password">Show</button>
+        </div>
+        <div id="password-help" class="small">Your password is used only to authenticate your account.</div>
+      </div>
+
+      <button class="login-submit" type="submit">Sign in securely</button>
+    </form>
+
+    <div class="login-help" aria-label="Account options">
+      <a href="{{ url_for('register') }}">Create an account</a>
+      <a href="{{ url_for('home') }}">Return to KOJA AFRICA</a>
+    </div>
+
+    <div class="login-trust">
+      <strong>KOJA AFRICA</strong> provides access to academic questions, assignments, research, documents, professional services and delivery features. Only sign in through the official KOJA AFRICA website.
+    </div>
+  </section>
+
+  <p class="login-footer">
+    New to KOJA? <a href="{{ url_for('register') }}">Create your account</a>.
+  </p>
 </div>
+<script>
+function toggleLoginPassword(){
+  const input=document.getElementById('login-password');
+  const button=document.querySelector('.show-password');
+  if(!input||!button)return;
+  const showing=input.type==='text';
+  input.type=showing?'password':'text';
+  button.textContent=showing?'Show':'Hide';
+  button.setAttribute('aria-label',showing?'Show password':'Hide password');
+}
+</script>
 """)
 
 @app.route("/logout")
@@ -1148,15 +1240,15 @@ def research():
         results += research_web(q,8)+research_wikipedia(q,6)+research_openalex(q,year,8)+research_crossref(q,year,author,8)+research_local_documents(q,12)
         results=_research_filter(results,source,year,sort)
     summary=research_ai_summary(q,results) if q else ''
-    return render_page('Research', r'''
+    return render_page('KOJA Research Engine', r'''
 <style>
 .research-shell{max-width:1100px;margin:auto}.research-search{display:grid;grid-template-columns:1fr auto;gap:10px}.research-search input{min-width:0}.research-filters{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-top:12px}.research-filters label{font-size:.82rem;font-weight:700}.research-filters select,.research-filters input{width:100%;margin-top:5px}.research-tabs{display:flex;gap:8px;overflow:auto;margin:14px 0}.research-tabs a{white-space:nowrap}.source-badge{display:inline-block;padding:5px 9px;border-radius:999px;background:rgba(80,150,255,.14);font-size:.78rem;font-weight:800}.research-result h3{line-height:1.35}.research-meta{font-size:.82rem;opacity:.8}.research-summary{border-left:4px solid #62a8ff}.research-summary pre{white-space:pre-wrap;font:inherit;line-height:1.6}.research-count{font-weight:700}.research-empty{padding:28px;text-align:center}@media(max-width:700px){.research-search{grid-template-columns:1fr}.research-filters{grid-template-columns:1fr 1fr}.research-result{padding:16px!important}}
 </style>
-<div class="research-shell"><div class="hero"><h2>🔎 KOJA Research Engine</h2><p>Search the web, scholarly literature and your KOJA document collection from one research workspace.</p><form method="get" action="{{ url_for('research') }}" class="research-search" style="margin-top:18px"><input name="q" value="{{ q }}" placeholder="Ask a question, topic, paper, author or subject…" aria-label="Research search"><button class="btn" type="submit">Search</button></form>
+<div class="research-shell"><div class="hero"><h1>KOJA Research Engine</h1><p>Search general web information, scholarly literature and KOJA document records from one research workspace.</p><p class="small" style="color:#dbeafe">Use specific keywords, a research topic, paper title or author name. Open the original source to verify important claims.</p><form method="get" action="{{ url_for('research') }}" class="research-search" style="margin-top:18px"><input name="q" value="{{ q }}" placeholder="Ask a question, topic, paper, author or subject…" aria-label="Research search"><button class="btn" type="submit">Search</button></form>
 <div class="research-filters"><label>Source<select name="source" form="research-filter-form"><option value="all" {% if source=='all' %}selected{% endif %}>All sources</option><option value="academic" {% if source=='academic' %}selected{% endif %}>Academic</option><option value="web" {% if source=='web' %}selected{% endif %}>Web</option><option value="wikipedia" {% if source=='wikipedia' %}selected{% endif %}>Wikipedia</option><option value="koja" {% if source=='koja' %}selected{% endif %}>KOJA Documents</option></select></label><label>Year<input name="year" form="research-filter-form" value="{{ year or '' }}" placeholder="e.g. 2025" inputmode="numeric"></label><label>Author<input name="author" form="research-filter-form" value="{{ author }}" placeholder="Academic author"></label><label>Sort<select name="sort" form="research-filter-form"><option value="relevance" {% if sort=='relevance' %}selected{% endif %}>Relevance</option><option value="date" {% if sort=='date' %}selected{% endif %}>Newest first</option><option value="citations" {% if sort=='citations' %}selected{% endif %}>Most cited</option></select></label></div><form id="research-filter-form" method="get" action="{{ url_for('research') }}"><input type="hidden" name="q" value="{{ q }}"></form></div>
 {% if q %}<div class="research-tabs"><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}">🎓 Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}">🌐 Web</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}">📁 KOJA Documents</a></div><div class="card"><span class="research-count">{{ results|length }} results</span> for <strong>“{{ q }}”</strong></div>{% if summary %}<div class="card research-summary"><h3>🧠 Research Summary</h3><pre>{{ summary }}</pre><p class="small">AI summaries use configured AI credentials when available; otherwise KOJA shows source-based highlights. Verify important claims against original sources.</p></div>{% endif %}{% for r in results %}<div class="card research-result"><span class="source-badge">{{ r.source }}</span><h3><a href="{{ r.url or '#' }}" {% if r.url %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a></h3>{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open original source ↗</a>{% endif %}</div>{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endfor %}{% else %}<div class="grid"><div class="card"><h3>🌐 Web Discovery</h3><p>Discover general web knowledge.</p></div><div class="card"><h3>🎓 Academic Search</h3><p>OpenAlex and Crossref provide scholarly metadata, authors, years and citation information.</p></div><div class="card"><h3>📁 KOJA Documents</h3><p>Search documents already connected to your KOJA Supabase database.</p></div><div class="card"><h3>🧠 AI Research Summary</h3><p>Configure an AI API key to synthesize retrieved evidence with source-number citations.</p></div></div>{% endif %}</div>
 <script type="application/ld+json">{{ {"@context":"https://schema.org","@type":"WebSite","name":"KOJA AFRICA Research","url":SITE_URL+"/research","potentialAction":{"@type":"SearchAction","target":SITE_URL+"/research?q={search_term_string}","query-input":"required name=search_term_string"}}|tojson }}</script>
-''',q=q,results=results,summary=summary,source=source,sort=sort,year=year,author=author,SITE_URL=SITE_URL)
+''',q=q,results=results,summary=summary,source=source,sort=sort,year=year,author=author,SITE_URL=SITE_URL, description="KOJA Research Engine — search web information, scholarly literature and KOJA document records, with source links for verification.")
 
 
 @app.route("/services")
