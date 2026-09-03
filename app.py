@@ -554,7 +554,7 @@ BASE_HTML = r"""
 *{box-sizing:border-box}
 body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f5f7fb;color:#172033}
 nav{background:#10233f;color:#fff;padding:12px 15px;position:sticky;top:0;z-index:1000}
-.nav-inner{max-width:1250px;margin:auto;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.nav-inner{max-width:1250px;margin:auto;display:flex;align-items:center;gap:7px;flex-wrap:wrap}.menu-toggle{display:none;width:auto;margin:0;background:transparent;border:1px solid rgba(255,255,255,.25);font-size:22px;padding:6px 10px}.nav-links{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
 .brand{font-weight:800;font-size:19px;margin-right:auto;display:flex;align-items:center;gap:8px;letter-spacing:.2px}.brand-mark{width:32px;height:32px;border-radius:9px;display:inline-grid;place-items:center;background:linear-gradient(135deg,#19a7b8,#f2b84b);box-shadow:0 5px 18px rgba(0,0,0,.22);animation:logoFloat 4s ease-in-out infinite}.brand-mark svg{width:22px;height:22px}.brand-name{white-space:nowrap}
 nav a{color:#fff;text-decoration:none;padding:8px 9px;border-radius:7px}
 nav a{transition:background .2s ease,transform .2s ease}nav a:hover{background:rgba(255,255,255,.12);transform:translateY(-1px)}
@@ -581,13 +581,15 @@ th,td{border-bottom:1px solid #e4e7ec;padding:9px;text-align:left;vertical-align
 .offline{color:#a62d2d;font-weight:700}
 footer{text-align:center;color:#667085;padding:30px}
 .actions{display:flex;gap:8px;flex-wrap:wrap}.actions .btn,.actions button{width:auto}
-@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}@keyframes logoFloat{0%,100%{transform:translateY(0) rotate(0deg)}50%{transform:translateY(-2px) rotate(1deg)}}@keyframes pulseSoft{0%,100%{box-shadow:0 0 0 0 rgba(25,167,184,.18)}50%{box-shadow:0 0 0 7px rgba(25,167,184,0)}}:focus-visible{outline:3px solid #f2b84b;outline-offset:2px}.hero{animation:fadeUp .55s ease both}.stat{animation:fadeUp .5s ease both}.online{animation:pulseSoft 2.4s ease-in-out infinite}@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition:none!important;transform:none!important}}@media(max-width:650px){nav a{font-size:12px}.container{width:min(100% - 14px,1250px)}table{display:block;overflow-x:auto}#map{height:350px}.actions .btn,.actions button{width:100%}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}@keyframes logoFloat{0%,100%{transform:translateY(0) rotate(0deg)}50%{transform:translateY(-2px) rotate(1deg)}}@keyframes pulseSoft{0%,100%{box-shadow:0 0 0 0 rgba(25,167,184,.18)}50%{box-shadow:0 0 0 7px rgba(25,167,184,0)}}:focus-visible{outline:3px solid #f2b84b;outline-offset:2px}.hero{animation:fadeUp .55s ease both}.stat{animation:fadeUp .5s ease both}.online{animation:pulseSoft 2.4s ease-in-out infinite}@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition:none!important;transform:none!important}}@media(max-width:650px){.menu-toggle{display:block}.nav-links{display:none;width:100%;flex-direction:column;align-items:stretch;gap:3px}.nav-links.open{display:flex}.nav-links a{text-align:left;padding:11px 12px}.container{width:min(100% - 14px,1250px)}table{display:block;overflow-x:auto}#map{height:350px}.actions .btn,.actions button{width:100%}}
 </style>
 </head>
 <body>
 <nav>
 <div class="nav-inner">
 <div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 18V6h7.2a5.3 5.3 0 0 1 0 10.6H8.5" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 9.1h3.4a1.9 1.9 0 0 1 0 3.8H8.5" stroke="white" stroke-width="2.2" stroke-linecap="round"/></svg></span><span class="brand-name">KOJA AFRICA</span></div>
+<button class="menu-toggle" type="button" aria-label="Open menu" aria-expanded="false" onclick="toggleKojamenu(this)">☰</button>
+<div class="nav-links">
 <a href="{{ url_for('home') }}">Home</a>
 {% if user %}
 <a href="{{ url_for('dashboard') }}">Dashboard</a>
@@ -607,6 +609,7 @@ footer{text-align:center;color:#667085;padding:30px}
 <a href="{{ url_for('login') }}">Login</a>
 <a href="{{ url_for('register') }}">Register</a>
 {% endif %}
+</div>
 {% if user and user.is_admin %}<a href="{{ url_for('admin') }}">Admin</a>{% endif %}
 </div>
 </nav>
@@ -617,6 +620,7 @@ footer{text-align:center;color:#667085;padding:30px}
 {{ body|safe }}
 </div>
 <footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Agricultural • Health • Transport Services</footer>
+<script>function toggleKojamenu(b){const m=document.querySelector(".nav-links");const o=m.classList.toggle("open");b.setAttribute("aria-expanded",o?"true":"false");b.setAttribute("aria-label",o?"Close menu":"Open menu");b.textContent=o?"✕":"☰"}document.addEventListener("click",e=>{const m=document.querySelector(".nav-links"),b=document.querySelector(".menu-toggle");if(window.innerWidth<=650&&m&&m.classList.contains("open")&&!m.contains(e.target)&&e.target!==b){m.classList.remove("open");if(b){b.textContent="☰";b.setAttribute("aria-expanded","false")}}});window.addEventListener("resize",()=>{if(window.innerWidth>650){const m=document.querySelector(".nav-links");if(m)m.classList.remove("open")}});</script>
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 </body>
 </html>
