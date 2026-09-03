@@ -20,7 +20,6 @@ from flask import (
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
-from werkzeug.middleware.proxy_fix import ProxyFix
 
 # ============================================================
 # KOJA AFRICA
@@ -46,35 +45,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("koja-africa")
 
 app = Flask(__name__)
-# Render terminates HTTPS at the proxy; trust forwarded host/proto headers.
-app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 app.secret_key = os.getenv(
     "SECRET_KEY",
     os.getenv("FLASK_SECRET_KEY", secrets.token_hex(32))
 )
 app.config["MAX_CONTENT_LENGTH"] = 15 * 1024 * 1024
-app.config["SESSION_COOKIE_HTTPONLY"] = True
-app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-app.config["SESSION_COOKIE_SECURE"] = os.getenv("SESSION_COOKIE_SECURE", "true").lower() not in ("0", "false", "no")
-app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
-
-# Lightweight production rate limiting without an extra dependency.
-_rate_hits = {}
-def _rate_limited(key, limit, window=60):
-    now = datetime.now(timezone.utc).timestamp()
-    bucket = _rate_hits.get(key, [])
-    bucket = [t for t in bucket if now - t < window]
-    if len(bucket) >= limit:
-        _rate_hits[key] = bucket
-        return True
-    bucket.append(now)
-    _rate_hits[key] = bucket
-    # Prevent unbounded memory growth on long-running instances.
-    if len(_rate_hits) > 5000:
-        oldest = sorted(_rate_hits.items(), key=lambda kv: kv[1][-1] if kv[1] else 0)[:1000]
-        for k, _ in oldest:
-            _rate_hits.pop(k, None)
-    return False
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_SERVICE_KEY = (
@@ -731,6 +706,7 @@ footer{text-align:center;color:var(--muted);padding:30px}
 <a href="{{ url_for('questions') }}">Questions</a>
 <a href="{{ url_for('assignments') }}">Assignments</a>
 <a href="{{ url_for('research') }}">🔎 Research</a>
+<a href="{{ url_for('connect') }}">💬 KOJA Connect</a>
 <a href="{{ url_for('settings') }}">⚙️ Settings</a>
 <div class="menu-group">
 <button type="button" id="moreMenuButton" aria-expanded="false" aria-haspopup="true">More ▾</button>
@@ -907,8 +883,6 @@ def health():
 @app.route("/register", methods=["GET","POST"])
 def register():
     if request.method == "POST":
-        if _rate_limited("register:" + (request.remote_addr or "unknown"), 8, 600):
-            return "Too many registration attempts. Please wait and try again.", 429
         full_name = clean(request.form.get("full_name"))
         email = clean(request.form.get("email")).lower()
         phone = clean(request.form.get("phone"))
@@ -980,8 +954,6 @@ def register():
 @app.route("/login", methods=["GET","POST"])
 def login():
     if request.method == "POST":
-        if _rate_limited("login:" + (request.remote_addr or "unknown"), 12, 300):
-            return "Too many login attempts. Please wait a few minutes and try again.", 429
         email = clean(request.form.get("email")).lower()
         password = request.form.get("password","")
         user = find_user_by_email(email)
@@ -1366,9 +1338,8 @@ def services():
 <div class="card"><h3>Academic Questions</h3><a class="btn" href="{{ url_for('questions') }}">Open</a></div>
 <div class="card"><h3>Assignments</h3><a class="btn" href="{{ url_for('assignments') }}">Open</a></div>
 <div class="card"><h3>CV</h3><a class="btn" href="{{ url_for('cv') }}">Open</a></div>
-<div class="card"><h3>Doctors</h3><p>Find doctors, view profiles and request appointments.</p><a class="btn" href="{{ url_for('doctors') }}">Find Doctors</a><a class="btn secondary" href="{{ url_for('professional_register') }}">Register</a></div>
-<div class="card"><h3>Teachers / Tutors</h3><p>Find teachers and tutors by subject, grade and qualification.</p><a class="btn" href="{{ url_for('teachers') }}">Find Tutors</a><a class="btn secondary" href="{{ url_for('professional_register') }}">Register</a></div>
-<div class="card"><h3>All Professionals</h3><p>Register and find professionals in many fields including law, accounting, engineering, ICT, construction, beauty, counselling and more.</p><a class="btn" href="{{ url_for('professionals') }}">Find Professionals</a><a class="btn secondary" href="{{ url_for('professional_register') }}">Register Profession</a></div>
+<div class="card"><h3>Doctors</h3><a class="btn" href="{{ url_for('doctors') }}">Open</a></div>
+<div class="card"><h3>Teachers</h3><a class="btn" href="{{ url_for('teachers') }}">Open</a></div>
 <div class="card"><h3>Deliveries</h3><a class="btn" href="{{ url_for('deliveries') }}">Open</a></div>
 </div>
 """)
@@ -1747,415 +1718,6 @@ def book_teacher(provider_id):
 """,teacher=teacher)
 
 # ============================================================
-# ALL PROFESSIONAL SERVICES
-# ============================================================
-
-PROFESSIONAL_CATEGORIES = [
-    "Lawyer / Legal Services", "Accountant / Auditor", "Engineer", "Architect",
-    "IT / Software / Web Developer", "Graphic Designer", "Consultant",
-    "Counsellor / Psychologist", "Social Worker", "Nurse / Midwife",
-    "Pharmacist", "Dentist", "Nutritionist / Dietitian", "Physiotherapist",
-    "Real Estate Agent", "Insurance Agent", "Financial Adviser", "Teacher / Tutor",
-    "Doctor / Medical Practitioner", "Electrician", "Plumber", "Mechanic",
-    "Builder / Contractor", "Carpenter", "Welder", "Tailor / Fashion Designer",
-    "Hairdresser / Barber / Beauty Professional", "Photographer / Videographer",
-    "Writer / Editor / Translator", "Marketing / Advertising", "Business Consultant",
-    "Other Professional Service"
-]
-
-@app.route("/professionals")
-@login_required
-def professionals():
-    category = clean(request.args.get("category"))
-    query = clean(request.args.get("q"))
-    rows = db_select("service_providers", order="created_at.desc", limit=500)
-    visible = []
-    for x in rows:
-        if str(x.get("provider_type") or "").lower() in {"driver", "doctor", "teacher", "tutor"}:
-            continue
-        status = str(x.get("approval_status") or x.get("verification_status") or "pending").lower()
-        if status not in {"approved", "active", "verified"}:
-            continue
-        if x.get("is_active") is False:
-            continue
-        hay = " ".join(str(x.get(k) or "") for k in ("full_name","name","profession","specialization","qualification","service_area","address","bio","service_description")).lower()
-        if category and category.lower() not in str(x.get("profession") or "").lower():
-            continue
-        if query and query.lower() not in hay:
-            continue
-        visible.append(x)
-    return render_page("Professional Services", r"""
-<div class="hero"><h2>👩‍💼 All Professional Services</h2><p>Find an approved professional, ask for advice or counselling, book a service, chat, or start a voice/video call.</p></div>
-<div class="card">
-<form method="get" class="actions">
-<input name="q" value="{{ query }}" placeholder="Search a profession, professional, service or qualification">
-<select name="category"><option value="">All professions</option>{% for c in categories %}<option value="{{ c }}" {% if category==c %}selected{% endif %}>{{ c }}</option>{% endfor %}</select>
-<button class="btn" type="submit">🔎 Search Profession</button>
-<a class="btn secondary" href="{{ url_for('professional_register') }}">📝 Register as Professional</a>
-</form>
-<p class="small">Only administrator-approved professional profiles are shown publicly.</p>
-</div>
-<div class="grid">
-{% for p in professionals %}
-<div class="card">
-<h3>{{ p.get('full_name') or p.get('name') or 'Professional' }}</h3>
-<p><strong>Profession:</strong> {{ p.get('profession') or 'Professional Service' }}</p>
-{% if p.get('specialization') %}<p><strong>Specialization:</strong> {{ p.get('specialization') }}</p>{% endif %}
-{% if p.get('qualification') %}<p><strong>Qualification:</strong> {{ p.get('qualification') }}</p>{% endif %}
-{% if p.get('experience_years') %}<p><strong>Experience:</strong> {{ p.get('experience_years') }} years</p>{% endif %}
-{% if p.get('service_area') or p.get('address') %}<p><strong>Service area:</strong> {{ p.get('service_area') or p.get('address') }}</p>{% endif %}
-{% if p.get('service_description') %}<p>{{ p.get('service_description') }}</p>{% elif p.get('bio') %}<p>{{ p.get('bio') }}</p>{% endif %}
-{% if p.get('hourly_rate') %}<p><strong>Rate:</strong> {{ p.get('currency') or 'ZMW' }} {{ p.get('hourly_rate') }}</p>{% endif %}
-<div class="actions">
-<a class="btn" href="{{ url_for('professional_contact', provider_id=p.get('id')) }}">👤 Contact / Services</a>
-<a class="btn secondary" href="{{ url_for('book_professional', provider_id=p.get('id'), purpose='booking') }}">📅 Book</a>
-<a class="btn secondary" href="{{ url_for('book_professional', provider_id=p.get('id'), purpose='advice') }}">💡 Ask Advice</a>
-<a class="btn secondary" href="{{ url_for('book_professional', provider_id=p.get('id'), purpose='counselling') }}">🧠 Counselling</a>
-</div>
-</div>
-{% else %}
-<div class="card"><h3>No approved professionals found</h3><p>Search another profession or register as a professional.</p><a class="btn" href="{{ url_for('professional_register') }}">Register as Professional</a></div>
-{% endfor %}
-</div>
-""", professionals=visible, categories=PROFESSIONAL_CATEGORIES, category=category, query=query)
-
-@app.route("/professional/register", methods=["GET","POST"])
-@login_required
-def professional_register():
-    user = current_user() or {}
-    existing = first_row("service_providers", {"user_id": user.get("id"), "provider_type": "professional"})
-    if request.method == "POST":
-        profession = clean(request.form.get("profession"))
-        if not profession:
-            flash("Please select or enter your profession.", "danger")
-            return redirect(url_for("professional_register"))
-        payload = {
-            "id": (existing or {}).get("id") or str(uuid.uuid4()), "user_id": user.get("id"), "provider_type": "professional",
-            "full_name": clean(request.form.get("full_name")) or user.get("name") or user.get("full_name"),
-            "name": clean(request.form.get("full_name")) or user.get("name") or user.get("full_name"),
-            "phone": clean(request.form.get("phone")) or user.get("phone"), "email": clean(request.form.get("email")) or user.get("email"),
-            "profession": profession, "specialization": clean(request.form.get("specialization")), "qualification": clean(request.form.get("qualification")),
-            "experience_years": clean(request.form.get("experience_years")) or None, "service_area": clean(request.form.get("service_area")),
-            "address": clean(request.form.get("address")), "bio": clean(request.form.get("bio")), "service_description": clean(request.form.get("service_description")),
-            "hourly_rate": clean(request.form.get("hourly_rate")) or None, "currency": clean(request.form.get("currency")) or "ZMW",
-            "is_available": False, "is_active": True, "verification_status": "pending", "approval_status": "pending", "created_at": utc_now(), "updated_at": utc_now()
-        }
-        if existing: data, error = db_update("service_providers", {"id": existing.get("id")}, payload)
-        else: data, error = db_insert("service_providers", payload)
-        if error:
-            fallback = {k:v for k,v in payload.items() if k not in {"profession","specialization","qualification","experience_years","service_area","service_description","hourly_rate","currency","approval_status","updated_at"}}
-            if existing: data, error = db_update("service_providers", {"id": existing.get("id")}, fallback)
-            else: data, error = db_insert("service_providers", fallback)
-        if error: flash("Professional registration failed: " + str(error)[:700], "danger")
-        else: flash("Professional profile submitted for administrator approval.", "success")
-        return redirect(url_for("professionals"))
-    return render_page("Register as Professional", r"""
-<div class="hero"><h2>📝 Register for Any Profession</h2><p>Register your professional service. Your profile becomes visible after administrator approval.</p></div>
-<div class="card"><form method="post">
-<label>Full Name</label><input name="full_name" value="{{ user.name or user.full_name or '' }}" required>
-<label>Phone</label><input name="phone" value="{{ user.phone or '' }}" required>
-<label>Email</label><input type="email" name="email" value="{{ user.email or '' }}">
-<label>Profession</label><select name="profession" required><option value="">Select profession</option>{% for c in categories %}<option value="{{ c }}">{{ c }}</option>{% endfor %}</select>
-<label>Specialization</label><input name="specialization" placeholder="Specialty or area of expertise">
-<label>Qualification / Certification</label><input name="qualification" placeholder="Degree, licence, certificate or professional membership">
-<label>Years of Experience</label><input name="experience_years" type="number" min="0" max="80" inputmode="numeric">
-<label>Service Area</label><input name="service_area" placeholder="City, town, province or online">
-<label>Address</label><input name="address">
-<label>Services Offered</label><textarea name="service_description" placeholder="Describe the services you offer"></textarea>
-<label>Professional Bio</label><textarea name="bio" placeholder="Experience, expertise and background"></textarea>
-<label>Rate</label><input name="hourly_rate" type="number" min="0" step="0.01" placeholder="Optional">
-<label>Currency</label><select name="currency"><option>ZMW</option><option>USD</option><option>ZAR</option></select>
-<button type="submit">Submit Professional Registration</button>
-</form></div>
-""", categories=PROFESSIONAL_CATEGORIES, user=user)
-
-@app.route("/professional/book/<provider_id>", methods=["GET", "POST"])
-@login_required
-def book_professional(provider_id):
-    """Book an approved universal professional for a service, advice, or counselling."""
-    user = current_user() or {}
-    provider = first_row("service_providers", {"id": provider_id})
-    if not provider or str(provider.get("provider_type") or "").lower() in {"driver", "doctor", "teacher", "tutor"}:
-        abort(404)
-    status = str(provider.get("approval_status") or provider.get("verification_status") or "pending").lower()
-    if status not in {"approved", "active", "verified"}:
-        return "This professional is not currently available for booking.", 403
-
-    purpose = clean(request.args.get("purpose") or request.form.get("purpose") or "booking").lower()
-    if purpose not in {"booking", "advice", "counselling"}:
-        purpose = "booking"
-    labels = {"booking": "Book Service", "advice": "Ask for Professional Advice", "counselling": "Request Counselling"}
-
-    if request.method == "POST":
-        payload = {
-            "id": str(uuid.uuid4()),
-            "client_id": user.get("id"),
-            "provider_id": provider_id,
-            "appointment_type": "professional_" + purpose,
-            "appointment_date": request.form.get("appointment_date"),
-            "start_time": request.form.get("start_time"),
-            "end_time": request.form.get("end_time") or None,
-            "location": clean(request.form.get("location")) or "Online",
-            "status": "requested",
-            "notes": clean(request.form.get("notes")),
-            "created_at": utc_now(),
-            "updated_at": utc_now(),
-        }
-        row, error = db_insert("appointments", payload)
-        if error:
-            flash("Request could not be submitted: " + str(error)[:700], "danger")
-        else:
-            flash("Professional request submitted successfully.", "success")
-        return redirect(url_for("dashboard"))
-
-    return render_page(labels[purpose], r"""
-<div class="hero">
-  <h2>{{ title }}</h2>
-  <p><strong>{{ provider.get('full_name') or provider.get('name') or 'Professional' }}</strong> · {{ provider.get('profession') or 'Professional Service' }}</p>
-  {% if provider.get('specialization') %}<p>{{ provider.get('specialization') }}</p>{% endif %}
-</div>
-<div class="card">
-<form method="post">
-<input type="hidden" name="purpose" value="{{ purpose }}">
-<label>Date</label><input type="date" name="appointment_date" required>
-<label>Start Time</label><input type="time" name="start_time" required>
-<label>End Time</label><input type="time" name="end_time">
-<label>Location / Online</label><input name="location" value="Online" placeholder="Office, home, clinic or online">
-<label>Message / Details</label><textarea name="notes" required placeholder="Explain what you need from the professional"></textarea>
-<button class="btn" type="submit">{{ title }}</button>
-</form>
-</div>
-""", provider=provider, purpose=purpose, title=labels[purpose])
-
-def professional_is_connected(provider):
-    """Return True when an approved professional has an active recent presence."""
-    if not provider:
-        return False
-    status = str(provider.get("approval_status") or provider.get("verification_status") or "pending").lower()
-    if status not in {"approved", "active", "verified"}:
-        return False
-    if provider.get("is_available") is False:
-        return False
-    seen = provider.get("last_seen_at")
-    if not seen:
-        return False
-    try:
-        from datetime import datetime, timezone
-        dt = datetime.fromisoformat(str(seen).replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return (datetime.now(timezone.utc) - dt).total_seconds() <= 30
-    except Exception:
-        return False
-
-
-@app.route("/api/professional/presence", methods=["POST"])
-@login_required
-def professional_presence():
-    me = current_user() or {}
-    provider = first_row("service_providers", {"user_id": me.get("id")})
-    if not provider:
-        return jsonify({"connected": False, "error": "Professional profile not found"}), 404
-    data = request.get_json(silent=True) or {}
-    online = bool(data.get("online", True))
-    now = utc_now()
-    updates = {"last_seen_at": now, "is_available": online, "updated_at": now}
-    _, error = db_update("service_providers", {"id": provider.get("id")}, updates)
-    if error:
-        return jsonify({"connected": False, "error": str(error)[:400]}), 500
-    return jsonify({"ok": True, "connected": online})
-
-
-@app.route("/professional/contact/<provider_id>")
-@login_required
-def professional_contact(provider_id):
-    provider = first_row("service_providers", {"id": provider_id})
-    if not provider or str(provider.get("provider_type") or "").lower() in {"driver","doctor","teacher","tutor"}:
-        return "Professional provider not found.", 404
-    status = str(provider.get("approval_status") or provider.get("verification_status") or "pending").lower()
-    connected = professional_is_connected(provider)
-    if status not in {"approved","active","verified"} and str((current_user() or {}).get("id")) != str(provider.get("user_id")):
-        return "This professional is not currently available.", 403
-    return render_page("Contact Professional", r"""
-<div class="hero"><h2>🤝 {{ provider.get('full_name') or provider.get('name') or 'Professional' }}</h2><p>{{ provider.get('profession') or 'Professional Service' }}{% if provider.get('specialization') %} · {{ provider.get('specialization') }}{% endif %}</p></div>
-<div class="grid">
-<div class="card"><h3>📅 Book</h3><p>Book this professional for a scheduled service.</p><a class="btn" href="{{ url_for('book_professional', provider_id=provider.id, purpose='booking') }}">Book Service</a></div>
-<div class="card"><h3>💡 Professional Advice</h3><p>Ask a question and request advice from this profession.</p><a class="btn" href="{{ url_for('book_professional', provider_id=provider.id, purpose='advice') }}">Ask for Advice</a></div>
-<div class="card"><h3>🧠 Counselling</h3><p>Request a counselling or consultation session where appropriate.</p><a class="btn" href="{{ url_for('book_professional', provider_id=provider.id, purpose='counselling') }}">Request Counselling</a></div>
-<div class="card"><h3>💬 Chat</h3><p>Send and receive text messages.</p><a class="btn" href="{{ url_for('professional_chat', provider_id=provider.id) }}">Open Chat</a></div>
-<div class="card"><h3>📞 Voice Call</h3>{% if connected %}<p>🟢 Connected — you can call this professional now.</p><a class="btn" href="{{ url_for('professional_call', provider_id=provider.id, mode='voice') }}">Start Voice Call</a>{% else %}<p>🔴 This professional is not connected right now.</p><button class="btn secondary" disabled>Voice Call Unavailable</button>{% endif %}</div>
-<div class="card"><h3>🎥 Video Call</h3>{% if connected %}<p>🟢 Connected — you can start a video call now.</p><a class="btn" href="{{ url_for('professional_call', provider_id=provider.id, mode='video') }}">Start Video Call</a>{% else %}<p>🔴 This professional is not connected right now.</p><button class="btn secondary" disabled>Video Call Unavailable</button>{% endif %}</div><div class="card"><h3>📲 Incoming Calls</h3><p>Professionals can open their call inbox to receive calls.</p><a class="btn secondary" href="{{ url_for('professional_calls') }}">Open Call Inbox</a></div>
-{% if provider.get('phone') %}<div class="card"><h3>📱 Phone</h3><a class="btn secondary" href="tel:{{ provider.get('phone') }}">Call {{ provider.get('phone') }}</a></div>{% endif %}
-</div>
-""", provider=provider, connected=connected)
-
-@app.route("/professional/chat/<provider_id>")
-@login_required
-def professional_chat(provider_id):
-    provider = first_row("service_providers", {"id": provider_id})
-    if not provider: return "Professional provider not found.", 404
-    me = current_user() or {}
-    return render_page("Professional Chat", r"""
-<div class="hero"><h2>💬 Chat with {{ provider.get('full_name') or provider.get('name') or 'Professional' }}</h2><p>{{ provider.get('profession') or 'Professional Service' }}</p></div>
-<div class="card"><div id="messages" style="height:50vh;overflow:auto;border:1px solid var(--border);padding:12px;border-radius:10px"></div><form id="chatForm" class="actions" style="margin-top:10px"><input id="message" placeholder="Type your message..." required style="flex:1"><button class="btn" type="submit">Send</button></form><p id="chatStatus" class="small"></p></div>
-<script>
-const providerId={{ provider.id|tojson }}; const box=document.getElementById('messages');
-async function loadMessages(){const r=await fetch('/api/professional/chat/'+providerId); if(!r.ok)return; const d=await r.json(); box.innerHTML=(d.messages||[]).map(m=>'<div style="margin:8px 0"><strong>'+esc(m.sender_name||'User')+'</strong><div>'+esc(m.message||'')+'</div><span class="small">'+esc(m.created_at||'')+'</span></div>').join(''); box.scrollTop=box.scrollHeight;}
-function esc(v){return String(v??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));}
-document.getElementById('chatForm').onsubmit=async e=>{e.preventDefault(); const msg=document.getElementById('message'); const r=await fetch('/api/professional/chat/'+providerId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg.value})}); if(r.ok){msg.value='';loadMessages()}else document.getElementById('chatStatus').textContent='Message could not be sent.';};
-loadMessages(); setInterval(loadMessages,2000);
-</script>
-""", provider=provider, me=me)
-
-@app.route("/api/professional/chat/<provider_id>", methods=["GET","POST"])
-@login_required
-def professional_chat_api(provider_id):
-    provider=first_row("service_providers", {"id":provider_id})
-    if not provider: return jsonify({"error":"Provider not found"}),404
-    me=current_user() or {}; me_id=str(me.get("id")); provider_user=str(provider.get("user_id") or "")
-    if request.method=="POST":
-        data=request.get_json(silent=True) or {}; message=clean(data.get("message"))
-        if not message: return jsonify({"error":"Message required"}),400
-        payload={"id":str(uuid.uuid4()),"sender_id":me_id,"receiver_id":provider_user,"provider_id":provider_id,"message":message,"created_at":utc_now()}
-        row,error=db_insert("professional_messages",payload)
-        if error: return jsonify({"error":str(error)[:500]}),500
-        return jsonify({"ok":True,"message":row or payload})
-    rows=db_select("professional_messages", order="created_at.asc", limit=500)
-    relevant=[]
-    for m in rows:
-        a=str(m.get("sender_id") or ""); b=str(m.get("receiver_id") or "")
-        if (a==me_id and b==provider_user and str(m.get("provider_id"))==str(provider_id)) or (a==provider_user and b==me_id and str(m.get("provider_id"))==str(provider_id)):
-            relevant.append(m)
-    for m in relevant:
-        m["sender_name"] = "You" if str(m.get("sender_id"))==me_id else (provider.get("full_name") or provider.get("name") or "Professional")
-    return jsonify({"messages":relevant})
-
-@app.route("/professional/call/<provider_id>")
-@login_required
-def professional_call(provider_id):
-    provider=first_row("service_providers", {"id":provider_id})
-    if not provider: return "Professional provider not found.",404
-    mode=clean(request.args.get("mode")).lower()
-    if mode not in {"voice","video"}: mode="video"
-    if not professional_is_connected(provider):
-        return "This professional is not connected right now. Please try again when they are online.", 409
-    return render_page("Professional Call", r"""
-<div class="hero"><h2>{{ '🎥 Video Call' if mode=='video' else '📞 Voice Call' }}</h2><p>With {{ provider.get('full_name') or provider.get('name') or 'Professional' }} · {{ provider.get('profession') or 'Professional Service' }}</p></div>
-<div class="card"><div id="incoming" style="display:none"></div><div id="callState">Preparing call…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:12px;{% if mode=='voice' %}display:none{% endif %}"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:12px;{% if mode=='voice' %}display:none{% endif %}"></video></div><audio id="remoteAudio" autoplay {% if mode!='voice' %}style="display:none"{% endif %}></audio><div class="actions" style="margin-top:14px"><button class="btn success" id="start">Start {{ mode.title() }} Call</button><button class="btn danger" id="hang">End Call</button><a class="btn secondary" href="{{ url_for('professional_contact', provider_id=provider.id) }}">Back</a></div><p class="small">Allow microphone/camera access. Both people must have an internet connection and keep this page open during the call.</p></div>
-<script>
-const providerId={{ provider.id|tojson }}, mode={{ mode|tojson }}; let callId=null, pc=null, poll=null; const uid={{ (user.get('id') if user else '')|tojson }};
-const state=t=>document.getElementById('callState').textContent=t;
-async function media(){return navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'})}
-let callTimer=null;
-function tellUnavailable(){const msg='This contact is not available. The call could not reach the professional. Please check your internet connection and try again later.'; state('🔴 '+msg); try{if('speechSynthesis' in window){speechSynthesis.cancel(); const u=new SpeechSynthesisUtterance(msg); u.lang='en-US'; speechSynthesis.speak(u)}}catch(e){}}
-function failCall(){if(poll)clearInterval(poll); if(callTimer)clearTimeout(callTimer); if(pc){pc.getSenders().forEach(s=>{try{s.track&&s.track.stop()}catch(e){}}); pc.close(); pc=null} if(callId){fetch('/api/professional/call/'+callId+'/hangup',{method:'POST'}).catch(()=>{}); callId=null} tellUnavailable()}
-async function startCall(){try{if(!navigator.onLine)throw Error('No internet connection'); const stream=await media(); document.getElementById('local').srcObject=stream; pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]}); pc.onconnectionstatechange=()=>{if(pc && ['failed','disconnected'].includes(pc.connectionState)) failCall()}; stream.getTracks().forEach(t=>pc.addTrack(t,stream)); pc.ontrack=e=>{document.getElementById('remote').srcObject=e.streams[0];document.getElementById('remoteAudio').srcObject=e.streams[0]}; pc.onicecandidate=e=>{if(e.candidate && callId)fetch('/api/professional/call/'+callId+'/ice',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate.toJSON(),side:'caller'})}).catch(()=>{})}; const offer=await pc.createOffer(); await pc.setLocalDescription(offer); const r=await fetch('/api/professional/call/'+providerId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode,offer:offer.sdp})}); const d=await r.json(); if(!r.ok)throw Error(d.error||'Call failed'); callId=d.call_id; state('Calling professional…'); callTimer=setTimeout(failCall,120000); poll=setInterval(checkCall,1000)}catch(e){if(e.message&&(/internet|network|failed|available/i.test(e.message))) tellUnavailable(); else state('Could not start call: '+e.message)}}
-async function checkCall(){if(!callId)return; try{const r=await fetch('/api/professional/call/'+callId,{cache:'no-store'}); if(!r.ok)throw Error('Network error'); const d=await r.json(); if(d.call && ['ended','declined','failed'].includes(d.call.status)){failCall();return} if(d.answer && pc && !pc.currentRemoteDescription){await pc.setRemoteDescription({type:'answer',sdp:d.answer}); if(callTimer)clearTimeout(callTimer); state('🟢 Connected');} for(const c of (d.callee_ice||[])){try{await pc.addIceCandidate(c)}catch(e){}}}catch(e){if(!navigator.onLine)failCall()}}
-window.addEventListener('offline',()=>{if(callId)failCall()});
-async function hang(){if(poll)clearInterval(poll); if(callTimer)clearTimeout(callTimer); if(pc){pc.getSenders().forEach(s=>{try{s.track&&s.track.stop()}catch(e){}});pc.close();pc=null} if(callId){await fetch('/api/professional/call/'+callId+'/hangup',{method:'POST'}).catch(()=>{});callId=null} state('Call ended')}
-document.getElementById('start').onclick=startCall; document.getElementById('hang').onclick=hang;
-</script>
-""", provider=provider, mode=mode)
-
-@app.route("/api/professional/call/<provider_id>", methods=["POST"])
-@login_required
-def professional_call_create(provider_id):
-    if _rate_limited("call:" + (request.remote_addr or "unknown"), 10, 60):
-        return jsonify({"error":"Too many call attempts. Please wait a moment and try again."}), 429
-    provider=first_row("service_providers", {"id":provider_id}); me=current_user() or {}
-    if not provider:return jsonify({"error":"Provider not found"}),404
-    data=request.get_json(silent=True) or {}; mode=clean(data.get("mode")).lower(); offer=data.get("offer")
-    if mode not in {"voice","video"} or not offer:return jsonify({"error":"Invalid call request"}),400
-    if not professional_is_connected(provider): return jsonify({"error":"This professional is not connected right now."}),409
-    payload={"id":str(uuid.uuid4()),"caller_id":me.get("id"),"callee_id":provider.get("user_id"),"provider_id":provider_id,"mode":mode,"status":"ringing","offer":offer,"created_at":utc_now()}
-    row,error=db_insert("professional_calls",payload)
-    if error:return jsonify({"error":str(error)[:500]}),500
-    return jsonify({"ok":True,"call_id":payload["id"]})
-
-@app.route("/api/professional/call/<call_id>")
-@login_required
-def professional_call_state(call_id):
-    row=first_row("professional_calls", {"id":call_id}); me=current_user() or {}
-    if not row:return jsonify({"error":"Call not found"}),404
-    if str(me.get("id")) not in {str(row.get("caller_id")),str(row.get("callee_id"))}:return jsonify({"error":"Forbidden"}),403
-    return jsonify({"call":row,"answer":row.get("answer"),"callee_ice":row.get("callee_ice") or []})
-
-@app.route("/api/professional/call/<call_id>/ice", methods=["POST"])
-@login_required
-def professional_call_ice(call_id):
-    row=first_row("professional_calls", {"id":call_id}); me=current_user() or {}; data=request.get_json(silent=True) or {}
-    if not row:return jsonify({"error":"Call not found"}),404
-    if str(me.get("id")) not in {str(row.get("caller_id")),str(row.get("callee_id"))}:return jsonify({"error":"Forbidden"}),403
-    side=clean(data.get("side")); candidate=data.get("candidate")
-    if side not in {"caller","callee"} or not candidate:return jsonify({"error":"Invalid candidate"}),400
-    key="caller_ice" if side=="caller" else "callee_ice"; arr=row.get(key) or []; arr.append(candidate)
-    _,error=db_update("professional_calls", {"id":call_id}, {key:arr})
-    return (jsonify({"ok":True}) if not error else jsonify({"error":str(error)[:400]}), 200 if not error else 500)
-
-@app.route("/api/professional/call/<call_id>/answer", methods=["POST"])
-@login_required
-def professional_call_answer(call_id):
-    row=first_row("professional_calls", {"id":call_id}); me=current_user() or {}; data=request.get_json(silent=True) or {}
-    if not row:return jsonify({"error":"Call not found"}),404
-    if str(me.get("id"))!=str(row.get("callee_id")):return jsonify({"error":"Only the recipient can answer"}),403
-    answer=data.get("answer")
-    if not answer:return jsonify({"error":"Answer required"}),400
-    _,error=db_update("professional_calls", {"id":call_id}, {"answer":answer,"status":"connected","answered_at":utc_now()})
-    return (jsonify({"ok":True}) if not error else jsonify({"error":str(error)[:400]}),200 if not error else 500)
-
-@app.route("/api/professional/call/<call_id>/hangup", methods=["POST"])
-@login_required
-def professional_call_hangup(call_id):
-    row=first_row("professional_calls", {"id":call_id}); me=current_user() or {}
-    if not row:return jsonify({"error":"Call not found"}),404
-    if str(me.get("id")) not in {str(row.get("caller_id")),str(row.get("callee_id"))}:return jsonify({"error":"Forbidden"}),403
-    _,error=db_update("professional_calls", {"id":call_id}, {"status":"ended","ended_at":utc_now()})
-    return (jsonify({"ok":True}) if not error else jsonify({"error":str(error)[:400]}),200 if not error else 500)
-
-
-@app.route("/professional/calls")
-@login_required
-def professional_calls():
-    return render_page("Professional Calls", r"""
-<div class="hero"><h2>📞 Professional Calls</h2><p>Incoming and active voice/video calls.</p></div>
-<div id="calls" class="grid"><div class="card">Checking for calls…</div></div>
-<script>
-async function check(){const r=await fetch('/api/professional/incoming-calls'); if(!r.ok)return; const d=await r.json(); const box=document.getElementById('calls'); box.innerHTML=(d.calls||[]).map(c=>`<div class="card"><h3>Incoming ${c.mode==='video'?'🎥 Video':'📞 Voice'} Call</h3><p>From ${esc(c.caller_name||'User')}</p><a class="btn success" href="/professional/answer-call/${c.id}">Accept</a><button class="btn danger" onclick="rejectCall('${c.id}')">Reject</button></div>`).join('') || '<div class="card"><p>No incoming calls.</p></div>';}
-function esc(v){return String(v??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));}
-async function rejectCall(id){await fetch('/api/professional/call/'+id+'/hangup',{method:'POST'});check();} check();setInterval(check,2000);
-async function presence(online=true){try{await fetch('/api/professional/presence',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({online})})}catch(e){}}
-presence(true); setInterval(()=>presence(true),10000); window.addEventListener('pagehide',()=>navigator.sendBeacon('/api/professional/presence',new Blob([JSON.stringify({online:false})],{type:'application/json'})));
-</script>
-""")
-
-@app.route("/api/professional/incoming-calls")
-@login_required
-def professional_incoming_calls():
-    me=current_user() or {}; rows=db_select("professional_calls", order="created_at.desc", limit=100); out=[]
-    for c in rows:
-        if str(c.get("callee_id"))==str(me.get("id")) and str(c.get("status"))=="ringing":
-            caller=first_row("profiles", {"id":c.get("caller_id")}) or {}
-            c["caller_name"]=caller.get("full_name") or caller.get("name") or caller.get("email") or "User"
-            out.append(c)
-    return jsonify({"calls":out[:20]})
-
-@app.route("/professional/answer-call/<call_id>")
-@login_required
-def professional_answer_call(call_id):
-    call=first_row("professional_calls", {"id":call_id}); me=current_user() or {}
-    if not call or str(call.get("callee_id"))!=str(me.get("id")):return "Call not found.",404
-    provider=first_row("service_providers", {"id":call.get("provider_id")}) or {}
-    return render_page("Answer Professional Call", r"""
-<div class="hero"><h2>Incoming {{ '🎥 Video' if call.mode=='video' else '📞 Voice' }} Call</h2><p>Professional: {{ provider.get('full_name') or provider.get('name') or 'Professional' }}</p></div>
-<div class="card"><button class="btn success" id="accept">Accept Call</button><button class="btn danger" id="decline">Decline</button><p id="state">Waiting…</p><video id="local" autoplay muted playsinline style="width:48%;background:#111;border-radius:12px;{% if call.mode=='voice' %}display:none{% endif %}"></video><video id="remote" autoplay playsinline style="width:48%;background:#111;border-radius:12px;{% if call.mode=='voice' %}display:none{% endif %}"></video><audio id="audio" autoplay {% if call.mode!='voice' %}style="display:none"{% endif %}></audio></div>
-<script>
-const id={{ call.id|tojson }}, mode={{ call.mode|tojson }};let pc=null,stream=null;const state=t=>document.getElementById('state').textContent=t;
-async function accept(){try{stream=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});document.getElementById('local').srcObject=stream;pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});stream.getTracks().forEach(t=>pc.addTrack(t,stream));pc.ontrack=e=>{document.getElementById('remote').srcObject=e.streams[0];document.getElementById('audio').srcObject=e.streams[0]};pc.onicecandidate=e=>{if(e.candidate)fetch('/api/professional/call/'+id+'/ice',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate.toJSON(),side:'callee'})})};const r=await fetch('/api/professional/call/'+id);const d=await r.json();await pc.setRemoteDescription({type:'offer',sdp:d.call.offer});const answer=await pc.createAnswer();await pc.setLocalDescription(answer);await fetch('/api/professional/call/'+id+'/answer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({answer:answer.sdp})});state('Connected');setInterval(async()=>{const q=await fetch('/api/professional/call/'+id);const x=await q.json();for(const c of (x.call.caller_ice||[])){try{await pc.addIceCandidate(c)}catch(e){}}},1000)}catch(e){state('Could not accept call: '+e.message)}}
-document.getElementById('accept').onclick=accept;document.getElementById('decline').onclick=async()=>{await fetch('/api/professional/call/'+id+'/hangup',{method:'POST'});location.href='/professional/calls'};
-</script>
-""", call=call, provider=provider)
-
-# ============================================================
 # DRIVER REGISTRATION / PROFILE
 # ============================================================
 
@@ -2225,8 +1787,6 @@ def ensure_driver_provider(user):
         return provider2 or legacy, None
     return None, error
 
-@app.route("/driver/register", methods=["GET", "POST"])
-@login_required
 def driver_register():
     user = current_user() or {}
     provider = get_driver_provider(user.get("id"))
@@ -2679,7 +2239,6 @@ def create_delivery_request():
         "id":str(uuid.uuid4()),
         "customer_id":user["id"],
         "user_id":user["id"],
-        "sender_id":user["id"],
         "driver_id":driver_id,
         "pickup_location":clean(body.get("pickup_location")),
         "destination":clean(body.get("destination")),
@@ -2726,7 +2285,7 @@ def deliveries():
         # after which the customer can search for a driver.
         tracking=make_tracking_code()
         payload={
-            "id":str(uuid.uuid4()),"customer_id":user["id"],"sender_id":user["id"],
+            "id":str(uuid.uuid4()),"customer_id":user["id"],
             "pickup_location":clean(request.form.get("pickup_location")),
             "destination":clean(request.form.get("destination")),
             "recipient_name":clean(request.form.get("recipient_name")),
@@ -3658,234 +3217,6 @@ def admin_deliveries():
 </table></div>
 """,rows=rows)
 
-
-# ============================================================
-# SENDER / RECEIVER LIVE GPS SHARING
-# ============================================================
-
-def normalize_phone(value):
-    return ''.join(ch for ch in str(value or '') if ch.isdigit())
-
-def delivery_participant(delivery):
-    user=current_user() or {}
-    uid=str(user.get("id") or "")
-    if uid and str(delivery.get("customer_id") or delivery.get("user_id") or delivery.get("sender_id") or "") == uid:
-        return "sender"
-    up=normalize_phone(user.get("phone")); rp=normalize_phone(delivery.get("recipient_phone"))
-    if up and rp and (up == rp or up.endswith(rp) or rp.endswith(up)):
-        return "receiver"
-    return "admin" if user.get("is_admin") else None
-
-@app.route("/delivery/<tracking_code>/sender-live-map")
-@login_required
-def sender_live_map(tracking_code):
-    delivery=first_row("deliveries",{"tracking_code":tracking_code})
-    if not delivery:return "Delivery not found.",404
-    if delivery_participant(delivery) not in ("sender","admin"):return "Sender access required.",403
-    return render_page("Sender & Receiver Live Map", r"""
-<div class="hero"><h2>📍 Sender Live Map</h2><p>See your own live location, the receiver's live location and the driver on one map.</p></div>
-<div class="card"><div class="actions"><button class="btn success" onclick="startGPS()">Start My GPS</button><button class="btn danger" onclick="stopGPS()">Stop My GPS</button><a class="btn secondary" href="{{ url_for('receiver_live_map',tracking_code=tracking_code) }}">Receiver Screen</a></div><p id="status">Waiting for GPS...</p><div id="map"></div></div>
-<script>
-const trackingCode={{ tracking_code|tojson }},myRole="sender";const map=L.map("map").setView([-13.9626,28.3228],6);L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);const icons={sender:L.divIcon({className:"koja-participant",html:"<div style='font-size:36px'>📤</div>",iconSize:[40,40],iconAnchor:[20,20]}),receiver:L.divIcon({className:"koja-participant",html:"<div style='font-size:36px'>📥</div>",iconSize:[40,40],iconAnchor:[20,20]}),driver:L.divIcon({className:"koja-participant",html:"<div style='font-size:36px'>🚚</div>",iconSize:[40,40],iconAnchor:[20,20]})};let watch=null,markers={};function st(t){document.getElementById("status").textContent=t}function mark(role,p,label){if(!markers[role])markers[role]=L.marker(p,{icon:icons[role]}).addTo(map);markers[role].setLatLng(p).bindPopup(label)}async function send(pos){const c=pos.coords;try{const r=await fetch("/api/delivery/"+encodeURIComponent(trackingCode)+"/participant-location",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({latitude:c.latitude,longitude:c.longitude,accuracy:c.accuracy,speed:c.speed,heading:c.heading,altitude:c.altitude})});const d=await r.json();st(d.ok?"🟢 YOUR GPS LIVE — "+new Date().toLocaleTimeString():(d.message||"GPS update failed"))}catch(e){st("GPS active; network retrying...")}}function startGPS(){if(watch!==null)return;if(!navigator.geolocation){st("GPS is not supported on this device.");return}st("Requesting GPS permission...");watch=navigator.geolocation.watchPosition(p=>{mark("sender",[p.coords.latitude,p.coords.longitude],"📤 YOU — Sender");map.setView([p.coords.latitude,p.coords.longitude],15);send(p)},e=>st(e.code===1?"Allow location permission in browser settings.":"GPS unavailable — retrying..."),{enableHighAccuracy:true,maximumAge:2000,timeout:15000})}function stopGPS(){if(watch!==null){navigator.geolocation.clearWatch(watch);watch=null}fetch("/api/delivery/"+encodeURIComponent(trackingCode)+"/participant-offline",{method:"POST"}).catch(()=>{});st("Your GPS sharing stopped.")}async function refresh(){try{const d=await (await fetch("/api/delivery/"+encodeURIComponent(trackingCode)+"/participant-location",{cache:"no-store"})).json();if(d.ok){if(d.sender)mark("sender",[d.sender.latitude,d.sender.longitude],"📤 Sender");if(d.receiver)mark("receiver",[d.receiver.latitude,d.receiver.longitude],"📥 Receiver");if(d.driver)mark("driver",[d.driver.latitude,d.driver.longitude],"🚚 Driver");st("🟢 LIVE • Sender + Receiver + Driver • "+new Date().toLocaleTimeString())}else st(d.message||"Waiting for live locations...")}catch(e){st("Connection lost — retrying...")}}refresh();setInterval(refresh,3000);
-</script>
-""",tracking_code=tracking_code)
-
-@app.route("/delivery/<tracking_code>/receiver-live-map")
-@login_required
-def receiver_live_map(tracking_code):
-    delivery=first_row("deliveries",{"tracking_code":tracking_code})
-    if not delivery:return "Delivery not found.",404
-    if delivery_participant(delivery) not in ("receiver","admin"):return "Receiver access required. The logged-in phone must match the delivery recipient phone.",403
-    return render_page("Receiver & Sender Live Map", r"""
-<div class="hero"><h2>📍 Receiver Live Map</h2><p>See your own live location, the sender's live location and the driver on one map.</p></div>
-<div class="card"><div class="actions"><button class="btn success" onclick="startGPS()">Start My GPS</button><button class="btn danger" onclick="stopGPS()">Stop My GPS</button><a class="btn secondary" href="{{ url_for('sender_live_map',tracking_code=tracking_code) }}">Sender Screen</a></div><p id="status">Waiting for GPS...</p><div id="map"></div></div>
-<script>
-const trackingCode={{ tracking_code|tojson }},myRole="receiver";const map=L.map("map").setView([-13.9626,28.3228],6);L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);const icons={sender:L.divIcon({className:"koja-participant",html:"<div style='font-size:36px'>📤</div>",iconSize:[40,40],iconAnchor:[20,20]}),receiver:L.divIcon({className:"koja-participant",html:"<div style='font-size:36px'>📥</div>",iconSize:[40,40],iconAnchor:[20,20]}),driver:L.divIcon({className:"koja-participant",html:"<div style='font-size:36px'>🚚</div>",iconSize:[40,40],iconAnchor:[20,20]})};let watch=null,markers={};function st(t){document.getElementById("status").textContent=t}function mark(role,p,label){if(!markers[role])markers[role]=L.marker(p,{icon:icons[role]}).addTo(map);markers[role].setLatLng(p).bindPopup(label)}async function send(pos){const c=pos.coords;try{const r=await fetch("/api/delivery/"+encodeURIComponent(trackingCode)+"/participant-location",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({latitude:c.latitude,longitude:c.longitude,accuracy:c.accuracy,speed:c.speed,heading:c.heading,altitude:c.altitude})});const d=await r.json();st(d.ok?"🟢 YOUR GPS LIVE — "+new Date().toLocaleTimeString():(d.message||"GPS update failed"))}catch(e){st("GPS active; network retrying...")}}function startGPS(){if(watch!==null)return;if(!navigator.geolocation){st("GPS is not supported on this device.");return}st("Requesting GPS permission...");watch=navigator.geolocation.watchPosition(p=>{mark("receiver",[p.coords.latitude,p.coords.longitude],"📥 YOU — Receiver");map.setView([p.coords.latitude,p.coords.longitude],15);send(p)},e=>st(e.code===1?"Allow location permission in browser settings.":"GPS unavailable — retrying..."),{enableHighAccuracy:true,maximumAge:2000,timeout:15000})}function stopGPS(){if(watch!==null){navigator.geolocation.clearWatch(watch);watch=null}fetch("/api/delivery/"+encodeURIComponent(trackingCode)+"/participant-offline",{method:"POST"}).catch(()=>{});st("Your GPS sharing stopped.")}async function refresh(){try{const d=await (await fetch("/api/delivery/"+encodeURIComponent(trackingCode)+"/participant-location",{cache:"no-store"})).json();if(d.ok){if(d.sender)mark("sender",[d.sender.latitude,d.sender.longitude],"📤 Sender");if(d.receiver)mark("receiver",[d.receiver.latitude,d.receiver.longitude],"📥 Receiver");if(d.driver)mark("driver",[d.driver.latitude,d.driver.longitude],"🚚 Driver");st("🟢 LIVE • Sender + Receiver + Driver • "+new Date().toLocaleTimeString())}else st(d.message||"Waiting for live locations...")}catch(e){st("Connection lost — retrying...")}}refresh();setInterval(refresh,3000);
-</script>
-""",tracking_code=tracking_code)
-
-@app.route("/api/delivery/<tracking_code>/participant-location", methods=["GET","POST"])
-@login_required
-def participant_location_api(tracking_code):
-    delivery=first_row("deliveries",{"tracking_code":tracking_code})
-    if not delivery:return jsonify({"ok":False,"message":"Delivery not found."}),404
-    role=delivery_participant(delivery)
-    if role is None:return jsonify({"ok":False,"message":"You are not authorized for this delivery."}),403
-    if not table_exists("delivery_participant_locations"):return jsonify({"ok":False,"message":"Run the updated database SQL to enable sender/receiver live GPS."}),503
-    if request.method=="POST":
-        if role not in ("sender","receiver"):return jsonify({"ok":False,"message":"Only sender or receiver can share GPS."}),403
-        body=request.get_json(silent=True) or {};lat=safe_float(body.get("latitude"));lon=safe_float(body.get("longitude"))
-        if lat is None or lon is None or not(-90<=lat<=90 and -180<=lon<=180):return jsonify({"ok":False,"message":"Invalid GPS coordinates."}),400
-        payload={"id":str(uuid.uuid4()),"delivery_id":str(delivery.get("id")),"user_id":str(current_user().get("id")),"role":role,"latitude":lat,"longitude":lon,"accuracy":safe_float(body.get("accuracy")),"speed":safe_float(body.get("speed")),"heading":safe_float(body.get("heading")),"altitude":safe_float(body.get("altitude")),"is_online":True,"created_at":utc_now()}
-        row,error=db_insert("delivery_participant_locations",payload)
-        if error:return jsonify({"ok":False,"message":"Could not save participant GPS.","error":str(error)[:400]}),500
-        return jsonify({"ok":True,"role":role,"updated_at":payload["created_at"]})
-    rows=db_select("delivery_participant_locations",filters={"delivery_id":str(delivery.get("id"))},order="created_at.desc",limit=100);now=datetime.now(timezone.utc);latest={}
-    for x in rows:
-        rr=x.get("role")
-        if rr in latest or not x.get("is_online"):continue
-        try:
-            ts=datetime.fromisoformat(str(x.get("created_at")).replace("Z","+00:00"));ts=ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
-            if (now-ts).total_seconds()>20:continue
-        except Exception:pass
-        latest[rr]=x
-    out={"ok":True,"sender":None,"receiver":None,"driver":None}
-    for rr,x in latest.items():out[rr]={"latitude":x.get("latitude"),"longitude":x.get("longitude"),"accuracy":x.get("accuracy"),"speed":x.get("speed"),"heading":x.get("heading"),"updated_at":x.get("created_at")}
-    driver_id=delivery.get("driver_id")
-    if driver_id:
-        locs=db_select("driver_locations",filters={"driver_id":driver_id},order="created_at.desc",limit=1)
-        if locs:
-            x=locs[0];fresh=True
-            try:
-                ts=datetime.fromisoformat(str(x.get("created_at")).replace("Z","+00:00"));ts=ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc);fresh=(now-ts).total_seconds()<=20
-            except Exception:pass
-            if fresh and x.get("is_online"):out["driver"]={"latitude":x.get("latitude"),"longitude":x.get("longitude"),"accuracy":x.get("accuracy"),"speed":x.get("speed"),"heading":x.get("heading"),"updated_at":x.get("created_at")}
-    return jsonify(out)
-
-@app.route("/api/delivery/<tracking_code>/participant-offline", methods=["POST"])
-@login_required
-def participant_offline_api(tracking_code):
-    delivery=first_row("deliveries",{"tracking_code":tracking_code})
-    if not delivery:return jsonify({"ok":False,"message":"Delivery not found."}),404
-    role=delivery_participant(delivery)
-    if role not in ("sender","receiver"):return jsonify({"ok":False,"message":"Participant access required."}),403
-    if not table_exists("delivery_participant_locations"):return jsonify({"ok":True})
-    rows=db_select("delivery_participant_locations",filters={"delivery_id":str(delivery.get("id")),"user_id":str(current_user().get("id"))},order="created_at.desc",limit=1)
-    if rows:
-        x=rows[0];x["is_online"]=False;x["created_at"]=utc_now();db_insert("delivery_participant_locations",x)
-    return jsonify({"ok":True,"message":"Participant GPS sharing stopped."})
-
-# ============================================================
-# OWNER LIVE LOCATION + SMART TV LIVE MAP
-# ============================================================
-
-@app.route("/owner/live-location")
-@admin_required
-def owner_live_location():
-    return render_page("Owner Live Location", r"""
-<div class="hero"><h2>📍 Owner Live Location</h2>
-<p>Use the owner's phone to share its real GPS position. Keep this page open while sharing.</p></div>
-<div class="card">
-  <div class="actions">
-    <button class="btn success" onclick="startOwnerGPS()">Start Owner GPS</button>
-    <button class="btn danger" onclick="stopOwnerGPS()">Stop GPS</button>
-    <a class="btn secondary" href="{{ url_for('admin_live_tv') }}">Open Smart TV Live Map</a>
-  </div>
-  <p id="owner-status">GPS not started.</p>
-  <div id="map"></div>
-</div>
-<script>
-let ownerWatch=null, ownerMarker=null;
-const map=L.map("map").setView([-13.9626,28.3228],6);
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);
-function os(t){document.getElementById("owner-status").textContent=t}
-function startOwnerGPS(){
- if(!navigator.geolocation){os("This device does not support GPS.");return}
- if(ownerWatch!==null) return;
- os("Requesting high-accuracy GPS permission...");
- ownerWatch=navigator.geolocation.watchPosition(async pos=>{
-   const c=pos.coords;
-   if(!ownerMarker) ownerMarker=L.marker([c.latitude,c.longitude]).addTo(map).bindPopup("Owner LIVE location");
-   else ownerMarker.setLatLng([c.latitude,c.longitude]);
-   map.setView([c.latitude,c.longitude],17,{animate:true});
-   try{
-     const r=await fetch("{{ url_for('owner_location_update') }}",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({latitude:c.latitude,longitude:c.longitude,accuracy:c.accuracy,speed:c.speed,heading:c.heading,altitude:c.altitude})});
-     const d=await r.json(); os(d.ok?"🟢 OWNER LIVE — updated "+new Date().toLocaleTimeString():d.message||"GPS update failed.");
-   }catch(e){os("GPS is active but network update failed — retrying...")}
- },e=>{os(e.code===1?"Location permission denied.":e.code===2?"Location unavailable.":"GPS timeout — retrying...")},{enableHighAccuracy:true,maximumAge:2000,timeout:15000});
-}
-function stopOwnerGPS(){
- if(ownerWatch!==null){navigator.geolocation.clearWatch(ownerWatch);ownerWatch=null;}
- fetch("{{ url_for('owner_location_offline') }}",{method:"POST"}).catch(()=>{});
- os("Owner GPS sharing stopped.");
-}
-window.addEventListener("pagehide",()=>{if(ownerWatch!==null) navigator.geolocation.clearWatch(ownerWatch);});
-</script>
-""")
-
-@app.route("/api/owner/location", methods=["POST"])
-@admin_required
-def owner_location_update():
-    body=request.get_json(silent=True) or {}
-    lat=safe_float(body.get("latitude")); lon=safe_float(body.get("longitude"))
-    if lat is None or lon is None or not (-90<=lat<=90 and -180<=lon<=180):
-        return jsonify({"ok":False,"message":"Invalid latitude or longitude."}),400
-    if not table_exists("owner_locations"):
-        return jsonify({"ok":False,"message":"owner_locations table is not available. Run the updated database SQL."}),503
-    payload={"id":str(uuid.uuid4()),"owner_id":str(current_user().get("id")),"latitude":lat,"longitude":lon,
-             "accuracy":safe_float(body.get("accuracy")),"speed":safe_float(body.get("speed")),
-             "heading":safe_float(body.get("heading")),"altitude":safe_float(body.get("altitude")),
-             "is_online":True,"created_at":utc_now()}
-    row,error=db_insert("owner_locations",payload)
-    if error:
-        logger.error("owner_locations insert failed: %s",error)
-        return jsonify({"ok":False,"message":"Owner GPS could not be saved.","error":str(error)[:500]}),500
-    return jsonify({"ok":True,"latitude":lat,"longitude":lon,"accuracy":payload["accuracy"],"created_at":payload["created_at"]})
-
-@app.route("/api/owner/offline", methods=["POST"])
-@admin_required
-def owner_location_offline():
-    if not table_exists("owner_locations"):
-        return jsonify({"ok":True,"message":"Owner GPS sharing stopped locally."})
-    latest=db_select("owner_locations",filters={"owner_id":str(current_user().get("id"))},order="created_at.desc",limit=1)
-    x=latest[0] if latest else {}
-    payload={"id":str(uuid.uuid4()),"owner_id":str(current_user().get("id")),"latitude":x.get("latitude"),"longitude":x.get("longitude"),
-             "accuracy":x.get("accuracy"),"speed":None,"heading":None,"altitude":x.get("altitude"),"is_online":False,"created_at":utc_now()}
-    db_insert("owner_locations",payload)
-    return jsonify({"ok":True,"message":"Owner is now offline."})
-
-@app.route("/admin/live-tv")
-@admin_required
-def admin_live_tv():
-    return render_page("KOJA Smart TV Live Map", r"""
-<div style="position:fixed;inset:0;background:#111;z-index:9999">
-  <div id="tvmap" style="position:absolute;inset:0"></div>
-  <div style="position:absolute;top:18px;left:18px;right:18px;display:flex;justify-content:space-between;align-items:center;pointer-events:none">
-    <div style="background:rgba(0,0,0,.78);color:white;padding:12px 18px;border-radius:14px;font-weight:800;font-size:22px">KOJA AFRICA • LIVE</div>
-    <div id="tvstatus" style="background:rgba(0,0,0,.78);color:white;padding:10px 15px;border-radius:12px">Connecting...</div>
-  </div>
-  <div style="position:absolute;bottom:18px;left:18px;background:rgba(0,0,0,.78);color:white;padding:12px 16px;border-radius:14px;pointer-events:none">
-    <b>🟢 LIVE</b> • Drivers + Owner GPS • Auto refresh
-  </div>
-</div>
-<script>
-const tvmap=L.map("tvmap",{zoomControl:false}).setView([-13.9626,28.3228],6);
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap contributors"}).addTo(tvmap);
-const tvMarkers={}; let ownerMarker=null;
-const truckIcon=L.divIcon({className:"koja-tv-truck",html:"<div style='font-size:36px'>🚚</div>",iconSize:[40,40],iconAnchor:[20,20]});
-const ownerIcon=L.divIcon({className:"koja-tv-owner",html:"<div style='font-size:36px'>👤</div>",iconSize:[40,40],iconAnchor:[20,20]});
-function esc(v){return String(v??"").replace(/[&<>\"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]));}
-async function refreshTV(){
- try{
-   const [dr,ow]=await Promise.all([fetch("{{ url_for('admin_live_drivers_api') }}",{cache:"no-store"}),fetch("{{ url_for('owner_live_api') }}",{cache:"no-store"})]);
-   const d=await dr.json(),o=await ow.json(); let count=0;
-   if(d.ok){const seen={}; (d.drivers||[]).forEach(x=>{seen[x.driver_id]=true;count++;const p=[Number(x.latitude),Number(x.longitude)];if(!tvMarkers[x.driver_id])tvMarkers[x.driver_id]=L.marker(p,{icon:truckIcon}).addTo(tvmap);else tvMarkers[x.driver_id].setLatLng(p);tvMarkers[x.driver_id].bindPopup("<b>🚚 "+esc(x.name)+"</b><br>LIVE<br>Accuracy: "+esc(x.accuracy||"—")+" m");});Object.keys(tvMarkers).forEach(id=>{if(!seen[id]){tvmap.removeLayer(tvMarkers[id]);delete tvMarkers[id];}});}
-   if(o.ok&&o.location){const p=[Number(o.location.latitude),Number(o.location.longitude)];if(!ownerMarker)ownerMarker=L.marker(p,{icon:ownerIcon}).addTo(tvmap);else ownerMarker.setLatLng(p);ownerMarker.bindPopup("<b>👤 OWNER</b><br>LIVE location<br>Accuracy: "+esc(o.location.accuracy||"—")+" m");count++;}
-   document.getElementById("tvstatus").textContent="🟢 "+count+" live location(s) • "+new Date().toLocaleTimeString();
- }catch(e){document.getElementById("tvstatus").textContent="🔴 Connection lost — retrying";}
-}
-async function ownerLive(){return null}
-refreshTV();setInterval(refreshTV,3000);
-</script>
-""")
-
-@app.route("/api/admin/owner-live")
-@admin_required
-def owner_live_api():
-    if not table_exists("owner_locations"):
-        return jsonify({"ok":True,"location":None})
-    rows=db_select("owner_locations",order="created_at.desc",limit=1)
-    if not rows or not rows[0].get("is_online"):
-        return jsonify({"ok":True,"location":None})
-    loc=rows[0]
-    try:
-        ts=datetime.fromisoformat(str(loc.get("created_at")).replace("Z","+00:00"));
-        if ts.tzinfo is None: ts=ts.replace(tzinfo=timezone.utc)
-        age=max(0,(datetime.now(timezone.utc)-ts).total_seconds())
-        if age>30:return jsonify({"ok":True,"location":None})
-    except Exception: pass
-    return jsonify({"ok":True,"location":{"latitude":loc.get("latitude"),"longitude":loc.get("longitude"),"accuracy":loc.get("accuracy"),"speed":loc.get("speed"),"heading":loc.get("heading"),"updated_at":loc.get("created_at")}})
-
 @app.route("/admin/appointments")
 @admin_required
 def admin_appointments():
@@ -3895,6 +3226,235 @@ def admin_appointments():
 {% for a in rows %}<tr><td>{{ a.get("appointment_date") }}</td><td>{{ a.get("client_id") }}</td><td>{{ a.get("provider_id") }}</td><td>{{ a.get("appointment_type") }}</td><td>{{ a.get("status") }}</td></tr>{% endfor %}
 </table></div>
 """,rows=rows)
+
+
+# ============================================================
+# KOJA CONNECT — GENERAL SOCIAL COMMUNICATION
+# Separate from Professional Services communication.
+# ============================================================
+
+KOJA_CONNECT_SQL = r"""
+create table if not exists public.koja_contacts (
+ id uuid primary key default gen_random_uuid(), requester_id uuid not null, addressee_id uuid not null,
+ status text not null default 'pending', created_at timestamptz default now(), updated_at timestamptz default now(),
+ unique(requester_id, addressee_id)
+);
+create index if not exists koja_contacts_requester_idx on public.koja_contacts(requester_id, status);
+create index if not exists koja_contacts_addressee_idx on public.koja_contacts(addressee_id, status);
+create table if not exists public.koja_conversations (
+ id uuid primary key default gen_random_uuid(), conversation_type text not null default 'direct', created_by uuid,
+ name text, avatar_url text, created_at timestamptz default now(), updated_at timestamptz default now()
+);
+create table if not exists public.koja_conversation_members (
+ conversation_id uuid not null references public.koja_conversations(id) on delete cascade,
+ user_id uuid not null, role text not null default 'member', joined_at timestamptz default now(), last_read_at timestamptz,
+ muted boolean default false, primary key(conversation_id,user_id)
+);
+create index if not exists koja_members_user_idx on public.koja_conversation_members(user_id, conversation_id);
+create table if not exists public.koja_messages (
+ id uuid primary key default gen_random_uuid(), conversation_id uuid not null references public.koja_conversations(id) on delete cascade,
+ sender_id uuid not null, message_type text not null default 'text', body text default '', file_url text,
+ created_at timestamptz default now(), edited_at timestamptz, deleted_at timestamptz
+);
+create index if not exists koja_messages_conversation_idx on public.koja_messages(conversation_id, created_at);
+create table if not exists public.koja_calls (
+ id uuid primary key default gen_random_uuid(), conversation_id uuid not null references public.koja_conversations(id) on delete cascade,
+ caller_id uuid not null, callee_id uuid not null, mode text not null default 'video', status text not null default 'ringing',
+ offer text, answer text, caller_ice jsonb default '[]'::jsonb, callee_ice jsonb default '[]'::jsonb,
+ created_at timestamptz default now(), answered_at timestamptz, ended_at timestamptz
+);
+create index if not exists koja_calls_callee_idx on public.koja_calls(callee_id,status,created_at desc);
+create index if not exists koja_calls_caller_idx on public.koja_calls(caller_id,status,created_at desc);
+create table if not exists public.koja_presence (
+ user_id uuid primary key, is_online boolean default false, last_seen_at timestamptz default now(), updated_at timestamptz default now()
+);
+create table if not exists public.koja_statuses (
+ id uuid primary key default gen_random_uuid(), user_id uuid not null, text_content text default '', media_url text,
+ media_type text default 'text', visibility text not null default 'contacts',
+ expires_at timestamptz not null default (now()+interval '24 hours'), created_at timestamptz default now()
+);
+create index if not exists koja_statuses_user_idx on public.koja_statuses(user_id,created_at desc);
+create table if not exists public.koja_notifications (
+ id uuid primary key default gen_random_uuid(), user_id uuid not null, notification_type text, title text, body text, related_id uuid,
+ is_read boolean default false, created_at timestamptz default now()
+);
+create index if not exists koja_notifications_user_idx on public.koja_notifications(user_id,is_read,created_at desc);
+create table if not exists public.koja_blocks (
+ blocker_id uuid not null, blocked_id uuid not null, created_at timestamptz default now(), primary key(blocker_id,blocked_id)
+);
+"""
+
+def _connect_user(uid): return find_user_by_id(uid) or {}
+def _conversation_member(cid, uid): return bool(first_row('koja_conversation_members', {'conversation_id':cid,'user_id':uid}))
+def _profile_name(uid):
+    u=_connect_user(uid); return first_nonempty(u.get('full_name'),u.get('name'),u.get('email'),'KOJA User')
+def _direct_conversation(a,b):
+    rows=db_select('koja_conversation_members',filters={'user_id':a},limit=100)
+    for m in rows:
+        cid=m.get('conversation_id')
+        if cid and _conversation_member(cid,b):
+            c=first_row('koja_conversations',{'id':cid})
+            if c and c.get('conversation_type','direct')=='direct': return c
+    c,err=db_insert('koja_conversations',{'id':str(uuid.uuid4()),'conversation_type':'direct','created_by':a,'created_at':utc_now(),'updated_at':utc_now()})
+    if err or not c:return None
+    cid=c['id']; db_insert('koja_conversation_members',{'conversation_id':cid,'user_id':a,'role':'member','joined_at':utc_now()}); db_insert('koja_conversation_members',{'conversation_id':cid,'user_id':b,'role':'member','joined_at':utc_now()}); return c
+
+@app.route('/connect')
+@login_required
+def connect():
+    uid=current_user()['id']; members=db_select('koja_conversation_members',filters={'user_id':uid},limit=100); conversations=[]
+    for m in members:
+        c=first_row('koja_conversations',{'id':m.get('conversation_id')})
+        if not c: continue
+        others=db_select('koja_conversation_members',filters={'conversation_id':c['id']},limit=10); other=next((x for x in others if str(x.get('user_id'))!=str(uid)),None)
+        c['_other_name']=_profile_name(other['user_id']) if other else (c.get('name') or 'Group'); last=db_select('koja_messages',filters={'conversation_id':c['id']},order='created_at.desc',limit=1); c['_last']=(last[0].get('body') or last[0].get('message_type','')) if last else 'No messages yet'; conversations.append(c)
+    return render_page('KOJA Connect',r'''<div class="hero"><h2>💬 KOJA Connect</h2><p>Chat, voice messages, voice calls, video calls, photos, files, groups and status updates with other KOJA users.</p></div><div class="grid"><div class="card"><h3>👥 Find People</h3><p>Search KOJA users and start a conversation.</p><a class="btn" href="{{ url_for('connect_people') }}">Find People</a></div><div class="card"><h3>🟢 Status</h3><p>Share a 24-hour status.</p><a class="btn" href="{{ url_for('connect_status') }}">My Status</a></div><div class="card"><h3>📞 Calls</h3><p>Voice and video calls separate from Professional Services.</p><a class="btn" href="{{ url_for('connect_calls') }}">Call History</a></div></div><div class="card"><h3>Recent Chats</h3>{% for c in conversations %}<a class="card" style="display:block;text-decoration:none;color:inherit" href="{{ url_for('connect_chat',conversation_id=c.id) }}"><strong>{{ c._other_name }}</strong><div class="small">{{ c._last }}</div></a>{% else %}<p>No chats yet. Find a KOJA user to start.</p>{% endfor %}</div>''',conversations=conversations)
+
+@app.route('/connect/people',methods=['GET','POST'])
+@login_required
+def connect_people():
+    uid=current_user()['id']
+    if request.method=='POST':
+        target=clean(request.form.get('user_id')); existing=first_row('koja_contacts',{'requester_id':uid,'addressee_id':target}) or first_row('koja_contacts',{'requester_id':target,'addressee_id':uid})
+        if target and target!=uid and find_user_by_id(target) and not existing:
+            db_insert('koja_contacts',{'id':str(uuid.uuid4()),'requester_id':uid,'addressee_id':target,'status':'pending','created_at':utc_now(),'updated_at':utc_now()}); db_insert('koja_notifications',{'user_id':target,'notification_type':'friend_request','title':'New KOJA connection request','body':f'{_profile_name(uid)} wants to connect on KOJA.','related_id':uid}); flash('Connection request sent.','success')
+        else: flash('User not found or request already exists.','warning')
+        return redirect(url_for('connect_people'))
+    q=clean(request.args.get('q')); people=[]
+    if q:
+        for col in ('email','full_name','name'):
+            for x in db_select('profiles',filters={col:f'ilike.*{q}*'},limit=30):
+                if str(x.get('id'))!=str(uid) and not any(str(p.get('id'))==str(x.get('id')) for p in people): people.append(x)
+    incoming=db_select('koja_contacts',filters={'addressee_id':uid,'status':'pending'},limit=50)
+    return render_page('KOJA People',r'''<div class="card"><h2>Find KOJA People</h2><form><input name="q" value="{{ q }}" placeholder="Search name or email"><button>Search</button></form></div><div class="grid">{% for p in people %}<div class="card"><h3>{{ p.get('full_name') or p.get('name') or p.get('email') }}</h3><p>{{ p.get('email') or '' }}</p><form method="post"><input type="hidden" name="user_id" value="{{ p.id }}"><button>➕ Connect</button></form><a class="btn secondary" href="{{ url_for('connect_new',user_id=p.id) }}">Message</a></div>{% endfor %}</div><div class="card"><h3>Incoming Requests</h3>{% for r in incoming %}<div class="card"><strong>{{ _profile_name(r.requester_id) }}</strong><form method="post" action="{{ url_for('connect_accept',contact_id=r.id) }}"><button>Accept</button></form></div>{% else %}<p>No pending requests.</p>{% endfor %}</div>''',people=people,q=q,incoming=incoming,_profile_name=_profile_name)
+
+@app.route('/connect/accept/<contact_id>',methods=['POST'])
+@login_required
+def connect_accept(contact_id):
+    uid=current_user()['id']; r=first_row('koja_contacts',{'id':contact_id})
+    if not r or str(r.get('addressee_id'))!=str(uid): abort(404)
+    db_update('koja_contacts',{'id':contact_id},{'status':'accepted','updated_at':utc_now()}); _direct_conversation(uid,r['requester_id']); flash('Connection accepted.','success'); return redirect(url_for('connect_people'))
+
+@app.route('/connect/new/<user_id>')
+@login_required
+def connect_new(user_id):
+    uid=current_user()['id']
+    if user_id==uid or not find_user_by_id(user_id): abort(404)
+    c=_direct_conversation(uid,user_id)
+    if not c: flash('Could not start chat. Run the KOJA Connect SQL first.','danger'); return redirect(url_for('connect'))
+    return redirect(url_for('connect_chat',conversation_id=c['id']))
+
+@app.route('/connect/chat/<conversation_id>')
+@login_required
+def connect_chat(conversation_id):
+    uid=current_user()['id'];
+    if not _conversation_member(conversation_id,uid): abort(403)
+    members=db_select('koja_conversation_members',filters={'conversation_id':conversation_id},limit=100); other=next((m for m in members if str(m.get('user_id'))!=str(uid)),None); other_id=other.get('user_id') if other else None; c=first_row('koja_conversations',{'id':conversation_id}) or {}
+    return render_page('KOJA Chat',r'''<div class="card"><a href="{{ url_for('connect') }}">← Connect</a><h2>💬 {{ name }}</h2></div><div class="card" id="messages" style="min-height:300px;max-height:55vh;overflow:auto"></div><div class="card"><form id="sendForm"><input id="text" autocomplete="off" placeholder="Write a message…"><button>Send</button></form><div class="grid"><button type="button" id="voiceNote">🎙️ Voice message</button><a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='voice') }}">📞 Voice Call</a><a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='video') }}">🎥 Video Call</a></div></div><script>const cid={{ conversation_id|tojson }};const box=document.getElementById('messages');const text=document.getElementById('text');async function load(){let r=await fetch('/api/connect/messages/'+cid);if(!r.ok)return;let d=await r.json();box.innerHTML=d.messages.map(m=>'<div class="card"><strong>'+m.sender_name+'</strong><div>'+((m.message_type==='text')?(m.body||''):'<a target="_blank" href="'+m.file_url+'">'+m.message_type+'</a>')+'</div><div class="small">'+(m.created_at||'')+'</div></div>').join('');box.scrollTop=box.scrollHeight;}document.getElementById('sendForm').onsubmit=async e=>{e.preventDefault();let v=text.value.trim();if(!v)return;let r=await fetch('/api/connect/messages/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:v})});if(r.ok){text.value='';load();}};load();setInterval(load,2500);let rec,parts=[];document.getElementById('voiceNote').onclick=async()=>{try{let st=await navigator.mediaDevices.getUserMedia({audio:true});rec=new MediaRecorder(st);parts=[];rec.ondataavailable=e=>parts.push(e.data);rec.onstop=async()=>{let b=new Blob(parts,{type:'audio/webm'});let fd=new FormData();fd.append('file',b,'voice.webm');await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});st.getTracks().forEach(t=>t.stop());load();};rec.start();setTimeout(()=>rec&&rec.state==='recording'&&rec.stop(),60000);}catch(e){alert('Microphone permission is required.');}};</script>''',conversation_id=conversation_id,name=_profile_name(other_id) if other_id else c.get('name','KOJA Chat'))
+
+@app.route('/api/connect/messages/<conversation_id>',methods=['GET','POST'])
+@login_required
+def connect_messages(conversation_id):
+    uid=current_user()['id']
+    if not _conversation_member(conversation_id,uid): return jsonify(error='Forbidden'),403
+    if request.method=='POST':
+        d=request.get_json(silent=True) or {}; body=clean(d.get('message'))
+        if not body:return jsonify(error='Empty message'),400
+        row,err=db_insert('koja_messages',{'id':str(uuid.uuid4()),'conversation_id':conversation_id,'sender_id':uid,'message_type':'text','body':body,'created_at':utc_now()})
+        if err:return jsonify(error=err),500
+        return jsonify(message=row)
+    rows=db_select('koja_messages',filters={'conversation_id':conversation_id},order='created_at.asc',limit=300)
+    for m in rows:m['sender_name']=_profile_name(m.get('sender_id'))
+    return jsonify(messages=rows)
+
+@app.route('/api/connect/messages/<conversation_id>/upload',methods=['POST'])
+@login_required
+def connect_upload(conversation_id):
+    uid=current_user()['id']
+    if not _conversation_member(conversation_id,uid):return jsonify(error='Forbidden'),403
+    f=request.files.get('file')
+    if not f:return jsonify(error='No file'),400
+    if not f.filename.lower().endswith('.webm'):return jsonify(error='Only webm voice messages are supported here.'),400
+    data=f.read()
+    if len(data)>5*1024*1024:return jsonify(error='Voice message too large'),413
+    path=f'connect/audio/{uuid.uuid4().hex}.webm'; r=requests.post(sb_storage_url(path),headers=sb_headers({'Content-Type':'audio/webm','x-upsert':'true'}),data=data,timeout=60)
+    if not r.ok:return jsonify(error=r.text[:500]),500
+    row,err=db_insert('koja_messages',{'id':str(uuid.uuid4()),'conversation_id':conversation_id,'sender_id':uid,'message_type':'audio','file_url':sb_storage_url(path),'body':'Voice message','created_at':utc_now()})
+    return jsonify(message=row) if not err else (jsonify(error=err),500)
+
+@app.route('/connect/status',methods=['GET','POST'])
+@login_required
+def connect_status():
+    uid=current_user()['id']
+    if request.method=='POST':
+        body=clean(request.form.get('text'))
+        if body:db_insert('koja_statuses',{'id':str(uuid.uuid4()),'user_id':uid,'text_content':body,'media_type':'text','visibility':'contacts','expires_at':(datetime.now(timezone.utc)+timedelta(hours=24)).isoformat(),'created_at':utc_now()});flash('Status posted for 24 hours.','success')
+        return redirect(url_for('connect_status'))
+    rows=db_select('koja_statuses',filters={'user_id':uid},order='created_at.desc',limit=30)
+    return render_page('KOJA Status',r'''<div class="card"><h2>🟢 My Status</h2><form method="post"><textarea name="text" maxlength="1000" placeholder="Share an update…"></textarea><button>Post Status</button></form></div>{% for s in rows %}<div class="card"><strong>{{ s.text_content }}</strong><div class="small">Expires: {{ s.expires_at }}</div></div>{% endfor %}''',rows=rows)
+
+@app.route('/connect/answer/<call_id>')
+@login_required
+def connect_answer(call_id):
+    uid=current_user()['id']; c=first_row('koja_calls',{'id':call_id})
+    if not c or str(c.get('callee_id'))!=str(uid) or c.get('status')!='ringing': abort(404)
+    return render_page('Answer KOJA Call',r'''<div class="card"><h2>📞 Incoming {{ c.mode|title }} Call</h2><p>From <strong>{{ name }}</strong></p><div id="state">Connecting…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px"></video></div><button id="hang" class="btn danger">End Call</button></div><script>const cid={{ call_id|tojson }},mode={{ c.mode|tojson }};let pc=null,timer=null;async function api(u,o){let r=await fetch(u,o);if(!r.ok)throw 0;return r.json()}async function start(){try{let x=await api('/api/connect/call/check/'+cid);if(!x.call.offer)throw 0;pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});let st=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});local.srcObject=st;st.getTracks().forEach(t=>pc.addTrack(t,st));pc.ontrack=e=>remote.srcObject=e.streams[0];pc.onicecandidate=e=>{if(e.candidate)fetch('/api/connect/call/ice/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate})})};await pc.setRemoteDescription({type:'offer',sdp:x.call.offer});let ans=await pc.createAnswer();await pc.setLocalDescription(ans);await api('/api/connect/call/answer/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({answer:ans.sdp})});state.textContent='Connected';timer=setInterval(async()=>{try{let z=await api('/api/connect/call/check/'+cid);if(z.call.status==='ended'){clearInterval(timer);pc.close();state.textContent='Call ended'}}catch(e){}},1500)}catch(e){state.textContent='Could not answer this call.'}}hang.onclick=()=>{fetch('/api/connect/call/end/'+cid,{method:'POST'});clearInterval(timer);if(pc)pc.close();state.textContent='Call ended'};start();</script>''',c=c,call_id=call_id,name=_profile_name(c.get('caller_id')))
+
+@app.route('/api/connect/call/answer/<call_id>',methods=['POST'])
+@login_required
+def connect_call_answer(call_id):
+    uid=current_user()['id'];c=first_row('koja_calls',{'id':call_id})
+    if not c or str(c.get('callee_id'))!=str(uid):return jsonify(error='Forbidden'),403
+    d=request.get_json(silent=True) or {};db_update('koja_calls',{'id':call_id},{'answer':clean(d.get('answer')),'status':'answered','answered_at':utc_now()});return jsonify(ok=True)
+
+@app.route('/connect/calls')
+@login_required
+def connect_calls():
+    uid=current_user()['id']; rows=db_select('koja_calls',filters={'caller_id':uid},order='created_at.desc',limit=50)+db_select('koja_calls',filters={'callee_id':uid},order='created_at.desc',limit=50); rows=sorted(rows,key=lambda x:x.get('created_at',''),reverse=True)[:50]
+    return render_page('KOJA Calls',r'''<div class="card"><h2>📞 KOJA Call History</h2>{% for c in rows %}<div class="card"><strong>{{ c.mode|title }}</strong> — {{ c.status }}<div class="small">{{ c.created_at }}</div>{% if c.callee_id|string == user.id|string and c.status=='ringing' %}<a class="btn" href="{{ url_for('connect_answer',call_id=c.id) }}">Answer</a>{% endif %}</div>{% else %}<p>No calls yet.</p>{% endfor %}</div>''',rows=rows)
+
+@app.route('/connect/call/<user_id>')
+@login_required
+def connect_call(user_id):
+    uid=current_user()['id']; mode=clean(request.args.get('mode','video'))
+    if user_id==uid or not find_user_by_id(user_id) or mode not in ('voice','video'):abort(404)
+    c=_direct_conversation(uid,user_id)
+    if not c:return 'Run KOJA Connect SQL first.',500
+    return render_page('KOJA Call',r'''<div class="card"><h2>📞 KOJA {{ mode|title }} Call</h2><p>Calling <strong>{{ name }}</strong></p><div id="state">Connecting…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px"></video></div><button id="hang" class="btn danger">End Call</button></div><script>const target={{ user_id|tojson }},mode={{ mode|tojson }};let callId=null,pc=null,timer=null,started=Date.now();const state=document.getElementById('state');const unavailable='This contact is not available because the internet or network connection could not be reached.';function speak(){if('speechSynthesis'in window){speechSynthesis.cancel();speechSynthesis.speak(new SpeechSynthesisUtterance(unavailable));}}function fail(msg){state.textContent=msg||unavailable;speak();clearInterval(timer);if(pc)pc.close();}async function api(u,o){let r=await fetch(u,o);if(!r.ok)throw 0;return r.json()}async function start(){try{if(!navigator.onLine)throw 0;let c=await api('/api/connect/call/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({callee_id:target,mode})});callId=c.call.id;pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});let st=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});document.getElementById('local').srcObject=st;st.getTracks().forEach(t=>pc.addTrack(t,st));pc.ontrack=e=>document.getElementById('remote').srcObject=e.streams[0];pc.onicecandidate=e=>{if(e.candidate)fetch('/api/connect/call/ice/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate})}).catch(()=>fail())};pc.onconnectionstatechange=()=>{if(['failed','disconnected'].includes(pc.connectionState))fail()};let offer=await pc.createOffer();await pc.setLocalDescription(offer);await api('/api/connect/call/offer/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({offer:offer.sdp})});state.textContent='Ringing…';timer=setInterval(async()=>{if(Date.now()-started>120000){fail();return}try{let x=await api('/api/connect/call/check/'+callId);if(x.call.status==='ended'||x.call.status==='rejected'){fail();return}if(x.call.answer&&!pc.currentRemoteDescription){await pc.setRemoteDescription({type:'answer',sdp:x.call.answer});state.textContent='Connected'}}catch(e){fail()}},1500)}catch(e){fail()}}document.getElementById('hang').onclick=()=>{if(callId)fetch('/api/connect/call/end/'+callId,{method:'POST'});clearInterval(timer);if(pc)pc.close();state.textContent='Call ended'};window.addEventListener('offline',()=>fail());start();</script>''',user_id=user_id,mode=mode,name=_profile_name(user_id))
+
+@app.route('/api/connect/call/create',methods=['POST'])
+@login_required
+def connect_call_create():
+    uid=current_user()['id']; d=request.get_json(silent=True) or {}; callee=clean(d.get('callee_id')); mode=d.get('mode','video')
+    if callee==uid or not find_user_by_id(callee) or mode not in ('voice','video'):return jsonify(error='Invalid call'),400
+    c=_direct_conversation(uid,callee); row,err=db_insert('koja_calls',{'id':str(uuid.uuid4()),'conversation_id':c['id'],'caller_id':uid,'callee_id':callee,'mode':mode,'status':'ringing','created_at':utc_now()})
+    if err:return jsonify(error=err),500
+    db_insert('koja_notifications',{'user_id':callee,'notification_type':'call','title':f'Incoming {mode} call','body':f'{_profile_name(uid)} is calling you.','related_id':row['id']});return jsonify(call=row)
+
+@app.route('/api/connect/call/offer/<call_id>',methods=['POST'])
+@login_required
+def connect_call_offer(call_id):
+    uid=current_user()['id']; c=first_row('koja_calls',{'id':call_id})
+    if not c or str(c.get('caller_id'))!=str(uid):return jsonify(error='Forbidden'),403
+    d=request.get_json(silent=True) or {};db_update('koja_calls',{'id':call_id},{'offer':clean(d.get('offer'))});return jsonify(ok=True)
+
+@app.route('/api/connect/call/check/<call_id>')
+@login_required
+def connect_call_check(call_id):
+    uid=current_user()['id'];c=first_row('koja_calls',{'id':call_id})
+    if not c or uid not in (str(c.get('caller_id')),str(c.get('callee_id'))):return jsonify(error='Forbidden'),403
+    return jsonify(call=c)
+
+@app.route('/api/connect/call/end/<call_id>',methods=['POST'])
+@login_required
+def connect_call_end(call_id):
+    uid=current_user()['id'];c=first_row('koja_calls',{'id':call_id})
+    if not c or uid not in (str(c.get('caller_id')),str(c.get('callee_id'))):return jsonify(error='Forbidden'),403
+    db_update('koja_calls',{'id':call_id},{'status':'ended','ended_at':utc_now()});return jsonify(ok=True)
+
+@app.route('/setup/connect-sql')
+def connect_sql():
+    return '<pre style="white-space:pre-wrap">'+KOJA_CONNECT_SQL.replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')+'</pre>'
 
 # ============================================================
 # ERROR HANDLERS
@@ -3918,21 +3478,6 @@ def internal_error(error):
     return render_page("Server Error",r"""
 <div class="card"><h2>KOJA AFRICA Server Error</h2><p>The server encountered an unexpected error. Check Render logs for details.</p><a class="btn" href="{{ url_for('home') }}">Return Home</a></div>
 """),500
-
-@app.after_request
-def security_headers(response):
-    response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
-    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    response.headers.setdefault("Permissions-Policy", "camera=(self), microphone=(self), geolocation=(self)")
-    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin-allow-popups")
-    response.headers.setdefault("X-XSS-Protection", "0")
-    if request.is_secure:
-        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-    if request.path.startswith("/api/"):
-        response.headers.setdefault("Cache-Control", "no-store")
-    response.headers.setdefault("X-KOJA-Version", APP_VERSION)
-    return response
 
 @app.before_request
 def before_request():
