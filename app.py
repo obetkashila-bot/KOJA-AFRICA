@@ -1778,7 +1778,7 @@ def professionals():
 @login_required
 def professional_register():
     user = current_user() or {}
-    existing = first_row("service_providers", {"user_id": user.get("id")})
+    existing = first_row("service_providers", {"user_id": user.get("id"), "provider_type": "professional"})
     if request.method == "POST":
         profession = clean(request.form.get("profession"))
         if not profession:
@@ -1942,6 +1942,8 @@ def ensure_driver_provider(user):
         return provider2 or legacy, None
     return None, error
 
+@app.route("/driver/register", methods=["GET", "POST"])
+@login_required
 def driver_register():
     user = current_user() or {}
     provider = get_driver_provider(user.get("id"))
