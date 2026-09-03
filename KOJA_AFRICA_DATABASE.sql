@@ -106,6 +106,19 @@ CREATE TABLE IF NOT EXISTS public.service_providers (
 CREATE INDEX IF NOT EXISTS idx_service_providers_user ON public.service_providers(user_id);
 CREATE INDEX IF NOT EXISTS idx_service_providers_type ON public.service_providers(provider_type);
 
+-- Universal professional profiles (all professions)
+ALTER TABLE public.service_providers ADD COLUMN IF NOT EXISTS profession text;
+ALTER TABLE public.service_providers ADD COLUMN IF NOT EXISTS specialization text;
+ALTER TABLE public.service_providers ADD COLUMN IF NOT EXISTS qualification text;
+ALTER TABLE public.service_providers ADD COLUMN IF NOT EXISTS experience_years integer;
+ALTER TABLE public.service_providers ADD COLUMN IF NOT EXISTS service_area text;
+ALTER TABLE public.service_providers ADD COLUMN IF NOT EXISTS service_description text;
+ALTER TABLE public.service_providers ADD COLUMN IF NOT EXISTS hourly_rate numeric DEFAULT 0;
+ALTER TABLE public.service_providers ADD COLUMN IF NOT EXISTS currency text DEFAULT 'ZMW';
+ALTER TABLE public.service_providers ADD COLUMN IF NOT EXISTS approval_status text DEFAULT 'pending';
+CREATE INDEX IF NOT EXISTS idx_service_providers_profession ON public.service_providers(profession);
+CREATE INDEX IF NOT EXISTS idx_service_providers_approval ON public.service_providers(approval_status);
+
 CREATE TABLE IF NOT EXISTS public.doctor_profiles (
  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), provider_id uuid, user_id uuid, full_name text, doctor_name text,
  specialty text, hospital_clinic text, qualification text, consultation_fee numeric DEFAULT 0, currency text DEFAULT 'ZMW',
