@@ -1,56 +1,41 @@
--- KOJA AFRICA APPROVAL CENTRE — SAFE UPDATE-ONLY MIGRATION
--- Adds approval workflow columns only. Does NOT DROP, DELETE, TRUNCATE or recreate tables.
+-- KOJA AFRICA — ROBUST APPROVAL CENTRE MIGRATION
+-- UPDATE ONLY. No DROP, DELETE, TRUNCATE, or table recreation.
+-- Safe when optional KOJA tables do not exist: missing tables are skipped.
+
 BEGIN;
 
-ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS approval_status text DEFAULT 'pending';
-ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS approved_by uuid;
-ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS approved_at timestamptz;
-ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS approval_note text;
-ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS answer_approval_status text DEFAULT 'pending';
+DO $$
+DECLARE t text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['assignments','doctor_profiles','teacher_profiles','driver_profiles','service_providers','documents','deliveries','appointments']
+  LOOP
+    IF to_regclass('public.' || t) IS NOT NULL THEN
+      EXECUTE format('ALTER TABLE public.%I ADD COLUMN IF NOT EXISTS approval_status text DEFAULT ''pending''', t);
+      EXECUTE format('ALTER TABLE public.%I ADD COLUMN IF NOT EXISTS approved_by uuid', t);
+      EXECUTE format('ALTER TABLE public.%I ADD COLUMN IF NOT EXISTS approved_at timestamptz', t);
+      EXECUTE format('ALTER TABLE public.%I ADD COLUMN IF NOT EXISTS approval_note text', t);
+      EXECUTE format('UPDATE public.%I SET approval_status = ''pending'' WHERE approval_status IS NULL', t);
+      EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON public.%I(approval_status)', 'idx_' || t || '_approval_status', t);
+    END IF;
+  END LOOP;
+END $$;
 
-ALTER TABLE public.doctor_profiles ADD COLUMN IF NOT EXISTS approval_status text DEFAULT 'pending';
-ALTER TABLE public.doctor_profiles ADD COLUMN IF NOT EXISTS approved_by uuid;
-ALTER TABLE public.doctor_profiles ADD COLUMN IF NOT EXISTS approved_at timestamptz;
-ALTER TABLE public.doctor_profiles ADD COLUMN IF NOT EXISTS approval_note text;
-
-ALTER TABLE public.teacher_profiles ADD COLUMN IF NOT EXISTS approval_status text DEFAULT 'pending';
-ALTER TABLE public.teacher_profiles ADD COLUMN IF NOT EXISTS approved_by uuid;
-ALTER TABLE public.teacher_profiles ADD COLUMN IF NOT EXISTS approved_at timestamptz;
-ALTER TABLE public.teacher_profiles ADD COLUMN IF NOT EXISTS approval_note text;
-
-ALTER TABLE public.driver_profiles ADD COLUMN IF NOT EXISTS approval_status text DEFAULT 'pending';
-ALTER TABLE public.driver_profiles ADD COLUMN IF NOT EXISTS approved_by uuid;
-ALTER TABLE public.driver_profiles ADD COLUMN IF NOT EXISTS approved_at timestamptz;
-ALTER TABLE public.driver_profiles ADD COLUMN IF NOT EXISTS approval_note text;
-
-ALTER TABLE public.service_providers ADD COLUMN IF NOT EXISTS approval_status text DEFAULT 'pending';
-ALTER TABLE public.service_providers ADD COLUMN IF NOT EXISTS approved_by uuid;
-ALTER TABLE public.service_providers ADD COLUMN IF NOT EXISTS approved_at timestamptz;
-ALTER TABLE public.service_providers ADD COLUMN IF NOT EXISTS approval_note text;
-
-ALTER TABLE public.documents ADD COLUMN IF NOT EXISTS approval_status text DEFAULT 'pending';
-ALTER TABLE public.documents ADD COLUMN IF NOT EXISTS approved_by uuid;
-ALTER TABLE public.documents ADD COLUMN IF NOT EXISTS approved_at timestamptz;
-ALTER TABLE public.documents ADD COLUMN IF NOT EXISTS approval_note text;
-
-ALTER TABLE public.deliveries ADD COLUMN IF NOT EXISTS approval_status text DEFAULT 'pending';
-ALTER TABLE public.deliveries ADD COLUMN IF NOT EXISTS approved_by uuid;
-ALTER TABLE public.deliveries ADD COLUMN IF NOT EXISTS approved_at timestamptz;
-ALTER TABLE public.deliveries ADD COLUMN IF NOT EXISTS approval_note text;
-
-ALTER TABLE public.appointments ADD COLUMN IF NOT EXISTS approval_status text DEFAULT 'pending';
-ALTER TABLE public.appointments ADD COLUMN IF NOT EXISTS approved_by uuid;
-ALTER TABLE public.appointments ADD COLUMN IF NOT EXISTS approved_at timestamptz;
-ALTER TABLE public.appointments ADD COLUMN IF NOT EXISTS approval_note text;
-
-CREATE INDEX IF NOT EXISTS idx_assignments_approval_status ON public.assignments(approval_status);
-CREATE INDEX IF NOT EXISTS idx_assignments_answer_approval_status ON public.assignments(answer_approval_status);
-CREATE INDEX IF NOT EXISTS idx_doctor_profiles_approval_status ON public.doctor_profiles(approval_status);
-CREATE INDEX IF NOT EXISTS idx_teacher_profiles_approval_status ON public.teacher_profiles(approval_status);
-CREATE INDEX IF NOT EXISTS idx_driver_profiles_approval_status ON public.driver_profiles(approval_status);
-CREATE INDEX IF NOT EXISTS idx_service_providers_approval_status ON public.service_providers(approval_status);
-CREATE INDEX IF NOT EXISTS idx_documents_approval_status ON public.documents(approval_status);
-CREATE INDEX IF NOT EXISTS idx_deliveries_approval_status ON public.deliveries(approval_status);
-CREATE INDEX IF NOT EXISTS idx_appointments_approval_status ON public.appointments(approval_status);
+-- Assignment answers use a separate approval status on the assignments row.
+DO $$
+BEGIN
+  IF to_regclass('public.assignments') IS NOT NULL THEN
+    ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS answer_approval_status text DEFAULT 'pending';
+    UPDATE public.assignments SET answer_approval_status = 'pending' WHERE answer_approval_status IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_assignments_answer_approval_status
+      ON public.assignments(answer_approval_status);
+  END IF;
+END $$;
 
 COMMIT;
+
+-- Verification: run this separately if desired.
+-- SELECT table_name, column_name
+-- FROM information_schema.columns
+-- WHERE table_schema='public'
+--   AND column_name IN ('approval_status','answer_approval_status','approved_by','approved_at','approval_note')
+-- ORDER BY table_name, column_name;

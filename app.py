@@ -3033,11 +3033,18 @@ def admin_approval_action(table, item_id):
     note = clean(request.form.get("note"))
     updates = {field: "approved" if action == "approve" else "rejected", "approved_by": current_user().get("id"), "approved_at": utc_now(), "approval_note": note or None}
     if table == "assignments":
-        updates["status"] = ("answer_approved" if kind == "assignment_answer" and action == "approve" else "answered" if kind == "assignment_answer" else "approved" if action == "approve" else "rejected")
+        # IMPORTANT: assignments.status has an existing database CHECK constraint.
+        # Approval is tracked by approval_status / answer_approval_status; do not
+        # write the approval label into status because values such as "approved"
+        # may violate the existing assignments_status_check constraint.
+        if kind == "assignment_answer" and action == "approve":
+            updates["status"] = "answered"
+        elif action == "reject":
+            updates["status"] = "rejected"
         updates["updated_at"] = utc_now()
     row, error = db_update(table, {"id": item_id}, updates)
     if error:
-        flash("Approval could not be saved. Run the latest KOJA approval SQL migration in Supabase first.", "danger")
+        flash(f"Approval could not be saved: {error}. Make sure the approval migration has been run in Supabase.", "danger")
         return redirect(url_for("admin_approvals"))
     log_activity(event, f"Admin {action} {table} record {item_id}." + (f" Note: {note}" if note else ""))
     # Optional notification to the owner/provider when an email can be resolved.
