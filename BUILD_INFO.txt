@@ -1,0 +1,5 @@
+KOJA AFRICA — Complete Production Build
+Build date: 2026-09-03
+Base: existing Google-ready KOJA build
+Google/Search configuration preserved.
+All existing application features preserved.
