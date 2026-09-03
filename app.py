@@ -1470,8 +1470,7 @@ def assignments():
             "student_id":user["id"],
             "user_id":user["id"],
             "owner_id":user["id"],
-            "sender_id":user["id"],
-            "tracking_code":make_assignment_tracking_code(),
+                "tracking_code":make_assignment_tracking_code(),
             "title":title,"description":description,
             "status":"submitted","created_at":utc_now()
         }
@@ -1885,38 +1884,24 @@ create table if not exists public.koja_marketplace_products (
  price numeric(12,2) not null default 0 check (price >= 0),
  currency text not null default 'ZMW',
  cover_url text,
- file_url text,
- file_name text,
- file_size bigint,
- is_published boolean not null default false,
  contact_phone text,
  contact_email text,
  whatsapp_number text,
- preferred_contact text default 'KOJA Chat',
+ preferred_contact text,
+ contact_phone_public boolean default false,
+ contact_email_public boolean default false,
+ whatsapp_public boolean default false,
  location text,
  town text,
  country text,
  continent text,
- show_phone_public boolean not null default true,
- show_email_public boolean not null default false,
- show_whatsapp_public boolean not null default false,
- show_location_public boolean not null default true,
+ file_url text,
+ file_name text,
+ file_size bigint,
+ is_published boolean not null default false,
  created_at timestamptz not null default now(),
  updated_at timestamptz not null default now()
 );
-alter table public.koja_marketplace_products add column if not exists contact_phone text;
-alter table public.koja_marketplace_products add column if not exists contact_email text;
-alter table public.koja_marketplace_products add column if not exists whatsapp_number text;
-alter table public.koja_marketplace_products add column if not exists preferred_contact text default 'KOJA Chat';
-alter table public.koja_marketplace_products add column if not exists location text;
-alter table public.koja_marketplace_products add column if not exists town text;
-alter table public.koja_marketplace_products add column if not exists country text;
-alter table public.koja_marketplace_products add column if not exists continent text;
-alter table public.koja_marketplace_products add column if not exists show_phone_public boolean not null default true;
-alter table public.koja_marketplace_products add column if not exists show_email_public boolean not null default false;
-alter table public.koja_marketplace_products add column if not exists show_whatsapp_public boolean not null default false;
-alter table public.koja_marketplace_products add column if not exists show_location_public boolean not null default true;
-
 create index if not exists koja_marketplace_products_feed_idx on public.koja_marketplace_products(is_published, created_at desc);
 create index if not exists koja_marketplace_products_seller_idx on public.koja_marketplace_products(seller_id, created_at desc);
 
@@ -2094,7 +2079,7 @@ def marketplace_product_view(product_id):
     if not product or not product.get('is_published'): abort(404)
     seller=marketplace_seller_name(product.get('seller_id')); uid=(current_user() or {}).get('id') if current_user() else None
     return render_page(product.get('title') or 'Digital Product',r'''
-<div class="card"><div class="small">{{ product.category }} · Seller: {{ seller }}</div><h1>{{ product.title }}</h1>{% if product.cover_url %}<img src="{{ url_for('marketplace_cover', product_id=product.id) }}" alt="{{ product.title }}" style="display:block;width:100%;max-height:520px;object-fit:contain;border-radius:12px;background:var(--bg)">{% endif %}<p style="white-space:pre-wrap;line-height:1.75">{{ product.description }}</p><div class="card" style="margin-top:18px"><h2>👤 Seller Information</h2><p><strong>Seller:</strong> {{ seller }}</p>{% if product.show_location_public and (product.location or product.town or product.country or product.continent) %}<p>📍 <strong>Location:</strong> {{ product.location or 'Not specified' }}{% if product.town %}, {{ product.town }}{% endif %}{% if product.country %}, {{ product.country }}{% endif %}{% if product.continent %} · {{ product.continent }}{% endif %}</p>{% endif %}{% if product.preferred_contact %}<p>💬 <strong>Preferred contact:</strong> {{ product.preferred_contact }}</p>{% endif %}<div class="actions">{% if product.show_phone_public and product.contact_phone %}<a class="btn secondary" href="tel:{{ product.contact_phone }}">📞 Call Seller</a>{% endif %}{% if product.show_whatsapp_public and product.whatsapp_number %}<a class="btn secondary" target="_blank" rel="noopener" href="https://wa.me/{{ product.whatsapp_number|replace('+','')|replace(' ','')|replace('-','') }}">💬 WhatsApp Seller</a>{% endif %}{% if product.show_email_public and product.contact_email %}<a class="btn secondary" href="mailto:{{ product.contact_email }}">✉️ Email Seller</a>{% endif %}</div></div><h2>{{ 'FREE' if product.price|float<=0 else money(product.price, product.currency) }}</h2>{% if user %}{% if access %}<a class="btn success" href="{{ url_for('marketplace_download', product_id=product.id) }}">⬇️ Download / Access</a>{% elif product.price|float<=0 %}<form method="post" action="{{ url_for('marketplace_buy', product_id=product.id) }}"><button class="btn success" type="submit">🎁 Get Free Product</button></form>{% else %}<form method="post" action="{{ url_for('marketplace_buy', product_id=product.id) }}"><button class="btn" type="submit">🛒 Request Purchase · {{ money(product.price, product.currency) }}</button></form><p class="small">Secure checkout is handled by Flutterwave when FLW_SECRET_KEY is configured. KOJA verifies the transaction on the server before releasing the digital file.</p>{% endif %}{% else %}<a class="btn" href="{{ url_for('login', next=request.path) }}">Login to Purchase / Download</a>{% endif %}</div>
+<div class="card"><div class="small">{{ product.category }} · Seller: {{ seller }}</div><h1>{{ product.title }}</h1>{% if product.cover_url %}<img src="{{ url_for('marketplace_cover', product_id=product.id) }}" alt="{{ product.title }}" style="display:block;width:100%;max-height:520px;object-fit:contain;border-radius:12px;background:var(--bg)">{% endif %}<p style="white-space:pre-wrap;line-height:1.75">{{ product.description }}</p><div class="card"><h3>👤 Seller Information</h3><p><strong>Seller:</strong> {{ seller }}</p>{% if product.location or product.town or product.country or product.continent %}<p>📍 {{ product.location or '' }}{% if product.town %}, {{ product.town }}{% endif %}{% if product.country %}, {{ product.country }}{% endif %}{% if product.continent %} · {{ product.continent }}{% endif %}</p>{% endif %}{% if product.contact_phone and product.contact_phone_public %}<p>📞 {{ product.contact_phone }}</p>{% endif %}{% if product.contact_email and product.contact_email_public %}<p>✉️ {{ product.contact_email }}</p>{% endif %}{% if product.whatsapp_number and product.whatsapp_public %}<p>💬 WhatsApp: {{ product.whatsapp_number }}</p>{% endif %}<div class="actions"><a class="btn" href="{{ url_for('marketplace_chat', seller_id=product.seller_id, product_id=product.id) }}">💬 Contact Seller</a>{% if product.contact_phone and product.contact_phone_public %}<a class="btn secondary" href="tel:{{ product.contact_phone }}">📞 Call</a>{% endif %}{% if product.whatsapp_number and product.whatsapp_public %}<a class="btn secondary" target="_blank" rel="noopener" href="https://wa.me/{{ product.whatsapp_number|replace('+','')|replace(' ','') }}">WhatsApp</a>{% endif %}</div></div><h2>{{ 'FREE' if product.price|float<=0 else money(product.price, product.currency) }}</h2>{% if user %}{% if access %}<a class="btn success" href="{{ url_for('marketplace_download', product_id=product.id) }}">⬇️ Download / Access</a>{% elif product.price|float<=0 %}<form method="post" action="{{ url_for('marketplace_buy', product_id=product.id) }}"><button class="btn success" type="submit">🎁 Get Free Product</button></form>{% else %}<form method="post" action="{{ url_for('marketplace_buy', product_id=product.id) }}"><button class="btn" type="submit">🛒 Request Purchase · {{ money(product.price, product.currency) }}</button></form><p class="small">Secure checkout is handled by Flutterwave when FLW_SECRET_KEY is configured. KOJA verifies the transaction on the server before releasing the digital file.</p>{% endif %}{% else %}<a class="btn" href="{{ url_for('login', next=request.path) }}">Login to Purchase / Download</a>{% endif %}</div>
 ''',product=product,seller=seller,access=marketplace_has_access(product,uid),money=marketplace_money)
 
 @app.route('/marketplace/buy/<product_id>',methods=['POST'])
@@ -2228,23 +2213,11 @@ def marketplace_sell():
             if cext in {'jpg','jpeg','png','webp'}:
                 cu,cerr=upload_storage(cover,'marketplace/covers')
                 if not cerr: cover_url=(cu or {}).get('url')
-        contact_phone=clean(request.form.get('contact_phone'))
-        contact_email=clean(request.form.get('contact_email')).lower()
-        whatsapp_number=clean(request.form.get('whatsapp_number'))
-        preferred_contact=clean(request.form.get('preferred_contact')) or 'KOJA Chat'
-        location=clean(request.form.get('location'))
-        town=clean(request.form.get('town'))
-        country=clean(request.form.get('country'))
-        continent=clean(request.form.get('continent')) or 'Africa'
-        show_phone_public=request.form.get('show_phone_public')=='on'
-        show_email_public=request.form.get('show_email_public')=='on'
-        show_whatsapp_public=request.form.get('show_whatsapp_public')=='on'
-        show_location_public=request.form.get('show_location_public')=='on'
-        payload={'seller_id':(current_user() or {}).get('id'),'title':title,'description':description,'category':category,'price':price,'currency':'ZMW','cover_url':cover_url,'file_url':(uploaded or {}).get('url'),'file_name':digital.filename,'file_size':getattr(digital,'content_length',None),'is_published':False,'contact_phone':contact_phone or None,'contact_email':contact_email or None,'whatsapp_number':whatsapp_number or None,'preferred_contact':preferred_contact,'location':location or None,'town':town or None,'country':country or None,'continent':continent or None,'show_phone_public':show_phone_public,'show_email_public':show_email_public,'show_whatsapp_public':show_whatsapp_public,'show_location_public':show_location_public}
+        payload={'seller_id':(current_user() or {}).get('id'),'title':title,'description':description,'category':category,'price':price,'currency':'ZMW','cover_url':cover_url,'contact_phone':clean(request.form.get('contact_phone')),'contact_email':clean(request.form.get('contact_email')).lower(),'whatsapp_number':clean(request.form.get('whatsapp_number')),'preferred_contact':clean(request.form.get('preferred_contact')) or 'KOJA Chat','contact_phone_public':bool(request.form.get('contact_phone_public')),'contact_email_public':bool(request.form.get('contact_email_public')),'whatsapp_public':bool(request.form.get('whatsapp_public')),'location':clean(request.form.get('location')),'town':clean(request.form.get('town')),'country':clean(request.form.get('country')),'continent':clean(request.form.get('continent')),'file_url':(uploaded or {}).get('url'),'file_name':digital.filename,'file_size':getattr(digital,'content_length',None),'is_published':False}
         _,err=db_insert('koja_marketplace_products',payload)
         flash('Product submitted. It is hidden until published/approved.' if not err else 'Product could not be saved. Run MARKETPLACE.sql in Supabase first.','success' if not err else 'danger')
         return redirect(url_for('marketplace_my'))
-    return render_page('Sell Digital Product',r'''<div class="hero"><h1>💼 Sell a Digital Product</h1><p>Upload a digital file and create a marketplace listing. New listings are unpublished until approved.</p></div><div class="card"><form method="post" enctype="multipart/form-data"><label>Product title</label><input name="title" maxlength="180" required placeholder="e.g. Grade 12 Mathematics Revision Guide"><label>Description</label><textarea name="description" maxlength="10000" required placeholder="Explain what the buyer receives..."></textarea><div class="grid"><div><label>Category</label><select name="category">{% for c in categories %}<option>{{ c }}</option>{% endfor %}</select></div><div><label>Price (ZMW)</label><input name="price" type="number" min="0" step="0.01" value="0" required></div></div><div class="card" style="margin-top:16px"><h2>📞 Seller Contact & Location</h2><p class="small">Choose what buyers may see on your public Marketplace listing.</p><div class="grid"><div><label>Phone number</label><input name="contact_phone" type="tel" placeholder="097xxxxxxx"></div><div><label>Email address</label><input name="contact_email" type="email" placeholder="seller@example.com"></div><div><label>WhatsApp number</label><input name="whatsapp_number" type="tel" placeholder="+26097xxxxxxx"></div><div><label>Preferred contact method</label><select name="preferred_contact"><option>KOJA Chat</option><option>Phone</option><option>WhatsApp</option><option>Email</option></select></div><div><label>Location / Area</label><input name="location" maxlength="180" placeholder="Area / neighbourhood"></div><div><label>Town / City</label><input name="town" maxlength="120" placeholder="Kitwe"></div><div><label>Country</label><input name="country" maxlength="120" value="Zambia"></div><div><label>Continent</label><select name="continent"><option>Africa</option><option>Asia</option><option>Europe</option><option>North America</option><option>South America</option><option>Oceania</option><option>Antarctica</option></select></div></div><div style="margin-top:12px"><label><input type="checkbox" name="show_phone_public" checked> Show phone publicly</label><label><input type="checkbox" name="show_email_public"> Show email publicly</label><label><input type="checkbox" name="show_whatsapp_public"> Show WhatsApp publicly</label><label><input type="checkbox" name="show_location_public" checked> Show location/town/country publicly</label></div></div><label>Digital product file</label><input type="file" name="digital_file" required><label>Cover image (optional)</label><input type="file" name="cover" accept="image/jpeg,image/png,image/webp"><button class="btn" type="submit">📤 Submit Product</button></form><p class="small">Maximum upload size follows KOJA's 15 MB server limit.</p></div>''',categories=MARKETPLACE_CATEGORIES)
+    return render_page('Sell Digital Product',r'''<div class="hero"><h1>💼 Sell a Digital Product</h1><p>Upload a digital file and create a marketplace listing. New listings are unpublished until approved.</p></div><div class="card"><form method="post" enctype="multipart/form-data"><label>Product title</label><input name="title" maxlength="180" required placeholder="e.g. Grade 12 Mathematics Revision Guide"><label>Description</label><textarea name="description" maxlength="10000" required placeholder="Explain what the buyer receives..."></textarea><div class="grid"><div><label>Category</label><select name="category">{% for c in categories %}<option>{{ c }}</option>{% endfor %}</select></div><div><label>Price (ZMW)</label><input name="price" type="number" min="0" step="0.01" value="0" required></div></div><label>Contact phone</label><input name="contact_phone" placeholder="Phone number"><label>Email</label><input type="email" name="contact_email" placeholder="seller@example.com"><label>WhatsApp number</label><input name="whatsapp_number" placeholder="WhatsApp number"><label>Preferred contact</label><select name="preferred_contact"><option>KOJA Chat</option><option>WhatsApp</option><option>Phone</option><option>Email</option></select><div class="grid"><label><input type="checkbox" name="contact_phone_public"> Show phone publicly</label><label><input type="checkbox" name="contact_email_public"> Show email publicly</label><label><input type="checkbox" name="whatsapp_public"> Show WhatsApp publicly</label></div><div class="grid"><div><label>Location / Area</label><input name="location"></div><div><label>Town / City</label><input name="town"></div><div><label>Country</label><input name="country" value="Zambia"></div><div><label>Continent</label><select name="continent"><option>Africa</option><option>Asia</option><option>Europe</option><option>North America</option><option>South America</option><option>Oceania</option><option>Antarctica</option></select></div></div><label>Digital product file</label><input type="file" name="digital_file" required><label>Cover image (optional)</label><input type="file" name="cover" accept="image/jpeg,image/png,image/webp"><button class="btn" type="submit">📤 Submit Product</button></form><p class="small">Maximum upload size follows KOJA's 15 MB server limit.</p></div>''',categories=MARKETPLACE_CATEGORIES)
 
 @app.route('/marketplace/my')
 @login_required
@@ -2256,7 +2229,7 @@ def marketplace_my():
     ids={str(x.get('product_id')) for x in orders+purchases if x.get('product_id')}
     allp=db_select('koja_marketplace_products',{'id':'in.('+','.join(ids)+')'} if ids else {'id':'eq.__none__'},limit=200) or []
     pm={str(p.get('id')):p for p in allp}
-    return render_page('My Marketplace',r'''<div class="hero"><h1>📦 My Marketplace</h1><div class="actions"><a class="btn" href="{{ url_for('marketplace_sell') }}">+ Sell Product</a><a class="btn secondary" href="{{ url_for('marketplace') }}">Browse Marketplace</a></div></div><div class="card"><h2>My Products</h2><table><tr><th>Product</th><th>Price</th><th>Status</th></tr>{% for p in products %}<tr><td>{{ p.title }}</td><td>{{ money(p.price,p.currency) if p.price|float>0 else 'FREE' }}</td><td>{{ 'Published' if p.is_published else 'Pending review' }}</td></tr>{% else %}<tr><td colspan="3">No products yet.</td></tr>{% endfor %}</table></div><div class="card"><h2>Sales / Orders</h2><table><tr><th>Product</th><th>Amount</th><th>Status</th></tr>{% for o in orders %}<tr><td>{{ pm.get(o.product_id,{}).get('title','Digital product') }}</td><td>{{ money(o.amount,o.currency) }}</td><td>{{ o.status }}</td></tr>{% else %}<tr><td colspan="3">No orders yet.</td></tr>{% endfor %}</table></div><div class="card"><h2>My Purchases</h2><table><tr><th>Product</th><th>Amount</th><th>Status</th><th></th></tr>{% for o in purchases %}{% set pp=pm.get(o.product_id) %}<tr><td>{{ pp.title if pp else 'Digital product' }}</td><td>{{ money(o.amount,o.currency) }}</td><td>{{ o.status }}</td><td>{% if pp and o.status=='paid' %}<a class="btn success" href="{{ url_for('marketplace_download',product_id=pp.id) }}">Download</a>{% endif %}</td></tr>{% else %}<tr><td colspan="4">No purchases yet.</td></tr>{% endfor %}</table></div>''',products=products,orders=orders,purchases=purchases,pm=pm,money=marketplace_money)
+    return render_page('My Marketplace',r'''<div class="hero"><h1>📦 My Marketplace</h1><div class="actions"><a class="btn" href="{{ url_for('marketplace_sell') }}">+ Sell Product</a><a class="btn secondary" href="{{ url_for('marketplace') }}">Browse Marketplace</a></div></div><div class="card"><h2>My Products</h2><table><tr><th>Product</th><th>Price</th><th>Status</th></tr>{% for p in products %}<tr><td>{{ p.title }}</td><td>{{ money(p.price,p.currency) if p.price|float>0 else 'FREE' }}</td><td>{{ 'Published' if p.is_published else 'Pending review' }}</td></tr>{% else %}<tr><td colspan="3">No products yet.</td></tr>{% endfor %}</table></div><div class="card"><h2>Sales / Orders</h2><table><tr><th>Product</th><th>Amount</th><th>Status</th><th>Actions</th></tr>{% for o in orders %}<tr><td>{{ pm.get(o.product_id,{}).get('title','Digital product') }}</td><td>{{ money(o.amount,o.currency) }}</td><td>{{ o.status }}</td><td>{% if o.status not in ['cancelled','refund_requested','refunded'] %}<form method="post" action="{{ url_for('marketplace_order_action',order_id=o.id,action='cancel') }}" style="display:inline"><button class="btn danger">Cancel</button></form><form method="post" action="{{ url_for('marketplace_order_action',order_id=o.id,action='refund') }}" style="display:inline"><button class="btn secondary">Refund</button></form>{% endif %}{% if o.status=='paid' %}<a class="btn" href="{{ url_for('marketplace_delivery',order_id=o.id) }}">🚚 Delivery</a>{% endif %}</td></tr>{% else %}<tr><td colspan="4">No orders yet.</td></tr>{% endfor %}</table></div><div class="card"><h2>My Purchases</h2><table><tr><th>Product</th><th>Amount</th><th>Status</th><th></th></tr>{% for o in purchases %}{% set pp=pm.get(o.product_id) %}<tr><td>{{ pp.title if pp else 'Digital product' }}</td><td>{{ money(o.amount,o.currency) }}</td><td>{{ o.status }}</td><td>{% if pp and o.status=='paid' %}<a class="btn success" href="{{ url_for('marketplace_download',product_id=pp.id) }}">Download</a><a class="btn" href="{{ url_for('marketplace_delivery',order_id=o.id) }}">🚚 Delivery</a>{% endif %}{% if o.status not in ['cancelled','refund_requested','refunded'] %}<form method="post" action="{{ url_for('marketplace_order_action',order_id=o.id,action='cancel') }}" style="display:inline"><button class="btn danger">Cancel</button></form><form method="post" action="{{ url_for('marketplace_order_action',order_id=o.id,action='refund') }}" style="display:inline"><button class="btn secondary">Refund</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="4">No purchases yet.</td></tr>{% endfor %}</table></div>''',products=products,orders=orders,purchases=purchases,pm=pm,money=marketplace_money)
 
 @app.route("/professional-communication")
 @login_required
@@ -2493,7 +2466,7 @@ def professional_contact(provider_id):
 <div class="card"><h3>🧠 Counselling</h3><p>Request a counselling or consultation session where appropriate.</p><a class="btn" href="{{ url_for('book_professional', provider_id=provider.id, purpose='counselling') }}">Request Counselling</a></div>
 <div class="card"><h3>🔒 Private Communication</h3><p>Direct communication with this professional.</p><a class="btn" href="{{ url_for('professional_chat', provider_id=provider.id) }}">💬 Private Chat</a><a class="btn secondary" href="{{ url_for('professional_call', provider_id=provider.id, mode='voice') }}">📞 Voice</a><a class="btn secondary" href="{{ url_for('professional_call', provider_id=provider.id, mode='video') }}">🎥 Video</a></div><div class="card"><h3>🌍 Public Communication</h3><p>Communicate with the wider {{ provider.get('profession') or 'professional' }} community.</p><a class="btn" href="{{ url_for('professional_community', profession_slug=profession_slug(provider.get('profession') or 'Other Professional Service')) }}">Open Public Room</a><a class="btn secondary" href="{{ url_for('professional_public_post', profession_slug=profession_slug(provider.get('profession') or 'Other Professional Service')) }}">Public Posts</a></div>
 <div class="card"><h3>📞 Voice Call</h3>{% if connected %}<p>🟢 Connected — you can call this professional now.</p><a class="btn" href="{{ url_for('professional_call', provider_id=provider.id, mode='voice') }}">Start Voice Call</a>{% else %}<p>🔴 This professional is not connected right now.</p><button class="btn secondary" disabled>Voice Call Unavailable</button>{% endif %}</div>
-<div class="card"><h3>🎥 Video Call</h3>{% if connected %}<p>🟢 Connected — you can start a video call now.</p><a class="btn" href="{{ url_for('professional_call', provider_id=provider.id, mode='video') }}">Start Video Call</a>{% else %}<p>🔴 This professional is not connected right now.</p><button class="btn secondary" disabled>Video Call Unavailable</button>{% endif %}</div><div class="card"><h3>📲 Incoming Calls</h3><p>Professionals can open their call inbox to receive calls.</p><a class="btn secondary" href="{{ url_for('professional_calls') }}">Open Call Inbox</a></div>
+<div class="card"><h3>🎥 Video Call</h3>{% if connected %}<p>🟢 Connected — you can start a video call now.</p><a class="btn" href="{{ url_for('professional_call', provider_id=provider.id, mode='video') }}">Start Video Call</a>{% else %}<p>🔴 This professional is not connected right now.</p><button class="btn secondary" disabled>Video Call Unavailable</button>{% endif %}</div><div class="card"><h3>⭐ Reviews</h3><p>Leave a rating and review after your service.</p><a class="btn secondary" href="{{ url_for('professional_review', provider_id=provider.id) }}">Review Professional</a></div><div class="card"><h3>📲 Incoming Calls</h3><p>Professionals can open their call inbox to receive calls.</p><a class="btn secondary" href="{{ url_for('professional_calls') }}">Open Call Inbox</a></div>
 {% if provider.get('phone') %}<div class="card"><h3>📱 Phone</h3><a class="btn secondary" href="tel:{{ provider.get('phone') }}">Call {{ provider.get('phone') }}</a></div>{% endif %}
 </div>
 """, provider=provider, connected=connected)
@@ -2863,7 +2836,7 @@ def driver_dashboard():
 {% elif d.get('status') == 'accepted' %}<form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.get('id'),action='picked_up') }}"><button class="btn">Picked Up</button></form>
 {% elif d.get('status') == 'picked_up' %}<form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.get('id'),action='in_transit') }}"><button class="btn">In Transit</button></form>
 {% elif d.get('status') == 'in_transit' %}<form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.get('id'),action='delivered') }}"><button class="btn success">Delivered</button></form>{% endif %}
-<a class="btn secondary" href="{{ url_for('track_delivery',tracking_code=d.get('tracking_code')) }}">Track Map</a>
+<a class="btn secondary" href="{{ url_for('track_delivery',tracking_code=d.get('tracking_code')) }}">Track Map</a><a class="btn secondary" href="{{ url_for('delivery_chat',delivery_id=d.get('id')) }}">💬 Chat</a><a class="btn secondary" href="{{ url_for('delivery_call',delivery_id=d.get('id'),mode='voice') }}">📞 Call</a>{% if d.get('status') in ['in_transit','delivered'] %}<a class="btn secondary" href="{{ url_for('delivery_proof',delivery_id=d.get('id')) }}">📦 Proof</a>{% endif %}
 </div></div>
 {% else %}<p>No delivery requests yet.</p>{% endfor %}
 </div>
@@ -2903,6 +2876,10 @@ def driver_delivery_action(delivery_id, action):
         flash("Could not update delivery status: " + str(error)[:700], "danger")
     else:
         log_activity("delivery_status", f"Delivery {delivery.get('tracking_code')} changed to {status}.")
+        try:
+            _notify(delivery.get('customer_id') or delivery.get('user_id'),'Delivery status updated',f"Delivery {delivery.get('tracking_code')} is now {status}.",'delivery',delivery_id)
+        except Exception:
+            pass
         flash(f"Delivery status changed to {status}.", "success")
     return redirect(url_for("driver_dashboard"))
 
@@ -3188,10 +3165,11 @@ def create_delivery_request():
         "id":str(uuid.uuid4()),
         "customer_id":user["id"],
         "user_id":user["id"],
-        "sender_id":user["id"],
         "driver_id":driver_id,
         "pickup_location":clean(body.get("pickup_location")),
+        "pickup_address":clean(body.get("pickup_address") or body.get("pickup_location")),
         "destination":clean(body.get("destination")),
+        "delivery_address":clean(body.get("delivery_address") or body.get("destination")),
         "pickup_latitude":lat,
         "pickup_longitude":lon,
         "recipient_name":clean(body.get("recipient_name")),
@@ -3211,7 +3189,9 @@ def create_delivery_request():
         minimal={
             "id":payload["id"],"customer_id":user["id"],"driver_id":driver_id,
             "pickup_location":payload["pickup_location"],
+            "pickup_address":payload["pickup_address"],
             "destination":payload["destination"],
+            "delivery_address":payload["delivery_address"],
             "recipient_name":payload["recipient_name"],
             "recipient_phone":payload["recipient_phone"],
             "package_description":payload["package_description"],
@@ -3235,7 +3215,7 @@ def deliveries():
         # after which the customer can search for a driver.
         tracking=make_tracking_code()
         payload={
-            "id":str(uuid.uuid4()),"customer_id":user["id"],"sender_id":user["id"],
+            "id":str(uuid.uuid4()),"customer_id":user["id"],"user_id":user["id"],
             "pickup_location":clean(request.form.get("pickup_location")),
             "pickup_address":clean(request.form.get("pickup_address") or request.form.get("pickup_location")),
             "destination":clean(request.form.get("destination")),
@@ -4750,6 +4730,181 @@ def professional_public_post(profession_slug):
 """, profession=profession, posts=posts)
 
 # ============================================================
+
+# ============================================================
+# KOJA AFRICA PRODUCTION COMPLETION — MARKETPLACE / DELIVERY / PROFESSIONALS
+# ============================================================
+PRODUCTION_COMPLETION_SQL = r''' 
+ALTER TABLE public.koja_marketplace_products ADD COLUMN IF NOT EXISTS contact_phone text;
+ALTER TABLE public.koja_marketplace_products ADD COLUMN IF NOT EXISTS contact_email text;
+ALTER TABLE public.koja_marketplace_products ADD COLUMN IF NOT EXISTS whatsapp_number text;
+ALTER TABLE public.koja_marketplace_products ADD COLUMN IF NOT EXISTS preferred_contact text default 'KOJA Chat';
+ALTER TABLE public.koja_marketplace_products ADD COLUMN IF NOT EXISTS contact_phone_public boolean default false;
+ALTER TABLE public.koja_marketplace_products ADD COLUMN IF NOT EXISTS contact_email_public boolean default false;
+ALTER TABLE public.koja_marketplace_products ADD COLUMN IF NOT EXISTS whatsapp_public boolean default false;
+ALTER TABLE public.koja_marketplace_products ADD COLUMN IF NOT EXISTS location text;
+ALTER TABLE public.koja_marketplace_products ADD COLUMN IF NOT EXISTS town text;
+ALTER TABLE public.koja_marketplace_products ADD COLUMN IF NOT EXISTS country text;
+ALTER TABLE public.koja_marketplace_products ADD COLUMN IF NOT EXISTS continent text;
+CREATE TABLE IF NOT EXISTS public.koja_marketplace_actions (id uuid primary key default gen_random_uuid(), order_id uuid, product_id uuid, actor_id uuid not null, action text not null, reason text, created_at timestamptz default now());
+CREATE TABLE IF NOT EXISTS public.koja_delivery_proofs (id uuid primary key default gen_random_uuid(), delivery_id uuid not null, uploaded_by uuid not null, proof_url text, proof_type text default 'file', note text, created_at timestamptz default now());
+CREATE TABLE IF NOT EXISTS public.professional_reviews (id uuid primary key default gen_random_uuid(), provider_id uuid not null, client_id uuid not null, appointment_id uuid, rating integer not null check(rating between 1 and 5), review text default '', created_at timestamptz default now());
+CREATE TABLE IF NOT EXISTS public.professional_payments (id uuid primary key default gen_random_uuid(), appointment_id uuid, client_id uuid not null, provider_id uuid not null, amount numeric(12,2) not null default 0, currency text not null default 'ZMW', status text not null default 'pending', payment_reference text unique, transaction_id text, created_at timestamptz default now(), updated_at timestamptz default now());
+'''
+
+def _notify(uid,title,body,ntype='system',related_id=None):
+    if not uid:return
+    try: db_insert('koja_notifications',{'user_id':uid,'notification_type':ntype,'title':title,'body':body,'related_id':related_id})
+    except Exception: pass
+
+def _marketplace_conversation(a,b):
+    return _direct_conversation(str(a),str(b)) if a and b and str(a)!=str(b) else None
+
+@app.route('/marketplace/chat/<seller_id>')
+@login_required
+def marketplace_chat(seller_id):
+    me=current_user()['id'];seller=find_user_by_id(seller_id) or {}
+    if not seller:abort(404)
+    c=_marketplace_conversation(me,seller_id)
+    if not c:return 'Unable to create seller conversation. Ensure KOJA Connect SQL is installed.',500
+    product_id=clean(request.args.get('product_id'))
+    _notify(seller_id,'Marketplace contact',f'{_profile_name(me)} contacted you on KOJA Marketplace.','marketplace',product_id or None)
+    return redirect(url_for('connect_chat',conversation_id=c['id']))
+
+@app.route('/marketplace/call/<seller_id>')
+@login_required
+def marketplace_call(seller_id):
+    if str(seller_id)==str(current_user()['id']):return 'You cannot call yourself.',400
+    return redirect(url_for('connect_call',user_id=seller_id,mode=clean(request.args.get('mode')) or 'video'))
+
+@app.route('/marketplace/order/<order_id>/<action>',methods=['POST'])
+@login_required
+def marketplace_order_action(order_id,action):
+    me=current_user()['id'];o=first_row('koja_marketplace_orders',{'id':order_id})
+    if not o:return 'Order not found.',404
+    if str(me) not in {str(o.get('buyer_id')),str(o.get('seller_id'))}:return 'Forbidden',403
+    if action not in {'cancel','refund'}:return 'Invalid action',400
+    status='cancelled' if action=='cancel' else 'refund_requested';reason=clean(request.form.get('reason')) or action.title()+' requested'
+    _,err=db_update('koja_marketplace_orders',{'id':order_id},{'status':status,'updated_at':utc_now()})
+    try:db_insert('koja_marketplace_actions',{'order_id':order_id,'product_id':o.get('product_id'),'actor_id':me,'action':action,'reason':reason})
+    except Exception:pass
+    other=o.get('seller_id') if str(o.get('buyer_id'))==str(me) else o.get('buyer_id')
+    _notify(other,'Marketplace order update',f'Order {order_id}: {status}. {reason}','marketplace',order_id)
+    flash('Order updated.' if not err else 'Order update failed: '+str(err)[:300],'success' if not err else 'danger')
+    return redirect(url_for('marketplace_my'))
+
+@app.route('/marketplace/delivery/<order_id>',methods=['GET','POST'])
+@login_required
+def marketplace_delivery(order_id):
+    me=current_user()['id'];o=first_row('koja_marketplace_orders',{'id':order_id})
+    if not o or str(me) not in {str(o.get('buyer_id')),str(o.get('seller_id'))}:return 'Forbidden',403
+    product=marketplace_product(o.get('product_id')) or {}
+    if request.method=='POST':
+        pickup=clean(request.form.get('pickup_address'));dest=clean(request.form.get('delivery_address'))
+        if not pickup or not dest:flash('Pickup and delivery addresses are required.','danger')
+        else:
+            tracking=make_tracking_code();payload={'id':str(uuid.uuid4()),'customer_id':me,'user_id':me,'pickup_address':pickup,'delivery_address':dest,'pickup_location':pickup,'destination':dest,'recipient_name':clean(request.form.get('recipient_name')) or _profile_name(me),'recipient_phone':clean(request.form.get('recipient_phone')),'package_description':'Marketplace order: '+str(product.get('title') or 'Marketplace product'),'delivery_fee':request.form.get('delivery_fee') or 0,'currency':'ZMW','status':'requested','tracking_code':tracking,'created_at':utc_now(),'updated_at':utc_now()}
+            row,err=db_insert('deliveries',payload)
+            if err:flash('Delivery request failed: '+str(err)[:600],'danger')
+            else:
+                other=o.get('seller_id') if str(o.get('buyer_id'))==str(me) else o.get('buyer_id');_notify(other,'Marketplace delivery requested',f'Tracking code: {tracking}','delivery',row.get('id') if isinstance(row,dict) else None);flash('Delivery created. Tracking: '+tracking,'success');return redirect(url_for('deliveries'))
+    return render_page('Marketplace Delivery',r'''<div class="hero"><h2>🚚 Marketplace Delivery</h2><p>{{ product.title }}</p></div><div class="card"><form method="post"><label>Pickup address</label><input name="pickup_address" required><label>Delivery address</label><input name="delivery_address" required><label>Recipient name</label><input name="recipient_name"><label>Recipient phone</label><input name="recipient_phone"><label>Delivery fee (ZMW)</label><input name="delivery_fee" type="number" min="0" step="0.01" value="0"><button class="btn" type="submit">Create Delivery</button></form></div>''',product=product)
+
+@app.route('/delivery/<delivery_id>/chat')
+@login_required
+def delivery_chat(delivery_id):
+    d=first_row('deliveries',{'id':delivery_id});me=current_user()['id']
+    if not d or str(me) not in {str(d.get('customer_id')),str(d.get('user_id')),str(d.get('driver_id'))}:return 'Forbidden',403
+    other=d.get('driver_id') if str(me) in {str(d.get('customer_id')),str(d.get('user_id'))} else d.get('customer_id') or d.get('user_id');c=_direct_conversation(me,other)
+    if not c:return 'Participant unavailable.',409
+    _notify(other,'Delivery message',f'{_profile_name(me)} contacted you about delivery {d.get("tracking_code")}.','delivery',delivery_id)
+    return redirect(url_for('connect_chat',conversation_id=c['id']))
+
+@app.route('/delivery/<delivery_id>/call')
+@login_required
+def delivery_call(delivery_id):
+    d=first_row('deliveries',{'id':delivery_id});me=current_user()['id']
+    if not d or str(me) not in {str(d.get('customer_id')),str(d.get('user_id')),str(d.get('driver_id'))}:return 'Forbidden',403
+    other=d.get('driver_id') if str(me) in {str(d.get('customer_id')),str(d.get('user_id'))} else d.get('customer_id') or d.get('user_id')
+    return redirect(url_for('connect_call',user_id=other,mode=clean(request.args.get('mode')) or 'video'))
+
+@app.route('/delivery/<delivery_id>/proof',methods=['GET','POST'])
+@login_required
+def delivery_proof(delivery_id):
+    d=first_row('deliveries',{'id':delivery_id});me=current_user()['id']
+    if not d:return 'Delivery not found.',404
+    if str(me) not in {str(d.get('customer_id')),str(d.get('user_id')),str(d.get('driver_id'))} and not current_user().get('is_admin'):return 'Forbidden',403
+    if request.method=='POST':
+        f=request.files.get('proof');note=clean(request.form.get('note'))
+        if not f or not f.filename:flash('Choose a proof file.','danger')
+        else:
+            up,err=upload_storage(f,'delivery/proofs')
+            if err:flash('Upload failed: '+str(err)[:500],'danger')
+            else:
+                _,e=db_insert('koja_delivery_proofs',{'delivery_id':delivery_id,'uploaded_by':me,'proof_url':up.get('url'),'proof_type':'file','note':note})
+                if not e:
+                    db_update('deliveries',{'id':delivery_id},{'status':'delivered','delivered_at':utc_now(),'updated_at':utc_now()});other=d.get('customer_id') if str(me)==str(d.get('driver_id')) else d.get('driver_id');_notify(other,'Delivery completed','Proof of delivery was uploaded.','delivery',delivery_id);flash('Delivery completed with proof.','success');return redirect(url_for('tracking'))
+                flash('Run the production SQL migration first.','danger')
+    return render_page('Proof of Delivery',r'''<div class="hero"><h2>📦 Proof of Delivery</h2></div><div class="card"><form method="post" enctype="multipart/form-data"><input type="file" name="proof" required><textarea name="note" placeholder="Delivery note"></textarea><button class="btn success">Upload Proof & Complete</button></form></div>''')
+
+@app.route('/professional/<provider_id>/review',methods=['GET','POST'])
+@login_required
+def professional_review(provider_id):
+    provider=first_row('service_providers',{'id':provider_id});me=current_user()['id']
+    if not provider:abort(404)
+    if request.method=='POST':
+        try:rating=max(1,min(5,int(request.form.get('rating') or 5)))
+        except:rating=5
+        _,err=db_insert('professional_reviews',{'provider_id':provider_id,'client_id':me,'appointment_id':clean(request.form.get('appointment_id')) or None,'rating':rating,'review':clean(request.form.get('review'))})
+        if err:flash('Review could not be saved. Run the production SQL migration first.','danger')
+        else:_notify(provider.get('user_id'),'New professional review',f'You received a {rating}/5 review.','professional',provider_id);flash('Review submitted.','success')
+    return render_page('Professional Review',r'''<div class="hero"><h2>⭐ Review {{ provider.full_name or provider.name or 'Professional' }}</h2></div><div class="card"><form method="post"><label>Rating</label><select name="rating">{% for n in [5,4,3,2,1] %}<option>{{ n }}</option>{% endfor %}</select><label>Review</label><textarea name="review" maxlength="4000"></textarea><button class="btn">Submit Review</button></form></div>''',provider=provider)
+
+@app.route('/professional/dashboard')
+@login_required
+def professional_dashboard():
+    me=current_user()['id'];p=first_row('service_providers',{'user_id':me})
+    if not p:return 'Professional profile not found.',404
+    bookings=db_select('appointments',{'provider_id':p.get('id')},order='created_at.desc',limit=100) or [];reviews=db_select('professional_reviews',{'provider_id':p.get('id')},order='created_at.desc',limit=100) or []
+    avg=round(sum(int(x.get('rating') or 0) for x in reviews)/len(reviews),1) if reviews else 0
+    return render_page('Professional Dashboard',r'''<div class="hero"><h2>👩‍💼 Professional Dashboard</h2><p>{{ p.full_name or p.name }} · {{ p.profession }}</p></div><div class="grid"><div class="card"><h3>Approval</h3><p>{{ p.approval_status or p.verification_status or 'pending' }}</p></div><div class="card"><h3>Bookings</h3><p>{{ bookings|length }}</p></div><div class="card"><h3>Rating</h3><p>⭐ {{ avg }}/5</p></div></div><div class="card"><h3>Recent Bookings</h3>{% for b in bookings[:30] %}<p>{{ b.appointment_type }} · {{ b.appointment_date }} · {{ b.status }} {% if b.status not in ['cancelled','rejected'] %}<form method='post' action='{{ url_for('professional_payment_start',provider_id=p.id,appointment_id=b.id) }}' style='display:inline'><button class='btn secondary'>Pay</button></form>{% endif %} <a class='btn secondary' href='{{ url_for('professional_review',provider_id=p.id) }}'>Review</a></p>{% else %}<p>No bookings yet.</p>{% endfor %}</div><div class="actions"><a class="btn" href="{{ url_for('professional_calls') }}">Calls</a><a class="btn secondary" href="{{ url_for('professional_communication') }}">Communication</a></div>''',p=p,bookings=bookings,reviews=reviews,avg=avg)
+
+@app.route('/professional/<provider_id>/pay/<appointment_id>',methods=['POST'])
+@login_required
+def professional_payment_start(provider_id,appointment_id):
+    if not FLW_SECRET_KEY:return 'Online payment is not configured. Add FLW_SECRET_KEY in Render.',503
+    provider=first_row('service_providers',{'id':provider_id});ap=first_row('appointments',{'id':appointment_id});me=current_user()
+    if not provider or not ap or str(ap.get('client_id'))!=str(me.get('id')):return 'Forbidden',403
+    amount=float(provider.get('hourly_rate') or provider.get('consultation_fee') or 0)
+    if amount<=0:return 'Professional fee is not configured.',400
+    ref='PRO-'+uuid.uuid4().hex[:24]
+    row,err=db_insert('professional_payments',{'appointment_id':appointment_id,'client_id':me['id'],'provider_id':provider_id,'amount':amount,'currency':'ZMW','status':'pending','payment_reference':ref,'created_at':utc_now(),'updated_at':utc_now()})
+    if err:return 'Run the production SQL migration first.',500
+    try:
+        r=requests.post(FLW_BASE_URL+'/payments',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json'},json={'tx_ref':ref,'amount':amount,'currency':'ZMW','redirect_url':url_for('professional_payment_callback',_external=True),'customer':{'email':me.get('email') or 'customer@koja.africa','name':me.get('name') or 'KOJA User'},'customizations':{'title':'KOJA Professional Service','description':provider.get('profession') or 'Professional service'}},timeout=30)
+        d=r.json() if r.content else {}
+        if r.ok and d.get('status')=='success':return redirect(d['data']['link'])
+        return jsonify({'error':'Checkout creation failed','details':d}),502
+    except Exception as exc:return 'Payment gateway error: '+str(exc)[:300],502
+
+@app.route('/professional/payment/callback')
+@login_required
+def professional_payment_callback():
+    ref=clean(request.args.get('tx_ref'));txid=clean(request.args.get('transaction_id'));p=first_row('professional_payments',{'payment_reference':ref})
+    if not p:return 'Payment record not found.',404
+    if txid and FLW_SECRET_KEY:
+        try:
+            r=requests.get(FLW_BASE_URL+'/transactions/'+quote(txid,safe=''),headers={'Authorization':'Bearer '+FLW_SECRET_KEY},timeout=30);d=r.json().get('data') if r.ok else None
+            if d and str(d.get('status','')).lower()=='successful' and abs(float(d.get('amount') or 0)-float(p.get('amount') or 0))<0.01 and str(d.get('currency','')).upper()=='ZMW':
+                db_update('professional_payments',{'id':p.get('id')},{'status':'paid','transaction_id':txid,'updated_at':utc_now()});_notify(p.get('provider_id'),'Professional payment received','A professional service payment was verified.','payment',p.get('id'));return redirect(url_for('dashboard'))
+        except Exception:pass
+    if clean(request.args.get('status'))=='cancelled':db_update('professional_payments',{'id':p.get('id')},{'status':'cancelled','updated_at':utc_now()})
+    return redirect(url_for('dashboard'))
+
+@app.route('/admin/production-sql')
+@admin_required
+def production_sql():
+    return render_page('Production SQL',r'''<div class="hero"><h2>🛠 Production SQL</h2><p>Run this once in Supabase SQL Editor.</p></div><div class="card"><textarea style="width:100%;min-height:70vh;font-family:monospace">{{ sql }}</textarea></div>''',sql=PRODUCTION_COMPLETION_SQL)
 
 # ERROR HANDLERS
 # ============================================================
