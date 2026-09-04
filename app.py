@@ -1707,47 +1707,69 @@ def book_doctor(provider_id):
 # ============================================================
 
 def _approved_teacher_rows():
-    """Build one public teacher directory from teacher_profiles and service_providers.
-    Only administrator-approved records are exposed. This also fixes older accounts
-    where the approval was applied to service_providers rather than teacher_profiles.
+    """Return all administrator-approved teacher/tutor records.
+
+    Approval and provider type can be stored in different columns depending on
+    which registration workflow created the record. Therefore each relevant
+    column is checked independently instead of allowing one non-teacher value
+    (for example provider_type='professional') to hide a teacher whose
+    profession/service_type is 'teacher' or 'tutor'.
     """
     merged = {}
+
+    def approved(row):
+        statuses = {
+            str(row.get(k) or '').strip().lower()
+            for k in ('approval_status', 'verification_status', 'status')
+        }
+        return bool(statuses & {'approved', 'active', 'verified'})
+
+    def is_teacher(row):
+        type_values = [
+            row.get('provider_type'), row.get('profession'),
+            row.get('service_type'), row.get('category'),
+            row.get('provider_category'), row.get('role'),
+        ]
+        text = ' '.join(str(v or '').strip().lower() for v in type_values)
+        # Empty type is retained for legacy teacher_profiles, where the table
+        # itself already identifies the record as a teacher.
+        return not text or 'teacher' in text or 'tutor' in text or 'education' in text
+
     # Primary teacher profiles.
-    for t in db_select("teacher_profiles", order="created_at.desc", limit=300):
-        status = str(t.get("approval_status") or t.get("verification_status") or t.get("status") or "").strip().lower()
-        provider_type = str(t.get("provider_type") or t.get("profession") or t.get("service_type") or "").lower()
-        is_teacher_type = (not provider_type) or ("teacher" in provider_type or "tutor" in provider_type)
-        if status not in ("approved", "active", "verified") or not is_teacher_type:
+    for t in db_select('teacher_profiles', order='created_at.desc', limit=500):
+        if not approved(t):
             continue
-        key = str(t.get("provider_id") or t.get("user_id") or t.get("id") or "")
+        if not is_teacher(t):
+            continue
+        key = str(t.get('provider_id') or t.get('user_id') or t.get('id') or '')
         if key:
             merged[key] = dict(t)
 
-    # Also include approved teacher/tutor service-provider records.
-    for p in db_select("service_providers", order="created_at.desc", limit=300):
-        ptype = str(p.get("provider_type") or p.get("profession") or p.get("service_type") or p.get("category") or "").lower()
-        status = str(p.get("approval_status") or p.get("verification_status") or p.get("status") or "").strip().lower()
-        if status not in ("approved", "active", "verified"):
+    # Also include approved service-provider records. A professional provider
+    # can still be a teacher/tutor when profession/service_type says so.
+    for p in db_select('service_providers', order='created_at.desc', limit=500):
+        if not approved(p):
             continue
-        if not ("teacher" in ptype or "tutor" in ptype):
+        if not is_teacher(p):
             continue
-        provider_id = str(p.get("id") or p.get("provider_id") or "")
-        user_id = str(p.get("user_id") or "")
+
+        provider_id = str(p.get('id') or p.get('provider_id') or '')
+        user_id = str(p.get('user_id') or '')
         existing = merged.get(provider_id) or merged.get(user_id)
+
         if existing:
-            # Fill missing fields from the provider record without replacing
-            # the richer teacher profile.
             for k, v in p.items():
-                if not existing.get(k) and v not in (None, ""):
+                if not existing.get(k) and v not in (None, ''):
                     existing[k] = v
-            existing["provider_id"] = existing.get("provider_id") or provider_id
+            existing['provider_id'] = existing.get('provider_id') or provider_id or user_id
             continue
+
         row = dict(p)
-        row["provider_id"] = provider_id or user_id
-        row["full_name"] = row.get("full_name") or row.get("name") or "Teacher / Tutor"
-        row["subjects"] = row.get("subjects") or row.get("specialization")
-        row["grade_levels"] = row.get("grade_levels") or row.get("service_area")
-        row["teaching_mode"] = row.get("teaching_mode") or "Online"
+        row['provider_id'] = provider_id or user_id
+        row['full_name'] = row.get('full_name') or row.get('name') or row.get('display_name') or 'Teacher / Tutor'
+        row['subjects'] = row.get('subjects') or row.get('specialization') or row.get('service_description')
+        row['grade_levels'] = row.get('grade_levels') or row.get('service_area') or 'All levels'
+        row['teaching_mode'] = row.get('teaching_mode') or 'Online & Live Classes'
         merged[provider_id or user_id] = row
 
     return list(merged.values())
