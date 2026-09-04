@@ -4100,7 +4100,6 @@ SMTP_USE_TLS=true</pre>
 @app.route("/admin/approvals")
 @admin_required
 def admin_approvals():
-    sections = []
     configs = [
         ("Assignments", "assignments", "approval_status", "title", "assignment"),
         ("Assignment Answers", "assignments", "answer_approval_status", "title", "assignment_answer"),
@@ -4111,111 +4110,105 @@ def admin_approvals():
         ("Documents", "documents", "approval_status", "title", "document"),
         ("Deliveries", "deliveries", "approval_status", "tracking_code", "delivery"),
         ("Appointments", "appointments", "approval_status", "appointment_type", "appointment"),
+        ("Marketplace Products", "koja_marketplace_products", "moderation_status", "title", "marketplace_product"),
     ]
+    sections=[]
     for label, table, status_field, title_field, kind in configs:
-        rows = db_select(table, order="created_at.desc", limit=300)
-        pending = []
+        rows=db_select(table,order="created_at.desc",limit=300)
+        pending=[]; approved=[]; rejected=[]
         for row in rows:
-            if kind == "assignment_answer":
-                if not row.get("answer_file_path") and not row.get("answer"):
-                    continue
-            status = str(row.get(status_field) or "pending").lower()
-            if status in ("pending", "submitted", "requested", "under_review"):
+            if kind=="assignment_answer" and not row.get("answer_file_path") and not row.get("answer"):
+                continue
+            status=str(row.get(status_field) or "pending").lower()
+            if status in ("pending","submitted","requested","under_review"):
                 pending.append(row)
-        if pending:
-            sections.append({"label": label, "table": table, "kind": kind, "rows": pending, "title_field": title_field})
-    return render_page("Admin Approvals", r"""
-<div class="hero"><h2>✅ Approval & Review Centre</h2><p>Review professional registrations, assignments, documents, marketplace products, appointments and other submissions before they become active or public.</p></div>
-<div class="card"><p><strong>Workflow:</strong> User submits → Pending review → Admin approves/rejects → KOJA updates status → optional email notification.</p><p class="small">All approval actions are restricted to administrators and recorded in the activity log.</p></div>
-{% for sec in sections %}
-<div class="card"><h3>{{ sec.label }} <span class="badge">{{ sec.rows|length }} pending</span></h3>
-{% for item in sec.rows %}
-<div style="border-top:1px solid var(--border);padding:14px 0">
-<strong>{{ item.get(sec.title_field) or item.get('name') or item.get('driver_name') or item.get('doctor_name') or item.get('teacher_name') or 'Submission' }}</strong>
-<p class="small">Status: {{ item.get('approval_status') or item.get('answer_approval_status') or 'pending' }}{% if item.get('tracking_code') %} · Tracking: {{ item.get('tracking_code') }}{% endif %}</p>
-<form method="post" action="{{ url_for('admin_approval_action', table=sec.table, item_id=item.get('id'), kind=sec.kind) }}" style="display:inline">
-<input type="hidden" name="kind" value="{{ sec.kind }}"><input type="hidden" name="action" value="approve"><button class="btn success" type="submit">✓ Approve</button>
-</form>
-<form method="post" action="{{ url_for('admin_approval_action', table=sec.table, item_id=item.get('id'), kind=sec.kind) }}" style="display:inline;margin-left:8px">
-<input type="hidden" name="kind" value="{{ sec.kind }}"><input type="hidden" name="action" value="reject"><input name="note" placeholder="Reason (optional)" style="max-width:260px"><button class="btn danger" type="submit">✕ Reject</button>
-</form>
-</div>
-{% endfor %}</div>
-{% else %}<div class="card"><h3>🎉 No pending approvals</h3><p>Everything currently in the approval queue has been reviewed.</p></div>{% endfor %}
-""", sections=sections)
+            elif status in ("approved","active","verified","published"):
+                approved.append(row)
+            elif status in ("rejected","declined"):
+                rejected.append(row)
+        if pending or approved or rejected:
+            sections.append({"label":label,"table":table,"kind":kind,"rows":pending,"approved":approved[:50],"rejected":rejected[:20],"title_field":title_field,"status_field":status_field})
+    return render_page("Admin Approvals", r'''<div class="hero"><h2>✅ Approval & Review Centre</h2><p>Approve submissions once, make eligible content active/public, and notify the owner automatically.</p></div>
+<div class="card"><p><strong>Workflow:</strong> User submits → Pending review → Admin approves/rejects → status becomes <strong>approved</strong> → eligible profile/content becomes active/public → user receives a KOJA notification.</p><p class="small">All approval actions are administrator-only and recorded in the activity log.</p></div>
+{% for sec in sections %}<div class="card"><h3>{{ sec.label }} <span class="badge">{{ sec.rows|length }} pending</span> {% if sec.approved %}<span class="badge">{{ sec.approved|length }} approved</span>{% endif %}</h3>
+{% for item in sec.rows %}<div style="border-top:1px solid var(--border);padding:14px 0"><strong>{{ item.get(sec.title_field) or item.get('name') or item.get('driver_name') or item.get('doctor_name') or item.get('teacher_name') or 'Submission' }}</strong>
+<p class="small">Status: <strong>{{ item.get(sec.status_field) or 'pending' }}</strong>{% if item.get('tracking_code') %} · Tracking: {{ item.get('tracking_code') }}{% endif %}</p>
+<form method="post" action="{{ url_for('admin_approval_action', table=sec.table, item_id=item.get('id'), kind=sec.kind) }}" style="display:inline"><input type="hidden" name="kind" value="{{ sec.kind }}"><input type="hidden" name="action" value="approve"><button class="btn success" type="submit">✓ Approve & Publish</button></form>
+<form method="post" action="{{ url_for('admin_approval_action', table=sec.table, item_id=item.get('id'), kind=sec.kind) }}" style="display:inline;margin-left:8px"><input type="hidden" name="kind" value="{{ sec.kind }}"><input type="hidden" name="action" value="reject"><input name="note" placeholder="Reason (optional)" style="max-width:260px"><button class="btn danger" type="submit">✕ Reject</button></form></div>
+{% else %}<p class="small">No pending items.</p>{% endfor %}
+{% if sec.approved %}<details style="margin-top:12px"><summary><strong>Approved / Public ({{ sec.approved|length }})</strong></summary>{% for item in sec.approved %}<p class="small" style="border-top:1px solid var(--border);padding:8px 0">✓ {{ item.get(sec.title_field) or item.get('name') or item.get('full_name') or item.get('tracking_code') or 'Submission' }} — <strong>{{ item.get(sec.status_field) or 'approved' }}</strong></p>{% endfor %}</details>{% endif %}</div>
+{% else %}<div class="card"><h3>🎉 No submissions found</h3><p>The approval queue is empty.</p></div>{% endfor %}''', sections=sections)
 
 @app.route("/admin/approvals/<table>/<item_id>", methods=["POST"])
 @admin_required
 def admin_approval_action(table, item_id):
-    allowed = {"assignments", "doctor_profiles", "teacher_profiles", "driver_profiles", "service_providers", "documents", "deliveries", "appointments"}
-    if table not in allowed:
-        return "Invalid approval target.", 400
-    action = clean(request.form.get("action")).lower()
-    if action not in ("approve", "reject"):
-        flash("Invalid approval action.", "danger")
-        return redirect(url_for("admin_approvals"))
-    kind = clean(request.args.get("kind")) or clean(request.form.get("kind"))
-    # Answer approval is a separate field on assignments.
-    if table == "assignments" and kind == "assignment_answer":
-        field = "answer_approval_status"
-        event = "assignment_answer_approved" if action == "approve" else "assignment_answer_rejected"
-    else:
-        field = "approval_status"
-        event = f"{table}_approved" if action == "approve" else f"{table}_rejected"
-    note = clean(request.form.get("note"))
-    updates = {field: "approved" if action == "approve" else "rejected", "approved_by": current_user().get("id"), "approved_at": utc_now(), "approval_note": note or None}
-    if table == "assignments":
-        # IMPORTANT: assignments.status has an existing database CHECK constraint.
-        # Approval is tracked by approval_status / answer_approval_status; do not
-        # write the approval label into status because values such as "approved"
-        # may violate the existing assignments_status_check constraint.
-        if kind == "assignment_answer" and action == "approve":
-            updates["status"] = "answered"
-        elif action == "reject":
-            updates["status"] = "rejected"
-        updates["updated_at"] = utc_now()
-    row, error = db_update(table, {"id": item_id}, updates)
+    allowed={"assignments","doctor_profiles","teacher_profiles","driver_profiles","service_providers","documents","deliveries","appointments","koja_marketplace_products"}
+    if table not in allowed: return "Invalid approval target.",400
+    action=clean(request.form.get("action")).lower()
+    if action not in ("approve","reject"):
+        flash("Invalid approval action.","danger"); return redirect(url_for("admin_approvals"))
+    kind=clean(request.args.get("kind")) or clean(request.form.get("kind"))
+    note=clean(request.form.get("note"))
+    current=first_row(table,{"id":item_id}) or {}
+    if not current:
+        flash("The submission could not be found.","danger"); return redirect(url_for("admin_approvals"))
+    field="answer_approval_status" if table=="assignments" and kind=="assignment_answer" else ("moderation_status" if table=="koja_marketplace_products" else "approval_status")
+    new_status="approved" if action=="approve" else "rejected"
+    updates={field:new_status}
+    for col,val in (("approved_by",current_user().get("id")),("approved_at",utc_now()),("approval_note",note or None),("updated_at",utc_now())):
+        if col in current: updates[col]=val
+    if table=="assignments":
+        if kind=="assignment_answer" and action=="approve" and "status" in current: updates["status"]="answered"
+        elif action=="reject" and "status" in current: updates["status"]="rejected"
+    if table=="appointments" and action=="approve" and "status" in current: updates["status"]="approved"
+    if action=="approve":
+        for col in ("is_active","is_public","is_published","is_available"):
+            if col in current: updates[col]=True
+        if table=="koja_marketplace_products" and "is_published" in current: updates["is_published"]=True
+        if table in ("doctor_profiles","teacher_profiles","driver_profiles","service_providers") and "verification_status" in current: updates["verification_status"]="verified"
+    _,error=db_update(table,{"id":item_id},updates)
     if error:
-        flash(f"Approval could not be saved: {error}. Make sure the approval migration has been run in Supabase.", "danger")
-        return redirect(url_for("admin_approvals"))
-    log_activity(event, f"Admin {action} {table} record {item_id}." + (f" Note: {note}" if note else ""))
-    # Optional notification to the owner/provider when an email can be resolved.
-    recipient = None
-    name = "User"
-    if table == "assignments":
-        # db_update() returns a PostgREST representation as a list. Normalize it
-        # before resolving the assignment owner so notification code cannot crash.
-        assignment_row = row or first_row(table, {"id": item_id}) or {}
-        if isinstance(assignment_row, list):
-            assignment_row = assignment_row[0] if assignment_row else {}
-        if not isinstance(assignment_row, dict):
-            assignment_row = {}
-        recipient, profile = get_assignment_recipient(assignment_row)
-        name = (profile or {}).get("full_name") or "User"
-    else:
-        # Supabase/PostgREST PATCH responses are arrays when
-        # return=representation is used. Normalize to one record before
-        # reading fields so approval notifications never crash with
-        # AttributeError: 'list' object has no attribute 'get'.
-        current = row or first_row(table, {"id": item_id}) or {}
-        if isinstance(current, list):
-            current = current[0] if current else {}
-        if not isinstance(current, dict):
-            current = {}
-        uid = current.get("user_id") or current.get("owner_id") or current.get("client_id") or current.get("provider_id")
-        if uid:
-            profile = first_row("profiles", {"id": uid}) or {}
-            recipient = profile.get("email")
-            name = profile.get("full_name") or "User"
-        recipient = recipient or current.get("email")
+        flash(f"Approval could not be saved: {error}","danger"); return redirect(url_for("admin_approvals"))
+    owner_id=None
+    if table=="assignments":
+        owner_id=current.get("student_id") or current.get("user_id") or current.get("owner_id")
+        if kind=="assignment_answer" and not owner_id and current.get("assignment_id"):
+            a=first_row("assignments",{"id":current.get("assignment_id")}) or {}; owner_id=a.get("student_id") or a.get("user_id") or a.get("owner_id")
+    elif table=="documents": owner_id=current.get("uploaded_by") or current.get("user_id") or current.get("owner_id")
+    elif table=="deliveries": owner_id=current.get("customer_id") or current.get("user_id")
+    elif table=="appointments": owner_id=current.get("client_id")
+    elif table=="koja_marketplace_products": owner_id=current.get("seller_id")
+    else: owner_id=current.get("user_id") or current.get("owner_id") or current.get("provider_id")
+    profile=first_row("profiles",{"id":owner_id}) if owner_id else {}
+    recipient=(profile or {}).get("email") or current.get("email")
+    name=(profile or {}).get("full_name") or current.get("full_name") or current.get("name") or "User"
+    public_url=None
+    if action=="approve":
+        if table=="service_providers": public_url=f"{SITE_URL}{url_for('public_professional_profile',provider_id=item_id)}"
+        elif table=="teacher_profiles": public_url=f"{SITE_URL}{url_for('teachers')}"
+        elif table=="doctor_profiles": public_url=f"{SITE_URL}{url_for('doctors')}"
+        elif table=="driver_profiles": public_url=f"{SITE_URL}{url_for('deliveries')}"
+        elif table=="koja_marketplace_products": public_url=f"{SITE_URL}{url_for('marketplace')}"
+        elif table=="documents": public_url=f"{SITE_URL}{url_for('documents')}"
+    title=f"KOJA AFRICA — Submission {new_status.title()}"
+    body=f"Hello {name}, your {table.replace('_',' ')} submission has been {new_status}."
+    if action=="approve": body += " It is now active/public where applicable."
+    if note: body += f" Admin note: {note}"
+    if public_url: body += f"\n\nView it on KOJA AFRICA: {public_url}"
+    notification_sent=False
+    if owner_id:
+        try:
+            _notify(owner_id,"approval",title,body,item_id); notification_sent=True
+            try: _send_web_push(owner_id,title,body,public_url or f"{SITE_URL}{url_for('notifications')}")
+            except Exception: pass
+        except Exception: logger.exception("Approval notification failed")
     if recipient and email_configured():
-        subject = f"KOJA AFRICA — {table.replace('_',' ').title()} {action.title()}"
-        body = f"Hello {name},\\n\\nYour KOJA AFRICA submission has been {action}."
-        if note: body += f"\\n\\nAdmin note: {note}"
-        body += "\\n\\nKOJA AFRICA"
-        ok, err = send_plain_email(recipient, subject, body)
-        if not ok: logger.warning("Approval notification email failed: %s", err)
-    flash(f"{table.replace('_',' ').title()} {'approved' if action == 'approve' else 'rejected'} successfully.", "success")
+        ok,err=send_plain_email(recipient,title,body)
+        if ok: notification_sent=True
+        else: logger.warning("Approval email failed: %s",err)
+    log_activity(f"{table}_{action}",f"Admin {action} {table} record {item_id}. Status={new_status}. Notification sent={notification_sent}." + (f" Note: {note}" if note else ""))
+    if action=="approve": flash(f"Approved successfully. Status: approved. Public/active where applicable: YES. User notification: {'SENT' if notification_sent else 'IN-APP NOTIFICATION UNAVAILABLE'}.","success")
+    else: flash(f"Rejected successfully. User notification: {'SENT' if notification_sent else 'IN-APP NOTIFICATION UNAVAILABLE'}.","success")
     return redirect(url_for("admin_approvals"))
 
 @app.route("/admin/drivers")
