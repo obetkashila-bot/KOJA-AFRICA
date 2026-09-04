@@ -4345,6 +4345,32 @@ def admin_marketplace():
     orders=db_select('koja_marketplace_orders',order='created_at.desc',limit=200) or []
     return render_page('Marketplace Admin',r'''<div class="hero"><h1>🛡️ Marketplace Admin</h1><p>Review products and manage marketplace orders.</p></div><div class="card"><h2>Products</h2><table><tr><th>Product</th><th>Price</th><th>Seller</th><th>Status</th><th>Action</th></tr>{% for p in products %}<tr><td>{{ p.title }}</td><td>{{ money(p.price,p.currency) }}</td><td>{{ seller_names.get(p.seller_id,'KOJA Seller') }}</td><td>{{ 'Published' if p.is_published else 'Pending' }}</td><td><form method="post" style="display:inline"><input type="hidden" name="item_id" value="{{ p.id }}"><button class="btn {{ 'warning' if p.is_published else 'success' }}" name="action" value="{{ 'unpublish' if p.is_published else 'publish' }}" type="submit">{{ 'Unpublish' if p.is_published else 'Publish' }}</button></form></td></tr>{% else %}<tr><td colspan="5">No products.</td></tr>{% endfor %}</table></div><div class="card"><h2>Orders</h2><table><tr><th>Product</th><th>Amount</th><th>Status</th><th>Action</th></tr>{% for o in orders %}<tr><td>{{ product_names.get(o.product_id,'Digital product') }}</td><td>{{ money(o.amount,o.currency) }}</td><td>{{ o.status }}</td><td>{% if o.status=='pending' %}<form method="post"><input type="hidden" name="item_id" value="{{ o.id }}"><button class="btn success" name="action" value="paid" type="submit">Mark Paid</button><button class="btn danger" name="action" value="cancel" type="submit">Cancel</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="4">No orders.</td></tr>{% endfor %}</table></div>''',products=products,orders=orders,seller_names={str(p.get('seller_id')):marketplace_seller_name(p.get('seller_id')) for p in products},product_names={str(p.get('id')):p.get('title') for p in products},money=marketplace_money)
 
+@app.route("/admin/earnings")
+@admin_required
+def admin_earnings():
+    teacher_rate=_money(os.getenv("KOJA_TEACHER_COMMISSION","10")); marketplace_rate=_money(os.getenv("KOJA_MARKETPLACE_COMMISSION","0")); delivery_rate=_money(os.getenv("KOJA_DELIVERY_COMMISSION","0"))
+    appointments=db_select("appointments",order="appointment_date.desc",limit=2000) or []
+    teacher_paid=[a for a in appointments if str(a.get("status") or "").lower() in {"completed","paid","delivered"}]
+    teacher_gross=0.0
+    for a in teacher_paid:
+        provider=first_row("service_providers",{"id":a.get("provider_id")}) if a.get("provider_id") else None
+        teacher_gross+=_money(a.get("price") or a.get("amount") or (provider or {}).get("hourly_rate"))
+    teacher_commission=teacher_gross*teacher_rate/100.0
+    deliveries=db_select("deliveries",order="created_at.desc",limit=2000) or []
+    delivery_paid=[d for d in deliveries if str(d.get("status") or "").lower() in {"paid","accepted","picked_up","delivered","completed"}]
+    delivery_gross=sum(_money(d.get("delivery_fee") or d.get("amount") or d.get("price")) for d in delivery_paid); delivery_commission=delivery_gross*delivery_rate/100.0
+    orders=db_select("koja_marketplace_orders",order="created_at.desc",limit=2000) or []
+    marketplace_paid=[o for o in orders if str(o.get("status") or "").lower() in {"paid","completed","delivered"}]
+    marketplace_gross=sum(_money(o.get("amount") or o.get("price")) for o in marketplace_paid); marketplace_commission=marketplace_gross*marketplace_rate/100.0
+    total_gross=teacher_gross+delivery_gross+marketplace_gross; platform_earnings=teacher_commission+delivery_commission+marketplace_commission
+    return render_page("Admin Earnings",r"""
+<div class="hero"><h2>💰 KOJA Earnings & Revenue</h2><p>Central financial overview for administrator monitoring.</p></div>
+<div class="grid"><div class="stat"><div class="big">{{ currency }} {{ '%.2f'|format(platform_earnings) }}</div>KOJA platform earnings</div><div class="stat"><div class="big">{{ currency }} {{ '%.2f'|format(total_gross) }}</div>Total gross transaction value</div><div class="stat"><div class="big">{{ currency }} {{ '%.2f'|format(teacher_commission) }}</div>Teacher commission</div><div class="stat"><div class="big">{{ currency }} {{ '%.2f'|format(delivery_commission + marketplace_commission) }}</div>Other configured commissions</div></div>
+<div class="card"><h3>📊 Earnings by service</h3><table><tr><th>Service</th><th>Gross</th><th>Rate</th><th>KOJA earnings</th><th>Records</th></tr><tr><td>👩‍🏫 Teachers / Tutors</td><td>{{ currency }} {{ '%.2f'|format(teacher_gross) }}</td><td>{{ teacher_rate }}%</td><td>{{ currency }} {{ '%.2f'|format(teacher_commission) }}</td><td>{{ teacher_paid|length }}</td></tr><tr><td>🚚 Deliveries</td><td>{{ currency }} {{ '%.2f'|format(delivery_gross) }}</td><td>{{ delivery_rate }}%</td><td>{{ currency }} {{ '%.2f'|format(delivery_commission) }}</td><td>{{ delivery_paid|length }}</td></tr><tr><td>🛒 Marketplace</td><td>{{ currency }} {{ '%.2f'|format(marketplace_gross) }}</td><td>{{ marketplace_rate }}%</td><td>{{ currency }} {{ '%.2f'|format(marketplace_commission) }}</td><td>{{ marketplace_paid|length }}</td></tr><tr><th>TOTAL</th><th>{{ currency }} {{ '%.2f'|format(total_gross) }}</th><th>—</th><th>{{ currency }} {{ '%.2f'|format(platform_earnings) }}</th><th>{{ teacher_paid|length + delivery_paid|length + marketplace_paid|length }}</th></tr></table></div>
+<div class="card"><h3>⚙️ Commission settings</h3><p>Teacher: {{ teacher_rate }}% · Delivery: {{ delivery_rate }}% · Marketplace: {{ marketplace_rate }}%</p><p class="small">Delivery and marketplace totals are gross transaction value unless their commission environment variables are configured.</p></div>
+<div class="actions"><a class="btn" href="{{ url_for('admin') }}">← Admin Dashboard</a></div>
+""",currency="ZMW",teacher_gross=teacher_gross,teacher_rate=teacher_rate,teacher_commission=teacher_commission,teacher_paid=teacher_paid,delivery_gross=delivery_gross,delivery_rate=delivery_rate,delivery_commission=delivery_commission,delivery_paid=delivery_paid,marketplace_gross=marketplace_gross,marketplace_rate=marketplace_rate,marketplace_commission=marketplace_commission,marketplace_paid=marketplace_paid,total_gross=total_gross,platform_earnings=platform_earnings)
+
 @app.route("/admin")
 @admin_required
 def admin():
@@ -4365,6 +4391,7 @@ def admin():
 <a class="btn" href="{{ url_for('admin_deliveries') }}">Deliveries</a>
 <a class="btn success" href="{{ url_for('admin_live_tracking') }}">🚚 Live GPS Tracking</a>
 <a class="btn" href="{{ url_for('admin_appointments') }}">Appointments</a>
+<a class="btn success" href="{{ url_for('admin_earnings') }}">💰 Earnings & Revenue</a>
 <a class="btn success" href="{{ url_for('admin_search_distribution') }}">🔎 Google Search & Distribution</a>
 </div></div>
 """,counts=counts)
