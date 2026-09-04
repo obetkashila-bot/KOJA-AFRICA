@@ -3089,6 +3089,9 @@ def tracking():
 <button class="btn success" onclick="startTracking()">📍 Start Live GPS</button>
 <button class="btn" onclick="routeToDestination()">🧭 Route to Destination</button>
 <button class="btn secondary" onclick="locateMe()">🎯 Locate Me</button>
+<button class="btn secondary" onclick="showLeafletMap()">🗺️ Leaflet Map</button>
+<button class="btn secondary" onclick="openGoogleMaps()">🌍 Google Maps</button>
+<button class="btn secondary" onclick="openSatelliteMap()">🛰️ Satellite Map</button>
 <button class="btn danger" onclick="stopTracking()">Stop GPS</button>
 <a class="btn secondary" href="{{ url_for('driver_register') }}">🚚 Register as a Driver</a>
 </div>
@@ -3111,7 +3114,9 @@ if(typeof L === "undefined"){status("Loading live map…");setTimeout(initLiveGp
 const map=L.map("map",{zoomControl:true}).setView([-13.9626,28.3228],6);
 const osm=L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:20,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);
 const hot=L.tileLayer("https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png",{maxZoom:20,attribution:"&copy; OpenStreetMap contributors, Tiles style by HOT"});
-L.control.layers({"OpenStreetMap detailed":osm,"Humanitarian OSM":hot},null,{collapsed:true}).addTo(map);
+const satellite=L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",{maxZoom:19,attribution:"Tiles &copy; Esri"});
+L.control.layers({"OpenStreetMap detailed":osm,"Humanitarian OSM":hot,"Satellite imagery":satellite},null,{collapsed:true}).addTo(map);
+function showSatelliteOnLeaflet(){satellite.addTo(map);if(map.hasLayer(osm))map.removeLayer(osm);if(map.hasLayer(hot))map.removeLayer(hot)}
 function status(t){document.getElementById("gps-status").textContent=t}
 function loadQueue(){try{offlineQueue=JSON.parse(localStorage.getItem(GPS_QUEUE_KEY)||"[]")}catch(e){offlineQueue=[]}}
 function saveQueue(){try{localStorage.setItem(GPS_QUEUE_KEY,JSON.stringify(offlineQueue.slice(-20)))}catch(e){}}
@@ -3126,6 +3131,21 @@ function startTracking(){
  watchId=navigator.geolocation.watchPosition(sendPosition,gpsError,{enableHighAccuracy:true,maximumAge:1000,timeout:20000});
 }
 function locateMe(){if(lastCoords){map.setView(lastCoords,18,{animate:true});return}startTracking()}
+function showLeafletMap(){
+ map.setView(lastCoords||map.getCenter(),lastCoords?18:map.getZoom(),{animate:true});
+ osm.addTo(map);
+ status(lastCoords?"🗺️ Leaflet Map · live GPS location shown.":"🗺️ Leaflet Map · start GPS to show your phone location.");
+}
+function openGoogleMaps(){
+ const openAt=(lat,lon)=>window.open("https://www.google.com/maps/@?api=1&map_action=map&center="+encodeURIComponent(lat+","+lon)+"&zoom=17","_blank");
+ if(lastCoords){openAt(lastCoords[0],lastCoords[1]);return}
+ if(navigator.geolocation){navigator.geolocation.getCurrentPosition(p=>openAt(p.coords.latitude,p.coords.longitude),()=>window.open("https://www.google.com/maps/","_blank"),{enableHighAccuracy:true,timeout:10000,maximumAge:1000});}else window.open("https://www.google.com/maps/","_blank");
+}
+function openSatelliteMap(){
+ const openAt=(lat,lon)=>window.open("https://www.google.com/maps/@"+encodeURIComponent(lat)+","+encodeURIComponent(lon)+",17z/data=!3m1!1e3","_blank");
+ if(lastCoords){openAt(lastCoords[0],lastCoords[1]);return}
+ if(navigator.geolocation){navigator.geolocation.getCurrentPosition(p=>openAt(p.coords.latitude,p.coords.longitude),()=>window.open("https://www.google.com/maps/@?api=1&map_action=map&basemap=satellite","_blank"),{enableHighAccuracy:true,timeout:10000,maximumAge:1000});}else window.open("https://www.google.com/maps/@?api=1&map_action=map&basemap=satellite","_blank");
+}
 function gpsAge(){return lastSentAt?Math.max(0,Math.round((Date.now()-lastSentAt)/1000)):null}
 function distanceM(a,b){const R=6371000,p=Math.PI/180,la1=a[0]*p,la2=b[0]*p,dla=(b[0]-a[0])*p,dlo=(b[1]-a[1])*p;const x=Math.sin(dla/2)**2+Math.cos(la1)*Math.cos(la2)*Math.sin(dlo/2)**2;return 2*R*Math.atan2(Math.sqrt(x),Math.sqrt(1-x))}
 async function reverseName(lat,lon){try{const r=await fetch(`/api/gps/reverse?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`,{headers:{"Accept":"application/json"}});const d=await r.json();return d.display_name||"Your current location"}catch(e){return "Your current location"}}
@@ -3302,7 +3322,6 @@ def drivers():
 <div class="actions">
 <button class="btn success" onclick="startDriverFinderGPS()">📍 Start Live GPS</button>
 <button class="btn" onclick="locateMe()">🎯 Locate Me</button>
-<button class="btn secondary" onclick="openGoogleMaps()">🗺️ Google Maps</button>
 <button class="btn secondary" onclick="findDrivers()">🔄 Refresh Drivers</button>
 <button class="btn danger" onclick="stopDriverFinderGPS()">Stop GPS</button>
 </div>
@@ -3325,14 +3344,6 @@ function updateMyMarker(lat,lon,acc){
  setAccuracy(acc);
 }
 function locateMe(){if(lastPosition){map.setView(lastPosition,16,{animate:true});return}startDriverFinderGPS()}
-function openGoogleMaps(){
- if(lastPosition){
-   const [lat,lon]=lastPosition;
-   window.open(`https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(lat+","+lon)}&destination=${encodeURIComponent(lat+","+lon)}&travelmode=driving`,'_blank');
- }else{
-   window.open('https://www.google.com/maps','_blank');
- }
-}
 function startDriverFinderGPS(){
  if(!navigator.geolocation){setStatus("GPS is not supported on this device.");return}
  if(watchId!==null){setStatus("🟢 Your GPS is already LIVE.");return}
@@ -3367,7 +3378,7 @@ async function routeToDriver(driver){
   destinationMarker=L.marker([driver.latitude,driver.longitude]).addTo(map).bindPopup("🚚 "+driver.name);
   map.fitBounds(L.latLngBounds(coords),{padding:[40,40]});
   const mins=Math.max(1,Math.round(Number(d.duration_s)/60));
-  setStatus(`🛣️ Route to ${driver.name}: ${(Number(d.distance_m)/1000).toFixed(1)} km · ETA ${mins} min · Google Maps available`);
+  setStatus(`🛣️ Route to ${driver.name}: ${(Number(d.distance_m)/1000).toFixed(1)} km · ETA ${mins} min`);
  }catch(e){setStatus("Could not calculate a road route to this driver.")}
 }
 async function findDrivers(){
@@ -3388,20 +3399,13 @@ async function findDrivers(){
    const m=L.marker(p).addTo(map).bindPopup(`<b>${escapeHtml(driver.name)}</b><br>${escapeHtml(driver.vehicle_type||"Vehicle")}<br>${driver.distance_km} km away<br>GPS accuracy: ${driver.accuracy?Math.round(driver.accuracy)+" m":"—"}`);
    markers.push(m);
    const div=document.createElement("div");div.className="card driver-card";
-   div.innerHTML=`<h3>${escapeHtml(driver.name)}</h3><p class="online">ONLINE</p><p><b>Vehicle:</b> ${escapeHtml(driver.vehicle_type||"Not specified")} ${escapeHtml(driver.vehicle_registration||"")}</p><p><b>Distance:</b> ${driver.distance_km} km</p><p><b>GPS accuracy:</b> ${driver.accuracy?Math.round(driver.accuracy)+" m":"—"}</p><p><b>Phone:</b> ${escapeHtml(driver.phone||"")}</p><div class="actions"><button class="btn success" onclick="requestDriver('${driver.driver_id}')">Request Delivery</button><button class="btn secondary" onclick='viewDriver(${JSON.stringify(driver)})'>View on Map</button><button class="btn" onclick='routeToDriver(${JSON.stringify(driver)})'>🛣️ Route Here</button><button class="btn secondary" onclick='openDriverGoogleMaps(${JSON.stringify(driver)})'>🗺️ Google Maps</button></div>`;
+   div.innerHTML=`<h3>${escapeHtml(driver.name)}</h3><p class="online">ONLINE</p><p><b>Vehicle:</b> ${escapeHtml(driver.vehicle_type||"Not specified")} ${escapeHtml(driver.vehicle_registration||"")}</p><p><b>Distance:</b> ${driver.distance_km} km</p><p><b>GPS accuracy:</b> ${driver.accuracy?Math.round(driver.accuracy)+" m":"—"}</p><p><b>Phone:</b> ${escapeHtml(driver.phone||"")}</p><div class="actions"><button class="btn success" onclick="requestDriver('${driver.driver_id}')">Request Delivery</button><button class="btn secondary" onclick='viewDriver(${JSON.stringify(driver)})'>View on Map</button><button class="btn" onclick='routeToDriver(${JSON.stringify(driver)})'>🛣️ Route Here</button></div>`;
    list.appendChild(div);
   });
   map.setView([lat,lon],13);setStatus(`🟢 Found ${d.drivers.length} online driver(s) · live refresh every 5s`);
  }catch(e){setStatus("Unable to search drivers. Check your internet connection.")}
 }
 function viewDriver(driver){map.setView([driver.latitude,driver.longitude],17,{animate:true})}
-function openDriverGoogleMaps(driver){
- const dLat=Number(driver.latitude), dLon=Number(driver.longitude);
- if(!Number.isFinite(dLat)||!Number.isFinite(dLon))return;
- let url=`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(dLat+","+dLon)}&travelmode=driving`;
- if(lastPosition){url+=`&origin=${encodeURIComponent(lastPosition[0]+","+lastPosition[1])}`}
- window.open(url,'_blank');
-}
 function escapeHtml(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]))}
 async function requestDriver(driverId){
  const lat=parseFloat(document.getElementById("lat").value),lon=parseFloat(document.getElementById("lon").value);
