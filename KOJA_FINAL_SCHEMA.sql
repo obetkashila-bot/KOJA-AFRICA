@@ -444,3 +444,60 @@ alter table public.koja_live_classes add column if not exists ended_at timestamp
 alter table public.koja_marketplace_orders add column if not exists payment_status text default 'unpaid';
 alter table public.koja_marketplace_orders add column if not exists paid_at timestamptz;
 alter table public.koja_marketplace_orders add column if not exists updated_at timestamptz default now();
+
+-- ============================================================
+-- KOJA V8 TEACHER DIRECTORY + ACTIVITY LOG COMPATIBILITY
+-- ============================================================
+create table if not exists public.teacher_profiles (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null,
+  provider_id uuid,
+  full_name text,
+  teacher_name text,
+  email text,
+  phone text,
+  subjects text,
+  grade_levels text,
+  qualification text,
+  experience_years numeric,
+  hourly_rate numeric,
+  currency text default 'ZMW',
+  service_area text,
+  bio text,
+  approval_status text default 'pending',
+  is_active boolean default true,
+  approved_by uuid,
+  approved_at timestamptz,
+  approval_note text,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+alter table public.teacher_profiles add column if not exists user_id uuid;
+alter table public.teacher_profiles add column if not exists provider_id uuid;
+alter table public.teacher_profiles add column if not exists full_name text;
+alter table public.teacher_profiles add column if not exists teacher_name text;
+alter table public.teacher_profiles add column if not exists email text;
+alter table public.teacher_profiles add column if not exists phone text;
+alter table public.teacher_profiles add column if not exists subjects text;
+alter table public.teacher_profiles add column if not exists grade_levels text;
+alter table public.teacher_profiles add column if not exists qualification text;
+alter table public.teacher_profiles add column if not exists experience_years numeric;
+alter table public.teacher_profiles add column if not exists hourly_rate numeric;
+alter table public.teacher_profiles add column if not exists currency text default 'ZMW';
+alter table public.teacher_profiles add column if not exists service_area text;
+alter table public.teacher_profiles add column if not exists bio text;
+alter table public.teacher_profiles add column if not exists approval_status text default 'pending';
+alter table public.teacher_profiles add column if not exists is_active boolean default true;
+alter table public.teacher_profiles add column if not exists approved_by uuid;
+alter table public.teacher_profiles add column if not exists approved_at timestamptz;
+alter table public.teacher_profiles add column if not exists approval_note text;
+alter table public.teacher_profiles add column if not exists created_at timestamptz default now();
+alter table public.teacher_profiles add column if not exists updated_at timestamptz default now();
+create index if not exists teacher_profiles_public_idx on public.teacher_profiles(approval_status,is_active,created_at desc);
+create index if not exists teacher_profiles_user_idx on public.teacher_profiles(user_id);
+
+-- Existing deployments may have activity_logs.user_id incorrectly referencing a legacy users table.
+alter table if exists public.activity_logs drop constraint if exists activity_logs_user_id_fkey;
+alter table if exists public.activity_logs add constraint activity_logs_user_id_fkey
+  foreign key (user_id) references public.profiles(id) on delete set null not valid;
+

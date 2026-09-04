@@ -336,7 +336,7 @@ def find_user_by_email(email):
     if not email:
         return None
 
-    for table in ("profiles", "koja_users", "users", "KOJA ZM"):
+    for table in ("profiles",):
         rows = db_select(table, filters={"email": email}, limit=1)
         if rows:
             return rows[0]
@@ -345,7 +345,7 @@ def find_user_by_email(email):
 def find_user_by_id(user_id):
     if not user_id:
         return None
-    for table in ("profiles", "koja_users", "users", "KOJA ZM"):
+    for table in ("profiles",):
         rows = db_select(table, filters={"id": user_id}, limit=1)
         if rows:
             return rows[0]
@@ -1713,9 +1713,90 @@ def book_doctor(provider_id):
 </form></div>
 """,doctor=doctor)
 
+@app.route("/teacher/register", methods=["GET","POST"])
+@login_required
+def teacher_register():
+    user = current_user() or {}
+    existing = first_row("teacher_profiles", {"user_id": user.get("id")})
+    if request.method == "POST":
+        payload = {
+            "id": (existing or {}).get("id") or str(uuid.uuid4()),
+            "user_id": user.get("id"),
+            "provider_id": user.get("id"),
+            "full_name": clean(request.form.get("full_name")) or user.get("name") or "Teacher",
+            "teacher_name": clean(request.form.get("full_name")) or user.get("name") or "Teacher",
+            "email": clean(request.form.get("email")) or user.get("email"),
+            "phone": clean(request.form.get("phone")) or user.get("phone"),
+            "subjects": clean(request.form.get("subjects")),
+            "grade_levels": clean(request.form.get("grade_levels")),
+            "qualification": clean(request.form.get("qualification")),
+            "experience_years": clean(request.form.get("experience_years")) or None,
+            "hourly_rate": clean(request.form.get("hourly_rate")) or None,
+            "currency": clean(request.form.get("currency")) or "ZMW",
+            "service_area": clean(request.form.get("service_area")),
+            "bio": clean(request.form.get("bio")),
+            "approval_status": "pending",
+            "is_active": True,
+            "created_at": utc_now(),
+            "updated_at": utc_now()
+        }
+        if existing:
+            _, error = db_update("teacher_profiles", {"id": existing.get("id")}, payload)
+        else:
+            _, error = db_insert("teacher_profiles", payload)
+        if error:
+            flash("Teacher registration failed: " + str(error)[:700], "danger")
+        else:
+            log_activity("teacher_registration", "Teacher/tutor profile submitted for administrator approval.")
+            flash("Teacher profile submitted. An administrator must approve it before it appears in the teacher directory.", "success")
+        return redirect(url_for("teachers"))
+    return render_page("Register as Teacher / Tutor", r"""
+<div class="hero"><h2>👩‍🏫 Register as Teacher / Tutor</h2><p>Complete your teaching profile. Your profile will appear publicly after administrator approval.</p></div>
+<div class="card"><form method="post">
+<label>Full Name</label><input name="full_name" value="{{ user.name or '' }}" required>
+<label>Email</label><input type="email" name="email" value="{{ user.email or '' }}">
+<label>Phone</label><input name="phone" value="{{ user.phone or '' }}" required>
+<label>Subjects</label><input name="subjects" placeholder="Mathematics, English, Science" required>
+<label>Grade / Level</label><input name="grade_levels" placeholder="Primary, Secondary, Grade 8-12" required>
+<label>Qualification</label><input name="qualification" placeholder="Degree, Diploma, Teaching Certificate" required>
+<label>Years of Experience</label><input name="experience_years" type="number" min="0" max="80">
+<label>Hourly Rate</label><input name="hourly_rate" type="number" min="0" step="0.01" placeholder="Optional">
+<label>Currency</label><select name="currency"><option>ZMW</option><option>USD</option><option>ZAR</option></select>
+<label>Service Area / Online</label><input name="service_area" placeholder="Town, city or Online">
+<label>About You</label><textarea name="bio" placeholder="Teaching experience and approach"></textarea>
+<button class="btn success" type="submit">Submit Teacher Profile</button>
+</form></div>
+""", user=user)
+
 @app.route("/teachers")
 @login_required
 def teachers():
+    teachers=db_select("teacher_profiles",order="created_at.desc",limit=100)
+    visible=[]
+    for t in teachers:
+        status=str(t.get("approval_status") or "pending").lower()
+        if status in {"approved","active","verified"} and t.get("is_active") is not False:
+            visible.append(t)
+    return render_page("Teachers",r"""
+<div class="hero"><h2>Find a Teacher / Tutor</h2><p>Choose a specific approved teacher for tutoring.</p><div class="actions"><a class="btn success" href="{{ url_for('teacher_register') }}">👩‍🏫 Register as Teacher / Tutor</a></div></div>
+<div class="grid">
+{% for t in teachers %}
+<div class="card">
+<h3>{{ t.get("full_name") or t.get("teacher_name") or "Teacher" }}</h3>
+<p><strong>Subjects:</strong> {{ t.get("subjects") or "Not specified" }}</p>
+<p><strong>Grades:</strong> {{ t.get("grade_levels") or "Not specified" }}</p>
+<p><strong>Qualification:</strong> {{ t.get("qualification") or "Not specified" }}</p>
+{% if t.get("experience_years") %}<p><strong>Experience:</strong> {{ t.get("experience_years") }} years</p>{% endif %}
+{% if t.get("service_area") %}<p><strong>Service area:</strong> {{ t.get("service_area") }}</p>{% endif %}
+{% if t.get("hourly_rate") %}<p><strong>Rate:</strong> {{ t.get("currency") or "ZMW" }} {{ t.get("hourly_rate") }}/hour</p>{% endif %}
+<a class="btn" href="{{ url_for('book_teacher',provider_id=(t.get('provider_id') or t.get('user_id') or t.get('id'))) }}">Book Teacher</a>
+<a class="btn secondary" href="{{ url_for('provider_map',provider_id=(t.get('provider_id') or t.get('user_id') or t.get('id')),provider_type='teacher') }}">View Location</a>
+</div>
+{% else %}<div class="card"><p>No approved teacher profiles are available yet. Teachers can register below and an administrator can approve their profiles.</p><a class="btn success" href="{{ url_for('teacher_register') }}">Register as Teacher / Tutor</a></div>{% endfor %}
+</div>
+""",teachers=visible)
+
+
     teachers=db_select("teacher_profiles",order="created_at.desc",limit=100)
     return render_page("Teachers",r"""
 <div class="hero"><h2>Find a Teacher / Tutor</h2><p>Choose a specific teacher for tutoring.</p></div>
