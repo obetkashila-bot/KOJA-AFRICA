@@ -724,8 +724,8 @@ footer{text-align:center;color:var(--muted);padding:30px}
 @media(min-width:761px){.nav-links{display:flex!important}}
 </style>
 </head>
-<body>
-<nav aria-label="Primary navigation">
+<body class="{{ 'koja-public-shell' if hide_chrome else '' }}">
+{% if not hide_chrome %}<nav aria-label="Primary navigation">
 <div class="nav-inner">
 <div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 18V6h7.2a5.3 5.3 0 0 1 0 10.6H8.5" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 9.1h3.4a1.9 1.9 0 0 1 0 3.8H8.5" stroke="white" stroke-width="2.2" stroke-linecap="round"/></svg></span><span class="brand-name">KOJA AFRICA</span></div>
 <button class="menu-toggle" id="menuToggle" type="button" aria-expanded="false" aria-controls="navLinks" aria-label="Open menu">☰ Menu</button>
@@ -757,8 +757,8 @@ footer{text-align:center;color:var(--muted);padding:30px}
 {% endif %}
 </div>
 </div>
-</nav>
-<script>
+</nav>{% endif %}
+{% if not hide_chrome %}<script>
 (function(){
  const toggle=document.getElementById('menuToggle'), links=document.getElementById('navLinks'), more=document.getElementById('moreMenuButton'), drop=document.getElementById('moreMenu');
  if(toggle){toggle.addEventListener('click',function(){const open=links.classList.toggle('open');toggle.setAttribute('aria-expanded',open);toggle.setAttribute('aria-label',open?'Close menu':'Open menu');toggle.innerHTML=open?'✕ Close':'☰ Menu';});}
@@ -766,14 +766,14 @@ footer{text-align:center;color:var(--muted);padding:30px}
  document.querySelectorAll('#navLinks a').forEach(function(a){a.addEventListener('click',function(){if(window.innerWidth<=760&&links.classList.contains('open')){links.classList.remove('open');toggle.setAttribute('aria-expanded','false');toggle.setAttribute('aria-label','Open menu');toggle.innerHTML='☰ Menu';}});});
  window.addEventListener('resize',function(){if(window.innerWidth>760){links.classList.remove('open');toggle&&toggle.setAttribute('aria-expanded','false');toggle&&(toggle.innerHTML='☰ Menu');}});
 })();
-</script>
-<div class="container">
+</script>{% endif %}
+<div class="container{{ ' public-container' if hide_chrome else '' }}">
 {% with messages=get_flashed_messages(with_categories=true) %}
 {% for category,message in messages %}<div class="alert">{{ message }}</div>{% endfor %}
 {% endwith %}
 {{ body|safe }}
 </div>
-<footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services</footer>
+{% if not hide_chrome %}<footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services</footer>{% endif %}
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 </body>
 </html>
@@ -840,7 +840,7 @@ def render_page(title, body_template, **context):
         graph.insert(0, website)
         seo_jsonld = json.dumps({"@context": "https://schema.org", "@graph": graph}, ensure_ascii=False)
 
-    return render_template_string(BASE_HTML, title=title, body=body, user=current_user(), theme=theme, meta_description=descriptions.get(title, "KOJA AFRICA — knowledge, questions, answers, research, academic resources, professional services and delivery services."), seo_jsonld=seo_jsonld)
+    return render_template_string(BASE_HTML, title=title, body=body, user=current_user(), theme=theme, hide_chrome=bool(context.get("hide_chrome", False)), meta_description=descriptions.get(title, "KOJA AFRICA — knowledge, questions, answers, research, academic resources, professional services and delivery services."), seo_jsonld=seo_jsonld)
 
 # ============================================================
 # USER SETTINGS
@@ -1916,7 +1916,7 @@ def public_feed():
     return render_page('KOJA Public — Community Feed', r'''
 <style>
 /* KOJA Public — immersive social feed: deliberately NO top bar */
-.public-page{max-width:760px;margin:0 auto 90px;padding:8px 10px 20px}
+.koja-public-shell{background:var(--bg);overflow-x:hidden}.public-container{width:100%;max-width:none;margin:0;padding:0}.public-page{position:relative;z-index:1;width:min(760px,100%);max-width:760px;margin:0 auto 90px;padding:8px 10px 20px;min-height:0;overflow:visible}
 .public-intro{padding:18px 6px 12px}.public-kicker{font-size:12px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);margin-bottom:5px}.public-title{font-size:30px;line-height:1.05;font-weight:950;margin:0}.public-sub{margin:7px 0 13px;color:var(--muted);font-size:14px}.public-search{display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:3px 12px;box-shadow:0 5px 18px rgba(0,0,0,.06)}.public-search span{font-size:18px}.public-search input{border:0!important;background:transparent!important;box-shadow:none!important;margin:0!important;padding:11px 4px!important;width:100%}
 .story-panel{background:var(--surface);border:1px solid var(--border);border-radius:22px;padding:12px;margin:4px 0 12px;box-shadow:0 5px 18px rgba(0,0,0,.05)}.story-row{display:flex;gap:15px;overflow-x:auto;scrollbar-width:none;padding:2px 2px 4px}.story-row::-webkit-scrollbar{display:none}.story{flex:0 0 72px;text-decoration:none;color:var(--text);text-align:center}.story-ring{width:66px;height:66px;margin:auto;border-radius:50%;padding:3px;background:linear-gradient(135deg,#176b87,#6d4aff,#f23f7b);display:grid;place-items:center}.story-inner{width:100%;height:100%;border-radius:50%;background:var(--surface);padding:2px;display:grid;place-items:center;overflow:hidden}.story-inner img{width:100%;height:100%;object-fit:cover;border-radius:50%}.story-avatar{font-weight:950;font-size:22px;color:var(--accent)}.story-name{display:block;margin-top:6px;font-size:11px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.story-create .story-ring{background:var(--accent)}.story-create .story-inner{background:var(--surface)}.story-plus{font-size:31px;color:var(--accent)}
 .composer{background:var(--surface);border:1px solid var(--border);border-radius:22px;padding:14px;margin-bottom:12px;box-shadow:0 5px 18px rgba(0,0,0,.05)}.composer-top{display:flex;gap:10px;align-items:center}.avatar{width:44px;height:44px;min-width:44px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,#176b87,#19a7b8);color:#fff;font-weight:950}.composer-trigger{flex:1;text-align:left;background:var(--bg);border:1px solid var(--border);border-radius:18px;padding:12px 14px;color:var(--muted);cursor:pointer}.composer-trigger:hover{transform:none;box-shadow:none}.composer-actions{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:12px}.composer-action{text-align:center;padding:9px 4px;border-radius:13px;background:var(--bg);color:var(--muted);font-weight:800;font-size:13px}.public-compose{display:none;margin-top:12px}.public-compose.open{display:block}.public-note{font-size:12px;color:var(--muted);margin-top:8px}
@@ -1936,7 +1936,7 @@ function togglePublicComposer(){const x=document.getElementById('publicCompose')
 function sharePost(url,title){if(navigator.share){navigator.share({title:title||'KOJA AFRICA',url:url}).catch(()=>{})}else{navigator.clipboard?.writeText(url);alert('Post link copied.')}}
 const ps=document.getElementById('publicSearch');if(ps){ps.addEventListener('input',()=>{const q=ps.value.toLowerCase().trim();document.querySelectorAll('.post').forEach(p=>p.style.display=(!q||p.innerText.toLowerCase().includes(q))?'block':'none')})}
 </script>
-''', posts=enriched)
+''', posts=enriched, hide_chrome=True)
 
 @app.route('/public/create', methods=['POST'])
 @login_required
