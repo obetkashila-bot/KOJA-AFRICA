@@ -1,28 +1,32 @@
-KOJA AFRICA FINAL PLATFORM V7 — 2026-09-04
+# KOJA AFRICA FINAL PLATFORM V8 — 2026-09-04
 
-# KOJA AFRICA FINAL PLATFORM V6 — 2026-09-04
+Flask + Supabase REST + Supabase Storage platform.
 
-Built from the approved KOJA AFRICA V5 package.
+## Included
+- Public Facebook-style social feed: posts, images/video, likes, comments, follow/block controls
+- Assignments and questions
+- Research Engine with web/scholarly/K0JA document sources and citation styles
+- Documents and research uploads
+- Professional registration, admin approval, public verified directory
+- Professional chat, voice/video call foundation, availability and booking calendar
+- Live tutoring with multi-user WebRTC classroom, attendance and teacher controls
+- KOJA Connect contacts, chat, voice messages and calls
+- Driver registration, discovery and live GPS delivery tracking
+- Marketplace products, media, orders, reviews and Flutterwave verification webhook
+- Notifications, SSE streams and optional Web Push with VAPID
+- Admin approvals, moderation/report actions, health checks
+- SEO: sitemap/robots, canonical/meta foundations and Google Search Console support
+- Security headers, CSRF on new state-changing endpoints, rate limiting foundation
 
-## V6 completion layer
-- Server-side SSE chat and notification streams (no browser Supabase service key required)
-- Follow/unfollow and block/unblock APIs
-- Appointment rescheduling with conflict protection
-- Professional recurring availability slots
-- Live-class enrollment, attendance and end-session lifecycle
-- Admin report moderation actions: resolve, dismiss, hide and delete
-- Web Push subscription storage endpoint
-- TURN/STUN runtime configuration
-- Full integration health endpoint: `/api/health/full`
-- Existing KOJA Research, Assignments, Professionals, Social, Marketplace, Connect, Booking and Live GPS Delivery features retained
+## Required environment
+SUPABASE_URL, SUPABASE_SERVICE_KEY, SECRET_KEY, SITE_URL
 
-## Required production services
-Set Supabase, SMTP, OpenAI, Flutterwave and TURN credentials in Render. The health endpoint reports which integrations are configured.
+Optional integrations:
+OPENAI_API_KEY, SMTP_HOST/PORT/USERNAME/PASSWORD/FROM, FLW_SECRET_KEY, FLW_WEBHOOK_HASH,
+TURN_URL/TURN_USERNAME/TURN_CREDENTIAL, VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY/VAPID_CLAIMS_EMAIL.
 
-## Deployment
-1. Run `KOJA_FINAL_SCHEMA.sql` in Supabase SQL Editor.
-2. Upload the project to GitHub.
-3. Deploy the repository on Render.
-4. Add environment variables from `.env.example`.
-5. Open `/api/health/full` and verify integrations.
-6. Test registration, approval, public professional profile, chat, calls, tutoring, booking, marketplace, research and live delivery.
+## Database
+Run `KOJA_FINAL_SCHEMA.sql` in Supabase SQL Editor before first use.
+
+## Important
+V8 integrates the application features, but real production readiness still requires deploying it, configuring the external services above, and testing registration, payments, email, WebRTC, GPS, uploads and admin workflows on real devices.

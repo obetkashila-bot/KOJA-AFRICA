@@ -431,3 +431,15 @@ create table if not exists public.koja_marketplace_product_reviews (
 );
 create index if not exists koja_marketplace_product_reviews_product_idx
  on public.koja_marketplace_product_reviews(product_id,created_at desc);
+
+-- ============================================================
+-- KOJA AFRICA V8 FINAL INTEGRATION
+-- ============================================================
+create index if not exists appointments_provider_scheduled_idx on public.appointments(provider_id,scheduled_at);
+create index if not exists appointments_client_scheduled_idx on public.appointments(client_id,scheduled_at);
+create index if not exists koja_push_subscriptions_user_idx on public.koja_push_subscriptions(user_id);
+alter table public.koja_live_class_members add column if not exists control_request text;
+alter table public.koja_live_classes add column if not exists ended_at timestamptz;
+alter table public.koja_marketplace_orders add column if not exists payment_status text default 'unpaid';
+alter table public.koja_marketplace_orders add column if not exists paid_at timestamptz;
+alter table public.koja_marketplace_orders add column if not exists updated_at timestamptz default now();

@@ -9,6 +9,8 @@ from email.message import EmailMessage
 import json
 import re
 import time
+import hashlib
+import hmac
 from datetime import datetime, timezone, timedelta
 from functools import wraps
 from urllib.parse import quote, unquote
@@ -93,7 +95,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.04-FINAL-PLATFORM-V7"
+APP_VERSION = "2026.09.04-FINAL-PLATFORM-V8"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -5233,6 +5235,170 @@ def push_subscribe():
 def full_health():
     checks={'supabase':supabase_configured(),'smtp':email_configured(),'turn':bool(os.getenv('TURN_URL') and os.getenv('TURN_USERNAME') and os.getenv('TURN_CREDENTIAL')),'flutterwave':bool(os.getenv('FLW_SECRET_KEY')),'openai':bool(os.getenv('OPENAI_API_KEY'))}
     return jsonify(ok=True,version=APP_VERSION,checks=checks,production_ready=all(checks.values()))
+
+
+# ============================================================
+# KOJA AFRICA V8 — FINAL INTEGRATION LAYER
+# ============================================================
+@app.after_request
+def _security_headers(resp):
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    resp.headers.setdefault("Permissions-Policy", "camera=(self), microphone=(self), geolocation=(self)")
+    if request.is_secure:
+        resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return resp
+
+def _notify_many(user_ids, kind, title, body, link=None):
+    for uid in set(str(x) for x in (user_ids or []) if x):
+        try: _notify(uid, kind, title, body, link)
+        except Exception: logger.exception("notification failed")
+
+def _appointment_slots(provider_id, date_str):
+    try: d=datetime.fromisoformat(str(date_str)).date()
+    except Exception: return []
+    slots=db_select('professional_availability_slots',filters={'provider_id':provider_id,'day_of_week':d.weekday(),'is_active':True},order='start_time.asc',limit=100)
+    booked=db_select('appointments',filters={'provider_id':provider_id},limit=1000)
+    used=set()
+    for a in booked:
+        if str(a.get('status','')).lower() in ('cancelled','rejected','completed'): continue
+        raw=a.get('scheduled_at') or a.get('appointment_date')
+        if raw:
+            try:
+                dt=datetime.fromisoformat(str(raw).replace('Z','+00:00'))
+                if dt.date()==d: used.add(dt.strftime('%H:%M'))
+            except Exception: pass
+    out=[]
+    for slot in slots:
+        try:
+            st=datetime.strptime(str(slot['start_time'])[:5],'%H:%M').time(); en=datetime.strptime(str(slot['end_time'])[:5],'%H:%M').time()
+        except Exception: continue
+        cur=datetime.combine(d,st); stop=datetime.combine(d,en)
+        while cur < stop:
+            end=cur+timedelta(minutes=30)
+            if end.time()<=en and cur.strftime('%H:%M') not in used:
+                val=cur.strftime('%H:%M'); out.append({'date':str(d),'time':val,'scheduled_at':f'{d}T{val}:00'})
+            cur=end
+    return out
+
+@app.route('/booking/<provider_id>')
+@login_required
+def booking_calendar(provider_id):
+    p=_approved_provider(provider_id)
+    if not p: abort(404)
+    return render_page('Book Professional', """<div class=\"hero\"><h1>📅 Book {{ name }}</h1><p>{{ p.get('profession') or p.get('provider_type') or 'Professional service' }}</p></div><div class=\"card\"><label>Date</label><input id=\"date\" type=\"date\"><button class=\"btn success\" onclick=\"loadSlots()\">Find available times</button></div><div id=\"slots\" class=\"card\"><p>Select a date.</p></div><script>const pid={{ provider_id|tojson }},csrf={{ csrf|tojson }};async function loadSlots(){const d=document.getElementById('date').value;if(!d)return;const r=await fetch('/api/booking/'+pid+'/slots?date='+encodeURIComponent(d));const j=await r.json();document.getElementById('slots').innerHTML=j.slots.length?j.slots.map(x=>`<button class=\"btn\" onclick=\"book('${x.scheduled_at}')\">${x.time}</button>`).join(' '):'<p>No available times for this date.</p>';}async function book(at){const f=new FormData();f.append('csrf_token',csrf);f.append('scheduled_at',at);const r=await fetch('/api/booking/'+pid+'/book',{method:'POST',body:f});const j=await r.json();alert(j.message||j.error||'Booking submitted');if(j.ok)loadSlots();}</script>""",p=p,provider_id=provider_id,name=_profile_name(p.get('user_id')),csrf=_csrf_token())
+
+@app.route('/api/booking/<provider_id>/slots')
+@login_required
+def booking_slots(provider_id):
+    if not _approved_provider(provider_id): abort(404)
+    d=clean(request.args.get('date'))
+    if not d: return jsonify(ok=False,error='date required'),400
+    return jsonify(ok=True,slots=_appointment_slots(provider_id,d))
+
+@app.route('/api/booking/<provider_id>/book',methods=['POST'])
+@login_required
+def booking_book(provider_id):
+    if not _csrf_ok(request.form.get('csrf_token') or request.headers.get('X-CSRF-Token')): abort(400)
+    p=_approved_provider(provider_id)
+    if not p: abort(404)
+    scheduled=clean(request.form.get('scheduled_at'))
+    if not scheduled: return jsonify(ok=False,error='scheduled_at required'),400
+    if not any(x['scheduled_at']==scheduled for x in _appointment_slots(provider_id,scheduled[:10])): return jsonify(ok=False,error='That time is not available.'),409
+    row,err=db_insert('appointments',{'id':str(uuid.uuid4()),'provider_id':provider_id,'client_id':current_user()['id'],'scheduled_at':scheduled,'status':'pending','created_at':utc_now(),'updated_at':utc_now()})
+    if err: return jsonify(ok=False,error=err),500
+    _notify(p.get('user_id'),'appointment','New booking request',f'{_profile_name(current_user()["id"])} requested {scheduled}.',row.get('id') if row else None)
+    return jsonify(ok=True,message='Booking request sent.',appointment=row)
+
+@app.route('/api/appointments/<appointment_id>/cancel',methods=['POST'])
+@login_required
+def appointment_cancel_final(appointment_id):
+    if not _csrf_ok(request.form.get('csrf_token') or request.headers.get('X-CSRF-Token')): abort(400)
+    a=first_row('appointments',{'id':appointment_id})
+    if not a or not _appointment_owner(a,current_user()['id']): abort(403)
+    if str(a.get('status')) in ('completed','cancelled'): return jsonify(ok=True,status=a.get('status'))
+    db_update('appointments',{'id':appointment_id},{'status':'cancelled','updated_at':utc_now()})
+    return jsonify(ok=True,status='cancelled')
+
+@app.route('/api/flutterwave/webhook',methods=['POST'])
+def flutterwave_webhook():
+    if not FLW_SECRET_KEY: return jsonify(ok=False,error='payments not configured'),503
+    expected=os.getenv('FLW_WEBHOOK_HASH','').strip(); provided=request.headers.get('verif-hash','')
+    if expected and not hmac.compare_digest(provided,expected): return jsonify(ok=False),401
+    data=request.get_json(silent=True) or {}; txid=data.get('id') or data.get('data',{}).get('id')
+    if not txid: return jsonify(ok=True,ignored=True)
+    try:
+        vr=requests.get(f'{FLW_BASE_URL}/transactions/{txid}/verify',headers={'Authorization':f'Bearer {FLW_SECRET_KEY}'},timeout=15)
+        if vr.status_code>=400: return jsonify(ok=False,error='verification failed'),502
+        vd=vr.json().get('data') or {}
+        if str(vd.get('status','')).lower()!='successful': return jsonify(ok=True,verified=False)
+        ref=vd.get('tx_ref') or vd.get('flw_ref'); orders=[]
+        if ref:
+            for key in ('tx_ref','payment_ref','reference'):
+                try: orders += db_select('koja_marketplace_orders',filters={key:ref},limit=20)
+                except Exception: pass
+        for o in {str(x.get('id')):x for x in orders if x.get('id')}.values():
+            db_update('koja_marketplace_orders',{'id':o['id']},{'status':'paid','payment_status':'paid','paid_at':utc_now(),'updated_at':utc_now()})
+        return jsonify(ok=True,verified=True)
+    except Exception:
+        logger.exception('Flutterwave webhook error'); return jsonify(ok=False,error='temporary verification error'),500
+
+@app.route('/api/marketplace/orders/<order_id>/status',methods=['POST'])
+@login_required
+def marketplace_order_status_final(order_id):
+    if not _csrf_ok(request.form.get('csrf_token') or request.headers.get('X-CSRF-Token')): abort(400)
+    o=first_row('koja_marketplace_orders',{'id':order_id})
+    if not o: abort(404)
+    uid=current_user()['id']; seller=o.get('seller_id') or o.get('provider_id'); buyer=o.get('buyer_id') or o.get('user_id')
+    if not current_user().get('is_admin') and str(uid) not in {str(seller),str(buyer)}: abort(403)
+    status=clean(request.form.get('status')).lower()
+    if status not in {'paid','processing','shipped','delivered','cancelled','refunded'}: return jsonify(ok=False,error='invalid status'),400
+    db_update('koja_marketplace_orders',{'id':order_id},{'status':status,'updated_at':utc_now()})
+    _notify_many([buyer,seller],'order','Order updated',f'Order {order_id} is now {status}.',order_id)
+    return jsonify(ok=True,status=status)
+
+@app.route('/social/profile/<user_id>')
+@login_required
+def social_profile(user_id):
+    if str(user_id)==str(current_user()['id']): abort(404)
+    f=first_row('koja_follows',{'follower_id':current_user()['id'],'following_id':user_id}); b=first_row('koja_blocks',{'blocker_id':current_user()['id'],'blocked_id':user_id})
+    return render_page('KOJA Profile',"""<div class=\"hero\"><h1>👤 {{ name }}</h1><p>KOJA AFRICA member</p></div><div class=\"card\"><button id=\"follow\" class=\"btn success\" onclick=\"toggleFollow()\">{{ 'Unfollow' if following else 'Follow' }}</button><button id=\"block\" class=\"btn danger\" onclick=\"toggleBlock()\">{{ 'Unblock' if blocked else 'Block' }}</button></div><script>const uid={{ user_id|tojson }},csrf={{ csrf|tojson }};let f={{ following|tojson }},b={{ blocked|tojson }};async function go(p,m){return (await fetch(p,{method:m,headers:{'X-CSRF-Token':csrf}})).json()}async function toggleFollow(){const j=await go('/api/social/follow/'+uid,f?'DELETE':'POST');if(j.ok){f=!f;follow.textContent=f?'Unfollow':'Follow'}}async function toggleBlock(){const j=await go('/api/social/block/'+uid,b?'DELETE':'POST');if(j.ok){b=!b;block.textContent=b?'Unblock':'Block'}}</script>""",user_id=user_id,name=_profile_name(user_id),following=bool(f),blocked=bool(b),csrf=_csrf_token())
+
+@app.route('/api/live-class/<class_id>/member/<user_id>/control',methods=['POST'])
+@login_required
+def live_class_member_control(class_id,user_id):
+    if not _csrf_ok(request.form.get('csrf_token') or request.headers.get('X-CSRF-Token')): abort(400)
+    c=first_row('koja_live_classes',{'id':class_id})
+    if not c or (str(c.get('provider_id'))!=str(current_user()['id']) and not current_user().get('is_admin')): abort(403)
+    action=clean(request.form.get('action')).lower()
+    if action not in ('mute','unmute','camera_off','camera_on','remove'): return jsonify(ok=False,error='invalid action'),400
+    if action=='remove': db_delete('koja_live_class_members',{'class_id':class_id,'user_id':user_id})
+    else:
+        try: db_update('koja_live_class_members',{'class_id':class_id,'user_id':user_id},{'control_request':action,'updated_at':utc_now()})
+        except Exception: pass
+    _notify(user_id,'live_class','Teacher control',f'Teacher requested: {action}.',class_id)
+    return jsonify(ok=True,action=action)
+
+VAPID_PRIVATE_KEY=os.getenv('VAPID_PRIVATE_KEY','').strip(); VAPID_CLAIMS_EMAIL=os.getenv('VAPID_CLAIMS_EMAIL','').strip(); VAPID_PUBLIC_KEY=os.getenv('VAPID_PUBLIC_KEY','').strip()
+@app.route('/api/push/config')
+@login_required
+def push_config_final(): return jsonify(enabled=bool(VAPID_PUBLIC_KEY),public_key=VAPID_PUBLIC_KEY)
+
+def _send_web_push(user_id,title,body,url='/notifications'):
+    if not VAPID_PRIVATE_KEY: return False
+    try:
+        from pywebpush import webpush
+        subs=db_select('koja_push_subscriptions',filters={'user_id':user_id},limit=100)
+        for sub in subs:
+            webpush(subscription_info={'endpoint':sub.get('endpoint'),'keys':{'p256dh':sub.get('p256dh'),'auth':sub.get('auth')}},data=json.dumps({'title':title,'body':body,'url':url}),vapid_private_key=VAPID_PRIVATE_KEY,vapid_claims={'sub':VAPID_CLAIMS_EMAIL or 'mailto:admin@koja-africa.com'})
+        return bool(subs)
+    except Exception: logger.exception('web push failed'); return False
+
+@app.route('/api/health/production')
+def production_health():
+    checks={'supabase':supabase_configured(),'storage':bool(SUPABASE_URL and SUPABASE_SERVICE_KEY),'smtp':email_configured(),'openai':bool(os.getenv('OPENAI_API_KEY')),'flutterwave':bool(FLW_SECRET_KEY),'turn':bool(os.getenv('TURN_URL') and os.getenv('TURN_USERNAME') and os.getenv('TURN_CREDENTIAL')),'push':bool(VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY),'site_url':SITE_URL.startswith('https://')}
+    return jsonify(ok=True,version=APP_VERSION,checks=checks,notes=['External credentials/services must be configured.','Real-device end-to-end testing is required before launch.'])
 
 
 # ============================================================
