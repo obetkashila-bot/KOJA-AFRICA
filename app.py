@@ -2525,7 +2525,7 @@ def book_professional(provider_id):
 <button class="btn" type="submit">{{ title }}</button>
 </form>
 </div>
-""", provider=provider, purpose=purpose, title=labels[purpose])
+""", provider=provider, purpose=purpose)
 
 def professional_is_connected(provider):
     """Return True when an approved professional has an active recent presence."""
