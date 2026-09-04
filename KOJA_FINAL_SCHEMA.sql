@@ -244,15 +244,119 @@ create index if not exists service_providers_location_idx on public.service_prov
 -- NOTE: Supabase Storage bucket 'koja-files' should exist. The application uploads media
 -- into public-feed/, professional-profiles/, connect/audio/, marketplace/, etc.
 
+-- ============================================================
+-- KOJA AFRICA V5 PRODUCTION COMPLETION MIGRATION
+-- ============================================================
 
--- Professional public profiles and reviews
-create table if not exists professional_reviews (id uuid primary key default gen_random_uuid(), provider_id uuid not null, reviewer_id uuid not null, rating integer not null check (rating between 1 and 5), review text not null, status text not null default 'published', created_at timestamptz default now(), updated_at timestamptz default now());
-alter table professional_reviews add column if not exists provider_id uuid;
-alter table professional_reviews add column if not exists reviewer_id uuid;
-alter table professional_reviews add column if not exists rating integer;
-alter table professional_reviews add column if not exists review text;
-alter table professional_reviews add column if not exists status text default 'published';
-alter table professional_reviews add column if not exists created_at timestamptz default now();
-alter table professional_reviews add column if not exists updated_at timestamptz default now();
-create index if not exists professional_reviews_provider_idx on professional_reviews(provider_id, status, created_at desc);
-create unique index if not exists professional_reviews_one_per_user on professional_reviews(provider_id, reviewer_id);
+alter table public.service_providers add column if not exists availability_notes text;
+alter table public.service_providers add column if not exists bio text;
+alter table public.service_providers add column if not exists updated_at timestamptz default now();
+alter table public.profiles add column if not exists email_verified boolean default false;
+alter table public.profiles add column if not exists email_verified_at timestamptz;
+alter table public.profiles add column if not exists profile_image_url text;
+
+create table if not exists public.professional_reviews (
+ id uuid primary key default gen_random_uuid(),
+ provider_id uuid not null references public.service_providers(id) on delete cascade,
+ user_id uuid not null,
+ rating integer not null check (rating between 1 and 5),
+ review_text text default '',
+ created_at timestamptz default now(),
+ updated_at timestamptz default now(),
+ unique(provider_id,user_id)
+);
+create index if not exists professional_reviews_provider_idx on public.professional_reviews(provider_id,created_at desc);
+
+create table if not exists public.koja_reports (
+ id uuid primary key default gen_random_uuid(),
+ reporter_id uuid not null,
+ content_type text not null,
+ content_id text not null,
+ reason text not null,
+ details text default '',
+ status text not null default 'pending',
+ reviewed_by uuid,
+ reviewed_at timestamptz,
+ created_at timestamptz default now()
+);
+create index if not exists koja_reports_status_idx on public.koja_reports(status,created_at desc);
+
+create table if not exists public.koja_account_tokens (
+ id uuid primary key default gen_random_uuid(),
+ user_id uuid not null,
+ token_hash text not null,
+ token_type text not null,
+ expires_at timestamptz not null,
+ used boolean default false,
+ created_at timestamptz default now(),
+ used_at timestamptz
+);
+create index if not exists koja_account_tokens_lookup_idx on public.koja_account_tokens(user_id,token_type,used,expires_at);
+
+create table if not exists public.koja_live_classes (
+ id uuid primary key default gen_random_uuid(),
+ provider_id uuid not null,
+ booking_id uuid,
+ title text not null,
+ subject text,
+ description text,
+ start_at timestamptz not null,
+ end_at timestamptz,
+ visibility text not null default 'private',
+ status text not null default 'scheduled',
+ room_token text unique not null,
+ attendance_count integer default 0,
+ created_at timestamptz default now(),
+ updated_at timestamptz default now()
+);
+create index if not exists koja_live_classes_provider_idx on public.koja_live_classes(provider_id,start_at desc);
+
+create table if not exists public.koja_live_class_members (
+ class_id uuid not null references public.koja_live_classes(id) on delete cascade,
+ user_id uuid not null,
+ role text not null default 'student',
+ joined_at timestamptz,
+ left_at timestamptz,
+ attendance_seconds integer default 0,
+ primary key(class_id,user_id)
+);
+
+create table if not exists public.koja_product_reviews (
+ id uuid primary key default gen_random_uuid(),
+ product_id uuid not null,
+ user_id uuid not null,
+ rating integer not null check(rating between 1 and 5),
+ review_text text default '',
+ created_at timestamptz default now(),
+ updated_at timestamptz default now(),
+ unique(product_id,user_id)
+);
+create index if not exists koja_product_reviews_product_idx on public.koja_product_reviews(product_id,created_at desc);
+
+alter table public.koja_marketplace_products add column if not exists seller_verified boolean default false;
+alter table public.koja_marketplace_products add column if not exists moderation_status text default 'pending';
+alter table public.koja_marketplace_orders add column if not exists payment_reference text;
+alter table public.koja_marketplace_orders add column if not exists updated_at timestamptz default now();
+
+alter table public.appointments add column if not exists updated_at timestamptz default now();
+alter table public.appointments add column if not exists cancellation_reason text;
+alter table public.appointments add column if not exists meeting_url text;
+alter table public.appointments add column if not exists reschedule_requested_at timestamptz;
+
+-- Notification preferences / delivery log.
+create table if not exists public.koja_notification_preferences (
+ user_id uuid primary key,
+ email_enabled boolean default true,
+ browser_enabled boolean default true,
+ chat_enabled boolean default true,
+ booking_enabled boolean default true,
+ assignment_enabled boolean default true,
+ delivery_enabled boolean default true,
+ marketplace_enabled boolean default true,
+ updated_at timestamptz default now()
+);
+
+-- Helpful moderation indexes.
+create index if not exists koja_public_posts_created_idx on public.koja_public_posts(created_at desc);
+create index if not exists koja_public_comments_post_idx on public.koja_public_comments(post_id,created_at desc);
+create index if not exists koja_marketplace_products_moderation_idx on public.koja_marketplace_products(moderation_status,is_published,created_at desc);

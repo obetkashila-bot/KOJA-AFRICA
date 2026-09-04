@@ -1,41 +1,36 @@
-# KOJA AFRICA — Final Flask Package (2026-09-04)
+# KOJA AFRICA — FINAL PLATFORM V5
 
-This package is the final integrated KOJA AFRICA Flask application based on the latest KOJA build.
+Flask + Supabase REST + Supabase Storage application for KOJA AFRICA.
 
 ## Included
-- Academic questions and complete assignment workflow
-- Multi-source Research Engine + AI research summaries/notes + citation styles
-- Documents and research resources
-- Universal professional registration for all listed professions
-- Administrator approval workflow before a professional becomes publicly discoverable
-- Public approved professional directory
-- Professional private chat/messages
-- Voice and video calling using browser WebRTC signaling
-- Live tutoring entry point using video sessions
-- Professional bookings/appointments, advice and counselling requests
-- Facebook-style KOJA Public feed with posts, images, likes and comments
-- Optional GPS location attached to public posts
-- KOJA Connect contacts, private chat, voice messages, voice/video calls and status
-- Digital Marketplace with product listings, media, orders and Flutterwave integration when configured
-- Driver registration, discovery, delivery requests and live GPS tracking
-- Live delivery map, route, ETA, speed, heading and GPS freshness
-- Google Search Console tools, robots.txt and sitemap.xml
-- Mobile-friendly UI, themes and animations
+- Public Facebook-style feed with media, comments, likes and location
+- KOJA Connect contacts, direct chat, voice messages and WebRTC calls
+- Professional registration with administrator approval before public listing
+- Public professional profiles, reviews, service locations and booking
+- Professional private chat, voice/video calls and live tutoring entry
+- Appointment accept/reject/cancel/reschedule/complete workflow
+- Live tutoring class scheduling and classroom room tokens
+- Assignments and Research Engine
+- Research sources, structured notes and citation styles
+- Digital marketplace, checkout integration and seller workflow
+- Marketplace moderation/review schema
+- Driver registration, approval and live GPS delivery tracking
+- Notifications and notification center
+- Account email verification and password reset when SMTP is configured
+- Reporting/moderation queue
+- Google-friendly public routes, robots and sitemap
+- TURN configuration endpoint for reliable WebRTC
+- Security headers, rate limiting and ownership/admin checks
 
 ## Deployment
-1. Create/update the Supabase database by running `KOJA_FINAL_SCHEMA.sql` in Supabase SQL Editor.
-2. Confirm the `koja-files` Storage bucket exists.
-3. Push `app.py`, `requirements.txt`, `Procfile`, `render.yaml` and `.env.example` to GitHub.
-4. In Render, set the production environment variables from `.env.example` (never commit secrets).
-5. Deploy.
+1. Create/update the Supabase database by running `KOJA_FINAL_SCHEMA.sql` in the Supabase SQL Editor.
+2. Deploy this folder to Render as a Python web service.
+3. Set all required environment variables in Render.
+4. Configure the `koja-files` Storage bucket and service-role access.
+5. Configure SMTP for verification/reset/notification email.
+6. Configure a TURN service using `TURN_URL`, `TURN_USERNAME`, and `TURN_CREDENTIAL` for reliable voice/video calls.
+7. Set `SITE_URL` to the real production domain.
+8. Test registration, verification, password reset, professional approval, chat/calls, booking, classroom, marketplace payment, GPS and admin moderation after deployment.
 
-## Important external requirements
-- Browser voice/video requires HTTPS and user microphone/camera permission.
-- Live GPS requires HTTPS and user location permission.
-- Real road routing uses OSRM through the KOJA server route endpoint.
-- Flutterwave payments require `FLW_SECRET_KEY`.
-- AI research summaries require `OPENAI_API_KEY` (or the supported AI key configuration already present in the app).
-- Google Search Console API reporting requires the service-account setup described in the Admin area.
-
-## Security
-Do not put Supabase service-role keys, SMTP passwords, Flutterwave secrets, OpenAI keys or Google service-account JSON into browser JavaScript or public repositories.
+## Important
+The application code can expose the integration points, but external services must still be configured. In particular, WebRTC reliability depends on a reachable TURN server, email depends on SMTP, payments depend on Flutterwave configuration/webhooks, and Google indexing depends on Google crawling the public production URLs.

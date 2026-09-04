@@ -92,7 +92,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.04-FINAL-SOCIAL-PROFESSIONAL-V4"
+APP_VERSION = "2026.09.04-FINAL-PLATFORM-V5"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -959,9 +959,17 @@ def register():
             flash(f"Registration failed: {str(error)[:500]}","danger")
             return redirect(url_for("register"))
 
+        # Email verification is optional at infrastructure level: when SMTP is configured
+        # a signed, expiring verification token is issued and emailed. Accounts remain
+        # usable so a missing mail provider cannot lock out new users.
+        if email_configured():
+            verify_token=secrets.token_urlsafe(40)
+            db_insert("koja_account_tokens", {"id":str(uuid.uuid4()),"user_id":user_id,"token_hash":generate_password_hash(verify_token),"token_type":"email_verify","expires_at":(datetime.now(timezone.utc)+timedelta(days=2)).isoformat(),"used":False,"created_at":utc_now()})
+            verify_link=f'{SITE_URL}{url_for("verify_email",token=quote(verify_token))}'
+            send_plain_email(email,"Verify your KOJA AFRICA email",f'Welcome to KOJA AFRICA. Verify your email: {verify_link}\nThis link expires in 48 hours.')
         login_user(row or payload)
         log_activity("registration","New KOJA account registered.")
-        flash("Account created successfully.","success")
+        flash("Account created successfully. Check your email to verify your address when email delivery is configured.","success")
         return redirect(url_for("dashboard"))
 
     return render_page("Register", r"""
@@ -2283,7 +2291,7 @@ def professionals():
 {% if p.get('service_description') %}<p>{{ p.get('service_description') }}</p>{% elif p.get('bio') %}<p>{{ p.get('bio') }}</p>{% endif %}
 {% if p.get('hourly_rate') %}<p><strong>Rate:</strong> {{ p.get('currency') or 'ZMW' }} {{ p.get('hourly_rate') }}</p>{% endif %}
 <div class="actions">
-<a class="btn" href="{{ url_for('professional_profile', provider_id=p.get('id')) }}">👤 View Profile</a><a class="btn" href="{{ url_for('professional_contact', provider_id=p.get('id')) }}">👤 Contact / Services</a>
+<a class="btn" href="{{ url_for('professional_contact', provider_id=p.get('id')) }}">👤 Contact / Services</a>
 <a class="btn secondary" href="{{ url_for('book_professional', provider_id=p.get('id'), purpose='booking') }}">📅 Book</a>
 <a class="btn secondary" href="{{ url_for('book_professional', provider_id=p.get('id'), purpose='advice') }}">💡 Ask Advice</a>
 <a class="btn secondary" href="{{ url_for('book_professional', provider_id=p.get('id'), purpose='counselling') }}">🧠 Counselling</a>
@@ -2295,44 +2303,6 @@ def professionals():
 {% endfor %}
 </div>
 """, professionals=visible, categories=PROFESSIONAL_CATEGORIES, category=category, query=query)
-
-@app.route("/professional/<provider_id>")
-def professional_profile(provider_id):
-    """Public, indexable profile for an approved professional."""
-    provider = first_row("service_providers", {"id": provider_id})
-    if not provider or str(provider.get("provider_type") or "").lower() == "driver": abort(404)
-    status = str(provider.get("approval_status") or provider.get("verification_status") or "pending").lower()
-    if status not in {"approved", "active", "verified"} or provider.get("is_active") is False: abort(404)
-    reviews = db_select("professional_reviews", {"provider_id": provider_id, "status": "published"}, order="created_at.desc", limit=100) or []
-    ratings = [float(r.get("rating") or 0) for r in reviews if r.get("rating") is not None]
-    avg_rating = round(sum(ratings) / len(ratings), 1) if ratings else 0
-    return render_page(provider.get("full_name") or provider.get("name") or "Professional Service", r"""
-<div class="hero">{% if provider.get('profile_image_url') %}<img src="{{ provider.get('profile_image_url') }}" alt="{{ provider.get('full_name') or provider.get('name') }}" style="width:140px;height:140px;object-fit:cover;border-radius:50%">{% endif %}
-<h1>{{ provider.get('full_name') or provider.get('name') or 'Professional' }}</h1><p><strong>{{ provider.get('profession') or 'Professional Service' }}</strong>{% if provider.get('specialization') %} · {{ provider.get('specialization') }}{% endif %}</p>
-{% if avg_rating %}<p>⭐ <strong>{{ avg_rating }}/5</strong> · {{ reviews|length }} review(s)</p>{% endif %}
-<div class="actions"><a class="btn" href="{{ url_for('professional_contact', provider_id=provider.get('id')) }}">💬 Contact</a><a class="btn" href="{{ url_for('book_professional', provider_id=provider.get('id'), purpose='booking') }}">📅 Book</a><a class="btn secondary" href="{{ url_for('professional_live_tutoring', provider_id=provider.get('id')) }}">🎥 Live Tutoring</a></div></div>
-<div class="grid"><div class="card"><h2>Professional Details</h2>
-{% if provider.get('qualification') %}<p><strong>Qualification:</strong> {{ provider.get('qualification') }}</p>{% endif %}{% if provider.get('experience_years') %}<p><strong>Experience:</strong> {{ provider.get('experience_years') }} years</p>{% endif %}{% if provider.get('service_area') or provider.get('address') %}<p><strong>Service area:</strong> {{ provider.get('service_area') or provider.get('address') }}</p>{% endif %}{% if provider.get('service_description') %}<p>{{ provider.get('service_description') }}</p>{% endif %}{% if provider.get('bio') %}<h3>About</h3><p>{{ provider.get('bio') }}</p>{% endif %}{% if provider.get('hourly_rate') %}<p><strong>Rate:</strong> {{ provider.get('currency') or 'ZMW' }} {{ provider.get('hourly_rate') }}</p>{% endif %}
-{% if provider.get('latitude') and provider.get('longitude') %}<p>📍 <a target="_blank" href="https://www.openstreetmap.org/?mlat={{ provider.get('latitude') }}&mlon={{ provider.get('longitude') }}#map=15/{{ provider.get('latitude') }}/{{ provider.get('longitude') }}">View service location on map</a></p>{% endif %}</div>
-<div class="card"><h2>⭐ Reviews</h2>{% if current_user %}<form method="post" action="{{ url_for('professional_review', provider_id=provider.get('id')) }}"><label>Rating</label><select name="rating" required><option value="5">5 — Excellent</option><option value="4">4 — Very good</option><option value="3">3 — Good</option><option value="2">2 — Fair</option><option value="1">1 — Poor</option></select><label>Review</label><textarea name="review" required maxlength="1000"></textarea><button class="btn" type="submit">Post Review</button></form>{% else %}<p>Log in to leave a review.</p>{% endif %}{% for r in reviews %}<div class="card"><strong>⭐ {{ r.get('rating') }}/5</strong><p>{{ r.get('review') }}</p><small>{{ r.get('created_at') }}</small></div>{% else %}<p>No reviews yet.</p>{% endfor %}</div></div>
-""", provider=provider, reviews=reviews, avg_rating=avg_rating, current_user=current_user())
-
-@app.route("/professional/<provider_id>/review", methods=["POST"])
-@login_required
-def professional_review(provider_id):
-    me = current_user() or {}; provider = first_row("service_providers", {"id": provider_id})
-    if not provider: abort(404)
-    try: rating = int(request.form.get("rating") or 0)
-    except Exception: rating = 0
-    review = clean(request.form.get("review"))
-    if rating not in range(1, 6) or not review:
-        flash("Please provide a rating from 1 to 5 and a review.", "danger"); return redirect(url_for("professional_profile", provider_id=provider_id))
-    existing = first_row("professional_reviews", {"provider_id": provider_id, "reviewer_id": me.get("id")})
-    payload = {"provider_id": provider_id, "reviewer_id": me.get("id"), "rating": rating, "review": review, "status": "published", "updated_at": utc_now()}
-    if existing: _, error = db_update("professional_reviews", {"id": existing.get("id")}, payload)
-    else: payload["id"] = str(uuid.uuid4()); payload["created_at"] = utc_now(); _, error = db_insert("professional_reviews", payload)
-    flash("Review saved." if not error else "Review could not be saved: " + str(error)[:400], "success" if not error else "danger")
-    return redirect(url_for("professional_profile", provider_id=provider_id))
 
 @app.route("/professional/register", methods=["GET","POST"])
 @login_required
@@ -4831,6 +4801,181 @@ def before_request():
 @app.context_processor
 def inject_globals():
     return {"APP_NAME":APP_NAME,"APP_TAGLINE":APP_TAGLINE,"SITE_URL":SITE_URL,"profession_slug":profession_slug}
+
+# ============================================================
+# KOJA AFRICA V5 PRODUCTION COMPLETION LAYER
+# ============================================================
+
+def _csrf_token():
+    token=session.get("csrf_token")
+    if not token:
+        token=secrets.token_urlsafe(32); session["csrf_token"]=token
+    return token
+
+def _csrf_ok(value):
+    return bool(value and secrets.compare_digest(str(value),str(session.get("csrf_token",""))))
+
+def _notify(uid, ntype, title, body, related_id=None):
+    try: db_insert("koja_notifications",{"user_id":uid,"notification_type":ntype,"title":title,"body":body,"related_id":related_id,"is_read":False,"created_at":utc_now()})
+    except Exception: pass
+
+def _provider(pid): return first_row("service_providers",{"id":pid}) or {}
+def _approved_provider(pid):
+    p=_provider(pid)
+    return p if str(p.get("approval_status","")).lower() in ("approved","active","verified") and p.get("is_active",True) is not False else None
+
+def _appointment_owner(a,uid): return str(a.get("client_id"))==str(uid) or str(a.get("provider_id"))==str(uid)
+
+@app.route('/professional/<provider_id>')
+def public_professional_profile(provider_id):
+    p=_approved_provider(provider_id)
+    if not p: abort(404)
+    reviews=db_select('professional_reviews',filters={'provider_id':provider_id},order='created_at.desc',limit=50)
+    for r in reviews: r['reviewer_name']=_profile_name(r.get('user_id'))
+    avg=sum(float(r.get('rating') or 0) for r in reviews)/len(reviews) if reviews else 0
+    return render_page('Professional Profile',r'''<div class="hero"><h1>{{ p.get('full_name') or p.get('name') or 'KOJA Professional' }}</h1><p>{{ p.get('profession') or 'Professional Service' }}{% if p.get('specialization') %} • {{ p.get('specialization') }}{% endif %}</p></div><div class="card" style="max-width:900px;margin:auto">{% if p.get('profile_image_url') %}<img src="{{ p.get('profile_image_url') }}" alt="Professional profile" style="width:140px;height:140px;object-fit:cover;border-radius:50%;float:right">{% endif %}<p><strong>Qualification:</strong> {{ p.get('qualification') or 'Not provided' }}</p><p><strong>Experience:</strong> {{ p.get('experience_years') or 0 }} years</p><p><strong>Service area:</strong> {{ p.get('location_label') or p.get('service_area') or 'Not specified' }}</p><p><strong>Rating:</strong> {% if reviews %}⭐ {{ '%.1f'|format(avg) }} / 5 ({{ reviews|length }}){% else %}No reviews yet{% endif %}</p>{% if p.get('bio') %}<h3>About</h3><p>{{ p.get('bio') }}</p>{% endif %}<div class="actions"><a class="btn" href="{{ url_for('professional_contact',provider_id=p.get('id')) }}">Private Chat / Call</a><a class="btn success" href="{{ url_for('professional_book',provider_id=p.get('id')) }}">Book Service</a></div></div><div class="card" style="max-width:900px;margin:16px auto"><h2>Reviews</h2>{% for r in reviews %}<div class="card"><strong>{{ r.get('reviewer_name') }}</strong> — ⭐ {{ r.get('rating') }}/5<p>{{ r.get('review_text') or '' }}</p></div>{% else %}<p>No reviews yet.</p>{% endfor %}</div>{% if user %}<div class="card" style="max-width:900px;margin:16px auto"><h3>Leave a review</h3><form method="post" action="{{ url_for('professional_review',provider_id=p.get('id')) }}"><input type="hidden" name="csrf_token" value="{{ csrf }}"><select name="rating" required><option value="5">5 — Excellent</option><option value="4">4 — Very good</option><option value="3">3 — Good</option><option value="2">2 — Fair</option><option value="1">1 — Poor</option></select><textarea name="review_text" maxlength="1000" placeholder="Your experience"></textarea><button class="btn success">Submit Review</button></form></div>{% endif %}''',p=p,reviews=reviews,avg=avg,csrf=_csrf_token())
+
+@app.route('/professional/<provider_id>/review',methods=['POST'])
+@login_required
+def professional_review(provider_id):
+    if not _csrf_ok(request.form.get('csrf_token')): abort(400)
+    p=_approved_provider(provider_id)
+    if not p: abort(404)
+    uid=current_user()['id']; rating=int(request.form.get('rating','0') or 0); text=clean(request.form.get('review_text'))
+    if rating not in range(1,6): flash('Rating must be between 1 and 5.','danger'); return redirect(url_for('public_professional_profile',provider_id=provider_id))
+    existing=first_row('professional_reviews',{'provider_id':provider_id,'user_id':uid})
+    payload={'provider_id':provider_id,'user_id':uid,'rating':rating,'review_text':text,'updated_at':utc_now()}
+    if existing: db_update('professional_reviews',{'id':existing['id']},payload)
+    else: db_insert('professional_reviews',{'id':str(uuid.uuid4()),**payload,'created_at':utc_now()})
+    _notify(p.get('user_id'),'review','New professional review',f'{_profile_name(uid)} reviewed your professional profile.',provider_id)
+    flash('Review saved.','success'); return redirect(url_for('public_professional_profile',provider_id=provider_id))
+
+@app.route('/notifications')
+@login_required
+def notifications():
+    rows=db_select('koja_notifications',filters={'user_id':current_user()['id']},order='created_at.desc',limit=100)
+    return render_page('Notifications',r'''<div class="hero"><h1>🔔 Notifications</h1></div><div class="card">{% for n in rows %}<div class="card"><strong>{{ n.get('title') }}</strong><p>{{ n.get('body') }}</p><small>{{ n.get('created_at','') }}</small></div>{% else %}<p>No notifications.</p>{% endfor %}</div>''',rows=rows)
+
+@app.route('/api/notifications/read-all',methods=['POST'])
+@login_required
+def notifications_read_all():
+    rows=db_select('koja_notifications',filters={'user_id':current_user()['id'],'is_read':False},limit=200)
+    for n in rows: db_update('koja_notifications',{'id':n.get('id')},{'is_read':True})
+    return jsonify(ok=True,count=len(rows))
+
+@app.route('/professional/<provider_id>/availability',methods=['GET','POST'])
+@login_required
+def professional_availability(provider_id):
+    p=_approved_provider(provider_id)
+    if not p or str(p.get('user_id'))!=str(current_user()['id']): abort(403)
+    if request.method=='POST':
+        if not _csrf_ok(request.form.get('csrf_token')): abort(400)
+        db_update('service_providers',{'id':provider_id},{'is_available':request.form.get('is_available')=='1','availability_notes':clean(request.form.get('availability_notes')),'updated_at':utc_now()})
+        flash('Availability updated.','success'); return redirect(url_for('professional_availability',provider_id=provider_id))
+    return render_page('Professional Availability',r'''<div class="card"><h2>Availability</h2><form method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"><label><input type="checkbox" name="is_available" value="1" {% if p.get('is_available',True) %}checked{% endif %}> Available for new clients</label><textarea name="availability_notes">{{ p.get('availability_notes','') }}</textarea><button class="btn success">Save</button></form></div>''',p=p,csrf=_csrf_token())
+
+@app.route('/appointment/<appointment_id>/action',methods=['POST'])
+@login_required
+def appointment_action(appointment_id):
+    if not _csrf_ok(request.form.get('csrf_token')): abort(400)
+    a=first_row('appointments',{'id':appointment_id})
+    if not a or (not _appointment_owner(a,current_user()['id']) and not current_user().get('is_admin')): abort(403)
+    action=clean(request.form.get('action')).lower(); status={'accept':'accepted','reject':'rejected','cancel':'cancelled','reschedule':'reschedule_requested','complete':'completed'}.get(action)
+    if not status: abort(400)
+    db_update('appointments',{'id':appointment_id},{'status':status,'updated_at':utc_now()})
+    other=a.get('provider_id') if str(a.get('client_id'))==str(current_user()['id']) else a.get('client_id')
+    if other: _notify(other,'appointment',f'Appointment {status}',f'Appointment {appointment_id} is now {status}.',appointment_id)
+    flash(f'Appointment {status}.','success'); return redirect(request.referrer or url_for('dashboard'))
+
+@app.route('/live-classes')
+@login_required
+def live_classes():
+    role=current_user().get('role'); rows=db_select('koja_live_classes',filters={'provider_id':current_user()['id']},order='created_at.desc',limit=100) if role in ('teacher','doctor') or current_user().get('is_admin') else []
+    return render_page('Live Tutoring',r'''<div class="hero"><h1>🎓 Live Tutoring</h1><p>Schedule classes and launch KOJA classroom sessions.</p></div>{% if user.role in ['teacher','doctor'] or user.is_admin %}<div class="card"><form method="post" action="{{ url_for('live_class_create') }}"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input name="title" placeholder="Class title" required><input name="subject" placeholder="Subject"><input name="start_at" type="datetime-local" required><input name="end_at" type="datetime-local"><select name="visibility"><option value="private">Private</option><option value="booked">Booked students</option></select><button class="btn success">Create Class</button></form></div>{% endif %}<div class="card"><h2>Classes</h2>{% for c in rows %}<p><strong>{{ c.get('title') }}</strong> — {{ c.get('start_at') }} — {{ c.get('status') }} <a class="btn" href="{{ url_for('live_class_room',class_id=c.get('id')) }}">Open Room</a></p>{% else %}<p>No classes.</p>{% endfor %}</div>''',rows=rows,csrf=_csrf_token())
+
+@app.route('/live-classes/create',methods=['POST'])
+@login_required
+def live_class_create():
+    if not _csrf_ok(request.form.get('csrf_token')): abort(400)
+    if current_user().get('role') not in ('teacher','doctor') and not current_user().get('is_admin'): abort(403)
+    row,err=db_insert('koja_live_classes',{'id':str(uuid.uuid4()),'provider_id':current_user()['id'],'title':clean(request.form.get('title')),'subject':clean(request.form.get('subject')),'start_at':clean(request.form.get('start_at')),'end_at':clean(request.form.get('end_at')) or None,'visibility':clean(request.form.get('visibility')) or 'private','status':'scheduled','room_token':secrets.token_urlsafe(24),'created_at':utc_now()})
+    flash('Live class created.' if not err else f'Could not create class: {err}','success' if not err else 'danger'); return redirect(url_for('live_classes'))
+
+@app.route('/live-class/<class_id>')
+@login_required
+def live_class_room(class_id):
+    c=first_row('koja_live_classes',{'id':class_id})
+    if not c: abort(404)
+    if str(c.get('provider_id'))!=str(current_user()['id']) and c.get('visibility')=='private' and not current_user().get('is_admin'): abort(403)
+    return render_page('Live Classroom',r'''<div class="hero"><h1>🎓 {{ c.get('title') }}</h1><p>{{ c.get('subject') or '' }} • {{ c.get('start_at') }}</p></div><div class="card"><p>Room: <strong>{{ c.get('room_token') }}</strong></p><a class="btn success" href="{{ url_for('connect_call',user_id=c.get('provider_id')) }}">Start Video Classroom</a><p class="small">For reliable calls across restrictive networks, configure TURN in Render.</p></div>''',c=c)
+
+@app.route('/report',methods=['POST'])
+@login_required
+def report_content():
+    if not _csrf_ok(request.form.get('csrf_token')): abort(400)
+    payload={'id':str(uuid.uuid4()),'reporter_id':current_user()['id'],'content_type':clean(request.form.get('content_type')),'content_id':clean(request.form.get('content_id')),'reason':clean(request.form.get('reason')),'details':clean(request.form.get('details')),'status':'pending','created_at':utc_now()}
+    row,err=db_insert('koja_reports',payload); return jsonify(ok=not bool(err),error=err)
+
+@app.route('/admin/reports')
+@admin_required
+def admin_reports():
+    rows=db_select('koja_reports',order='created_at.desc',limit=300)
+    return render_page('Admin Reports',r'''<div class="hero"><h1>🛡️ Reports & Moderation</h1></div><div class="card"><table><tr><th>Type</th><th>Content</th><th>Reason</th><th>Status</th><th>Date</th></tr>{% for r in rows %}<tr><td>{{ r.get('content_type') }}</td><td>{{ r.get('content_id') }}</td><td>{{ r.get('reason') }}</td><td>{{ r.get('status') }}</td><td>{{ r.get('created_at','')[:10] }}</td></tr>{% else %}<tr><td colspan="5">No reports.</td></tr>{% endfor %}</table></div>''',rows=rows)
+
+@app.route('/admin/reports/<report_id>/status',methods=['POST'])
+@admin_required
+def admin_report_status(report_id):
+    status=clean(request.form.get('status'))
+    if status not in ('pending','reviewing','resolved','dismissed'): abort(400)
+    db_update('koja_reports',{'id':report_id},{'status':status,'reviewed_by':current_user()['id'],'reviewed_at':utc_now()})
+    return redirect(url_for('admin_reports'))
+
+@app.route('/api/rtc-config')
+def rtc_config():
+    servers=[{'urls':'stun:stun.l.google.com:19302'}]
+    u=clean(os.getenv('TURN_URL')); n=clean(os.getenv('TURN_USERNAME')); c=clean(os.getenv('TURN_CREDENTIAL'))
+    if u and n and c: servers.append({'urls':u,'username':n,'credential':c})
+    return jsonify(iceServers=servers,turn_enabled=bool(u and n and c))
+
+@app.route('/forgot-password',methods=['GET','POST'])
+def forgot_password():
+    if request.method=='POST':
+        if _rate_limited('forgot:'+ (request.remote_addr or 'unknown'),5,600): return 'Too many attempts. Try later.',429
+        email=clean(request.form.get('email')).lower(); u=find_user_by_email(email)
+        if u and email_configured():
+            token=secrets.token_urlsafe(40); expires=(datetime.now(timezone.utc)+timedelta(hours=1)).isoformat()
+            db_insert('koja_account_tokens',{'id':str(uuid.uuid4()),'user_id':u.get('id'),'token_hash':generate_password_hash(token),'token_type':'password_reset','expires_at':expires,'used':False,'created_at':utc_now()})
+            link=f'{SITE_URL}{url_for("reset_password",token=quote(token))}'
+            send_plain_email(email,'KOJA AFRICA password reset',f'Reset your KOJA password: {link}\nThis link expires in one hour.')
+        flash('If the email belongs to a KOJA account, a reset link has been sent.','success'); return redirect(url_for('login'))
+    return render_page('Forgot Password',r'''<div class="card" style="max-width:500px;margin:auto"><h2>Reset Password</h2><form method="post"><input name="email" type="email" required placeholder="Email"><button class="btn success">Send Reset Link</button></form></div>''')
+
+@app.route('/reset-password/<token>',methods=['GET','POST'])
+def reset_password(token):
+    rows=db_select('koja_account_tokens',filters={'token_type':'password_reset','used':False},limit=100); match=None
+    for r in rows:
+        try:
+            if datetime.fromisoformat(str(r.get('expires_at')).replace('Z','+00:00'))>=datetime.now(timezone.utc) and check_password_hash(r.get('token_hash',''),token): match=r; break
+        except Exception: pass
+    if not match: return 'This reset link is invalid or expired.',400
+    if request.method=='POST':
+        pw=request.form.get('password','')
+        if len(pw)<8: flash('Password must be at least 8 characters.','danger'); return redirect(request.url)
+        if not find_user_by_id(match.get('user_id')): return 'Account not found.',404
+        db_update('profiles',{'id':match.get('user_id')},{'password_hash':generate_password_hash(pw),'updated_at':utc_now()}); db_update('koja_account_tokens',{'id':match.get('id')},{'used':True,'used_at':utc_now()})
+        flash('Password changed. You can now log in.','success'); return redirect(url_for('login'))
+    return render_page('Set Password',r'''<div class="card" style="max-width:500px;margin:auto"><h2>Choose a new password</h2><form method="post"><input name="password" type="password" minlength="8" required><button class="btn success">Change Password</button></form></div>''')
+
+@app.route('/verify-email/<token>')
+def verify_email(token):
+    rows=db_select('koja_account_tokens',filters={'token_type':'email_verify','used':False},limit=100); match=None
+    for r in rows:
+        try:
+            if datetime.fromisoformat(str(r.get('expires_at')).replace('Z','+00:00'))>=datetime.now(timezone.utc) and check_password_hash(r.get('token_hash',''),token): match=r; break
+        except Exception: pass
+    if not match: return 'Verification link is invalid or expired.',400
+    db_update('profiles',{'id':match.get('user_id')},{'email_verified':True,'email_verified_at':utc_now()}); db_update('koja_account_tokens',{'id':match.get('id')},{'used':True,'used_at':utc_now()})
+    return render_page('Email Verified',r'''<div class="card"><h2>✅ Email verified</h2><p>Your KOJA account email has been verified.</p><a class="btn" href="{{ url_for('login') }}">Login</a></div>''')
 
 # ============================================================
 # LOCAL / RENDER START
