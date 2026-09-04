@@ -676,16 +676,16 @@ BASE_HTML = r"""
 </script>
 <style>
 /* KOJA Public compact navigation: keep Home / Live / People visible without a large top bar. */
-body.koja-public-page > nav:not(.koja-public-mini-nav){display:none}
-body.koja-public-page .container{width:100%;max-width:none;margin:0 auto 30px;padding:0}
-body.koja-public-page footer{display:none}
+body.koja-public-page > nav:not(.koja-public-mini-nav),body.koja-news-page > nav:not(.koja-public-mini-nav){display:none}
+body.koja-public-page .container,body.koja-news-page .container{width:100%;max-width:none;margin:0 auto 30px;padding:0}
+body.koja-public-page footer,body.koja-news-page footer{display:none}
 .koja-public-mini-nav{position:sticky;top:0;z-index:1100;height:42px;display:flex;align-items:center;justify-content:center;gap:6px;padding:4px 8px;background:rgba(255,255,255,.94);backdrop-filter:blur(10px);border-bottom:1px solid #e4e7ec}
 .koja-public-mini-nav a{display:inline-flex;align-items:center;justify-content:center;min-width:58px;height:32px;padding:4px 10px;border-radius:18px;text-decoration:none;color:#172033;font-size:12px;font-weight:700}
 .koja-public-mini-nav a:hover{background:#eef5f8}
 .koja-public-mini-nav .active{background:#176b87;color:#fff}
-.koja-public-page .public-shell{width:min(760px,100%);margin:0 auto;padding:0 10px 30px}
-.koja-public-page .public-shell .hero{margin-top:8px}
-@media(max-width:760px){.koja-public-mini-nav{height:38px}.koja-public-mini-nav a{min-width:52px;height:29px;padding:3px 8px;font-size:11px}.koja-public-page .public-shell{padding-left:7px;padding-right:7px}}
+.koja-public-page .public-shell,.koja-news-page .public-shell{width:min(820px,100%);margin:0 auto;padding:0 10px 30px}
+.koja-public-page .public-shell .hero,.koja-news-page .public-shell .hero{margin-top:8px}
+@media(max-width:760px){.koja-public-mini-nav{height:38px}.koja-public-mini-nav a{min-width:52px;height:29px;padding:3px 8px;font-size:11px}.koja-public-page .public-shell,.koja-news-page .public-shell{padding-left:7px;padding-right:7px}}
 *{box-sizing:border-box}
 :root{color-scheme:light;--bg:#f5f7fb;--surface:#fff;--text:#172033;--muted:#667085;--border:#e4e7ec;--nav:#10233f;--accent:#176b87;--focus:#f2b84b}
 html[data-koja-theme="dark"]{color-scheme:dark;--bg:#0f1720;--surface:#17212b;--text:#edf2f7;--muted:#aab7c4;--border:#30404f;--nav:#091522;--accent:#2aa7b8;--focus:#f2c15b}
@@ -733,7 +733,7 @@ footer{text-align:center;color:var(--muted);padding:30px}
 </style>
 </head>
 <body class="{% if request.path == '/public' %}koja-public-page{% endif %}">
-{% if request.path == '/public' %}<nav class="koja-public-mini-nav" aria-label="Public navigation"><a href="{{ url_for('home') }}">⌂ Home</a><a href="{{ url_for('public_feed') }}" class="active">● Live</a><a href="{{ url_for('connect_people') }}">👥 People</a></nav>{% endif %}
+{% if request.path in ['/public','/news'] %}<nav class="koja-public-mini-nav" aria-label="Public navigation"><a href="{{ url_for('home') }}">⌂ Home</a><a href="{{ url_for('public_feed') }}" class="{% if request.path == '/public' %}active{% endif %}">🎥 Media & Live</a><a href="{{ url_for('news_updates') }}" class="{% if request.path == '/news' %}active{% endif %}">📰 News</a><a href="{{ url_for('connect_people') }}">👥 People</a></nav>{% endif %}
 <nav aria-label="Primary navigation">
 <div class="nav-inner">
 <div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 18V6h7.2a5.3 5.3 0 0 1 0 10.6H8.5" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 9.1h3.4a1.9 1.9 0 0 1 0 3.8H8.5" stroke="white" stroke-width="2.2" stroke-linecap="round"/></svg></span><span class="brand-name">KOJA AFRICA</span></div>
@@ -1864,7 +1864,8 @@ def public_feed_create():
     payload={'author_id':current_user().get('id'),'post_type':post_type,'title':title or None,'body':body,'media_url':(uploaded or {}).get('url'),'media_type':media_type,'is_published':True}
     _,err=db_insert('koja_public_posts',payload)
     flash('Published to KOJA Public.' if not err else 'Public post could not be published. Run the updated KOJA_CONNECT.sql first.','success' if not err else 'danger')
-    return redirect(url_for('public_feed'))
+    next_path=request.form.get('return_to') if request.form.get('return_to') in ['/public','/news'] else '/public'
+    return redirect(next_path)
 
 @app.route('/public/like/<post_id>', methods=['POST'])
 @login_required
@@ -1872,14 +1873,47 @@ def public_toggle_like(post_id):
     uid=current_user().get('id'); existing=first_row('koja_public_likes', {'post_id':post_id,'user_id':uid})
     if existing: db_delete('koja_public_likes', {'post_id':post_id,'user_id':uid})
     else: db_insert('koja_public_likes', {'post_id':post_id,'user_id':uid})
-    return redirect(url_for('public_feed')+'#post-'+post_id)
+    next_path=request.args.get('next') if request.args.get('next') in ['/public','/news'] else '/public'
+    return redirect(next_path+'#post-'+post_id)
 
 @app.route('/public/comment/<post_id>', methods=['POST'])
 @login_required
 def public_comment(post_id):
     body=clean(request.form.get('body'))
     if body: db_insert('koja_public_comments', {'post_id':post_id,'author_id':current_user().get('id'),'body':body})
-    return redirect(url_for('public_feed')+'#post-'+post_id)
+    next_path=request.args.get('next') if request.args.get('next') in ['/public','/news'] else '/public'
+    return redirect(next_path+'#post-'+post_id)
+
+@app.route('/news')
+def news_updates():
+    rows = db_select('koja_public_posts', {'is_published':'eq.true'}, order='created_at.desc', limit=100) or []
+    allowed = {'news','update','announcement','event'}
+    rows = [r for r in rows if (r.get('post_type') or 'update').lower() in allowed]
+    enriched=[]
+    uid=(current_user() or {}).get('id')
+    for post in rows:
+        author=first_row('profiles', {'id':post.get('author_id')}) or {}
+        likes=db_select('koja_public_likes', {'post_id':post.get('id')}, select='user_id', limit=500) or []
+        comments=db_select('koja_public_comments', {'post_id':post.get('id')}, order='created_at.asc', limit=100) or []
+        comment_rows=[]
+        for c in comments:
+            ca=first_row('profiles', {'id':c.get('author_id')}) or {}
+            comment_rows.append({**c,'author_name':ca.get('full_name') or ca.get('name') or ca.get('email') or 'KOJA User'})
+        enriched.append({**post,'author_name':author.get('full_name') or author.get('name') or author.get('email') or 'KOJA User','author_id':post.get('author_id'),'like_count':len(likes),'liked':bool(uid and any(str(x.get('user_id'))==str(uid) for x in likes)),'comments':comment_rows})
+    return render_page('KOJA News & Updates', r'''
+<div class="public-shell">
+<style>
+.news-hero{margin:0 0 12px;border-radius:16px;padding:24px 18px;background:linear-gradient(135deg,#16243f,#176b87);color:#fff}.news-hero h1{margin:0 0 5px;font-size:28px}.news-hero p{margin:0;opacity:.9}.news-toolbar{display:flex;gap:7px;overflow:auto;padding:2px 0 10px}.news-filter{border:1px solid var(--border);border-radius:999px;padding:7px 12px;background:var(--surface);font-size:12px;font-weight:800;white-space:nowrap;text-decoration:none;color:inherit}.news-grid{display:grid;grid-template-columns:1fr;gap:12px}.news-card{padding:16px}.news-type{display:inline-block;font-size:10px;font-weight:900;letter-spacing:.04em;text-transform:uppercase;padding:4px 7px;border-radius:999px;background:#edf5f7;color:#176b87}.news-card h2{margin:8px 0 6px;font-size:21px;line-height:1.25}.news-body{white-space:pre-wrap;line-height:1.65;font-size:15px}.news-media{width:100%;max-height:520px;object-fit:cover;border-radius:13px;margin-top:11px;display:block}.news-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.news-actions .btn{font-size:12px;padding:7px 10px}.news-compose{position:sticky;top:42px;z-index:15}.news-compose textarea{min-height:90px}
+@media(min-width:900px){.news-grid{grid-template-columns:1fr 1fr}.news-grid .news-feature{grid-column:span 2}.news-grid .news-feature h2{font-size:25px}}
+@media(max-width:760px){.news-hero{border-radius:13px;padding:19px 14px}.news-hero h1{font-size:24px}.news-card{padding:13px}.news-compose{top:38px}}
+</style>
+<section class="news-hero"><h1>📰 KOJA News & Updates</h1><p>News, announcements, events and important community updates from KOJA AFRICA.</p></section>
+<div class="news-toolbar"><span class="news-filter">📰 All</span><a class="news-filter" href="{{ url_for('public_feed') }}">🎥 Media & Live</a><span class="news-filter">📢 Announcements</span><span class="news-filter">📅 Events</span></div>
+<div class="card news-compose">{% if user %}<form method="post" action="{{ url_for('public_feed_create') }}" enctype="multipart/form-data"><strong>✍️ Publish News or Update</strong><div class="grid"><div><label>Type</label><select name="post_type"><option value="news">News</option><option value="update">Community Update</option><option value="announcement">Announcement</option><option value="event">Event</option></select></div><div><label>Headline</label><input name="title" maxlength="180" placeholder="Clear news headline" required></div></div><textarea name="body" maxlength="5000" placeholder="Write the full news story or update…" required></textarea><label>Optional image/video</label><input type="file" name="media" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"><input type="hidden" name="return_to" value="/news"><button class="btn" type="submit">📰 Publish News</button></form>{% else %}<strong>📰 KOJA News</strong><p class="small">Log in to publish news, announcements and community updates.</p><a class="btn" href="{{ url_for('login',next='/news') }}">Login</a>{% endif %}</div>
+<div style="display:flex;align-items:center;justify-content:space-between;margin:13px 2px 8px"><h2 style="margin:0;font-size:19px">Latest News & Updates</h2><span class="small">Newest first</span></div>
+<div class="news-grid">{% for p in posts %}<article class="card news-card {% if loop.first %}news-feature{% endif %}" id="post-{{ p.id }}"><span class="news-type">{{ p.post_type|title }}</span><h2>{{ p.title or 'KOJA Community Update' }}</h2><div class="small" style="margin-bottom:8px">By <strong>{{ p.author_name }}</strong> · {{ p.created_at }}</div><div class="news-body">{{ p.body }}</div>{% if p.media_url %}{% if (p.media_type or '') == 'video' or (p.media_url|lower).endswith('.mp4') or (p.media_url|lower).endswith('.webm') or (p.media_url|lower).endswith('.mov') %}<video class="news-media" controls playsinline preload="metadata" src="{{ p.media_url }}"></video>{% else %}<img class="news-media" src="{{ p.media_url }}" alt="{{ p.title or 'KOJA news' }}" loading="lazy">{% endif %}{% endif %}<div class="news-actions">{% if user %}<form method="post" action="{{ url_for('public_toggle_like',post_id=p.id,next='/news') }}"><button class="btn secondary" type="submit">{{ '❤️ Liked' if p.liked else '🤍 Like' }} · {{ p.like_count }}</button></form>{% else %}<a class="btn secondary" href="{{ url_for('login',next='/news') }}">🤍 Like · {{ p.like_count }}</a>{% endif %}<span class="btn secondary">💬 {{ p.comments|length }}</span>{% if user and p.author_id and p.author_id|string != user.id|string %}<a class="btn" href="{{ url_for('connect_call',user_id=p.author_id,mode='video') }}">🎥 Call</a>{% endif %}<button class="btn secondary" type="button" onclick="navigator.clipboard&&navigator.clipboard.writeText(location.origin+'/news#post-{{ p.id }}').then(()=>this.textContent='✓ Link copied')">↗ Share</button></div>{% if user %}<form method="post" action="{{ url_for('public_comment',post_id=p.id,next='/news') }}" style="margin-top:9px"><input name="body" maxlength="1000" placeholder="Comment on this update…" required><button class="btn" type="submit">Comment</button></form>{% endif %}</article>{% else %}<div class="card"><h3>No news or updates yet.</h3><p>KOJA news, announcements, events and community updates will appear here.</p></div>{% endfor %}</div>
+</div>
+''', posts=enriched)
 
 
 # ============================================================
