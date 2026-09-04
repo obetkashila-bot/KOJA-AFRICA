@@ -809,6 +809,8 @@ footer{text-align:center;color:var(--muted);padding:30px}
 <a href="{{ url_for('marketplace') }}">🛒 Marketplace</a>
 <a href="{{ url_for('connect') }}">💬 Communication</a>
 <a href="{{ url_for('professional_communication') }}">👩‍💼 Professional Communication</a>
+<a href="{{ url_for('driver_register') }}">🚚 Register as a Driver</a>
+<a href="{{ url_for('tracking') }}">📍 Live GPS Map</a>
 <a href="{{ url_for('settings') }}">⚙️ Settings</a>
 <div class="menu-group">
 <button type="button" id="moreMenuButton" aria-expanded="false" aria-haspopup="true">More ▾</button>
@@ -822,6 +824,8 @@ footer{text-align:center;color:var(--muted);padding:30px}
 {% else %}
 <a href="{{ url_for('login') }}">Login</a>
 <a href="{{ url_for('register') }}">Register</a>
+<a href="{{ url_for('driver_register') }}">🚚 Register as a Driver</a>
+<a href="{{ url_for('tracking') }}">📍 Live GPS Map</a>
 {% endif %}
 </div>
 </div>
