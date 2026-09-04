@@ -114,6 +114,7 @@ alter table public.appointments add column if not exists client_id uuid;
 alter table public.appointments add column if not exists provider_id uuid;
 alter table public.appointments add column if not exists appointment_type text;
 alter table public.appointments add column if not exists appointment_date date;
+alter table public.appointments add column if not exists scheduled_at timestamptz;
 alter table public.appointments add column if not exists start_time time;
 alter table public.appointments add column if not exists end_time time;
 alter table public.appointments add column if not exists location text;
