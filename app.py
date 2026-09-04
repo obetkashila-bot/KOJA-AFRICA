@@ -10,7 +10,7 @@ import json
 import re
 from datetime import datetime, timezone, timedelta
 from functools import wraps
-from urllib.parse import quote, unquote
+from urllib.parse import quote
 
 import requests
 from dotenv import load_dotenv
@@ -64,7 +64,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.04-RESEARCH-V3-CHATGPT-LIKE"
+APP_VERSION = "2026.09.03-RESEARCH-V2"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -1046,49 +1046,19 @@ def _research_year(value):
         return None
 
 def research_web(query, limit=8):
-    """Real web discovery with a no-key HTML search fallback plus DDG Instant Answer.
-    Results are normalized so the AI receives title, URL and evidence together.
-    """
     q=clean(query)
     if not q: return []
     out=[]
-    headers={'User-Agent':'KOJA-AFRICA-Research/3.0 (+https://koja-africa.onrender.com)'}
-    # First try DuckDuckGo's HTML results endpoint. It provides actual search-result
-    # pages rather than only the small Instant Answer knowledge base.
     try:
-        r=requests.get('https://html.duckduckgo.com/html/',params={'q':q},timeout=12,headers=headers)
+        r=requests.get('https://api.duckduckgo.com/',params={'q':q,'format':'json','no_html':1,'skip_disambig':1},timeout=10,headers={'User-Agent':'KOJA-AFRICA-Research/2.0'})
         if r.ok:
-            html=r.text
-            # Keep this dependency-free: extract result anchors/snippets from DDG HTML.
-            blocks=re.findall(r'<div[^>]+class="result[^>]*>(.*?)</div>\s*</div>',html,re.I|re.S)
-            if not blocks:
-                blocks=re.findall(r'<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>\s*(?:<a[^>]+class="result__snippet"[^>]*>(.*?)</a>)?',html,re.I|re.S)
-                for m in blocks:
-                    url=clean(re.sub(r'<.*?>',' ',m[0])); title=clean(re.sub(r'<.*?>',' ',m[1])); snippet=clean(re.sub(r'<.*?>',' ',m[2] or ''))
-                    if url and title:
-                        out.append({'source':'Web','title':title,'url':url,'snippet':snippet or title,'year':None,'source_type':'website'})
-            else:
-                for block in blocks:
-                    am=re.search(r'class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',block,re.I|re.S)
-                    if not am: continue
-                    url=unquote(am.group(1)); title=clean(re.sub(r'<.*?>',' ',am.group(2)))
-                    sm=re.search(r'class="result__snippet"[^>]*>(.*?)</a>',block,re.I|re.S)
-                    snippet=clean(re.sub(r'<.*?>',' ',sm.group(1))) if sm else title
-                    if title: out.append({'source':'Web','title':title,'url':url,'snippet':snippet,'year':None,'source_type':'website'})
-    except Exception as exc:
-        logger.warning('Web HTML research failed: %s',exc)
-    # Instant Answer is a useful fallback and often gives a clean canonical URL.
-    if len(out)<max(3,limit//2):
-        try:
-            r=requests.get('https://api.duckduckgo.com/',params={'q':q,'format':'json','no_html':1,'skip_disambig':1},timeout=10,headers=headers)
-            if r.ok:
-                d=r.json()
-                if d.get('AbstractText'):
-                    out.append({'source':'Web','title':d.get('Heading') or q,'url':d.get('AbstractURL') or 'https://duckduckgo.com/?q='+quote(q),'snippet':d.get('AbstractText'),'year':None,'source_type':'website'})
-                for item in d.get('RelatedTopics',[]):
-                    if item.get('FirstURL') and item.get('Text'):
-                        out.append({'source':'Web','title':clean(item.get('Text')),'url':item.get('FirstURL'),'snippet':clean(item.get('Text')),'year':None,'source_type':'website'})
-        except Exception as exc: logger.warning('Web instant-answer research failed: %s',exc)
+            d=r.json()
+            if d.get('AbstractText'):
+                out.append({'source':'Web','title':d.get('Heading') or q,'url':d.get('AbstractURL') or 'https://duckduckgo.com/?q='+quote(q),'snippet':d.get('AbstractText'),'year':None})
+            for item in d.get('RelatedTopics',[]):
+                if item.get('FirstURL') and item.get('Text'):
+                    out.append({'source':'Web','title':item.get('Text'),'url':item.get('FirstURL'),'snippet':item.get('Text'),'year':None})
+    except Exception as exc: logger.warning('Web research failed: %s',exc)
     return out[:limit]
 
 def research_wikipedia(query, limit=6):
@@ -1259,33 +1229,18 @@ def _openai_text(prompt, system_prompt, max_output_tokens=900, timeout=40):
 
 def research_ai_summary(query, results):
     if not results: return ''
-    source_text='\n\n'.join(
-        f"[{i+1}] {r.get('title','')} | {r.get('source','')} | {r.get('year') or 'n.d.'}\n"
-        f"Authors: {', '.join(_names(r))}\nJournal/Publisher: {r.get('journal') or r.get('publisher') or ''}\n"
-        f"Evidence: {clean(r.get('snippet',''))[:2200]}\nURL: {r.get('url','')}"
-        for i,r in enumerate(results[:25])
+    source_text='\n\n'.join(f"[{i+1}] {r.get('title','')} ({r.get('source','')})\n{r.get('snippet','')[:1200]}" for i,r in enumerate(results[:10]))
+    text=_openai_text(
+        f"Question: {query}\n\nSources:\n{source_text}\n\nWrite a concise research summary with 3-5 key findings and a short evidence note.",
+        'You are KOJA Research. Summarize only the supplied sources. Do not invent facts. Cite source numbers like [1] [2]. State when evidence is limited.',
+        700, 30
     )
-    system=('You are KOJA Research, a rigorous evidence-grounded research assistant. '
-            'Answer the research question using ONLY the supplied retrieved evidence. '
-            'Do not invent facts, citations, dates, authors, URLs, quotations, statistics or conclusions. '
-            'Every substantive factual claim must end with one or more source-number citations such as [1] or [2][4]. '
-            'If sources disagree, explain the disagreement. If evidence is insufficient, explicitly identify what is missing. '
-            'Produce deep, educational explanations rather than a short summary. Define important concepts, explain mechanisms and relationships, '
-            'compare perspectives where evidence permits, explain why findings matter, discuss practical or theoretical implications, '
-            'and identify limitations and unanswered questions. Use clear connected paragraphs with useful headings. '
-            'Never pad the answer with generic statements.')
-    prompt=(f"Question: {query}\n\nRetrieved evidence:\n{source_text}\n\n"
-            'Write a substantial research answer suitable for a student or researcher. Start with a clear direct answer, then develop the explanation in depth. '
-            'Use headings such as Overview, Key Concepts, Detailed Explanation, Evidence and Findings, Comparison or Debate, Implications, Limitations, '
-            'and Conclusion when appropriate. Explain technical terms in plain language when first introduced. '
-            'Citations must appear immediately after the claims they support. Do not include a bibliography here because KOJA displays the verified source list separately.')
-    text=_openai_text(prompt,system,5000,60)
     if text: return text
     highlights=[]
-    for i,r in enumerate(results[:10],1):
+    for r in results[:5]:
         ss=clean(r.get('snippet','')).replace('\n',' ')
-        if ss: highlights.append(f"[{i}] {r.get('title','Source')}: {ss[:700]}")
-    return 'AI deep research is not configured. Retrieved evidence:\n\n'+'\n\n'.join(highlights)
+        if ss: highlights.append(f"{r.get('title','Source')}: {ss[:300]}")
+    return 'AI summary is not configured. Source-based highlights:\n\n'+'\n\n'.join(highlights)
 
 
 # KOJA V4 citation engine: source-type-aware bibliography fields
@@ -1324,40 +1279,18 @@ def make_bibliography(results,style): return [(i+1,make_reference(r,style,i+1)) 
 def research_ai_notes(query, results, style='apa'):
     if not results: return 'No sufficiently relevant evidence was retrieved for this topic.'
     bundle=[]
-    for i,r in enumerate(results[:25],1):
-        bundle.append(f"[{i}] {r.get('title','')} | {r.get('source','')} | {r.get('year') or 'n.d.'}\nAuthors: {', '.join(_names(r))}\nJournal/Publisher: {r.get('journal') or r.get('publisher') or ''}\nEvidence: {clean(r.get('snippet',''))[:2200]}\nURL: {r.get('url','')}")
-    prompt=(f"Write DEEP RESEARCH NOTES on: {query}\n\nUse ONLY the supplied evidence. Do not invent facts, figures, quotations, authors, dates, references, mechanisms or conclusions. Every substantive factual claim must have one or more source-number citations such as [1] immediately after the claim. If evidence is insufficient, explicitly say so. If sources conflict, explain the conflict and attribute each position.\n\nThe notes must be substantially explanatory, not a short summary. Aim for a detailed study/research guide with connected academic paragraphs. Explain what concepts mean, how they relate, why the evidence supports particular conclusions, what alternative interpretations exist, and what the findings imply. Use examples only when they are supported by the supplied evidence.\n\nUse this structure where appropriate:\n# Research Notes: {query}\n## 1. Overview and direct answer\n## 2. Key concepts and definitions\n## 3. Background and context\n## 4. Detailed explanation of the issue\n## 5. Major findings and themes\n## 6. Evidence and critical discussion\n## 7. Relationships, mechanisms and comparisons\n## 8. Practical, theoretical and/or policy implications\n## 9. Limitations and evidence gaps\n## 10. Conclusion\n\nFor each major section, provide multiple developed paragraphs where the evidence permits. Do not turn the notes into disconnected bullet fragments. Use the selected citation style ({CITATION_STYLES.get(style,style)}) only for the reference list, while keeping source-number citations [1], [2] in the body so every claim can be traced.\n\nSOURCES:\n" + '\n\n'.join(bundle))
-    text=_openai_text(prompt,'You are KOJA Deep Research Notes. Be rigorous, explanatory, evidence-bound and academically useful. Never fabricate source details.',6500,75)
+    for i,r in enumerate(results[:12],1):
+        bundle.append(f"[{i}] {r.get('title','')} | {r.get('source','')} | {r.get('year') or 'n.d.'}\nAuthors: {', '.join(_names(r))}\nEvidence: {clean(r.get('snippet',''))[:1600]}\nURL: {r.get('url','')}")
+    prompt=(f'Write high-quality research notes on: {query}\n\nUse ONLY the evidence supplied below. Do not invent facts, figures, quotations, authors, dates, references or conclusions. Every substantive factual claim must have one or more source-number citations such as [1] immediately after the claim. If evidence is insufficient, say so.\n\nStructure the notes with: Title; Introduction; Key concepts/background; Main findings/themes; Evidence and discussion; Implications; Conclusion; Research gaps/limitations only if supported. Write connected explanatory paragraphs, like strong academic study notes, not disconnected bullet fragments. Use the selected citation style for the reference list: {CITATION_STYLES.get(style,style)}.\n\nSOURCES:\n' + '\n\n'.join(bundle))
+    text=_openai_text(prompt,'You are KOJA Research Notes. Be evidence-bound, clear, academic and concise. Never fabricate citations or source details.',2200,45)
     if text: return text
-    lines=[f"# Research Notes: {query}","","## 1. Overview and direct answer",f"The search retrieved {len(results)} relevant records. The detailed notes below are limited to the evidence available in those records.","","## 2. Evidence by source"]
-    for i,r in enumerate(results[:15],1):
+    lines=[f"# Research Notes: {query}","","## Introduction",f"The search retrieved {len(results)} relevant records. The notes below are limited to the evidence contained in those records.",""]
+    for i,r in enumerate(results[:8],1):
         evidence=clean(r.get('snippet',''))
-        if evidence: lines += [f"### Source {i}: {r.get('title','Untitled')} [{i}]",evidence,"","The original source should be opened before using this evidence in formal academic work.",""]
-    lines += ["## 10. Conclusion","The available evidence should be interpreted in light of the coverage and limitations of the retrieved sources."]
+        if evidence: lines += [f"## {i}. {r.get('title','Untitled')} [{i}]",evidence,""]
+    lines += ["## Conclusion","The available evidence is source-dependent and should be checked against the original publications before formal submission."]
     return '\n'.join(lines)
 
-
-@app.route('/api/research')
-def research_api():
-    """JSON research endpoint for the web/mobile UI and future app clients."""
-    q=clean(request.args.get('q',''))
-    if not q: return jsonify({'ok':False,'error':'A research question is required.'}),400
-    source_filter=clean(request.args.get('source','all')).lower() or 'all'
-    sort=clean(request.args.get('sort','relevance')).lower() or 'relevance'
-    year=_research_year(request.args.get('year',''))
-    author=clean(request.args.get('author',''))
-    style=clean(request.args.get('style','apa')).lower() or 'apa'
-    if style not in CITATION_STYLES: style='apa'
-    raw=research_web(q,10)+research_wikipedia(q,6)+research_openalex(q,12)+research_crossref(q,12,author or None)+research_local_documents(q,12)
-    results=_research_deduplicate(raw,q)
-    results=_research_filter(results,source_filter,year,sort)
-    results=[r for r in results if not request.args.get('source_type') or request.args.get('source_type')=='all' or _source_type(r)==request.args.get('source_type')]
-    results=results[:25]
-    summary=research_ai_summary(q,results)
-    clean_results=[]
-    for i,r in enumerate(results,1):
-        clean_results.append({k:v for k,v in r.items() if not k.startswith('_')} | {'number':i,'citation':make_intext(r,style,i),'reference':make_reference(r,style,i)})
-    return jsonify({'ok':True,'query':q,'count':len(clean_results),'summary':summary,'citation_style':CITATION_STYLES[style],'results':clean_results,'references':[x['reference'] for x in clean_results]})
 
 @app.route('/research/notes')
 def research_notes():
@@ -1365,13 +1298,13 @@ def research_notes():
     if style not in CITATION_STYLES: style='apa'
     results=[]
     if q:
-        raw=research_web(q,10)+research_wikipedia(q,8)+research_openalex(q,None,15)+research_crossref(q,None,None,15)+research_local_documents(q,15)
-        results=_research_deduplicate(raw,q)[:25]
+        raw=research_web(q,6)+research_wikipedia(q,5)+research_openalex(q,None,10)+research_crossref(q,None,None,10)+research_local_documents(q,10)
+        results=_research_deduplicate(raw,q)[:12]
     notes=research_ai_notes(q,results,style) if q else ''
     bibliography=make_bibliography(results,style) if results else []
     return render_page('Research Notes', r'''<style>
 .notes-shell{max-width:1000px;margin:auto}.notes-toolbar{display:grid;grid-template-columns:1fr auto auto;gap:10px}.notes-body{line-height:1.8;font-size:1rem}.notes-body pre{white-space:pre-wrap;font:inherit}.ref{margin:10px 0}.note-actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}@media(max-width:700px){.notes-toolbar{grid-template-columns:1fr}.notes-body{font-size:.97rem}}
-</style><div class="notes-shell"><div class="hero"><h2>📝 KOJA Research Notes</h2><p>Build deep, explained research notes from web, academic and KOJA evidence. The goal is understanding—not just a short summary.</p><form method="get" action="{{ url_for('research_notes') }}" class="notes-toolbar"><input name="q" value="{{ q }}" placeholder="Enter your research topic…" required><select name="style">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select><button class="btn">Write Notes</button></form></div>{% if q %}<div class="note-actions"><button class="btn secondary" type="button" onclick="copyKOJANotes()">Copy Notes</button><button class="btn secondary" type="button" onclick="window.print()">Print</button><a class="btn secondary" href="{{ url_for('research',q=q,style=style) }}">View Evidence</a></div><div class="card"><strong>{{ results|length }} ranked evidence sources</strong></div><div id="koja-notes" class="card notes-body"><pre>{{ notes }}</pre></div>{% if bibliography %}<div class="card"><h3>References</h3>{% for n,ref in bibliography %}<div class="ref">{{ n }}. {{ ref|safe }}</div>{% endfor %}</div>{% endif %}<script>function copyKOJANotes(){const el=document.getElementById('koja-notes');navigator.clipboard.writeText(el.innerText).then(()=>alert('Research notes copied.')).catch(()=>alert('Select and copy the notes manually.'))}</script>{% else %}<div class="card"><h3>How KOJA writes notes</h3><p>1. Searches multiple evidence sources.</p><p>2. Removes duplicates and ranks relevance.</p><p>3. Gives the AI only the strongest evidence.</p><p>4. Produces connected academic paragraphs with source citations.</p><p>5. Generates a bibliography in your selected citation style.</p></div>{% endif %}</div>''',q=q,style=style,citation_styles=CITATION_STYLES,results=results,notes=notes,bibliography=bibliography)
+</style><div class="notes-shell"><div class="hero"><h2>📝 KOJA Research Notes</h2><p>Turn ranked research evidence into clear, connected academic notes.</p><form method="get" action="{{ url_for('research_notes') }}" class="notes-toolbar"><input name="q" value="{{ q }}" placeholder="Enter your research topic…" required><select name="style">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select><button class="btn">Write Notes</button></form></div>{% if q %}<div class="note-actions"><button class="btn secondary" type="button" onclick="copyKOJANotes()">Copy Notes</button><button class="btn secondary" type="button" onclick="window.print()">Print</button><a class="btn secondary" href="{{ url_for('research',q=q,style=style) }}">View Evidence</a></div><div class="card"><strong>{{ results|length }} ranked evidence sources</strong></div><div id="koja-notes" class="card notes-body"><pre>{{ notes }}</pre></div>{% if bibliography %}<div class="card"><h3>References</h3>{% for n,ref in bibliography %}<div class="ref">{{ n }}. {{ ref|safe }}</div>{% endfor %}</div>{% endif %}<script>function copyKOJANotes(){const el=document.getElementById('koja-notes');navigator.clipboard.writeText(el.innerText).then(()=>alert('Research notes copied.')).catch(()=>alert('Select and copy the notes manually.'))}</script>{% else %}<div class="card"><h3>How KOJA writes notes</h3><p>1. Searches multiple evidence sources.</p><p>2. Removes duplicates and ranks relevance.</p><p>3. Gives the AI only the strongest evidence.</p><p>4. Produces connected academic paragraphs with source citations.</p><p>5. Generates a bibliography in your selected citation style.</p></div>{% endif %}</div>''',q=q,style=style,citation_styles=CITATION_STYLES,results=results,notes=notes,bibliography=bibliography)
 
 @app.route('/research')
 def research():
@@ -1379,20 +1312,39 @@ def research():
     if style not in CITATION_STYLES: style='apa'
     results=[]
     if q:
-        results += research_web(q,10)+research_wikipedia(q,8)+research_openalex(q,year,15)+research_crossref(q,year,author,15)+research_local_documents(q,15)
+        results += research_web(q,8)+research_wikipedia(q,6)+research_openalex(q,year,10)+research_crossref(q,year,author,10)+research_local_documents(q,12)
         results=_research_deduplicate(results,q)
         results=_research_filter(results,source_filter,year,sort)
         if source_type!='all': results=[r for r in results if _source_type(r)==source_type]
-        results=results[:25]
     summary=research_ai_summary(q,results) if q else ''
     bibliography=make_bibliography(results,style) if results else []
     return render_page('Research', r'''
 <style>
-.research-shell{max-width:1120px;margin:auto}.research-search{display:grid;grid-template-columns:1fr auto;gap:10px}.research-search input{min-width:0}.research-filters{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}.research-filters label{font-size:.82rem;font-weight:700}.research-filters select,.research-filters input{width:100%;margin-top:5px}.research-tabs{display:flex;gap:8px;overflow:auto;margin:14px 0}.research-tabs a{white-space:nowrap}.research-summary{border-left:4px solid #62a8ff}.research-summary pre{white-space:pre-wrap;font:inherit;line-height:1.85;font-size:1.02rem}.research-count{font-weight:700}.research-empty{padding:28px;text-align:center}.deep-label{font-size:.78rem;font-weight:800;letter-spacing:.02em;opacity:.75}.source-list{display:flex;flex-direction:column;gap:7px}.source-row{display:flex;align-items:center;gap:10px;padding:9px 10px;border:1px solid rgba(127,127,127,.18);border-radius:12px}.source-icon{width:30px;height:30px;min-width:30px;border-radius:50%;display:grid;place-items:center;font-size:.9rem;background:rgba(80,150,255,.12)}.source-row a{font-weight:700;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.source-row small{margin-left:auto;opacity:.65;white-space:nowrap}.source-details{margin-left:40px;margin-top:-3px;margin-bottom:4px}.source-details summary{cursor:pointer;font-size:.8rem;opacity:.7}.source-details p{line-height:1.6;font-size:.9rem}.deep-notes{line-height:1.9;font-size:1.02rem}.deep-notes h1,.deep-notes h2,.deep-notes h3{line-height:1.35;margin-top:1.5em}.deep-notes p{margin:0 0 1em}.notes-body{line-height:1.9;font-size:1.02rem}.notes-body pre{white-space:pre-wrap;font:inherit;line-height:1.9}.note-actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}@media(max-width:700px){.research-search{grid-template-columns:1fr}.research-filters{grid-template-columns:1fr 1fr}.research-summary pre,.deep-notes,.notes-body{font-size:.98rem}.source-row small{display:none}}
+.research-shell{max-width:1100px;margin:auto}.research-search{display:grid;grid-template-columns:1fr auto;gap:10px}.research-search input{min-width:0}.research-filters{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-top:12px}.research-filters label{font-size:.82rem;font-weight:700}.research-filters select,.research-filters input{width:100%;margin-top:5px}.research-tabs{display:flex;gap:8px;overflow:auto;margin:14px 0}.research-tabs a{white-space:nowrap}.source-badge{display:inline-block;padding:5px 9px;border-radius:999px;background:rgba(80,150,255,.14);font-size:.78rem;font-weight:800}.research-result h3{line-height:1.35}.research-meta{font-size:.82rem;opacity:.8}.research-summary{border-left:4px solid #62a8ff}.research-summary pre{white-space:pre-wrap;font:inherit;line-height:1.6}.research-count{font-weight:700}.research-empty{padding:28px;text-align:center}@media(max-width:700px){.research-search{grid-template-columns:1fr}.research-filters{grid-template-columns:1fr 1fr}.research-result{padding:16px!important}}
 </style>
-<div class="research-shell"><div class="hero"><h2>🔎 KOJA Research Engine</h2><p>Search the web, scholarly literature and your KOJA document collection from one research workspace.</p><form method="get" action="{{ url_for('research') }}" class="research-search" style="margin-top:18px"><input name="q" value="{{ q }}" placeholder="Ask a question, topic, paper, author or subject…" aria-label="Research search"><button class="btn" type="submit">Search</button></form>
-<div class="research-filters"><label>Source<select name="source" form="research-filter-form"><option value="all" {% if source_filter=='all' %}selected{% endif %}>All sources</option><option value="academic" {% if source_filter=='academic' %}selected{% endif %}>Academic</option><option value="web" {% if source_filter=='web' %}selected{% endif %}>Web</option><option value="wikipedia" {% if source_filter=='wikipedia' %}selected{% endif %}>Wikipedia</option><option value="koja" {% if source_filter=='koja' %}selected{% endif %}>KOJA Documents</option></select></label><label>Year<input name="year" form="research-filter-form" value="{{ year or '' }}" placeholder="e.g. 2025" inputmode="numeric"></label><label>Author<input name="author" form="research-filter-form" value="{{ author }}" placeholder="Academic author"></label><label>Citation style<select name="style" form="research-filter-form">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Source type<select name="source_type" form="research-filter-form"><option value="all">All source types</option>{% for k,v in source_types.items() %}<option value="{{k}}" {% if source_type==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Sort<select name="sort" form="research-filter-form"><option value="relevance" {% if sort=='relevance' %}selected{% endif %}>Relevance</option><option value="date" {% if sort=='date' %}selected{% endif %}>Newest first</option><option value="citations" {% if sort=='citations' %}selected{% endif %}>Most cited</option></select></label></div><form id="research-filter-form" method="get" action="{{ url_for('research') }}"><input type="hidden" name="q" value="{{ q }}"></form></div>
-{% if q %}<div class="note-actions"><a class="btn" href="{{ url_for('research_notes',q=q,style=style) }}">📝 Write Research Notes from this topic</a><button class="btn secondary" type="button" onclick="copyResearchAnswer()">Copy answer</button></div><div class="research-tabs"><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}">🎓 Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}">🌐 Web</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}">📁 KOJA Documents</a></div><div class="card"><span class="research-count">{{ results|length }} results</span> for <strong>“{{ q }}”</strong></div>{% if summary %}<div id="koja-research-answer" class="card research-summary"><h3>🧠 KOJA Deep Research Answer</h3><p class="deep-label">DETAILED, EVIDENCE-GROUNDED EXPLANATION</p><pre>{{ summary }}</pre><p class="small">AI summaries use configured AI credentials when available; otherwise KOJA shows source-based highlights. Verify important claims against original sources.</p></div>{% endif %}<div class="card"><div class="deep-label">SOURCES</div><div class="source-list">{% for r in results %}<div><div class="source-row"><span class="source-icon" title="{{ r.source }}">{% if r.source=='Academic' %}🎓{% elif r.source=='Wikipedia' %}W{% elif r.source=='KOJA Documents' %}📁{% else %}🌐{% endif %}</span><a href="{{ r.url or '#' }}" {% if r.url %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a><small>{% if r.year %}{{ r.year }}{% endif %} · [{{ loop.index }}]</small></div><details class="source-details"><summary>Evidence</summary><p>{{ r.snippet }}</p><p><strong>{{ make_intext(r,style,loop.index) }}</strong></p></details></div>{% endfor %}</div></div>{% if results %}<div class="card"><div class="deep-label">DEEP SOURCE-BY-SOURCE EVIDENCE</div>{% for r in results %}<details class="source-details" style="margin:10px 0"><summary>[{{ loop.index }}] {{ r.title }}</summary><p>{{ r.snippet }}</p></details>{% endfor %}</div>{% endif %}{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endfor %}{% if bibliography %}<div class="card"><h2>References</h2><p class="small">Generated from available source metadata. Verify against the original source.</p>{% for n,ref in bibliography %}<p style="padding-left:28px;text-indent:-28px;line-height:1.6">{{ ref|safe }}</p>{% endfor %}</div>{% endif %}{% else %}<div class="grid"><div class="card"><h3>🌐 Web Discovery</h3><p>Discover general web knowledge.</p></div><div class="card"><h3>🎓 Academic Search</h3><p>OpenAlex and Crossref provide scholarly metadata, authors, years and citation information.</p></div><div class="card"><h3>📁 KOJA Documents</h3><p>Search documents already connected to your KOJA Supabase database.</p></div><div class="card"><h3>🧠 AI Research Summary</h3><p>Configure an AI API key to synthesize retrieved evidence with source-number citations.</p></div></div>{% endif %}</div><script>function copyResearchAnswer(){const el=document.getElementById('koja-research-answer');if(!el)return;navigator.clipboard.writeText(el.innerText).then(()=>alert('Research answer copied.')).catch(()=>alert('Select and copy the answer manually.'));}</script>
+<div class="research-shell">
+<div class="hero"><h2>🔎 KOJA Research Engine</h2><p>Build deep, explained research notes from web, academic and KOJA evidence. The goal is understanding—not just a short summary.</p></div>
+<div class="card"><form method="get">
+<div class="research-search"><input name="q" value="{{ q }}" placeholder="Ask a research question, topic, paper title or author" required><button>Search</button></div>
+<div class="research-filters">
+<select name="source"><option value="all" {% if source_filter=='all' %}selected{% endif %}>All sources</option><option value="academic" {% if source_filter=='academic' %}selected{% endif %}>🎓 Academic</option><option value="web" {% if source_filter=='web' %}selected{% endif %}>🌐 Web</option><option value="wikipedia" {% if source_filter=='wikipedia' %}selected{% endif %}>W Wikipedia</option><option value="koja" {% if source_filter=='koja' %}selected{% endif %}>📁 KOJA Documents</option></select>
+<input name="year" value="{{ year }}" placeholder="Year">
+<input name="author" value="{{ author }}" placeholder="Author">
+<select name="style">{% for k,v in citation_styles.items() %}<option value="{{ k }}" {% if style==k %}selected{% endif %}>{{ v }}</option>{% endfor %}</select>
+<select name="source_type"><option value="">All source types</option>{% for k,v in source_types.items() %}<option value="{{ k }}" {% if source_type==k %}selected{% endif %}>{{ v }}</option>{% endfor %}</select>
+<select name="sort"><option value="relevance" {% if sort=='relevance' %}selected{% endif %}>Relevance</option><option value="newest" {% if sort=='newest' %}selected{% endif %}>Newest first</option><option value="cited" {% if sort=='cited' %}selected{% endif %}>Most cited</option></select>
+</div></form></div>
+{% if q %}
+<div class="note-actions"><a class="btn" href="{{ url_for('research_notes',q=q,style=style) }}">📝 Write Research Notes from this topic</a><button class="btn secondary" type="button" onclick="copyResearchAnswer()">Copy answer</button></div>
+<div class="research-tabs"><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}">🎓 Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}">🌐 Web</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}">📁 KOJA Documents</a></div>
+<div class="card"><span class="research-count">{{ results|length }} results</span> for <strong>“{{ q }}”</strong></div>
+{% if summary %}<div id="koja-research-answer" class="card research-summary"><h3>🧠 KOJA Deep Research Answer</h3><p class="deep-label">DETAILED, EVIDENCE-GROUNDED EXPLANATION</p><pre>{{ summary }}</pre><p class="small">AI summaries use configured AI credentials when available; otherwise KOJA shows source-based highlights. Verify important claims against original sources.</p></div>{% endif %}
+{% if results %}
+<div class="card"><div class="deep-label">SOURCES</div><div class="source-list">{% for r in results %}<div><div class="source-row"><span class="source-icon" title="{{ r.source }}">{% if r.source=='Academic' %}🎓{% elif r.source=='Wikipedia' %}W{% elif r.source=='KOJA Documents' %}📁{% else %}🌐{% endif %}</span><a href="{{ r.url or '#' }}" {% if r.url %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a><small>{% if r.year %}{{ r.year }}{% endif %} · [{{ loop.index }}]</small></div><details class="source-details"><summary>Evidence</summary><p>{{ r.snippet }}</p><p><strong>{{ make_intext(r,style,loop.index) }}</strong></p></details></div>{% endfor %}</div></div>
+<div class="card"><div class="deep-label">DEEP SOURCE-BY-SOURCE EVIDENCE</div>{% for r in results %}<details class="source-details" style="margin:10px 0"><summary>[{{ loop.index }}] {{ r.title }}</summary><p>{{ r.snippet }}</p></details>{% endfor %}</div>
+{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endif %}
+{% if bibliography %}<div class="card"><h2>References</h2><p class="small">Generated from available source metadata. Verify against the original source.</p>{% for n,ref in bibliography %}<p style="padding-left:28px;text-indent:-28px;line-height:1.6">{{ ref|safe }}</p>{% endfor %}</div>{% endif %}
+{% else %}<div class="grid"><div class="card"><h3>🌐 Web Discovery</h3><p>Discover general web knowledge.</p></div><div class="card"><h3>🎓 Academic Search</h3><p>OpenAlex and Crossref provide scholarly metadata, authors, years and citation information.</p></div><div class="card"><h3>📁 KOJA Documents</h3><p>Search documents already connected to your KOJA Supabase database.</p></div><div class="card"><h3>🧠 AI Research Summary</h3><p>Configure an AI API key to synthesize retrieved evidence with source-number citations.</p></div></div>{% endif %}</div><script>function copyResearchAnswer(){const el=document.getElementById('koja-research-answer');if(!el)return;navigator.clipboard.writeText(el.innerText).then(()=>alert('Research answer copied.')).catch(()=>alert('Select and copy the answer manually.'));}</script>
 ''',q=q,results=results,summary=summary,source_filter=source_filter,sort=sort,year=year,author=author,style=style,source_type=source_type,citation_styles=CITATION_STYLES,source_types=SOURCE_TYPES,bibliography=bibliography,make_intext=make_intext,SITE_URL=SITE_URL)
 
 

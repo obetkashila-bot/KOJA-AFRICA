@@ -1,18 +1,16 @@
-# KOJA AFRICA — Research Engine V3
+# KOJA AFRICA — Research Engine Fixed V4
 
-KOJA Research Engine combines live web discovery, Wikipedia, OpenAlex, Crossref and KOJA document records into one research workspace. Retrieved evidence is deduplicated and ranked before AI synthesis.
+This package fixes the Research Engine Jinja template error that caused `/research` to return HTTP 500.
 
-## AI configuration
-Set `OPENAI_API_KEY` (or `AI_API_KEY`) and `AI_MODEL`. The default model is `gpt-5.6-luna`. The API endpoint defaults to the OpenAI Responses API.
+## Deploy on Render
+1. Replace the repository `app.py` with this file.
+2. Keep/update `requirements.txt`.
+3. Commit and push to GitHub.
+4. Let Render redeploy.
+5. Open `/health`, then `/research`.
 
-## Supabase
-Set `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, and `SUPABASE_STORAGE_BUCKET` as required by the rest of KOJA.
+The Research Engine keeps the deep research features: web, academic, Wikipedia and KOJA evidence, source-number citations, deep source evidence, compact source rows, AI synthesis, and citation-style references.
 
-## Run
-`pip install -r requirements.txt`
-`gunicorn app:app --workers 2 --threads 4 --timeout 120`
-
-## Research API
-`GET /api/research?q=your%20topic&style=apa`
-
-The API returns ranked results, source numbers, in-text citations, references and an evidence-grounded AI answer.
+## Verification performed
+- Python compilation: PASS
+- Jinja research template parse: PASS
