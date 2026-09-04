@@ -400,3 +400,34 @@ alter table koja_marketplace_posts add column if not exists moderated_at timesta
 alter table koja_reports add column if not exists moderation_action text;
 alter table koja_reports add column if not exists reviewed_by uuid;
 alter table koja_reports add column if not exists reviewed_at timestamptz;
+
+-- ============================================================
+-- KOJA AFRICA V7: real multi-user live classroom signaling
+-- and marketplace product reviews
+-- ============================================================
+create table if not exists public.koja_live_class_signals (
+ id uuid primary key default gen_random_uuid(),
+ class_id uuid not null references public.koja_live_classes(id) on delete cascade,
+ sender_id uuid not null,
+ recipient_id uuid not null,
+ signal_type text not null,
+ payload jsonb,
+ created_at timestamptz default now()
+);
+create index if not exists koja_live_class_signals_recipient_idx
+ on public.koja_live_class_signals(class_id,recipient_id,created_at);
+create index if not exists koja_live_class_signals_cleanup_idx
+ on public.koja_live_class_signals(created_at);
+
+create table if not exists public.koja_marketplace_product_reviews (
+ id uuid primary key default gen_random_uuid(),
+ product_id uuid not null references public.koja_marketplace_products(id) on delete cascade,
+ buyer_id uuid not null,
+ rating integer not null check(rating between 1 and 5),
+ review_text text default '',
+ created_at timestamptz default now(),
+ updated_at timestamptz default now(),
+ unique(product_id,buyer_id)
+);
+create index if not exists koja_marketplace_product_reviews_product_idx
+ on public.koja_marketplace_product_reviews(product_id,created_at desc);
