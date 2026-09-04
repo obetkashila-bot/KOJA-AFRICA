@@ -656,6 +656,49 @@ def log_activity(action, description="", user_id=None):
         pass
 
 # ============================================================
+# ADMIN AUTO-APPROVAL SETTINGS
+# Stored in the existing activity_logs table so no new Supabase
+# table/migration is required. Defaults are intentionally OFF.
+# ============================================================
+
+AUTO_APPROVAL_DEFAULTS = {
+    "master": False,
+    "marketplace": False,
+    "drivers": False,
+    "professionals": False,
+    "doctors": False,
+    "teachers": False,
+    "documents": False,
+    "assignments": False,
+    "appointments": False,
+}
+
+def get_auto_approval_settings():
+    settings = dict(AUTO_APPROVAL_DEFAULTS)
+    try:
+        rows = db_select("activity_logs", {"action": "eq.admin_auto_approval_settings"}, order="created_at.desc", limit=1)
+        if rows:
+            desc = str(rows[0].get("description") or "")
+            prefix = "AUTO_APPROVAL_SETTINGS:"
+            if desc.startswith(prefix):
+                saved = json.loads(desc[len(prefix):])
+                if isinstance(saved, dict):
+                    for key in settings:
+                        if key in saved:
+                            settings[key] = bool(saved[key])
+    except Exception as exc:
+        logger.warning("Could not read auto-approval settings: %s", exc)
+    if settings.get("master"):
+        for key in settings:
+            if key != "master":
+                settings[key] = True
+    return settings
+
+def auto_approval_enabled(kind):
+    settings = get_auto_approval_settings()
+    return bool(settings.get("master") or settings.get(kind))
+
+# ============================================================
 # GEOLOCATION
 # ============================================================
 
@@ -2403,9 +2446,9 @@ def marketplace_sell():
             if cext in {'jpg','jpeg','png','webp'}:
                 cu,cerr=upload_storage(cover,'marketplace/covers')
                 if not cerr: cover_url=(cu or {}).get('url')
-        payload={'seller_id':(current_user() or {}).get('id'),'title':title,'description':description,'category':category,'price':price,'currency':'ZMW','cover_url':cover_url,'file_url':(uploaded or {}).get('url'),'file_name':digital.filename,'file_size':getattr(digital,'content_length',None),'is_published':False}
+        payload={'seller_id':(current_user() or {}).get('id'),'title':title,'description':description,'category':category,'price':price,'currency':'ZMW','cover_url':cover_url,'file_url':(uploaded or {}).get('url'),'file_name':digital.filename,'file_size':getattr(digital,'content_length',None),'is_published':auto_approval_enabled('marketplace')}
         _,err=db_insert('koja_marketplace_products',payload)
-        flash('Product submitted. It is hidden until published/approved.' if not err else 'Product could not be saved. Run MARKETPLACE.sql in Supabase first.','success' if not err else 'danger')
+        flash(('Product published automatically.' if auto_approval_enabled('marketplace') else 'Product submitted. It is hidden until published/approved.') if not err else 'Product could not be saved. Run MARKETPLACE.sql in Supabase first.','success' if not err else 'danger')
         return redirect(url_for('marketplace_my'))
     return render_page('Sell Digital Product',r'''<div class="hero"><h1>💼 Sell a Digital Product</h1><p>Upload a digital file and create a marketplace listing. New listings are unpublished until approved.</p></div><div class="card"><form method="post" enctype="multipart/form-data"><label>Product title</label><input name="title" maxlength="180" required placeholder="e.g. Grade 12 Mathematics Revision Guide"><label>Description</label><textarea name="description" maxlength="10000" required placeholder="Explain what the buyer receives..."></textarea><div class="grid"><div><label>Category</label><select name="category">{% for c in categories %}<option>{{ c }}</option>{% endfor %}</select></div><div><label>Price (ZMW)</label><input name="price" type="number" min="0" step="0.01" value="0" required></div></div><label>Digital product file</label><input type="file" name="digital_file" required><label>Cover image (optional)</label><input type="file" name="cover" accept="image/jpeg,image/png,image/webp"><button class="btn" type="submit">📤 Submit Product</button></form><p class="small">Maximum upload size follows KOJA's 15 MB server limit.</p></div>''',categories=MARKETPLACE_CATEGORIES)
 
@@ -2510,7 +2553,7 @@ def professional_register():
             "experience_years": clean(request.form.get("experience_years")) or None, "service_area": clean(request.form.get("service_area")),
             "address": clean(request.form.get("address")), "bio": clean(request.form.get("bio")), "service_description": clean(request.form.get("service_description")),
             "hourly_rate": clean(request.form.get("hourly_rate")) or None, "currency": clean(request.form.get("currency")) or "ZMW",
-            "is_available": False, "is_active": True, "verification_status": "pending", "approval_status": "pending", "created_at": utc_now(), "updated_at": utc_now()
+            "is_available": False, "is_active": True, "verification_status": ("approved" if auto_approval_enabled("professionals") else "pending"), "approval_status": ("approved" if auto_approval_enabled("professionals") else "pending"), "created_at": utc_now(), "updated_at": utc_now()
         }
         if existing: data, error = db_update("service_providers", {"id": existing.get("id")}, payload)
         else: data, error = db_insert("service_providers", payload)
@@ -2519,7 +2562,7 @@ def professional_register():
             if existing: data, error = db_update("service_providers", {"id": existing.get("id")}, fallback)
             else: data, error = db_insert("service_providers", fallback)
         if error: flash("Professional registration failed: " + str(error)[:700], "danger")
-        else: flash("Professional profile submitted for administrator approval.", "success")
+        else: flash("Professional profile approved automatically and is now active." if auto_approval_enabled("professionals") else "Professional profile submitted for administrator approval.", "success")
         return redirect(url_for("professionals"))
     return render_page("Register as Professional", r"""
 <div class="hero"><h2>📝 Register for Any Profession</h2><p>Register your professional service. Your profile becomes visible after administrator approval.</p></div>
@@ -2875,7 +2918,7 @@ def ensure_driver_provider(user):
         "name": full_name,
         "phone": user.get("phone") or None,
         "email": user.get("email") or None,
-        "verification_status": "pending",
+        "verification_status": ("approved" if auto_approval_enabled("drivers") else "pending"),
         "is_available": False,
         "is_active": True
     }
@@ -2936,7 +2979,7 @@ def driver_register():
             "vehicle_registration": vehicle_registration,
             "driving_license_number": driving_license_number,
             "service_area": service_area or None,
-            "verification_status": "pending",
+            "verification_status": ("approved" if auto_approval_enabled("drivers") else "pending"),
         }
 
         if existing and existing.get("id"):
@@ -2950,8 +2993,8 @@ def driver_register():
             flash("Driver registration failed: " + str(error)[:900], "danger")
             return redirect(url_for("driver_register"))
 
-        # A successful driver profile makes the account a driver, but verification
-        # remains pending until an administrator approves the profile.
+        # A successful driver profile makes the account a driver. Verification
+        # is automatic when enabled by the administrator; otherwise it remains pending.
         db_update("profiles", {"id": user["id"]}, {"role": "driver"})
         session["user"]["role"] = "driver"
         session["user"]["driver_provider_id"] = provider_id
@@ -4213,6 +4256,7 @@ def admin():
 <a class="btn" href="{{ url_for('admin_users') }}">Users</a>
 <a class="btn success" href="{{ url_for('admin_assignments') }}">📚 Assignments & Answers</a>
 <a class="btn success" href="{{ url_for('admin_approvals') }}">✅ Approval Centre</a>
+<a class="btn warning" href="{{ url_for('admin_approval_settings') }}">⚙️ Automatic Approval</a>
 <a class="btn" href="{{ url_for('admin_email_settings') }}">📧 Email Management</a>
 <a class="btn" href="{{ url_for('admin_drivers') }}">Drivers</a>
 <a class="btn" href="{{ url_for('admin_deliveries') }}">Deliveries</a>
@@ -4407,6 +4451,49 @@ SMTP_USE_TLS=true</pre>
 </div>
 """, gmail_mode=gmail_mode, smtp_host=SMTP_HOST, smtp_port=SMTP_PORT, smtp_from=SMTP_FROM, configured=email_configured())
 
+@app.route("/admin/approval-settings", methods=["GET", "POST"])
+@admin_required
+def admin_approval_settings():
+    if request.method == "POST":
+        keys = ["master", "marketplace", "drivers", "professionals", "doctors", "teachers", "documents", "assignments", "appointments"]
+        settings = {key: bool(request.form.get(key)) for key in keys}
+        if settings.get("master"):
+            for key in settings:
+                if key != "master":
+                    settings[key] = True
+        try:
+            log_activity("admin_auto_approval_settings", "AUTO_APPROVAL_SETTINGS:" + json.dumps(settings, separators=(",", ":")))
+            flash("Automatic approval settings saved successfully.", "success")
+        except Exception as exc:
+            logger.exception("Saving auto-approval settings failed: %s", exc)
+            flash("Automatic approval settings could not be saved.", "danger")
+        return redirect(url_for("admin_approval_settings"))
+
+    settings = get_auto_approval_settings()
+    return render_page("Automatic Approval Settings", r"""
+<div class="hero"><h2>⚙️ Automatic Approval</h2><p>Choose which new submissions can become active without a manual administrator approval.</p></div>
+<div class="card">
+<p><strong>Current mode:</strong> {{ "Automatic approval enabled" if settings.master else "Manual approval / per-service settings" }}</p>
+<p class="small">This setting affects <strong>new</strong> submissions. Existing pending records remain available in the Approval Centre. Turn on only the categories you are comfortable approving automatically.</p>
+<form method="post">
+<label style="display:block;padding:10px 0"><input type="checkbox" name="master" value="1" style="width:auto" {% if settings.master %}checked{% endif %}> <strong>🚀 Auto-approve everything</strong></label>
+<hr>
+<div class="grid">
+<label><input type="checkbox" name="marketplace" value="1" style="width:auto" {% if settings.marketplace %}checked{% endif %}> 📣 Marketplace products / ads</label>
+<label><input type="checkbox" name="drivers" value="1" style="width:auto" {% if settings.drivers %}checked{% endif %}> 🚚 Driver registrations</label>
+<label><input type="checkbox" name="professionals" value="1" style="width:auto" {% if settings.professionals %}checked{% endif %}> 👩‍💼 Professional registrations</label>
+<label><input type="checkbox" name="doctors" value="1" style="width:auto" {% if settings.doctors %}checked{% endif %}> 🩺 Doctor profiles</label>
+<label><input type="checkbox" name="teachers" value="1" style="width:auto" {% if settings.teachers %}checked{% endif %}> 👩‍🏫 Teacher / Tutor profiles</label>
+<label><input type="checkbox" name="documents" value="1" style="width:auto" {% if settings.documents %}checked{% endif %}> 📚 Documents</label>
+<label><input type="checkbox" name="assignments" value="1" style="width:auto" {% if settings.assignments %}checked{% endif %}> 📝 Assignments</label>
+<label><input type="checkbox" name="appointments" value="1" style="width:auto" {% if settings.appointments %}checked{% endif %}> 📅 Appointments</label>
+</div>
+<button class="btn success" type="submit">💾 Save Automatic Approval</button>
+<a class="btn secondary" href="{{ url_for('admin_approvals') }}">Open Approval Centre</a>
+</form>
+</div>
+""", settings=settings)
+
 @app.route("/admin/approvals")
 @admin_required
 def admin_approvals():
@@ -4435,8 +4522,8 @@ def admin_approvals():
         if pending:
             sections.append({"label": label, "table": table, "kind": kind, "rows": pending, "title_field": title_field})
     return render_page("Admin Approvals", r"""
-<div class="hero"><h2>✅ Approval & Review Centre</h2><p>Review submissions before they become active, published, approved or sent to users.</p></div>
-<div class="card"><p><strong>Workflow:</strong> User submits → Pending review → Admin approves/rejects → KOJA updates status → optional email notification.</p><p class="small">All approval actions are restricted to administrators and recorded in the activity log.</p></div>
+<div class="hero"><h2>✅ Approval & Review Centre</h2><p>Review submissions before they become active, published, approved or sent to users.</p><div class="actions"><a class="btn warning" href="{{ url_for('admin_approval_settings') }}">⚙️ Automatic Approval Settings</a></div></div>
+<div class="card"><p><strong>Workflow:</strong> Manual approval is used unless automatic approval is enabled in <strong>Automatic Approval Settings</strong>.</p><p class="small">All manual approval actions are restricted to administrators and recorded in the activity log.</p></div>
 {% for sec in sections %}
 <div class="card"><h3>{{ sec.label }} <span class="badge">{{ sec.rows|length }} pending</span></h3>
 {% for item in sec.rows %}
