@@ -3069,85 +3069,141 @@ def driver_delivery_action(delivery_id, action):
 # ============================================================
 
 @app.route("/tracking")
-@login_required
 def tracking():
+    # GPS-ONLY: this page is usable without an account for local phone GPS.
+    # When logged in, the same page can also identify the signed-in user.
     user=current_user()
     delivery_id = clean(request.args.get("delivery_id"))
-    return render_page("Live GPS Tracking",r"""
-<div class="hero"><h2>Live Driver GPS</h2><p>Allow browser location permission. Keep this page open while driving.</p></div>
+    return render_page("Live GPS Map",r"""
+<div class="hero"><h2>Live GPS Map</h2><p>See your phone on a live map with roads, places and building detail. You can also plan a road route to a destination.</p></div>
 <div class="card">
-<label>Delivery ID (optional)</label>
-<input id="delivery_id" value="{{ delivery_id or '' }}" placeholder="Assigned delivery ID (automatic when opened from a job)">
-<div class="actions">
-<button class="btn success" onclick="startTracking()">Go Online / Start GPS</button>
-<button class="btn danger" onclick="stopTracking()">Stop GPS / Go Offline</button>
+<div class="grid">
+<div><label>Destination / place (optional)</label><input id="gps-destination" placeholder="e.g. a school, shop, street or address"></div>
+<div><label>Delivery ID (driver only, optional)</label><input id="delivery_id" value="{{ delivery_id or '' }}" placeholder="Assigned delivery ID"></div>
 </div>
-<p id="gps-status">GPS not started.</p>
+<div class="actions">
+<button class="btn success" onclick="startTracking()">📍 Start Live GPS</button>
+<button class="btn" onclick="routeToDestination()">🧭 Route to Destination</button>
+<button class="btn secondary" onclick="locateMe()">🎯 Locate Me</button>
+<button class="btn danger" onclick="stopTracking()">Stop GPS</button>
+</div>
+<p id="gps-status">GPS not started. Location stays local on this phone unless you are a signed-in driver sharing GPS.</p>
 <div id="map"></div>
+<p class="small">Map data: OpenStreetMap. Detailed roads, places and building footprints appear as you zoom in. Routing follows available roads.</p>
 </div>
 <script>
 let watchId=null,marker=null,lastSentAt=0,lastCoords=null,lastRaw=null,isTracking=false;
-let wakeLock=null,offlineQueue=[],lastHeading=null, lastAccuracy=null;
-const GPS_QUEUE_KEY="koja_gps_queue_v10";
-const map=L.map("map").setView([-13.9626,28.3228],6);
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);
+let wakeLock=null,offlineQueue=[],lastHeading=null,lastAccuracy=null,lastDestination=null,destinationMarker=null,routeLine=null;
+const GPS_QUEUE_KEY="koja_gps_queue_v11";
+const LOGGED_IN={{ (user is not none)|tojson }};
+const IS_DRIVER={{ ((user and (user.get('role') in ['driver','admin'] or user.get('is_admin')))|tojson if user else false) }};
+const map=L.map("map",{zoomControl:true}).setView([-13.9626,28.3228],6);
+const osm=L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:20,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);
+const hot=L.tileLayer("https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png",{maxZoom:20,attribution:"&copy; OpenStreetMap contributors, Tiles style by HOT"});
+L.control.layers({"OpenStreetMap detailed":osm,"Humanitarian OSM":hot},null,{collapsed:true}).addTo(map);
 function status(t){document.getElementById("gps-status").textContent=t}
 function loadQueue(){try{offlineQueue=JSON.parse(localStorage.getItem(GPS_QUEUE_KEY)||"[]")}catch(e){offlineQueue=[]}}
 function saveQueue(){try{localStorage.setItem(GPS_QUEUE_KEY,JSON.stringify(offlineQueue.slice(-20)))}catch(e){}}
 async function requestWakeLock(){try{if("wakeLock" in navigator)wakeLock=await navigator.wakeLock.request("screen")}catch(e){}}
-async function flushQueue(){if(!navigator.onLine||!offlineQueue.length)return; const q=offlineQueue.slice(); offlineQueue=[]; saveQueue(); for(const item of q){try{const r=await fetch("/api/driver/location",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(item)}); if(!r.ok)throw Error();}catch(e){offlineQueue.push(item);break}} saveQueue();}
+async function flushQueue(){if(!IS_DRIVER||!navigator.onLine||!offlineQueue.length)return; const q=offlineQueue.slice(); offlineQueue=[]; saveQueue(); for(const item of q){try{const r=await fetch("/api/driver/location",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(item)}); if(!r.ok)throw Error();}catch(e){offlineQueue.push(item);break}} saveQueue();}
 function startTracking(){
  if(!navigator.geolocation){status("This browser does not support GPS.");return}
  if(isTracking){status("GPS is already LIVE.");return}
- isTracking=true; loadQueue(); requestWakeLock(); flushQueue(); status("Requesting high-accuracy GPS…");
+ isTracking=true; loadQueue(); requestWakeLock(); if(IS_DRIVER)flushQueue();
+ status(LOGGED_IN ? (IS_DRIVER?"🟢 LIVE GPS for your driver account — requesting high-accuracy location…":"📍 LIVE GPS for your account — location is shown on this phone.") : "📍 LIVE GPS for this phone — no account required.");
  navigator.geolocation.getCurrentPosition(sendPosition,gpsError,{enableHighAccuracy:true,maximumAge:0,timeout:20000});
  watchId=navigator.geolocation.watchPosition(sendPosition,gpsError,{enableHighAccuracy:true,maximumAge:1000,timeout:20000});
 }
+function locateMe(){if(lastCoords){map.setView(lastCoords,18,{animate:true});return}startTracking()}
 function gpsAge(){return lastSentAt?Math.max(0,Math.round((Date.now()-lastSentAt)/1000)):null}
 function distanceM(a,b){const R=6371000,p=Math.PI/180,la1=a[0]*p,la2=b[0]*p,dla=(b[0]-a[0])*p,dlo=(b[1]-a[1])*p;const x=Math.sin(dla/2)**2+Math.cos(la1)*Math.cos(la2)*Math.sin(dlo/2)**2;return 2*R*Math.atan2(Math.sqrt(x),Math.sqrt(1-x))}
+async function reverseName(lat,lon){try{const r=await fetch(`/api/gps/reverse?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`,{headers:{"Accept":"application/json"}});const d=await r.json();return d.display_name||"Your current location"}catch(e){return "Your current location"}}
 async function sendPosition(position){
  const c=position.coords, lat=Number(c.latitude), lon=Number(c.longitude);
  if(!Number.isFinite(lat)||!Number.isFinite(lon))return;
  const now=Date.now(), acc=Number(c.accuracy);
  if(Number.isFinite(acc)&&acc>150){status("🟡 GPS signal weak — accuracy "+Math.round(acc)+"m. Waiting for a better fix…");return}
- if(lastRaw && Number.isFinite(acc) && Number.isFinite(lastAccuracy) && acc>lastAccuracy*2 && now-lastSentAt<5000)return;
- const moving=Number.isFinite(c.speed)&&c.speed>1.0;
- const minInterval=moving?2200:5000;
- const minMove=moving?3:8;
- if(lastCoords && (now-lastSentAt<minInterval || distanceM(lastCoords,[lat,lon])<minMove))return;
+ if(lastRaw&&Number.isFinite(acc)&&Number.isFinite(lastAccuracy)&&acc>lastAccuracy*2&&now-lastSentAt<5000)return;
+ const moving=Number.isFinite(c.speed)&&c.speed>1.0, minInterval=moving?2200:5000, minMove=moving?3:8;
+ if(lastCoords&&(now-lastSentAt<minInterval||distanceM(lastCoords,[lat,lon])<minMove))return;
  let heading=Number(c.heading);
  if(!Number.isFinite(heading)&&lastCoords){const d=distanceM(lastCoords,[lat,lon]);if(d>=5)heading=Number(lastHeading)}
  if(Number.isFinite(heading)){if(lastHeading!==null){let delta=((heading-lastHeading+540)%360)-180;heading=(lastHeading+delta*.35+360)%360}lastHeading=heading}
- lastCoords=[lat,lon]; lastRaw=[lat,lon]; lastSentAt=now; lastAccuracy=acc;
- if(!marker){marker=L.marker([lat,lon]).addTo(map).bindPopup("Your live driver location");}
- else marker.setLatLng([lat,lon]);
- const el=marker.getElement()?.querySelector("img"); if(el&&Number.isFinite(heading))el.style.transform="rotate("+heading+"deg)";
- map.setView([lat,lon],16);
- const deliveryId=document.getElementById("delivery_id").value.trim();
- const payload={latitude:lat,longitude:lon,accuracy:acc,speed:Number.isFinite(c.speed)?c.speed:null,heading:Number.isFinite(heading)?heading:null,altitude:Number.isFinite(c.altitude)?c.altitude:null,delivery_id:deliveryId||null};
- if(!navigator.onLine){offlineQueue.push(payload);saveQueue();status("🟠 OFFLINE — GPS saved on this phone and will sync when internet returns.");return}
+ lastCoords=[lat,lon];lastRaw=[lat,lon];lastSentAt=now;lastAccuracy=acc;
+ if(!marker){marker=L.marker([lat,lon]).addTo(map).bindPopup("This phone — live GPS");}else marker.setLatLng([lat,lon]);
+ const el=marker.getElement()?.querySelector("img");if(el&&Number.isFinite(heading))el.style.transform="rotate("+heading+"deg)";
+ map.setView([lat,lon],18,{animate:true});
+ const name=await reverseName(lat,lon);marker.setPopupContent("<strong>Live GPS</strong><br>"+name+"<br>Accuracy: "+(acc?Math.round(acc)+" m":"—"));
+ if(lastDestination)updateGpsRoute(false);
+ if(IS_DRIVER){
+  const deliveryId=document.getElementById("delivery_id").value.trim();
+  const payload={latitude:lat,longitude:lon,accuracy:acc,speed:Number.isFinite(c.speed)?c.speed:null,heading:Number.isFinite(heading)?heading:null,altitude:Number.isFinite(c.altitude)?c.altitude:null,delivery_id:deliveryId||null};
+  if(!navigator.onLine){offlineQueue.push(payload);saveQueue();status("🟠 OFFLINE — driver GPS saved on this phone and will sync when internet returns.");return}
+  try{const r=await fetch("/api/driver/location",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});if(!r.ok)throw Error();await r.json();await flushQueue();status("🟢 LIVE DRIVER GPS · "+new Date().toLocaleTimeString()+" · accuracy "+(acc?Math.round(acc)+"m":"—")+(moving?" · moving":" · stationary"));}catch(e){offlineQueue.push(payload);saveQueue();status("🟠 Network unavailable — driver GPS update queued for automatic sync.")}
+ }else status((LOGGED_IN?"🟢 LIVE GPS for your account":"🟢 LIVE GPS on this phone")+" · "+new Date().toLocaleTimeString()+" · accuracy "+(acc?Math.round(acc)+"m":"—"));
+}
+function gpsError(e){if(e.code===1)status("Location permission denied. Allow location permission in browser settings.");else if(e.code===2)status("Device could not determine location.");else if(e.code===3)status("GPS timed out.");else status("GPS error.")}
+function stopTracking(){isTracking=false;if(watchId!==null){navigator.geolocation.clearWatch(watchId);watchId=null}if(wakeLock){try{wakeLock.release()}catch(e){}wakeLock=null}if(IS_DRIVER){fetch("/api/driver/offline",{method:"POST",headers:{"Content-Type":"application/json"}}).then(r=>r.json()).then(d=>status(d.message||"GPS sharing stopped.")).catch(()=>status("GPS stopped locally."))}else status("GPS stopped. The last location remains only on this map until the page is closed.")}
+async function routeToDestination(){
+ const q=document.getElementById("gps-destination").value.trim();
+ if(!q){status("Enter a destination, building, place or address first.");return}
+ if(!lastCoords){status("Getting your current GPS location first…");startTracking();setTimeout(routeToDestination,1800);return}
+ status("🧭 Finding destination and calculating road route…");
  try{
-  const r=await fetch("/api/driver/location",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-  if(!r.ok)throw Error(); const d=await r.json();
-  await flushQueue();
-  status(d.ok?"🟢 LIVE GPS · "+new Date().toLocaleTimeString()+" · accuracy "+(acc?Math.round(acc)+"m":"—")+(moving?" · moving":" · stationary"):(d.message||"GPS update failed."));
- }catch(e){offlineQueue.push(payload);saveQueue();status("🟠 Network unavailable — GPS update queued for automatic sync.");}
+  const r=await fetch("/api/gps/geocode?q="+encodeURIComponent(q),{headers:{"Accept":"application/json"}});const d=await r.json();
+  if(!d.ok||!d.latitude){status(d.message||"Destination not found.");return}
+  lastDestination=[Number(d.latitude),Number(d.longitude)];
+  if(destinationMarker)destinationMarker.setLatLng(lastDestination);else destinationMarker=L.marker(lastDestination).addTo(map).bindPopup("Destination: "+(d.display_name||q));
+  await updateGpsRoute(true);
+ }catch(e){status("Could not calculate the route. Check your internet connection.")}
 }
-function gpsError(e){
- if(e.code===1)status("Location permission denied. Allow location permission in browser settings.");
- else if(e.code===2)status("Device could not determine location.");
- else if(e.code===3)status("GPS timed out."); else status("GPS error.");
+async function updateGpsRoute(force=false){
+ if(!lastCoords||!lastDestination)return;if(!force&&Date.now()-(window.lastGpsRouteAt||0)<8000)return;window.lastGpsRouteAt=Date.now();
+ try{const u=`/api/gps/route?from_lat=${encodeURIComponent(lastCoords[0])}&from_lon=${encodeURIComponent(lastCoords[1])}&to_lat=${encodeURIComponent(lastDestination[0])}&to_lon=${encodeURIComponent(lastDestination[1])}`;const r=await fetch(u,{headers:{"Accept":"application/json"}});const d=await r.json();if(!d.ok||!d.geometry?.coordinates?.length)throw Error(d.message||"No road route");const coords=d.geometry.coordinates.map(x=>[x[1],x[0]]);if(routeLine)routeLine.setLatLngs(coords);else routeLine=L.polyline(coords,{weight:6,opacity:.85}).addTo(map);map.fitBounds(L.latLngBounds(coords),{padding:[40,40]});status("🟢 Road route ready · "+(Number(d.distance_m)/1000).toFixed(1)+" km · ETA "+Math.max(1,Math.round(Number(d.duration_s)/60))+" min");}catch(e){status("GPS is live, but no road route was found between these points.")}
 }
-function stopTracking(){
- isTracking=false; if(watchId!==null){navigator.geolocation.clearWatch(watchId);watchId=null;}
- if(wakeLock){try{wakeLock.release()}catch(e){} wakeLock=null}
- fetch("/api/driver/offline",{method:"POST",headers:{"Content-Type":"application/json"}}).then(r=>r.json()).then(d=>status(d.message||"GPS sharing stopped.")).catch(()=>status("GPS stopped locally."));
-}
-window.addEventListener("online",()=>{status("🟢 Internet restored — syncing GPS…");flushQueue()});
+window.addEventListener("online",()=>{if(IS_DRIVER){status("🟢 Internet restored — syncing driver GPS…");flushQueue()}});
 document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&isTracking)requestWakeLock()});
+window.addEventListener("pagehide",()=>{if(isTracking&&IS_DRIVER){navigator.sendBeacon("/api/driver/offline",new Blob([JSON.stringify({})],{type:"application/json"}))}});
 loadQueue();
 </script>
-""")
+""",delivery_id=delivery_id,user=user)
+
+# GPS-ONLY public geocoding and routing endpoints. They do not expose account data.
+@app.route("/api/gps/geocode")
+def gps_geocode():
+    q=clean(request.args.get("q"))
+    if not q:return jsonify({"ok":False,"message":"A destination is required."}),400
+    try:
+        r=requests.get("https://nominatim.openstreetmap.org/search",params={"format":"jsonv2","limit":1,"q":q},headers={"User-Agent":"KOJA-AFRICA-GPS/11 (https://koja-africa.onrender.com)"},timeout=10)
+        r.raise_for_status();a=r.json()
+        if not a:return jsonify({"ok":False,"message":"Destination not found."}),404
+        x=a[0];return jsonify({"ok":True,"latitude":safe_float(x.get("lat")),"longitude":safe_float(x.get("lon")),"display_name":x.get("display_name",q)})
+    except Exception:
+        return jsonify({"ok":False,"message":"Destination search is temporarily unavailable."}),503
+
+@app.route("/api/gps/reverse")
+def gps_reverse():
+    lat=safe_float(request.args.get("lat"));lon=safe_float(request.args.get("lon"))
+    if lat is None or lon is None or not(-90<=lat<=90 and -180<=lon<=180):return jsonify({"ok":False,"message":"Invalid coordinates."}),400
+    try:
+        r=requests.get("https://nominatim.openstreetmap.org/reverse",params={"format":"jsonv2","lat":lat,"lon":lon,"zoom":18},headers={"User-Agent":"KOJA-AFRICA-GPS/11 (https://koja-africa.onrender.com)"},timeout=10)
+        r.raise_for_status();d=r.json();return jsonify({"ok":True,"display_name":d.get("display_name","Current location")})
+    except Exception:
+        return jsonify({"ok":True,"display_name":"Current location"})
+
+@app.route("/api/gps/route")
+def gps_route_public():
+    try:
+        lat1=safe_float(request.args.get("from_lat"));lon1=safe_float(request.args.get("from_lon"));lat2=safe_float(request.args.get("to_lat"));lon2=safe_float(request.args.get("to_lon"))
+        vals=(lat1,lon1,lat2,lon2)
+        if any(v is None for v in vals) or not(-90<=lat1<=90 and -180<=lon1<=180 and -90<=lat2<=90 and -180<=lon2<=180):return jsonify({"ok":False,"message":"Valid coordinates are required."}),400
+        url=f"https://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}"
+        r=requests.get(url,params={"overview":"full","geometries":"geojson","steps":"false"},timeout=12);r.raise_for_status();data=r.json()
+        if not data.get("routes"):return jsonify({"ok":False,"message":"No road route found."}),404
+        route=data["routes"][0];return jsonify({"ok":True,"distance_m":route.get("distance",0),"duration_s":route.get("duration",0),"geometry":route.get("geometry",{})})
+    except requests.RequestException:return jsonify({"ok":False,"message":"Routing service is temporarily unavailable."}),503
+    except Exception as exc:
+        logger.exception("Public GPS route lookup failed");return jsonify({"ok":False,"message":"Could not calculate route."}),500
 
 @app.route("/api/driver/location", methods=["POST"])
 @driver_required
