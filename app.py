@@ -16,7 +16,7 @@ import requests
 from dotenv import load_dotenv
 from flask import (
     Flask, request, redirect, url_for, session,
-    render_template_string, flash, send_file, jsonify, abort, Response
+    render_template_string, flash, send_file, jsonify, abort
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
@@ -155,64 +155,6 @@ def json_or_empty(response):
 
 def clean(value):
     return str(value or "").strip()
-def storage_object_from_url(media_url):
-    """Return (bucket, object_path) for a Supabase Storage URL or stored path."""
-    u=clean(media_url)
-    if not u:
-        return "", ""
-    # Accept URLs from any KOJA bucket so older posts still work after a
-    # bucket-name change.
-    patterns=(
-        "/storage/v1/object/public/",
-        "/storage/v1/object/sign/",
-        "/storage/v1/object/",
-    )
-    for marker in patterns:
-        if marker in u:
-            rest=u.split(marker,1)[1].split("?",1)[0].split("#",1)[0]
-            if "/" in rest:
-                bucket, path=rest.split("/",1)
-                return unquote(bucket), unquote(path)
-    # Some older KOJA records may contain only the Storage object path.
-    # Never treat arbitrary http(s) URLs as storage paths.
-    if not re.match(r"^https?://", u, re.I):
-        return STORAGE_BUCKET, unquote(u.lstrip("/"))
-    return "", ""
-
-def storage_path_from_url(media_url):
-    """Backward-compatible helper returning only the Storage object path."""
-    return storage_object_from_url(media_url)[1]
-
-def browser_storage_url(media_url, expires_in=3600):
-    """Return a browser-loadable URL even when the Supabase bucket is private."""
-    u=clean(media_url)
-    path=storage_path_from_url(u)
-    if not path or not supabase_configured():
-        return u
-    try:
-        endpoint=f"{SUPABASE_URL}/storage/v1/object/sign/{quote(STORAGE_BUCKET,safe='')}/{quote(path,safe='/')}"
-        r=requests.post(endpoint,headers=sb_headers({"Content-Type":"application/json"}),json={"expiresIn":int(expires_in)},timeout=15)
-        if r.ok:
-            data=json_or_empty(r)
-            signed=data.get("signedURL") or data.get("signedUrl") or data.get("signed_url")
-            if signed:
-                if signed.startswith("http"):
-                    return signed
-                return f"{SUPABASE_URL}{signed}" if signed.startswith("/") else f"{SUPABASE_URL}/{signed}"
-    except Exception:
-        logger.exception("Could not create signed media URL")
-    # Public buckets can still use the permanent public URL.
-    return u
-
-def prepare_public_media_rows(rows):
-    """Attach a fresh browser URL for each public-feed image/video."""
-    prepared=[]
-    for row in rows or []:
-        item=dict(row)
-        item["browser_media_url"]=browser_storage_url(item.get("media_url"))
-        prepared.append(item)
-    return prepared
-
 
 def first_nonempty(*values):
     for value in values:
@@ -656,49 +598,6 @@ def log_activity(action, description="", user_id=None):
         pass
 
 # ============================================================
-# ADMIN AUTO-APPROVAL SETTINGS
-# Stored in the existing activity_logs table so no new Supabase
-# table/migration is required. Defaults are intentionally OFF.
-# ============================================================
-
-AUTO_APPROVAL_DEFAULTS = {
-    "master": False,
-    "marketplace": False,
-    "drivers": False,
-    "professionals": False,
-    "doctors": False,
-    "teachers": False,
-    "documents": False,
-    "assignments": False,
-    "appointments": False,
-}
-
-def get_auto_approval_settings():
-    settings = dict(AUTO_APPROVAL_DEFAULTS)
-    try:
-        rows = db_select("activity_logs", {"action": "eq.admin_auto_approval_settings"}, order="created_at.desc", limit=1)
-        if rows:
-            desc = str(rows[0].get("description") or "")
-            prefix = "AUTO_APPROVAL_SETTINGS:"
-            if desc.startswith(prefix):
-                saved = json.loads(desc[len(prefix):])
-                if isinstance(saved, dict):
-                    for key in settings:
-                        if key in saved:
-                            settings[key] = bool(saved[key])
-    except Exception as exc:
-        logger.warning("Could not read auto-approval settings: %s", exc)
-    if settings.get("master"):
-        for key in settings:
-            if key != "master":
-                settings[key] = True
-    return settings
-
-def auto_approval_enabled(kind):
-    settings = get_auto_approval_settings()
-    return bool(settings.get("master") or settings.get(kind))
-
-# ============================================================
 # GEOLOCATION
 # ============================================================
 
@@ -772,22 +671,10 @@ BASE_HTML = r"""
 {% if seo_jsonld %}<script type="application/ld+json">{{ seo_jsonld|safe }}</script>{% endif %}
 <title>{{ title or "KOJA AFRICA" }}</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
-<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 (function(){try{var t={{ theme|tojson }};var saved=localStorage.getItem("koja_theme");if(saved==="light"||saved==="dark"||saved==="system")t=saved;document.documentElement.dataset.kojaTheme=t||"system";}catch(e){}})();
 </script>
 <style>
-/* KOJA Public compact navigation: keep Home / Live / People visible without a large top bar. */
-body.koja-public-page > nav:not(.koja-public-mini-nav),body.koja-news-page > nav:not(.koja-public-mini-nav){display:none}
-body.koja-public-page .container,body.koja-news-page .container{width:100%;max-width:none;margin:0 auto 30px;padding:0}
-body.koja-public-page footer,body.koja-news-page footer{display:none}
-.koja-public-mini-nav{position:sticky;top:0;z-index:1100;height:42px;display:flex;align-items:center;justify-content:center;gap:6px;padding:4px 8px;background:rgba(255,255,255,.94);backdrop-filter:blur(10px);border-bottom:1px solid #e4e7ec}
-.koja-public-mini-nav a{display:inline-flex;align-items:center;justify-content:center;min-width:58px;height:32px;padding:4px 10px;border-radius:18px;text-decoration:none;color:#172033;font-size:12px;font-weight:700}
-.koja-public-mini-nav a:hover{background:#eef5f8}
-.koja-public-mini-nav .active{background:#176b87;color:#fff}
-.koja-public-page .public-shell,.koja-news-page .public-shell{width:min(820px,100%);margin:0 auto;padding:0 10px 30px}
-.koja-public-page .public-shell .hero,.koja-news-page .public-shell .hero{margin-top:8px}
-@media(max-width:760px){.koja-public-mini-nav{height:38px}.koja-public-mini-nav a{min-width:52px;height:29px;padding:3px 8px;font-size:11px}.koja-public-page .public-shell,.koja-news-page .public-shell{padding-left:7px;padding-right:7px}}
 *{box-sizing:border-box}
 :root{color-scheme:light;--bg:#f5f7fb;--surface:#fff;--text:#172033;--muted:#667085;--border:#e4e7ec;--nav:#10233f;--accent:#176b87;--focus:#f2b84b}
 html[data-koja-theme="dark"]{color-scheme:dark;--bg:#0f1720;--surface:#17212b;--text:#edf2f7;--muted:#aab7c4;--border:#30404f;--nav:#091522;--accent:#2aa7b8;--focus:#f2c15b}
@@ -834,8 +721,7 @@ footer{text-align:center;color:var(--muted);padding:30px}
 @media(min-width:761px){.nav-links{display:flex!important}}
 </style>
 </head>
-<body class="{% if request.path == '/public' %}koja-public-page{% endif %}">
-{% if request.path in ['/public','/news'] %}<nav class="koja-public-mini-nav" aria-label="Public navigation"><a href="{{ url_for('home') }}">⌂ Home</a><a href="{{ url_for('public_feed') }}" class="{% if request.path == '/public' %}active{% endif %}">🎥 Media & Live</a><a href="{{ url_for('news_updates') }}" class="{% if request.path == '/news' %}active{% endif %}">📰 News</a><a href="{{ url_for('connect_people') }}">👥 People</a></nav>{% endif %}
+<body>
 <nav aria-label="Primary navigation">
 <div class="nav-inner">
 <div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 18V6h7.2a5.3 5.3 0 0 1 0 10.6H8.5" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 9.1h3.4a1.9 1.9 0 0 1 0 3.8H8.5" stroke="white" stroke-width="2.2" stroke-linecap="round"/></svg></span><span class="brand-name">KOJA AFRICA</span></div>
@@ -852,8 +738,6 @@ footer{text-align:center;color:var(--muted);padding:30px}
 <a href="{{ url_for('marketplace') }}">🛒 Marketplace</a>
 <a href="{{ url_for('connect') }}">💬 Communication</a>
 <a href="{{ url_for('professional_communication') }}">👩‍💼 Professional Communication</a>
-<a href="{{ url_for('driver_register') }}">🚚 Register as a Driver</a>
-<a href="{{ url_for('tracking') }}">📍 Live GPS Map</a>
 <a href="{{ url_for('settings') }}">⚙️ Settings</a>
 <div class="menu-group">
 <button type="button" id="moreMenuButton" aria-expanded="false" aria-haspopup="true">More ▾</button>
@@ -867,8 +751,6 @@ footer{text-align:center;color:var(--muted);padding:30px}
 {% else %}
 <a href="{{ url_for('login') }}">Login</a>
 <a href="{{ url_for('register') }}">Register</a>
-<a href="{{ url_for('driver_register') }}">🚚 Register as a Driver</a>
-<a href="{{ url_for('tracking') }}">📍 Live GPS Map</a>
 {% endif %}
 </div>
 </div>
@@ -889,6 +771,7 @@ footer{text-align:center;color:var(--muted);padding:30px}
 {{ body|safe }}
 </div>
 <footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services</footer>
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 </body>
 </html>
 """
@@ -1457,9 +1340,7 @@ def research_notes():
     notes=research_ai_notes(q,results,style) if q else ''
     bibliography=make_bibliography(results,style) if results else []
     return render_page('Research Notes', r'''<style>
-.notes-shell{max-width:1000px;margin:auto}.notes-toolbar{display:grid;grid-template-columns:1fr auto auto;gap:10px}.notes-body{line-height:1.8;font-size:1rem}.notes-body pre{white-space:pre-wrap;font:inherit}.ref{margin:10px 0}.note-actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}/* KOJA Public v3 polish */
-.public-extra{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin-top:8px}.public-extra button{border:1px solid #304251;background:#0b121a;color:#dbe6ee;border-radius:999px;padding:7px 10px;font-size:11px;font-weight:800}.public-online{font-size:10px;color:#69dfa0;font-weight:900}.media-caption{position:absolute;left:10px;top:58px;z-index:6;background:rgba(0,0,0,.62);color:#fff;border:1px solid rgba(255,255,255,.18);padding:6px 9px;border-radius:999px;font-size:10px;font-weight:800;display:none}.media-post.has-video .media-caption{display:block}.media-error{display:none!important}.media-error.show{display:block!important}.media-post:focus-within{outline:2px solid #19a7b8;outline-offset:-2px}.public-backtop{position:fixed;right:14px;bottom:16px;z-index:1200;width:42px;height:42px;border-radius:50%;border:1px solid rgba(255,255,255,.25);background:rgba(0,0,0,.72);color:#fff;display:none;font-size:18px}.public-backtop.show{display:block}.reduced-motion *{scroll-behavior:auto!important;animation:none!important;transition:none!important}
-@media(max-width:700px){.notes-toolbar{grid-template-columns:1fr}.notes-body{font-size:.97rem}}
+.notes-shell{max-width:1000px;margin:auto}.notes-toolbar{display:grid;grid-template-columns:1fr auto auto;gap:10px}.notes-body{line-height:1.8;font-size:1rem}.notes-body pre{white-space:pre-wrap;font:inherit}.ref{margin:10px 0}.note-actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}@media(max-width:700px){.notes-toolbar{grid-template-columns:1fr}.notes-body{font-size:.97rem}}
 </style><div class="notes-shell"><div class="hero"><h2>📝 KOJA Research Notes</h2><p>Turn ranked research evidence into clear, connected academic notes.</p><form method="get" action="{{ url_for('research_notes') }}" class="notes-toolbar"><input name="q" value="{{ q }}" placeholder="Enter your research topic…" required><select name="style">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select><button class="btn">Write Notes</button></form></div>{% if q %}<div class="note-actions"><button class="btn secondary" type="button" onclick="copyKOJANotes()">Copy Notes</button><button class="btn secondary" type="button" onclick="window.print()">Print</button><a class="btn secondary" href="{{ url_for('research',q=q,style=style) }}">View Evidence</a></div><div class="card"><strong>{{ results|length }} ranked evidence sources</strong></div><div id="koja-notes" class="card notes-body"><pre>{{ notes }}</pre></div>{% if bibliography %}<div class="card"><h3>References</h3>{% for n,ref in bibliography %}<div class="ref">{{ n }}. {{ ref|safe }}</div>{% endfor %}</div>{% endif %}<script>function copyKOJANotes(){const el=document.getElementById('koja-notes');navigator.clipboard.writeText(el.innerText).then(()=>alert('Research notes copied.')).catch(()=>alert('Select and copy the notes manually.'))}</script>{% else %}<div class="card"><h3>How KOJA writes notes</h3><p>1. Searches multiple evidence sources.</p><p>2. Removes duplicates and ranks relevance.</p><p>3. Gives the AI only the strongest evidence.</p><p>4. Produces connected academic paragraphs with source citations.</p><p>5. Generates a bibliography in your selected citation style.</p></div>{% endif %}</div>''',q=q,style=style,citation_styles=CITATION_STYLES,results=results,notes=notes,bibliography=bibliography)
 
 @app.route('/research')
@@ -1918,173 +1799,61 @@ create table if not exists public.koja_public_comments (
 create index if not exists koja_public_comments_post_idx on public.koja_public_comments(post_id,created_at);
 """
 
-# ============================================================
-# INDEPENDENT PUBLIC MEDIA + NEWS SCREENS
-# ============================================================
-
-INDEPENDENT_SCREEN_HTML = r"""
-<!doctype html><html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
-<meta name="description" content="{{ meta_description }}"><meta name="robots" content="index,follow,max-image-preview:large">
-<link rel="canonical" href="{{ SITE_URL }}{{ request.path }}"><meta property="og:type" content="website"><meta property="og:site_name" content="KOJA AFRICA"><meta property="og:title" content="{{ title }}"><meta property="og:description" content="{{ meta_description }}"><meta property="og:url" content="{{ SITE_URL }}{{ request.path }}"><title>{{ title }}</title>
-<style>
-*{box-sizing:border-box}html,body{margin:0;width:100%;min-height:100%;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}a{text-decoration:none}.screen-nav{position:fixed;left:0;right:0;top:0;height:48px;z-index:100;background:rgba(5,10,17,.9);backdrop-filter:blur(14px);display:flex;align-items:center;justify-content:space-between;padding:6px 10px}.screen-brand{color:#fff;font-weight:900;font-size:15px}.screen-links{display:flex;gap:5px}.screen-links a{color:#fff;padding:7px 10px;border-radius:999px;font-size:11px;font-weight:800}.screen-links a.active{background:#19a7b8}.screen{min-height:100vh;padding-top:48px}.screen-inner{width:100%;max-width:1100px;margin:auto}.composer{padding:12px;background:#111b27;border-bottom:1px solid rgba(255,255,255,.08)}.composer form{max-width:900px;margin:auto}.composer-grid{display:grid;grid-template-columns:160px 1fr;gap:8px}.composer input,.composer select,.composer textarea{width:100%;border:1px solid #314050;background:#0b121a;color:#fff;border-radius:9px;padding:10px;font:inherit;margin:0 0 8px}.composer textarea{min-height:65px}.composer input[type=file]{padding:7px}.composer button{border:0;background:#19a7b8;color:#fff;border-radius:9px;padding:10px 14px;font-weight:900;cursor:pointer}.login-box{padding:10px 12px;color:#aebccc;background:#111b27}.login-box a{color:#6dd5df;font-weight:800}.empty{padding:60px 20px;text-align:center;color:#9aa9b8}
-.media-screen{background:#03070b;color:#fff}.media-hero{min-height:72vh;display:flex;align-items:flex-end;padding:22px 18px;background:radial-gradient(circle at 70% 20%,#163c49 0,#071018 40%,#03070b 72%)}.media-hero h1{font-size:clamp(30px,7vw,64px);line-height:1;margin:0 0 8px}.media-hero p{margin:0;color:#b9c6d2;font-size:14px}.media-label{display:inline-block;margin-bottom:12px;padding:6px 9px;border:1px solid #39515e;border-radius:999px;color:#78dbe2;font-size:10px;font-weight:900;letter-spacing:.14em}.live-panel{padding:10px;background:#070d14;border-top:1px solid #182430;border-bottom:1px solid #182430}.live-title{font-weight:900;margin:2px 0 8px}.live-row{display:flex;gap:8px;overflow-x:auto;padding-bottom:3px}.live-person{min-width:170px;background:#0d1721;border:1px solid #223342;border-radius:12px;padding:10px}.live-dot{color:#5de19a;font-size:10px;font-weight:900}.live-name{font-weight:900;margin:4px 0 1px}.live-role{color:#91a2b2;font-size:11px}.live-actions{display:flex;gap:5px;margin-top:7px}.live-actions a{background:#176b87;color:#fff;border-radius:8px;padding:7px 8px;font-size:10px;font-weight:900}.media-feed{background:#03070b}.media-post{position:relative;background:#050b11;border-bottom:1px solid #17222d;min-height:100svh;display:flex;flex-direction:column;justify-content:center}.media-post-media{width:100%;height:calc(100svh - 48px);min-height:65vh;object-fit:contain;background:#000;display:block;visibility:visible;opacity:1}.media-post-media.video{object-fit:contain;visibility:visible;opacity:1}.media-overlay{position:absolute;left:0;right:0;bottom:0;padding:70px 15px 15px;background:linear-gradient(transparent,rgba(0,0,0,.9));pointer-events:none}.media-meta{display:flex;align-items:center;gap:8px}.avatar{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;background:#176b87;font-weight:900}.media-title{font-size:18px;font-weight:900;margin:7px 0 3px}.media-body{font-size:13px;white-space:pre-wrap;color:#dce4eb;max-width:800px}.media-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px;pointer-events:auto}.media-actions form{display:inline}.media-actions button,.media-actions a{border:1px solid rgba(255,255,255,.2);background:rgba(0,0,0,.5);color:#fff;border-radius:999px;padding:7px 10px;font-size:11px;font-weight:800}.media-actions .call{background:#176b87;border-color:#176b87}.media-comments{max-width:820px;margin:0 auto;padding:10px 14px 15px;background:#050b11;color:#dce4eb}.media-comments div{border-top:1px solid #1b2833;padding:7px 0;font-size:12px}.media-comments form{display:flex;gap:5px;margin-top:7px}.media-comments input{flex:1;min-width:0;background:#0b121a;color:#fff;border:1px solid #263746;border-radius:8px;padding:9px}.media-comments button{background:#176b87;color:#fff;border:0;border-radius:8px;padding:8px 11px;font-weight:800}
-.news-screen{background:#f3f5f7;color:#182230}.news-screen .screen-nav{background:#fff;border-bottom:1px solid #e1e6eb}.news-screen .screen-brand,.news-screen .screen-links a{color:#182230}.news-screen .screen-links a.active{color:#fff;background:#176b87}.news-head{padding:28px 16px 22px;background:#fff;border-bottom:1px solid #e1e6eb}.news-head-inner{max-width:1000px;margin:auto}.news-kicker{font-size:11px;font-weight:900;letter-spacing:.12em;color:#176b87}.news-head h1{font-family:Georgia,serif;font-size:clamp(34px,7vw,58px);line-height:1.03;margin:7px 0}.news-head p{color:#657383;max-width:680px;margin:0}.news-content{max-width:1000px;margin:auto;padding:14px}.news-compose{background:#fff;border:1px solid #e1e6eb;border-radius:12px;padding:13px;margin-bottom:14px}.news-compose strong{display:block;margin-bottom:9px}.news-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.news-card{background:#fff;border:1px solid #e1e6eb;border-radius:12px;overflow:hidden}.news-card.feature{grid-column:span 2}.news-card-media{width:100%;height:260px;object-fit:cover;display:block;background:#e9edf1;visibility:visible;opacity:1}.news-card-media video{display:block}.news-card.feature .news-card-media{height:420px}.news-card-body{padding:15px}.news-type{font-size:10px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:#176b87}.news-card h2{font-family:Georgia,serif;font-size:24px;line-height:1.18;margin:7px 0}.news-card.feature h2{font-size:34px}.news-text{white-space:pre-wrap;line-height:1.7;color:#3e4a57}.news-byline{font-size:11px;color:#7b8793;margin-bottom:8px}.news-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}.news-actions button,.news-actions a{border:0;background:#eaf0f4;color:#263442;border-radius:999px;padding:7px 10px;font-size:11px;font-weight:800}.news-actions .call{background:#176b87;color:#fff}.news-comment{margin-top:10px}.news-comment form{display:flex;gap:5px}.news-comment input{flex:1;min-width:0;border:1px solid #d6dde3;border-radius:8px;padding:9px}.news-comment button{background:#176b87!important;color:#fff!important}.news-comment-list div{border-top:1px solid #edf0f2;padding:7px 0;font-size:12px}.news-footer{padding:35px 14px;text-align:center;color:#7b8793;font-size:12px}
-/* KOJA Public UX upgrades */
-.public-tools{position:sticky;top:48px;z-index:900;padding:8px 10px;background:rgba(7,13,20,.96);backdrop-filter:blur(12px);border-bottom:1px solid #1b2a36;display:flex;gap:7px;align-items:center;flex-wrap:wrap}.public-search{flex:1;min-width:180px;background:#0b121a;color:#fff;border:1px solid #304251;border-radius:999px;padding:9px 13px;outline:none}.public-chip{border:1px solid #304251;background:#0b121a;color:#cbd7e1;border-radius:999px;padding:8px 11px;font-size:11px;font-weight:900;cursor:pointer}.public-chip.active{background:#19a7b8;color:#fff;border-color:#19a7b8}.media-post.hidden,.news-card.hidden{display:none!important}.media-quick{position:absolute;right:12px;bottom:86px;z-index:8;display:flex;flex-direction:column;gap:7px}.media-quick button{width:40px;height:40px;border-radius:50%;border:1px solid rgba(255,255,255,.25);background:rgba(0,0,0,.62);color:#fff;font-size:17px;cursor:pointer}.media-status{font-size:10px;color:#91a2b2;margin-top:5px}.save-on{background:#d69b22!important;border-color:#d69b22!important;color:#fff!important}.media-post video{touch-action:manipulation}.public-loading{text-align:center;padding:25px;color:#91a2b2}.public-tip{font-size:11px;color:#91a2b2;margin-top:5px}
-@media(max-width:700px){.screen-nav{height:44px}.screen{padding-top:44px}.screen-links a{padding:6px 7px;font-size:10px}.screen-brand{font-size:13px}.composer-grid{grid-template-columns:1fr}.media-hero{min-height:55vh;padding:18px 13px}.media-post{min-height:calc(100svh - 44px)}.media-post-media{height:calc(100svh - 44px);min-height:0}.media-overlay{padding:85px 12px 12px}.news-grid{grid-template-columns:1fr}.news-card.feature{grid-column:auto}.news-card.feature .news-card-media,.news-card-media{height:240px}.news-card.feature h2{font-size:27px}.news-head{padding:24px 13px 19px}.news-content{padding:10px}.news-card h2{font-size:21px}}
-</style><script>
-(function(){
-function saved(id){try{return JSON.parse(localStorage.getItem('koja_saved_media')||'[]').includes(String(id))}catch(e){return false}}
-function setSaved(id,on){try{var a=JSON.parse(localStorage.getItem('koja_saved_media')||'[]').map(String);id=String(id);a=a.filter(x=>x!==id);if(on)a.unshift(id);localStorage.setItem('koja_saved_media',JSON.stringify(a.slice(0,200)))}catch(e){}}
-function refreshSaveButtons(){document.querySelectorAll('[data-save]').forEach(function(b){var on=saved(b.dataset.save);b.classList.toggle('save-on',on);if(b.classList.contains('save-btn'))b.textContent=on?'✓':'🔖';else b.textContent=on?'🔖 Saved':'🔖 Save';})}
-window.kojaShare=function(path,btn){var url=location.origin+path;if(navigator.share){navigator.share({title:document.title,url:url}).catch(function(){})}else if(navigator.clipboard){navigator.clipboard.writeText(url).then(function(){if(btn){var t=btn.textContent;btn.textContent='✓ Copied';setTimeout(function(){btn.textContent=t},1500)}})}};
-function setupFilter(searchId,selector){var search=document.getElementById(searchId);var chips=document.querySelectorAll(selector+' .public-chip');var active='all';function apply(){var q=(search?search.value:'').trim().toLowerCase();document.querySelectorAll(selector+' ~ .media-feed .media-post, '+selector+' ~ .news-grid .news-card').forEach(function(el){var okText=!q||(el.dataset.search||'').includes(q);var okType=active==='all'||el.dataset.kind===active||el.dataset.type===active||(active==='video'&&el.dataset.kind==='video')||(active==='image'&&el.dataset.kind==='image');el.classList.toggle('hidden',!(okText&&okType));})}chips.forEach(function(c){c.addEventListener('click',function(){chips.forEach(x=>x.classList.remove('active'));c.classList.add('active');active=c.dataset.filter;apply()})});if(search)search.addEventListener('input',apply);apply()}
-if(document.getElementById('mediaSearch')){var mt=document.getElementById('mediaSearch'),mc=mt.parentElement.querySelectorAll('.public-chip'),active='all';function ma(){var q=mt.value.toLowerCase().trim();document.querySelectorAll('#mediaFeed .media-post').forEach(function(e){var ok=!q||(e.dataset.search||'').includes(q);var f=active==='all'||e.dataset.kind===active||e.dataset.type===active; e.classList.toggle('hidden',!(ok&&f))})}mc.forEach(function(c){c.addEventListener('click',function(){mc.forEach(function(x){x.classList.remove('active')});c.classList.add('active');active=c.dataset.filter;ma()})});mt.addEventListener('input',ma);ma()}
-if(document.getElementById('newsSearch')){var nt=document.getElementById('newsSearch');var nc=nt.parentElement.querySelectorAll('.public-chip');function na(){var q=nt.value.toLowerCase().trim(),f='all';nc.forEach(function(x){if(x.classList.contains('active'))f=x.dataset.filter});document.querySelectorAll('#newsGrid .news-card').forEach(function(e){e.classList.toggle('hidden',!((!q||(e.dataset.search||'').includes(q))&&(f==='all'||e.dataset.type===f)))})}nc.forEach(function(c){c.addEventListener('click',function(){nc.forEach(x=>x.classList.remove('active'));c.classList.add('active');na()})});nt.addEventListener('input',na)}
-document.querySelectorAll('[data-save]').forEach(function(b){b.addEventListener('click',function(){var id=b.dataset.save,on=!saved(id);setSaved(id,on);refreshSaveButtons()})});
-document.querySelectorAll('.mute-btn').forEach(function(b){b.addEventListener('click',function(){var v=b.closest('.media-post').querySelector('video');if(v){v.muted=!v.muted;b.textContent=v.muted?'🔇':'🔊';if(v.paused)v.play().catch(function(){})}})});
-var vids=[].slice.call(document.querySelectorAll('.media-post video'));if('IntersectionObserver' in window){var io=new IntersectionObserver(function(es){es.forEach(function(e){var v=e.target;if(e.isIntersecting&&e.intersectionRatio>.6){v.muted=true;v.play().catch(function(){})}else if(!e.isIntersecting){v.pause()}})},{threshold:[.1,.6,.9]});vids.forEach(function(v){io.observe(v)})}
-refreshSaveButtons();
-})();
-
-function setupPublicEnhancements(){
-  try{if(localStorage.getItem('koja_reduced_motion')==='1')document.documentElement.classList.add('reduced-motion')}catch(e){}
-  document.querySelectorAll('.media-post video').forEach(function(v){
-    var post=v.closest('.media-post'); if(post)post.classList.add('has-video');
-    v.muted=true; v.playsInline=true;
-    v.addEventListener('error',function(){var f=post&&post.querySelector('.media-error');if(f)f.classList.add('show')});
-    v.addEventListener('loadeddata',function(){var f=post&&post.querySelector('.media-error');if(f)f.classList.remove('show')});
-  });
-  if('IntersectionObserver' in window){
-    var io=new IntersectionObserver(function(es){es.forEach(function(e){var v=e.target;if(!e.isIntersecting){try{v.pause()}catch(x){}}else if(v.dataset.autoplay==='1'){v.play().catch(function(){})}})},{threshold:.55});
-    document.querySelectorAll('.media-post video').forEach(function(v){v.dataset.autoplay='1';io.observe(v)});
-  }
-  document.querySelectorAll('.mute-btn').forEach(function(b){b.addEventListener('click',function(){var v=b.closest('.media-post')?.querySelector('video');if(!v)return;v.muted=!v.muted;b.textContent=v.muted?'🔇':'🔊';})});
-  var top=document.createElement('button');top.className='public-backtop';top.type='button';top.textContent='↑';top.setAttribute('aria-label','Back to top');document.body.appendChild(top);top.onclick=function(){scrollTo({top:0,behavior:'smooth'})};
-  addEventListener('scroll',function(){top.classList.toggle('show',scrollY>600)},{passive:true});
-  document.querySelectorAll('[data-save]').forEach(function(b){b.addEventListener('click',function(){var id=b.dataset.save,on=!saved(id);setSaved(id,on);refreshSaveButtons();})});
-  refreshSaveButtons();
-  document.querySelectorAll('.public-chip').forEach(function(ch){ch.addEventListener('click',function(){var scope=ch.closest('.screen');if(!scope)return;scope.querySelectorAll('.public-chip').forEach(function(x){x.classList.remove('active')});ch.classList.add('active');applyPublicFilter(scope)})});
-  document.querySelectorAll('.public-search').forEach(function(inp){inp.addEventListener('input',function(){applyPublicFilter(inp.closest('.screen'))})});
-}
-function applyPublicFilter(scope){if(!scope)return;var inp=scope.querySelector('.public-search');var q=(inp?.value||'').toLowerCase().trim();var active=scope.querySelector('.public-chip.active');var type=active?.dataset.filter||'all';scope.querySelectorAll('.media-post,.news-card').forEach(function(el){var okType=type==='all'||(el.dataset.type||'').toLowerCase()===type;var okText=!q||(el.dataset.search||'').includes(q);el.classList.toggle('hidden',!(okType&&okText));});}
-document.addEventListener("DOMContentLoaded",setupPublicEnhancements);
-</script></head><body>{{ screen_body|safe }}</body></html>
-"""
-
-def render_independent_screen(title, body_template, screen_class, meta_description, **context):
-    body=render_template_string(body_template, **context)
-    return render_template_string(INDEPENDENT_SCREEN_HTML,title=title,screen_class=screen_class,meta_description=meta_description,screen_body=body,SITE_URL=SITE_URL)
-
-def _public_enriched_rows(post_rows):
-    enriched=[]; uid=(current_user() or {}).get('id')
-    for post in post_rows:
-        author=first_row('profiles', {'id':post.get('author_id')}) or {}
-        likes=db_select('koja_public_likes', {'post_id':post.get('id')}, select='user_id', limit=500) or []
-        comments=db_select('koja_public_comments', {'post_id':post.get('id')}, order='created_at.asc', limit=100) or []
-        comment_rows=[]
-        for c in comments:
-            ca=first_row('profiles', {'id':c.get('author_id')}) or {}
-            comment_rows.append({**c,'author_name':ca.get('full_name') or ca.get('name') or ca.get('email') or 'KOJA User'})
-        enriched.append({**post,'author_name':author.get('full_name') or author.get('name') or author.get('email') or 'KOJA User','author_id':post.get('author_id'),'like_count':len(likes),'liked':bool(uid and any(str(x.get('user_id'))==str(uid) for x in likes)),'comments':comment_rows})
-    return enriched
-
-@app.route('/public/media/<post_id>')
-def public_media_file(post_id):
-    """Stream a public-feed image/video through KOJA.
-
-    This avoids browser failures caused by private Supabase Storage buckets or
-    expired signed URLs. Supports HTTP Range requests required by HTML5 video.
-    """
-    post = first_row('koja_public_posts', {'id': post_id, 'is_published': 'eq.true'})
-    if not post or not post.get('media_url'):
-        abort(404)
-    media_url = clean(post.get('media_url'))
-    bucket, path = storage_object_from_url(media_url)
-    if not path or not bucket or not supabase_configured():
-        logger.error('Public media path could not be resolved: %r', media_url)
-        abort(404)
-
-    # Only allow media formats used by the public feed.
-    ext = path.rsplit('.', 1)[-1].lower() if '.' in path else ''
-    allowed = {'jpg':'image/jpeg','jpeg':'image/jpeg','png':'image/png','webp':'image/webp',
-               'mp4':'video/mp4','webm':'video/webm','mov':'video/quicktime'}
-    content_type = (post.get('media_type') == 'video' and {
-        'mp4':'video/mp4','webm':'video/webm','mov':'video/quicktime'
-    }.get(ext)) or allowed.get(ext) or 'application/octet-stream'
-    if ext not in allowed:
-        abort(415)
-
-    object_url = (
-        f"{SUPABASE_URL}/storage/v1/object/"
-        f"{quote(bucket, safe='')}/{quote(path, safe='/')}"
-    )
-    incoming_range = request.headers.get('Range')
-    headers = sb_headers()
-    headers.pop('Content-Type', None)
-    if incoming_range:
-        headers['Range'] = incoming_range
-    try:
-        upstream = requests.get(object_url, headers=headers, timeout=60, allow_redirects=True)
-    except Exception:
-        logger.exception('Public media proxy failed')
-        abort(502)
-    if not upstream.ok and upstream.status_code != 206:
-        logger.error('Public media fetch failed: %s %s', upstream.status_code, upstream.text[:500])
-        abort(upstream.status_code if upstream.status_code in (403,404) else 502)
-
-    response = Response(upstream.content, status=206 if upstream.status_code == 206 else 200, mimetype=content_type)
-    response.headers['Content-Type'] = upstream.headers.get('Content-Type', content_type).split(';',1)[0]
-    response.headers['Accept-Ranges'] = 'bytes'
-    if upstream.headers.get('Content-Length'):
-        response.headers['Content-Length'] = upstream.headers['Content-Length']
-    if upstream.headers.get('Content-Range'):
-        response.headers['Content-Range'] = upstream.headers['Content-Range']
-    response.headers['Content-Disposition'] = 'inline'
-    response.headers['X-Content-Type-Options'] = 'nosniff'
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Cache-Control'] = 'public, max-age=300'
-    return response
-
 @app.route('/public')
 def public_feed():
-    rows=db_select('koja_public_posts', {'is_published':'eq.true'}, order='created_at.desc', limit=150) or []
-    rows=[r for r in rows if r.get('media_url') and ((r.get('media_type') or '').lower() in {'image','video'} or str(r.get('media_url') or '').lower().endswith(('.jpg','.jpeg','.png','.webp','.mp4','.webm','.mov')))]
-    enriched=prepare_public_media_rows(_public_enriched_rows(rows))
-    live_people=[]
-    try: live_people=db_select('service_providers', {'is_available':'eq.true'}, limit=12) or []
-    except Exception: live_people=[]
-    return render_independent_screen('KOJA Media — Full Screen', r'''
-<div class="media-screen screen"><nav class="screen-nav"><a class="screen-brand" href="{{ url_for('home') }}">KOJA AFRICA</a><div class="screen-links"><a class="active" href="{{ url_for('public_feed') }}">🎥 Media</a><a href="{{ url_for('news_updates') }}">📰 News</a><a href="{{ url_for('connect_people') }}">👥 People</a></div></nav><div class="screen-inner">
-<section class="media-hero"><div><span class="media-label">KOJA MEDIA</span><h1>Photos. Videos.<br>Live.</h1><p>Independent full-screen media for stories, marketing, promotion and live calls.</p></div></section>
-{% if live_people %}<section class="live-panel"><div class="live-title">🔴 People available for live calls</div><div class="live-row">{% for person in live_people %}<div class="live-person"><span class="live-dot">● LIVE</span><div class="live-name">{{ person.get('full_name') or person.get('name') or 'KOJA Professional' }}</div><div class="live-role">{{ person.get('profession') or 'Professional Service' }}</div>{% if user and person.get('user_id') and person.get('user_id')|string != user.id|string %}<div class="live-actions"><a href="{{ url_for('professional_call',provider_id=person.id,mode='video') }}">🎥 Video</a><a href="{{ url_for('professional_call',provider_id=person.id,mode='voice') }}">📞 Voice</a></div>{% else %}<div class="live-actions"><a href="{{ url_for('login',next='/public') }}">Login to call</a></div>{% endif %}</div>{% endfor %}</div></section>{% endif %}
-<div class="composer">{% if user %}<form method="post" action="{{ url_for('public_feed_create') }}" enctype="multipart/form-data"><div class="composer-grid"><select name="post_type"><option value="media">Media / Story</option><option value="marketing">Marketing / Promotion</option></select><input name="title" maxlength="180" placeholder="Media title or campaign name"></div><textarea name="body" maxlength="5000" placeholder="Describe this media…" required></textarea><input type="file" name="media" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime" required><button type="submit">Publish Media</button><input type="hidden" name="return_to" value="/public"></form>{% else %}<div class="login-box">Log in to publish media or start a live call. <a href="{{ url_for('login',next='/public') }}">Login</a></div>{% endif %}</div>
-<div class="public-tools"><input id="mediaSearch" class="public-search" type="search" placeholder="Search media, stories, people…" autocomplete="off"><button class="public-chip active" data-filter="all" type="button">All</button><button class="public-chip" data-filter="video" type="button">Videos</button><button class="public-chip" data-filter="image" type="button">Photos</button><button class="public-chip" data-filter="marketing" type="button">Marketing</button></div>
-<section class="media-feed" id="mediaFeed">{% for p in posts %}<article class="media-post" id="post-{{ p.id }}" data-search="{{ (p.title or '')|lower }} {{ (p.body or '')|lower }} {{ (p.author_name or '')|lower }}" data-kind="{{ (p.media_type or 'media')|lower }}" data-type="{{ (p.post_type or 'media')|lower }}">{% if (p.media_type or '') == 'video' or (p.media_url|lower).endswith(('.mp4','.webm','.mov')) %}<video class="media-post-media video" controls playsinline preload="metadata" src="{{ url_for('public_media_file', post_id=p.id) }}" onerror="this.style.display='none';this.nextElementSibling.style.display='grid'"></video><div class="media-error" style="display:none;min-height:50vh;place-items:center;background:#000;color:#9fb0bf;text-align:center;padding:30px">Video could not be loaded. Check the media file or storage URL.</div>{% else %}<img class="media-post-media" src="{{ url_for('public_media_file', post_id=p.id) }}" alt="{{ p.title or 'KOJA Media' }}" loading="eager" onerror="this.style.display='none';this.nextElementSibling.style.display='grid'"><div class="media-error" style="display:none;min-height:50vh;place-items:center;background:#000;color:#9fb0bf;text-align:center;padding:30px">Image could not be loaded. Check the media file or storage URL.</div>{% endif %}<div class="media-quick"><button type="button" class="save-btn" data-save="{{ p.id }}" aria-label="Save media">🔖</button><button type="button" class="mute-btn" aria-label="Mute or unmute">🔇</button></div><div class="media-overlay"><div class="media-meta"><div class="avatar">{{ (p.author_name or 'K')[:1]|upper }}</div><div><strong>{{ p.author_name }}</strong><div style="font-size:10px;color:#aab8c5">{{ p.created_at }}</div></div></div>{% if p.title %}<div class="media-title">{{ p.title }}</div>{% endif %}<div class="media-body">{{ p.body }}</div><div class="media-actions">{% if user %}<form method="post" action="{{ url_for('public_toggle_like',post_id=p.id,next='/public') }}"><button type="submit">{{ '❤️ Liked' if p.liked else '🤍 Like' }} · {{ p.like_count }}</button></form>{% else %}<a href="{{ url_for('login',next='/public') }}">🤍 Like · {{ p.like_count }}</a>{% endif %}<a href="#comments-{{ p.id }}">💬 {{ p.comments|length }}</a>{% if user and p.author_id and p.author_id|string != user.id|string %}<a class="call" href="{{ url_for('connect_call',user_id=p.author_id,mode='video') }}">🎥 Live Call</a>{% endif %}<button type="button" data-save="{{ p.id }}">🔖 Save</button><button type="button" onclick="kojaShare('/public#post-{{ p.id }}',this)">↗ Share</button></div></div><div class="media-comments" id="comments-{{ p.id }}">{% for c in p.comments %}<div><strong>{{ c.author_name }}</strong> — {{ c.body }}<br><span style="color:#7e8d9b">{{ c.created_at }}</span></div>{% endfor %}{% if user %}<form method="post" action="{{ url_for('public_comment',post_id=p.id,next='/public') }}"><input name="body" maxlength="1000" placeholder="Comment…" required><button type="submit">Send</button></form>{% endif %}</div></article>{% else %}<div class="empty">No media published yet.</div>{% endfor %}</section>
-</div></div>
-''',screen_class='media-screen',meta_description='KOJA AFRICA Media — full-screen photos, videos, marketing media and live calls.',posts=enriched,live_people=live_people,user=current_user())
+    # db_select returns a list (not a (rows, error) tuple).
+    # Keep the public page resilient: an unavailable/missing table simply shows an empty feed.
+    rows = db_select('koja_public_posts', {'is_published':'eq.true'}, order='created_at.desc', limit=50) or []
+    enriched=[]
+    for post in rows or []:
+        author=first_row('profiles', {'id':post.get('author_id')}) or {}
+        likes = db_select('koja_public_likes', {'post_id':post.get('id')}, select='user_id', limit=500) or []
+        comments = db_select('koja_public_comments', {'post_id':post.get('id')}, order='created_at.asc', limit=100) or []
+        comment_rows=[]
+        for c in comments or []:
+            ca=first_row('profiles', {'id':c.get('author_id')}) or {}
+            comment_rows.append({**c,'author_name':ca.get('full_name') or ca.get('name') or ca.get('email') or 'KOJA User'})
+        uid=(current_user() or {}).get('id')
+        enriched.append({**post,'author_name':author.get('full_name') or author.get('name') or author.get('email') or 'KOJA User',
+            'like_count':len(likes or []),'liked':bool(uid and any(str(x.get('user_id'))==str(uid) for x in (likes or []))), 'comments':comment_rows})
+    return render_page('KOJA Public — News, Updates & Media', r'''
+<div class="hero"><h1>🌍 KOJA Public</h1><p>News, updates, public messages and images from the KOJA community. Everyone can view this page.</p></div>
+{% if user %}<div class="card"><h3>📝 Share with everyone</h3>
+<form method="post" action="{{ url_for('public_feed_create') }}" enctype="multipart/form-data">
+<div class="grid"><div><label>Type</label><select name="post_type"><option value="update">Community Update</option><option value="news">News</option><option value="announcement">Announcement</option><option value="event">Event</option></select></div><div><label>Title (optional)</label><input name="title" maxlength="180" placeholder="What is this about?"></div></div>
+<label>Message</label><textarea name="body" maxlength="5000" placeholder="Write a public message, update or news..." required></textarea>
+<label>Image / media (optional)</label><input type="file" name="media" accept="image/jpeg,image/png,image/webp">
+<button class="btn" type="submit">🌐 Publish Publicly</button></form>
+<p class="small">Your post is public and may be visible to people who are not logged in.</p></div>
+{% else %}<div class="card"><strong>Want to publish?</strong> <a class="btn" href="{{ url_for('login', next='/public') }}">Login</a> <a class="btn secondary" href="{{ url_for('register', next='/public') }}">Create account</a></div>{% endif %}
+<div class="card"><h2>📰 News & Updates</h2><p class="small">Public feed · newest first</p></div>
+{% for p in posts %}<article class="card" id="post-{{ p.id }}"><strong>👤 {{ p.author_name }}</strong><div class="small">{{ p.post_type|title }} · {{ p.created_at }}</div>
+{% if p.title %}<h2 style="margin-top:10px">{{ p.title }}</h2>{% endif %}<p style="white-space:pre-wrap;line-height:1.7">{{ p.body }}</p>
+{% if p.media_url %}<img src="{{ p.media_url }}" alt="Public KOJA post image" loading="lazy" style="width:100%;max-height:620px;object-fit:cover;border-radius:12px;margin-top:8px">{% endif %}
+<div class="actions" style="margin-top:12px">{% if user %}<form method="post" action="{{ url_for('public_toggle_like', post_id=p.id) }}" style="display:inline"><button class="btn secondary" type="submit">{{ '❤️ Liked' if p.liked else '🤍 Like' }} · {{ p.like_count }}</button></form>{% else %}<a class="btn secondary" href="{{ url_for('login', next='/public') }}">🤍 Like · {{ p.like_count }}</a>{% endif %}<span class="btn secondary" style="cursor:default">💬 {{ p.comments|length }} Comments</span></div>
+{% for c in p.comments %}<div style="padding:9px 0;border-top:1px solid var(--border);margin-top:9px"><strong>{{ c.author_name }}</strong><div>{{ c.body }}</div><div class="small">{{ c.created_at }}</div></div>{% endfor %}
+{% if user %}<form method="post" action="{{ url_for('public_comment', post_id=p.id) }}"><input name="body" maxlength="1000" placeholder="Write a comment..." required><button class="btn" type="submit">Comment</button></form>{% else %}<p class="small"><a href="{{ url_for('login', next='/public') }}">Login</a> to comment.</p>{% endif %}
+</article>{% else %}<div class="card"><h3>No public updates yet.</h3><p>Be the first KOJA user to share a public update or news.</p></div>{% endfor %}
+''', posts=enriched)
 
 @app.route('/public/create', methods=['POST'])
 @login_required
 def public_feed_create():
-    body=clean(request.form.get('body')); title=clean(request.form.get('title')); post_type=clean(request.form.get('post_type')).lower() or 'media'
-    if post_type not in {'media','marketing','update','news','announcement','event'}: post_type='media'
-    return_to=request.form.get('return_to') if request.form.get('return_to') in ['/public','/news'] else '/public'
-    if not body: flash('Write a message before publishing.','danger'); return redirect(return_to)
-    media=request.files.get('media'); uploaded=None; media_type=None
+    body=clean(request.form.get('body')); title=clean(request.form.get('title'))
+    post_type=clean(request.form.get('post_type')).lower() or 'update'
+    if post_type not in {'update','news','announcement','event'}: post_type='update'
+    if not body: flash('Write a message before publishing.','danger'); return redirect(url_for('public_feed'))
+    media=request.files.get('media'); uploaded=None
     if media and media.filename:
         ext=media.filename.lower().rsplit('.',1)[-1] if '.' in media.filename else ''
-        if ext not in {'jpg','jpeg','png','webp','mp4','webm','mov'}: flash('Public media must be JPG, PNG, WebP, MP4, WebM or MOV.','danger'); return redirect(return_to)
+        if ext not in {'jpg','jpeg','png','webp'}: flash('Public feed images must be JPG, PNG or WebP.','danger'); return redirect(url_for('public_feed'))
         uploaded,err=upload_storage(media,'public-feed')
-        if err: flash(f'Media upload failed: {err}','danger'); return redirect(return_to)
-        media_type='video' if ext in {'mp4','webm','mov'} else 'image'
-    if post_type in {'media','marketing'} and not uploaded: flash('Media posts require a photo or video.','danger'); return redirect('/public')
-    payload={'author_id':current_user().get('id'),'post_type':post_type,'title':title or None,'body':body,'media_url':(uploaded or {}).get('url'),'media_type':media_type,'is_published':True}
+        if err: flash(f'Image upload failed: {err}','danger'); return redirect(url_for('public_feed'))
+    payload={'author_id':current_user().get('id'),'post_type':post_type,'title':title or None,'body':body,
+             'media_url':(uploaded or {}).get('url'),'media_type':('image' if uploaded else None),'is_published':True}
     _,err=db_insert('koja_public_posts',payload)
-    flash('Published successfully.' if not err else 'Post could not be published. Run the updated KOJA_CONNECT.sql first.','success' if not err else 'danger')
-    return redirect(return_to)
+    flash('Published to KOJA Public.' if not err else 'Public post could not be published. Run the updated KOJA_CONNECT.sql first.','success' if not err else 'danger')
+    return redirect(url_for('public_feed'))
 
 @app.route('/public/like/<post_id>', methods=['POST'])
 @login_required
@@ -2092,26 +1861,14 @@ def public_toggle_like(post_id):
     uid=current_user().get('id'); existing=first_row('koja_public_likes', {'post_id':post_id,'user_id':uid})
     if existing: db_delete('koja_public_likes', {'post_id':post_id,'user_id':uid})
     else: db_insert('koja_public_likes', {'post_id':post_id,'user_id':uid})
-    next_path=request.args.get('next') if request.args.get('next') in ['/public','/news'] else '/public'
-    return redirect(next_path+'#post-'+post_id)
+    return redirect(url_for('public_feed')+'#post-'+post_id)
 
 @app.route('/public/comment/<post_id>', methods=['POST'])
 @login_required
 def public_comment(post_id):
     body=clean(request.form.get('body'))
     if body: db_insert('koja_public_comments', {'post_id':post_id,'author_id':current_user().get('id'),'body':body})
-    next_path=request.args.get('next') if request.args.get('next') in ['/public','/news'] else '/public'
-    return redirect(next_path+'#post-'+post_id)
-
-@app.route('/news')
-def news_updates():
-    rows=db_select('koja_public_posts', {'is_published':'eq.true'}, order='created_at.desc', limit=150) or []
-    allowed={'news','update','announcement','event'}
-    rows=[r for r in rows if (r.get('post_type') or 'update').lower() in allowed]
-    enriched=_public_enriched_rows(rows)
-    return render_independent_screen('KOJA News & Updates', r'''
-<div class="news-screen screen"><nav class="screen-nav"><a class="screen-brand" href="{{ url_for('home') }}">KOJA AFRICA</a><div class="screen-links"><a href="{{ url_for('public_feed') }}">🎥 Media</a><a class="active" href="{{ url_for('news_updates') }}">📰 News</a><a href="{{ url_for('connect_people') }}">👥 People</a></div></nav><div class="news-head"><div class="news-head-inner"><div class="news-kicker">KOJA AFRICA • NEWSROOM</div><h1>News & Updates</h1><p>This is a separate newsroom screen. Media-only posts stay on the Media screen.</p></div></div><div class="news-content"><div class="news-compose">{% if user %}<form method="post" action="{{ url_for('public_feed_create') }}" enctype="multipart/form-data"><strong>✍️ Publish News or Update</strong><div class="composer-grid"><select name="post_type"><option value="news">News</option><option value="update">Community Update</option><option value="announcement">Announcement</option><option value="event">Event</option></select><input name="title" maxlength="180" placeholder="News headline" required></div><textarea name="body" maxlength="5000" placeholder="Write the news story or update…" required></textarea><input type="file" name="media" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"><button type="submit">Publish News</button><input type="hidden" name="return_to" value="/news"></form>{% else %}<strong>KOJA Newsroom</strong><div class="small">Log in to publish news and updates. <a href="{{ url_for('login',next='/news') }}">Login</a></div>{% endif %}</div><div class="public-tools" style="background:#fff;border-color:#e1e6eb;top:48px"><input id="newsSearch" class="public-search" style="background:#f7f9fa;color:#182230;border-color:#d6dde3" type="search" placeholder="Search news and updates…" autocomplete="off"><button class="public-chip active" data-filter="all" type="button">All</button><button class="public-chip" data-filter="news" type="button">News</button><button class="public-chip" data-filter="announcement" type="button">Announcements</button><button class="public-chip" data-filter="event" type="button">Events</button></div><div class="news-grid" id="newsGrid">{% for p in posts %}<article class="news-card {% if loop.first %}feature{% endif %}" id="post-{{ p.id }}" data-search="{{ (p.title or '')|lower }} {{ (p.body or '')|lower }} {{ (p.author_name or '')|lower }}" data-type="{{ (p.post_type or 'update')|lower }}">{% if p.media_url %}{% if (p.media_type or '') == 'video' or (p.media_url|lower).endswith(('.mp4','.webm','.mov')) %}<video class="news-card-media" controls playsinline preload="metadata" src="{{ url_for('public_media_file', post_id=p.id) }}"></video>{% else %}<img class="news-card-media" src="{{ url_for('public_media_file', post_id=p.id) }}" alt="{{ p.title or 'KOJA News' }}" loading="eager">{% endif %}{% endif %}<div class="news-card-body"><span class="news-type">{{ p.post_type|title }}</span><h2>{{ p.title or 'KOJA Community Update' }}</h2><div class="news-byline">By <strong>{{ p.author_name }}</strong> · {{ p.created_at }}</div><div class="news-text">{{ p.body }}</div><div class="news-actions">{% if user %}<form method="post" action="{{ url_for('public_toggle_like',post_id=p.id,next='/news') }}"><button type="submit">{{ '❤️ Liked' if p.liked else '🤍 Like' }} · {{ p.like_count }}</button></form>{% else %}<a href="{{ url_for('login',next='/news') }}">🤍 Like · {{ p.like_count }}</a>{% endif %}<a href="#comments-{{ p.id }}">💬 {{ p.comments|length }}</a>{% if user and p.author_id and p.author_id|string != user.id|string %}<a class="call" href="{{ url_for('connect_call',user_id=p.author_id,mode='video') }}">🎥 Call</a>{% endif %}<button type="button" data-save="{{ p.id }}">🔖 Save</button><button type="button" onclick="kojaShare('/news#post-{{ p.id }}',this)">↗ Share</button></div><div class="news-comment" id="comments-{{ p.id }}">{% for c in p.comments %}<div class="news-comment-list"><div><strong>{{ c.author_name }}</strong> — {{ c.body }}</div></div>{% endfor %}{% if user %}<form method="post" action="{{ url_for('public_comment',post_id=p.id,next='/news') }}"><input name="body" maxlength="1000" placeholder="Comment on this update…" required><button type="submit">Send</button></form>{% endif %}</div></div></article>{% else %}<div class="empty">No news or updates published yet.</div>{% endfor %}</div></div><div class="news-footer">KOJA AFRICA Newsroom • Independent news and community updates</div></div>
-''',screen_class='news-screen',meta_description='KOJA AFRICA News & Updates — independent news, announcements, events and community updates.',posts=enriched,user=current_user())
+    return redirect(url_for('public_feed')+'#post-'+post_id)
 
 
 # ============================================================
@@ -2446,9 +2203,9 @@ def marketplace_sell():
             if cext in {'jpg','jpeg','png','webp'}:
                 cu,cerr=upload_storage(cover,'marketplace/covers')
                 if not cerr: cover_url=(cu or {}).get('url')
-        payload={'seller_id':(current_user() or {}).get('id'),'title':title,'description':description,'category':category,'price':price,'currency':'ZMW','cover_url':cover_url,'file_url':(uploaded or {}).get('url'),'file_name':digital.filename,'file_size':getattr(digital,'content_length',None),'is_published':auto_approval_enabled('marketplace')}
+        payload={'seller_id':(current_user() or {}).get('id'),'title':title,'description':description,'category':category,'price':price,'currency':'ZMW','cover_url':cover_url,'file_url':(uploaded or {}).get('url'),'file_name':digital.filename,'file_size':getattr(digital,'content_length',None),'is_published':False}
         _,err=db_insert('koja_marketplace_products',payload)
-        flash(('Product published automatically.' if auto_approval_enabled('marketplace') else 'Product submitted. It is hidden until published/approved.') if not err else 'Product could not be saved. Run MARKETPLACE.sql in Supabase first.','success' if not err else 'danger')
+        flash('Product submitted. It is hidden until published/approved.' if not err else 'Product could not be saved. Run MARKETPLACE.sql in Supabase first.','success' if not err else 'danger')
         return redirect(url_for('marketplace_my'))
     return render_page('Sell Digital Product',r'''<div class="hero"><h1>💼 Sell a Digital Product</h1><p>Upload a digital file and create a marketplace listing. New listings are unpublished until approved.</p></div><div class="card"><form method="post" enctype="multipart/form-data"><label>Product title</label><input name="title" maxlength="180" required placeholder="e.g. Grade 12 Mathematics Revision Guide"><label>Description</label><textarea name="description" maxlength="10000" required placeholder="Explain what the buyer receives..."></textarea><div class="grid"><div><label>Category</label><select name="category">{% for c in categories %}<option>{{ c }}</option>{% endfor %}</select></div><div><label>Price (ZMW)</label><input name="price" type="number" min="0" step="0.01" value="0" required></div></div><label>Digital product file</label><input type="file" name="digital_file" required><label>Cover image (optional)</label><input type="file" name="cover" accept="image/jpeg,image/png,image/webp"><button class="btn" type="submit">📤 Submit Product</button></form><p class="small">Maximum upload size follows KOJA's 15 MB server limit.</p></div>''',categories=MARKETPLACE_CATEGORIES)
 
@@ -2553,7 +2310,7 @@ def professional_register():
             "experience_years": clean(request.form.get("experience_years")) or None, "service_area": clean(request.form.get("service_area")),
             "address": clean(request.form.get("address")), "bio": clean(request.form.get("bio")), "service_description": clean(request.form.get("service_description")),
             "hourly_rate": clean(request.form.get("hourly_rate")) or None, "currency": clean(request.form.get("currency")) or "ZMW",
-            "is_available": False, "is_active": True, "verification_status": ("approved" if auto_approval_enabled("professionals") else "pending"), "approval_status": ("approved" if auto_approval_enabled("professionals") else "pending"), "created_at": utc_now(), "updated_at": utc_now()
+            "is_available": False, "is_active": True, "verification_status": "pending", "approval_status": "pending", "created_at": utc_now(), "updated_at": utc_now()
         }
         if existing: data, error = db_update("service_providers", {"id": existing.get("id")}, payload)
         else: data, error = db_insert("service_providers", payload)
@@ -2562,7 +2319,7 @@ def professional_register():
             if existing: data, error = db_update("service_providers", {"id": existing.get("id")}, fallback)
             else: data, error = db_insert("service_providers", fallback)
         if error: flash("Professional registration failed: " + str(error)[:700], "danger")
-        else: flash("Professional profile approved automatically and is now active." if auto_approval_enabled("professionals") else "Professional profile submitted for administrator approval.", "success")
+        else: flash("Professional profile submitted for administrator approval.", "success")
         return redirect(url_for("professionals"))
     return render_page("Register as Professional", r"""
 <div class="hero"><h2>📝 Register for Any Profession</h2><p>Register your professional service. Your profile becomes visible after administrator approval.</p></div>
@@ -2918,7 +2675,7 @@ def ensure_driver_provider(user):
         "name": full_name,
         "phone": user.get("phone") or None,
         "email": user.get("email") or None,
-        "verification_status": ("approved" if auto_approval_enabled("drivers") else "pending"),
+        "verification_status": "pending",
         "is_available": False,
         "is_active": True
     }
@@ -2979,7 +2736,7 @@ def driver_register():
             "vehicle_registration": vehicle_registration,
             "driving_license_number": driving_license_number,
             "service_area": service_area or None,
-            "verification_status": ("approved" if auto_approval_enabled("drivers") else "pending"),
+            "verification_status": "pending",
         }
 
         if existing and existing.get("id"):
@@ -2993,8 +2750,8 @@ def driver_register():
             flash("Driver registration failed: " + str(error)[:900], "danger")
             return redirect(url_for("driver_register"))
 
-        # A successful driver profile makes the account a driver. Verification
-        # is automatic when enabled by the administrator; otherwise it remains pending.
+        # A successful driver profile makes the account a driver, but verification
+        # remains pending until an administrator approves the profile.
         db_update("profiles", {"id": user["id"]}, {"role": "driver"})
         session["user"]["role"] = "driver"
         session["user"]["driver_provider_id"] = provider_id
@@ -3112,203 +2869,61 @@ def driver_delivery_action(delivery_id, action):
         flash(f"Delivery status changed to {status}.", "success")
     return redirect(url_for("driver_dashboard"))
 
-# DRIVER GPS — V22 (GPS-ONLY CHANGES)
+# DRIVER GPS
 # ============================================================
 
 @app.route("/tracking")
+@login_required
 def tracking():
-    # GPS-ONLY: this page is usable without an account for local phone GPS.
-    # When logged in, the same page can also identify the signed-in user.
     user=current_user()
     delivery_id = clean(request.args.get("delivery_id"))
-    return render_page("Live GPS Map",r"""
-<div class="hero"><h2>Live GPS Map</h2><p>See your phone on a live map with roads, places and building detail. You can also plan a road route to a destination.</p></div>
+    return render_page("Live GPS Tracking",r"""
+<div class="hero"><h2>Live Driver GPS</h2><p>Allow browser location permission. Keep this page open while driving.</p></div>
 <div class="card">
-<div class="grid">
-<div><label>Destination / place (optional)</label><input id="gps-destination" placeholder="e.g. a school, shop, street or address"></div>
-<div><label>Delivery ID (driver only, optional)</label><input id="delivery_id" value="{{ delivery_id or '' }}" placeholder="Assigned delivery ID"></div>
-</div>
+<label>Delivery ID (optional)</label>
+<input id="delivery_id" value="{{ delivery_id or '' }}" placeholder="Assigned delivery ID (automatic when opened from a job)">
 <div class="actions">
-<button class="btn success" onclick="startTracking()">📍 Start Live GPS</button>
-<button class="btn" onclick="routeToDestination()">🧭 Route to Destination</button>
-<button class="btn secondary" onclick="locateMe()">🎯 Locate Me</button>
-<button class="btn secondary" onclick="showLeafletMap()">🗺️ Leaflet Map</button>
-<button class="btn secondary" onclick="openGoogleMaps()">🌍 Google Maps</button>
-<button class="btn secondary" onclick="openSatelliteMap()">🛰️ Satellite Map</button>
-<button class="btn danger" onclick="stopTracking()">Stop GPS</button>
-<a class="btn secondary" href="{{ url_for('driver_register') }}">🚚 Register as a Driver</a>
+<button class="btn success" onclick="startTracking()">Go Online / Start GPS</button>
+<button class="btn danger" onclick="stopTracking()">Stop GPS / Go Offline</button>
 </div>
-<p id="gps-status">GPS not started. Location stays local on this phone unless you are a signed-in driver sharing GPS.</p>
+<p id="gps-status">GPS not started.</p>
 <div id="map"></div>
-<p class="small">Map data: OpenStreetMap. Detailed roads, places and building footprints appear as you zoom in. Routing follows available roads.</p>
-<p class="small">🚚 Want to deliver with KOJA? Use <a href="{{ url_for('driver_register') }}">Register as a Driver</a>. Driver GPS sharing becomes available after registration and the required KOJA verification.</p>
 </div>
 <script>
-let watchId=null,marker=null,lastSentAt=0,lastCoords=null,lastRaw=null,isTracking=false;
-let wakeLock=null,offlineQueue=[],lastHeading=null,lastAccuracy=null,lastDestination=null,destinationMarker=null,routeLine=null;
-const GPS_QUEUE_KEY="koja_gps_queue_v26";
-const LOGGED_IN={{ (user is not none)|tojson }};
-const IS_DRIVER={{ ((user and (user.get('role') in ['driver','admin'] or user.get('is_admin')))|tojson if user else false) }};
-
-// GPS-ONLY: Leaflet is loaded at the end of the KOJA document, so initialize
-// this GPS map only after Leaflet has finished loading.
-function initLiveGpsMap(){
-if(typeof L === "undefined"){status("Loading live map…");setTimeout(initLiveGpsMap,100);return}
-const map=L.map("map",{zoomControl:true}).setView([-13.9626,28.3228],6);
-const osm=L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:20,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);
-const hot=L.tileLayer("https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png",{maxZoom:20,attribution:"&copy; OpenStreetMap contributors, Tiles style by HOT"});
-const satellite=L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",{maxZoom:19,attribution:"Tiles &copy; Esri"});
-L.control.layers({"OpenStreetMap detailed":osm,"Humanitarian OSM":hot,"Satellite imagery":satellite},null,{collapsed:true}).addTo(map);
-function showSatelliteOnLeaflet(){satellite.addTo(map);if(map.hasLayer(osm))map.removeLayer(osm);if(map.hasLayer(hot))map.removeLayer(hot)}
+let watchId=null,marker=null;
+const map=L.map("map").setView([-13.9626,28.3228],6);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);
 function status(t){document.getElementById("gps-status").textContent=t}
-function loadQueue(){try{offlineQueue=JSON.parse(localStorage.getItem(GPS_QUEUE_KEY)||"[]")}catch(e){offlineQueue=[]}}
-function saveQueue(){try{localStorage.setItem(GPS_QUEUE_KEY,JSON.stringify(offlineQueue.slice(-20)))}catch(e){}}
-async function requestWakeLock(){try{if("wakeLock" in navigator)wakeLock=await navigator.wakeLock.request("screen")}catch(e){}}
-async function flushQueue(){if(!IS_DRIVER||!navigator.onLine||!offlineQueue.length)return; const q=offlineQueue.slice(); offlineQueue=[]; saveQueue(); for(const item of q){try{const r=await fetch("/api/driver/location",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(item)}); if(!r.ok)throw Error();}catch(e){offlineQueue.push(item);break}} saveQueue();}
 function startTracking(){
  if(!navigator.geolocation){status("This browser does not support GPS.");return}
- if(isTracking){status("GPS is already LIVE.");return}
- isTracking=true; loadQueue(); requestWakeLock(); if(IS_DRIVER)flushQueue();
- status(LOGGED_IN ? (IS_DRIVER?"🟢 LIVE GPS for your driver account — requesting high-accuracy location…":"📍 LIVE GPS for your account — location is shown on this phone.") : "📍 LIVE GPS for this phone — no account required.");
- navigator.geolocation.getCurrentPosition(sendPosition,gpsError,{enableHighAccuracy:true,maximumAge:0,timeout:20000});
- watchId=navigator.geolocation.watchPosition(sendPosition,gpsError,{enableHighAccuracy:true,maximumAge:1000,timeout:20000});
+ status("Requesting GPS permission...");
+ watchId=navigator.geolocation.watchPosition(sendPosition,gpsError,{enableHighAccuracy:true,maximumAge:3000,timeout:15000});
 }
-function locateMe(){if(lastCoords){map.setView(lastCoords,18,{animate:true});return}startTracking()}
-function showLeafletMap(){
- map.setView(lastCoords||map.getCenter(),lastCoords?18:map.getZoom(),{animate:true});
- osm.addTo(map);
- status(lastCoords?"🗺️ Leaflet Map · live GPS location shown.":"🗺️ Leaflet Map · start GPS to show your phone location.");
-}
-function openGoogleMaps(){
- const openAt=(lat,lon)=>window.open("https://www.google.com/maps/@?api=1&map_action=map&center="+encodeURIComponent(lat+","+lon)+"&zoom=17","_blank");
- if(lastCoords){openAt(lastCoords[0],lastCoords[1]);return}
- if(navigator.geolocation){navigator.geolocation.getCurrentPosition(p=>openAt(p.coords.latitude,p.coords.longitude),()=>window.open("https://www.google.com/maps/","_blank"),{enableHighAccuracy:true,timeout:10000,maximumAge:1000});}else window.open("https://www.google.com/maps/","_blank");
-}
-function openSatelliteMap(){
- const openAt=(lat,lon)=>window.open("https://www.google.com/maps/@"+encodeURIComponent(lat)+","+encodeURIComponent(lon)+",17z/data=!3m1!1e3","_blank");
- if(lastCoords){openAt(lastCoords[0],lastCoords[1]);return}
- if(navigator.geolocation){navigator.geolocation.getCurrentPosition(p=>openAt(p.coords.latitude,p.coords.longitude),()=>window.open("https://www.google.com/maps/@?api=1&map_action=map&basemap=satellite","_blank"),{enableHighAccuracy:true,timeout:10000,maximumAge:1000});}else window.open("https://www.google.com/maps/@?api=1&map_action=map&basemap=satellite","_blank");
-}
-function gpsAge(){return lastSentAt?Math.max(0,Math.round((Date.now()-lastSentAt)/1000)):null}
-function distanceM(a,b){const R=6371000,p=Math.PI/180,la1=a[0]*p,la2=b[0]*p,dla=(b[0]-a[0])*p,dlo=(b[1]-a[1])*p;const x=Math.sin(dla/2)**2+Math.cos(la1)*Math.cos(la2)*Math.sin(dlo/2)**2;return 2*R*Math.atan2(Math.sqrt(x),Math.sqrt(1-x))}
-async function reverseName(lat,lon){try{const r=await fetch(`/api/gps/reverse?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`,{headers:{"Accept":"application/json"}});const d=await r.json();return d.display_name||"Your current location"}catch(e){return "Your current location"}}
 async function sendPosition(position){
- const c=position.coords, lat=Number(c.latitude), lon=Number(c.longitude);
- if(!Number.isFinite(lat)||!Number.isFinite(lon)||lat<-90||lat>90||lon<-180||lon>180)return;
- const now=Date.now(), acc=Number(c.accuracy);
- if(!Number.isFinite(acc)||acc<=0){status("🟡 GPS accuracy unavailable — waiting for a verified fix…");return}
- if(acc>150){status("🟡 GPS signal weak — accuracy "+Math.round(acc)+"m. Waiting for a better fix…");return}
- if(lastRaw&&Number.isFinite(lastAccuracy)&&acc>lastAccuracy*2&&now-lastSentAt<10000)return;
- const candidate=[lat,lon];
- const moving=Number.isFinite(c.speed)&&c.speed>1.0;
- const minInterval=moving?2200:5000, minMove=moving?3:8;
- if(lastCoords){
-   const jump=distanceM(lastCoords,candidate);
-   const allowedJump=Math.max(1000,Number.isFinite(c.speed)?Math.max(1000,c.speed*120):1000,acc*5,lastAccuracy*5||0);
-   if(jump>allowedJump){status("🟡 GPS jump rejected — waiting for a stable location ("+Math.round(jump)+"m jump).");return}
-   if(now-lastSentAt<minInterval||jump<minMove)return;
- }
- let heading=Number(c.heading);
- if(!Number.isFinite(heading)&&lastCoords){const d=distanceM(lastCoords,candidate);if(d>=5)heading=Number(lastHeading)}
- if(Number.isFinite(heading)){if(lastHeading!==null){let delta=((heading-lastHeading+540)%360)-180;heading=(lastHeading+delta*.35+360)%360}lastHeading=heading}
- lastCoords=candidate;lastRaw=candidate;lastSentAt=now;lastAccuracy=acc;
- if(!marker){marker=L.marker(candidate).addTo(map).bindPopup("This phone — live GPS");}else marker.setLatLng(candidate);
- const el=marker.getElement()?.querySelector("img");if(el&&Number.isFinite(heading))el.style.transform="rotate("+heading+"deg)";
- map.setView(candidate,18,{animate:true});
- const name=await reverseName(lat,lon);marker.setPopupContent("<strong>Live GPS</strong><br>"+name+"<br>Accuracy: "+Math.round(acc)+" m");
- if(lastDestination)updateGpsRoute(false);
- if(IS_DRIVER){
-  const deliveryId=document.getElementById("delivery_id").value.trim();
-  const payload={latitude:lat,longitude:lon,accuracy:acc,speed:Number.isFinite(c.speed)?c.speed:null,heading:Number.isFinite(heading)?heading:null,altitude:Number.isFinite(c.altitude)?c.altitude:null,delivery_id:deliveryId||null};
-  if(!navigator.onLine){offlineQueue.push(payload);saveQueue();status("🟠 OFFLINE — verified GPS saved on this phone and will sync when internet returns.");return}
-  try{const r=await fetch("/api/driver/location",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});if(!r.ok)throw Error();await r.json();await flushQueue();status("🟢 LIVE DRIVER GPS · "+new Date().toLocaleTimeString()+" · accuracy "+Math.round(acc)+"m"+(moving?" · moving":" · stationary"));}catch(e){offlineQueue.push(payload);saveQueue();status("🟠 Network unavailable — driver GPS update queued for automatic sync.")}
- }else status((LOGGED_IN?"🟢 LIVE GPS for your account":"🟢 LIVE GPS on this phone")+" · "+new Date().toLocaleTimeString()+" · accuracy "+Math.round(acc)+"m");
-}
-function gpsError(e){if(e.code===1)status("Location permission denied. Allow location permission in browser settings.");else if(e.code===2)status("Device could not determine location.");else if(e.code===3)status("GPS timed out.");else status("GPS error.")}
-function stopTracking(){isTracking=false;if(watchId!==null){navigator.geolocation.clearWatch(watchId);watchId=null}if(wakeLock){try{wakeLock.release()}catch(e){}wakeLock=null}if(IS_DRIVER){fetch("/api/driver/offline",{method:"POST",headers:{"Content-Type":"application/json"}}).then(r=>r.json()).then(d=>status(d.message||"GPS sharing stopped.")).catch(()=>status("GPS stopped locally."))}else status("GPS stopped. The last location remains only on this map until the page is closed.")}
-async function routeToDestination(){
- const q=document.getElementById("gps-destination").value.trim();
- if(!q){status("Enter a destination, building, place or address first.");return}
- if(!lastCoords){status("Getting your current GPS location first…");startTracking();setTimeout(routeToDestination,1800);return}
- status("🧭 Finding destination and calculating road route…");
+ const c=position.coords, lat=c.latitude, lon=c.longitude;
+ if(!marker){marker=L.marker([lat,lon]).addTo(map).bindPopup("Your live driver location");}
+ else marker.setLatLng([lat,lon]);
+ map.setView([lat,lon],16);
+ const deliveryId=document.getElementById("delivery_id").value.trim();
  try{
-  const r=await fetch("/api/gps/geocode?q="+encodeURIComponent(q),{headers:{"Accept":"application/json"}});const d=await r.json();
-  if(!d.ok||!d.latitude){status(d.message||"Destination not found.");return}
-  lastDestination=[Number(d.latitude),Number(d.longitude)];
-  if(destinationMarker)destinationMarker.setLatLng(lastDestination);else destinationMarker=L.marker(lastDestination).addTo(map).bindPopup("Destination: "+(d.display_name||q));
-  await updateGpsRoute(true);
- }catch(e){status("Could not calculate the route. Check your internet connection.")}
+  const r=await fetch("/api/driver/location",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+   latitude:lat,longitude:lon,accuracy:c.accuracy,speed:c.speed,heading:c.heading,altitude:c.altitude,delivery_id:deliveryId||null
+  })});
+  const d=await r.json();
+  status(d.ok?"ONLINE — GPS updated "+new Date().toLocaleTimeString():(d.message||"GPS update failed."));
+ }catch(e){status("Network error while sending GPS.");}
 }
-async function updateGpsRoute(force=false){
- if(!lastCoords||!lastDestination)return;if(!force&&Date.now()-(window.lastGpsRouteAt||0)<8000)return;window.lastGpsRouteAt=Date.now();
- try{const u=`/api/gps/route?from_lat=${encodeURIComponent(lastCoords[0])}&from_lon=${encodeURIComponent(lastCoords[1])}&to_lat=${encodeURIComponent(lastDestination[0])}&to_lon=${encodeURIComponent(lastDestination[1])}`;const r=await fetch(u,{headers:{"Accept":"application/json"}});const d=await r.json();if(!d.ok||!d.geometry?.coordinates?.length)throw Error(d.message||"No road route");const coords=d.geometry.coordinates.map(x=>[x[1],x[0]]);if(routeLine)routeLine.setLatLngs(coords);else routeLine=L.polyline(coords,{weight:6,opacity:.85}).addTo(map);map.fitBounds(L.latLngBounds(coords),{padding:[40,40]});status("🟢 Road route ready · "+(Number(d.distance_m)/1000).toFixed(1)+" km · ETA "+Math.max(1,Math.round(Number(d.duration_s)/60))+" min");}catch(e){status("GPS is live, but no road route was found between these points.")}
+function gpsError(e){
+ if(e.code===1)status("Location permission denied. Allow location permission in browser settings.");
+ else if(e.code===2)status("Device could not determine location.");
+ else if(e.code===3)status("GPS timed out."); else status("GPS error.");
 }
-window.addEventListener("online",()=>{if(IS_DRIVER){status("🟢 Internet restored — syncing driver GPS…");flushQueue()}});
-document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&isTracking)requestWakeLock()});
-window.addEventListener("pagehide",()=>{if(isTracking&&IS_DRIVER){navigator.sendBeacon("/api/driver/offline",new Blob([JSON.stringify({})],{type:"application/json"}))}});
-loadQueue();
-window.startTracking=startTracking;
-window.routeToDestination=routeToDestination;
-window.locateMe=locateMe;
-window.stopTracking=stopTracking;
+function stopTracking(){
+ if(watchId!==null){navigator.geolocation.clearWatch(watchId);watchId=null;}
+ fetch("/api/driver/offline",{method:"POST",headers:{"Content-Type":"application/json"}}).then(r=>r.json()).then(d=>status(d.message||"GPS sharing stopped.")).catch(()=>status("GPS stopped locally."));
 }
-if(document.readyState === "loading") document.addEventListener("DOMContentLoaded",initLiveGpsMap);
-else initLiveGpsMap();
 </script>
-""",delivery_id=delivery_id,user=user)
-
-# GPS-ONLY public geocoding and routing endpoints. They do not expose account data.
-@app.route("/api/gps/geocode")
-def gps_geocode():
-    q=clean(request.args.get("q"))
-    if not q:return jsonify({"ok":False,"message":"A destination is required."}),400
-    try:
-        r=requests.get("https://nominatim.openstreetmap.org/search",params={"format":"jsonv2","limit":1,"q":q},headers={"User-Agent":"KOJA-AFRICA-GPS/11 (https://koja-africa.onrender.com)"},timeout=10)
-        r.raise_for_status();a=r.json()
-        if not a:return jsonify({"ok":False,"message":"Destination not found."}),404
-        x=a[0];return jsonify({"ok":True,"latitude":safe_float(x.get("lat")),"longitude":safe_float(x.get("lon")),"display_name":x.get("display_name",q)})
-    except Exception:
-        return jsonify({"ok":False,"message":"Destination search is temporarily unavailable."}),503
-
-@app.route("/api/gps/reverse")
-def gps_reverse():
-    lat=safe_float(request.args.get("lat"));lon=safe_float(request.args.get("lon"))
-    if lat is None or lon is None or not(-90<=lat<=90 and -180<=lon<=180):return jsonify({"ok":False,"message":"Invalid coordinates."}),400
-    try:
-        r=requests.get("https://nominatim.openstreetmap.org/reverse",params={"format":"jsonv2","lat":lat,"lon":lon,"zoom":18},headers={"User-Agent":"KOJA-AFRICA-GPS/11 (https://koja-africa.onrender.com)"},timeout=10)
-        r.raise_for_status();d=r.json();return jsonify({"ok":True,"display_name":d.get("display_name","Current location")})
-    except Exception:
-        return jsonify({"ok":True,"display_name":"Current location"})
-
-@app.route("/api/gps/route")
-def gps_route_public():
-    try:
-        lat1=safe_float(request.args.get("from_lat"));lon1=safe_float(request.args.get("from_lon"));lat2=safe_float(request.args.get("to_lat"));lon2=safe_float(request.args.get("to_lon"))
-        vals=(lat1,lon1,lat2,lon2)
-        if any(v is None for v in vals) or not(-90<=lat1<=90 and -180<=lon1<=180 and -90<=lat2<=90 and -180<=lon2<=180):return jsonify({"ok":False,"message":"Valid coordinates are required."}),400
-        url=f"https://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}"
-        r=requests.get(url,params={"overview":"full","geometries":"geojson","steps":"false"},timeout=12);r.raise_for_status();data=r.json()
-        if not data.get("routes"):return jsonify({"ok":False,"message":"No road route found."}),404
-        route=data["routes"][0];return jsonify({"ok":True,"distance_m":route.get("distance",0),"duration_s":route.get("duration",0),"geometry":route.get("geometry",{})})
-    except requests.RequestException:return jsonify({"ok":False,"message":"Routing service is temporarily unavailable."}),503
-    except Exception as exc:
-        logger.exception("Public GPS route lookup failed");return jsonify({"ok":False,"message":"Could not calculate route."}),500
-
-@app.route("/api/gps/snap")
-def gps_snap():
-    """GPS-ONLY: snap a coordinate to the nearest available road using OSRM."""
-    lat=safe_float(request.args.get("lat")); lon=safe_float(request.args.get("lon"))
-    if lat is None or lon is None or not (-90<=lat<=90) or not (-180<=lon<=180):
-        return jsonify({"ok":False,"message":"Valid latitude and longitude are required."}),400
-    try:
-        url=f"https://router.project-osrm.org/nearest/v1/driving/{lon},{lat}?number=1"
-        r=requests.get(url,timeout=8,headers={"User-Agent":"KOJA-AFRICA-GPS/26"})
-        data=r.json(); wp=(data.get("waypoints") or [None])[0]
-        loc=wp.get("location") if wp else None
-        if not loc or len(loc)<2: raise ValueError("No road match")
-        return jsonify({"ok":True,"latitude":float(loc[1]),"longitude":float(loc[0]),"name":wp.get("name") or "Nearest road"})
-    except Exception:
-        return jsonify({"ok":False,"message":"Road matching unavailable right now."}),503
+""")
 
 @app.route("/api/driver/location", methods=["POST"])
 @driver_required
@@ -3322,30 +2937,14 @@ def driver_location_update():
     provider_id = str(provider["id"])
     body = request.get_json(silent=True) or {}
     lat = safe_float(body.get("latitude")); lon = safe_float(body.get("longitude"))
-    accuracy = safe_float(body.get("accuracy")); speed = safe_float(body.get("speed")); heading = safe_float(body.get("heading"))
     if lat is None or lon is None or not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
         return jsonify({"ok":False,"message":"Invalid latitude or longitude."}),400
-    if accuracy is not None and (accuracy < 0 or accuracy > 10000): accuracy = None
-    if accuracy is None or accuracy > 150:
-        return jsonify({"ok":False,"message":"GPS accuracy is too weak. Waiting for a better fix."}),422
-    if speed is not None and (speed < 0 or speed > 100): speed = None
-    if heading is not None: heading = heading % 360
-    # Reject implausible coordinate jumps caused by a bad GPS fix.
-    recent=db_select("driver_locations",filters={"driver_id":provider_id},order="created_at.desc",limit=1)
-    if recent:
-        prev=recent[0]
-        plat=safe_float(prev.get("latitude"));plon=safe_float(prev.get("longitude"));
-        if plat is not None and plon is not None:
-            jump=haversine_km(plat,plon,lat,lon)*1000
-            allowed=max(1500.0,accuracy*5.0,(speed or 0)*120.0)
-            if jump>allowed:
-                return jsonify({"ok":False,"message":"GPS jump rejected. Waiting for a stable location.","jump_m":round(jump)}),422
     payload = {
         "id": str(uuid.uuid4()), "driver_id": provider_id,
         "latitude": lat, "longitude": lon,
-        "accuracy": accuracy,
-        "speed": speed,
-        "heading": heading,
+        "accuracy": safe_float(body.get("accuracy")),
+        "speed": safe_float(body.get("speed")),
+        "heading": safe_float(body.get("heading")),
         "is_online": True, "created_at": utc_now()
     }
     row, error = db_insert("driver_locations", payload)
@@ -3392,134 +2991,80 @@ def driver_offline():
 @login_required
 def drivers():
     return render_page("Nearby Drivers",r"""
-<div class="hero"><h2>Nearby Delivery Drivers</h2><p>Use your live GPS to find online drivers, view them on the map, and get a road route to a selected driver.</p></div>
+<div class="hero"><h2>Nearby Delivery Drivers</h2><p>Share your pickup/shop location and KOJA will calculate distances to online drivers.</p></div>
 <div class="card">
 <div class="grid">
 <div><label>Your Latitude</label><input id="lat" type="number" step="any" placeholder="-13.96"></div>
 <div><label>Your Longitude</label><input id="lon" type="number" step="any" placeholder="28.32"></div>
 </div>
 <div class="actions">
-<button class="btn success" onclick="startDriverFinderGPS()">📍 Start Live GPS</button>
-<button class="btn" onclick="locateMe()">🎯 Locate Me</button>
-<button class="btn secondary" onclick="findDrivers()">🔄 Refresh Drivers</button>
-<button class="btn danger" onclick="stopDriverFinderGPS()">Stop GPS</button>
+<button class="btn" onclick="locateMe()">Use My Current Location</button>
+<button class="btn success" onclick="findDrivers()">Find Nearby Drivers</button>
 </div>
-<p id="status" class="small">GPS not started.</p>
-<p id="accuracy" class="small"></p>
+<p id="status" class="small"></p>
 </div>
 <div class="card"><div id="map"></div></div>
-<div class="card"><h3>Available Drivers</h3><div id="driver-list">Start GPS or enter your location and search.</div></div>
+<div class="card"><h3>Available Drivers</h3><div id="driver-list">Enter your location and search.</div></div>
 <script>
-let map=L.map("map").setView([-13.9626,28.3228],6),me=null,meAccuracy=null,markers=[],watchId=null,lastPosition=null,selectedDriver=null,routeLine=null,destinationMarker=null,driverRefreshTimer=null;
-const osm=L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:20,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);
-const hot=L.tileLayer("https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png",{maxZoom:20,attribution:"&copy; OpenStreetMap contributors, Tiles style by HOT"});
-const satellite=L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",{maxZoom:19,attribution:"Tiles &copy; Esri"});
-L.control.layers({"OpenStreetMap":osm,"Detailed HOT":hot,"Satellite imagery":satellite},null,{collapsed:true}).addTo(map);
-function openDriverGoogle(driver){window.open("https://www.google.com/maps/dir/?api=1&destination="+encodeURIComponent(driver.latitude+","+driver.longitude),"_blank")}
-function openDriverSatellite(driver){window.open("https://www.google.com/maps/@"+encodeURIComponent(driver.latitude)+","+encodeURIComponent(driver.longitude)+",17z/data=!3m1!1e3","_blank")}
-function setStatus(t){document.getElementById("status").textContent=t}
-function setAccuracy(a){document.getElementById("accuracy").textContent=Number.isFinite(a)?"GPS accuracy: "+Math.round(a)+" m" : ""}
-let lastMarkerPosition=null;
-function animateDriverMarker(from,to){
- if(!me||!from){if(me)me.setLatLng(to);return}
- const start=performance.now(),duration=700;
- function step(now){const t=Math.min(1,(now-start)/duration),e=t<.5?2*t*t:1-Math.pow(-2*t+2,2)/2;me.setLatLng([from[0]+(to[0]-from[0])*e,from[1]+(to[1]-from[1])*e]);if(t<1)requestAnimationFrame(step)}
- requestAnimationFrame(step)
-}
-function updateMyMarker(lat,lon,acc){
- const p=[lat,lon];
- if(me)animateDriverMarker(lastMarkerPosition,p);else me=L.marker(p).addTo(map).bindPopup("📍 Your live location");
- lastMarkerPosition=p;
- if(meAccuracy)meAccuracy.setLatLng(p).setRadius(Number.isFinite(acc)?Math.min(acc,500):0);else if(Number.isFinite(acc))meAccuracy=L.circle(p,{radius:Math.min(acc,500),weight:1,fillOpacity:.08}).addTo(map);
- setAccuracy(acc);
-}
-function locateMe(){if(lastPosition){map.setView(lastPosition,16,{animate:true});return}startDriverFinderGPS()}
-function startDriverFinderGPS(){
- if(!navigator.geolocation){setStatus("GPS is not supported on this device.");return}
- if(watchId!==null){setStatus("🟢 Your GPS is already LIVE.");return}
- setStatus("Requesting high-accuracy GPS…");
- const opts={enableHighAccuracy:true,maximumAge:1000,timeout:20000};
- const onPos=p=>{
-   const c=p.coords,lat=Number(c.latitude),lon=Number(c.longitude),acc=Number(c.accuracy);
-   if(!Number.isFinite(lat)||!Number.isFinite(lon)||lat<-90||lat>90||lon<-180||lon>180)return;
-   if(!Number.isFinite(acc)||acc<=0){setStatus("🟡 GPS accuracy unavailable — waiting for a verified fix.");return}
-   if(acc>150){setAccuracy(acc);setStatus("🟡 GPS is weak — accuracy "+Math.round(acc)+"m. Waiting for a better fix.");return}
-   const candidate=[lat,lon];
-   if(lastPosition){
-     const jump=distanceM(lastPosition,candidate);
-     if(jump>Math.max(1000,acc*5)){setStatus("🟡 GPS jump rejected — waiting for a stable fix.");return}
-     if(jump<3&&Number.isFinite(meAccuracy?.getRadius?.())){updateMyMarker(lat,lon,Math.min(acc,meAccuracy.getRadius()));return}
-   }
-   lastPosition=candidate;document.getElementById("lat").value=lat;document.getElementById("lon").value=lon;updateMyMarker(lat,lon,acc);
-   setStatus("🟢 YOUR GPS LIVE · "+new Date().toLocaleTimeString()+" · accuracy "+Math.round(acc)+"m");
-   findDrivers();
- };
- const onErr=e=>setStatus(e.code===1?"Location permission denied — allow GPS in browser settings.":e.code===2?"GPS location unavailable.":"GPS timed out — retrying…");
- navigator.geolocation.getCurrentPosition(onPos,onErr,opts);
- watchId=navigator.geolocation.watchPosition(onPos,onErr,opts);
- if(driverRefreshTimer===null)driverRefreshTimer=setInterval(()=>{if(lastPosition)findDrivers()},5000);
-}
-function stopDriverFinderGPS(){
- if(watchId!==null){navigator.geolocation.clearWatch(watchId);watchId=null}
- if(driverRefreshTimer!==null){clearInterval(driverRefreshTimer);driverRefreshTimer=null}
- setStatus("GPS stopped. Driver map remains visible.");
-}
-function clearRoute(){if(routeLine){map.removeLayer(routeLine);routeLine=null}if(destinationMarker){map.removeLayer(destinationMarker);destinationMarker=null}}
-async function routeToDriver(driver){
- if(!lastPosition){setStatus("Start your GPS first.");return}
- selectedDriver=driver;clearRoute();
- try{
-  const u=`/api/delivery/route?from_lat=${encodeURIComponent(lastPosition[0])}&from_lon=${encodeURIComponent(lastPosition[1])}&to_lat=${encodeURIComponent(driver.latitude)}&to_lon=${encodeURIComponent(driver.longitude)}`;
-  const r=await fetch(u,{headers:{"Accept":"application/json"}}),d=await r.json();
-  if(!d.ok||!d.geometry?.coordinates?.length)throw Error(d.message||"No road route");
-  const coords=d.geometry.coordinates.map(x=>[x[1],x[0]]);routeLine=L.polyline(coords,{weight:6,opacity:.85}).addTo(map);
-  destinationMarker=L.marker([driver.latitude,driver.longitude]).addTo(map).bindPopup("🚚 "+driver.name);
-  map.fitBounds(L.latLngBounds(coords),{padding:[40,40]});
-  const mins=Math.max(1,Math.round(Number(d.duration_s)/60));
-  setStatus(`🛣️ Route to ${driver.name}: ${(Number(d.distance_m)/1000).toFixed(1)} km · ETA ${mins} min`);
- }catch(e){setStatus("Could not calculate a road route to this driver.")}
+let map=L.map("map").setView([-13.9626,28.3228],6),me=null,markers=[];
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);
+function locateMe(){
+ if(!navigator.geolocation){document.getElementById("status").textContent="GPS is not supported.";return}
+ document.getElementById("status").textContent="Requesting your location...";
+ navigator.geolocation.getCurrentPosition(p=>{
+  document.getElementById("lat").value=p.coords.latitude;
+  document.getElementById("lon").value=p.coords.longitude;
+  if(me)me.setLatLng([p.coords.latitude,p.coords.longitude]);else me=L.marker([p.coords.latitude,p.coords.longitude]).addTo(map).bindPopup("Your pickup/shop location");
+  map.setView([p.coords.latitude,p.coords.longitude],14);
+  document.getElementById("status").textContent="Location obtained.";
+  findDrivers();
+ },()=>document.getElementById("status").textContent="Location permission denied or unavailable.",{enableHighAccuracy:true,timeout:15000});
 }
 async function findDrivers(){
  const lat=parseFloat(document.getElementById("lat").value),lon=parseFloat(document.getElementById("lon").value);
- if(!Number.isFinite(lat)||!Number.isFinite(lon)){setStatus("Enter or obtain a valid location first.");return}
- if(lat<-90||lat>90||lon<-180||lon>180){setStatus("Invalid GPS coordinates.");return}
- setStatus("🔄 Finding online drivers near your live location…");
+ if(!Number.isFinite(lat)||!Number.isFinite(lon)){document.getElementById("status").textContent="Enter or obtain a valid location first.";return}
+ document.getElementById("status").textContent="Searching for online drivers...";
  try{
-  const r=await fetch(`/api/nearby-drivers?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lon)}&radius_km=50`,{cache:"no-store"});
-  const d=await r.json();markers.forEach(m=>map.removeLayer(m));markers=[];
+  const r=await fetch(`/api/nearby-drivers?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lon)}&radius_km=50`);
+  const d=await r.json();
+  markers.forEach(m=>map.removeLayer(m));markers=[];
   const list=document.getElementById("driver-list");
   if(!d.ok){list.textContent=d.message||"Search failed.";return}
-  updateMyMarker(lat,lon,Number.isFinite(lastPosition?.[0])?undefined:undefined);
-  if(!d.drivers.length){list.innerHTML="<p>No online drivers found within 50 km.</p>";setStatus("No nearby drivers are online.");return}
+  if(me)me.setLatLng([lat,lon]);else me=L.marker([lat,lon]).addTo(map).bindPopup("Your pickup/shop location");
+  if(!d.drivers.length){list.innerHTML="<p>No online drivers found within 50 km.</p>";document.getElementById("status").textContent="No nearby drivers are online.";return}
   list.innerHTML="";
   d.drivers.forEach(driver=>{
-   const p=[driver.latitude,driver.longitude];
-   const m=L.marker(p).addTo(map).bindPopup(`<b>${escapeHtml(driver.name)}</b><br>${escapeHtml(driver.vehicle_type||"Vehicle")}<br>${driver.distance_km} km away<br>GPS accuracy: ${driver.accuracy?Math.round(driver.accuracy)+" m":"—"}`);
+   const m=L.marker([driver.latitude,driver.longitude]).addTo(map).bindPopup(`<b>${escapeHtml(driver.name)}</b><br>${escapeHtml(driver.vehicle_type||"Vehicle")}<br>${driver.distance_km} km away`);
    markers.push(m);
    const div=document.createElement("div");div.className="card driver-card";
-   div.innerHTML=`<h3>${escapeHtml(driver.name)}</h3><p class="online">ONLINE</p><p><b>Vehicle:</b> ${escapeHtml(driver.vehicle_type||"Not specified")} ${escapeHtml(driver.vehicle_registration||"")}</p><p><b>Distance:</b> ${driver.distance_km} km</p><p><b>GPS accuracy:</b> ${driver.accuracy?Math.round(driver.accuracy)+" m":"—"}</p><p><b>Phone:</b> ${escapeHtml(driver.phone||"")}</p><div class="actions"><button class="btn success" onclick="requestDriver('${driver.driver_id}')">Request Delivery</button><button class="btn secondary" onclick='viewDriver(${JSON.stringify(driver)})'>View on Map</button><button class="btn" onclick='routeToDriver(${JSON.stringify(driver)})'>🛣️ Route Here</button><button class="btn secondary" onclick='openDriverGoogle(${JSON.stringify(driver)})'>🌍 Google Maps</button><button class="btn secondary" onclick='openDriverSatellite(${JSON.stringify(driver)})'>🛰️ Satellite</button></div>`;
+   div.innerHTML=`<h3>${escapeHtml(driver.name)}</h3><p class="online">ONLINE</p><p><b>Vehicle:</b> ${escapeHtml(driver.vehicle_type||"Not specified")} ${escapeHtml(driver.vehicle_registration||"")}</p><p><b>Distance:</b> ${driver.distance_km} km</p><p><b>Phone:</b> ${escapeHtml(driver.phone||"")}</p><div class="actions"><button class="btn success" onclick="requestDriver('${driver.driver_id}')">Request Delivery</button><button class="btn secondary" onclick="map.setView([${driver.latitude},${driver.longitude}],16)">View on Map</button></div>`;
    list.appendChild(div);
   });
-  map.setView([lat,lon],13);setStatus(`🟢 Found ${d.drivers.length} online driver(s) · live refresh every 5s`);
- }catch(e){setStatus("Unable to search drivers. Check your internet connection.")}
+  map.setView([lat,lon],13);
+  document.getElementById("status").textContent=`Found ${d.drivers.length} online driver(s).`;
+ }catch(e){document.getElementById("status").textContent="Unable to search drivers."}
 }
-function viewDriver(driver){map.setView([driver.latitude,driver.longitude],17,{animate:true})}
 function escapeHtml(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]))}
 async function requestDriver(driverId){
  const lat=parseFloat(document.getElementById("lat").value),lon=parseFloat(document.getElementById("lon").value);
- const pickup=prompt("Pickup / shop location description:","My current location");if(pickup===null)return;
- const destination=prompt("Delivery destination:");if(!destination)return;
- const recipient=prompt("Recipient name:","");const phone=prompt("Recipient phone:","");const description=prompt("Package description:","");
+ const pickup=prompt("Pickup / shop location description:","My current location");
+ if(pickup===null)return;
+ const destination=prompt("Delivery destination:");
+ if(!destination)return;
+ const recipient=prompt("Recipient name:","");
+ const phone=prompt("Recipient phone:","");
+ const description=prompt("Package description:","");
  try{
-   let destination_latitude=null,destination_longitude=null;
-   const g=await (await fetch("/api/gps/geocode?q="+encodeURIComponent(destination),{headers:{"Accept":"application/json"}})).json();
-   if(g.ok&&Number.isFinite(Number(g.latitude))&&Number.isFinite(Number(g.longitude))){destination_latitude=Number(g.latitude);destination_longitude=Number(g.longitude);}
-   const body={driver_id:driverId,pickup_location:pickup,destination:destination,pickup_latitude:Number.isFinite(lat)?lat:null,pickup_longitude:Number.isFinite(lon)?lon:null,destination_latitude,destination_longitude,recipient_name:recipient||"",recipient_phone:phone||"",package_description:description||""};
-   const r=await fetch("/api/delivery/request",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-   const d=await r.json();alert(d.message||"Delivery request submitted.");if(d.ok)window.location.href="/deliveries"
- }catch(e){alert("Unable to send delivery request. Check the destination and try again.")}
+  const r=await fetch("/api/delivery/request",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+   driver_id:driverId,pickup_location:pickup,destination:destination,
+   pickup_latitude:lat,pickup_longitude:lon,recipient_name:recipient||"",
+   recipient_phone:phone||"",package_description:description||""
+  })});
+  const d=await r.json();
+  alert(d.message||"Delivery request submitted.");
+  if(d.ok)window.location.href="/deliveries";
+ }catch(e){alert("Unable to send delivery request.")}
 }
-window.addEventListener("pagehide",stopDriverFinderGPS);
 </script>
 """)
 
@@ -3545,10 +3090,7 @@ def nearby_drivers():
         if not loc.get("is_online"):
             continue
         dlat=safe_float(loc.get("latitude")); dlon=safe_float(loc.get("longitude"))
-        if dlat is None or dlon is None or dlat<-90 or dlat>90 or dlon<-180 or dlon>180:
-            continue
-        acc=safe_float(loc.get("accuracy"))
-        if acc is not None and (acc<=0 or acc>150):
+        if dlat is None or dlon is None:
             continue
 
         created=loc.get("created_at")
@@ -3605,22 +3147,16 @@ def create_delivery_request():
     lat=safe_float(body.get("pickup_latitude")); lon=safe_float(body.get("pickup_longitude"))
     tracking=make_tracking_code()
 
-    pickup_location=clean(body.get("pickup_location")) or "Current location"
-    destination=clean(body.get("destination")) or "Destination"
     payload={
         "id":str(uuid.uuid4()),
         "customer_id":user["id"],
         "user_id":user["id"],
         "sender_id":user["id"],
         "driver_id":driver_id,
-        "pickup_address":pickup_location,
-        "delivery_address":destination,
-        "pickup_location":pickup_location,
-        "destination":destination,
+        "pickup_location":clean(body.get("pickup_location")),
+        "destination":clean(body.get("destination")),
         "pickup_latitude":lat,
         "pickup_longitude":lon,
-        "destination_latitude":safe_float(body.get("destination_latitude")),
-        "destination_longitude":safe_float(body.get("destination_longitude")),
         "recipient_name":clean(body.get("recipient_name")),
         "recipient_phone":clean(body.get("recipient_phone")),
         "package_description":clean(body.get("package_description")),
@@ -3637,8 +3173,6 @@ def create_delivery_request():
     if error:
         minimal={
             "id":payload["id"],"customer_id":user["id"],"driver_id":driver_id,
-            "pickup_address":payload["pickup_address"],
-            "delivery_address":payload["delivery_address"],
             "pickup_location":payload["pickup_location"],
             "destination":payload["destination"],
             "recipient_name":payload["recipient_name"],
@@ -3665,14 +3199,8 @@ def deliveries():
         tracking=make_tracking_code()
         payload={
             "id":str(uuid.uuid4()),"customer_id":user["id"],"sender_id":user["id"],
-            "pickup_address":clean(request.form.get("pickup_location")) or "Current location",
-            "delivery_address":clean(request.form.get("destination")) or "Destination",
-            "pickup_location":clean(request.form.get("pickup_location")) or "Current location",
-            "destination":clean(request.form.get("destination")) or "Destination",
-            "pickup_latitude":safe_float(request.form.get("pickup_latitude")),
-            "pickup_longitude":safe_float(request.form.get("pickup_longitude")),
-            "destination_latitude":safe_float(request.form.get("destination_latitude")),
-            "destination_longitude":safe_float(request.form.get("destination_longitude")),
+            "pickup_location":clean(request.form.get("pickup_location")),
+            "destination":clean(request.form.get("destination")),
             "recipient_name":clean(request.form.get("recipient_name")),
             "recipient_phone":clean(request.form.get("recipient_phone")),
             "package_description":clean(request.form.get("package_description")),
@@ -3695,15 +3223,9 @@ def deliveries():
     return render_page("Deliveries",r"""
 <div class="hero"><h2>Delivery Service</h2><p>Use Nearby Drivers to see drivers around your shop/pickup location.</p><a class="btn success" href="{{ url_for('drivers') }}">Find Nearby Drivers</a></div>
 <div class="card"><h2>Create Delivery Without Selecting Driver Yet</h2>
-<form method="post" id="delivery-form">
-<label>Pickup / Shop Location</label><input name="pickup_location" id="pickup_location" required placeholder="Shop, house, street or current location">
-<div class="actions"><button type="button" class="btn secondary" onclick="useDeliveryGPS()">📍 Use My Current GPS</button></div>
-<input type="hidden" name="pickup_latitude" id="pickup_latitude">
-<input type="hidden" name="pickup_longitude" id="pickup_longitude">
-<label>Destination</label><input name="destination" id="delivery_destination" required placeholder="Building, school, shop, street or address">
-<input type="hidden" name="destination_latitude" id="destination_latitude">
-<input type="hidden" name="destination_longitude" id="destination_longitude">
-<div class="card"><div id="delivery-map" style="height:330px;border-radius:12px;overflow:hidden"></div><p id="delivery-gps-status" class="small">Use GPS to map pickup, or enter a destination and preview the road route.</p><div class="actions"><button type="button" class="btn" onclick="previewDeliveryRoute()">🧭 Preview Road Route</button></div></div>
+<form method="post">
+<label>Pickup / Shop Location</label><input name="pickup_location" required>
+<label>Destination</label><input name="destination" required>
 <label>Recipient Name</label><input name="recipient_name" required>
 <label>Recipient Phone</label><input name="recipient_phone" required>
 <label>Package Description</label><textarea name="package_description"></textarea>
@@ -3714,13 +3236,6 @@ def deliveries():
 <label>Notes</label><textarea name="notes"></textarea>
 <button type="submit">Create Delivery Request</button>
 </form></div>
-<script>
-const dmap=L.map("delivery-map").setView([-13.9626,28.3228],6);L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:20,attribution:"&copy; OpenStreetMap contributors"}).addTo(dmap);
-let pickupMarker=null,destMarker=null,droute=null;
-function dst(t){document.getElementById("delivery-gps-status").textContent=t}
-function useDeliveryGPS(){if(!navigator.geolocation){dst("This device does not support GPS.");return}dst("Requesting high-accuracy GPS…");navigator.geolocation.getCurrentPosition(p=>{const c=p.coords;document.getElementById("pickup_latitude").value=c.latitude;document.getElementById("pickup_longitude").value=c.longitude;if(pickupMarker)pickupMarker.setLatLng([c.latitude,c.longitude]);else pickupMarker=L.marker([c.latitude,c.longitude]).addTo(dmap).bindPopup("📍 Pickup / shop — your current GPS");dmap.setView([c.latitude,c.longitude],17);dst("🟢 Pickup GPS captured · accuracy "+(c.accuracy?Math.round(c.accuracy)+"m":"—"));},e=>dst(e.code===1?"Allow location permission in browser settings.":"GPS unavailable — enter the pickup location manually."),{enableHighAccuracy:true,maximumAge:0,timeout:20000})}
-async function previewDeliveryRoute(){const q=document.getElementById("delivery_destination").value.trim();if(!q){dst("Enter a destination first.");return}let lat=parseFloat(document.getElementById("pickup_latitude").value),lon=parseFloat(document.getElementById("pickup_longitude").value);if(!Number.isFinite(lat)||!Number.isFinite(lon)){dst("Getting your pickup GPS first…");useDeliveryGPS();setTimeout(previewDeliveryRoute,1800);return}dst("Finding destination and calculating road route…");try{const g=await (await fetch("/api/gps/geocode?q="+encodeURIComponent(q))).json();if(!g.ok){dst(g.message||"Destination not found.");return}const dl=Number(g.latitude),do_=Number(g.longitude);document.getElementById("destination_latitude").value=dl;document.getElementById("destination_longitude").value=do_;if(destMarker)destMarker.setLatLng([dl,do_]);else destMarker=L.marker([dl,do_]).addTo(dmap).bindPopup("🎯 Delivery destination");const r=await (await fetch(`/api/gps/route?from_lat=${lat}&from_lon=${lon}&to_lat=${dl}&to_lon=${do_}`)).json();if(!r.ok)throw Error(r.message||"No route");const coords=r.geometry.coordinates.map(x=>[x[1],x[0]]);if(droute)droute.setLatLngs(coords);else droute=L.polyline(coords,{weight:5,opacity:.8}).addTo(dmap);dmap.fitBounds(droute.getBounds(),{padding:[30,30]});dst("🟢 Road route ready · "+(Number(r.distance_m)/1000).toFixed(1)+" km · ETA "+Math.max(1,Math.round(Number(r.duration_s)/60))+" min");}catch(e){dst("Could not calculate the road route. Check the destination and try again.")}}
-</script>
 <div class="card"><h2>My Deliveries</h2>
 {% for d in rows %}
 <div class="card"><strong>{{ d.get("tracking_code") }}</strong>
@@ -3760,8 +3275,6 @@ def track_delivery(tracking_code):
 <script>
 const trackingCode={{ delivery.get("tracking_code")|tojson }};
 const destination={{ delivery.get("destination")|tojson }};
-const storedDestinationLat={{ delivery.get("destination_latitude")|tojson }};
-const storedDestinationLon={{ delivery.get("destination_longitude")|tojson }};
 let map=L.map("map").setView([-13.9626,28.3228],6);
 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);
 let driverMarker=null,destinationMarker=null,routeLine=null,lastDriver=null,lastDestination=null,lastRouteAt=0;
@@ -3774,16 +3287,10 @@ function mins(sec){if(!Number.isFinite(sec))return "—";let m=Math.max(1,Math.r
 async function geocodeDestination(){
  if(!destination)return;
  try{
-  if(Number.isFinite(Number(storedDestinationLat))&&Number.isFinite(Number(storedDestinationLon))&&Number(storedDestinationLat)>=-90&&Number(storedDestinationLat)<=90&&Number(storedDestinationLon)>=-180&&Number(storedDestinationLon)<=180){
-    lastDestination=[Number(storedDestinationLat),Number(storedDestinationLon)];
-    destinationMarker=L.marker(lastDestination).addTo(map).bindPopup("Delivery destination");
-    setText("tracking-status","Saved destination coordinates loaded. Waiting for driver's live GPS...");
-    await updateRoute(true);
-    return;
-  }
-  const r=await fetch("/api/gps/geocode?q="+encodeURIComponent(destination),{headers:{"Accept":"application/json"}}); const d=await r.json();
-  if(!d.ok||!Number.isFinite(Number(d.latitude))||!Number.isFinite(Number(d.longitude))){setText("tracking-status","Driver GPS connected. Destination could not be mapped automatically.");return}
-  lastDestination=[Number(d.latitude),Number(d.longitude)];
+  const url="https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q="+encodeURIComponent(destination);
+  const r=await fetch(url,{headers:{"Accept":"application/json"}}); const a=await r.json();
+  if(!a.length){setText("tracking-status","Driver GPS connected. Destination could not be mapped automatically.");return}
+  lastDestination=[parseFloat(a[0].lat),parseFloat(a[0].lon)];
   destinationMarker=L.marker(lastDestination).addTo(map).bindPopup("Delivery destination");
   setText("tracking-status","Destination mapped. Waiting for driver's live GPS...");
   await updateRoute(true);
@@ -3817,10 +3324,8 @@ async function load(){
   const d=await r.json();
   setText("delivery-status",d.status||"");
   if(!d.ok){setText("tracking-status",d.message||"No driver GPS available yet.");return}
-  const p=[Number(d.latitude),Number(d.longitude)],acc=Number(d.accuracy);
-  if(!Number.isFinite(p[0])||!Number.isFinite(p[1])||p[0]<-90||p[0]>90||p[1]<-180||p[1]>180)return;
-  if(Number.isFinite(acc)&&acc>150){setText("tracking-status","🟡 Driver GPS accuracy is weak ("+Math.round(acc)+" m). Waiting for a better fix…");return}
-  if(lastDriver&&distanceM(lastDriver,p)>Math.max(1500,Number.isFinite(acc)?acc*5:1500)){setText("tracking-status","🟡 Driver GPS jump rejected. Waiting for a stable fix…");return}
+  const p=[Number(d.latitude),Number(d.longitude)];
+  if(!Number.isFinite(p[0])||!Number.isFinite(p[1]))return;
   lastDriver=p;
   if(!driverMarker){driverMarker=L.marker(p,{icon:driverIcon}).addTo(map).bindPopup("Live driver location");map.setView(p,15)}
   else driverMarker.setLatLng(p);
@@ -3829,16 +3334,14 @@ async function load(){
   if(node&&Number.isFinite(heading))node.style.transform="rotate("+heading+"deg)";
   if(Number.isFinite(Number(d.speed)) && Number(d.speed)>=0)setText("speed",(Number(d.speed)*3.6).toFixed(0)+" km/h");else setText("speed","—");
   const age=d.age_seconds!=null?Math.max(0,Math.round(d.age_seconds)):null;
-  setText("tracking-status",age!==null && age>20 ? "⚠️ GPS signal is stale — last update "+age+"s ago." : "🟢 LIVE — driver GPS updated "+(age===null?"now":age+"s ago")+". Accuracy: "+(d.accuracy?Math.round(d.accuracy)+" m":"—"));
+  setText("tracking-status","LIVE — driver's GPS updated "+(age===null?"now":age+"s ago")+". Accuracy: "+(d.accuracy?Math.round(d.accuracy)+" m":"—"));
   await updateRoute(false);
  }catch(e){setText("tracking-status","Network connection lost. Retrying live GPS...")}
 }
 geocodeDestination();
 load();
-setInterval(load,3000);
+setInterval(load,5000);
 setInterval(()=>updateRoute(true),15000);
-document.addEventListener("visibilitychange",()=>{if(document.hidden){setText("gps-status","GPS page is in background. Keep KOJA open for continuous sharing.");}});
-window.addEventListener("pagehide",()=>{if(isTracking){navigator.sendBeacon("/api/driver/offline",new Blob([JSON.stringify({})],{type:"application/json"}));}});
 </script>
 """,delivery=delivery)
 
@@ -4256,7 +3759,6 @@ def admin():
 <a class="btn" href="{{ url_for('admin_users') }}">Users</a>
 <a class="btn success" href="{{ url_for('admin_assignments') }}">📚 Assignments & Answers</a>
 <a class="btn success" href="{{ url_for('admin_approvals') }}">✅ Approval Centre</a>
-<a class="btn warning" href="{{ url_for('admin_approval_settings') }}">⚙️ Automatic Approval</a>
 <a class="btn" href="{{ url_for('admin_email_settings') }}">📧 Email Management</a>
 <a class="btn" href="{{ url_for('admin_drivers') }}">Drivers</a>
 <a class="btn" href="{{ url_for('admin_deliveries') }}">Deliveries</a>
@@ -4451,49 +3953,6 @@ SMTP_USE_TLS=true</pre>
 </div>
 """, gmail_mode=gmail_mode, smtp_host=SMTP_HOST, smtp_port=SMTP_PORT, smtp_from=SMTP_FROM, configured=email_configured())
 
-@app.route("/admin/approval-settings", methods=["GET", "POST"])
-@admin_required
-def admin_approval_settings():
-    if request.method == "POST":
-        keys = ["master", "marketplace", "drivers", "professionals", "doctors", "teachers", "documents", "assignments", "appointments"]
-        settings = {key: bool(request.form.get(key)) for key in keys}
-        if settings.get("master"):
-            for key in settings:
-                if key != "master":
-                    settings[key] = True
-        try:
-            log_activity("admin_auto_approval_settings", "AUTO_APPROVAL_SETTINGS:" + json.dumps(settings, separators=(",", ":")))
-            flash("Automatic approval settings saved successfully.", "success")
-        except Exception as exc:
-            logger.exception("Saving auto-approval settings failed: %s", exc)
-            flash("Automatic approval settings could not be saved.", "danger")
-        return redirect(url_for("admin_approval_settings"))
-
-    settings = get_auto_approval_settings()
-    return render_page("Automatic Approval Settings", r"""
-<div class="hero"><h2>⚙️ Automatic Approval</h2><p>Choose which new submissions can become active without a manual administrator approval.</p></div>
-<div class="card">
-<p><strong>Current mode:</strong> {{ "Automatic approval enabled" if settings.master else "Manual approval / per-service settings" }}</p>
-<p class="small">This setting affects <strong>new</strong> submissions. Existing pending records remain available in the Approval Centre. Turn on only the categories you are comfortable approving automatically.</p>
-<form method="post">
-<label style="display:block;padding:10px 0"><input type="checkbox" name="master" value="1" style="width:auto" {% if settings.master %}checked{% endif %}> <strong>🚀 Auto-approve everything</strong></label>
-<hr>
-<div class="grid">
-<label><input type="checkbox" name="marketplace" value="1" style="width:auto" {% if settings.marketplace %}checked{% endif %}> 📣 Marketplace products / ads</label>
-<label><input type="checkbox" name="drivers" value="1" style="width:auto" {% if settings.drivers %}checked{% endif %}> 🚚 Driver registrations</label>
-<label><input type="checkbox" name="professionals" value="1" style="width:auto" {% if settings.professionals %}checked{% endif %}> 👩‍💼 Professional registrations</label>
-<label><input type="checkbox" name="doctors" value="1" style="width:auto" {% if settings.doctors %}checked{% endif %}> 🩺 Doctor profiles</label>
-<label><input type="checkbox" name="teachers" value="1" style="width:auto" {% if settings.teachers %}checked{% endif %}> 👩‍🏫 Teacher / Tutor profiles</label>
-<label><input type="checkbox" name="documents" value="1" style="width:auto" {% if settings.documents %}checked{% endif %}> 📚 Documents</label>
-<label><input type="checkbox" name="assignments" value="1" style="width:auto" {% if settings.assignments %}checked{% endif %}> 📝 Assignments</label>
-<label><input type="checkbox" name="appointments" value="1" style="width:auto" {% if settings.appointments %}checked{% endif %}> 📅 Appointments</label>
-</div>
-<button class="btn success" type="submit">💾 Save Automatic Approval</button>
-<a class="btn secondary" href="{{ url_for('admin_approvals') }}">Open Approval Centre</a>
-</form>
-</div>
-""", settings=settings)
-
 @app.route("/admin/approvals")
 @admin_required
 def admin_approvals():
@@ -4522,8 +3981,8 @@ def admin_approvals():
         if pending:
             sections.append({"label": label, "table": table, "kind": kind, "rows": pending, "title_field": title_field})
     return render_page("Admin Approvals", r"""
-<div class="hero"><h2>✅ Approval & Review Centre</h2><p>Review submissions before they become active, published, approved or sent to users.</p><div class="actions"><a class="btn warning" href="{{ url_for('admin_approval_settings') }}">⚙️ Automatic Approval Settings</a></div></div>
-<div class="card"><p><strong>Workflow:</strong> Manual approval is used unless automatic approval is enabled in <strong>Automatic Approval Settings</strong>.</p><p class="small">All manual approval actions are restricted to administrators and recorded in the activity log.</p></div>
+<div class="hero"><h2>✅ Approval & Review Centre</h2><p>Review submissions before they become active, published, approved or sent to users.</p></div>
+<div class="card"><p><strong>Workflow:</strong> User submits → Pending review → Admin approves/rejects → KOJA updates status → optional email notification.</p><p class="small">All approval actions are restricted to administrators and recorded in the activity log.</p></div>
 {% for sec in sections %}
 <div class="card"><h3>{{ sec.label }} <span class="badge">{{ sec.rows|length }} pending</span></h3>
 {% for item in sec.rows %}
@@ -4749,10 +4208,7 @@ def participant_location_api(tracking_code):
         if role not in ("sender","receiver"):return jsonify({"ok":False,"message":"Only sender or receiver can share GPS."}),403
         body=request.get_json(silent=True) or {};lat=safe_float(body.get("latitude"));lon=safe_float(body.get("longitude"))
         if lat is None or lon is None or not(-90<=lat<=90 and -180<=lon<=180):return jsonify({"ok":False,"message":"Invalid GPS coordinates."}),400
-        accuracy=safe_float(body.get("accuracy"));
-        if accuracy is not None and (accuracy<0 or accuracy>10000): accuracy=None
-        if accuracy is not None and accuracy>150:return jsonify({"ok":False,"message":"GPS accuracy is too weak. Waiting for a better fix."}),422
-        payload={"id":str(uuid.uuid4()),"delivery_id":str(delivery.get("id")),"user_id":str(current_user().get("id")),"role":role,"latitude":lat,"longitude":lon,"accuracy":accuracy,"speed":safe_float(body.get("speed")),"heading":safe_float(body.get("heading")),"altitude":safe_float(body.get("altitude")),"is_online":True,"created_at":utc_now()}
+        payload={"id":str(uuid.uuid4()),"delivery_id":str(delivery.get("id")),"user_id":str(current_user().get("id")),"role":role,"latitude":lat,"longitude":lon,"accuracy":safe_float(body.get("accuracy")),"speed":safe_float(body.get("speed")),"heading":safe_float(body.get("heading")),"altitude":safe_float(body.get("altitude")),"is_online":True,"created_at":utc_now()}
         row,error=db_insert("delivery_participant_locations",payload)
         if error:return jsonify({"ok":False,"message":"Could not save participant GPS.","error":str(error)[:400]}),500
         return jsonify({"ok":True,"role":role,"updated_at":payload["created_at"]})
@@ -5012,7 +4468,7 @@ def connect():
         if not c: continue
         others=db_select('koja_conversation_members',filters={'conversation_id':c['id']},limit=10); other=next((x for x in others if str(x.get('user_id'))!=str(uid)),None)
         c['_other_name']=_profile_name(other['user_id']) if other else (c.get('name') or 'Group'); last=db_select('koja_messages',filters={'conversation_id':c['id']},order='created_at.desc',limit=1); c['_last']=(last[0].get('body') or last[0].get('message_type','')) if last else 'No messages yet'; conversations.append(c)
-    return render_page('KOJA Connect',r'''<div class="hero"><h2>💬 KOJA Connect</h2><p>Chat, voice messages, voice calls, video calls, photos, files, groups and status updates with other KOJA users.</p></div><div class="card"><h3>⚡ Communication Buttons</h3><div class="grid"><a class="btn" href="{{ url_for('connect_people') }}">👥 Find / Connect People</a><a class="btn" href="{{ url_for('connect_status') }}">🟢 Post 24-hour Status</a><a class="btn" href="{{ url_for('connect_calls') }}">📞 Call History / Answer</a><button class="btn secondary" type="button" onclick="alert('Open a chat to use files and voice messages.')">📎 Files / Images / Voice</button></div></div><div class="card"><h3>Recent Chats</h3>{% for c in conversations %}<a class="card" style="display:block;text-decoration:none;color:inherit" href="{{ url_for('connect_chat',conversation_id=c.id) }}"><strong>{{ c._other_name }}</strong><div class="small">{{ c._last }}</div></a>{% else %}<p>No chats yet. Find a KOJA user to start.</p>{% endfor %}</div>''',conversations=conversations)
+    return render_page('KOJA Connect',r'''<div class="hero"><h2>💬 KOJA Connect</h2><p>Chat, voice messages, voice calls, video calls, photos, files, groups and status updates with other KOJA users.</p></div><div class="grid"><div class="card"><h3>👥 Find People</h3><p>Search KOJA users and start a conversation.</p><a class="btn" href="{{ url_for('connect_people') }}">Find People</a></div><div class="card"><h3>🟢 Status</h3><p>Share a 24-hour status.</p><a class="btn" href="{{ url_for('connect_status') }}">My Status</a></div><div class="card"><h3>📞 Calls</h3><p>Voice and video calls separate from Professional Services.</p><a class="btn" href="{{ url_for('connect_calls') }}">Call History</a></div></div><div class="card"><h3>Recent Chats</h3>{% for c in conversations %}<a class="card" style="display:block;text-decoration:none;color:inherit" href="{{ url_for('connect_chat',conversation_id=c.id) }}"><strong>{{ c._other_name }}</strong><div class="small">{{ c._last }}</div></a>{% else %}<p>No chats yet. Find a KOJA user to start.</p>{% endfor %}</div>''',conversations=conversations)
 
 @app.route('/connect/people',methods=['GET','POST'])
 @login_required
@@ -5051,10 +4507,16 @@ def connect_new(user_id):
 @app.route('/connect/chat/<conversation_id>')
 @login_required
 def connect_chat(conversation_id):
-    uid=current_user()['id'];
+    uid=current_user()['id']
     if not _conversation_member(conversation_id,uid): abort(403)
-    members=db_select('koja_conversation_members',filters={'conversation_id':conversation_id},limit=100); other=next((m for m in members if str(m.get('user_id'))!=str(uid)),None); other_id=other.get('user_id') if other else None; c=first_row('koja_conversations',{'id':conversation_id}) or {}
-    return render_page('KOJA Chat',r'''<div class="card"><a href="{{ url_for('connect') }}">← Connect</a><h2>💬 {{ name }}</h2><div class="small">🔒 Private KOJA communication</div></div><div class="card" id="messages" style="min-height:300px;max-height:55vh;overflow:auto"></div><div class="card"><form id="sendForm" class="actions"><input id="text" autocomplete="off" maxlength="4000" placeholder="Write a message…" style="flex:1"><button id="sendBtn">Send</button></form><div class="grid"><label class="btn secondary" style="cursor:pointer">📎 Send File / Image<input id="filePick" type="file" accept="image/*,.pdf,.doc,.docx,.txt,.webm,.mp3,.wav,.m4a" hidden></label><button type="button" id="voiceNote">🎙️ Record Voice Message</button><a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='voice') }}">📞 Start Voice Call</a><a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='video') }}">🎥 Start Video Call</a><a class="btn secondary" href="{{ url_for('connect_people') }}">👥 Find People</a><a class="btn secondary" href="{{ url_for('connect_status') }}">🟢 My Status</a><a class="btn secondary" href="{{ url_for('connect_calls') }}">📞 Call History</a></div><div id="uploadState" class="small"></div></div><script>const cid={{ conversation_id|tojson }};const box=document.getElementById('messages'),text=document.getElementById('text'),sendBtn=document.getElementById('sendBtn');let lastCount=0;function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}function render(m){let content=m.message_type==='text'?esc(m.body):'<a target="_blank" rel="noopener" href="'+esc(m.file_url||'#')+'">📎 '+esc(m.body||m.message_type)+'</a>';return '<div class="card"><strong>'+esc(m.sender_name)+'</strong><div>'+content+'</div><div class="small">'+esc(m.created_at||'')+'</div></div>';}async function load(force=false){try{let r=await fetch('/api/connect/messages/'+cid,{cache:'no-store'});if(!r.ok)return;let d=await r.json();if(force||d.messages.length!==lastCount){box.innerHTML=d.messages.map(render).join('');box.scrollTop=box.scrollHeight;lastCount=d.messages.length;}}catch(e){}}document.getElementById('sendForm').onsubmit=async e=>{e.preventDefault();let v=text.value.trim();if(!v)return;sendBtn.disabled=true;try{let r=await fetch('/api/connect/messages/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:v})});if(r.ok){text.value='';await load(true);}}finally{sendBtn.disabled=false;text.focus();}};document.getElementById('filePick').onchange=async e=>{let f=e.target.files[0];if(!f)return;if(f.size>15*1024*1024){alert('File must be 15 MB or smaller.');e.target.value='';return;}let st=document.getElementById('uploadState');st.textContent='Uploading '+f.name+'…';let fd=new FormData();fd.append('file',f);try{let r=await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});st.textContent=r.ok?'File sent.':'Upload failed.';await load(true);}catch(x){st.textContent='Upload failed.';}e.target.value='';};let rec,parts=[];document.getElementById('voiceNote').onclick=async()=>{try{let st=await navigator.mediaDevices.getUserMedia({audio:true});rec=new MediaRecorder(st);parts=[];rec.ondataavailable=e=>parts.push(e.data);rec.onstop=async()=>{let b=new Blob(parts,{type:'audio/webm'}),fd=new FormData();fd.append('file',b,'voice.webm');await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});st.getTracks().forEach(t=>t.stop());load(true);};rec.start();setTimeout(()=>rec&&rec.state==='recording'&&rec.stop(),60000);}catch(e){alert('Microphone permission is required.');}};load(true);setInterval(load,1500);</script>''',conversation_id=conversation_id,name=_profile_name(other_id) if other_id else c.get('name','KOJA Chat'))
+    members=db_select('koja_conversation_members',filters={'conversation_id':conversation_id},limit=100)
+    other=next((m for m in members if str(m.get('user_id'))!=str(uid)),None)
+    other_id=other.get('user_id') if other else None
+    c=first_row('koja_conversations',{'id':conversation_id}) or {}
+    return render_page('KOJA Chat',r'''<div class="card"><a href="{{ url_for('connect') }}">← Connect</a><h2>💬 {{ name }}</h2></div>
+<div class="card" id="incomingCall" style="display:none;border:2px solid var(--accent,#0a7)"><strong id="incomingTitle">Incoming call</strong><div id="incomingText" class="small"></div><div class="grid" style="margin-top:10px"><a id="answerCall" class="btn success">✅ Answer</a><button type="button" id="rejectCall" class="btn danger">❌ Reject</button></div></div>
+<div class="card" id="messages" style="min-height:300px;max-height:55vh;overflow:auto"></div><div class="card"><form id="sendForm"><input id="text" autocomplete="off" placeholder="Write a message…"><button>Send</button></form><div class="grid"><button type="button" id="voiceNote">🎙️ Voice message</button>{% if other_id %}<a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='voice') }}">📞 Voice Call</a><a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='video') }}">🎥 Video Call</a>{% else %}<button type="button" class="btn secondary" disabled>📞 Voice Call unavailable</button><button type="button" class="btn secondary" disabled>🎥 Video Call unavailable</button>{% endif %}</div><p class="small">Calls use your device microphone. Video calls also use the camera. Your browser will ask for permission.</p></div>
+<script>const cid={{ conversation_id|tojson }},myUid={{ uid|tojson }};const box=document.getElementById('messages'),text=document.getElementById('text');function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}async function load(){try{let r=await fetch('/api/connect/messages/'+cid,{cache:'no-store'});if(!r.ok)return;let d=await r.json();box.innerHTML=d.messages.map(m=>'<div class="card"><strong>'+esc(m.sender_name)+'</strong><div>'+((m.message_type==='text')?esc(m.body||''):'<a target="_blank" rel="noopener" href="'+esc(m.file_url||'#')+'">'+esc(m.message_type)+'</a>')+'</div><div class="small">'+esc(m.created_at||'')+'</div></div>').join('');box.scrollTop=box.scrollHeight;}catch(e){}}document.getElementById('sendForm').onsubmit=async e=>{e.preventDefault();let v=text.value.trim();if(!v)return;let r=await fetch('/api/connect/messages/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:v})});if(r.ok){text.value='';load();}};let rec,parts=[];document.getElementById('voiceNote').onclick=async()=>{try{let st=await navigator.mediaDevices.getUserMedia({audio:true});rec=new MediaRecorder(st);parts=[];rec.ondataavailable=e=>parts.push(e.data);rec.onstop=async()=>{let b=new Blob(parts,{type:'audio/webm'});let fd=new FormData();fd.append('file',b,'voice.webm');await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});st.getTracks().forEach(t=>t.stop());load();};rec.start();setTimeout(()=>rec&&rec.state==='recording'&&rec.stop(),60000);}catch(e){alert('Microphone permission is required for voice messages.');}};async function incoming(){try{let r=await fetch('/api/connect/incoming-calls',{cache:'no-store'});if(!r.ok)return;let d=await r.json(),c=(d.calls||[])[0],panel=document.getElementById('incomingCall');if(!c){panel.style.display='none';return;}panel.style.display='block';document.getElementById('incomingTitle').textContent=c.mode==='video'?'🎥 Incoming Video Call':'📞 Incoming Voice Call';document.getElementById('incomingText').textContent='From '+(c.caller_name||'KOJA User');document.getElementById('answerCall').href='/connect/answer/'+encodeURIComponent(c.id);document.getElementById('rejectCall').onclick=async()=>{await fetch('/api/connect/call/end/'+encodeURIComponent(c.id),{method:'POST'});incoming();};}catch(e){}}load();setInterval(load,2500);incoming();setInterval(incoming,2000);</script>''',conversation_id=conversation_id,name=_profile_name(other_id) if other_id else c.get('name','KOJA Chat'),other_id=other_id,uid=uid)
 
 @app.route('/api/connect/messages/<conversation_id>',methods=['GET','POST'])
 @login_required
@@ -5078,19 +4540,12 @@ def connect_upload(conversation_id):
     if not _conversation_member(conversation_id,uid):return jsonify(error='Forbidden'),403
     f=request.files.get('file')
     if not f:return jsonify(error='No file'),400
-    name=(f.filename or '').lower()
-    allowed={'.webm':'audio/webm','.mp3':'audio/mpeg','.wav':'audio/wav','.m4a':'audio/mp4','.jpg':'image/jpeg','.jpeg':'image/jpeg','.png':'image/png','.webp':'image/webp','.pdf':'application/pdf','.doc':'application/msword','.docx':'application/vnd.openxmlformats-officedocument.wordprocessingml.document','.txt':'text/plain'}
-    ext=next((x for x in allowed if name.endswith(x)),None)
-    if not ext:return jsonify(error='Unsupported communication file type.'),400
+    if not f.filename.lower().endswith('.webm'):return jsonify(error='Only webm voice messages are supported here.'),400
     data=f.read()
-    if len(data)>15*1024*1024:return jsonify(error='File too large (15 MB maximum).'),413
-    folder='connect/audio' if allowed[ext].startswith('audio/') else 'connect/files'
-    path=f'{folder}/{uuid.uuid4().hex}{ext}'
-    r=requests.post(sb_storage_url(path),headers=sb_headers({'Content-Type':allowed[ext],'x-upsert':'true'}),data=data,timeout=60)
+    if len(data)>5*1024*1024:return jsonify(error='Voice message too large'),413
+    path=f'connect/audio/{uuid.uuid4().hex}.webm'; r=requests.post(sb_storage_url(path),headers=sb_headers({'Content-Type':'audio/webm','x-upsert':'true'}),data=data,timeout=60)
     if not r.ok:return jsonify(error=r.text[:500]),500
-    kind='audio' if allowed[ext].startswith('audio/') else ('image' if allowed[ext].startswith('image/') else 'file')
-    label='Voice message' if kind=='audio' else (f.filename or 'Attachment')
-    row,err=db_insert('koja_messages',{'id':str(uuid.uuid4()),'conversation_id':conversation_id,'sender_id':uid,'message_type':kind,'file_url':sb_storage_url(path),'body':label,'created_at':utc_now()})
+    row,err=db_insert('koja_messages',{'id':str(uuid.uuid4()),'conversation_id':conversation_id,'sender_id':uid,'message_type':'audio','file_url':sb_storage_url(path),'body':'Voice message','created_at':utc_now()})
     return jsonify(message=row) if not err else (jsonify(error=err),500)
 
 @app.route('/connect/status',methods=['GET','POST'])
@@ -5109,14 +4564,39 @@ def connect_status():
 def connect_answer(call_id):
     uid=current_user()['id']; c=first_row('koja_calls',{'id':call_id})
     if not c or str(c.get('callee_id'))!=str(uid) or c.get('status')!='ringing': abort(404)
-    return render_page('Answer KOJA Call',r'''<div class="card"><h2>📞 Incoming {{ c.mode|title }} Call</h2><p>From <strong>{{ name }}</strong></p><div id="state">Connecting…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px"></video></div><button id="hang" class="btn danger">End Call</button></div><script>const cid={{ call_id|tojson }},mode={{ c.mode|tojson }};let pc=null,timer=null;async function api(u,o){let r=await fetch(u,o);if(!r.ok)throw 0;return r.json()}async function start(){try{let x=await api('/api/connect/call/check/'+cid);if(!x.call.offer)throw 0;pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});let st=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});local.srcObject=st;st.getTracks().forEach(t=>pc.addTrack(t,st));pc.ontrack=e=>remote.srcObject=e.streams[0];pc.onicecandidate=e=>{if(e.candidate)fetch('/api/connect/call/ice/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate})})};await pc.setRemoteDescription({type:'offer',sdp:x.call.offer});let ans=await pc.createAnswer();await pc.setLocalDescription(ans);await api('/api/connect/call/answer/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({answer:ans.sdp})});state.textContent='Connected';timer=setInterval(async()=>{try{let z=await api('/api/connect/call/check/'+cid);if(z.call.status==='ended'){clearInterval(timer);pc.close();state.textContent='Call ended'}}catch(e){}},1500)}catch(e){state.textContent='Could not answer this call.'}}hang.onclick=()=>{fetch('/api/connect/call/end/'+cid,{method:'POST'});clearInterval(timer);if(pc)pc.close();state.textContent='Call ended'};start();</script>''',c=c,call_id=call_id,name=_profile_name(c.get('caller_id')))
+    return render_page('Answer KOJA Call',r'''<div class="card"><h2>📞 Incoming {{ c.mode|title }} Call</h2><p>From <strong>{{ name }}</strong></p><div id="state">Preparing…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px;{% if c.mode=='voice' %}display:none{% endif %}"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px;{% if c.mode=='voice' %}display:none{% endif %}"></video></div><audio id="remoteAudio" autoplay {% if c.mode!='voice' %}style="display:none"{% endif %}></audio><div class="actions" style="margin-top:14px"><button id="accept" class="btn success">✅ Answer</button><button id="decline" class="btn danger">❌ Reject</button></div><p class="small">Allow microphone{% if c.mode=='video' %} and camera{% endif %} access when your browser asks.</p></div><script>const cid={{ call_id|tojson }},mode={{ c.mode|tojson }};let pc=null,timer=null,stream=null,accepted=false,state=document.getElementById('state');function setState(t){state.textContent=t;}function cleanup(){if(timer)clearInterval(timer);if(stream)stream.getTracks().forEach(t=>t.stop());if(pc){pc.close();pc=null;}}async function api(u,o){let r=await fetch(u,o),d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||'Request failed');return d;}async function accept(){if(accepted)return;accepted=true;acceptBtn.disabled=true;try{if(!navigator.onLine)throw Error('No internet connection.');stream=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});local.srcObject=stream;pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});stream.getTracks().forEach(t=>pc.addTrack(t,stream));pc.ontrack=e=>{if(e.streams[0]){remote.srcObject=e.streams[0];remoteAudio.srcObject=e.streams[0];}};pc.onicecandidate=e=>{if(e.candidate)fetch('/api/connect/call/ice/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate.toJSON(),side:'callee'})}).catch(()=>{});};let x;for(let n=0;n<15;n++){x=await api('/api/connect/call/check/'+cid);if(['ended','rejected'].includes(x.call.status))throw Error('Call was ended before it was answered.');if(x.call.offer)break;setState('Waiting for caller…');await new Promise(r=>setTimeout(r,1000));}if(!x||!x.call.offer)throw Error('The call offer did not arrive. Please ask the caller to try again.');await pc.setRemoteDescription({type:'offer',sdp:x.call.offer});let ans=await pc.createAnswer();await pc.setLocalDescription(ans);await api('/api/connect/call/answer/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({answer:ans.sdp})});setState('🟢 Connected');let seenCallerIce=0;timer=setInterval(async()=>{try{let z=await api('/api/connect/call/check/'+cid);if(['ended','rejected'].includes(z.call.status)){setState('Call ended.');cleanup();return;}const list=z.call.caller_ice||[];for(let i=seenCallerIce;i<list.length;i++){try{await pc.addIceCandidate(list[i]);}catch(e){}}seenCallerIce=list.length;}catch(e){}},1200);}catch(e){accepted=false;acceptBtn.disabled=false;setState('Could not answer: '+e.message);cleanup();}}async function end(){try{await fetch('/api/connect/call/end/'+cid,{method:'POST'});}catch(e){}cleanup();setState('Call ended.');acceptBtn.disabled=true;decline.disabled=true;}const acceptBtn=document.getElementById('accept');acceptBtn.onclick=accept;decline.onclick=end;</script>''',c=c,call_id=call_id,name=_profile_name(c.get('caller_id')))
+
+@app.route('/api/connect/incoming-calls')
+@login_required
+def connect_incoming_calls():
+    uid=current_user()['id']; rows=db_select('koja_calls',filters={'callee_id':uid,'status':'ringing'},order='created_at.desc',limit=20); out=[]
+    for c in rows:
+        c=dict(c); c['caller_name']=_profile_name(c.get('caller_id')); out.append(c)
+    return jsonify(calls=out)
+
+@app.route('/api/connect/call/ice/<call_id>',methods=['POST'])
+@login_required
+def connect_call_ice(call_id):
+    uid=current_user()['id']; c=first_row('koja_calls',{'id':call_id})
+    if not c or str(uid) not in (str(c.get('caller_id')),str(c.get('callee_id'))):return jsonify(error='Forbidden'),403
+    d=request.get_json(silent=True) or {}; candidate=d.get('candidate'); side=d.get('side')
+    if not isinstance(candidate,dict) or side not in ('caller','callee'):return jsonify(error='Invalid ICE candidate'),400
+    expected_side='caller' if str(c.get('caller_id'))==str(uid) else 'callee'
+    if side != expected_side:return jsonify(error='Invalid ICE side for this user'),403
+    key='caller_ice' if side=='caller' else 'callee_ice'; arr=c.get(key) or []
+    if not isinstance(arr,list):arr=[]
+    if len(arr)<100:arr.append(candidate)
+    _,err=db_update('koja_calls',{'id':call_id},{key:arr})
+    return jsonify(ok=True) if not err else (jsonify(error=err),500)
 
 @app.route('/api/connect/call/answer/<call_id>',methods=['POST'])
 @login_required
 def connect_call_answer(call_id):
     uid=current_user()['id'];c=first_row('koja_calls',{'id':call_id})
-    if not c or str(c.get('callee_id'))!=str(uid):return jsonify(error='Forbidden'),403
-    d=request.get_json(silent=True) or {};db_update('koja_calls',{'id':call_id},{'answer':clean(d.get('answer')),'status':'answered','answered_at':utc_now()});return jsonify(ok=True)
+    if not c or str(c.get('callee_id'))!=str(uid) or c.get('status')!='ringing':return jsonify(error='Forbidden'),403
+    d=request.get_json(silent=True) or {}; answer=clean(d.get('answer'))
+    if not answer:return jsonify(error='Missing answer'),400
+    db_update('koja_calls',{'id':call_id},{'answer':answer,'status':'answered','answered_at':utc_now()});return jsonify(ok=True)
 
 @app.route('/connect/calls')
 @login_required
@@ -5124,14 +4604,21 @@ def connect_calls():
     uid=current_user()['id']; rows=db_select('koja_calls',filters={'caller_id':uid},order='created_at.desc',limit=50)+db_select('koja_calls',filters={'callee_id':uid},order='created_at.desc',limit=50); rows=sorted(rows,key=lambda x:x.get('created_at',''),reverse=True)[:50]
     return render_page('KOJA Calls',r'''<div class="card"><h2>📞 KOJA Call History</h2>{% for c in rows %}<div class="card"><strong>{{ c.mode|title }}</strong> — {{ c.status }}<div class="small">{{ c.created_at }}</div>{% if c.callee_id|string == user.id|string and c.status=='ringing' %}<a class="btn" href="{{ url_for('connect_answer',call_id=c.id) }}">Answer</a>{% endif %}</div>{% else %}<p>No calls yet.</p>{% endfor %}</div>''',rows=rows)
 
+@app.route('/connect/call/')
+@app.route('/connect/call')
+@login_required
+def connect_call_missing_target():
+    flash('Please open a chat with the person you want to call, then choose Voice Call or Video Call.','warning')
+    return redirect(url_for('connect'))
+
 @app.route('/connect/call/<user_id>')
 @login_required
 def connect_call(user_id):
-    uid=current_user()['id']; mode=clean(request.args.get('mode','video'))
-    if user_id==uid or not find_user_by_id(user_id) or mode not in ('voice','video'):abort(404)
+    uid=current_user()['id']; mode=clean(request.args.get('mode','video')).lower()
+    if not user_id or user_id==uid or not find_user_by_id(user_id) or mode not in ('voice','video'): abort(404)
     c=_direct_conversation(uid,user_id)
     if not c:return 'Run KOJA Connect SQL first.',500
-    return render_page('KOJA Call',r'''<div class="card"><h2>📞 KOJA {{ mode|title }} Call</h2><p>Calling <strong>{{ name }}</strong></p><div id="state">Connecting…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px"></video></div><button id="hang" class="btn danger">End Call</button></div><script>const target={{ user_id|tojson }},mode={{ mode|tojson }};let callId=null,pc=null,timer=null,started=Date.now();const state=document.getElementById('state');const unavailable='This contact is not available because the internet or network connection could not be reached.';function speak(){if('speechSynthesis'in window){speechSynthesis.cancel();speechSynthesis.speak(new SpeechSynthesisUtterance(unavailable));}}function fail(msg){state.textContent=msg||unavailable;speak();clearInterval(timer);if(pc)pc.close();}async function api(u,o){let r=await fetch(u,o);if(!r.ok)throw 0;return r.json()}async function start(){try{if(!navigator.onLine)throw 0;let c=await api('/api/connect/call/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({callee_id:target,mode})});callId=c.call.id;pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});let st=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});document.getElementById('local').srcObject=st;st.getTracks().forEach(t=>pc.addTrack(t,st));pc.ontrack=e=>document.getElementById('remote').srcObject=e.streams[0];pc.onicecandidate=e=>{if(e.candidate)fetch('/api/connect/call/ice/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate})}).catch(()=>fail())};pc.onconnectionstatechange=()=>{if(['failed','disconnected'].includes(pc.connectionState))fail()};let offer=await pc.createOffer();await pc.setLocalDescription(offer);await api('/api/connect/call/offer/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({offer:offer.sdp})});state.textContent='Ringing…';timer=setInterval(async()=>{if(Date.now()-started>120000){fail();return}try{let x=await api('/api/connect/call/check/'+callId);if(x.call.status==='ended'||x.call.status==='rejected'){fail();return}if(x.call.answer&&!pc.currentRemoteDescription){await pc.setRemoteDescription({type:'answer',sdp:x.call.answer});state.textContent='Connected'}}catch(e){fail()}},1500)}catch(e){fail()}}document.getElementById('hang').onclick=()=>{if(callId)fetch('/api/connect/call/end/'+callId,{method:'POST'});clearInterval(timer);if(pc)pc.close();state.textContent='Call ended'};window.addEventListener('offline',()=>fail());start();</script>''',user_id=user_id,mode=mode,name=_profile_name(user_id))
+    return render_page('KOJA Call',r'''<div class="card"><h2>{{ '🎥 Video' if mode=='video' else '📞 Voice' }} Call</h2><p>Calling <strong>{{ name }}</strong></p><div id="state">Preparing call…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px;{% if mode=='voice' %}display:none{% endif %}"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px;{% if mode=='voice' %}display:none{% endif %}"></video></div><audio id="remoteAudio" autoplay {% if mode!='video' %}style="display:none"{% endif %}></audio><div class="actions" style="margin-top:14px"><button id="start" class="btn success">Start {{ mode.title() }} Call</button><button id="hang" class="btn danger">End Call</button></div><p class="small">Microphone{% if mode=='video' %} and camera{% endif %} permission is required.</p></div><script>const target={{ user_id|tojson }},mode={{ mode|tojson }},calleeName={{ name|tojson }};let callId=null,pc=null,timer=null,stream=null,started=Date.now(),state=document.getElementById('state');function setState(t){state.textContent=t;}function cleanup(){if(timer)clearInterval(timer);if(stream)stream.getTracks().forEach(t=>t.stop());if(pc){pc.close();pc=null;}}async function api(u,o){let r=await fetch(u,o),d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||'Request failed');return d;}async function start(){try{startBtn.disabled=true;if(!navigator.onLine)throw Error('No internet connection.');stream=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});local.srcObject=stream;pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});stream.getTracks().forEach(t=>pc.addTrack(t,stream));pc.ontrack=e=>{if(e.streams[0]){remote.srcObject=e.streams[0];remoteAudio.srcObject=e.streams[0];}};pc.onicecandidate=e=>{if(e.candidate&&callId)fetch('/api/connect/call/ice/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate.toJSON(),side:'caller'})}).catch(()=>{});};let c=await api('/api/connect/call/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({callee_id:target,mode})});callId=c.call.id;let offer=await pc.createOffer();await pc.setLocalDescription(offer);await api('/api/connect/call/offer/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({offer:offer.sdp})});setState('🔔 Ringing '+calleeName+'…');started=Date.now();let seenCalleeIce=0;timer=setInterval(async()=>{if(Date.now()-started>120000){setState('No answer.');end();return;}try{let x=await api('/api/connect/call/check/'+callId);if(['ended','rejected'].includes(x.call.status)){setState('Call declined or ended.');cleanup();return;}if(x.call.answer&&!pc.currentRemoteDescription){await pc.setRemoteDescription({type:'answer',sdp:x.call.answer});setState('🟢 Connected');}const list=x.call.callee_ice||[];for(let i=seenCalleeIce;i<list.length;i++){try{await pc.addIceCandidate(list[i]);}catch(e){}}seenCalleeIce=list.length;}catch(e){}},1200);}catch(e){setState('Could not start call: '+e.message);cleanup();startBtn.disabled=false;}}async function end(){if(callId)fetch('/api/connect/call/end/'+callId,{method:'POST'}).catch(()=>{});cleanup();setState('Call ended.');}const startBtn=document.getElementById('start');startBtn.onclick=start;document.getElementById('hang').onclick=end;window.addEventListener('offline',()=>{setState('Internet connection lost.');cleanup();});</script>''',user_id=user_id,mode=mode,name=_profile_name(user_id))
 
 @app.route('/api/connect/call/create',methods=['POST'])
 @login_required
