@@ -200,6 +200,8 @@ create table if not exists public.koja_notifications (
  id uuid primary key default gen_random_uuid(), user_id uuid not null, notification_type text, title text, body text, related_id uuid,
  is_read boolean default false, created_at timestamptz default now()
 );
+alter table public.koja_notifications add column if not exists link text;
+create index if not exists koja_notifications_user_idx on public.koja_notifications(user_id,is_read,created_at desc);
 
 -- Marketplace
 create table if not exists public.koja_marketplace_products (
