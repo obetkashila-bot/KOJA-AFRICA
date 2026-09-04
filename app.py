@@ -1813,58 +1813,55 @@ create index if not exists koja_public_comments_post_idx on public.koja_public_c
 
 @app.route('/public')
 def public_feed():
-    # db_select returns a list (not a (rows, error) tuple).
-    # Keep the public page resilient: an unavailable/missing table simply shows an empty feed.
     rows = db_select('koja_public_posts', {'is_published':'eq.true'}, order='created_at.desc', limit=50) or []
     enriched=[]
-    for post in rows or []:
+    for post in rows:
         author=first_row('profiles', {'id':post.get('author_id')}) or {}
         likes = db_select('koja_public_likes', {'post_id':post.get('id')}, select='user_id', limit=500) or []
         comments = db_select('koja_public_comments', {'post_id':post.get('id')}, order='created_at.asc', limit=100) or []
         comment_rows=[]
-        for c in comments or []:
+        for c in comments:
             ca=first_row('profiles', {'id':c.get('author_id')}) or {}
             comment_rows.append({**c,'author_name':ca.get('full_name') or ca.get('name') or ca.get('email') or 'KOJA User'})
         uid=(current_user() or {}).get('id')
-        enriched.append({**post,'author_name':author.get('full_name') or author.get('name') or author.get('email') or 'KOJA User',
-            'like_count':len(likes or []),'liked':bool(uid and any(str(x.get('user_id'))==str(uid) for x in (likes or []))), 'comments':comment_rows})
+        enriched.append({**post,'author_name':author.get('full_name') or author.get('name') or author.get('email') or 'KOJA User','author_id':post.get('author_id'),'like_count':len(likes),'liked':bool(uid and any(str(x.get('user_id'))==str(uid) for x in likes)),'comments':comment_rows})
+    live_people=[]
+    try: live_people=db_select('service_providers', {'is_available':'eq.true'}, limit=12) or []
+    except Exception: live_people=[]
     return render_page('KOJA Public — News, Updates & Media', r'''
 <div class="public-shell">
-<div class="hero"><h1>🌍 KOJA Public</h1><p>News, updates, public messages and images from the KOJA community. Everyone can view this page.</p></div>
-{% if user %}<div class="card"><h3>📝 Share with everyone</h3>
-<form method="post" action="{{ url_for('public_feed_create') }}" enctype="multipart/form-data">
-<div class="grid"><div><label>Type</label><select name="post_type"><option value="update">Community Update</option><option value="news">News</option><option value="announcement">Announcement</option><option value="event">Event</option></select></div><div><label>Title (optional)</label><input name="title" maxlength="180" placeholder="What is this about?"></div></div>
-<label>Message</label><textarea name="body" maxlength="5000" placeholder="Write a public message, update or news..." required></textarea>
-<label>Image / media (optional)</label><input type="file" name="media" accept="image/jpeg,image/png,image/webp">
-<button class="btn" type="submit">🌐 Publish Publicly</button></form>
-<p class="small">Your post is public and may be visible to people who are not logged in.</p></div>
-{% else %}<div class="card"><strong>Want to publish?</strong> <a class="btn" href="{{ url_for('login', next='/public') }}">Login</a> <a class="btn secondary" href="{{ url_for('register', next='/public') }}">Create account</a></div>{% endif %}
-<div class="card"><h2>📰 News & Updates</h2><p class="small">Public feed · newest first</p></div>
-{% for p in posts %}<article class="card" id="post-{{ p.id }}"><strong>👤 {{ p.author_name }}</strong><div class="small">{{ p.post_type|title }} · {{ p.created_at }}</div>
-{% if p.title %}<h2 style="margin-top:10px">{{ p.title }}</h2>{% endif %}<p style="white-space:pre-wrap;line-height:1.7">{{ p.body }}</p>
-{% if p.media_url %}<img src="{{ p.media_url }}" alt="Public KOJA post image" loading="lazy" style="width:100%;max-height:620px;object-fit:cover;border-radius:12px;margin-top:8px">{% endif %}
-<div class="actions" style="margin-top:12px">{% if user %}<form method="post" action="{{ url_for('public_toggle_like', post_id=p.id) }}" style="display:inline"><button class="btn secondary" type="submit">{{ '❤️ Liked' if p.liked else '🤍 Like' }} · {{ p.like_count }}</button></form>{% else %}<a class="btn secondary" href="{{ url_for('login', next='/public') }}">🤍 Like · {{ p.like_count }}</a>{% endif %}<span class="btn secondary" style="cursor:default">💬 {{ p.comments|length }} Comments</span></div>
-{% for c in p.comments %}<div style="padding:9px 0;border-top:1px solid var(--border);margin-top:9px"><strong>{{ c.author_name }}</strong><div>{{ c.body }}</div><div class="small">{{ c.created_at }}</div></div>{% endfor %}
-{% if user %}<form method="post" action="{{ url_for('public_comment', post_id=p.id) }}"><input name="body" maxlength="1000" placeholder="Write a comment..." required><button class="btn" type="submit">Comment</button></form>{% else %}<p class="small"><a href="{{ url_for('login', next='/public') }}">Login</a> to comment.</p>{% endif %}
-</article>{% else %}<div class="card"><h3>No public updates yet.</h3><p>Be the first KOJA user to share a public update or news.</p></div>{% endfor %}
+<style>
+.public-media-hero{position:relative;overflow:hidden;margin:0 0 10px;border-radius:16px;padding:22px 16px;background:linear-gradient(135deg,#10233f,#176b87);color:#fff}
+.public-media-hero h1{font-size:26px;margin:0 0 4px}.public-media-hero p{margin:0;opacity:.92;font-size:13px}
+.public-live-strip{display:flex;gap:8px;overflow-x:auto;padding:3px 1px 9px;scrollbar-width:none}.public-live-strip::-webkit-scrollbar{display:none}
+.live-person{min-width:145px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:10px;box-shadow:0 3px 12px rgba(0,0,0,.05)}
+.live-dot{display:inline-flex;align-items:center;gap:5px;color:#177245;font-size:11px;font-weight:800}.live-dot i{width:7px;height:7px;border-radius:50%;background:#177245;display:inline-block;box-shadow:0 0 0 4px rgba(23,114,69,.10)}
+.public-composer{position:sticky;top:42px;z-index:20}.public-composer textarea{min-height:82px}.public-media-preview{width:100%;max-height:560px;object-fit:cover;border-radius:13px;display:block;margin-top:9px;background:#101820}.public-video-preview{aspect-ratio:16/9;max-height:none;object-fit:cover}
+.public-post{padding:13px;margin-bottom:12px}.public-post-head{display:flex;align-items:center;gap:9px}.public-avatar{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;background:#e8f3f6;font-weight:800;flex:0 0 auto}.public-post-body{white-space:pre-wrap;line-height:1.55;font-size:15px}.public-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}.public-actions .btn{font-size:12px;padding:7px 10px}.public-marketing-badge{font-size:10px;font-weight:800;padding:4px 7px;border-radius:20px;background:#fff3d6;color:#805500}.public-file-label{font-size:12px;color:var(--muted)}
+@media(max-width:760px){.public-composer{top:38px}.public-media-hero{border-radius:13px;padding:18px 14px}.public-media-hero h1{font-size:23px}.public-post{border-radius:12px}.public-media-preview{max-height:430px}}
+</style>
+<section class="public-media-hero"><h1>🌍 KOJA Public</h1><p>News • Stories • Images • Video • Community • Live Calls</p></section>
+{% if live_people %}<div class="card" style="padding:11px;margin-bottom:10px"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px"><strong>🔴 Live Calls</strong><a class="small" href="{{ url_for('connect_people') }}">People →</a></div><div class="public-live-strip">{% for person in live_people %}<div class="live-person"><span class="live-dot"><i></i> LIVE</span><div style="font-weight:800;margin:4px 0 2px">{{ person.get('full_name') or person.get('name') or 'KOJA Professional' }}</div><div class="small" style="margin-bottom:7px">{{ person.get('profession') or 'Professional Service' }}</div>{% if user and person.get('user_id') and person.get('user_id')|string != user.id|string %}<div class="actions"><a class="btn" href="{{ url_for('professional_call',provider_id=person.id,mode='video') }}">🎥 Call</a><a class="btn secondary" href="{{ url_for('professional_call',provider_id=person.id,mode='voice') }}">📞 Voice</a></div>{% else %}<a class="btn" href="{{ url_for('login',next='/public') }}">Login to call</a>{% endif %}</div>{% endfor %}</div></div>{% endif %}
+<div class="card public-composer">{% if user %}<form method="post" action="{{ url_for('public_feed_create') }}" enctype="multipart/form-data"><div style="display:flex;gap:7px;align-items:center;margin-bottom:5px"><strong>📣 Create a public post</strong><span class="public-marketing-badge">MEDIA & MARKETING</span></div><div class="grid"><div><label>Post type</label><select name="post_type"><option value="update">Community Update</option><option value="news">News</option><option value="announcement">Announcement</option><option value="event">Event</option><option value="marketing">Marketing / Promotion</option></select></div><div><label>Title</label><input name="title" maxlength="180" placeholder="Headline or campaign title"></div></div><textarea name="body" maxlength="5000" placeholder="Share news, a story, product/service promotion, event, announcement or community update…" required></textarea><label>Photo or video</label><input type="file" name="media" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"><div class="public-file-label">Images and short marketing videos are supported. Use clear, high-quality media.</div><button class="btn" type="submit">🚀 Publish to KOJA Public</button></form>{% else %}<strong>📣 Join KOJA Public</strong><p class="small">Log in to publish stories, photos, videos and promotions, or to start a live call.</p><div class="actions"><a class="btn" href="{{ url_for('login', next='/public') }}">Login</a><a class="btn secondary" href="{{ url_for('register', next='/public') }}">Create account</a></div>{% endif %}</div>
+<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:10px 2px 7px"><h2 style="margin:0;font-size:18px">📰 Public Feed</h2><span class="small">Newest first</span></div>
+{% for p in posts %}<article class="card public-post" id="post-{{ p.id }}"><div class="public-post-head"><div class="public-avatar">{{ (p.author_name or 'K')[:1]|upper }}</div><div style="min-width:0;flex:1"><strong>{{ p.author_name }}</strong><div class="small">{{ p.post_type|title }} · {{ p.created_at }}</div></div></div>{% if p.title %}<h2 style="font-size:19px;margin:10px 0 6px">{{ p.title }}</h2>{% endif %}<div class="public-post-body">{{ p.body }}</div>{% if p.media_url %}{% if (p.media_type or '') == 'video' or (p.media_url|lower).endswith('.mp4') or (p.media_url|lower).endswith('.webm') or (p.media_url|lower).endswith('.mov') %}<video class="public-media-preview public-video-preview" controls playsinline preload="metadata" src="{{ p.media_url }}"></video>{% else %}<img class="public-media-preview" src="{{ p.media_url }}" alt="{{ p.title or 'KOJA Public media' }}" loading="lazy">{% endif %}{% endif %}<div class="public-actions">{% if user %}<form method="post" action="{{ url_for('public_toggle_like', post_id=p.id) }}" style="display:inline"><button class="btn secondary" type="submit">{{ '❤️ Liked' if p.liked else '🤍 Like' }} · {{ p.like_count }}</button></form>{% else %}<a class="btn secondary" href="{{ url_for('login', next='/public') }}">🤍 Like · {{ p.like_count }}</a>{% endif %}<span class="btn secondary" style="cursor:default">💬 {{ p.comments|length }}</span>{% if user and p.author_id and p.author_id|string != user.id|string %}<a class="btn" href="{{ url_for('connect_call',user_id=p.author_id,mode='video') }}">🎥 Live Call</a>{% endif %}<button class="btn secondary" type="button" onclick="navigator.clipboard&&navigator.clipboard.writeText(location.origin+'/public#post-{{ p.id }}').then(()=>this.textContent='✓ Link copied')">↗ Share</button></div>{% for c in p.comments %}<div style="padding:8px 0;border-top:1px solid var(--border);margin-top:8px"><strong>{{ c.author_name }}</strong><div>{{ c.body }}</div><div class="small">{{ c.created_at }}</div></div>{% endfor %}{% if user %}<form method="post" action="{{ url_for('public_comment', post_id=p.id) }}" style="margin-top:8px"><input name="body" maxlength="1000" placeholder="Write a comment…" required><button class="btn" type="submit">Comment</button></form>{% else %}<p class="small"><a href="{{ url_for('login', next='/public') }}">Login</a> to comment.</p>{% endif %}</article>{% else %}<div class="card"><h3>No public updates yet.</h3><p>Be the first KOJA user to publish a story, image, video, announcement or promotion.</p></div>{% endfor %}
 </div>
-''', posts=enriched)
+''', posts=enriched, live_people=live_people)
 
 @app.route('/public/create', methods=['POST'])
 @login_required
 def public_feed_create():
-    body=clean(request.form.get('body')); title=clean(request.form.get('title'))
-    post_type=clean(request.form.get('post_type')).lower() or 'update'
-    if post_type not in {'update','news','announcement','event'}: post_type='update'
+    body=clean(request.form.get('body')); title=clean(request.form.get('title')); post_type=clean(request.form.get('post_type')).lower() or 'update'
+    if post_type not in {'update','news','announcement','event','marketing'}: post_type='update'
     if not body: flash('Write a message before publishing.','danger'); return redirect(url_for('public_feed'))
-    media=request.files.get('media'); uploaded=None
+    media=request.files.get('media'); uploaded=None; media_type=None
     if media and media.filename:
         ext=media.filename.lower().rsplit('.',1)[-1] if '.' in media.filename else ''
-        if ext not in {'jpg','jpeg','png','webp'}: flash('Public feed images must be JPG, PNG or WebP.','danger'); return redirect(url_for('public_feed'))
+        if ext not in {'jpg','jpeg','png','webp','mp4','webm','mov'}: flash('Public media must be JPG, PNG, WebP, MP4, WebM or MOV.','danger'); return redirect(url_for('public_feed'))
         uploaded,err=upload_storage(media,'public-feed')
-        if err: flash(f'Image upload failed: {err}','danger'); return redirect(url_for('public_feed'))
-    payload={'author_id':current_user().get('id'),'post_type':post_type,'title':title or None,'body':body,
-             'media_url':(uploaded or {}).get('url'),'media_type':('image' if uploaded else None),'is_published':True}
+        if err: flash(f'Media upload failed: {err}','danger'); return redirect(url_for('public_feed'))
+        media_type='video' if ext in {'mp4','webm','mov'} else 'image'
+    payload={'author_id':current_user().get('id'),'post_type':post_type,'title':title or None,'body':body,'media_url':(uploaded or {}).get('url'),'media_type':media_type,'is_published':True}
     _,err=db_insert('koja_public_posts',payload)
     flash('Published to KOJA Public.' if not err else 'Public post could not be published. Run the updated KOJA_CONNECT.sql first.','success' if not err else 'danger')
     return redirect(url_for('public_feed'))
