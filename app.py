@@ -16,11 +16,10 @@ import requests
 from dotenv import load_dotenv
 from flask import (
     Flask, request, redirect, url_for, session,
-    render_template_string, flash, send_file, jsonify, abort, Response
+    render_template_string, flash, send_file, jsonify, abort
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
-from werkzeug.middleware.proxy_fix import ProxyFix
 
 # ============================================================
 # KOJA AFRICA
@@ -46,35 +45,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("koja-africa")
 
 app = Flask(__name__)
-# Render terminates HTTPS at the proxy; trust forwarded host/proto headers.
-app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 app.secret_key = os.getenv(
     "SECRET_KEY",
     os.getenv("FLASK_SECRET_KEY", secrets.token_hex(32))
 )
 app.config["MAX_CONTENT_LENGTH"] = 15 * 1024 * 1024
-app.config["SESSION_COOKIE_HTTPONLY"] = True
-app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-app.config["SESSION_COOKIE_SECURE"] = os.getenv("SESSION_COOKIE_SECURE", "true").lower() not in ("0", "false", "no")
-app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
-
-# Lightweight production rate limiting without an extra dependency.
-_rate_hits = {}
-def _rate_limited(key, limit, window=60):
-    now = datetime.now(timezone.utc).timestamp()
-    bucket = _rate_hits.get(key, [])
-    bucket = [t for t in bucket if now - t < window]
-    if len(bucket) >= limit:
-        _rate_hits[key] = bucket
-        return True
-    bucket.append(now)
-    _rate_hits[key] = bucket
-    # Prevent unbounded memory growth on long-running instances.
-    if len(_rate_hits) > 5000:
-        oldest = sorted(_rate_hits.items(), key=lambda kv: kv[1][-1] if kv[1] else 0)[:1000]
-        for k, _ in oldest:
-            _rate_hits.pop(k, None)
-    return False
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_SERVICE_KEY = (
@@ -82,9 +57,6 @@ SUPABASE_SERVICE_KEY = (
     or os.getenv("SUPABASE_KEY", "")
 )
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
-FLW_SECRET_KEY = os.getenv("FLW_SECRET_KEY", "").strip()
-FLW_BASE_URL = "https://api.flutterwave.com/v3"
-
 
 STORAGE_BUCKET = os.getenv(
     "SUPABASE_STORAGE_BUCKET",
@@ -92,7 +64,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.03-RESEARCH-V2"
+APP_VERSION = "2026.09.04-RESEARCH-V3-CHATGPT-LIKE"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -113,7 +85,7 @@ GSC_SERVICE_ACCOUNT_JSON = os.getenv("GSC_SERVICE_ACCOUNT_JSON", "").strip()
 
 ALLOWED_EXTENSIONS = {
     "pdf", "doc", "docx", "txt",
-    "jpg", "jpeg", "png", "webp", "mp4", "webm", "mov"
+    "jpg", "jpeg", "png", "webp"
 }
 
 # ============================================================
@@ -734,10 +706,6 @@ footer{text-align:center;color:var(--muted);padding:30px}
 <a href="{{ url_for('questions') }}">Questions</a>
 <a href="{{ url_for('assignments') }}">Assignments</a>
 <a href="{{ url_for('research') }}">🔎 Research</a>
-<a href="{{ url_for('public_feed') }}">🌍 Public</a>
-<a href="{{ url_for('marketplace') }}">🛒 Marketplace</a>
-<a href="{{ url_for('connect') }}">💬 Communication</a>
-<a href="{{ url_for('professional_communication') }}">👩‍💼 Professional Communication</a>
 <a href="{{ url_for('settings') }}">⚙️ Settings</a>
 <div class="menu-group">
 <button type="button" id="moreMenuButton" aria-expanded="false" aria-haspopup="true">More ▾</button>
@@ -745,7 +713,7 @@ footer{text-align:center;color:var(--muted);padding:30px}
 <a role="menuitem" href="{{ url_for('deliveries') }}">Deliveries</a>
 <a role="menuitem" href="{{ url_for('drivers') }}">Drivers</a>
 {% if user.role in ['driver','admin'] or user.is_admin %}<a role="menuitem" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}
-{% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('admin') }}">Admin</a><a role="menuitem" href="{{ url_for('admin_marketplace') }}">Marketplace Admin</a>{% endif %}
+{% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('admin') }}">Admin</a>{% endif %}
 <a role="menuitem" href="{{ url_for('logout') }}">Logout</a>
 </div></div>
 {% else %}
@@ -770,7 +738,7 @@ footer{text-align:center;color:var(--muted);padding:30px}
 {% endwith %}
 {{ body|safe }}
 </div>
-<footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services</footer>
+<footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Agricultural • Health • Transport Services</footer>
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 </body>
 </html>
@@ -786,12 +754,11 @@ def render_page(title, body_template, **context):
         "Research": "KOJA AFRICA Research Engine — search web information, scholarly literature and KOJA documents and create structured research notes and citations.",
         "Assignments": "KOJA AFRICA assignments — ask questions, upload assignments and access academic resources.",
         "Documents": "KOJA AFRICA documents and research resources for learning and academic work.",
-        "Marketplace": "KOJA AFRICA Digital Marketplace — discover and sell ebooks, courses, templates, research resources, software, graphics and other digital products.",
     }
     # Google-friendly structured data for public pages. This improves entity/page
     # understanding and can enable eligible search enhancements; it does not
     # guarantee a rich result. Private/account pages intentionally get no JSON-LD.
-    public_paths = {"/", "/research", "/research/notes", "/marketplace"}
+    public_paths = {"/", "/research", "/research/notes"}
     seo_jsonld = ""
     if request.path in public_paths:
         page_title = title or "KOJA AFRICA"
@@ -915,8 +882,6 @@ def health():
 @app.route("/register", methods=["GET","POST"])
 def register():
     if request.method == "POST":
-        if _rate_limited("register:" + (request.remote_addr or "unknown"), 8, 600):
-            return "Too many registration attempts. Please wait and try again.", 429
         full_name = clean(request.form.get("full_name"))
         email = clean(request.form.get("email")).lower()
         phone = clean(request.form.get("phone"))
@@ -988,8 +953,6 @@ def register():
 @app.route("/login", methods=["GET","POST"])
 def login():
     if request.method == "POST":
-        if _rate_limited("login:" + (request.remote_addr or "unknown"), 12, 300):
-            return "Too many login attempts. Please wait a few minutes and try again.", 429
         email = clean(request.form.get("email")).lower()
         password = request.form.get("password","")
         user = find_user_by_email(email)
@@ -1083,19 +1046,49 @@ def _research_year(value):
         return None
 
 def research_web(query, limit=8):
+    """Real web discovery with a no-key HTML search fallback plus DDG Instant Answer.
+    Results are normalized so the AI receives title, URL and evidence together.
+    """
     q=clean(query)
     if not q: return []
     out=[]
+    headers={'User-Agent':'KOJA-AFRICA-Research/3.0 (+https://koja-africa.onrender.com)'}
+    # First try DuckDuckGo's HTML results endpoint. It provides actual search-result
+    # pages rather than only the small Instant Answer knowledge base.
     try:
-        r=requests.get('https://api.duckduckgo.com/',params={'q':q,'format':'json','no_html':1,'skip_disambig':1},timeout=10,headers={'User-Agent':'KOJA-AFRICA-Research/2.0'})
+        r=requests.get('https://html.duckduckgo.com/html/',params={'q':q},timeout=12,headers=headers)
         if r.ok:
-            d=r.json()
-            if d.get('AbstractText'):
-                out.append({'source':'Web','title':d.get('Heading') or q,'url':d.get('AbstractURL') or 'https://duckduckgo.com/?q='+quote(q),'snippet':d.get('AbstractText'),'year':None})
-            for item in d.get('RelatedTopics',[]):
-                if item.get('FirstURL') and item.get('Text'):
-                    out.append({'source':'Web','title':item.get('Text'),'url':item.get('FirstURL'),'snippet':item.get('Text'),'year':None})
-    except Exception as exc: logger.warning('Web research failed: %s',exc)
+            html=r.text
+            # Keep this dependency-free: extract result anchors/snippets from DDG HTML.
+            blocks=re.findall(r'<div[^>]+class="result[^>]*>(.*?)</div>\s*</div>',html,re.I|re.S)
+            if not blocks:
+                blocks=re.findall(r'<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>\s*(?:<a[^>]+class="result__snippet"[^>]*>(.*?)</a>)?',html,re.I|re.S)
+                for m in blocks:
+                    url=clean(re.sub(r'<.*?>',' ',m[0])); title=clean(re.sub(r'<.*?>',' ',m[1])); snippet=clean(re.sub(r'<.*?>',' ',m[2] or ''))
+                    if url and title:
+                        out.append({'source':'Web','title':title,'url':url,'snippet':snippet or title,'year':None,'source_type':'website'})
+            else:
+                for block in blocks:
+                    am=re.search(r'class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',block,re.I|re.S)
+                    if not am: continue
+                    url=unquote(am.group(1)); title=clean(re.sub(r'<.*?>',' ',am.group(2)))
+                    sm=re.search(r'class="result__snippet"[^>]*>(.*?)</a>',block,re.I|re.S)
+                    snippet=clean(re.sub(r'<.*?>',' ',sm.group(1))) if sm else title
+                    if title: out.append({'source':'Web','title':title,'url':url,'snippet':snippet,'year':None,'source_type':'website'})
+    except Exception as exc:
+        logger.warning('Web HTML research failed: %s',exc)
+    # Instant Answer is a useful fallback and often gives a clean canonical URL.
+    if len(out)<max(3,limit//2):
+        try:
+            r=requests.get('https://api.duckduckgo.com/',params={'q':q,'format':'json','no_html':1,'skip_disambig':1},timeout=10,headers=headers)
+            if r.ok:
+                d=r.json()
+                if d.get('AbstractText'):
+                    out.append({'source':'Web','title':d.get('Heading') or q,'url':d.get('AbstractURL') or 'https://duckduckgo.com/?q='+quote(q),'snippet':d.get('AbstractText'),'year':None,'source_type':'website'})
+                for item in d.get('RelatedTopics',[]):
+                    if item.get('FirstURL') and item.get('Text'):
+                        out.append({'source':'Web','title':clean(item.get('Text')),'url':item.get('FirstURL'),'snippet':clean(item.get('Text')),'year':None,'source_type':'website'})
+        except Exception as exc: logger.warning('Web instant-answer research failed: %s',exc)
     return out[:limit]
 
 def research_wikipedia(query, limit=6):
@@ -1266,18 +1259,33 @@ def _openai_text(prompt, system_prompt, max_output_tokens=900, timeout=40):
 
 def research_ai_summary(query, results):
     if not results: return ''
-    source_text='\n\n'.join(f"[{i+1}] {r.get('title','')} ({r.get('source','')})\n{r.get('snippet','')[:1200]}" for i,r in enumerate(results[:10]))
-    text=_openai_text(
-        f"Question: {query}\n\nSources:\n{source_text}\n\nWrite a concise research summary with 3-5 key findings and a short evidence note.",
-        'You are KOJA Research. Summarize only the supplied sources. Do not invent facts. Cite source numbers like [1] [2]. State when evidence is limited.',
-        700, 30
+    source_text='\n\n'.join(
+        f"[{i+1}] {r.get('title','')} | {r.get('source','')} | {r.get('year') or 'n.d.'}\n"
+        f"Authors: {', '.join(_names(r))}\nJournal/Publisher: {r.get('journal') or r.get('publisher') or ''}\n"
+        f"Evidence: {clean(r.get('snippet',''))[:2200]}\nURL: {r.get('url','')}"
+        for i,r in enumerate(results[:25])
     )
+    system=('You are KOJA Research, a rigorous evidence-grounded research assistant. '
+            'Answer the research question using ONLY the supplied retrieved evidence. '
+            'Do not invent facts, citations, dates, authors, URLs, quotations, statistics or conclusions. '
+            'Every substantive factual claim must end with one or more source-number citations such as [1] or [2][4]. '
+            'If sources disagree, explain the disagreement. If evidence is insufficient, explicitly identify what is missing. '
+            'Produce deep, educational explanations rather than a short summary. Define important concepts, explain mechanisms and relationships, '
+            'compare perspectives where evidence permits, explain why findings matter, discuss practical or theoretical implications, '
+            'and identify limitations and unanswered questions. Use clear connected paragraphs with useful headings. '
+            'Never pad the answer with generic statements.')
+    prompt=(f"Question: {query}\n\nRetrieved evidence:\n{source_text}\n\n"
+            'Write a substantial research answer suitable for a student or researcher. Start with a clear direct answer, then develop the explanation in depth. '
+            'Use headings such as Overview, Key Concepts, Detailed Explanation, Evidence and Findings, Comparison or Debate, Implications, Limitations, '
+            'and Conclusion when appropriate. Explain technical terms in plain language when first introduced. '
+            'Citations must appear immediately after the claims they support. Do not include a bibliography here because KOJA displays the verified source list separately.')
+    text=_openai_text(prompt,system,5000,60)
     if text: return text
     highlights=[]
-    for r in results[:5]:
+    for i,r in enumerate(results[:10],1):
         ss=clean(r.get('snippet','')).replace('\n',' ')
-        if ss: highlights.append(f"{r.get('title','Source')}: {ss[:300]}")
-    return 'AI summary is not configured. Source-based highlights:\n\n'+'\n\n'.join(highlights)
+        if ss: highlights.append(f"[{i}] {r.get('title','Source')}: {ss[:700]}")
+    return 'AI deep research is not configured. Retrieved evidence:\n\n'+'\n\n'.join(highlights)
 
 
 # KOJA V4 citation engine: source-type-aware bibliography fields
@@ -1316,18 +1324,40 @@ def make_bibliography(results,style): return [(i+1,make_reference(r,style,i+1)) 
 def research_ai_notes(query, results, style='apa'):
     if not results: return 'No sufficiently relevant evidence was retrieved for this topic.'
     bundle=[]
-    for i,r in enumerate(results[:12],1):
-        bundle.append(f"[{i}] {r.get('title','')} | {r.get('source','')} | {r.get('year') or 'n.d.'}\nAuthors: {', '.join(_names(r))}\nEvidence: {clean(r.get('snippet',''))[:1600]}\nURL: {r.get('url','')}")
-    prompt=(f'Write high-quality research notes on: {query}\n\nUse ONLY the evidence supplied below. Do not invent facts, figures, quotations, authors, dates, references or conclusions. Every substantive factual claim must have one or more source-number citations such as [1] immediately after the claim. If evidence is insufficient, say so.\n\nStructure the notes with: Title; Introduction; Key concepts/background; Main findings/themes; Evidence and discussion; Implications; Conclusion; Research gaps/limitations only if supported. Write connected explanatory paragraphs, like strong academic study notes, not disconnected bullet fragments. Use the selected citation style for the reference list: {CITATION_STYLES.get(style,style)}.\n\nSOURCES:\n' + '\n\n'.join(bundle))
-    text=_openai_text(prompt,'You are KOJA Research Notes. Be evidence-bound, clear, academic and concise. Never fabricate citations or source details.',2200,45)
+    for i,r in enumerate(results[:25],1):
+        bundle.append(f"[{i}] {r.get('title','')} | {r.get('source','')} | {r.get('year') or 'n.d.'}\nAuthors: {', '.join(_names(r))}\nJournal/Publisher: {r.get('journal') or r.get('publisher') or ''}\nEvidence: {clean(r.get('snippet',''))[:2200]}\nURL: {r.get('url','')}")
+    prompt=(f"Write DEEP RESEARCH NOTES on: {query}\n\nUse ONLY the supplied evidence. Do not invent facts, figures, quotations, authors, dates, references, mechanisms or conclusions. Every substantive factual claim must have one or more source-number citations such as [1] immediately after the claim. If evidence is insufficient, explicitly say so. If sources conflict, explain the conflict and attribute each position.\n\nThe notes must be substantially explanatory, not a short summary. Aim for a detailed study/research guide with connected academic paragraphs. Explain what concepts mean, how they relate, why the evidence supports particular conclusions, what alternative interpretations exist, and what the findings imply. Use examples only when they are supported by the supplied evidence.\n\nUse this structure where appropriate:\n# Research Notes: {query}\n## 1. Overview and direct answer\n## 2. Key concepts and definitions\n## 3. Background and context\n## 4. Detailed explanation of the issue\n## 5. Major findings and themes\n## 6. Evidence and critical discussion\n## 7. Relationships, mechanisms and comparisons\n## 8. Practical, theoretical and/or policy implications\n## 9. Limitations and evidence gaps\n## 10. Conclusion\n\nFor each major section, provide multiple developed paragraphs where the evidence permits. Do not turn the notes into disconnected bullet fragments. Use the selected citation style ({CITATION_STYLES.get(style,style)}) only for the reference list, while keeping source-number citations [1], [2] in the body so every claim can be traced.\n\nSOURCES:\n" + '\n\n'.join(bundle))
+    text=_openai_text(prompt,'You are KOJA Deep Research Notes. Be rigorous, explanatory, evidence-bound and academically useful. Never fabricate source details.',6500,75)
     if text: return text
-    lines=[f"# Research Notes: {query}","","## Introduction",f"The search retrieved {len(results)} relevant records. The notes below are limited to the evidence contained in those records.",""]
-    for i,r in enumerate(results[:8],1):
+    lines=[f"# Research Notes: {query}","","## 1. Overview and direct answer",f"The search retrieved {len(results)} relevant records. The detailed notes below are limited to the evidence available in those records.","","## 2. Evidence by source"]
+    for i,r in enumerate(results[:15],1):
         evidence=clean(r.get('snippet',''))
-        if evidence: lines += [f"## {i}. {r.get('title','Untitled')} [{i}]",evidence,""]
-    lines += ["## Conclusion","The available evidence is source-dependent and should be checked against the original publications before formal submission."]
+        if evidence: lines += [f"### Source {i}: {r.get('title','Untitled')} [{i}]",evidence,"","The original source should be opened before using this evidence in formal academic work.",""]
+    lines += ["## 10. Conclusion","The available evidence should be interpreted in light of the coverage and limitations of the retrieved sources."]
     return '\n'.join(lines)
 
+
+@app.route('/api/research')
+def research_api():
+    """JSON research endpoint for the web/mobile UI and future app clients."""
+    q=clean(request.args.get('q',''))
+    if not q: return jsonify({'ok':False,'error':'A research question is required.'}),400
+    source_filter=clean(request.args.get('source','all')).lower() or 'all'
+    sort=clean(request.args.get('sort','relevance')).lower() or 'relevance'
+    year=_research_year(request.args.get('year',''))
+    author=clean(request.args.get('author',''))
+    style=clean(request.args.get('style','apa')).lower() or 'apa'
+    if style not in CITATION_STYLES: style='apa'
+    raw=research_web(q,10)+research_wikipedia(q,6)+research_openalex(q,12)+research_crossref(q,12,author or None)+research_local_documents(q,12)
+    results=_research_deduplicate(raw,q)
+    results=_research_filter(results,source_filter,year,sort)
+    results=[r for r in results if not request.args.get('source_type') or request.args.get('source_type')=='all' or _source_type(r)==request.args.get('source_type')]
+    results=results[:25]
+    summary=research_ai_summary(q,results)
+    clean_results=[]
+    for i,r in enumerate(results,1):
+        clean_results.append({k:v for k,v in r.items() if not k.startswith('_')} | {'number':i,'citation':make_intext(r,style,i),'reference':make_reference(r,style,i)})
+    return jsonify({'ok':True,'query':q,'count':len(clean_results),'summary':summary,'citation_style':CITATION_STYLES[style],'results':clean_results,'references':[x['reference'] for x in clean_results]})
 
 @app.route('/research/notes')
 def research_notes():
@@ -1335,13 +1365,13 @@ def research_notes():
     if style not in CITATION_STYLES: style='apa'
     results=[]
     if q:
-        raw=research_web(q,6)+research_wikipedia(q,5)+research_openalex(q,None,10)+research_crossref(q,None,None,10)+research_local_documents(q,10)
-        results=_research_deduplicate(raw,q)[:12]
+        raw=research_web(q,10)+research_wikipedia(q,8)+research_openalex(q,None,15)+research_crossref(q,None,None,15)+research_local_documents(q,15)
+        results=_research_deduplicate(raw,q)[:25]
     notes=research_ai_notes(q,results,style) if q else ''
     bibliography=make_bibliography(results,style) if results else []
     return render_page('Research Notes', r'''<style>
 .notes-shell{max-width:1000px;margin:auto}.notes-toolbar{display:grid;grid-template-columns:1fr auto auto;gap:10px}.notes-body{line-height:1.8;font-size:1rem}.notes-body pre{white-space:pre-wrap;font:inherit}.ref{margin:10px 0}.note-actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}@media(max-width:700px){.notes-toolbar{grid-template-columns:1fr}.notes-body{font-size:.97rem}}
-</style><div class="notes-shell"><div class="hero"><h2>📝 KOJA Research Notes</h2><p>Turn ranked research evidence into clear, connected academic notes.</p><form method="get" action="{{ url_for('research_notes') }}" class="notes-toolbar"><input name="q" value="{{ q }}" placeholder="Enter your research topic…" required><select name="style">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select><button class="btn">Write Notes</button></form></div>{% if q %}<div class="note-actions"><button class="btn secondary" type="button" onclick="copyKOJANotes()">Copy Notes</button><button class="btn secondary" type="button" onclick="window.print()">Print</button><a class="btn secondary" href="{{ url_for('research',q=q,style=style) }}">View Evidence</a></div><div class="card"><strong>{{ results|length }} ranked evidence sources</strong></div><div id="koja-notes" class="card notes-body"><pre>{{ notes }}</pre></div>{% if bibliography %}<div class="card"><h3>References</h3>{% for n,ref in bibliography %}<div class="ref">{{ n }}. {{ ref|safe }}</div>{% endfor %}</div>{% endif %}<script>function copyKOJANotes(){const el=document.getElementById('koja-notes');navigator.clipboard.writeText(el.innerText).then(()=>alert('Research notes copied.')).catch(()=>alert('Select and copy the notes manually.'))}</script>{% else %}<div class="card"><h3>How KOJA writes notes</h3><p>1. Searches multiple evidence sources.</p><p>2. Removes duplicates and ranks relevance.</p><p>3. Gives the AI only the strongest evidence.</p><p>4. Produces connected academic paragraphs with source citations.</p><p>5. Generates a bibliography in your selected citation style.</p></div>{% endif %}</div>''',q=q,style=style,citation_styles=CITATION_STYLES,results=results,notes=notes,bibliography=bibliography)
+</style><div class="notes-shell"><div class="hero"><h2>📝 KOJA Research Notes</h2><p>Build deep, explained research notes from web, academic and KOJA evidence. The goal is understanding—not just a short summary.</p><form method="get" action="{{ url_for('research_notes') }}" class="notes-toolbar"><input name="q" value="{{ q }}" placeholder="Enter your research topic…" required><select name="style">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select><button class="btn">Write Notes</button></form></div>{% if q %}<div class="note-actions"><button class="btn secondary" type="button" onclick="copyKOJANotes()">Copy Notes</button><button class="btn secondary" type="button" onclick="window.print()">Print</button><a class="btn secondary" href="{{ url_for('research',q=q,style=style) }}">View Evidence</a></div><div class="card"><strong>{{ results|length }} ranked evidence sources</strong></div><div id="koja-notes" class="card notes-body"><pre>{{ notes }}</pre></div>{% if bibliography %}<div class="card"><h3>References</h3>{% for n,ref in bibliography %}<div class="ref">{{ n }}. {{ ref|safe }}</div>{% endfor %}</div>{% endif %}<script>function copyKOJANotes(){const el=document.getElementById('koja-notes');navigator.clipboard.writeText(el.innerText).then(()=>alert('Research notes copied.')).catch(()=>alert('Select and copy the notes manually.'))}</script>{% else %}<div class="card"><h3>How KOJA writes notes</h3><p>1. Searches multiple evidence sources.</p><p>2. Removes duplicates and ranks relevance.</p><p>3. Gives the AI only the strongest evidence.</p><p>4. Produces connected academic paragraphs with source citations.</p><p>5. Generates a bibliography in your selected citation style.</p></div>{% endif %}</div>''',q=q,style=style,citation_styles=CITATION_STYLES,results=results,notes=notes,bibliography=bibliography)
 
 @app.route('/research')
 def research():
@@ -1349,19 +1379,20 @@ def research():
     if style not in CITATION_STYLES: style='apa'
     results=[]
     if q:
-        results += research_web(q,8)+research_wikipedia(q,6)+research_openalex(q,year,10)+research_crossref(q,year,author,10)+research_local_documents(q,12)
+        results += research_web(q,10)+research_wikipedia(q,8)+research_openalex(q,year,15)+research_crossref(q,year,author,15)+research_local_documents(q,15)
         results=_research_deduplicate(results,q)
         results=_research_filter(results,source_filter,year,sort)
         if source_type!='all': results=[r for r in results if _source_type(r)==source_type]
+        results=results[:25]
     summary=research_ai_summary(q,results) if q else ''
     bibliography=make_bibliography(results,style) if results else []
     return render_page('Research', r'''
 <style>
-.research-shell{max-width:1100px;margin:auto}.research-search{display:grid;grid-template-columns:1fr auto;gap:10px}.research-search input{min-width:0}.research-filters{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-top:12px}.research-filters label{font-size:.82rem;font-weight:700}.research-filters select,.research-filters input{width:100%;margin-top:5px}.research-tabs{display:flex;gap:8px;overflow:auto;margin:14px 0}.research-tabs a{white-space:nowrap}.source-badge{display:inline-block;padding:5px 9px;border-radius:999px;background:rgba(80,150,255,.14);font-size:.78rem;font-weight:800}.research-result h3{line-height:1.35}.research-meta{font-size:.82rem;opacity:.8}.research-summary{border-left:4px solid #62a8ff}.research-summary pre{white-space:pre-wrap;font:inherit;line-height:1.6}.research-count{font-weight:700}.research-empty{padding:28px;text-align:center}@media(max-width:700px){.research-search{grid-template-columns:1fr}.research-filters{grid-template-columns:1fr 1fr}.research-result{padding:16px!important}}
+.research-shell{max-width:1120px;margin:auto}.research-search{display:grid;grid-template-columns:1fr auto;gap:10px}.research-search input{min-width:0}.research-filters{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}.research-filters label{font-size:.82rem;font-weight:700}.research-filters select,.research-filters input{width:100%;margin-top:5px}.research-tabs{display:flex;gap:8px;overflow:auto;margin:14px 0}.research-tabs a{white-space:nowrap}.research-summary{border-left:4px solid #62a8ff}.research-summary pre{white-space:pre-wrap;font:inherit;line-height:1.85;font-size:1.02rem}.research-count{font-weight:700}.research-empty{padding:28px;text-align:center}.deep-label{font-size:.78rem;font-weight:800;letter-spacing:.02em;opacity:.75}.source-list{display:flex;flex-direction:column;gap:7px}.source-row{display:flex;align-items:center;gap:10px;padding:9px 10px;border:1px solid rgba(127,127,127,.18);border-radius:12px}.source-icon{width:30px;height:30px;min-width:30px;border-radius:50%;display:grid;place-items:center;font-size:.9rem;background:rgba(80,150,255,.12)}.source-row a{font-weight:700;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.source-row small{margin-left:auto;opacity:.65;white-space:nowrap}.source-details{margin-left:40px;margin-top:-3px;margin-bottom:4px}.source-details summary{cursor:pointer;font-size:.8rem;opacity:.7}.source-details p{line-height:1.6;font-size:.9rem}.deep-notes{line-height:1.9;font-size:1.02rem}.deep-notes h1,.deep-notes h2,.deep-notes h3{line-height:1.35;margin-top:1.5em}.deep-notes p{margin:0 0 1em}.notes-body{line-height:1.9;font-size:1.02rem}.notes-body pre{white-space:pre-wrap;font:inherit;line-height:1.9}.note-actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}@media(max-width:700px){.research-search{grid-template-columns:1fr}.research-filters{grid-template-columns:1fr 1fr}.research-summary pre,.deep-notes,.notes-body{font-size:.98rem}.source-row small{display:none}}
 </style>
 <div class="research-shell"><div class="hero"><h2>🔎 KOJA Research Engine</h2><p>Search the web, scholarly literature and your KOJA document collection from one research workspace.</p><form method="get" action="{{ url_for('research') }}" class="research-search" style="margin-top:18px"><input name="q" value="{{ q }}" placeholder="Ask a question, topic, paper, author or subject…" aria-label="Research search"><button class="btn" type="submit">Search</button></form>
 <div class="research-filters"><label>Source<select name="source" form="research-filter-form"><option value="all" {% if source_filter=='all' %}selected{% endif %}>All sources</option><option value="academic" {% if source_filter=='academic' %}selected{% endif %}>Academic</option><option value="web" {% if source_filter=='web' %}selected{% endif %}>Web</option><option value="wikipedia" {% if source_filter=='wikipedia' %}selected{% endif %}>Wikipedia</option><option value="koja" {% if source_filter=='koja' %}selected{% endif %}>KOJA Documents</option></select></label><label>Year<input name="year" form="research-filter-form" value="{{ year or '' }}" placeholder="e.g. 2025" inputmode="numeric"></label><label>Author<input name="author" form="research-filter-form" value="{{ author }}" placeholder="Academic author"></label><label>Citation style<select name="style" form="research-filter-form">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Source type<select name="source_type" form="research-filter-form"><option value="all">All source types</option>{% for k,v in source_types.items() %}<option value="{{k}}" {% if source_type==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Sort<select name="sort" form="research-filter-form"><option value="relevance" {% if sort=='relevance' %}selected{% endif %}>Relevance</option><option value="date" {% if sort=='date' %}selected{% endif %}>Newest first</option><option value="citations" {% if sort=='citations' %}selected{% endif %}>Most cited</option></select></label></div><form id="research-filter-form" method="get" action="{{ url_for('research') }}"><input type="hidden" name="q" value="{{ q }}"></form></div>
-{% if q %}<div class="note-actions"><a class="btn" href="{{ url_for('research_notes',q=q,style=style) }}">📝 Write Research Notes from this topic</a></div><div class="research-tabs"><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}">🎓 Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}">🌐 Web</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}">📁 KOJA Documents</a></div><div class="card"><span class="research-count">{{ results|length }} results</span> for <strong>“{{ q }}”</strong></div>{% if summary %}<div class="card research-summary"><h3>🧠 Research Summary</h3><pre>{{ summary }}</pre><p class="small">AI summaries use configured AI credentials when available; otherwise KOJA shows source-based highlights. Verify important claims against original sources.</p></div>{% endif %}{% for r in results %}<div class="card research-result"><span class="source-badge">{{ r.source }}</span><h3><a href="{{ r.url or '#' }}" {% if r.url %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a></h3>{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p><p><strong>In-text:</strong> {{ make_intext(r,style,loop.index) }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open original source ↗</a>{% endif %}</div>{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endfor %}{% if bibliography %}<div class="card"><h2>References</h2><p class="small">Generated from available source metadata. Verify against the original source.</p>{% for n,ref in bibliography %}<p style="padding-left:28px;text-indent:-28px;line-height:1.6">{{ ref|safe }}</p>{% endfor %}</div>{% endif %}{% else %}<div class="grid"><div class="card"><h3>🌐 Web Discovery</h3><p>Discover general web knowledge.</p></div><div class="card"><h3>🎓 Academic Search</h3><p>OpenAlex and Crossref provide scholarly metadata, authors, years and citation information.</p></div><div class="card"><h3>📁 KOJA Documents</h3><p>Search documents already connected to your KOJA Supabase database.</p></div><div class="card"><h3>🧠 AI Research Summary</h3><p>Configure an AI API key to synthesize retrieved evidence with source-number citations.</p></div></div>{% endif %}</div>
+{% if q %}<div class="note-actions"><a class="btn" href="{{ url_for('research_notes',q=q,style=style) }}">📝 Write Research Notes from this topic</a><button class="btn secondary" type="button" onclick="copyResearchAnswer()">Copy answer</button></div><div class="research-tabs"><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}">🎓 Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}">🌐 Web</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}">📁 KOJA Documents</a></div><div class="card"><span class="research-count">{{ results|length }} results</span> for <strong>“{{ q }}”</strong></div>{% if summary %}<div id="koja-research-answer" class="card research-summary"><h3>🧠 KOJA Deep Research Answer</h3><p class="deep-label">DETAILED, EVIDENCE-GROUNDED EXPLANATION</p><pre>{{ summary }}</pre><p class="small">AI summaries use configured AI credentials when available; otherwise KOJA shows source-based highlights. Verify important claims against original sources.</p></div>{% endif %}<div class="card"><div class="deep-label">SOURCES</div><div class="source-list">{% for r in results %}<div><div class="source-row"><span class="source-icon" title="{{ r.source }}">{% if r.source=='Academic' %}🎓{% elif r.source=='Wikipedia' %}W{% elif r.source=='KOJA Documents' %}📁{% else %}🌐{% endif %}</span><a href="{{ r.url or '#' }}" {% if r.url %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a><small>{% if r.year %}{{ r.year }}{% endif %} · [{{ loop.index }}]</small></div><details class="source-details"><summary>Evidence</summary><p>{{ r.snippet }}</p><p><strong>{{ make_intext(r,style,loop.index) }}</strong></p></details></div>{% endfor %}</div></div>{% if results %}<div class="card"><div class="deep-label">DEEP SOURCE-BY-SOURCE EVIDENCE</div>{% for r in results %}<details class="source-details" style="margin:10px 0"><summary>[{{ loop.index }}] {{ r.title }}</summary><p>{{ r.snippet }}</p></details>{% endfor %}</div>{% endif %}{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endfor %}{% if bibliography %}<div class="card"><h2>References</h2><p class="small">Generated from available source metadata. Verify against the original source.</p>{% for n,ref in bibliography %}<p style="padding-left:28px;text-indent:-28px;line-height:1.6">{{ ref|safe }}</p>{% endfor %}</div>{% endif %}{% else %}<div class="grid"><div class="card"><h3>🌐 Web Discovery</h3><p>Discover general web knowledge.</p></div><div class="card"><h3>🎓 Academic Search</h3><p>OpenAlex and Crossref provide scholarly metadata, authors, years and citation information.</p></div><div class="card"><h3>📁 KOJA Documents</h3><p>Search documents already connected to your KOJA Supabase database.</p></div><div class="card"><h3>🧠 AI Research Summary</h3><p>Configure an AI API key to synthesize retrieved evidence with source-number citations.</p></div></div>{% endif %}</div><script>function copyResearchAnswer(){const el=document.getElementById('koja-research-answer');if(!el)return;navigator.clipboard.writeText(el.innerText).then(()=>alert('Research answer copied.')).catch(()=>alert('Select and copy the answer manually.'));}</script>
 ''',q=q,results=results,summary=summary,source_filter=source_filter,sort=sort,year=year,author=author,style=style,source_type=source_type,citation_styles=CITATION_STYLES,source_types=SOURCE_TYPES,bibliography=bibliography,make_intext=make_intext,SITE_URL=SITE_URL)
 
 
@@ -1374,9 +1405,8 @@ def services():
 <div class="card"><h3>Academic Questions</h3><a class="btn" href="{{ url_for('questions') }}">Open</a></div>
 <div class="card"><h3>Assignments</h3><a class="btn" href="{{ url_for('assignments') }}">Open</a></div>
 <div class="card"><h3>CV</h3><a class="btn" href="{{ url_for('cv') }}">Open</a></div>
-<div class="card"><h3>Doctors</h3><p>Find doctors, view profiles and request appointments.</p><a class="btn" href="{{ url_for('doctors') }}">Find Doctors</a><a class="btn secondary" href="{{ url_for('professional_register') }}">Register</a></div>
-<div class="card"><h3>Teachers / Tutors</h3><p>Find teachers and tutors by subject, grade and qualification.</p><a class="btn" href="{{ url_for('teachers') }}">Find Tutors</a><a class="btn secondary" href="{{ url_for('teacher_dashboard') }}">Teacher Dashboard</a></div>
-<div class="card"><h3>All Professionals</h3><p>Register and find professionals in many fields including law, accounting, engineering, ICT, construction, beauty, counselling and more.</p><a class="btn" href="{{ url_for('professionals') }}">Find Professionals</a><a class="btn secondary" href="{{ url_for('professional_register') }}">Register Profession</a></div>
+<div class="card"><h3>Doctors</h3><a class="btn" href="{{ url_for('doctors') }}">Open</a></div>
+<div class="card"><h3>Teachers</h3><a class="btn" href="{{ url_for('teachers') }}">Open</a></div>
 <div class="card"><h3>Deliveries</h3><a class="btn" href="{{ url_for('deliveries') }}">Open</a></div>
 </div>
 """)
@@ -1702,1531 +1732,57 @@ def book_doctor(provider_id):
 </form></div>
 """,doctor=doctor)
 
-# ============================================================
-# TEACHERS / TUTORS — APPROVED PUBLIC DIRECTORY + ONLINE/LIVE CLASSES
-# ============================================================
-
-def _approved_teacher_rows():
-    """Return all administrator-approved teacher/tutor records.
-
-    Approval and provider type can be stored in different columns depending on
-    which registration workflow created the record. Therefore each relevant
-    column is checked independently instead of allowing one non-teacher value
-    (for example provider_type='professional') to hide a teacher whose
-    profession/service_type is 'teacher' or 'tutor'.
-    """
-    merged = {}
-
-    def approved(row):
-        statuses = {
-            str(row.get(k) or '').strip().lower()
-            for k in ('approval_status', 'verification_status', 'status')
-        }
-        return bool(statuses & {'approved', 'active', 'verified'})
-
-    def is_teacher(row):
-        type_values = [
-            row.get('provider_type'), row.get('profession'),
-            row.get('service_type'), row.get('category'),
-            row.get('provider_category'), row.get('role'),
-        ]
-        text = ' '.join(str(v or '').strip().lower() for v in type_values)
-        # Empty type is retained for legacy teacher_profiles, where the table
-        # itself already identifies the record as a teacher.
-        return not text or 'teacher' in text or 'tutor' in text or 'education' in text
-
-    # Primary teacher profiles.
-    for t in db_select('teacher_profiles', order='created_at.desc', limit=500):
-        if not approved(t):
-            continue
-        if not is_teacher(t):
-            continue
-        key = str(t.get('provider_id') or t.get('user_id') or t.get('id') or '')
-        if key:
-            merged[key] = dict(t)
-
-    # Also include approved service-provider records. A professional provider
-    # can still be a teacher/tutor when profession/service_type says so.
-    for p in db_select('service_providers', order='created_at.desc', limit=500):
-        if not approved(p):
-            continue
-        if not is_teacher(p):
-            continue
-
-        provider_id = str(p.get('id') or p.get('provider_id') or '')
-        user_id = str(p.get('user_id') or '')
-        existing = merged.get(provider_id) or merged.get(user_id)
-
-        if existing:
-            for k, v in p.items():
-                if not existing.get(k) and v not in (None, ''):
-                    existing[k] = v
-            existing['provider_id'] = existing.get('provider_id') or provider_id or user_id
-            continue
-
-        row = dict(p)
-        row['provider_id'] = provider_id or user_id
-        row['full_name'] = row.get('full_name') or row.get('name') or row.get('display_name') or 'Teacher / Tutor'
-        row['subjects'] = row.get('subjects') or row.get('specialization') or row.get('service_description')
-        row['grade_levels'] = row.get('grade_levels') or row.get('service_area') or 'All levels'
-        row['teaching_mode'] = row.get('teaching_mode') or 'Online & Live Classes'
-        merged[provider_id or user_id] = row
-
-    return list(merged.values())
-
-
 @app.route("/teachers")
 @login_required
 def teachers():
-    teachers = _approved_teacher_rows()
-    return render_page("Teachers", r"""
-<div class="hero">
-  <h2>👩‍🏫 Find a Teacher / Tutor</h2>
-  <p>Choose an approved teacher for tutoring, online lessons or live classes.</p>
-  <div class="actions">
-    <span class="badge">{{ teachers|length }} approved teacher{{ '' if teachers|length == 1 else 's' }}</span>
-    <a class="btn secondary" href="{{ url_for('professional_communication') }}">Professional Communication</a>
-  </div>
-</div>
+    teachers=db_select("teacher_profiles",order="created_at.desc",limit=100)
+    return render_page("Teachers",r"""
+<div class="hero"><h2>Find a Teacher / Tutor</h2><p>Choose a specific teacher for tutoring.</p></div>
 <div class="grid">
 {% for t in teachers %}
-  <div class="card">
-    <h3>{{ t.get("full_name") or t.get("teacher_name") or "Teacher / Tutor" }}</h3>
-    <p><span class="badge">✓ Approved</span></p>
-    <p><strong>Subjects:</strong> {{ t.get("subjects") or t.get("specialization") or "Not specified" }}</p>
-    <p><strong>Grades:</strong> {{ t.get("grade_levels") or "All levels" }}</p>
-    <p><strong>Qualification:</strong> {{ t.get("qualification") or "Not specified" }}</p>
-    {% if t.get("experience_years") %}<p><strong>Experience:</strong> {{ t.get("experience_years") }} years</p>{% endif %}
-    {% if t.get("hourly_rate") %}<p><strong>Rate:</strong> {{ t.get("currency") or "ZMW" }} {{ t.get("hourly_rate") }}/hour</p>{% endif %}
-    <p><strong>Classes:</strong> {{ t.get("teaching_mode") or "Online & Live Classes" }}</p>
-    <div class="actions">
-      <a class="btn" href="{{ url_for('book_teacher',provider_id=(t.get('provider_id') or t.get('id') or t.get('user_id'))) }}">📅 Book Tutor</a>
-      <a class="btn secondary" href="{{ url_for('teacher_classes',provider_id=(t.get('provider_id') or t.get('id') or t.get('user_id'))) }}">🎓 Classes</a>
-      <a class="btn secondary" href="{{ url_for('provider_map',provider_id=(t.get('provider_id') or t.get('id') or t.get('user_id')),provider_type='teacher') }}">📍 Location</a>
-    </div>
-  </div>
-{% else %}
-  <div class="card"><h3>No approved teacher profiles found</h3><p>If an administrator has approved a teacher, her profile will appear here automatically. The directory checks both teacher profiles and approved professional-provider records.</p></div>
-{% endfor %}
-</div>
-""", teachers=teachers)
-
-
-@app.route("/teacher/classes/<provider_id>")
-@login_required
-def teacher_classes(provider_id):
-    teachers = _approved_teacher_rows()
-    teacher = next((t for t in teachers if str(t.get("provider_id") or t.get("id") or t.get("user_id")) == str(provider_id)), None)
-    if not teacher:
-        abort(404)
-    scheduled_classes = db_select("teacher_classes", filters={"teacher_id": teacher.get("provider_id") or teacher.get("id") or teacher.get("user_id")}, order="class_date.asc", limit=100)
-    active_rooms = {}
-    for c in scheduled_classes:
-        rid = c.get('id')
-        if rid:
-            rooms = db_select('teacher_live_rooms', filters={'class_id': rid, 'status': 'live'}, order='created_at.desc', limit=1)
-            if rooms: active_rooms[str(rid)] = rooms[0]
-    return render_page("Teacher Classes", r"""
-<div class="hero"><h2>🎓 {{ teacher.get("full_name") or "Teacher / Tutor" }} — Classes</h2><p>Choose from scheduled paid classes, live lessons or flexible online tutoring.</p></div>
-<div class="card"><h3>📅 Scheduled Paid Classes</h3>{% for c in scheduled_classes %}<div class="card"><h3>{{ c.get('title') }}</h3><p>{{ c.get('subject') or '' }} · <span class="badge">{{ c.get('class_type') or 'online' }}</span></p><p>{{ c.get('class_date') or 'Date to be arranged' }} {{ c.get('start_time') or '' }}{% if c.get('end_time') %}–{{ c.get('end_time') }}{% endif %}</p><p><strong>{{ c.get('currency') or 'ZMW' }} {{ c.get('price') or 0 }}</strong>{% if c.get('capacity') %} · {{ c.get('capacity') }} seats{% endif %}</p><p>{{ c.get('description') or '' }}</p><a class="btn" href="{{ url_for('book_teacher_class',class_id=c.get('id')) }}">Book This Class</a>{% if c.get('class_type') == 'live' and active_rooms.get(c.get('id')|string) %} <a class="btn success" href="{{ url_for('teacher_live_room',room_id=active_rooms.get(c.get('id')|string).get('id')) }}">🎥 Join KOJA Live</a>{% endif %}{% if c.get('class_type') == 'live' and c.get('meeting_url') %} <a class="btn secondary" href="{{ c.get('meeting_url') }}" target="_blank" rel="noopener">Join external link</a>{% endif %}</div>{% else %}<p>No scheduled paid classes yet. You can still request a private tutoring session.</p>{% endfor %}</div>
-<div class="grid">
-  <div class="card">
-    <h3>🔴 Live Classes</h3>
-    <p>Interactive teacher-led lessons with scheduled participation, questions and real-time discussion.</p>
-    <ul><li>Scheduled lesson time</li><li>Real-time interaction</li><li>Teacher-led instruction</li><li>Suitable for individual or group lessons</li></ul>
-    <a class="btn" href="{{ url_for('book_teacher',provider_id=provider_id) }}">Book a Live Class</a>
-  </div>
-  <div class="card">
-    <h3>💻 Online Classes</h3>
-    <p>Remote tutoring arranged with the teacher. The booking can specify the preferred online platform or learning arrangement.</p>
-    <ul><li>Learn from anywhere</li><li>Flexible online sessions</li><li>Subject and grade-specific tutoring</li><li>Online location supported</li></ul>
-    <a class="btn" href="{{ url_for('book_teacher',provider_id=provider_id) }}">Book an Online Class</a>
-  </div>
-</div>
 <div class="card">
-  <h3>Teacher profile</h3>
-  <p><strong>Subjects:</strong> {{ teacher.get("subjects") or teacher.get("specialization") or "Not specified" }}</p>
-  <p><strong>Grades:</strong> {{ teacher.get("grade_levels") or "All levels" }}</p>
-  <p><strong>Qualification:</strong> {{ teacher.get("qualification") or "Not specified" }}</p>
-  {% if teacher.get("hourly_rate") %}<p><strong>Rate:</strong> {{ teacher.get("currency") or "ZMW" }} {{ teacher.get("hourly_rate") }}/hour</p>{% endif %}
+<h3>{{ t.get("full_name") or t.get("teacher_name") or "Teacher" }}</h3>
+<p><strong>Subjects:</strong> {{ t.get("subjects") or "Not specified" }}</p>
+<p><strong>Grades:</strong> {{ t.get("grade_levels") or "Not specified" }}</p>
+<p><strong>Qualification:</strong> {{ t.get("qualification") or "Not specified" }}</p>
+{% if t.get("hourly_rate") %}<p><strong>Rate:</strong> {{ t.get("currency") or "ZMW" }} {{ t.get("hourly_rate") }}/hour</p>{% endif %}
+<a class="btn" href="{{ url_for('book_teacher',provider_id=(t.get('provider_id') or t.get('id'))) }}">Book Teacher</a>
+<a class="btn secondary" href="{{ url_for('provider_map',provider_id=(t.get('provider_id') or t.get('id')),provider_type='teacher') }}">View Location</a>
 </div>
-""", teacher=teacher, provider_id=provider_id, scheduled_classes=scheduled_classes, active_rooms=active_rooms)
-
-
-
-
-@app.route("/teacher/class/book/<class_id>", methods=["GET", "POST"])
-@login_required
-def book_teacher_class(class_id):
-    user=current_user() or {}
-    c=first_row("teacher_classes", {"id": class_id})
-    if not c or str(c.get("status") or "published").lower() not in {"published","active"}: abort(404)
-    provider_id=c.get("provider_id") or c.get("teacher_id")
-    if request.method=="POST":
-        notes="Paid class: "+clean(c.get("title"))+"\nPrice: "+str(c.get("currency") or "ZMW")+" "+str(c.get("price") or 0)+"\n"+clean(request.form.get("notes"))
-        payload={"id":str(uuid.uuid4()),"client_id":user.get("id"),"provider_id":provider_id,"appointment_type":"teacher","appointment_date":c.get("class_date"),"start_time":c.get("start_time"),"end_time":c.get("end_time"),"location":c.get("location") or ("Online" if c.get("class_type")!="in_person" else ""),"status":"requested","notes":notes,"created_at":utc_now(),"updated_at":utc_now()}
-        row,error=db_insert("appointments",payload)
-        if error: flash("Class booking failed: "+str(error)[:500],"danger")
-        else: flash("Class seat requested. Complete the payment arrangement with KOJA before attendance.","success")
-        return redirect(url_for("dashboard"))
-    return render_page("Book Class",r"""
-<div class="hero"><h2>🎓 {{ c.get('title') }}</h2><p>{{ c.get('subject') or '' }} · {{ c.get('class_type') or 'online' }}</p></div>
-<div class="card"><p>{{ c.get('description') or 'Teacher-led class.' }}</p><p><strong>Date:</strong> {{ c.get('class_date') or 'To be arranged' }} {{ c.get('start_time') or '' }}{% if c.get('end_time') %}–{{ c.get('end_time') }}{% endif %}</p><p><strong>Price:</strong> {{ c.get('currency') or 'ZMW' }} {{ c.get('price') or 0 }}</p><p><strong>Capacity:</strong> {{ c.get('capacity') or 1 }}</p><form method="post"><label>Notes for teacher</label><textarea name="notes" placeholder="Grade, topic, questions, etc."></textarea><button type="submit">Request My Seat</button></form></div>
-""", c=c)
+{% else %}<div class="card"><p>No teacher profiles have been registered yet.</p></div>{% endfor %}
+</div>
+""",teachers=teachers)
 
 @app.route("/teacher/book/<provider_id>",methods=["GET","POST"])
 @login_required
 def book_teacher(provider_id):
     user=current_user()
-    teacher=next((t for t in _approved_teacher_rows() if str(t.get("provider_id") or t.get("id") or t.get("user_id")) == str(provider_id)), None)
+    teacher=first_row("teacher_profiles",{"provider_id":provider_id}) or first_row("teacher_profiles",{"id":provider_id})
     if not teacher: abort(404)
     if request.method=="POST":
-        class_type=clean(request.form.get("class_type") or "online").lower()
-        if class_type not in ("live", "online", "in_person"):
-            class_type="online"
-        location=clean(request.form.get("location"))
-        if class_type == "online" and not location:
-            location="Online"
         payload={
             "id":str(uuid.uuid4()),"client_id":user["id"],"provider_id":provider_id,
             "appointment_type":"teacher","appointment_date":request.form.get("appointment_date"),
             "start_time":request.form.get("start_time"),"end_time":request.form.get("end_time"),
-            "location":location,"status":"requested","notes":("Class type: " + class_type.replace("_", " ").title() + "\n" + clean(request.form.get("notes"))),
-            "created_at":utc_now(),"updated_at":utc_now()
+            "location":clean(request.form.get("location")),"status":"requested",
+            "notes":clean(request.form.get("notes")),"created_at":utc_now(),"updated_at":utc_now()
         }
         row,error=db_insert("appointments",payload)
         if error: flash("Teacher booking failed: "+str(error)[:500],"danger")
-        else: flash(("Live class" if class_type=="live" else "Online class" if class_type=="online" else "Teacher booking")+" request submitted.","success")
+        else: flash("Teacher booking request submitted.","success")
         return redirect(url_for("dashboard"))
     return render_page("Book Teacher",r"""
-<div class="card"><h2>Book {{ teacher.get("full_name") or "Teacher / Tutor" }}</h2>
-<p><strong>Subjects:</strong> {{ teacher.get("subjects") or teacher.get("specialization") or "Not specified" }}</p>
+<div class="card"><h2>Book {{ teacher.get("full_name") or teacher.get("teacher_name") or "Teacher" }}</h2>
+<p>{{ teacher.get("subjects") or "" }}</p>
 <form method="post">
-<label>Class Type</label><select name="class_type" required><option value="live">🔴 Live Class</option><option value="online">💻 Online Class</option><option value="in_person">🏫 In-Person Tutoring</option></select>
 <label>Date</label><input type="date" name="appointment_date" required>
 <label>Start Time</label><input type="time" name="start_time" required>
 <label>End Time</label><input type="time" name="end_time">
-<label>Location / Online Platform</label><input name="location" value="Online" placeholder="Online, Zoom, Google Meet, home or school">
-<label>Lesson details</label><textarea name="notes" placeholder="Subject, grade, topic, number of learners and any special requirements"></textarea>
-<button class="btn" type="submit">Request Class</button>
+<label>Location / Online</label><input name="location">
+<label>Notes</label><textarea name="notes"></textarea>
+<button type="submit">Book Teacher</button>
 </form></div>
 """,teacher=teacher)
-
-
-# ============================================================
-# TEACHER PROFIT CENTRE — CLASSES, PACKAGES, AVAILABILITY & EARNINGS
-# ============================================================
-TEACHER_PROFIT_SQL = """
-create table if not exists public.teacher_classes (
- id uuid primary key default gen_random_uuid(), teacher_id uuid not null, provider_id uuid,
- title text not null, subject text, description text, class_type text not null default 'online',
- class_date date, start_time time, end_time time, capacity integer default 1,
- price numeric default 0, currency text default 'ZMW', meeting_url text, location text,
- status text default 'published', created_at timestamptz default now(), updated_at timestamptz default now()
-);
-create index if not exists teacher_classes_teacher_idx on public.teacher_classes(teacher_id, class_date, start_time);
-create index if not exists teacher_classes_status_idx on public.teacher_classes(status, class_date, start_time);
-create table if not exists public.teacher_packages (
- id uuid primary key default gen_random_uuid(), teacher_id uuid not null, provider_id uuid,
- name text not null, subject text, lessons integer default 4, validity_days integer default 30,
- price numeric default 0, currency text default 'ZMW', description text, status text default 'published',
- created_at timestamptz default now(), updated_at timestamptz default now()
-);
-create index if not exists teacher_packages_teacher_idx on public.teacher_packages(teacher_id, status);
-create table if not exists public.teacher_availability (
- id uuid primary key default gen_random_uuid(), teacher_id uuid not null, day_of_week integer not null,
- start_time time not null, end_time time not null, mode text default 'online', is_active boolean default true,
- created_at timestamptz default now()
-);
-create index if not exists teacher_availability_teacher_idx on public.teacher_availability(teacher_id, day_of_week);
-
-create table if not exists public.teacher_live_rooms (
- id uuid primary key default gen_random_uuid(),
- class_id uuid, teacher_id uuid not null, provider_id uuid, room_code text unique not null,
- title text not null, status text default 'live', created_at timestamptz default now(), ended_at timestamptz
-);
-create index if not exists teacher_live_rooms_teacher_idx on public.teacher_live_rooms(teacher_id, created_at desc);
-create index if not exists teacher_live_rooms_class_idx on public.teacher_live_rooms(class_id, created_at desc);
-
-create table if not exists public.teacher_live_presence (
- room_id uuid not null references public.teacher_live_rooms(id) on delete cascade,
- peer_id text not null, user_id uuid not null, display_name text, is_teacher boolean default false,
- last_seen timestamptz default now(), primary key(room_id, peer_id)
-);
-create index if not exists teacher_live_presence_room_idx on public.teacher_live_presence(room_id, last_seen desc);
-
-create table if not exists public.teacher_live_signals (
- id uuid primary key default gen_random_uuid(), room_id uuid not null references public.teacher_live_rooms(id) on delete cascade,
- sender_peer_id text not null, recipient_peer_id text, signal_type text not null, payload jsonb not null, created_at timestamptz default now()
-);
-create index if not exists teacher_live_signals_room_idx on public.teacher_live_signals(room_id, created_at asc);
-
-create table if not exists public.teacher_live_messages (
- id uuid primary key default gen_random_uuid(), room_id uuid not null references public.teacher_live_rooms(id) on delete cascade,
- sender_peer_id text not null, sender_name text, body text not null, created_at timestamptz default now()
-);
-create index if not exists teacher_live_messages_room_idx on public.teacher_live_messages(room_id, created_at asc);
-"""
-
-# ============================================================
-# KOJA LIVE CLASSROOM — WebRTC, screen sharing, whiteboard, chat
-# ============================================================
-
-def _live_room(room_id):
-    return first_row("teacher_live_rooms", {"id": room_id})
-
-def _live_room_teacher_allowed(room, user_id):
-    if not room or not user_id:
-        return False
-    return str(room.get("teacher_id") or "") == str(user_id) or str(room.get("provider_id") or "") == str(user_id)
-
-def _live_peer_is_teacher(room, user_id):
-    return _live_room_teacher_allowed(room, user_id)
-
-@app.route("/teacher/live/create/<class_id>", methods=["POST"])
-@login_required
-def teacher_live_create(class_id):
-    user=current_user() or {}
-    c=first_row("teacher_classes", {"id": class_id})
-    if not c: abort(404)
-    provider=_teacher_provider_for_user(user.get("id")); teacher_id=_teacher_id_for_user(user.get("id"))
-    if not provider or str(c.get("teacher_id") or c.get("provider_id")) not in {str(teacher_id), str(provider.get("id"))}: abort(403)
-    try: capacity=max(2,min(int(c.get("capacity") or os.getenv("KOJA_LIVE_MAX_PARTICIPANTS","500")),5000))
-    except Exception: capacity=500
-    room_id=str(uuid.uuid4()); room_code="KOJA-"+secrets.token_urlsafe(6).upper().replace("-",""); room_name="koja-class-"+room_id
-    payload={"id":room_id,"class_id":class_id,"teacher_id":teacher_id,"provider_id":provider.get("id"),"room_code":room_code,"title":clean(c.get("title") or "KOJA Live Lesson"),"status":"live","created_at":utc_now(),"started_at":utc_now(),"livekit_room_name":room_name,"classroom_mode":"large_sfu","max_participants":capacity}
-    row,error=db_insert("teacher_live_rooms",payload)
-    if error:
-        flash("Could not create the live classroom. Run the Live Classroom SQL migration first.","danger"); return redirect(url_for("teacher_dashboard"))
-    if _livekit_configured():
-        ok,_,api_error=_livekit_room_api("CreateRoom", {"name":room_name,"max_participants":capacity,"empty_timeout":300,"departure_timeout":20})
-        if not ok: logger.warning("LiveKit CreateRoom failed for %s: %s",room_name,api_error)
-    flash("KOJA Live Classroom created. The teacher moderation panel is ready.","success")
-    return redirect(url_for("teacher_live_room",room_id=room_id))
-
-def _livekit_configured():
-    return bool(os.getenv("LIVEKIT_URL","").strip() and os.getenv("LIVEKIT_API_KEY","").strip() and os.getenv("LIVEKIT_API_SECRET","").strip())
-
-def _livekit_http_url():
-    u=os.getenv("LIVEKIT_URL","").strip().rstrip("/")
-    if u.startswith("wss://"): return "https://"+u[6:]
-    if u.startswith("ws://"): return "http://"+u[5:]
-    return u
-
-def _livekit_admin_token(room_name, grant_extra=None):
-    import jwt
-    now=int(datetime.now(timezone.utc).timestamp()); grants={"room":room_name,"roomAdmin":True,"roomList":True,"roomCreate":True}
-    if grant_extra: grants.update(grant_extra)
-    return jwt.encode({"iss":os.getenv("LIVEKIT_API_KEY").strip(),"sub":"koja-server","nbf":now,"exp":now+300,"video":grants},os.getenv("LIVEKIT_API_SECRET").strip(),algorithm="HS256")
-
-def _livekit_room_api(method, body):
-    if not _livekit_configured(): return False,None,"LiveKit is not configured"
-    try:
-        room_name=body.get("room") or body.get("name") or ""; token=_livekit_admin_token(room_name)
-        r=requests.post(_livekit_http_url()+"/twirp/livekit.RoomService/"+method,headers={"Authorization":"Bearer "+token,"Content-Type":"application/json"},json=body,timeout=12)
-        data=r.json() if r.content else {}
-        if not r.ok: return False,data,data.get("msg") or data.get("message") or r.text[:500]
-        return True,data,None
-    except Exception as e: return False,None,str(e)
-
-def _livekit_room_name(room): return room.get("livekit_room_name") or ("koja-class-"+str(room.get("id")))
-
-def _live_student_allowed(room, user_id):
-    if not room or not user_id: return False
-    if _live_peer_is_teacher(room,user_id): return True
-    class_id=room.get("class_id")
-    if not class_id: return False
-    c=first_row("teacher_classes", {"id":class_id}) or {}; provider_id=c.get("provider_id") or c.get("teacher_id") or room.get("provider_id")
-    rows=db_select("appointments",filters={"client_id":user_id,"provider_id":provider_id,"appointment_type":"teacher"},order="created_at.desc",limit=50)
-    allowed={"requested","approved","confirmed","paid","completed","active","accepted"}
-    return any(str(x.get("status") or "").lower() in allowed for x in rows)
-
-@app.route("/teacher/live/<room_id>")
-@login_required
-def teacher_live_room(room_id):
-    room=_live_room(room_id)
-    if not room or str(room.get("status") or "live").lower()=="ended": abort(404)
-    user=current_user() or {}; uid=str(user.get("id") or ""); teacher=_live_peer_is_teacher(room,uid)
-    if not teacher and not _live_student_allowed(room,uid):
-        return render_page("Class Access", '<div class="hero"><h2>🔒 Class access required</h2><p>This live classroom is restricted to the teacher and students with a KOJA class booking.</p><a class="btn" href="{{ url_for(\'teachers\') }}">Find a Teacher</a></div>')
-    return render_page("KOJA Live Classroom", r"""
-<style>.lk-toolbar{position:fixed;right:14px;bottom:14px;z-index:1000}.lk-menu-wrap{position:relative}.lk-menu-toggle{width:48px!important;height:48px!important;min-width:48px!important;padding:0!important;margin:0!important;border-radius:50%!important;font-size:24px!important;display:flex!important;align-items:center;justify-content:center;box-shadow:0 5px 18px rgba(0,0,0,.25)}.lk-menu{position:absolute;right:0;bottom:58px;display:none;flex-direction:column;gap:7px;padding:9px;background:var(--surface);border:1px solid var(--border);border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.22);min-width:180px}.lk-menu.open{display:flex}.lk-menu .lk-icon-btn{width:100%!important;height:38px!important;min-width:38px!important;padding:0 10px!important;margin:0!important;display:flex!important;align-items:center;justify-content:flex-start;gap:9px;border-radius:9px!important;font-size:16px!important}.lk-menu .lk-label{position:static!important;transform:none!important;background:transparent!important;color:inherit!important;padding:0!important;font-size:13px!important;opacity:1!important;pointer-events:auto!important}.lk-grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(280px,1fr);gap:14px}.lk-video-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px}.lk-person{border:1px solid var(--border);border-radius:12px;padding:10px;margin:7px 0}.lk-person .actions{margin-top:7px;display:flex;flex-wrap:wrap;gap:5px}.lk-person .actions .lk-icon-btn{width:38px!important;height:38px!important;min-width:38px!important;font-size:17px!important}.lk-panel{max-height:430px;overflow:auto}.lk-queue{border-left:4px solid currentColor}@media(max-width:850px){.lk-grid{grid-template-columns:1fr}.lk-video-grid{grid-template-columns:1fr}.lk-video-grid video{max-height:280px!important}}@media(max-width:420px){.lk-toolbar{right:10px;bottom:10px}.lk-menu-toggle{width:44px!important;height:44px!important;min-width:44px!important;font-size:21px!important}.lk-menu{bottom:52px;min-width:165px}}</style>
-<div class="hero"><h2>🎓 KOJA Live Classroom — Large Class</h2><p><strong>{{ room.get('title') }}</strong> · Room <span class="badge">{{ room.get('room_code') }}</span></p><p class="small">Large-class SFU classroom with adaptive video, teacher controls, moderated speaking, chat/Q&A and attendance.</p></div>
-<div id="lkClass" data-room="{{ room.get('id') }}" data-name="{{ user.get('name') or user.get('full_name') or user.get('email') or 'Participant' }}" data-teacher="{{ '1' if teacher else '0' }}">
-<div class="lk-toolbar"><div class="lk-menu-wrap"><button class="btn lk-menu-toggle" id="lkMenuToggle" type="button" aria-label="Classroom controls" aria-expanded="false" title="Classroom controls">⋮</button><div class="lk-menu" id="lkMenu" aria-hidden="true"><button class="btn lk-icon-btn lk-join" id="join" title="Join classroom" aria-label="Join classroom">🎥<span class="lk-label">Join classroom</span></button><button class="btn secondary lk-icon-btn" id="mic" disabled title="Microphone" aria-label="Microphone">🎙️<span class="lk-label">Microphone</span></button><button class="btn secondary lk-icon-btn" id="cam" disabled title="Camera" aria-label="Camera">📷<span class="lk-label">Camera</span></button><button class="btn secondary lk-icon-btn" id="screen" disabled title="Share screen" aria-label="Share screen">🖥️<span class="lk-label">Share screen</span></button>{% if not teacher %}<button class="btn secondary lk-icon-btn" id="hand" disabled title="Raise hand" aria-label="Raise hand">✋<span class="lk-label">Raise hand</span></button>{% endif %}{% if teacher %}<button class="btn secondary lk-icon-btn" id="announce" disabled title="Announcement" aria-label="Announcement">📢<span class="lk-label">Announcement</span></button><button class="btn danger lk-icon-btn" id="end" disabled title="End lesson" aria-label="End lesson">⏹<span class="lk-label">End lesson</span></button>{% endif %}</div></div></div>
-<div class="card lk-status" style="margin-top:14px"><span id="status">Ready to join.</span><span id="count" class="badge">0 participants</span>{% if teacher %}<span id="handCount" class="badge">0 raised hands</span><span id="attendance" class="badge">Attendance: —</span>{% endif %}</div>
-<div class="lk-grid" style="margin-top:14px"><div><div class="card"><h3>🎥 Classroom</h3><div class="lk-video-grid" id="videos"></div></div><div class="card" style="margin-top:14px"><h3>💬 Class Chat & Q&A</h3><div id="chat" class="lk-panel" style="height:260px;border:1px solid var(--border);padding:8px"></div><div class="actions"><input id="msg" placeholder="Ask a question or message the class" disabled><button class="btn" id="send" disabled>Send</button></div></div></div>
-<div><div class="card"><h3>👥 Participants</h3><div id="people" class="lk-panel">Not joined yet.</div></div>{% if teacher %}<div class="card" style="margin-top:14px"><h3>✋ Raise-hand queue</h3><div id="hands" class="lk-panel">No raised hands.</div></div><div class="card" style="margin-top:14px"><h3>📊 Attendance</h3><div id="attList" class="lk-panel">Join the room to load attendance.</div></div>{% endif %}</div></div>
-<div class="card" style="margin-top:14px"><h3>🧑‍🏫 Teacher moderation</h3><p class="small">Students are viewers by default. The teacher can promote a student to speaker, demote them, mute published tracks, remove them, and lower raised hands. This keeps a large class efficient while allowing controlled participation.</p></div></div>
-<script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
-<script>
-(()=>{const menuToggle=document.getElementById('lkMenuToggle'),lkMenu=document.getElementById('lkMenu');menuToggle.onclick=()=>{const open=lkMenu.classList.toggle('open');menuToggle.setAttribute('aria-expanded',open?'true':'false');lkMenu.setAttribute('aria-hidden',open?'false':'true');};document.addEventListener('click',e=>{if(!e.target.closest('.lk-menu-wrap')){lkMenu.classList.remove('open');menuToggle.setAttribute('aria-expanded','false');lkMenu.setAttribute('aria-hidden','true');}});const root=document.getElementById('lkClass'),roomId=root.dataset.room,name=root.dataset.name,isTeacher=root.dataset.teacher==='1';const status=document.getElementById('status'),count=document.getElementById('count'),videos=document.getElementById('videos'),people=document.getElementById('people'),joinBtn=document.getElementById('join'),micBtn=document.getElementById('mic'),camBtn=document.getElementById('cam'),screenBtn=document.getElementById('screen'),handBtn=document.getElementById('hand'),endBtn=document.getElementById('end'),announceBtn=document.getElementById('announce'),chat=document.getElementById('chat'),msg=document.getElementById('msg'),send=document.getElementById('send'),hands=document.getElementById('hands'),handCount=document.getElementById('handCount'),attList=document.getElementById('attList'),attendance=document.getElementById('attendance');let room=null,screenOn=false,raised=new Map(),joinedAttendance=false;
-function esc(x){return String(x??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}function addChat(t){let d=document.createElement('div');d.style.padding='4px 0';d.textContent=t;chat.appendChild(d);chat.scrollTop=chat.scrollHeight;}function tile(id,label,el){let key=id.replace(/[^a-zA-Z0-9_-]/g,'_'),box=document.getElementById('tile_'+key);if(!box){box=document.createElement('div');box.className='card';box.id='tile_'+key;box.innerHTML='<div style="font-weight:700;margin-bottom:6px"></div><div class="media"></div>';box.firstElementChild.textContent=label;videos.appendChild(box);}if(el&&!box.querySelector('.media').contains(el))box.querySelector('.media').appendChild(el);}function removeTile(id){let x=document.getElementById('tile_'+id.replace(/[^a-zA-Z0-9_-]/g,'_'));if(x)x.remove();}
-async function api(u,o={}){let r=await fetch(u,{headers:{'Content-Type':'application/json',...(o.headers||{})},...o});let d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.message||'Request failed');return d;}
-function participantActions(p){if(!isTeacher||p.identity===room.localParticipant.identity)return '';let safe=encodeURIComponent(p.identity),speaker=p.permissions?.canPublish;return '<div class="actions"><button class="btn secondary lk-icon-btn" title="'+(speaker?'Make viewer':'Approve to speak')+'" aria-label="'+(speaker?'Make viewer':'Approve to speak')+'" data-act="'+(speaker?'demote':'promote')+'" data-id="'+safe+'">'+(speaker?'🔇':'🎤')+'<span class="lk-label">'+(speaker?'Viewer':'Approve')+'</span></button><button class="btn secondary lk-icon-btn" title="Mute audio" aria-label="Mute audio" data-act="mute" data-id="'+safe+'">🔕<span class="lk-label">Mute</span></button><button class="btn danger lk-icon-btn" title="Remove participant" aria-label="Remove participant" data-act="remove" data-id="'+safe+'">🚫<span class="lk-label">Remove</span></button></div>';}
-function refresh(){if(!room)return;let ps=[room.localParticipant,...Array.from(room.remoteParticipants.values())];count.textContent=ps.length+' participant'+(ps.length===1?'':'s');people.innerHTML=ps.map(p=>{let pub=Array.from(p.getTrackPublications?p.getTrackPublications():[]),can=p.permissions?.canPublish;return '<div class="lk-person"><strong>'+(p.isSpeaking?'🗣️ ':'🟢 ')+esc(p.name||p.identity)+'</strong>'+(p===room.localParticipant?' — You':'')+'<div class="small">'+(can?'🎤 Speaker':'👀 Viewer')+(pub.length?' · '+pub.length+' track(s)':'')+'</div>'+participantActions(p)+'</div>';}).join('');if(handCount)handCount.textContent=raised.size+' raised hand'+(raised.size===1?'':'s');renderHands();}
-function renderHands(){if(!hands)return;let arr=[...raised.entries()];hands.innerHTML=arr.length?arr.map(([id,n])=>'<div class="lk-person lk-queue"><strong>✋ '+esc(n)+'</strong><div class="actions"><button class="btn lk-icon-btn" title="Approve to speak" aria-label="Approve to speak" data-hand="promote" data-id="'+encodeURIComponent(id)+'">🎤<span class="lk-label">Approve</span></button><button class="btn secondary lk-icon-btn" title="Lower hand" aria-label="Lower hand" data-hand="lower" data-id="'+encodeURIComponent(id)+'">✋<span class="lk-label">Lower</span></button></div></div>').join(''):'No raised hands.';}
-function attach(track,publication,participant){let el=track.attach();el.style.width='100%';el.style.maxHeight='360px';el.style.borderRadius='12px';el.autoplay=true;el.playsInline=true;tile(participant.identity,participant.name||participant.identity,el);}function detach(track,participant){track.detach().forEach(x=>x.remove());if(!Array.from(participant.getTrackPublications()).some(p=>p.track&&p.track.kind==='video'))removeTile(participant.identity);}
-async function moderation(action,identity){let d=await api('/api/teacher/live/'+roomId+'/moderate',{method:'POST',body:JSON.stringify({action,identity})});addChat('🧑‍🏫 '+d.message);if(action==='lower_hand')raised.delete(identity);refresh();}
-async function attendanceLoad(){if(!isTeacher)return;try{let d=await api('/api/teacher/live/'+roomId+'/attendance');attendance.textContent='Attendance: '+d.present+' present / '+d.total+' records';attList.innerHTML=d.records.map(x=>'<div class="lk-person"><strong>'+esc(x.display_name||x.identity)+'</strong><div class="small">Joined: '+esc(x.joined_at||'—')+(x.left_at?' · Left: '+esc(x.left_at):' · Present')+'</div></div>').join('')||'No attendance yet.';}catch(e){}}
-async function join(){if(room)return;try{status.textContent='Connecting…';let cred=await api('/api/teacher/live/'+roomId+'/token',{method:'POST'});room=new LivekitClient.Room({adaptiveStream:true,dynacast:true,videoCaptureDefaults:{resolution:LivekitClient.VideoPresets.h720.resolution}});room.on(LivekitClient.RoomEvent.TrackSubscribed,attach);room.on(LivekitClient.RoomEvent.TrackUnsubscribed,detach);room.on(LivekitClient.RoomEvent.ParticipantConnected,refresh);room.on(LivekitClient.RoomEvent.ParticipantDisconnected,p=>{removeTile(p.identity);raised.delete(p.identity);refresh();});room.on(LivekitClient.RoomEvent.ActiveSpeakersChanged,refresh);room.on(LivekitClient.RoomEvent.Reconnecting,()=>status.textContent='Connection interrupted — reconnecting…');room.on(LivekitClient.RoomEvent.Reconnected,()=>status.textContent='Reconnected — live');room.on(LivekitClient.RoomEvent.ParticipantPermissionsChanged,refresh);room.on(LivekitClient.RoomEvent.ParticipantMetadataChanged,refresh);room.on(LivekitClient.RoomEvent.DataReceived,(payload,p)=>{try{let d=JSON.parse(new TextDecoder().decode(payload)),who=p?.name||p?.identity||'Participant';if(d.type==='chat')addChat(who+': '+d.text);if(d.type==='announcement')addChat('📢 TEACHER: '+d.text);if(d.type==='hand'){raised.set(p.identity,who);addChat('✋ '+who+' raised a hand.');refresh();}if(d.type==='lower_hand'&&d.identity===room.localParticipant.identity){raised.delete(d.identity);addChat('✋ Your hand was lowered by the teacher.');refresh();}}catch(e){}});room.on(LivekitClient.RoomEvent.Disconnected,()=>{status.textContent='Disconnected.';room=null;});await room.connect(cred.server_url,cred.participant_token);status.textContent=isTeacher?'Connected — teacher host mode':'Connected — viewer mode';joinBtn.disabled=true;[micBtn,camBtn,screenBtn,msg,send].forEach(x=>x.disabled=false);if(handBtn)handBtn.disabled=false;if(endBtn)endBtn.disabled=!isTeacher;if(announceBtn)announceBtn.disabled=!isTeacher;refresh();if(isTeacher)await room.localParticipant.enableCameraAndMicrophone();await api('/api/teacher/live/'+roomId+'/attendance',{method:'POST'});joinedAttendance=true;if(isTeacher)attendanceLoad();}catch(e){status.textContent='Could not join: '+e.message;room=null;}}
-joinBtn.onclick=join;micBtn.onclick=async()=>{if(!room)return;await room.localParticipant.setMicrophoneEnabled(!room.localParticipant.isMicrophoneEnabled);micBtn.textContent=room.localParticipant.isMicrophoneEnabled?'🔇 Mute':'🎙️ Mic';};camBtn.onclick=async()=>{if(!room)return;await room.localParticipant.setCameraEnabled(!room.localParticipant.isCameraEnabled);camBtn.textContent=room.localParticipant.isCameraEnabled?'📵 Camera off':'📷 Camera';};screenBtn.onclick=async()=>{try{await room.localParticipant.setScreenShareEnabled(!screenOn,{audio:true});screenOn=!screenOn;screenBtn.textContent=screenOn?'⛔ Stop sharing':'🖥️ Share screen';}catch(e){status.textContent='Screen sharing unavailable: '+e.message;}};if(handBtn)handBtn.onclick=async()=>{raised.set(room.localParticipant.identity,name);await room.localParticipant.publishData(new TextEncoder().encode(JSON.stringify({type:'hand'})),{reliable:true});addChat('✋ You raised your hand.');refresh();};send.onclick=async()=>{let text=msg.value.trim();if(!text||!room)return;msg.value='';await room.localParticipant.publishData(new TextEncoder().encode(JSON.stringify({type:'chat',text})),{reliable:true});addChat('You: '+text);};msg.addEventListener('keydown',e=>{if(e.key==='Enter')send.click();});
-people.addEventListener('click',async e=>{let b=e.target.closest('button[data-act]');if(!b)return;try{await moderation(b.dataset.act,decodeURIComponent(b.dataset.id));}catch(x){alert(x.message);}});if(hands)hands.addEventListener('click',async e=>{let b=e.target.closest('button[data-hand]');if(!b)return;try{let id=decodeURIComponent(b.dataset.id);if(b.dataset.hand==='promote')await moderation('promote',id);else await moderation('lower_hand',id);}catch(x){alert(x.message);}});
-if(announceBtn)announceBtn.onclick=async()=>{let text=prompt('Announcement for the class:');if(!text||!room)return;await room.localParticipant.publishData(new TextEncoder().encode(JSON.stringify({type:'announcement',text:text.slice(0,500)})),{reliable:true});addChat('📢 TEACHER: '+text);};if(endBtn)endBtn.onclick=async()=>{if(confirm('End this lesson for everyone?')){await api('/api/teacher/live/'+roomId+'/end',{method:'POST'});if(room)await room.disconnect();location.reload();}};setInterval(()=>{if(isTeacher&&room)attendanceLoad();},15000);window.addEventListener('beforeunload',()=>{if(joinedAttendance)navigator.sendBeacon('/api/teacher/live/'+roomId+'/attendance/leave',new Blob(['{}'],{type:'application/json'}));});})();
-</script>
-""", room=room, user=user, teacher=teacher)
-
-@app.route("/api/teacher/live/<room_id>/token", methods=["POST"])
-@login_required
-def livekit_token(room_id):
-    room=_live_room(room_id)
-    if not room or str(room.get("status") or "live").lower()=="ended": return jsonify({"ok":False,"message":"Classroom is not active."}),404
-    user=current_user() or {}; uid=str(user.get("id") or "")
-    if not uid:return jsonify({"ok":False,"message":"Authentication required."}),401
-    teacher=_live_peer_is_teacher(room,uid)
-    if not teacher and not _live_student_allowed(room,uid): return jsonify({"ok":False,"message":"You are not enrolled/booked for this class."}),403
-    api_key=os.getenv("LIVEKIT_API_KEY","").strip(); api_secret=os.getenv("LIVEKIT_API_SECRET","").strip(); server_url=os.getenv("LIVEKIT_URL","").strip()
-    if not api_key or not api_secret or not server_url:return jsonify({"ok":False,"message":"LiveKit is not configured. Add LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET in Render."}),503
-    try: import jwt
-    except Exception:return jsonify({"ok":False,"message":"PyJWT is missing. Add PyJWT to requirements.txt."}),500
-    room_name=_livekit_room_name(room)
-    if not teacher:
-        ok,data,err=_livekit_room_api("ListParticipants",{"room":room_name})
-        try: cap=int(room.get("max_participants") or os.getenv("KOJA_LIVE_MAX_PARTICIPANTS","500"))
-        except Exception: cap=500
-        if ok and len(data.get("participants") or []) >= cap:return jsonify({"ok":False,"message":"This classroom is currently full."}),409
-    identity="koja-"+uid; now=int(datetime.now(timezone.utc).timestamp()); grants={"room":room_name,"roomJoin":True,"canSubscribe":True,"canPublish":bool(teacher),"canPublishData":True}
-    if teacher: grants.update({"canPublishSources":["camera","microphone","screen_share","screen_share_audio"],"roomAdmin":True})
-    claims={"iss":api_key,"sub":identity,"name":clean(user.get("name") or user.get("full_name") or user.get("email") or "Participant",200),"nbf":now,"exp":now+3600,"video":grants}
-    return jsonify({"ok":True,"server_url":server_url,"participant_token":jwt.encode(claims,api_secret,algorithm="HS256"),"mode":"teacher" if teacher else "student"})
-
-@app.route("/api/teacher/live/<room_id>/moderate", methods=["POST"])
-@login_required
-def livekit_moderate(room_id):
-    room=_live_room(room_id); user=current_user() or {}
-    if not room or not _live_peer_is_teacher(room,user.get("id")): return jsonify({"ok":False,"message":"Teacher permission required."}),403
-    if not _livekit_configured(): return jsonify({"ok":False,"message":"LiveKit is not configured."}),503
-    data=request.get_json(silent=True) or {}; action=str(data.get("action") or "").lower(); identity=str(data.get("identity") or "").strip()
-    if not identity or identity=="koja-"+str(user.get("id")): return jsonify({"ok":False,"message":"Invalid participant."}),400
-    rn=_livekit_room_name(room)
-    if action in {"promote","demote"}:
-        permission={"can_subscribe":True,"can_publish":action=="promote","can_publish_data":True,"can_publish_sources":["camera","microphone","screen_share","screen_share_audio"] if action=="promote" else []}
-        ok,_,err=_livekit_room_api("UpdateParticipant",{"room":rn,"identity":identity,"permission":permission})
-        if not ok:return jsonify({"ok":False,"message":"Moderation failed: "+str(err)}),502
-        return jsonify({"ok":True,"message":"Participant promoted to speaker." if action=="promote" else "Participant returned to viewer mode."})
-    if action=="remove":
-        ok,_,err=_livekit_room_api("RemoveParticipant",{"room":rn,"identity":identity})
-        if not ok:return jsonify({"ok":False,"message":"Remove failed: "+str(err)}),502
-        return jsonify({"ok":True,"message":"Participant removed from the classroom."})
-    if action=="mute":
-        ok,info,err=_livekit_room_api("GetParticipant",{"room":rn,"identity":identity})
-        if not ok:return jsonify({"ok":False,"message":"Could not find participant: "+str(err)}),502
-        muted=0
-        for t in (info.get("tracks") or []):
-            typ=str(t.get("type") or "").upper(); src=str(t.get("source") or "").upper()
-            if typ in {"AUDIO","0"} or src in {"MICROPHONE","2"}:
-                ok,_,_= _livekit_room_api("MutePublishedTrack",{"room":rn,"identity":identity,"track_sid":t.get("sid"),"muted":True})
-                if ok: muted+=1
-        return jsonify({"ok":True,"message":("Audio muted." if muted else "No published microphone track found.")})
-    if action=="lower_hand":
-        import base64
-        try:
-            token=_livekit_admin_token(rn); payload=json.dumps({"type":"lower_hand","identity":identity}).encode(); body={"room":rn,"data":base64.b64encode(payload).decode(),"kind":"RELIABLE","destination_identities":[identity]}
-            r=requests.post(_livekit_http_url()+"/twirp/livekit.RoomService/SendData",headers={"Authorization":"Bearer "+token,"Content-Type":"application/json"},json=body,timeout=12)
-            if not r.ok:return jsonify({"ok":False,"message":"Could not lower hand."}),502
-        except Exception as e:return jsonify({"ok":False,"message":str(e)}),502
-        return jsonify({"ok":True,"message":"Hand lowered."})
-    return jsonify({"ok":False,"message":"Unknown moderation action."}),400
-
-@app.route("/api/teacher/live/<room_id>/attendance", methods=["GET","POST"])
-@login_required
-def live_attendance(room_id):
-    room=_live_room(room_id); user=current_user() or {}; uid=str(user.get("id") or "")
-    if not room or (not _live_peer_is_teacher(room,uid) and not _live_student_allowed(room,uid)): return jsonify({"ok":False,"message":"Access denied."}),403
-    if request.method=="POST":
-        identity="koja-"+uid; rows=db_select("teacher_live_attendance",filters={"room_id":room_id,"user_id":uid,"left_at":None},order="joined_at.desc",limit=1)
-        if not rows: db_insert("teacher_live_attendance",{"id":str(uuid.uuid4()),"room_id":room_id,"user_id":uid,"identity":identity,"display_name":clean(user.get("name") or user.get("full_name") or user.get("email") or "Participant"),"joined_at":utc_now()})
-        return jsonify({"ok":True})
-    if not _live_peer_is_teacher(room,uid): return jsonify({"ok":True,"present":1,"total":0,"records":[]})
-    rows=db_select("teacher_live_attendance",filters={"room_id":room_id},order="joined_at.desc",limit=1000); latest={}
-    for x in rows: latest.setdefault(str(x.get("user_id")),x)
-    records=list(latest.values()); present=sum(1 for x in records if not x.get("left_at"))
-    return jsonify({"ok":True,"present":present,"total":len(records),"records":records})
-
-@app.route("/api/teacher/live/<room_id>/attendance/leave", methods=["POST"])
-@login_required
-def live_attendance_leave(room_id):
-    room=_live_room(room_id); user=current_user() or {}; uid=str(user.get("id") or "")
-    if not room:return jsonify({"ok":False}),404
-    rows=db_select("teacher_live_attendance",filters={"room_id":room_id,"user_id":uid,"left_at":None},order="joined_at.desc",limit=1)
-    if rows: db_update("teacher_live_attendance",{"id":rows[0].get("id")},{"left_at":utc_now()})
-    return jsonify({"ok":True})
-
-@app.route("/api/teacher/live/<room_id>/end", methods=["POST"])
-@login_required
-def teacher_live_end(room_id):
-    room=_live_room(room_id); user=current_user() or {}
-    if not room or not _live_peer_is_teacher(room,user.get("id")): return jsonify({"ok":False,"message":"Teacher permission required."}),403
-    rn=_livekit_room_name(room)
-    if _livekit_configured():
-        ok,_,err=_livekit_room_api("DeleteRoom",{"room":rn})
-        if not ok: logger.warning("LiveKit DeleteRoom failed for %s: %s",rn,err)
-    row,error=db_update("teacher_live_rooms",{"id":room_id},{"status":"ended","ended_at":utc_now()})
-    if error:return jsonify({"ok":False,"message":"Could not end classroom: "+str(error)[:500]}),500
-    return jsonify({"ok":True,"message":"Lesson ended for everyone."})
-
-
-def _teacher_provider_for_user(user_id):
-    if not user_id:
-        return None
-    for table in ("service_providers", "teacher_profiles"):
-        rows = db_select(table, filters={"user_id": user_id}, order="created_at.desc", limit=10)
-        for row in rows:
-            status = str(row.get("approval_status") or row.get("verification_status") or row.get("status") or "").lower()
-            if status in {"approved", "active", "verified"}:
-                return row
-    return None
-
-def _teacher_id_for_user(user_id):
-    p = _teacher_provider_for_user(user_id)
-    return (p or {}).get("id") or user_id
-
-def _money(v):
-    try:
-        return float(v or 0)
-    except Exception:
-        return 0.0
-
-def _teacher_dashboard_data(user_id):
-    provider = _teacher_provider_for_user(user_id) or {}
-    teacher_id = _teacher_id_for_user(user_id)
-    classes = db_select("teacher_classes", filters={"teacher_id": teacher_id}, order="class_date.desc", limit=100)
-    packages = db_select("teacher_packages", filters={"teacher_id": teacher_id}, order="created_at.desc", limit=100)
-    appointments = db_select("appointments", filters={"provider_id": provider.get("id") or teacher_id}, order="appointment_date.desc", limit=300)
-    completed = [a for a in appointments if str(a.get("status") or "").lower() in {"completed", "paid", "delivered"}]
-    gross = 0.0
-    for a in completed:
-        price = a.get("price") or a.get("amount")
-        if price is None:
-            price = provider.get("hourly_rate")
-        gross += _money(price)
-    commission_rate = _money(os.getenv("KOJA_TEACHER_COMMISSION", "10"))
-    commission = gross * commission_rate / 100.0
-    return provider, classes, packages, appointments, gross, commission, max(0.0, gross - commission), commission_rate
-
-@app.route("/teacher/dashboard", methods=["GET"])
-@login_required
-def teacher_dashboard():
-    user = current_user() or {}
-    provider, classes, packages, appointments, gross, commission, net, commission_rate = _teacher_dashboard_data(user.get("id"))
-    if not provider:
-        return render_page("Teacher Dashboard", r"""
-<div class="hero"><h2>👩‍🏫 Teacher Profit Centre</h2><p>Register and get administrator approval before managing paid teaching services.</p><a class="btn" href="{{ url_for('professional_register') }}">Register as Teacher / Tutor</a></div>
-""")
-    return render_page("Teacher Dashboard", r"""
-<div class="hero"><h2>👩‍🏫 Teacher Profit Centre</h2><p>Turn your teaching time into bookable services, paid classes and repeat-student packages.</p><div class="actions"><span class="badge">✓ {{ provider.get('approval_status') or 'Approved' }}</span><a class="btn" href="{{ url_for('teacher_create_class') }}">＋ Create Paid Class</a><a class="btn secondary" href="{{ url_for('teacher_create_package') }}">＋ Create Package</a></div></div>
-<div class="grid">
-<div class="stat"><div class="big">{{ provider.get('currency') or 'ZMW' }} {{ '%.2f'|format(gross) }}</div>Gross earnings</div>
-<div class="stat"><div class="big">{{ provider.get('currency') or 'ZMW' }} {{ '%.2f'|format(net) }}</div>Estimated payout</div>
-<div class="stat"><div class="big">{{ appointments|length }}</div>Bookings</div>
-<div class="stat"><div class="big">{{ classes|length }}</div>Classes</div>
-</div>
-<div class="card"><h3>💰 Pricing</h3><p>Your standard rate: <strong>{{ provider.get('currency') or 'ZMW' }} {{ provider.get('hourly_rate') or '0' }}/hour</strong>.</p><form method="post" action="{{ url_for('teacher_update_pricing') }}" class="actions"><input name="hourly_rate" type="number" min="0" step="0.01" value="{{ provider.get('hourly_rate') or '' }}" placeholder="Hourly rate"><input name="currency" value="{{ provider.get('currency') or 'ZMW' }}" style="max-width:100px"><button class="btn" type="submit">Update Rate</button><a class="btn secondary" href="{{ url_for('teacher_availability') }}">🗓️ Availability</a></form><p>KOJA commission is currently <strong>{{ commission_rate }}%</strong>. Estimated commission from completed bookings: {{ provider.get('currency') or 'ZMW' }} {{ '%.2f'|format(commission) }}.</p><p class="small">Actual payment processing and teacher withdrawals depend on the payment method connected to KOJA.</p></div>
-<div class="card"><h3>🎓 Your Paid Classes</h3>{% for c in classes %}<div class="card"><h4>{{ c.get('title') }}</h4><p>{{ c.get('subject') or '' }} · {{ c.get('class_type') or 'online' }} · {{ c.get('currency') or 'ZMW' }} {{ c.get('price') or 0 }}</p><p>{{ c.get('class_date') or '' }} {{ c.get('start_time') or '' }}{% if c.get('capacity') %} · {{ c.get('capacity') }} seats{% endif %}</p><span class="badge">{{ c.get('status') or 'published' }}</span>{% if c.get('class_type') == 'live' %}<form method="post" action="{{ url_for('teacher_live_create',class_id=c.get('id')) }}" style="display:inline"><button class="btn success" type="submit">🎥 Start KOJA Live Classroom</button></form>{% endif %}{% if c.get('meeting_url') %}<p><a class="btn secondary" href="{{ c.get('meeting_url') }}" target="_blank" rel="noopener">Open class link</a></p>{% endif %}</div>{% else %}<p>No paid classes created yet.</p>{% endfor %}</div>
-<div class="card"><h3>📦 Packages</h3>{% for p in packages %}<div class="card"><strong>{{ p.get('name') }}</strong><p>{{ p.get('lessons') or 4 }} lessons · {{ p.get('currency') or 'ZMW' }} {{ p.get('price') or 0 }} · {{ p.get('validity_days') or 30 }} days</p></div>{% else %}<p>No packages created yet.</p>{% endfor %}</div>
-""", provider=provider, classes=classes, packages=packages, appointments=appointments, gross=gross, commission=commission, net=net, commission_rate=commission_rate)
-
-@app.route("/teacher/pricing", methods=["POST"])
-@login_required
-def teacher_update_pricing():
-    user=current_user() or {}; provider=_teacher_provider_for_user(user.get("id"))
-    if not provider: return "Teacher profile must be approved before changing pricing.",403
-    updates={"hourly_rate":clean(request.form.get("hourly_rate")) or None,"currency":clean(request.form.get("currency")) or "ZMW"}
-    row,error=db_update("service_providers",{"id":provider.get("id")},updates)
-    if error: flash("Could not update pricing: "+str(error)[:500],"danger")
-    else: flash("Your standard tutoring rate was updated.","success")
-    return redirect(url_for("teacher_dashboard"))
-
-@app.route("/teacher/availability", methods=["GET", "POST"])
-@login_required
-def teacher_availability():
-    user=current_user() or {}; provider=_teacher_provider_for_user(user.get("id"))
-    if not provider: return "Teacher profile must be approved before setting availability.",403
-    teacher_id=_teacher_id_for_user(user.get("id"))
-    if request.method=="POST":
-        try: day=int(request.form.get("day_of_week"))
-        except Exception: day=0
-        payload={"id":str(uuid.uuid4()),"teacher_id":teacher_id,"day_of_week":max(0,min(6,day)),"start_time":request.form.get("start_time"),"end_time":request.form.get("end_time"),"mode":clean(request.form.get("mode")) or "online","is_active":True,"created_at":utc_now()}
-        row,error=db_insert("teacher_availability",payload)
-        if error: flash("Could not save availability. Run the teacher profit SQL migration first.","danger")
-        else: flash("Availability added.","success")
-        return redirect(url_for("teacher_availability"))
-    rows=db_select("teacher_availability",filters={"teacher_id":teacher_id},order="day_of_week.asc",limit=100)
-    return render_page("Teacher Availability",r"""
-<div class="hero"><h2>🗓️ Teaching Availability</h2><p>Publish the times you accept students so your schedule can generate more bookings.</p></div>
-<div class="card"><form method="post"><label>Day</label><select name="day_of_week"><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option><option value="0">Sunday</option></select><label>Start</label><input type="time" name="start_time" required><label>End</label><input type="time" name="end_time" required><label>Mode</label><select name="mode"><option>online</option><option>live</option><option>in_person</option></select><button type="submit">Add Availability</button></form></div>
-<div class="card"><h3>Published times</h3>{% for a in rows %}<div class="card">Day {{ a.get('day_of_week') }} · {{ a.get('start_time') }}–{{ a.get('end_time') }} · {{ a.get('mode') }}</div>{% else %}<p>No availability added yet.</p>{% endfor %}</div>
-""",rows=rows)
-
-@app.route("/teacher/classes/create", methods=["GET", "POST"])
-@login_required
-def teacher_create_class():
-    user=current_user() or {}; provider=_teacher_provider_for_user(user.get("id"))
-    if not provider: return "Teacher profile must be approved before creating classes.",403
-    if request.method=="POST":
-        class_type=clean(request.form.get("class_type") or "online").lower()
-        if class_type not in {"live","online","in_person"}: class_type="online"
-        payload={"id":str(uuid.uuid4()),"teacher_id":_teacher_id_for_user(user.get("id")),"provider_id":provider.get("id"),"title":clean(request.form.get("title")),"subject":clean(request.form.get("subject")),"description":clean(request.form.get("description")),"class_type":class_type,"class_date":request.form.get("class_date") or None,"start_time":request.form.get("start_time") or None,"end_time":request.form.get("end_time") or None,"capacity":request.form.get("capacity") or 1,"price":request.form.get("price") or 0,"currency":clean(request.form.get("currency")) or provider.get("currency") or "ZMW","meeting_url":clean(request.form.get("meeting_url")),"location":clean(request.form.get("location")) or ("Online" if class_type!="in_person" else ""),"status":"published","created_at":utc_now(),"updated_at":utc_now()}
-        if not payload["title"]: flash("Class title is required.","danger"); return redirect(url_for("teacher_create_class"))
-        row,error=db_insert("teacher_classes",payload)
-        if error: flash("Could not create class. Run the teacher profit SQL migration first.","danger")
-        else: flash("Paid class published successfully.","success")
-        return redirect(url_for("teacher_dashboard"))
-    return render_page("Create Paid Class",r"""
-<div class="hero"><h2>＋ Create a Paid Class</h2><p>Offer a one-to-one lesson or a group class. Set your own price and capacity.</p></div>
-<div class="card"><form method="post"><label>Class title</label><input name="title" placeholder="Grade 12 Mathematics Revision" required><label>Subject</label><input name="subject" placeholder="Mathematics"><label>Description</label><textarea name="description" placeholder="What students will learn"></textarea><label>Class type</label><select name="class_type"><option value="live">🔴 Live Class</option><option value="online">💻 Online Class</option><option value="in_person">🏫 In-Person</option></select><label>Date</label><input type="date" name="class_date"><label>Start</label><input type="time" name="start_time"><label>End</label><input type="time" name="end_time"><label>Seats / Capacity</label><input type="number" name="capacity" min="1" value="1"><label>Price</label><input type="number" name="price" min="0" step="0.01" required><label>Currency</label><input name="currency" value="{{ provider.get('currency') or 'ZMW' }}"><label>Online meeting link (optional)</label><input name="meeting_url" placeholder="Google Meet, Zoom or other approved link"><label>Location</label><input name="location" placeholder="Online, school, tutoring centre..."><button type="submit">Publish Paid Class</button></form></div>
-""",provider=provider)
-
-@app.route("/teacher/packages/create", methods=["GET", "POST"])
-@login_required
-def teacher_create_package():
-    user=current_user() or {}; provider=_teacher_provider_for_user(user.get("id"))
-    if not provider: return "Teacher profile must be approved before creating packages.",403
-    if request.method=="POST":
-        payload={"id":str(uuid.uuid4()),"teacher_id":_teacher_id_for_user(user.get("id")),"provider_id":provider.get("id"),"name":clean(request.form.get("name")),"subject":clean(request.form.get("subject")),"lessons":request.form.get("lessons") or 4,"validity_days":request.form.get("validity_days") or 30,"price":request.form.get("price") or 0,"currency":clean(request.form.get("currency")) or provider.get("currency") or "ZMW","description":clean(request.form.get("description")),"status":"published","created_at":utc_now(),"updated_at":utc_now()}
-        row,error=db_insert("teacher_packages",payload)
-        if error: flash("Could not create package. Run the teacher profit SQL migration first.","danger")
-        else: flash("Teaching package published successfully.","success")
-        return redirect(url_for("teacher_dashboard"))
-    return render_page("Create Teaching Package",r"""
-<div class="hero"><h2>📦 Create a Teaching Package</h2><p>Packages encourage students to book several lessons at once.</p></div><div class="card"><form method="post"><label>Package name</label><input name="name" placeholder="4-Lesson Mathematics Package" required><label>Subject</label><input name="subject"><label>Number of lessons</label><input type="number" name="lessons" min="1" value="4"><label>Validity (days)</label><input type="number" name="validity_days" min="1" value="30"><label>Total package price</label><input type="number" name="price" min="0" step="0.01" required><label>Currency</label><input name="currency" value="{{ provider.get('currency') or 'ZMW' }}"><label>Description</label><textarea name="description" placeholder="What is included?"></textarea><button type="submit">Publish Package</button></form></div>
-""",provider=provider)
-
-@app.route("/setup/teacher-profit-sql")
-@login_required
-def teacher_profit_sql():
-    if not (current_user() or {}).get("is_admin"): return "Admin access required.",403
-    return '<pre style="white-space:pre-wrap">'+TEACHER_PROFIT_SQL.replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')+'</pre>'
-
-
-# ============================================================
-# ALL PROFESSIONAL SERVICES
-# ============================================================
-
-PROFESSIONAL_CATEGORIES = [
-    "Lawyer / Legal Services", "Accountant / Auditor", "Engineer", "Architect",
-    "IT / Software / Web Developer", "Graphic Designer", "Consultant",
-    "Counsellor / Psychologist", "Social Worker", "Nurse / Midwife",
-    "Pharmacist", "Dentist", "Nutritionist / Dietitian", "Physiotherapist",
-    "Real Estate Agent", "Insurance Agent", "Financial Adviser", "Teacher / Tutor",
-    "Doctor / Medical Practitioner", "Electrician", "Plumber", "Mechanic",
-    "Builder / Contractor", "Carpenter", "Welder", "Tailor / Fashion Designer",
-    "Hairdresser / Barber / Beauty Professional", "Photographer / Videographer",
-    "Writer / Editor / Translator", "Marketing / Advertising", "Business Consultant",
-    "Other Professional Service"
-]
-
-# ============================================================
-# PUBLIC KOJA FEED — Facebook-style public wall
-# Everyone can VIEW. Logged-in users can POST, LIKE and COMMENT.
-# Supports text, news/updates and public images.
-# ============================================================
-PUBLIC_FEED_SQL = """
-create extension if not exists pgcrypto;
-create table if not exists public.koja_public_posts (
- id uuid primary key default gen_random_uuid(), author_id uuid not null,
- post_type text not null default 'update', title text, body text not null,
- media_url text, media_type text, created_at timestamptz default now(),
- updated_at timestamptz default now(), is_published boolean default true
-);
-create index if not exists koja_public_posts_feed_idx on public.koja_public_posts(is_published, created_at desc);
-create index if not exists koja_public_posts_author_idx on public.koja_public_posts(author_id, created_at desc);
-create table if not exists public.koja_public_likes (
- post_id uuid not null references public.koja_public_posts(id) on delete cascade,
- user_id uuid not null, created_at timestamptz default now(), primary key(post_id,user_id)
-);
-create index if not exists koja_public_likes_post_idx on public.koja_public_likes(post_id);
-create table if not exists public.koja_public_comments (
- id uuid primary key default gen_random_uuid(),
- post_id uuid not null references public.koja_public_posts(id) on delete cascade,
- author_id uuid not null, body text not null, created_at timestamptz default now()
-);
-create index if not exists koja_public_comments_post_idx on public.koja_public_comments(post_id,created_at);
-"""
-
-@app.route('/public')
-def public_feed():
-    # db_select returns a list (not a (rows, error) tuple).
-    # Keep the public page resilient: an unavailable/missing table simply shows an empty feed.
-    # Read the feed defensively. Some older Supabase installations have stale
-    # PostgREST schema/cache behaviour around boolean filters. Fetch recent rows
-    # and apply the publication check in Python as a second line of defence.
-    rows = db_select('koja_public_posts', order='created_at.desc', limit=100) or []
-    rows = [r for r in rows if str(r.get('is_published')).lower() in ('true','1','t','yes') or r.get('is_published') is None]
-    enriched=[]
-    for post in rows or []:
-        author=first_row('profiles', {'id':post.get('author_id')}) or {}
-        likes = db_select('koja_public_likes', {'post_id':post.get('id')}, select='user_id', limit=500) or []
-        comments = db_select('koja_public_comments', {'post_id':post.get('id')}, order='created_at.asc', limit=100) or []
-        comment_rows=[]
-        for c in comments or []:
-            ca=first_row('profiles', {'id':c.get('author_id')}) or {}
-            comment_rows.append({**c,'author_name':ca.get('full_name') or ca.get('name') or ca.get('email') or 'KOJA User'})
-        uid=(current_user() or {}).get('id')
-        enriched.append({**post,'author_name':author.get('full_name') or author.get('name') or author.get('email') or 'KOJA User',
-            'like_count':len(likes or []),'liked':bool(uid and any(str(x.get('user_id'))==str(uid) for x in (likes or []))), 'comments':comment_rows})
-    return render_page('KOJA Public — News, Updates & Media', r'''
-<div class="hero"><h1>🌍 KOJA Public</h1><p>News, updates, public messages and images from the KOJA community. Everyone can view this page.</p></div>
-{% if user %}<div class="card"><h3>📝 Share with everyone</h3>
-<form method="post" action="{{ url_for('public_feed_create') }}" enctype="multipart/form-data">
-<div class="grid"><div><label>Type</label><select name="post_type"><option value="update">Community Update</option><option value="news">News</option><option value="announcement">Announcement</option><option value="event">Event</option></select></div><div><label>Title (optional)</label><input name="title" maxlength="180" placeholder="What is this about?"></div></div>
-<label>Message</label><textarea name="body" maxlength="5000" placeholder="Write a public message, update or news..." required></textarea>
-<label>Image / media (optional)</label><input type="file" name="media" accept="image/jpeg,image/png,image/webp">
-<button class="btn" type="submit">🌐 Publish Publicly</button></form>
-<p class="small">Your post is public and may be visible to people who are not logged in.</p></div>
-{% else %}<div class="card"><strong>Want to publish?</strong> <a class="btn" href="{{ url_for('login', next='/public') }}">Login</a> <a class="btn secondary" href="{{ url_for('register', next='/public') }}">Create account</a></div>{% endif %}
-<div class="card"><h2>📰 News & Updates</h2><p class="small">Public feed · newest first</p></div>
-{% for p in posts %}<article class="card" id="post-{{ p.id }}"><strong>👤 {{ p.author_name }}</strong><div class="small">{{ p.post_type|title }} · {{ p.created_at }}</div>
-{% if p.title %}<h2 style="margin-top:10px">{{ p.title }}</h2>{% endif %}<p style="white-space:pre-wrap;line-height:1.7">{{ p.body }}</p>
-{% if p.media_url %}<img src="{{ url_for('public_post_media', post_id=p.id) }}" alt="Public KOJA post image" loading="lazy" style="width:100%;max-height:620px;object-fit:cover;border-radius:12px;margin-top:8px">{% endif %}
-<div class="actions" style="margin-top:12px">{% if user %}<form method="post" action="{{ url_for('public_toggle_like', post_id=p.id) }}" style="display:inline"><button class="btn secondary" type="submit">{{ '❤️ Liked' if p.liked else '🤍 Like' }} · {{ p.like_count }}</button></form>{% else %}<a class="btn secondary" href="{{ url_for('login', next='/public') }}">🤍 Like · {{ p.like_count }}</a>{% endif %}<span class="btn secondary" style="cursor:default">💬 {{ p.comments|length }} Comments</span></div>
-{% for c in p.comments %}<div style="padding:9px 0;border-top:1px solid var(--border);margin-top:9px"><strong>{{ c.author_name }}</strong><div>{{ c.body }}</div><div class="small">{{ c.created_at }}</div></div>{% endfor %}
-{% if user %}<form method="post" action="{{ url_for('public_comment', post_id=p.id) }}"><input name="body" maxlength="1000" placeholder="Write a comment..." required><button class="btn" type="submit">Comment</button></form>{% else %}<p class="small"><a href="{{ url_for('login', next='/public') }}">Login</a> to comment.</p>{% endif %}
-</article>{% else %}<div class="card"><h3>No public updates yet.</h3><p>Be the first KOJA user to share a public update or news.</p></div>{% endfor %}
-''', posts=enriched)
-
-@app.route('/public/media/<post_id>')
-def public_post_media(post_id):
-    """Serve public-feed media reliably, including when the storage bucket is not public.
-    The post itself is still public; the server uses the Supabase service key to fetch the
-    stored object so an accidentally private bucket does not produce a broken image.
-    """
-    post = first_row('koja_public_posts', {'id': post_id}) or {}
-    if not post or not post.get('is_published') or not post.get('media_url'):
-        abort(404)
-    media_url = str(post.get('media_url') or '')
-    try:
-        if SUPABASE_URL and media_url.startswith(SUPABASE_URL + '/storage/v1/object/public/'):
-            prefix = SUPABASE_URL.rstrip('/') + '/storage/v1/object/public/'
-            rest = media_url[len(prefix):]
-            parts = rest.split('/', 1)
-            if len(parts) == 2:
-                bucket, object_path = parts
-                r = requests.get(
-                    f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/{quote(bucket, safe='')}/{quote(object_path, safe='/')}",
-                    headers=sb_headers(), timeout=30
-                )
-                if r.ok:
-                    return Response(r.content, status=200, content_type=r.headers.get('Content-Type') or post.get('media_type') or 'image/jpeg',
-                                    headers={'Cache-Control':'public, max-age=3600'})
-        # Fallback for externally hosted media URLs.
-        r = requests.get(media_url, timeout=30, stream=True)
-        if r.ok:
-            return Response(r.content, status=200, content_type=r.headers.get('Content-Type') or 'image/jpeg',
-                            headers={'Cache-Control':'public, max-age=3600'})
-    except Exception as exc:
-        logger.warning('Public media fetch failed for %s: %s', post_id, exc)
-    abort(404)
-
-@app.route('/public/create', methods=['POST'])
-@login_required
-def public_feed_create():
-    body=clean(request.form.get('body')); title=clean(request.form.get('title'))
-    post_type=clean(request.form.get('post_type')).lower() or 'update'
-    if post_type not in {'update','news','announcement','event'}: post_type='update'
-    if not body: flash('Write a message before publishing.','danger'); return redirect(url_for('public_feed'))
-    media=request.files.get('media'); uploaded=None
-    if media and media.filename:
-        ext=media.filename.lower().rsplit('.',1)[-1] if '.' in media.filename else ''
-        if ext not in {'jpg','jpeg','png','webp'}: flash('Public feed images must be JPG, PNG or WebP.','danger'); return redirect(url_for('public_feed'))
-        uploaded,err=upload_storage(media,'public-feed')
-        if err: flash(f'Image upload failed: {err}','danger'); return redirect(url_for('public_feed'))
-    payload={'author_id':current_user().get('id'),'post_type':post_type,'title':title or None,'body':body,
-             'media_url':(uploaded or {}).get('url'),'media_type':('image' if uploaded else None),'is_published':True}
-    created,err=db_insert('koja_public_posts',payload)
-    if err:
-        flash(f'Public post could not be published: {err[:500]}','danger')
-    else:
-        # Confirm persistence instead of reporting success solely because INSERT returned.
-        check_id = (created or {}).get('id') if isinstance(created, dict) else None
-        saved = first_row('koja_public_posts', {'id': check_id}) if check_id else None
-        if saved:
-            flash('Published to KOJA Public successfully.','success')
-        else:
-            flash('The post was accepted but could not be verified in the public feed. Please refresh and check Supabase table permissions.','danger')
-    return redirect(url_for('public_feed'))
-
-@app.route('/public/like/<post_id>', methods=['POST'])
-@login_required
-def public_toggle_like(post_id):
-    uid=current_user().get('id'); existing=first_row('koja_public_likes', {'post_id':post_id,'user_id':uid})
-    if existing: db_delete('koja_public_likes', {'post_id':post_id,'user_id':uid})
-    else: db_insert('koja_public_likes', {'post_id':post_id,'user_id':uid})
-    return redirect(url_for('public_feed')+'#post-'+post_id)
-
-@app.route('/public/comment/<post_id>', methods=['POST'])
-@login_required
-def public_comment(post_id):
-    body=clean(request.form.get('body'))
-    if body: db_insert('koja_public_comments', {'post_id':post_id,'author_id':current_user().get('id'),'body':body})
-    return redirect(url_for('public_feed')+'#post-'+post_id)
-
-
-# ============================================================
-# KOJA DIGITAL MARKETPLACE
-# ============================================================
-
-MARKETPLACE_SQL = r'''
-create table if not exists public.koja_marketplace_products (
- id uuid primary key default gen_random_uuid(),
- seller_id uuid not null,
- title text not null,
- description text not null,
- category text not null default 'Other',
- price numeric(12,2) not null default 0 check (price >= 0),
- currency text not null default 'ZMW',
- cover_url text,
- file_url text,
- file_name text,
- file_size bigint,
- is_published boolean not null default false,
- created_at timestamptz not null default now(),
- updated_at timestamptz not null default now()
-);
-create index if not exists koja_marketplace_products_feed_idx on public.koja_marketplace_products(is_published, created_at desc);
-create index if not exists koja_marketplace_products_seller_idx on public.koja_marketplace_products(seller_id, created_at desc);
-
-create table if not exists public.koja_marketplace_orders (
- id uuid primary key default gen_random_uuid(),
- product_id uuid not null references public.koja_marketplace_products(id) on delete cascade,
- buyer_id uuid not null,
- seller_id uuid not null,
- amount numeric(12,2) not null default 0,
- currency text not null default 'ZMW',
- status text not null default 'pending',
- payment_method text,
- payment_reference text,
- payment_transaction_id text,
- created_at timestamptz not null default now(),
- updated_at timestamptz not null default now()
-);
-create index if not exists koja_marketplace_orders_buyer_idx on public.koja_marketplace_orders(buyer_id, created_at desc);
-create index if not exists koja_marketplace_orders_seller_idx on public.koja_marketplace_orders(seller_id, created_at desc);
-create unique index if not exists koja_marketplace_free_order_unique on public.koja_marketplace_orders(product_id, buyer_id) where amount = 0;
-
-create table if not exists public.koja_marketplace_posts (
- id uuid primary key default gen_random_uuid(),
- author_id uuid not null,
- product_id uuid references public.koja_marketplace_products(id) on delete set null,
- title text,
- body text not null,
- media_url text,
- media_type text,
- created_at timestamptz not null default now(),
- updated_at timestamptz not null default now(),
- is_published boolean not null default true
-);
-create index if not exists koja_marketplace_posts_feed_idx on public.koja_marketplace_posts(is_published, created_at desc);
-create index if not exists koja_marketplace_posts_author_idx on public.koja_marketplace_posts(author_id, created_at desc);
-create index if not exists koja_marketplace_posts_product_idx on public.koja_marketplace_posts(product_id, created_at desc);
-'''
-
-MARKETPLACE_CATEGORIES = [
-    'Ebooks & Books','Courses & Learning','Research & Academic','Templates & Documents',
-    'Software & Code','Graphics & Design','Music & Audio','Video & Media',
-    'Business Resources','Other'
-]
-MARKETPLACE_FILE_EXTENSIONS = {
-    'pdf','doc','docx','txt','zip','csv','xlsx','xls','ppt','pptx',
-    'jpg','jpeg','png','webp','mp3','wav','m4a','mp4','webm','py','html','css','js','json'
-}
-
-def marketplace_product(product_id):
-    return first_row('koja_marketplace_products', {'id': product_id})
-
-def marketplace_seller_name(user_id):
-    u=find_user_by_id(user_id) or {}
-    return first_nonempty(u.get('full_name'),u.get('name'),u.get('email'),'KOJA Seller')
-
-def marketplace_money(value,currency='ZMW'):
-    try: return f"{currency} {float(value or 0):,.2f}"
-    except Exception: return f"{currency} 0.00"
-
-def marketplace_has_access(product,user_id):
-    if not product or not user_id: return False
-    if str(product.get('seller_id'))==str(user_id): return True
-    try:
-        if float(product.get('price') or 0)<=0: return True
-    except Exception: pass
-    return bool(first_row('koja_marketplace_orders',{'product_id':product.get('id'),'buyer_id':user_id,'status':'eq.paid'}))
-
-def marketplace_post_author_name(user_id):
-    return marketplace_seller_name(user_id)
-
-def marketplace_post_storage_path(media_url):
-    media_url=clean(media_url); storage_path=''
-    public_prefix=f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/" if SUPABASE_URL else ''
-    if public_prefix and media_url.startswith(public_prefix):
-        rem=media_url[len(public_prefix):]
-        bp=f"{STORAGE_BUCKET}/"
-        if rem.startswith(bp): storage_path=unquote(rem[len(bp):])
-    if not storage_path:
-        storage_path=media_url.lstrip('/')
-        if storage_path.startswith(f"{STORAGE_BUCKET}/"):
-            storage_path=storage_path[len(STORAGE_BUCKET)+1:]
-    return storage_path
-
-@app.route('/marketplace/post-media/<post_id>')
-def marketplace_post_media(post_id):
-    post=first_row('koja_marketplace_posts', {'id':post_id})
-    if not post or not post.get('is_published') or not post.get('media_url'): abort(404)
-    storage_path=marketplace_post_storage_path(post.get('media_url'))
-    if not storage_path or not supabase_configured(): abort(404)
-    try:
-        r=requests.get(sb_storage_url(storage_path),headers=sb_headers(),timeout=30)
-        if not r.ok: abort(404)
-        response=send_file(io.BytesIO(r.content),mimetype=r.headers.get('Content-Type') or post.get('media_type') or 'application/octet-stream',max_age=3600)
-        response.headers['Cache-Control']='public, max-age=3600'
-        return response
-    except Exception:
-        abort(404)
-
-@app.route('/marketplace/post',methods=['GET','POST'])
-@login_required
-def marketplace_post_create():
-    if request.method=='POST':
-        title=clean(request.form.get('title'))
-        body=clean(request.form.get('body'))
-        product_id=clean(request.form.get('product_id')) or None
-        if not body:
-            flash('Write something for your marketplace post.','danger')
-            return redirect(url_for('marketplace_post_create'))
-        if product_id:
-            product=marketplace_product(product_id)
-            if not product or (not product.get('is_published') and str(product.get('seller_id'))!=str((current_user() or {}).get('id'))):
-                product_id=None
-        image=request.files.get('image')
-        video=request.files.get('video')
-        if image and image.filename and video and video.filename:
-            flash('Choose an image OR a video for one post, not both.','danger')
-            return redirect(url_for('marketplace_post_create'))
-        media_url=None; media_type=None
-        media=image if image and image.filename else video if video and video.filename else None
-        if media:
-            ext=media.filename.lower().rsplit('.',1)[-1] if '.' in media.filename else ''
-            if image and image.filename:
-                if ext not in {'jpg','jpeg','png','webp'}:
-                    flash('Marketplace images must be JPG, JPEG, PNG or WEBP.','danger')
-                    return redirect(url_for('marketplace_post_create'))
-                folder='marketplace/posts/images'; media_type='image'
-            else:
-                if ext not in {'mp4','webm','mov'}:
-                    flash('Marketplace videos must be MP4, WEBM or MOV.','danger')
-                    return redirect(url_for('marketplace_post_create'))
-                folder='marketplace/posts/videos'; media_type='video'
-            uploaded,err=upload_storage(media,folder)
-            if err:
-                flash(f'Media upload failed: {err}','danger')
-                return redirect(url_for('marketplace_post_create'))
-            media_url=(uploaded or {}).get('url')
-        _,err=db_insert('koja_marketplace_posts',{
-            'author_id':(current_user() or {}).get('id'),
-            'product_id':product_id,
-            'title':title or None,
-            'body':body,
-            'media_url':media_url,
-            'media_type':media_type,
-            'is_published':True,
-            'updated_at':utc_now()
-        })
-        flash('Marketplace post published.' if not err else 'Post could not be saved. Run the updated MARKETPLACE.sql in Supabase.','success' if not err else 'danger')
-        return redirect(url_for('marketplace'))
-    uid=(current_user() or {}).get('id')
-    products=db_select('koja_marketplace_products',{'seller_id':uid},order='created_at.desc',limit=100) or []
-    return render_page('Create Marketplace Post',r'''<div class="hero"><h1>📣 Create Marketplace Post</h1><p>Promote a product, announce an offer, share an image, or publish a marketplace video.</p></div><div class="card"><form method="post" enctype="multipart/form-data"><label>Post title (optional)</label><input name="title" maxlength="180" placeholder="e.g. New Grade 12 Revision Guide available"><label>Post</label><textarea name="body" maxlength="10000" required placeholder="Tell buyers what you are offering..."></textarea><label>Link to your product (optional)</label><select name="product_id"><option value="">No product link</option>{% for p in products %}<option value="{{ p.id }}">{{ p.title }}</option>{% endfor %}</select><div class="grid"><div><label>Image (optional)</label><input type="file" name="image" accept="image/jpeg,image/png,image/webp"></div><div><label>Video (optional)</label><input type="file" name="video" accept="video/mp4,video/webm,video/quicktime"></div></div><button class="btn" type="submit">🚀 Publish Post</button></form><p class="small">Maximum media upload: {{ max_mb }} MB. Use either an image or a video per post.</p></div>''',products=products,max_mb=MAX_UPLOAD_MB)
-
-@app.route('/marketplace')
-def marketplace():
-    q=clean(request.args.get('q')); category=clean(request.args.get('category'))
-    rows=db_select('koja_marketplace_products',{'is_published':'eq.true'},order='created_at.desc',limit=100) or []
-    if q:
-        n=q.lower(); rows=[r for r in rows if n in str(r.get('title') or '').lower() or n in str(r.get('description') or '').lower() or n in str(r.get('category') or '').lower()]
-    if category: rows=[r for r in rows if str(r.get('category') or '')==category]
-    products=[{**r,'seller_name':marketplace_seller_name(r.get('seller_id')),'price_display':marketplace_money(r.get('price'),r.get('currency') or 'ZMW')} for r in rows]
-    post_rows=db_select('koja_marketplace_posts',{'is_published':'eq.true'},order='created_at.desc',limit=50) or []
-    pids=[str(x.get('product_id')) for x in post_rows if x.get('product_id')]
-    post_products={str(p.get('id')):p for p in (db_select('koja_marketplace_products',{'id':'in.('+','.join(pids)+')'},limit=100) if pids else [])}
-    posts=[{**r,'author_name':marketplace_post_author_name(r.get('author_id')),'product':post_products.get(str(r.get('product_id')))} for r in post_rows]
-    return render_page('Marketplace',r'''
-<div class="hero"><h1>🛒 KOJA Digital Marketplace</h1><p>Discover, buy and sell digital products across Africa — ebooks, courses, research resources, templates, software, graphics, audio and more.</p><div class="actions"><a class="btn" href="{{ url_for('marketplace_sell') if user else url_for('login', next='/marketplace/sell') }}">💼 Sell a Digital Product</a>{% if user %}<a class="btn secondary" href="{{ url_for('marketplace_my') }}">📦 My Marketplace</a>{% endif %}</div></div>
-<div class="card"><form method="get"><div class="grid"><div><label>Search</label><input name="q" value="{{ q }}" placeholder="Search digital products..."></div><div><label>Category</label><select name="category"><option value="">All categories</option>{% for c in categories %}<option value="{{ c }}" {% if category==c %}selected{% endif %}>{{ c }}</option>{% endfor %}</select></div></div><button class="btn" type="submit">🔎 Search Marketplace</button></form></div>
-<div class="card"><div class="actions" style="justify-content:space-between"><h2 style="margin:0">📣 Marketplace Posts</h2>{% if user %}<a class="btn" href="{{ url_for('marketplace_post_create') }}">+ Post</a>{% endif %}</div>{% for p in posts %}<article class="card" style="margin-top:14px"><div class="small">👤 {{ p.author_name }} · {{ p.created_at }}</div>{% if p.title %}<h3 style="margin:8px 0">{{ p.title }}</h3>{% endif %}<p style="white-space:pre-wrap;line-height:1.6">{{ p.body }}</p>{% if p.media_url and p.media_type=='image' %}<img src="{{ url_for('marketplace_post_media', post_id=p.id) }}" alt="Marketplace post image" loading="lazy" style="display:block;width:100%;max-height:620px;object-fit:contain;border-radius:12px;background:var(--bg)">{% elif p.media_url and p.media_type=='video' %}<video controls preload="metadata" playsinline style="display:block;width:100%;max-height:620px;border-radius:12px;background:#000"><source src="{{ url_for('marketplace_post_media', post_id=p.id) }}"></video>{% endif %}{% if p.product and p.product.is_published %}<div class="actions" style="margin-top:12px"><a class="btn" href="{{ url_for('marketplace_product_view', product_id=p.product.id) }}">🛒 View {{ p.product.title }}</a></div>{% endif %}</article>{% else %}<p class="small">No marketplace posts yet. Publish the first one.</p>{% endfor %}</div>
-<div class="grid">{% for p in products %}<article class="card"><div style="aspect-ratio:16/9;background:var(--bg);border-radius:10px;overflow:hidden;display:grid;place-items:center">{% if p.cover_url %}<img src="{{ url_for('marketplace_cover', product_id=p.id) }}" alt="{{ p.title }}" loading="lazy" style="width:100%;height:100%;object-fit:cover">{% else %}<div style="font-size:52px">📄</div>{% endif %}</div><div class="small" style="margin-top:10px">{{ p.category }} · by {{ p.seller_name }}</div><h2 style="margin:6px 0">{{ p.title }}</h2><p style="min-height:48px">{{ p.description[:180] }}{% if p.description|length>180 %}…{% endif %}</p><strong style="font-size:20px">{{ p.price_display if p.price|float > 0 else 'FREE' }}</strong><div class="actions" style="margin-top:12px"><a class="btn" href="{{ url_for('marketplace_product_view', product_id=p.id) }}">View Product</a></div></article>{% else %}<div class="card"><h3>No products found yet.</h3><p>Be the first seller to publish a digital product.</p></div>{% endfor %}</div>
-''',products=products,posts=posts,q=q,category=category,categories=MARKETPLACE_CATEGORIES)
-
-@app.route('/marketplace/product/<product_id>')
-def marketplace_product_view(product_id):
-    product=marketplace_product(product_id)
-    if not product or not product.get('is_published'): abort(404)
-    seller=marketplace_seller_name(product.get('seller_id')); uid=(current_user() or {}).get('id') if current_user() else None
-    return render_page(product.get('title') or 'Digital Product',r'''
-<div class="card"><div class="small">{{ product.category }} · Seller: {{ seller }}</div><h1>{{ product.title }}</h1>{% if product.cover_url %}<img src="{{ url_for('marketplace_cover', product_id=product.id) }}" alt="{{ product.title }}" style="display:block;width:100%;max-height:520px;object-fit:contain;border-radius:12px;background:var(--bg)">{% endif %}<p style="white-space:pre-wrap;line-height:1.75">{{ product.description }}</p><h2>{{ 'FREE' if product.price|float<=0 else money(product.price, product.currency) }}</h2>{% if user %}{% if access %}<a class="btn success" href="{{ url_for('marketplace_download', product_id=product.id) }}">⬇️ Download / Access</a>{% elif product.price|float<=0 %}<form method="post" action="{{ url_for('marketplace_buy', product_id=product.id) }}"><button class="btn success" type="submit">🎁 Get Free Product</button></form>{% else %}<form method="post" action="{{ url_for('marketplace_buy', product_id=product.id) }}"><button class="btn" type="submit">🛒 Request Purchase · {{ money(product.price, product.currency) }}</button></form><p class="small">Secure checkout is handled by Flutterwave when FLW_SECRET_KEY is configured. KOJA verifies the transaction on the server before releasing the digital file.</p>{% endif %}{% else %}<a class="btn" href="{{ url_for('login', next=request.path) }}">Login to Purchase / Download</a>{% endif %}</div>
-''',product=product,seller=seller,access=marketplace_has_access(product,uid),money=marketplace_money)
-
-@app.route('/marketplace/buy/<product_id>',methods=['POST'])
-@login_required
-def marketplace_buy(product_id):
-    product=marketplace_product(product_id); user=current_user() or {}; uid=user.get('id')
-    if not product or not product.get('is_published'): abort(404)
-    try: amount=float(product.get('price') or 0)
-    except Exception: amount=0
-    if amount<=0:
-        existing=first_row('koja_marketplace_orders',{'product_id':product_id,'buyer_id':uid,'status':'eq.paid'})
-        if not existing:
-            _,err=db_insert('koja_marketplace_orders',{'product_id':product_id,'buyer_id':uid,'seller_id':product.get('seller_id'),'amount':0,'currency':product.get('currency') or 'ZMW','status':'paid','payment_method':'free','payment_reference':'FREE-'+secrets.token_hex(8),'updated_at':utc_now()})
-            if err: flash('Could not create the free-product order. Run MARKETPLACE.sql in Supabase first.','danger'); return redirect(url_for('marketplace_product_view',product_id=product_id))
-        flash('Free product added to your purchases.','success')
-        return redirect(url_for('marketplace_download',product_id=product_id))
-
-    if not FLW_SECRET_KEY:
-        flash('Online payment is not configured yet. Add FLW_SECRET_KEY to Render Environment Variables.','warning')
-        return redirect(url_for('marketplace_product_view',product_id=product_id))
-    email=clean(user.get('email')).lower()
-    if not email:
-        flash('Your account needs an email address before payment can start.','warning')
-        return redirect(url_for('marketplace_product_view',product_id=product_id))
-    tx_ref='KOJA-MKT-'+uuid.uuid4().hex[:24]
-    order,err=db_insert('koja_marketplace_orders',{'product_id':product_id,'buyer_id':uid,'seller_id':product.get('seller_id'),'amount':amount,'currency':product.get('currency') or 'ZMW','status':'pending','payment_method':'flutterwave','payment_reference':tx_ref,'updated_at':utc_now()})
-    if err or not order:
-        flash('Marketplace order could not be created. Run MARKETPLACE.sql in Supabase first.','danger')
-        return redirect(url_for('marketplace_product_view',product_id=product_id))
-    payload={'tx_ref':tx_ref,'amount':amount,'currency':product.get('currency') or 'ZMW','redirect_url':url_for('marketplace_payment_callback',_external=True),'customer':{'email':email,'name':first_nonempty(user.get('name'),email),'phonenumber':user.get('phone') or ''},'customizations':{'title':'KOJA AFRICA Marketplace','description':product.get('title') or 'Digital product'}}
-    try:
-        r=requests.post(FLW_BASE_URL+'/payments',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json'},json=payload,timeout=30)
-        data=json_or_empty(r)
-        link=((data.get('data') or {}).get('link')) if isinstance(data,dict) else None
-        if r.ok and link:
-            return redirect(link)
-        logger.error('Flutterwave checkout creation failed: %s %s',r.status_code,str(data)[:1500])
-    except Exception as exc:
-        logger.exception('Flutterwave checkout error: %s',exc)
-    flash('Payment checkout could not be started. Please try again.','danger')
-    return redirect(url_for('marketplace_product_view',product_id=product_id))
-
-@app.route('/marketplace/payment/callback')
-@login_required
-def marketplace_payment_callback():
-    tx_ref=clean(request.args.get('tx_ref')); transaction_id=clean(request.args.get('transaction_id')); status=clean(request.args.get('status')).lower(); uid=(current_user() or {}).get('id')
-    if not tx_ref or not transaction_id:
-        flash('Payment response was incomplete.','danger'); return redirect(url_for('marketplace_my'))
-    order=first_row('koja_marketplace_orders',{'payment_reference':tx_ref,'buyer_id':uid})
-    if not order:
-        flash('Marketplace payment order could not be found.','danger'); return redirect(url_for('marketplace_my'))
-    if not FLW_SECRET_KEY:
-        flash('Payment verification is not configured.','danger'); return redirect(url_for('marketplace_my'))
-    try:
-        r=requests.get(FLW_BASE_URL+'/transactions/'+transaction_id+'/verify',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json'},timeout=30)
-        body=json_or_empty(r); tx=(body.get('data') or {}) if isinstance(body,dict) else {}
-        expected_amount=float(order.get('amount') or 0); paid_amount=float(tx.get('amount') or 0); expected_currency=str(order.get('currency') or 'ZMW').upper(); paid_currency=str(tx.get('currency') or '').upper()
-        valid=(r.ok and tx.get('status')=='successful' and str(tx.get('tx_ref'))==tx_ref and paid_currency==expected_currency and paid_amount>=expected_amount)
-        if valid:
-            db_update('koja_marketplace_orders',{'id':order.get('id')},{'status':'paid','payment_method':'flutterwave','payment_reference':tx_ref,'payment_transaction_id':str(tx.get('id') or transaction_id),'updated_at':utc_now()})
-            flash('Payment verified successfully. Your digital product is now available.','success')
-            return redirect(url_for('marketplace_download',product_id=order.get('product_id')))
-        db_update('koja_marketplace_orders',{'id':order.get('id')},{'status':'failed' if status in ('failed','cancelled') else 'pending','updated_at':utc_now()})
-    except Exception as exc:
-        logger.exception('Flutterwave verification error: %s',exc)
-    flash('Payment was not verified, so the digital product has not been released.','warning')
-    return redirect(url_for('marketplace_my'))
-
-@app.route('/marketplace/cover/<product_id>')
-def marketplace_cover(product_id):
-    product=marketplace_product(product_id)
-    if not product or not product.get('cover_url'): abort(404)
-    media_url=clean(product.get('cover_url')); storage_path=''
-    public_prefix=f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/" if SUPABASE_URL else ''
-    if public_prefix and media_url.startswith(public_prefix):
-        rem=media_url[len(public_prefix):]; bp=f"{STORAGE_BUCKET}/"
-        if rem.startswith(bp): storage_path=unquote(rem[len(bp):])
-    if not storage_path:
-        storage_path=media_url.lstrip('/')
-        if storage_path.startswith(f"{STORAGE_BUCKET}/"): storage_path=storage_path[len(STORAGE_BUCKET)+1:]
-    if not storage_path or not supabase_configured(): abort(404)
-    try:
-        r=requests.get(sb_storage_url(storage_path),headers=sb_headers(),timeout=20)
-        if not r.ok: abort(404)
-        response=send_file(io.BytesIO(r.content),mimetype=r.headers.get('Content-Type') or 'image/jpeg',max_age=3600)
-        response.headers['Cache-Control']='public, max-age=3600'
-        return response
-    except Exception:
-        abort(404)
-
-@app.route('/marketplace/download/<product_id>')
-@login_required
-def marketplace_download(product_id):
-    product=marketplace_product(product_id); uid=(current_user() or {}).get('id')
-    if not product or not product.get('is_published') or not marketplace_has_access(product,uid): abort(404)
-    media_url=clean(product.get('file_url')); storage_path=''
-    public_prefix=f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/" if SUPABASE_URL else ''
-    if public_prefix and media_url.startswith(public_prefix):
-        rem=media_url[len(public_prefix):]; bp=f"{STORAGE_BUCKET}/"
-        if rem.startswith(bp): storage_path=unquote(rem[len(bp):])
-    if not storage_path:
-        storage_path=media_url.lstrip('/')
-        if storage_path.startswith(f"{STORAGE_BUCKET}/"): storage_path=storage_path[len(STORAGE_BUCKET)+1:]
-    if not storage_path or not supabase_configured(): abort(404)
-    try:
-        r=requests.get(sb_storage_url(storage_path),headers=sb_headers(),timeout=30)
-        if not r.ok: abort(404)
-        filename=secure_filename(product.get('file_name') or 'koja-digital-product') or 'koja-digital-product'
-        return send_file(io.BytesIO(r.content),download_name=filename,mimetype=r.headers.get('Content-Type') or 'application/octet-stream',max_age=0)
-    except Exception as exc:
-        logger.exception('Marketplace download failed: %s',exc); abort(404)
-
-@app.route('/marketplace/sell',methods=['GET','POST'])
-@login_required
-def marketplace_sell():
-    if request.method=='POST':
-        title=clean(request.form.get('title')); description=clean(request.form.get('description')); category=clean(request.form.get('category')) or 'Other'
-        try: price=float(request.form.get('price') or 0)
-        except Exception: price=-1
-        if not title or not description or price<0: flash('Title, description and a valid price are required.','danger'); return redirect(url_for('marketplace_sell'))
-        if category not in MARKETPLACE_CATEGORIES: category='Other'
-        digital=request.files.get('digital_file'); cover=request.files.get('cover')
-        if not digital or not digital.filename: flash('Choose the digital product file to sell.','danger'); return redirect(url_for('marketplace_sell'))
-        ext=digital.filename.lower().rsplit('.',1)[-1] if '.' in digital.filename else ''
-        if ext not in MARKETPLACE_FILE_EXTENSIONS: flash('Unsupported digital file type.','danger'); return redirect(url_for('marketplace_sell'))
-        uploaded,err=upload_storage(digital,'marketplace/products')
-        if err: flash(f'Digital file upload failed: {err}','danger'); return redirect(url_for('marketplace_sell'))
-        cover_url=None
-        if cover and cover.filename:
-            cext=cover.filename.lower().rsplit('.',1)[-1] if '.' in cover.filename else ''
-            if cext in {'jpg','jpeg','png','webp'}:
-                cu,cerr=upload_storage(cover,'marketplace/covers')
-                if not cerr: cover_url=(cu or {}).get('url')
-        payload={'seller_id':(current_user() or {}).get('id'),'title':title,'description':description,'category':category,'price':price,'currency':'ZMW','cover_url':cover_url,'file_url':(uploaded or {}).get('url'),'file_name':digital.filename,'file_size':getattr(digital,'content_length',None),'is_published':False}
-        _,err=db_insert('koja_marketplace_products',payload)
-        flash('Product submitted. It is hidden until published/approved.' if not err else 'Product could not be saved. Run MARKETPLACE.sql in Supabase first.','success' if not err else 'danger')
-        return redirect(url_for('marketplace_my'))
-    return render_page('Sell Digital Product',r'''<div class="hero"><h1>💼 Sell a Digital Product</h1><p>Upload a digital file and create a marketplace listing. New listings are unpublished until approved.</p></div><div class="card"><form method="post" enctype="multipart/form-data"><label>Product title</label><input name="title" maxlength="180" required placeholder="e.g. Grade 12 Mathematics Revision Guide"><label>Description</label><textarea name="description" maxlength="10000" required placeholder="Explain what the buyer receives..."></textarea><div class="grid"><div><label>Category</label><select name="category">{% for c in categories %}<option>{{ c }}</option>{% endfor %}</select></div><div><label>Price (ZMW)</label><input name="price" type="number" min="0" step="0.01" value="0" required></div></div><label>Digital product file</label><input type="file" name="digital_file" required><label>Cover image (optional)</label><input type="file" name="cover" accept="image/jpeg,image/png,image/webp"><button class="btn" type="submit">📤 Submit Product</button></form><p class="small">Maximum upload size follows KOJA's 15 MB server limit.</p></div>''',categories=MARKETPLACE_CATEGORIES)
-
-@app.route('/marketplace/my')
-@login_required
-def marketplace_my():
-    uid=(current_user() or {}).get('id')
-    products=db_select('koja_marketplace_products',{'seller_id':uid},order='created_at.desc',limit=100) or []
-    orders=db_select('koja_marketplace_orders',{'seller_id':uid},order='created_at.desc',limit=100) or []
-    purchases=db_select('koja_marketplace_orders',{'buyer_id':uid},order='created_at.desc',limit=100) or []
-    ids={str(x.get('product_id')) for x in orders+purchases if x.get('product_id')}
-    allp=db_select('koja_marketplace_products',{'id':'in.('+','.join(ids)+')'} if ids else {'id':'eq.__none__'},limit=200) or []
-    pm={str(p.get('id')):p for p in allp}
-    return render_page('My Marketplace',r'''<div class="hero"><h1>📦 My Marketplace</h1><div class="actions"><a class="btn" href="{{ url_for('marketplace_sell') }}">+ Sell Product</a><a class="btn secondary" href="{{ url_for('marketplace') }}">Browse Marketplace</a></div></div><div class="card"><h2>My Products</h2><table><tr><th>Product</th><th>Price</th><th>Status</th></tr>{% for p in products %}<tr><td>{{ p.title }}</td><td>{{ money(p.price,p.currency) if p.price|float>0 else 'FREE' }}</td><td>{{ 'Published' if p.is_published else 'Pending review' }}</td></tr>{% else %}<tr><td colspan="3">No products yet.</td></tr>{% endfor %}</table></div><div class="card"><h2>Sales / Orders</h2><table><tr><th>Product</th><th>Amount</th><th>Status</th></tr>{% for o in orders %}<tr><td>{{ pm.get(o.product_id,{}).get('title','Digital product') }}</td><td>{{ money(o.amount,o.currency) }}</td><td>{{ o.status }}</td></tr>{% else %}<tr><td colspan="3">No orders yet.</td></tr>{% endfor %}</table></div><div class="card"><h2>My Purchases</h2><table><tr><th>Product</th><th>Amount</th><th>Status</th><th></th></tr>{% for o in purchases %}{% set pp=pm.get(o.product_id) %}<tr><td>{{ pp.title if pp else 'Digital product' }}</td><td>{{ money(o.amount,o.currency) }}</td><td>{{ o.status }}</td><td>{% if pp and o.status=='paid' %}<a class="btn success" href="{{ url_for('marketplace_download',product_id=pp.id) }}">Download</a>{% endif %}</td></tr>{% else %}<tr><td colspan="4">No purchases yet.</td></tr>{% endfor %}</table></div>''',products=products,orders=orders,purchases=purchases,pm=pm,money=marketplace_money)
-
-@app.route("/professional-communication")
-@login_required
-def professional_communication():
-    return render_page("Professional Communication", r"""
-<div class="hero"><h2>👩‍💼 Professional Communication</h2><p>Choose a profession to access its dedicated communication space. Each profession has its own public room, public posts, and professional-to-client private communication.</p></div>
-<div class="card"><div class="actions"><a class="btn" href="{{ url_for('professionals') }}">👥 Find Professionals</a><a class="btn secondary" href="{{ url_for('professional_register') }}">📝 Register as Professional</a></div></div>
-<div class="grid">
-{% for c in categories %}
-<div class="card"><h3>{{ c }}</h3><p class="small">Dedicated {{ c }} communication.</p><div class="actions"><a class="btn" href="{{ url_for('professional_community', profession_slug=profession_slug(c)) }}">🌍 Public Communication</a><a class="btn secondary" href="{{ url_for('professional_public_post', profession_slug=profession_slug(c)) }}">📰 Public Posts</a></div></div>
-{% endfor %}
-</div>
-""", categories=PROFESSIONAL_CATEGORIES)
-
-@app.route("/professionals")
-@login_required
-def professionals():
-    category = clean(request.args.get("category"))
-    query = clean(request.args.get("q"))
-    rows = db_select("service_providers", order="created_at.desc", limit=500)
-    visible = []
-    for x in rows:
-        if str(x.get("provider_type") or "").lower() in {"driver", "doctor", "teacher", "tutor"}:
-            continue
-        status = str(x.get("approval_status") or x.get("verification_status") or "pending").lower()
-        if status not in {"approved", "active", "verified"}:
-            continue
-        if x.get("is_active") is False:
-            continue
-        hay = " ".join(str(x.get(k) or "") for k in ("full_name","name","profession","specialization","qualification","service_area","address","bio","service_description")).lower()
-        if category and category.lower() not in str(x.get("profession") or "").lower():
-            continue
-        if query and query.lower() not in hay:
-            continue
-        visible.append(x)
-    return render_page("Professional Services", r"""
-<div class="hero"><h2>👩‍💼 All Professional Services</h2><p>Find an approved professional, ask for advice or counselling, book a service, chat, or start a voice/video call.</p><div class="actions"><a class="btn" href="{{ url_for('professional_communication') }}">💬 Professional Communication</a></div></div>
-<div class="card">
-<form method="get" class="actions">
-<input name="q" value="{{ query }}" placeholder="Search a profession, professional, service or qualification">
-<select name="category"><option value="">All professions</option>{% for c in categories %}<option value="{{ c }}" {% if category==c %}selected{% endif %}>{{ c }}</option>{% endfor %}</select>
-<button class="btn" type="submit">🔎 Search Profession</button>
-<a class="btn secondary" href="{{ url_for('professional_register') }}">📝 Register as Professional</a>
-</form>
-<p class="small">Only administrator-approved professional profiles are shown publicly.</p>
-</div>
-<div class="grid">
-{% for p in professionals %}
-<div class="card">
-<h3>{{ p.get('full_name') or p.get('name') or 'Professional' }}</h3>
-<p><strong>Profession:</strong> {{ p.get('profession') or 'Professional Service' }}</p>
-{% if p.get('specialization') %}<p><strong>Specialization:</strong> {{ p.get('specialization') }}</p>{% endif %}
-{% if p.get('qualification') %}<p><strong>Qualification:</strong> {{ p.get('qualification') }}</p>{% endif %}
-{% if p.get('experience_years') %}<p><strong>Experience:</strong> {{ p.get('experience_years') }} years</p>{% endif %}
-{% if p.get('service_area') or p.get('address') %}<p><strong>Service area:</strong> {{ p.get('service_area') or p.get('address') }}</p>{% endif %}
-{% if p.get('service_description') %}<p>{{ p.get('service_description') }}</p>{% elif p.get('bio') %}<p>{{ p.get('bio') }}</p>{% endif %}
-{% if p.get('hourly_rate') %}<p><strong>Rate:</strong> {{ p.get('currency') or 'ZMW' }} {{ p.get('hourly_rate') }}</p>{% endif %}
-<div class="actions">
-<a class="btn" href="{{ url_for('professional_contact', provider_id=p.get('id')) }}">👤 Contact / Services</a>
-<a class="btn secondary" href="{{ url_for('professional_community', profession_slug=profession_slug(p.get('profession') or 'Other Professional Service')) }}">🌍 Public Communication</a>
-<a class="btn secondary" href="{{ url_for('book_professional', provider_id=p.get('id'), purpose='booking') }}">📅 Book</a>
-<a class="btn secondary" href="{{ url_for('book_professional', provider_id=p.get('id'), purpose='advice') }}">💡 Ask Advice</a>
-<a class="btn secondary" href="{{ url_for('book_professional', provider_id=p.get('id'), purpose='counselling') }}">🧠 Counselling</a>
-</div>
-</div>
-{% else %}
-<div class="card"><h3>No approved professionals found</h3><p>Search another profession or register as a professional.</p><a class="btn" href="{{ url_for('professional_register') }}">Register as Professional</a></div>
-{% endfor %}
-</div>
-""", professionals=visible, categories=PROFESSIONAL_CATEGORIES, category=category, query=query)
-
-@app.route("/professional/register", methods=["GET","POST"])
-@login_required
-def professional_register():
-    user = current_user() or {}
-    existing = first_row("service_providers", {"user_id": user.get("id"), "provider_type": "professional"})
-    if request.method == "POST":
-        profession = clean(request.form.get("profession"))
-        if not profession:
-            flash("Please select or enter your profession.", "danger")
-            return redirect(url_for("professional_register"))
-        payload = {
-            "id": (existing or {}).get("id") or str(uuid.uuid4()), "user_id": user.get("id"), "provider_type": "professional",
-            "full_name": clean(request.form.get("full_name")) or user.get("name") or user.get("full_name"),
-            "name": clean(request.form.get("full_name")) or user.get("name") or user.get("full_name"),
-            "phone": clean(request.form.get("phone")) or user.get("phone"), "email": clean(request.form.get("email")) or user.get("email"),
-            "profession": profession, "specialization": clean(request.form.get("specialization")), "qualification": clean(request.form.get("qualification")),
-            "experience_years": clean(request.form.get("experience_years")) or None, "service_area": clean(request.form.get("service_area")),
-            "address": clean(request.form.get("address")), "bio": clean(request.form.get("bio")), "service_description": clean(request.form.get("service_description")),
-            "hourly_rate": clean(request.form.get("hourly_rate")) or None, "currency": clean(request.form.get("currency")) or "ZMW",
-            "is_available": False, "is_active": True, "verification_status": "pending", "approval_status": "pending", "created_at": utc_now(), "updated_at": utc_now()
-        }
-        if existing: data, error = db_update("service_providers", {"id": existing.get("id")}, payload)
-        else: data, error = db_insert("service_providers", payload)
-        if error:
-            fallback = {k:v for k,v in payload.items() if k not in {"profession","specialization","qualification","experience_years","service_area","service_description","hourly_rate","currency","approval_status","updated_at"}}
-            if existing: data, error = db_update("service_providers", {"id": existing.get("id")}, fallback)
-            else: data, error = db_insert("service_providers", fallback)
-        if error: flash("Professional registration failed: " + str(error)[:700], "danger")
-        else: flash("Professional profile submitted for administrator approval.", "success")
-        return redirect(url_for("professionals"))
-    return render_page("Register as Professional", r"""
-<div class="hero"><h2>📝 Register for Any Profession</h2><p>Register your professional service. Your profile becomes visible after administrator approval.</p></div>
-<div class="card"><form method="post">
-<label>Full Name</label><input name="full_name" value="{{ user.name or user.full_name or '' }}" required>
-<label>Phone</label><input name="phone" value="{{ user.phone or '' }}" required>
-<label>Email</label><input type="email" name="email" value="{{ user.email or '' }}">
-<label>Profession</label><select name="profession" required><option value="">Select profession</option>{% for c in categories %}<option value="{{ c }}">{{ c }}</option>{% endfor %}</select>
-<label>Specialization</label><input name="specialization" placeholder="Specialty or area of expertise">
-<label>Qualification / Certification</label><input name="qualification" placeholder="Degree, licence, certificate or professional membership">
-<label>Years of Experience</label><input name="experience_years" type="number" min="0" max="80" inputmode="numeric">
-<label>Service Area</label><input name="service_area" placeholder="City, town, province or online">
-<label>Address</label><input name="address">
-<label>Services Offered</label><textarea name="service_description" placeholder="Describe the services you offer"></textarea>
-<label>Professional Bio</label><textarea name="bio" placeholder="Experience, expertise and background"></textarea>
-<label>Rate</label><input name="hourly_rate" type="number" min="0" step="0.01" placeholder="Optional">
-<label>Currency</label><select name="currency"><option>ZMW</option><option>USD</option><option>ZAR</option></select>
-<button type="submit">Submit Professional Registration</button>
-</form></div>
-""", categories=PROFESSIONAL_CATEGORIES, user=user)
-
-@app.route("/professional/book/<provider_id>", methods=["GET", "POST"])
-@login_required
-def book_professional(provider_id):
-    """Book an approved universal professional for a service, advice, or counselling."""
-    user = current_user() or {}
-    provider = first_row("service_providers", {"id": provider_id})
-    if not provider or str(provider.get("provider_type") or "").lower() in {"driver", "doctor", "teacher", "tutor"}:
-        abort(404)
-    status = str(provider.get("approval_status") or provider.get("verification_status") or "pending").lower()
-    if status not in {"approved", "active", "verified"}:
-        return "This professional is not currently available for booking.", 403
-
-    purpose = clean(request.args.get("purpose") or request.form.get("purpose") or "booking").lower()
-    if purpose not in {"booking", "advice", "counselling"}:
-        purpose = "booking"
-    labels = {"booking": "Book Service", "advice": "Ask for Professional Advice", "counselling": "Request Counselling"}
-
-    if request.method == "POST":
-        payload = {
-            "id": str(uuid.uuid4()),
-            "client_id": user.get("id"),
-            "provider_id": provider_id,
-            "appointment_type": "professional_" + purpose,
-            "appointment_date": request.form.get("appointment_date"),
-            "start_time": request.form.get("start_time"),
-            "end_time": request.form.get("end_time") or None,
-            "location": clean(request.form.get("location")) or "Online",
-            "status": "requested",
-            "notes": clean(request.form.get("notes")),
-            "created_at": utc_now(),
-            "updated_at": utc_now(),
-        }
-        row, error = db_insert("appointments", payload)
-        if error:
-            flash("Request could not be submitted: " + str(error)[:700], "danger")
-        else:
-            flash("Professional request submitted successfully.", "success")
-        return redirect(url_for("dashboard"))
-
-    return render_page(labels[purpose], r"""
-<div class="hero">
-  <h2>{{ title }}</h2>
-  <p><strong>{{ provider.get('full_name') or provider.get('name') or 'Professional' }}</strong> · {{ provider.get('profession') or 'Professional Service' }}</p>
-  {% if provider.get('specialization') %}<p>{{ provider.get('specialization') }}</p>{% endif %}
-</div>
-<div class="card">
-<form method="post">
-<input type="hidden" name="purpose" value="{{ purpose }}">
-<label>Date</label><input type="date" name="appointment_date" required>
-<label>Start Time</label><input type="time" name="start_time" required>
-<label>End Time</label><input type="time" name="end_time">
-<label>Location / Online</label><input name="location" value="Online" placeholder="Office, home, clinic or online">
-<label>Message / Details</label><textarea name="notes" required placeholder="Explain what you need from the professional"></textarea>
-<button class="btn" type="submit">{{ title }}</button>
-</form>
-</div>
-""", provider=provider, purpose=purpose, title=labels[purpose])
-
-def professional_is_connected(provider):
-    """Return True when an approved professional has an active recent presence."""
-    if not provider:
-        return False
-    status = str(provider.get("approval_status") or provider.get("verification_status") or "pending").lower()
-    if status not in {"approved", "active", "verified"}:
-        return False
-    if provider.get("is_available") is False:
-        return False
-    seen = provider.get("last_seen_at")
-    if not seen:
-        return False
-    try:
-        from datetime import datetime, timezone
-        dt = datetime.fromisoformat(str(seen).replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return (datetime.now(timezone.utc) - dt).total_seconds() <= 30
-    except Exception:
-        return False
-
-
-@app.route("/api/professional/presence", methods=["POST"])
-@login_required
-def professional_presence():
-    me = current_user() or {}
-    provider = first_row("service_providers", {"user_id": me.get("id")})
-    if not provider:
-        return jsonify({"connected": False, "error": "Professional profile not found"}), 404
-    data = request.get_json(silent=True) or {}
-    online = bool(data.get("online", True))
-    now = utc_now()
-    updates = {"last_seen_at": now, "is_available": online, "updated_at": now}
-    _, error = db_update("service_providers", {"id": provider.get("id")}, updates)
-    if error:
-        return jsonify({"connected": False, "error": str(error)[:400]}), 500
-    return jsonify({"ok": True, "connected": online})
-
-
-@app.route("/professional/contact/<provider_id>")
-@login_required
-def professional_contact(provider_id):
-    provider = first_row("service_providers", {"id": provider_id})
-    if not provider or str(provider.get("provider_type") or "").lower() in {"driver","doctor","teacher","tutor"}:
-        return "Professional provider not found.", 404
-    status = str(provider.get("approval_status") or provider.get("verification_status") or "pending").lower()
-    connected = professional_is_connected(provider)
-    if status not in {"approved","active","verified"} and str((current_user() or {}).get("id")) != str(provider.get("user_id")):
-        return "This professional is not currently available.", 403
-    return render_page("Contact Professional", r"""
-<div class="hero"><h2>🤝 {{ provider.get('full_name') or provider.get('name') or 'Professional' }}</h2><p>{{ provider.get('profession') or 'Professional Service' }}{% if provider.get('specialization') %} · {{ provider.get('specialization') }}{% endif %}</p></div>
-<div class="grid">
-<div class="card"><h3>📅 Book</h3><p>Book this professional for a scheduled service.</p><a class="btn" href="{{ url_for('book_professional', provider_id=provider.id, purpose='booking') }}">Book Service</a></div>
-<div class="card"><h3>💡 Professional Advice</h3><p>Ask a question and request advice from this profession.</p><a class="btn" href="{{ url_for('book_professional', provider_id=provider.id, purpose='advice') }}">Ask for Advice</a></div>
-<div class="card"><h3>🧠 Counselling</h3><p>Request a counselling or consultation session where appropriate.</p><a class="btn" href="{{ url_for('book_professional', provider_id=provider.id, purpose='counselling') }}">Request Counselling</a></div>
-<div class="card"><h3>🔒 Private Communication</h3><p>Direct communication with this professional.</p><a class="btn" href="{{ url_for('professional_chat', provider_id=provider.id) }}">💬 Private Chat</a><a class="btn secondary" href="{{ url_for('professional_call', provider_id=provider.id, mode='voice') }}">📞 Voice</a><a class="btn secondary" href="{{ url_for('professional_call', provider_id=provider.id, mode='video') }}">🎥 Video</a></div><div class="card"><h3>🌍 Public Communication</h3><p>Communicate with the wider {{ provider.get('profession') or 'professional' }} community.</p><a class="btn" href="{{ url_for('professional_community', profession_slug=profession_slug(provider.get('profession') or 'Other Professional Service')) }}">Open Public Room</a><a class="btn secondary" href="{{ url_for('professional_public_post', profession_slug=profession_slug(provider.get('profession') or 'Other Professional Service')) }}">Public Posts</a></div>
-<div class="card"><h3>📞 Voice Call</h3>{% if connected %}<p>🟢 Connected — you can call this professional now.</p><a class="btn" href="{{ url_for('professional_call', provider_id=provider.id, mode='voice') }}">Start Voice Call</a>{% else %}<p>🔴 This professional is not connected right now.</p><button class="btn secondary" disabled>Voice Call Unavailable</button>{% endif %}</div>
-<div class="card"><h3>🎥 Video Call</h3>{% if connected %}<p>🟢 Connected — you can start a video call now.</p><a class="btn" href="{{ url_for('professional_call', provider_id=provider.id, mode='video') }}">Start Video Call</a>{% else %}<p>🔴 This professional is not connected right now.</p><button class="btn secondary" disabled>Video Call Unavailable</button>{% endif %}</div><div class="card"><h3>📲 Incoming Calls</h3><p>Professionals can open their call inbox to receive calls.</p><a class="btn secondary" href="{{ url_for('professional_calls') }}">Open Call Inbox</a></div>
-{% if provider.get('phone') %}<div class="card"><h3>📱 Phone</h3><a class="btn secondary" href="tel:{{ provider.get('phone') }}">Call {{ provider.get('phone') }}</a></div>{% endif %}
-</div>
-""", provider=provider, connected=connected)
-
-@app.route("/professional/chat/<provider_id>")
-@login_required
-def professional_chat(provider_id):
-    provider = first_row("service_providers", {"id": provider_id})
-    if not provider: return "Professional provider not found.", 404
-    me = current_user() or {}
-    return render_page("Professional Chat", r"""
-<div class="hero"><h2>💬 Chat with {{ provider.get('full_name') or provider.get('name') or 'Professional' }}</h2><p>{{ provider.get('profession') or 'Professional Service' }}</p></div>
-<div class="card"><div id="messages" style="height:50vh;overflow:auto;border:1px solid var(--border);padding:12px;border-radius:10px"></div><form id="chatForm" class="actions" style="margin-top:10px"><input id="message" placeholder="Type your message..." required style="flex:1"><button class="btn" type="submit">Send</button></form><p id="chatStatus" class="small"></p></div>
-<script>
-const providerId={{ provider.id|tojson }}; const box=document.getElementById('messages');
-async function loadMessages(){const r=await fetch('/api/professional/chat/'+providerId); if(!r.ok)return; const d=await r.json(); box.innerHTML=(d.messages||[]).map(m=>'<div style="margin:8px 0"><strong>'+esc(m.sender_name||'User')+'</strong><div>'+esc(m.message||'')+'</div><span class="small">'+esc(m.created_at||'')+'</span></div>').join(''); box.scrollTop=box.scrollHeight;}
-function esc(v){return String(v??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));}
-document.getElementById('chatForm').onsubmit=async e=>{e.preventDefault(); const msg=document.getElementById('message'); const r=await fetch('/api/professional/chat/'+providerId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg.value})}); if(r.ok){msg.value='';loadMessages()}else document.getElementById('chatStatus').textContent='Message could not be sent.';};
-loadMessages(); setInterval(loadMessages,2000);
-</script>
-""", provider=provider, me=me)
-
-@app.route("/api/professional/chat/<provider_id>", methods=["GET","POST"])
-@login_required
-def professional_chat_api(provider_id):
-    provider=first_row("service_providers", {"id":provider_id})
-    if not provider: return jsonify({"error":"Provider not found"}),404
-    me=current_user() or {}; me_id=str(me.get("id")); provider_user=str(provider.get("user_id") or "")
-    if request.method=="POST":
-        data=request.get_json(silent=True) or {}; message=clean(data.get("message"))
-        if not message: return jsonify({"error":"Message required"}),400
-        payload={"id":str(uuid.uuid4()),"sender_id":me_id,"receiver_id":provider_user,"provider_id":provider_id,"message":message,"created_at":utc_now()}
-        row,error=db_insert("professional_messages",payload)
-        if error: return jsonify({"error":str(error)[:500]}),500
-        return jsonify({"ok":True,"message":row or payload})
-    rows=db_select("professional_messages", order="created_at.asc", limit=500)
-    relevant=[]
-    for m in rows:
-        a=str(m.get("sender_id") or ""); b=str(m.get("receiver_id") or "")
-        if (a==me_id and b==provider_user and str(m.get("provider_id"))==str(provider_id)) or (a==provider_user and b==me_id and str(m.get("provider_id"))==str(provider_id)):
-            relevant.append(m)
-    for m in relevant:
-        m["sender_name"] = "You" if str(m.get("sender_id"))==me_id else (provider.get("full_name") or provider.get("name") or "Professional")
-    return jsonify({"messages":relevant})
-
-@app.route("/professional/call/<provider_id>")
-@login_required
-def professional_call(provider_id):
-    provider=first_row("service_providers", {"id":provider_id})
-    if not provider: return "Professional provider not found.",404
-    mode=clean(request.args.get("mode")).lower()
-    if mode not in {"voice","video"}: mode="video"
-    if not professional_is_connected(provider):
-        return "This professional is not connected right now. Please try again when they are online.", 409
-    return render_page("Professional Call", r"""
-<div class="hero"><h2>{{ '🎥 Video Call' if mode=='video' else '📞 Voice Call' }}</h2><p>With {{ provider.get('full_name') or provider.get('name') or 'Professional' }} · {{ provider.get('profession') or 'Professional Service' }}</p></div>
-<div class="card"><div id="incoming" style="display:none"></div><div id="callState">Preparing call…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:12px;{% if mode=='voice' %}display:none{% endif %}"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:12px;{% if mode=='voice' %}display:none{% endif %}"></video></div><audio id="remoteAudio" autoplay {% if mode!='voice' %}style="display:none"{% endif %}></audio><div class="actions" style="margin-top:14px"><button class="btn success" id="start">Start {{ mode.title() }} Call</button><button class="btn danger" id="hang">End Call</button><a class="btn secondary" href="{{ url_for('professional_contact', provider_id=provider.id) }}">Back</a></div><p class="small">Allow microphone/camera access. Both people must have an internet connection and keep this page open during the call.</p></div>
-<script>
-const providerId={{ provider.id|tojson }}, mode={{ mode|tojson }}; let callId=null, pc=null, poll=null; const uid={{ (user.get('id') if user else '')|tojson }};
-const state=t=>document.getElementById('callState').textContent=t;
-async function media(){return navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'})}
-let callTimer=null;
-function tellUnavailable(){const msg='This contact is not available. The call could not reach the professional. Please check your internet connection and try again later.'; state('🔴 '+msg); try{if('speechSynthesis' in window){speechSynthesis.cancel(); const u=new SpeechSynthesisUtterance(msg); u.lang='en-US'; speechSynthesis.speak(u)}}catch(e){}}
-function failCall(){if(poll)clearInterval(poll); if(callTimer)clearTimeout(callTimer); if(pc){pc.getSenders().forEach(s=>{try{s.track&&s.track.stop()}catch(e){}}); pc.close(); pc=null} if(callId){fetch('/api/professional/call/'+callId+'/hangup',{method:'POST'}).catch(()=>{}); callId=null} tellUnavailable()}
-async function startCall(){try{if(!navigator.onLine)throw Error('No internet connection'); const stream=await media(); document.getElementById('local').srcObject=stream; pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]}); pc.onconnectionstatechange=()=>{if(pc && ['failed','disconnected'].includes(pc.connectionState)) failCall()}; stream.getTracks().forEach(t=>pc.addTrack(t,stream)); pc.ontrack=e=>{document.getElementById('remote').srcObject=e.streams[0];document.getElementById('remoteAudio').srcObject=e.streams[0]}; pc.onicecandidate=e=>{if(e.candidate && callId)fetch('/api/professional/call/'+callId+'/ice',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate.toJSON(),side:'caller'})}).catch(()=>{})}; const offer=await pc.createOffer(); await pc.setLocalDescription(offer); const r=await fetch('/api/professional/call/'+providerId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode,offer:offer.sdp})}); const d=await r.json(); if(!r.ok)throw Error(d.error||'Call failed'); callId=d.call_id; state('Calling professional…'); callTimer=setTimeout(failCall,30000); poll=setInterval(checkCall,1000)}catch(e){if(e.message&&(/internet|network|failed|available/i.test(e.message))) tellUnavailable(); else state('Could not start call: '+e.message)}}
-async function checkCall(){if(!callId)return; try{const r=await fetch('/api/professional/call/'+callId,{cache:'no-store'}); if(!r.ok)throw Error('Network error'); const d=await r.json(); if(d.call && ['ended','declined','failed'].includes(d.call.status)){failCall();return} if(d.answer && pc && !pc.currentRemoteDescription){await pc.setRemoteDescription({type:'answer',sdp:d.answer}); if(callTimer)clearTimeout(callTimer); state('🟢 Connected');} for(const c of (d.callee_ice||[])){try{await pc.addIceCandidate(c)}catch(e){}}}catch(e){if(!navigator.onLine)failCall()}}
-window.addEventListener('offline',()=>{if(callId)failCall()});
-async function hang(){if(poll)clearInterval(poll); if(callTimer)clearTimeout(callTimer); if(pc){pc.getSenders().forEach(s=>{try{s.track&&s.track.stop()}catch(e){}});pc.close();pc=null} if(callId){await fetch('/api/professional/call/'+callId+'/hangup',{method:'POST'}).catch(()=>{});callId=null} state('Call ended')}
-document.getElementById('start').onclick=startCall; document.getElementById('hang').onclick=hang;
-</script>
-""", provider=provider, mode=mode)
-
-@app.route("/api/professional/call/<provider_id>", methods=["POST"])
-@login_required
-def professional_call_create(provider_id):
-    if _rate_limited("call:" + (request.remote_addr or "unknown"), 10, 60):
-        return jsonify({"error":"Too many call attempts. Please wait a moment and try again."}), 429
-    provider=first_row("service_providers", {"id":provider_id}); me=current_user() or {}
-    if not provider:return jsonify({"error":"Provider not found"}),404
-    data=request.get_json(silent=True) or {}; mode=clean(data.get("mode")).lower(); offer=data.get("offer")
-    if mode not in {"voice","video"} or not offer:return jsonify({"error":"Invalid call request"}),400
-    if not professional_is_connected(provider): return jsonify({"error":"This professional is not connected right now."}),409
-    payload={"id":str(uuid.uuid4()),"caller_id":me.get("id"),"callee_id":provider.get("user_id"),"provider_id":provider_id,"mode":mode,"status":"ringing","offer":offer,"created_at":utc_now()}
-    row,error=db_insert("professional_calls",payload)
-    if error:return jsonify({"error":str(error)[:500]}),500
-    return jsonify({"ok":True,"call_id":payload["id"]})
-
-@app.route("/api/professional/call/<call_id>")
-@login_required
-def professional_call_state(call_id):
-    row=first_row("professional_calls", {"id":call_id}); me=current_user() or {}
-    if not row:return jsonify({"error":"Call not found"}),404
-    if str(me.get("id")) not in {str(row.get("caller_id")),str(row.get("callee_id"))}:return jsonify({"error":"Forbidden"}),403
-    return jsonify({"call":row,"answer":row.get("answer"),"callee_ice":row.get("callee_ice") or []})
-
-@app.route("/api/professional/call/<call_id>/ice", methods=["POST"])
-@login_required
-def professional_call_ice(call_id):
-    row=first_row("professional_calls", {"id":call_id}); me=current_user() or {}; data=request.get_json(silent=True) or {}
-    if not row:return jsonify({"error":"Call not found"}),404
-    if str(me.get("id")) not in {str(row.get("caller_id")),str(row.get("callee_id"))}:return jsonify({"error":"Forbidden"}),403
-    side=clean(data.get("side")); candidate=data.get("candidate")
-    if side not in {"caller","callee"} or not candidate:return jsonify({"error":"Invalid candidate"}),400
-    key="caller_ice" if side=="caller" else "callee_ice"; arr=row.get(key) or []; arr.append(candidate)
-    _,error=db_update("professional_calls", {"id":call_id}, {key:arr})
-    return (jsonify({"ok":True}) if not error else jsonify({"error":str(error)[:400]}), 200 if not error else 500)
-
-@app.route("/api/professional/call/<call_id>/answer", methods=["POST"])
-@login_required
-def professional_call_answer(call_id):
-    row=first_row("professional_calls", {"id":call_id}); me=current_user() or {}; data=request.get_json(silent=True) or {}
-    if not row:return jsonify({"error":"Call not found"}),404
-    if str(me.get("id"))!=str(row.get("callee_id")):return jsonify({"error":"Only the recipient can answer"}),403
-    answer=data.get("answer")
-    if not answer:return jsonify({"error":"Answer required"}),400
-    _,error=db_update("professional_calls", {"id":call_id}, {"answer":answer,"status":"connected","answered_at":utc_now()})
-    return (jsonify({"ok":True}) if not error else jsonify({"error":str(error)[:400]}),200 if not error else 500)
-
-@app.route("/api/professional/call/<call_id>/hangup", methods=["POST"])
-@login_required
-def professional_call_hangup(call_id):
-    row=first_row("professional_calls", {"id":call_id}); me=current_user() or {}
-    if not row:return jsonify({"error":"Call not found"}),404
-    if str(me.get("id")) not in {str(row.get("caller_id")),str(row.get("callee_id"))}:return jsonify({"error":"Forbidden"}),403
-    _,error=db_update("professional_calls", {"id":call_id}, {"status":"ended","ended_at":utc_now()})
-    return (jsonify({"ok":True}) if not error else jsonify({"error":str(error)[:400]}),200 if not error else 500)
-
-
-@app.route("/professional/calls")
-@login_required
-def professional_calls():
-    return render_page("Professional Calls", r"""
-<div class="hero"><h2>📞 Professional Calls</h2><p>Incoming and active voice/video calls.</p></div>
-<div id="calls" class="grid"><div class="card">Checking for calls…</div></div>
-<script>
-async function check(){const r=await fetch('/api/professional/incoming-calls'); if(!r.ok)return; const d=await r.json(); const box=document.getElementById('calls'); box.innerHTML=(d.calls||[]).map(c=>`<div class="card"><h3>Incoming ${c.mode==='video'?'🎥 Video':'📞 Voice'} Call</h3><p>From ${esc(c.caller_name||'User')}</p><a class="btn success" href="/professional/answer-call/${c.id}">Accept</a><button class="btn danger" onclick="rejectCall('${c.id}')">Reject</button></div>`).join('') || '<div class="card"><p>No incoming calls.</p></div>';}
-function esc(v){return String(v??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));}
-async function rejectCall(id){await fetch('/api/professional/call/'+id+'/hangup',{method:'POST'});check();} check();setInterval(check,2000);
-async function presence(online=true){try{await fetch('/api/professional/presence',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({online})})}catch(e){}}
-presence(true); setInterval(()=>presence(true),10000); window.addEventListener('pagehide',()=>navigator.sendBeacon('/api/professional/presence',new Blob([JSON.stringify({online:false})],{type:'application/json'})));
-</script>
-""")
-
-@app.route("/api/professional/incoming-calls")
-@login_required
-def professional_incoming_calls():
-    me=current_user() or {}; rows=db_select("professional_calls", order="created_at.desc", limit=100); out=[]
-    for c in rows:
-        if str(c.get("callee_id"))==str(me.get("id")) and str(c.get("status"))=="ringing":
-            caller=first_row("profiles", {"id":c.get("caller_id")}) or {}
-            c["caller_name"]=caller.get("full_name") or caller.get("name") or caller.get("email") or "User"
-            out.append(c)
-    return jsonify({"calls":out[:20]})
-
-@app.route("/professional/answer-call/<call_id>")
-@login_required
-def professional_answer_call(call_id):
-    call=first_row("professional_calls", {"id":call_id}); me=current_user() or {}
-    if not call or str(call.get("callee_id"))!=str(me.get("id")):return "Call not found.",404
-    provider=first_row("service_providers", {"id":call.get("provider_id")}) or {}
-    return render_page("Answer Professional Call", r"""
-<div class="hero"><h2>Incoming {{ '🎥 Video' if call.mode=='video' else '📞 Voice' }} Call</h2><p>Professional: {{ provider.get('full_name') or provider.get('name') or 'Professional' }}</p></div>
-<div class="card"><button class="btn success" id="accept">Accept Call</button><button class="btn danger" id="decline">Decline</button><p id="state">Waiting…</p><video id="local" autoplay muted playsinline style="width:48%;background:#111;border-radius:12px;{% if call.mode=='voice' %}display:none{% endif %}"></video><video id="remote" autoplay playsinline style="width:48%;background:#111;border-radius:12px;{% if call.mode=='voice' %}display:none{% endif %}"></video><audio id="audio" autoplay {% if call.mode!='voice' %}style="display:none"{% endif %}></audio></div>
-<script>
-const id={{ call.id|tojson }}, mode={{ call.mode|tojson }};let pc=null,stream=null;const state=t=>document.getElementById('state').textContent=t;
-async function accept(){try{stream=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});document.getElementById('local').srcObject=stream;pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});stream.getTracks().forEach(t=>pc.addTrack(t,stream));pc.ontrack=e=>{document.getElementById('remote').srcObject=e.streams[0];document.getElementById('audio').srcObject=e.streams[0]};pc.onicecandidate=e=>{if(e.candidate)fetch('/api/professional/call/'+id+'/ice',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate.toJSON(),side:'callee'})})};const r=await fetch('/api/professional/call/'+id);const d=await r.json();await pc.setRemoteDescription({type:'offer',sdp:d.call.offer});const answer=await pc.createAnswer();await pc.setLocalDescription(answer);await fetch('/api/professional/call/'+id+'/answer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({answer:answer.sdp})});state('Connected');setInterval(async()=>{const q=await fetch('/api/professional/call/'+id);const x=await q.json();for(const c of (x.call.caller_ice||[])){try{await pc.addIceCandidate(c)}catch(e){}}},1000)}catch(e){state('Could not accept call: '+e.message)}}
-document.getElementById('accept').onclick=accept;document.getElementById('decline').onclick=async()=>{await fetch('/api/professional/call/'+id+'/hangup',{method:'POST'});location.href='/professional/calls'};
-</script>
-""", call=call, provider=provider)
 
 # ============================================================
 # DRIVER REGISTRATION / PROFILE
@@ -3298,8 +1854,6 @@ def ensure_driver_provider(user):
         return provider2 or legacy, None
     return None, error
 
-@app.route("/driver/register", methods=["GET", "POST"])
-@login_required
 def driver_register():
     user = current_user() or {}
     provider = get_driver_provider(user.get("id"))
@@ -3752,7 +2306,6 @@ def create_delivery_request():
         "id":str(uuid.uuid4()),
         "customer_id":user["id"],
         "user_id":user["id"],
-        "sender_id":user["id"],
         "driver_id":driver_id,
         "pickup_location":clean(body.get("pickup_location")),
         "destination":clean(body.get("destination")),
@@ -3799,7 +2352,7 @@ def deliveries():
         # after which the customer can search for a driver.
         tracking=make_tracking_code()
         payload={
-            "id":str(uuid.uuid4()),"customer_id":user["id"],"sender_id":user["id"],
+            "id":str(uuid.uuid4()),"customer_id":user["id"],
             "pickup_location":clean(request.form.get("pickup_location")),
             "destination":clean(request.form.get("destination")),
             "recipient_name":clean(request.form.get("recipient_name")),
@@ -4325,52 +2878,6 @@ def sitemap_xml():
 # ADMIN
 # ============================================================
 
-@app.route('/admin/marketplace', methods=['GET','POST'])
-@login_required
-def admin_marketplace():
-    if not (current_user() or {}).get('is_admin'): abort(403)
-    if request.method=='POST':
-        action=clean(request.form.get('action')); item_id=clean(request.form.get('item_id'))
-        if action in ('publish','unpublish'):
-            db_update('koja_marketplace_products',{'id':item_id},{'is_published':action=='publish','updated_at':utc_now()})
-            flash('Marketplace product status updated.','success')
-        elif action=='paid':
-            db_update('koja_marketplace_orders',{'id':item_id},{'status':'paid','updated_at':utc_now()})
-            flash('Order marked paid. Verify the payment independently before doing this.','success')
-        elif action=='cancel':
-            db_update('koja_marketplace_orders',{'id':item_id},{'status':'cancelled','updated_at':utc_now()})
-            flash('Order cancelled.','success')
-        return redirect(url_for('admin_marketplace'))
-    products=db_select('koja_marketplace_products',order='created_at.desc',limit=200) or []
-    orders=db_select('koja_marketplace_orders',order='created_at.desc',limit=200) or []
-    return render_page('Marketplace Admin',r'''<div class="hero"><h1>🛡️ Marketplace Admin</h1><p>Review products and manage marketplace orders.</p></div><div class="card"><h2>Products</h2><table><tr><th>Product</th><th>Price</th><th>Seller</th><th>Status</th><th>Action</th></tr>{% for p in products %}<tr><td>{{ p.title }}</td><td>{{ money(p.price,p.currency) }}</td><td>{{ seller_names.get(p.seller_id,'KOJA Seller') }}</td><td>{{ 'Published' if p.is_published else 'Pending' }}</td><td><form method="post" style="display:inline"><input type="hidden" name="item_id" value="{{ p.id }}"><button class="btn {{ 'warning' if p.is_published else 'success' }}" name="action" value="{{ 'unpublish' if p.is_published else 'publish' }}" type="submit">{{ 'Unpublish' if p.is_published else 'Publish' }}</button></form></td></tr>{% else %}<tr><td colspan="5">No products.</td></tr>{% endfor %}</table></div><div class="card"><h2>Orders</h2><table><tr><th>Product</th><th>Amount</th><th>Status</th><th>Action</th></tr>{% for o in orders %}<tr><td>{{ product_names.get(o.product_id,'Digital product') }}</td><td>{{ money(o.amount,o.currency) }}</td><td>{{ o.status }}</td><td>{% if o.status=='pending' %}<form method="post"><input type="hidden" name="item_id" value="{{ o.id }}"><button class="btn success" name="action" value="paid" type="submit">Mark Paid</button><button class="btn danger" name="action" value="cancel" type="submit">Cancel</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="4">No orders.</td></tr>{% endfor %}</table></div>''',products=products,orders=orders,seller_names={str(p.get('seller_id')):marketplace_seller_name(p.get('seller_id')) for p in products},product_names={str(p.get('id')):p.get('title') for p in products},money=marketplace_money)
-
-@app.route("/admin/earnings")
-@admin_required
-def admin_earnings():
-    teacher_rate=_money(os.getenv("KOJA_TEACHER_COMMISSION","10")); marketplace_rate=_money(os.getenv("KOJA_MARKETPLACE_COMMISSION","0")); delivery_rate=_money(os.getenv("KOJA_DELIVERY_COMMISSION","0"))
-    appointments=db_select("appointments",order="appointment_date.desc",limit=2000) or []
-    teacher_paid=[a for a in appointments if str(a.get("status") or "").lower() in {"completed","paid","delivered"}]
-    teacher_gross=0.0
-    for a in teacher_paid:
-        provider=first_row("service_providers",{"id":a.get("provider_id")}) if a.get("provider_id") else None
-        teacher_gross+=_money(a.get("price") or a.get("amount") or (provider or {}).get("hourly_rate"))
-    teacher_commission=teacher_gross*teacher_rate/100.0
-    deliveries=db_select("deliveries",order="created_at.desc",limit=2000) or []
-    delivery_paid=[d for d in deliveries if str(d.get("status") or "").lower() in {"paid","accepted","picked_up","delivered","completed"}]
-    delivery_gross=sum(_money(d.get("delivery_fee") or d.get("amount") or d.get("price")) for d in delivery_paid); delivery_commission=delivery_gross*delivery_rate/100.0
-    orders=db_select("koja_marketplace_orders",order="created_at.desc",limit=2000) or []
-    marketplace_paid=[o for o in orders if str(o.get("status") or "").lower() in {"paid","completed","delivered"}]
-    marketplace_gross=sum(_money(o.get("amount") or o.get("price")) for o in marketplace_paid); marketplace_commission=marketplace_gross*marketplace_rate/100.0
-    total_gross=teacher_gross+delivery_gross+marketplace_gross; platform_earnings=teacher_commission+delivery_commission+marketplace_commission
-    return render_page("Admin Earnings",r"""
-<div class="hero"><h2>💰 KOJA Earnings & Revenue</h2><p>Central financial overview for administrator monitoring.</p></div>
-<div class="grid"><div class="stat"><div class="big">{{ currency }} {{ '%.2f'|format(platform_earnings) }}</div>KOJA platform earnings</div><div class="stat"><div class="big">{{ currency }} {{ '%.2f'|format(total_gross) }}</div>Total gross transaction value</div><div class="stat"><div class="big">{{ currency }} {{ '%.2f'|format(teacher_commission) }}</div>Teacher commission</div><div class="stat"><div class="big">{{ currency }} {{ '%.2f'|format(delivery_commission + marketplace_commission) }}</div>Other configured commissions</div></div>
-<div class="card"><h3>📊 Earnings by service</h3><table><tr><th>Service</th><th>Gross</th><th>Rate</th><th>KOJA earnings</th><th>Records</th></tr><tr><td>👩‍🏫 Teachers / Tutors</td><td>{{ currency }} {{ '%.2f'|format(teacher_gross) }}</td><td>{{ teacher_rate }}%</td><td>{{ currency }} {{ '%.2f'|format(teacher_commission) }}</td><td>{{ teacher_paid|length }}</td></tr><tr><td>🚚 Deliveries</td><td>{{ currency }} {{ '%.2f'|format(delivery_gross) }}</td><td>{{ delivery_rate }}%</td><td>{{ currency }} {{ '%.2f'|format(delivery_commission) }}</td><td>{{ delivery_paid|length }}</td></tr><tr><td>🛒 Marketplace</td><td>{{ currency }} {{ '%.2f'|format(marketplace_gross) }}</td><td>{{ marketplace_rate }}%</td><td>{{ currency }} {{ '%.2f'|format(marketplace_commission) }}</td><td>{{ marketplace_paid|length }}</td></tr><tr><th>TOTAL</th><th>{{ currency }} {{ '%.2f'|format(total_gross) }}</th><th>—</th><th>{{ currency }} {{ '%.2f'|format(platform_earnings) }}</th><th>{{ teacher_paid|length + delivery_paid|length + marketplace_paid|length }}</th></tr></table></div>
-<div class="card"><h3>⚙️ Commission settings</h3><p>Teacher: {{ teacher_rate }}% · Delivery: {{ delivery_rate }}% · Marketplace: {{ marketplace_rate }}%</p><p class="small">Delivery and marketplace totals are gross transaction value unless their commission environment variables are configured.</p></div>
-<div class="actions"><a class="btn" href="{{ url_for('admin') }}">← Admin Dashboard</a></div>
-""",currency="ZMW",teacher_gross=teacher_gross,teacher_rate=teacher_rate,teacher_commission=teacher_commission,teacher_paid=teacher_paid,delivery_gross=delivery_gross,delivery_rate=delivery_rate,delivery_commission=delivery_commission,delivery_paid=delivery_paid,marketplace_gross=marketplace_gross,marketplace_rate=marketplace_rate,marketplace_commission=marketplace_commission,marketplace_paid=marketplace_paid,total_gross=total_gross,platform_earnings=platform_earnings)
-
 @app.route("/admin")
 @admin_required
 def admin():
@@ -4391,7 +2898,6 @@ def admin():
 <a class="btn" href="{{ url_for('admin_deliveries') }}">Deliveries</a>
 <a class="btn success" href="{{ url_for('admin_live_tracking') }}">🚚 Live GPS Tracking</a>
 <a class="btn" href="{{ url_for('admin_appointments') }}">Appointments</a>
-<a class="btn success" href="{{ url_for('admin_earnings') }}">💰 Earnings & Revenue</a>
 <a class="btn success" href="{{ url_for('admin_search_distribution') }}">🔎 Google Search & Distribution</a>
 </div></div>
 """,counts=counts)
@@ -4628,43 +3134,6 @@ def admin_approvals():
 {% else %}<div class="card"><h3>🎉 No pending approvals</h3><p>Everything currently in the approval queue has been reviewed.</p></div>{% endfor %}
 """, sections=sections)
 
-def publish_approval_update(table, item, action):
-    """Publish a safe, generic public update when a public-facing provider/document is approved."""
-    if action != 'approve' or not item:
-        return
-    public_types = {
-        'teacher_profiles': ('teacher', 'A teacher has been approved on KOJA AFRICA.'),
-        'doctor_profiles': ('professional', 'A professional service provider has been approved on KOJA AFRICA.'),
-        'service_providers': ('professional', 'A professional service provider has been approved on KOJA AFRICA.'),
-        'driver_profiles': ('delivery', 'A delivery driver has been approved on KOJA AFRICA.'),
-        'documents': ('document', 'A new document has been approved and is available on KOJA AFRICA.'),
-    }
-    if table not in public_types:
-        return
-    post_type, generic = public_types[table]
-    title = clean(item.get('title') or item.get('full_name') or item.get('name') or item.get('document_title'))
-    if not title:
-        title = 'KOJA AFRICA Update'
-    body = generic
-    if table == 'documents' and title != 'KOJA AFRICA Update':
-        body = f'“{title}” has been approved and is now available through KOJA AFRICA.'
-    elif table in {'teacher_profiles','doctor_profiles','service_providers','driver_profiles'} and title != 'KOJA AFRICA Update':
-        body = f'{title} has been approved on KOJA AFRICA and is now available to users.'
-    payload = {
-        'author_id': current_user().get('id'),
-        'post_type': post_type,
-        'title': title,
-        'body': body,
-        'media_url': None,
-        'media_type': None,
-        'is_published': True,
-    }
-    created, error = db_insert('koja_public_posts', payload)
-    if error:
-        logger.warning('Approval public update could not be created for %s/%s: %s', table, item.get('id'), error)
-        return
-    logger.info('Published public approval update %s for %s/%s', created, table, item.get('id'))
-
 @app.route("/admin/approvals/<table>/<item_id>", methods=["POST"])
 @admin_required
 def admin_approval_action(table, item_id):
@@ -4699,12 +3168,6 @@ def admin_approval_action(table, item_id):
     if error:
         flash(f"Approval could not be saved: {error}. Make sure the approval migration has been run in Supabase.", "danger")
         return redirect(url_for("admin_approvals"))
-    # Approved public-facing records also generate a public KOJA update.
-    # Private assignment/answer records are intentionally excluded.
-    approved_item = row or first_row(table, {"id": item_id}) or {}
-    if isinstance(approved_item, list):
-        approved_item = approved_item[0] if approved_item else {}
-    publish_approval_update(table, approved_item, action)
     log_activity(event, f"Admin {action} {table} record {item_id}." + (f" Note: {note}" if note else ""))
     # Optional notification to the owner/provider when an email can be resolved.
     recipient = None
@@ -4821,234 +3284,6 @@ def admin_deliveries():
 </table></div>
 """,rows=rows)
 
-
-# ============================================================
-# SENDER / RECEIVER LIVE GPS SHARING
-# ============================================================
-
-def normalize_phone(value):
-    return ''.join(ch for ch in str(value or '') if ch.isdigit())
-
-def delivery_participant(delivery):
-    user=current_user() or {}
-    uid=str(user.get("id") or "")
-    if uid and str(delivery.get("customer_id") or delivery.get("user_id") or delivery.get("sender_id") or "") == uid:
-        return "sender"
-    up=normalize_phone(user.get("phone")); rp=normalize_phone(delivery.get("recipient_phone"))
-    if up and rp and (up == rp or up.endswith(rp) or rp.endswith(up)):
-        return "receiver"
-    return "admin" if user.get("is_admin") else None
-
-@app.route("/delivery/<tracking_code>/sender-live-map")
-@login_required
-def sender_live_map(tracking_code):
-    delivery=first_row("deliveries",{"tracking_code":tracking_code})
-    if not delivery:return "Delivery not found.",404
-    if delivery_participant(delivery) not in ("sender","admin"):return "Sender access required.",403
-    return render_page("Sender & Receiver Live Map", r"""
-<div class="hero"><h2>📍 Sender Live Map</h2><p>See your own live location, the receiver's live location and the driver on one map.</p></div>
-<div class="card"><div class="actions"><button class="btn success" onclick="startGPS()">Start My GPS</button><button class="btn danger" onclick="stopGPS()">Stop My GPS</button><a class="btn secondary" href="{{ url_for('receiver_live_map',tracking_code=tracking_code) }}">Receiver Screen</a></div><p id="status">Waiting for GPS...</p><div id="map"></div></div>
-<script>
-const trackingCode={{ tracking_code|tojson }},myRole="sender";const map=L.map("map").setView([-13.9626,28.3228],6);L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);const icons={sender:L.divIcon({className:"koja-participant",html:"<div style='font-size:36px'>📤</div>",iconSize:[40,40],iconAnchor:[20,20]}),receiver:L.divIcon({className:"koja-participant",html:"<div style='font-size:36px'>📥</div>",iconSize:[40,40],iconAnchor:[20,20]}),driver:L.divIcon({className:"koja-participant",html:"<div style='font-size:36px'>🚚</div>",iconSize:[40,40],iconAnchor:[20,20]})};let watch=null,markers={};function st(t){document.getElementById("status").textContent=t}function mark(role,p,label){if(!markers[role])markers[role]=L.marker(p,{icon:icons[role]}).addTo(map);markers[role].setLatLng(p).bindPopup(label)}async function send(pos){const c=pos.coords;try{const r=await fetch("/api/delivery/"+encodeURIComponent(trackingCode)+"/participant-location",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({latitude:c.latitude,longitude:c.longitude,accuracy:c.accuracy,speed:c.speed,heading:c.heading,altitude:c.altitude})});const d=await r.json();st(d.ok?"🟢 YOUR GPS LIVE — "+new Date().toLocaleTimeString():(d.message||"GPS update failed"))}catch(e){st("GPS active; network retrying...")}}function startGPS(){if(watch!==null)return;if(!navigator.geolocation){st("GPS is not supported on this device.");return}st("Requesting GPS permission...");watch=navigator.geolocation.watchPosition(p=>{mark("sender",[p.coords.latitude,p.coords.longitude],"📤 YOU — Sender");map.setView([p.coords.latitude,p.coords.longitude],15);send(p)},e=>st(e.code===1?"Allow location permission in browser settings.":"GPS unavailable — retrying..."),{enableHighAccuracy:true,maximumAge:2000,timeout:15000})}function stopGPS(){if(watch!==null){navigator.geolocation.clearWatch(watch);watch=null}fetch("/api/delivery/"+encodeURIComponent(trackingCode)+"/participant-offline",{method:"POST"}).catch(()=>{});st("Your GPS sharing stopped.")}async function refresh(){try{const d=await (await fetch("/api/delivery/"+encodeURIComponent(trackingCode)+"/participant-location",{cache:"no-store"})).json();if(d.ok){if(d.sender)mark("sender",[d.sender.latitude,d.sender.longitude],"📤 Sender");if(d.receiver)mark("receiver",[d.receiver.latitude,d.receiver.longitude],"📥 Receiver");if(d.driver)mark("driver",[d.driver.latitude,d.driver.longitude],"🚚 Driver");st("🟢 LIVE • Sender + Receiver + Driver • "+new Date().toLocaleTimeString())}else st(d.message||"Waiting for live locations...")}catch(e){st("Connection lost — retrying...")}}refresh();setInterval(refresh,3000);
-</script>
-""",tracking_code=tracking_code)
-
-@app.route("/delivery/<tracking_code>/receiver-live-map")
-@login_required
-def receiver_live_map(tracking_code):
-    delivery=first_row("deliveries",{"tracking_code":tracking_code})
-    if not delivery:return "Delivery not found.",404
-    if delivery_participant(delivery) not in ("receiver","admin"):return "Receiver access required. The logged-in phone must match the delivery recipient phone.",403
-    return render_page("Receiver & Sender Live Map", r"""
-<div class="hero"><h2>📍 Receiver Live Map</h2><p>See your own live location, the sender's live location and the driver on one map.</p></div>
-<div class="card"><div class="actions"><button class="btn success" onclick="startGPS()">Start My GPS</button><button class="btn danger" onclick="stopGPS()">Stop My GPS</button><a class="btn secondary" href="{{ url_for('sender_live_map',tracking_code=tracking_code) }}">Sender Screen</a></div><p id="status">Waiting for GPS...</p><div id="map"></div></div>
-<script>
-const trackingCode={{ tracking_code|tojson }},myRole="receiver";const map=L.map("map").setView([-13.9626,28.3228],6);L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);const icons={sender:L.divIcon({className:"koja-participant",html:"<div style='font-size:36px'>📤</div>",iconSize:[40,40],iconAnchor:[20,20]}),receiver:L.divIcon({className:"koja-participant",html:"<div style='font-size:36px'>📥</div>",iconSize:[40,40],iconAnchor:[20,20]}),driver:L.divIcon({className:"koja-participant",html:"<div style='font-size:36px'>🚚</div>",iconSize:[40,40],iconAnchor:[20,20]})};let watch=null,markers={};function st(t){document.getElementById("status").textContent=t}function mark(role,p,label){if(!markers[role])markers[role]=L.marker(p,{icon:icons[role]}).addTo(map);markers[role].setLatLng(p).bindPopup(label)}async function send(pos){const c=pos.coords;try{const r=await fetch("/api/delivery/"+encodeURIComponent(trackingCode)+"/participant-location",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({latitude:c.latitude,longitude:c.longitude,accuracy:c.accuracy,speed:c.speed,heading:c.heading,altitude:c.altitude})});const d=await r.json();st(d.ok?"🟢 YOUR GPS LIVE — "+new Date().toLocaleTimeString():(d.message||"GPS update failed"))}catch(e){st("GPS active; network retrying...")}}function startGPS(){if(watch!==null)return;if(!navigator.geolocation){st("GPS is not supported on this device.");return}st("Requesting GPS permission...");watch=navigator.geolocation.watchPosition(p=>{mark("receiver",[p.coords.latitude,p.coords.longitude],"📥 YOU — Receiver");map.setView([p.coords.latitude,p.coords.longitude],15);send(p)},e=>st(e.code===1?"Allow location permission in browser settings.":"GPS unavailable — retrying..."),{enableHighAccuracy:true,maximumAge:2000,timeout:15000})}function stopGPS(){if(watch!==null){navigator.geolocation.clearWatch(watch);watch=null}fetch("/api/delivery/"+encodeURIComponent(trackingCode)+"/participant-offline",{method:"POST"}).catch(()=>{});st("Your GPS sharing stopped.")}async function refresh(){try{const d=await (await fetch("/api/delivery/"+encodeURIComponent(trackingCode)+"/participant-location",{cache:"no-store"})).json();if(d.ok){if(d.sender)mark("sender",[d.sender.latitude,d.sender.longitude],"📤 Sender");if(d.receiver)mark("receiver",[d.receiver.latitude,d.receiver.longitude],"📥 Receiver");if(d.driver)mark("driver",[d.driver.latitude,d.driver.longitude],"🚚 Driver");st("🟢 LIVE • Sender + Receiver + Driver • "+new Date().toLocaleTimeString())}else st(d.message||"Waiting for live locations...")}catch(e){st("Connection lost — retrying...")}}refresh();setInterval(refresh,3000);
-</script>
-""",tracking_code=tracking_code)
-
-@app.route("/api/delivery/<tracking_code>/participant-location", methods=["GET","POST"])
-@login_required
-def participant_location_api(tracking_code):
-    delivery=first_row("deliveries",{"tracking_code":tracking_code})
-    if not delivery:return jsonify({"ok":False,"message":"Delivery not found."}),404
-    role=delivery_participant(delivery)
-    if role is None:return jsonify({"ok":False,"message":"You are not authorized for this delivery."}),403
-    if not table_exists("delivery_participant_locations"):return jsonify({"ok":False,"message":"Run the updated database SQL to enable sender/receiver live GPS."}),503
-    if request.method=="POST":
-        if role not in ("sender","receiver"):return jsonify({"ok":False,"message":"Only sender or receiver can share GPS."}),403
-        body=request.get_json(silent=True) or {};lat=safe_float(body.get("latitude"));lon=safe_float(body.get("longitude"))
-        if lat is None or lon is None or not(-90<=lat<=90 and -180<=lon<=180):return jsonify({"ok":False,"message":"Invalid GPS coordinates."}),400
-        payload={"id":str(uuid.uuid4()),"delivery_id":str(delivery.get("id")),"user_id":str(current_user().get("id")),"role":role,"latitude":lat,"longitude":lon,"accuracy":safe_float(body.get("accuracy")),"speed":safe_float(body.get("speed")),"heading":safe_float(body.get("heading")),"altitude":safe_float(body.get("altitude")),"is_online":True,"created_at":utc_now()}
-        row,error=db_insert("delivery_participant_locations",payload)
-        if error:return jsonify({"ok":False,"message":"Could not save participant GPS.","error":str(error)[:400]}),500
-        return jsonify({"ok":True,"role":role,"updated_at":payload["created_at"]})
-    rows=db_select("delivery_participant_locations",filters={"delivery_id":str(delivery.get("id"))},order="created_at.desc",limit=100);now=datetime.now(timezone.utc);latest={}
-    for x in rows:
-        rr=x.get("role")
-        if rr in latest or not x.get("is_online"):continue
-        try:
-            ts=datetime.fromisoformat(str(x.get("created_at")).replace("Z","+00:00"));ts=ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
-            if (now-ts).total_seconds()>20:continue
-        except Exception:pass
-        latest[rr]=x
-    out={"ok":True,"sender":None,"receiver":None,"driver":None}
-    for rr,x in latest.items():out[rr]={"latitude":x.get("latitude"),"longitude":x.get("longitude"),"accuracy":x.get("accuracy"),"speed":x.get("speed"),"heading":x.get("heading"),"updated_at":x.get("created_at")}
-    driver_id=delivery.get("driver_id")
-    if driver_id:
-        locs=db_select("driver_locations",filters={"driver_id":driver_id},order="created_at.desc",limit=1)
-        if locs:
-            x=locs[0];fresh=True
-            try:
-                ts=datetime.fromisoformat(str(x.get("created_at")).replace("Z","+00:00"));ts=ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc);fresh=(now-ts).total_seconds()<=20
-            except Exception:pass
-            if fresh and x.get("is_online"):out["driver"]={"latitude":x.get("latitude"),"longitude":x.get("longitude"),"accuracy":x.get("accuracy"),"speed":x.get("speed"),"heading":x.get("heading"),"updated_at":x.get("created_at")}
-    return jsonify(out)
-
-@app.route("/api/delivery/<tracking_code>/participant-offline", methods=["POST"])
-@login_required
-def participant_offline_api(tracking_code):
-    delivery=first_row("deliveries",{"tracking_code":tracking_code})
-    if not delivery:return jsonify({"ok":False,"message":"Delivery not found."}),404
-    role=delivery_participant(delivery)
-    if role not in ("sender","receiver"):return jsonify({"ok":False,"message":"Participant access required."}),403
-    if not table_exists("delivery_participant_locations"):return jsonify({"ok":True})
-    rows=db_select("delivery_participant_locations",filters={"delivery_id":str(delivery.get("id")),"user_id":str(current_user().get("id"))},order="created_at.desc",limit=1)
-    if rows:
-        x=rows[0];x["is_online"]=False;x["created_at"]=utc_now();db_insert("delivery_participant_locations",x)
-    return jsonify({"ok":True,"message":"Participant GPS sharing stopped."})
-
-# ============================================================
-# OWNER LIVE LOCATION + SMART TV LIVE MAP
-# ============================================================
-
-@app.route("/owner/live-location")
-@admin_required
-def owner_live_location():
-    return render_page("Owner Live Location", r"""
-<div class="hero"><h2>📍 Owner Live Location</h2>
-<p>Use the owner's phone to share its real GPS position. Keep this page open while sharing.</p></div>
-<div class="card">
-  <div class="actions">
-    <button class="btn success" onclick="startOwnerGPS()">Start Owner GPS</button>
-    <button class="btn danger" onclick="stopOwnerGPS()">Stop GPS</button>
-    <a class="btn secondary" href="{{ url_for('admin_live_tv') }}">Open Smart TV Live Map</a>
-  </div>
-  <p id="owner-status">GPS not started.</p>
-  <div id="map"></div>
-</div>
-<script>
-let ownerWatch=null, ownerMarker=null;
-const map=L.map("map").setView([-13.9626,28.3228],6);
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);
-function os(t){document.getElementById("owner-status").textContent=t}
-function startOwnerGPS(){
- if(!navigator.geolocation){os("This device does not support GPS.");return}
- if(ownerWatch!==null) return;
- os("Requesting high-accuracy GPS permission...");
- ownerWatch=navigator.geolocation.watchPosition(async pos=>{
-   const c=pos.coords;
-   if(!ownerMarker) ownerMarker=L.marker([c.latitude,c.longitude]).addTo(map).bindPopup("Owner LIVE location");
-   else ownerMarker.setLatLng([c.latitude,c.longitude]);
-   map.setView([c.latitude,c.longitude],17,{animate:true});
-   try{
-     const r=await fetch("{{ url_for('owner_location_update') }}",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({latitude:c.latitude,longitude:c.longitude,accuracy:c.accuracy,speed:c.speed,heading:c.heading,altitude:c.altitude})});
-     const d=await r.json(); os(d.ok?"🟢 OWNER LIVE — updated "+new Date().toLocaleTimeString():d.message||"GPS update failed.");
-   }catch(e){os("GPS is active but network update failed — retrying...")}
- },e=>{os(e.code===1?"Location permission denied.":e.code===2?"Location unavailable.":"GPS timeout — retrying...")},{enableHighAccuracy:true,maximumAge:2000,timeout:15000});
-}
-function stopOwnerGPS(){
- if(ownerWatch!==null){navigator.geolocation.clearWatch(ownerWatch);ownerWatch=null;}
- fetch("{{ url_for('owner_location_offline') }}",{method:"POST"}).catch(()=>{});
- os("Owner GPS sharing stopped.");
-}
-window.addEventListener("pagehide",()=>{if(ownerWatch!==null) navigator.geolocation.clearWatch(ownerWatch);});
-</script>
-""")
-
-@app.route("/api/owner/location", methods=["POST"])
-@admin_required
-def owner_location_update():
-    body=request.get_json(silent=True) or {}
-    lat=safe_float(body.get("latitude")); lon=safe_float(body.get("longitude"))
-    if lat is None or lon is None or not (-90<=lat<=90 and -180<=lon<=180):
-        return jsonify({"ok":False,"message":"Invalid latitude or longitude."}),400
-    if not table_exists("owner_locations"):
-        return jsonify({"ok":False,"message":"owner_locations table is not available. Run the updated database SQL."}),503
-    payload={"id":str(uuid.uuid4()),"owner_id":str(current_user().get("id")),"latitude":lat,"longitude":lon,
-             "accuracy":safe_float(body.get("accuracy")),"speed":safe_float(body.get("speed")),
-             "heading":safe_float(body.get("heading")),"altitude":safe_float(body.get("altitude")),
-             "is_online":True,"created_at":utc_now()}
-    row,error=db_insert("owner_locations",payload)
-    if error:
-        logger.error("owner_locations insert failed: %s",error)
-        return jsonify({"ok":False,"message":"Owner GPS could not be saved.","error":str(error)[:500]}),500
-    return jsonify({"ok":True,"latitude":lat,"longitude":lon,"accuracy":payload["accuracy"],"created_at":payload["created_at"]})
-
-@app.route("/api/owner/offline", methods=["POST"])
-@admin_required
-def owner_location_offline():
-    if not table_exists("owner_locations"):
-        return jsonify({"ok":True,"message":"Owner GPS sharing stopped locally."})
-    latest=db_select("owner_locations",filters={"owner_id":str(current_user().get("id"))},order="created_at.desc",limit=1)
-    x=latest[0] if latest else {}
-    payload={"id":str(uuid.uuid4()),"owner_id":str(current_user().get("id")),"latitude":x.get("latitude"),"longitude":x.get("longitude"),
-             "accuracy":x.get("accuracy"),"speed":None,"heading":None,"altitude":x.get("altitude"),"is_online":False,"created_at":utc_now()}
-    db_insert("owner_locations",payload)
-    return jsonify({"ok":True,"message":"Owner is now offline."})
-
-@app.route("/admin/live-tv")
-@admin_required
-def admin_live_tv():
-    return render_page("KOJA Smart TV Live Map", r"""
-<div style="position:fixed;inset:0;background:#111;z-index:9999">
-  <div id="tvmap" style="position:absolute;inset:0"></div>
-  <div style="position:absolute;top:18px;left:18px;right:18px;display:flex;justify-content:space-between;align-items:center;pointer-events:none">
-    <div style="background:rgba(0,0,0,.78);color:white;padding:12px 18px;border-radius:14px;font-weight:800;font-size:22px">KOJA AFRICA • LIVE</div>
-    <div id="tvstatus" style="background:rgba(0,0,0,.78);color:white;padding:10px 15px;border-radius:12px">Connecting...</div>
-  </div>
-  <div style="position:absolute;bottom:18px;left:18px;background:rgba(0,0,0,.78);color:white;padding:12px 16px;border-radius:14px;pointer-events:none">
-    <b>🟢 LIVE</b> • Drivers + Owner GPS • Auto refresh
-  </div>
-</div>
-<script>
-const tvmap=L.map("tvmap",{zoomControl:false}).setView([-13.9626,28.3228],6);
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap contributors"}).addTo(tvmap);
-const tvMarkers={}; let ownerMarker=null;
-const truckIcon=L.divIcon({className:"koja-tv-truck",html:"<div style='font-size:36px'>🚚</div>",iconSize:[40,40],iconAnchor:[20,20]});
-const ownerIcon=L.divIcon({className:"koja-tv-owner",html:"<div style='font-size:36px'>👤</div>",iconSize:[40,40],iconAnchor:[20,20]});
-function esc(v){return String(v??"").replace(/[&<>\"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]));}
-async function refreshTV(){
- try{
-   const [dr,ow]=await Promise.all([fetch("{{ url_for('admin_live_drivers_api') }}",{cache:"no-store"}),fetch("{{ url_for('owner_live_api') }}",{cache:"no-store"})]);
-   const d=await dr.json(),o=await ow.json(); let count=0;
-   if(d.ok){const seen={}; (d.drivers||[]).forEach(x=>{seen[x.driver_id]=true;count++;const p=[Number(x.latitude),Number(x.longitude)];if(!tvMarkers[x.driver_id])tvMarkers[x.driver_id]=L.marker(p,{icon:truckIcon}).addTo(tvmap);else tvMarkers[x.driver_id].setLatLng(p);tvMarkers[x.driver_id].bindPopup("<b>🚚 "+esc(x.name)+"</b><br>LIVE<br>Accuracy: "+esc(x.accuracy||"—")+" m");});Object.keys(tvMarkers).forEach(id=>{if(!seen[id]){tvmap.removeLayer(tvMarkers[id]);delete tvMarkers[id];}});}
-   if(o.ok&&o.location){const p=[Number(o.location.latitude),Number(o.location.longitude)];if(!ownerMarker)ownerMarker=L.marker(p,{icon:ownerIcon}).addTo(tvmap);else ownerMarker.setLatLng(p);ownerMarker.bindPopup("<b>👤 OWNER</b><br>LIVE location<br>Accuracy: "+esc(o.location.accuracy||"—")+" m");count++;}
-   document.getElementById("tvstatus").textContent="🟢 "+count+" live location(s) • "+new Date().toLocaleTimeString();
- }catch(e){document.getElementById("tvstatus").textContent="🔴 Connection lost — retrying";}
-}
-async function ownerLive(){return null}
-refreshTV();setInterval(refreshTV,3000);
-</script>
-""")
-
-@app.route("/api/admin/owner-live")
-@admin_required
-def owner_live_api():
-    if not table_exists("owner_locations"):
-        return jsonify({"ok":True,"location":None})
-    rows=db_select("owner_locations",order="created_at.desc",limit=1)
-    if not rows or not rows[0].get("is_online"):
-        return jsonify({"ok":True,"location":None})
-    loc=rows[0]
-    try:
-        ts=datetime.fromisoformat(str(loc.get("created_at")).replace("Z","+00:00"));
-        if ts.tzinfo is None: ts=ts.replace(tzinfo=timezone.utc)
-        age=max(0,(datetime.now(timezone.utc)-ts).total_seconds())
-        if age>30:return jsonify({"ok":True,"location":None})
-    except Exception: pass
-    return jsonify({"ok":True,"location":{"latitude":loc.get("latitude"),"longitude":loc.get("longitude"),"accuracy":loc.get("accuracy"),"speed":loc.get("speed"),"heading":loc.get("heading"),"updated_at":loc.get("created_at")}})
-
 @app.route("/admin/appointments")
 @admin_required
 def admin_appointments():
@@ -5060,329 +3295,6 @@ def admin_appointments():
 """,rows=rows)
 
 # ============================================================
-# KOJA CONNECT — GENERAL SOCIAL COMMUNICATION
-# Separate from Professional Services communication.
-# ============================================================
-
-KOJA_CONNECT_SQL = r"""
-create table if not exists public.koja_contacts (
- id uuid primary key default gen_random_uuid(), requester_id uuid not null, addressee_id uuid not null,
- status text not null default 'pending', created_at timestamptz default now(), updated_at timestamptz default now(),
- unique(requester_id, addressee_id)
-);
-create index if not exists koja_contacts_requester_idx on public.koja_contacts(requester_id, status);
-create index if not exists koja_contacts_addressee_idx on public.koja_contacts(addressee_id, status);
-create table if not exists public.koja_conversations (
- id uuid primary key default gen_random_uuid(), conversation_type text not null default 'direct', created_by uuid,
- name text, avatar_url text, created_at timestamptz default now(), updated_at timestamptz default now()
-);
-create table if not exists public.koja_conversation_members (
- conversation_id uuid not null references public.koja_conversations(id) on delete cascade,
- user_id uuid not null, role text not null default 'member', joined_at timestamptz default now(), last_read_at timestamptz,
- muted boolean default false, primary key(conversation_id,user_id)
-);
-create index if not exists koja_members_user_idx on public.koja_conversation_members(user_id, conversation_id);
-create table if not exists public.koja_messages (
- id uuid primary key default gen_random_uuid(), conversation_id uuid not null references public.koja_conversations(id) on delete cascade,
- sender_id uuid not null, message_type text not null default 'text', body text default '', file_url text,
- created_at timestamptz default now(), edited_at timestamptz, deleted_at timestamptz
-);
-create index if not exists koja_messages_conversation_idx on public.koja_messages(conversation_id, created_at);
-create table if not exists public.koja_calls (
- id uuid primary key default gen_random_uuid(), conversation_id uuid not null references public.koja_conversations(id) on delete cascade,
- caller_id uuid not null, callee_id uuid not null, mode text not null default 'video', status text not null default 'ringing',
- offer text, answer text, caller_ice jsonb default '[]'::jsonb, callee_ice jsonb default '[]'::jsonb,
- created_at timestamptz default now(), answered_at timestamptz, ended_at timestamptz
-);
-create index if not exists koja_calls_callee_idx on public.koja_calls(callee_id,status,created_at desc);
-create index if not exists koja_calls_caller_idx on public.koja_calls(caller_id,status,created_at desc);
-create table if not exists public.koja_presence (
- user_id uuid primary key, is_online boolean default false, last_seen_at timestamptz default now(), updated_at timestamptz default now()
-);
-create table if not exists public.koja_statuses (
- id uuid primary key default gen_random_uuid(), user_id uuid not null, text_content text default '', media_url text,
- media_type text default 'text', visibility text not null default 'contacts',
- expires_at timestamptz not null default (now()+interval '24 hours'), created_at timestamptz default now()
-);
-create index if not exists koja_statuses_user_idx on public.koja_statuses(user_id,created_at desc);
-create table if not exists public.koja_notifications (
- id uuid primary key default gen_random_uuid(), user_id uuid not null, notification_type text, title text, body text, related_id uuid,
- is_read boolean default false, created_at timestamptz default now()
-);
-create index if not exists koja_notifications_user_idx on public.koja_notifications(user_id,is_read,created_at desc);
-create table if not exists public.koja_blocks (
- blocker_id uuid not null, blocked_id uuid not null, created_at timestamptz default now(), primary key(blocker_id,blocked_id)
-);
-"""
-
-def _connect_user(uid): return find_user_by_id(uid) or {}
-def _conversation_member(cid, uid): return bool(first_row('koja_conversation_members', {'conversation_id':cid,'user_id':uid}))
-def _profile_name(uid):
-    u=_connect_user(uid); return first_nonempty(u.get('full_name'),u.get('name'),u.get('email'),'KOJA User')
-def _direct_conversation(a,b):
-    rows=db_select('koja_conversation_members',filters={'user_id':a},limit=100)
-    for m in rows:
-        cid=m.get('conversation_id')
-        if cid and _conversation_member(cid,b):
-            c=first_row('koja_conversations',{'id':cid})
-            if c and c.get('conversation_type','direct')=='direct': return c
-    c,err=db_insert('koja_conversations',{'id':str(uuid.uuid4()),'conversation_type':'direct','created_by':a,'created_at':utc_now(),'updated_at':utc_now()})
-    if err or not c:return None
-    cid=c['id']; db_insert('koja_conversation_members',{'conversation_id':cid,'user_id':a,'role':'member','joined_at':utc_now()}); db_insert('koja_conversation_members',{'conversation_id':cid,'user_id':b,'role':'member','joined_at':utc_now()}); return c
-
-@app.route('/connect')
-@login_required
-def connect():
-    uid=current_user()['id']; members=db_select('koja_conversation_members',filters={'user_id':uid},limit=100); conversations=[]
-    for m in members:
-        c=first_row('koja_conversations',{'id':m.get('conversation_id')})
-        if not c: continue
-        others=db_select('koja_conversation_members',filters={'conversation_id':c['id']},limit=10); other=next((x for x in others if str(x.get('user_id'))!=str(uid)),None)
-        c['_other_name']=_profile_name(other['user_id']) if other else (c.get('name') or 'Group'); last=db_select('koja_messages',filters={'conversation_id':c['id']},order='created_at.desc',limit=1); c['_last']=(last[0].get('body') or last[0].get('message_type','')) if last else 'No messages yet'; conversations.append(c)
-    return render_page('KOJA Connect',r'''<div class="hero"><h2>💬 KOJA Connect</h2><p>Chat, voice messages, voice calls, video calls, photos, files, groups and status updates with other KOJA users.</p></div><div class="grid"><div class="card"><h3>👥 Find People</h3><p>Search KOJA users and start a conversation.</p><a class="btn" href="{{ url_for('connect_people') }}">Find People</a></div><div class="card"><h3>🟢 Status</h3><p>Share a 24-hour status.</p><a class="btn" href="{{ url_for('connect_status') }}">My Status</a></div><div class="card"><h3>📞 Calls</h3><p>Voice and video calls separate from Professional Services.</p><a class="btn" href="{{ url_for('connect_calls') }}">Call History</a></div></div><div class="card"><h3>Recent Chats</h3>{% for c in conversations %}<a class="card" style="display:block;text-decoration:none;color:inherit" href="{{ url_for('connect_chat',conversation_id=c.id) }}"><strong>{{ c._other_name }}</strong><div class="small">{{ c._last }}</div></a>{% else %}<p>No chats yet. Find a KOJA user to start.</p>{% endfor %}</div>''',conversations=conversations)
-
-@app.route('/connect/people',methods=['GET','POST'])
-@login_required
-def connect_people():
-    uid=current_user()['id']
-    if request.method=='POST':
-        target=clean(request.form.get('user_id')); existing=first_row('koja_contacts',{'requester_id':uid,'addressee_id':target}) or first_row('koja_contacts',{'requester_id':target,'addressee_id':uid})
-        if target and target!=uid and find_user_by_id(target) and not existing:
-            db_insert('koja_contacts',{'id':str(uuid.uuid4()),'requester_id':uid,'addressee_id':target,'status':'pending','created_at':utc_now(),'updated_at':utc_now()}); db_insert('koja_notifications',{'user_id':target,'notification_type':'friend_request','title':'New KOJA connection request','body':f'{_profile_name(uid)} wants to connect on KOJA.','related_id':uid}); flash('Connection request sent.','success')
-        else: flash('User not found or request already exists.','warning')
-        return redirect(url_for('connect_people'))
-    q=clean(request.args.get('q')); people=[]
-    if q:
-        for col in ('email','full_name','name'):
-            for x in db_select('profiles',filters={col:f'ilike.*{q}*'},limit=30):
-                if str(x.get('id'))!=str(uid) and not any(str(p.get('id'))==str(x.get('id')) for p in people): people.append(x)
-    incoming=db_select('koja_contacts',filters={'addressee_id':uid,'status':'pending'},limit=50)
-    return render_page('KOJA People',r'''<div class="card"><h2>Find KOJA People</h2><form><input name="q" value="{{ q }}" placeholder="Search name or email"><button>Search</button></form></div><div class="grid">{% for p in people %}<div class="card"><h3>{{ p.get('full_name') or p.get('name') or p.get('email') }}</h3><p>{{ p.get('email') or '' }}</p><form method="post"><input type="hidden" name="user_id" value="{{ p.id }}"><button>➕ Connect</button></form><a class="btn secondary" href="{{ url_for('connect_new',user_id=p.id) }}">Message</a></div>{% endfor %}</div><div class="card"><h3>Incoming Requests</h3>{% for r in incoming %}<div class="card"><strong>{{ _profile_name(r.requester_id) }}</strong><form method="post" action="{{ url_for('connect_accept',contact_id=r.id) }}"><button>Accept</button></form></div>{% else %}<p>No pending requests.</p>{% endfor %}</div>''',people=people,q=q,incoming=incoming,_profile_name=_profile_name)
-
-@app.route('/connect/accept/<contact_id>',methods=['POST'])
-@login_required
-def connect_accept(contact_id):
-    uid=current_user()['id']; r=first_row('koja_contacts',{'id':contact_id})
-    if not r or str(r.get('addressee_id'))!=str(uid): abort(404)
-    db_update('koja_contacts',{'id':contact_id},{'status':'accepted','updated_at':utc_now()}); _direct_conversation(uid,r['requester_id']); flash('Connection accepted.','success'); return redirect(url_for('connect_people'))
-
-@app.route('/connect/new/<user_id>')
-@login_required
-def connect_new(user_id):
-    uid=current_user()['id']
-    if user_id==uid or not find_user_by_id(user_id): abort(404)
-    c=_direct_conversation(uid,user_id)
-    if not c: flash('Could not start chat. Run the KOJA Connect SQL first.','danger'); return redirect(url_for('connect'))
-    return redirect(url_for('connect_chat',conversation_id=c['id']))
-
-@app.route('/connect/chat/<conversation_id>')
-@login_required
-def connect_chat(conversation_id):
-    uid=current_user()['id'];
-    if not _conversation_member(conversation_id,uid): abort(403)
-    members=db_select('koja_conversation_members',filters={'conversation_id':conversation_id},limit=100); other=next((m for m in members if str(m.get('user_id'))!=str(uid)),None); other_id=other.get('user_id') if other else None; c=first_row('koja_conversations',{'id':conversation_id}) or {}
-    return render_page('KOJA Chat',r'''<div class="card"><a href="{{ url_for('connect') }}">← Connect</a><h2>💬 {{ name }}</h2></div><div class="card" id="messages" style="min-height:300px;max-height:55vh;overflow:auto"></div><div class="card"><form id="sendForm"><input id="text" autocomplete="off" placeholder="Write a message…"><button>Send</button></form><div class="grid"><button type="button" id="voiceNote">🎙️ Voice message</button><a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='voice') }}">📞 Voice Call</a><a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='video') }}">🎥 Video Call</a></div></div><script>const cid={{ conversation_id|tojson }};const box=document.getElementById('messages');const text=document.getElementById('text');async function load(){let r=await fetch('/api/connect/messages/'+cid);if(!r.ok)return;let d=await r.json();box.innerHTML=d.messages.map(m=>'<div class="card"><strong>'+m.sender_name+'</strong><div>'+((m.message_type==='text')?(m.body||''):'<a target="_blank" href="'+m.file_url+'">'+m.message_type+'</a>')+'</div><div class="small">'+(m.created_at||'')+'</div></div>').join('');box.scrollTop=box.scrollHeight;}document.getElementById('sendForm').onsubmit=async e=>{e.preventDefault();let v=text.value.trim();if(!v)return;let r=await fetch('/api/connect/messages/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:v})});if(r.ok){text.value='';load();}};load();setInterval(load,2500);let rec,parts=[];document.getElementById('voiceNote').onclick=async()=>{try{let st=await navigator.mediaDevices.getUserMedia({audio:true});rec=new MediaRecorder(st);parts=[];rec.ondataavailable=e=>parts.push(e.data);rec.onstop=async()=>{let b=new Blob(parts,{type:'audio/webm'});let fd=new FormData();fd.append('file',b,'voice.webm');await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});st.getTracks().forEach(t=>t.stop());load();};rec.start();setTimeout(()=>rec&&rec.state==='recording'&&rec.stop(),60000);}catch(e){alert('Microphone permission is required.');}};</script>''',conversation_id=conversation_id,name=_profile_name(other_id) if other_id else c.get('name','KOJA Chat'))
-
-@app.route('/api/connect/messages/<conversation_id>',methods=['GET','POST'])
-@login_required
-def connect_messages(conversation_id):
-    uid=current_user()['id']
-    if not _conversation_member(conversation_id,uid): return jsonify(error='Forbidden'),403
-    if request.method=='POST':
-        d=request.get_json(silent=True) or {}; body=clean(d.get('message'))
-        if not body:return jsonify(error='Empty message'),400
-        row,err=db_insert('koja_messages',{'id':str(uuid.uuid4()),'conversation_id':conversation_id,'sender_id':uid,'message_type':'text','body':body,'created_at':utc_now()})
-        if err:return jsonify(error=err),500
-        return jsonify(message=row)
-    rows=db_select('koja_messages',filters={'conversation_id':conversation_id},order='created_at.asc',limit=300)
-    for m in rows:m['sender_name']=_profile_name(m.get('sender_id'))
-    return jsonify(messages=rows)
-
-@app.route('/api/connect/messages/<conversation_id>/upload',methods=['POST'])
-@login_required
-def connect_upload(conversation_id):
-    uid=current_user()['id']
-    if not _conversation_member(conversation_id,uid):return jsonify(error='Forbidden'),403
-    f=request.files.get('file')
-    if not f:return jsonify(error='No file'),400
-    if not f.filename.lower().endswith('.webm'):return jsonify(error='Only webm voice messages are supported here.'),400
-    data=f.read()
-    if len(data)>5*1024*1024:return jsonify(error='Voice message too large'),413
-    path=f'connect/audio/{uuid.uuid4().hex}.webm'; r=requests.post(sb_storage_url(path),headers=sb_headers({'Content-Type':'audio/webm','x-upsert':'true'}),data=data,timeout=60)
-    if not r.ok:return jsonify(error=r.text[:500]),500
-    row,err=db_insert('koja_messages',{'id':str(uuid.uuid4()),'conversation_id':conversation_id,'sender_id':uid,'message_type':'audio','file_url':sb_storage_url(path),'body':'Voice message','created_at':utc_now()})
-    return jsonify(message=row) if not err else (jsonify(error=err),500)
-
-@app.route('/connect/status',methods=['GET','POST'])
-@login_required
-def connect_status():
-    uid=current_user()['id']
-    if request.method=='POST':
-        body=clean(request.form.get('text'))
-        if body:db_insert('koja_statuses',{'id':str(uuid.uuid4()),'user_id':uid,'text_content':body,'media_type':'text','visibility':'contacts','expires_at':(datetime.now(timezone.utc)+timedelta(hours=24)).isoformat(),'created_at':utc_now()});flash('Status posted for 24 hours.','success')
-        return redirect(url_for('connect_status'))
-    rows=db_select('koja_statuses',filters={'user_id':uid},order='created_at.desc',limit=30)
-    return render_page('KOJA Status',r'''<div class="card"><h2>🟢 My Status</h2><form method="post"><textarea name="text" maxlength="1000" placeholder="Share an update…"></textarea><button>Post Status</button></form></div>{% for s in rows %}<div class="card"><strong>{{ s.text_content }}</strong><div class="small">Expires: {{ s.expires_at }}</div></div>{% endfor %}''',rows=rows)
-
-@app.route('/connect/answer/<call_id>')
-@login_required
-def connect_answer(call_id):
-    uid=current_user()['id']; c=first_row('koja_calls',{'id':call_id})
-    if not c or str(c.get('callee_id'))!=str(uid) or c.get('status')!='ringing': abort(404)
-    return render_page('Answer KOJA Call',r'''<div class="card"><h2>📞 Incoming {{ c.mode|title }} Call</h2><p>From <strong>{{ name }}</strong></p><div id="state">Connecting…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px"></video></div><button id="hang" class="btn danger">End Call</button></div><script>const cid={{ call_id|tojson }},mode={{ c.mode|tojson }};let pc=null,timer=null;async function api(u,o){let r=await fetch(u,o);if(!r.ok)throw 0;return r.json()}async function start(){try{let x=await api('/api/connect/call/check/'+cid);if(!x.call.offer)throw 0;pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});let st=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});local.srcObject=st;st.getTracks().forEach(t=>pc.addTrack(t,st));pc.ontrack=e=>remote.srcObject=e.streams[0];pc.onicecandidate=e=>{if(e.candidate)fetch('/api/connect/call/ice/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate})})};await pc.setRemoteDescription({type:'offer',sdp:x.call.offer});let ans=await pc.createAnswer();await pc.setLocalDescription(ans);await api('/api/connect/call/answer/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({answer:ans.sdp})});state.textContent='Connected';timer=setInterval(async()=>{try{let z=await api('/api/connect/call/check/'+cid);if(z.call.status==='ended'){clearInterval(timer);pc.close();state.textContent='Call ended'}}catch(e){}},1500)}catch(e){state.textContent='Could not answer this call.'}}hang.onclick=()=>{fetch('/api/connect/call/end/'+cid,{method:'POST'});clearInterval(timer);if(pc)pc.close();state.textContent='Call ended'};start();</script>''',c=c,call_id=call_id,name=_profile_name(c.get('caller_id')))
-
-@app.route('/api/connect/call/answer/<call_id>',methods=['POST'])
-@login_required
-def connect_call_answer(call_id):
-    uid=current_user()['id'];c=first_row('koja_calls',{'id':call_id})
-    if not c or str(c.get('callee_id'))!=str(uid):return jsonify(error='Forbidden'),403
-    d=request.get_json(silent=True) or {};db_update('koja_calls',{'id':call_id},{'answer':clean(d.get('answer')),'status':'answered','answered_at':utc_now()});return jsonify(ok=True)
-
-@app.route('/connect/calls')
-@login_required
-def connect_calls():
-    uid=current_user()['id']; rows=db_select('koja_calls',filters={'caller_id':uid},order='created_at.desc',limit=50)+db_select('koja_calls',filters={'callee_id':uid},order='created_at.desc',limit=50); rows=sorted(rows,key=lambda x:x.get('created_at',''),reverse=True)[:50]
-    return render_page('KOJA Calls',r'''<div class="card"><h2>📞 KOJA Call History</h2>{% for c in rows %}<div class="card"><strong>{{ c.mode|title }}</strong> — {{ c.status }}<div class="small">{{ c.created_at }}</div>{% if c.callee_id|string == user.id|string and c.status=='ringing' %}<a class="btn" href="{{ url_for('connect_answer',call_id=c.id) }}">Answer</a>{% endif %}</div>{% else %}<p>No calls yet.</p>{% endfor %}</div>''',rows=rows)
-
-@app.route('/connect/call/<user_id>')
-@login_required
-def connect_call(user_id):
-    uid=current_user()['id']; mode=clean(request.args.get('mode','video'))
-    if user_id==uid or not find_user_by_id(user_id) or mode not in ('voice','video'):abort(404)
-    c=_direct_conversation(uid,user_id)
-    if not c:return 'Run KOJA Connect SQL first.',500
-    return render_page('KOJA Call',r'''<div class="card"><h2>📞 KOJA {{ mode|title }} Call</h2><p>Calling <strong>{{ name }}</strong></p><div id="state">Connecting…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px"></video></div><button id="hang" class="btn danger">End Call</button></div><script>const target={{ user_id|tojson }},mode={{ mode|tojson }};let callId=null,pc=null,timer=null,started=Date.now();const state=document.getElementById('state');const unavailable='This contact is not available because the internet or network connection could not be reached.';function speak(){if('speechSynthesis'in window){speechSynthesis.cancel();speechSynthesis.speak(new SpeechSynthesisUtterance(unavailable));}}function fail(msg){state.textContent=msg||unavailable;speak();clearInterval(timer);if(pc)pc.close();}async function api(u,o){let r=await fetch(u,o);if(!r.ok)throw 0;return r.json()}async function start(){try{if(!navigator.onLine)throw 0;let c=await api('/api/connect/call/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({callee_id:target,mode})});callId=c.call.id;pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});let st=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});document.getElementById('local').srcObject=st;st.getTracks().forEach(t=>pc.addTrack(t,st));pc.ontrack=e=>document.getElementById('remote').srcObject=e.streams[0];pc.onicecandidate=e=>{if(e.candidate)fetch('/api/connect/call/ice/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate})}).catch(()=>fail())};pc.onconnectionstatechange=()=>{if(['failed','disconnected'].includes(pc.connectionState))fail()};let offer=await pc.createOffer();await pc.setLocalDescription(offer);await api('/api/connect/call/offer/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({offer:offer.sdp})});state.textContent='Ringing…';timer=setInterval(async()=>{if(Date.now()-started>120000){fail();return}try{let x=await api('/api/connect/call/check/'+callId);if(x.call.status==='ended'||x.call.status==='rejected'){fail();return}if(x.call.answer&&!pc.currentRemoteDescription){await pc.setRemoteDescription({type:'answer',sdp:x.call.answer});state.textContent='Connected'}}catch(e){fail()}},1500)}catch(e){fail()}}document.getElementById('hang').onclick=()=>{if(callId)fetch('/api/connect/call/end/'+callId,{method:'POST'});clearInterval(timer);if(pc)pc.close();state.textContent='Call ended'};window.addEventListener('offline',()=>fail());start();</script>''',user_id=user_id,mode=mode,name=_profile_name(user_id))
-
-@app.route('/api/connect/call/create',methods=['POST'])
-@login_required
-def connect_call_create():
-    uid=current_user()['id']; d=request.get_json(silent=True) or {}; callee=clean(d.get('callee_id')); mode=d.get('mode','video')
-    if callee==uid or not find_user_by_id(callee) or mode not in ('voice','video'):return jsonify(error='Invalid call'),400
-    c=_direct_conversation(uid,callee); row,err=db_insert('koja_calls',{'id':str(uuid.uuid4()),'conversation_id':c['id'],'caller_id':uid,'callee_id':callee,'mode':mode,'status':'ringing','created_at':utc_now()})
-    if err:return jsonify(error=err),500
-    db_insert('koja_notifications',{'user_id':callee,'notification_type':'call','title':f'Incoming {mode} call','body':f'{_profile_name(uid)} is calling you.','related_id':row['id']});return jsonify(call=row)
-
-@app.route('/api/connect/call/offer/<call_id>',methods=['POST'])
-@login_required
-def connect_call_offer(call_id):
-    uid=current_user()['id']; c=first_row('koja_calls',{'id':call_id})
-    if not c or str(c.get('caller_id'))!=str(uid):return jsonify(error='Forbidden'),403
-    d=request.get_json(silent=True) or {};db_update('koja_calls',{'id':call_id},{'offer':clean(d.get('offer'))});return jsonify(ok=True)
-
-@app.route('/api/connect/call/check/<call_id>')
-@login_required
-def connect_call_check(call_id):
-    uid=current_user()['id'];c=first_row('koja_calls',{'id':call_id})
-    if not c or uid not in (str(c.get('caller_id')),str(c.get('callee_id'))):return jsonify(error='Forbidden'),403
-    return jsonify(call=c)
-
-@app.route('/api/connect/call/end/<call_id>',methods=['POST'])
-@login_required
-def connect_call_end(call_id):
-    uid=current_user()['id'];c=first_row('koja_calls',{'id':call_id})
-    if not c or uid not in (str(c.get('caller_id')),str(c.get('callee_id'))):return jsonify(error='Forbidden'),403
-    db_update('koja_calls',{'id':call_id},{'status':'ended','ended_at':utc_now()});return jsonify(ok=True)
-
-@app.route('/setup/connect-sql')
-def connect_sql():
-    return '<pre style="white-space:pre-wrap">'+KOJA_CONNECT_SQL.replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')+'</pre>'
-
-
-# ============================================================
-# PROFESSION-SPECIFIC + PUBLIC COMMUNICATION
-# ============================================================
-
-def profession_slug(value):
-    import re
-    text = clean(value).lower()
-    return re.sub(r"[^a-z0-9]+", "-", text).strip("-")
-
-def profession_from_slug(slug):
-    wanted = profession_slug(slug)
-    for item in PROFESSIONAL_CATEGORIES:
-        if profession_slug(item) == wanted:
-            return item
-    return None
-
-PROFESSIONAL_PUBLIC_SQL = r"""
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
-CREATE TABLE IF NOT EXISTS public.professional_public_messages (
- id uuid PRIMARY KEY DEFAULT gen_random_uuid(), profession text NOT NULL,
- sender_id uuid NOT NULL, message text NOT NULL, created_at timestamptz DEFAULT now(), deleted_at timestamptz
-);
-CREATE INDEX IF NOT EXISTS professional_public_messages_profession_idx ON public.professional_public_messages(profession, created_at DESC);
-CREATE TABLE IF NOT EXISTS public.professional_public_posts (
- id uuid PRIMARY KEY DEFAULT gen_random_uuid(), profession text NOT NULL, author_id uuid NOT NULL,
- provider_id uuid, title text NOT NULL, body text NOT NULL, media_url text,
- created_at timestamptz DEFAULT now(), updated_at timestamptz DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS professional_public_posts_profession_idx ON public.professional_public_posts(profession, created_at DESC);
-CREATE TABLE IF NOT EXISTS public.professional_public_comments (
- id uuid PRIMARY KEY DEFAULT gen_random_uuid(), post_id uuid NOT NULL REFERENCES public.professional_public_posts(id) ON DELETE CASCADE,
- author_id uuid NOT NULL, body text NOT NULL, created_at timestamptz DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS professional_public_comments_post_idx ON public.professional_public_comments(post_id, created_at);
-"""
-
-@app.route("/professional/community/<path:profession_slug>", methods=["GET", "POST"])
-def professional_community(profession_slug):
-    profession = profession_from_slug(profession_slug)
-    if not profession: abort(404)
-    me = current_user() or {}
-    if request.method == "POST" and not me.get("id"):
-        flash("Please log in to participate in public communication.", "warning")
-        return redirect(url_for("login", next=request.path))
-    if request.method == "POST":
-        message = clean(request.form.get("message"))
-        if not message:
-            flash("Write a message before posting.", "danger")
-        else:
-            _, error = db_insert("professional_public_messages", {"id":str(uuid.uuid4()),"profession":profession,"sender_id":me.get("id"),"message":message,"created_at":utc_now()})
-            if error: flash("Public message could not be sent: " + str(error)[:500], "danger")
-        return redirect(url_for("professional_community", profession_slug=profession_slug))
-    messages = db_select("professional_public_messages", filters={"profession":profession}, order="created_at.asc", limit=200)
-    cache={}
-    for m in messages:
-        uid=m.get("sender_id")
-        if uid not in cache:
-            u=first_row("profiles",{"id":uid}) or {}
-            cache[uid]=u.get("full_name") or u.get("name") or u.get("email") or "KOJA User"
-        m["sender_name"]=cache[uid]
-    return render_page(profession+" Communication", r"""
-<div class="hero"><h2>💬 {{ profession }} — Public Communication</h2><p>This is the public communication room for <strong>{{ profession }}</strong>. KOJA members can ask questions, share knowledge, make announcements and discuss this profession.</p></div>
-<div class="card"><div class="actions"><a class="btn secondary" href="{{ url_for('professionals', category=profession) }}">👥 Find {{ profession }}</a><a class="btn secondary" href="{{ url_for('professional_public_post', profession_slug=profession_slug(profession)) }}">📰 Public Posts</a></div>
-<form method="post" style="margin-top:12px"><label>Public message</label><textarea name="message" maxlength="4000" required placeholder="Start a {{ profession }} discussion..."></textarea><button class="btn" type="submit">📢 Send to Public Room</button></form></div>
-<div class="card"><h3>🌍 {{ profession }} Public Room</h3>{% for m in messages %}<div style="padding:12px 0;border-bottom:1px solid rgba(127,127,127,.18)"><strong>{{ m.sender_name }}</strong><div style="margin-top:5px;white-space:pre-wrap">{{ m.message }}</div><div class="small">{{ m.created_at }}</div></div>{% else %}<p>No public messages yet. Start the first discussion.</p>{% endfor %}</div>
-""", profession=profession, messages=messages)
-
-@app.route("/professional/public-post/<path:profession_slug>", methods=["GET", "POST"])
-def professional_public_post(profession_slug):
-    profession=profession_from_slug(profession_slug)
-    if not profession: abort(404)
-    me=current_user() or {}
-    if request.method=="POST" and not me.get("id"):
-        flash("Please log in to publish a public post.", "warning")
-        return redirect(url_for("login", next=request.path))
-    if request.method=="POST":
-        title=clean(request.form.get("title")); body=clean(request.form.get("body"))
-        if not title or not body: flash("Title and message are required.","danger")
-        else:
-            provider=first_row("service_providers",{"user_id":me.get("id"),"profession":profession})
-            _,error=db_insert("professional_public_posts",{"id":str(uuid.uuid4()),"profession":profession,"author_id":me.get("id"),"provider_id":(provider or {}).get("id"),"title":title,"body":body,"created_at":utc_now(),"updated_at":utc_now()})
-            if error: flash("Public post could not be published: "+str(error)[:500],"danger")
-        return redirect(url_for("professional_public_post",profession_slug=profession_slug))
-    posts=db_select("professional_public_posts",filters={"profession":profession},order="created_at.desc",limit=100)
-    for post in posts:
-        u=first_row("profiles",{"id":post.get("author_id")}) or {}
-        post["author_name"]=u.get("full_name") or u.get("name") or u.get("email") or "KOJA User"
-    return render_page(profession+" Public Posts", r"""
-<div class="hero"><h2>🌍 {{ profession }} — Public Posts</h2><p>Public discussions, announcements, questions and knowledge sharing for {{ profession }}.</p></div>
-<div class="card"><form method="post"><label>Post title</label><input name="title" maxlength="180" required placeholder="Discussion or announcement title"><label>Message</label><textarea name="body" maxlength="8000" required placeholder="Write your public post..."></textarea><button class="btn" type="submit">📢 Publish Public Post</button></form></div>
-<div class="grid">{% for p in posts %}<div class="card"><h3>{{ p.title }}</h3><p class="small">By {{ p.author_name }} · {{ p.created_at }}</p><p style="white-space:pre-wrap">{{ p.body }}</p></div>{% else %}<div class="card"><p>No public posts yet.</p></div>{% endfor %}</div>
-""", profession=profession, posts=posts)
-
-# ============================================================
-
 # ERROR HANDLERS
 # ============================================================
 
@@ -5405,21 +3317,6 @@ def internal_error(error):
 <div class="card"><h2>KOJA AFRICA Server Error</h2><p>The server encountered an unexpected error. Check Render logs for details.</p><a class="btn" href="{{ url_for('home') }}">Return Home</a></div>
 """),500
 
-@app.after_request
-def security_headers(response):
-    response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
-    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    response.headers.setdefault("Permissions-Policy", "camera=(self), microphone=(self), geolocation=(self)")
-    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin-allow-popups")
-    response.headers.setdefault("X-XSS-Protection", "0")
-    if request.is_secure:
-        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-    if request.path.startswith("/api/"):
-        response.headers.setdefault("Cache-Control", "no-store")
-    response.headers.setdefault("X-KOJA-Version", APP_VERSION)
-    return response
-
 @app.before_request
 def before_request():
     # Deliberately empty. Never connect to Supabase at startup.
@@ -5427,7 +3324,7 @@ def before_request():
 
 @app.context_processor
 def inject_globals():
-    return {"APP_NAME":APP_NAME,"APP_TAGLINE":APP_TAGLINE,"SITE_URL":SITE_URL,"profession_slug":profession_slug}
+    return {"APP_NAME":APP_NAME,"APP_TAGLINE":APP_TAGLINE,"SITE_URL":SITE_URL}
 
 # ============================================================
 # LOCAL / RENDER START
