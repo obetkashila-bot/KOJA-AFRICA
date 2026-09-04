@@ -155,21 +155,33 @@ def json_or_empty(response):
 
 def clean(value):
     return str(value or "").strip()
-def storage_path_from_url(media_url):
-    """Extract a Supabase Storage object path from public or signed URLs."""
+def storage_object_from_url(media_url):
+    """Return (bucket, object_path) for a Supabase Storage URL or stored path."""
     u=clean(media_url)
     if not u:
-        return ""
-    marker=f"/storage/v1/object/public/{STORAGE_BUCKET}/"
-    if marker in u:
-        return u.split(marker,1)[1].split("?",1)[0]
-    marker2=f"/storage/v1/object/{STORAGE_BUCKET}/"
-    if marker2 in u:
-        return u.split(marker2,1)[1].split("?",1)[0]
-    marker3=f"/storage/v1/object/sign/{STORAGE_BUCKET}/"
-    if marker3 in u:
-        return u.split(marker3,1)[1].split("?",1)[0]
-    return ""
+        return "", ""
+    # Accept URLs from any KOJA bucket so older posts still work after a
+    # bucket-name change.
+    patterns=(
+        "/storage/v1/object/public/",
+        "/storage/v1/object/sign/",
+        "/storage/v1/object/",
+    )
+    for marker in patterns:
+        if marker in u:
+            rest=u.split(marker,1)[1].split("?",1)[0].split("#",1)[0]
+            if "/" in rest:
+                bucket, path=rest.split("/",1)
+                return unquote(bucket), unquote(path)
+    # Some older KOJA records may contain only the Storage object path.
+    # Never treat arbitrary http(s) URLs as storage paths.
+    if not re.match(r"^https?://", u, re.I):
+        return STORAGE_BUCKET, unquote(u.lstrip("/"))
+    return "", ""
+
+def storage_path_from_url(media_url):
+    """Backward-compatible helper returning only the Storage object path."""
+    return storage_object_from_url(media_url)[1]
 
 def browser_storage_url(media_url, expires_in=3600):
     """Return a browser-loadable URL even when the Supabase bucket is private."""
@@ -1902,8 +1914,9 @@ def public_media_file(post_id):
     if not post or not post.get('media_url'):
         abort(404)
     media_url = clean(post.get('media_url'))
-    path = storage_path_from_url(media_url)
-    if not path or not supabase_configured():
+    bucket, path = storage_object_from_url(media_url)
+    if not path or not bucket or not supabase_configured():
+        logger.error('Public media path could not be resolved: %r', media_url)
         abort(404)
 
     # Only allow media formats used by the public feed.
@@ -1916,13 +1929,17 @@ def public_media_file(post_id):
     if ext not in allowed:
         abort(415)
 
-    object_url = sb_storage_url(path)
+    object_url = (
+        f"{SUPABASE_URL}/storage/v1/object/"
+        f"{quote(bucket, safe='')}/{quote(path, safe='/')}"
+    )
     incoming_range = request.headers.get('Range')
     headers = sb_headers()
+    headers.pop('Content-Type', None)
     if incoming_range:
         headers['Range'] = incoming_range
     try:
-        upstream = requests.get(object_url, headers=headers, timeout=60)
+        upstream = requests.get(object_url, headers=headers, timeout=60, allow_redirects=True)
     except Exception:
         logger.exception('Public media proxy failed')
         abort(502)
@@ -1937,6 +1954,9 @@ def public_media_file(post_id):
         response.headers['Content-Length'] = upstream.headers['Content-Length']
     if upstream.headers.get('Content-Range'):
         response.headers['Content-Range'] = upstream.headers['Content-Range']
+    response.headers['Content-Disposition'] = 'inline'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Cache-Control'] = 'public, max-age=300'
     return response
 
