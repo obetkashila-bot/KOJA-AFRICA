@@ -3094,9 +3094,14 @@ def tracking():
 <script>
 let watchId=null,marker=null,lastSentAt=0,lastCoords=null,lastRaw=null,isTracking=false;
 let wakeLock=null,offlineQueue=[],lastHeading=null,lastAccuracy=null,lastDestination=null,destinationMarker=null,routeLine=null;
-const GPS_QUEUE_KEY="koja_gps_queue_v11";
+const GPS_QUEUE_KEY="koja_gps_queue_v12";
 const LOGGED_IN={{ (user is not none)|tojson }};
 const IS_DRIVER={{ ((user and (user.get('role') in ['driver','admin'] or user.get('is_admin')))|tojson if user else false) }};
+
+// GPS-ONLY: Leaflet is loaded at the end of the KOJA document, so initialize
+// this GPS map only after Leaflet has finished loading.
+function initLiveGpsMap(){
+if(typeof L === "undefined"){status("Loading live map…");setTimeout(initLiveGpsMap,100);return}
 const map=L.map("map",{zoomControl:true}).setView([-13.9626,28.3228],6);
 const osm=L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:20,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);
 const hot=L.tileLayer("https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png",{maxZoom:20,attribution:"&copy; OpenStreetMap contributors, Tiles style by HOT"});
@@ -3165,6 +3170,13 @@ window.addEventListener("online",()=>{if(IS_DRIVER){status("🟢 Internet restor
 document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&isTracking)requestWakeLock()});
 window.addEventListener("pagehide",()=>{if(isTracking&&IS_DRIVER){navigator.sendBeacon("/api/driver/offline",new Blob([JSON.stringify({})],{type:"application/json"}))}});
 loadQueue();
+window.startTracking=startTracking;
+window.routeToDestination=routeToDestination;
+window.locateMe=locateMe;
+window.stopTracking=stopTracking;
+}
+if(document.readyState === "loading") document.addEventListener("DOMContentLoaded",initLiveGpsMap);
+else initLiveGpsMap();
 </script>
 """,delivery_id=delivery_id,user=user)
 
