@@ -2093,7 +2093,11 @@ create index if not exists koja_public_comments_post_idx on public.koja_public_c
 def public_feed():
     # db_select returns a list (not a (rows, error) tuple).
     # Keep the public page resilient: an unavailable/missing table simply shows an empty feed.
-    rows = db_select('koja_public_posts', {'is_published':'eq.true'}, order='created_at.desc', limit=50) or []
+    # Read the feed defensively. Some older Supabase installations have stale
+    # PostgREST schema/cache behaviour around boolean filters. Fetch recent rows
+    # and apply the publication check in Python as a second line of defence.
+    rows = db_select('koja_public_posts', order='created_at.desc', limit=100) or []
+    rows = [r for r in rows if str(r.get('is_published')).lower() in ('true','1','t','yes') or r.get('is_published') is None]
     enriched=[]
     for post in rows or []:
         author=first_row('profiles', {'id':post.get('author_id')}) or {}
@@ -2119,12 +2123,45 @@ def public_feed():
 <div class="card"><h2>📰 News & Updates</h2><p class="small">Public feed · newest first</p></div>
 {% for p in posts %}<article class="card" id="post-{{ p.id }}"><strong>👤 {{ p.author_name }}</strong><div class="small">{{ p.post_type|title }} · {{ p.created_at }}</div>
 {% if p.title %}<h2 style="margin-top:10px">{{ p.title }}</h2>{% endif %}<p style="white-space:pre-wrap;line-height:1.7">{{ p.body }}</p>
-{% if p.media_url %}<img src="{{ p.media_url }}" alt="Public KOJA post image" loading="lazy" style="width:100%;max-height:620px;object-fit:cover;border-radius:12px;margin-top:8px">{% endif %}
+{% if p.media_url %}<img src="{{ url_for('public_post_media', post_id=p.id) }}" alt="Public KOJA post image" loading="lazy" style="width:100%;max-height:620px;object-fit:cover;border-radius:12px;margin-top:8px">{% endif %}
 <div class="actions" style="margin-top:12px">{% if user %}<form method="post" action="{{ url_for('public_toggle_like', post_id=p.id) }}" style="display:inline"><button class="btn secondary" type="submit">{{ '❤️ Liked' if p.liked else '🤍 Like' }} · {{ p.like_count }}</button></form>{% else %}<a class="btn secondary" href="{{ url_for('login', next='/public') }}">🤍 Like · {{ p.like_count }}</a>{% endif %}<span class="btn secondary" style="cursor:default">💬 {{ p.comments|length }} Comments</span></div>
 {% for c in p.comments %}<div style="padding:9px 0;border-top:1px solid var(--border);margin-top:9px"><strong>{{ c.author_name }}</strong><div>{{ c.body }}</div><div class="small">{{ c.created_at }}</div></div>{% endfor %}
 {% if user %}<form method="post" action="{{ url_for('public_comment', post_id=p.id) }}"><input name="body" maxlength="1000" placeholder="Write a comment..." required><button class="btn" type="submit">Comment</button></form>{% else %}<p class="small"><a href="{{ url_for('login', next='/public') }}">Login</a> to comment.</p>{% endif %}
 </article>{% else %}<div class="card"><h3>No public updates yet.</h3><p>Be the first KOJA user to share a public update or news.</p></div>{% endfor %}
 ''', posts=enriched)
+
+@app.route('/public/media/<post_id>')
+def public_post_media(post_id):
+    """Serve public-feed media reliably, including when the storage bucket is not public.
+    The post itself is still public; the server uses the Supabase service key to fetch the
+    stored object so an accidentally private bucket does not produce a broken image.
+    """
+    post = first_row('koja_public_posts', {'id': post_id}) or {}
+    if not post or not post.get('is_published') or not post.get('media_url'):
+        abort(404)
+    media_url = str(post.get('media_url') or '')
+    try:
+        if SUPABASE_URL and media_url.startswith(SUPABASE_URL + '/storage/v1/object/public/'):
+            prefix = SUPABASE_URL.rstrip('/') + '/storage/v1/object/public/'
+            rest = media_url[len(prefix):]
+            parts = rest.split('/', 1)
+            if len(parts) == 2:
+                bucket, object_path = parts
+                r = requests.get(
+                    f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/{quote(bucket, safe='')}/{quote(object_path, safe='/')}",
+                    headers=sb_headers(), timeout=30
+                )
+                if r.ok:
+                    return Response(r.content, status=200, content_type=r.headers.get('Content-Type') or post.get('media_type') or 'image/jpeg',
+                                    headers={'Cache-Control':'public, max-age=3600'})
+        # Fallback for externally hosted media URLs.
+        r = requests.get(media_url, timeout=30, stream=True)
+        if r.ok:
+            return Response(r.content, status=200, content_type=r.headers.get('Content-Type') or 'image/jpeg',
+                            headers={'Cache-Control':'public, max-age=3600'})
+    except Exception as exc:
+        logger.warning('Public media fetch failed for %s: %s', post_id, exc)
+    abort(404)
 
 @app.route('/public/create', methods=['POST'])
 @login_required
@@ -2141,8 +2178,17 @@ def public_feed_create():
         if err: flash(f'Image upload failed: {err}','danger'); return redirect(url_for('public_feed'))
     payload={'author_id':current_user().get('id'),'post_type':post_type,'title':title or None,'body':body,
              'media_url':(uploaded or {}).get('url'),'media_type':('image' if uploaded else None),'is_published':True}
-    _,err=db_insert('koja_public_posts',payload)
-    flash('Published to KOJA Public.' if not err else 'Public post could not be published. Run the updated KOJA_CONNECT.sql first.','success' if not err else 'danger')
+    created,err=db_insert('koja_public_posts',payload)
+    if err:
+        flash(f'Public post could not be published: {err[:500]}','danger')
+    else:
+        # Confirm persistence instead of reporting success solely because INSERT returned.
+        check_id = (created or {}).get('id') if isinstance(created, dict) else None
+        saved = first_row('koja_public_posts', {'id': check_id}) if check_id else None
+        if saved:
+            flash('Published to KOJA Public successfully.','success')
+        else:
+            flash('The post was accepted but could not be verified in the public feed. Please refresh and check Supabase table permissions.','danger')
     return redirect(url_for('public_feed'))
 
 @app.route('/public/like/<post_id>', methods=['POST'])
@@ -4290,6 +4336,43 @@ def admin_approvals():
 {% else %}<div class="card"><h3>🎉 No pending approvals</h3><p>Everything currently in the approval queue has been reviewed.</p></div>{% endfor %}
 """, sections=sections)
 
+def publish_approval_update(table, item, action):
+    """Publish a safe, generic public update when a public-facing provider/document is approved."""
+    if action != 'approve' or not item:
+        return
+    public_types = {
+        'teacher_profiles': ('teacher', 'A teacher has been approved on KOJA AFRICA.'),
+        'doctor_profiles': ('professional', 'A professional service provider has been approved on KOJA AFRICA.'),
+        'service_providers': ('professional', 'A professional service provider has been approved on KOJA AFRICA.'),
+        'driver_profiles': ('delivery', 'A delivery driver has been approved on KOJA AFRICA.'),
+        'documents': ('document', 'A new document has been approved and is available on KOJA AFRICA.'),
+    }
+    if table not in public_types:
+        return
+    post_type, generic = public_types[table]
+    title = clean(item.get('title') or item.get('full_name') or item.get('name') or item.get('document_title'))
+    if not title:
+        title = 'KOJA AFRICA Update'
+    body = generic
+    if table == 'documents' and title != 'KOJA AFRICA Update':
+        body = f'“{title}” has been approved and is now available through KOJA AFRICA.'
+    elif table in {'teacher_profiles','doctor_profiles','service_providers','driver_profiles'} and title != 'KOJA AFRICA Update':
+        body = f'{title} has been approved on KOJA AFRICA and is now available to users.'
+    payload = {
+        'author_id': current_user().get('id'),
+        'post_type': post_type,
+        'title': title,
+        'body': body,
+        'media_url': None,
+        'media_type': None,
+        'is_published': True,
+    }
+    created, error = db_insert('koja_public_posts', payload)
+    if error:
+        logger.warning('Approval public update could not be created for %s/%s: %s', table, item.get('id'), error)
+        return
+    logger.info('Published public approval update %s for %s/%s', created, table, item.get('id'))
+
 @app.route("/admin/approvals/<table>/<item_id>", methods=["POST"])
 @admin_required
 def admin_approval_action(table, item_id):
@@ -4324,6 +4407,12 @@ def admin_approval_action(table, item_id):
     if error:
         flash(f"Approval could not be saved: {error}. Make sure the approval migration has been run in Supabase.", "danger")
         return redirect(url_for("admin_approvals"))
+    # Approved public-facing records also generate a public KOJA update.
+    # Private assignment/answer records are intentionally excluded.
+    approved_item = row or first_row(table, {"id": item_id}) or {}
+    if isinstance(approved_item, list):
+        approved_item = approved_item[0] if approved_item else {}
+    publish_approval_update(table, approved_item, action)
     log_activity(event, f"Admin {action} {table} record {item_id}." + (f" Note: {note}" if note else ""))
     # Optional notification to the owner/provider when an email can be resolved.
     recipient = None
