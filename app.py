@@ -3069,7 +3069,7 @@ def driver_delivery_action(delivery_id, action):
         flash(f"Delivery status changed to {status}.", "success")
     return redirect(url_for("driver_dashboard"))
 
-# DRIVER GPS — V10 (GPS-ONLY CHANGES)
+# DRIVER GPS — V22 (GPS-ONLY CHANGES)
 # ============================================================
 
 @app.route("/tracking")
@@ -3103,7 +3103,7 @@ def tracking():
 <script>
 let watchId=null,marker=null,lastSentAt=0,lastCoords=null,lastRaw=null,isTracking=false;
 let wakeLock=null,offlineQueue=[],lastHeading=null,lastAccuracy=null,lastDestination=null,destinationMarker=null,routeLine=null;
-const GPS_QUEUE_KEY="koja_gps_queue_v12";
+const GPS_QUEUE_KEY="koja_gps_queue_v22";
 const LOGGED_IN={{ (user is not none)|tojson }};
 const IS_DRIVER={{ ((user and (user.get('role') in ['driver','admin'] or user.get('is_admin')))|tojson if user else false) }};
 
@@ -3243,6 +3243,22 @@ def gps_route_public():
     except Exception as exc:
         logger.exception("Public GPS route lookup failed");return jsonify({"ok":False,"message":"Could not calculate route."}),500
 
+@app.route("/api/gps/snap")
+def gps_snap():
+    """GPS-ONLY: snap a coordinate to the nearest available road using OSRM."""
+    lat=safe_float(request.args.get("lat")); lon=safe_float(request.args.get("lon"))
+    if lat is None or lon is None or not (-90<=lat<=90) or not (-180<=lon<=180):
+        return jsonify({"ok":False,"message":"Valid latitude and longitude are required."}),400
+    try:
+        url=f"https://router.project-osrm.org/nearest/v1/driving/{lon},{lat}?number=1"
+        r=requests.get(url,timeout=8,headers={"User-Agent":"KOJA-AFRICA-GPS/22"})
+        data=r.json(); wp=(data.get("waypoints") or [None])[0]
+        loc=wp.get("location") if wp else None
+        if not loc or len(loc)<2: raise ValueError("No road match")
+        return jsonify({"ok":True,"latitude":float(loc[1]),"longitude":float(loc[0]),"name":wp.get("name") or "Nearest road"})
+    except Exception:
+        return jsonify({"ok":False,"message":"Road matching unavailable right now."}),503
+
 @app.route("/api/driver/location", methods=["POST"])
 @driver_required
 def driver_location_update():
@@ -3334,12 +3350,23 @@ def drivers():
 let map=L.map("map").setView([-13.9626,28.3228],6),me=null,meAccuracy=null,markers=[],watchId=null,lastPosition=null,selectedDriver=null,routeLine=null,destinationMarker=null,driverRefreshTimer=null;
 const osm=L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:20,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);
 const hot=L.tileLayer("https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png",{maxZoom:20,attribution:"&copy; OpenStreetMap contributors, Tiles style by HOT"});
-L.control.layers({"OpenStreetMap":osm,"Detailed HOT":hot},null,{collapsed:true}).addTo(map);
+const satellite=L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",{maxZoom:19,attribution:"Tiles &copy; Esri"});
+L.control.layers({"OpenStreetMap":osm,"Detailed HOT":hot,"Satellite imagery":satellite},null,{collapsed:true}).addTo(map);
+function openDriverGoogle(driver){window.open("https://www.google.com/maps/dir/?api=1&destination="+encodeURIComponent(driver.latitude+","+driver.longitude),"_blank")}
+function openDriverSatellite(driver){window.open("https://www.google.com/maps/@"+encodeURIComponent(driver.latitude)+","+encodeURIComponent(driver.longitude)+",17z/data=!3m1!1e3","_blank")}
 function setStatus(t){document.getElementById("status").textContent=t}
 function setAccuracy(a){document.getElementById("accuracy").textContent=Number.isFinite(a)?"GPS accuracy: "+Math.round(a)+" m" : ""}
+let lastMarkerPosition=null;
+function animateDriverMarker(from,to){
+ if(!me||!from){if(me)me.setLatLng(to);return}
+ const start=performance.now(),duration=700;
+ function step(now){const t=Math.min(1,(now-start)/duration),e=t<.5?2*t*t:1-Math.pow(-2*t+2,2)/2;me.setLatLng([from[0]+(to[0]-from[0])*e,from[1]+(to[1]-from[1])*e]);if(t<1)requestAnimationFrame(step)}
+ requestAnimationFrame(step)
+}
 function updateMyMarker(lat,lon,acc){
  const p=[lat,lon];
- if(me)me.setLatLng(p);else me=L.marker(p).addTo(map).bindPopup("📍 Your live location");
+ if(me)animateDriverMarker(lastMarkerPosition,p);else me=L.marker(p).addTo(map).bindPopup("📍 Your live location");
+ lastMarkerPosition=p;
  if(meAccuracy)meAccuracy.setLatLng(p).setRadius(Number.isFinite(acc)?Math.min(acc,500):0);else if(Number.isFinite(acc))meAccuracy=L.circle(p,{radius:Math.min(acc,500),weight:1,fillOpacity:.08}).addTo(map);
  setAccuracy(acc);
 }
@@ -3399,7 +3426,7 @@ async function findDrivers(){
    const m=L.marker(p).addTo(map).bindPopup(`<b>${escapeHtml(driver.name)}</b><br>${escapeHtml(driver.vehicle_type||"Vehicle")}<br>${driver.distance_km} km away<br>GPS accuracy: ${driver.accuracy?Math.round(driver.accuracy)+" m":"—"}`);
    markers.push(m);
    const div=document.createElement("div");div.className="card driver-card";
-   div.innerHTML=`<h3>${escapeHtml(driver.name)}</h3><p class="online">ONLINE</p><p><b>Vehicle:</b> ${escapeHtml(driver.vehicle_type||"Not specified")} ${escapeHtml(driver.vehicle_registration||"")}</p><p><b>Distance:</b> ${driver.distance_km} km</p><p><b>GPS accuracy:</b> ${driver.accuracy?Math.round(driver.accuracy)+" m":"—"}</p><p><b>Phone:</b> ${escapeHtml(driver.phone||"")}</p><div class="actions"><button class="btn success" onclick="requestDriver('${driver.driver_id}')">Request Delivery</button><button class="btn secondary" onclick='viewDriver(${JSON.stringify(driver)})'>View on Map</button><button class="btn" onclick='routeToDriver(${JSON.stringify(driver)})'>🛣️ Route Here</button></div>`;
+   div.innerHTML=`<h3>${escapeHtml(driver.name)}</h3><p class="online">ONLINE</p><p><b>Vehicle:</b> ${escapeHtml(driver.vehicle_type||"Not specified")} ${escapeHtml(driver.vehicle_registration||"")}</p><p><b>Distance:</b> ${driver.distance_km} km</p><p><b>GPS accuracy:</b> ${driver.accuracy?Math.round(driver.accuracy)+" m":"—"}</p><p><b>Phone:</b> ${escapeHtml(driver.phone||"")}</p><div class="actions"><button class="btn success" onclick="requestDriver('${driver.driver_id}')">Request Delivery</button><button class="btn secondary" onclick='viewDriver(${JSON.stringify(driver)})'>View on Map</button><button class="btn" onclick='routeToDriver(${JSON.stringify(driver)})'>🛣️ Route Here</button><button class="btn secondary" onclick='openDriverGoogle(${JSON.stringify(driver)})'>🌍 Google Maps</button><button class="btn secondary" onclick='openDriverSatellite(${JSON.stringify(driver)})'>🛰️ Satellite</button></div>`;
    list.appendChild(div);
   });
   map.setView([lat,lon],13);setStatus(`🟢 Found ${d.drivers.length} online driver(s) · live refresh every 5s`);
