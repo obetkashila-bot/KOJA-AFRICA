@@ -5051,16 +5051,10 @@ def connect_new(user_id):
 @app.route('/connect/chat/<conversation_id>')
 @login_required
 def connect_chat(conversation_id):
-    uid=current_user()['id']
+    uid=current_user()['id'];
     if not _conversation_member(conversation_id,uid): abort(403)
-    members=db_select('koja_conversation_members',filters={'conversation_id':conversation_id},limit=100)
-    other=next((m for m in members if str(m.get('user_id'))!=str(uid)),None)
-    other_id=other.get('user_id') if other else None
-    c=first_row('koja_conversations',{'id':conversation_id}) or {}
-    return render_page('KOJA Chat',r'''<div class="card"><a href="{{ url_for('connect') }}">← Connect</a><h2>💬 {{ name }}</h2></div>
-<div class="card" id="incomingCall" style="display:none;border:2px solid var(--accent,#0a7)"><strong id="incomingTitle">Incoming call</strong><div id="incomingText" class="small"></div><div class="grid" style="margin-top:10px"><a id="answerCall" class="btn success">✅ Answer</a><button type="button" id="rejectCall" class="btn danger">❌ Reject</button></div></div>
-<div class="card" id="messages" style="min-height:300px;max-height:55vh;overflow:auto"></div><div class="card"><form id="sendForm"><input id="text" autocomplete="off" placeholder="Write a message…"><button>Send</button></form><div class="grid"><button type="button" id="voiceNote">🎙️ Voice message</button>{% if other_id %}<a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='voice') }}">📞 Voice Call</a><a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='video') }}">🎥 Video Call</a>{% else %}<button type="button" class="btn secondary" disabled>📞 Voice Call unavailable</button><button type="button" class="btn secondary" disabled>🎥 Video Call unavailable</button>{% endif %}</div><p class="small">Calls use your device microphone. Video calls also use the camera. Your browser will ask for permission.</p></div>
-<script>const cid={{ conversation_id|tojson }},myUid={{ uid|tojson }};const box=document.getElementById('messages'),text=document.getElementById('text');function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}async function load(){try{let r=await fetch('/api/connect/messages/'+cid,{cache:'no-store'});if(!r.ok)return;let d=await r.json();box.innerHTML=d.messages.map(m=>'<div class="card"><strong>'+esc(m.sender_name)+'</strong><div>'+((m.message_type==='text')?esc(m.body||''):'<a target="_blank" rel="noopener" href="'+esc(m.file_url||'#')+'">'+esc(m.message_type)+'</a>')+'</div><div class="small">'+esc(m.created_at||'')+'</div></div>').join('');box.scrollTop=box.scrollHeight;}catch(e){}}document.getElementById('sendForm').onsubmit=async e=>{e.preventDefault();let v=text.value.trim();if(!v)return;let r=await fetch('/api/connect/messages/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:v})});if(r.ok){text.value='';load();}};let rec,parts=[];document.getElementById('voiceNote').onclick=async()=>{try{let st=await navigator.mediaDevices.getUserMedia({audio:true});rec=new MediaRecorder(st);parts=[];rec.ondataavailable=e=>parts.push(e.data);rec.onstop=async()=>{let b=new Blob(parts,{type:'audio/webm'});let fd=new FormData();fd.append('file',b,'voice.webm');await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});st.getTracks().forEach(t=>t.stop());load();};rec.start();setTimeout(()=>rec&&rec.state==='recording'&&rec.stop(),60000);}catch(e){alert('Microphone permission is required for voice messages.');}};async function incoming(){try{let r=await fetch('/api/connect/incoming-calls',{cache:'no-store'});if(!r.ok)return;let d=await r.json(),c=(d.calls||[])[0],panel=document.getElementById('incomingCall');if(!c){panel.style.display='none';return;}panel.style.display='block';document.getElementById('incomingTitle').textContent=c.mode==='video'?'🎥 Incoming Video Call':'📞 Incoming Voice Call';document.getElementById('incomingText').textContent='From '+(c.caller_name||'KOJA User');document.getElementById('answerCall').href='/connect/answer/'+encodeURIComponent(c.id);document.getElementById('rejectCall').onclick=async()=>{await fetch('/api/connect/call/end/'+encodeURIComponent(c.id),{method:'POST'});incoming();};}catch(e){}}load();setInterval(load,2500);incoming();setInterval(incoming,2000);</script>''',conversation_id=conversation_id,name=_profile_name(other_id) if other_id else c.get('name','KOJA Chat'),other_id=other_id,uid=uid)
+    members=db_select('koja_conversation_members',filters={'conversation_id':conversation_id},limit=100); other=next((m for m in members if str(m.get('user_id'))!=str(uid)),None); other_id=other.get('user_id') if other else None; c=first_row('koja_conversations',{'id':conversation_id}) or {}
+    return render_page('KOJA Chat',r'''<div class="card"><a href="{{ url_for('connect') }}">← Connect</a><h2>💬 {{ name }}</h2><div class="small">🔒 Private KOJA communication</div></div><div class="card" id="messages" style="min-height:300px;max-height:55vh;overflow:auto"></div><div class="card"><form id="sendForm" class="actions"><input id="text" autocomplete="off" maxlength="4000" placeholder="Write a message…" style="flex:1"><button id="sendBtn">Send</button></form><div class="grid"><label class="btn secondary" style="cursor:pointer">📎 File<input id="filePick" type="file" hidden></label><button type="button" id="voiceNote">🎙️ Voice message</button><a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='voice') }}">📞 Voice Call</a><a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='video') }}">🎥 Video Call</a></div><div id="uploadState" class="small"></div></div><script>const cid={{ conversation_id|tojson }};const box=document.getElementById('messages'),text=document.getElementById('text'),sendBtn=document.getElementById('sendBtn');let lastCount=0;function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}function render(m){let content=m.message_type==='text'?esc(m.body):'<a target="_blank" rel="noopener" href="'+esc(m.file_url||'#')+'">📎 '+esc(m.body||m.message_type)+'</a>';return '<div class="card"><strong>'+esc(m.sender_name)+'</strong><div>'+content+'</div><div class="small">'+esc(m.created_at||'')+'</div></div>';}async function load(force=false){try{let r=await fetch('/api/connect/messages/'+cid,{cache:'no-store'});if(!r.ok)return;let d=await r.json();if(force||d.messages.length!==lastCount){box.innerHTML=d.messages.map(render).join('');box.scrollTop=box.scrollHeight;lastCount=d.messages.length;}}catch(e){}}document.getElementById('sendForm').onsubmit=async e=>{e.preventDefault();let v=text.value.trim();if(!v)return;sendBtn.disabled=true;try{let r=await fetch('/api/connect/messages/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:v})});if(r.ok){text.value='';await load(true);}}finally{sendBtn.disabled=false;text.focus();}};document.getElementById('filePick').onchange=async e=>{let f=e.target.files[0];if(!f)return;if(f.size>15*1024*1024){alert('File must be 15 MB or smaller.');e.target.value='';return;}let st=document.getElementById('uploadState');st.textContent='Uploading '+f.name+'…';let fd=new FormData();fd.append('file',f);try{let r=await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});st.textContent=r.ok?'File sent.':'Upload failed.';await load(true);}catch(x){st.textContent='Upload failed.';}e.target.value='';};let rec,parts=[];document.getElementById('voiceNote').onclick=async()=>{try{let st=await navigator.mediaDevices.getUserMedia({audio:true});rec=new MediaRecorder(st);parts=[];rec.ondataavailable=e=>parts.push(e.data);rec.onstop=async()=>{let b=new Blob(parts,{type:'audio/webm'}),fd=new FormData();fd.append('file',b,'voice.webm');await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});st.getTracks().forEach(t=>t.stop());load(true);};rec.start();setTimeout(()=>rec&&rec.state==='recording'&&rec.stop(),60000);}catch(e){alert('Microphone permission is required.');}};load(true);setInterval(load,1500);</script>''',conversation_id=conversation_id,name=_profile_name(other_id) if other_id else c.get('name','KOJA Chat'))
 
 @app.route('/api/connect/messages/<conversation_id>',methods=['GET','POST'])
 @login_required
@@ -5084,12 +5078,19 @@ def connect_upload(conversation_id):
     if not _conversation_member(conversation_id,uid):return jsonify(error='Forbidden'),403
     f=request.files.get('file')
     if not f:return jsonify(error='No file'),400
-    if not f.filename.lower().endswith('.webm'):return jsonify(error='Only webm voice messages are supported here.'),400
+    name=(f.filename or '').lower()
+    allowed={'.webm':'audio/webm','.mp3':'audio/mpeg','.wav':'audio/wav','.m4a':'audio/mp4','.jpg':'image/jpeg','.jpeg':'image/jpeg','.png':'image/png','.webp':'image/webp','.pdf':'application/pdf','.doc':'application/msword','.docx':'application/vnd.openxmlformats-officedocument.wordprocessingml.document','.txt':'text/plain'}
+    ext=next((x for x in allowed if name.endswith(x)),None)
+    if not ext:return jsonify(error='Unsupported communication file type.'),400
     data=f.read()
-    if len(data)>5*1024*1024:return jsonify(error='Voice message too large'),413
-    path=f'connect/audio/{uuid.uuid4().hex}.webm'; r=requests.post(sb_storage_url(path),headers=sb_headers({'Content-Type':'audio/webm','x-upsert':'true'}),data=data,timeout=60)
+    if len(data)>15*1024*1024:return jsonify(error='File too large (15 MB maximum).'),413
+    folder='connect/audio' if allowed[ext].startswith('audio/') else 'connect/files'
+    path=f'{folder}/{uuid.uuid4().hex}{ext}'
+    r=requests.post(sb_storage_url(path),headers=sb_headers({'Content-Type':allowed[ext],'x-upsert':'true'}),data=data,timeout=60)
     if not r.ok:return jsonify(error=r.text[:500]),500
-    row,err=db_insert('koja_messages',{'id':str(uuid.uuid4()),'conversation_id':conversation_id,'sender_id':uid,'message_type':'audio','file_url':sb_storage_url(path),'body':'Voice message','created_at':utc_now()})
+    kind='audio' if allowed[ext].startswith('audio/') else ('image' if allowed[ext].startswith('image/') else 'file')
+    label='Voice message' if kind=='audio' else (f.filename or 'Attachment')
+    row,err=db_insert('koja_messages',{'id':str(uuid.uuid4()),'conversation_id':conversation_id,'sender_id':uid,'message_type':kind,'file_url':sb_storage_url(path),'body':label,'created_at':utc_now()})
     return jsonify(message=row) if not err else (jsonify(error=err),500)
 
 @app.route('/connect/status',methods=['GET','POST'])
@@ -5103,96 +5104,210 @@ def connect_status():
     rows=db_select('koja_statuses',filters={'user_id':uid},order='created_at.desc',limit=30)
     return render_page('KOJA Status',r'''<div class="card"><h2>🟢 My Status</h2><form method="post"><textarea name="text" maxlength="1000" placeholder="Share an update…"></textarea><button>Post Status</button></form></div>{% for s in rows %}<div class="card"><strong>{{ s.text_content }}</strong><div class="small">Expires: {{ s.expires_at }}</div></div>{% endfor %}''',rows=rows)
 
-@app.route('/connect/answer/<call_id>')
-@login_required
-def connect_answer(call_id):
-    uid=current_user()['id']; c=first_row('koja_calls',{'id':call_id})
-    if not c or str(c.get('callee_id'))!=str(uid) or c.get('status')!='ringing': abort(404)
-    return render_page('Answer KOJA Call',r'''<div class="card"><h2>📞 Incoming {{ c.mode|title }} Call</h2><p>From <strong>{{ name }}</strong></p><div id="state">Preparing…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px;{% if c.mode=='voice' %}display:none{% endif %}"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px;{% if c.mode=='voice' %}display:none{% endif %}"></video></div><audio id="remoteAudio" autoplay {% if c.mode!='voice' %}style="display:none"{% endif %}></audio><div class="actions" style="margin-top:14px"><button id="accept" class="btn success">✅ Answer</button><button id="decline" class="btn danger">❌ Reject</button></div><p class="small">Allow microphone{% if c.mode=='video' %} and camera{% endif %} access when your browser asks.</p></div><script>const cid={{ call_id|tojson }},mode={{ c.mode|tojson }};let pc=null,timer=null,stream=null,accepted=false,state=document.getElementById('state');function setState(t){state.textContent=t;}function cleanup(){if(timer)clearInterval(timer);if(stream)stream.getTracks().forEach(t=>t.stop());if(pc){pc.close();pc=null;}}async function api(u,o){let r=await fetch(u,o),d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||'Request failed');return d;}async function accept(){if(accepted)return;accepted=true;acceptBtn.disabled=true;try{if(!navigator.onLine)throw Error('No internet connection.');stream=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});local.srcObject=stream;pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});stream.getTracks().forEach(t=>pc.addTrack(t,stream));pc.ontrack=e=>{if(e.streams[0]){remote.srcObject=e.streams[0];remoteAudio.srcObject=e.streams[0];}};pc.onicecandidate=e=>{if(e.candidate)fetch('/api/connect/call/ice/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate.toJSON(),side:'callee'})}).catch(()=>{});};let x;for(let n=0;n<15;n++){x=await api('/api/connect/call/check/'+cid);if(['ended','rejected'].includes(x.call.status))throw Error('Call was ended before it was answered.');if(x.call.offer)break;setState('Waiting for caller…');await new Promise(r=>setTimeout(r,1000));}if(!x||!x.call.offer)throw Error('The call offer did not arrive. Please ask the caller to try again.');await pc.setRemoteDescription({type:'offer',sdp:x.call.offer});let ans=await pc.createAnswer();await pc.setLocalDescription(ans);await api('/api/connect/call/answer/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({answer:ans.sdp})});setState('🟢 Connected');let seenCallerIce=0;timer=setInterval(async()=>{try{let z=await api('/api/connect/call/check/'+cid);if(['ended','rejected'].includes(z.call.status)){setState('Call ended.');cleanup();return;}const list=z.call.caller_ice||[];for(let i=seenCallerIce;i<list.length;i++){try{await pc.addIceCandidate(list[i]);}catch(e){}}seenCallerIce=list.length;}catch(e){}},1200);}catch(e){accepted=false;acceptBtn.disabled=false;setState('Could not answer: '+e.message);cleanup();}}async function end(){try{await fetch('/api/connect/call/end/'+cid,{method:'POST'});}catch(e){}cleanup();setState('Call ended.');acceptBtn.disabled=true;decline.disabled=true;}const acceptBtn=document.getElementById('accept');acceptBtn.onclick=accept;decline.onclick=end;</script>''',c=c,call_id=call_id,name=_profile_name(c.get('caller_id')))
-
 @app.route('/api/connect/incoming-calls')
 @login_required
 def connect_incoming_calls():
-    uid=current_user()['id']; rows=db_select('koja_calls',filters={'callee_id':uid,'status':'ringing'},order='created_at.desc',limit=20); out=[]
+    uid=str(current_user()['id'])
+    rows=db_select('koja_calls',filters={'callee_id':uid,'status':'ringing'},order='created_at.desc',limit=10)
+    out=[]
+    now=datetime.now(timezone.utc)
     for c in rows:
-        c=dict(c); c['caller_name']=_profile_name(c.get('caller_id')); out.append(c)
+        try:
+            created=datetime.fromisoformat(str(c.get('created_at','')).replace('Z','+00:00'))
+            if (now-created).total_seconds()>120:
+                db_update('koja_calls',{'id':c['id']},{'status':'ended','ended_at':utc_now()})
+                continue
+        except Exception:
+            pass
+        c=dict(c); c['caller_name']=_profile_name(c.get('caller_id'))
+        out.append(c)
     return jsonify(calls=out)
 
-@app.route('/api/connect/call/ice/<call_id>',methods=['POST'])
+@app.route('/connect/answer/<call_id>')
 @login_required
-def connect_call_ice(call_id):
-    uid=current_user()['id']; c=first_row('koja_calls',{'id':call_id})
-    if not c or str(uid) not in (str(c.get('caller_id')),str(c.get('callee_id'))):return jsonify(error='Forbidden'),403
-    d=request.get_json(silent=True) or {}; candidate=d.get('candidate'); side=d.get('side')
-    if not isinstance(candidate,dict) or side not in ('caller','callee'):return jsonify(error='Invalid ICE candidate'),400
-    expected_side='caller' if str(c.get('caller_id'))==str(uid) else 'callee'
-    if side != expected_side:return jsonify(error='Invalid ICE side for this user'),403
-    key='caller_ice' if side=='caller' else 'callee_ice'; arr=c.get(key) or []
-    if not isinstance(arr,list):arr=[]
-    if len(arr)<100:arr.append(candidate)
-    _,err=db_update('koja_calls',{'id':call_id},{key:arr})
-    return jsonify(ok=True) if not err else (jsonify(error=err),500)
+def connect_answer(call_id):
+    uid=str(current_user()['id']); c=first_row('koja_calls',{'id':call_id})
+    if not c or str(c.get('callee_id'))!=uid or c.get('status')!='ringing': abort(404)
+    return render_page('Answer KOJA Call',r'''<div class="card">
+<h2 id="title">{{ '🎥' if c.mode=='video' else '📞' }} Incoming {{ c.mode|title }} Call</h2>
+<p>From <strong>{{ name }}</strong></p>
+<div id="state">Waiting for caller…</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+<video id="local" autoplay muted playsinline style="width:100%;min-height:180px;object-fit:cover;background:#111;border-radius:10px"></video>
+<video id="remote" autoplay playsinline style="width:100%;min-height:180px;object-fit:cover;background:#111;border-radius:10px"></video>
+</div>
+<a id="back" class="btn secondary" href="{{ url_for('connect') }}">Back</a>
+<button id="hang" class="btn danger">End Call</button>
+</div>
+<audio id="remoteAudio" autoplay></audio>
+<script>
+const cid={{ call_id|tojson }}, mode={{ c.mode|tojson }};
+const state=document.getElementById('state'), localEl=document.getElementById('local'), remoteEl=document.getElementById('remote');
+let pc=null, timer=null, localStream=null, seenCallerIce=0, answered=false;
+async function api(u,o){const r=await fetch(u,Object.assign({cache:'no-store'},o||{}));let d={};try{d=await r.json()}catch(e){}if(!r.ok)throw Error(d.error||('HTTP '+r.status));return d}
+async function start(){
+ try{
+   let x=null;
+   for(let n=0;n<20;n++){
+     x=await api('/api/connect/call/check/'+encodeURIComponent(cid));
+     if(['ended','rejected'].includes(x.call.status)) throw Error('The caller ended the call.');
+     if(x.call.offer) break;
+     state.textContent='Waiting for caller…';
+     await new Promise(r=>setTimeout(r,700));
+   }
+   if(!x || !x.call.offer) throw Error('The caller connection did not arrive. Please try again.');
+   localStream=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});
+   localEl.srcObject=localStream;
+   pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
+   localStream.getTracks().forEach(t=>pc.addTrack(t,localStream));
+   pc.ontrack=e=>{if(e.streams&&e.streams[0]){remoteEl.srcObject=e.streams[0];document.getElementById('remoteAudio').srcObject=e.streams[0];remoteEl.play().catch(()=>{});}};
+   pc.onicecandidate=e=>{if(e.candidate)fetch('/api/connect/call/ice/'+encodeURIComponent(cid),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate.toJSON(),side:'callee'})}).catch(()=>{});};
+   pc.onconnectionstatechange=()=>{if(pc && pc.connectionState==='connected'){state.textContent='🟢 Live — you can see and hear each other';} if(pc && ['failed','closed'].includes(pc.connectionState)){state.textContent='Connection ended.';}};
+   await pc.setRemoteDescription({type:'offer',sdp:x.call.offer});
+   const ans=await pc.createAnswer(); await pc.setLocalDescription(ans);
+   await api('/api/connect/call/answer/'+encodeURIComponent(cid),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({answer:ans.sdp})});
+   answered=true; state.textContent='🔄 Connecting live call…';
+   timer=setInterval(async()=>{try{
+      const z=await api('/api/connect/call/check/'+encodeURIComponent(cid));
+      if(['ended','rejected'].includes(z.call.status)){cleanup();state.textContent='Call ended.';return;}
+      const list=z.call.caller_ice||[];
+      for(let i=seenCallerIce;i<list.length;i++){try{await pc.addIceCandidate(list[i]);}catch(e){}}
+      seenCallerIce=list.length;
+   }catch(e){}},800);
+ }catch(e){state.textContent='Could not connect: '+e.message;}
+}
+function cleanup(){clearInterval(timer);if(localStream)localStream.getTracks().forEach(t=>t.stop());if(pc)pc.close();}
+document.getElementById('hang').onclick=async()=>{try{await fetch('/api/connect/call/end/'+encodeURIComponent(cid),{method:'POST'});}catch(e){}cleanup();state.textContent='Call ended.';};
+start();
+</script>''',c=c,call_id=call_id,name=_profile_name(c.get('caller_id')))
 
 @app.route('/api/connect/call/answer/<call_id>',methods=['POST'])
 @login_required
 def connect_call_answer(call_id):
-    uid=current_user()['id'];c=first_row('koja_calls',{'id':call_id})
-    if not c or str(c.get('callee_id'))!=str(uid) or c.get('status')!='ringing':return jsonify(error='Forbidden'),403
+    uid=str(current_user()['id']); c=first_row('koja_calls',{'id':call_id})
+    if not c or str(c.get('callee_id'))!=uid:return jsonify(error='Forbidden'),403
+    if c.get('status')!='ringing':return jsonify(error='Call is no longer ringing'),409
     d=request.get_json(silent=True) or {}; answer=clean(d.get('answer'))
-    if not answer:return jsonify(error='Missing answer'),400
-    db_update('koja_calls',{'id':call_id},{'answer':answer,'status':'answered','answered_at':utc_now()});return jsonify(ok=True)
+    if not answer:return jsonify(error='Missing answer SDP'),400
+    row,err=db_update('koja_calls',{'id':call_id},{'answer':answer,'status':'answered','answered_at':utc_now()})
+    return (jsonify(error=err),500) if err else jsonify(ok=True,call=row)
 
 @app.route('/connect/calls')
 @login_required
 def connect_calls():
-    uid=current_user()['id']; rows=db_select('koja_calls',filters={'caller_id':uid},order='created_at.desc',limit=50)+db_select('koja_calls',filters={'callee_id':uid},order='created_at.desc',limit=50); rows=sorted(rows,key=lambda x:x.get('created_at',''),reverse=True)[:50]
-    return render_page('KOJA Calls',r'''<div class="card"><h2>📞 KOJA Call History</h2>{% for c in rows %}<div class="card"><strong>{{ c.mode|title }}</strong> — {{ c.status }}<div class="small">{{ c.created_at }}</div>{% if c.callee_id|string == user.id|string and c.status=='ringing' %}<a class="btn" href="{{ url_for('connect_answer',call_id=c.id) }}">Answer</a>{% endif %}</div>{% else %}<p>No calls yet.</p>{% endfor %}</div>''',rows=rows)
-
-@app.route('/connect/call/')
-@app.route('/connect/call')
-@login_required
-def connect_call_missing_target():
-    flash('Please open a chat with the person you want to call, then choose Voice Call or Video Call.','warning')
-    return redirect(url_for('connect'))
+    uid=str(current_user()['id']); rows=db_select('koja_calls',filters={'caller_id':uid},order='created_at.desc',limit=50)+db_select('koja_calls',filters={'callee_id':uid},order='created_at.desc',limit=50)
+    rows=sorted(rows,key=lambda x:x.get('created_at',''),reverse=True)[:50]
+    return render_page('KOJA Calls',r'''<div class="card"><h2>📞 KOJA Call History</h2>{% for c in rows %}<div class="card"><strong>{{ '🎥 Video' if c.mode=='video' else '📞 Voice' }}</strong> — {{ c.status }}<div class="small">{{ c.created_at }}</div>{% if c.callee_id|string == user.id|string and c.status=='ringing' %}<a class="btn success" href="{{ url_for('connect_answer',call_id=c.id) }}">Answer</a>{% endif %}</div>{% else %}<p>No calls yet.</p>{% endfor %}</div>''',rows=rows)
 
 @app.route('/connect/call/<user_id>')
 @login_required
 def connect_call(user_id):
-    uid=current_user()['id']; mode=clean(request.args.get('mode','video')).lower()
-    if not user_id or user_id==uid or not find_user_by_id(user_id) or mode not in ('voice','video'): abort(404)
+    uid=str(current_user()['id']); user_id=str(user_id); mode=clean(request.args.get('mode','video')).lower()
+    if user_id==uid or not find_user_by_id(user_id) or mode not in ('voice','video'):abort(404)
     c=_direct_conversation(uid,user_id)
     if not c:return 'Run KOJA Connect SQL first.',500
-    return render_page('KOJA Call',r'''<div class="card"><h2>{{ '🎥 Video' if mode=='video' else '📞 Voice' }} Call</h2><p>Calling <strong>{{ name }}</strong></p><div id="state">Preparing call…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px;{% if mode=='voice' %}display:none{% endif %}"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px;{% if mode=='voice' %}display:none{% endif %}"></video></div><audio id="remoteAudio" autoplay {% if mode!='video' %}style="display:none"{% endif %}></audio><div class="actions" style="margin-top:14px"><button id="start" class="btn success">Start {{ mode.title() }} Call</button><button id="hang" class="btn danger">End Call</button></div><p class="small">Microphone{% if mode=='video' %} and camera{% endif %} permission is required.</p></div><script>const target={{ user_id|tojson }},mode={{ mode|tojson }},calleeName={{ name|tojson }};let callId=null,pc=null,timer=null,stream=null,started=Date.now(),state=document.getElementById('state');function setState(t){state.textContent=t;}function cleanup(){if(timer)clearInterval(timer);if(stream)stream.getTracks().forEach(t=>t.stop());if(pc){pc.close();pc=null;}}async function api(u,o){let r=await fetch(u,o),d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||'Request failed');return d;}async function start(){try{startBtn.disabled=true;if(!navigator.onLine)throw Error('No internet connection.');stream=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});local.srcObject=stream;pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});stream.getTracks().forEach(t=>pc.addTrack(t,stream));pc.ontrack=e=>{if(e.streams[0]){remote.srcObject=e.streams[0];remoteAudio.srcObject=e.streams[0];}};pc.onicecandidate=e=>{if(e.candidate&&callId)fetch('/api/connect/call/ice/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate.toJSON(),side:'caller'})}).catch(()=>{});};let c=await api('/api/connect/call/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({callee_id:target,mode})});callId=c.call.id;let offer=await pc.createOffer();await pc.setLocalDescription(offer);await api('/api/connect/call/offer/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({offer:offer.sdp})});setState('🔔 Ringing '+calleeName+'…');started=Date.now();let seenCalleeIce=0;timer=setInterval(async()=>{if(Date.now()-started>120000){setState('No answer.');end();return;}try{let x=await api('/api/connect/call/check/'+callId);if(['ended','rejected'].includes(x.call.status)){setState('Call declined or ended.');cleanup();return;}if(x.call.answer&&!pc.currentRemoteDescription){await pc.setRemoteDescription({type:'answer',sdp:x.call.answer});setState('🟢 Connected');}const list=x.call.callee_ice||[];for(let i=seenCalleeIce;i<list.length;i++){try{await pc.addIceCandidate(list[i]);}catch(e){}}seenCalleeIce=list.length;}catch(e){}},1200);}catch(e){setState('Could not start call: '+e.message);cleanup();startBtn.disabled=false;}}async function end(){if(callId)fetch('/api/connect/call/end/'+callId,{method:'POST'}).catch(()=>{});cleanup();setState('Call ended.');}const startBtn=document.getElementById('start');startBtn.onclick=start;document.getElementById('hang').onclick=end;window.addEventListener('offline',()=>{setState('Internet connection lost.');cleanup();});</script>''',user_id=user_id,mode=mode,name=_profile_name(user_id))
+    # Create the ringing call server-side so a browser-side JavaScript failure cannot prevent the call from reaching the other user.
+    existing=db_select('koja_calls',filters={'caller_id':uid,'callee_id':user_id,'status':'ringing'},order='created_at.desc',limit=1)
+    call=existing[0] if existing else None
+    if not call:
+        call,err=db_insert('koja_calls',{'id':str(uuid.uuid4()),'conversation_id':c['id'],'caller_id':uid,'callee_id':user_id,'mode':mode,'status':'ringing','created_at':utc_now()})
+        if err:return 'Could not create call: '+str(err),500
+        db_insert('koja_notifications',{'user_id':user_id,'notification_type':'call','title':f'Incoming {mode} call','body':f'{_profile_name(uid)} is calling you.','related_id':call['id']})
+    return render_page('KOJA Call',r'''<div class="card">
+<h2>{{ '🎥' if mode=='video' else '📞' }} KOJA {{ mode|title }} Call</h2><p>Calling <strong>{{ name }}</strong></p>
+<div id="state">Starting camera and microphone…</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+<video id="local" autoplay muted playsinline style="width:100%;min-height:180px;object-fit:cover;background:#111;border-radius:10px"></video>
+<video id="remote" autoplay playsinline style="width:100%;min-height:180px;object-fit:cover;background:#111;border-radius:10px"></video>
+</div>
+<div class="small">Your preview is on the left. The other person appears on the right when connected.</div>
+<button id="hang" class="btn danger">End Call</button></div>
+<audio id="remoteAudio" autoplay></audio>
+<script>
+const callId={{ call.id|tojson }},mode={{ mode|tojson }}; const state=document.getElementById('state'),localEl=document.getElementById('local'),remoteEl=document.getElementById('remote');
+let pc=null,timer=null,localStream=null,seenCalleeIce=0,remoteSet=false,finished=false;
+async function api(u,o){const r=await fetch(u,Object.assign({cache:'no-store'},o||{}));let d={};try{d=await r.json()}catch(e){}if(!r.ok)throw Error(d.error||('HTTP '+r.status));return d}
+function cleanup(){clearInterval(timer);if(localStream)localStream.getTracks().forEach(t=>t.stop());if(pc)pc.close();}
+async function start(){try{
+ if(!navigator.onLine)throw Error('No internet connection');
+ pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
+ localStream=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});localEl.srcObject=localStream;localStream.getTracks().forEach(t=>pc.addTrack(t,localStream));
+ pc.ontrack=e=>{if(e.streams&&e.streams[0]){remoteEl.srcObject=e.streams[0];document.getElementById('remoteAudio').srcObject=e.streams[0];remoteEl.play().catch(()=>{});}};
+ pc.onicecandidate=e=>{if(e.candidate)fetch('/api/connect/call/ice/'+encodeURIComponent(callId),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate.toJSON(),side:'caller'})}).catch(()=>{});};
+ pc.onconnectionstatechange=()=>{if(pc.connectionState==='connected')state.textContent='🟢 Live — you can see and hear each other';if(pc.connectionState==='failed')state.textContent='Connection failed. Try the call again.';};
+ const offer=await pc.createOffer({offerToReceiveAudio:true,offerToReceiveVideo:mode==='video'});await pc.setLocalDescription(offer);
+ await api('/api/connect/call/offer/'+encodeURIComponent(callId),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({offer:offer.sdp})});
+ state.textContent='📳 Ringing…'; const started=Date.now();
+ timer=setInterval(async()=>{try{
+   if(Date.now()-started>120000){await fetch('/api/connect/call/end/'+encodeURIComponent(callId),{method:'POST'});cleanup();state.textContent='No answer.';return;}
+   const x=await api('/api/connect/call/check/'+encodeURIComponent(callId));
+   if(['ended','rejected'].includes(x.call.status)){cleanup();state.textContent='Call ended.';return;}
+   if(x.call.answer && !remoteSet){await pc.setRemoteDescription({type:'answer',sdp:x.call.answer});remoteSet=true;state.textContent='🔄 Connecting live call…';}
+   const list=x.call.callee_ice||[];for(let i=seenCalleeIce;i<list.length;i++){try{await pc.addIceCandidate(list[i]);}catch(e){}}seenCalleeIce=list.length;
+ }catch(e){}},800);
+ }catch(e){state.textContent='Could not start call: '+e.message;}
+}
+document.getElementById('hang').onclick=async()=>{finished=true;try{await fetch('/api/connect/call/end/'+encodeURIComponent(callId),{method:'POST'});}catch(e){}cleanup();state.textContent='Call ended.';};
+window.addEventListener('pagehide',()=>{if(!finished)fetch('/api/connect/call/end/'+encodeURIComponent(callId),{method:'POST',keepalive:true}).catch(()=>{});cleanup();});
+start();
+</script>''',user_id=user_id,mode=mode,name=_profile_name(user_id),call=call)
 
 @app.route('/api/connect/call/create',methods=['POST'])
 @login_required
 def connect_call_create():
-    uid=current_user()['id']; d=request.get_json(silent=True) or {}; callee=clean(d.get('callee_id')); mode=d.get('mode','video')
+    uid=str(current_user()['id']); d=request.get_json(silent=True) or {}; callee=str(clean(d.get('callee_id'))); mode=clean(d.get('mode','video')).lower()
     if callee==uid or not find_user_by_id(callee) or mode not in ('voice','video'):return jsonify(error='Invalid call'),400
-    c=_direct_conversation(uid,callee); row,err=db_insert('koja_calls',{'id':str(uuid.uuid4()),'conversation_id':c['id'],'caller_id':uid,'callee_id':callee,'mode':mode,'status':'ringing','created_at':utc_now()})
+    c=_direct_conversation(uid,callee)
+    if not c:return jsonify(error='Conversation not found'),404
+    existing=db_select('koja_calls',filters={'caller_id':uid,'callee_id':callee,'status':'ringing'},order='created_at.desc',limit=1)
+    if existing:return jsonify(call=existing[0])
+    row,err=db_insert('koja_calls',{'id':str(uuid.uuid4()),'conversation_id':c['id'],'caller_id':uid,'callee_id':callee,'mode':mode,'status':'ringing','created_at':utc_now()})
     if err:return jsonify(error=err),500
-    db_insert('koja_notifications',{'user_id':callee,'notification_type':'call','title':f'Incoming {mode} call','body':f'{_profile_name(uid)} is calling you.','related_id':row['id']});return jsonify(call=row)
+    db_insert('koja_notifications',{'user_id':callee,'notification_type':'call','title':f'Incoming {mode} call','body':f'{_profile_name(uid)} is calling you.','related_id':row['id']})
+    return jsonify(call=row)
 
 @app.route('/api/connect/call/offer/<call_id>',methods=['POST'])
 @login_required
 def connect_call_offer(call_id):
-    uid=current_user()['id']; c=first_row('koja_calls',{'id':call_id})
-    if not c or str(c.get('caller_id'))!=str(uid):return jsonify(error='Forbidden'),403
-    d=request.get_json(silent=True) or {};db_update('koja_calls',{'id':call_id},{'offer':clean(d.get('offer'))});return jsonify(ok=True)
+    uid=str(current_user()['id']); c=first_row('koja_calls',{'id':call_id})
+    if not c or str(c.get('caller_id'))!=uid:return jsonify(error='Forbidden'),403
+    if c.get('status') not in ('ringing','answered'):return jsonify(error='Call is no longer active'),409
+    d=request.get_json(silent=True) or {}; offer=clean(d.get('offer'))
+    if not offer:return jsonify(error='Missing offer SDP'),400
+    row,err=db_update('koja_calls',{'id':call_id},{'offer':offer})
+    return (jsonify(error=err),500) if err else jsonify(ok=True,call=row)
+
+@app.route('/api/connect/call/ice/<call_id>',methods=['POST'])
+@login_required
+def connect_call_ice(call_id):
+    uid=str(current_user()['id']); c=first_row('koja_calls',{'id':call_id})
+    if not c or uid not in (str(c.get('caller_id')),str(c.get('callee_id'))):return jsonify(error='Forbidden'),403
+    d=request.get_json(silent=True) or {}; candidate=d.get('candidate'); side=clean(d.get('side')).lower()
+    if side not in ('caller','callee') or not candidate:return jsonify(error='Invalid ICE candidate'),400
+    expected='caller' if uid==str(c.get('caller_id')) else 'callee'
+    if side!=expected:return jsonify(error='Invalid signaling side'),403
+    key='caller_ice' if side=='caller' else 'callee_ice'; arr=c.get(key) or []
+    if not isinstance(arr,list):arr=[]
+    sig=json.dumps(candidate,sort_keys=True,separators=(',',':'))
+    if not any(json.dumps(x,sort_keys=True,separators=(',',':'))==sig for x in arr):arr.append(candidate)
+    if len(arr)>200:arr=arr[-200:]
+    row,err=db_update('koja_calls',{'id':call_id},{key:arr})
+    return (jsonify(error=err),500) if err else jsonify(ok=True)
 
 @app.route('/api/connect/call/check/<call_id>')
 @login_required
 def connect_call_check(call_id):
-    uid=current_user()['id'];c=first_row('koja_calls',{'id':call_id})
+    uid=str(current_user()['id']); c=first_row('koja_calls',{'id':call_id})
     if not c or uid not in (str(c.get('caller_id')),str(c.get('callee_id'))):return jsonify(error='Forbidden'),403
     return jsonify(call=c)
 
 @app.route('/api/connect/call/end/<call_id>',methods=['POST'])
 @login_required
 def connect_call_end(call_id):
-    uid=current_user()['id'];c=first_row('koja_calls',{'id':call_id})
+    uid=str(current_user()['id']);c=first_row('koja_calls',{'id':call_id})
     if not c or uid not in (str(c.get('caller_id')),str(c.get('callee_id'))):return jsonify(error='Forbidden'),403
-    db_update('koja_calls',{'id':call_id},{'status':'ended','ended_at':utc_now()});return jsonify(ok=True)
+    if c.get('status')!='ended':db_update('koja_calls',{'id':call_id},{'status':'ended','ended_at':utc_now()})
+    return jsonify(ok=True)
 
 @app.route('/setup/connect-sql')
 def connect_sql():
