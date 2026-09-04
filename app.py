@@ -3338,9 +3338,6 @@ def drivers():
 <div class="actions">
 <button class="btn success" onclick="startDriverFinderGPS()">📍 Start Live GPS</button>
 <button class="btn" onclick="locateMe()">🎯 Locate Me</button>
-<button class="btn secondary" onclick="showDriverLeaflet()">🗺️ Leaflet Map</button>
-<button class="btn secondary" onclick="openDriverGoogleMap()">🌍 Google Maps</button>
-<button class="btn secondary" onclick="openDriverSatelliteMap()">🛰️ Satellite Map</button>
 <button class="btn secondary" onclick="findDrivers()">🔄 Refresh Drivers</button>
 <button class="btn danger" onclick="stopDriverFinderGPS()">Stop GPS</button>
 </div>
@@ -3357,9 +3354,6 @@ const satellite=L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/service
 L.control.layers({"OpenStreetMap":osm,"Detailed HOT":hot,"Satellite imagery":satellite},null,{collapsed:true}).addTo(map);
 function openDriverGoogle(driver){window.open("https://www.google.com/maps/dir/?api=1&destination="+encodeURIComponent(driver.latitude+","+driver.longitude),"_blank")}
 function openDriverSatellite(driver){window.open("https://www.google.com/maps/@"+encodeURIComponent(driver.latitude)+","+encodeURIComponent(driver.longitude)+",17z/data=!3m1!1e3","_blank")}
-function showDriverLeaflet(){map.setView(lastPosition||map.getCenter(),lastPosition?16:map.getZoom(),{animate:true});osm.addTo(map);setStatus(lastPosition?"🗺️ Leaflet Map · your live location shown.":"🗺️ Leaflet Map · start GPS to show your location.")}
-function openDriverGoogleMap(){const openAt=(lat,lon)=>window.open("https://www.google.com/maps/@?api=1&map_action=map&center="+encodeURIComponent(lat+","+lon)+"&zoom=17","_blank");if(lastPosition){openAt(lastPosition[0],lastPosition[1]);return}if(navigator.geolocation){navigator.geolocation.getCurrentPosition(p=>openAt(p.coords.latitude,p.coords.longitude),()=>window.open("https://www.google.com/maps/","_blank"),{enableHighAccuracy:true,timeout:10000,maximumAge:1000})}else window.open("https://www.google.com/maps/","_blank")}
-function openDriverSatelliteMap(){const openAt=(lat,lon)=>window.open("https://www.google.com/maps/@"+encodeURIComponent(lat)+","+encodeURIComponent(lon)+",17z/data=!3m1!1e3","_blank");if(lastPosition){openAt(lastPosition[0],lastPosition[1]);return}if(navigator.geolocation){navigator.geolocation.getCurrentPosition(p=>openAt(p.coords.latitude,p.coords.longitude),()=>window.open("https://www.google.com/maps/@?api=1&map_action=map&basemap=satellite","_blank"),{enableHighAccuracy:true,timeout:10000,maximumAge:1000})}else window.open("https://www.google.com/maps/@?api=1&map_action=map&basemap=satellite","_blank")}
 function setStatus(t){document.getElementById("status").textContent=t}
 function setAccuracy(a){document.getElementById("accuracy").textContent=Number.isFinite(a)?"GPS accuracy: "+Math.round(a)+" m" : ""}
 let lastMarkerPosition=null;
@@ -3530,14 +3524,18 @@ def create_delivery_request():
     lat=safe_float(body.get("pickup_latitude")); lon=safe_float(body.get("pickup_longitude"))
     tracking=make_tracking_code()
 
+    pickup_location=clean(body.get("pickup_location")) or "Current location"
+    destination=clean(body.get("destination")) or "Destination"
     payload={
         "id":str(uuid.uuid4()),
         "customer_id":user["id"],
         "user_id":user["id"],
         "sender_id":user["id"],
         "driver_id":driver_id,
-        "pickup_location":clean(body.get("pickup_location")),
-        "destination":clean(body.get("destination")),
+        "pickup_address":pickup_location,
+        "delivery_address":destination,
+        "pickup_location":pickup_location,
+        "destination":destination,
         "pickup_latitude":lat,
         "pickup_longitude":lon,
         "destination_latitude":safe_float(body.get("destination_latitude")),
@@ -3558,6 +3556,8 @@ def create_delivery_request():
     if error:
         minimal={
             "id":payload["id"],"customer_id":user["id"],"driver_id":driver_id,
+            "pickup_address":payload["pickup_address"],
+            "delivery_address":payload["delivery_address"],
             "pickup_location":payload["pickup_location"],
             "destination":payload["destination"],
             "recipient_name":payload["recipient_name"],
@@ -3584,8 +3584,10 @@ def deliveries():
         tracking=make_tracking_code()
         payload={
             "id":str(uuid.uuid4()),"customer_id":user["id"],"sender_id":user["id"],
-            "pickup_location":clean(request.form.get("pickup_location")),
-            "destination":clean(request.form.get("destination")),
+            "pickup_address":clean(request.form.get("pickup_location")) or "Current location",
+            "delivery_address":clean(request.form.get("destination")) or "Destination",
+            "pickup_location":clean(request.form.get("pickup_location")) or "Current location",
+            "destination":clean(request.form.get("destination")) or "Destination",
             "pickup_latitude":safe_float(request.form.get("pickup_latitude")),
             "pickup_longitude":safe_float(request.form.get("pickup_longitude")),
             "destination_latitude":safe_float(request.form.get("destination_latitude")),
