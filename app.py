@@ -1974,7 +1974,7 @@ def teacher_live_create(class_id):
         abort(403)
     room_id=str(uuid.uuid4())
     room_code="KOJA-"+secrets.token_urlsafe(6).upper().replace("-","")
-    payload={"id":room_id,"class_id":class_id,"teacher_id":teacher_id,"provider_id":provider.get("id"),"room_code":room_code,"title":clean(c.get("title") or "KOJA Live Lesson"),"status":"live","created_at":utc_now()}
+    payload={"id":room_id,"class_id":class_id,"teacher_id":teacher_id,"provider_id":provider.get("id"),"room_code":room_code,"title":clean(c.get("title") or "KOJA Live Lesson"),"status":"live","created_at":utc_now(),"started_at":utc_now(),"livekit_room_name":"koja-class-"+room_id,"classroom_mode":"large_sfu","max_participants":int(c.get("capacity") or os.getenv("KOJA_LIVE_MAX_PARTICIPANTS","500"))}
     row,error=db_insert("teacher_live_rooms",payload)
     if error:
         flash("Could not create the live classroom. Run the Live Classroom SQL migration first.","danger")
@@ -1986,152 +1986,42 @@ def teacher_live_create(class_id):
 @login_required
 def teacher_live_room(room_id):
     room=_live_room(room_id)
-    if not room or str(room.get("status") or "live").lower() == "ended":
-        abort(404)
-    user=current_user() or {}
-    return render_page("KOJA Live Classroom", r'''
-<div class="hero">
-  <h2>🎓 KOJA Live Classroom</h2>
-  <p><strong>{{ room.get('title') }}</strong> · Room <span class="badge">{{ room.get('room_code') }}</span></p>
-  <p class="small">Real-time video/audio, screen sharing, collaborative whiteboard, chat, hand raise and teacher controls.</p>
-</div>
-<div id="classroom" data-room="{{ room.get('id') }}" data-user="{{ user.get('id') }}" data-name="{{ user.get('name') or user.get('full_name') or user.get('email') or 'Participant' }}" data-teacher="{{ '1' if teacher else '0' }}">
-  <div class="actions" style="position:sticky;top:8px;z-index:5">
-    <button class="btn" id="joinBtn">🎥 Join lesson</button>
-    <button class="btn secondary" id="micBtn" disabled>🎙️ Mic</button>
-    <button class="btn secondary" id="camBtn" disabled>📷 Camera</button>
-    <button class="btn secondary" id="screenBtn" disabled>🖥️ Share screen</button>
-    <button class="btn secondary" id="handBtn" disabled>✋ Raise hand</button>
-    <button class="btn secondary" id="whiteboardBtn" disabled>🧑‍🏫 Whiteboard</button>
-    {% if teacher %}<button class="btn danger" id="endBtn" disabled>⏹ End lesson</button>{% endif %}
-  </div>
-  <div class="grid" id="videos" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr));margin-top:14px"></div>
-  <div class="grid" style="margin-top:14px">
-    <div class="card" id="chatCard"><h3>💬 Live Chat</h3><div id="chat" style="height:220px;overflow:auto;border:1px solid var(--border);padding:8px"></div><div class="actions"><input id="chatInput" placeholder="Message the class" disabled><button class="btn" id="sendChat" disabled>Send</button></div></div>
-    <div class="card"><h3>👥 Participants</h3><div id="participants">Not joined yet.</div><p class="small">Tip: use headphones to prevent audio feedback. For large classes, a TURN server is recommended.</p></div>
-  </div>
-  <div class="card" id="boardCard" style="display:none;margin-top:14px"><h3>🧑‍🏫 Collaborative Whiteboard</h3><canvas id="board" width="1000" height="500" style="width:100%;height:auto;border:1px solid var(--border);background:#fff;touch-action:none"></canvas><div class="actions"><button class="btn secondary" id="clearBoard">Clear board</button><span class="small">Draw with finger, mouse or stylus. Changes are synchronized with participants.</span></div></div>
-  <div class="card" style="margin-top:14px"><h3>🔒 Classroom security</h3><p class="small">Only logged-in KOJA users can enter this room. The teacher controls the lesson room and can end it. WebRTC media is peer-to-peer; KOJA stores only room signaling/chat metadata.</p></div>
-</div>
+    if not room or str(room.get("status") or "live").lower() == "ended": abort(404)
+    user=current_user() or {}; teacher=_live_peer_is_teacher(room,user.get("id"))
+    return render_page("KOJA Live Classroom", r"""
+<div class="hero"><h2>🎓 KOJA Live Classroom — Large Class</h2><p><strong>{{ room.get('title') }}</strong> · Room <span class="badge">{{ room.get('room_code') }}</span></p><p class="small">Scalable classroom powered by an SFU: adaptive video, screen sharing, chat, Q&A and teacher moderation.</p></div>
+<div id="lkClass" data-room="{{ room.get('id') }}" data-name="{{ user.get('name') or user.get('full_name') or user.get('email') or 'Participant' }}" data-teacher="{{ '1' if teacher else '0' }}">
+<div class="actions" style="position:sticky;top:8px;z-index:10"><button class="btn" id="join">🎥 Join classroom</button><button class="btn secondary" id="mic" disabled>🎙️ Mic</button><button class="btn secondary" id="cam" disabled>📷 Camera</button><button class="btn secondary" id="screen" disabled>🖥️ Share screen</button><button class="btn secondary" id="hand" disabled>✋ Raise hand</button>{% if teacher %}<button class="btn danger" id="end" disabled>⏹ End lesson</button>{% endif %}</div>
+<div class="card" style="margin-top:14px"><span id="status">Ready to join.</span> <span id="count" class="badge">0 participants</span></div>
+<div class="grid" id="videos" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr));margin-top:14px"></div>
+<div class="grid" style="margin-top:14px"><div class="card"><h3>💬 Class Chat & Q&A</h3><div id="chat" style="height:280px;overflow:auto;border:1px solid var(--border);padding:8px"></div><div class="actions"><input id="msg" placeholder="Ask a question or message the class" disabled><button class="btn" id="send" disabled>Send</button></div></div><div class="card"><h3>👥 Participants</h3><div id="people" style="max-height:300px;overflow:auto">Not joined yet.</div><p class="small">Students join listen/watch-first. This keeps large classes efficient; the teacher can enable speaking separately in a future moderation layer.</p></div></div>
+<div class="card" style="margin-top:14px"><h3>🧑‍🏫 Large-class mode</h3><p class="small">Unlike the previous peer-to-peer classroom, media is routed through the LiveKit SFU. This avoids every student creating a separate video connection to every other student.</p></div></div>
+<script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
 <script>
-(()=>{
-const root=document.getElementById('classroom'), roomId=root.dataset.room, userId=root.dataset.user;
-const name=root.dataset.name, isTeacher=root.dataset.teacher==='1';
-const peerId=(crypto.randomUUID?crypto.randomUUID():Math.random().toString(36).slice(2)+Date.now());
-const pcs=new Map(); const streams=new Map(); let localStream=null, joined=false, lastSignal='', lastMessage='', lastPoll=0;
-const joinBtn=document.getElementById('joinBtn'), micBtn=document.getElementById('micBtn'), camBtn=document.getElementById('camBtn'), screenBtn=document.getElementById('screenBtn'), handBtn=document.getElementById('handBtn'), whiteboardBtn=document.getElementById('whiteboardBtn'), endBtn=document.getElementById('endBtn');
-const videos=document.getElementById('videos'), participants=document.getElementById('participants'), chat=document.getElementById('chat'), chatInput=document.getElementById('chatInput'), sendChat=document.getElementById('sendChat');
-const boardCard=document.getElementById('boardCard'), board=document.getElementById('board'), ctx=board.getContext('2d'); let drawing=false, lastPt=null;
-function esc(x){return String(x??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
-async function api(url,opt={}){const r=await fetch(url,{headers:{'Content-Type':'application/json',...(opt.headers||{})},...opt}); const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.message||'Request failed'); return d;}
-function videoFor(id,label,stream,muted=false){let el=document.getElementById('v_'+id); if(!el){el=document.createElement('div');el.id='v_'+id;el.className='card';el.innerHTML='<div style="font-weight:700">'+esc(label)+'</div><video autoplay playsinline '+(muted?'muted':'')+' style="width:100%;border-radius:12px;background:#111;min-height:180px"></video>';videos.appendChild(el);} el.querySelector('video').srcObject=stream; return el;}
-function removePeer(id){const pc=pcs.get(id);if(pc){pc.close();pcs.delete(id);} const el=document.getElementById('v_'+id);if(el)el.remove(); streams.delete(id);}
-async function sendSignal(to,type,payload){await api('/api/teacher/live/'+roomId+'/signal',{method:'POST',body:JSON.stringify({sender_peer_id:peerId,recipient_peer_id:to,signal_type:type,payload})});}
-async function makeOffer(id){let pc=pcs.get(id);if(!pc){pc=makePC(id);} const offer=await pc.createOffer();await pc.setLocalDescription(offer);await sendSignal(id,'offer',offer);}
-function makePC(id){const pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'}]});pcs.set(id,pc);if(localStream)localStream.getTracks().forEach(t=>pc.addTrack(t,localStream));pc.onicecandidate=e=>{if(e.candidate)sendSignal(id,'ice',e.candidate.toJSON()).catch(()=>{});};pc.ontrack=e=>{const st=e.streams[0]||new MediaStream([e.track]);streams.set(id,st);videoFor(id,'Participant '+id.slice(0,6),st,false);};pc.onconnectionstatechange=()=>{if(['failed','closed','disconnected'].includes(pc.connectionState))removePeer(id);};return pc;}
-async function handleSignal(s){const from=s.sender_peer_id; if(from===peerId)return; let pc=pcs.get(from); if(s.signal_type==='offer'){pc=pc||makePC(from);await pc.setRemoteDescription(s.payload);const ans=await pc.createAnswer();await pc.setLocalDescription(ans);await sendSignal(from,'answer',ans);}else if(s.signal_type==='answer'){pc=pc||makePC(from);await pc.setRemoteDescription(s.payload);}else if(s.signal_type==='ice'){pc=pc||makePC(from);try{await pc.addIceCandidate(s.payload);}catch(e){}}else if(s.signal_type==='whiteboard'){applyBoardAction(s.payload);}else if(s.signal_type==='hand'){addChat('✋ '+(s.payload.name||'Participant')+' raised a hand.');}}
-function addChat(text){const d=document.createElement('div');d.innerHTML=esc(text);chat.appendChild(d);chat.scrollTop=chat.scrollHeight;}
-async function poll(){if(!joined)return;try{if(!poll.lastPresence || Date.now()-poll.lastPresence>10000){await api('/api/teacher/live/'+roomId+'/presence',{method:'POST',body:JSON.stringify({peer_id:peerId,display_name:name,is_teacher:isTeacher})});poll.lastPresence=Date.now();}const d=await api('/api/teacher/live/'+roomId+'/poll?since='+encodeURIComponent(lastPoll||'')+'&peer='+encodeURIComponent(peerId));for(const s of (d.signals||[])){lastPoll=s.created_at;await handleSignal(s);} if(d.participants){participants.innerHTML=d.participants.map(p=>'<div>🟢 '+esc(p.display_name||'Participant')+(p.is_teacher?' — Teacher':'')+(p.peer_id===peerId?' — You':'')+'</div>').join('')||'No participants'; for(const p of d.participants){if(p.peer_id!==peerId&&!pcs.has(p.peer_id)){if(peerId<p.peer_id){makeOffer(p.peer_id).catch(()=>{});}}}} for(const m of (d.messages||[])){if(!lastMessage||m.created_at>lastMessage){addChat((m.sender_name||'Participant')+': '+m.body);lastMessage=m.created_at;}}}catch(e){}setTimeout(poll,1200);}
-async function join(){if(joined)return;try{localStream=await navigator.mediaDevices.getUserMedia({video:true,audio:true});}catch(e){try{localStream=await navigator.mediaDevices.getUserMedia({video:false,audio:true});}catch(e2){localStream=new MediaStream();}}
-joined=true;joinBtn.disabled=true;[micBtn,camBtn,screenBtn,handBtn,whiteboardBtn,sendChat,chatInput].forEach(x=>x.disabled=false);if(endBtn)endBtn.disabled=!isTeacher;videoFor(peerId,name,localStream,true);await api('/api/teacher/live/'+roomId+'/presence',{method:'POST',body:JSON.stringify({peer_id:peerId,display_name:name,is_teacher:isTeacher})});poll();}
-joinBtn.onclick=join;micBtn.onclick=()=>localStream.getAudioTracks().forEach(t=>t.enabled=!t.enabled);camBtn.onclick=()=>localStream.getVideoTracks().forEach(t=>t.enabled=!t.enabled);
-screenBtn.onclick=async()=>{try{const ss=await navigator.mediaDevices.getDisplayMedia({video:true});const track=ss.getVideoTracks()[0];for(const pc of pcs.values()){const sender=pc.getSenders().find(x=>x.track&&x.track.kind==='video');if(sender)sender.replaceTrack(track);}videoFor(peerId,name,new MediaStream([track]),true);track.onended=()=>{const cam=localStream.getVideoTracks()[0];for(const pc of pcs.values()){const sender=pc.getSenders().find(x=>x.track&&x.track.kind==='video');if(sender)sender.replaceTrack(cam);}videoFor(peerId,name,localStream,true);};}catch(e){}}
-handBtn.onclick=()=>sendSignal(null,'hand',{name}).catch(()=>{});
-whiteboardBtn.onclick=()=>boardCard.style.display=boardCard.style.display==='none'?'block':'none';
-sendChat.onclick=async()=>{const b=chatInput.value.trim();if(!b)return;chatInput.value='';await api('/api/teacher/live/'+roomId+'/message',{method:'POST',body:JSON.stringify({sender_peer_id:peerId,sender_name:name,body:b})});};chatInput.addEventListener('keydown',e=>{if(e.key==='Enter')sendChat.click();});
-if(endBtn)endBtn.onclick=async()=>{if(confirm('End this live lesson for everyone?')){await api('/api/teacher/live/'+roomId+'/end',{method:'POST'});location.reload();}};
-function pt(e){const r=board.getBoundingClientRect();return{x:(e.clientX-r.left)*board.width/r.width,y:(e.clientY-r.top)*board.height/r.height};}
-function draw(a){ctx.lineWidth=3;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(a.x1,a.y1);ctx.lineTo(a.x2,a.y2);ctx.stroke();}
-function applyBoardAction(a){if(a.type==='clear')ctx.clearRect(0,0,board.width,board.height);else draw(a);}
-board.addEventListener('pointerdown',e=>{drawing=true;lastPt=pt(e);});board.addEventListener('pointerup',()=>{drawing=false;lastPt=null;});board.addEventListener('pointerleave',()=>{drawing=false;lastPt=null;});board.addEventListener('pointermove',e=>{if(!drawing||!lastPt)return;const q=pt(e),a={type:'draw',x1:lastPt.x,y1:lastPt.y,x2:q.x,y2:q.y};draw(a);sendSignal(null,'whiteboard',a).catch(()=>{});lastPt=q;});document.getElementById('clearBoard').onclick=()=>{ctx.clearRect(0,0,board.width,board.height);sendSignal(null,'whiteboard',{type:'clear'}).catch(()=>{});};
-window.addEventListener('beforeunload',()=>{navigator.sendBeacon('/api/teacher/live/'+roomId+'/leave',JSON.stringify({peer_id:peerId}));});
-})();
+(()=>{const root=document.getElementById('lkClass'),roomId=root.dataset.room,name=root.dataset.name,isTeacher=root.dataset.teacher==='1';const status=document.getElementById('status'),count=document.getElementById('count'),videos=document.getElementById('videos'),people=document.getElementById('people'),joinBtn=document.getElementById('join'),micBtn=document.getElementById('mic'),camBtn=document.getElementById('cam'),screenBtn=document.getElementById('screen'),handBtn=document.getElementById('hand'),endBtn=document.getElementById('end'),chat=document.getElementById('chat'),msg=document.getElementById('msg'),send=document.getElementById('send');let room=null,screenOn=false;
+function esc(x){return String(x??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}function addChat(t){let d=document.createElement('div');d.textContent=t;chat.appendChild(d);chat.scrollTop=chat.scrollHeight;}function tile(id,label,el){let key=id.replace(/[^a-zA-Z0-9_-]/g,'_'),box=document.getElementById('tile_'+key);if(!box){box=document.createElement('div');box.className='card';box.id='tile_'+key;box.innerHTML='<div style="font-weight:700;margin-bottom:6px"></div><div class="media"></div>';box.firstElementChild.textContent=label;videos.appendChild(box);}if(el&&!box.querySelector('.media').contains(el))box.querySelector('.media').appendChild(el);}function removeTile(id){let x=document.getElementById('tile_'+id.replace(/[^a-zA-Z0-9_-]/g,'_'));if(x)x.remove();}function refresh(){if(!room)return;let ps=[room.localParticipant,...Array.from(room.remoteParticipants.values())];count.textContent=ps.length+' participant'+(ps.length===1?'':'s');people.innerHTML=ps.map(p=>'<div style="padding:6px 0;border-bottom:1px solid var(--border)">'+(p.isSpeaking?'🗣️ ':'🟢 ')+esc(p.name||p.identity)+(p===room.localParticipant?' — You':'')+'</div>').join('');}
+function attach(track,publication,participant){let el=track.attach();el.style.width='100%';el.style.maxHeight='360px';el.style.borderRadius='12px';el.autoplay=true;el.playsInline=true;tile(participant.identity,participant.name||participant.identity,el);}function detach(track,participant){track.detach().forEach(x=>x.remove());if(!Array.from(participant.getTrackPublications()).some(p=>p.track&&p.track.kind==='video'))removeTile(participant.identity);}
+async function api(u,o={}){let r=await fetch(u,{headers:{'Content-Type':'application/json',...(o.headers||{})},...o});let d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.message||'Request failed');return d;}async function join(){if(room)return;try{status.textContent='Connecting…';let cred=await api('/api/teacher/live/'+roomId+'/token',{method:'POST'});room=new LivekitClient.Room({adaptiveStream:true,dynacast:true,videoCaptureDefaults:{resolution:LivekitClient.VideoPresets.h720.resolution}});room.on(LivekitClient.RoomEvent.TrackSubscribed,attach);room.on(LivekitClient.RoomEvent.TrackUnsubscribed,detach);room.on(LivekitClient.RoomEvent.ParticipantConnected,refresh);room.on(LivekitClient.RoomEvent.ParticipantDisconnected,p=>{removeTile(p.identity);refresh();});room.on(LivekitClient.RoomEvent.ActiveSpeakersChanged,refresh);room.on(LivekitClient.RoomEvent.DataReceived,(payload,p)=>{try{let d=JSON.parse(new TextDecoder().decode(payload));if(d.type==='chat')addChat((p?.name||'Participant')+': '+d.text);if(d.type==='hand')addChat('✋ '+(p?.name||'Participant')+' raised a hand.');}catch(e){}});room.on(LivekitClient.RoomEvent.Disconnected,()=>status.textContent='Disconnected.');await room.connect(cred.server_url,cred.participant_token);status.textContent='Connected — scalable SFU classroom';joinBtn.disabled=true;[micBtn,camBtn,screenBtn,handBtn,msg,send].forEach(x=>x.disabled=false);if(endBtn)endBtn.disabled=!isTeacher;refresh();if(isTeacher)await room.localParticipant.enableCameraAndMicrophone();}catch(e){status.textContent='Could not join: '+e.message;room=null;}}
+joinBtn.onclick=join;micBtn.onclick=async()=>{await room.localParticipant.setMicrophoneEnabled(!room.localParticipant.isMicrophoneEnabled);micBtn.textContent=room.localParticipant.isMicrophoneEnabled?'🔇 Mute':'🎙️ Mic';};camBtn.onclick=async()=>{await room.localParticipant.setCameraEnabled(!room.localParticipant.isCameraEnabled);camBtn.textContent=room.localParticipant.isCameraEnabled?'📵 Camera off':'📷 Camera';};screenBtn.onclick=async()=>{try{await room.localParticipant.setScreenShareEnabled(!screenOn,{audio:true});screenOn=!screenOn;screenBtn.textContent=screenOn?'⛔ Stop sharing':'🖥️ Share screen';}catch(e){status.textContent='Screen sharing unavailable: '+e.message;}};handBtn.onclick=async()=>{await room.localParticipant.publishData(new TextEncoder().encode(JSON.stringify({type:'hand'})),{reliable:true});addChat('✋ You raised your hand.');};send.onclick=async()=>{let text=msg.value.trim();if(!text)return;msg.value='';await room.localParticipant.publishData(new TextEncoder().encode(JSON.stringify({type:'chat',text})),{reliable:true});addChat('You: '+text);};msg.addEventListener('keydown',e=>{if(e.key==='Enter')send.click();});if(endBtn)endBtn.onclick=async()=>{if(confirm('End this lesson for everyone?')){await api('/api/teacher/live/'+roomId+'/end',{method:'POST'});if(room)await room.disconnect();location.reload();}};})();
 </script>
-''', room=room, user=user, teacher=_live_peer_is_teacher(room,user.get('id')))
+""", room=room, user=user, teacher=teacher)
 
-@app.route("/api/teacher/live/<room_id>/presence", methods=["POST"])
+@app.route("/api/teacher/live/<room_id>/token", methods=["POST"])
 @login_required
-def live_presence(room_id):
+def livekit_token(room_id):
     room=_live_room(room_id)
-    if not room or str(room.get("status") or "live") != "live": return jsonify({"ok":False,"message":"Classroom is not active."}),404
-    user=current_user() or {}; b=request.get_json(silent=True) or {}; peer=clean(b.get("peer_id"),100)
-    if not peer:return jsonify({"ok":False,"message":"Peer ID required."}),400
-    payload={"room_id":room_id,"peer_id":peer,"user_id":user.get("id"),"display_name":clean(b.get("display_name"),200) or "Participant","is_teacher":bool(b.get("is_teacher")) and _live_peer_is_teacher(room,user.get("id")),"last_seen":utc_now()}
-    existing=first_row("teacher_live_presence",{"room_id":room_id,"peer_id":peer})
-    row,error=(db_update("teacher_live_presence",{"room_id":room_id,"peer_id":peer},payload) if existing else db_insert("teacher_live_presence",payload))
-    if error:return jsonify({"ok":False,"message":str(error)[:500]}),500
-    return jsonify({"ok":True})
-
-@app.route("/api/teacher/live/<room_id>/signal", methods=["POST"])
-@login_required
-def live_signal(room_id):
-    room=_live_room(room_id)
-    if not room:return jsonify({"ok":False,"message":"Room not found."}),404
-    user=current_user() or {}; b=request.get_json(silent=True) or {}; peer=clean(b.get("sender_peer_id"),100); typ=clean(b.get("signal_type"),40); payload=b.get("payload") or {}
-    if not peer or typ not in {"offer","answer","ice","hand","whiteboard"}:return jsonify({"ok":False,"message":"Invalid signal."}),400
-    # Only a peer that is currently present in this room may send signaling data.
-    pres=first_row("teacher_live_presence",{"room_id":room_id,"peer_id":peer})
-    if not pres or str(pres.get("user_id"))!=str(user.get("id")):return jsonify({"ok":False,"message":"Join the classroom first."}),403
-    row,error=db_insert("teacher_live_signals",{"id":str(uuid.uuid4()),"room_id":room_id,"sender_peer_id":peer,"recipient_peer_id":clean(b.get("recipient_peer_id"),100) or None,"signal_type":typ,"payload":payload,"created_at":utc_now()})
-    if error:return jsonify({"ok":False,"message":str(error)[:500]}),500
-    return jsonify({"ok":True})
-
-@app.route("/api/teacher/live/<room_id>/message", methods=["POST"])
-@login_required
-def live_message(room_id):
-    room=_live_room(room_id)
-    if not room:return jsonify({"ok":False,"message":"Room not found."}),404
-    user=current_user() or {}; b=request.get_json(silent=True) or {}; peer=clean(b.get("sender_peer_id"),100); body=clean(b.get("body"),2000)
-    pres=first_row("teacher_live_presence",{"room_id":room_id,"peer_id":peer})
-    if not pres or str(pres.get("user_id"))!=str(user.get("id")):return jsonify({"ok":False,"message":"Join the classroom first."}),403
-    if not body:return jsonify({"ok":False,"message":"Message is empty."}),400
-    row,error=db_insert("teacher_live_messages",{"id":str(uuid.uuid4()),"room_id":room_id,"sender_peer_id":peer,"sender_name":clean(b.get("sender_name"),200) or "Participant","body":body,"created_at":utc_now()})
-    if error:return jsonify({"ok":False,"message":str(error)[:500]}),500
-    return jsonify({"ok":True})
-
-@app.route("/api/teacher/live/<room_id>/poll")
-@login_required
-def live_poll(room_id):
-    room=_live_room(room_id)
-    if not room:return jsonify({"ok":False,"message":"Room not found."}),404
-    user=current_user() or {}; since=clean(request.args.get("since"),80)
-    # Presence is refreshed on each poll by the current peer when the browser sends a presence update below.
-    pres=db_select("teacher_live_presence",filters={"room_id":room_id},order="last_seen.desc",limit=50)
-    active=[]; now=datetime.now(timezone.utc)
-    for x in pres:
-        try: dt=datetime.fromisoformat(str(x.get("last_seen")).replace("Z","+00:00")); age=(now-dt).total_seconds()
-        except Exception: age=0
-        if age <= 30: active.append(x)
-    # Signal/message polling uses a timestamp boundary. Keep it simple and defensive for PostgREST schemas.
-    sigs=db_select("teacher_live_signals",filters={"room_id":room_id},order="created_at.asc",limit=300)
-    msgs=db_select("teacher_live_messages",filters={"room_id":room_id},order="created_at.asc",limit=200)
-    if since:
-        sigs=[x for x in sigs if str(x.get("created_at") or "")>since]
-    # Do not leak private signals to arbitrary users: only targeted signals or broadcast signals.
-    mypeer=clean(request.args.get("peer"),100)
-    if mypeer:
-        sigs=[x for x in sigs if not x.get("recipient_peer_id") or str(x.get("recipient_peer_id"))==mypeer]
-    return jsonify({"ok":True,"participants":active,"signals":sigs,"messages":msgs[-100:]})
-
-@app.route("/api/teacher/live/<room_id>/leave", methods=["POST"])
-@login_required
-def live_leave(room_id):
-    b=request.get_json(silent=True) or {}
-    peer=clean(b.get("peer_id"),100); user=current_user() or {}
-    if peer:
-        db_update("teacher_live_presence",{"room_id":room_id,"peer_id":peer},{"last_seen":datetime.now(timezone.utc)-timedelta(minutes=10)})
-    return jsonify({"ok":True})
-
-@app.route("/api/teacher/live/<room_id>/end", methods=["POST"])
-@login_required
-def live_end(room_id):
-    room=_live_room(room_id); user=current_user() or {}
-    if not room:return jsonify({"ok":False,"message":"Room not found."}),404
-    if not _live_room_teacher_allowed(room,user.get("id")):return jsonify({"ok":False,"message":"Teacher access required."}),403
-    row,error=db_update("teacher_live_rooms",{"id":room_id},{"status":"ended","ended_at":utc_now()})
-    if error:return jsonify({"ok":False,"message":str(error)[:500]}),500
-    return jsonify({"ok":True})
-
+    if not room or str(room.get("status") or "live").lower()=="ended": return jsonify({"ok":False,"message":"Classroom is not active."}),404
+    user=current_user() or {}; uid=str(user.get("id") or "")
+    api_key=os.getenv("LIVEKIT_API_KEY","").strip(); api_secret=os.getenv("LIVEKIT_API_SECRET","").strip(); server_url=os.getenv("LIVEKIT_URL","").strip()
+    if not uid:return jsonify({"ok":False,"message":"Authentication required."}),401
+    if not api_key or not api_secret or not server_url:return jsonify({"ok":False,"message":"LiveKit is not configured. Add LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET in Render."}),503
+    try: import jwt
+    except Exception:return jsonify({"ok":False,"message":"PyJWT is missing. Add PyJWT to requirements.txt."}),500
+    identity="koja-"+uid; room_name="koja-class-"+str(room.get("id")); teacher=_live_peer_is_teacher(room,uid); now=int(datetime.now(timezone.utc).timestamp())
+    grants={"room":room_name,"roomJoin":True,"canSubscribe":True,"canPublish":bool(teacher),"canPublishData":True}
+    if teacher: grants.update({"canPublishSources":["camera","microphone","screen_share","screen_share_audio"],"roomAdmin":True})
+    claims={"iss":api_key,"sub":identity,"name":clean(user.get("name") or user.get("full_name") or user.get("email") or "Participant",200),"nbf":now,"exp":now+3600,"video":grants}
+    return jsonify({"ok":True,"server_url":server_url,"participant_token":jwt.encode(claims,api_secret,algorithm="HS256"),"mode":"teacher" if teacher else "student"})
 
 def _teacher_provider_for_user(user_id):
     if not user_id:

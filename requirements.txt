@@ -1,5 +1,7 @@
 Flask>=3.0,<4
-requests>=2.31,<3
-Werkzeug>=3.0,<4
-gunicorn>=22,<24
-python-dotenv>=1.0,<2
+requests>=2.31
+python-dotenv>=1.0
+Werkzeug>=3.0
+PyJWT>=2.9
+reportlab>=4.0
+Pillow>=10.0
