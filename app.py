@@ -1714,8 +1714,10 @@ def _approved_teacher_rows():
     merged = {}
     # Primary teacher profiles.
     for t in db_select("teacher_profiles", order="created_at.desc", limit=300):
-        status = str(t.get("approval_status") or "").strip().lower()
-        if status not in ("approved", "active", "verified"):
+        status = str(t.get("approval_status") or t.get("verification_status") or t.get("status") or "").strip().lower()
+        provider_type = str(t.get("provider_type") or t.get("profession") or t.get("service_type") or "").lower()
+        is_teacher_type = (not provider_type) or ("teacher" in provider_type or "tutor" in provider_type)
+        if status not in ("approved", "active", "verified") or not is_teacher_type:
             continue
         key = str(t.get("provider_id") or t.get("user_id") or t.get("id") or "")
         if key:
@@ -1723,8 +1725,8 @@ def _approved_teacher_rows():
 
     # Also include approved teacher/tutor service-provider records.
     for p in db_select("service_providers", order="created_at.desc", limit=300):
-        ptype = str(p.get("provider_type") or p.get("profession") or "").lower()
-        status = str(p.get("approval_status") or "").strip().lower()
+        ptype = str(p.get("provider_type") or p.get("profession") or p.get("service_type") or p.get("category") or "").lower()
+        status = str(p.get("approval_status") or p.get("verification_status") or p.get("status") or "").strip().lower()
         if status not in ("approved", "active", "verified"):
             continue
         if not ("teacher" in ptype or "tutor" in ptype):
@@ -1796,9 +1798,15 @@ def teacher_classes(provider_id):
     if not teacher:
         abort(404)
     scheduled_classes = db_select("teacher_classes", filters={"teacher_id": teacher.get("provider_id") or teacher.get("id") or teacher.get("user_id")}, order="class_date.asc", limit=100)
+    active_rooms = {}
+    for c in scheduled_classes:
+        rid = c.get('id')
+        if rid:
+            rooms = db_select('teacher_live_rooms', filters={'class_id': rid, 'status': 'live'}, order='created_at.desc', limit=1)
+            if rooms: active_rooms[str(rid)] = rooms[0]
     return render_page("Teacher Classes", r"""
 <div class="hero"><h2>🎓 {{ teacher.get("full_name") or "Teacher / Tutor" }} — Classes</h2><p>Choose from scheduled paid classes, live lessons or flexible online tutoring.</p></div>
-<div class="card"><h3>📅 Scheduled Paid Classes</h3>{% for c in scheduled_classes %}<div class="card"><h3>{{ c.get('title') }}</h3><p>{{ c.get('subject') or '' }} · <span class="badge">{{ c.get('class_type') or 'online' }}</span></p><p>{{ c.get('class_date') or 'Date to be arranged' }} {{ c.get('start_time') or '' }}{% if c.get('end_time') %}–{{ c.get('end_time') }}{% endif %}</p><p><strong>{{ c.get('currency') or 'ZMW' }} {{ c.get('price') or 0 }}</strong>{% if c.get('capacity') %} · {{ c.get('capacity') }} seats{% endif %}</p><p>{{ c.get('description') or '' }}</p><a class="btn" href="{{ url_for('book_teacher_class',class_id=c.get('id')) }}">Book This Class</a></div>{% else %}<p>No scheduled paid classes yet. You can still request a private tutoring session.</p>{% endfor %}</div>
+<div class="card"><h3>📅 Scheduled Paid Classes</h3>{% for c in scheduled_classes %}<div class="card"><h3>{{ c.get('title') }}</h3><p>{{ c.get('subject') or '' }} · <span class="badge">{{ c.get('class_type') or 'online' }}</span></p><p>{{ c.get('class_date') or 'Date to be arranged' }} {{ c.get('start_time') or '' }}{% if c.get('end_time') %}–{{ c.get('end_time') }}{% endif %}</p><p><strong>{{ c.get('currency') or 'ZMW' }} {{ c.get('price') or 0 }}</strong>{% if c.get('capacity') %} · {{ c.get('capacity') }} seats{% endif %}</p><p>{{ c.get('description') or '' }}</p><a class="btn" href="{{ url_for('book_teacher_class',class_id=c.get('id')) }}">Book This Class</a>{% if c.get('class_type') == 'live' and active_rooms.get(c.get('id')|string) %} <a class="btn success" href="{{ url_for('teacher_live_room',room_id=active_rooms.get(c.get('id')|string).get('id')) }}">🎥 Join KOJA Live</a>{% endif %}{% if c.get('class_type') == 'live' and c.get('meeting_url') %} <a class="btn secondary" href="{{ c.get('meeting_url') }}" target="_blank" rel="noopener">Join external link</a>{% endif %}</div>{% else %}<p>No scheduled paid classes yet. You can still request a private tutoring session.</p>{% endfor %}</div>
 <div class="grid">
   <div class="card">
     <h3>🔴 Live Classes</h3>
@@ -1820,7 +1828,7 @@ def teacher_classes(provider_id):
   <p><strong>Qualification:</strong> {{ teacher.get("qualification") or "Not specified" }}</p>
   {% if teacher.get("hourly_rate") %}<p><strong>Rate:</strong> {{ teacher.get("currency") or "ZMW" }} {{ teacher.get("hourly_rate") }}/hour</p>{% endif %}
 </div>
-""", teacher=teacher, provider_id=provider_id, scheduled_classes=scheduled_classes)
+""", teacher=teacher, provider_id=provider_id, scheduled_classes=scheduled_classes, active_rooms=active_rooms)
 
 
 
@@ -1909,7 +1917,221 @@ create table if not exists public.teacher_availability (
  created_at timestamptz default now()
 );
 create index if not exists teacher_availability_teacher_idx on public.teacher_availability(teacher_id, day_of_week);
+
+create table if not exists public.teacher_live_rooms (
+ id uuid primary key default gen_random_uuid(),
+ class_id uuid, teacher_id uuid not null, provider_id uuid, room_code text unique not null,
+ title text not null, status text default 'live', created_at timestamptz default now(), ended_at timestamptz
+);
+create index if not exists teacher_live_rooms_teacher_idx on public.teacher_live_rooms(teacher_id, created_at desc);
+create index if not exists teacher_live_rooms_class_idx on public.teacher_live_rooms(class_id, created_at desc);
+
+create table if not exists public.teacher_live_presence (
+ room_id uuid not null references public.teacher_live_rooms(id) on delete cascade,
+ peer_id text not null, user_id uuid not null, display_name text, is_teacher boolean default false,
+ last_seen timestamptz default now(), primary key(room_id, peer_id)
+);
+create index if not exists teacher_live_presence_room_idx on public.teacher_live_presence(room_id, last_seen desc);
+
+create table if not exists public.teacher_live_signals (
+ id uuid primary key default gen_random_uuid(), room_id uuid not null references public.teacher_live_rooms(id) on delete cascade,
+ sender_peer_id text not null, recipient_peer_id text, signal_type text not null, payload jsonb not null, created_at timestamptz default now()
+);
+create index if not exists teacher_live_signals_room_idx on public.teacher_live_signals(room_id, created_at asc);
+
+create table if not exists public.teacher_live_messages (
+ id uuid primary key default gen_random_uuid(), room_id uuid not null references public.teacher_live_rooms(id) on delete cascade,
+ sender_peer_id text not null, sender_name text, body text not null, created_at timestamptz default now()
+);
+create index if not exists teacher_live_messages_room_idx on public.teacher_live_messages(room_id, created_at asc);
 """
+
+# ============================================================
+# KOJA LIVE CLASSROOM — WebRTC, screen sharing, whiteboard, chat
+# ============================================================
+
+def _live_room(room_id):
+    return first_row("teacher_live_rooms", {"id": room_id})
+
+def _live_room_teacher_allowed(room, user_id):
+    if not room or not user_id:
+        return False
+    return str(room.get("teacher_id") or "") == str(user_id) or str(room.get("provider_id") or "") == str(user_id)
+
+def _live_peer_is_teacher(room, user_id):
+    return _live_room_teacher_allowed(room, user_id)
+
+@app.route("/teacher/live/create/<class_id>", methods=["POST"])
+@login_required
+def teacher_live_create(class_id):
+    user=current_user() or {}
+    c=first_row("teacher_classes", {"id": class_id})
+    if not c:
+        abort(404)
+    provider=_teacher_provider_for_user(user.get("id"))
+    teacher_id=_teacher_id_for_user(user.get("id"))
+    if not provider or str(c.get("teacher_id") or c.get("provider_id")) not in {str(teacher_id), str(provider.get("id"))}:
+        abort(403)
+    room_id=str(uuid.uuid4())
+    room_code="KOJA-"+secrets.token_urlsafe(6).upper().replace("-","")
+    payload={"id":room_id,"class_id":class_id,"teacher_id":teacher_id,"provider_id":provider.get("id"),"room_code":room_code,"title":clean(c.get("title") or "KOJA Live Lesson"),"status":"live","created_at":utc_now()}
+    row,error=db_insert("teacher_live_rooms",payload)
+    if error:
+        flash("Could not create the live classroom. Run the Live Classroom SQL migration first.","danger")
+        return redirect(url_for("teacher_dashboard"))
+    flash("KOJA Live Classroom created. You can now start the lesson.","success")
+    return redirect(url_for("teacher_live_room",room_id=room_id))
+
+@app.route("/teacher/live/<room_id>")
+@login_required
+def teacher_live_room(room_id):
+    room=_live_room(room_id)
+    if not room or str(room.get("status") or "live").lower() == "ended":
+        abort(404)
+    user=current_user() or {}
+    return render_page("KOJA Live Classroom", r'''
+<div class="hero">
+  <h2>🎓 KOJA Live Classroom</h2>
+  <p><strong>{{ room.get('title') }}</strong> · Room <span class="badge">{{ room.get('room_code') }}</span></p>
+  <p class="small">Real-time video/audio, screen sharing, collaborative whiteboard, chat, hand raise and teacher controls.</p>
+</div>
+<div id="classroom" data-room="{{ room.get('id') }}" data-user="{{ user.get('id') }}" data-name="{{ user.get('name') or user.get('full_name') or user.get('email') or 'Participant' }}" data-teacher="{{ '1' if teacher else '0' }}">
+  <div class="actions" style="position:sticky;top:8px;z-index:5">
+    <button class="btn" id="joinBtn">🎥 Join lesson</button>
+    <button class="btn secondary" id="micBtn" disabled>🎙️ Mic</button>
+    <button class="btn secondary" id="camBtn" disabled>📷 Camera</button>
+    <button class="btn secondary" id="screenBtn" disabled>🖥️ Share screen</button>
+    <button class="btn secondary" id="handBtn" disabled>✋ Raise hand</button>
+    <button class="btn secondary" id="whiteboardBtn" disabled>🧑‍🏫 Whiteboard</button>
+    {% if teacher %}<button class="btn danger" id="endBtn" disabled>⏹ End lesson</button>{% endif %}
+  </div>
+  <div class="grid" id="videos" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr));margin-top:14px"></div>
+  <div class="grid" style="margin-top:14px">
+    <div class="card" id="chatCard"><h3>💬 Live Chat</h3><div id="chat" style="height:220px;overflow:auto;border:1px solid var(--border);padding:8px"></div><div class="actions"><input id="chatInput" placeholder="Message the class" disabled><button class="btn" id="sendChat" disabled>Send</button></div></div>
+    <div class="card"><h3>👥 Participants</h3><div id="participants">Not joined yet.</div><p class="small">Tip: use headphones to prevent audio feedback. For large classes, a TURN server is recommended.</p></div>
+  </div>
+  <div class="card" id="boardCard" style="display:none;margin-top:14px"><h3>🧑‍🏫 Collaborative Whiteboard</h3><canvas id="board" width="1000" height="500" style="width:100%;height:auto;border:1px solid var(--border);background:#fff;touch-action:none"></canvas><div class="actions"><button class="btn secondary" id="clearBoard">Clear board</button><span class="small">Draw with finger, mouse or stylus. Changes are synchronized with participants.</span></div></div>
+  <div class="card" style="margin-top:14px"><h3>🔒 Classroom security</h3><p class="small">Only logged-in KOJA users can enter this room. The teacher controls the lesson room and can end it. WebRTC media is peer-to-peer; KOJA stores only room signaling/chat metadata.</p></div>
+</div>
+<script>
+(()=>{
+const root=document.getElementById('classroom'), roomId=root.dataset.room, userId=root.dataset.user;
+const name=root.dataset.name, isTeacher=root.dataset.teacher==='1';
+const peerId=(crypto.randomUUID?crypto.randomUUID():Math.random().toString(36).slice(2)+Date.now());
+const pcs=new Map(); const streams=new Map(); let localStream=null, joined=false, lastSignal='', lastMessage='', lastPoll=0;
+const joinBtn=document.getElementById('joinBtn'), micBtn=document.getElementById('micBtn'), camBtn=document.getElementById('camBtn'), screenBtn=document.getElementById('screenBtn'), handBtn=document.getElementById('handBtn'), whiteboardBtn=document.getElementById('whiteboardBtn'), endBtn=document.getElementById('endBtn');
+const videos=document.getElementById('videos'), participants=document.getElementById('participants'), chat=document.getElementById('chat'), chatInput=document.getElementById('chatInput'), sendChat=document.getElementById('sendChat');
+const boardCard=document.getElementById('boardCard'), board=document.getElementById('board'), ctx=board.getContext('2d'); let drawing=false, lastPt=null;
+function esc(x){return String(x??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
+async function api(url,opt={}){const r=await fetch(url,{headers:{'Content-Type':'application/json',...(opt.headers||{})},...opt}); const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.message||'Request failed'); return d;}
+function videoFor(id,label,stream,muted=false){let el=document.getElementById('v_'+id); if(!el){el=document.createElement('div');el.id='v_'+id;el.className='card';el.innerHTML='<div style="font-weight:700">'+esc(label)+'</div><video autoplay playsinline '+(muted?'muted':'')+' style="width:100%;border-radius:12px;background:#111;min-height:180px"></video>';videos.appendChild(el);} el.querySelector('video').srcObject=stream; return el;}
+function removePeer(id){const pc=pcs.get(id);if(pc){pc.close();pcs.delete(id);} const el=document.getElementById('v_'+id);if(el)el.remove(); streams.delete(id);}
+async function sendSignal(to,type,payload){await api('/api/teacher/live/'+roomId+'/signal',{method:'POST',body:JSON.stringify({sender_peer_id:peerId,recipient_peer_id:to,signal_type:type,payload})});}
+async function makeOffer(id){let pc=pcs.get(id);if(!pc){pc=makePC(id);} const offer=await pc.createOffer();await pc.setLocalDescription(offer);await sendSignal(id,'offer',offer);}
+function makePC(id){const pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'}]});pcs.set(id,pc);if(localStream)localStream.getTracks().forEach(t=>pc.addTrack(t,localStream));pc.onicecandidate=e=>{if(e.candidate)sendSignal(id,'ice',e.candidate.toJSON()).catch(()=>{});};pc.ontrack=e=>{const st=e.streams[0]||new MediaStream([e.track]);streams.set(id,st);videoFor(id,'Participant '+id.slice(0,6),st,false);};pc.onconnectionstatechange=()=>{if(['failed','closed','disconnected'].includes(pc.connectionState))removePeer(id);};return pc;}
+async function handleSignal(s){const from=s.sender_peer_id; if(from===peerId)return; let pc=pcs.get(from); if(s.signal_type==='offer'){pc=pc||makePC(from);await pc.setRemoteDescription(s.payload);const ans=await pc.createAnswer();await pc.setLocalDescription(ans);await sendSignal(from,'answer',ans);}else if(s.signal_type==='answer'){pc=pc||makePC(from);await pc.setRemoteDescription(s.payload);}else if(s.signal_type==='ice'){pc=pc||makePC(from);try{await pc.addIceCandidate(s.payload);}catch(e){}}else if(s.signal_type==='whiteboard'){applyBoardAction(s.payload);}else if(s.signal_type==='hand'){addChat('✋ '+(s.payload.name||'Participant')+' raised a hand.');}}
+function addChat(text){const d=document.createElement('div');d.innerHTML=esc(text);chat.appendChild(d);chat.scrollTop=chat.scrollHeight;}
+async function poll(){if(!joined)return;try{if(!poll.lastPresence || Date.now()-poll.lastPresence>10000){await api('/api/teacher/live/'+roomId+'/presence',{method:'POST',body:JSON.stringify({peer_id:peerId,display_name:name,is_teacher:isTeacher})});poll.lastPresence=Date.now();}const d=await api('/api/teacher/live/'+roomId+'/poll?since='+encodeURIComponent(lastPoll||'')+'&peer='+encodeURIComponent(peerId));for(const s of (d.signals||[])){lastPoll=s.created_at;await handleSignal(s);} if(d.participants){participants.innerHTML=d.participants.map(p=>'<div>🟢 '+esc(p.display_name||'Participant')+(p.is_teacher?' — Teacher':'')+(p.peer_id===peerId?' — You':'')+'</div>').join('')||'No participants'; for(const p of d.participants){if(p.peer_id!==peerId&&!pcs.has(p.peer_id)){if(peerId<p.peer_id){makeOffer(p.peer_id).catch(()=>{});}}}} for(const m of (d.messages||[])){if(!lastMessage||m.created_at>lastMessage){addChat((m.sender_name||'Participant')+': '+m.body);lastMessage=m.created_at;}}}catch(e){}setTimeout(poll,1200);}
+async function join(){if(joined)return;try{localStream=await navigator.mediaDevices.getUserMedia({video:true,audio:true});}catch(e){try{localStream=await navigator.mediaDevices.getUserMedia({video:false,audio:true});}catch(e2){localStream=new MediaStream();}}
+joined=true;joinBtn.disabled=true;[micBtn,camBtn,screenBtn,handBtn,whiteboardBtn,sendChat,chatInput].forEach(x=>x.disabled=false);if(endBtn)endBtn.disabled=!isTeacher;videoFor(peerId,name,localStream,true);await api('/api/teacher/live/'+roomId+'/presence',{method:'POST',body:JSON.stringify({peer_id:peerId,display_name:name,is_teacher:isTeacher})});poll();}
+joinBtn.onclick=join;micBtn.onclick=()=>localStream.getAudioTracks().forEach(t=>t.enabled=!t.enabled);camBtn.onclick=()=>localStream.getVideoTracks().forEach(t=>t.enabled=!t.enabled);
+screenBtn.onclick=async()=>{try{const ss=await navigator.mediaDevices.getDisplayMedia({video:true});const track=ss.getVideoTracks()[0];for(const pc of pcs.values()){const sender=pc.getSenders().find(x=>x.track&&x.track.kind==='video');if(sender)sender.replaceTrack(track);}videoFor(peerId,name,new MediaStream([track]),true);track.onended=()=>{const cam=localStream.getVideoTracks()[0];for(const pc of pcs.values()){const sender=pc.getSenders().find(x=>x.track&&x.track.kind==='video');if(sender)sender.replaceTrack(cam);}videoFor(peerId,name,localStream,true);};}catch(e){}}
+handBtn.onclick=()=>sendSignal(null,'hand',{name}).catch(()=>{});
+whiteboardBtn.onclick=()=>boardCard.style.display=boardCard.style.display==='none'?'block':'none';
+sendChat.onclick=async()=>{const b=chatInput.value.trim();if(!b)return;chatInput.value='';await api('/api/teacher/live/'+roomId+'/message',{method:'POST',body:JSON.stringify({sender_peer_id:peerId,sender_name:name,body:b})});};chatInput.addEventListener('keydown',e=>{if(e.key==='Enter')sendChat.click();});
+if(endBtn)endBtn.onclick=async()=>{if(confirm('End this live lesson for everyone?')){await api('/api/teacher/live/'+roomId+'/end',{method:'POST'});location.reload();}};
+function pt(e){const r=board.getBoundingClientRect();return{x:(e.clientX-r.left)*board.width/r.width,y:(e.clientY-r.top)*board.height/r.height};}
+function draw(a){ctx.lineWidth=3;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(a.x1,a.y1);ctx.lineTo(a.x2,a.y2);ctx.stroke();}
+function applyBoardAction(a){if(a.type==='clear')ctx.clearRect(0,0,board.width,board.height);else draw(a);}
+board.addEventListener('pointerdown',e=>{drawing=true;lastPt=pt(e);});board.addEventListener('pointerup',()=>{drawing=false;lastPt=null;});board.addEventListener('pointerleave',()=>{drawing=false;lastPt=null;});board.addEventListener('pointermove',e=>{if(!drawing||!lastPt)return;const q=pt(e),a={type:'draw',x1:lastPt.x,y1:lastPt.y,x2:q.x,y2:q.y};draw(a);sendSignal(null,'whiteboard',a).catch(()=>{});lastPt=q;});document.getElementById('clearBoard').onclick=()=>{ctx.clearRect(0,0,board.width,board.height);sendSignal(null,'whiteboard',{type:'clear'}).catch(()=>{});};
+window.addEventListener('beforeunload',()=>{navigator.sendBeacon('/api/teacher/live/'+roomId+'/leave',JSON.stringify({peer_id:peerId}));});
+})();
+</script>
+''', room=room, user=user, teacher=_live_peer_is_teacher(room,user.get('id')))
+
+@app.route("/api/teacher/live/<room_id>/presence", methods=["POST"])
+@login_required
+def live_presence(room_id):
+    room=_live_room(room_id)
+    if not room or str(room.get("status") or "live") != "live": return jsonify({"ok":False,"message":"Classroom is not active."}),404
+    user=current_user() or {}; b=request.get_json(silent=True) or {}; peer=clean(b.get("peer_id"),100)
+    if not peer:return jsonify({"ok":False,"message":"Peer ID required."}),400
+    payload={"room_id":room_id,"peer_id":peer,"user_id":user.get("id"),"display_name":clean(b.get("display_name"),200) or "Participant","is_teacher":bool(b.get("is_teacher")) and _live_peer_is_teacher(room,user.get("id")),"last_seen":utc_now()}
+    existing=first_row("teacher_live_presence",{"room_id":room_id,"peer_id":peer})
+    row,error=(db_update("teacher_live_presence",{"room_id":room_id,"peer_id":peer},payload) if existing else db_insert("teacher_live_presence",payload))
+    if error:return jsonify({"ok":False,"message":str(error)[:500]}),500
+    return jsonify({"ok":True})
+
+@app.route("/api/teacher/live/<room_id>/signal", methods=["POST"])
+@login_required
+def live_signal(room_id):
+    room=_live_room(room_id)
+    if not room:return jsonify({"ok":False,"message":"Room not found."}),404
+    user=current_user() or {}; b=request.get_json(silent=True) or {}; peer=clean(b.get("sender_peer_id"),100); typ=clean(b.get("signal_type"),40); payload=b.get("payload") or {}
+    if not peer or typ not in {"offer","answer","ice","hand","whiteboard"}:return jsonify({"ok":False,"message":"Invalid signal."}),400
+    # Only a peer that is currently present in this room may send signaling data.
+    pres=first_row("teacher_live_presence",{"room_id":room_id,"peer_id":peer})
+    if not pres or str(pres.get("user_id"))!=str(user.get("id")):return jsonify({"ok":False,"message":"Join the classroom first."}),403
+    row,error=db_insert("teacher_live_signals",{"id":str(uuid.uuid4()),"room_id":room_id,"sender_peer_id":peer,"recipient_peer_id":clean(b.get("recipient_peer_id"),100) or None,"signal_type":typ,"payload":payload,"created_at":utc_now()})
+    if error:return jsonify({"ok":False,"message":str(error)[:500]}),500
+    return jsonify({"ok":True})
+
+@app.route("/api/teacher/live/<room_id>/message", methods=["POST"])
+@login_required
+def live_message(room_id):
+    room=_live_room(room_id)
+    if not room:return jsonify({"ok":False,"message":"Room not found."}),404
+    user=current_user() or {}; b=request.get_json(silent=True) or {}; peer=clean(b.get("sender_peer_id"),100); body=clean(b.get("body"),2000)
+    pres=first_row("teacher_live_presence",{"room_id":room_id,"peer_id":peer})
+    if not pres or str(pres.get("user_id"))!=str(user.get("id")):return jsonify({"ok":False,"message":"Join the classroom first."}),403
+    if not body:return jsonify({"ok":False,"message":"Message is empty."}),400
+    row,error=db_insert("teacher_live_messages",{"id":str(uuid.uuid4()),"room_id":room_id,"sender_peer_id":peer,"sender_name":clean(b.get("sender_name"),200) or "Participant","body":body,"created_at":utc_now()})
+    if error:return jsonify({"ok":False,"message":str(error)[:500]}),500
+    return jsonify({"ok":True})
+
+@app.route("/api/teacher/live/<room_id>/poll")
+@login_required
+def live_poll(room_id):
+    room=_live_room(room_id)
+    if not room:return jsonify({"ok":False,"message":"Room not found."}),404
+    user=current_user() or {}; since=clean(request.args.get("since"),80)
+    # Presence is refreshed on each poll by the current peer when the browser sends a presence update below.
+    pres=db_select("teacher_live_presence",filters={"room_id":room_id},order="last_seen.desc",limit=50)
+    active=[]; now=datetime.now(timezone.utc)
+    for x in pres:
+        try: dt=datetime.fromisoformat(str(x.get("last_seen")).replace("Z","+00:00")); age=(now-dt).total_seconds()
+        except Exception: age=0
+        if age <= 30: active.append(x)
+    # Signal/message polling uses a timestamp boundary. Keep it simple and defensive for PostgREST schemas.
+    sigs=db_select("teacher_live_signals",filters={"room_id":room_id},order="created_at.asc",limit=300)
+    msgs=db_select("teacher_live_messages",filters={"room_id":room_id},order="created_at.asc",limit=200)
+    if since:
+        sigs=[x for x in sigs if str(x.get("created_at") or "")>since]
+    # Do not leak private signals to arbitrary users: only targeted signals or broadcast signals.
+    mypeer=clean(request.args.get("peer"),100)
+    if mypeer:
+        sigs=[x for x in sigs if not x.get("recipient_peer_id") or str(x.get("recipient_peer_id"))==mypeer]
+    return jsonify({"ok":True,"participants":active,"signals":sigs,"messages":msgs[-100:]})
+
+@app.route("/api/teacher/live/<room_id>/leave", methods=["POST"])
+@login_required
+def live_leave(room_id):
+    b=request.get_json(silent=True) or {}
+    peer=clean(b.get("peer_id"),100); user=current_user() or {}
+    if peer:
+        db_update("teacher_live_presence",{"room_id":room_id,"peer_id":peer},{"last_seen":datetime.now(timezone.utc)-timedelta(minutes=10)})
+    return jsonify({"ok":True})
+
+@app.route("/api/teacher/live/<room_id>/end", methods=["POST"])
+@login_required
+def live_end(room_id):
+    room=_live_room(room_id); user=current_user() or {}
+    if not room:return jsonify({"ok":False,"message":"Room not found."}),404
+    if not _live_room_teacher_allowed(room,user.get("id")):return jsonify({"ok":False,"message":"Teacher access required."}),403
+    row,error=db_update("teacher_live_rooms",{"id":room_id},{"status":"ended","ended_at":utc_now()})
+    if error:return jsonify({"ok":False,"message":str(error)[:500]}),500
+    return jsonify({"ok":True})
+
 
 def _teacher_provider_for_user(user_id):
     if not user_id:
@@ -1917,7 +2139,7 @@ def _teacher_provider_for_user(user_id):
     for table in ("service_providers", "teacher_profiles"):
         rows = db_select(table, filters={"user_id": user_id}, order="created_at.desc", limit=10)
         for row in rows:
-            status = str(row.get("approval_status") or row.get("verification_status") or "").lower()
+            status = str(row.get("approval_status") or row.get("verification_status") or row.get("status") or "").lower()
             if status in {"approved", "active", "verified"}:
                 return row
     return None
@@ -1967,7 +2189,7 @@ def teacher_dashboard():
 <div class="stat"><div class="big">{{ classes|length }}</div>Classes</div>
 </div>
 <div class="card"><h3>💰 Pricing</h3><p>Your standard rate: <strong>{{ provider.get('currency') or 'ZMW' }} {{ provider.get('hourly_rate') or '0' }}/hour</strong>.</p><form method="post" action="{{ url_for('teacher_update_pricing') }}" class="actions"><input name="hourly_rate" type="number" min="0" step="0.01" value="{{ provider.get('hourly_rate') or '' }}" placeholder="Hourly rate"><input name="currency" value="{{ provider.get('currency') or 'ZMW' }}" style="max-width:100px"><button class="btn" type="submit">Update Rate</button><a class="btn secondary" href="{{ url_for('teacher_availability') }}">🗓️ Availability</a></form><p>KOJA commission is currently <strong>{{ commission_rate }}%</strong>. Estimated commission from completed bookings: {{ provider.get('currency') or 'ZMW' }} {{ '%.2f'|format(commission) }}.</p><p class="small">Actual payment processing and teacher withdrawals depend on the payment method connected to KOJA.</p></div>
-<div class="card"><h3>🎓 Your Paid Classes</h3>{% for c in classes %}<div class="card"><h4>{{ c.get('title') }}</h4><p>{{ c.get('subject') or '' }} · {{ c.get('class_type') or 'online' }} · {{ c.get('currency') or 'ZMW' }} {{ c.get('price') or 0 }}</p><p>{{ c.get('class_date') or '' }} {{ c.get('start_time') or '' }}{% if c.get('capacity') %} · {{ c.get('capacity') }} seats{% endif %}</p><span class="badge">{{ c.get('status') or 'published' }}</span>{% if c.get('meeting_url') %}<p><a class="btn secondary" href="{{ c.get('meeting_url') }}" target="_blank" rel="noopener">Open class link</a></p>{% endif %}</div>{% else %}<p>No paid classes created yet.</p>{% endfor %}</div>
+<div class="card"><h3>🎓 Your Paid Classes</h3>{% for c in classes %}<div class="card"><h4>{{ c.get('title') }}</h4><p>{{ c.get('subject') or '' }} · {{ c.get('class_type') or 'online' }} · {{ c.get('currency') or 'ZMW' }} {{ c.get('price') or 0 }}</p><p>{{ c.get('class_date') or '' }} {{ c.get('start_time') or '' }}{% if c.get('capacity') %} · {{ c.get('capacity') }} seats{% endif %}</p><span class="badge">{{ c.get('status') or 'published' }}</span>{% if c.get('class_type') == 'live' %}<form method="post" action="{{ url_for('teacher_live_create',class_id=c.get('id')) }}" style="display:inline"><button class="btn success" type="submit">🎥 Start KOJA Live Classroom</button></form>{% endif %}{% if c.get('meeting_url') %}<p><a class="btn secondary" href="{{ c.get('meeting_url') }}" target="_blank" rel="noopener">Open class link</a></p>{% endif %}</div>{% else %}<p>No paid classes created yet.</p>{% endfor %}</div>
 <div class="card"><h3>📦 Packages</h3>{% for p in packages %}<div class="card"><strong>{{ p.get('name') }}</strong><p>{{ p.get('lessons') or 4 }} lessons · {{ p.get('currency') or 'ZMW' }} {{ p.get('price') or 0 }} · {{ p.get('validity_days') or 30 }} days</p></div>{% else %}<p>No packages created yet.</p>{% endfor %}</div>
 """, provider=provider, classes=classes, packages=packages, appointments=appointments, gross=gross, commission=commission, net=net, commission_rate=commission_rate)
 
