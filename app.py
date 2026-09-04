@@ -3293,80 +3293,124 @@ def driver_offline():
 @login_required
 def drivers():
     return render_page("Nearby Drivers",r"""
-<div class="hero"><h2>Nearby Delivery Drivers</h2><p>Share your pickup/shop location and KOJA will calculate distances to online drivers.</p></div>
+<div class="hero"><h2>Nearby Delivery Drivers</h2><p>Use your live GPS to find online drivers, view them on the map, and get a road route to a selected driver.</p></div>
 <div class="card">
 <div class="grid">
 <div><label>Your Latitude</label><input id="lat" type="number" step="any" placeholder="-13.96"></div>
 <div><label>Your Longitude</label><input id="lon" type="number" step="any" placeholder="28.32"></div>
 </div>
 <div class="actions">
-<button class="btn" onclick="locateMe()">Use My Current Location</button>
-<button class="btn success" onclick="findDrivers()">Find Nearby Drivers</button>
+<button class="btn success" onclick="startDriverFinderGPS()">📍 Start Live GPS</button>
+<button class="btn" onclick="locateMe()">🎯 Locate Me</button>
+<button class="btn secondary" onclick="openGoogleMaps()">🗺️ Google Maps</button>
+<button class="btn secondary" onclick="findDrivers()">🔄 Refresh Drivers</button>
+<button class="btn danger" onclick="stopDriverFinderGPS()">Stop GPS</button>
 </div>
-<p id="status" class="small"></p>
+<p id="status" class="small">GPS not started.</p>
+<p id="accuracy" class="small"></p>
 </div>
 <div class="card"><div id="map"></div></div>
-<div class="card"><h3>Available Drivers</h3><div id="driver-list">Enter your location and search.</div></div>
+<div class="card"><h3>Available Drivers</h3><div id="driver-list">Start GPS or enter your location and search.</div></div>
 <script>
-let map=L.map("map").setView([-13.9626,28.3228],6),me=null,markers=[];
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);
-function locateMe(){
- if(!navigator.geolocation){document.getElementById("status").textContent="GPS is not supported.";return}
- document.getElementById("status").textContent="Requesting your location...";
- navigator.geolocation.getCurrentPosition(p=>{
-  document.getElementById("lat").value=p.coords.latitude;
-  document.getElementById("lon").value=p.coords.longitude;
-  if(me)me.setLatLng([p.coords.latitude,p.coords.longitude]);else me=L.marker([p.coords.latitude,p.coords.longitude]).addTo(map).bindPopup("Your pickup/shop location");
-  map.setView([p.coords.latitude,p.coords.longitude],14);
-  document.getElementById("status").textContent="Location obtained.";
-  findDrivers();
- },()=>document.getElementById("status").textContent="Location permission denied or unavailable.",{enableHighAccuracy:true,timeout:15000});
+let map=L.map("map").setView([-13.9626,28.3228],6),me=null,meAccuracy=null,markers=[],watchId=null,lastPosition=null,selectedDriver=null,routeLine=null,destinationMarker=null,driverRefreshTimer=null;
+const osm=L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:20,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);
+const hot=L.tileLayer("https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png",{maxZoom:20,attribution:"&copy; OpenStreetMap contributors, Tiles style by HOT"});
+L.control.layers({"OpenStreetMap":osm,"Detailed HOT":hot},null,{collapsed:true}).addTo(map);
+function setStatus(t){document.getElementById("status").textContent=t}
+function setAccuracy(a){document.getElementById("accuracy").textContent=Number.isFinite(a)?"GPS accuracy: "+Math.round(a)+" m" : ""}
+function updateMyMarker(lat,lon,acc){
+ const p=[lat,lon];
+ if(me)me.setLatLng(p);else me=L.marker(p).addTo(map).bindPopup("📍 Your live location");
+ if(meAccuracy)meAccuracy.setLatLng(p).setRadius(Number.isFinite(acc)?Math.min(acc,500):0);else if(Number.isFinite(acc))meAccuracy=L.circle(p,{radius:Math.min(acc,500),weight:1,fillOpacity:.08}).addTo(map);
+ setAccuracy(acc);
+}
+function locateMe(){if(lastPosition){map.setView(lastPosition,16,{animate:true});return}startDriverFinderGPS()}
+function openGoogleMaps(){
+ if(lastPosition){
+   const [lat,lon]=lastPosition;
+   window.open(`https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(lat+","+lon)}&destination=${encodeURIComponent(lat+","+lon)}&travelmode=driving`,'_blank');
+ }else{
+   window.open('https://www.google.com/maps','_blank');
+ }
+}
+function startDriverFinderGPS(){
+ if(!navigator.geolocation){setStatus("GPS is not supported on this device.");return}
+ if(watchId!==null){setStatus("🟢 Your GPS is already LIVE.");return}
+ setStatus("Requesting high-accuracy GPS…");
+ const opts={enableHighAccuracy:true,maximumAge:1000,timeout:20000};
+ const onPos=p=>{
+   const c=p.coords,lat=Number(c.latitude),lon=Number(c.longitude),acc=Number(c.accuracy);
+   if(!Number.isFinite(lat)||!Number.isFinite(lon))return;
+   lastPosition=[lat,lon];document.getElementById("lat").value=lat;document.getElementById("lon").value=lon;updateMyMarker(lat,lon,acc);
+   setStatus(acc>150?"🟡 GPS is weak — waiting for a better fix.":"🟢 YOUR GPS LIVE · "+new Date().toLocaleTimeString());
+   if(acc<=150)findDrivers();
+ };
+ const onErr=e=>setStatus(e.code===1?"Location permission denied — allow GPS in browser settings.":e.code===2?"GPS location unavailable.":"GPS timed out — retrying…");
+ navigator.geolocation.getCurrentPosition(onPos,onErr,opts);
+ watchId=navigator.geolocation.watchPosition(onPos,onErr,opts);
+ if(driverRefreshTimer===null)driverRefreshTimer=setInterval(()=>{if(lastPosition)findDrivers()},5000);
+}
+function stopDriverFinderGPS(){
+ if(watchId!==null){navigator.geolocation.clearWatch(watchId);watchId=null}
+ if(driverRefreshTimer!==null){clearInterval(driverRefreshTimer);driverRefreshTimer=null}
+ setStatus("GPS stopped. Driver map remains visible.");
+}
+function clearRoute(){if(routeLine){map.removeLayer(routeLine);routeLine=null}if(destinationMarker){map.removeLayer(destinationMarker);destinationMarker=null}}
+async function routeToDriver(driver){
+ if(!lastPosition){setStatus("Start your GPS first.");return}
+ selectedDriver=driver;clearRoute();
+ try{
+  const u=`/api/delivery/route?from_lat=${encodeURIComponent(lastPosition[0])}&from_lon=${encodeURIComponent(lastPosition[1])}&to_lat=${encodeURIComponent(driver.latitude)}&to_lon=${encodeURIComponent(driver.longitude)}`;
+  const r=await fetch(u,{headers:{"Accept":"application/json"}}),d=await r.json();
+  if(!d.ok||!d.geometry?.coordinates?.length)throw Error(d.message||"No road route");
+  const coords=d.geometry.coordinates.map(x=>[x[1],x[0]]);routeLine=L.polyline(coords,{weight:6,opacity:.85}).addTo(map);
+  destinationMarker=L.marker([driver.latitude,driver.longitude]).addTo(map).bindPopup("🚚 "+driver.name);
+  map.fitBounds(L.latLngBounds(coords),{padding:[40,40]});
+  const mins=Math.max(1,Math.round(Number(d.duration_s)/60));
+  setStatus(`🛣️ Route to ${driver.name}: ${(Number(d.distance_m)/1000).toFixed(1)} km · ETA ${mins} min · Google Maps available`);
+ }catch(e){setStatus("Could not calculate a road route to this driver.")}
 }
 async function findDrivers(){
  const lat=parseFloat(document.getElementById("lat").value),lon=parseFloat(document.getElementById("lon").value);
- if(!Number.isFinite(lat)||!Number.isFinite(lon)){document.getElementById("status").textContent="Enter or obtain a valid location first.";return}
- document.getElementById("status").textContent="Searching for online drivers...";
+ if(!Number.isFinite(lat)||!Number.isFinite(lon)){setStatus("Enter or obtain a valid location first.");return}
+ if(lat<-90||lat>90||lon<-180||lon>180){setStatus("Invalid GPS coordinates.");return}
+ setStatus("🔄 Finding online drivers near your live location…");
  try{
-  const r=await fetch(`/api/nearby-drivers?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lon)}&radius_km=50`);
-  const d=await r.json();
-  markers.forEach(m=>map.removeLayer(m));markers=[];
+  const r=await fetch(`/api/nearby-drivers?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lon)}&radius_km=50`,{cache:"no-store"});
+  const d=await r.json();markers.forEach(m=>map.removeLayer(m));markers=[];
   const list=document.getElementById("driver-list");
   if(!d.ok){list.textContent=d.message||"Search failed.";return}
-  if(me)me.setLatLng([lat,lon]);else me=L.marker([lat,lon]).addTo(map).bindPopup("Your pickup/shop location");
-  if(!d.drivers.length){list.innerHTML="<p>No online drivers found within 50 km.</p>";document.getElementById("status").textContent="No nearby drivers are online.";return}
+  updateMyMarker(lat,lon,Number.isFinite(lastPosition?.[0])?undefined:undefined);
+  if(!d.drivers.length){list.innerHTML="<p>No online drivers found within 50 km.</p>";setStatus("No nearby drivers are online.");return}
   list.innerHTML="";
   d.drivers.forEach(driver=>{
-   const m=L.marker([driver.latitude,driver.longitude]).addTo(map).bindPopup(`<b>${escapeHtml(driver.name)}</b><br>${escapeHtml(driver.vehicle_type||"Vehicle")}<br>${driver.distance_km} km away`);
+   const p=[driver.latitude,driver.longitude];
+   const m=L.marker(p).addTo(map).bindPopup(`<b>${escapeHtml(driver.name)}</b><br>${escapeHtml(driver.vehicle_type||"Vehicle")}<br>${driver.distance_km} km away<br>GPS accuracy: ${driver.accuracy?Math.round(driver.accuracy)+" m":"—"}`);
    markers.push(m);
    const div=document.createElement("div");div.className="card driver-card";
-   div.innerHTML=`<h3>${escapeHtml(driver.name)}</h3><p class="online">ONLINE</p><p><b>Vehicle:</b> ${escapeHtml(driver.vehicle_type||"Not specified")} ${escapeHtml(driver.vehicle_registration||"")}</p><p><b>Distance:</b> ${driver.distance_km} km</p><p><b>Phone:</b> ${escapeHtml(driver.phone||"")}</p><div class="actions"><button class="btn success" onclick="requestDriver('${driver.driver_id}')">Request Delivery</button><button class="btn secondary" onclick="map.setView([${driver.latitude},${driver.longitude}],16)">View on Map</button></div>`;
+   div.innerHTML=`<h3>${escapeHtml(driver.name)}</h3><p class="online">ONLINE</p><p><b>Vehicle:</b> ${escapeHtml(driver.vehicle_type||"Not specified")} ${escapeHtml(driver.vehicle_registration||"")}</p><p><b>Distance:</b> ${driver.distance_km} km</p><p><b>GPS accuracy:</b> ${driver.accuracy?Math.round(driver.accuracy)+" m":"—"}</p><p><b>Phone:</b> ${escapeHtml(driver.phone||"")}</p><div class="actions"><button class="btn success" onclick="requestDriver('${driver.driver_id}')">Request Delivery</button><button class="btn secondary" onclick='viewDriver(${JSON.stringify(driver)})'>View on Map</button><button class="btn" onclick='routeToDriver(${JSON.stringify(driver)})'>🛣️ Route Here</button><button class="btn secondary" onclick='openDriverGoogleMaps(${JSON.stringify(driver)})'>🗺️ Google Maps</button></div>`;
    list.appendChild(div);
   });
-  map.setView([lat,lon],13);
-  document.getElementById("status").textContent=`Found ${d.drivers.length} online driver(s).`;
- }catch(e){document.getElementById("status").textContent="Unable to search drivers."}
+  map.setView([lat,lon],13);setStatus(`🟢 Found ${d.drivers.length} online driver(s) · live refresh every 5s`);
+ }catch(e){setStatus("Unable to search drivers. Check your internet connection.")}
+}
+function viewDriver(driver){map.setView([driver.latitude,driver.longitude],17,{animate:true})}
+function openDriverGoogleMaps(driver){
+ const dLat=Number(driver.latitude), dLon=Number(driver.longitude);
+ if(!Number.isFinite(dLat)||!Number.isFinite(dLon))return;
+ let url=`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(dLat+","+dLon)}&travelmode=driving`;
+ if(lastPosition){url+=`&origin=${encodeURIComponent(lastPosition[0]+","+lastPosition[1])}`}
+ window.open(url,'_blank');
 }
 function escapeHtml(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]))}
 async function requestDriver(driverId){
  const lat=parseFloat(document.getElementById("lat").value),lon=parseFloat(document.getElementById("lon").value);
- const pickup=prompt("Pickup / shop location description:","My current location");
- if(pickup===null)return;
- const destination=prompt("Delivery destination:");
- if(!destination)return;
- const recipient=prompt("Recipient name:","");
- const phone=prompt("Recipient phone:","");
- const description=prompt("Package description:","");
- try{
-  const r=await fetch("/api/delivery/request",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
-   driver_id:driverId,pickup_location:pickup,destination:destination,
-   pickup_latitude:lat,pickup_longitude:lon,recipient_name:recipient||"",
-   recipient_phone:phone||"",package_description:description||""
-  })});
-  const d=await r.json();
-  alert(d.message||"Delivery request submitted.");
-  if(d.ok)window.location.href="/deliveries";
- }catch(e){alert("Unable to send delivery request.")}
+ const pickup=prompt("Pickup / shop location description:","My current location");if(pickup===null)return;
+ const destination=prompt("Delivery destination:");if(!destination)return;
+ const recipient=prompt("Recipient name:","");const phone=prompt("Recipient phone:","");const description=prompt("Package description:","");
+ try{const r=await fetch("/api/delivery/request",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({driver_id:driverId,pickup_location:pickup,destination:destination,pickup_latitude:lat,pickup_longitude:lon,recipient_name:recipient||"",recipient_phone:phone||"",package_description:description||""})});const d=await r.json();alert(d.message||"Delivery request submitted.");if(d.ok)window.location.href="/deliveries"}catch(e){alert("Unable to send delivery request.")}
 }
+window.addEventListener("pagehide",stopDriverFinderGPS);
 </script>
 """)
 
