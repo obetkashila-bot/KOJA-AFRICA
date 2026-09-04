@@ -1375,7 +1375,7 @@ def services():
 <div class="card"><h3>Assignments</h3><a class="btn" href="{{ url_for('assignments') }}">Open</a></div>
 <div class="card"><h3>CV</h3><a class="btn" href="{{ url_for('cv') }}">Open</a></div>
 <div class="card"><h3>Doctors</h3><p>Find doctors, view profiles and request appointments.</p><a class="btn" href="{{ url_for('doctors') }}">Find Doctors</a><a class="btn secondary" href="{{ url_for('professional_register') }}">Register</a></div>
-<div class="card"><h3>Teachers / Tutors</h3><p>Find teachers and tutors by subject, grade and qualification.</p><a class="btn" href="{{ url_for('teachers') }}">Find Tutors</a><a class="btn secondary" href="{{ url_for('professional_register') }}">Register</a></div>
+<div class="card"><h3>Teachers / Tutors</h3><p>Find teachers and tutors by subject, grade and qualification.</p><a class="btn" href="{{ url_for('teachers') }}">Find Tutors</a><a class="btn secondary" href="{{ url_for('teacher_dashboard') }}">Teacher Dashboard</a></div>
 <div class="card"><h3>All Professionals</h3><p>Register and find professionals in many fields including law, accounting, engineering, ICT, construction, beauty, counselling and more.</p><a class="btn" href="{{ url_for('professionals') }}">Find Professionals</a><a class="btn secondary" href="{{ url_for('professional_register') }}">Register Profession</a></div>
 <div class="card"><h3>Deliveries</h3><a class="btn" href="{{ url_for('deliveries') }}">Open</a></div>
 </div>
@@ -1795,8 +1795,10 @@ def teacher_classes(provider_id):
     teacher = next((t for t in teachers if str(t.get("provider_id") or t.get("id") or t.get("user_id")) == str(provider_id)), None)
     if not teacher:
         abort(404)
+    scheduled_classes = db_select("teacher_classes", filters={"teacher_id": teacher.get("provider_id") or teacher.get("id") or teacher.get("user_id")}, order="class_date.asc", limit=100)
     return render_page("Teacher Classes", r"""
-<div class="hero"><h2>🎓 {{ teacher.get("full_name") or "Teacher / Tutor" }} — Classes</h2><p>Choose how you want to learn: live interactive classes or flexible online tutoring.</p></div>
+<div class="hero"><h2>🎓 {{ teacher.get("full_name") or "Teacher / Tutor" }} — Classes</h2><p>Choose from scheduled paid classes, live lessons or flexible online tutoring.</p></div>
+<div class="card"><h3>📅 Scheduled Paid Classes</h3>{% for c in scheduled_classes %}<div class="card"><h3>{{ c.get('title') }}</h3><p>{{ c.get('subject') or '' }} · <span class="badge">{{ c.get('class_type') or 'online' }}</span></p><p>{{ c.get('class_date') or 'Date to be arranged' }} {{ c.get('start_time') or '' }}{% if c.get('end_time') %}–{{ c.get('end_time') }}{% endif %}</p><p><strong>{{ c.get('currency') or 'ZMW' }} {{ c.get('price') or 0 }}</strong>{% if c.get('capacity') %} · {{ c.get('capacity') }} seats{% endif %}</p><p>{{ c.get('description') or '' }}</p><a class="btn" href="{{ url_for('book_teacher_class',class_id=c.get('id')) }}">Book This Class</a></div>{% else %}<p>No scheduled paid classes yet. You can still request a private tutoring session.</p>{% endfor %}</div>
 <div class="grid">
   <div class="card">
     <h3>🔴 Live Classes</h3>
@@ -1818,8 +1820,29 @@ def teacher_classes(provider_id):
   <p><strong>Qualification:</strong> {{ teacher.get("qualification") or "Not specified" }}</p>
   {% if teacher.get("hourly_rate") %}<p><strong>Rate:</strong> {{ teacher.get("currency") or "ZMW" }} {{ teacher.get("hourly_rate") }}/hour</p>{% endif %}
 </div>
-""", teacher=teacher, provider_id=provider_id)
+""", teacher=teacher, provider_id=provider_id, scheduled_classes=scheduled_classes)
 
+
+
+
+@app.route("/teacher/class/book/<class_id>", methods=["GET", "POST"])
+@login_required
+def book_teacher_class(class_id):
+    user=current_user() or {}
+    c=first_row("teacher_classes", {"id": class_id})
+    if not c or str(c.get("status") or "published").lower() not in {"published","active"}: abort(404)
+    provider_id=c.get("provider_id") or c.get("teacher_id")
+    if request.method=="POST":
+        notes="Paid class: "+clean(c.get("title"))+"\nPrice: "+str(c.get("currency") or "ZMW")+" "+str(c.get("price") or 0)+"\n"+clean(request.form.get("notes"))
+        payload={"id":str(uuid.uuid4()),"client_id":user.get("id"),"provider_id":provider_id,"appointment_type":"teacher","appointment_date":c.get("class_date"),"start_time":c.get("start_time"),"end_time":c.get("end_time"),"location":c.get("location") or ("Online" if c.get("class_type")!="in_person" else ""),"status":"requested","notes":notes,"created_at":utc_now(),"updated_at":utc_now()}
+        row,error=db_insert("appointments",payload)
+        if error: flash("Class booking failed: "+str(error)[:500],"danger")
+        else: flash("Class seat requested. Complete the payment arrangement with KOJA before attendance.","success")
+        return redirect(url_for("dashboard"))
+    return render_page("Book Class",r"""
+<div class="hero"><h2>🎓 {{ c.get('title') }}</h2><p>{{ c.get('subject') or '' }} · {{ c.get('class_type') or 'online' }}</p></div>
+<div class="card"><p>{{ c.get('description') or 'Teacher-led class.' }}</p><p><strong>Date:</strong> {{ c.get('class_date') or 'To be arranged' }} {{ c.get('start_time') or '' }}{% if c.get('end_time') %}–{{ c.get('end_time') }}{% endif %}</p><p><strong>Price:</strong> {{ c.get('currency') or 'ZMW' }} {{ c.get('price') or 0 }}</p><p><strong>Capacity:</strong> {{ c.get('capacity') or 1 }}</p><form method="post"><label>Notes for teacher</label><textarea name="notes" placeholder="Grade, topic, questions, etc."></textarea><button type="submit">Request My Seat</button></form></div>
+""", c=c)
 
 @app.route("/teacher/book/<provider_id>",methods=["GET","POST"])
 @login_required
@@ -1858,6 +1881,168 @@ def book_teacher(provider_id):
 <button class="btn" type="submit">Request Class</button>
 </form></div>
 """,teacher=teacher)
+
+
+# ============================================================
+# TEACHER PROFIT CENTRE — CLASSES, PACKAGES, AVAILABILITY & EARNINGS
+# ============================================================
+TEACHER_PROFIT_SQL = """
+create table if not exists public.teacher_classes (
+ id uuid primary key default gen_random_uuid(), teacher_id uuid not null, provider_id uuid,
+ title text not null, subject text, description text, class_type text not null default 'online',
+ class_date date, start_time time, end_time time, capacity integer default 1,
+ price numeric default 0, currency text default 'ZMW', meeting_url text, location text,
+ status text default 'published', created_at timestamptz default now(), updated_at timestamptz default now()
+);
+create index if not exists teacher_classes_teacher_idx on public.teacher_classes(teacher_id, class_date, start_time);
+create index if not exists teacher_classes_status_idx on public.teacher_classes(status, class_date, start_time);
+create table if not exists public.teacher_packages (
+ id uuid primary key default gen_random_uuid(), teacher_id uuid not null, provider_id uuid,
+ name text not null, subject text, lessons integer default 4, validity_days integer default 30,
+ price numeric default 0, currency text default 'ZMW', description text, status text default 'published',
+ created_at timestamptz default now(), updated_at timestamptz default now()
+);
+create index if not exists teacher_packages_teacher_idx on public.teacher_packages(teacher_id, status);
+create table if not exists public.teacher_availability (
+ id uuid primary key default gen_random_uuid(), teacher_id uuid not null, day_of_week integer not null,
+ start_time time not null, end_time time not null, mode text default 'online', is_active boolean default true,
+ created_at timestamptz default now()
+);
+create index if not exists teacher_availability_teacher_idx on public.teacher_availability(teacher_id, day_of_week);
+"""
+
+def _teacher_provider_for_user(user_id):
+    if not user_id:
+        return None
+    for table in ("service_providers", "teacher_profiles"):
+        rows = db_select(table, filters={"user_id": user_id}, order="created_at.desc", limit=10)
+        for row in rows:
+            status = str(row.get("approval_status") or row.get("verification_status") or "").lower()
+            if status in {"approved", "active", "verified"}:
+                return row
+    return None
+
+def _teacher_id_for_user(user_id):
+    p = _teacher_provider_for_user(user_id)
+    return (p or {}).get("id") or user_id
+
+def _money(v):
+    try:
+        return float(v or 0)
+    except Exception:
+        return 0.0
+
+def _teacher_dashboard_data(user_id):
+    provider = _teacher_provider_for_user(user_id) or {}
+    teacher_id = _teacher_id_for_user(user_id)
+    classes = db_select("teacher_classes", filters={"teacher_id": teacher_id}, order="class_date.desc", limit=100)
+    packages = db_select("teacher_packages", filters={"teacher_id": teacher_id}, order="created_at.desc", limit=100)
+    appointments = db_select("appointments", filters={"provider_id": provider.get("id") or teacher_id}, order="appointment_date.desc", limit=300)
+    completed = [a for a in appointments if str(a.get("status") or "").lower() in {"completed", "paid", "delivered"}]
+    gross = 0.0
+    for a in completed:
+        price = a.get("price") or a.get("amount")
+        if price is None:
+            price = provider.get("hourly_rate")
+        gross += _money(price)
+    commission_rate = _money(os.getenv("KOJA_TEACHER_COMMISSION", "10"))
+    commission = gross * commission_rate / 100.0
+    return provider, classes, packages, appointments, gross, commission, max(0.0, gross - commission), commission_rate
+
+@app.route("/teacher/dashboard", methods=["GET"])
+@login_required
+def teacher_dashboard():
+    user = current_user() or {}
+    provider, classes, packages, appointments, gross, commission, net, commission_rate = _teacher_dashboard_data(user.get("id"))
+    if not provider:
+        return render_page("Teacher Dashboard", r"""
+<div class="hero"><h2>👩‍🏫 Teacher Profit Centre</h2><p>Register and get administrator approval before managing paid teaching services.</p><a class="btn" href="{{ url_for('professional_register') }}">Register as Teacher / Tutor</a></div>
+""")
+    return render_page("Teacher Dashboard", r"""
+<div class="hero"><h2>👩‍🏫 Teacher Profit Centre</h2><p>Turn your teaching time into bookable services, paid classes and repeat-student packages.</p><div class="actions"><span class="badge">✓ {{ provider.get('approval_status') or 'Approved' }}</span><a class="btn" href="{{ url_for('teacher_create_class') }}">＋ Create Paid Class</a><a class="btn secondary" href="{{ url_for('teacher_create_package') }}">＋ Create Package</a></div></div>
+<div class="grid">
+<div class="stat"><div class="big">{{ provider.get('currency') or 'ZMW' }} {{ '%.2f'|format(gross) }}</div>Gross earnings</div>
+<div class="stat"><div class="big">{{ provider.get('currency') or 'ZMW' }} {{ '%.2f'|format(net) }}</div>Estimated payout</div>
+<div class="stat"><div class="big">{{ appointments|length }}</div>Bookings</div>
+<div class="stat"><div class="big">{{ classes|length }}</div>Classes</div>
+</div>
+<div class="card"><h3>💰 Pricing</h3><p>Your standard rate: <strong>{{ provider.get('currency') or 'ZMW' }} {{ provider.get('hourly_rate') or '0' }}/hour</strong>.</p><form method="post" action="{{ url_for('teacher_update_pricing') }}" class="actions"><input name="hourly_rate" type="number" min="0" step="0.01" value="{{ provider.get('hourly_rate') or '' }}" placeholder="Hourly rate"><input name="currency" value="{{ provider.get('currency') or 'ZMW' }}" style="max-width:100px"><button class="btn" type="submit">Update Rate</button><a class="btn secondary" href="{{ url_for('teacher_availability') }}">🗓️ Availability</a></form><p>KOJA commission is currently <strong>{{ commission_rate }}%</strong>. Estimated commission from completed bookings: {{ provider.get('currency') or 'ZMW' }} {{ '%.2f'|format(commission) }}.</p><p class="small">Actual payment processing and teacher withdrawals depend on the payment method connected to KOJA.</p></div>
+<div class="card"><h3>🎓 Your Paid Classes</h3>{% for c in classes %}<div class="card"><h4>{{ c.get('title') }}</h4><p>{{ c.get('subject') or '' }} · {{ c.get('class_type') or 'online' }} · {{ c.get('currency') or 'ZMW' }} {{ c.get('price') or 0 }}</p><p>{{ c.get('class_date') or '' }} {{ c.get('start_time') or '' }}{% if c.get('capacity') %} · {{ c.get('capacity') }} seats{% endif %}</p><span class="badge">{{ c.get('status') or 'published' }}</span>{% if c.get('meeting_url') %}<p><a class="btn secondary" href="{{ c.get('meeting_url') }}" target="_blank" rel="noopener">Open class link</a></p>{% endif %}</div>{% else %}<p>No paid classes created yet.</p>{% endfor %}</div>
+<div class="card"><h3>📦 Packages</h3>{% for p in packages %}<div class="card"><strong>{{ p.get('name') }}</strong><p>{{ p.get('lessons') or 4 }} lessons · {{ p.get('currency') or 'ZMW' }} {{ p.get('price') or 0 }} · {{ p.get('validity_days') or 30 }} days</p></div>{% else %}<p>No packages created yet.</p>{% endfor %}</div>
+""", provider=provider, classes=classes, packages=packages, appointments=appointments, gross=gross, commission=commission, net=net, commission_rate=commission_rate)
+
+@app.route("/teacher/pricing", methods=["POST"])
+@login_required
+def teacher_update_pricing():
+    user=current_user() or {}; provider=_teacher_provider_for_user(user.get("id"))
+    if not provider: return "Teacher profile must be approved before changing pricing.",403
+    updates={"hourly_rate":clean(request.form.get("hourly_rate")) or None,"currency":clean(request.form.get("currency")) or "ZMW"}
+    row,error=db_update("service_providers",{"id":provider.get("id")},updates)
+    if error: flash("Could not update pricing: "+str(error)[:500],"danger")
+    else: flash("Your standard tutoring rate was updated.","success")
+    return redirect(url_for("teacher_dashboard"))
+
+@app.route("/teacher/availability", methods=["GET", "POST"])
+@login_required
+def teacher_availability():
+    user=current_user() or {}; provider=_teacher_provider_for_user(user.get("id"))
+    if not provider: return "Teacher profile must be approved before setting availability.",403
+    teacher_id=_teacher_id_for_user(user.get("id"))
+    if request.method=="POST":
+        try: day=int(request.form.get("day_of_week"))
+        except Exception: day=0
+        payload={"id":str(uuid.uuid4()),"teacher_id":teacher_id,"day_of_week":max(0,min(6,day)),"start_time":request.form.get("start_time"),"end_time":request.form.get("end_time"),"mode":clean(request.form.get("mode")) or "online","is_active":True,"created_at":utc_now()}
+        row,error=db_insert("teacher_availability",payload)
+        if error: flash("Could not save availability. Run the teacher profit SQL migration first.","danger")
+        else: flash("Availability added.","success")
+        return redirect(url_for("teacher_availability"))
+    rows=db_select("teacher_availability",filters={"teacher_id":teacher_id},order="day_of_week.asc",limit=100)
+    return render_page("Teacher Availability",r"""
+<div class="hero"><h2>🗓️ Teaching Availability</h2><p>Publish the times you accept students so your schedule can generate more bookings.</p></div>
+<div class="card"><form method="post"><label>Day</label><select name="day_of_week"><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option><option value="0">Sunday</option></select><label>Start</label><input type="time" name="start_time" required><label>End</label><input type="time" name="end_time" required><label>Mode</label><select name="mode"><option>online</option><option>live</option><option>in_person</option></select><button type="submit">Add Availability</button></form></div>
+<div class="card"><h3>Published times</h3>{% for a in rows %}<div class="card">Day {{ a.get('day_of_week') }} · {{ a.get('start_time') }}–{{ a.get('end_time') }} · {{ a.get('mode') }}</div>{% else %}<p>No availability added yet.</p>{% endfor %}</div>
+""",rows=rows)
+
+@app.route("/teacher/classes/create", methods=["GET", "POST"])
+@login_required
+def teacher_create_class():
+    user=current_user() or {}; provider=_teacher_provider_for_user(user.get("id"))
+    if not provider: return "Teacher profile must be approved before creating classes.",403
+    if request.method=="POST":
+        class_type=clean(request.form.get("class_type") or "online").lower()
+        if class_type not in {"live","online","in_person"}: class_type="online"
+        payload={"id":str(uuid.uuid4()),"teacher_id":_teacher_id_for_user(user.get("id")),"provider_id":provider.get("id"),"title":clean(request.form.get("title")),"subject":clean(request.form.get("subject")),"description":clean(request.form.get("description")),"class_type":class_type,"class_date":request.form.get("class_date") or None,"start_time":request.form.get("start_time") or None,"end_time":request.form.get("end_time") or None,"capacity":request.form.get("capacity") or 1,"price":request.form.get("price") or 0,"currency":clean(request.form.get("currency")) or provider.get("currency") or "ZMW","meeting_url":clean(request.form.get("meeting_url")),"location":clean(request.form.get("location")) or ("Online" if class_type!="in_person" else ""),"status":"published","created_at":utc_now(),"updated_at":utc_now()}
+        if not payload["title"]: flash("Class title is required.","danger"); return redirect(url_for("teacher_create_class"))
+        row,error=db_insert("teacher_classes",payload)
+        if error: flash("Could not create class. Run the teacher profit SQL migration first.","danger")
+        else: flash("Paid class published successfully.","success")
+        return redirect(url_for("teacher_dashboard"))
+    return render_page("Create Paid Class",r"""
+<div class="hero"><h2>＋ Create a Paid Class</h2><p>Offer a one-to-one lesson or a group class. Set your own price and capacity.</p></div>
+<div class="card"><form method="post"><label>Class title</label><input name="title" placeholder="Grade 12 Mathematics Revision" required><label>Subject</label><input name="subject" placeholder="Mathematics"><label>Description</label><textarea name="description" placeholder="What students will learn"></textarea><label>Class type</label><select name="class_type"><option value="live">🔴 Live Class</option><option value="online">💻 Online Class</option><option value="in_person">🏫 In-Person</option></select><label>Date</label><input type="date" name="class_date"><label>Start</label><input type="time" name="start_time"><label>End</label><input type="time" name="end_time"><label>Seats / Capacity</label><input type="number" name="capacity" min="1" value="1"><label>Price</label><input type="number" name="price" min="0" step="0.01" required><label>Currency</label><input name="currency" value="{{ provider.get('currency') or 'ZMW' }}"><label>Online meeting link (optional)</label><input name="meeting_url" placeholder="Google Meet, Zoom or other approved link"><label>Location</label><input name="location" placeholder="Online, school, tutoring centre..."><button type="submit">Publish Paid Class</button></form></div>
+""",provider=provider)
+
+@app.route("/teacher/packages/create", methods=["GET", "POST"])
+@login_required
+def teacher_create_package():
+    user=current_user() or {}; provider=_teacher_provider_for_user(user.get("id"))
+    if not provider: return "Teacher profile must be approved before creating packages.",403
+    if request.method=="POST":
+        payload={"id":str(uuid.uuid4()),"teacher_id":_teacher_id_for_user(user.get("id")),"provider_id":provider.get("id"),"name":clean(request.form.get("name")),"subject":clean(request.form.get("subject")),"lessons":request.form.get("lessons") or 4,"validity_days":request.form.get("validity_days") or 30,"price":request.form.get("price") or 0,"currency":clean(request.form.get("currency")) or provider.get("currency") or "ZMW","description":clean(request.form.get("description")),"status":"published","created_at":utc_now(),"updated_at":utc_now()}
+        row,error=db_insert("teacher_packages",payload)
+        if error: flash("Could not create package. Run the teacher profit SQL migration first.","danger")
+        else: flash("Teaching package published successfully.","success")
+        return redirect(url_for("teacher_dashboard"))
+    return render_page("Create Teaching Package",r"""
+<div class="hero"><h2>📦 Create a Teaching Package</h2><p>Packages encourage students to book several lessons at once.</p></div><div class="card"><form method="post"><label>Package name</label><input name="name" placeholder="4-Lesson Mathematics Package" required><label>Subject</label><input name="subject"><label>Number of lessons</label><input type="number" name="lessons" min="1" value="4"><label>Validity (days)</label><input type="number" name="validity_days" min="1" value="30"><label>Total package price</label><input type="number" name="price" min="0" step="0.01" required><label>Currency</label><input name="currency" value="{{ provider.get('currency') or 'ZMW' }}"><label>Description</label><textarea name="description" placeholder="What is included?"></textarea><button type="submit">Publish Package</button></form></div>
+""",provider=provider)
+
+@app.route("/setup/teacher-profit-sql")
+@login_required
+def teacher_profit_sql():
+    if not (current_user() or {}).get("is_admin"): return "Admin access required.",403
+    return '<pre style="white-space:pre-wrap">'+TEACHER_PROFIT_SQL.replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')+'</pre>'
+
 
 # ============================================================
 # ALL PROFESSIONAL SERVICES
