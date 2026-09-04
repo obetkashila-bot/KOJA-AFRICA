@@ -98,3 +98,10 @@ DATABASE:
   koja_conversations, koja_conversation_members, koja_messages, koja_calls and notifications.
 - Run KOJA_CONNECT.sql in Supabase if those tables are not already installed.
 - Run MARKETPLACE.sql for the marketplace commission/payout schema.
+
+
+SETTINGS UX UPDATE — 2026-09-04
+- Improved /settings with separate Account, Appearance, Research & Sources, Security, Device Preferences and KOJA sections.
+- Added system/light/dark theme selection, reduced-motion mode and compact layout.
+- Theme and research-source permission remain session settings; reduced-motion/compact layout are stored locally on the device.
+- Added a reset-device-preferences control and clearer research/security guidance.
