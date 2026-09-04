@@ -1,36 +1,26 @@
-# KOJA AFRICA — FINAL PLATFORM V5
+# KOJA AFRICA FINAL PLATFORM V6 — 2026-09-04
 
-Flask + Supabase REST + Supabase Storage application for KOJA AFRICA.
+Built from the approved KOJA AFRICA V5 package.
 
-## Included
-- Public Facebook-style feed with media, comments, likes and location
-- KOJA Connect contacts, direct chat, voice messages and WebRTC calls
-- Professional registration with administrator approval before public listing
-- Public professional profiles, reviews, service locations and booking
-- Professional private chat, voice/video calls and live tutoring entry
-- Appointment accept/reject/cancel/reschedule/complete workflow
-- Live tutoring class scheduling and classroom room tokens
-- Assignments and Research Engine
-- Research sources, structured notes and citation styles
-- Digital marketplace, checkout integration and seller workflow
-- Marketplace moderation/review schema
-- Driver registration, approval and live GPS delivery tracking
-- Notifications and notification center
-- Account email verification and password reset when SMTP is configured
-- Reporting/moderation queue
-- Google-friendly public routes, robots and sitemap
-- TURN configuration endpoint for reliable WebRTC
-- Security headers, rate limiting and ownership/admin checks
+## V6 completion layer
+- Server-side SSE chat and notification streams (no browser Supabase service key required)
+- Follow/unfollow and block/unblock APIs
+- Appointment rescheduling with conflict protection
+- Professional recurring availability slots
+- Live-class enrollment, attendance and end-session lifecycle
+- Admin report moderation actions: resolve, dismiss, hide and delete
+- Web Push subscription storage endpoint
+- TURN/STUN runtime configuration
+- Full integration health endpoint: `/api/health/full`
+- Existing KOJA Research, Assignments, Professionals, Social, Marketplace, Connect, Booking and Live GPS Delivery features retained
+
+## Required production services
+Set Supabase, SMTP, OpenAI, Flutterwave and TURN credentials in Render. The health endpoint reports which integrations are configured.
 
 ## Deployment
-1. Create/update the Supabase database by running `KOJA_FINAL_SCHEMA.sql` in the Supabase SQL Editor.
-2. Deploy this folder to Render as a Python web service.
-3. Set all required environment variables in Render.
-4. Configure the `koja-files` Storage bucket and service-role access.
-5. Configure SMTP for verification/reset/notification email.
-6. Configure a TURN service using `TURN_URL`, `TURN_USERNAME`, and `TURN_CREDENTIAL` for reliable voice/video calls.
-7. Set `SITE_URL` to the real production domain.
-8. Test registration, verification, password reset, professional approval, chat/calls, booking, classroom, marketplace payment, GPS and admin moderation after deployment.
-
-## Important
-The application code can expose the integration points, but external services must still be configured. In particular, WebRTC reliability depends on a reachable TURN server, email depends on SMTP, payments depend on Flutterwave configuration/webhooks, and Google indexing depends on Google crawling the public production URLs.
+1. Run `KOJA_FINAL_SCHEMA.sql` in Supabase SQL Editor.
+2. Upload the project to GitHub.
+3. Deploy the repository on Render.
+4. Add environment variables from `.env.example`.
+5. Open `/api/health/full` and verify integrations.
+6. Test registration, approval, public professional profile, chat, calls, tutoring, booking, marketplace, research and live delivery.

@@ -360,3 +360,43 @@ create table if not exists public.koja_notification_preferences (
 create index if not exists koja_public_posts_created_idx on public.koja_public_posts(created_at desc);
 create index if not exists koja_public_comments_post_idx on public.koja_public_comments(post_id,created_at desc);
 create index if not exists koja_marketplace_products_moderation_idx on public.koja_marketplace_products(moderation_status,is_published,created_at desc);
+
+
+-- KOJA AFRICA V6 completion tables
+create table if not exists koja_follows (
+ id uuid primary key default gen_random_uuid(), follower_id uuid not null, following_id uuid not null,
+ created_at timestamptz default now(), unique(follower_id,following_id)
+);
+create index if not exists idx_koja_follows_following on koja_follows(following_id);
+
+create table if not exists professional_availability_slots (
+ id uuid primary key default gen_random_uuid(), provider_id uuid not null,
+ day_of_week int not null check(day_of_week between 0 and 6), start_time time not null, end_time time not null,
+ is_active boolean default true, created_at timestamptz default now(), unique(provider_id,day_of_week,start_time,end_time)
+);
+
+create table if not exists koja_live_class_members (
+ id uuid primary key default gen_random_uuid(), class_id uuid not null, user_id uuid not null,
+ role text default 'student', joined_at timestamptz default now(), attendance_status text default 'present', updated_at timestamptz default now(),
+ unique(class_id,user_id)
+);
+create index if not exists idx_live_class_members_class on koja_live_class_members(class_id);
+
+create table if not exists koja_push_subscriptions (
+ id uuid primary key default gen_random_uuid(), user_id uuid not null, endpoint text not null,
+ p256dh text, auth text, created_at timestamptz default now(), updated_at timestamptz default now(),
+ unique(user_id,endpoint)
+);
+
+alter table koja_public_posts add column if not exists is_hidden boolean default false;
+alter table koja_public_posts add column if not exists moderated_at timestamptz;
+alter table koja_public_posts add column if not exists moderated_by uuid;
+alter table koja_public_comments add column if not exists is_hidden boolean default false;
+alter table koja_public_comments add column if not exists moderated_at timestamptz;
+alter table koja_marketplace_products add column if not exists is_hidden boolean default false;
+alter table koja_marketplace_products add column if not exists moderated_at timestamptz;
+alter table koja_marketplace_posts add column if not exists is_hidden boolean default false;
+alter table koja_marketplace_posts add column if not exists moderated_at timestamptz;
+alter table koja_reports add column if not exists moderation_action text;
+alter table koja_reports add column if not exists reviewed_by uuid;
+alter table koja_reports add column if not exists reviewed_at timestamptz;

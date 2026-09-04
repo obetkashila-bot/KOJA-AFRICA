@@ -8,6 +8,7 @@ import smtplib
 from email.message import EmailMessage
 import json
 import re
+import time
 from datetime import datetime, timezone, timedelta
 from functools import wraps
 from urllib.parse import quote, unquote
@@ -16,7 +17,7 @@ import requests
 from dotenv import load_dotenv
 from flask import (
     Flask, request, redirect, url_for, session,
-    render_template_string, flash, send_file, jsonify, abort
+    render_template_string, flash, send_file, jsonify, abort, Response
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
@@ -92,7 +93,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.04-FINAL-PLATFORM-V5"
+APP_VERSION = "2026.09.04-FINAL-PLATFORM-V6"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -4976,6 +4977,188 @@ def verify_email(token):
     if not match: return 'Verification link is invalid or expired.',400
     db_update('profiles',{'id':match.get('user_id')},{'email_verified':True,'email_verified_at':utc_now()}); db_update('koja_account_tokens',{'id':match.get('id')},{'used':True,'used_at':utc_now()})
     return render_page('Email Verified',r'''<div class="card"><h2>✅ Email verified</h2><p>Your KOJA account email has been verified.</p><a class="btn" href="{{ url_for('login') }}">Login</a></div>''')
+
+# ============================================================
+# KOJA AFRICA V6 COMPLETION — REAL OPERATIONS LAYER
+# ============================================================
+
+@app.route('/api/connect/stream/<conversation_id>')
+@login_required
+def connect_message_stream(conversation_id):
+    """Lightweight SSE stream for chat clients without exposing Supabase keys."""
+    uid=current_user()['id']
+    member=first_row('koja_conversation_members',{'conversation_id':conversation_id,'user_id':uid})
+    if not member and not current_user().get('is_admin'): abort(403)
+    since=clean(request.args.get('since'))
+    def generate():
+        last=since
+        for _ in range(12):
+            filters={'conversation_id':conversation_id}
+            rows=db_select('koja_messages',filters=filters,order='created_at.asc',limit=100)
+            fresh=[m for m in rows if not last or str(m.get('created_at',''))>last]
+            if fresh:
+                for m in fresh:
+                    yield 'data: '+json.dumps(m,default=str)+'\n\n'
+                last=str(fresh[-1].get('created_at') or last)
+            else:
+                yield ': heartbeat\n\n'
+            time.sleep(2)
+    return Response(generate(),mimetype='text/event-stream',headers={'Cache-Control':'no-cache','X-Accel-Buffering':'no'})
+
+@app.route('/api/notifications/stream')
+@login_required
+def notification_stream():
+    uid=current_user()['id']; since=clean(request.args.get('since'))
+    def generate():
+        last=since
+        for _ in range(12):
+            rows=db_select('koja_notifications',filters={'user_id':uid},order='created_at.asc',limit=100)
+            fresh=[n for n in rows if not last or str(n.get('created_at',''))>last]
+            if fresh:
+                for n in fresh: yield 'data: '+json.dumps(n,default=str)+'\n\n'
+                last=str(fresh[-1].get('created_at') or last)
+            else: yield ': heartbeat\n\n'
+            time.sleep(2)
+    return Response(generate(),mimetype='text/event-stream',headers={'Cache-Control':'no-cache','X-Accel-Buffering':'no'})
+
+@app.route('/api/social/follow/<user_id>',methods=['POST','DELETE'])
+@login_required
+def social_follow(user_id):
+    if not _csrf_ok(request.form.get('csrf_token') or request.headers.get('X-CSRF-Token')): abort(400)
+    uid=current_user()['id']
+    if str(uid)==str(user_id): return jsonify(ok=False,error='Cannot follow yourself'),400
+    existing=first_row('koja_follows',{'follower_id':uid,'following_id':user_id})
+    if request.method=='DELETE':
+        if existing: db_delete('koja_follows',{'id':existing['id']})
+        return jsonify(ok=True,following=False)
+    if not existing:
+        db_insert('koja_follows',{'id':str(uuid.uuid4()),'follower_id':uid,'following_id':user_id,'created_at':utc_now()})
+        _notify(user_id,'follow','New follower',f'{_profile_name(uid)} started following you.',uid)
+    return jsonify(ok=True,following=True)
+
+@app.route('/api/social/block/<user_id>',methods=['POST','DELETE'])
+@login_required
+def social_block(user_id):
+    if not _csrf_ok(request.form.get('csrf_token') or request.headers.get('X-CSRF-Token')): abort(400)
+    uid=current_user()['id']
+    existing=first_row('koja_blocks',{'blocker_id':uid,'blocked_id':user_id})
+    if request.method=='DELETE':
+        if existing: db_delete('koja_blocks',{'id':existing['id']})
+        return jsonify(ok=True,blocked=False)
+    if not existing: db_insert('koja_blocks',{'id':str(uuid.uuid4()),'blocker_id':uid,'blocked_id':user_id,'created_at':utc_now()})
+    return jsonify(ok=True,blocked=True)
+
+@app.route('/api/appointments/<appointment_id>/reschedule',methods=['POST'])
+@login_required
+def appointment_reschedule(appointment_id):
+    if not _csrf_ok(request.form.get('csrf_token') or request.headers.get('X-CSRF-Token')): abort(400)
+    a=first_row('appointments',{'id':appointment_id})
+    if not a or not _appointment_owner(a,current_user()['id']): abort(403)
+    start=clean(request.form.get('scheduled_at') or request.form.get('appointment_date'))
+    if not start: return jsonify(ok=False,error='scheduled_at is required'),400
+    # Prevent obvious double-booking for the same provider.
+    provider=a.get('provider_id'); conflicts=db_select('appointments',filters={'provider_id':provider,'scheduled_at':start,'status':'eq.accepted'},limit=10)
+    conflicts=[x for x in conflicts if str(x.get('id'))!=str(appointment_id)]
+    if conflicts: return jsonify(ok=False,error='Provider is already booked at that time.'),409
+    db_update('appointments',{'id':appointment_id},{'scheduled_at':start,'status':'reschedule_requested','updated_at':utc_now()})
+    other=a.get('provider_id') if str(a.get('client_id'))==str(current_user()['id']) else a.get('client_id')
+    if other: _notify(other,'appointment','Reschedule requested',f'Appointment {appointment_id} requested a new time: {start}',appointment_id)
+    return jsonify(ok=True,status='reschedule_requested',scheduled_at=start)
+
+@app.route('/professional/<provider_id>/availability-slots',methods=['GET','POST'])
+@login_required
+def professional_availability_slots(provider_id):
+    p=_approved_provider(provider_id)
+    if not p or str(p.get('user_id'))!=str(current_user()['id']): abort(403)
+    if request.method=='GET':
+        return jsonify(slots=db_select('professional_availability_slots',filters={'provider_id':provider_id},order='day_of_week.asc,start_time.asc',limit=200))
+    if not _csrf_ok(request.form.get('csrf_token') or request.headers.get('X-CSRF-Token')): abort(400)
+    day=int(request.form.get('day_of_week','0')); start=clean(request.form.get('start_time')); end=clean(request.form.get('end_time'))
+    if day not in range(7) or not start or not end: return jsonify(ok=False,error='Invalid availability slot'),400
+    row,err=db_insert('professional_availability_slots',{'id':str(uuid.uuid4()),'provider_id':provider_id,'day_of_week':day,'start_time':start,'end_time':end,'is_active':True,'created_at':utc_now()})
+    return jsonify(ok=not bool(err),slot=row,error=err)
+
+@app.route('/professional/availability-slots/<slot_id>',methods=['DELETE'])
+@login_required
+def delete_availability_slot(slot_id):
+    if not _csrf_ok(request.form.get('csrf_token') or request.headers.get('X-CSRF-Token')): abort(400)
+    slot=first_row('professional_availability_slots',{'id':slot_id})
+    if not slot: abort(404)
+    p=_provider(slot.get('provider_id'))
+    if not p or str(p.get('user_id'))!=str(current_user()['id']): abort(403)
+    db_delete('professional_availability_slots',{'id':slot_id}); return jsonify(ok=True)
+
+@app.route('/live-class/<class_id>/join',methods=['POST'])
+@login_required
+def live_class_join(class_id):
+    if not _csrf_ok(request.form.get('csrf_token') or request.headers.get('X-CSRF-Token')): abort(400)
+    c=first_row('koja_live_classes',{'id':class_id})
+    if not c: abort(404)
+    uid=current_user()['id']
+    if str(c.get('provider_id'))!=str(uid):
+        existing=first_row('koja_live_class_members',{'class_id':class_id,'user_id':uid})
+        if not existing:
+            db_insert('koja_live_class_members',{'id':str(uuid.uuid4()),'class_id':class_id,'user_id':uid,'role':'student','joined_at':utc_now(),'attendance_status':'present'})
+    db_update('koja_live_classes',{'id':class_id},{'status':'live','updated_at':utc_now()})
+    return redirect(url_for('live_class_room',class_id=class_id))
+
+@app.route('/live-class/<class_id>/attendance',methods=['GET','POST'])
+@login_required
+def live_class_attendance(class_id):
+    c=first_row('koja_live_classes',{'id':class_id})
+    if not c: abort(404)
+    if str(c.get('provider_id'))!=str(current_user()['id']) and not current_user().get('is_admin'): abort(403)
+    if request.method=='POST':
+        if not _csrf_ok(request.form.get('csrf_token') or request.headers.get('X-CSRF-Token')): abort(400)
+        member=first_row('koja_live_class_members',{'class_id':class_id,'user_id':request.form.get('user_id')})
+        if member: db_update('koja_live_class_members',{'id':member['id']},{'attendance_status':clean(request.form.get('status')) or 'present','updated_at':utc_now()})
+    return jsonify(attendance=db_select('koja_live_class_members',filters={'class_id':class_id},order='joined_at.asc',limit=500))
+
+@app.route('/live-class/<class_id>/end',methods=['POST'])
+@login_required
+def live_class_end(class_id):
+    if not _csrf_ok(request.form.get('csrf_token') or request.headers.get('X-CSRF-Token')): abort(400)
+    c=first_row('koja_live_classes',{'id':class_id})
+    if not c: abort(404)
+    if str(c.get('provider_id'))!=str(current_user()['id']) and not current_user().get('is_admin'): abort(403)
+    db_update('koja_live_classes',{'id':class_id},{'status':'completed','ended_at':utc_now(),'updated_at':utc_now()})
+    return jsonify(ok=True)
+
+@app.route('/admin/reports/<report_id>/action',methods=['POST'])
+@admin_required
+def admin_report_action(report_id):
+    if not _csrf_ok(request.form.get('csrf_token') or request.headers.get('X-CSRF-Token')): abort(400)
+    r=first_row('koja_reports',{'id':report_id})
+    if not r: abort(404)
+    action=clean(request.form.get('action')).lower()
+    if action not in ('resolve','dismiss','hide','delete'): abort(400)
+    ctype=clean(r.get('content_type')).lower(); cid=clean(r.get('content_id'))
+    table_map={'post':'koja_public_posts','comment':'koja_public_comments','product':'koja_marketplace_products','marketplace_post':'koja_marketplace_posts'}
+    target=table_map.get(ctype)
+    if action in ('hide','delete') and target and cid:
+        if action=='delete': db_delete(target,{'id':cid})
+        else: db_update(target,{'id':cid},{'is_hidden':True,'moderated_at':utc_now(),'moderated_by':current_user()['id']})
+    db_update('koja_reports',{'id':report_id},{'status':'resolved' if action!='dismiss' else 'dismissed','moderation_action':action,'reviewed_by':current_user()['id'],'reviewed_at':utc_now()})
+    return redirect(url_for('admin_reports'))
+
+@app.route('/api/push/subscribe',methods=['POST'])
+@login_required
+def push_subscribe():
+    if not _csrf_ok(request.form.get('csrf_token') or request.headers.get('X-CSRF-Token')): abort(400)
+    data=request.get_json(silent=True) or request.form
+    endpoint=clean(data.get('endpoint')); p256=clean(data.get('p256dh')); auth=clean(data.get('auth'))
+    if not endpoint: return jsonify(ok=False,error='endpoint required'),400
+    existing=first_row('koja_push_subscriptions',{'user_id':current_user()['id'],'endpoint':endpoint})
+    payload={'user_id':current_user()['id'],'endpoint':endpoint,'p256dh':p256,'auth':auth,'updated_at':utc_now()}
+    if existing: db_update('koja_push_subscriptions',{'id':existing['id']},payload)
+    else: db_insert('koja_push_subscriptions',{'id':str(uuid.uuid4()),**payload,'created_at':utc_now()})
+    return jsonify(ok=True)
+
+@app.route('/api/health/full')
+def full_health():
+    checks={'supabase':supabase_configured(),'smtp':email_configured(),'turn':bool(os.getenv('TURN_URL') and os.getenv('TURN_USERNAME') and os.getenv('TURN_CREDENTIAL')),'flutterwave':bool(os.getenv('FLW_SECRET_KEY')),'openai':bool(os.getenv('OPENAI_API_KEY'))}
+    return jsonify(ok=True,version=APP_VERSION,checks=checks,production_ready=all(checks.values()))
+
 
 # ============================================================
 # LOCAL / RENDER START
