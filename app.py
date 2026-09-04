@@ -729,6 +729,7 @@ BASE_HTML = r"""
 {% if seo_jsonld %}<script type="application/ld+json">{{ seo_jsonld|safe }}</script>{% endif %}
 <title>{{ title or "KOJA AFRICA" }}</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 (function(){try{var t={{ theme|tojson }};var saved=localStorage.getItem("koja_theme");if(saved==="light"||saved==="dark"||saved==="system")t=saved;document.documentElement.dataset.kojaTheme=t||"system";}catch(e){}})();
 </script>
@@ -841,7 +842,6 @@ footer{text-align:center;color:var(--muted);padding:30px}
 {{ body|safe }}
 </div>
 <footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services</footer>
-<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 </body>
 </html>
 """
@@ -3086,10 +3086,12 @@ def tracking():
 <button class="btn" onclick="routeToDestination()">🧭 Route to Destination</button>
 <button class="btn secondary" onclick="locateMe()">🎯 Locate Me</button>
 <button class="btn danger" onclick="stopTracking()">Stop GPS</button>
+<a class="btn secondary" href="{{ url_for('driver_register') }}">🚚 Register as a Driver</a>
 </div>
 <p id="gps-status">GPS not started. Location stays local on this phone unless you are a signed-in driver sharing GPS.</p>
 <div id="map"></div>
 <p class="small">Map data: OpenStreetMap. Detailed roads, places and building footprints appear as you zoom in. Routing follows available roads.</p>
+<p class="small">🚚 Want to deliver with KOJA? Use <a href="{{ url_for('driver_register') }}">Register as a Driver</a>. Driver GPS sharing becomes available after registration and the required KOJA verification.</p>
 </div>
 <script>
 let watchId=null,marker=null,lastSentAt=0,lastCoords=null,lastRaw=null,isTracking=false;
@@ -3453,6 +3455,8 @@ def create_delivery_request():
         "destination":clean(body.get("destination")),
         "pickup_latitude":lat,
         "pickup_longitude":lon,
+        "destination_latitude":safe_float(body.get("destination_latitude")),
+        "destination_longitude":safe_float(body.get("destination_longitude")),
         "recipient_name":clean(body.get("recipient_name")),
         "recipient_phone":clean(body.get("recipient_phone")),
         "package_description":clean(body.get("package_description")),
@@ -3497,6 +3501,10 @@ def deliveries():
             "id":str(uuid.uuid4()),"customer_id":user["id"],"sender_id":user["id"],
             "pickup_location":clean(request.form.get("pickup_location")),
             "destination":clean(request.form.get("destination")),
+            "pickup_latitude":safe_float(request.form.get("pickup_latitude")),
+            "pickup_longitude":safe_float(request.form.get("pickup_longitude")),
+            "destination_latitude":safe_float(request.form.get("destination_latitude")),
+            "destination_longitude":safe_float(request.form.get("destination_longitude")),
             "recipient_name":clean(request.form.get("recipient_name")),
             "recipient_phone":clean(request.form.get("recipient_phone")),
             "package_description":clean(request.form.get("package_description")),
@@ -3519,9 +3527,15 @@ def deliveries():
     return render_page("Deliveries",r"""
 <div class="hero"><h2>Delivery Service</h2><p>Use Nearby Drivers to see drivers around your shop/pickup location.</p><a class="btn success" href="{{ url_for('drivers') }}">Find Nearby Drivers</a></div>
 <div class="card"><h2>Create Delivery Without Selecting Driver Yet</h2>
-<form method="post">
-<label>Pickup / Shop Location</label><input name="pickup_location" required>
-<label>Destination</label><input name="destination" required>
+<form method="post" id="delivery-form">
+<label>Pickup / Shop Location</label><input name="pickup_location" id="pickup_location" required placeholder="Shop, house, street or current location">
+<div class="actions"><button type="button" class="btn secondary" onclick="useDeliveryGPS()">📍 Use My Current GPS</button></div>
+<input type="hidden" name="pickup_latitude" id="pickup_latitude">
+<input type="hidden" name="pickup_longitude" id="pickup_longitude">
+<label>Destination</label><input name="destination" id="delivery_destination" required placeholder="Building, school, shop, street or address">
+<input type="hidden" name="destination_latitude" id="destination_latitude">
+<input type="hidden" name="destination_longitude" id="destination_longitude">
+<div class="card"><div id="delivery-map" style="height:330px;border-radius:12px;overflow:hidden"></div><p id="delivery-gps-status" class="small">Use GPS to map pickup, or enter a destination and preview the road route.</p><div class="actions"><button type="button" class="btn" onclick="previewDeliveryRoute()">🧭 Preview Road Route</button></div></div>
 <label>Recipient Name</label><input name="recipient_name" required>
 <label>Recipient Phone</label><input name="recipient_phone" required>
 <label>Package Description</label><textarea name="package_description"></textarea>
@@ -3532,6 +3546,13 @@ def deliveries():
 <label>Notes</label><textarea name="notes"></textarea>
 <button type="submit">Create Delivery Request</button>
 </form></div>
+<script>
+const dmap=L.map("delivery-map").setView([-13.9626,28.3228],6);L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:20,attribution:"&copy; OpenStreetMap contributors"}).addTo(dmap);
+let pickupMarker=null,destMarker=null,droute=null;
+function dst(t){document.getElementById("delivery-gps-status").textContent=t}
+function useDeliveryGPS(){if(!navigator.geolocation){dst("This device does not support GPS.");return}dst("Requesting high-accuracy GPS…");navigator.geolocation.getCurrentPosition(p=>{const c=p.coords;document.getElementById("pickup_latitude").value=c.latitude;document.getElementById("pickup_longitude").value=c.longitude;if(pickupMarker)pickupMarker.setLatLng([c.latitude,c.longitude]);else pickupMarker=L.marker([c.latitude,c.longitude]).addTo(dmap).bindPopup("📍 Pickup / shop — your current GPS");dmap.setView([c.latitude,c.longitude],17);dst("🟢 Pickup GPS captured · accuracy "+(c.accuracy?Math.round(c.accuracy)+"m":"—"));},e=>dst(e.code===1?"Allow location permission in browser settings.":"GPS unavailable — enter the pickup location manually."),{enableHighAccuracy:true,maximumAge:0,timeout:20000})}
+async function previewDeliveryRoute(){const q=document.getElementById("delivery_destination").value.trim();if(!q){dst("Enter a destination first.");return}let lat=parseFloat(document.getElementById("pickup_latitude").value),lon=parseFloat(document.getElementById("pickup_longitude").value);if(!Number.isFinite(lat)||!Number.isFinite(lon)){dst("Getting your pickup GPS first…");useDeliveryGPS();setTimeout(previewDeliveryRoute,1800);return}dst("Finding destination and calculating road route…");try{const g=await (await fetch("/api/gps/geocode?q="+encodeURIComponent(q))).json();if(!g.ok){dst(g.message||"Destination not found.");return}const dl=Number(g.latitude),do_=Number(g.longitude);document.getElementById("destination_latitude").value=dl;document.getElementById("destination_longitude").value=do_;if(destMarker)destMarker.setLatLng([dl,do_]);else destMarker=L.marker([dl,do_]).addTo(dmap).bindPopup("🎯 Delivery destination");const r=await (await fetch(`/api/gps/route?from_lat=${lat}&from_lon=${lon}&to_lat=${dl}&to_lon=${do_}`)).json();if(!r.ok)throw Error(r.message||"No route");const coords=r.geometry.coordinates.map(x=>[x[1],x[0]]);if(droute)droute.setLatLngs(coords);else droute=L.polyline(coords,{weight:5,opacity:.8}).addTo(dmap);dmap.fitBounds(droute.getBounds(),{padding:[30,30]});dst("🟢 Road route ready · "+(Number(r.distance_m)/1000).toFixed(1)+" km · ETA "+Math.max(1,Math.round(Number(r.duration_s)/60))+" min");}catch(e){dst("Could not calculate the road route. Check the destination and try again.")}}
+</script>
 <div class="card"><h2>My Deliveries</h2>
 {% for d in rows %}
 <div class="card"><strong>{{ d.get("tracking_code") }}</strong>
