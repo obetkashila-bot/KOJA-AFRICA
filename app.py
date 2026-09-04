@@ -3103,7 +3103,7 @@ def tracking():
 <script>
 let watchId=null,marker=null,lastSentAt=0,lastCoords=null,lastRaw=null,isTracking=false;
 let wakeLock=null,offlineQueue=[],lastHeading=null,lastAccuracy=null,lastDestination=null,destinationMarker=null,routeLine=null;
-const GPS_QUEUE_KEY="koja_gps_queue_v22";
+const GPS_QUEUE_KEY="koja_gps_queue_v26";
 const LOGGED_IN={{ (user is not none)|tojson }};
 const IS_DRIVER={{ ((user and (user.get('role') in ['driver','admin'] or user.get('is_admin')))|tojson if user else false) }};
 
@@ -3151,27 +3151,35 @@ function distanceM(a,b){const R=6371000,p=Math.PI/180,la1=a[0]*p,la2=b[0]*p,dla=
 async function reverseName(lat,lon){try{const r=await fetch(`/api/gps/reverse?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`,{headers:{"Accept":"application/json"}});const d=await r.json();return d.display_name||"Your current location"}catch(e){return "Your current location"}}
 async function sendPosition(position){
  const c=position.coords, lat=Number(c.latitude), lon=Number(c.longitude);
- if(!Number.isFinite(lat)||!Number.isFinite(lon))return;
+ if(!Number.isFinite(lat)||!Number.isFinite(lon)||lat<-90||lat>90||lon<-180||lon>180)return;
  const now=Date.now(), acc=Number(c.accuracy);
- if(Number.isFinite(acc)&&acc>150){status("🟡 GPS signal weak — accuracy "+Math.round(acc)+"m. Waiting for a better fix…");return}
- if(lastRaw&&Number.isFinite(acc)&&Number.isFinite(lastAccuracy)&&acc>lastAccuracy*2&&now-lastSentAt<5000)return;
- const moving=Number.isFinite(c.speed)&&c.speed>1.0, minInterval=moving?2200:5000, minMove=moving?3:8;
- if(lastCoords&&(now-lastSentAt<minInterval||distanceM(lastCoords,[lat,lon])<minMove))return;
+ if(!Number.isFinite(acc)||acc<=0){status("🟡 GPS accuracy unavailable — waiting for a verified fix…");return}
+ if(acc>150){status("🟡 GPS signal weak — accuracy "+Math.round(acc)+"m. Waiting for a better fix…");return}
+ if(lastRaw&&Number.isFinite(lastAccuracy)&&acc>lastAccuracy*2&&now-lastSentAt<10000)return;
+ const candidate=[lat,lon];
+ const moving=Number.isFinite(c.speed)&&c.speed>1.0;
+ const minInterval=moving?2200:5000, minMove=moving?3:8;
+ if(lastCoords){
+   const jump=distanceM(lastCoords,candidate);
+   const allowedJump=Math.max(1000,Number.isFinite(c.speed)?Math.max(1000,c.speed*120):1000,acc*5,lastAccuracy*5||0);
+   if(jump>allowedJump){status("🟡 GPS jump rejected — waiting for a stable location ("+Math.round(jump)+"m jump).");return}
+   if(now-lastSentAt<minInterval||jump<minMove)return;
+ }
  let heading=Number(c.heading);
- if(!Number.isFinite(heading)&&lastCoords){const d=distanceM(lastCoords,[lat,lon]);if(d>=5)heading=Number(lastHeading)}
+ if(!Number.isFinite(heading)&&lastCoords){const d=distanceM(lastCoords,candidate);if(d>=5)heading=Number(lastHeading)}
  if(Number.isFinite(heading)){if(lastHeading!==null){let delta=((heading-lastHeading+540)%360)-180;heading=(lastHeading+delta*.35+360)%360}lastHeading=heading}
- lastCoords=[lat,lon];lastRaw=[lat,lon];lastSentAt=now;lastAccuracy=acc;
- if(!marker){marker=L.marker([lat,lon]).addTo(map).bindPopup("This phone — live GPS");}else marker.setLatLng([lat,lon]);
+ lastCoords=candidate;lastRaw=candidate;lastSentAt=now;lastAccuracy=acc;
+ if(!marker){marker=L.marker(candidate).addTo(map).bindPopup("This phone — live GPS");}else marker.setLatLng(candidate);
  const el=marker.getElement()?.querySelector("img");if(el&&Number.isFinite(heading))el.style.transform="rotate("+heading+"deg)";
- map.setView([lat,lon],18,{animate:true});
- const name=await reverseName(lat,lon);marker.setPopupContent("<strong>Live GPS</strong><br>"+name+"<br>Accuracy: "+(acc?Math.round(acc)+" m":"—"));
+ map.setView(candidate,18,{animate:true});
+ const name=await reverseName(lat,lon);marker.setPopupContent("<strong>Live GPS</strong><br>"+name+"<br>Accuracy: "+Math.round(acc)+" m");
  if(lastDestination)updateGpsRoute(false);
  if(IS_DRIVER){
   const deliveryId=document.getElementById("delivery_id").value.trim();
   const payload={latitude:lat,longitude:lon,accuracy:acc,speed:Number.isFinite(c.speed)?c.speed:null,heading:Number.isFinite(heading)?heading:null,altitude:Number.isFinite(c.altitude)?c.altitude:null,delivery_id:deliveryId||null};
-  if(!navigator.onLine){offlineQueue.push(payload);saveQueue();status("🟠 OFFLINE — driver GPS saved on this phone and will sync when internet returns.");return}
-  try{const r=await fetch("/api/driver/location",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});if(!r.ok)throw Error();await r.json();await flushQueue();status("🟢 LIVE DRIVER GPS · "+new Date().toLocaleTimeString()+" · accuracy "+(acc?Math.round(acc)+"m":"—")+(moving?" · moving":" · stationary"));}catch(e){offlineQueue.push(payload);saveQueue();status("🟠 Network unavailable — driver GPS update queued for automatic sync.")}
- }else status((LOGGED_IN?"🟢 LIVE GPS for your account":"🟢 LIVE GPS on this phone")+" · "+new Date().toLocaleTimeString()+" · accuracy "+(acc?Math.round(acc)+"m":"—"));
+  if(!navigator.onLine){offlineQueue.push(payload);saveQueue();status("🟠 OFFLINE — verified GPS saved on this phone and will sync when internet returns.");return}
+  try{const r=await fetch("/api/driver/location",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});if(!r.ok)throw Error();await r.json();await flushQueue();status("🟢 LIVE DRIVER GPS · "+new Date().toLocaleTimeString()+" · accuracy "+Math.round(acc)+"m"+(moving?" · moving":" · stationary"));}catch(e){offlineQueue.push(payload);saveQueue();status("🟠 Network unavailable — driver GPS update queued for automatic sync.")}
+ }else status((LOGGED_IN?"🟢 LIVE GPS for your account":"🟢 LIVE GPS on this phone")+" · "+new Date().toLocaleTimeString()+" · accuracy "+Math.round(acc)+"m");
 }
 function gpsError(e){if(e.code===1)status("Location permission denied. Allow location permission in browser settings.");else if(e.code===2)status("Device could not determine location.");else if(e.code===3)status("GPS timed out.");else status("GPS error.")}
 function stopTracking(){isTracking=false;if(watchId!==null){navigator.geolocation.clearWatch(watchId);watchId=null}if(wakeLock){try{wakeLock.release()}catch(e){}wakeLock=null}if(IS_DRIVER){fetch("/api/driver/offline",{method:"POST",headers:{"Content-Type":"application/json"}}).then(r=>r.json()).then(d=>status(d.message||"GPS sharing stopped.")).catch(()=>status("GPS stopped locally."))}else status("GPS stopped. The last location remains only on this map until the page is closed.")}
@@ -3251,7 +3259,7 @@ def gps_snap():
         return jsonify({"ok":False,"message":"Valid latitude and longitude are required."}),400
     try:
         url=f"https://router.project-osrm.org/nearest/v1/driving/{lon},{lat}?number=1"
-        r=requests.get(url,timeout=8,headers={"User-Agent":"KOJA-AFRICA-GPS/22"})
+        r=requests.get(url,timeout=8,headers={"User-Agent":"KOJA-AFRICA-GPS/26"})
         data=r.json(); wp=(data.get("waypoints") or [None])[0]
         loc=wp.get("location") if wp else None
         if not loc or len(loc)<2: raise ValueError("No road match")
@@ -3275,8 +3283,20 @@ def driver_location_update():
     if lat is None or lon is None or not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
         return jsonify({"ok":False,"message":"Invalid latitude or longitude."}),400
     if accuracy is not None and (accuracy < 0 or accuracy > 10000): accuracy = None
+    if accuracy is None or accuracy > 150:
+        return jsonify({"ok":False,"message":"GPS accuracy is too weak. Waiting for a better fix."}),422
     if speed is not None and (speed < 0 or speed > 100): speed = None
     if heading is not None: heading = heading % 360
+    # Reject implausible coordinate jumps caused by a bad GPS fix.
+    recent=db_select("driver_locations",filters={"driver_id":provider_id},order="created_at.desc",limit=1)
+    if recent:
+        prev=recent[0]
+        plat=safe_float(prev.get("latitude"));plon=safe_float(prev.get("longitude"));
+        if plat is not None and plon is not None:
+            jump=haversine_km(plat,plon,lat,lon)*1000
+            allowed=max(1500.0,accuracy*5.0,(speed or 0)*120.0)
+            if jump>allowed:
+                return jsonify({"ok":False,"message":"GPS jump rejected. Waiting for a stable location.","jump_m":round(jump)}),422
     payload = {
         "id": str(uuid.uuid4()), "driver_id": provider_id,
         "latitude": lat, "longitude": lon,
@@ -3378,10 +3398,18 @@ function startDriverFinderGPS(){
  const opts={enableHighAccuracy:true,maximumAge:1000,timeout:20000};
  const onPos=p=>{
    const c=p.coords,lat=Number(c.latitude),lon=Number(c.longitude),acc=Number(c.accuracy);
-   if(!Number.isFinite(lat)||!Number.isFinite(lon))return;
-   lastPosition=[lat,lon];document.getElementById("lat").value=lat;document.getElementById("lon").value=lon;updateMyMarker(lat,lon,acc);
-   setStatus(acc>150?"🟡 GPS is weak — waiting for a better fix.":"🟢 YOUR GPS LIVE · "+new Date().toLocaleTimeString());
-   if(acc<=150)findDrivers();
+   if(!Number.isFinite(lat)||!Number.isFinite(lon)||lat<-90||lat>90||lon<-180||lon>180)return;
+   if(!Number.isFinite(acc)||acc<=0){setStatus("🟡 GPS accuracy unavailable — waiting for a verified fix.");return}
+   if(acc>150){setAccuracy(acc);setStatus("🟡 GPS is weak — accuracy "+Math.round(acc)+"m. Waiting for a better fix.");return}
+   const candidate=[lat,lon];
+   if(lastPosition){
+     const jump=distanceM(lastPosition,candidate);
+     if(jump>Math.max(1000,acc*5)){setStatus("🟡 GPS jump rejected — waiting for a stable fix.");return}
+     if(jump<3&&Number.isFinite(meAccuracy?.getRadius?.())){updateMyMarker(lat,lon,Math.min(acc,meAccuracy.getRadius()));return}
+   }
+   lastPosition=candidate;document.getElementById("lat").value=lat;document.getElementById("lon").value=lon;updateMyMarker(lat,lon,acc);
+   setStatus("🟢 YOUR GPS LIVE · "+new Date().toLocaleTimeString()+" · accuracy "+Math.round(acc)+"m");
+   findDrivers();
  };
  const onErr=e=>setStatus(e.code===1?"Location permission denied — allow GPS in browser settings.":e.code===2?"GPS location unavailable.":"GPS timed out — retrying…");
  navigator.geolocation.getCurrentPosition(onPos,onErr,opts);
@@ -3439,7 +3467,14 @@ async function requestDriver(driverId){
  const pickup=prompt("Pickup / shop location description:","My current location");if(pickup===null)return;
  const destination=prompt("Delivery destination:");if(!destination)return;
  const recipient=prompt("Recipient name:","");const phone=prompt("Recipient phone:","");const description=prompt("Package description:","");
- try{const r=await fetch("/api/delivery/request",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({driver_id:driverId,pickup_location:pickup,destination:destination,pickup_latitude:lat,pickup_longitude:lon,recipient_name:recipient||"",recipient_phone:phone||"",package_description:description||""})});const d=await r.json();alert(d.message||"Delivery request submitted.");if(d.ok)window.location.href="/deliveries"}catch(e){alert("Unable to send delivery request.")}
+ try{
+   let destination_latitude=null,destination_longitude=null;
+   const g=await (await fetch("/api/gps/geocode?q="+encodeURIComponent(destination),{headers:{"Accept":"application/json"}})).json();
+   if(g.ok&&Number.isFinite(Number(g.latitude))&&Number.isFinite(Number(g.longitude))){destination_latitude=Number(g.latitude);destination_longitude=Number(g.longitude);}
+   const body={driver_id:driverId,pickup_location:pickup,destination:destination,pickup_latitude:Number.isFinite(lat)?lat:null,pickup_longitude:Number.isFinite(lon)?lon:null,destination_latitude,destination_longitude,recipient_name:recipient||"",recipient_phone:phone||"",package_description:description||""};
+   const r=await fetch("/api/delivery/request",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+   const d=await r.json();alert(d.message||"Delivery request submitted.");if(d.ok)window.location.href="/deliveries"
+ }catch(e){alert("Unable to send delivery request. Check the destination and try again.")}
 }
 window.addEventListener("pagehide",stopDriverFinderGPS);
 </script>
@@ -3467,7 +3502,10 @@ def nearby_drivers():
         if not loc.get("is_online"):
             continue
         dlat=safe_float(loc.get("latitude")); dlon=safe_float(loc.get("longitude"))
-        if dlat is None or dlon is None:
+        if dlat is None or dlon is None or dlat<-90 or dlat>90 or dlon<-180 or dlon>180:
+            continue
+        acc=safe_float(loc.get("accuracy"))
+        if acc is not None and (acc<=0 or acc>150):
             continue
 
         created=loc.get("created_at")
@@ -3679,6 +3717,8 @@ def track_delivery(tracking_code):
 <script>
 const trackingCode={{ delivery.get("tracking_code")|tojson }};
 const destination={{ delivery.get("destination")|tojson }};
+const storedDestinationLat={{ delivery.get("destination_latitude")|tojson }};
+const storedDestinationLon={{ delivery.get("destination_longitude")|tojson }};
 let map=L.map("map").setView([-13.9626,28.3228],6);
 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);
 let driverMarker=null,destinationMarker=null,routeLine=null,lastDriver=null,lastDestination=null,lastRouteAt=0;
@@ -3691,10 +3731,16 @@ function mins(sec){if(!Number.isFinite(sec))return "—";let m=Math.max(1,Math.r
 async function geocodeDestination(){
  if(!destination)return;
  try{
-  const url="https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q="+encodeURIComponent(destination);
-  const r=await fetch(url,{headers:{"Accept":"application/json"}}); const a=await r.json();
-  if(!a.length){setText("tracking-status","Driver GPS connected. Destination could not be mapped automatically.");return}
-  lastDestination=[parseFloat(a[0].lat),parseFloat(a[0].lon)];
+  if(Number.isFinite(Number(storedDestinationLat))&&Number.isFinite(Number(storedDestinationLon))&&Number(storedDestinationLat)>=-90&&Number(storedDestinationLat)<=90&&Number(storedDestinationLon)>=-180&&Number(storedDestinationLon)<=180){
+    lastDestination=[Number(storedDestinationLat),Number(storedDestinationLon)];
+    destinationMarker=L.marker(lastDestination).addTo(map).bindPopup("Delivery destination");
+    setText("tracking-status","Saved destination coordinates loaded. Waiting for driver's live GPS...");
+    await updateRoute(true);
+    return;
+  }
+  const r=await fetch("/api/gps/geocode?q="+encodeURIComponent(destination),{headers:{"Accept":"application/json"}}); const d=await r.json();
+  if(!d.ok||!Number.isFinite(Number(d.latitude))||!Number.isFinite(Number(d.longitude))){setText("tracking-status","Driver GPS connected. Destination could not be mapped automatically.");return}
+  lastDestination=[Number(d.latitude),Number(d.longitude)];
   destinationMarker=L.marker(lastDestination).addTo(map).bindPopup("Delivery destination");
   setText("tracking-status","Destination mapped. Waiting for driver's live GPS...");
   await updateRoute(true);
@@ -3728,8 +3774,10 @@ async function load(){
   const d=await r.json();
   setText("delivery-status",d.status||"");
   if(!d.ok){setText("tracking-status",d.message||"No driver GPS available yet.");return}
-  const p=[Number(d.latitude),Number(d.longitude)];
-  if(!Number.isFinite(p[0])||!Number.isFinite(p[1]))return;
+  const p=[Number(d.latitude),Number(d.longitude)],acc=Number(d.accuracy);
+  if(!Number.isFinite(p[0])||!Number.isFinite(p[1])||p[0]<-90||p[0]>90||p[1]<-180||p[1]>180)return;
+  if(Number.isFinite(acc)&&acc>150){setText("tracking-status","🟡 Driver GPS accuracy is weak ("+Math.round(acc)+" m). Waiting for a better fix…");return}
+  if(lastDriver&&distanceM(lastDriver,p)>Math.max(1500,Number.isFinite(acc)?acc*5:1500)){setText("tracking-status","🟡 Driver GPS jump rejected. Waiting for a stable fix…");return}
   lastDriver=p;
   if(!driverMarker){driverMarker=L.marker(p,{icon:driverIcon}).addTo(map).bindPopup("Live driver location");map.setView(p,15)}
   else driverMarker.setLatLng(p);
@@ -4614,7 +4662,10 @@ def participant_location_api(tracking_code):
         if role not in ("sender","receiver"):return jsonify({"ok":False,"message":"Only sender or receiver can share GPS."}),403
         body=request.get_json(silent=True) or {};lat=safe_float(body.get("latitude"));lon=safe_float(body.get("longitude"))
         if lat is None or lon is None or not(-90<=lat<=90 and -180<=lon<=180):return jsonify({"ok":False,"message":"Invalid GPS coordinates."}),400
-        payload={"id":str(uuid.uuid4()),"delivery_id":str(delivery.get("id")),"user_id":str(current_user().get("id")),"role":role,"latitude":lat,"longitude":lon,"accuracy":safe_float(body.get("accuracy")),"speed":safe_float(body.get("speed")),"heading":safe_float(body.get("heading")),"altitude":safe_float(body.get("altitude")),"is_online":True,"created_at":utc_now()}
+        accuracy=safe_float(body.get("accuracy"));
+        if accuracy is not None and (accuracy<0 or accuracy>10000): accuracy=None
+        if accuracy is not None and accuracy>150:return jsonify({"ok":False,"message":"GPS accuracy is too weak. Waiting for a better fix."}),422
+        payload={"id":str(uuid.uuid4()),"delivery_id":str(delivery.get("id")),"user_id":str(current_user().get("id")),"role":role,"latitude":lat,"longitude":lon,"accuracy":accuracy,"speed":safe_float(body.get("speed")),"heading":safe_float(body.get("heading")),"altitude":safe_float(body.get("altitude")),"is_online":True,"created_at":utc_now()}
         row,error=db_insert("delivery_participant_locations",payload)
         if error:return jsonify({"ok":False,"message":"Could not save participant GPS.","error":str(error)[:400]}),500
         return jsonify({"ok":True,"role":role,"updated_at":payload["created_at"]})
