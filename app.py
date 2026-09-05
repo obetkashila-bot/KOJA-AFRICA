@@ -155,6 +155,13 @@ def json_or_empty(response):
 
 def clean(value):
     return str(value or "").strip()
+
+def normalize_sdp(value):
+    """Normalize browser SDP without changing its media semantics."""
+    s = str(value or "").replace("\ufeff", "")
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+    lines = [line.strip() for line in s.split("\n") if line.strip()]
+    return "\r\n".join(lines) + ("\r\n" if lines else "")
 def storage_object_from_url(media_url):
     """Return (bucket, object_path) for a Supabase Storage URL or stored path."""
     u=clean(media_url)
@@ -5159,6 +5166,7 @@ def connect_answer(call_id):
 const cid={{ call_id|tojson }}, mode={{ c.mode|tojson }};
 const state=document.getElementById('state'), localEl=document.getElementById('local'), remoteEl=document.getElementById('remote');
 let pc=null, timer=null, localStream=null, seenCallerIce=0, answered=false;
+function normalizeSDP(s){return String(s||'').replace(/^\ufeff/,'').replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n').map(x=>x.trim()).filter(Boolean).join('\r\n')+'\r\n';}
 async function api(u,o){const r=await fetch(u,Object.assign({cache:'no-store'},o||{}));let d={};try{d=await r.json()}catch(e){}if(!r.ok)throw Error(d.error||('HTTP '+r.status));return d}
 async function start(){
  try{
@@ -5178,9 +5186,9 @@ async function start(){
    pc.ontrack=e=>{if(e.streams&&e.streams[0]){remoteEl.srcObject=e.streams[0];document.getElementById('remoteAudio').srcObject=e.streams[0];remoteEl.play().catch(()=>{});}};
    pc.onicecandidate=e=>{if(e.candidate)fetch('/api/connect/call/ice/'+encodeURIComponent(cid),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate.toJSON(),side:'callee'})}).catch(()=>{});};
    pc.onconnectionstatechange=()=>{if(pc && pc.connectionState==='connected'){state.textContent='🟢 Live — you can see and hear each other';} if(pc && ['failed','closed'].includes(pc.connectionState)){state.textContent='Connection ended.';}};
-   await pc.setRemoteDescription({type:'offer',sdp:x.call.offer});
+   const remoteOffer=normalizeSDP(x.call.offer); if(!remoteOffer.includes('v=0\r\n')) throw Error('Caller sent invalid SDP. Please start a new call.'); await pc.setRemoteDescription({type:'offer',sdp:remoteOffer});
    const ans=await pc.createAnswer(); await pc.setLocalDescription(ans);
-   await api('/api/connect/call/answer/'+encodeURIComponent(cid),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({answer:ans.sdp})});
+   await api('/api/connect/call/answer/'+encodeURIComponent(cid),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({answer:normalizeSDP(ans.sdp)})});
    answered=true; state.textContent='🔄 Connecting live call…';
    timer=setInterval(async()=>{try{
       const z=await api('/api/connect/call/check/'+encodeURIComponent(cid));
@@ -5202,7 +5210,7 @@ def connect_call_answer(call_id):
     uid=str(current_user()['id']); c=first_row('koja_calls',{'id':call_id})
     if not c or str(c.get('callee_id'))!=uid:return jsonify(error='Forbidden'),403
     if c.get('status')!='ringing':return jsonify(error='Call is no longer ringing'),409
-    d=request.get_json(silent=True) or {}; answer=clean(d.get('answer'))
+    d=request.get_json(silent=True) or {}; answer=normalize_sdp(d.get('answer'))
     if not answer:return jsonify(error='Missing answer SDP'),400
     row,err=db_update('koja_calls',{'id':call_id},{'answer':answer,'status':'answered','answered_at':utc_now()})
     return (jsonify(error=err),500) if err else jsonify(ok=True,call=row)
@@ -5255,6 +5263,7 @@ def connect_call(user_id):
 <script>
 const callId={{ call.id|tojson }},mode={{ mode|tojson }}; const state=document.getElementById('state'),localEl=document.getElementById('local'),remoteEl=document.getElementById('remote');
 let pc=null,timer=null,localStream=null,seenCalleeIce=0,remoteSet=false,finished=false;
+function normalizeSDP(s){return String(s||'').replace(/^\ufeff/,'').replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n').map(x=>x.trim()).filter(Boolean).join('\r\n')+'\r\n';}
 async function api(u,o){const r=await fetch(u,Object.assign({cache:'no-store'},o||{}));let d={};try{d=await r.json()}catch(e){}if(!r.ok)throw Error(d.error||('HTTP '+r.status));return d}
 function cleanup(){clearInterval(timer);if(localStream)localStream.getTracks().forEach(t=>t.stop());if(pc)pc.close();}
 async function start(){try{
@@ -5265,13 +5274,13 @@ async function start(){try{
  pc.onicecandidate=e=>{if(e.candidate)fetch('/api/connect/call/ice/'+encodeURIComponent(callId),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate.toJSON(),side:'caller'})}).catch(()=>{});};
  pc.onconnectionstatechange=()=>{if(pc.connectionState==='connected')state.textContent='🟢 Live — you can see and hear each other';if(pc.connectionState==='failed')state.textContent='Connection failed. Try the call again.';};
  const offer=await pc.createOffer({offerToReceiveAudio:true,offerToReceiveVideo:mode==='video'});await pc.setLocalDescription(offer);
- await api('/api/connect/call/offer/'+encodeURIComponent(callId),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({offer:offer.sdp})});
+ await api('/api/connect/call/offer/'+encodeURIComponent(callId),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({offer:normalizeSDP(offer.sdp)})});
  state.textContent='📳 Ringing…'; const started=Date.now();
  timer=setInterval(async()=>{try{
    if(Date.now()-started>120000){await fetch('/api/connect/call/end/'+encodeURIComponent(callId),{method:'POST'});cleanup();state.textContent='No answer.';return;}
    const x=await api('/api/connect/call/check/'+encodeURIComponent(callId));
    if(['ended','rejected'].includes(x.call.status)){cleanup();state.textContent='Call ended.';return;}
-   if(x.call.answer && !remoteSet){await pc.setRemoteDescription({type:'answer',sdp:x.call.answer});remoteSet=true;state.textContent='🔄 Connecting live call…';}
+   if(x.call.answer && !remoteSet){const remoteAnswer=normalizeSDP(x.call.answer); if(!remoteAnswer.includes('v=0\r\n')) throw Error('Callee sent invalid SDP. Please start a new call.'); await pc.setRemoteDescription({type:'answer',sdp:remoteAnswer});remoteSet=true;state.textContent='🔄 Connecting live call…';}
    const list=x.call.callee_ice||[];for(let i=seenCalleeIce;i<list.length;i++){try{await pc.addIceCandidate(list[i]);}catch(e){}}seenCalleeIce=list.length;
  }catch(e){}},800);
  }catch(e){state.textContent='Could not start call: '+e.message;}
@@ -5312,7 +5321,7 @@ def connect_call_offer(call_id):
     uid=str(current_user()['id']); c=first_row('koja_calls',{'id':call_id})
     if not c or str(c.get('caller_id'))!=uid:return jsonify(error='Forbidden'),403
     if c.get('status') not in ('ringing','answered'):return jsonify(error='Call is no longer active'),409
-    d=request.get_json(silent=True) or {}; offer=clean(d.get('offer'))
+    d=request.get_json(silent=True) or {}; offer=normalize_sdp(d.get('offer'))
     if not offer:return jsonify(error='Missing offer SDP'),400
     row,err=db_update('koja_calls',{'id':call_id},{'offer':offer})
     return (jsonify(error=err),500) if err else jsonify(ok=True,call=row)
