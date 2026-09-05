@@ -2055,55 +2055,110 @@ def driver_delivery_action(delivery_id, action):
 @app.route("/tracking")
 @login_required
 def tracking():
-    user=current_user()
     delivery_id = clean(request.args.get("delivery_id"))
-    return render_page("Live GPS Tracking",r"""
-<div class="hero"><h2>Live Driver GPS</h2><p>Allow browser location permission. Keep this page open while driving.</p></div>
+    # Google Maps browser keys are intentionally optional. Restrict any key in Google Cloud.
+    google_maps_key = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
+    return render_page("Live GPS Tracking", r"""
+<div class="hero">
+  <h2>📍 KOJA Live GPS Command Map</h2>
+  <p>Real GPS when connected, plus a visible preview/demo map when no driver GPS is connected yet.</p>
+</div>
 <div class="card">
-<label>Delivery ID (optional)</label>
-<input id="delivery_id" value="{{ delivery_id or '' }}" placeholder="Assigned delivery ID (automatic when opened from a job)">
-<div class="actions">
-<button class="btn success" onclick="startTracking()">Go Online / Start GPS</button>
-<button class="btn danger" onclick="stopTracking()">Stop GPS / Go Offline</button>
+  <div class="map-toolbar" role="toolbar" aria-label="Map controls">
+    <button class="map-tab active" type="button" onclick="showMap('leaflet')">🗺️ Leaflet</button>
+    <button class="map-tab" type="button" onclick="showMap('satellite')">🛰️ Satellite</button>
+    <button class="map-tab" type="button" onclick="showMap('google')" {% if not google_maps_key %}disabled title="Add GOOGLE_MAPS_API_KEY in Render environment variables"{% endif %}>🌐 Google Map</button>
+    <button class="map-tab" type="button" onclick="fitZambia()">🇿🇲 Zambia</button>
+    <button class="map-tab" type="button" onclick="locateMe()">📍 My Location</button>
+  </div>
+  <div class="map-status-row">
+    <span id="gps-status" class="badge">GPS: Not connected</span>
+    <span id="map-status" class="small">Preview mode — waiting for a real GPS signal.</span>
+  </div>
+  <div id="map"></div>
+  <div id="google-map" style="display:none"></div>
 </div>
-<p id="gps-status">GPS not started.</p>
-<div id="map"></div>
+<div class="card">
+  <h3>🚗 Driver GPS</h3>
+  <label>Delivery ID (optional)</label>
+  <input id="delivery_id" value="{{ delivery_id or '' }}" placeholder="Assigned delivery ID">
+  <div class="actions">
+    <button class="btn success" onclick="startTracking()">▶ Start Live GPS</button>
+    <button class="btn danger" onclick="stopTracking()">■ Stop GPS</button>
+    <button class="btn secondary" onclick="demoMode()">▶ Preview Demo Driver</button>
+  </div>
+  <p class="small">If no driver is connected, the map remains usable in preview mode. A demo marker is shown so the map interface is never blank.</p>
 </div>
+<style>
+.map-toolbar{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:10px}.map-tab{width:auto!important;margin:0!important;padding:9px 12px!important;background:#eef3f7;color:#172033;border:1px solid #d9e0e7}.map-tab.active{background:#176b87;color:#fff}.map-tab:disabled{opacity:.5;cursor:not-allowed}.map-status-row{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:9px;flex-wrap:wrap}#map,#google-map{height:520px;min-height:390px;border-radius:13px;overflow:hidden;border:1px solid var(--border)}.demo-pin{font-size:30px;filter:drop-shadow(0 3px 4px rgba(0,0,0,.35))}
+@media(max-width:760px){#map,#google-map{height:400px;min-height:350px}.map-toolbar .map-tab{flex:1 1 45%;}}
+</style>
 <script>
-let watchId=null,marker=null;
-const map=L.map("map").setView([-13.9626,28.3228],6);
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);
-function status(t){document.getElementById("gps-status").textContent=t}
-function startTracking(){
- if(!navigator.geolocation){status("This browser does not support GPS.");return}
- status("Requesting GPS permission...");
- watchId=navigator.geolocation.watchPosition(sendPosition,gpsError,{enableHighAccuracy:true,maximumAge:3000,timeout:15000});
+let watchId=null, marker=null, accuracyCircle=null, demoMarker=null, activeMap='leaflet';
+let map=L.map('map',{zoomControl:true}).setView([-13.9626,28.3228],6);
+const streetLayer=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; OpenStreetMap contributors'});
+const satelliteLayer=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{maxZoom:19,attribution:'Tiles &copy; Esri'});
+streetLayer.addTo(map);
+let googleMap=null, googleMarker=null;
+const googleKey={{ google_maps_key|tojson }};
+function status(t){document.getElementById('gps-status').textContent=t}
+function mapStatus(t){document.getElementById('map-status').textContent=t}
+function setActive(btn){document.querySelectorAll('.map-tab').forEach(b=>b.classList.remove('active'));if(btn)btn.classList.add('active')}
+function showMap(mode){
+ activeMap=mode;
+ document.getElementById('map').style.display=mode==='google'?'none':'block';
+ document.getElementById('google-map').style.display=mode==='google'?'block':'none';
+ if(mode==='leaflet'){
+  if(map.hasLayer(satelliteLayer))map.removeLayer(satelliteLayer); if(!map.hasLayer(streetLayer))streetLayer.addTo(map);
+  map.invalidateSize(); mapStatus('Leaflet street map active.');
+ }
+ if(mode==='satellite'){
+  if(map.hasLayer(streetLayer))map.removeLayer(streetLayer); if(!map.hasLayer(satelliteLayer))satelliteLayer.addTo(map);
+  map.invalidateSize(); mapStatus('Satellite imagery active.');
+ }
+ if(mode==='google'){
+  if(!googleKey){mapStatus('Google Maps is not configured. Add GOOGLE_MAPS_API_KEY in Render.');return;}
+  loadGoogleMap();
+ }
+ const tabs=document.querySelectorAll('.map-tab'); tabs.forEach(b=>{if((mode==='leaflet'&&b.textContent.includes('Leaflet'))||(mode==='satellite'&&b.textContent.includes('Satellite'))||(mode==='google'&&b.textContent.includes('Google')))setActive(b);});
+}
+function fitZambia(){if(activeMap==='google'&&googleMap){googleMap.setCenter({lat:-13.9626,lng:28.3228});googleMap.setZoom(6);return;}map.setView([-13.9626,28.3228],6);mapStatus('Zambia preview view.');}
+function locateMe(){if(!navigator.geolocation){mapStatus('Browser location is unavailable.');return;}navigator.geolocation.getCurrentPosition(p=>applyPosition(p,false),e=>mapStatus('Location unavailable — preview map remains active.'),{enableHighAccuracy:true,timeout:10000,maximumAge:10000});}
+function applyPosition(position,send){
+ const c=position.coords, lat=c.latitude,lon=c.longitude;
+ status('GPS: CONNECTED'); mapStatus('Live position '+new Date().toLocaleTimeString()+' • accuracy '+Math.round(c.accuracy||0)+' m');
+ if(!marker)marker=L.marker([lat,lon]).addTo(map).bindPopup('📍 KOJA live driver location'); else marker.setLatLng([lat,lon]);
+ if(accuracyCircle)accuracyCircle.setLatLng([lat,lon]).setRadius(c.accuracy||20); else accuracyCircle=L.circle([lat,lon],{radius:c.accuracy||20,weight:1}).addTo(map);
+ if(activeMap!=='google')map.setView([lat,lon],16);
+ if(googleMap){googleMarker?googleMarker.setPosition({lat:lat,lng:lon}):googleMarker=new google.maps.Marker({position:{lat:lat,lng:lon},map:googleMap,title:'KOJA live driver location'});}
+ if(send)sendPosition(position);
 }
 async function sendPosition(position){
- const c=position.coords, lat=c.latitude, lon=c.longitude;
- if(!marker){marker=L.marker([lat,lon]).addTo(map).bindPopup("Your live driver location");}
- else marker.setLatLng([lat,lon]);
- map.setView([lat,lon],16);
- const deliveryId=document.getElementById("delivery_id").value.trim();
- try{
-  const r=await fetch("/api/driver/location",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
-   latitude:lat,longitude:lon,accuracy:c.accuracy,speed:c.speed,heading:c.heading,altitude:c.altitude,delivery_id:deliveryId||null
-  })});
-  const d=await r.json();
-  status(d.ok?"ONLINE — GPS updated "+new Date().toLocaleTimeString():(d.message||"GPS update failed."));
- }catch(e){status("Network error while sending GPS.");}
+ const c=position.coords,deliveryId=document.getElementById('delivery_id').value.trim();
+ try{const r=await fetch('/api/driver/location',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({latitude:c.latitude,longitude:c.longitude,accuracy:c.accuracy,speed:c.speed,heading:c.heading,altitude:c.altitude,delivery_id:deliveryId||null})});const d=await r.json();if(!d.ok)mapStatus(d.message||'GPS received but server did not save it.');}
+ catch(e){mapStatus('GPS is connected locally, but server/network is unavailable.');}
 }
-function gpsError(e){
- if(e.code===1)status("Location permission denied. Allow location permission in browser settings.");
- else if(e.code===2)status("Device could not determine location.");
- else if(e.code===3)status("GPS timed out."); else status("GPS error.");
+function startTracking(){
+ if(!navigator.geolocation){status('GPS: UNSUPPORTED');mapStatus('This browser does not support device GPS. Preview remains available.');return;}
+ status('GPS: CONNECTING…');mapStatus('Requesting device location…');
+ watchId=navigator.geolocation.watchPosition(p=>applyPosition(p,true),gpsError,{enableHighAccuracy:true,maximumAge:3000,timeout:15000});
 }
-function stopTracking(){
- if(watchId!==null){navigator.geolocation.clearWatch(watchId);watchId=null;}
- fetch("/api/driver/offline",{method:"POST",headers:{"Content-Type":"application/json"}}).then(r=>r.json()).then(d=>status(d.message||"GPS sharing stopped.")).catch(()=>status("GPS stopped locally."));
+function gpsError(e){if(e.code===1){status('GPS: PERMISSION DENIED');mapStatus('Allow location permission; preview remains available.');}else if(e.code===2){status('GPS: NO SIGNAL');mapStatus('No GPS signal. Preview mode remains active.');}else if(e.code===3){status('GPS: TIMEOUT');mapStatus('GPS timed out. Preview mode remains active.');}else{status('GPS: ERROR');mapStatus('GPS error. Preview mode remains active.');}}
+function stopTracking(){if(watchId!==null){navigator.geolocation.clearWatch(watchId);watchId=null;}fetch('/api/driver/offline',{method:'POST',headers:{'Content-Type':'application/json'}}).then(r=>r.json()).then(d=>{status('GPS: OFFLINE');mapStatus(d.message||'GPS sharing stopped. Preview remains active.');}).catch(()=>{status('GPS: OFFLINE');mapStatus('GPS stopped locally.');});}
+function demoMode(){
+ status('GPS: DEMO / NOT CONNECTED');mapStatus('Preview driver — no real GPS connection. This is not a real driver location.');
+ const p=[-13.9626,28.3228];
+ if(!demoMarker)demoMarker=L.marker(p,{title:'KOJA Demo Driver'}).addTo(map).bindPopup('<b>KOJA Demo Driver</b><br>Preview only — not connected').openPopup(); else demoMarker.setLatLng(p).openPopup();
+ if(activeMap!=='google')map.setView(p,6);
 }
+function loadGoogleMap(){
+ if(googleMap){mapStatus('Google Map active.');return;}
+ window.initKojaGoogleMap=function(){googleMap=new google.maps.Map(document.getElementById('google-map'),{center:{lat:-13.9626,lng:28.3228},zoom:6,mapTypeId:'roadmap',mapTypeControl:true,streetViewControl:true,fullscreenControl:true});googleMarker=new google.maps.Marker({position:{lat:-13.9626,lng:28.3228},map:googleMap,title:'KOJA preview driver'});mapStatus('Google Map active.');};
+ const s=document.createElement('script');s.async=true;s.defer=true;s.src='https://maps.googleapis.com/maps/api/js?key='+encodeURIComponent(googleKey)+'&loading=async&callback=initKojaGoogleMap';s.onerror=()=>mapStatus('Google Maps failed to load. Leaflet remains available.');document.head.appendChild(s);
+}
+demoMode();
 </script>
-""")
+""", delivery_id=delivery_id, google_maps_key=google_maps_key)
 
 @app.route("/api/driver/location", methods=["POST"])
 @driver_required
