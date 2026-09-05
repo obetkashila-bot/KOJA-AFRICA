@@ -5167,7 +5167,28 @@ const cid={{ call_id|tojson }}, mode={{ c.mode|tojson }};
 const state=document.getElementById('state'), localEl=document.getElementById('local'), remoteEl=document.getElementById('remote');
 let pc=null, timer=null, localStream=null, seenCallerIce=0, answered=false;
 function normalizeSDP(s){return String(s||'').replace(/^\ufeff/,'').replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n').map(x=>x.trim()).filter(Boolean).join('\r\n')+'\r\n';}
-async function api(u,o){const r=await fetch(u,Object.assign({cache:'no-store'},o||{}));let d={};try{d=await r.json()}catch(e){}if(!r.ok)throw Error(d.error||('HTTP '+r.status));return d}
+async function api(u,o){
+  let lastErr=null;
+  for(let attempt=0;attempt<4;attempt++){
+    try{
+      const r=await fetch(u,Object.assign({cache:'no-store'},o||{}));
+      let d={};try{d=await r.json()}catch(e){}
+      if(r.ok)return d;
+      if([502,503,504].includes(r.status)){
+        lastErr=Error('HTTP '+r.status);
+        if(attempt<3){await new Promise(res=>setTimeout(res,700*(attempt+1)));continue;}
+      }
+      throw Error(d.error||('HTTP '+r.status));
+    }catch(e){
+      lastErr=e;
+      if(attempt<3 && (!navigator.onLine || /HTTP 502|HTTP 503|HTTP 504|Failed to fetch|NetworkError/i.test(String(e)))){
+        await new Promise(res=>setTimeout(res,700*(attempt+1)));continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr||Error('Network error');
+}
 async function start(){
  try{
    let x=null;
@@ -5197,7 +5218,7 @@ async function start(){
       for(let i=seenCallerIce;i<list.length;i++){try{await pc.addIceCandidate(list[i]);}catch(e){}}
       seenCallerIce=list.length;
    }catch(e){}},800);
- }catch(e){state.textContent='Could not connect: '+e.message;}
+ }catch(e){state.textContent=/HTTP 503|HTTP 502|HTTP 504|Network/i.test(String(e))?'🔄 KOJA server connection was temporarily unavailable. Please try again.':'Could not connect: '+e.message;}
 }
 function cleanup(){clearInterval(timer);if(localStream)localStream.getTracks().forEach(t=>t.stop());if(pc)pc.close();}
 document.getElementById('hang').onclick=async()=>{try{await fetch('/api/connect/call/end/'+encodeURIComponent(cid),{method:'POST'});}catch(e){}cleanup();state.textContent='Call ended.';};
@@ -5264,7 +5285,28 @@ def connect_call(user_id):
 const callId={{ call.id|tojson }},mode={{ mode|tojson }}; const state=document.getElementById('state'),localEl=document.getElementById('local'),remoteEl=document.getElementById('remote');
 let pc=null,timer=null,localStream=null,seenCalleeIce=0,remoteSet=false,finished=false;
 function normalizeSDP(s){return String(s||'').replace(/^\ufeff/,'').replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n').map(x=>x.trim()).filter(Boolean).join('\r\n')+'\r\n';}
-async function api(u,o){const r=await fetch(u,Object.assign({cache:'no-store'},o||{}));let d={};try{d=await r.json()}catch(e){}if(!r.ok)throw Error(d.error||('HTTP '+r.status));return d}
+async function api(u,o){
+  let lastErr=null;
+  for(let attempt=0;attempt<4;attempt++){
+    try{
+      const r=await fetch(u,Object.assign({cache:'no-store'},o||{}));
+      let d={};try{d=await r.json()}catch(e){}
+      if(r.ok)return d;
+      if([502,503,504].includes(r.status)){
+        lastErr=Error('HTTP '+r.status);
+        if(attempt<3){await new Promise(res=>setTimeout(res,700*(attempt+1)));continue;}
+      }
+      throw Error(d.error||('HTTP '+r.status));
+    }catch(e){
+      lastErr=e;
+      if(attempt<3 && (!navigator.onLine || /HTTP 502|HTTP 503|HTTP 504|Failed to fetch|NetworkError/i.test(String(e)))){
+        await new Promise(res=>setTimeout(res,700*(attempt+1)));continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr||Error('Network error');
+}
 function cleanup(){clearInterval(timer);if(localStream)localStream.getTracks().forEach(t=>t.stop());if(pc)pc.close();}
 async function start(){try{
  if(!navigator.onLine)throw Error('No internet connection');
@@ -5282,7 +5324,7 @@ async function start(){try{
    if(['ended','rejected'].includes(x.call.status)){cleanup();state.textContent='Call ended.';return;}
    if(x.call.answer && !remoteSet){const remoteAnswer=normalizeSDP(x.call.answer); if(!remoteAnswer.includes('v=0\r\n')) throw Error('Callee sent invalid SDP. Please start a new call.'); await pc.setRemoteDescription({type:'answer',sdp:remoteAnswer});remoteSet=true;state.textContent='🔄 Connecting live call…';}
    const list=x.call.callee_ice||[];for(let i=seenCalleeIce;i<list.length;i++){try{await pc.addIceCandidate(list[i]);}catch(e){}}seenCalleeIce=list.length;
- }catch(e){}},800);
+ }catch(e){if(!finished && /HTTP 503|HTTP 502|HTTP 504|Network/i.test(String(e))) state.textContent='🔄 Server connection interrupted — retrying…';}},800);
  }catch(e){state.textContent='Could not start call: '+e.message;}
 }
 document.getElementById('hang').onclick=async()=>{finished=true;try{await fetch('/api/connect/call/end/'+encodeURIComponent(callId),{method:'POST'});}catch(e){}cleanup();state.textContent='Call ended.';};
