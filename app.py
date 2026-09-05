@@ -702,7 +702,6 @@ footer{text-align:center;color:var(--muted);padding:30px}
 <a href="{{ url_for('home') }}">Home</a>
 {% if user %}
 <a href="{{ url_for('dashboard') }}">Dashboard</a>
-<a href="{{ url_for('services') }}">Services</a>
 <a href="{{ url_for('questions') }}">Questions</a>
 <a href="{{ url_for('assignments') }}">Assignments</a>
 <a href="{{ url_for('research') }}">🔎 Research</a>
@@ -1369,6 +1368,129 @@ def research_ai_summary(query, results):
             highlights.append(f"{r.get('title','Source')}: {ss[:300]}")
     return 'AI summary is unavailable. Source-based highlights:\n\n'+'\n\n'.join(highlights)
 
+
+
+# ============================================================
+# KOJA RESEARCH AI — conversational research workspace
+# Research-only addition. Does not alter other KOJA services.
+# ============================================================
+def _research_ai_response(messages, use_web=False, include_documents=True):
+    api_key = os.getenv("AI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return {"ok": False, "message": "KOJA AI is not configured. Add AI_API_KEY or OPENAI_API_KEY in Render Environment."}
+    endpoint = os.getenv("AI_API_URL", "https://api.openai.com/v1/responses")
+    model = os.getenv("RESEARCH_CHAT_MODEL") or os.getenv("AI_MODEL") or "gpt-5.6-luna"
+    history = []
+    for item in (messages or [])[-10:]:
+        role = item.get("role") if isinstance(item, dict) else None
+        content = item.get("content") if isinstance(item, dict) else None
+        if role in ("user", "assistant") and content:
+            history.append({"role": role, "content": [{"type": "input_text", "text": str(content)[:6000]}]})
+    if not history:
+        return {"ok": False, "message": "Please enter a question."}
+    latest = str(messages[-1].get("content", ""))[:4000]
+    doc_context = ""
+    if include_documents:
+        try:
+            docs = research_local_documents(latest, 5)
+            if docs:
+                doc_context = "\n\nKOJA DOCUMENT EVIDENCE:\n" + "\n\n".join(
+                    f"[{i+1}] {d.get('title','KOJA Document')}\n{clean(d.get('snippet',''))[:900]}\nURL: {d.get('url','')}"
+                    for i, d in enumerate(docs)
+                )
+        except Exception as exc:
+            logger.info("KOJA document context skipped: %s", exc)
+    system = (
+        "You are KOJA AI, the conversational research assistant inside KOJA AFRICA. "
+        "Be helpful, clear, accurate and natural. Maintain context across follow-up messages. "
+        "Explain reasoning and concepts in a way the user can understand, but do not reveal hidden chain-of-thought. "
+        "When current or changing information is requested and web search is enabled, use web evidence. "
+        "Do not invent facts, sources, quotations or links. Distinguish known information from uncertainty. "
+        "When evidence is available, cite it with numbered markers such as [1], [2]. "
+        "Use KOJA document evidence when relevant and label it as KOJA Documents."
+    )
+    if doc_context:
+        system += doc_context
+    payload = {
+        "model": model,
+        "input": [{"role": "system", "content": [{"type": "input_text", "text": system}]}] + history,
+        "max_output_tokens": 1800,
+    }
+    if use_web:
+        payload["tools"] = [{"type": "web_search"}]
+    try:
+        r = requests.post(endpoint, json=payload, timeout=50, headers={
+            "Authorization": "Bearer " + api_key,
+            "Content-Type": "application/json",
+        })
+        if not r.ok:
+            logger.warning("KOJA Research AI failed: %s", r.text[:900])
+            return {"ok": False, "message": "KOJA AI could not complete that request right now. Check the AI key/model configuration in Render."}
+        data = r.json()
+        text = clean(data.get("output_text") or "")
+        citations = []
+        seen = set()
+        for item in data.get("output") or []:
+            for content in item.get("content") or []:
+                for ann in content.get("annotations") or []:
+                    if ann.get("type") == "url_citation":
+                        url = clean(ann.get("url"))
+                        if url and url not in seen:
+                            seen.add(url)
+                            citations.append({"title": clean(ann.get("title") or url), "url": url})
+                if not text and content.get("type") in ("output_text", "text") and content.get("text"):
+                    text += str(content.get("text"))
+        text = clean(text)
+        if not text:
+            return {"ok": False, "message": "KOJA AI returned an empty response. Please try again."}
+        return {"ok": True, "message": text, "sources": citations[:10]}
+    except Exception as exc:
+        logger.warning("KOJA Research AI exception: %s", exc)
+        return {"ok": False, "message": "KOJA AI is temporarily unavailable. Please try again."}
+
+@app.route("/research", methods=["GET"])
+def research():
+    q = clean(request.args.get("q", ""))
+    if not q:
+        return render_page("Research", r'''
+<style>
+.research-ai{max-width:1000px;margin:auto}.chat-box{min-height:320px;max-height:58vh;overflow:auto;padding:8px}.msg{padding:12px 14px;border-radius:16px;margin:10px 0;white-space:pre-wrap;line-height:1.55}.msg.user{margin-left:14%;background:rgba(80,150,255,.14)}.msg.ai{margin-right:14%;background:rgba(128,128,128,.10)}.chat-form{display:grid;grid-template-columns:1fr auto;gap:10px}.source-list a{display:block;margin:6px 0}@media(max-width:700px){.msg.user{margin-left:4%}.msg.ai{margin-right:4%}.chat-form{grid-template-columns:1fr}}
+</style>
+<div class="research-ai"><div class="hero"><h2>🔎 KOJA Research AI</h2><p>Ask questions naturally, continue the conversation, and use current web evidence when needed.</p></div>
+<div class="card"><div id="koja-chat" class="chat-box"><div class="msg ai"><strong>KOJA AI</strong><br>Hello. I can explain topics, answer follow-up questions, research current information and use relevant KOJA Documents.</div></div>
+<form id="koja-chat-form" class="chat-form"><textarea id="koja-prompt" rows="3" placeholder="Ask KOJA AI anything about your research…" required></textarea><button class="btn" type="submit">Send</button></form>
+<label style="display:block;margin-top:10px"><input id="koja-web" type="checkbox" style="width:auto"> Research the web for current information</label>
+<div id="koja-sources" class="source-list small" style="margin-top:12px"></div></div>
+<div class="card"><h3>Research tools</h3><p>Turn on web research for current information. KOJA also checks relevant KOJA Documents for context.</p></div></div>
+<script>
+const chat=document.getElementById('koja-chat'), form=document.getElementById('koja-chat-form'), promptEl=document.getElementById('koja-prompt'), webEl=document.getElementById('koja-web'), sources=document.getElementById('koja-sources');
+let history=[];
+function add(role,text){const d=document.createElement('div');d.className='msg '+(role==='user'?'user':'ai');d.innerHTML='<strong>'+(role==='user'?'You':'KOJA AI')+'</strong><br>'+text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');chat.appendChild(d);chat.scrollTop=chat.scrollHeight}
+form.addEventListener('submit',async e=>{e.preventDefault();const text=promptEl.value.trim();if(!text)return;add('user',text);history.push({role:'user',content:text});promptEl.value='';const btn=form.querySelector('button');btn.disabled=true;btn.textContent='Thinking…';try{const r=await fetch('/research/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:history,use_web:webEl.checked})});const d=await r.json();add('assistant',d.message||'No response.');if(d.message)history.push({role:'assistant',content:d.message});sources.innerHTML='';(d.sources||[]).forEach((s,i)=>{const a=document.createElement('a');a.href=s.url;a.target='_blank';a.rel='noopener noreferrer';a.textContent='['+(i+1)+'] '+s.title;sources.appendChild(a)});if(history.length>12)history=history.slice(-12)}catch(err){add('assistant','KOJA AI could not connect. Please try again.')}finally{btn.disabled=false;btn.textContent='Send'}});
+</script>''')
+    results = research_web(q,8) + research_wikipedia(q,5) + research_openalex(q,None,8) + research_crossref(q,None,None,8) + research_local_documents(q,8)
+    results = _research_deduplicate(results,q)[:20]
+    summary = research_ai_summary(q,results) if results else ''
+    return render_page("Research", r'''
+<div class="research-ai"><div class="hero"><h2>🔎 KOJA Research</h2><p>Evidence for: <strong>{{ q }}</strong></p><a class="btn secondary" href="{{ url_for('research') }}">Ask KOJA AI</a></div>
+{% if summary %}<div class="card"><h3>🧠 AI Research Summary</h3><pre style="white-space:pre-wrap;line-height:1.6">{{ summary }}</pre></div>{% endif %}
+<div class="card"><h3>{{ results|length }} evidence sources</h3>{% for r in results %}<div class="card"><span class="badge">{{ r.source }}</span><h3>{{ r.title }}</h3><p>{{ r.snippet }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open source ↗</a>{% endif %}</div>{% else %}<p>No evidence sources were returned.</p>{% endfor %}</div></div>''', q=q, results=results, summary=summary)
+
+@app.route("/research/chat", methods=["POST"])
+def research_chat():
+    data = request.get_json(silent=True) or {}
+    messages = data.get("messages") or []
+    use_web = bool(data.get("use_web"))
+    if not isinstance(messages, list):
+        return jsonify({"ok":False,"message":"Invalid conversation."}), 400
+    cleaned=[]
+    for m in messages[-12:]:
+        if isinstance(m,dict) and m.get("role") in ("user","assistant") and clean(m.get("content")):
+            cleaned.append({"role":m["role"],"content":clean(m["content"])[:6000]})
+    if not cleaned or cleaned[-1]["role"] != "user":
+        return jsonify({"ok":False,"message":"Please send a user message."}), 400
+    result = _research_ai_response(cleaned, use_web=use_web, include_documents=True)
+    return jsonify(result), 200 if result.get("ok") else 503
 
 # ============================================================
 # QUESTIONS / ASSIGNMENTS
