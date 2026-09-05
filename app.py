@@ -64,7 +64,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.05-PRO-PUBLIC-MEDIA-REAL-GPS-V2"
+APP_VERSION = "2026.09.05-PRO-PUBLIC-MEDIA-REAL-GPS-V2-MENU"
 # REAL GPS V2 authoritative merge: 2026.09.01-LIVE-GPS-V2
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
@@ -709,11 +709,17 @@ footer{text-align:center;color:var(--muted);padding:30px}
 <a href="{{ url_for('research') }}">🔎 Research</a>
 <a href="{{ url_for('settings') }}">⚙️ Settings</a>
 <div class="menu-group">
+<button type="button" id="deliveryMenuButton" aria-expanded="false" aria-haspopup="true">🚚 Delivery ▾</button>
+<div class="dropdown" id="deliveryMenu" role="menu">
+<a role="menuitem" href="{{ url_for('deliveries') }}">📦 Request Delivery</a>
+<a role="menuitem" href="{{ url_for('drivers') }}">🚗 Find Drivers</a>
+<a role="menuitem" href="{{ url_for('tracking') }}">📍 Live GPS Tracking</a>
+{% if user.role in ['driver','admin'] or user.is_admin %}<a role="menuitem" href="{{ url_for('driver_dashboard') }}">🧑‍✈️ Driver Dashboard</a>{% endif %}
+{% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('admin_live_tracking') }}">🛰️ Admin Live GPS</a>{% endif %}
+</div></div>
+<div class="menu-group">
 <button type="button" id="moreMenuButton" aria-expanded="false" aria-haspopup="true">More ▾</button>
 <div class="dropdown" id="moreMenu" role="menu">
-<a role="menuitem" href="{{ url_for('deliveries') }}">Deliveries</a>
-<a role="menuitem" href="{{ url_for('drivers') }}">Drivers</a>
-{% if user.role in ['driver','admin'] or user.is_admin %}<a role="menuitem" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}
 {% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('admin') }}">Admin</a>{% endif %}
 <a role="menuitem" href="{{ url_for('logout') }}">Logout</a>
 </div></div>
@@ -726,9 +732,11 @@ footer{text-align:center;color:var(--muted);padding:30px}
 </nav>
 <script>
 (function(){
- const toggle=document.getElementById('menuToggle'), links=document.getElementById('navLinks'), more=document.getElementById('moreMenuButton'), drop=document.getElementById('moreMenu');
+ const toggle=document.getElementById('menuToggle'), links=document.getElementById('navLinks'), more=document.getElementById('moreMenuButton'), drop=document.getElementById('moreMenu'), delivery=document.getElementById('deliveryMenuButton'), deliveryDrop=document.getElementById('deliveryMenu');
  if(toggle){toggle.addEventListener('click',function(){const open=links.classList.toggle('open');toggle.setAttribute('aria-expanded',open);toggle.setAttribute('aria-label',open?'Close menu':'Open menu');toggle.innerHTML=open?'✕ Close':'☰ Menu';});}
- if(more&&drop){more.addEventListener('click',function(e){e.stopPropagation();const open=drop.classList.toggle('open');more.setAttribute('aria-expanded',open);});document.addEventListener('click',function(e){if(!e.target.closest('.menu-group')){drop.classList.remove('open');more.setAttribute('aria-expanded','false');}});}
+ if(more&&drop){more.addEventListener('click',function(e){e.stopPropagation();const open=drop.classList.toggle('open');more.setAttribute('aria-expanded',open);});}
+ if(delivery&&deliveryDrop){delivery.addEventListener('click',function(e){e.stopPropagation();const open=deliveryDrop.classList.toggle('open');delivery.setAttribute('aria-expanded',open);});}
+ document.addEventListener('click',function(e){if(!e.target.closest('.menu-group')){drop&&drop.classList.remove('open');more&&more.setAttribute('aria-expanded','false');deliveryDrop&&deliveryDrop.classList.remove('open');delivery&&delivery.setAttribute('aria-expanded','false');}});
  document.querySelectorAll('#navLinks a').forEach(function(a){a.addEventListener('click',function(){if(window.innerWidth<=760&&links.classList.contains('open')){links.classList.remove('open');toggle.setAttribute('aria-expanded','false');toggle.setAttribute('aria-label','Open menu');toggle.innerHTML='☰ Menu';}});});
  window.addEventListener('resize',function(){if(window.innerWidth>760){links.classList.remove('open');toggle&&toggle.setAttribute('aria-expanded','false');toggle&&(toggle.innerHTML='☰ Menu');}});
 })();
