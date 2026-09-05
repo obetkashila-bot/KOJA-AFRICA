@@ -64,8 +64,8 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.05-PRO-PUBLIC-MEDIA-REAL-GPS-V2-MULTI-MAP-FIXED"
-APP_BUILD_MARKER = "KOJA-GPS-V2-MULTI-MAP-FIXED-2026-09-05-1724"
+APP_VERSION = "2026.09.05-PRO-PUBLIC-MEDIA-REAL-GPS-V2-MULTI-MAP-FINAL-FIXED"
+APP_BUILD_MARKER = "KOJA-GPS-V2-MULTI-MAP-FINAL-2026-09-05-0800"
 # REAL GPS V2 authoritative merge: 2026.09.01-LIVE-GPS-V2
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
@@ -2092,7 +2092,7 @@ def tracking():
 </div>
 <style>
 .map-toolbar{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:10px}.map-tab{width:auto!important;margin:0!important;padding:9px 12px!important;background:#eef3f7;color:#172033;border:1px solid #d9e0e7}.map-tab.active{background:#176b87;color:#fff}.map-tab:disabled{opacity:.5;cursor:not-allowed}.map-status-row{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:9px;flex-wrap:wrap}#map,#google-map{height:520px;min-height:390px;border-radius:13px;overflow:hidden;border:1px solid var(--border)}.demo-pin{font-size:30px;filter:drop-shadow(0 3px 4px rgba(0,0,0,.35))}
-@media(max-width:760px){#map,#google-map{height:400px;min-height:350px}.map-toolbar .map-tab{flex:1 1 45%;}}
+@media(max-width:760px){ #map,#google-map{height:400px;min-height:350px}.map-toolbar .map-tab{flex:1 1 45%;}}
 </style>
 <script>
 let watchId=null, marker=null, accuracyCircle=null, demoMarker=null, activeMap='leaflet';
