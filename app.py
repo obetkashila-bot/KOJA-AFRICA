@@ -2075,8 +2075,8 @@ def tracking():
     <span id="gps-status" class="badge">GPS: Not connected</span>
     <span id="map-status" class="small">Preview mode — waiting for a real GPS signal.</span>
   </div>
-  <div id="map"></div>
-  <div id="google-map" style="display:none"></div>
+  <div id="map" style="display:block!important;visibility:visible!important;width:100%;height:520px;min-height:390px;background:#dfe7ef"></div>
+  <div id="google-map" style="display:none;visibility:visible;width:100%;height:520px;min-height:390px;background:#dfe7ef"></div>
 </div>
 <div class="card">
   <h3>🚗 Driver GPS</h3>
@@ -2091,7 +2091,7 @@ def tracking():
 </div>
 <style>
 .map-toolbar{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:10px}.map-tab{width:auto!important;margin:0!important;padding:9px 12px!important;background:#eef3f7;color:#172033;border:1px solid #d9e0e7}.map-tab.active{background:#176b87;color:#fff}.map-tab:disabled{opacity:.5;cursor:not-allowed}.map-status-row{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:9px;flex-wrap:wrap}#map,#google-map{height:520px;min-height:390px;border-radius:13px;overflow:hidden;border:1px solid var(--border)}.demo-pin{font-size:30px;filter:drop-shadow(0 3px 4px rgba(0,0,0,.35))}
-@media(max-width:760px)div#map,div#google-map{height:400px;min-height:350px}.map-toolbar .map-tab{flex:1 1 45%;}}
+@media(max-width:760px){#map,#google-map{height:400px;min-height:350px}.map-toolbar .map-tab{flex:1 1 45%;}}
 </style>
 <script>
 let watchId=null, marker=null, accuracyCircle=null, demoMarker=null, activeMap='leaflet';
@@ -2157,6 +2157,8 @@ function loadGoogleMap(){
  const s=document.createElement('script');s.async=true;s.defer=true;s.src='https://maps.googleapis.com/maps/api/js?key='+encodeURIComponent(googleKey)+'&loading=async&callback=initKojaGoogleMap';s.onerror=()=>mapStatus('Google Maps failed to load. Leaflet remains available.');document.head.appendChild(s);
 }
 demoMode();
+setTimeout(function(){try{map.invalidateSize(true);}catch(e){}},300);
+window.addEventListener("resize",function(){try{map.invalidateSize(true);}catch(e){}});
 </script>
 """, delivery_id=delivery_id, google_maps_key=google_maps_key)
 
