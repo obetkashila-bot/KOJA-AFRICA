@@ -1,38 +1,34 @@
-KOJA AFRICA — COMPLETE LATEST PACKAGE
-Date: 2026-09-03
+KOJA AFRICA — COMPLETE DEPLOY PACKAGE
+=====================================
 
-FIXES INCLUDED
-1. Driver registration endpoint restored:
-   /driver/register
-2. Driver dashboard /driver can now redirect to driver_register safely.
-3. Professional services registration and directory included.
-4. /services no longer references missing doctor_register or tutor_register endpoints.
-5. Universal professional profiles support many professions and admin approval.
-6. Sender/receiver live GPS screens and participant-location APIs included.
-7. Owner/admin live GPS and delivery tracking included.
-8. Research Engine, citations, AI integration, SEO/Search Console features from the latest package included.
+Package contents
+----------------
+app.py                       Main Flask application
+requirements.txt             Render/Python dependencies
+.python-version              Python runtime selection
+schema_public_media_news.sql Public news/media + professional public communication tables
+.env.example                 Environment variable template — contains NO real secrets
+README_DEPLOY.txt            Deployment instructions
 
-DEPLOY TO RENDER
-1. Replace the GitHub app.py with this package's app.py.
-2. Keep requirements.txt and Procfile.
-3. Commit and push to the GitHub repository connected to Render.
-4. Wait for Render to finish deploying.
-5. Test:
-   https://koja-africa.onrender.com/health
-   https://koja-africa.onrender.com/services
-   https://koja-africa.onrender.com/driver
-   https://koja-africa.onrender.com/driver/register
+Render settings
+---------------
+Runtime: Python 3
+Build Command: pip install -r requirements.txt
+Start Command: gunicorn app:app
 
-DATABASE
-Run KOJA_AFRICA_DATABASE.sql in Supabase SQL Editor if its latest tables/columns have not already been applied.
-Do not delete existing production data just to apply this package.
+IMPORTANT
+---------
+1. Do not put real API keys, Supabase service keys, SMTP passwords, or GSC JSON in GitHub.
+2. Add those values only in Render Environment Variables.
+3. Run schema_public_media_news.sql in Supabase SQL Editor before testing Public News/Media and Professional Public Communication.
+4. This package is designed for the existing KOJA-AFRICA Render service and existing Supabase project.
+5. Keep the existing Render service; do not create a second KOJA service just to deploy this package.
 
-NEW PROFESSIONAL SERVICES FEATURES (2026-09-03)
-- All-profession registration: Lawyer, Accountant, Engineer, Architect, ICT/Developer, Designer, Consultant, Counsellor, Nurse, Pharmacist, Dentist, Nutritionist, Physiotherapist, Real Estate, Insurance, Financial Adviser, Teacher/Tutor, Doctor, Electrician, Plumber, Mechanic, Builder, Carpenter, Welder, Tailor, Beauty, Photographer, Writer/Editor/Translator, Marketing, Business Consultant and Other.
-- Professional directory search by profession, name, qualification, service and service area.
-- Professional profiles are visible in the directory only after approval.
-- Each approved professional has buttons for Book, Ask Advice, Counselling, Chat, Voice Call and Video Call.
-- Professional chat uses the KOJA database and refreshes messages automatically.
-- Voice/video calls use browser WebRTC signaling. Users must allow microphone/camera permissions and both sides must keep the call page open.
-- Run the updated KOJA_AFRICA_DATABASE.sql in Supabase to create professional_messages and professional_calls.
-- If the database already has the tables, CREATE TABLE IF NOT EXISTS / CREATE INDEX IF NOT EXISTS will leave them in place.
+Main test URLs
+--------------
+https://koja-africa.onrender.com/
+https://koja-africa.onrender.com/health
+https://koja-africa.onrender.com/public
+https://koja-africa.onrender.com/professional-communication
+https://koja-africa.onrender.com/connect
+https://koja-africa.onrender.com/research

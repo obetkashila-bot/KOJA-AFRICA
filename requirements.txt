@@ -1,6 +1,7 @@
-Flask>=3.0,<4
+Flask>=3.1,<4
 requests>=2.31,<3
 python-dotenv>=1.0,<2
 Werkzeug>=3.0,<4
-google-auth>=2.0,<3
-gunicorn>=21,<24
+gunicorn>=22,<24
+google-auth>=2.30,<3
+reportlab>=4.0,<5
