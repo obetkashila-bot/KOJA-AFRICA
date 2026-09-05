@@ -3,3 +3,6 @@ requests>=2.31,<3
 Werkzeug>=3.0,<4
 gunicorn>=22,<24
 python-dotenv>=1.0,<2
+Flask>=3.0,<4
+Werkzeug>=3.0,<4
+google-auth>=2.30,<3
