@@ -92,7 +92,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "KOJA AFRICA V41-FINAL-REPAIR-2026.09.05"
+APP_VERSION = "2026.09.05-V39-COMMUNICATIONS"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -109,11 +109,6 @@ SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "true").strip().lower() not in ("0", "f
 SITE_URL = os.getenv("SITE_URL", "https://koja-africa.onrender.com").rstrip("/")
 GSC_SITE_URL = os.getenv("GSC_SITE_URL", SITE_URL)
 GSC_SERVICE_ACCOUNT_JSON = os.getenv("GSC_SERVICE_ACCOUNT_JSON", "").strip()
-
-# Dedicated administrator authentication. These values stay server-side.
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "").strip()
-ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "").strip().lower()
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 
 
 ALLOWED_EXTENSIONS = {
@@ -569,13 +564,14 @@ def login_required(fn):
 def admin_required(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        if session.get("admin_authenticated"):
-            return fn(*args, **kwargs)
         user = current_user()
-        if user and user.get("is_admin"):
-            return fn(*args, **kwargs)
-        flash("Administrator login required.", "warning")
-        return redirect(url_for("admin_login", next=request.path))
+        if not user:
+            flash("Administrator login required.", "warning")
+            return redirect(url_for("login"))
+        if not user.get("is_admin"):
+            flash("Administrator access required.", "danger")
+            return redirect(url_for("dashboard"))
+        return fn(*args, **kwargs)
     return wrapper
 
 def driver_required(fn):
@@ -988,88 +984,6 @@ def register():
 <p>Already registered? <a href="{{ url_for('login') }}">Login</a></p>
 </div>
 """)
-
-
-@app.route("/admin/login", methods=["GET", "POST"])
-def admin_login():
-    if request.method == "POST":
-        if _rate_limited("admin-login:" + (request.remote_addr or "unknown"), 8, 300):
-            return "Too many administrator login attempts. Please wait a few minutes and try again.", 429
-
-        identifier = clean(request.form.get("identifier")).lower()
-        password = request.form.get("password", "")
-
-        if not identifier or not password:
-            flash("Administrator username/email and password are required.", "danger")
-            return redirect(url_for("admin_login"))
-
-        authenticated = False
-        admin_id = None
-        admin_name = "KOJA Administrator"
-
-        # Preferred production credentials: Render environment variables.
-        env_identifier_ok = (
-            (ADMIN_USERNAME and identifier == ADMIN_USERNAME.lower()) or
-            (ADMIN_EMAIL and identifier == ADMIN_EMAIL)
-        )
-        if ADMIN_PASSWORD and env_identifier_ok and secrets.compare_digest(password, ADMIN_PASSWORD):
-            authenticated = True
-            admin_id = "env-admin"
-
-        # Database-backed administrator fallback/compatibility.
-        if not authenticated:
-            candidates = db_select(
-                "profiles",
-                filters={"is_admin": "eq.true"},
-                order="created_at.asc",
-                limit=100
-            ) or []
-            for candidate in candidates:
-                email = str(candidate.get("email") or "").lower()
-                username = str(candidate.get("admin_username") or "").lower()
-                if identifier not in (email, username):
-                    continue
-                if candidate.get("is_active") is False:
-                    continue
-                if password_matches(candidate, password):
-                    authenticated = True
-                    admin_id = str(candidate.get("id"))
-                    admin_name = candidate.get("full_name") or candidate.get("name") or email or admin_name
-                    break
-
-        if not authenticated:
-            flash("Invalid administrator credentials.", "danger")
-            return redirect(url_for("admin_login"))
-
-        session.clear()
-        session["admin_authenticated"] = True
-        session["admin_id"] = admin_id
-        session["admin_name"] = admin_name
-        session.permanent = True
-        return redirect(request.args.get("next") if request.args.get("next", "").startswith("/admin") else url_for("admin"))
-
-    return render_page("Admin Login", r"""
-<div class="card" style="max-width:500px;margin:auto">
-<h2>🛡️ KOJA AFRICA Administrator Login</h2>
-<p class="small">This is a separate administrator login. Enter your administrator username or email and password.</p>
-<form method="post">
-<label>Admin Username or Email</label>
-<input name="identifier" autocomplete="username" required>
-<label>Admin Password</label>
-<input name="password" type="password" autocomplete="current-password" required>
-<button class="btn success" type="submit">Administrator Login</button>
-</form>
-<p><a href="{{ url_for('login') }}">Return to normal user login</a></p>
-</div>
-""")
-
-@app.route("/admin/logout")
-def admin_logout():
-    session.pop("admin_authenticated", None)
-    session.pop("admin_id", None)
-    session.pop("admin_name", None)
-    flash("Administrator session ended.", "success")
-    return redirect(url_for("admin_login"))
 
 @app.route("/login", methods=["GET","POST"])
 def login():
@@ -1732,189 +1646,16 @@ def cv():
 </div>
 """)
 
-
-@app.route("/documents", methods=["GET", "POST"])
-def documents():
-    user = current_user()
-    if request.method == "POST":
-        if not user:
-            return redirect(url_for("login", next="/documents"))
-        upload = request.files.get("file")
-        title = clean(request.form.get("title"))
-        category = clean(request.form.get("category")) or "General"
-        description = clean(request.form.get("description"))
-        if not upload or not upload.filename:
-            flash("Please choose a document.", "danger")
-            return redirect(url_for("documents"))
-        ext = upload.filename.rsplit(".", 1)[-1].lower() if "." in upload.filename else ""
-        if ext not in ALLOWED_EXTENSIONS:
-            flash("File type is not allowed.", "danger")
-            return redirect(url_for("documents"))
-        safe_name = secure_filename(upload.filename)
-        if not safe_name:
-            flash("Invalid filename.", "danger")
-            return redirect(url_for("documents"))
-        raw = upload.read()
-        if len(raw) > MAX_UPLOAD_MB * 1024 * 1024:
-            flash(f"File exceeds {MAX_UPLOAD_MB} MB.", "danger")
-            return redirect(url_for("documents"))
-        path = f"documents/{uuid.uuid4()}-{safe_name}"
-        public_url = storage_upload(path, raw, upload.mimetype or "application/octet-stream")
-        if not public_url:
-            flash("Document upload failed. Check Supabase Storage configuration.", "danger")
-            return redirect(url_for("documents"))
-        row, error = db_insert("documents", {
-            "id": str(uuid.uuid4()), "user_id": user.get("id"),
-            "title": title or safe_name, "description": description,
-            "file_name": safe_name, "file_path": path, "file_url": public_url,
-            "category": category, "is_public": False, "is_active": True,
-            "approval_status": "pending", "created_at": utc_now(), "updated_at": utc_now()
-        })
-        if error:
-            storage_delete(path)
-            flash("Document record could not be saved: " + str(error)[:500], "danger")
-        else:
-            flash("Document uploaded and submitted for admin approval.", "success")
-        return redirect(url_for("documents"))
-
-    q = clean(request.args.get("q"))
-    category = clean(request.args.get("category"))
-    rows = db_select("documents", order="created_at.desc", limit=300) or []
-    public_rows = []
-    for row in rows:
-        if str(row.get("approval_status") or "pending").lower() != "approved":
-            continue
-        if row.get("is_active") is False or row.get("is_public") is False:
-            continue
-        if q and q.lower() not in str(row.get("title") or "").lower() and q.lower() not in str(row.get("description") or "").lower():
-            continue
-        if category and str(row.get("category") or "").lower() != category.lower():
-            continue
-        public_rows.append(row)
-    categories = sorted({str(r.get("category") or "General") for r in rows})
-    return render_page("Documents", r"""
-<div class="hero"><h2>📚 KOJA Documents</h2><p>Search approved public documents and submit new academic or research resources for review.</p></div>
-<div class="card">
-<form method="get" class="actions">
-<input name="q" value="{{ q }}" placeholder="Search documents..." style="flex:1">
-<select name="category"><option value="">All categories</option>{% for c in categories %}<option value="{{ c }}" {% if c==category %}selected{% endif %}>{{ c }}</option>{% endfor %}</select>
-<button class="btn" type="submit">Search</button>
-</form>
-</div>
-<div class="grid">
-{% for d in public_rows %}
-<div class="card"><h3>{{ d.get("title") }}</h3><p>{{ d.get("description") or "KOJA document" }}</p><p class="small">{{ d.get("category") or "General" }} · {{ d.get("file_name") or "" }}</p>
-{% if d.get("file_url") %}<a class="btn" href="{{ d.get("file_url") }}" target="_blank" rel="noopener">Open / Download</a>{% endif %}</div>
-{% else %}<div class="card"><p>No approved public documents matched your search.</p></div>{% endfor %}
-</div>
-{% if user %}
-<div class="card"><h3>Upload a Document</h3><form method="post" enctype="multipart/form-data">
-<label>Title</label><input name="title" required>
-<label>Category</label><input name="category" placeholder="Academic, Research, Notes, etc.">
-<label>Description</label><textarea name="description"></textarea>
-<label>File</label><input type="file" name="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp" required>
-<button class="btn success" type="submit">Submit Document</button>
-</form></div>
-{% endif %}
-""", public_rows=public_rows, q=q, category=category, categories=categories, user=user)
-
 # ============================================================
 # DOCTORS / TEACHERS
 # ============================================================
-
-
-@app.route("/doctor/register", methods=["GET", "POST"])
-@login_required
-def doctor_register():
-    user = current_user() or {}
-    existing = first_row("doctor_profiles", {"provider_id": user.get("id")})
-    if request.method == "POST":
-        payload = {
-            "id": (existing or {}).get("id") or str(uuid.uuid4()),
-            "provider_id": user.get("id"),
-            "full_name": clean(request.form.get("full_name")) or user.get("name"),
-            "specialty": clean(request.form.get("specialty")) or "General",
-            "phone": clean(request.form.get("phone")) or user.get("phone"),
-            "location": clean(request.form.get("location")),
-            "bio": clean(request.form.get("bio")),
-            "consultation_fee": clean(request.form.get("consultation_fee")) or None,
-            "hospital_clinic": clean(request.form.get("hospital_clinic")),
-            "qualification": clean(request.form.get("qualification")),
-            "license_number": clean(request.form.get("license_number")),
-            "currency": clean(request.form.get("currency")) or "ZMW",
-            "approval_status": "pending"
-        }
-        row, error = db_update("doctor_profiles", {"id": existing.get("id")}, payload) if existing else db_insert("doctor_profiles", payload)
-        if error:
-            flash("Doctor registration failed: " + str(error)[:700], "danger")
-        else:
-            flash("Doctor profile submitted for admin approval.", "success")
-        return redirect(url_for("doctors"))
-    return render_page("Doctor Registration", r"""
-<div class="card" style="max-width:700px;margin:auto"><h2>Register as Doctor</h2>
-<form method="post">
-<label>Full Name</label><input name="full_name" value="{{ user.name or '' }}" required>
-<label>Specialty</label><input name="specialty" required>
-<label>Qualification</label><input name="qualification">
-<label>Licence Number</label><input name="license_number">
-<label>Hospital / Clinic</label><input name="hospital_clinic">
-<label>Phone</label><input name="phone" value="{{ user.phone or '' }}">
-<label>Location</label><input name="location">
-<label>Consultation Fee</label><input name="consultation_fee" type="number" min="0" step="0.01">
-<label>Currency</label><select name="currency"><option>ZMW</option><option>USD</option></select>
-<label>Bio</label><textarea name="bio"></textarea>
-<button class="btn success" type="submit">Submit for Approval</button>
-</form></div>
-""", user=user)
-
-@app.route("/teacher/register", methods=["GET", "POST"])
-@login_required
-def teacher_register():
-    user = current_user() or {}
-    existing = first_row("teacher_profiles", {"provider_id": user.get("id")})
-    if request.method == "POST":
-        payload = {
-            "id": (existing or {}).get("id") or str(uuid.uuid4()),
-            "provider_id": user.get("id"),
-            "full_name": clean(request.form.get("full_name")) or user.get("name"),
-            "subject": clean(request.form.get("subject")),
-            "grade": clean(request.form.get("grade")),
-            "phone": clean(request.form.get("phone")) or user.get("phone"),
-            "location": clean(request.form.get("location")),
-            "bio": clean(request.form.get("bio")),
-            "hourly_rate": clean(request.form.get("hourly_rate")) or None,
-            "qualification": clean(request.form.get("qualification")),
-            "currency": clean(request.form.get("currency")) or "ZMW",
-            "approval_status": "pending"
-        }
-        row, error = db_update("teacher_profiles", {"id": existing.get("id")}, payload) if existing else db_insert("teacher_profiles", payload)
-        if error:
-            flash("Teacher registration failed: " + str(error)[:700], "danger")
-        else:
-            flash("Teacher/tutor profile submitted for admin approval.", "success")
-        return redirect(url_for("teachers"))
-    return render_page("Teacher Registration", r"""
-<div class="card" style="max-width:700px;margin:auto"><h2>Register as Teacher / Tutor</h2>
-<form method="post">
-<label>Full Name</label><input name="full_name" value="{{ user.name or '' }}" required>
-<label>Subject</label><input name="subject" required>
-<label>Grade / Level</label><input name="grade">
-<label>Qualification</label><input name="qualification">
-<label>Phone</label><input name="phone" value="{{ user.phone or '' }}">
-<label>Location</label><input name="location">
-<label>Hourly Rate</label><input name="hourly_rate" type="number" min="0" step="0.01">
-<label>Currency</label><select name="currency"><option>ZMW</option><option>USD</option></select>
-<label>Bio</label><textarea name="bio"></textarea>
-<button class="btn success" type="submit">Submit for Approval</button>
-</form></div>
-""", user=user)
 
 @app.route("/doctors")
 @login_required
 def doctors():
     doctors=db_select("doctor_profiles",order="created_at.desc",limit=100)
     return render_page("Doctors",r"""
-<div class="hero"><h2>Find a Doctor</h2><p>Choose a specific doctor and request an appointment.</p><p><a class="btn secondary" href="{{ url_for("doctor_register") }}">Register as Doctor</a></p></div>
+<div class="hero"><h2>Find a Doctor</h2><p>Choose a specific doctor and request an appointment.</p></div>
 <div class="grid">
 {% for d in doctors %}
 <div class="card">
@@ -1966,7 +1707,7 @@ def book_doctor(provider_id):
 def teachers():
     teachers=db_select("teacher_profiles",order="created_at.desc",limit=100)
     return render_page("Teachers",r"""
-<div class="hero"><h2>Find a Teacher / Tutor</h2><p>Choose a specific teacher for tutoring.</p><p><a class="btn secondary" href="{{ url_for("teacher_register") }}">Register as Teacher / Tutor</a></p></div>
+<div class="hero"><h2>Find a Teacher / Tutor</h2><p>Choose a specific teacher for tutoring.</p></div>
 <div class="grid">
 {% for t in teachers %}
 <div class="card">
@@ -3708,7 +3449,11 @@ def provider_location(provider_id):
 # GOOGLE SEARCH & DISTRIBUTION
 # ============================================================
 
-PUBLIC_INDEX_ROUTES = ["/", "/research", "/research/notes", "/documents", "/doctors", "/teachers", "/professionals", "/marketplace", "/public"]
+PUBLIC_INDEX_ROUTES = [
+    "/",
+    "/research",
+    "/research/notes",
+]
 
 GSC_SCOPE = "https://www.googleapis.com/auth/webmasters.readonly"
 GSC_WRITE_SCOPE = "https://www.googleapis.com/auth/webmasters"
@@ -4011,7 +3756,7 @@ def admin():
 <div class="grid">{% for name,count in counts.items() %}<div class="stat"><div class="big">{{ count }}</div>{{ name }}</div>{% endfor %}</div>
 <div class="card"><h3>Management</h3>
 <div class="actions">
-<a class="btn secondary" href="{{ url_for('admin_logout') }}">Admin Logout</a><a class="btn" href="{{ url_for('admin_users') }}">Users</a>
+<a class="btn" href="{{ url_for('admin_users') }}">Users</a>
 <a class="btn success" href="{{ url_for('admin_assignments') }}">📚 Assignments & Answers</a>
 <a class="btn success" href="{{ url_for('admin_approvals') }}">✅ Approval Centre</a>
 <a class="btn" href="{{ url_for('admin_email_settings') }}">📧 Email Management</a>
@@ -4680,6 +4425,7 @@ create table if not exists public.koja_calls (
 );
 create index if not exists koja_calls_callee_idx on public.koja_calls(callee_id,status,created_at desc);
 create index if not exists koja_calls_caller_idx on public.koja_calls(caller_id,status,created_at desc);
+create table if not exists public.koja_group_call_participants (call_id uuid not null references public.koja_calls(id) on delete cascade, user_id uuid not null, status text not null default 'invited', joined_at timestamptz, primary key(call_id,user_id));
 create table if not exists public.koja_presence (
  user_id uuid primary key, is_online boolean default false, last_seen_at timestamptz default now(), updated_at timestamptz default now()
 );
@@ -4723,7 +4469,7 @@ def connect():
         if not c: continue
         others=db_select('koja_conversation_members',filters={'conversation_id':c['id']},limit=10); other=next((x for x in others if str(x.get('user_id'))!=str(uid)),None)
         c['_other_name']=_profile_name(other['user_id']) if other else (c.get('name') or 'Group'); last=db_select('koja_messages',filters={'conversation_id':c['id']},order='created_at.desc',limit=1); c['_last']=(last[0].get('body') or last[0].get('message_type','')) if last else 'No messages yet'; conversations.append(c)
-    return render_page('KOJA Connect',r'''<div class="hero"><h2>💬 KOJA Connect</h2><p>Chat, voice messages, voice calls, video calls, photos, files, groups and status updates with other KOJA users.</p></div><div class="grid"><div class="card"><h3>👥 Find People</h3><p>Search KOJA users and start a conversation.</p><a class="btn" href="{{ url_for('connect_people') }}">Find People</a></div><div class="card"><h3>🟢 Status</h3><p>Share a 24-hour status.</p><a class="btn" href="{{ url_for('connect_status') }}">My Status</a></div><div class="card"><h3>📞 Calls</h3><p>Voice and video calls separate from Professional Services.</p><a class="btn" href="{{ url_for('connect_calls') }}">Call History</a></div></div><div class="card"><h3>Recent Chats</h3>{% for c in conversations %}<a class="card" style="display:block;text-decoration:none;color:inherit" href="{{ url_for('connect_chat',conversation_id=c.id) }}"><strong>{{ c._other_name }}</strong><div class="small">{{ c._last }}</div></a>{% else %}<p>No chats yet. Find a KOJA user to start.</p>{% endfor %}</div>''',conversations=conversations)
+    return render_page('KOJA Connect',r'''<div class="hero"><h2>💬 KOJA Connect</h2><p>Chat, voice messages, voice calls, video calls, photos, files, groups and status updates with other KOJA users.</p></div><div class="grid"><div class="card"><h3>👥 Find People</h3><p>Search KOJA users and start a conversation.</p><a class="btn" href="{{ url_for('connect_people') }}">Find People</a></div><div class="card"><h3>🟢 Status</h3><p>Share a 24-hour status.</p><a class="btn" href="{{ url_for('connect_status') }}">My Status</a></div><div class="card"><h3>📞 Calls</h3><p>Voice and video calls separate from Professional Services.</p><a class="btn" href="{{ url_for('connect_calls') }}">Call History</a></div></div><div class="card"><div class="actions"><h3 style="margin-right:auto">Recent Chats</h3><a class="btn" href="{{ url_for('connect_group_new') }}">➕ New Group</a></div>{% for c in conversations %}<a class="card" style="display:block;text-decoration:none;color:inherit" href="{{ url_for('connect_chat',conversation_id=c.id) }}"><strong>{{ c._other_name }}</strong><div class="small">{{ c._last }}</div></a>{% else %}<p>No chats yet. Find a KOJA user to start.</p>{% endfor %}</div>''',conversations=conversations)
 
 @app.route('/connect/people',methods=['GET','POST'])
 @login_required
@@ -4765,7 +4511,7 @@ def connect_chat(conversation_id):
     uid=current_user()['id'];
     if not _conversation_member(conversation_id,uid): abort(403)
     members=db_select('koja_conversation_members',filters={'conversation_id':conversation_id},limit=100); other=next((m for m in members if str(m.get('user_id'))!=str(uid)),None); other_id=other.get('user_id') if other else None; c=first_row('koja_conversations',{'id':conversation_id}) or {}
-    return render_page('KOJA Chat',r'''<div class="card"><a href="{{ url_for('connect') }}">← Connect</a><h2>💬 {{ name }}</h2></div><div class="card" id="messages" style="min-height:300px;max-height:55vh;overflow:auto"></div><div class="card"><form id="sendForm"><input id="text" autocomplete="off" placeholder="Write a message…"><button>Send</button></form><div class="grid"><button type="button" id="voiceNote">🎙️ Voice message</button><a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='voice') }}">📞 Voice Call</a><a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='video') }}">🎥 Video Call</a></div></div><script>const cid={{ conversation_id|tojson }};const box=document.getElementById('messages');const text=document.getElementById('text');async function load(){let r=await fetch('/api/connect/messages/'+cid);if(!r.ok)return;let d=await r.json();box.innerHTML=d.messages.map(m=>'<div class="card"><strong>'+m.sender_name+'</strong><div>'+((m.message_type==='text')?(m.body||''):'<a target="_blank" href="'+m.file_url+'">'+m.message_type+'</a>')+'</div><div class="small">'+(m.created_at||'')+'</div></div>').join('');box.scrollTop=box.scrollHeight;}document.getElementById('sendForm').onsubmit=async e=>{e.preventDefault();let v=text.value.trim();if(!v)return;let r=await fetch('/api/connect/messages/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:v})});if(r.ok){text.value='';load();}};load();setInterval(load,2500);let rec,parts=[];document.getElementById('voiceNote').onclick=async()=>{try{let st=await navigator.mediaDevices.getUserMedia({audio:true});rec=new MediaRecorder(st);parts=[];rec.ondataavailable=e=>parts.push(e.data);rec.onstop=async()=>{let b=new Blob(parts,{type:'audio/webm'});let fd=new FormData();fd.append('file',b,'voice.webm');await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});st.getTracks().forEach(t=>t.stop());load();};rec.start();setTimeout(()=>rec&&rec.state==='recording'&&rec.stop(),60000);}catch(e){alert('Microphone permission is required.');}};</script>''',conversation_id=conversation_id,name=_profile_name(other_id) if other_id else c.get('name','KOJA Chat'))
+    return render_page('KOJA Chat',r'''<div class="card"><a href="{{ url_for('connect') }}">← Connect</a><h2>💬 {{ name }}</h2><p class="small">Sent messages appear on the right. Received messages appear on the left.</p></div><div class="card" id="messages" style="min-height:300px;max-height:55vh;overflow:auto"></div><div class="card"><form id="sendForm"><input id="text" autocomplete="off" placeholder="Write a message…"><button>Send</button></form><form id="fileForm" enctype="multipart/form-data" style="margin-top:8px"><input id="file" type="file" accept="image/*,.pdf,.doc,.docx,.txt,.webp,.audio/*"><button type="submit">📎 Photo / File</button></form><div class="grid"><button type="button" id="voiceNote">🎙️ Voice message</button><a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='voice') }}">📞 Voice Call</a><a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='video') }}">🎥 Video Call</a>{% if c.get('conversation_type')=='group' %}<a class="btn" href="{{ url_for('connect_group_call',conversation_id=conversation_id,mode='video') }}">👥 Group Video</a><a class="btn secondary" href="{{ url_for('connect_group_call',conversation_id=conversation_id,mode='voice') }}">👥 Group Voice</a>{% endif %}</div></div><script>const cid={{ conversation_id|tojson }},me={{ user.id|tojson }};const box=document.getElementById('messages'),text=document.getElementById('text');function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}async function load(){let r=await fetch('/api/connect/messages/'+cid);if(!r.ok)return;let d=await r.json();box.innerHTML=d.messages.map(m=>{let mine=String(m.sender_id)===String(me);let body=m.message_type==='text'?'<div>'+esc(m.body)+'</div>':(m.file_url?'<div><a target="_blank" rel="noopener" href="'+esc(m.file_url)+'">'+esc(m.body||m.message_type)+'</a></div>':'<div>'+esc(m.body)+'</div>');return '<div style="display:flex;justify-content:'+(mine?'flex-end':'flex-start')+';margin:7px 0"><div style="max-width:78%;padding:10px 13px;border-radius:16px;background:var(--card);border:1px solid var(--border);text-align:left"><strong>'+esc(mine?'You':m.sender_name)+'</strong>'+body+'<div class="small">'+esc(m.created_at||'')+'</div></div></div>'}).join('');box.scrollTop=box.scrollHeight;}document.getElementById('sendForm').onsubmit=async e=>{e.preventDefault();let v=text.value.trim();if(!v)return;let r=await fetch('/api/connect/messages/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:v})});if(r.ok){text.value='';load();}};document.getElementById('fileForm').onsubmit=async e=>{e.preventDefault();let f=document.getElementById('file').files[0];if(!f)return;let fd=new FormData();fd.append('file',f);let r=await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});if(r.ok){document.getElementById('file').value='';load();}else alert('File could not be sent.');};load();setInterval(load,2000);let rec,parts=[];document.getElementById('voiceNote').onclick=async()=>{try{let st=await navigator.mediaDevices.getUserMedia({audio:true});rec=new MediaRecorder(st);parts=[];rec.ondataavailable=e=>parts.push(e.data);rec.onstop=async()=>{let b=new Blob(parts,{type:'audio/webm'}),fd=new FormData();fd.append('file',b,'voice.webm');await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});st.getTracks().forEach(t=>t.stop());load();};rec.start();setTimeout(()=>rec&&rec.state==='recording'&&rec.stop(),60000);}catch(e){alert('Microphone permission is required.');}};</script>''',conversation_id=conversation_id,name=_profile_name(other_id) if other_id else c.get('name','KOJA Chat'))
 
 @app.route('/api/connect/messages/<conversation_id>',methods=['GET','POST'])
 @login_required
@@ -4788,14 +4534,59 @@ def connect_upload(conversation_id):
     uid=current_user()['id']
     if not _conversation_member(conversation_id,uid):return jsonify(error='Forbidden'),403
     f=request.files.get('file')
-    if not f:return jsonify(error='No file'),400
-    if not f.filename.lower().endswith('.webm'):return jsonify(error='Only webm voice messages are supported here.'),400
+    if not f or not f.filename:return jsonify(error='No file'),400
     data=f.read()
-    if len(data)>5*1024*1024:return jsonify(error='Voice message too large'),413
-    path=f'connect/audio/{uuid.uuid4().hex}.webm'; r=requests.post(sb_storage_url(path),headers=sb_headers({'Content-Type':'audio/webm','x-upsert':'true'}),data=data,timeout=60)
+    if len(data)>15*1024*1024:return jsonify(error='File too large (15 MB maximum)'),413
+    name=secure_filename(f.filename) or ('upload-'+uuid.uuid4().hex); ext=os.path.splitext(name)[1].lower()
+    allowed={'.webm','.wav','.mp3','.m4a','.ogg','.jpg','.jpeg','.png','.webp','.pdf','.doc','.docx','.txt'}
+    if ext not in allowed:return jsonify(error='Unsupported file type'),400
+    mime=f.mimetype or 'application/octet-stream'; path=f'connect/files/{uuid.uuid4().hex}{ext}'
+    r=requests.post(sb_storage_url(path),headers=sb_headers({'Content-Type':mime,'x-upsert':'true'}),data=data,timeout=60)
     if not r.ok:return jsonify(error=r.text[:500]),500
-    row,err=db_insert('koja_messages',{'id':str(uuid.uuid4()),'conversation_id':conversation_id,'sender_id':uid,'message_type':'audio','file_url':sb_storage_url(path),'body':'Voice message','created_at':utc_now()})
+    mt='audio' if mime.startswith('audio/') else ('image' if mime.startswith('image/') else 'file')
+    row,err=db_insert('koja_messages',{'id':str(uuid.uuid4()),'conversation_id':conversation_id,'sender_id':uid,'message_type':mt,'file_url':sb_storage_url(path),'body':name if mt!='audio' else 'Voice message','created_at':utc_now()})
     return jsonify(message=row) if not err else (jsonify(error=err),500)
+
+@app.route('/connect/group/new',methods=['GET','POST'])
+@login_required
+def connect_group_new():
+    uid=current_user()['id']
+    if request.method=='POST':
+        name=clean(request.form.get('name')) or 'KOJA Group'; ids=list(dict.fromkeys([x for x in request.form.getlist('user_id') if x and x!=uid]))
+        if not ids:return redirect(url_for('connect_group_new'))
+        c,err=db_insert('koja_conversations',{'id':str(uuid.uuid4()),'conversation_type':'group','created_by':uid,'name':name,'created_at':utc_now(),'updated_at':utc_now()})
+        if err:return 'Could not create group: '+str(err),500
+        for member in [uid]+ids:
+            if find_user_by_id(member):db_insert('koja_conversation_members',{'conversation_id':c['id'],'user_id':member,'role':'admin' if member==uid else 'member','joined_at':utc_now()})
+        return redirect(url_for('connect_chat',conversation_id=c['id']))
+    q=clean(request.args.get('q')); people=[]
+    if q:
+        for col in ('email','full_name','name'):
+            for x in db_select('profiles',filters={col:f'ilike.*{q}*'},limit=30):
+                if str(x.get('id'))!=str(uid) and not any(str(p.get('id'))==str(x.get('id')) for p in people):people.append(x)
+    return render_page('New KOJA Group',r'''<div class="card"><h2>👥 Create KOJA Group</h2><form method="get"><input name="q" value="{{ q }}" placeholder="Search people"><button>Search</button></form><form method="post"><input name="name" placeholder="Group name" required>{% for p in people %}<label style="display:block;margin:10px 0"><input type="checkbox" name="user_id" value="{{ p.id }}"> {{ p.get('full_name') or p.get('name') or p.get('email') }}</label>{% endfor %}<button class="btn">Create Group</button></form></div>''',people=people,q=q)
+
+@app.route('/connect/group-call/<conversation_id>')
+@login_required
+def connect_group_call(conversation_id):
+    uid=current_user()['id']; mode=clean(request.args.get('mode','video'))
+    if mode not in ('voice','video') or not _conversation_member(conversation_id,uid):abort(403)
+    return render_page('KOJA Group Call',r'''<div class="card"><h2>👥 KOJA Group {{ mode|title }} Call</h2><p>Start a group call invitation for all members.</p><div id="state">Ready</div><button id="start" class="btn">Start Group Call</button><button id="hang" class="btn danger">End</button></div><script>const cid={{ conversation_id|tojson }},mode={{ mode|tojson }};let calls=[];start.onclick=async()=>{let r=await fetch('/api/connect/group-call/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,mode})}),d=await r.json();if(!r.ok){state.textContent=d.error||'Could not start';return}calls=d.calls||[];state.textContent='Invited '+calls.length+' participant(s).';};hang.onclick=async()=>{for(const c of calls)await fetch('/api/connect/call/end/'+c.id,{method:'POST'});state.textContent='Group call ended';};</script>''',conversation_id=conversation_id,mode=mode)
+
+@app.route('/api/connect/group-call/create',methods=['POST'])
+@login_required
+def connect_group_call_create():
+    uid=current_user()['id']; d=request.get_json(silent=True) or {}; cid=clean(d.get('conversation_id')); mode=d.get('mode','video')
+    if mode not in ('voice','video') or not _conversation_member(cid,uid):return jsonify(error='Forbidden'),403
+    members=db_select('koja_conversation_members',filters={'conversation_id':cid},limit=50); calls=[]
+    for m in members:
+        callee=m.get('user_id')
+        if not callee or str(callee)==str(uid):continue
+        row,err=db_insert('koja_calls',{'id':str(uuid.uuid4()),'conversation_id':cid,'caller_id':uid,'callee_id':callee,'mode':mode,'status':'ringing','created_at':utc_now()})
+        if not err and row:
+            db_insert('koja_group_call_participants',{'call_id':row['id'],'user_id':callee,'status':'invited'})
+            db_insert('koja_notifications',{'user_id':callee,'notification_type':'group_call','title':f'Incoming group {mode} call','body':f'{_profile_name(uid)} started a group call.','related_id':row['id']});calls.append(row)
+    return jsonify(calls=calls)
 
 @app.route('/connect/status',methods=['GET','POST'])
 @login_required
@@ -4806,7 +4597,19 @@ def connect_status():
         if body:db_insert('koja_statuses',{'id':str(uuid.uuid4()),'user_id':uid,'text_content':body,'media_type':'text','visibility':'contacts','expires_at':(datetime.now(timezone.utc)+timedelta(hours=24)).isoformat(),'created_at':utc_now()});flash('Status posted for 24 hours.','success')
         return redirect(url_for('connect_status'))
     rows=db_select('koja_statuses',filters={'user_id':uid},order='created_at.desc',limit=30)
-    return render_page('KOJA Status',r'''<div class="card"><h2>🟢 My Status</h2><form method="post"><textarea name="text" maxlength="1000" placeholder="Share an update…"></textarea><button>Post Status</button></form></div>{% for s in rows %}<div class="card"><strong>{{ s.text_content }}</strong><div class="small">Expires: {{ s.expires_at }}</div></div>{% endfor %}''',rows=rows)
+    return render_page('KOJA Status',r'''<div class="card"><h2>🟢 My Status</h2><form method="post"><textarea name="text" maxlength="1000" placeholder="Share an update…"></textarea><button>Post Status</button></form><form method="post" enctype="multipart/form-data" action="{{ url_for('connect_status_media') }}"><input type="file" name="file" accept="image/*,video/*"><button>📷 Photo / Video Status</button></form></div>{% for s in rows %}<div class="card"><strong>{{ s.text_content }}</strong><div class="small">Expires: {{ s.expires_at }}</div></div>{% endfor %}''',rows=rows)
+
+@app.route('/connect/status/media',methods=['POST'])
+@login_required
+def connect_status_media():
+    uid=current_user()['id']; f=request.files.get('file')
+    if not f or not f.filename:return redirect(url_for('connect_status'))
+    data=f.read(); name=secure_filename(f.filename) or 'status'; ext=os.path.splitext(name)[1].lower()
+    if len(data)>15*1024*1024 or ext not in {'.jpg','.jpeg','.png','.webp','.mp4','.webm'}:return redirect(url_for('connect_status'))
+    mime=f.mimetype or 'application/octet-stream'; path=f'connect/status/{uuid.uuid4().hex}{ext}'
+    r=requests.post(sb_storage_url(path),headers=sb_headers({'Content-Type':mime,'x-upsert':'true'}),data=data,timeout=60)
+    if r.ok:db_insert('koja_statuses',{'id':str(uuid.uuid4()),'user_id':uid,'text_content':'','media_url':sb_storage_url(path),'media_type':'video' if mime.startswith('video/') else 'image','visibility':'contacts','expires_at':(datetime.now(timezone.utc)+timedelta(hours=24)).isoformat(),'created_at':utc_now()})
+    return redirect(url_for('connect_status'))
 
 @app.route('/connect/answer/<call_id>')
 @login_required
