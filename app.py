@@ -64,7 +64,8 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.05-PRO-PUBLIC-MEDIA-REAL-GPS-V2-MENU"
+APP_VERSION = "2026.09.05-PRO-PUBLIC-MEDIA-REAL-GPS-V2-MULTI-MAP-FIXED"
+APP_BUILD_MARKER = "KOJA-GPS-V2-MULTI-MAP-FIXED-2026-09-05-1724"
 # REAL GPS V2 authoritative merge: 2026.09.01-LIVE-GPS-V2
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
@@ -2160,7 +2161,7 @@ demoMode();
 setTimeout(function(){try{map.invalidateSize(true);}catch(e){}},300);
 window.addEventListener("resize",function(){try{map.invalidateSize(true);}catch(e){}});
 </script>
-""", delivery_id=delivery_id, google_maps_key=google_maps_key)
+""", delivery_id=delivery_id, google_maps_key=google_maps_key, app_build_marker=APP_BUILD_MARKER)
 
 @app.route("/api/driver/location", methods=["POST"])
 @driver_required
