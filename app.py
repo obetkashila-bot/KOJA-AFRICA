@@ -674,7 +674,7 @@ BASE_HTML = r"""
 <script>
 (function(){try{var t={{ theme|tojson }};var saved=localStorage.getItem("koja_theme");if(saved==="light"||saved==="dark"||saved==="system")t=saved;document.documentElement.dataset.kojaTheme=t||"system";}catch(e){}})();
 </script>
-<style>
+<style>.icon-action{display:inline-flex;align-items:center;justify-content:center;gap:5px;min-width:54px;height:42px;padding:0 10px;border:0;background:transparent;color:inherit;border-radius:10px;font-size:20px;cursor:pointer;text-decoration:none}.icon-action span{font-size:14px;font-weight:600}.icon-action:hover{background:var(--border)}.icon-action:active{transform:scale(.96)}
 *{box-sizing:border-box}
 :root{color-scheme:light;--bg:#f5f7fb;--surface:#fff;--text:#172033;--muted:#667085;--border:#e4e7ec;--nav:#10233f;--accent:#176b87;--focus:#f2b84b}
 html[data-koja-theme="dark"]{color-scheme:dark;--bg:#0f1720;--surface:#17212b;--text:#edf2f7;--muted:#aab7c4;--border:#30404f;--nav:#091522;--accent:#2aa7b8;--focus:#f2c15b}
@@ -1831,55 +1831,32 @@ def public_feed():
 
     return render_page('KOJA Public — News, Videos & Media', r'''
 <style>
-.public-feed-tabs{display:flex;gap:8px;overflow-x:auto;padding:4px 0 10px;scrollbar-width:none}
-.public-feed-tabs::-webkit-scrollbar{display:none}
-.public-feed-tabs a{white-space:nowrap}
-.public-post{overflow:hidden}
-.public-post-media{display:block;width:100%;max-height:680px;border-radius:14px;margin-top:10px;background:#000}
-.public-post-video{aspect-ratio:9/16;object-fit:contain}
-.public-post-image{max-height:680px;object-fit:contain;background:var(--bg)}
-.public-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
-.public-actions form{display:inline}
-.public-share{cursor:pointer}
-@media(max-width:600px){.public-post-video{max-height:76vh}.public-post-image{max-height:70vh}}
+.koja-public-shell{max-width:980px;margin:auto}
+.koja-public-head{padding:24px;border-radius:24px;background:linear-gradient(135deg,var(--card),var(--bg));border:1px solid var(--border);margin-bottom:14px}
+.koja-public-head h1{margin:0 0 7px;font-size:30px}.koja-public-head p{margin:0;color:var(--muted)}
+.koja-sections{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px}
+.koja-section{display:block;text-decoration:none;padding:17px 12px;border:1px solid var(--border);border-radius:18px;background:var(--card);text-align:center;color:inherit}
+.koja-section.active{border:2px solid currentColor}.koja-section .bigicon{font-size:28px;display:block;margin-bottom:6px}.koja-section strong{display:block}.koja-section span{font-size:12px;color:var(--muted)}
+.koja-content{border:1px solid var(--border);border-radius:22px;background:var(--card);overflow:hidden;margin-bottom:14px}
+.koja-content-head{padding:18px 18px 10px}.koja-content-head h2{margin:0}.koja-content-head p{margin:5px 0 0;color:var(--muted);font-size:13px}
+.koja-post{padding:18px;border-top:1px solid var(--border)}
+.koja-post:first-of-type{border-top:0}.koja-meta{font-size:12px;color:var(--muted);margin-top:3px}.koja-title{font-size:21px;margin:12px 0 7px}.koja-body{white-space:pre-wrap;line-height:1.7;margin:0 0 12px}
+.koja-photo{width:100%;max-height:620px;object-fit:contain;background:#111;border-radius:16px;display:block}.koja-video{width:100%;max-height:680px;background:#080808;border-radius:16px;display:block}
+.koja-actions{display:flex;align-items:center;gap:6px;margin-top:12px}.koja-action{border:1px solid var(--border);background:transparent;border-radius:14px;min-width:52px;height:42px;padding:0 12px;font-size:18px;cursor:pointer}.koja-action span{font-size:13px;margin-left:4px}.koja-action:hover{transform:translateY(-1px)}
+.koja-compose{padding:16px;border:1px dashed var(--border);border-radius:18px;margin:14px}.koja-compose h3{margin-top:0}
+@media(max-width:650px){.koja-sections{gap:7px}.koja-section{padding:14px 5px}.koja-section .bigicon{font-size:24px}.koja-section span{display:none}.koja-public-head{padding:20px}.koja-public-head h1{font-size:26px}.koja-post{padding:14px}.koja-photo{max-height:75vh}.koja-video{max-height:75vh}}
 </style>
-<div class="hero"><h1>🌍 KOJA Public</h1><p>News, videos, photos and community updates — a public social feed for KOJA AFRICA.</p></div>
-<div class="card public-feed-tabs">
-<a class="btn {{ '' if feed_type else 'secondary' }}" href="{{ url_for('public_feed') }}">🏠 All</a>
-<a class="btn {{ 'secondary' if feed_type!='news' else '' }}" href="{{ url_for('public_feed', type='news') }}">📰 News</a>
-<a class="btn {{ 'secondary' if feed_type!='video' else '' }}" href="{{ url_for('public_feed', type='video') }}">🎥 Videos</a>
-<a class="btn {{ 'secondary' if feed_type!='media' else '' }}" href="{{ url_for('public_feed', type='media') }}">🖼️ Media</a>
-</div>
-{% if user %}<div class="card"><h3>📝 Share with everyone</h3>
-<form method="post" action="{{ url_for('public_feed_create') }}" enctype="multipart/form-data">
-<div class="grid"><div><label>Type</label><select name="post_type"><option value="update">Community Update</option><option value="news">News</option><option value="announcement">Announcement</option><option value="event">Event</option></select></div><div><label>Title</label><input name="title" maxlength="180" placeholder="Headline or title"></div></div>
-<label>Message</label><textarea name="body" maxlength="5000" placeholder="Write a public message, news story or video caption..." required></textarea>
-<label>Photo or Video</label><input type="file" name="media" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm">
-<p class="small">Images: JPG/PNG/WebP. Videos: MP4/WebM. Keep videos reasonably sized for mobile upload.</p>
-<button class="btn" type="submit">🌐 Publish Publicly</button></form>
-<p class="small">Your post is public and may be visible to people who are not logged in.</p></div>
-{% else %}<div class="card"><strong>Want to publish?</strong> <a class="btn" href="{{ url_for('login', next='/public') }}">Login</a> <a class="btn secondary" href="{{ url_for('register', next='/public') }}">Create account</a></div>{% endif %}
-<div class="card"><h2>{% if feed_type=='news' %}📰 News{% elif feed_type=='video' %}🎥 Videos{% elif feed_type=='media' %}🖼️ Media{% else %}📰 News, Videos & Updates{% endif %}</h2><p class="small">Public feed · newest first</p></div>
-{% for p in posts %}<article class="card public-post" id="post-{{ p.id }}">
-<strong>👤 {{ p.author_name }}</strong><div class="small">{{ p.post_type|title }} · {{ p.created_at }}</div>
-{% if p.title %}<h2 style="margin-top:10px">{{ p.title }}</h2>{% endif %}<p style="white-space:pre-wrap;line-height:1.7">{{ p.body }}</p>
-{% if p.media_url and p.media_type=='video' %}<video class="public-post-media public-post-video" controls playsinline preload="metadata"><source src="{{ p.media_url }}">Your browser does not support this video.</video>{% elif p.media_url and p.media_type=='image' %}<img class="public-post-media public-post-image" src="{{ p.media_url }}" alt="KOJA Public media" loading="lazy">{% endif %}
-<div class="public-actions">{% if user %}<form method="post" action="{{ url_for('public_toggle_like', post_id=p.id) }}"><button class="btn secondary" type="submit">{{ '❤️ Liked' if p.liked else '🤍 Like' }} · {{ p.like_count }}</button></form>{% else %}<a class="btn secondary" href="{{ url_for('login', next='/public') }}">🤍 Like · {{ p.like_count }}</a>{% endif %}<span class="btn secondary" style="cursor:default">💬 {{ p.comments|length }} Comments</span><button class="btn secondary public-share" type="button" data-share-url="{{ request.url_root.rstrip('/') }}{{ url_for('public_feed') }}#post-{{ p.id }}" data-share-title="{{ p.title or 'KOJA AFRICA Public' }}" data-share-text="{{ p.body|truncate(160, True) }}">↗️ Share</button></div>
-{% for c in p.comments %}<div style="padding:9px 0;border-top:1px solid var(--border);margin-top:9px"><strong>{{ c.author_name }}</strong><div>{{ c.body }}</div><div class="small">{{ c.created_at }}</div></div>{% endfor %}
-{% if user %}<form method="post" action="{{ url_for('public_comment', post_id=p.id) }}"><input name="body" maxlength="1000" placeholder="Write a comment..." required><button class="btn" type="submit">Comment</button></form>{% else %}<p class="small"><a href="{{ url_for('login', next='/public') }}">Login</a> to comment.</p>{% endif %}
-</article>{% else %}<div class="card"><h3>No public content yet.</h3><p>Be the first KOJA user to share news, a photo, video or community update.</p></div>{% endfor %}
-<script>
-document.querySelectorAll('.public-share').forEach(function(btn){
-  btn.addEventListener('click', async function(){
-    const url=btn.dataset.shareUrl, title=btn.dataset.shareTitle || 'KOJA AFRICA Public', text=btn.dataset.shareText || '';
-    try {
-      if(navigator.share){ await navigator.share({title:title,text:text,url:url}); }
-      else if(navigator.clipboard){ await navigator.clipboard.writeText(url); alert('Public post link copied.'); }
-      else { window.prompt('Copy this public post link:',url); }
-    } catch(e) {}
-  });
-});
-</script>
+<div class="koja-public-shell">
+<section class="koja-public-head"><h1>KOJA Public</h1><p>A dedicated space for African news, video stories and photography.</p></section>
+<nav class="koja-sections" aria-label="KOJA Public sections">
+<a class="koja-section {{ 'active' if feed_type=='news' else '' }}" href="{{ url_for('public_feed',type='news') }}"><span class="bigicon">📰</span><strong>News</strong><span>Stories & updates</span></a>
+<a class="koja-section {{ 'active' if feed_type=='video' else '' }}" href="{{ url_for('public_feed',type='video') }}"><span class="bigicon">▶</span><strong>Videos</strong><span>Watch stories</span></a>
+<a class="koja-section {{ 'active' if feed_type=='media' else '' }}" href="{{ url_for('public_feed',type='media') }}"><span class="bigicon">▣</span><strong>Photos</strong><span>Visual gallery</span></a>
+</nav>
+{% if user %}<div class="koja-compose"><h3>Publish to KOJA Public</h3><form method="post" action="{{ url_for('public_feed_create') }}" enctype="multipart/form-data"><div class="grid"><div><label>Section</label><select name="post_type"><option value="news">News</option><option value="update">Update</option><option value="announcement">Announcement</option><option value="event">Event</option></select></div><div><label>Title</label><input name="title" maxlength="180" placeholder="Headline or title"></div></div><label>Story / caption</label><textarea name="body" maxlength="5000" placeholder="Write your story or caption..." required></textarea><label>Photo or video</label><input type="file" name="media" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm"><button class="btn" type="submit">Publish</button></form></div>{% endif %}
+<section class="koja-content"><div class="koja-content-head"><h2>{% if feed_type=='news' %}News{% elif feed_type=='video' %}Video Stories{% elif feed_type=='media' %}Photo Gallery{% else %}Latest Public Content{% endif %}</h2><p>Latest first · KOJA AFRICA</p></div>
+{% for p in posts %}<article class="koja-post" id="post-{{ p.id }}"><strong>{{ p.author_name }}</strong><div class="koja-meta">{{ p.post_type|title }} · {{ p.created_at }}</div>{% if p.title %}<h3 class="koja-title">{{ p.title }}</h3>{% endif %}<p class="koja-body">{{ p.body }}</p>{% if p.media_url and p.media_type=='video' %}<video class="koja-video" controls playsinline preload="metadata"><source src="{{ p.media_url }}">Your browser does not support video.</video>{% elif p.media_url and p.media_type=='image' %}<img class="koja-photo" src="{{ p.media_url }}" alt="KOJA Public photo" loading="lazy">{% endif %}<div class="koja-actions">{% if user %}<form method="post" action="{{ url_for('public_toggle_like',post_id=p.id) }}"><button class="koja-action" type="submit" aria-label="Like" title="Like">{{ '♥' if p.liked else '♡' }}<span>{{ p.like_count }}</span></button></form>{% else %}<a class="koja-action" href="{{ url_for('login',next='/public') }}" aria-label="Like" title="Like">♡<span>{{ p.like_count }}</span></a>{% endif %}<button class="koja-action" type="button" aria-label="Comments" title="Comments" onclick="document.getElementById('comment-{{ p.id }}')?.focus()">◌<span>{{ p.comments|length }}</span></button><button class="koja-action public-share" type="button" aria-label="Share" title="Share" data-share-url="{{ request.url_root.rstrip('/') }}{{ url_for('public_feed') }}#post-{{ p.id }}" data-share-title="{{ p.title or 'KOJA Public' }}" data-share-text="{{ p.body|truncate(160,True) }}">↗</button></div>{% for c in p.comments %}<div style="padding:9px 0;border-top:1px solid var(--border);margin-top:9px"><strong>{{ c.author_name }}</strong><div>{{ c.body }}</div><div class="small">{{ c.created_at }}</div></div>{% endfor %}{% if user %}<form method="post" action="{{ url_for('public_comment',post_id=p.id) }}" style="display:flex;gap:7px;margin-top:10px"><input id="comment-{{ p.id }}" name="body" maxlength="1000" placeholder="Add a comment..." required><button class="btn" type="submit">Post</button></form>{% endif %}</article>{% else %}<div style="padding:28px;text-align:center"><h3>No content yet</h3><p class="small">New KOJA public stories, videos and photos will appear here.</p></div>{% endfor %}</section></div>
+<script>document.querySelectorAll('.public-share').forEach(function(b){b.onclick=async function(){const u=b.dataset.shareUrl,t=b.dataset.shareTitle||'KOJA Public',x=b.dataset.shareText||'';try{if(navigator.share)await navigator.share({title:t,text:x,url:u});else if(navigator.clipboard){await navigator.clipboard.writeText(u);alert('Link copied.')}else window.prompt('Copy link:',u)}catch(e){}}});</script>
 ''', posts=enriched, feed_type=feed_type)
 
 @app.route('/public/create', methods=['POST'])
