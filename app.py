@@ -94,7 +94,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.07-V44-SECURITY-RESEARCH-QUALITY"
+APP_VERSION = "2026.09.07-V45-RESEARCH-STRICT-EVIDENCE"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -1350,80 +1350,133 @@ def _research_normalize_query(query):
     for pat,repl in fixes.items(): q=re.sub(pat,repl,q,flags=re.I)
     return q
 
+def _research_intent(query):
+    q=_research_normalize_query(query).lower().strip()
+    if re.search(r'\b(define|definition|meaning|what is|what are|explain)\b',q): return 'definition'
+    if re.search(r'\b(compare|comparison|difference|versus|vs)\b',q): return 'comparison'
+    if re.search(r'\b(cause|causes|reason|reasons|factors|determinants)\b',q): return 'causes'
+    if re.search(r'\b(impact|effect|effects|influence|affect)\b',q): return 'impact'
+    if re.search(r'\b(trend|growth|increase|decrease|statistics|data)\b',q): return 'trend'
+    return 'general'
+
 def _research_domain(query):
     q=_research_normalize_query(query).lower()
     education_terms=('assessment','assessments','curriculum','teaching','learning','student','school','education','pedagogy','lesson','exam','examination','grading','evaluation','teacher','classroom')
     health_terms=('disease','clinical','patient','doctor','medicine','medical','diagnosis','treatment','nursing','health')
     business_terms=('business','market','sales','customer','profit','company','finance','entrepreneur','marketing')
+    science_terms=('matter','energy','atom','atoms','molecule','molecules','element','elements','compound','compounds','force','motion','mass','gravity','physics','chemistry','biology','cell','cells','organism','ecosystem','photosynthesis','electricity','magnetism','particle','particles','matter','radiation','heat','temperature')
     research_terms=('research','methodology','literature review','systematic review','study','sample','qualitative','quantitative')
     if any(x in q for x in education_terms): return 'education'
     if any(x in q for x in health_terms): return 'health'
     if any(x in q for x in business_terms): return 'business'
+    if any(x in q for x in science_terms): return 'science'
     if any(x in q for x in research_terms): return 'research'
     return 'general'
 
+def _research_topic_terms(query):
+    stop=set('define definition meaning what is what are explain the a an of for in on to and or does do is are can could would should how why which who where when research evidence'.split())
+    return [t for t in _research_tokens(_research_normalize_query(query)) if t not in stop]
+
 def _research_query_plan(query):
-    """Build a typo-corrected, domain-aware evidence search plan."""
+    """Build a typo-corrected, intent/domain-specific search plan without generic noise."""
     q=_research_normalize_query(query)
     if not q: return []
-    plans=[q]; low=q.lower()
-    stripped=re.sub(r"^(what|why|how|which|who|where|when|can|does|do|is|are)\s+",'',q,flags=re.I).strip(' ?')
-    if stripped and stripped.lower()!=q.lower(): plans.append(stripped)
-    domain=_research_domain(q)
-    if domain=='education':
-        plans.append(f"{stripped or q} educational assessment components types principles evidence")
-    elif domain=='health':
-        plans.append(f"{stripped or q} clinical evidence guidelines review")
-    elif domain=='business':
-        plans.append(f"{stripped or q} business evidence research data")
-    elif any(k in low for k in ('impact','effect','influence','affect')):
-        plans.append(f"{stripped or q} evidence outcomes")
-    elif any(k in low for k in ('cause','causes','reason','factors','determinants')):
-        plans.append(f"{stripped or q} causes factors evidence")
-    elif any(k in low for k in ('compare','comparison','difference','versus',' vs ')):
-        plans.append(f"{stripped or q} comparison evidence")
-    elif any(k in low for k in ('trend','growth','increase','decrease','statistics','data')):
-        plans.append(f"{stripped or q} statistics data trend")
-    else:
-        plans.append(f"{stripped or q} research evidence")
+    intent=_research_intent(q); domain=_research_domain(q)
+    topic=' '.join(_research_topic_terms(q)) or q
+    plans=[q]
+    if intent=='definition':
+        if domain=='science': plans.append(f'{topic} definition physics science')
+        elif domain=='education': plans.append(f'{topic} definition educational assessment')
+        elif domain=='health': plans.append(f'{topic} definition medical clinical')
+        elif domain=='business': plans.append(f'{topic} definition business')
+        else: plans.append(f'{topic} definition')
+    elif intent=='comparison': plans.append(f'{topic} comparison differences evidence')
+    elif intent=='causes': plans.append(f'{topic} causes factors evidence')
+    elif intent=='impact': plans.append(f'{topic} effects impact evidence')
+    elif intent=='trend': plans.append(f'{topic} statistics data trend')
+    elif domain=='education': plans.append(f'{topic} educational assessment evidence')
+    elif domain=='health': plans.append(f'{topic} clinical evidence guidelines review')
+    elif domain=='business': plans.append(f'{topic} business evidence research data')
+    elif domain=='science': plans.append(f'{topic} science physics chemistry evidence')
+    else: plans.append(f'{topic} research evidence')
     out=[]
     for x in plans:
         x=clean(x)
         if x and x.lower() not in [y.lower() for y in out]: out.append(x)
     return out[:3]
 
-def _research_relevance_gate(results, query, minimum=1.55):
-    """Reject semantically weak sources before AI synthesis or bibliography generation."""
-    domain=_research_domain(query); q=_research_normalize_query(query).lower()
-    tokens=set(re.findall(r"[a-z0-9]{3,}",q))
+def _research_obviously_irrelevant(r, query):
+    title=clean(r.get('title','')).lower(); snippet=clean(r.get('snippet','')).lower()
+    source=clean(r.get('source','')).lower()
+    intent=_research_intent(query); domain=_research_domain(query)
+    topic_terms=_research_topic_terms(query)
+    text=title+' '+snippet
+    if not title and not snippet: return True
+    # A Google landing page is navigation, not evidence. Never count it as research evidence.
+    if r.get('_google_link') or (source=='google search' and 'google.com/search' in clean(r.get('url','')).lower()): return True
+    # Obvious lexical traps: the target word appears in an unrelated proper title.
+    if domain=='science':
+        negative_title=(
+            'album','song','band','film','movie','novel','war','battle','military','telepathy',
+            'mind over','materialism','philosophy','philosophical','plab','licensing','football','sport'
+        )
+        if any(x in title for x in negative_title): return True
+    if intent=='definition' and topic_terms:
+        # For a definition request, a source must discuss the concept itself, not merely mention it.
+        primary=topic_terms[0]
+        if primary not in title and primary not in snippet: return True
+    return False
+
+def _research_relevance_gate(results, query, minimum=2.15):
+    """Strict evidence gate: discard navigation pages, lexical traps and weak topic matches."""
+    domain=_research_domain(query); intent=_research_intent(query); q=_research_normalize_query(query).lower()
+    topic_terms=set(_research_topic_terms(query));
     domain_terms={
         'education':set('assessment educational education student teacher teaching learning curriculum evaluation grading formative summative diagnostic classroom test examination'.split()),
         'health':set('clinical medical medicine patient health diagnosis treatment disease nursing guideline'.split()),
         'business':set('business market sales customer finance company profit marketing entrepreneurship'.split()),
+        'science':set('science scientific physics chemistry biology matter energy atom molecule element compound force motion mass gravity particle radiation heat temperature electricity magnetism'.split()),
         'research':set('research methodology study evidence literature review qualitative quantitative sample'.split()),
         'general':set(),
     }[domain]
     strong=[]
     for r in results:
-        text=(clean(r.get('title',''))+' '+clean(r.get('snippet',''))).lower()
+        if _research_obviously_irrelevant(r,query): continue
+        title=clean(r.get('title','')).lower(); snippet=clean(r.get('snippet','')).lower(); text=title+' '+snippet
         source=str(r.get('source','')).lower()
-        score=float(r.get('_logic_score') or 0)
-        token_hits=sum(1 for t in tokens if t in text)
+        score=0.0
+        topic_hits=sum(1 for t in topic_terms if t in text)
         domain_hits=sum(1 for t in domain_terms if t in text)
-        # Exact multi-word topic matches are stronger than generic single-word overlap.
-        if q and q in text: score+=1.0
-        score+=min(token_hits,8)*0.08+min(domain_hits,8)*0.16
-        if domain=='education' and any(x in source for x in ('wikipedia','web','google search')) and domain_hits<2: score-=0.45
+        exact_topic=bool(q and q in text)
+        primary_exact=bool(topic_terms and next(iter(topic_terms)) in title)
+        if exact_topic: score+=2.0
+        score+=min(topic_hits,6)*0.55
+        score+=min(domain_hits,6)*0.25
+        if primary_exact: score+=1.0
+        if source in ('openalex','crossref'): score+=1.25
+        elif source=='koja documents': score+=1.10
+        elif source=='wikipedia': score+=0.45
+        elif source=='web': score+=0.15
+        elif source=='google search': score-=0.75
+        if r.get('doi'): score+=0.25
+        if r.get('citations'): score+=min(float(r.get('citations') or 0)/200,0.35)
+        # Definition questions require direct concept evidence, not just generic keyword overlap.
+        if intent=='definition' and topic_terms:
+            primary=topic_terms[0]
+            direct=primary in title or primary in snippet
+            if not direct: continue
+            if domain!='general' and domain_hits<1 and source not in ('openalex','crossref','koja documents'): continue
+        # Non-general domain research needs actual domain evidence.
+        if domain!='general' and domain_hits==0 and not any(t in title for t in topic_terms): continue
         r['_quality_score']=round(score,4)
-        if score>=minimum and (domain=='general' or domain_hits>=1 or q in text or source in ('openalex','crossref','koja documents')):
-            strong.append(r)
-    strong.sort(key=lambda r:r.get('_quality_score',0),reverse=True)
+        if score>=minimum: strong.append(r)
+    strong.sort(key=lambda r:(r.get('_quality_score',0),r.get('_logic_score',0),r.get('citations') or 0),reverse=True)
     return strong
 
 def _research_score_logic(results, query):
     """Second-pass evidence ranking: relevance + source quality + freshness + citations."""
     qtokens=set(re.findall(r"[a-z0-9]{3,}",query.lower()))
-    quality={'openalex':1.35,'crossref':1.30,'koja documents':1.25,'web':1.0,'wikipedia':0.85}
+    quality={'openalex':1.35,'crossref':1.30,'koja documents':1.25,'web':0.75,'wikipedia':0.70,'google search':-0.50}
     now_year=datetime.now(timezone.utc).year
     for r in results:
         text=(clean(r.get('title',''))+' '+clean(r.get('snippet',''))).lower()
@@ -1709,7 +1762,7 @@ def research():
 </style>
 <div class="research-shell"><div class="research-welcome"><h2>🔎 What would you like to research?</h2><p>Ask a full question, attach a document, or use your voice. KOJA Research searches web, academic literature, Wikipedia and your KOJA documents, then brings the evidence together.</p></div><div class="hero"><form method="get" action="{{ url_for('research') }}" class="research-search" id="research-composer"><textarea name="q" rows="3" maxlength="2000" placeholder="Ask anything you want to research…" aria-label="Research question" autofocus>{{ q }}</textarea><div class="research-composer-bottom"><div class="research-composer-actions"><label class="btn secondary research-icon" title="Attach a document" aria-label="Attach a document">📎<input id="research-file" type="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp" hidden></label><button class="btn secondary research-icon" id="research-record" type="button" title="Record voice" aria-label="Record voice">🎙️</button><span class="research-recording" id="research-recording">● Recording…</span><span class="research-file-name" id="research-file-name"></span></div><button class="btn research-send" type="submit" title="Send research question" aria-label="Send research question">➤</button></div></form>
 <script>(function(){const box=document.querySelector('#research-composer textarea[name="q"]');const file=document.getElementById('research-file');const name=document.getElementById('research-file-name');const rec=document.getElementById('research-record');const recLabel=document.getElementById('research-recording');let media=null,chunks=[];if(box){const grow=()=>{box.style.height='auto';box.style.height=Math.min(box.scrollHeight,280)+'px'};box.addEventListener('input',grow);grow()}if(file){file.addEventListener('change',()=>{name.textContent=file.files&&file.files[0]?file.files[0].name:''})}if(rec&&navigator.mediaDevices&&window.MediaRecorder){rec.addEventListener('click',async()=>{if(media){media.stop();return}try{const stream=await navigator.mediaDevices.getUserMedia({audio:true});media=new MediaRecorder(stream);chunks=[];media.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};media.onstop=()=>{const blob=new Blob(chunks,{type:'audio/webm'});const url=URL.createObjectURL(blob);name.textContent='Voice recording ready ('+Math.round(blob.size/1024)+' KB)';const a=document.createElement('a');a.href=url;a.download='koja-research-question.webm';a.style.display='none';document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(url);a.remove()},1000);stream.getTracks().forEach(t=>t.stop());media=null;rec.textContent='🎙️';recLabel.style.display='none'};media.start();rec.textContent='⏹️';recLabel.style.display='inline';}catch(e){alert('Microphone permission is required to record.')}})}})();</script><div class="research-filters"><label>Source<select name="source" form="research-filter-form"><option value="all" {% if source_filter=='all' %}selected{% endif %}>All sources</option><option value="academic" {% if source_filter=='academic' %}selected{% endif %}>Academic</option><option value="web" {% if source_filter=='web' %}selected{% endif %}>Web</option><option value="wikipedia" {% if source_filter=='wikipedia' %}selected{% endif %}>Wikipedia</option><option value="koja" {% if source_filter=='koja' %}selected{% endif %}>KOJA Documents</option></select></label><label>Year<input name="year" form="research-filter-form" value="{{ year or '' }}" placeholder="e.g. 2025" inputmode="numeric"></label><label>Author<input name="author" form="research-filter-form" value="{{ author }}" placeholder="Academic author"></label><label>Citation style<select name="style" form="research-filter-form">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Source type<select name="source_type" form="research-filter-form"><option value="all">All source types</option>{% for k,v in source_types.items() %}<option value="{{k}}" {% if source_type==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Sort<select name="sort" form="research-filter-form"><option value="relevance" {% if sort=='relevance' %}selected{% endif %}>Relevance</option><option value="date" {% if sort=='date' %}selected{% endif %}>Newest first</option><option value="citations" {% if sort=='citations' %}selected{% endif %}>Most cited</option></select></label></div><form id="research-filter-form" method="get" action="{{ url_for('research') }}"><input type="hidden" name="q" value="{{ q }}"></form></div>
-{% if q %}<div class="note-actions"><a class="btn" href="{{ url_for('research_notes',q=q,style=style) }}">📝 Write Research Notes</a><a class="btn secondary" href="{{ url_for('research') }}">＋ New research</a></div><div class="research-tabs"><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}">🎓 Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}">🌐 Web</a><a class="btn secondary" href="https://www.google.com/search?q={{ q|urlencode }}" target="_blank" rel="noopener">🔎 Google</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}">📁 KOJA Documents</a></div><div class="card"><span class="research-count">{{ results|length }} ranked sources</span> found for <strong>“{{ q }}”</strong><p class="small" style="margin-top:8px">KOJA combines multiple search angles, Google Search, web discovery, academic literature and KOJA Documents; it removes duplicates, weighs source quality, ranks evidence and then uses KOJA AI to synthesize the strongest evidence.</p></div>{% if summary %}<div class="card research-summary"><div class="research-answer-label">🧠 KOJA Research Answer</div><pre>{{ summary }}</pre><p class="small">AI summaries use configured AI credentials when available; otherwise KOJA shows source-based highlights. Verify important claims against original sources.</p></div>{% endif %}{% for r in results %}<div class="card research-result"><span class="source-badge">{{ r.source }}</span><h3><a href="{{ r.url or '#' }}" {% if r.url %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a></h3>{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p><p><strong>In-text:</strong> {{ make_intext(r,style,loop.index) }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open original source ↗</a>{% endif %}</div>{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endfor %}{% if bibliography %}<div class="card"><h2>References</h2><p class="small">Generated from available source metadata. Verify against the original source.</p>{% for n,ref in bibliography %}<p style="padding-left:28px;text-indent:-28px;line-height:1.6">{{ ref|safe }}</p>{% endfor %}</div>{% endif %}{% else %}<div class="grid"><div class="card"><h3>🔎 Google + Web</h3><p>Use Google Search alongside web discovery for broader coverage.</p></div><div class="card"><h3>🎓 Academic Search</h3><p>OpenAlex and Crossref provide scholarly metadata, authors, years and citation information.</p></div><div class="card"><h3>📁 KOJA Documents</h3><p>Search documents already connected to your KOJA Supabase database.</p></div><div class="card"><h3>🧠 AI Research Summary</h3><p>Configure an AI API key to synthesize retrieved evidence with source-number citations.</p></div></div>{% endif %}</div>
+{% if q %}<div class="note-actions"><a class="btn" href="{{ url_for('research_notes',q=q,style=style) }}">📝 Write Research Notes</a><a class="btn secondary" href="{{ url_for('research') }}">＋ New research</a></div><div class="research-tabs"><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}">🎓 Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}">🌐 Web</a><a class="btn secondary" href="https://www.google.com/search?q={{ q|urlencode }}" target="_blank" rel="noopener">🔎 Google</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}">📁 KOJA Documents</a></div><div class="card"><span class="research-count">{{ results|length }} ranked sources</span> found for <strong>“{{ q }}”</strong><p class="small" style="margin-top:8px">KOJA combines multiple research angles, academic literature, web sources and KOJA Documents; it removes duplicates, filters weak matches, ranks evidence and then uses KOJA AI to synthesize the strongest evidence.</p></div>{% if summary %}<div class="card research-summary"><div class="research-answer-label">🧠 KOJA Research Answer</div><pre>{{ summary }}</pre><p class="small">AI summaries use configured AI credentials when available; otherwise KOJA shows source-based highlights. Verify important claims against original sources.</p></div>{% endif %}{% for r in results %}<div class="card research-result"><span class="source-badge">{{ r.source }}</span><h3><a href="{{ r.url or '#' }}" {% if r.url %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a></h3>{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p><p><strong>In-text:</strong> {{ make_intext(r,style,loop.index) }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open original source ↗</a>{% endif %}</div>{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endfor %}{% if bibliography %}<div class="card"><h2>References</h2><p class="small">Generated from available source metadata. Verify against the original source.</p>{% for n,ref in bibliography %}<p style="padding-left:28px;text-indent:-28px;line-height:1.6">{{ ref|safe }}</p>{% endfor %}</div>{% endif %}{% else %}<div class="grid"><div class="card"><h3>🔎 Research Discovery</h3><p>KOJA searches across multiple research sources and filters weak or unrelated matches.</p></div><div class="card"><h3>🎓 Academic Search</h3><p>OpenAlex and Crossref provide scholarly metadata, authors, years and citation information.</p></div><div class="card"><h3>📁 KOJA Documents</h3><p>Search documents already connected to your KOJA Supabase database.</p></div><div class="card"><h3>🧠 AI Research Summary</h3><p>Configure an AI API key to synthesize retrieved evidence with source-number citations.</p></div></div>{% endif %}</div>
 ''',q=q,results=results,summary=summary,source_filter=source_filter,sort=sort,year=year,author=author,style=style,source_type=source_type,citation_styles=CITATION_STYLES,source_types=SOURCE_TYPES,bibliography=bibliography,make_intext=make_intext,SITE_URL=SITE_URL)
 
 
