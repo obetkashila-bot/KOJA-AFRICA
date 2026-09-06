@@ -1328,7 +1328,10 @@ def _ai_config_status():
     """Return safe Gemini configuration diagnostics without exposing secrets."""
     raw_key=(os.getenv("GEMINI_API_KEY") or "").strip()
     model=(os.getenv("GEMINI_MODEL") or "gemini-3.7-flash").strip()
-    fallback=(os.getenv("GEMINI_FALLBACK_MODEL") or "gemini-2.5-flash-lite").strip()
+    fallback=(os.getenv("GEMINI_FALLBACK_MODEL") or "gemini-3.5-flash-lite").strip()
+    # Google has retired 2.5 Flash-Lite for some new users; transparently migrate old env settings.
+    if fallback == "gemini-2.5-flash-lite":
+        fallback = "gemini-3.5-flash-lite"
     base=(os.getenv("GEMINI_API_URL") or "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
     endpoint=f"{base}/models/{model}:generateContent"
     return {
@@ -1341,7 +1344,7 @@ def _ai_config_status():
         "key_length": len(raw_key),
     }
 
-def _ai_call(prompt, system_prompt, max_output_tokens=900, timeout=12):
+def _ai_call(prompt, system_prompt, max_output_tokens=900, timeout=8):
     """Call Gemini directly with transient-error retry and model fallback."""
     cfg=_ai_config_status()
     api_key=(os.getenv("GEMINI_API_KEY") or "").strip()
@@ -1352,14 +1355,9 @@ def _ai_call(prompt, system_prompt, max_output_tokens=900, timeout=12):
     primary=cfg["model"]
     fallback=cfg["fallback_model"]
     try:
-        # Keep synchronous requests below Render/Gunicorn worker timeout.
         retry_attempts=max(1, min(int(os.getenv("GEMINI_RETRY_ATTEMPTS") or "1"), 2))
     except ValueError:
         retry_attempts=1
-    try:
-        timeout=max(5, min(float(timeout), float(os.getenv("GEMINI_REQUEST_TIMEOUT") or "12")))
-    except (TypeError, ValueError):
-        timeout=12
 
     payload={
         "systemInstruction":{"parts":[{"text":system_prompt}]},
@@ -1450,7 +1448,7 @@ def _ai_call(prompt, system_prompt, max_output_tokens=900, timeout=12):
 
     return "", last_error
 
-def _gemini_text(prompt, system_prompt, max_output_tokens=900, timeout=12):
+def _gemini_text(prompt, system_prompt, max_output_tokens=900, timeout=40):
     # Kept as a compatibility wrapper for existing KOJA research code.
     text, _error = _ai_call(prompt, system_prompt, max_output_tokens, timeout)
     return text
@@ -1475,7 +1473,7 @@ def research_ai_summary(query, results):
     text=_gemini_text(
         f"Question: {query}\n\nSources:\n{source_text}\n\nWrite a concise research summary with 3-5 key findings and a short evidence note.",
         'You are KOJA Research. Summarize only the supplied sources. Do not invent facts. Cite source numbers like [1] [2]. State when evidence is limited.',
-        700, 10
+        700, 30
     )
     if text: return text
     highlights=[]
@@ -1639,7 +1637,7 @@ def ai_assistant():
             "When the user asks for research, recommend the KOJA Research Engine rather than pretending you browsed the web."
         )
         full_prompt = "Conversation history:\n" + ("\n".join(context_lines) if context_lines else "(none)") + "\n\nUSER: " + prompt
-        answer, ai_error = _ai_call(full_prompt, system, max_output_tokens=1200, timeout=10)
+        answer, ai_error = _ai_call(full_prompt, system, max_output_tokens=1200, timeout=8)
         if not answer:
             flash("KOJA AI: " + _ai_error_message(ai_error), "danger")
         else:
