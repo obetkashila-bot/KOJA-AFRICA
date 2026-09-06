@@ -1328,6 +1328,7 @@ def _ai_config_status():
     """Return safe Gemini configuration diagnostics without exposing secrets."""
     raw_key=(os.getenv("GEMINI_API_KEY") or "").strip()
     model=(os.getenv("GEMINI_MODEL") or "gemini-3.7-flash").strip()
+    fallback=(os.getenv("GEMINI_FALLBACK_MODEL") or "gemini-2.5-flash-lite").strip()
     base=(os.getenv("GEMINI_API_URL") or "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
     endpoint=f"{base}/models/{model}:generateContent"
     return {
@@ -1335,53 +1336,114 @@ def _ai_config_status():
         "provider": "gemini",
         "endpoint": endpoint,
         "model": model,
+        "fallback_model": fallback,
         "key_source": "GEMINI_API_KEY" if raw_key else "none",
         "key_length": len(raw_key),
     }
 
 def _ai_call(prompt, system_prompt, max_output_tokens=900, timeout=40):
-    """Call Google Gemini via its REST API; no paid SDK is required."""
+    """Call Gemini directly with transient-error retry and model fallback."""
     cfg=_ai_config_status()
     api_key=(os.getenv("GEMINI_API_KEY") or "").strip()
     if not api_key:
         return "", "missing_api_key"
+
+    base=(os.getenv("GEMINI_API_URL") or "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
+    primary=cfg["model"]
+    fallback=cfg["fallback_model"]
+    try:
+        retry_attempts=max(1, min(int(os.getenv("GEMINI_RETRY_ATTEMPTS") or "2"), 4))
+    except ValueError:
+        retry_attempts=2
+
     payload={
         "systemInstruction":{"parts":[{"text":system_prompt}]},
         "contents":[{"role":"user","parts":[{"text":prompt}]}],
         "generationConfig":{"maxOutputTokens":max_output_tokens,"temperature":0.4},
     }
-    try:
-        r=requests.post(cfg["endpoint"], params={"key":api_key}, json=payload, timeout=timeout,
-                        headers={"Content-Type":"application/json"})
-        if not r.ok:
-            body=r.text[:800]
-            logger.warning("Gemini request failed status=%s model=%s body=%s", r.status_code, cfg["model"], body)
-            if r.status_code in (401,403): return "", "authentication_failed"
-            if r.status_code==404: return "", "endpoint_or_model_not_found"
-            if r.status_code==429: return "", "rate_limited"
-            if 500 <= r.status_code <= 599: return "", "provider_server_error"
-            return "", f"provider_http_{r.status_code}"
-        data=r.json()
-        parts=[]
-        for candidate in data.get("candidates") or []:
-            content=candidate.get("content") or {}
-            for part in content.get("parts") or []:
-                text=part.get("text")
-                if text: parts.append(text)
-        text=clean("\n".join(parts))
-        if text: return text, ""
-        feedback=(data.get("promptFeedback") or {}).get("blockReason")
-        if feedback: return "", "safety_blocked"
-        return "", "empty_provider_response"
-    except requests.Timeout:
-        logger.warning("Gemini request timed out model=%s", cfg["model"])
-        return "", "timeout"
-    except requests.RequestException as exc:
-        logger.warning("Gemini network request failed model=%s error=%s", cfg["model"], exc)
-        return "", "network_error"
-    except Exception as exc:
-        logger.warning("Gemini response parsing failed: %s", exc)
-        return "", "invalid_provider_response"
+    headers={
+        "x-goog-api-key": api_key,
+        "Content-Type":"application/json",
+    }
+    transient_codes={429,500,502,503,504}
+    last_error="provider_server_error"
+
+    # Try the primary model, then a stable lower-cost fallback if the provider is busy.
+    models=[]
+    for model in (primary, fallback):
+        if model and model not in models:
+            models.append(model)
+
+    for model_index, model in enumerate(models):
+        endpoint=f"{base}/models/{model}:generateContent"
+        for attempt in range(retry_attempts):
+            try:
+                r=requests.post(endpoint, json=payload, timeout=timeout, headers=headers)
+                if r.ok:
+                    data=r.json()
+                    parts=[]
+                    for candidate in data.get("candidates") or []:
+                        content=candidate.get("content") or {}
+                        for part in content.get("parts") or []:
+                            text=part.get("text")
+                            if text: parts.append(text)
+                    text=clean("\n".join(parts))
+                    if text:
+                        if model != primary:
+                            logger.info("Gemini fallback model succeeded model=%s", model)
+                        return text, ""
+                    feedback=(data.get("promptFeedback") or {}).get("blockReason")
+                    if feedback:
+                        return "", "safety_blocked"
+                    last_error="empty_provider_response"
+                    break
+
+                status=r.status_code
+                body=r.text[:800]
+                logger.warning("Gemini request failed status=%s model=%s attempt=%s/%s body=%s",
+                               status, model, attempt+1, retry_attempts, body)
+                if status in (401,403):
+                    return "", "authentication_failed"
+                if status==404:
+                    last_error="endpoint_or_model_not_found"
+                    break
+                if status in transient_codes:
+                    last_error="rate_limited" if status==429 else "provider_server_error"
+                    if attempt < retry_attempts-1:
+                        import time
+                        time.sleep(1.0 * (2 ** attempt))
+                        continue
+                    break
+                return "", f"provider_http_{status}"
+            except requests.Timeout:
+                last_error="timeout"
+                logger.warning("Gemini request timed out model=%s attempt=%s/%s", model, attempt+1, retry_attempts)
+                if attempt < retry_attempts-1:
+                    import time
+                    time.sleep(1.0 * (2 ** attempt))
+                    continue
+                break
+            except requests.RequestException as exc:
+                last_error="network_error"
+                logger.warning("Gemini network request failed model=%s error=%s", model, exc)
+                if attempt < retry_attempts-1:
+                    import time
+                    time.sleep(1.0 * (2 ** attempt))
+                    continue
+                break
+            except Exception as exc:
+                logger.warning("Gemini response parsing failed: %s", exc)
+                return "", "invalid_provider_response"
+
+        # Only fall back after a temporary provider/model problem.
+        if model_index == 0 and len(models) > 1 and last_error in (
+            "provider_server_error", "rate_limited", "timeout", "network_error", "endpoint_or_model_not_found"
+        ):
+            logger.warning("Gemini primary model unavailable; trying fallback model=%s", fallback)
+            continue
+        break
+
+    return "", last_error
 
 def _gemini_text(prompt, system_prompt, max_output_tokens=900, timeout=40):
     # Kept as a compatibility wrapper for existing KOJA research code.
