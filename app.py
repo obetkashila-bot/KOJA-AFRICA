@@ -1659,16 +1659,29 @@ def ai_assistant():
         else:
             messages = db_select("koja_ai_messages", {"conversation_id": conversation_id, "user_id": uid}, order="created_at.asc", limit=100)
     return render_page("KOJA AI", r'''
-<div class="hero"><h2>🧠 KOJA AI 2.0</h2><p>Persistent AI conversations with server-side history.</p><p class="small">Your AI API key remains server-side and is never displayed.</p></div>
-<div style="display:grid;grid-template-columns:minmax(190px,260px) 1fr;gap:16px;align-items:start">
-<div class="card"><form method="post"><input type="hidden" name="action" value="new"><button class="btn" style="width:100%" type="submit">＋ New chat</button></form><hr>
-{% for c in conversations %}<a href="{{ url_for('ai_assistant', conversation_id=c.id) }}" style="display:block;padding:10px;border-radius:10px;margin:5px 0;text-decoration:none;background:{{ 'rgba(127,127,127,.18)' if c.id|string==conversation_id else 'transparent' }}">{{ c.title }}</a>{% endfor %}
-{% if not conversations %}<p class="small">No saved conversations yet.</p>{% endif %}</div>
-<div class="card">
-{% if messages %}{% for item in messages %}<div style="margin:12px 0;padding:12px;border-radius:12px;background:rgba(127,127,127,.10)"><strong>{{ 'You' if item.role=='user' else 'KOJA AI' }}</strong><div style="white-space:pre-wrap;margin-top:6px">{{ item.content }}</div></div>{% endfor %}{% else %}<p class="small">Start a new conversation with KOJA AI.</p>{% endif %}
-<form method="post"><input type="hidden" name="conversation_id" value="{{ conversation_id }}"><textarea name="prompt" maxlength="12000" required placeholder="Ask KOJA AI anything..."></textarea><div class="actions"><button class="btn" type="submit">Send to KOJA AI</button>{% if conversation_id %}<button class="btn secondary" name="action" value="archive" type="submit">Archive chat</button>{% endif %}</div></form>
-<p class="small">For academic research with source citations, use <a href="{{ url_for('research') }}">KOJA Research Engine</a>.</p>
-</div></div>
+<style>
+.koja-ai-page{position:relative;min-height:calc(100vh - 90px);margin:-8px -12px 0;display:flex;flex-direction:column;background:var(--bg,#fff)}
+.koja-ai-top{height:58px;display:flex;align-items:center;gap:8px;padding:8px 14px;border-bottom:1px solid rgba(127,127,127,.18);position:sticky;top:0;z-index:20;background:var(--bg,#fff)}
+.koja-ai-icon{width:42px;height:42px;display:inline-flex;align-items:center;justify-content:center;border:1px solid rgba(127,127,127,.22);border-radius:12px;background:transparent;font-size:20px;cursor:pointer;text-decoration:none;color:inherit}
+.koja-ai-title{font-weight:700;font-size:16px;margin-right:auto}.koja-ai-main{width:100%;max-width:980px;margin:0 auto;flex:1;display:flex;flex-direction:column;padding:18px 18px 26px;box-sizing:border-box}.koja-ai-messages{flex:1;padding:8px 0 18px}.koja-ai-empty{min-height:55vh;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}.koja-ai-empty h2{font-size:30px;margin:0 0 8px}.koja-ai-empty p{opacity:.7}.koja-ai-msg{display:flex;margin:20px 0}.koja-ai-msg.user{justify-content:flex-end}.koja-ai-bubble{max-width:min(78%,720px);padding:13px 16px;border-radius:18px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}.koja-ai-msg.user .koja-ai-bubble{background:rgba(127,127,127,.16);border-bottom-right-radius:6px}.koja-ai-msg.assistant .koja-ai-bubble{border-bottom-left-radius:6px}.koja-ai-compose{position:sticky;bottom:0;padding-top:8px;background:linear-gradient(transparent,var(--bg,#fff) 18%)}.koja-ai-compose form{display:flex;align-items:flex-end;gap:8px;border:1px solid rgba(127,127,127,.28);border-radius:22px;padding:8px 8px 8px 14px;background:var(--bg,#fff);box-shadow:0 2px 12px rgba(0,0,0,.05)}.koja-ai-compose textarea{border:0!important;box-shadow:none!important;outline:none!important;resize:none;min-height:24px;max-height:180px;margin:0!important;padding:8px 0!important;background:transparent!important;flex:1}.koja-ai-send{width:42px;height:42px;border:0;border-radius:50%;cursor:pointer;font-size:18px}.koja-ai-drawer{position:fixed;inset:0;z-index:100;display:none}.koja-ai-drawer.open{display:block}.koja-ai-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.38)}.koja-ai-panel{position:absolute;left:0;top:0;bottom:0;width:min(320px,86vw);padding:14px;background:var(--bg,#fff);box-shadow:8px 0 30px rgba(0,0,0,.16);overflow:auto}.koja-ai-panel-head{display:flex;align-items:center;gap:8px;margin-bottom:14px}.koja-ai-panel-head strong{margin-right:auto}.koja-ai-chatlink{display:block;padding:11px 12px;border-radius:11px;text-decoration:none;color:inherit;margin:3px 0}.koja-ai-chatlink.active{background:rgba(127,127,127,.16)}
+@media(max-width:700px){.koja-ai-main{padding:10px 12px 20px}.koja-ai-bubble{max-width:88%}.koja-ai-empty h2{font-size:25px}.koja-ai-top{padding-left:10px}}
+</style>
+<div class="koja-ai-page">
+  <div class="koja-ai-top">
+    <button class="koja-ai-icon" type="button" aria-label="Recent chats" title="Recent chats" onclick="document.getElementById('kojaRecentChats').classList.add('open')">☰</button>
+    <div class="koja-ai-title">🧠 KOJA AI</div>
+    <form method="post" style="margin:0"><input type="hidden" name="action" value="new"><button class="koja-ai-icon" type="submit" aria-label="New chat" title="New chat">＋</button></form>
+  </div>
+  <div class="koja-ai-main">
+    <div class="koja-ai-messages">
+    {% if messages %}
+      {% for item in messages %}<div class="koja-ai-msg {{ 'user' if item.role=='user' else 'assistant' }}"><div class="koja-ai-bubble">{% if item.role!='user' %}<strong>KOJA AI</strong><br>{% endif %}{{ item.content }}</div></div>{% endfor %}
+    {% else %}<div class="koja-ai-empty"><h2>How can I help?</h2><p>Ask KOJA AI anything.</p></div>{% endif %}
+    </div>
+    <div class="koja-ai-compose"><form method="post"><input type="hidden" name="conversation_id" value="{{ conversation_id }}"><textarea name="prompt" maxlength="12000" required placeholder="Message KOJA AI…" rows="1"></textarea><button class="koja-ai-send" type="submit" aria-label="Send" title="Send">↑</button></form><p class="small" style="text-align:center;margin:8px 0 0">For academic research with source citations, use <a href="{{ url_for('research') }}">KOJA Research</a>.</p></div>
+  </div>
+</div>
+<div id="kojaRecentChats" class="koja-ai-drawer"><div class="koja-ai-backdrop" onclick="document.getElementById('kojaRecentChats').classList.remove('open')"></div><aside class="koja-ai-panel"><div class="koja-ai-panel-head"><strong>Recent chats</strong><button class="koja-ai-icon" type="button" onclick="document.getElementById('kojaRecentChats').classList.remove('open')" aria-label="Close">×</button></div>{% for c in conversations %}<a class="koja-ai-chatlink {{ 'active' if c.id|string==conversation_id else '' }}" href="{{ url_for('ai_assistant', conversation_id=c.id) }}">{{ c.title }}</a>{% else %}<p class="small">No saved conversations yet.</p>{% endfor %}</aside></div>
 ''', conversations=conversations, messages=messages, conversation_id=conversation_id)
 
 @app.route("/documents", methods=["GET", "POST"])
