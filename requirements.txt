@@ -5,3 +5,5 @@ python-dotenv
 pywebpush
 cryptography
 gunicorn
+
+google-auth

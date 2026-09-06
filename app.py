@@ -8,6 +8,7 @@ import smtplib
 from email.message import EmailMessage
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from functools import wraps
 from urllib.parse import quote, unquote
@@ -93,7 +94,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.06-V40.6-PRODUCTION-SECURITY-FINAL"
+APP_VERSION = "2026.09.07-V44-SECURITY-RESEARCH-QUALITY"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -673,6 +674,12 @@ def enforce_csrf():
     # authenticated and only changes the caller's own professional presence.
     if request.path == "/api/professional/presence":
         return None
+
+    # KOJA Connect WebRTC signaling: keep login + call-participant authorization
+    # below, but do not block browser ICE trickling on the page-level CSRF token.
+    # These endpoints only operate on calls owned by the authenticated caller/callee.
+    if request.path.startswith("/api/connect/call/ice/"):
+        return None
     # JSON/browser requests and normal HTML forms are both protected.
     # The token is injected into forms and fetch requests by BASE_HTML.
     if not csrf_valid():
@@ -768,7 +775,7 @@ nav a:hover{background:rgba(255,255,255,.12);transform:translateY(-1px)}
 h1,h2,h3{margin-top:0}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:15px}
 input,select,textarea,button{width:100%;padding:11px 12px;margin-top:6px;margin-bottom:12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font:inherit}
-textarea{min-height:120px}
+textarea{min-height:150px;line-height:1.55;resize:vertical} textarea[name="prompt"]{min-height:190px;padding:16px;border-radius:16px;font-size:1rem} textarea[name="q"]{min-height:90px;resize:vertical}
 button,.btn{display:inline-block;background:#176b87;color:#fff;border:0;text-decoration:none;cursor:pointer;padding:10px 14px;border-radius:8px;transition:transform .2s ease,box-shadow .2s ease,filter .2s ease}button:hover,.btn:hover{transform:translateY(-2px);box-shadow:0 7px 18px rgba(0,0,0,.12);filter:brightness(1.04)}button:active,.btn:active{transform:translateY(0)}
 .btn.secondary{background:#5f6b7a}.btn.success{background:#177245}.btn.danger{background:#a62d2d}.btn.warning{background:#9b6b00}
 table{width:100%;border-collapse:collapse}
@@ -1161,12 +1168,42 @@ def _research_year(value):
     except Exception:
         return None
 
+def research_google(query, limit=8):
+    """Google-backed research when a Programmable Search JSON API key/CSE is configured.
+    Without credentials, KOJA provides a direct Google Search link instead of scraping Google.
+    """
+    q=clean(query)
+    if not q: return []
+    api_key=clean(os.getenv('GOOGLE_SEARCH_API_KEY',''))
+    cse_id=clean(os.getenv('GOOGLE_CSE_ID',''))
+    if not (api_key and cse_id):
+        return [{'source':'Google Search','title':f'Google results for: {q}',
+                 'url':'https://www.google.com/search?q='+quote(q),
+                 'snippet':'Open Google Search to review live web results for this research query.','year':None,'_google_link':True}]
+    try:
+        r=requests.get('https://www.googleapis.com/customsearch/v1',
+                       params={'key':api_key,'cx':cse_id,'q':q,'num':min(max(limit,1),10)},
+                       timeout=5,headers={'User-Agent':'KOJA-AFRICA-Research/7.0'})
+        if not r.ok:
+            logger.warning('Google research failed status=%s: %s',r.status_code,r.text[:300])
+            return []
+        out=[]
+        for x in r.json().get('items',[]):
+            title=clean(x.get('title','')); url=clean(x.get('link',''))
+            if title and url:
+                out.append({'source':'Google Search','title':title,'url':url,
+                            'snippet':clean(x.get('snippet','')),'year':None,'source_type':'website'})
+        return out
+    except Exception as exc:
+        logger.warning('Google research failed: %s',exc)
+        return []
+
 def research_web(query, limit=8):
     q=clean(query)
     if not q: return []
     out=[]
     try:
-        r=requests.get('https://api.duckduckgo.com/',params={'q':q,'format':'json','no_html':1,'skip_disambig':1},timeout=10,headers={'User-Agent':'KOJA-AFRICA-Research/2.0'})
+        r=requests.get('https://api.duckduckgo.com/',params={'q':q,'format':'json','no_html':1,'skip_disambig':1},timeout=4,headers={'User-Agent':'KOJA-AFRICA-Research/2.0'})
         if r.ok:
             d=r.json()
             if d.get('AbstractText'):
@@ -1181,7 +1218,7 @@ def research_wikipedia(query, limit=6):
     q=clean(query)
     if not q: return []
     try:
-        r=requests.get('https://en.wikipedia.org/w/api.php',params={'action':'query','list':'search','srsearch':q,'srlimit':limit,'format':'json','utf8':1},timeout=10,headers={'User-Agent':'KOJA-AFRICA-Research/2.0'})
+        r=requests.get('https://en.wikipedia.org/w/api.php',params={'action':'query','list':'search','srsearch':q,'srlimit':limit,'format':'json','utf8':1},timeout=4,headers={'User-Agent':'KOJA-AFRICA-Research/2.0'})
         if not r.ok: return []
         out=[]
         for x in r.json().get('query',{}).get('search',[]):
@@ -1199,7 +1236,7 @@ def research_openalex(query, year=None, limit=10):
         params={'search':q,'per-page':limit,'mailto':os.getenv('RESEARCH_EMAIL','').strip()}
         if year: params['filter']=f'publication_year:{year}'
         params={k:v for k,v in params.items() if v}
-        r=requests.get('https://api.openalex.org/works',params=params,timeout=12,headers={'User-Agent':'KOJA-AFRICA-Research/6.0'})
+        r=requests.get('https://api.openalex.org/works',params=params,timeout=5,headers={'User-Agent':'KOJA-AFRICA-Research/6.0'})
         if not r.ok: return []
         out=[]
         for x in r.json().get('results',[]):
@@ -1229,7 +1266,7 @@ def research_crossref(query, year=None, author=None, limit=10):
         if author: params['query.author']=clean(author)
         mail=os.getenv('RESEARCH_EMAIL','').strip()
         if mail: params['mailto']=mail
-        r=requests.get('https://api.crossref.org/works',params=params,timeout=12,headers={'User-Agent':'KOJA-AFRICA-Research/6.0'})
+        r=requests.get('https://api.crossref.org/works',params=params,timeout=5,headers={'User-Agent':'KOJA-AFRICA-Research/6.0'})
         if not r.ok: return []
         out=[]
         for x in r.json().get('message',{}).get('items',[]):
@@ -1264,99 +1301,26 @@ def research_local_documents(query, limit=12):
     for r in rows: r.pop('_score',None)
     return rows[:limit]
 
-def _research_normalize_query(q):
-    """Normalize common spelling errors without changing the user's intent."""
-    q=clean(q)
-    if not q: return ''
-    replacements={
-        'assesment':'assessment', 'assesments':'assessments',
-        'assessmant':'assessment', 'assesmentt':'assessment'
-    }
-    words=q.split()
-    return ' '.join(replacements.get(w.lower(),w) for w in words)
-
-
 def _research_tokens(q):
-    stop={'the','and','for','with','from','into','about','what','are','how','why','who','does','this','that','part','parts'}
-    return [t for t in re.findall(r"[\w'-]+", clean(q).lower()) if len(t)>1 and t not in stop]
-
-
-def _research_intent(query):
-    """Infer a lightweight research domain so unrelated search results can be rejected."""
-    q=_research_normalize_query(query).lower()
-    education_terms={
-        'education','educational','school','student','students','teacher','teachers','teaching',
-        'learning','curriculum','classroom','assessment','assessments','assignment','academic',
-        'exam','examination','pedagogy','learner','learners','formative','summative','diagnostic'
-    }
-    medical_terms={'medical','medicine','clinical','patient','disease','diagnosis','nursing','doctor'}
-    legal_terms={'law','legal','legislation','court','case','statute'}
-    research_terms={'research','study','methodology','literature','review','evidence'}
-    toks=set(re.findall(r"[\w'-]+",q))
-    if toks & education_terms: domain='education'
-    elif toks & medical_terms: domain='medical'
-    elif toks & legal_terms: domain='legal'
-    elif toks & research_terms: domain='research'
-    else: domain='general'
-    return {'domain':domain,'query':q,'tokens':_research_tokens(q)}
-
+    return [t for t in re.findall(r"[\w\'-]+", clean(q).lower()) if len(t)>1]
 
 def _research_score(r, query):
-    intent=_research_intent(query); q=intent['query']; toks=intent['tokens']
+    q=clean(query).lower(); toks=_research_tokens(query)
     title=clean(r.get('title','')).lower(); snippet=clean(r.get('snippet','')).lower()
     authors=' '.join(_names(r)).lower(); journal=clean(r.get('journal','')).lower()
-    source=clean(r.get('source','')).lower(); source_type=clean(r.get('source_type','')).lower()
-    if not toks and not q: return 0
-
-    score=0.0
+    if not toks: return 0
+    score=0
     if title==q: score+=100
-    if q and q in title: score+=70
-    # Phrase and title matches are deliberately much stronger than a weak
-    # occurrence somewhere in an abstract/snippet.
-    if len(toks)>=2 and all(t in title for t in toks): score+=35
+    if q and q in title: score+=60
     for t in toks:
-        if re.search(r'\b'+re.escape(t)+r'\b',title): score+=22
-        elif t in title: score+=10
-        if re.search(r'\b'+re.escape(t)+r'\b',snippet): score+=5
-        if t in authors: score+=4
-        if t in journal: score+=4
-
-    if source in ('openalex','crossref'): score+=12
-    if source_type in ('journal_article','book','book_chapter','government_report','thesis','conference_paper'): score+=10
-    if r.get('doi'): score+=5
-    score+=min(int(r.get('citations') or 0),100)/25
-
-    # Domain-aware relevance. This prevents keyword collisions such as an
-    # educational query retrieving naval, military, anatomy or neuroscience pages.
-    domain=intent['domain']
-    combined=title+' '+snippet+' '+journal
-    domain_signals={
-        'education': {'education','educational','school','student','teacher','teaching','learning','curriculum','classroom','assessment','pedagogy','learner','academic','exam','formative','summative','diagnostic'},
-        'medical': {'medical','medicine','clinical','patient','diagnosis','nursing','health','disease'},
-        'legal': {'law','legal','court','statute','legislation','case','judicial'},
-        'research': {'research','study','methodology','literature','evidence','review','empirical'}
-    }
-    if domain in domain_signals:
-        hits=sum(1 for term in domain_signals[domain] if re.search(r'\b'+re.escape(term)+r'\b',combined))
-        score += min(hits,6)*7
-
-    if domain=='education':
-        off_topic={
-            'military','naval','war','battle','weapon','combat','army','brain','anatomy',
-            'neuroscience','neuron','memory','perception','executive function','ship','fleet'
-        }
-        off_hits=sum(1 for term in off_topic if re.search(r'\b'+re.escape(term)+r'\b',combined))
-        score -= off_hits*18
-        # A result that only matches the generic word "assessment" but has no
-        # educational signal should not survive as a top evidence source.
-        if any(t in toks for t in ('assessment','assessments')):
-            edu_hits=sum(1 for term in domain_signals['education'] if re.search(r'\b'+re.escape(term)+r'\b',combined))
-            if edu_hits==0: score-=45
-
-    r['_relevance']=round(score,2)
-    r['_research_domain']=domain
-    return r['_relevance']
-
+        if t in title: score+=18
+        if t in authors: score+=12
+        if t in journal: score+=5
+        if t in snippet: score+=2
+    if str(r.get('source','')).lower() in ('openalex','crossref'): score+=8
+    if r.get('doi'): score+=4
+    score+=min(int(r.get('citations') or 0),100)/20
+    r['_relevance']=round(score,2); return r['_relevance']
 
 def _research_key(r):
     doi=clean(r.get('doi') or '').lower().replace('https://doi.org/','').strip()
@@ -1366,7 +1330,6 @@ def _research_key(r):
     title=re.sub(r'[^a-z0-9]+',' ',clean(r.get('title','')).lower()).strip()
     return 'title:'+title
 
-
 def _research_deduplicate(results, query):
     merged={}
     for r in results:
@@ -1375,19 +1338,136 @@ def _research_deduplicate(results, query):
         old=merged[k]
         if len(clean(r.get('snippet',''))) > len(clean(old.get('snippet',''))): old['snippet']=r.get('snippet','')
         for fld in ('authors','journal','doi','publisher','volume','issue','pages','edition','year','citations','source_type'):
-            if not old.get(fld) and r.get(fld): old[fld]=r[fld]
+            if not old.get(fld) and r.get(fld): old[fld]=r.get(fld)
         sources=set(str(old.get('source','')).split(' + ')); sources.add(str(r.get('source',''))); old['source']=' + '.join(sorted(x for x in sources if x))
         old['_relevance']=max(old.get('_relevance',0),r.get('_relevance',0))
-    # Hard evidence gate. Keep the threshold modest so niche but valid sources
-    # can survive, while clearly unrelated keyword collisions disappear.
-    cleaned=[r for r in merged.values() if r.get('_relevance',0)>=18]
-    return sorted(cleaned,key=lambda r:(r.get('_relevance',0),r.get('citations') or 0,r.get('year') or 0),reverse=True)
+    return sorted(merged.values(),key=lambda r:(r.get('_relevance',0),r.get('citations') or 0,r.get('year') or 0),reverse=True)
 
+def _research_normalize_query(query):
+    q=clean(query)
+    if not q: return ''
+    fixes={r"\bassesment\b":"assessment",r"\bassessments\b":"assessments"}
+    for pat,repl in fixes.items(): q=re.sub(pat,repl,q,flags=re.I)
+    return q
+
+def _research_domain(query):
+    q=_research_normalize_query(query).lower()
+    education_terms=('assessment','assessments','curriculum','teaching','learning','student','school','education','pedagogy','lesson','exam','examination','grading','evaluation','teacher','classroom')
+    health_terms=('disease','clinical','patient','doctor','medicine','medical','diagnosis','treatment','nursing','health')
+    business_terms=('business','market','sales','customer','profit','company','finance','entrepreneur','marketing')
+    research_terms=('research','methodology','literature review','systematic review','study','sample','qualitative','quantitative')
+    if any(x in q for x in education_terms): return 'education'
+    if any(x in q for x in health_terms): return 'health'
+    if any(x in q for x in business_terms): return 'business'
+    if any(x in q for x in research_terms): return 'research'
+    return 'general'
+
+def _research_query_plan(query):
+    """Build a typo-corrected, domain-aware evidence search plan."""
+    q=_research_normalize_query(query)
+    if not q: return []
+    plans=[q]; low=q.lower()
+    stripped=re.sub(r"^(what|why|how|which|who|where|when|can|does|do|is|are)\s+",'',q,flags=re.I).strip(' ?')
+    if stripped and stripped.lower()!=q.lower(): plans.append(stripped)
+    domain=_research_domain(q)
+    if domain=='education':
+        plans.append(f"{stripped or q} educational assessment components types principles evidence")
+    elif domain=='health':
+        plans.append(f"{stripped or q} clinical evidence guidelines review")
+    elif domain=='business':
+        plans.append(f"{stripped or q} business evidence research data")
+    elif any(k in low for k in ('impact','effect','influence','affect')):
+        plans.append(f"{stripped or q} evidence outcomes")
+    elif any(k in low for k in ('cause','causes','reason','factors','determinants')):
+        plans.append(f"{stripped or q} causes factors evidence")
+    elif any(k in low for k in ('compare','comparison','difference','versus',' vs ')):
+        plans.append(f"{stripped or q} comparison evidence")
+    elif any(k in low for k in ('trend','growth','increase','decrease','statistics','data')):
+        plans.append(f"{stripped or q} statistics data trend")
+    else:
+        plans.append(f"{stripped or q} research evidence")
+    out=[]
+    for x in plans:
+        x=clean(x)
+        if x and x.lower() not in [y.lower() for y in out]: out.append(x)
+    return out[:3]
+
+def _research_relevance_gate(results, query, minimum=1.55):
+    """Reject semantically weak sources before AI synthesis or bibliography generation."""
+    domain=_research_domain(query); q=_research_normalize_query(query).lower()
+    tokens=set(re.findall(r"[a-z0-9]{3,}",q))
+    domain_terms={
+        'education':set('assessment educational education student teacher teaching learning curriculum evaluation grading formative summative diagnostic classroom test examination'.split()),
+        'health':set('clinical medical medicine patient health diagnosis treatment disease nursing guideline'.split()),
+        'business':set('business market sales customer finance company profit marketing entrepreneurship'.split()),
+        'research':set('research methodology study evidence literature review qualitative quantitative sample'.split()),
+        'general':set(),
+    }[domain]
+    strong=[]
+    for r in results:
+        text=(clean(r.get('title',''))+' '+clean(r.get('snippet',''))).lower()
+        source=str(r.get('source','')).lower()
+        score=float(r.get('_logic_score') or 0)
+        token_hits=sum(1 for t in tokens if t in text)
+        domain_hits=sum(1 for t in domain_terms if t in text)
+        # Exact multi-word topic matches are stronger than generic single-word overlap.
+        if q and q in text: score+=1.0
+        score+=min(token_hits,8)*0.08+min(domain_hits,8)*0.16
+        if domain=='education' and any(x in source for x in ('wikipedia','web','google search')) and domain_hits<2: score-=0.45
+        r['_quality_score']=round(score,4)
+        if score>=minimum and (domain=='general' or domain_hits>=1 or q in text or source in ('openalex','crossref','koja documents')):
+            strong.append(r)
+    strong.sort(key=lambda r:r.get('_quality_score',0),reverse=True)
+    return strong
+
+def _research_score_logic(results, query):
+    """Second-pass evidence ranking: relevance + source quality + freshness + citations."""
+    qtokens=set(re.findall(r"[a-z0-9]{3,}",query.lower()))
+    quality={'openalex':1.35,'crossref':1.30,'koja documents':1.25,'web':1.0,'wikipedia':0.85}
+    now_year=datetime.now(timezone.utc).year
+    for r in results:
+        text=(clean(r.get('title',''))+' '+clean(r.get('snippet',''))).lower()
+        hits=sum(1 for t in qtokens if t in text)
+        base=float(r.get('_relevance') or 0)
+        source=str(r.get('source','')).lower()
+        qscore=quality.get(source,1.0)
+        yr=r.get('year')
+        freshness=0
+        try:
+            age=max(0,now_year-int(yr)); freshness=max(0,1-min(age,10)/20)
+        except Exception: pass
+        cites=min(1.0, float(r.get('citations') or 0)/100)
+        r['_logic_score']=round(base + hits*0.12 + qscore + freshness*0.25 + cites*0.20,4)
+    return sorted(results,key=lambda r:r.get('_logic_score',0),reverse=True)
+
+def _research_collect(query, year=None, author=None):
+    """Run independent evidence sources concurrently so one slow provider does not block all others."""
+    plan=_research_query_plan(query)
+    jobs=[]
+    for q in plan:
+        jobs.extend([
+            ('google',lambda q=q: research_google(q,6)),
+            ('web',lambda q=q: research_web(q,6)),
+            ('wikipedia',lambda q=q: research_wikipedia(q,4)),
+            ('openalex',lambda q=q: research_openalex(q,year,8)),
+            ('crossref',lambda q=q: research_crossref(q,year,author,8)),
+            ('koja',lambda q=q: research_local_documents(q,8)),
+        ])
+    raw=[]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures=[pool.submit(fn) for _,fn in jobs]
+        for fut in as_completed(futures):
+            try: raw.extend(fut.result() or [])
+            except Exception as exc: logger.warning('Research provider task failed: %s',exc)
+    results=_research_deduplicate(raw,_research_normalize_query(query))
+    ranked=_research_score_logic(results,_research_normalize_query(query))
+    return _research_relevance_gate(ranked,_research_normalize_query(query))
 
 def _research_filter(results, source='all', year=None, sort='relevance'):
-    source=(source or 'all').lower(); source=source if source in ('all','web','wikipedia','academic','koja') else 'all'
+    source=(source or 'all').lower(); source=source if source in ('all','google','web','wikipedia','academic','koja') else 'all'
     if source!='all':
         if source=='academic': results=[r for r in results if any(x in str(r.get('source','')).lower() for x in ('openalex','crossref'))]
+        elif source=='google': results=[r for r in results if 'google search' in str(r.get('source','')).lower()]
         elif source=='koja': results=[r for r in results if 'koja documents' in str(r.get('source','')).lower()]
         else: results=[r for r in results if str(r.get('source','')).lower()==source]
     if year: results=[r for r in results if str(r.get('year') or '')==str(year)]
@@ -1397,82 +1477,150 @@ def _research_filter(results, source='all', year=None, sort='relevance'):
     return results
 
 def _ai_config_status():
-    """Return safe AI configuration diagnostics without exposing secrets."""
-    raw_key=os.getenv("AI_API_KEY") or os.getenv("OPENAI_API_KEY")
-    endpoint=(os.getenv("AI_API_URL") or "https://api.openai.com/v1/responses").strip()
-    model=(os.getenv("AI_MODEL") or "gpt-5.6-luna").strip()
-    provider="openai" if "api.openai.com" in endpoint else "custom"
+    """Return safe Gemini configuration diagnostics without exposing secrets."""
+    raw_key=(os.getenv("GEMINI_API_KEY") or "").strip()
+    model=(os.getenv("GEMINI_MODEL") or "gemini-3.5-flash-lite").strip()
+    # Avoid known exhausted/obsolete model settings from older Render deployments.
+    if model in ("gemini-3.7-flash", "gemini-2.5-flash-lite"):
+        model = "gemini-3.5-flash-lite"
+    fallback=(os.getenv("GEMINI_FALLBACK_MODEL") or "gemini-3.5-flash-lite").strip()
+    # Google has retired 2.5 Flash-Lite for some new users; transparently migrate old env settings.
+    if fallback == "gemini-2.5-flash-lite":
+        fallback = "gemini-3.5-flash-lite"
+    base=(os.getenv("GEMINI_API_URL") or "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
+    endpoint=f"{base}/models/{model}:generateContent"
     return {
         "configured": bool(raw_key),
-        "provider": provider,
+        "provider": "gemini",
         "endpoint": endpoint,
         "model": model,
-        "key_source": "AI_API_KEY" if os.getenv("AI_API_KEY") else ("OPENAI_API_KEY" if os.getenv("OPENAI_API_KEY") else "none"),
-        "key_length": len(raw_key.strip()) if raw_key else 0,
+        "fallback_model": fallback,
+        "key_source": "GEMINI_API_KEY" if raw_key else "none",
+        "key_length": len(raw_key),
     }
 
-def _ai_call(prompt, system_prompt, max_output_tokens=900, timeout=40):
+def _ai_call(prompt, system_prompt, max_output_tokens=900, timeout=20):
+    """Call Gemini directly with transient-error retry and model fallback."""
     cfg=_ai_config_status()
-    api_key=(os.getenv("AI_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
+    api_key=(os.getenv("GEMINI_API_KEY") or "").strip()
     if not api_key:
         return "", "missing_api_key"
-    endpoint=cfg["endpoint"]
-    model=cfg["model"]
-    payload={"model":model,"input":[{"role":"system","content":[{"type":"input_text","text":system_prompt}]},{"role":"user","content":[{"type":"input_text","text":prompt}]}],"max_output_tokens":max_output_tokens}
-    try:
-        r=requests.post(endpoint,json=payload,timeout=timeout,headers={"Authorization":"Bearer "+api_key,"Content-Type":"application/json"})
-        if not r.ok:
-            body=r.text[:800]
-            logger.warning("AI request failed status=%s model=%s endpoint=%s body=%s", r.status_code, model, endpoint, body)
-            if r.status_code in (401,403): return "", "authentication_failed"
-            if r.status_code==404: return "", "endpoint_or_model_not_found"
-            if r.status_code==429: return "", "rate_limited"
-            if 500 <= r.status_code <= 599: return "", "provider_server_error"
-            return "", f"provider_http_{r.status_code}"
-        data=r.json()
-        text=clean(data.get("output_text") or "")
-        if text: return text, ""
-        parts=[]
-        for item in data.get("output") or []:
-            for content in item.get("content") or []:
-                if content.get("type") in ("output_text","text") and content.get("text"):
-                    parts.append(content["text"])
-        text=clean("\n".join(parts))
-        return (text, "" if text else "empty_provider_response")
-    except requests.Timeout:
-        logger.warning("AI request timed out model=%s endpoint=%s", model, endpoint)
-        return "", "timeout"
-    except requests.RequestException as exc:
-        logger.warning("AI network request failed model=%s endpoint=%s error=%s", model, endpoint, exc)
-        return "", "network_error"
-    except Exception as exc:
-        logger.warning("AI response parsing failed: %s", exc)
-        return "", "invalid_provider_response"
 
-def _openai_text(prompt, system_prompt, max_output_tokens=900, timeout=40):
+    base=(os.getenv("GEMINI_API_URL") or "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
+    primary=cfg["model"]
+    fallback=cfg["fallback_model"]
+    # AI requests must fail fast. Retrying a quota/timeout error only makes the
+    # Render request slower and can exhaust the platform request window.
+    retry_attempts=1
+
+    payload={
+        "systemInstruction":{"parts":[{"text":system_prompt}]},
+        "contents":[{"role":"user","parts":[{"text":prompt}]}],
+        "generationConfig":{"maxOutputTokens":max_output_tokens,"temperature":0.75},
+    }
+    headers={
+        "x-goog-api-key": api_key,
+        "Content-Type":"application/json",
+    }
+    transient_codes={429,500,502,503,504}
+    last_error="provider_server_error"
+
+    # Try the primary model, then a stable lower-cost fallback if the provider is busy.
+    models=[]
+    for model in (primary, fallback):
+        if model and model not in models:
+            models.append(model)
+
+    for model_index, model in enumerate(models):
+        endpoint=f"{base}/models/{model}:generateContent"
+        for attempt in range(retry_attempts):
+            try:
+                r=requests.post(endpoint, json=payload, timeout=timeout, headers=headers)
+                if r.ok:
+                    data=r.json()
+                    parts=[]
+                    for candidate in data.get("candidates") or []:
+                        content=candidate.get("content") or {}
+                        for part in content.get("parts") or []:
+                            text=part.get("text")
+                            if text: parts.append(text)
+                    text=clean("\n".join(parts))
+                    if text:
+                        if model != primary:
+                            logger.info("Gemini fallback model succeeded model=%s", model)
+                        return text, ""
+                    feedback=(data.get("promptFeedback") or {}).get("blockReason")
+                    if feedback:
+                        return "", "safety_blocked"
+                    last_error="empty_provider_response"
+                    break
+
+                status=r.status_code
+                body=r.text[:800]
+                logger.warning("Gemini request failed status=%s model=%s attempt=%s/%s body=%s",
+                               status, model, attempt+1, retry_attempts, body)
+                if status in (401,403):
+                    return "", "authentication_failed"
+                if status==404:
+                    last_error="endpoint_or_model_not_found"
+                    break
+                if status in transient_codes:
+                    last_error="rate_limited" if status==429 else "provider_server_error"
+                    # Do not retry or fall through to a second model.
+                    return "", last_error
+                return "", f"provider_http_{status}"
+            except requests.Timeout:
+                last_error="timeout"
+                logger.warning("Gemini request timed out model=%s attempt=%s/%s", model, attempt+1, retry_attempts)
+                return "", last_error
+            except requests.RequestException as exc:
+                last_error="network_error"
+                logger.warning("Gemini network request failed model=%s error=%s", model, exc)
+                if attempt < retry_attempts-1:
+                    import time
+                    time.sleep(1.0 * (2 ** attempt))
+                    continue
+                break
+            except Exception as exc:
+                logger.warning("Gemini response parsing failed: %s", exc)
+                return "", "invalid_provider_response"
+
+        # Only fall back after a temporary provider/model problem.
+        if model_index == 0 and len(models) > 1 and last_error in (
+            "provider_server_error", "rate_limited", "timeout", "network_error", "endpoint_or_model_not_found"
+        ):
+            logger.warning("Gemini primary model unavailable; trying fallback model=%s", fallback)
+            continue
+        break
+
+    return "", last_error
+
+def _gemini_text(prompt, system_prompt, max_output_tokens=900, timeout=40):
+    # Kept as a compatibility wrapper for existing KOJA research code.
     text, _error = _ai_call(prompt, system_prompt, max_output_tokens, timeout)
     return text
 
 def _ai_error_message(code):
     return {
-        "missing_api_key":"AI API key is missing from the running Render service.",
-        "authentication_failed":"AI provider rejected the API key. Check that the key is valid and belongs to the configured provider.",
-        "endpoint_or_model_not_found":"The AI endpoint or model was not found. Check AI_API_URL and AI_MODEL.",
-        "rate_limited":"The AI provider rate-limited the request. Wait and try again.",
-        "provider_server_error":"The AI provider returned a server error. Try again shortly.",
-        "timeout":"The AI provider request timed out.",
-        "network_error":"KOJA could not reach the AI provider from Render.",
-        "empty_provider_response":"The AI provider returned no usable text.",
-        "invalid_provider_response":"KOJA received an unexpected AI response format.",
-    }.get(code, "The AI provider returned an error. Check the Render logs.")
+        "missing_api_key":"Gemini API key is missing from the running Render service.",
+        "authentication_failed":"Gemini rejected the API key. Check that the key is valid and belongs to the configured Google AI project.",
+        "endpoint_or_model_not_found":"The Gemini endpoint or model was not found. Check GEMINI_MODEL.",
+        "rate_limited":"Gemini rate-limited the request. Wait and try again.",
+        "provider_server_error":"Gemini returned a server error. Try again shortly.",
+        "timeout":"The Gemini request timed out.",
+        "network_error":"KOJA could not reach Gemini from Render.",
+        "empty_provider_response":"Gemini returned no usable text.",
+        "invalid_provider_response":"KOJA received an unexpected Gemini response format.",
+        "safety_blocked":"Gemini blocked the request under its safety policies.",
+    }.get(code, "Gemini returned an error. Check the Render logs.")
 
 def research_ai_summary(query, results):
     if not results: return ''
     source_text='\n\n'.join(f"[{i+1}] {r.get('title','')} ({r.get('source','')})\n{r.get('snippet','')[:1200]}" for i,r in enumerate(results[:10]))
-    text=_openai_text(
+    text=_gemini_text(
         f"Question: {query}\n\nSources:\n{source_text}\n\nWrite a concise research summary with 3-5 key findings and a short evidence note.",
         'You are KOJA Research. Summarize only the supplied sources. Do not invent facts. Cite source numbers like [1] [2]. State when evidence is limited.',
-        700, 30
+        700, 20
     )
     if text: return text
     highlights=[]
@@ -1497,17 +1645,8 @@ def _names(r):
     return [clean(str(x)) for x in a if clean(str(x))]
 def _apa(n):
     p=n.split(); return (p[-1]+", "+" ".join(x[0]+"." for x in p[:-1])).strip() if len(p)>1 else n
-def _reference_author(r):
-    a=_names(r)
-    if a: return ", ".join(_apa(x) for x in a)
-    src=clean(r.get('source') or '').lower()
-    if src=='wikipedia': return 'Wikipedia contributors'
-    publisher=clean(r.get('publisher') or '')
-    if publisher: return publisher
-    return clean(r.get('source') or '') or 'Unknown author'
-
 def make_reference(r,style="apa",n=1):
-    a=_names(r); auth=_reference_author(r); title=clean(r.get("title") or "Untitled"); year=r.get("year") or "n.d."; journal=clean(r.get("journal") or ""); doi=clean(r.get("doi") or ""); url=clean(r.get("url") or ""); publisher=clean(r.get("publisher") or ""); st=_source_type(r)
+    a=_names(r); auth=", ".join(_apa(x) for x in a) or "KOJA AFRICA"; title=clean(r.get("title") or "Untitled"); year=r.get("year") or "n.d."; journal=clean(r.get("journal") or ""); doi=clean(r.get("doi") or ""); url=clean(r.get("url") or ""); publisher=clean(r.get("publisher") or ""); st=_source_type(r)
     if style=="apa":
         if st=="journal_article": return f"{auth} ({year}). {title}. {journal}."+(f" https://doi.org/{doi.replace('https://doi.org/','')}" if doi else (f" {url}" if url else ""))
         if st=="book": return f"{auth} ({year}). <i>{title}</i>. {publisher}."
@@ -1530,7 +1669,7 @@ def research_ai_notes(query, results, style='apa'):
     for i,r in enumerate(results[:12],1):
         bundle.append(f"[{i}] {r.get('title','')} | {r.get('source','')} | {r.get('year') or 'n.d.'}\nAuthors: {', '.join(_names(r))}\nEvidence: {clean(r.get('snippet',''))[:1600]}\nURL: {r.get('url','')}")
     prompt=(f'Write high-quality research notes on: {query}\n\nUse ONLY the evidence supplied below. Do not invent facts, figures, quotations, authors, dates, references or conclusions. Every substantive factual claim must have one or more source-number citations such as [1] immediately after the claim. If evidence is insufficient, say so.\n\nStructure the notes with: Title; Introduction; Key concepts/background; Main findings/themes; Evidence and discussion; Implications; Conclusion; Research gaps/limitations only if supported. Write connected explanatory paragraphs, like strong academic study notes, not disconnected bullet fragments. Use the selected citation style for the reference list: {CITATION_STYLES.get(style,style)}.\n\nSOURCES:\n' + '\n\n'.join(bundle))
-    text=_openai_text(prompt,'You are KOJA Research Notes. Be evidence-bound, clear, academic and concise. Never fabricate citations or source details.',2200,45)
+    text=_gemini_text(prompt,'You are KOJA Research Notes. Be evidence-bound, clear, academic and concise. Never fabricate citations or source details.',2200,20)
     if text: return text
     lines=[f"# Research Notes: {query}","","## Introduction",f"The search retrieved {len(results)} relevant records. The notes below are limited to the evidence contained in those records.",""]
     for i,r in enumerate(results[:8],1):
@@ -1542,13 +1681,11 @@ def research_ai_notes(query, results, style='apa'):
 
 @app.route('/research/notes')
 def research_notes():
-    q=clean(request.args.get('q','')); style=clean(request.args.get('style','apa')).lower() or 'apa'
+    q=_research_normalize_query(request.args.get('q','')); style=clean(request.args.get('style','apa')).lower() or 'apa'
     if style not in CITATION_STYLES: style='apa'
     results=[]
     if q:
-        search_q=_research_normalize_query(q)
-        raw=research_web(search_q,6)+research_wikipedia(search_q,5)+research_openalex(search_q,None,10)+research_crossref(search_q,None,None,10)+research_local_documents(search_q,10)
-        results=_research_deduplicate(raw,search_q)[:12]
+        results=_research_collect(q)[:12]
     notes=research_ai_notes(q,results,style) if q else ''
     bibliography=make_bibliography(results,style) if results else []
     return render_page('Research Notes', r'''<style>
@@ -1557,23 +1694,22 @@ def research_notes():
 
 @app.route('/research')
 def research():
-    q=clean(request.args.get('q','')); source_filter=clean(request.args.get('source','all')).lower() or 'all'; sort=clean(request.args.get('sort','relevance')).lower() or 'relevance'; year=_research_year(request.args.get('year','')); author=clean(request.args.get('author','')); style=clean(request.args.get('style','apa')).lower() or 'apa'; source_type=clean(request.args.get('source_type','all')).lower() or 'all'
+    q=_research_normalize_query(request.args.get('q','')); source_filter=clean(request.args.get('source','all')).lower() or 'all'; sort=clean(request.args.get('sort','relevance')).lower() or 'relevance'; year=_research_year(request.args.get('year','')); author=clean(request.args.get('author','')); style=clean(request.args.get('style','apa')).lower() or 'apa'; source_type=clean(request.args.get('source_type','all')).lower() or 'all'
     if style not in CITATION_STYLES: style='apa'
     results=[]
     if q:
-        results += research_web(q,8)+research_wikipedia(q,6)+research_openalex(q,year,10)+research_crossref(q,year,author,10)+research_local_documents(q,12)
-        results=_research_deduplicate(results,q)
+        results=_research_collect(q,year,author)
         results=_research_filter(results,source_filter,year,sort)
         if source_type!='all': results=[r for r in results if _source_type(r)==source_type]
     summary=research_ai_summary(q,results) if q else ''
     bibliography=make_bibliography(results,style) if results else []
     return render_page('Research', r'''
 <style>
-.research-shell{max-width:1100px;margin:auto}.research-search{display:grid;grid-template-columns:1fr auto;gap:10px}.research-search input{min-width:0}.research-filters{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-top:12px}.research-filters label{font-size:.82rem;font-weight:700}.research-filters select,.research-filters input{width:100%;margin-top:5px}.research-tabs{display:flex;gap:8px;overflow:auto;margin:14px 0}.research-tabs a{white-space:nowrap}.source-badge{display:inline-block;padding:5px 9px;border-radius:999px;background:rgba(80,150,255,.14);font-size:.78rem;font-weight:800}.research-result h3{line-height:1.35}.research-meta{font-size:.82rem;opacity:.8}.research-summary{border-left:4px solid #62a8ff}.research-summary pre{white-space:pre-wrap;font:inherit;line-height:1.6}.research-count{font-weight:700}.research-empty{padding:28px;text-align:center}@media(max-width:700px){.research-search{grid-template-columns:1fr}.research-filters{grid-template-columns:1fr 1fr}.research-result{padding:16px!important}}
+.research-shell{max-width:920px;margin:auto}.research-search{display:flex;flex-direction:column;gap:8px;background:rgba(127,127,127,.08);border:1px solid rgba(127,127,127,.18);padding:10px 12px;border-radius:24px}.research-search textarea{width:100%;min-width:0;resize:none;min-height:105px;max-height:280px;border:0!important;background:transparent!important;box-shadow:none!important;font-size:1.05rem;padding:14px 10px!important;outline:none}.research-composer-bottom{display:flex;align-items:center;gap:8px}.research-composer-actions{display:flex;align-items:center;gap:6px}.research-icon{width:42px!important;height:42px!important;margin:0!important;padding:0!important;border-radius:50%!important;display:inline-flex!important;align-items:center;justify-content:center;font-size:1.2rem;cursor:pointer}.research-send{margin-left:auto!important;width:44px!important;height:44px!important;border-radius:50%!important;padding:0!important;display:inline-flex!important;align-items:center;justify-content:center;font-size:1.15rem}.research-file-name{font-size:.78rem;opacity:.72;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:55%}.research-recording{font-size:.78rem;font-weight:700;display:none}.research-search .btn{border-radius:22px;padding:10px 18px}.research-filters{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px}.research-filters label{font-size:.78rem;font-weight:700;opacity:.9}.research-filters select,.research-filters input{width:100%;margin-top:5px}.research-tabs{display:flex;gap:8px;overflow:auto;margin:14px 0;padding-bottom:2px}.research-tabs a{white-space:nowrap;border-radius:20px}.source-badge{display:inline-block;padding:5px 10px;border-radius:999px;background:rgba(80,150,255,.14);font-size:.74rem;font-weight:800}.research-result{border-radius:18px!important;margin-bottom:12px}.research-result h3{line-height:1.35;margin:9px 0}.research-result h3 a{text-decoration:none}.research-meta{font-size:.82rem;opacity:.72}.research-summary{border:1px solid rgba(98,168,255,.28);border-radius:18px!important;background:rgba(98,168,255,.06)}.research-summary pre{white-space:pre-wrap;font:inherit;line-height:1.7;margin:0}.research-count{font-weight:700}.research-empty{padding:35px;text-align:center;border-radius:18px!important}.research-welcome{text-align:center;padding:20px 10px 8px}.research-welcome h2{font-size:1.8rem;margin-bottom:8px}.research-welcome p{opacity:.75}.research-answer-label{font-weight:800;margin-bottom:10px}.research-source-list{margin-top:6px}.research-source-list .card{border-radius:18px!important}@media(max-width:700px){.research-search{border-radius:18px}.research-filters{grid-template-columns:1fr 1fr}.research-result{padding:16px!important}}@media(max-width:480px){.research-filters{grid-template-columns:1fr}}
 </style>
-<div class="research-shell"><div class="hero"><h2>🔎 KOJA Research Engine</h2><p>Search the web, scholarly literature and your KOJA document collection from one research workspace.</p><form method="get" action="{{ url_for('research') }}" class="research-search" style="margin-top:18px"><input name="q" value="{{ q }}" placeholder="Ask a question, topic, paper, author or subject…" aria-label="Research search"><button class="btn" type="submit">Search</button></form>
-<div class="research-filters"><label>Source<select name="source" form="research-filter-form"><option value="all" {% if source_filter=='all' %}selected{% endif %}>All sources</option><option value="academic" {% if source_filter=='academic' %}selected{% endif %}>Academic</option><option value="web" {% if source_filter=='web' %}selected{% endif %}>Web</option><option value="wikipedia" {% if source_filter=='wikipedia' %}selected{% endif %}>Wikipedia</option><option value="koja" {% if source_filter=='koja' %}selected{% endif %}>KOJA Documents</option></select></label><label>Year<input name="year" form="research-filter-form" value="{{ year or '' }}" placeholder="e.g. 2025" inputmode="numeric"></label><label>Author<input name="author" form="research-filter-form" value="{{ author }}" placeholder="Academic author"></label><label>Citation style<select name="style" form="research-filter-form">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Source type<select name="source_type" form="research-filter-form"><option value="all">All source types</option>{% for k,v in source_types.items() %}<option value="{{k}}" {% if source_type==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Sort<select name="sort" form="research-filter-form"><option value="relevance" {% if sort=='relevance' %}selected{% endif %}>Relevance</option><option value="date" {% if sort=='date' %}selected{% endif %}>Newest first</option><option value="citations" {% if sort=='citations' %}selected{% endif %}>Most cited</option></select></label></div><form id="research-filter-form" method="get" action="{{ url_for('research') }}"><input type="hidden" name="q" value="{{ q }}"></form></div>
-{% if q %}<div class="note-actions"><a class="btn" href="{{ url_for('research_notes',q=q,style=style) }}">📝 Write Research Notes from this topic</a></div><div class="research-tabs"><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}">🎓 Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}">🌐 Web</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}">📁 KOJA Documents</a></div><div class="card"><span class="research-count">{{ results|length }} results</span> for <strong>“{{ q }}”</strong></div>{% if summary %}<div class="card research-summary"><h3>🧠 Research Summary</h3><pre>{{ summary }}</pre><p class="small">AI summaries use configured AI credentials when available; otherwise KOJA shows source-based highlights. Verify important claims against original sources.</p></div>{% endif %}{% for r in results %}<div class="card research-result"><span class="source-badge">{{ r.source }}</span><h3><a href="{{ r.url or '#' }}" {% if r.url %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a></h3>{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p><p><strong>In-text:</strong> {{ make_intext(r,style,loop.index) }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open original source ↗</a>{% endif %}</div>{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endfor %}{% if bibliography %}<div class="card"><h2>References</h2><p class="small">Generated from available source metadata. Verify against the original source.</p>{% for n,ref in bibliography %}<p style="padding-left:28px;text-indent:-28px;line-height:1.6">{{ ref|safe }}</p>{% endfor %}</div>{% endif %}{% else %}<div class="grid"><div class="card"><h3>🌐 Web Discovery</h3><p>Discover general web knowledge.</p></div><div class="card"><h3>🎓 Academic Search</h3><p>OpenAlex and Crossref provide scholarly metadata, authors, years and citation information.</p></div><div class="card"><h3>📁 KOJA Documents</h3><p>Search documents already connected to your KOJA Supabase database.</p></div><div class="card"><h3>🧠 AI Research Summary</h3><p>Configure an AI API key to synthesize retrieved evidence with source-number citations.</p></div></div>{% endif %}</div>
+<div class="research-shell"><div class="research-welcome"><h2>🔎 What would you like to research?</h2><p>Ask a full question, attach a document, or use your voice. KOJA Research searches web, academic literature, Wikipedia and your KOJA documents, then brings the evidence together.</p></div><div class="hero"><form method="get" action="{{ url_for('research') }}" class="research-search" id="research-composer"><textarea name="q" rows="3" maxlength="2000" placeholder="Ask anything you want to research…" aria-label="Research question" autofocus>{{ q }}</textarea><div class="research-composer-bottom"><div class="research-composer-actions"><label class="btn secondary research-icon" title="Attach a document" aria-label="Attach a document">📎<input id="research-file" type="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp" hidden></label><button class="btn secondary research-icon" id="research-record" type="button" title="Record voice" aria-label="Record voice">🎙️</button><span class="research-recording" id="research-recording">● Recording…</span><span class="research-file-name" id="research-file-name"></span></div><button class="btn research-send" type="submit" title="Send research question" aria-label="Send research question">➤</button></div></form>
+<script>(function(){const box=document.querySelector('#research-composer textarea[name="q"]');const file=document.getElementById('research-file');const name=document.getElementById('research-file-name');const rec=document.getElementById('research-record');const recLabel=document.getElementById('research-recording');let media=null,chunks=[];if(box){const grow=()=>{box.style.height='auto';box.style.height=Math.min(box.scrollHeight,280)+'px'};box.addEventListener('input',grow);grow()}if(file){file.addEventListener('change',()=>{name.textContent=file.files&&file.files[0]?file.files[0].name:''})}if(rec&&navigator.mediaDevices&&window.MediaRecorder){rec.addEventListener('click',async()=>{if(media){media.stop();return}try{const stream=await navigator.mediaDevices.getUserMedia({audio:true});media=new MediaRecorder(stream);chunks=[];media.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};media.onstop=()=>{const blob=new Blob(chunks,{type:'audio/webm'});const url=URL.createObjectURL(blob);name.textContent='Voice recording ready ('+Math.round(blob.size/1024)+' KB)';const a=document.createElement('a');a.href=url;a.download='koja-research-question.webm';a.style.display='none';document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(url);a.remove()},1000);stream.getTracks().forEach(t=>t.stop());media=null;rec.textContent='🎙️';recLabel.style.display='none'};media.start();rec.textContent='⏹️';recLabel.style.display='inline';}catch(e){alert('Microphone permission is required to record.')}})}})();</script><div class="research-filters"><label>Source<select name="source" form="research-filter-form"><option value="all" {% if source_filter=='all' %}selected{% endif %}>All sources</option><option value="academic" {% if source_filter=='academic' %}selected{% endif %}>Academic</option><option value="web" {% if source_filter=='web' %}selected{% endif %}>Web</option><option value="wikipedia" {% if source_filter=='wikipedia' %}selected{% endif %}>Wikipedia</option><option value="koja" {% if source_filter=='koja' %}selected{% endif %}>KOJA Documents</option></select></label><label>Year<input name="year" form="research-filter-form" value="{{ year or '' }}" placeholder="e.g. 2025" inputmode="numeric"></label><label>Author<input name="author" form="research-filter-form" value="{{ author }}" placeholder="Academic author"></label><label>Citation style<select name="style" form="research-filter-form">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Source type<select name="source_type" form="research-filter-form"><option value="all">All source types</option>{% for k,v in source_types.items() %}<option value="{{k}}" {% if source_type==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Sort<select name="sort" form="research-filter-form"><option value="relevance" {% if sort=='relevance' %}selected{% endif %}>Relevance</option><option value="date" {% if sort=='date' %}selected{% endif %}>Newest first</option><option value="citations" {% if sort=='citations' %}selected{% endif %}>Most cited</option></select></label></div><form id="research-filter-form" method="get" action="{{ url_for('research') }}"><input type="hidden" name="q" value="{{ q }}"></form></div>
+{% if q %}<div class="note-actions"><a class="btn" href="{{ url_for('research_notes',q=q,style=style) }}">📝 Write Research Notes</a><a class="btn secondary" href="{{ url_for('research') }}">＋ New research</a></div><div class="research-tabs"><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}">🎓 Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}">🌐 Web</a><a class="btn secondary" href="https://www.google.com/search?q={{ q|urlencode }}" target="_blank" rel="noopener">🔎 Google</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}">📁 KOJA Documents</a></div><div class="card"><span class="research-count">{{ results|length }} ranked sources</span> found for <strong>“{{ q }}”</strong><p class="small" style="margin-top:8px">KOJA combines multiple search angles, Google Search, web discovery, academic literature and KOJA Documents; it removes duplicates, weighs source quality, ranks evidence and then uses KOJA AI to synthesize the strongest evidence.</p></div>{% if summary %}<div class="card research-summary"><div class="research-answer-label">🧠 KOJA Research Answer</div><pre>{{ summary }}</pre><p class="small">AI summaries use configured AI credentials when available; otherwise KOJA shows source-based highlights. Verify important claims against original sources.</p></div>{% endif %}{% for r in results %}<div class="card research-result"><span class="source-badge">{{ r.source }}</span><h3><a href="{{ r.url or '#' }}" {% if r.url %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a></h3>{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p><p><strong>In-text:</strong> {{ make_intext(r,style,loop.index) }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open original source ↗</a>{% endif %}</div>{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endfor %}{% if bibliography %}<div class="card"><h2>References</h2><p class="small">Generated from available source metadata. Verify against the original source.</p>{% for n,ref in bibliography %}<p style="padding-left:28px;text-indent:-28px;line-height:1.6">{{ ref|safe }}</p>{% endfor %}</div>{% endif %}{% else %}<div class="grid"><div class="card"><h3>🔎 Google + Web</h3><p>Use Google Search alongside web discovery for broader coverage.</p></div><div class="card"><h3>🎓 Academic Search</h3><p>OpenAlex and Crossref provide scholarly metadata, authors, years and citation information.</p></div><div class="card"><h3>📁 KOJA Documents</h3><p>Search documents already connected to your KOJA Supabase database.</p></div><div class="card"><h3>🧠 AI Research Summary</h3><p>Configure an AI API key to synthesize retrieved evidence with source-number citations.</p></div></div>{% endif %}</div>
 ''',q=q,results=results,summary=summary,source_filter=source_filter,sort=sort,year=year,author=author,style=style,source_type=source_type,citation_styles=CITATION_STYLES,source_types=SOURCE_TYPES,bibliography=bibliography,make_intext=make_intext,SITE_URL=SITE_URL)
 
 
@@ -1596,47 +1732,115 @@ def ai_status():
 @app.route("/ai", methods=["GET", "POST"])
 @login_required
 def ai_assistant():
-    """General KOJA AI assistant. Uses the configured AI provider and keeps a short session conversation."""
-    # Do not persist AI conversation contents in Flask's client-side session cookie.
-    history = []
-    answer = ""
+    """KOJA AI 2.0: persistent conversations stored server-side in Supabase."""
+    user = current_user() or {}
+    uid = str(user.get("id") or "")
+    conversations = db_select("koja_ai_conversations", {"user_id": uid, "is_archived": False}, order="updated_at.desc", limit=30)
+    conversation_id = clean(request.args.get("conversation_id"))
     if request.method == "POST":
         action = clean(request.form.get("action", "chat"))
-        if action == "clear":
-            flash("KOJA AI conversation cleared.", "success")
+        conversation_id = clean(request.form.get("conversation_id") or conversation_id)
+        if action == "new":
+            row, err = db_insert("koja_ai_conversations", {"user_id": uid, "title": "New KOJA AI chat"})
+            if row and row.get("id"):
+                return redirect(url_for("ai_assistant", conversation_id=row["id"]))
+            flash("Could not create a new AI chat. Run KOJA_AI_V2_SQL.sql in Supabase first.", "danger")
+            return redirect(url_for("ai_assistant"))
+        if action == "archive":
+            if conversation_id:
+                db_update("koja_ai_conversations", {"id": conversation_id, "user_id": uid}, {"is_archived": True, "updated_at": utc_now()})
             return redirect(url_for("ai_assistant"))
         prompt = clean(request.form.get("prompt"))
         if not prompt:
             flash("Enter a question for KOJA AI.", "warning")
-            return redirect(url_for("ai_assistant"))
-        if _rate_limited("ai:" + str((current_user() or {}).get("id") or request.remote_addr or "unknown"), 20, 300):
+            return redirect(url_for("ai_assistant", conversation_id=conversation_id) if conversation_id else url_for("ai_assistant"))
+        if _rate_limited("ai:" + uid, 20, 300):
             flash("Too many AI requests. Please wait a few minutes.", "warning")
+            return redirect(url_for("ai_assistant", conversation_id=conversation_id) if conversation_id else url_for("ai_assistant"))
+        if not conversation_id:
+            row, err = db_insert("koja_ai_conversations", {"user_id": uid, "title": prompt[:80] or "New KOJA AI chat"})
+            if row and row.get("id"):
+                conversation_id = row["id"]
+            else:
+                flash("KOJA AI storage is not ready. Run KOJA_AI_V2_SQL.sql in Supabase.", "danger")
+                return redirect(url_for("ai_assistant"))
+        owned = db_select("koja_ai_conversations", {"id": conversation_id, "user_id": uid, "is_archived": False}, limit=1)
+        if not owned:
+            flash("That AI conversation is unavailable.", "danger")
             return redirect(url_for("ai_assistant"))
-        context = ""
+        previous = db_select("koja_ai_messages", {"conversation_id": conversation_id, "user_id": uid}, order="created_at.desc", limit=20)
+        previous.reverse()
+        context_lines = []
+        for item in previous:
+            role = "USER" if item.get("role") == "user" else "KOJA AI"
+            context_lines.append(role + ": " + clean(item.get("content"))[:12000])
+        # Give repeated questions natural variation while keeping the factual core stable.
+        response_styles = [
+            "Answer directly in a concise conversational style.",
+            "Answer in a slightly different natural wording, with the key point first.",
+            "Explain it simply and practically, using a short example only when useful.",
+            "Give a compact answer with the most important details first.",
+            "Use a clear, friendly explanation with different wording from a previous answer if the question repeats.",
+        ]
+        response_style = secrets.choice(response_styles)
         system = (
-            "You are KOJA AI, the general AI assistant inside KOJA AFRICA. "
-            "Answer clearly and practically. Do not invent citations, facts, names, prices, laws, medical diagnoses, "
-            "or current events. If information is uncertain or requires live verification, say so. "
+            "You are KOJA AI, the general AI assistant inside KOJA AFRICA. Answer clearly and practically. "
+            "Do not invent citations, facts, names, prices, laws, medical diagnoses, or current events. "
+            "If information is uncertain or requires live verification, say so. Maintain continuity using the supplied conversation. "
+            "When the user asks the same or nearly the same question again, vary the wording, structure, examples, or level of explanation naturally, "
+            "but keep the underlying facts, conclusion, and important numbers consistent. Never change a fact merely to sound different. "
+            "Avoid repetitive stock openings and do not mention that you are varying the response. "
+            "" + response_style + " "
             "KOJA has separate Research, Documents, Assignments, Professional Services, Marketplace and Delivery modules. "
             "When the user asks for research, recommend the KOJA Research Engine rather than pretending you browsed the web."
         )
-        full_prompt = ("Previous conversation:\n" + context + "\n\n" if context else "") + "USER: " + prompt
-        answer, ai_error = _ai_call(full_prompt, system, max_output_tokens=1200, timeout=45)
+        full_prompt = "Conversation history:\n" + ("\n".join(context_lines) if context_lines else "(none)") + "\n\nUSER: " + prompt
+        answer, ai_error = _ai_call(full_prompt, system, max_output_tokens=1200, timeout=20)
         if not answer:
             flash("KOJA AI: " + _ai_error_message(ai_error), "danger")
         else:
-            # Keep only this request's exchange in server memory so the response is visible
-            # without persisting conversation contents in the client-side cookie.
-            history = [{"role":"user","content":prompt},{"role":"assistant","content":answer}]
-            log_activity("ai_chat", "User used KOJA AI.")
-    return render_page("KOJA AI", r"""
-<div class="hero"><h2>🧠 KOJA AI</h2><p>Ask questions, get explanations, plan work and turn ideas into practical next steps.</p><p class="small">AI configuration is checked on the server. Your API key is never displayed.</p></div>
-<div class="card">
-{% for item in history %}<div style="margin:12px 0;padding:12px;border-radius:12px;background:rgba(127,127,127,.10)"><strong>{{ 'You' if item.role=='user' else 'KOJA AI' }}</strong><div style="white-space:pre-wrap;margin-top:6px">{{ item.content }}</div></div>{% endfor %}
-<form method="post"><textarea name="prompt" maxlength="12000" required placeholder="Ask KOJA AI anything..."></textarea><div class="actions"><button class="btn" type="submit">Send to KOJA AI</button><button class="btn secondary" name="action" value="clear" type="submit">Clear</button></div></form>
-{% if not history %}<p class="small">For academic research with source citations, use <a href="{{ url_for('research') }}">KOJA Research Engine</a>.</p>{% endif %}
+            db_insert("koja_ai_messages", {"conversation_id": conversation_id, "user_id": uid, "role": "user", "content": prompt})
+            db_insert("koja_ai_messages", {"conversation_id": conversation_id, "user_id": uid, "role": "assistant", "content": answer})
+            title = clean(owned[0].get("title"))
+            update = {"updated_at": utc_now()}
+            if not title or title == "New KOJA AI chat":
+                update["title"] = prompt[:80] or "New KOJA AI chat"
+            db_update("koja_ai_conversations", {"id": conversation_id, "user_id": uid}, update)
+            log_activity("ai_chat", "User used KOJA AI 2.0.")
+        return redirect(url_for("ai_assistant", conversation_id=conversation_id))
+
+    messages = []
+    if conversation_id:
+        owned = db_select("koja_ai_conversations", {"id": conversation_id, "user_id": uid, "is_archived": False}, limit=1)
+        if not owned:
+            conversation_id = ""
+        else:
+            messages = db_select("koja_ai_messages", {"conversation_id": conversation_id, "user_id": uid}, order="created_at.asc", limit=100)
+    return render_page("KOJA AI", r'''
+<style>
+.koja-ai-page{position:relative;width:calc(100% + 24px);min-height:calc(100vh - 70px);margin:-8px -12px 0;display:flex;flex-direction:column;background:var(--bg,#fff)}
+.koja-ai-top{height:58px;display:flex;align-items:center;gap:8px;padding:8px 14px;border-bottom:1px solid rgba(127,127,127,.18);position:sticky;top:0;z-index:20;background:var(--bg,#fff)}
+.koja-ai-icon{width:42px;height:42px;display:inline-flex;align-items:center;justify-content:center;border:1px solid rgba(127,127,127,.22);border-radius:12px;background:transparent;font-size:20px;cursor:pointer;text-decoration:none;color:inherit}
+.koja-ai-title{font-weight:700;font-size:16px;margin-right:auto}.koja-ai-main{width:100%;max-width:1100px;margin:0 auto;flex:1;display:flex;flex-direction:column;padding:18px 18px 26px;box-sizing:border-box}.koja-ai-messages{flex:1;padding:8px 0 18px}.koja-ai-empty{min-height:55vh;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}.koja-ai-empty h2{font-size:30px;margin:0 0 8px}.koja-ai-empty p{opacity:.7}.koja-ai-msg{display:flex;margin:20px 0}.koja-ai-msg.user{justify-content:flex-end}.koja-ai-bubble{max-width:min(78%,720px);padding:13px 16px;border-radius:18px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}.koja-ai-msg.user .koja-ai-bubble{background:rgba(127,127,127,.16);border-bottom-right-radius:6px}.koja-ai-msg.assistant .koja-ai-bubble{border-bottom-left-radius:6px}.koja-ai-compose{position:sticky;bottom:0;padding-top:8px;background:linear-gradient(transparent,var(--bg,#fff) 18%)}.koja-ai-compose{padding-bottom:env(safe-area-inset-bottom)}.koja-ai-compose form{display:flex;flex-direction:column;gap:6px;border:1px solid rgba(127,127,127,.28);border-radius:24px;padding:10px 10px 8px 14px;background:var(--bg,#fff);box-shadow:0 2px 12px rgba(0,0,0,.05)}.koja-ai-input-row{display:flex;align-items:flex-end;gap:8px}.koja-ai-compose textarea{border:0!important;box-shadow:none!important;outline:none!important;resize:none;min-height:34px;max-height:180px;margin:0!important;padding:8px 0!important;background:transparent!important;flex:1;font-size:16px;line-height:1.45}.koja-ai-tools{display:flex;align-items:center;gap:4px}.koja-ai-tool{width:38px;height:38px;border:0;border-radius:50%;cursor:pointer;background:transparent;color:inherit;font-size:20px;display:inline-flex;align-items:center;justify-content:center}.koja-ai-tool:hover{background:rgba(127,127,127,.12)}.koja-ai-tool.recording{background:rgba(220,60,60,.15)}.koja-ai-send{width:42px;height:42px;border:0;border-radius:50%;cursor:pointer;font-size:18px}.koja-ai-file{display:none}.koja-ai-attachment{display:none;align-items:center;gap:8px;margin:2px 2px 0;padding:7px 10px;border-radius:12px;background:rgba(127,127,127,.10);font-size:.86rem}.koja-ai-attachment.show{display:flex}.koja-ai-attachment button{margin-left:auto;border:0;background:transparent;cursor:pointer;font-size:17px;color:inherit}.koja-ai-drawer{position:fixed;inset:0;z-index:100;display:none}.koja-ai-drawer.open{display:block}.koja-ai-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.38)}.koja-ai-panel{position:absolute;left:0;top:0;bottom:0;width:min(320px,86vw);padding:14px;background:var(--bg,#fff);box-shadow:8px 0 30px rgba(0,0,0,.16);overflow:auto}.koja-ai-panel-head{display:flex;align-items:center;gap:8px;margin-bottom:14px}.koja-ai-panel-head strong{margin-right:auto}.koja-ai-chatlink{display:block;padding:11px 12px;border-radius:11px;text-decoration:none;color:inherit;margin:3px 0}.koja-ai-chatlink.active{background:rgba(127,127,127,.16)}
+@media(max-width:700px){.koja-ai-main{padding:10px 12px 20px}.koja-ai-bubble{max-width:88%}.koja-ai-empty h2{font-size:25px}.koja-ai-top{padding-left:10px}}
+</style>
+<div class="koja-ai-page">
+  <div class="koja-ai-top">
+    <button class="koja-ai-icon" type="button" aria-label="Recent chats" title="Recent chats" onclick="document.getElementById('kojaRecentChats').classList.add('open')">☰</button>
+    <div class="koja-ai-title">🧠 KOJA AI</div>
+    <form method="post" style="margin:0"><input type="hidden" name="action" value="new"><button class="koja-ai-icon" type="submit" aria-label="New chat" title="New chat">＋</button></form>
+  </div>
+  <div class="koja-ai-main">
+    <div class="koja-ai-messages">
+    {% if messages %}
+      {% for item in messages %}<div class="koja-ai-msg {{ 'user' if item.role=='user' else 'assistant' }}"><div class="koja-ai-bubble">{% if item.role!='user' %}<strong>KOJA AI</strong><br>{% endif %}{{ item.content }}</div></div>{% endfor %}
+    {% else %}<div class="koja-ai-empty"><h2>How can I help?</h2><p>Ask KOJA AI anything.</p></div>{% endif %}
+    </div>
+    <div class="koja-ai-compose"><form method="post" enctype="multipart/form-data" id="kojaAiForm"><input type="hidden" name="conversation_id" value="{{ conversation_id }}"><div id="kojaAttachment" class="koja-ai-attachment"><span id="kojaAttachmentIcon">📄</span><span id="kojaAttachmentName"></span><button type="button" onclick="clearKOJAAttachment()" aria-label="Remove attachment">×</button></div><div class="koja-ai-input-row"><div class="koja-ai-tools"><label class="koja-ai-tool" for="kojaAiFile" title="Upload document" aria-label="Upload document">📎</label><input class="koja-ai-file" id="kojaAiFile" type="file" name="attachment" accept=".pdf,.doc,.docx,.txt,.csv,.md,.jpg,.jpeg,.png,.webp"><button class="koja-ai-tool" type="button" id="kojaAiRecord" title="Record voice message" aria-label="Record voice message">🎙️</button></div><textarea name="prompt" id="kojaAiPrompt" maxlength="12000" required placeholder="Message KOJA AI…" rows="1"></textarea><button class="koja-ai-send" type="submit" aria-label="Send" title="Send">↑</button></div></form><p class="small" style="text-align:center;margin:8px 0 0">📎 Add a document or 🎙️ record a voice note. For academic research with source citations, use <a href="{{ url_for('research') }}">KOJA Research</a>.</p></div><script>(function(){const ta=document.getElementById('kojaAiPrompt'),file=document.getElementById('kojaAiFile'),chip=document.getElementById('kojaAttachment'),name=document.getElementById('kojaAttachmentName'),icon=document.getElementById('kojaAttachmentIcon'),recBtn=document.getElementById('kojaAiRecord');function resize(){ta.style.height='auto';ta.style.height=Math.min(ta.scrollHeight,180)+'px'}ta.addEventListener('input',resize);file.addEventListener('change',function(){const f=file.files[0];if(!f)return;name.textContent=f.name;icon.textContent=f.type.startsWith('image/')?'🖼️':(f.type.startsWith('audio/')?'🎵':'📄');chip.classList.add('show');});window.clearKOJAAttachment=function(){file.value='';chip.classList.remove('show');name.textContent=''};let recorder,parts=[],stream;recBtn.addEventListener('click',async function(){if(recorder&&recorder.state==='recording'){recorder.stop();return}try{stream=await navigator.mediaDevices.getUserMedia({audio:true});recorder=new MediaRecorder(stream);parts=[];recorder.ondataavailable=e=>{if(e.data.size)parts.push(e.data)};recorder.onstop=()=>{const blob=new Blob(parts,{type:'audio/webm'});const f=new File([blob],'KOJA-voice-note.webm',{type:'audio/webm'});try{const dt=new DataTransfer();dt.items.add(f);file.files=dt.files;name.textContent=f.name;icon.textContent='🎙️';chip.classList.add('show');ta.value=(ta.value?ta.value+'\n':'')+'[Voice note attached — please process this attachment]';resize()}catch(e){ta.value=(ta.value?ta.value+'\n':'')+'[Voice note recorded]';resize()}stream.getTracks().forEach(t=>t.stop());recBtn.classList.remove('recording');recBtn.textContent='🎙️';};recorder.start();recBtn.classList.add('recording');recBtn.textContent='⏹️';setTimeout(()=>{if(recorder&&recorder.state==='recording')recorder.stop()},60000)}catch(e){alert('Microphone permission is required to record a voice message.')}});resize()})();</script>
+  </div>
 </div>
-""", history=history, answer=answer)
+<div id="kojaRecentChats" class="koja-ai-drawer"><div class="koja-ai-backdrop" onclick="document.getElementById('kojaRecentChats').classList.remove('open')"></div><aside class="koja-ai-panel"><div class="koja-ai-panel-head"><strong>Recent chats</strong><button class="koja-ai-icon" type="button" onclick="document.getElementById('kojaRecentChats').classList.remove('open')" aria-label="Close">×</button></div>{% for c in conversations %}<a class="koja-ai-chatlink {{ 'active' if c.id|string==conversation_id else '' }}" href="{{ url_for('ai_assistant', conversation_id=c.id) }}">{{ c.title }}</a>{% else %}<p class="small">No saved conversations yet.</p>{% endfor %}</aside></div>
+''', conversations=conversations, messages=messages, conversation_id=conversation_id)
 
 @app.route("/documents", methods=["GET", "POST"])
 @login_required
@@ -3667,6 +3871,12 @@ def deliveries():
 def track_delivery(tracking_code):
     delivery=first_row("deliveries",{"tracking_code":tracking_code})
     if not delivery: abort(404)
+    user=current_user() or {}
+    allowed=bool(user.get("is_admin")) or str(delivery.get("customer_id") or "") == str(user.get("id") or "")
+    if not allowed:
+        provider=get_driver_provider(user.get("id"))
+        allowed=bool(provider and str(provider.get("id")) == str(delivery.get("driver_id") or ""))
+    if not allowed: abort(403)
     return render_page("Track Delivery",r"""
 <div class="hero"><h2>Live Delivery Tracking</h2><p>Tracking code: <strong>{{ delivery.get("tracking_code") }}</strong></p></div>
 <div class="card">
@@ -3828,6 +4038,12 @@ def delivery_location(tracking_code):
 @app.route("/provider-map/<provider_id>")
 @login_required
 def provider_map(provider_id):
+    user=current_user() or {}
+    provider=first_row("service_providers",{"id":provider_id}) or {}
+    own_provider=provider.get("user_id") and str(provider.get("user_id"))==str(user.get("id") or "")
+    if not user.get("is_admin") and not own_provider:
+        # A provider map is private; only an admin or the provider themselves may open it.
+        abort(403)
     provider_type=request.args.get("provider_type","provider")
     return render_page("Provider Location",r"""
 <div class="hero"><h2>{{ provider_type|title }} Location</h2><p>Latest GPS position shared by this provider.</p></div>
@@ -3852,6 +4068,11 @@ update();setInterval(update,10000);
 @app.route("/api/provider/<provider_id>/location")
 @login_required
 def provider_location(provider_id):
+    user=current_user() or {}
+    provider=first_row("service_providers",{"id":provider_id}) or {}
+    own_provider=provider.get("user_id") and str(provider.get("user_id"))==str(user.get("id") or "")
+    if not user.get("is_admin") and not own_provider:
+        return jsonify({"ok":False,"message":"You are not authorized to view this provider location."}),403
     rows=db_select("driver_locations",filters={"driver_id":provider_id},order="created_at.desc",limit=1)
     if not rows:
         return jsonify({"ok":False,"message":"This provider has not shared a GPS location."})
@@ -4143,9 +4364,8 @@ def sitemap_xml():
 # ============================================================
 
 @app.route('/admin/marketplace', methods=['GET','POST'])
-@login_required
+@admin_required
 def admin_marketplace():
-    if not (current_user() or {}).get('is_admin'): abort(403)
     if request.method=='POST':
         action=clean(request.form.get('action')); item_id=clean(request.form.get('item_id'))
         if action in ('publish','unpublish'):
@@ -5113,15 +5333,147 @@ def connect_status_media():
 @login_required
 def connect_answer(call_id):
     uid=current_user()['id']; c=first_row('koja_calls',{'id':call_id})
-    if not c or str(c.get('callee_id'))!=str(uid) or c.get('status')!='ringing': abort(404)
-    return render_page('Answer KOJA Call',r'''<div class="card"><h2>📞 Incoming {{ c.mode|title }} Call</h2><p>From <strong>{{ name }}</strong></p><div id="state">Connecting…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px"></video></div><button id="hang" class="btn danger">End Call</button></div><script>const cid={{ call_id|tojson }},mode={{ c.mode|tojson }};let pc=null,timer=null;async function api(u,o){let r=await fetch(u,o);if(!r.ok)throw 0;return r.json()}async function start(){try{let x=await api('/api/connect/call/check/'+cid);if(!x.call.offer)throw 0;pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});let st=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});local.srcObject=st;st.getTracks().forEach(t=>pc.addTrack(t,st));pc.ontrack=e=>remote.srcObject=e.streams[0];pc.onicecandidate=e=>{if(e.candidate)fetch('/api/connect/call/ice/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate})})};await pc.setRemoteDescription({type:'offer',sdp:x.call.offer});let ans=await pc.createAnswer();await pc.setLocalDescription(ans);await api('/api/connect/call/answer/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({answer:ans.sdp})});state.textContent='Connected';timer=setInterval(async()=>{try{let z=await api('/api/connect/call/check/'+cid);if(z.call.status==='ended'){clearInterval(timer);pc.close();state.textContent='Call ended'}}catch(e){}},1500)}catch(e){state.textContent='Could not answer this call.'}}hang.onclick=()=>{fetch('/api/connect/call/end/'+cid,{method:'POST'});clearInterval(timer);if(pc)pc.close();state.textContent='Call ended'};start();</script>''',c=c,call_id=call_id,name=_profile_name(c.get('caller_id')))
+    if not c or str(c.get('callee_id'))!=str(uid) or c.get('status') not in ('ringing','answered'):
+        abort(404)
+    return render_page('Answer KOJA Call',r'''<div class="card"><h2>📞 Incoming {{ c.mode|title }} Call</h2><p>From <strong>{{ name }}</strong></p><div id="state">Connecting…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px"></video></div><button id="hang" class="btn danger">End Call</button></div><script>
+const cid={{ call_id|tojson }},mode={{ c.mode|tojson }};
+let pc=null,timer=null,iceTimer=null,remoteIce=new Set();
+const state=document.getElementById('state');
+async function api(u,o){let r=await fetch(u,o);if(!r.ok)throw 0;return r.json();}
+async function sendIce(candidate){
+  try{await api('/api/connect/call/ice/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate})});}catch(e){}
+}
+async function pullIce(){
+  if(!pc||!pc.remoteDescription)return;
+  try{
+    let x=await api('/api/connect/call/ice/'+cid);
+    for(const candidate of (x.candidates||[])){
+      const key=JSON.stringify(candidate);
+      if(remoteIce.has(key))continue;
+      remoteIce.add(key);
+      try{await pc.addIceCandidate(candidate);}catch(e){}
+    }
+  }catch(e){}
+}
+async function start(){
+  try{
+    let x=await api('/api/connect/call/check/'+cid);
+    if(!x.call.offer)throw 0;
+    pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
+    let st=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});
+    document.getElementById('local').srcObject=st;
+    st.getTracks().forEach(t=>pc.addTrack(t,st));
+    pc.ontrack=e=>document.getElementById('remote').srcObject=e.streams[0];
+    pc.onicecandidate=e=>{if(e.candidate)sendIce(e.candidate.toJSON?e.candidate.toJSON():e.candidate);};
+    pc.onconnectionstatechange=()=>{if(['failed','closed'].includes(pc.connectionState)){state.textContent='Connection failed';}};
+    await pc.setRemoteDescription({type:'offer',sdp:x.call.offer});
+    await pullIce();
+    let ans=await pc.createAnswer();
+    await pc.setLocalDescription(ans);
+    await api('/api/connect/call/answer/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({answer:ans.sdp})});
+    state.textContent='Connected';
+    iceTimer=setInterval(pullIce,1000);
+    timer=setInterval(async()=>{
+      try{
+        let z=await api('/api/connect/call/check/'+cid);
+        if(z.call.status==='ended'){clearInterval(timer);clearInterval(iceTimer);pc.close();state.textContent='Call ended';}
+      }catch(e){}
+    },1500);
+  }catch(e){state.textContent='Could not answer this call.';}
+}
+document.getElementById('hang').onclick=()=>{fetch('/api/connect/call/end/'+cid,{method:'POST'});clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();state.textContent='Call ended';};
+start();
+</script>''',c=c,call_id=call_id,name=_profile_name(c.get('caller_id')))
+
+@app.route('/api/connect/call/ice/<call_id>',methods=['POST','GET'])
+@login_required
+def connect_call_ice(call_id):
+    # Normalize the authenticated user ID before comparing with Supabase UUID values.
+    # This prevents valid ICE signaling requests from being rejected with HTTP 403
+    # when current_user() returns a UUID-like value instead of a plain string.
+    uid=str(current_user()['id'])
+    c=first_row('koja_calls',{'id':call_id})
+    if not c or uid not in (str(c.get('caller_id')),str(c.get('callee_id'))):
+        return jsonify(error='Forbidden'),403
+
+    caller_id=str(c.get('caller_id'))
+    callee_id=str(c.get('callee_id'))
+
+    def parse_candidates(value):
+        if isinstance(value,list):
+            return value
+        if isinstance(value,str):
+            try:
+                parsed=json.loads(value)
+                return parsed if isinstance(parsed,list) else []
+            except Exception:
+                return []
+        return []
+
+    caller_ice=parse_candidates(c.get('caller_ice'))
+    callee_ice=parse_candidates(c.get('callee_ice'))
+
+    if request.method == 'GET':
+        # Return only the other participant's candidates.
+        remote=callee_ice if str(uid)==caller_id else caller_ice
+        return jsonify(ok=True,candidates=remote)
+
+    d=request.get_json(silent=True) or {}
+    candidate=d.get('candidate')
+    if not isinstance(candidate,dict):
+        return jsonify(error='Invalid ICE candidate'),400
+
+    # Basic size guard for signaling data.
+    if len(json.dumps(candidate,separators=(',',':'))) > 12000:
+        return jsonify(error='ICE candidate too large'),413
+
+    mine=caller_ice if str(uid)==caller_id else callee_ice
+    mine_json=json.dumps(mine,separators=(',',':'),sort_keys=True)
+    candidate_json=json.dumps(candidate,separators=(',',':'),sort_keys=True)
+
+    # De-duplicate candidates without changing any other KOJA service.
+    if candidate_json not in {
+        json.dumps(x,separators=(',',':'),sort_keys=True)
+        for x in mine if isinstance(x,dict)
+    }:
+        mine.append(candidate)
+
+    field='caller_ice' if str(uid)==caller_id else 'callee_ice'
+    updated,err=db_update('koja_calls',{'id':call_id},{field:mine})
+    if err:
+        return jsonify(error=str(err)[:500]),500
+
+    return jsonify(ok=True,count=len(mine))
 
 @app.route('/api/connect/call/answer/<call_id>',methods=['POST'])
 @login_required
 def connect_call_answer(call_id):
-    uid=current_user()['id'];c=first_row('koja_calls',{'id':call_id})
-    if not c or str(c.get('callee_id'))!=str(uid):return jsonify(error='Forbidden'),403
-    d=request.get_json(silent=True) or {};db_update('koja_calls',{'id':call_id},{'answer':clean(d.get('answer')),'status':'answered','answered_at':utc_now()});return jsonify(ok=True)
+    uid=current_user()['id']; c=first_row('koja_calls',{'id':call_id})
+    if not c or str(c.get('callee_id'))!=str(uid):
+        return jsonify(error='Forbidden'),403
+
+    d=request.get_json(silent=True) or {}
+    answer=clean(d.get('answer'))
+    if not answer:
+        return jsonify(error='Missing answer'),400
+
+    # Idempotent answer: repeated browser requests must not produce a conflict.
+    # Only the authenticated callee may change the answer.
+    status=str(c.get('status') or '').lower()
+    if status in ('ended','rejected'):
+        return jsonify(error='Call is no longer active',status=status),409
+
+    if status == 'answered' and c.get('answer'):
+        return jsonify(ok=True,already_answered=True,call=c)
+
+    updated,err=db_update('koja_calls',{'id':call_id},{
+        'answer':answer,
+        'status':'answered',
+        'answered_at':utc_now()
+    })
+    if err:
+        return jsonify(error=str(err)[:500]),500
+    return jsonify(ok=True,call=updated or {'id':call_id,'status':'answered'})
 
 @app.route('/connect/calls')
 @login_required
@@ -5136,7 +5488,64 @@ def connect_call(user_id):
     if user_id==uid or not find_user_by_id(user_id) or mode not in ('voice','video'):abort(404)
     c=_direct_conversation(uid,user_id)
     if not c:return 'Run KOJA Connect SQL first.',500
-    return render_page('KOJA Call',r'''<div class="card"><h2>📞 KOJA {{ mode|title }} Call</h2><p>Calling <strong>{{ name }}</strong></p><div id="state">Connecting…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px"></video></div><button id="hang" class="btn danger">End Call</button></div><script>const target={{ user_id|tojson }},mode={{ mode|tojson }};let callId=null,pc=null,timer=null,started=Date.now();const state=document.getElementById('state');const unavailable='This contact is not available because the internet or network connection could not be reached.';function speak(){if('speechSynthesis'in window){speechSynthesis.cancel();speechSynthesis.speak(new SpeechSynthesisUtterance(unavailable));}}function fail(msg){state.textContent=msg||unavailable;speak();clearInterval(timer);if(pc)pc.close();}async function api(u,o){let r=await fetch(u,o);if(!r.ok)throw 0;return r.json()}async function start(){try{if(!navigator.onLine)throw 0;let c=await api('/api/connect/call/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({callee_id:target,mode})});callId=c.call.id;pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});let st=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});document.getElementById('local').srcObject=st;st.getTracks().forEach(t=>pc.addTrack(t,st));pc.ontrack=e=>document.getElementById('remote').srcObject=e.streams[0];pc.onicecandidate=e=>{if(e.candidate)fetch('/api/connect/call/ice/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate})}).catch(()=>fail())};pc.onconnectionstatechange=()=>{if(['failed','disconnected'].includes(pc.connectionState))fail()};let offer=await pc.createOffer();await pc.setLocalDescription(offer);await api('/api/connect/call/offer/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({offer:offer.sdp})});state.textContent='Ringing…';timer=setInterval(async()=>{if(Date.now()-started>120000){fail();return}try{let x=await api('/api/connect/call/check/'+callId);if(x.call.status==='ended'||x.call.status==='rejected'){fail();return}if(x.call.answer&&!pc.currentRemoteDescription){await pc.setRemoteDescription({type:'answer',sdp:x.call.answer});state.textContent='Connected'}}catch(e){fail()}},1500)}catch(e){fail()}}document.getElementById('hang').onclick=()=>{if(callId)fetch('/api/connect/call/end/'+callId,{method:'POST'});clearInterval(timer);if(pc)pc.close();state.textContent='Call ended'};window.addEventListener('offline',()=>fail());start();</script>''',user_id=user_id,mode=mode,name=_profile_name(user_id))
+    return render_page('KOJA Call',r'''<div class="card"><h2>📞 KOJA {{ mode|title }} Call</h2><p>Calling <strong>{{ name }}</strong></p><div id="state">Connecting…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px"></video></div><button id="hang" class="btn danger">End Call</button></div><script>
+const target={{ user_id|tojson }},mode={{ mode|tojson }};
+let callId=null,pc=null,timer=null,iceTimer=null,remoteIce=new Set(),started=Date.now();
+const state=document.getElementById('state');
+const unavailable='This contact is not available because the internet or network connection could not be reached.';
+function speak(){if('speechSynthesis'in window){speechSynthesis.cancel();speechSynthesis.speak(new SpeechSynthesisUtterance(unavailable));}}
+function fail(msg){state.textContent=msg||unavailable;speak();clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();}
+async function api(u,o){let r=await fetch(u,o);if(!r.ok)throw 0;return r.json();}
+async function sendIce(candidate){
+  try{await api('/api/connect/call/ice/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate})});}catch(e){}
+}
+async function pullIce(){
+  if(!callId||!pc||!pc.remoteDescription)return;
+  try{
+    let x=await api('/api/connect/call/ice/'+callId);
+    for(const candidate of (x.candidates||[])){
+      const key=JSON.stringify(candidate);
+      if(remoteIce.has(key))continue;
+      remoteIce.add(key);
+      try{await pc.addIceCandidate(candidate);}catch(e){}
+    }
+  }catch(e){}
+}
+async function start(){
+  try{
+    if(!navigator.onLine)throw 0;
+    let c=await api('/api/connect/call/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({callee_id:target,mode})});
+    callId=c.call.id;
+    pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
+    let st=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});
+    document.getElementById('local').srcObject=st;
+    st.getTracks().forEach(t=>pc.addTrack(t,st));
+    pc.ontrack=e=>document.getElementById('remote').srcObject=e.streams[0];
+    pc.onicecandidate=e=>{if(e.candidate)sendIce(e.candidate.toJSON?e.candidate.toJSON():e.candidate);};
+    pc.onconnectionstatechange=()=>{if(['failed','closed'].includes(pc.connectionState))fail();};
+    let offer=await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await api('/api/connect/call/offer/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({offer:offer.sdp})});
+    state.textContent='Ringing…';
+    iceTimer=setInterval(pullIce,1000);
+    timer=setInterval(async()=>{
+      if(Date.now()-started>120000){fail();return;}
+      try{
+        let x=await api('/api/connect/call/check/'+callId);
+        if(x.call.status==='ended'||x.call.status==='rejected'){fail();return;}
+        if(x.call.answer&&!pc.currentRemoteDescription){
+          await pc.setRemoteDescription({type:'answer',sdp:x.call.answer});
+          state.textContent='Connected';
+          pullIce();
+        }
+      }catch(e){fail();}
+    },1500);
+  }catch(e){fail();}
+}
+document.getElementById('hang').onclick=()=>{if(callId)fetch('/api/connect/call/end/'+callId,{method:'POST'});clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();state.textContent='Call ended';};
+window.addEventListener('offline',()=>fail());
+start();
+</script>''',user_id=user_id,mode=mode,name=_profile_name(user_id))
 
 @app.route('/api/connect/call/create',methods=['POST'])
 @login_required
@@ -5157,14 +5566,14 @@ def connect_call_offer(call_id):
 @app.route('/api/connect/call/check/<call_id>')
 @login_required
 def connect_call_check(call_id):
-    uid=current_user()['id'];c=first_row('koja_calls',{'id':call_id})
+    uid=str(current_user()['id']);c=first_row('koja_calls',{'id':call_id})
     if not c or uid not in (str(c.get('caller_id')),str(c.get('callee_id'))):return jsonify(error='Forbidden'),403
     return jsonify(call=c)
 
 @app.route('/api/connect/call/end/<call_id>',methods=['POST'])
 @login_required
 def connect_call_end(call_id):
-    uid=current_user()['id'];c=first_row('koja_calls',{'id':call_id})
+    uid=str(current_user()['id']);c=first_row('koja_calls',{'id':call_id})
     if not c or uid not in (str(c.get('caller_id')),str(c.get('callee_id'))):return jsonify(error='Forbidden'),403
     db_update('koja_calls',{'id':call_id},{'status':'ended','ended_at':utc_now()});return jsonify(ok=True)
 
@@ -5178,7 +5587,6 @@ def connect_sql():
 # ============================================================
 
 def profession_slug(value):
-    import re
     text = clean(value).lower()
     return re.sub(r"[^a-z0-9]+", "-", text).strip("-")
 
