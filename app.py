@@ -1630,11 +1630,16 @@ def ai_assistant():
             role = "USER" if item.get("role") == "user" else "KOJA AI"
             context_lines.append(role + ": " + clean(item.get("content"))[:12000])
         system = (
-            "You are KOJA AI, the general AI assistant inside KOJA AFRICA. Answer clearly and practically. "
-            "Do not invent citations, facts, names, prices, laws, medical diagnoses, or current events. "
-            "If information is uncertain or requires live verification, say so. Maintain continuity using the supplied conversation. "
-            "KOJA has separate Research, Documents, Assignments, Professional Services, Marketplace and Delivery modules. "
-            "When the user asks for research, recommend the KOJA Research Engine rather than pretending you browsed the web."
+            "You are KOJA AI, the intelligent assistant inside KOJA AFRICA. Your conversation style should feel natural, capable, calm, and helpful—similar to a high-quality modern AI assistant. "
+            "Understand the user's intent before answering and use the supplied conversation history to maintain continuity. "
+            "Give the direct answer first, then useful explanation or steps when needed. Match the user's level: simple language for simple questions and technical language for technical work. "
+            "Use short paragraphs, headings, numbered steps, and bullet points when they improve readability. For code or commands, provide clean copy-ready blocks. "
+            "Do not repeat the user's question unnecessarily. Do not use filler such as 'Sure!' or 'As an AI'. Be confident when the answer is well established and transparent when it is uncertain. "
+            "Ask a clarifying question only when the missing information materially changes the answer; otherwise make a reasonable assumption and state it briefly. "
+            "Never invent citations, facts, names, prices, laws, medical diagnoses, current events, or actions you did not perform. If information requires live verification, say so clearly. "
+            "When the user asks for current web research or source-backed academic research, use or recommend the KOJA Research Engine rather than pretending that you browsed the web. "
+            "KOJA has separate Research, Documents, Assignments, Professional Services, Marketplace and Delivery modules. Do not claim to have changed those modules unless an available KOJA action actually did so. "
+            "Your goal is to be useful, precise, practical, and conversational while respecting the user's instructions and the boundaries of KOJA."
         )
         full_prompt = "Conversation history:\n" + ("\n".join(context_lines) if context_lines else "(none)") + "\n\nUSER: " + prompt
         answer, ai_error = _ai_call(full_prompt, system, max_output_tokens=1200, timeout=8)
@@ -1659,16 +1664,19 @@ def ai_assistant():
         else:
             messages = db_select("koja_ai_messages", {"conversation_id": conversation_id, "user_id": uid}, order="created_at.asc", limit=100)
     return render_page("KOJA AI", r'''
-<div class="hero"><h2>🧠 KOJA AI 2.0</h2><p>Persistent AI conversations with server-side history.</p><p class="small">Your AI API key remains server-side and is never displayed.</p></div>
+<div class="hero"><h2>🧠 KOJA AI</h2><p>Your personal AI workspace for questions, ideas, learning, writing, planning and technical help.</p><p class="small">Powered by Gemini. Your API key stays server-side and is never displayed.</p></div>
 <div style="display:grid;grid-template-columns:minmax(190px,260px) 1fr;gap:16px;align-items:start">
-<div class="card"><form method="post"><input type="hidden" name="action" value="new"><button class="btn" style="width:100%" type="submit">＋ New chat</button></form><hr>
-{% for c in conversations %}<a href="{{ url_for('ai_assistant', conversation_id=c.id) }}" style="display:block;padding:10px;border-radius:10px;margin:5px 0;text-decoration:none;background:{{ 'rgba(127,127,127,.18)' if c.id|string==conversation_id else 'transparent' }}">{{ c.title }}</a>{% endfor %}
-{% if not conversations %}<p class="small">No saved conversations yet.</p>{% endif %}</div>
-<div class="card">
-{% if messages %}{% for item in messages %}<div style="margin:12px 0;padding:12px;border-radius:12px;background:rgba(127,127,127,.10)"><strong>{{ 'You' if item.role=='user' else 'KOJA AI' }}</strong><div style="white-space:pre-wrap;margin-top:6px">{{ item.content }}</div></div>{% endfor %}{% else %}<p class="small">Start a new conversation with KOJA AI.</p>{% endif %}
-<form method="post"><input type="hidden" name="conversation_id" value="{{ conversation_id }}"><textarea name="prompt" maxlength="12000" required placeholder="Ask KOJA AI anything..."></textarea><div class="actions"><button class="btn" type="submit">Send to KOJA AI</button>{% if conversation_id %}<button class="btn secondary" name="action" value="archive" type="submit">Archive chat</button>{% endif %}</div></form>
-<p class="small">For academic research with source citations, use <a href="{{ url_for('research') }}">KOJA Research Engine</a>.</p>
-</div></div>
+<div class="card"><form method="post"><input type="hidden" name="action" value="new"><button class="btn" style="width:100%;font-size:15px" type="submit">＋ New chat</button></form><hr>
+<p class="small" style="margin-bottom:8px">Recent conversations</p>
+{% for c in conversations %}<a href="{{ url_for('ai_assistant', conversation_id=c.id) }}" style="display:block;padding:11px 12px;border-radius:12px;margin:5px 0;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:{{ 'rgba(127,127,127,.18)' if c.id|string==conversation_id else 'transparent' }}">{{ c.title }}</a>{% endfor %}
+{% if not conversations %}<p class="small">Your chats will appear here.</p>{% endif %}
+</div>
+<div class="card" style="min-height:420px">
+<div style="max-width:820px;margin:0 auto">
+{% if messages %}{% for item in messages %}<div style="display:flex;justify-content:{{ 'flex-end' if item.role=='user' else 'flex-start' }};margin:18px 0"><div style="max-width:88%;padding:13px 16px;border-radius:18px;{{ 'background:rgba(127,127,127,.18);border-bottom-right-radius:5px' if item.role=='user' else 'background:rgba(127,127,127,.08);border-bottom-left-radius:5px' }}"><div class="small" style="font-weight:700;margin-bottom:6px">{{ 'You' if item.role=='user' else '🧠 KOJA AI' }}</div><div style="white-space:pre-wrap;line-height:1.65">{{ item.content }}</div></div></div>{% endfor %}{% else %}<div style="text-align:center;padding:48px 10px 30px"><div style="font-size:42px">🧠</div><h3 style="margin:10px 0">How can I help?</h3><p class="small">Ask me a question, give me a task, or describe what you are trying to build.</p><div class="grid" style="margin-top:20px"><div class="card"><strong>Explain</strong><p class="small">Break down difficult topics simply.</p></div><div class="card"><strong>Create</strong><p class="small">Draft, rewrite, plan or brainstorm.</p></div><div class="card"><strong>Build</strong><p class="small">Help with code and technical problems.</p></div></div></div>{% endif %}
+<form method="post" style="margin-top:22px"><input type="hidden" name="conversation_id" value="{{ conversation_id }}"><textarea name="prompt" maxlength="12000" required rows="4" placeholder="Message KOJA AI…"></textarea><div class="actions"><button class="btn" type="submit">Send ↗</button>{% if conversation_id %}<button class="btn secondary" name="action" value="archive" type="submit">Archive</button>{% endif %}</div></form>
+<p class="small" style="margin-top:12px">KOJA AI can make mistakes. Verify important information. For source-backed academic research, use <a href="{{ url_for('research') }}">KOJA Research Engine</a>.</p>
+</div></div></div>
 ''', conversations=conversations, messages=messages, conversation_id=conversation_id)
 
 @app.route("/documents", methods=["GET", "POST"])
