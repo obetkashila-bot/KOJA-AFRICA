@@ -16,7 +16,7 @@ import requests
 from dotenv import load_dotenv
 from flask import (
     Flask, request, redirect, url_for, session,
-    render_template_string, flash, send_file, jsonify, abort
+    render_template_string, flash, send_file, jsonify, abort, Response
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
@@ -110,6 +110,60 @@ SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "true").strip().lower() not in ("0", "f
 SITE_URL = os.getenv("SITE_URL", "https://koja-africa.onrender.com").rstrip("/")
 GSC_SITE_URL = os.getenv("GSC_SITE_URL", SITE_URL)
 GSC_SERVICE_ACCOUNT_JSON = os.getenv("GSC_SERVICE_ACCOUNT_JSON", "").strip()
+
+# Web Push / background KOJA call alerts. Private VAPID key stays server-side.
+KOJA_PUSH_VAPID_PRIVATE_KEY = os.getenv("KOJA_PUSH_VAPID_PRIVATE_KEY", "").strip()
+KOJA_PUSH_VAPID_PUBLIC_KEY = os.getenv("KOJA_PUSH_VAPID_PUBLIC_KEY", "").strip()
+KOJA_PUSH_VAPID_SUBJECT = os.getenv(
+    "KOJA_PUSH_VAPID_SUBJECT",
+    "mailto:admin@koja-africa.com"
+).strip()
+KOJA_PUSH_ENABLED = bool(KOJA_PUSH_VAPID_PRIVATE_KEY and KOJA_PUSH_VAPID_PUBLIC_KEY)
+try:
+    from pywebpush import webpush as _koja_webpush
+except Exception:
+    _koja_webpush = None
+
+def _koja_push_subscriptions(user_id):
+    try:
+        return db_select(
+            "koja_push_subscriptions",
+            filters={"user_id": str(user_id)},
+            limit=20
+        ) or []
+    except Exception as exc:
+        logger.warning("KOJA push subscription lookup failed: %s", exc)
+        return []
+
+def _koja_send_push(user_id, payload):
+    if not KOJA_PUSH_ENABLED or _koja_webpush is None:
+        return 0
+    sent = 0
+    for sub in _koja_push_subscriptions(user_id):
+        try:
+            subscription_info = {
+                "endpoint": sub.get("endpoint"),
+                "keys": {
+                    "p256dh": sub.get("p256dh"),
+                    "auth": sub.get("auth"),
+                },
+            }
+            _koja_webpush(
+                subscription_info=subscription_info,
+                data=json.dumps(payload),
+                vapid_private_key=KOJA_PUSH_VAPID_PRIVATE_KEY,
+                vapid_claims={"sub": KOJA_PUSH_VAPID_SUBJECT},
+            )
+            sent += 1
+        except Exception as exc:
+            logger.warning("KOJA web push failed: %s", exc)
+            # Invalid/expired subscriptions should not remain forever.
+            if getattr(exc, "response", None) is not None and getattr(exc.response, "status_code", 0) in (404, 410):
+                try:
+                    db_delete("koja_push_subscriptions", {"endpoint": sub.get("endpoint")})
+                except Exception:
+                    pass
+    return sent
 
 
 ALLOWED_EXTENSIONS = {
@@ -4998,7 +5052,9 @@ def connect_group_call_create():
         row,err=db_insert('koja_calls',{'id':str(uuid.uuid4()),'conversation_id':cid,'caller_id':uid,'callee_id':callee,'mode':mode,'status':'ringing','created_at':utc_now()})
         if not err and row:
             db_insert('koja_group_call_participants',{'call_id':row['id'],'user_id':callee,'status':'invited'})
-            db_insert('koja_notifications',{'user_id':callee,'notification_type':'group_call','title':f'Incoming group {mode} call','body':f'{_profile_name(uid)} started a group call.','related_id':row['id']});calls.append(row)
+            db_insert('koja_notifications',{'user_id':callee,'notification_type':'group_call','title':f'Incoming group {mode} call','body':f'{_profile_name(uid)} started a group call.','related_id':row['id']})
+            _koja_send_push(callee,{'title':f'Incoming KOJA group {mode} call','body':f'{_profile_name(uid)} started a group call.','call_id':str(row['id']),'mode':mode,'url':f'/connect/answer/{row["id"]}','tag':'koja-group-call-'+str(row['id'])})
+            calls.append(row)
     return jsonify(calls=calls)
 
 @app.route('/connect/status',methods=['GET','POST'])
