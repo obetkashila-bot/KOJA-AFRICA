@@ -4,3 +4,4 @@ reportlab
 python-dotenv
 pywebpush
 cryptography
+gunicorn
