@@ -1,0 +1,44 @@
+KOJA AFRICA — Communications V3.1 Network/ICE Patch
+
+DEPLOY TARGET
+- Deploy ONLY to the existing Render service: KOJA-AFRICA.
+- Do not replace, delete, or modify other KOJA services.
+
+WHAT THIS PATCH FIXES
+- Adds TURN support to WebRTC ICE configuration.
+- Keeps multiple STUN servers as direct-connection fallback.
+- Adds ICE server error/gathering diagnostics.
+- Adds caller ICE restart/recovery when media connectivity fails.
+- Lets the callee respond to a caller ICE-restart offer.
+- Accepts a new answer after an ICE restart.
+- Automatically expires abandoned ringing calls older than 120 seconds, preventing stale-call 409 blocks.
+- Keeps answered calls busy instead of incorrectly terminating legitimate long calls.
+- Keeps background Web Push calling support.
+
+RENDER ENVIRONMENT VARIABLES FOR TURN
+Set these on KOJA-AFRICA only:
+
+KOJA_TURN_URLS=turn:YOUR_TURN_HOST:3478,turns:YOUR_TURN_HOST:5349
+KOJA_TURN_USERNAME=YOUR_TURN_USERNAME
+KOJA_TURN_CREDENTIAL=YOUR_TURN_PASSWORD_OR_CREDENTIAL
+
+The TURN values above are placeholders. Obtain them from your authorized TURN provider. Do not paste the private credential into public code or chat.
+
+OPTIONAL ALIAS
+KOJA_TURN_URL may be used instead of KOJA_TURN_URLS when only one TURN URL is needed.
+
+VAPID VARIABLES (for background call notifications)
+KOJA_PUSH_VAPID_PRIVATE_KEY
+KOJA_PUSH_VAPID_PUBLIC_KEY
+KOJA_PUSH_VAPID_SUBJECT
+
+The VAPID private key must remain secret.
+
+DIAGNOSTIC ENDPOINT
+After deployment, while logged in:
+/api/connect/ice/status
+
+Expected result when TURN is configured:
+turn_configured: true
+
+If turn_configured is false, the application still has STUN, but restrictive mobile/NAT networks may continue to fail until TURN credentials are configured.
