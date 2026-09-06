@@ -5119,12 +5119,12 @@ async function start(){
     timer=setInterval(async()=>{
       try{
         let z=await api('/api/connect/call/check/'+cid);
-        if(['ended','rejected','missed'].includes(String(z.call.status||''))){clearInterval(timer);clearInterval(iceTimer);pc.close();state.textContent='Call '+z.call.status+'.';}
+        if(['ended','rejected','missed'].includes(String(z.call.status||''))){clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();window.location.href='/connect/chat/'+{{ c.id|tojson }};}
       }catch(e){}
     },1500);
   }catch(e){state.textContent='Could not answer this call.';}
 }
-document.getElementById('hang').onclick=()=>{fetch('/api/connect/call/end/'+cid,{method:'POST'});clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();state.textContent='Call ended';};
+document.getElementById('hang').onclick=async()=>{try{await fetch('/api/connect/call/end/'+cid,{method:'POST'});}catch(e){}clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();window.location.href='/connect/chat/'+{{ c.id|tojson }};};
 start();
 </script>''',c=c,call_id=call_id,name=_profile_name(c.get('caller_id')),ice_servers=_koja_connect_ice_servers())
 
@@ -5313,7 +5313,7 @@ async function start(){
     },1500);
   }catch(e){fail();}
 }
-document.getElementById('hang').onclick=()=>{if(callId)fetch('/api/connect/call/end/'+callId,{method:'POST'});clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();state.textContent='Call ended';};
+document.getElementById('hang').onclick=async()=>{if(callId){try{await fetch('/api/connect/call/end/'+callId,{method:'POST'});}catch(e){}}clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();window.location.href='/connect/chat/'+{{ c.id|tojson }};};
 window.addEventListener('offline',()=>fail());
 start();
 </script>''',user_id=user_id,mode=mode,name=_profile_name(user_id),ice_servers=_koja_connect_ice_servers())
