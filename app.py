@@ -4807,7 +4807,7 @@ def connect():
         if not c: continue
         others=db_select('koja_conversation_members',filters={'conversation_id':c['id']},limit=10); other=next((x for x in others if str(x.get('user_id'))!=str(uid)),None)
         c['_other_name']=_profile_name(other['user_id']) if other else (c.get('name') or 'Group'); last=db_select('koja_messages',filters={'conversation_id':c['id']},order='created_at.desc',limit=1); c['_last']=(last[0].get('body') or last[0].get('message_type','')) if last else 'No messages yet'; conversations.append(c)
-    return render_page('KOJA Connect',r'''<div class="hero"><h2>💬 KOJA Connect</h2><p>Chat, voice messages, voice calls, video calls, photos, files, groups and status updates with other KOJA users.</p></div><div class="grid"><div class="card"><h3>👥 Find People</h3><p>Search KOJA users and start a conversation.</p><a class="btn" href="{{ url_for('connect_people') }}">Find People</a></div><div class="card"><h3>🟢 Status</h3><p>Share a 24-hour status.</p><a class="btn" href="{{ url_for('connect_status') }}">My Status</a></div><div class="card"><h3>📞 Calls</h3><p>Voice and video calls separate from Professional Services.</p><a class="btn" href="{{ url_for('connect_calls') }}">Call History</a></div></div><div class="card"><div class="actions"><h3 style="margin-right:auto">Recent Chats</h3><a class="btn" href="{{ url_for('connect_group_new') }}">➕ New Group</a></div>{% for c in conversations %}<a class="card" style="display:block;text-decoration:none;color:inherit" href="{{ url_for('connect_chat',conversation_id=c.id) }}"><strong>{{ c._other_name }}</strong><div class="small">{{ c._last }}</div></a>{% else %}<p>No chats yet. Find a KOJA user to start.</p>{% endfor %}</div>''',conversations=conversations)
+    return render_page('KOJA Connect',r'''<div class="hero"><h2>💬 KOJA Connect</h2><p>Chat, voice messages, voice calls, video calls, photos, files, groups and status updates with other KOJA users.</p></div><div class="grid"><div class="card"><h3>👥 Find People</h3><p>Search KOJA users and start a conversation.</p><a class="btn" href="{{ url_for('connect_people') }}">Find People</a></div><div class="card"><h3>🟢 Status</h3><p>Share a 24-hour status.</p><a class="btn" href="{{ url_for('connect_status') }}">My Status</a><a class="btn secondary" href="{{ url_for('koja_push_setup') }}">🔔 Call Alerts</a></div><div class="card"><h3>📞 Calls</h3><p>Voice and video calls separate from Professional Services.</p><a class="btn" href="{{ url_for('connect_calls') }}">Call History</a></div></div><div class="card"><div class="actions"><h3 style="margin-right:auto">Recent Chats</h3><a class="btn" href="{{ url_for('connect_group_new') }}">➕ New Group</a></div>{% for c in conversations %}<a class="card" style="display:block;text-decoration:none;color:inherit" href="{{ url_for('connect_chat',conversation_id=c.id) }}"><strong>{{ c._other_name }}</strong><div class="small">{{ c._last }}</div></a>{% else %}<p>No chats yet. Find a KOJA user to start.</p>{% endfor %}</div>''',conversations=conversations)
 
 @app.route('/connect/people',methods=['GET','POST'])
 @login_required
@@ -5026,6 +5026,52 @@ def connect_status_media():
         if err:
             delete_storage_path(path)
     return redirect(url_for('connect_status'))
+
+@app.route('/koja-push-sw.js')
+def koja_push_service_worker():
+    sw = """const esc=(v)=>String(v||'');
+self.addEventListener('push',event=>{let d={};try{d=event.data?event.data.json():{}}catch(e){};const o={body:d.body||'Incoming KOJA call',icon:d.icon||'/static/favicon-192.png',badge:d.badge||'/static/favicon-192.png',tag:d.tag||'koja-call',renotify:true,vibrate:[300,100,300],data:d,actions:d.call_id?[{action:'answer',title:'Answer'},{action:'decline',title:'Decline'}]:[]};event.waitUntil(self.registration.showNotification(d.title||'KOJA AFRICA',o));});
+self.addEventListener('notificationclick',event=>{event.notification.close();const d=event.notification.data||{};if(event.action==='decline'&&d.call_id){event.waitUntil(clients.openWindow('/connect/decline/'+encodeURIComponent(d.call_id)));return;}const u=event.action==='answer'&&d.call_id?'/connect/answer/'+encodeURIComponent(d.call_id):(d.url||'/connect');event.waitUntil(clients.matchAll({type:'window',includeUncontrolled:true}).then(cs=>{for(const c of cs){if('focus' in c){c.focus();if('navigate' in c)return c.navigate(u);}}return clients.openWindow(u);}));});"""
+    return Response(sw,mimetype='application/javascript',headers={'Service-Worker-Allowed':'/','Cache-Control':'no-cache'})
+
+@app.route('/api/connect/push/public-key')
+@login_required
+def koja_push_public_key(): return jsonify(ok=True,enabled=KOJA_PUSH_ENABLED,public_key=KOJA_PUSH_VAPID_PUBLIC_KEY if KOJA_PUSH_ENABLED else '')
+
+@app.route('/api/connect/push/subscribe',methods=['POST'])
+@login_required
+def koja_push_subscribe():
+    d=request.get_json(silent=True) or {}; sub=d.get('subscription') or d; keys=sub.get('keys') or {}; uid=str(current_user()['id'])
+    endpoint=clean(sub.get('endpoint')); p256dh=clean(keys.get('p256dh')); auth=clean(keys.get('auth'))
+    if not endpoint or not p256dh or not auth:return jsonify(ok=False,error='Invalid push subscription'),400
+    old=first_row('koja_push_subscriptions',{'endpoint':endpoint}); data={'user_id':uid,'endpoint':endpoint,'p256dh':p256dh,'auth':auth,'updated_at':utc_now()}
+    if old: db_update('koja_push_subscriptions',{'id':old.get('id')},data)
+    else: data.update({'id':str(uuid.uuid4()),'created_at':utc_now()}); db_insert('koja_push_subscriptions',data)
+    return jsonify(ok=True,enabled=KOJA_PUSH_ENABLED)
+
+@app.route('/api/connect/push/unsubscribe',methods=['POST'])
+@login_required
+def koja_push_unsubscribe():
+    d=request.get_json(silent=True) or {}; endpoint=clean(d.get('endpoint')); uid=str(current_user()['id'])
+    if endpoint:
+        try: db_delete('koja_push_subscriptions',{'user_id':uid,'endpoint':endpoint})
+        except Exception: pass
+    return jsonify(ok=True)
+
+@app.route('/connect/decline/<call_id>')
+@login_required
+def koja_push_decline(call_id):
+    uid=str(current_user()['id']); c=first_row('koja_calls',{'id':call_id})
+    if c and str(c.get('callee_id'))==uid and str(c.get('status') or '').lower()=='ringing':
+        db_update('koja_calls',{'id':call_id},{'status':'rejected','ended_at':utc_now()})
+        return redirect(url_for('connect_chat',conversation_id=c.get('conversation_id'))) if c.get('conversation_id') else redirect(url_for('connect'))
+    return redirect(url_for('connect'))
+
+@app.route('/connect/push-setup')
+@login_required
+def koja_push_setup():
+    return render_page('KOJA Background Calls',"""<div class='card'><h2>🔔 KOJA Background Call Alerts</h2><p>Enable notifications so KOJA can alert you while another app is in front.</p><button id='enable' class='btn'>Enable KOJA Call Alerts</button><div id='state' class='small'></div></div><script>
+const state=document.getElementById('state');function key(s){let p='='.repeat((4-s.length%4)%4);return Uint8Array.from(atob((s+p).replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0));}async function go(){try{if(!('serviceWorker'in navigator)||!('PushManager'in window)){state.textContent='Push notifications are not supported by this browser.';return}let r=await fetch('/api/connect/push/public-key'),d=await r.json();if(!d.enabled){state.textContent='KOJA push server is not configured yet.';return}let reg=await navigator.serviceWorker.register('/koja-push-sw.js',{scope:'/'});let perm=await Notification.requestPermission();if(perm!=='granted'){state.textContent='Notification permission denied.';return}let sub=await reg.pushManager.getSubscription();if(!sub)sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:key(d.public_key)});r=await fetch('/api/connect/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':document.querySelector('meta[name=csrf-token]')?.content||''},body:JSON.stringify({subscription:sub.toJSON()})});state.textContent=r.ok?'KOJA background call alerts enabled.':'Could not save subscription.';}catch(e){state.textContent='Could not enable alerts: '+e;}}enable.onclick=go;</script>""")
 
 @app.route('/api/connect/incoming-calls',methods=['GET'])
 @login_required
@@ -5247,7 +5293,7 @@ let callId=null,pc=null,timer=null,iceTimer=null,remoteIce=new Set(),pendingIce=
 const state=document.getElementById('state');
 const unavailable='This contact is not available because the internet or network connection could not be reached.';
 function speak(){if('speechSynthesis'in window){speechSynthesis.cancel();speechSynthesis.speak(new SpeechSynthesisUtterance(unavailable));}}
-async function fail(msg){state.textContent=msg||unavailable;speak();clearInterval(timer);clearInterval(iceTimer);if(callId){try{await fetch('/api/connect/call/end/'+callId,{method:'POST'})}catch(e){}}if(pc)pc.close();}
+async function fail(msg){state.textContent=msg||unavailable;speak();clearInterval(timer);clearInterval(iceTimer);if(callId){try{await fetch('/api/connect/call/end/'+callId,{method:'POST'})}catch(e){}}if(pc)pc.close();setTimeout(()=>{window.location.href='/connect/chat/'+{{ c.id|tojson }};},500);}
 async function api(u,o){let r=await fetch(u,o);if(!r.ok)throw 0;return r.json();}
 async function sendIce(candidate){
   try{await api('/api/connect/call/ice/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate})});}catch(e){}
@@ -5316,7 +5362,7 @@ async function start(){
 document.getElementById('hang').onclick=async()=>{if(callId){try{await fetch('/api/connect/call/end/'+callId,{method:'POST'});}catch(e){}}clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();window.location.href='/connect/chat/'+{{ c.id|tojson }};};
 window.addEventListener('offline',()=>fail());
 start();
-</script>''',user_id=user_id,mode=mode,name=_profile_name(user_id),ice_servers=_koja_connect_ice_servers())
+</script>''',user_id=user_id,mode=mode,name=_profile_name(user_id),ice_servers=_koja_connect_ice_servers(),conversation_id=c.get('id'))
 
 @app.route('/api/connect/call/create',methods=['POST'])
 @login_required
@@ -5332,7 +5378,7 @@ def connect_call_create():
             return jsonify(error='You already have an active KOJA call.',busy=True),409
     c=_direct_conversation(uid,callee); row,err=db_insert('koja_calls',{'id':str(uuid.uuid4()),'conversation_id':c['id'],'caller_id':uid,'callee_id':callee,'mode':mode,'status':'ringing','created_at':utc_now()})
     if err:return jsonify(error=err),500
-    db_insert('koja_notifications',{'user_id':callee,'notification_type':'call','title':f'Incoming {mode} call','body':f'{_profile_name(uid)} is calling you.','related_id':row['id']});return jsonify(call=row)
+    db_insert('koja_notifications',{'user_id':callee,'notification_type':'call','title':f'Incoming {mode} call','body':f'{_profile_name(uid)} is calling you.','related_id':row['id']}); _koja_send_push(callee,{'title':f'Incoming KOJA {mode} call','body':f'{_profile_name(uid)} is calling you.','call_id':str(row['id']),'mode':mode,'url':f'/connect/answer/{row["id"]}','tag':'koja-call-'+str(row['id'])}); return jsonify(call=row)
 
 @app.route('/api/connect/call/offer/<call_id>',methods=['POST'])
 @login_required
