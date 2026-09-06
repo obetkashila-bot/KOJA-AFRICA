@@ -5418,7 +5418,7 @@ async function start(){
 document.getElementById('hang').onclick=async()=>{if(callId){try{await fetch('/api/connect/call/end/'+callId,{method:'POST'});}catch(e){}}clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();window.location.href='/connect/chat/'+{{ c.id|tojson }};};
 window.addEventListener('offline',()=>fail());
 start();
-</script>''',user_id=user_id,mode=mode,name=_profile_name(user_id),ice_servers=_koja_connect_ice_servers(),conversation_id=c.get('id'))
+</script>''',user_id=user_id,mode=mode,name=_profile_name(user_id),ice_servers=_koja_connect_ice_servers(),conversation_id=c.get('id'),c=c)
 
 @app.route('/api/connect/call/create',methods=['POST'])
 @login_required
