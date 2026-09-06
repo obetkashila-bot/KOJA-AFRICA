@@ -839,6 +839,73 @@ footer{text-align:center;color:var(--muted);padding:30px}
  window.addEventListener('resize',function(){if(window.innerWidth>760){links.classList.remove('open');toggle&&toggle.setAttribute('aria-expanded','false');toggle&&(toggle.innerHTML='☰ Menu');}});
 })();
 </script>
+{% if user %}
+<style>
+#kojaIncomingCall{display:none;position:fixed;z-index:99999;left:12px;right:12px;bottom:18px;max-width:520px;margin:auto;background:var(--card,#fff);color:var(--text,#111);border:2px solid var(--border,#ddd);border-radius:18px;padding:16px;box-shadow:0 14px 45px rgba(0,0,0,.28)}
+#kojaIncomingCall .kic-title{font-size:1.08rem;font-weight:800;margin-bottom:6px}#kojaIncomingCall .kic-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+#kojaIncomingCall button,#kojaIncomingCall a{flex:1;min-width:120px;text-align:center;padding:11px 14px;border-radius:10px;text-decoration:none;border:0;cursor:pointer;font-weight:800}
+#kojaIncomingAnswer{background:#16803c;color:#fff}.kojaIncomingReject{background:#b42318;color:#fff}
+</style>
+<div id="kojaIncomingCall" role="alert" aria-live="assertive">
+  <div class="kic-title" id="kojaIncomingTitle">📞 Incoming call</div>
+  <div id="kojaIncomingText">Someone is calling you.</div>
+  <div class="kic-actions">
+    <a id="kojaIncomingAnswer" href="#">Answer</a>
+    <button type="button" class="kojaIncomingReject" id="kojaIncomingReject">Decline</button>
+  </div>
+</div>
+<script>
+(function(){
+  const panel=document.getElementById('kojaIncomingCall');
+  const title=document.getElementById('kojaIncomingTitle');
+  const txt=document.getElementById('kojaIncomingText');
+  const answer=document.getElementById('kojaIncomingAnswer');
+  const reject=document.getElementById('kojaIncomingReject');
+  if(!panel)return;
+  let current=null,lastId=null,timer=null,audioCtx=null,beepTimer=null;
+  function beep(){
+    try{
+      audioCtx=audioCtx||new (window.AudioContext||window.webkitAudioContext)();
+      if(audioCtx.state==='suspended')audioCtx.resume();
+      const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+      o.frequency.value=880;g.gain.value=.035;o.connect(g);g.connect(audioCtx.destination);
+      o.start();o.stop(audioCtx.currentTime+.18);
+    }catch(e){}
+  }
+  function ring(){if(!beepTimer){beep();beepTimer=setInterval(beep,1200);}}
+  function stopRing(){if(beepTimer){clearInterval(beepTimer);beepTimer=null;}}
+  function show(c){
+    current=c;lastId=c.id;
+    title.textContent=(c.mode==='video'?'🎥':'📞')+' Incoming '+(c.mode||'voice')+' call';
+    txt.textContent=(c.caller_name||'KOJA user')+' is calling you.';
+    answer.href='/connect/answer/'+encodeURIComponent(c.id);
+    panel.style.display='block';ring();
+  }
+  function hide(){current=null;panel.style.display='none';stopRing();}
+  async function poll(){
+    try{
+      const r=await fetch('/api/connect/incoming-calls',{cache:'no-store'});
+      if(!r.ok)return;
+      const d=await r.json();
+      const calls=d.calls||[];
+      if(!calls.length){if(current)hide();return;}
+      const c=calls[0];
+      if(!current||current.id!==c.id)show(c);
+    }catch(e){}
+  }
+  answer.addEventListener('click',function(){stopRing();});
+  reject.addEventListener('click',async function(){
+    if(!current)return;
+    const id=current.id;
+    hide();
+    try{await fetch('/api/connect/call/reject/'+encodeURIComponent(id),{method:'POST'});}catch(e){}
+    poll();
+  });
+  ['click','touchstart'].forEach(ev=>document.addEventListener(ev,function(){if(audioCtx&&audioCtx.state==='suspended')audioCtx.resume();},{passive:true}));
+  poll();timer=setInterval(poll,2000);
+})();
+</script>
+{% endif %}
 <div class="container">
 {% with messages=get_flashed_messages(with_categories=true) %}
 {% for category,message in messages %}<div class="alert">{{ message }}</div>{% endfor %}
@@ -5027,22 +5094,6 @@ def connect_status_media():
             delete_storage_path(path)
     return redirect(url_for('connect_status'))
 
-def _koja_connect_ice_servers():
-    # STUN is useful for normal NAT traversal. TURN is required for networks
-    # where direct peer-to-peer connectivity is blocked (some mobile/carrier
-    # NATs, corporate networks, and symmetric NAT). Configure TURN through
-    # Render environment variables without changing any other KOJA service.
-    servers=[
-        {'urls':'stun:stun.l.google.com:19302'},
-        {'urls':'stun:stun.cloudflare.com:3478'}
-    ]
-    turn_url=os.getenv('KOJA_TURN_URL','').strip()
-    turn_user=os.getenv('KOJA_TURN_USERNAME','').strip()
-    turn_cred=os.getenv('KOJA_TURN_CREDENTIAL','').strip()
-    if turn_url and turn_user and turn_cred:
-        servers.append({'urls':turn_url,'username':turn_user,'credential':turn_cred})
-    return servers
-
 @app.route('/connect/answer/<call_id>')
 @login_required
 def connect_answer(call_id):
@@ -5050,8 +5101,8 @@ def connect_answer(call_id):
     if not c or str(c.get('callee_id'))!=str(uid) or c.get('status') not in ('ringing','answered'):
         abort(404)
     return render_page('Answer KOJA Call',r'''<div class="card"><h2>📞 Incoming {{ c.mode|title }} Call</h2><p>From <strong>{{ name }}</strong></p><div id="state">Connecting…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px"></video></div><button id="hang" class="btn danger">End Call</button></div><script>
-const cid={{ call_id|tojson }},mode={{ c.mode|tojson }},iceServers={{ ice_servers|tojson }};
-let pc=null,timer=null,iceTimer=null,remoteIce=new Set(),pendingRemoteIce=[];
+const cid={{ call_id|tojson }},mode={{ c.mode|tojson }};
+let pc=null,timer=null,iceTimer=null,remoteIce=new Set();
 const state=document.getElementById('state');
 async function api(u,o){let r=await fetch(u,o);if(!r.ok)throw 0;return r.json();}
 async function sendIce(candidate){
@@ -5065,11 +5116,7 @@ async function pullIce(){
       const key=JSON.stringify(candidate);
       if(remoteIce.has(key))continue;
       remoteIce.add(key);
-      try{await pc.addIceCandidate(candidate);}catch(e){pendingRemoteIce.push(candidate);}
-    }
-    if(pc.remoteDescription&&pendingRemoteIce.length){
-      const q=pendingRemoteIce.splice(0);
-      for(const candidate of q){try{await pc.addIceCandidate(candidate);}catch(e){}}
+      try{await pc.addIceCandidate(candidate);}catch(e){}
     }
   }catch(e){}
 }
@@ -5077,24 +5124,19 @@ async function start(){
   try{
     let x=await api('/api/connect/call/check/'+cid);
     if(!x.call.offer)throw 0;
-    pc=new RTCPeerConnection({iceServers});
+    pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
     let st=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});
     document.getElementById('local').srcObject=st;
     st.getTracks().forEach(t=>pc.addTrack(t,st));
     pc.ontrack=e=>document.getElementById('remote').srcObject=e.streams[0];
     pc.onicecandidate=e=>{if(e.candidate)sendIce(e.candidate.toJSON?e.candidate.toJSON():e.candidate);};
-    pc.onconnectionstatechange=()=>{
-      if(pc.connectionState==='connected')state.textContent='Connected';
-      else if(['failed','closed'].includes(pc.connectionState))state.textContent='Connection failed — check network/TURN settings';
-    };
-    pc.oniceconnectionstatechange=()=>{if(pc.iceConnectionState==='failed')state.textContent='ICE connection failed — TURN may be required';};
-    pc.onicecandidateerror=e=>{console.warn('KOJA ICE candidate error',e);};
+    pc.onconnectionstatechange=()=>{if(['failed','closed'].includes(pc.connectionState)){state.textContent='Connection failed';}};
     await pc.setRemoteDescription({type:'offer',sdp:x.call.offer});
     await pullIce();
     let ans=await pc.createAnswer();
     await pc.setLocalDescription(ans);
     await api('/api/connect/call/answer/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({answer:ans.sdp})});
-    state.textContent='Waiting for media connection…';
+    state.textContent='Connected';
     iceTimer=setInterval(pullIce,1000);
     timer=setInterval(async()=>{
       try{
@@ -5106,7 +5148,7 @@ async function start(){
 }
 document.getElementById('hang').onclick=()=>{fetch('/api/connect/call/end/'+cid,{method:'POST'});clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();state.textContent='Call ended';};
 start();
-</script>''',c=c,call_id=call_id,name=_profile_name(c.get('caller_id')),ice_servers=_koja_connect_ice_servers())
+</script>''',c=c,call_id=call_id,name=_profile_name(c.get('caller_id')))
 
 @app.route('/api/connect/call/ice/<call_id>',methods=['POST','GET'])
 @login_required
@@ -5212,8 +5254,8 @@ def connect_call(user_id):
     c=_direct_conversation(uid,user_id)
     if not c:return 'Run KOJA Connect SQL first.',500
     return render_page('KOJA Call',r'''<div class="card"><h2>📞 KOJA {{ mode|title }} Call</h2><p>Calling <strong>{{ name }}</strong></p><div id="state">Connecting…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px"></video></div><button id="hang" class="btn danger">End Call</button></div><script>
-const target={{ user_id|tojson }},mode={{ mode|tojson }},iceServers={{ ice_servers|tojson }};
-let callId=null,pc=null,timer=null,iceTimer=null,remoteIce=new Set(),pendingRemoteIce=[],started=Date.now();
+const target={{ user_id|tojson }},mode={{ mode|tojson }};
+let callId=null,pc=null,timer=null,iceTimer=null,remoteIce=new Set(),started=Date.now();
 const state=document.getElementById('state');
 const unavailable='This contact is not available because the internet or network connection could not be reached.';
 function speak(){if('speechSynthesis'in window){speechSynthesis.cancel();speechSynthesis.speak(new SpeechSynthesisUtterance(unavailable));}}
@@ -5230,11 +5272,7 @@ async function pullIce(){
       const key=JSON.stringify(candidate);
       if(remoteIce.has(key))continue;
       remoteIce.add(key);
-      try{await pc.addIceCandidate(candidate);}catch(e){pendingRemoteIce.push(candidate);}
-    }
-    if(pc.remoteDescription&&pendingRemoteIce.length){
-      const q=pendingRemoteIce.splice(0);
-      for(const candidate of q){try{await pc.addIceCandidate(candidate);}catch(e){}}
+      try{await pc.addIceCandidate(candidate);}catch(e){}
     }
   }catch(e){}
 }
@@ -5243,18 +5281,13 @@ async function start(){
     if(!navigator.onLine)throw 0;
     let c=await api('/api/connect/call/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({callee_id:target,mode})});
     callId=c.call.id;
-    pc=new RTCPeerConnection({iceServers});
+    pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
     let st=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});
     document.getElementById('local').srcObject=st;
     st.getTracks().forEach(t=>pc.addTrack(t,st));
     pc.ontrack=e=>document.getElementById('remote').srcObject=e.streams[0];
     pc.onicecandidate=e=>{if(e.candidate)sendIce(e.candidate.toJSON?e.candidate.toJSON():e.candidate);};
-    pc.onconnectionstatechange=()=>{
-      if(pc.connectionState==='connected')state.textContent='Connected';
-      else if(['failed','closed'].includes(pc.connectionState))fail('Connection failed — check network/TURN settings');
-    };
-    pc.oniceconnectionstatechange=()=>{if(pc.iceConnectionState==='failed')state.textContent='ICE connection failed — TURN may be required';};
-    pc.onicecandidateerror=e=>{console.warn('KOJA ICE candidate error',e);};
+    pc.onconnectionstatechange=()=>{if(['failed','closed'].includes(pc.connectionState))fail();};
     let offer=await pc.createOffer();
     await pc.setLocalDescription(offer);
     await api('/api/connect/call/offer/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({offer:offer.sdp})});
@@ -5267,7 +5300,7 @@ async function start(){
         if(x.call.status==='ended'||x.call.status==='rejected'){fail();return;}
         if(x.call.answer&&!pc.currentRemoteDescription){
           await pc.setRemoteDescription({type:'answer',sdp:x.call.answer});
-          state.textContent='Negotiating media…';
+          state.textContent='Connected';
           pullIce();
         }
       }catch(e){fail();}
@@ -5277,7 +5310,7 @@ async function start(){
 document.getElementById('hang').onclick=()=>{if(callId)fetch('/api/connect/call/end/'+callId,{method:'POST'});clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();state.textContent='Call ended';};
 window.addEventListener('offline',()=>fail());
 start();
-</script>''',user_id=user_id,mode=mode,name=_profile_name(user_id),ice_servers=_koja_connect_ice_servers())
+</script>''',user_id=user_id,mode=mode,name=_profile_name(user_id))
 
 @app.route('/api/connect/call/create',methods=['POST'])
 @login_required
@@ -5308,6 +5341,38 @@ def connect_call_end(call_id):
     uid=str(current_user()['id']);c=first_row('koja_calls',{'id':call_id})
     if not c or uid not in (str(c.get('caller_id')),str(c.get('callee_id'))):return jsonify(error='Forbidden'),403
     db_update('koja_calls',{'id':call_id},{'status':'ended','ended_at':utc_now()});return jsonify(ok=True)
+
+@app.route('/api/connect/incoming-calls',methods=['GET'])
+@login_required
+def connect_incoming_calls():
+    """Return active incoming calls for the logged-in user.
+    This is intentionally based on koja_calls rather than notifications so
+    an incoming call is delivered even if the notification row is delayed or fails.
+    """
+    uid=str(current_user()['id'])
+    rows=db_select('koja_calls',filters={'callee_id':uid,'status':'ringing'},order='created_at.desc',limit=10)
+    active=[]
+    for c in rows:
+        if not c or not c.get('id'):
+            continue
+        active.append({
+            'id':str(c.get('id')),
+            'mode':str(c.get('mode') or 'voice'),
+            'caller_id':str(c.get('caller_id') or ''),
+            'caller_name':_profile_name(c.get('caller_id')),
+            'created_at':c.get('created_at')
+        })
+    return jsonify(ok=True,calls=active)
+
+@app.route('/api/connect/call/reject/<call_id>',methods=['POST'])
+@login_required
+def connect_call_reject(call_id):
+    uid=str(current_user()['id'])
+    c=first_row('koja_calls',{'id':call_id})
+    if not c or str(c.get('callee_id'))!=uid or c.get('status')!='ringing':
+        return jsonify(error='Forbidden'),403
+    db_update('koja_calls',{'id':call_id},{'status':'rejected','ended_at':utc_now()})
+    return jsonify(ok=True)
 
 @app.route('/setup/connect-sql')
 def connect_sql():
