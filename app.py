@@ -4825,8 +4825,10 @@ create table if not exists public.koja_calls (
  id uuid primary key default gen_random_uuid(), conversation_id uuid not null references public.koja_conversations(id) on delete cascade,
  caller_id uuid not null, callee_id uuid not null, mode text not null default 'video', status text not null default 'ringing',
  offer text, answer text, caller_ice jsonb default '[]'::jsonb, callee_ice jsonb default '[]'::jsonb,
- created_at timestamptz default now(), answered_at timestamptz, ended_at timestamptz
+ created_at timestamptz default now(), answered_at timestamptz, ended_at timestamptz, last_activity_at timestamptz
 );
+alter table public.koja_calls add column if not exists last_activity_at timestamptz;
+update public.koja_calls set last_activity_at=coalesce(last_activity_at,answered_at,created_at) where last_activity_at is null;
 create index if not exists koja_calls_callee_idx on public.koja_calls(callee_id,status,created_at desc);
 create index if not exists koja_calls_caller_idx on public.koja_calls(caller_id,status,created_at desc);
 create table if not exists public.koja_group_call_participants (call_id uuid not null references public.koja_calls(id) on delete cascade, user_id uuid not null, status text not null default 'invited', joined_at timestamptz, primary key(call_id,user_id));
@@ -5178,7 +5180,7 @@ def connect_answer(call_id):
         abort(404)
     return render_page('Answer KOJA Call',r'''<div class="card"><h2>📞 Incoming {{ c.mode|title }} Call</h2><p>From <strong>{{ name }}</strong></p><div id="state">Connecting…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px"></video></div><button id="hang" class="btn danger">End Call</button></div><script>
 const cid={{ call_id|tojson }},mode={{ c.mode|tojson }};
-let pc=null,timer=null,iceTimer=null,remoteIce=new Set(),pendingIce=[];
+let pc=null,timer=null,iceTimer=null,heartbeatTimer=null,remoteIce=new Set(),pendingIce=[];
 const state=document.getElementById('state');
 let soundCtx=null,ringTimer=null;
 function soundTone(freq,duration,offset=0,type='sine',gain=0.045){try{soundCtx=soundCtx||new (window.AudioContext||window.webkitAudioContext)();if(soundCtx.state==='suspended')soundCtx.resume().catch(()=>{});const t=soundCtx.currentTime+offset,osc=soundCtx.createOscillator(),g=soundCtx.createGain();osc.type=type;osc.frequency.value=freq;g.gain.setValueAtTime(0.0001,t);g.gain.exponentialRampToValueAtTime(gain,t+0.02);g.gain.exponentialRampToValueAtTime(0.0001,t+duration);osc.connect(g).connect(soundCtx.destination);osc.start(t);osc.stop(t+duration+0.03);}catch(e){}}
@@ -5230,11 +5232,13 @@ async function start(){
     await pc.setLocalDescription(ans);
     await api('/api/connect/call/answer/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({answer:ans.sdp})});
     state.textContent='Connecting media…';
+    heartbeatTimer=setInterval(()=>fetch('/api/connect/call/heartbeat/'+cid,{method:'POST'}).catch(()=>{}),15000);
     iceTimer=setInterval(pullIce,1000);
+    heartbeatTimer=setInterval(()=>{if(callId)fetch('/api/connect/call/heartbeat/'+callId,{method:'POST'}).catch(()=>{});},15000);
     timer=setInterval(async()=>{
       try{
         let z=await api('/api/connect/call/check/'+cid);
-        if(['ended','rejected','missed'].includes(String(z.call.status||''))){clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();endCallSound();window.location.href='/connect/chat/'+{{ c.id|tojson }};}
+        if(['ended','rejected','missed'].includes(String(z.call.status||''))){clearInterval(timer);clearInterval(iceTimer);clearInterval(heartbeatTimer);if(pc)pc.close();endCallSound();window.location.href='/connect/chat/'+{{ c.id|tojson }};}
         if(z.call.offer && z.call.offer !== pc.currentRemoteDescription?.sdp && pc.signalingState !== 'closed'){
           await pc.setRemoteDescription({type:'offer',sdp:z.call.offer});
           let reneg=await pc.createAnswer();
@@ -5246,7 +5250,7 @@ async function start(){
     },1500);
   }catch(e){stopRinging();state.textContent='Could not answer this call.';}
 }
-document.getElementById('hang').onclick=async()=>{try{await fetch('/api/connect/call/end/'+cid,{method:'POST'});}catch(e){}clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();endCallSound();window.location.href='/connect/chat/'+{{ c.id|tojson }};};
+document.getElementById('hang').onclick=async()=>{try{await fetch('/api/connect/call/end/'+cid,{method:'POST'});}catch(e){}clearInterval(timer);clearInterval(iceTimer);clearInterval(heartbeatTimer);if(pc)pc.close();endCallSound();window.location.href='/connect/chat/'+{{ c.id|tojson }};};
 startRinging();
 start();
 </script>''',c=c,call_id=call_id,name=_profile_name(c.get('caller_id')),ice_servers=_koja_connect_ice_servers())
@@ -5358,11 +5362,26 @@ def connect_call_answer(call_id):
     updated,err=db_update('koja_calls',{'id':call_id},{
         'answer':answer,
         'status':'answered',
-        'answered_at':utc_now()
+        'answered_at':utc_now(),
+        'last_activity_at':utc_now()
     })
     if err:
         return jsonify(error=str(err)[:500]),500
     return jsonify(ok=True,call=updated or {'id':call_id,'status':'answered'})
+
+@app.route('/api/connect/call/heartbeat/<call_id>',methods=['POST'])
+@login_required
+def connect_call_heartbeat(call_id):
+    uid=str(current_user()['id']); c=first_row('koja_calls',{'id':call_id})
+    if not c or uid not in (str(c.get('caller_id')),str(c.get('callee_id'))):
+        return jsonify(error='Forbidden'),403
+    status=str(c.get('status') or '').lower()
+    if status not in ('ringing','answered'):
+        return jsonify(ok=False,status=status,active=False),409
+    updated,err=db_update('koja_calls',{'id':call_id},{'last_activity_at':utc_now()})
+    if err:
+        return jsonify(error=str(err)[:500]),500
+    return jsonify(ok=True,status=status,active=True)
 
 @app.route('/connect/calls')
 @login_required
@@ -5379,7 +5398,7 @@ def connect_call(user_id):
     if not c:return 'Run KOJA Connect SQL first.',500
     return render_page('KOJA Call',r'''<div class="card"><h2>📞 KOJA {{ mode|title }} Call</h2><p>Calling <strong>{{ name }}</strong></p><div id="state">Connecting…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px"></video></div><button id="hang" class="btn danger">End Call</button></div><script>
 const target={{ user_id|tojson }},mode={{ mode|tojson }};
-let callId=null,pc=null,timer=null,iceTimer=null,remoteIce=new Set(),pendingIce=[],started=Date.now(),restartTimer=null,restartBusy=false;
+let callId=null,pc=null,timer=null,iceTimer=null,heartbeatTimer=null,remoteIce=new Set(),pendingIce=[],started=Date.now(),restartTimer=null,restartBusy=false;
 const state=document.getElementById('state');
 let soundCtx=null,ringTimer=null;
 function soundTone(freq,duration,offset=0,type='sine',gain=0.045){try{soundCtx=soundCtx||new (window.AudioContext||window.webkitAudioContext)();if(soundCtx.state==='suspended')soundCtx.resume().catch(()=>{});const t=soundCtx.currentTime+offset,osc=soundCtx.createOscillator(),g=soundCtx.createGain();osc.type=type;osc.frequency.value=freq;g.gain.setValueAtTime(0.0001,t);g.gain.exponentialRampToValueAtTime(gain,t+0.02);g.gain.exponentialRampToValueAtTime(0.0001,t+duration);osc.connect(g).connect(soundCtx.destination);osc.start(t);osc.stop(t+duration+0.03);}catch(e){}}
@@ -5388,10 +5407,10 @@ function startRinging(){stopRinging();ringOnce();ringTimer=setInterval(ringOnce,
 function stopRinging(){if(ringTimer){clearInterval(ringTimer);ringTimer=null;}}
 function endCallSound(){stopRinging();soundTone(520,0.18,0,'sine',0.045);soundTone(390,0.22,0.22,'sine',0.045);soundTone(260,0.28,0.48,'sine',0.045);}
 ['click','touchstart','keydown'].forEach(ev=>window.addEventListener(ev,()=>{try{if(soundCtx&&soundCtx.state==='suspended')soundCtx.resume()}catch(e){}},{passive:true}));
-const callMessages={offline:'The call is unavailable because your device is not connected to the internet.',network:'The call is unavailable because the internet or network connection could not be established.',busy:'The person you are calling is already on another KOJA call. Please try again later.',noanswer:'The call is unavailable because the person did not answer.',rejected:'The call was declined by the person you are calling.',ended:'The call has ended.',failed:'The call is unavailable because a connection could not be established.'};
+const callMessages={offline:'The call is unavailable because your device is not connected to the internet.',network:'The call is unavailable because the internet or network connection could not be established.',busy:'The person you are calling is currently on another KOJA call. Please try again later.',ringing:'The person you are calling is already being called on KOJA. Please try again shortly.',own_active_call:'You already have an active KOJA call. End it before starting another call.',own_ringing_call:'You already have a KOJA call ringing. Please end it before starting another call.',noanswer:'The call is unavailable because the person did not answer.',rejected:'The call was declined by the person you are calling.',ended:'The call has ended.',failed:'The call is unavailable because a connection could not be established.'};
 function speak(text){if(!('speechSynthesis'in window))return;try{speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(text);u.lang='en-US';u.rate=0.95;u.pitch=1;speechSynthesis.speak(u);}catch(e){}}
 function showCallMessage(key,text){const msg=text||callMessages[key]||callMessages.network;state.textContent='🔴 '+msg;if(key==='ended'||key==='rejected'||key==='noanswer'||key==='failed'||key==='busy'||key==='offline'||key==='network')endCallSound();speak(msg);}
-async function fail(reason){clearInterval(timer);clearInterval(iceTimer);let key='network';if(reason&&typeof reason==='string'){if(/offline|internet connection/i.test(reason))key='offline';else if(/rejected|declined/i.test(reason))key='rejected';else if(/ended/i.test(reason))key='ended';else if(/failed|connection/i.test(reason))key='failed';}showCallMessage(key);if(callId){try{await fetch('/api/connect/call/end/'+callId,{method:'POST'})}catch(e){}}if(pc)pc.close();setTimeout(()=>{window.location.href='/connect/chat/'+{{ c.id|tojson }};},900);}
+async function fail(reason){clearInterval(timer);clearInterval(iceTimer);clearInterval(heartbeatTimer);let key='network';if(reason&&typeof reason==='string'){if(/offline|internet connection/i.test(reason))key='offline';else if(/rejected|declined/i.test(reason))key='rejected';else if(/ended/i.test(reason))key='ended';else if(/failed|connection/i.test(reason))key='failed';}showCallMessage(key);if(callId){try{await fetch('/api/connect/call/end/'+callId,{method:'POST'})}catch(e){}}if(pc)pc.close();setTimeout(()=>{window.location.href='/connect/chat/'+{{ c.id|tojson }};},900);}
 async function api(u,o){let r=await fetch(u,o),d={};try{d=await r.json()}catch(e){}if(!r.ok){let e=new Error(d.error||('HTTP '+r.status));e.status=r.status;e.data=d;throw e}return d;}
 async function sendIce(candidate){
   try{await api('/api/connect/call/ice/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate})});}catch(e){}
@@ -5433,6 +5452,7 @@ async function start(){
     if(!navigator.onLine)throw 0;
     let c=await api('/api/connect/call/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({callee_id:target,mode})});
     callId=c.call.id;
+    fetch('/api/connect/call/heartbeat/'+callId,{method:'POST'}).catch(()=>{});
     pc=new RTCPeerConnection({iceServers:{{ ice_servers|tojson }}});
     let st=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});
     document.getElementById('local').srcObject=st;
@@ -5471,7 +5491,7 @@ async function start(){
       }catch(e){fail();}
     },1500);
   }catch(e){
-    if(e&&e.status===409){clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();showCallMessage('busy',e.data?.error||callMessages.busy);return;} if(!navigator.onLine){showCallMessage('offline');return;}
+    if(e&&e.status===409){clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();const rk=e.data?.reason||'busy';showCallMessage(rk,e.data?.error||callMessages[rk]||callMessages.busy);return;} if(!navigator.onLine){showCallMessage('offline');return;}
     fail();
   }
 }
@@ -5505,16 +5525,41 @@ def connect_call_create():
         if status=='ringing' and ringing_stale(existing):
             db_update('koja_calls',{'id':existing['id']},{'status':'missed','ended_at':utc_now()})
             continue
-        if status in ('ringing','answered'):
-            return jsonify(error='This contact is already on a KOJA call.',busy=True,status=status),409
+        if status=='answered':
+            # A call is busy only while the participant is actively sending
+            # heartbeat traffic. This prevents crashed/stale browser sessions
+            # from blocking future calls forever.
+            active_at=existing.get('last_activity_at') or existing.get('answered_at')
+            try:
+                active_dt=datetime.fromisoformat(str(active_at).replace('Z','+00:00')) if active_at else None
+                if active_dt and active_dt.tzinfo is None: active_dt=active_dt.replace(tzinfo=timezone.utc)
+                if active_dt and (now-active_dt).total_seconds()>45:
+                    db_update('koja_calls',{'id':existing['id']},{'status':'ended','ended_at':utc_now()})
+                    continue
+            except Exception:
+                pass
+            return jsonify(error='The person you are calling is currently on another KOJA call. Please try again later.',busy=True,status='answered',reason='busy'),409
+        if status=='ringing':
+            return jsonify(error='The person you are calling is already being called on KOJA. Please try again shortly.',busy=True,status='ringing',reason='ringing'),409
     for existing in db_select('koja_calls',filters={'caller_id':uid},order='created_at.desc',limit=20):
         status=str(existing.get('status') or '').lower()
         if status=='ringing' and ringing_stale(existing):
             db_update('koja_calls',{'id':existing['id']},{'status':'missed','ended_at':utc_now()})
             continue
-        if status in ('ringing','answered'):
-            return jsonify(error='You already have an active KOJA call.',busy=True,status=status),409
-    c=_direct_conversation(uid,callee); row,err=db_insert('koja_calls',{'id':str(uuid.uuid4()),'conversation_id':c['id'],'caller_id':uid,'callee_id':callee,'mode':mode,'status':'ringing','created_at':utc_now()})
+        if status=='answered':
+            active_at=existing.get('last_activity_at') or existing.get('answered_at')
+            try:
+                active_dt=datetime.fromisoformat(str(active_at).replace('Z','+00:00')) if active_at else None
+                if active_dt and active_dt.tzinfo is None: active_dt=active_dt.replace(tzinfo=timezone.utc)
+                if active_dt and (now-active_dt).total_seconds()>45:
+                    db_update('koja_calls',{'id':existing['id']},{'status':'ended','ended_at':utc_now()})
+                    continue
+            except Exception:
+                pass
+            return jsonify(error='You already have an active KOJA call. End it before starting another call.',busy=True,status='answered',reason='own_active_call'),409
+        if status=='ringing':
+            return jsonify(error='You already have a KOJA call ringing. Please end it before starting another call.',busy=True,status='ringing',reason='own_ringing_call'),409
+    c=_direct_conversation(uid,callee); row,err=db_insert('koja_calls',{'id':str(uuid.uuid4()),'conversation_id':c['id'],'caller_id':uid,'callee_id':callee,'mode':mode,'status':'ringing','created_at':utc_now(),'last_activity_at':utc_now()})
     if err:return jsonify(error=err),500
     db_insert('koja_notifications',{'user_id':callee,'notification_type':'call','title':f'Incoming {mode} call','body':f'{_profile_name(uid)} is calling you.','related_id':row['id']}); _koja_send_push(callee,{'title':f'Incoming KOJA {mode} call','body':f'{_profile_name(uid)} is calling you.','call_id':str(row['id']),'mode':mode,'url':f'/connect/answer/{row["id"]}','tag':'koja-call-'+str(row['id'])}); return jsonify(call=row)
 
