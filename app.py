@@ -94,7 +94,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.07-V45-RESEARCH-STRICT-EVIDENCE"
+APP_VERSION = "2026.09.07-V45.1-RESEARCH-STRICT-HOTFIX"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -1430,7 +1430,7 @@ def _research_obviously_irrelevant(r, query):
 def _research_relevance_gate(results, query, minimum=2.15):
     """Strict evidence gate: discard navigation pages, lexical traps and weak topic matches."""
     domain=_research_domain(query); intent=_research_intent(query); q=_research_normalize_query(query).lower()
-    topic_terms=set(_research_topic_terms(query));
+    topic_terms=list(_research_topic_terms(query));
     domain_terms={
         'education':set('assessment educational education student teacher teaching learning curriculum evaluation grading formative summative diagnostic classroom test examination'.split()),
         'health':set('clinical medical medicine patient health diagnosis treatment disease nursing guideline'.split()),
@@ -1448,7 +1448,7 @@ def _research_relevance_gate(results, query, minimum=2.15):
         topic_hits=sum(1 for t in topic_terms if t in text)
         domain_hits=sum(1 for t in domain_terms if t in text)
         exact_topic=bool(q and q in text)
-        primary_exact=bool(topic_terms and next(iter(topic_terms)) in title)
+        primary_exact=bool(topic_terms and topic_terms[0] in title)
         if exact_topic: score+=2.0
         score+=min(topic_hits,6)*0.55
         score+=min(domain_hits,6)*0.25
