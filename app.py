@@ -94,7 +94,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.06-V40.6-PRODUCTION-SECURITY-FINAL"
+APP_VERSION = "2026.09.07-V41-AI-GOOGLE-GROUNDING"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -1445,8 +1445,8 @@ def _ai_config_status():
         "key_length": len(raw_key),
     }
 
-def _ai_call(prompt, system_prompt, max_output_tokens=900, timeout=6):
-    """Call Gemini directly with transient-error retry and model fallback."""
+def _ai_call(prompt, system_prompt, max_output_tokens=900, timeout=6, google_search=False):
+    """Call Gemini with optional native Google Search grounding, transient retry, and fallback."""
     cfg=_ai_config_status()
     api_key=(os.getenv("GEMINI_API_KEY") or "").strip()
     if not api_key:
@@ -1465,6 +1465,10 @@ def _ai_call(prompt, system_prompt, max_output_tokens=900, timeout=6):
         "contents":[{"role":"user","parts":[{"text":prompt}]}],
         "generationConfig":{"maxOutputTokens":max_output_tokens,"temperature":0.4},
     }
+    # Native Gemini grounding: Google Search is executed by Gemini when useful.
+    # This avoids scraping Google/Chrome and keeps search inside the AI request.
+    if google_search and os.getenv("GEMINI_GOOGLE_SEARCH", "1").strip().lower() not in ("0", "false", "no", "off"):
+        payload["tools"]=[{"google_search":{}}]
     headers={
         "x-goog-api-key": api_key,
         "Content-Type":"application/json",
@@ -1493,6 +1497,22 @@ def _ai_call(prompt, system_prompt, max_output_tokens=900, timeout=6):
                             if text: parts.append(text)
                     text=clean("\n".join(parts))
                     if text:
+                        # Surface the grounded web sources in the saved KOJA AI answer.
+                        if google_search:
+                            sources=[]
+                            seen_urls=set()
+                            metadata=data.get("groundingMetadata") or {}
+                            for chunk in metadata.get("groundingChunks") or []:
+                                web=chunk.get("web") or {}
+                                title=clean(web.get("title"))
+                                uri=clean(web.get("uri"))
+                                if uri and uri not in seen_urls:
+                                    seen_urls.add(uri)
+                                    sources.append((title or uri, uri))
+                            if sources:
+                                text += "\n\nGoogle sources:\n" + "\n".join(
+                                    (f"- {title}: {uri}" if title else f"- {uri}") for title, uri in sources[:6]
+                                )
                         if model != primary:
                             logger.info("Gemini fallback model succeeded model=%s", model)
                         return text, ""
@@ -1733,10 +1753,12 @@ def ai_assistant():
             "Do not invent citations, facts, names, prices, laws, medical diagnoses, or current events. "
             "If information is uncertain or requires live verification, say so. Maintain continuity using the supplied conversation. "
             "KOJA has separate Research, Documents, Assignments, Professional Services, Marketplace and Delivery modules. "
-            "When the user asks for research, recommend the KOJA Research Engine rather than pretending you browsed the web."
+            "You have native Google Search grounding available. Use it when the user asks for current, changing, factual, web-based, recent, local, product, news, or verification information. "
+            "When Google Search grounding is used, base current claims on the grounded sources and do not claim to have browsed anything beyond those sources. "
+            "For deep academic research, recommend the KOJA Research Engine, which can combine Google, web, academic literature, and KOJA Documents."
         )
         full_prompt = "Conversation history:\n" + ("\n".join(context_lines) if context_lines else "(none)") + "\n\nUSER: " + prompt
-        answer, ai_error = _ai_call(full_prompt, system, max_output_tokens=1200, timeout=6)
+        answer, ai_error = _ai_call(full_prompt, system, max_output_tokens=1200, timeout=6, google_search=True)
         if not answer:
             flash("KOJA AI: " + _ai_error_message(ai_error), "danger")
         else:
@@ -1768,16 +1790,16 @@ def ai_assistant():
 <div class="koja-ai-page">
   <div class="koja-ai-top">
     <button class="koja-ai-icon" type="button" aria-label="Recent chats" title="Recent chats" onclick="document.getElementById('kojaRecentChats').classList.add('open')">☰</button>
-    <div class="koja-ai-title">🧠 KOJA AI</div>
+    <div class="koja-ai-title">🧠 KOJA AI <span style="font-size:11px;opacity:.7;font-weight:500">· Google connected</span></div>
     <form method="post" style="margin:0"><input type="hidden" name="action" value="new"><button class="koja-ai-icon" type="submit" aria-label="New chat" title="New chat">＋</button></form>
   </div>
   <div class="koja-ai-main">
     <div class="koja-ai-messages">
     {% if messages %}
       {% for item in messages %}<div class="koja-ai-msg {{ 'user' if item.role=='user' else 'assistant' }}"><div class="koja-ai-bubble">{% if item.role!='user' %}<strong>KOJA AI</strong><br>{% endif %}{{ item.content }}</div></div>{% endfor %}
-    {% else %}<div class="koja-ai-empty"><h2>How can I help?</h2><p>Ask KOJA AI anything.</p></div>{% endif %}
+    {% else %}<div class="koja-ai-empty"><h2>How can I help?</h2><p>Ask KOJA AI anything. KOJA can use Google Search for current information when needed.</p></div>{% endif %}
     </div>
-    <div class="koja-ai-compose"><form method="post"><input type="hidden" name="conversation_id" value="{{ conversation_id }}"><textarea name="prompt" maxlength="12000" required placeholder="Message KOJA AI…" rows="1"></textarea><button class="koja-ai-send" type="submit" aria-label="Send" title="Send">↑</button></form><p class="small" style="text-align:center;margin:8px 0 0">For academic research with source citations, use <a href="{{ url_for('research') }}">KOJA Research</a>.</p></div>
+    <div class="koja-ai-compose"><form method="post"><input type="hidden" name="conversation_id" value="{{ conversation_id }}"><textarea name="prompt" maxlength="12000" required placeholder="Message KOJA AI…" rows="1"></textarea><button class="koja-ai-send" type="submit" aria-label="Send" title="Send">↑</button></form><p class="small" style="text-align:center;margin:8px 0 0">🔎 Google Search is built into KOJA AI. For deeper multi-source research, use <a href="{{ url_for('research') }}">KOJA Research</a>.</p></div>
   </div>
 </div>
 <div id="kojaRecentChats" class="koja-ai-drawer"><div class="koja-ai-backdrop" onclick="document.getElementById('kojaRecentChats').classList.remove('open')"></div><aside class="koja-ai-panel"><div class="koja-ai-panel-head"><strong>Recent chats</strong><button class="koja-ai-icon" type="button" onclick="document.getElementById('kojaRecentChats').classList.remove('open')" aria-label="Close">×</button></div>{% for c in conversations %}<a class="koja-ai-chatlink {{ 'active' if c.id|string==conversation_id else '' }}" href="{{ url_for('ai_assistant', conversation_id=c.id) }}">{{ c.title }}</a>{% else %}<p class="small">No saved conversations yet.</p>{% endfor %}</aside></div>
