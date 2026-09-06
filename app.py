@@ -1327,7 +1327,7 @@ def _research_filter(results, source='all', year=None, sort='relevance'):
 def _ai_config_status():
     """Return safe Gemini configuration diagnostics without exposing secrets."""
     raw_key=(os.getenv("GEMINI_API_KEY") or "").strip()
-    model=(os.getenv("GEMINI_MODEL") or "gemini-3.7-flash").strip()
+    model=(os.getenv("GEMINI_MODEL") or "gemini-3.5-flash-lite").strip()
     fallback=(os.getenv("GEMINI_FALLBACK_MODEL") or "gemini-3.5-flash-lite").strip()
     # Google has retired 2.5 Flash-Lite for some new users; transparently migrate old env settings.
     if fallback == "gemini-2.5-flash-lite":
@@ -1344,7 +1344,7 @@ def _ai_config_status():
         "key_length": len(raw_key),
     }
 
-def _ai_call(prompt, system_prompt, max_output_tokens=900, timeout=8):
+def _ai_call(prompt, system_prompt, max_output_tokens=900, timeout=6):
     """Call Gemini directly with transient-error retry and model fallback."""
     cfg=_ai_config_status()
     api_key=(os.getenv("GEMINI_API_KEY") or "").strip()
@@ -1637,7 +1637,7 @@ def ai_assistant():
             "When the user asks for research, recommend the KOJA Research Engine rather than pretending you browsed the web."
         )
         full_prompt = "Conversation history:\n" + ("\n".join(context_lines) if context_lines else "(none)") + "\n\nUSER: " + prompt
-        answer, ai_error = _ai_call(full_prompt, system, max_output_tokens=1200, timeout=8)
+        answer, ai_error = _ai_call(full_prompt, system, max_output_tokens=1200, timeout=6)
         if not answer:
             flash("KOJA AI: " + _ai_error_message(ai_error), "danger")
         else:
