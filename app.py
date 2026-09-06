@@ -94,7 +94,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.07-V42-AI-GEMINI-FAST-FIX"
+APP_VERSION = "2026.09.07-V43-AI-GEMINI-FAST-VARIATION"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -1465,7 +1465,7 @@ def _ai_call(prompt, system_prompt, max_output_tokens=900, timeout=20):
     payload={
         "systemInstruction":{"parts":[{"text":system_prompt}]},
         "contents":[{"role":"user","parts":[{"text":prompt}]}],
-        "generationConfig":{"maxOutputTokens":max_output_tokens,"temperature":0.4},
+        "generationConfig":{"maxOutputTokens":max_output_tokens,"temperature":0.75},
     }
     headers={
         "x-goog-api-key": api_key,
@@ -1723,10 +1723,23 @@ def ai_assistant():
         for item in previous:
             role = "USER" if item.get("role") == "user" else "KOJA AI"
             context_lines.append(role + ": " + clean(item.get("content"))[:12000])
+        # Give repeated questions natural variation while keeping the factual core stable.
+        response_styles = [
+            "Answer directly in a concise conversational style.",
+            "Answer in a slightly different natural wording, with the key point first.",
+            "Explain it simply and practically, using a short example only when useful.",
+            "Give a compact answer with the most important details first.",
+            "Use a clear, friendly explanation with different wording from a previous answer if the question repeats.",
+        ]
+        response_style = secrets.choice(response_styles)
         system = (
             "You are KOJA AI, the general AI assistant inside KOJA AFRICA. Answer clearly and practically. "
             "Do not invent citations, facts, names, prices, laws, medical diagnoses, or current events. "
             "If information is uncertain or requires live verification, say so. Maintain continuity using the supplied conversation. "
+            "When the user asks the same or nearly the same question again, vary the wording, structure, examples, or level of explanation naturally, "
+            "but keep the underlying facts, conclusion, and important numbers consistent. Never change a fact merely to sound different. "
+            "Avoid repetitive stock openings and do not mention that you are varying the response. "
+            "" + response_style + " "
             "KOJA has separate Research, Documents, Assignments, Professional Services, Marketplace and Delivery modules. "
             "When the user asks for research, recommend the KOJA Research Engine rather than pretending you browsed the web."
         )
