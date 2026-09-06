@@ -1325,79 +1325,87 @@ def _research_filter(results, source='all', year=None, sort='relevance'):
     return results
 
 def _ai_config_status():
-    """Return safe AI configuration diagnostics without exposing secrets."""
-    raw_key=os.getenv("AI_API_KEY") or os.getenv("OPENAI_API_KEY")
-    endpoint=(os.getenv("AI_API_URL") or "https://api.openai.com/v1/responses").strip()
-    model=(os.getenv("AI_MODEL") or "gpt-5.6-luna").strip()
-    provider="openai" if "api.openai.com" in endpoint else "custom"
+    """Return safe Gemini configuration diagnostics without exposing secrets."""
+    raw_key=(os.getenv("GEMINI_API_KEY") or "").strip()
+    model=(os.getenv("GEMINI_MODEL") or "gemini-3.7-flash").strip()
+    base=(os.getenv("GEMINI_API_URL") or "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
+    endpoint=f"{base}/models/{model}:generateContent"
     return {
         "configured": bool(raw_key),
-        "provider": provider,
+        "provider": "gemini",
         "endpoint": endpoint,
         "model": model,
-        "key_source": "AI_API_KEY" if os.getenv("AI_API_KEY") else ("OPENAI_API_KEY" if os.getenv("OPENAI_API_KEY") else "none"),
-        "key_length": len(raw_key.strip()) if raw_key else 0,
+        "key_source": "GEMINI_API_KEY" if raw_key else "none",
+        "key_length": len(raw_key),
     }
 
 def _ai_call(prompt, system_prompt, max_output_tokens=900, timeout=40):
+    """Call Google Gemini via its REST API; no paid SDK is required."""
     cfg=_ai_config_status()
-    api_key=(os.getenv("AI_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
+    api_key=(os.getenv("GEMINI_API_KEY") or "").strip()
     if not api_key:
         return "", "missing_api_key"
-    endpoint=cfg["endpoint"]
-    model=cfg["model"]
-    payload={"model":model,"input":[{"role":"system","content":[{"type":"input_text","text":system_prompt}]},{"role":"user","content":[{"type":"input_text","text":prompt}]}],"max_output_tokens":max_output_tokens}
+    payload={
+        "systemInstruction":{"parts":[{"text":system_prompt}]},
+        "contents":[{"role":"user","parts":[{"text":prompt}]}],
+        "generationConfig":{"maxOutputTokens":max_output_tokens,"temperature":0.4},
+    }
     try:
-        r=requests.post(endpoint,json=payload,timeout=timeout,headers={"Authorization":"Bearer "+api_key,"Content-Type":"application/json"})
+        r=requests.post(cfg["endpoint"], params={"key":api_key}, json=payload, timeout=timeout,
+                        headers={"Content-Type":"application/json"})
         if not r.ok:
             body=r.text[:800]
-            logger.warning("AI request failed status=%s model=%s endpoint=%s body=%s", r.status_code, model, endpoint, body)
+            logger.warning("Gemini request failed status=%s model=%s body=%s", r.status_code, cfg["model"], body)
             if r.status_code in (401,403): return "", "authentication_failed"
             if r.status_code==404: return "", "endpoint_or_model_not_found"
             if r.status_code==429: return "", "rate_limited"
             if 500 <= r.status_code <= 599: return "", "provider_server_error"
             return "", f"provider_http_{r.status_code}"
         data=r.json()
-        text=clean(data.get("output_text") or "")
-        if text: return text, ""
         parts=[]
-        for item in data.get("output") or []:
-            for content in item.get("content") or []:
-                if content.get("type") in ("output_text","text") and content.get("text"):
-                    parts.append(content["text"])
+        for candidate in data.get("candidates") or []:
+            content=candidate.get("content") or {}
+            for part in content.get("parts") or []:
+                text=part.get("text")
+                if text: parts.append(text)
         text=clean("\n".join(parts))
-        return (text, "" if text else "empty_provider_response")
+        if text: return text, ""
+        feedback=(data.get("promptFeedback") or {}).get("blockReason")
+        if feedback: return "", "safety_blocked"
+        return "", "empty_provider_response"
     except requests.Timeout:
-        logger.warning("AI request timed out model=%s endpoint=%s", model, endpoint)
+        logger.warning("Gemini request timed out model=%s", cfg["model"])
         return "", "timeout"
     except requests.RequestException as exc:
-        logger.warning("AI network request failed model=%s endpoint=%s error=%s", model, endpoint, exc)
+        logger.warning("Gemini network request failed model=%s error=%s", cfg["model"], exc)
         return "", "network_error"
     except Exception as exc:
-        logger.warning("AI response parsing failed: %s", exc)
+        logger.warning("Gemini response parsing failed: %s", exc)
         return "", "invalid_provider_response"
 
-def _openai_text(prompt, system_prompt, max_output_tokens=900, timeout=40):
+def _gemini_text(prompt, system_prompt, max_output_tokens=900, timeout=40):
+    # Kept as a compatibility wrapper for existing KOJA research code.
     text, _error = _ai_call(prompt, system_prompt, max_output_tokens, timeout)
     return text
 
 def _ai_error_message(code):
     return {
-        "missing_api_key":"AI API key is missing from the running Render service.",
-        "authentication_failed":"AI provider rejected the API key. Check that the key is valid and belongs to the configured provider.",
-        "endpoint_or_model_not_found":"The AI endpoint or model was not found. Check AI_API_URL and AI_MODEL.",
-        "rate_limited":"The AI provider rate-limited the request. Wait and try again.",
-        "provider_server_error":"The AI provider returned a server error. Try again shortly.",
-        "timeout":"The AI provider request timed out.",
-        "network_error":"KOJA could not reach the AI provider from Render.",
-        "empty_provider_response":"The AI provider returned no usable text.",
-        "invalid_provider_response":"KOJA received an unexpected AI response format.",
-    }.get(code, "The AI provider returned an error. Check the Render logs.")
+        "missing_api_key":"Gemini API key is missing from the running Render service.",
+        "authentication_failed":"Gemini rejected the API key. Check that the key is valid and belongs to the configured Google AI project.",
+        "endpoint_or_model_not_found":"The Gemini endpoint or model was not found. Check GEMINI_MODEL.",
+        "rate_limited":"Gemini rate-limited the request. Wait and try again.",
+        "provider_server_error":"Gemini returned a server error. Try again shortly.",
+        "timeout":"The Gemini request timed out.",
+        "network_error":"KOJA could not reach Gemini from Render.",
+        "empty_provider_response":"Gemini returned no usable text.",
+        "invalid_provider_response":"KOJA received an unexpected Gemini response format.",
+        "safety_blocked":"Gemini blocked the request under its safety policies.",
+    }.get(code, "Gemini returned an error. Check the Render logs.")
 
 def research_ai_summary(query, results):
     if not results: return ''
     source_text='\n\n'.join(f"[{i+1}] {r.get('title','')} ({r.get('source','')})\n{r.get('snippet','')[:1200]}" for i,r in enumerate(results[:10]))
-    text=_openai_text(
+    text=_gemini_text(
         f"Question: {query}\n\nSources:\n{source_text}\n\nWrite a concise research summary with 3-5 key findings and a short evidence note.",
         'You are KOJA Research. Summarize only the supplied sources. Do not invent facts. Cite source numbers like [1] [2]. State when evidence is limited.',
         700, 30
@@ -1449,7 +1457,7 @@ def research_ai_notes(query, results, style='apa'):
     for i,r in enumerate(results[:12],1):
         bundle.append(f"[{i}] {r.get('title','')} | {r.get('source','')} | {r.get('year') or 'n.d.'}\nAuthors: {', '.join(_names(r))}\nEvidence: {clean(r.get('snippet',''))[:1600]}\nURL: {r.get('url','')}")
     prompt=(f'Write high-quality research notes on: {query}\n\nUse ONLY the evidence supplied below. Do not invent facts, figures, quotations, authors, dates, references or conclusions. Every substantive factual claim must have one or more source-number citations such as [1] immediately after the claim. If evidence is insufficient, say so.\n\nStructure the notes with: Title; Introduction; Key concepts/background; Main findings/themes; Evidence and discussion; Implications; Conclusion; Research gaps/limitations only if supported. Write connected explanatory paragraphs, like strong academic study notes, not disconnected bullet fragments. Use the selected citation style for the reference list: {CITATION_STYLES.get(style,style)}.\n\nSOURCES:\n' + '\n\n'.join(bundle))
-    text=_openai_text(prompt,'You are KOJA Research Notes. Be evidence-bound, clear, academic and concise. Never fabricate citations or source details.',2200,45)
+    text=_gemini_text(prompt,'You are KOJA Research Notes. Be evidence-bound, clear, academic and concise. Never fabricate citations or source details.',2200,45)
     if text: return text
     lines=[f"# Research Notes: {query}","","## Introduction",f"The search retrieved {len(results)} relevant records. The notes below are limited to the evidence contained in those records.",""]
     for i,r in enumerate(results[:8],1):
