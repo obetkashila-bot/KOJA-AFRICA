@@ -94,7 +94,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.07-V45.1-RESEARCH-STRICT-HOTFIX"
+APP_VERSION = "2026.09.07-V45.2-RESEARCH-DEFINITION-GATE"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -1412,19 +1412,20 @@ def _research_obviously_irrelevant(r, query):
     topic_terms=_research_topic_terms(query)
     text=title+' '+snippet
     if not title and not snippet: return True
-    # A Google landing page is navigation, not evidence. Never count it as research evidence.
     if r.get('_google_link') or (source=='google search' and 'google.com/search' in clean(r.get('url','')).lower()): return True
-    # Obvious lexical traps: the target word appears in an unrelated proper title.
     if domain=='science':
-        negative_title=(
-            'album','song','band','film','movie','novel','war','battle','military','telepathy',
-            'mind over','materialism','philosophy','philosophical','plab','licensing','football','sport'
-        )
+        negative_title=('album','song','band','film','movie','novel','war','battle','military','telepathy','mind over','materialism','philosophy','philosophical','plab','licensing','football','sport','game','video game','fiction','character','literature','poem','poetry')
         if any(x in title for x in negative_title): return True
     if intent=='definition' and topic_terms:
-        # For a definition request, a source must discuss the concept itself, not merely mention it.
         primary=topic_terms[0]
-        if primary not in title and primary not in snippet: return True
+        title_has_primary=bool(primary and re.search(r'\b'+re.escape(primary)+r'\b', title))
+        snippet_has_primary=bool(primary and re.search(r'\b'+re.escape(primary)+r'\b', snippet))
+        definition_markers=('is defined as','is a','refers to','means','defined as','consists of','is the','are the')
+        has_definition_marker=any(m in snippet for m in definition_markers)
+        if source=='wikipedia':
+            if not title_has_primary: return True
+        elif not title_has_primary and not (snippet_has_primary and has_definition_marker):
+            return True
     return False
 
 def _research_relevance_gate(results, query, minimum=2.15):
