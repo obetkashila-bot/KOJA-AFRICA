@@ -5180,6 +5180,13 @@ def connect_answer(call_id):
 const cid={{ call_id|tojson }},mode={{ c.mode|tojson }};
 let pc=null,timer=null,iceTimer=null,remoteIce=new Set(),pendingIce=[];
 const state=document.getElementById('state');
+let soundCtx=null,ringTimer=null;
+function soundTone(freq,duration,offset=0,type='sine',gain=0.045){try{soundCtx=soundCtx||new (window.AudioContext||window.webkitAudioContext)();if(soundCtx.state==='suspended')soundCtx.resume().catch(()=>{});const t=soundCtx.currentTime+offset,osc=soundCtx.createOscillator(),g=soundCtx.createGain();osc.type=type;osc.frequency.value=freq;g.gain.setValueAtTime(0.0001,t);g.gain.exponentialRampToValueAtTime(gain,t+0.02);g.gain.exponentialRampToValueAtTime(0.0001,t+duration);osc.connect(g).connect(soundCtx.destination);osc.start(t);osc.stop(t+duration+0.03);}catch(e){}}
+function ringOnce(){soundTone(880,0.32,0,'sine',0.05);soundTone(660,0.32,0.42,'sine',0.05);}
+function startRinging(){stopRinging();ringOnce();ringTimer=setInterval(ringOnce,1800);}
+function stopRinging(){if(ringTimer){clearInterval(ringTimer);ringTimer=null;}}
+function endCallSound(){stopRinging();soundTone(520,0.18,0,'sine',0.045);soundTone(390,0.22,0.22,'sine',0.045);soundTone(260,0.28,0.48,'sine',0.045);}
+['click','touchstart','keydown'].forEach(ev=>window.addEventListener(ev,()=>{try{if(soundCtx&&soundCtx.state==='suspended')soundCtx.resume()}catch(e){}},{passive:true}));
 async function api(u,o){let r=await fetch(u,o);if(!r.ok)throw 0;return r.json();}
 async function sendIce(candidate){
   try{await api('/api/connect/call/ice/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate})});}catch(e){}
@@ -5214,7 +5221,7 @@ async function start(){
     pc.onicecandidate=e=>{if(e.candidate)sendIce(e.candidate.toJSON?e.candidate.toJSON():e.candidate);};
     pc.onicecandidateerror=e=>{if(e.errorCode===701)state.textContent='ICE server unavailable — retrying…';};
     pc.onicegatheringstatechange=()=>{if(pc.iceGatheringState==='complete')pullIce();};
-    pc.onconnectionstatechange=()=>{if(pc.connectionState==='connected')state.textContent='Connected';if(pc.connectionState==='disconnected')state.textContent='Reconnecting…';if(['failed','closed'].includes(pc.connectionState)){state.textContent='Connection failed';}};
+    pc.onconnectionstatechange=()=>{if(pc.connectionState==='connected'){stopRinging();state.textContent='Connected';}if(pc.connectionState==='disconnected')state.textContent='Reconnecting…';if(['failed','closed'].includes(pc.connectionState)){stopRinging();state.textContent='Connection failed';}};
     pc.oniceconnectionstatechange=()=>{if(pc.iceConnectionState==='checking')state.textContent='Connecting media…';if(pc.iceConnectionState==='connected'||pc.iceConnectionState==='completed')state.textContent='Connected';if(pc.iceConnectionState==='failed')state.textContent='Connection failed — waiting for caller to renegotiate…';};
     await pc.setRemoteDescription({type:'offer',sdp:x.call.offer});
     await flushRemoteIce();
@@ -5227,7 +5234,7 @@ async function start(){
     timer=setInterval(async()=>{
       try{
         let z=await api('/api/connect/call/check/'+cid);
-        if(['ended','rejected','missed'].includes(String(z.call.status||''))){clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();window.location.href='/connect/chat/'+{{ c.id|tojson }};}
+        if(['ended','rejected','missed'].includes(String(z.call.status||''))){clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();endCallSound();window.location.href='/connect/chat/'+{{ c.id|tojson }};}
         if(z.call.offer && z.call.offer !== pc.currentRemoteDescription?.sdp && pc.signalingState !== 'closed'){
           await pc.setRemoteDescription({type:'offer',sdp:z.call.offer});
           let reneg=await pc.createAnswer();
@@ -5237,9 +5244,10 @@ async function start(){
         }
       }catch(e){}
     },1500);
-  }catch(e){state.textContent='Could not answer this call.';}
+  }catch(e){stopRinging();state.textContent='Could not answer this call.';}
 }
-document.getElementById('hang').onclick=async()=>{try{await fetch('/api/connect/call/end/'+cid,{method:'POST'});}catch(e){}clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();window.location.href='/connect/chat/'+{{ c.id|tojson }};};
+document.getElementById('hang').onclick=async()=>{try{await fetch('/api/connect/call/end/'+cid,{method:'POST'});}catch(e){}clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();endCallSound();window.location.href='/connect/chat/'+{{ c.id|tojson }};};
+startRinging();
 start();
 </script>''',c=c,call_id=call_id,name=_profile_name(c.get('caller_id')),ice_servers=_koja_connect_ice_servers())
 
@@ -5373,9 +5381,17 @@ def connect_call(user_id):
 const target={{ user_id|tojson }},mode={{ mode|tojson }};
 let callId=null,pc=null,timer=null,iceTimer=null,remoteIce=new Set(),pendingIce=[],started=Date.now(),restartTimer=null,restartBusy=false;
 const state=document.getElementById('state');
-const unavailable='This contact is not available because the internet or network connection could not be reached.';
-function speak(){if('speechSynthesis'in window){speechSynthesis.cancel();speechSynthesis.speak(new SpeechSynthesisUtterance(unavailable));}}
-async function fail(msg){state.textContent=msg||unavailable;speak();clearInterval(timer);clearInterval(iceTimer);if(callId){try{await fetch('/api/connect/call/end/'+callId,{method:'POST'})}catch(e){}}if(pc)pc.close();setTimeout(()=>{window.location.href='/connect/chat/'+{{ c.id|tojson }};},500);}
+let soundCtx=null,ringTimer=null;
+function soundTone(freq,duration,offset=0,type='sine',gain=0.045){try{soundCtx=soundCtx||new (window.AudioContext||window.webkitAudioContext)();if(soundCtx.state==='suspended')soundCtx.resume().catch(()=>{});const t=soundCtx.currentTime+offset,osc=soundCtx.createOscillator(),g=soundCtx.createGain();osc.type=type;osc.frequency.value=freq;g.gain.setValueAtTime(0.0001,t);g.gain.exponentialRampToValueAtTime(gain,t+0.02);g.gain.exponentialRampToValueAtTime(0.0001,t+duration);osc.connect(g).connect(soundCtx.destination);osc.start(t);osc.stop(t+duration+0.03);}catch(e){}}
+function ringOnce(){soundTone(880,0.32,0,'sine',0.05);soundTone(660,0.32,0.42,'sine',0.05);}
+function startRinging(){stopRinging();ringOnce();ringTimer=setInterval(ringOnce,1800);}
+function stopRinging(){if(ringTimer){clearInterval(ringTimer);ringTimer=null;}}
+function endCallSound(){stopRinging();soundTone(520,0.18,0,'sine',0.045);soundTone(390,0.22,0.22,'sine',0.045);soundTone(260,0.28,0.48,'sine',0.045);}
+['click','touchstart','keydown'].forEach(ev=>window.addEventListener(ev,()=>{try{if(soundCtx&&soundCtx.state==='suspended')soundCtx.resume()}catch(e){}},{passive:true}));
+const callMessages={offline:'The call is unavailable because your device is not connected to the internet.',network:'The call is unavailable because the internet or network connection could not be established.',busy:'The person you are calling is already on another KOJA call. Please try again later.',noanswer:'The call is unavailable because the person did not answer.',rejected:'The call was declined by the person you are calling.',ended:'The call has ended.',failed:'The call is unavailable because a connection could not be established.'};
+function speak(text){if(!('speechSynthesis'in window))return;try{speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(text);u.lang='en-US';u.rate=0.95;u.pitch=1;speechSynthesis.speak(u);}catch(e){}}
+function showCallMessage(key,text){const msg=text||callMessages[key]||callMessages.network;state.textContent='🔴 '+msg;if(key==='ended'||key==='rejected'||key==='noanswer'||key==='failed'||key==='busy'||key==='offline'||key==='network')endCallSound();speak(msg);}
+async function fail(reason){clearInterval(timer);clearInterval(iceTimer);let key='network';if(reason&&typeof reason==='string'){if(/offline|internet connection/i.test(reason))key='offline';else if(/rejected|declined/i.test(reason))key='rejected';else if(/ended/i.test(reason))key='ended';else if(/failed|connection/i.test(reason))key='failed';}showCallMessage(key);if(callId){try{await fetch('/api/connect/call/end/'+callId,{method:'POST'})}catch(e){}}if(pc)pc.close();setTimeout(()=>{window.location.href='/connect/chat/'+{{ c.id|tojson }};},900);}
 async function api(u,o){let r=await fetch(u,o),d={};try{d=await r.json()}catch(e){}if(!r.ok){let e=new Error(d.error||('HTTP '+r.status));e.status=r.status;e.data=d;throw e}return d;}
 async function sendIce(candidate){
   try{await api('/api/connect/call/ice/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate})});}catch(e){}
@@ -5426,7 +5442,7 @@ async function start(){
     pc.onicecandidateerror=e=>{if(e.errorCode===701)state.textContent='ICE server unavailable — retrying…';};
     pc.onicegatheringstatechange=()=>{if(pc.iceGatheringState==='complete')pullIce();};
     pc.onconnectionstatechange=()=>{
-      if(pc.connectionState==='connected'){state.textContent='Connected';if(restartTimer){clearTimeout(restartTimer);restartTimer=null;}}
+      if(pc.connectionState==='connected'){stopRinging();state.textContent='Connected';if(restartTimer){clearTimeout(restartTimer);restartTimer=null;}}
       if(pc.connectionState==='disconnected'){state.textContent='Reconnecting…';if(!restartTimer)restartTimer=setTimeout(()=>{if(pc&&pc.connectionState==='disconnected')restartIceOffer();},5000);}
       if(pc.connectionState==='failed'){state.textContent='Connection failed — retrying…';restartIceOffer();}
       if(pc.connectionState==='closed')fail('Connection closed.');
@@ -5440,12 +5456,13 @@ async function start(){
     await pc.setLocalDescription(offer);
     await api('/api/connect/call/offer/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({offer:offer.sdp})});
     state.textContent='Ringing…';
+    startRinging();
     iceTimer=setInterval(pullIce,1000);
     timer=setInterval(async()=>{
-      if(Date.now()-started>120000){fail();return;}
+      if(Date.now()-started>120000){showCallMessage('noanswer');if(callId){try{await fetch('/api/connect/call/end/'+callId,{method:'POST'})}catch(e){}}return;}
       try{
         let x=await api('/api/connect/call/check/'+callId);
-        if(['ended','rejected','missed'].includes(String(x.call.status||''))){fail('Call '+x.call.status+'.');return;}
+        if(x.call.status==='rejected'){showCallMessage('rejected');return;} if(x.call.status==='missed'){showCallMessage('noanswer');return;} if(x.call.status==='ended'){showCallMessage('ended');return;}
         if(x.call.answer&&(!pc.currentRemoteDescription||x.call.answer!==pc.currentRemoteDescription.sdp)){
           await pc.setRemoteDescription({type:'answer',sdp:x.call.answer});
           state.textContent='Connected';
@@ -5454,12 +5471,12 @@ async function start(){
       }catch(e){fail();}
     },1500);
   }catch(e){
-    if(e&&e.status===409){clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();state.textContent=e.data?.error||'This contact is already on a KOJA call.';return;}
+    if(e&&e.status===409){clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();showCallMessage('busy',e.data?.error||callMessages.busy);return;} if(!navigator.onLine){showCallMessage('offline');return;}
     fail();
   }
 }
-document.getElementById('hang').onclick=async()=>{if(callId){try{await fetch('/api/connect/call/end/'+callId,{method:'POST'});}catch(e){}}clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();window.location.href='/connect/chat/'+{{ c.id|tojson }};};
-window.addEventListener('offline',()=>fail());
+document.getElementById('hang').onclick=async()=>{if(callId){try{await fetch('/api/connect/call/end/'+callId,{method:'POST'});}catch(e){}}clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();endCallSound();window.location.href='/connect/chat/'+{{ c.id|tojson }};};
+window.addEventListener('offline',()=>showCallMessage('offline'));
 start();
 </script>''',user_id=user_id,mode=mode,name=_profile_name(user_id),ice_servers=_koja_connect_ice_servers(),conversation_id=c.get('id'),c=c)
 
