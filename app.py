@@ -811,6 +811,10 @@ footer{text-align:center;color:var(--muted);padding:30px}
 <a href="{{ url_for('assignments') }}">Assignments</a>
 <a href="{{ url_for('research') }}">🔎 Research</a>
 <a href="{{ url_for('public_feed') }}">🌍 Public</a>
+<a href="{{ url_for('news_nextgen') }}">📰 News</a>
+<a href="{{ url_for('media_nextgen') }}">◉ Media</a>
+<a href="{{ url_for('ai_nextgen') }}">✦ AI</a>
+<a href="{{ url_for('communication_nextgen') }}">💬 Connect+</a>
 <a href="{{ url_for('marketplace') }}">🛒 Marketplace</a>
 <a href="{{ url_for('connect') }}">💬 Communication</a>
 <a href="{{ url_for('professional_communication') }}">👩‍💼 Professional Communication</a>
@@ -2520,12 +2524,11 @@ PROFESSIONAL_CATEGORIES = [
 ]
 
 # ============================================================
+# PUBLIC KOJA FEED — Facebook-style public wall
+# Everyone can VIEW. Logged-in users can POST, LIKE and COMMENT.
+# Supports text, news/updates and public images.
 # ============================================================
-# KOJA NEXT-GENERATION FEED / MEDIA ENGINE
-# Full-screen social media feed with video, image, reactions, comments,
-# shares, view analytics and mobile-first interaction.
-# ============================================================
-PUBLIC_FEED_SQL = r'''
+PUBLIC_FEED_SQL = """
 create extension if not exists pgcrypto;
 create table if not exists public.koja_public_posts (
  id uuid primary key default gen_random_uuid(), author_id uuid not null,
@@ -2533,9 +2536,6 @@ create table if not exists public.koja_public_posts (
  media_url text, media_type text, created_at timestamptz default now(),
  updated_at timestamptz default now(), is_published boolean default true
 );
-alter table public.koja_public_posts add column if not exists view_count bigint default 0;
-alter table public.koja_public_posts add column if not exists share_count bigint default 0;
-alter table public.koja_public_posts add column if not exists media_duration numeric;
 create index if not exists koja_public_posts_feed_idx on public.koja_public_posts(is_published, created_at desc);
 create index if not exists koja_public_posts_author_idx on public.koja_public_posts(author_id, created_at desc);
 create table if not exists public.koja_public_likes (
@@ -2549,193 +2549,109 @@ create table if not exists public.koja_public_comments (
  author_id uuid not null, body text not null, created_at timestamptz default now()
 );
 create index if not exists koja_public_comments_post_idx on public.koja_public_comments(post_id,created_at);
-create table if not exists public.koja_feed_events (
- id uuid primary key default gen_random_uuid(),
- post_id uuid not null references public.koja_public_posts(id) on delete cascade,
- user_id uuid, session_id text, event_type text not null,
- watch_seconds numeric default 0, completion_percent numeric default 0,
- created_at timestamptz default now()
-);
-create index if not exists koja_feed_events_post_idx on public.koja_feed_events(post_id,created_at desc);
-create index if not exists koja_feed_events_session_idx on public.koja_feed_events(session_id,post_id,event_type);
-'''
+"""
 
 @app.route('/public')
 def public_feed():
-    rows = db_select('koja_public_posts', {'is_published':'eq.true'}, order='created_at.desc', limit=100) or []
+    # db_select returns a list (not a (rows, error) tuple).
+    # Keep the public page resilient: an unavailable/missing table simply shows an empty feed.
+    rows = db_select('koja_public_posts', {'is_published':'eq.true'}, order='created_at.desc', limit=50) or []
     enriched=[]
-    uid=(current_user() or {}).get('id')
-    for post in rows:
+    for post in rows or []:
         author=first_row('profiles', {'id':post.get('author_id')}) or {}
-        likes=db_select('koja_public_likes', {'post_id':post.get('id')}, select='user_id', limit=10000) or []
-        comments=db_select('koja_public_comments', {'post_id':post.get('id')}, order='created_at.asc', limit=200) or []
+        likes = db_select('koja_public_likes', {'post_id':post.get('id')}, select='user_id', limit=500) or []
+        comments = db_select('koja_public_comments', {'post_id':post.get('id')}, order='created_at.asc', limit=100) or []
         comment_rows=[]
-        for c in comments:
+        for c in comments or []:
             ca=first_row('profiles', {'id':c.get('author_id')}) or {}
             comment_rows.append({**c,'author_name':ca.get('full_name') or ca.get('name') or ca.get('email') or 'KOJA User'})
-        enriched.append({**post,
-            'author_name':author.get('full_name') or author.get('name') or author.get('email') or 'KOJA User',
-            'like_count':len(likes),
-            'liked':bool(uid and any(str(x.get('user_id'))==str(uid) for x in likes)),
-            'comments':comment_rows,
-            'comment_count':len(comment_rows),
-            'view_count':int(post.get('view_count') or 0),
-            'share_count':int(post.get('share_count') or 0),
-            'is_video':str(post.get('media_type') or '').lower()=='video'
-        })
-    return render_page('KOJA Feed — Video, Media & Community', r'''
-<style>
-.ng-feed{max-width:760px;margin:0 auto;padding-bottom:90px}
-.ng-top{position:sticky;top:0;z-index:20;backdrop-filter:blur(18px);background:rgba(10,12,18,.78);border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:12px 14px;margin-bottom:14px}
-.ng-top-row{display:flex;align-items:center;gap:10px}.ng-brand{font-size:22px;font-weight:900;margin-right:auto}.ng-pill{border:1px solid rgba(255,255,255,.13);padding:8px 12px;border-radius:999px;text-decoration:none}
-.ng-create{border:1px solid rgba(255,255,255,.1);border-radius:22px;padding:14px;margin-bottom:16px;background:rgba(255,255,255,.035)}
-.ng-create textarea{min-height:62px;resize:vertical}.ng-tools{display:flex;gap:8px;align-items:center;margin-top:9px}.ng-tools label{cursor:pointer;margin:0}.ng-file{display:none}.ng-feed-list{display:flex;flex-direction:column;gap:18px}
-.ng-card{position:relative;min-height:68vh;border-radius:24px;overflow:hidden;background:#080a0f;border:1px solid rgba(255,255,255,.08);box-shadow:0 18px 60px rgba(0,0,0,.25)}
-.ng-media{position:relative;width:100%;height:min(78vh,760px);background:#050609;display:flex;align-items:center;justify-content:center;overflow:hidden;cursor:pointer}.ng-media img,.ng-media video{width:100%;height:100%;object-fit:cover}.ng-media video{background:#000}.ng-gradient{position:absolute;inset:auto 0 0;height:48%;background:linear-gradient(transparent,rgba(0,0,0,.88));pointer-events:none}
-.ng-meta{position:absolute;left:16px;right:84px;bottom:18px;z-index:3;color:#fff}.ng-author{font-weight:800}.ng-body{white-space:pre-wrap;line-height:1.45;margin-top:6px}.ng-title{font-size:19px;font-weight:800;margin:6px 0}.ng-stats{font-size:12px;opacity:.82;margin-top:8px}
-.ng-actions{position:absolute;right:10px;bottom:18px;z-index:5;display:flex;flex-direction:column;gap:9px}.ng-action{width:52px;height:52px;border-radius:50%;border:1px solid rgba(255,255,255,.16);background:rgba(0,0,0,.48);color:#fff;display:flex;align-items:center;justify-content:center;font-size:20px;cursor:pointer;backdrop-filter:blur(10px)}.ng-action small{display:block;font-size:9px;margin-top:1px}.ng-action.liked{transform:scale(1.04)}
-.ng-play{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:68px;height:68px;border-radius:50%;border:1px solid rgba(255,255,255,.35);background:rgba(0,0,0,.38);color:#fff;font-size:28px;display:none;align-items:center;justify-content:center;z-index:4}.ng-media.paused .ng-play{display:flex}
-.ng-progress{position:absolute;left:0;right:0;bottom:0;height:3px;background:rgba(255,255,255,.2);z-index:5}.ng-progress i{display:block;height:100%;width:0;background:#fff}
-.ng-empty{text-align:center;padding:55px 20px}.ng-modal{position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:100;display:none;align-items:flex-end;justify-content:center}.ng-modal.open{display:flex}.ng-sheet{background:#11151d;width:min(760px,100%);max-height:82vh;border-radius:24px 24px 0 0;padding:18px;overflow:auto}.ng-sheet-head{display:flex;align-items:center}.ng-comment{display:flex;gap:9px;padding:11px 0;border-bottom:1px solid rgba(255,255,255,.08)}
-.ng-lightbox{position:fixed;inset:0;background:#000;z-index:110;display:none;align-items:center;justify-content:center}.ng-lightbox.open{display:flex}.ng-lightbox img,.ng-lightbox video{max-width:100%;max-height:100%;width:100%;height:100%;object-fit:contain}.ng-close{position:absolute;right:15px;top:15px;z-index:5;width:44px;height:44px;border-radius:50%;border:0;background:rgba(255,255,255,.12);color:#fff;font-size:22px}
-@media(max-width:760px){.ng-feed{padding:0 7px 80px}.ng-card{border-radius:18px;min-height:76vh}.ng-media{height:76vh}.ng-top{border-radius:15px}.ng-create{border-radius:18px}.ng-action{width:48px;height:48px}.ng-meta{left:13px;right:72px}.ng-brand{font-size:20px}}
-</style>
-<div class="ng-feed">
- <div class="ng-top"><div class="ng-top-row"><div class="ng-brand">KOJA <span class="small">FEED</span></div><a class="ng-pill" href="{{ url_for('public_feed') }}">For You</a><a class="ng-pill" href="{{ url_for('public_feed') }}#latest">Latest</a></div></div>
- {% if user %}<div class="ng-create"><form method="post" action="{{ url_for('public_feed_create') }}" enctype="multipart/form-data" id="ngComposer">
-   <textarea name="body" maxlength="5000" placeholder="Share something with KOJA…" required></textarea>
-   <input name="title" maxlength="180" placeholder="Title (optional)">
-   <input type="hidden" name="post_type" value="update">
-   <div class="ng-tools"><label class="btn secondary">＋ Media<input class="ng-file" type="file" name="media" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"></label><span id="ngFileName" class="small">Image or video · max {{ max_mb }} MB</span><button class="btn" type="submit">Publish</button></div>
- </form></div>{% else %}<div class="ng-create"><strong>Join the KOJA community.</strong><div class="small" style="margin:6px 0 10px">Create posts, videos, comments and reactions.</div><a class="btn" href="{{ url_for('login', next='/public') }}">Login</a> <a class="btn secondary" href="{{ url_for('register', next='/public') }}">Create account</a></div>{% endif %}
- <div class="ng-feed-list" id="latest">
- {% for p in posts %}<article class="ng-card" id="post-{{ p.id }}" data-post-id="{{ p.id }}">
-   <div class="ng-media{% if p.is_video %} video-media{% endif %}" data-media="1">
-   {% if p.media_url %}{% if p.is_video %}<video playsinline preload="metadata" muted loop src="{{ url_for('public_feed_media', post_id=p.id) }}"></video>{% else %}<img src="{{ url_for('public_feed_media', post_id=p.id) }}" alt="KOJA community media" loading="lazy">{% endif %}{% else %}<div style="padding:30px;text-align:center;font-size:52px">KOJA</div>{% endif %}
-   <div class="ng-gradient"></div><div class="ng-play">▶</div><div class="ng-progress"><i></i></div>
-   <div class="ng-meta"><div class="ng-author">{{ p.author_name }}</div><div class="small">{{ p.post_type|title }} · {{ p.created_at }}</div>{% if p.title %}<div class="ng-title">{{ p.title }}</div>{% endif %}<div class="ng-body">{{ p.body }}</div><div class="ng-stats"><span class="view-count">{{ p.view_count }}</span> views · <span>{{ p.comment_count }}</span> comments · <span class="share-count">{{ p.share_count }}</span> shares</div></div>
-   <div class="ng-actions">
-    <button class="ng-action like-btn{% if p.liked %} liked{% endif %}" data-liked="{{ '1' if p.liked else '0' }}" title="Like">{{ '❤️' if p.liked else '🤍' }}<small>{{ p.like_count }}</small></button>
-    <button class="ng-action comment-btn" title="Comments">💬<small>{{ p.comment_count }}</small></button>
-    <button class="ng-action share-btn" title="Share">↗<small>Share</small></button>
-    <button class="ng-action copy-btn" title="Copy link">🔗<small>Link</small></button>
-   </div></div>
-   <script type="application/json" class="ng-comments">{{ p.comments|tojson }}</script>
- </article>{% else %}<div class="ng-empty"><h2>Your new KOJA world starts here.</h2><p>Be the first person to publish a video, image or community story.</p></div>{% endfor %}
- </div>
-</div>
-<div class="ng-modal" id="commentModal"><div class="ng-sheet"><div class="ng-sheet-head"><h2 style="margin-right:auto">Comments</h2><button class="btn secondary" id="closeComments">Close</button></div><div id="commentList"></div>{% if user %}<form id="commentForm" style="margin-top:12px"><input id="commentInput" maxlength="1000" placeholder="Write a comment…" required><button class="btn" type="submit">Send</button></form>{% else %}<p class="small"><a href="{{ url_for('login', next='/public') }}">Login</a> to comment.</p>{% endif %}</div></div>
-<div class="ng-lightbox" id="lightbox"><button class="ng-close" id="closeLightbox">×</button><div id="lightboxContent"></div></div>
-<script>
-(()=>{
- const cards=[...document.querySelectorAll('.ng-card')];let activeComment=null;const sessionKey='koja_feed_session';let sid=localStorage.getItem(sessionKey);if(!sid){sid=(crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random());localStorage.setItem(sessionKey,sid)}
- const sendEvent=async(id,type,extra={})=>{try{await fetch('/api/public/feed/event',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({post_id:id,event_type:type,session_id:sid,...extra})})}catch(e){}}
- const playCard=c=>{const v=c.querySelector('video');if(!v)return;v.play().catch(()=>{});c.querySelector('.ng-media').classList.remove('paused');sendEvent(c.dataset.postId,'play')}
- const pauseCard=c=>{const v=c.querySelector('video');if(!v)return;v.pause();c.querySelector('.ng-media').classList.add('paused')}
- const observer=new IntersectionObserver(entries=>entries.forEach(e=>{if(e.isIntersecting&&e.intersectionRatio>.68){cards.forEach(x=>{if(x!==e.target)pauseCard(x)});playCard(e.target);sendEvent(e.target.dataset.postId,'impression')}else if(e.intersectionRatio<.25)pauseCard(e.target)}),{threshold:[.25,.68,.9]});cards.forEach(c=>observer.observe(c));
- cards.forEach(c=>{const media=c.querySelector('.ng-media'),v=c.querySelector('video'),prog=c.querySelector('.ng-progress i');
-  media.addEventListener('click',e=>{if(e.target.closest('.ng-action'))return;if(v){if(v.paused)playCard(c);else{v.pause();media.classList.add('paused');}} else openLightbox(c)});
-  if(v)v.addEventListener('timeupdate',()=>{if(v.duration){prog.style.width=(v.currentTime/v.duration*100)+'%';const pct=v.currentTime/v.duration*100;if(pct>25&&!c.dataset.p25){c.dataset.p25=1;sendEvent(c.dataset.postId,'25_percent',{watch_seconds:v.currentTime,completion_percent:pct})}if(pct>50&&!c.dataset.p50){c.dataset.p50=1;sendEvent(c.dataset.postId,'50_percent',{watch_seconds:v.currentTime,completion_percent:pct})}if(pct>75&&!c.dataset.p75){c.dataset.p75=1;sendEvent(c.dataset.postId,'75_percent',{watch_seconds:v.currentTime,completion_percent:pct})}}});
-  c.querySelector('.like-btn').onclick=async()=>{const r=await fetch('/public/like/'+c.dataset.postId,{method:'POST',headers:{'X-Requested-With':'XMLHttpRequest'}});if(r.ok){const d=await r.json();c.querySelector('.like-btn').innerHTML=(d.liked?'❤️':'🤍')+'<small>'+d.like_count+'</small>';c.querySelector('.like-btn').classList.toggle('liked',d.liked)}};
-  c.querySelector('.share-btn').onclick=async()=>{const url=location.origin+location.pathname+'#post-'+c.dataset.postId;try{if(navigator.share)await navigator.share({title:'KOJA',text:'See this on KOJA',url});else await navigator.clipboard.writeText(url)}catch(e){}sendEvent(c.dataset.postId,'share')};
-  c.querySelector('.copy-btn').onclick=async()=>{const url=location.origin+location.pathname+'#post-'+c.dataset.postId;try{await navigator.clipboard.writeText(url);c.querySelector('.copy-btn').innerHTML='✓<small>Copied</small>'}catch(e){}sendEvent(c.dataset.postId,'copy_link')};
-  c.querySelector('.comment-btn').onclick=()=>openComments(c);
- });
- function openComments(c){activeComment=c;const list=document.getElementById('commentList'),data=JSON.parse(c.querySelector('.ng-comments').textContent||'[]');list.innerHTML=data.length?data.map(x=>'<div class="ng-comment"><div><strong>'+escapeHtml(x.author_name||'KOJA User')+'</strong><div>'+escapeHtml(x.body||'')+'</div><div class="small">'+escapeHtml(x.created_at||'')+'</div></div></div>').join(''):'<p class="small">No comments yet.</p>';document.getElementById('commentModal').classList.add('open');sendEvent(c.dataset.postId,'comment_open')}
- function openLightbox(c){const media=c.querySelector('img,video');if(!media)return;const lb=document.getElementById('lightbox'),box=document.getElementById('lightboxContent');box.innerHTML='';const x=media.cloneNode(true);x.removeAttribute('controls');if(x.tagName==='VIDEO'){x.controls=true;x.autoplay=true;x.muted=false}box.appendChild(x);lb.classList.add('open')}
- function escapeHtml(s){return String(s).replace(/[&<>'"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[m]))}
- document.getElementById('closeComments').onclick=()=>document.getElementById('commentModal').classList.remove('open');document.getElementById('commentModal').onclick=e=>{if(e.target.id==='commentModal')e.currentTarget.classList.remove('open')};document.getElementById('closeLightbox').onclick=()=>{document.getElementById('lightbox').classList.remove('open');document.getElementById('lightboxContent').innerHTML=''};
- const cf=document.getElementById('commentForm');if(cf)cf.onsubmit=async e=>{e.preventDefault();const input=document.getElementById('commentInput');const r=await fetch('/api/public/comment/'+activeComment.dataset.postId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({body:input.value})});if(r.ok){input.value='';openComments(activeComment);const n=activeComment.querySelector('.comment-btn small');n.textContent=Number(n.textContent||0)+1}};
- const fi=document.querySelector('.ng-file');if(fi)fi.onchange=()=>{document.getElementById('ngFileName').textContent=fi.files[0]?fi.files[0].name:'Image or video · max {{ max_mb }} MB'};
-})();
-</script>
-''', posts=enriched, max_mb=MAX_UPLOAD_MB)
+        uid=(current_user() or {}).get('id')
+        enriched.append({**post,'author_name':author.get('full_name') or author.get('name') or author.get('email') or 'KOJA User',
+            'like_count':len(likes or []),'liked':bool(uid and any(str(x.get('user_id'))==str(uid) for x in (likes or []))), 'comments':comment_rows})
+    return render_page('KOJA Public — News, Updates & Media', r'''
+<div class="hero"><h1>🌍 KOJA Public</h1><p>News, updates, public messages and images from the KOJA community. Everyone can view this page.</p></div>
+{% if user %}<div class="card"><h3>📝 Share with everyone</h3>
+<form method="post" action="{{ url_for('public_feed_create') }}" enctype="multipart/form-data">
+<div class="grid"><div><label>Type</label><select name="post_type"><option value="update">Community Update</option><option value="news">News</option><option value="announcement">Announcement</option><option value="event">Event</option></select></div><div><label>Title (optional)</label><input name="title" maxlength="180" placeholder="What is this about?"></div></div>
+<label>Message</label><textarea name="body" maxlength="5000" placeholder="Write a public message, update or news..." required></textarea>
+<label>Image / media (optional)</label><input type="file" name="media" accept="image/jpeg,image/png,image/webp">
+<button class="btn" type="submit">🌐 Publish Publicly</button></form>
+<p class="small">Your post is public and may be visible to people who are not logged in.</p></div>
+{% else %}<div class="card"><strong>Want to publish?</strong> <a class="btn" href="{{ url_for('login', next='/public') }}">Login</a> <a class="btn secondary" href="{{ url_for('register', next='/public') }}">Create account</a></div>{% endif %}
+<div class="card"><h2>📰 News & Updates</h2><p class="small">Public feed · newest first</p></div>
+{% for p in posts %}<article class="card" id="post-{{ p.id }}"><strong>👤 {{ p.author_name }}</strong><div class="small">{{ p.post_type|title }} · {{ p.created_at }}</div>
+{% if p.title %}<h2 style="margin-top:10px">{{ p.title }}</h2>{% endif %}<p style="white-space:pre-wrap;line-height:1.7">{{ p.body }}</p>
+{% if p.media_url %}<img src="{{ url_for('public_feed_media', post_id=p.id) }}" alt="Public KOJA post image" loading="lazy" style="width:100%;max-height:620px;object-fit:cover;border-radius:12px;margin-top:8px">{% endif %}
+<div class="actions" style="margin-top:12px">{% if user %}<form method="post" action="{{ url_for('public_toggle_like', post_id=p.id) }}" style="display:inline"><button class="btn secondary" type="submit">{{ '❤️ Liked' if p.liked else '🤍 Like' }} · {{ p.like_count }}</button></form>{% else %}<a class="btn secondary" href="{{ url_for('login', next='/public') }}">🤍 Like · {{ p.like_count }}</a>{% endif %}<span class="btn secondary" style="cursor:default">💬 {{ p.comments|length }} Comments</span></div>
+{% for c in p.comments %}<div style="padding:9px 0;border-top:1px solid var(--border);margin-top:9px"><strong>{{ c.author_name }}</strong><div>{{ c.body }}</div><div class="small">{{ c.created_at }}</div></div>{% endfor %}
+{% if user %}<form method="post" action="{{ url_for('public_comment', post_id=p.id) }}"><input name="body" maxlength="1000" placeholder="Write a comment..." required><button class="btn" type="submit">Comment</button></form>{% else %}<p class="small"><a href="{{ url_for('login', next='/public') }}">Login</a> to comment.</p>{% endif %}
+</article>{% else %}<div class="card"><h3>No public updates yet.</h3><p>Be the first KOJA user to share a public update or news.</p></div>{% endfor %}
+''', posts=enriched)
 
 @app.route('/public/media/<post_id>')
 def public_feed_media(post_id):
     post = first_row('koja_public_posts', {'id': post_id})
-    if not post or not as_bool(post.get('is_published')): return '', 404
-    value=clean(post.get('media_url'))
-    if not value:return '',404
-    path=value
-    public_prefix=f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{quote(STORAGE_BUCKET,safe='')}/" if SUPABASE_URL else ''
-    if public_prefix and value.startswith(public_prefix): path=unquote(value[len(public_prefix):])
-    if path.startswith(('http://','https://')): return '',404
+    if not post or not as_bool(post.get('is_published')):
+        return '', 404
+    value = clean(post.get('media_url'))
+    if not value:
+        return '', 404
+    # V40.5 stores a private Storage path. Accept the old public URL format
+    # only when it points to this exact Supabase project and bucket.
+    path = value
+    public_prefix = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{quote(STORAGE_BUCKET, safe='')}/" if SUPABASE_URL else ''
+    if public_prefix and value.startswith(public_prefix):
+        path = unquote(value[len(public_prefix):])
+    if path.startswith('http://') or path.startswith('https://'):
+        return '', 404
     try:
-        r=requests.get(sb_storage_url(path),headers=sb_headers(),timeout=60)
-        if not r.ok:return '',404
-        mime=r.headers.get('Content-Type') or 'application/octet-stream'
-        response=send_file(io.BytesIO(r.content),mimetype=mime,download_name='koja-public-media')
-        response.headers['Cache-Control']='public, max-age=600'
+        r = requests.get(sb_storage_url(path), headers=sb_headers(), timeout=20)
+        if not r.ok:
+            return '', 404
+        mime = r.headers.get('Content-Type') or 'application/octet-stream'
+        response = send_file(io.BytesIO(r.content), mimetype=mime, download_name='koja-public-media')
+        response.headers['Cache-Control'] = 'public, max-age=300'
         return response
     except Exception:
-        logger.exception('Public feed media read failed');return '',404
+        logger.exception('Public feed media read failed')
+        return '', 404
 
-@app.route('/public/create',methods=['POST'])
+@app.route('/public/create', methods=['POST'])
 @login_required
 def public_feed_create():
-    body=clean(request.form.get('body'));title=clean(request.form.get('title'));post_type=clean(request.form.get('post_type')).lower() or 'update'
-    if post_type not in {'update','news','announcement','event'}:post_type='update'
-    if not body:flash('Write something before publishing.','danger');return redirect(url_for('public_feed'))
-    media=request.files.get('media');uploaded=None;media_type=None
+    body=clean(request.form.get('body')); title=clean(request.form.get('title'))
+    post_type=clean(request.form.get('post_type')).lower() or 'update'
+    if post_type not in {'update','news','announcement','event'}: post_type='update'
+    if not body: flash('Write a message before publishing.','danger'); return redirect(url_for('public_feed'))
+    media=request.files.get('media'); uploaded=None
     if media and media.filename:
         ext=media.filename.lower().rsplit('.',1)[-1] if '.' in media.filename else ''
-        if ext not in {'jpg','jpeg','png','webp','mp4','webm','mov'}:flash('Use JPG, PNG, WebP, MP4, WebM or MOV.','danger');return redirect(url_for('public_feed'))
+        if ext not in {'jpg','jpeg','png','webp'}: flash('Public feed images must be JPG, PNG or WebP.','danger'); return redirect(url_for('public_feed'))
         uploaded,err=upload_storage(media,'public-feed',public=False)
-        if err:flash(f'Media upload failed: {err}','danger');return redirect(url_for('public_feed'))
-        media_type='video' if ext in {'mp4','webm','mov'} else 'image'
-    payload={'author_id':current_user().get('id'),'post_type':post_type,'title':title or None,'body':body,'media_url':(uploaded or {}).get('path'),'media_type':media_type,'is_published':True,'view_count':0,'share_count':0}
+        if err: flash(f'Image upload failed: {err}','danger'); return redirect(url_for('public_feed'))
+    payload={'author_id':current_user().get('id'),'post_type':post_type,'title':title or None,'body':body,
+             'media_url':(uploaded or {}).get('path'),'media_type':('image' if uploaded else None),'is_published':True}
     _,err=db_insert('koja_public_posts',payload)
-    if err and uploaded:delete_storage_path(uploaded.get('path'))
-    flash('Published to KOJA Feed.' if not err else 'Could not publish. Run the new KOJA Feed SQL first.','success' if not err else 'danger')
+    if err and uploaded:
+        delete_storage_path(uploaded.get('path'))
+    flash('Published to KOJA Public.' if not err else 'Public post could not be published. Run the updated KOJA_CONNECT.sql first.','success' if not err else 'danger')
     return redirect(url_for('public_feed'))
 
-@app.route('/public/like/<post_id>',methods=['POST'])
+@app.route('/public/like/<post_id>', methods=['POST'])
 @login_required
 def public_toggle_like(post_id):
-    uid=current_user().get('id');existing=first_row('koja_public_likes',{'post_id':post_id,'user_id':uid})
-    if existing:db_delete('koja_public_likes',{'post_id':post_id,'user_id':uid});liked=False
-    else:db_insert('koja_public_likes',{'post_id':post_id,'user_id':uid});liked=True
-    count=len(db_select('koja_public_likes',{'post_id':post_id},select='user_id',limit=10000) or [])
-    if request.headers.get('X-Requested-With')=='XMLHttpRequest' or request.is_json:return jsonify(liked=liked,like_count=count)
+    uid=current_user().get('id'); existing=first_row('koja_public_likes', {'post_id':post_id,'user_id':uid})
+    if existing: db_delete('koja_public_likes', {'post_id':post_id,'user_id':uid})
+    else: db_insert('koja_public_likes', {'post_id':post_id,'user_id':uid})
     return redirect(url_for('public_feed')+'#post-'+post_id)
 
-@app.route('/api/public/comment/<post_id>',methods=['POST'])
-@login_required
-def public_comment_api(post_id):
-    d=request.get_json(silent=True) or {};body=clean(d.get('body'))
-    if not body:return jsonify(error='Comment is required'),400
-    row,err=db_insert('koja_public_comments',{'post_id':post_id,'author_id':current_user().get('id'),'body':body})
-    if err:return jsonify(error='Could not save comment'),500
-    return jsonify(ok=True,comment=row)
-
-@app.route('/public/comment/<post_id>',methods=['POST'])
+@app.route('/public/comment/<post_id>', methods=['POST'])
 @login_required
 def public_comment(post_id):
     body=clean(request.form.get('body'))
-    if body:db_insert('koja_public_comments',{'post_id':post_id,'author_id':current_user().get('id'),'body':body})
+    if body: db_insert('koja_public_comments', {'post_id':post_id,'author_id':current_user().get('id'),'body':body})
     return redirect(url_for('public_feed')+'#post-'+post_id)
 
-@app.route('/api/public/feed/event',methods=['POST'])
-def public_feed_event():
-    d=request.get_json(silent=True) or {};pid=clean(d.get('post_id'));event=clean(d.get('event_type')).lower();sid=clean(d.get('session_id'))[:120]
-    allowed={'impression','play','pause','25_percent','50_percent','75_percent','complete','share','copy_link','comment_open'}
-    if not pid or event not in allowed:return jsonify(error='Invalid event'),400
-    # Basic anti-spam: ignore repeated impression/play events from the same session within a short window.
-    if event in {'impression','play'} and sid:
-        recent=db_select('koja_feed_events',{'post_id':pid,'session_id':f'eq.{sid}','event_type':f'eq.{event}'},order='created_at.desc',limit=1) or []
-        if recent:
-            try:
-                created=datetime.fromisoformat(str(recent[0].get('created_at')).replace('Z','+00:00'));age=(datetime.now(timezone.utc)-created).total_seconds()
-                if age<30:return jsonify(ok=True,dedup=True)
-            except Exception:pass
-    uid=(current_user() or {}).get('id')
-    db_insert('koja_feed_events',{'post_id':pid,'user_id':uid,'session_id':sid or None,'event_type':event,'watch_seconds':float(d.get('watch_seconds') or 0),'completion_percent':float(d.get('completion_percent') or 0)})
-    if event=='impression':
-        post=first_row('koja_public_posts',{'id':pid}) or {};db_update('koja_public_posts',{'id':pid},{'view_count':int(post.get('view_count') or 0)+1})
-    if event=='share':
-        post=first_row('koja_public_posts',{'id':pid}) or {};db_update('koja_public_posts',{'id':pid},{'share_count':int(post.get('share_count') or 0)+1})
-    return jsonify(ok=True)
 
 # ============================================================
 # KOJA DIGITAL MARKETPLACE
@@ -5949,6 +5865,141 @@ def professional_public_post(profession_slug):
 """, profession=profession, posts=posts)
 
 # ============================================================
+
+
+# ============================================================
+# KOJA NEXT-GENERATION EXPERIENCE V48
+# AI • COMMUNICATION • MEDIA • NEWS
+# ============================================================
+
+NEXTGEN_SQL = r'''
+create table if not exists public.koja_news_reactions (
+    post_id uuid not null references public.koja_public_posts(id) on delete cascade,
+    user_id uuid not null, reaction text not null default 'like',
+    created_at timestamptz default now(), primary key(post_id,user_id)
+);
+create index if not exists koja_news_reactions_post_idx on public.koja_news_reactions(post_id);
+
+create table if not exists public.koja_media_events (
+    id uuid primary key default gen_random_uuid(),
+    post_id uuid references public.koja_public_posts(id) on delete cascade,
+    user_id uuid, session_id text not null, event_type text not null,
+    watch_seconds numeric default 0, completion_percent numeric default 0,
+    created_at timestamptz default now()
+);
+create index if not exists koja_media_events_post_idx on public.koja_media_events(post_id,created_at desc);
+create index if not exists koja_media_events_session_idx on public.koja_media_events(session_id,created_at desc);
+
+create table if not exists public.koja_ai_feedback (
+    id uuid primary key default gen_random_uuid(), user_id uuid,
+    rating text, prompt_hash text, created_at timestamptz default now()
+);
+'''
+
+@app.route('/ai-next', methods=['GET'])
+@login_required
+def ai_nextgen():
+    return render_page('KOJA AI', r'''
+<style>
+.ng-ai{max-width:900px;margin:auto}.ng-shell{background:var(--surface);border:1px solid var(--border);border-radius:22px;overflow:hidden;box-shadow:0 15px 50px rgba(0,0,0,.10)}
+.ng-head{padding:20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px}.ng-orb{width:44px;height:44px;border-radius:15px;display:grid;place-items:center;background:linear-gradient(135deg,#176b87,#19a7b8);color:white;font-size:23px}
+.ng-chat{height:58vh;min-height:360px;overflow:auto;padding:18px}.ng-msg{display:flex;margin:12px 0}.ng-msg.user{justify-content:flex-end}.ng-bubble{max-width:min(82%,720px);padding:12px 15px;border-radius:18px;background:rgba(127,127,127,.10);white-space:pre-wrap}.ng-msg.user .ng-bubble{background:#176b87;color:white}.ng-compose{padding:12px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:flex-end}.ng-compose textarea{margin:0;min-height:48px;max-height:150px;resize:none}.ng-send{width:52px;height:48px;margin:0;border-radius:15px}.ng-tools{display:flex;gap:7px;flex-wrap:wrap;padding:0 18px 14px}.ng-chip{border:1px solid var(--border);border-radius:999px;padding:8px 12px;background:var(--surface);cursor:pointer}
+</style>
+<div class="ng-ai"><div class="ng-shell"><div class="ng-head"><div class="ng-orb">✦</div><div><h2 style="margin:0">KOJA AI</h2><div class="small">Your intelligent workspace for questions, ideas, research and documents.</div></div><span id="aiState" class="badge" style="margin-left:auto">Ready</span></div>
+<div id="aiChat" class="ng-chat"><div class="ng-msg"><div class="ng-bubble"><strong>KOJA AI</strong><br>How can I help you today?</div></div></div>
+<div class="ng-tools"><button class="ng-chip" data-p="Explain this simply">Explain simply</button><button class="ng-chip" data-p="Help me research this topic">Research</button><button class="ng-chip" data-p="Create a step-by-step plan for this">Make a plan</button></div>
+<div class="ng-compose"><textarea id="aiPrompt" placeholder="Message KOJA AI…" maxlength="12000"></textarea><button id="aiSend" class="ng-send" type="button" aria-label="Send">➤</button></div></div></div>
+<script>
+const ac=document.getElementById('aiChat'),ap=document.getElementById('aiPrompt'),as=document.getElementById('aiState'),send=document.getElementById('aiSend');
+let hist=[]; try{hist=JSON.parse(localStorage.getItem('koja_ai_nextgen')||'[]')}catch(e){hist=[]}
+function esc(x){return String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function redraw(){ac.innerHTML='';(hist.length?hist:[{role:'assistant',content:'How can I help you today?'}]).forEach(m=>{let d=document.createElement('div');d.className='ng-msg '+(m.role==='user'?'user':'');d.innerHTML='<div class="ng-bubble">'+(m.role==='assistant'?'<strong>KOJA AI</strong><br>':'')+esc(m.content)+'</div>';ac.appendChild(d)});ac.scrollTop=ac.scrollHeight}
+async function ask(){let q=ap.value.trim();if(!q)return;ap.value='';hist.push({role:'user',content:q});redraw();as.textContent='Thinking…';send.disabled=true;try{let r=await fetch('/api/nextgen/ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:q,history:hist.slice(-12)})});let d=await r.json();if(!r.ok)throw Error(d.error||'KOJA AI is unavailable');hist.push({role:'assistant',content:d.answer||'No answer returned.'});localStorage.setItem('koja_ai_nextgen',JSON.stringify(hist.slice(-30)));as.textContent='Ready';}catch(e){hist.push({role:'assistant',content:e.message});as.textContent='Unavailable';}finally{send.disabled=false;redraw();}}
+send.onclick=ask;ap.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();ask()}});document.querySelectorAll('.ng-chip').forEach(b=>b.onclick=()=>{ap.value=b.dataset.p;ap.focus()});redraw();
+</script>
+''')
+
+@app.route('/api/nextgen/ai', methods=['POST'])
+@login_required
+def api_nextgen_ai():
+    d=request.get_json(silent=True) or {}; prompt=clean(d.get('prompt'))
+    if not prompt:return jsonify(error='Enter a message.'),400
+    uid=(current_user() or {}).get('id')
+    if _rate_limited('next-ai:'+str(uid or request.remote_addr),20,300): return jsonify(error='Too many requests. Please wait.'),429
+    hist=d.get('history') or []
+    context='\n'.join(f"{x.get('role','user')}: {str(x.get('content',''))[:5000]}" for x in hist[-10:] if isinstance(x,dict))
+    system=('You are KOJA AI, an intelligent assistant inside KOJA AFRICA. Be accurate, useful and concise. '
+            'Never claim live browsing unless live sources were actually provided. Help with writing, learning, coding, planning, research and everyday tasks. '
+            'If a request needs current facts, clearly state that verification is needed.')
+    answer,err=_ai_call(('Conversation context:\n'+context+'\n\n' if context else '')+'USER: '+prompt,system,max_output_tokens=1800,timeout=50)
+    if not answer:return jsonify(error=_ai_error_message(err)),502
+    log_activity('ai_chat','User used next-generation KOJA AI.')
+    return jsonify(answer=answer)
+
+@app.route('/communication-next')
+@login_required
+def communication_nextgen():
+    uid=current_user()['id']; members=db_select('koja_conversation_members',filters={'user_id':uid},limit=100); chats=[]
+    for m in members:
+        c=first_row('koja_conversations',{'id':m.get('conversation_id')})
+        if not c: continue
+        ms=db_select('koja_conversation_members',filters={'conversation_id':c['id']},limit=20)
+        other=next((x for x in ms if str(x.get('user_id'))!=str(uid)),None)
+        name=_profile_name(other.get('user_id')) if other else (c.get('name') or 'KOJA Group')
+        last=db_select('koja_messages',filters={'conversation_id':c['id']},order='created_at.desc',limit=1)
+        chats.append({'id':c['id'],'name':name,'last':(last[0].get('body') if last else 'Start a conversation') or 'Media message'})
+    return render_page('KOJA Communication',r'''
+<style>.comm-wrap{display:grid;grid-template-columns:340px 1fr;gap:16px}.comm-list,.comm-main{background:var(--surface);border:1px solid var(--border);border-radius:20px;overflow:hidden}.comm-search{padding:14px;border-bottom:1px solid var(--border)}.comm-search input{margin:0}.comm-item{display:block;padding:15px;border-bottom:1px solid var(--border);text-decoration:none;color:inherit}.comm-item:hover{background:rgba(127,127,127,.08)}.comm-main{min-height:520px;padding:25px}.comm-orbs{display:flex;gap:12px;flex-wrap:wrap}.comm-orb{width:62px;height:62px;border-radius:20px;background:rgba(23,107,135,.12);display:grid;place-items:center;font-size:25px}.comm-actions{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:20px}@media(max-width:800px){.comm-wrap{grid-template-columns:1fr}.comm-main{min-height:300px}}
+</style>
+<div class="hero"><h2>💬 KOJA Communication</h2><p>One communication layer for messaging, media, voice, video, groups and status.</p></div>
+<div class="comm-wrap"><div class="comm-list"><div class="comm-search"><input id="chatSearch" placeholder="Search conversations…"></div><div id="chatList">{% for c in chats %}<a class="comm-item" data-name="{{ c.name|lower }}" href="{{ url_for('connect_chat',conversation_id=c.id) }}"><strong>{{ c.name }}</strong><div class="small">{{ c.last[:100] }}</div></a>{% else %}<div class="comm-item">No conversations yet.</div>{% endfor %}</div></div>
+<div class="comm-main"><div class="comm-orbs"><div class="comm-orb">💬</div><div class="comm-orb">🎙️</div><div class="comm-orb">📹</div><div class="comm-orb">👥</div><div class="comm-orb">📎</div></div><h2>Communication, redesigned</h2><p>Continue conversations without leaving KOJA. Open any chat for the existing secure messaging and calling system.</p><div class="comm-actions"><a class="btn" href="{{ url_for('connect_people') }}">👥 Find People</a><a class="btn" href="{{ url_for('connect_group_new') }}">➕ New Group</a><a class="btn secondary" href="{{ url_for('connect_status') }}">🟢 Status</a><a class="btn secondary" href="{{ url_for('connect_calls') }}">📞 Call History</a></div></div></div>
+<script>const cs=document.getElementById('chatSearch');cs.oninput=()=>{let q=cs.value.toLowerCase();document.querySelectorAll('.comm-item[data-name]').forEach(x=>x.style.display=x.dataset.name.includes(q)?'block':'none')}</script>
+''',chats=chats)
+
+@app.route('/media-next')
+def media_nextgen():
+    rows=db_select('koja_public_posts',{'is_published':'eq.true'},order='created_at.desc',limit=100) or []
+    items=[]
+    for p in rows:
+        if not p.get('media_url'): continue
+        items.append(p)
+    return render_page('KOJA Media',r'''
+<style>.media-feed{height:calc(100vh - 150px);min-height:540px;overflow-y:auto;scroll-snap-type:y mandatory;background:#05070a;border-radius:22px}.media-card{height:100%;min-height:540px;position:relative;scroll-snap-align:start;display:grid;place-items:center;background:#05070a}.media-card img,.media-card video{width:100%;height:100%;object-fit:contain;max-height:calc(100vh - 150px)}.media-overlay{position:absolute;left:18px;right:18px;bottom:18px;color:#fff;text-shadow:0 2px 8px #000;z-index:2}.media-actions{position:absolute;right:16px;bottom:110px;display:flex;flex-direction:column;gap:9px;z-index:3}.media-actions button{width:50px;height:50px;border-radius:50%;padding:0;margin:0;background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.2)}.media-empty{padding:70px;text-align:center;color:#fff}
+</style>
+<div class="hero"><h2>◉ KOJA Media</h2><p>Immersive media discovery with adaptive interaction, sharing and watch analytics.</p></div>
+<div class="media-feed" id="mediaFeed">{% for p in items %}<article class="media-card" data-id="{{ p.id }}" data-seen="0">{% if p.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=p.id) }}" playsinline muted loop preload="metadata"></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="KOJA media">{% endif %}<div class="media-actions"><button onclick="likeMedia('{{ p.id }}')">♡</button><button onclick="shareMedia('{{ p.id }}')">↗</button><button onclick="copyMedia('{{ p.id }}')">⧉</button></div><div class="media-overlay"><strong>{{ p.title or 'KOJA Media' }}</strong><div>{{ p.body[:220] }}</div><div class="small" style="color:#ddd">{{ p.post_type|title }} · {{ p.created_at }}</div></div></article>{% else %}<div class="media-empty"><h2>No media yet</h2><p>Publish a photo or video to start the KOJA media experience.</p></div>{% endfor %}</div>
+<script>
+const feed=document.getElementById('mediaFeed');const io=new IntersectionObserver(es=>es.forEach(e=>{let v=e.target.querySelector('video');if(e.isIntersecting){if(v)v.play().catch(()=>{});if(e.target.dataset.seen==='0'){e.target.dataset.seen='1';track(e.target.dataset.id,'impression',0,0)}}else if(v)v.pause()}),{root:feed,threshold:.65});document.querySelectorAll('.media-card').forEach(x=>io.observe(x));
+function track(id,type,w,c){fetch('/api/nextgen/media-event',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({post_id:id,event_type:type,watch_seconds:w,completion_percent:c})}).catch(()=>{})}
+async function likeMedia(id){await fetch('/public/like/'+id,{method:'POST'});}
+function shareMedia(id){let u=location.origin+'/public#post-'+id;if(navigator.share)navigator.share({title:'KOJA Media',url:u});else navigator.clipboard?.writeText(u)}
+function copyMedia(id){let u=location.origin+'/public#post-'+id;navigator.clipboard?.writeText(u);}
+</script>
+''',items=items)
+
+@app.route('/api/nextgen/media-event',methods=['POST'])
+def nextgen_media_event():
+    d=request.get_json(silent=True) or {}; pid=clean(d.get('post_id')); et=clean(d.get('event_type'))
+    allowed={'impression','play','pause','25_percent','50_percent','75_percent','complete','share'}
+    if not pid or et not in allowed:return jsonify(error='Invalid event'),400
+    sid=request.cookies.get('koja_media_session') or uuid.uuid4().hex
+    uid=(current_user() or {}).get('id')
+    db_insert('koja_media_events',{'post_id':pid,'user_id':uid,'session_id':sid,'event_type':et,'watch_seconds':float(d.get('watch_seconds') or 0),'completion_percent':float(d.get('completion_percent') or 0),'created_at':utc_now()})
+    resp=jsonify(ok=True);resp.set_cookie('koja_media_session',sid,max_age=60*60*24*30,httponly=True,samesite='Lax');return resp
+
+@app.route('/news-next')
+def news_nextgen():
+    rows=db_select('koja_public_posts',{'is_published':'eq.true','post_type':'eq.news'},order='created_at.desc',limit=100) or []
+    for p in rows:
+        a=first_row('profiles',{'id':p.get('author_id')}) or {};p['author_name']=a.get('full_name') or a.get('name') or 'KOJA News'
+    return render_page('KOJA News',r'''
+<style>.news-grid{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:18px}.news-card{background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:20px;margin-bottom:14px}.news-card img{width:100%;max-height:460px;object-fit:cover;border-radius:15px;margin-top:12px}.news-meta{color:var(--muted);font-size:13px}.news-side{position:sticky;top:85px;height:max-content}.topic{display:inline-block;padding:8px 11px;border:1px solid var(--border);border-radius:999px;margin:4px;text-decoration:none;color:inherit}@media(max-width:800px){.news-grid{grid-template-columns:1fr}.news-side{position:static}}
+</style>
+<div class="hero"><h2>📰 KOJA News</h2><p>Fast, structured and mobile-first news discovery from KOJA.</p></div><div class="news-grid"><main>{% for p in posts %}<article class="news-card"><div class="news-meta">{{ p.author_name }} · {{ p.created_at }}</div><h2>{{ p.title or 'KOJA News Update' }}</h2><p style="white-space:pre-wrap;line-height:1.75">{{ p.body }}</p>{% if p.media_url %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" alt="{{ p.title or 'KOJA news' }}" loading="lazy">{% endif %}<div class="actions" style="margin-top:14px"><a class="btn secondary" href="{{ url_for('public_feed') }}#post-{{ p.id }}">💬 Discuss</a><button class="btn secondary" onclick="navigator.clipboard&&navigator.clipboard.writeText(location.origin+'/public#post-{{ p.id }}')">Copy Link</button></div></article>{% else %}<div class="news-card"><h3>No news published yet.</h3><p>KOJA news will appear here as publishers post verified updates.</p></div>{% endfor %}</main><aside class="news-side"><div class="news-card"><h3>KOJA Newsroom</h3><p class="small">News, announcements and important public updates in one place.</p><a class="btn" href="{{ url_for('public_feed') }}">Open Public Feed</a></div><div class="news-card"><h3>Explore</h3><a class="topic" href="{{ url_for('research') }}">Research</a><a class="topic" href="{{ url_for('media_nextgen') }}">Media</a><a class="topic" href="{{ url_for('ai_nextgen') }}">AI</a></div></aside></div>
+''',posts=rows)
+
+
 
 # ERROR HANDLERS
 # ============================================================
