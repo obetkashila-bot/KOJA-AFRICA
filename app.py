@@ -1650,6 +1650,79 @@ def _ai_call(prompt, system_prompt, max_output_tokens=900, timeout=12):
             continue
     return "","timeout_or_provider_error"
 
+def _ai_stream(prompt, system_prompt, max_output_tokens=1200, timeout=90):
+    """Stream KOJA AI tokens. Groq is primary; Gemini is a fallback."""
+    groq_key=(os.getenv("GROQ_API_KEY") or "").strip()
+    if groq_key:
+        model=(os.getenv("GROQ_MODEL") or "llama-3.3-70b-versatile").strip()
+        payload={
+            "model":model,
+            "messages":[
+                {"role":"system","content":system_prompt},
+                {"role":"user","content":prompt},
+            ],
+            "temperature":0.7,
+            "max_completion_tokens":max_output_tokens,
+            "stream":True,
+        }
+        try:
+            with requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                json=payload,
+                stream=True,
+                timeout=(5, min(int(timeout), 90)),
+                headers={
+                    "Authorization":"Bearer "+groq_key,
+                    "Content-Type":"application/json",
+                    "Accept":"text/event-stream",
+                },
+            ) as r:
+                if r.ok:
+                    got=False
+                    for line in r.iter_lines(decode_unicode=True):
+                        if not line:
+                            continue
+                        if isinstance(line, bytes):
+                            line=line.decode("utf-8", "ignore")
+                        if not line.startswith("data:"):
+                            continue
+                        raw=line[5:].strip()
+                        if raw=="[DONE]":
+                            break
+                        try:
+                            data=json.loads(raw)
+                        except Exception:
+                            continue
+                        choices=data.get("choices") or []
+                        if not choices:
+                            continue
+                        delta=(choices[0].get("delta") or {}).get("content")
+                        if delta:
+                            got=True
+                            yield {"type":"token","text":delta}
+                    if got:
+                        yield {"type":"done"}
+                        return
+                    logger.warning("Groq streaming returned no text model=%s", model)
+                else:
+                    logger.warning("Groq streaming failed status=%s model=%s", r.status_code, model)
+        except requests.Timeout:
+            logger.warning("Groq streaming timed out model=%s", model)
+        except requests.RequestException as exc:
+            logger.warning("Groq streaming network error model=%s: %s", model, exc)
+        except Exception as exc:
+            logger.warning("Groq streaming error model=%s: %s", model, exc)
+
+    # Reliable fallback: use the normal provider chain and emit its answer as
+    # one token event so the frontend still receives a valid SSE response.
+    answer, err=_ai_call(prompt, system_prompt, max_output_tokens=max_output_tokens, timeout=min(int(timeout),12))
+    if answer:
+        yield {"type":"token","text":answer}
+        yield {"type":"done"}
+    else:
+        yield {"type":"error","error":err or "timeout_or_provider_error"}
+
+
 def _ai_error_message(code):
     return {
         "missing_api_key":"Gemini API key is missing from the running Render service.",
@@ -5879,25 +5952,30 @@ create table if not exists public.koja_ai_feedback (
 @app.route('/ai-next', methods=['GET'])
 @login_required
 def ai_nextgen():
-    return render_page('KOJA AI', r'''
-<style>
-.ng-ai{max-width:900px;margin:auto}.ng-shell{background:var(--surface);border:1px solid var(--border);border-radius:22px;overflow:hidden;box-shadow:0 15px 50px rgba(0,0,0,.10)}
-.ng-head{padding:20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px}.ng-orb{width:44px;height:44px;border-radius:15px;display:grid;place-items:center;background:linear-gradient(135deg,#176b87,#19a7b8);color:white;font-size:23px}
-.ng-chat{height:58vh;min-height:360px;overflow:auto;padding:18px}.ng-msg{display:flex;margin:12px 0}.ng-msg.user{justify-content:flex-end}.ng-bubble{max-width:min(82%,720px);padding:12px 15px;border-radius:18px;background:rgba(127,127,127,.10);white-space:pre-wrap}.ng-msg.user .ng-bubble{background:#176b87;color:white}.ng-compose{padding:12px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:flex-end}.ng-compose textarea{margin:0;min-height:48px;max-height:150px;resize:none}.ng-send{width:52px;height:48px;margin:0;border-radius:15px}.ng-tools{display:flex;gap:7px;flex-wrap:wrap;padding:0 18px 14px}.ng-chip{border:1px solid var(--border);border-radius:999px;padding:8px 12px;background:var(--surface);cursor:pointer}
-</style>
-<div class="ng-ai"><div class="ng-shell"><div class="ng-head"><div class="ng-orb">✦</div><div><h2 style="margin:0">KOJA AI</h2><div class="small">Your intelligent workspace for questions, ideas, research and documents.</div></div><span id="aiState" class="badge" style="margin-left:auto">Ready</span></div>
-<div id="aiChat" class="ng-chat"><div class="ng-msg"><div class="ng-bubble"><strong>KOJA AI</strong><br>How can I help you today?</div></div></div>
-<div class="ng-tools"><button class="ng-chip" data-p="Explain this simply">Explain simply</button><button class="ng-chip" data-p="Help me research this topic">Research</button><button class="ng-chip" data-p="Create a step-by-step plan for this">Make a plan</button></div>
-<div class="ng-compose"><textarea id="aiPrompt" placeholder="Message KOJA AI…" maxlength="12000"></textarea><button id="aiSend" class="ng-send" type="button" aria-label="Send">➤</button></div></div></div>
-<script>
-const ac=document.getElementById('aiChat'),ap=document.getElementById('aiPrompt'),as=document.getElementById('aiState'),send=document.getElementById('aiSend');
-let hist=[]; try{hist=JSON.parse(localStorage.getItem('koja_ai_nextgen')||'[]')}catch(e){hist=[]}
-function esc(x){return String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
-function redraw(){ac.innerHTML='';(hist.length?hist:[{role:'assistant',content:'How can I help you today?'}]).forEach(m=>{let d=document.createElement('div');d.className='ng-msg '+(m.role==='user'?'user':'');d.innerHTML='<div class="ng-bubble">'+(m.role==='assistant'?'<strong>KOJA AI</strong><br>':'')+esc(m.content)+'</div>';ac.appendChild(d)});ac.scrollTop=ac.scrollHeight}
-async function ask(){let q=ap.value.trim();if(!q||send.disabled)return;ap.value='';hist.push({role:'user',content:q});hist.push({role:'assistant',content:''});redraw();as.textContent='Generating…';send.disabled=true;let reader;try{let r=await fetch('/api/nextgen/ai/stream',{method:'POST',headers:{'Content-Type':'application/json','Accept':'text/event-stream'},body:JSON.stringify({prompt:q,history:hist.slice(-12)})});if(!r.ok){let d=await r.json().catch(()=>({}));throw Error(d.error||'KOJA AI is unavailable');}reader=r.body.getReader();let decoder=new TextDecoder();let buffer='';while(true){let part=await reader.read();if(part.done)break;buffer+=decoder.decode(part.value,{stream:true});let events=buffer.split('\n\n');buffer=events.pop()||'';for(let ev of events){let line=ev.split('\n').find(x=>x.startsWith('data:'));if(!line)continue;let payload=JSON.parse(line.slice(5).trim());if(payload.type==='token'){hist[hist.length-1].content+=payload.text;redraw();}else if(payload.type==='error'){throw Error(payload.message||'KOJA AI is unavailable');}}}hist[hist.length-1].content=hist[hist.length-1].content||'No answer returned.';localStorage.setItem('koja_ai_nextgen',JSON.stringify(hist.slice(-30)));as.textContent='Ready';}catch(e){if(hist[hist.length-1]?.role==='assistant'&&!hist[hist.length-1].content)hist[hist.length-1].content=e.message;as.textContent='Unavailable';}finally{send.disabled=false;redraw();}}
-send.onclick=ask;ap.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();ask()}});document.querySelectorAll('.ng-chip').forEach(b=>b.onclick=()=>{ap.value=b.dataset.p;ap.focus()});redraw();
-</script>
-''')
+    return render_page('KOJA AI', r'''<style>
+html,body{margin:0!important;padding:0!important}.ng-full{position:fixed;inset:0;width:100vw;height:100dvh;z-index:9999;background:var(--bg,#fff);color:var(--text,#111);display:flex;overflow:hidden}.ng-sidebar{width:280px;flex:0 0 280px;background:var(--surface,#f7f7f8);border-right:1px solid var(--border,#ddd);display:flex;flex-direction:column}.ng-side-top{padding:12px;border-bottom:1px solid var(--border,#ddd)}.ng-new{width:100%;height:44px;border:1px solid var(--border,#ccc);border-radius:12px;background:var(--surface,#fff);color:inherit;font-weight:600;cursor:pointer}.ng-new:hover,.ng-hitem:hover{background:rgba(127,127,127,.1)}.ng-history-title{padding:14px 14px 7px;font-size:12px;font-weight:700;opacity:.58;text-transform:uppercase;letter-spacing:.06em}.ng-history{flex:1;overflow-y:auto;padding:5px 8px 14px}.ng-hitem{display:block;width:100%;text-align:left;border:0;background:transparent;color:inherit;padding:11px 12px;border-radius:10px;cursor:pointer;margin:2px 0}.ng-hitem strong{display:block;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ng-hitem small{display:block;opacity:.52;margin-top:4px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ng-empty{padding:18px 10px;text-align:center;opacity:.55;font-size:13px}.ng-main{flex:1;min-width:0;height:100%;display:flex;flex-direction:column;background:var(--bg,#fff)}.ng-topbar{height:58px;flex:0 0 58px;border-bottom:1px solid var(--border,#ddd);display:flex;align-items:center;padding:0 18px;gap:10px;background:var(--bg,#fff)}.ng-brand{display:flex;align-items:center;gap:9px;font-weight:700;font-size:16px}.ng-orb{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;background:linear-gradient(135deg,#176b87,#19a7b8);color:#fff;font-size:16px}.ng-status{margin-left:auto;font-size:12px;opacity:.58}.ng-menu{display:none;width:38px;height:38px;border:0;background:transparent;border-radius:10px;font-size:22px;cursor:pointer;color:inherit}.ng-chat{flex:1;overflow-y:auto;scroll-behavior:smooth;padding:28px 18px 150px}.ng-inner{max-width:850px;margin:0 auto}.ng-welcome{text-align:center;padding:12vh 15px 25px}.ng-welcome h1{font-size:30px;margin:0 0 9px}.ng-welcome p{opacity:.6;margin:0}.ng-msg{display:flex;margin:0 auto;padding:22px 0;gap:13px;max-width:850px}.ng-msg.user{justify-content:flex-end}.ng-avatar{width:30px;height:30px;flex:0 0 30px;border-radius:9px;display:grid;place-items:center;font-size:13px;font-weight:700}.ng-msg.assistant .ng-avatar{background:linear-gradient(135deg,#176b87,#19a7b8);color:#fff}.ng-msg.user .ng-avatar{background:#ececec;color:#333;order:2}.ng-content{max-width:760px;line-height:1.65;font-size:15px;white-space:pre-wrap;overflow-wrap:anywhere}.ng-msg.user .ng-content{background:#f1f1f1;padding:11px 15px;border-radius:18px;line-height:1.5}.ng-composer-wrap{position:absolute;left:280px;right:0;bottom:0;padding:12px 18px 18px;background:linear-gradient(transparent,var(--bg,#fff) 30%)}.ng-composer{max-width:850px;margin:0 auto;border:1px solid #cfcfcf;border-radius:20px;background:var(--surface,#fff);box-shadow:0 3px 18px rgba(0,0,0,.08);display:flex;align-items:flex-end;padding:8px 9px 8px 15px;gap:8px}.ng-composer textarea{flex:1;border:0!important;outline:0!important;box-shadow:none!important;background:transparent!important;color:inherit!important;margin:0!important;padding:8px 0!important;min-height:28px;max-height:180px;resize:none;font:inherit;line-height:1.45}.ng-send{width:40px;height:40px;flex:0 0 40px;border:0;border-radius:12px;background:#176b87;color:#fff;cursor:pointer;font-size:17px}.ng-send:disabled{opacity:.45;cursor:not-allowed}.ng-hint{text-align:center;font-size:11px;opacity:.45;margin-top:7px}.ng-chips{display:flex;justify-content:center;gap:7px;flex-wrap:wrap;margin:0 auto 12px;max-width:850px}.ng-chip{border:1px solid var(--border,#ddd);border-radius:999px;padding:7px 11px;background:var(--surface,#fff);color:inherit;cursor:pointer;font-size:12px}@media(max-width:800px){.ng-sidebar{position:absolute;left:0;top:0;bottom:0;z-index:20;transform:translateX(-100%);transition:transform .2s ease;box-shadow:8px 0 30px rgba(0,0,0,.12)}.ng-sidebar.open{transform:translateX(0)}.ng-menu{display:block}.ng-composer-wrap{left:0;padding:10px 10px 12px}.ng-chat{padding:18px 12px 125px}.ng-msg{padding:17px 3px}.ng-content{font-size:14px}.ng-welcome{padding-top:13vh}.ng-welcome h1{font-size:26px}}@media(prefers-color-scheme:dark){.ng-msg.user .ng-content{background:rgba(255,255,255,.08)}.ng-composer{border-color:#444}}
+</style><div class="ng-full"><aside id="ngSidebar" class="ng-sidebar"><div class="ng-side-top"><button id="newChat" class="ng-new">＋ New chat</button></div><div class="ng-history-title">History</div><div id="historyList" class="ng-history"><div class="ng-empty">Loading history…</div></div></aside><main class="ng-main"><header class="ng-topbar"><button id="menuBtn" class="ng-menu" aria-label="Open chat history">☰</button><div class="ng-brand"><span class="ng-orb">✦</span><span>KOJA AI</span></div><span id="aiState" class="ng-status">Ready</span></header><section id="aiChat" class="ng-chat"><div class="ng-inner"></div></section><div class="ng-composer-wrap"><div id="chips" class="ng-chips"><button class="ng-chip" data-p="Explain this simply">Explain simply</button><button class="ng-chip" data-p="Help me research this topic">Research</button><button class="ng-chip" data-p="Create a step-by-step plan for this">Make a plan</button></div><div class="ng-composer"><textarea id="aiPrompt" placeholder="Message KOJA AI…" maxlength="12000" rows="1" aria-label="Message KOJA AI"></textarea><button id="aiSend" class="ng-send" type="button" aria-label="Send">➤</button></div><div class="ng-hint">KOJA AI can make mistakes. Check important information.</div></div></main></div><script>
+const ac=document.getElementById('aiChat'),inner=ac.querySelector('.ng-inner'),ap=document.getElementById('aiPrompt'),as=document.getElementById('aiState'),send=document.getElementById('aiSend'),hl=document.getElementById('historyList'),sidebar=document.getElementById('ngSidebar');let hist=[],conversationId=null;function esc(x){return String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}function redraw(){inner.innerHTML='';if(!hist.length){inner.innerHTML='<div class="ng-welcome"><h1>How can I help you today?</h1><p>Ask KOJA AI anything.</p></div>';return}hist.forEach(m=>{let d=document.createElement('div');d.className='ng-msg '+(m.role==='user'?'user':'assistant');let a=document.createElement('div');a.className='ng-avatar';a.textContent=m.role==='user'?'U':'✦';let c=document.createElement('div');c.className='ng-content';c.innerHTML=esc(m.content);d.appendChild(a);d.appendChild(c);inner.appendChild(d)});ac.scrollTop=ac.scrollHeight}function resizeBox(){ap.style.height='auto';ap.style.height=Math.min(ap.scrollHeight,180)+'px'}async function loadHistory(){try{let r=await fetch('/api/nextgen/ai/history');let d=await r.json();hl.innerHTML='';if(!d.chats?.length){hl.innerHTML='<div class="ng-empty">No previous chats yet.</div>';return}d.chats.forEach(c=>{let b=document.createElement('button');b.className='ng-hitem';b.innerHTML='<strong>'+esc(c.title||'KOJA AI chat')+'</strong><small>'+esc(c.preview||'')+'</small>';b.onclick=()=>openChat(c.id);hl.appendChild(b)})}catch(e){hl.innerHTML='<div class="ng-empty">History unavailable.</div>'}}async function openChat(id){let r=await fetch('/api/nextgen/ai/history/'+encodeURIComponent(id));let d=await r.json();if(!r.ok){as.textContent='Unavailable';return}conversationId=id;hist=d.messages||[];redraw();as.textContent='Ready';sidebar.classList.remove('open')}function newChat(){conversationId=null;hist=[];ap.value='';resizeBox();as.textContent='Ready';redraw();ap.focus();sidebar.classList.remove('open')}async function ask(){let q=ap.value.trim();if(!q||send.disabled)return;ap.value='';resizeBox();hist.push({role:'user',content:q},{role:'assistant',content:''});redraw();send.disabled=true;as.textContent='Generating…';try{let r=await fetch('/api/nextgen/ai/stream',{method:'POST',headers:{'Content-Type':'application/json','Accept':'text/event-stream'},body:JSON.stringify({prompt:q,history:hist.slice(-12),conversation_id:conversationId})});if(!r.ok){let d=await r.json().catch(()=>({}));throw Error(d.error||'KOJA AI is unavailable')}let reader=r.body.getReader(),dec=new TextDecoder(),buf='';while(true){let z=await reader.read();if(z.done)break;buf+=dec.decode(z.value,{stream:true});let es=buf.split('\n\n');buf=es.pop()||'';for(let ev of es){let line=ev.split('\n').find(x=>x.startsWith('data:'));if(!line)continue;let x;try{x=JSON.parse(line.slice(5).trim())}catch(_){continue}if(x.type==='conversation')conversationId=x.id;else if(x.type==='token'){hist[hist.length-1].content+=x.text||'';redraw()}else if(x.type==='error')throw Error(x.message||'KOJA AI unavailable')}}as.textContent='Ready';loadHistory()}catch(e){if(hist.at(-1)?.role==='assistant')hist.at(-1).content=e.message;as.textContent='Unavailable';redraw()}finally{send.disabled=false;ap.focus()}}send.onclick=ask;document.getElementById('newChat').onclick=newChat;document.getElementById('menuBtn').onclick=()=>sidebar.classList.toggle('open');ap.addEventListener('input',resizeBox);ap.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();ask()}});document.querySelectorAll('.ng-chip').forEach(b=>b.onclick=()=>{ap.value=b.dataset.p;resizeBox();ap.focus()});redraw();loadHistory();</script>''')
+@app.route('/api/nextgen/ai/history', methods=['GET'])
+@login_required
+def api_nextgen_ai_history():
+    uid=str((current_user() or {}).get('id') or '')
+    chats=db_select('koja_ai_conversations', {'user_id':uid,'is_archived':False}, order='updated_at.desc', limit=50)
+    out=[]
+    for c in chats:
+        msgs=db_select('koja_ai_messages', {'conversation_id':c.get('id'),'user_id':uid}, order='created_at.desc', limit=5)
+        preview=next((clean(m.get('content'))[:100] for m in msgs if m.get('role')=='user'),'')
+        out.append({'id':c.get('id'),'title':c.get('title') or 'KOJA AI chat','preview':preview,'updated_at':c.get('updated_at')})
+    return jsonify(chats=out)
+
+@app.route('/api/nextgen/ai/history/<conversation_id>', methods=['GET'])
+@login_required
+def api_nextgen_ai_history_chat(conversation_id):
+    uid=str((current_user() or {}).get('id') or '')
+    owned=db_select('koja_ai_conversations', {'id':conversation_id,'user_id':uid,'is_archived':False}, limit=1)
+    if not owned:return jsonify(error='Chat not found.'),404
+    msgs=db_select('koja_ai_messages', {'conversation_id':conversation_id,'user_id':uid}, order='created_at.asc', limit=200)
+    return jsonify(id=conversation_id,title=owned[0].get('title') or 'KOJA AI chat',messages=[{'role':m.get('role'),'content':m.get('content') or ''} for m in msgs])
 
 @app.route('/api/nextgen/ai/stream', methods=['POST'])
 @login_required
@@ -5909,21 +5987,34 @@ def api_nextgen_ai_stream():
     if _rate_limited('next-ai:'+str(uid or request.remote_addr),20,300):
         return jsonify(error='Too many requests. Please wait.'),429
     hist=d.get('history') or []
+    conversation_id=clean(d.get('conversation_id'))
+    owned=db_select('koja_ai_conversations', {'id':conversation_id,'user_id':uid,'is_archived':False}, limit=1) if conversation_id else []
+    if not owned:
+        row,err=db_insert('koja_ai_conversations', {'user_id':uid,'title':prompt[:80] or 'KOJA AI chat'})
+        if not row or not row.get('id'): return jsonify(error='KOJA AI history storage is not ready.'),500
+        conversation_id=row['id']
     context='\\n'.join(f"{x.get('role','user')}: {str(x.get('content',''))[:3500]}" for x in hist[-8:] if isinstance(x,dict))
     system=('You are KOJA AI, an intelligent assistant inside KOJA AFRICA. Be accurate, useful and concise. '
             'Never claim live browsing unless live sources were actually provided. Help with writing, learning, coding, planning, research and everyday tasks. '
             'If a request needs current facts, clearly state that verification is needed.')
     full_prompt=(('Conversation context:\\n'+context+'\\n\\n') if context else '')+'USER: '+prompt
     def events():
-        yield ': KOJA AI stream connected\\n\\n'
+        parts=[]
+        yield ': KOJA AI stream connected\n\n'
+        yield 'data: '+json.dumps({'type':'conversation','id':conversation_id},separators=(',',':'))+'\n\n'
         for item in _ai_stream(full_prompt,system,max_output_tokens=1200,timeout=90):
             if item.get('type')=='token':
-                yield 'data: '+json.dumps(item,separators=(',',':'))+'\\n\\n'
+                parts.append(item.get('text') or '')
+                yield 'data: '+json.dumps(item,separators=(',',':'))+'\n\n'
             elif item.get('type')=='error':
-                yield 'data: '+json.dumps({'type':'error','message':_ai_error_message(item.get('error'))},separators=(',',':'))+'\\n\\n'
+                yield 'data: '+json.dumps({'type':'error','message':_ai_error_message(item.get('error'))},separators=(',',':'))+'\n\n'
                 return
             elif item.get('type')=='done':
-                yield 'data: '+json.dumps({'type':'done'},separators=(',',':'))+'\\n\\n'
+                answer=''.join(parts).strip() or 'No answer returned.'
+                db_insert('koja_ai_messages', {'conversation_id':conversation_id,'user_id':uid,'role':'user','content':prompt})
+                db_insert('koja_ai_messages', {'conversation_id':conversation_id,'user_id':uid,'role':'assistant','content':answer})
+                db_update('koja_ai_conversations', {'id':conversation_id,'user_id':uid}, {'updated_at':utc_now(),'title':prompt[:80] or 'KOJA AI chat'})
+                yield 'data: '+json.dumps({'type':'done'},separators=(',',':'))+'\n\n'
                 log_activity('ai_chat','User used next-generation KOJA AI streaming.')
     return Response(events(),mimetype='text/event-stream',headers={
         'Cache-Control':'no-cache, no-transform',
