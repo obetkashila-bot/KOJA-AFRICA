@@ -8,6 +8,7 @@ import smtplib
 from email.message import EmailMessage
 import json
 import re
+import base64
 from datetime import datetime, timezone, timedelta
 from functools import wraps
 from urllib.parse import quote, unquote
@@ -110,6 +111,13 @@ SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "true").strip().lower() not in ("0", "f
 SITE_URL = os.getenv("SITE_URL", "https://koja-africa.onrender.com").rstrip("/")
 GSC_SITE_URL = os.getenv("GSC_SITE_URL", SITE_URL)
 GSC_SERVICE_ACCOUNT_JSON = os.getenv("GSC_SERVICE_ACCOUNT_JSON", "").strip()
+
+# KOJA AI / background push notifications
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
+VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY", "").strip()
+VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "").strip()
+VAPID_SUBJECT = os.getenv("VAPID_SUBJECT", "mailto:admin@koja-africa.com").strip()
 
 
 ALLOWED_EXTENSIONS = {
@@ -806,6 +814,9 @@ footer{text-align:center;color:var(--muted);padding:30px}
 <a href="{{ url_for('public_feed') }}">🌍 Public</a>
 <a href="{{ url_for('marketplace') }}">🛒 Marketplace</a>
 <a href="{{ url_for('connect') }}">💬 Communication</a>
+<a href="{{ url_for('koja_ai') }}">🤖 KOJA AI</a>
+<a href="{{ url_for('media_screen') }}">🎬 Media</a>
+<a href="{{ url_for('news_screen') }}">📰 News</a>
 <a href="{{ url_for('professional_communication') }}">👩‍💼 Professional Communication</a>
 <a href="{{ url_for('settings') }}">⚙️ Settings</a>
 <div class="menu-group">
@@ -841,7 +852,23 @@ footer{text-align:center;color:var(--muted);padding:30px}
 </div>
 <footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services</footer>
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
-</body>
+<script>
+(function(){
+ if(!('serviceWorker' in navigator))return;
+ navigator.serviceWorker.register('/service-worker.js').then(async()=>{
+   try{const c=await fetch('/api/push/config');const cfg=await c.json();
+     if(cfg.enabled && 'PushManager' in window && Notification.permission!=='denied'){
+       const reg=await navigator.serviceWorker.ready; let sub=await reg.pushManager.getSubscription();
+       if(!sub && Notification.permission!=='denied'){try{sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:Uint8Array.from(atob(cfg.public_key.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0))})}catch(e){}}
+       if(sub)fetch('/api/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:sub.toJSON()})}).catch(()=>{});
+     }
+   }catch(e){}
+ });
+ {% if user %}
+ let lastCall='';async function kojaIncoming(){try{const r=await fetch('/api/connect/incoming',{cache:'no-store'});if(!r.ok)return;const d=await r.json();const c=(d.calls||[])[0];if(c&&c.id!==lastCall){lastCall=c.id;const msg='Incoming KOJA '+c.mode+' call from '+(c.caller_name||'KOJA user');if('Notification'in window&&Notification.permission==='granted')new Notification(msg,{body:'Tap to answer',tag:c.id});if('speechSynthesis'in window){speechSynthesis.cancel();speechSynthesis.speak(new SpeechSynthesisUtterance(msg))}if(!document.getElementById('kojaIncomingBanner')){const b=document.createElement('div');b.id='kojaIncomingBanner';b.style='position:fixed;z-index:9999;bottom:18px;left:12px;right:12px;padding:14px;border-radius:14px;background:#0b6b78;color:white;box-shadow:0 8px 30px #0004';b.innerHTML='<strong>📞 '+msg+'</strong> <a style="color:white;margin-left:10px" href="/connect/answer/'+c.id+'">Answer</a> <button style="float:right" onclick="this.parentElement.remove()">×</button>';document.body.appendChild(b)}}}catch(e){}}setInterval(kojaIncoming,3000);kojaIncoming();
+ {% endif %}
+})();
+</script></body>
 </html>
 """
 
@@ -4855,6 +4882,8 @@ create table if not exists public.koja_statuses (
  expires_at timestamptz not null default (now()+interval '24 hours'), created_at timestamptz default now()
 );
 create index if not exists koja_statuses_user_idx on public.koja_statuses(user_id,created_at desc);
+create table if not exists public.koja_push_subscriptions (id uuid primary key default gen_random_uuid(), user_id uuid not null, endpoint text not null unique, subscription jsonb not null, updated_at timestamptz default now());
+create index if not exists koja_push_sub_user_idx on public.koja_push_subscriptions(user_id);
 create table if not exists public.koja_notifications (
  id uuid primary key default gen_random_uuid(), user_id uuid not null, notification_type text, title text, body text, related_id uuid,
  is_read boolean default false, created_at timestamptz default now()
@@ -5145,7 +5174,7 @@ def connect_call_create():
     if callee==uid or not find_user_by_id(callee) or mode not in ('voice','video'):return jsonify(error='Invalid call'),400
     c=_direct_conversation(uid,callee); row,err=db_insert('koja_calls',{'id':str(uuid.uuid4()),'conversation_id':c['id'],'caller_id':uid,'callee_id':callee,'mode':mode,'status':'ringing','created_at':utc_now()})
     if err:return jsonify(error=err),500
-    db_insert('koja_notifications',{'user_id':callee,'notification_type':'call','title':f'Incoming {mode} call','body':f'{_profile_name(uid)} is calling you.','related_id':row['id']});return jsonify(call=row)
+    db_insert('koja_notifications',{'user_id':callee,'notification_type':'call','title':f'Incoming {mode} call','body':f'{_profile_name(uid)} is calling you.','related_id':row['id']});_send_push_to_user(callee,f'Incoming {mode} call',f'{_profile_name(uid)} is calling you.',url_for('connect_answer',call_id=row['id'],_external=False));return jsonify(call=row)
 
 @app.route('/api/connect/call/offer/<call_id>',methods=['POST'])
 @login_required
@@ -5161,6 +5190,21 @@ def connect_call_check(call_id):
     if not c or uid not in (str(c.get('caller_id')),str(c.get('callee_id'))):return jsonify(error='Forbidden'),403
     return jsonify(call=c)
 
+
+@app.route('/api/connect/call/ice/<call_id>',methods=['POST'])
+@login_required
+def connect_call_ice(call_id):
+    uid=current_user()['id']; c=first_row('koja_calls',{'id':call_id})
+    if not c or uid not in (str(c.get('caller_id')),str(c.get('callee_id'))): return jsonify(error='Forbidden'),403
+    d=request.get_json(silent=True) or {}; cand=d.get('candidate')
+    if not cand:return jsonify(error='Missing candidate'),400
+    field='caller_ice' if str(c.get('caller_id'))==str(uid) else 'callee_ice'
+    arr=c.get(field) or []
+    if isinstance(arr,str):
+        try: arr=json.loads(arr)
+        except Exception: arr=[]
+    arr.append(cand); db_update('koja_calls',{'id':call_id},{field:arr}); return jsonify(ok=True)
+
 @app.route('/api/connect/call/end/<call_id>',methods=['POST'])
 @login_required
 def connect_call_end(call_id):
@@ -5174,11 +5218,93 @@ def connect_sql():
 
 
 # ============================================================
+# KOJA BACKGROUND CALL NOTIFICATIONS / PWA
+# ============================================================
+
+@app.route('/service-worker.js')
+def koja_service_worker():
+    js = r'''const CACHE='koja-shell-v1';
+const CORE=['/','/connect','/media','/news'];
+self.addEventListener('install',e=>{e.waitUntil(caches.open(CACHE).then(c=>c.addAll(CORE).catch(()=>{})));self.skipWaiting()});
+self.addEventListener('activate',e=>e.waitUntil(self.clients.claim()));
+self.addEventListener('fetch',e=>{const u=new URL(e.request.url);if(e.request.method!=='GET')return;if(u.hostname.includes('tile.openstreetmap.org')){e.respondWith(caches.open(CACHE).then(c=>c.match(e.request).then(x=>x||fetch(e.request).then(r=>{c.put(e.request,r.clone());return r}).catch(()=>x))));return;}if(u.origin===location.origin){e.respondWith(fetch(e.request).then(r=>{if(r.ok)caches.open(CACHE).then(c=>c.put(e.request,r.clone()));return r}).catch(()=>caches.match(e.request).then(x=>x||caches.match('/'))));}});
+self.addEventListener('push',e=>{let d={title:'KOJA AFRICA',body:'You have a new notification.',url:'/connect/calls'};try{if(e.data)d=Object.assign(d,e.data.json())}catch(_){}e.waitUntil(self.registration.showNotification(d.title,{body:d.body,icon:'/static/koja-icon.png',badge:'/static/koja-icon.png',tag:d.tag||'koja-call',renotify:true,data:{url:d.url||'/connect/calls'},actions:[{action:'open',title:'Open KOJA'}]}))});
+self.addEventListener('notificationclick',e=>{e.notification.close();const u=e.notification.data&&e.notification.data.url||'/connect/calls';e.waitUntil(clients.matchAll({type:'window',includeUncontrolled:true}).then(cs=>{for(const c of cs){if('focus'in c){c.navigate(u);return c.focus()}}return clients.openWindow(u)}))});'''
+    return app.response_class(js,mimetype='application/javascript',headers={'Cache-Control':'no-cache'})
+
+@app.route('/api/push/config')
+def push_config():
+    return jsonify(enabled=bool(VAPID_PUBLIC_KEY),public_key=VAPID_PUBLIC_KEY)
+
+@app.route('/api/push/subscribe',methods=['POST'])
+@login_required
+def push_subscribe():
+    d=request.get_json(silent=True) or {}; sub=d.get('subscription')
+    if not isinstance(sub,dict) or not sub.get('endpoint'): return jsonify(error='Invalid subscription'),400
+    # Requires the SQL below; safe to call repeatedly.
+    db_insert('koja_push_subscriptions',{'user_id':current_user()['id'],'endpoint':sub.get('endpoint'),'subscription':sub,'updated_at':utc_now()})
+    return jsonify(ok=True)
+
+@app.route('/api/connect/incoming')
+@login_required
+def connect_incoming():
+    uid=current_user()['id']
+    rows=db_select('koja_calls',filters={'callee_id':uid},order='created_at.desc',limit=10)
+    calls=[r for r in rows if r.get('status')=='ringing'][:5]
+    return jsonify(calls=[{'id':r.get('id'),'mode':r.get('mode'),'caller_id':r.get('caller_id'),'caller_name':_profile_name(r.get('caller_id'))} for r in calls])
+
+def _send_push_to_user(user_id,title,body,url):
+    if not VAPID_PRIVATE_KEY: return 0
+    try:
+        from pywebpush import webpush, WebPushException
+    except Exception:
+        return 0
+    subs=db_select('koja_push_subscriptions',filters={'user_id':user_id},limit=20)
+    sent=0
+    for row in subs:
+        try:
+            webpush(subscription_info=row.get('subscription'),data=json.dumps({'title':title,'body':body,'url':url}),vapid_private_key=VAPID_PRIVATE_KEY,vapid_claims={'sub':VAPID_SUBJECT})
+            sent+=1
+        except Exception as e:
+            logger.warning('Push delivery failed: %s',e)
+    return sent
+
+@app.route('/koja-ai')
+@login_required
+def koja_ai():
+    return render_page('KOJA AI',r'''<div class="hero"><h1>🤖 KOJA AI</h1><p>Ask KOJA AI using Google Gemini.</p></div><div class="card"><textarea id="q" rows="5" placeholder="Ask KOJA AI anything…"></textarea><button class="btn" onclick="askAI()">Ask KOJA AI</button><div id="a" style="white-space:pre-wrap;margin-top:16px"></div></div><script>async function askAI(){const q=document.getElementById('q').value.trim(),a=document.getElementById('a');if(!q)return;a.textContent='KOJA AI is thinking…';try{const r=await fetch('/api/koja-ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:q})});const d=await r.json();a.textContent=r.ok?d.answer:(d.error||'AI request failed')}catch(e){a.textContent='KOJA AI is unavailable right now.'}}</script>''')
+
+@app.route('/api/koja-ai',methods=['POST'])
+@login_required
+def koja_ai_api():
+    if not GEMINI_API_KEY:return jsonify(error='KOJA AI is not configured. Add GEMINI_API_KEY in Render environment variables.'),503
+    d=request.get_json(silent=True) or {}; prompt=clean(d.get('prompt'))
+    if not prompt:return jsonify(error='Enter a question.'),400
+    url=f'https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}'
+    payload={'contents':[{'role':'user','parts':[{'text':f'You are KOJA AI, the helpful AI assistant for KOJA AFRICA. Be accurate, clear and practical.\n\nUser: {prompt}'}]}]}
+    try:
+        r=requests.post(url,json=payload,timeout=60); data=r.json()
+        if not r.ok:return jsonify(error=data.get('error',{}).get('message','Gemini request failed')),502
+        answer=''.join(p.get('text','') for p in data.get('candidates',[{}])[0].get('content',{}).get('parts',[])).strip()
+        return jsonify(answer=answer or 'KOJA AI returned no text.',model=GEMINI_MODEL)
+    except Exception as e:return jsonify(error='KOJA AI network request failed.'),502
+
+@app.route('/media')
+def media_screen():
+    posts=db_select('public_posts',filters={'is_published':'eq.true'},order='created_at.desc',limit=50)
+    posts=[x for x in posts if x.get('media_url')]
+    return render_page('KOJA Media',r'''<div class="hero"><h1>🎬 KOJA Media</h1><p>Public images and videos.</p></div>{% for p in posts %}<article class="card">{% if p.title %}<h3>{{p.title}}</h3>{% endif %}<p>{{p.body}}</p>{% if p.media_type=='video' %}<video controls playsinline preload="metadata" style="width:100%;max-height:620px;border-radius:12px" src="{{url_for('public_feed_media',post_id=p.id)}}"></video>{% else %}<img loading="lazy" style="width:100%;max-height:620px;object-fit:contain;border-radius:12px" src="{{url_for('public_feed_media',post_id=p.id)}}" alt="KOJA public media">{% endif %}</article>{% else %}<div class="card">No public media yet.</div>{% endfor %}''',posts=posts)
+
+@app.route('/news')
+def news_screen():
+    posts=db_select('public_posts',filters={'post_type':'eq.news','is_published':'eq.true'},order='created_at.desc',limit=50)
+    return render_page('KOJA News',r'''<div class="hero"><h1>📰 KOJA News</h1><p>News is kept separate from the Media screen.</p></div>{% for p in posts %}<article class="card"><div class="small">{{p.created_at}}</div><h2>{{p.title or 'KOJA News'}}</h2><p style="white-space:pre-wrap">{{p.body}}</p>{% if p.media_url %}<img loading="lazy" style="width:100%;max-height:500px;object-fit:contain;border-radius:12px" src="{{url_for('public_feed_media',post_id=p.id)}}" alt="KOJA news image">{% endif %}</article>{% else %}<div class="card">No news published yet.</div>{% endfor %}''',posts=posts)
+
+# ============================================================
 # PROFESSION-SPECIFIC + PUBLIC COMMUNICATION
 # ============================================================
 
 def profession_slug(value):
-    import re
     text = clean(value).lower()
     return re.sub(r"[^a-z0-9]+", "-", text).strip("-")
 
