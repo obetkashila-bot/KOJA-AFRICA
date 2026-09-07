@@ -94,7 +94,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.07-V45.2-RESEARCH-DEFINITION-GATE"
+APP_VERSION = "2026.09.07-V46-GOOGLE-GROUNDED-RESEARCH"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -1668,20 +1668,101 @@ def _ai_error_message(code):
         "safety_blocked":"Gemini blocked the request under its safety policies.",
     }.get(code, "Gemini returned an error. Check the Render logs.")
 
-def research_ai_summary(query, results):
-    if not results: return ''
-    source_text='\n\n'.join(f"[{i+1}] {r.get('title','')} ({r.get('source','')})\n{r.get('snippet','')[:1200]}" for i,r in enumerate(results[:10]))
-    text=_gemini_text(
-        f"Question: {query}\n\nSources:\n{source_text}\n\nWrite a concise research summary with 3-5 key findings and a short evidence note.",
-        'You are KOJA Research. Summarize only the supplied sources. Do not invent facts. Cite source numbers like [1] [2]. State when evidence is limited.',
-        700, 20
+def _gemini_grounded_research(query, results):
+    """Primary KOJA Research synthesis: Gemini + native Google Search grounding.
+    Returns (answer, grounded_sources, error_code)."""
+    cfg=_ai_config_status()
+    api_key=(os.getenv("GEMINI_API_KEY") or "").strip()
+    if not api_key:
+        return "", [], "missing_api_key"
+    base=(os.getenv("GEMINI_API_URL") or "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
+    models=[]
+    for model in (cfg.get("model"), cfg.get("fallback_model")):
+        if model and model not in models: models.append(model)
+    intent=_research_intent(query)
+    domain=_research_domain(query)
+    source_text='\n\n'.join(
+        f"LOCAL EVIDENCE [{i+1}] {r.get('title','')} | {r.get('source','')} | {r.get('year') or 'n.d.'}\n"
+        f"{clean(r.get('snippet',''))[:1200]}\nURL: {r.get('url','')}"
+        for i,r in enumerate(results[:8])
     )
-    if text: return text
+    system=(
+        "You are KOJA Research, a rigorous research assistant. "
+        "Use Google Search grounding to independently find and verify the best sources for the user's exact question. "
+        "Answer the exact question, not merely related topics. For definition questions, define the exact concept requested first. "
+        "Prefer authoritative sources, universities, government agencies, professional bodies, peer-reviewed literature and primary sources. "
+        "Reject keyword-only matches and unrelated pages. Do not use an album, song, film, fictional work, or unrelated philosophical page as evidence for a scientific definition. "
+        "Do not invent facts or citations. Keep the answer concise but useful. "
+        "Use numbered source citations [1], [2] immediately after factual claims. "
+        "Only cite sources that actually support the claim."
+    )
+    prompt=(
+        f"Research question: {query}\n"
+        f"Detected intent: {intent}; domain: {domain}.\n\n"
+        "First perform Google Search grounding as needed. Then synthesize the strongest evidence. "
+        "The local evidence below is supplementary; do not trust it merely because it contains matching words. "
+        "Return a direct answer followed by a short Evidence/Scope note.\n\n"
+        f"LOCAL EVIDENCE:\n{source_text or '(none)'}"
+    )
+    payload={
+        "systemInstruction":{"parts":[{"text":system}]},
+        "contents":[{"role":"user","parts":[{"text":prompt}]}],
+        "tools":[{"google_search":{}}],
+        "generationConfig":{"maxOutputTokens":1000,"temperature":0.2},
+    }
+    headers={"x-goog-api-key":api_key,"Content-Type":"application/json"}
+    last_error="provider_server_error"
+    for mi,model in enumerate(models):
+        try:
+            endpoint=f"{base}/models/{model}:generateContent"
+            resp=requests.post(endpoint,json=payload,timeout=35,headers=headers)
+            if not resp.ok:
+                if resp.status_code in (401,403): return "", [], "authentication_failed"
+                if resp.status_code==404:
+                    last_error="endpoint_or_model_not_found"; continue
+                if resp.status_code==429:
+                    last_error="rate_limited"; continue
+                last_error=f"provider_http_{resp.status_code}"; continue
+            data=resp.json()
+            cand=(data.get("candidates") or [{}])[0]
+            content=cand.get("content") or {}
+            parts=content.get("parts") or []
+            answer=clean("\n".join(str(x.get("text")) for x in parts if x.get("text")))
+            gm=cand.get("groundingMetadata") or {}
+            chunks=gm.get("groundingChunks") or []
+            grounded=[]
+            for i,ch in enumerate(chunks):
+                web=ch.get("web") or {}
+                url=clean(web.get("uri"))
+                title=clean(web.get("title")) or url
+                if not url: continue
+                grounded.append({"title":title,"url":url,"source":"Google Search","snippet":"Google-grounded source supporting KOJA Research.","year":None,"citations":0,"_grounded_index":i})
+            if answer:
+                return answer, grounded, ""
+            last_error="empty_provider_response"
+        except requests.Timeout:
+            last_error="timeout"
+        except requests.RequestException:
+            last_error="network_error"
+        except Exception as exc:
+            logger.warning("Grounded research parsing failed: %s",exc)
+            last_error="invalid_provider_response"
+    return "", [], last_error
+
+
+def research_ai_summary(query, results):
+    if not query: return '', []
+    answer, grounded, error=_gemini_grounded_research(query, results)
+    if answer:
+        return answer, grounded
+    # Deterministic fallback: never call a loose snippet concatenation a synthesized AI answer.
     highlights=[]
     for r in results[:5]:
         ss=clean(r.get('snippet','')).replace('\n',' ')
         if ss: highlights.append(f"{r.get('title','Source')}: {ss[:300]}")
-    return 'AI summary is not configured. Source-based highlights:\n\n'+'\n\n'.join(highlights)
+    fallback=("AI research synthesis is temporarily unavailable. " + _ai_error_message(error) +
+              "\n\nVerified source highlights:\n\n" + '\n\n'.join(highlights)) if highlights else _ai_error_message(error)
+    return fallback, []
 
 
 # KOJA V4 citation engine: source-type-aware bibliography fields
@@ -1755,7 +1836,12 @@ def research():
         results=_research_collect(q,year,author)
         results=_research_filter(results,source_filter,year,sort)
         if source_type!='all': results=[r for r in results if _source_type(r)==source_type]
-    summary=research_ai_summary(q,results) if q else ''
+    summary, grounded_sources=research_ai_summary(q,results) if q else ('', [])
+    if grounded_sources:
+        # Grounded Google sources become the primary visible evidence; retain only a few
+        # highly relevant KOJA/academic records as supplementary context.
+        existing=[r for r in results if str(r.get('source','')).lower() in ('openalex','crossref','koja documents')][:4]
+        results=grounded_sources + existing
     bibliography=make_bibliography(results,style) if results else []
     return render_page('Research', r'''
 <style>
