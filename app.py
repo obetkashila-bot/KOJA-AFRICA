@@ -1572,179 +1572,83 @@ def _ai_config_status():
         "groq_key_length": len(groq_key),
     }
 
-def _ai_call(prompt, system_prompt, max_output_tokens=900, timeout=20):
-    """Call Gemini directly with transient-error retry and model fallback."""
+def _ai_call(prompt, system_prompt, max_output_tokens=900, timeout=12):
+    """Fast normal-chat path: prefer configured Groq, then fall back to Gemini."""
     cfg=_ai_config_status()
-    api_key=(os.getenv("GEMINI_API_KEY") or "").strip()
-    if not api_key:
+    groq_key=(os.getenv("GROQ_API_KEY") or "").strip()
+    gemini_key=(os.getenv("GEMINI_API_KEY") or "").strip()
+
+    # Groq is preferred for normal KOJA AI chats when configured because it is
+    # optimized for low-latency text generation. Keep the existing Gemini path
+    # as a fallback so the application does not depend on one provider.
+    if groq_key:
+        model=(os.getenv("GROQ_MODEL") or "llama-3.3-70b-versatile").strip()
+        payload={
+            "model":model,
+            "messages":[{"role":"system","content":system_prompt},{"role":"user","content":prompt}],
+            "temperature":0.7,
+            "max_completion_tokens":max_output_tokens,
+            "stream":False,
+        }
+        try:
+            r=requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                json=payload,
+                timeout=(5, min(int(timeout),12)),
+                headers={"Authorization":"Bearer "+groq_key,"Content-Type":"application/json"},
+            )
+            if r.ok:
+                data=r.json(); choices=data.get("choices") or []
+                answer=clean(((choices[0].get("message") or {}).get("content") or "")) if choices else ""
+                if answer:
+                    return answer, ""
+                logger.warning("Groq returned an empty response model=%s",model)
+            elif r.status_code not in (401,403,429):
+                logger.warning("Groq request failed status=%s model=%s",r.status_code,model)
+            else:
+                logger.warning("Groq request unavailable status=%s model=%s; using Gemini fallback",r.status_code,model)
+        except requests.Timeout:
+            logger.warning("Groq request timed out model=%s; using Gemini fallback",model)
+        except requests.RequestException as exc:
+            logger.warning("Groq network error model=%s: %s; using Gemini fallback",model,exc)
+        except Exception as exc:
+            logger.warning("Groq response error model=%s: %s; using Gemini fallback",model,exc)
+
+    if not gemini_key:
         return "", "missing_api_key"
 
     base=(os.getenv("GEMINI_API_URL") or "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
-    primary=cfg["model"]
-    fallback=cfg["fallback_model"]
-    # AI requests must fail fast. Retrying a quota/timeout error only makes the
-    # Render request slower and can exhaust the platform request window.
-    retry_attempts=1
-
+    primary=cfg["model"]; fallback=cfg["fallback_model"]
     payload={
         "systemInstruction":{"parts":[{"text":system_prompt}]},
         "contents":[{"role":"user","parts":[{"text":prompt}]}],
-        "generationConfig":{"maxOutputTokens":max_output_tokens,"temperature":0.75},
+        "generationConfig":{"maxOutputTokens":max_output_tokens,"temperature":0.7},
     }
-    headers={
-        "x-goog-api-key": api_key,
-        "Content-Type":"application/json",
-    }
-    transient_codes={429,500,502,503,504}
-    last_error="provider_server_error"
-
-    # Try the primary model, then a stable lower-cost fallback if the provider is busy.
+    headers={"x-goog-api-key":gemini_key,"Content-Type":"application/json"}
     models=[]
-    for model in (primary, fallback):
-        if model and model not in models:
-            models.append(model)
-
-    for model_index, model in enumerate(models):
+    for model in (primary,fallback):
+        if model and model not in models: models.append(model)
+    for model in models:
         endpoint=f"{base}/models/{model}:generateContent"
-        for attempt in range(retry_attempts):
-            try:
-                r=requests.post(endpoint, json=payload, timeout=timeout, headers=headers)
-                if r.ok:
-                    data=r.json()
-                    parts=[]
-                    for candidate in data.get("candidates") or []:
-                        content=candidate.get("content") or {}
-                        for part in content.get("parts") or []:
-                            text=part.get("text")
-                            if text: parts.append(text)
-                    text=clean("\n".join(parts))
-                    if text:
-                        if model != primary:
-                            logger.info("Gemini fallback model succeeded model=%s", model)
-                        return text, ""
-                    feedback=(data.get("promptFeedback") or {}).get("blockReason")
-                    if feedback:
-                        return "", "safety_blocked"
-                    last_error="empty_provider_response"
-                    break
-
-                status=r.status_code
-                body=r.text[:800]
-                logger.warning("Gemini request failed status=%s model=%s attempt=%s/%s body=%s",
-                               status, model, attempt+1, retry_attempts, body)
-                if status in (401,403):
-                    return "", "authentication_failed"
-                if status==404:
-                    last_error="endpoint_or_model_not_found"
-                    break
-                if status in transient_codes:
-                    last_error="rate_limited" if status==429 else "provider_server_error"
-                    # Do not retry or fall through to a second model.
-                    return "", last_error
-                return "", f"provider_http_{status}"
-            except requests.Timeout:
-                last_error="timeout"
-                logger.warning("Gemini request timed out model=%s attempt=%s/%s", model, attempt+1, retry_attempts)
-                return "", last_error
-            except requests.RequestException as exc:
-                last_error="network_error"
-                logger.warning("Gemini network request failed model=%s error=%s", model, exc)
-                if attempt < retry_attempts-1:
-                    import time
-                    time.sleep(1.0 * (2 ** attempt))
-                    continue
-                break
-            except Exception as exc:
-                logger.warning("Gemini response parsing failed: %s", exc)
-                return "", "invalid_provider_response"
-
-        # Only fall back after a temporary provider/model problem.
-        if model_index == 0 and len(models) > 1 and last_error in (
-            "provider_server_error", "rate_limited", "timeout", "network_error", "endpoint_or_model_not_found"
-        ):
-            logger.warning("Gemini primary model unavailable; trying fallback model=%s", fallback)
-            continue
-        break
-
-    return "", last_error
-
-def _ai_stream(prompt, system_prompt, max_output_tokens=1200, timeout=90):
-    """Yield Gemini streaming text chunks. Falls back to the configured model if needed."""
-    cfg=_ai_config_status()
-    api_key=(os.getenv("GEMINI_API_KEY") or "").strip()
-    if not api_key:
-        yield {"type":"error","error":"missing_api_key"}
-        return
-    base=(os.getenv("GEMINI_API_URL") or "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
-    models=[]
-    for model in (cfg["model"], cfg["fallback_model"]):
-        if model and model not in models:
-            models.append(model)
-    payload={
-        "systemInstruction":{"parts":[{"text":system_prompt}]},
-        "contents":[{"role":"user","parts":[{"text":prompt}]}],
-        "generationConfig":{"maxOutputTokens":max_output_tokens,"temperature":0.75},
-    }
-    headers={"x-goog-api-key":api_key,"Content-Type":"application/json","Accept":"text/event-stream"}
-    last_error="provider_server_error"
-    for model_index, model in enumerate(models):
-        endpoint=f"{base}/models/{model}:streamGenerateContent?alt=sse"
-        got_text=False
         try:
-            with requests.post(endpoint, json=payload, timeout=(10, timeout), headers=headers, stream=True) as r:
-                if not r.ok:
-                    status=r.status_code
-                    logger.warning("Gemini stream failed status=%s model=%s body=%s", status, model, r.text[:500])
-                    if status in (401,403): last_error="authentication_failed"
-                    elif status==404: last_error="endpoint_or_model_not_found"
-                    elif status==429: last_error="rate_limited"
-                    elif status in (500,502,503,504): last_error="provider_server_error"
-                    else: last_error=f"provider_http_{status}"
-                else:
-                    for raw in r.iter_lines(decode_unicode=True):
-                        if not raw:
-                            continue
-                        line=raw.strip()
-                        if not line.startswith("data:"):
-                            continue
-                        blob=line[5:].strip()
-                        if not blob or blob == "[DONE]":
-                            continue
-                        try:
-                            data=json.loads(blob)
-                        except Exception:
-                            continue
-                        for candidate in data.get("candidates") or []:
-                            content=candidate.get("content") or {}
-                            for part in content.get("parts") or []:
-                                text=part.get("text")
-                                if text:
-                                    got_text=True
-                                    yield {"type":"token","text":text}
-                    if got_text:
-                        yield {"type":"done"}
-                        return
-                    feedback=(data.get("promptFeedback") or {}).get("blockReason") if 'data' in locals() else None
-                    last_error="safety_blocked" if feedback else "empty_provider_response"
+            r=requests.post(endpoint,json=payload,timeout=(5,min(int(timeout),12)),headers=headers)
+            if r.ok:
+                data=r.json(); parts=[]
+                for candidate in data.get("candidates") or []:
+                    for part in (candidate.get("content") or {}).get("parts") or []:
+                        if part.get("text"): parts.append(part["text"])
+                answer=clean("\n".join(parts))
+                if answer: return answer,""
+            elif r.status_code in (401,403): return "","authentication_failed"
+            elif r.status_code==429: return "","rate_limited"
         except requests.Timeout:
-            last_error="timeout"
-            logger.warning("Gemini stream timed out model=%s", model)
-        except requests.RequestException as exc:
-            last_error="network_error"
-            logger.warning("Gemini stream network error model=%s error=%s", model, exc)
-        except Exception as exc:
-            last_error="invalid_provider_response"
-            logger.warning("Gemini stream parsing error: %s", exc)
-        if model_index == 0 and len(models)>1 and last_error in ("provider_server_error","rate_limited","timeout","network_error","endpoint_or_model_not_found"):
-            logger.warning("Gemini streaming fallback model=%s", cfg["fallback_model"])
+            logger.warning("Gemini request timed out model=%s",model)
             continue
-        break
-    yield {"type":"error","error":last_error}
-
-def _gemini_text(prompt, system_prompt, max_output_tokens=900, timeout=40):
-    # Kept as a compatibility wrapper for existing KOJA research code.
-    text, _error = _ai_call(prompt, system_prompt, max_output_tokens, timeout)
-    return text
+        except requests.RequestException:
+            continue
+        except Exception:
+            continue
+    return "","timeout_or_provider_error"
 
 def _ai_error_message(code):
     return {
