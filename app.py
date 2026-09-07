@@ -813,6 +813,7 @@ footer{text-align:center;color:var(--muted);padding:30px}
 <a href="{{ url_for('public_feed') }}">🌍 Public</a>
 <a href="{{ url_for('news_nextgen') }}">📰 News</a>
 <a href="{{ url_for('media_nextgen') }}">◉ Media</a>
+<a href="/videos">🎬 Videos</a>
 <a href="{{ url_for('ai_nextgen') }}">✦ AI</a>
 <a href="{{ url_for('communication_nextgen') }}">💬 Connect+</a>
 <a href="{{ url_for('marketplace') }}">🛒 Marketplace</a>
@@ -5957,18 +5958,22 @@ def communication_nextgen():
 <script>const cs=document.getElementById('chatSearch');cs.oninput=()=>{let q=cs.value.toLowerCase();document.querySelectorAll('.comm-item[data-name]').forEach(x=>x.style.display=x.dataset.name.includes(q)?'block':'none')}</script>
 ''',chats=chats)
 
+@app.route('/videos')
 @app.route('/media-next')
 def media_nextgen():
+    video_only=request.path == '/videos' or clean(request.args.get('type')).lower() == 'video'
     rows=db_select('koja_public_posts',{'is_published':'eq.true'},order='created_at.desc',limit=100) or []
     items=[]
     for p in rows:
         if not p.get('media_url'): continue
+        if video_only and str(p.get('media_type') or '').lower() != 'video': continue
         items.append(p)
-    return render_page('KOJA Media',r'''
+    page_title='KOJA Videos — Public Audience' if video_only else 'KOJA Media'
+    return render_page(page_title,r'''
 <style>.media-feed{height:calc(100vh - 150px);min-height:540px;overflow-y:auto;scroll-snap-type:y mandatory;background:#05070a;border-radius:22px}.media-card{height:100%;min-height:540px;position:relative;scroll-snap-align:start;display:grid;place-items:center;background:#05070a}.media-card img,.media-card video{width:100%;height:100%;object-fit:contain;max-height:calc(100vh - 150px)}.media-overlay{position:absolute;left:18px;right:18px;bottom:18px;color:#fff;text-shadow:0 2px 8px #000;z-index:2}.media-actions{position:absolute;right:16px;bottom:110px;display:flex;flex-direction:column;gap:9px;z-index:3}.media-actions button{width:50px;height:50px;border-radius:50%;padding:0;margin:0;background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.2)}.media-empty{padding:70px;text-align:center;color:#fff}
 </style>
-<div class="hero"><h2>◉ KOJA Media</h2><p>Immersive media discovery with adaptive interaction, sharing and watch analytics.</p></div>
-<div class="media-feed" id="mediaFeed">{% for p in items %}<article class="media-card" data-id="{{ p.id }}" data-seen="0">{% if p.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=p.id) }}" playsinline muted loop preload="metadata"></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="KOJA media">{% endif %}<div class="media-actions"><button onclick="likeMedia('{{ p.id }}')">♡</button><button onclick="shareMedia('{{ p.id }}')">↗</button><button onclick="copyMedia('{{ p.id }}')">⧉</button></div><div class="media-overlay"><strong>{{ p.title or 'KOJA Media' }}</strong><div>{{ p.body[:220] }}</div><div class="small" style="color:#ddd">{{ p.post_type|title }} · {{ p.created_at }}</div></div></article>{% else %}<div class="media-empty"><h2>No media yet</h2><p>Publish a photo or video to start the KOJA media experience.</p></div>{% endfor %}</div>
+<div class="hero"><h2>◉ {% if video_only %}KOJA Videos{% else %}KOJA Media{% endif %}</h2><p>{% if video_only %}Public videos are visible to the KOJA audience without requiring an account. Watch, share and discover community videos.{% else %}Immersive media discovery with public audience access, video playback, sharing and watch analytics.{% endif %}</p></div>
+<div class="media-feed" id="mediaFeed">{% for p in items %}<article class="media-card" data-id="{{ p.id }}" data-seen="0">{% if p.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=p.id) }}" playsinline muted loop preload="metadata"></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="KOJA media">{% endif %}<div class="media-actions"><button onclick="likeMedia('{{ p.id }}')">♡</button><button onclick="shareMedia('{{ p.id }}')">↗</button><button onclick="copyMedia('{{ p.id }}')">⧉</button></div><div class="media-overlay"><strong>{{ p.title or 'KOJA Media' }}</strong><div>{{ p.body[:220] }}</div><div class="small" style="color:#ddd">{{ p.post_type|title }} · {{ p.created_at }}</div></div></article>{% else %}<div class="media-empty"><h2>{% if video_only %}No public videos yet{% else %}No media yet{% endif %}</h2><p>{% if video_only %}Published KOJA videos will appear here for everyone to watch.{% else %}Publish a photo or video to start the KOJA media experience.{% endif %}</p></div>{% endfor %}</div>
 <script>
 const feed=document.getElementById('mediaFeed');const io=new IntersectionObserver(es=>es.forEach(e=>{let v=e.target.querySelector('video');if(e.isIntersecting){if(v)v.play().catch(()=>{});if(e.target.dataset.seen==='0'){e.target.dataset.seen='1';track(e.target.dataset.id,'impression',0,0)}}else if(v)v.pause()}),{root:feed,threshold:.65});document.querySelectorAll('.media-card').forEach(x=>io.observe(x));
 function track(id,type,w,c){fetch('/api/nextgen/media-event',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({post_id:id,event_type:type,watch_seconds:w,completion_percent:c})}).catch(()=>{})}
@@ -5976,7 +5981,7 @@ async function likeMedia(id){await fetch('/public/like/'+id,{method:'POST'});}
 function shareMedia(id){let u=location.origin+'/public#post-'+id;if(navigator.share)navigator.share({title:'KOJA Media',url:u});else navigator.clipboard?.writeText(u)}
 function copyMedia(id){let u=location.origin+'/public#post-'+id;navigator.clipboard?.writeText(u);}
 </script>
-''',items=items)
+''',items=items,video_only=video_only)
 
 @app.route('/api/nextgen/media-event',methods=['POST'])
 def nextgen_media_event():
