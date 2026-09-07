@@ -94,7 +94,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.07-V46-GOOGLE-GROUNDED-RESEARCH"
+APP_VERSION = "2026.09.07-V46.2-GROQ-RESEARCH-FALLBACK"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -1420,12 +1420,22 @@ def _research_obviously_irrelevant(r, query):
         primary=topic_terms[0]
         title_has_primary=bool(primary and re.search(r'\b'+re.escape(primary)+r'\b', title))
         snippet_has_primary=bool(primary and re.search(r'\b'+re.escape(primary)+r'\b', snippet))
-        definition_markers=('is defined as','is a','refers to','means','defined as','consists of','is the','are the')
+        definition_markers=('is defined as','is a','refers to','means','defined as','consists of','is the','are the','is an intrinsic','is a measure')
         has_definition_marker=any(m in snippet for m in definition_markers)
+        # Definition searches must be about the requested concept itself. A paper
+        # containing the word "mass" in a long title about atherosclerosis, BMI,
+        # shootings, etc. is not evidence for "Define mass".
+        title_words=re.findall(r"[a-z0-9]+", title)
+        compact_title=' '.join(title_words)
+        direct_title = compact_title in {primary, f'{primary} physics', f'{primary} chemistry'}
+        focused_title = (f'defining {primary}' in compact_title or f'definition of {primary}' in compact_title or f'{primary} definition' in compact_title or compact_title.startswith(primary+' '))
         if source=='wikipedia':
             if not title_has_primary: return True
-        elif not title_has_primary and not (snippet_has_primary and has_definition_marker):
-            return True
+        elif source in ('openalex','crossref'):
+            if not (direct_title or focused_title): return True
+            if not has_definition_marker and not focused_title: return True
+        elif source in ('web','google search','koja documents'):
+            if not title_has_primary and not (snippet_has_primary and has_definition_marker): return True
     return False
 
 def _research_relevance_gate(results, query, minimum=2.15):
@@ -1501,7 +1511,6 @@ def _research_collect(query, year=None, author=None):
     for q in plan:
         jobs.extend([
             ('google',lambda q=q: research_google(q,6)),
-            ('web',lambda q=q: research_web(q,6)),
             ('wikipedia',lambda q=q: research_wikipedia(q,4)),
             ('openalex',lambda q=q: research_openalex(q,year,8)),
             ('crossref',lambda q=q: research_crossref(q,year,author,8)),
@@ -1533,6 +1542,7 @@ def _research_filter(results, source='all', year=None, sort='relevance'):
 def _ai_config_status():
     """Return safe Gemini configuration diagnostics without exposing secrets."""
     raw_key=(os.getenv("GEMINI_API_KEY") or "").strip()
+    groq_key=(os.getenv("GROQ_API_KEY") or "").strip()
     model=(os.getenv("GEMINI_MODEL") or "gemini-3.5-flash-lite").strip()
     # Avoid known exhausted/obsolete model settings from older Render deployments.
     if model in ("gemini-3.7-flash", "gemini-2.5-flash-lite"):
@@ -1551,6 +1561,10 @@ def _ai_config_status():
         "fallback_model": fallback,
         "key_source": "GEMINI_API_KEY" if raw_key else "none",
         "key_length": len(raw_key),
+        "groq_configured": bool(groq_key),
+        "groq_model": (os.getenv("GROQ_MODEL") or "groq/compound").strip(),
+        "groq_key_source": "GROQ_API_KEY" if groq_key else "none",
+        "groq_key_length": len(groq_key),
     }
 
 def _ai_call(prompt, system_prompt, max_output_tokens=900, timeout=20):
@@ -1750,18 +1764,50 @@ def _gemini_grounded_research(query, results):
     return "", [], last_error
 
 
+def _groq_grounded_research(query, results):
+    """Fallback KOJA Research synthesis using Groq Compound web search."""
+    api_key=(os.getenv("GROQ_API_KEY") or "").strip()
+    if not api_key: return "", "missing_groq_api_key"
+    model=(os.getenv("GROQ_MODEL") or "groq/compound").strip()
+    intent=_research_intent(query); domain=_research_domain(query)
+    local='\n\n'.join(f"LOCAL EVIDENCE [{i+1}] {r.get('title','')} | {r.get('source','')} | {r.get('year') or 'n.d.'}\n{clean(r.get('snippet',''))[:1000]}\nURL: {r.get('url','')}" for i,r in enumerate(results[:8]))
+    system=("You are KOJA Research, a rigorous research assistant. Answer the exact research question. For definition questions, define the exact concept first. Use your built-in web search to verify information when needed. Prefer universities, government agencies, professional bodies, peer-reviewed literature and primary sources. Reject keyword-only or unrelated matches. Do not invent facts or citations. Use numbered source citations [1], [2] only when the source actually supports the claim. Return a direct answer followed by a concise Evidence/Scope note.")
+    prompt=f"Research question: {query}\nDetected intent: {intent}; domain: {domain}.\n\nLOCAL EVIDENCE (supplementary):\n{local or '(none)'}"
+    payload={"model":model,"messages":[{"role":"system","content":system},{"role":"user","content":prompt}],"temperature":0.2,"max_completion_tokens":1000}
+    try:
+        resp=requests.post("https://api.groq.com/openai/v1/chat/completions",json=payload,timeout=35,headers={"Authorization":f"Bearer {api_key}","Content-Type":"application/json"})
+        if not resp.ok:
+            if resp.status_code in (401,403): return "", "groq_authentication_failed"
+            if resp.status_code==429: return "", "groq_rate_limited"
+            return "", f"groq_http_{resp.status_code}"
+        data=resp.json(); choices=data.get("choices") or []
+        answer=clean(((choices[0].get("message") or {}).get("content") or "")) if choices else ""
+        return (answer, "") if answer else ("", "groq_empty_response")
+    except requests.Timeout: return "", "groq_timeout"
+    except requests.RequestException: return "", "groq_network_error"
+    except Exception: return "", "groq_invalid_response"
+
+
 def research_ai_summary(query, results):
     if not query: return '', []
     answer, grounded, error=_gemini_grounded_research(query, results)
     if answer:
         return answer, grounded
+    groq_answer, groq_error=_groq_grounded_research(query, results)
+    if groq_answer:
+        return groq_answer, []
     # Deterministic fallback: never call a loose snippet concatenation a synthesized AI answer.
+    # Do not turn a rate-limit event into a misleading list of loosely related
+    # search snippets. The relevance gate above is the last line of defence.
+    if not results:
+        return ("AI research synthesis is temporarily unavailable. " + _ai_error_message(error) +
+                "\n\nNo sufficiently relevant evidence passed KOJA's research-quality filter."), []
     highlights=[]
-    for r in results[:5]:
+    for r in results[:2]:
         ss=clean(r.get('snippet','')).replace('\n',' ')
-        if ss: highlights.append(f"{r.get('title','Source')}: {ss[:300]}")
+        if ss: highlights.append(f"{r.get('title','Source')}: {ss[:500]}")
     fallback=("AI research synthesis is temporarily unavailable. " + _ai_error_message(error) +
-              "\n\nVerified source highlights:\n\n" + '\n\n'.join(highlights)) if highlights else _ai_error_message(error)
+              "\n\nVerified relevant evidence:\n\n" + '\n\n'.join(highlights))
     return fallback, []
 
 
