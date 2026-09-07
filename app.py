@@ -17,7 +17,7 @@ import requests
 from dotenv import load_dotenv
 from flask import (
     Flask, request, redirect, url_for, session,
-    render_template_string, flash, send_file, jsonify, abort
+    render_template_string, flash, send_file, jsonify, abort, Response
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
@@ -813,7 +813,6 @@ footer{text-align:center;color:var(--muted);padding:30px}
 <a href="{{ url_for('public_feed') }}">🌍 Public</a>
 <a href="{{ url_for('news_nextgen') }}">📰 News</a>
 <a href="{{ url_for('media_nextgen') }}">◉ Media</a>
-<a href="/videos">🎬 Videos</a>
 <a href="{{ url_for('ai_nextgen') }}">✦ AI</a>
 <a href="{{ url_for('communication_nextgen') }}">💬 Connect+</a>
 <a href="{{ url_for('marketplace') }}">🛒 Marketplace</a>
@@ -1667,6 +1666,79 @@ def _ai_call(prompt, system_prompt, max_output_tokens=900, timeout=20):
         break
 
     return "", last_error
+
+def _ai_stream(prompt, system_prompt, max_output_tokens=1200, timeout=90):
+    """Yield Gemini streaming text chunks. Falls back to the configured model if needed."""
+    cfg=_ai_config_status()
+    api_key=(os.getenv("GEMINI_API_KEY") or "").strip()
+    if not api_key:
+        yield {"type":"error","error":"missing_api_key"}
+        return
+    base=(os.getenv("GEMINI_API_URL") or "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
+    models=[]
+    for model in (cfg["model"], cfg["fallback_model"]):
+        if model and model not in models:
+            models.append(model)
+    payload={
+        "systemInstruction":{"parts":[{"text":system_prompt}]},
+        "contents":[{"role":"user","parts":[{"text":prompt}]}],
+        "generationConfig":{"maxOutputTokens":max_output_tokens,"temperature":0.75},
+    }
+    headers={"x-goog-api-key":api_key,"Content-Type":"application/json","Accept":"text/event-stream"}
+    last_error="provider_server_error"
+    for model_index, model in enumerate(models):
+        endpoint=f"{base}/models/{model}:streamGenerateContent?alt=sse"
+        got_text=False
+        try:
+            with requests.post(endpoint, json=payload, timeout=(10, timeout), headers=headers, stream=True) as r:
+                if not r.ok:
+                    status=r.status_code
+                    logger.warning("Gemini stream failed status=%s model=%s body=%s", status, model, r.text[:500])
+                    if status in (401,403): last_error="authentication_failed"
+                    elif status==404: last_error="endpoint_or_model_not_found"
+                    elif status==429: last_error="rate_limited"
+                    elif status in (500,502,503,504): last_error="provider_server_error"
+                    else: last_error=f"provider_http_{status}"
+                else:
+                    for raw in r.iter_lines(decode_unicode=True):
+                        if not raw:
+                            continue
+                        line=raw.strip()
+                        if not line.startswith("data:"):
+                            continue
+                        blob=line[5:].strip()
+                        if not blob or blob == "[DONE]":
+                            continue
+                        try:
+                            data=json.loads(blob)
+                        except Exception:
+                            continue
+                        for candidate in data.get("candidates") or []:
+                            content=candidate.get("content") or {}
+                            for part in content.get("parts") or []:
+                                text=part.get("text")
+                                if text:
+                                    got_text=True
+                                    yield {"type":"token","text":text}
+                    if got_text:
+                        yield {"type":"done"}
+                        return
+                    feedback=(data.get("promptFeedback") or {}).get("blockReason") if 'data' in locals() else None
+                    last_error="safety_blocked" if feedback else "empty_provider_response"
+        except requests.Timeout:
+            last_error="timeout"
+            logger.warning("Gemini stream timed out model=%s", model)
+        except requests.RequestException as exc:
+            last_error="network_error"
+            logger.warning("Gemini stream network error model=%s error=%s", model, exc)
+        except Exception as exc:
+            last_error="invalid_provider_response"
+            logger.warning("Gemini stream parsing error: %s", exc)
+        if model_index == 0 and len(models)>1 and last_error in ("provider_server_error","rate_limited","timeout","network_error","endpoint_or_model_not_found"):
+            logger.warning("Gemini streaming fallback model=%s", cfg["fallback_model"])
+            continue
+        break
+    yield {"type":"error","error":last_error}
 
 def _gemini_text(prompt, system_prompt, max_output_tokens=900, timeout=40):
     # Kept as a compatibility wrapper for existing KOJA research code.
@@ -5915,10 +5987,42 @@ const ac=document.getElementById('aiChat'),ap=document.getElementById('aiPrompt'
 let hist=[]; try{hist=JSON.parse(localStorage.getItem('koja_ai_nextgen')||'[]')}catch(e){hist=[]}
 function esc(x){return String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function redraw(){ac.innerHTML='';(hist.length?hist:[{role:'assistant',content:'How can I help you today?'}]).forEach(m=>{let d=document.createElement('div');d.className='ng-msg '+(m.role==='user'?'user':'');d.innerHTML='<div class="ng-bubble">'+(m.role==='assistant'?'<strong>KOJA AI</strong><br>':'')+esc(m.content)+'</div>';ac.appendChild(d)});ac.scrollTop=ac.scrollHeight}
-async function ask(){let q=ap.value.trim();if(!q)return;ap.value='';hist.push({role:'user',content:q});redraw();as.textContent='Thinking…';send.disabled=true;try{let r=await fetch('/api/nextgen/ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:q,history:hist.slice(-12)})});let d=await r.json();if(!r.ok)throw Error(d.error||'KOJA AI is unavailable');hist.push({role:'assistant',content:d.answer||'No answer returned.'});localStorage.setItem('koja_ai_nextgen',JSON.stringify(hist.slice(-30)));as.textContent='Ready';}catch(e){hist.push({role:'assistant',content:e.message});as.textContent='Unavailable';}finally{send.disabled=false;redraw();}}
+async function ask(){let q=ap.value.trim();if(!q||send.disabled)return;ap.value='';hist.push({role:'user',content:q});hist.push({role:'assistant',content:''});redraw();as.textContent='Generating…';send.disabled=true;let reader;try{let r=await fetch('/api/nextgen/ai/stream',{method:'POST',headers:{'Content-Type':'application/json','Accept':'text/event-stream'},body:JSON.stringify({prompt:q,history:hist.slice(-12)})});if(!r.ok){let d=await r.json().catch(()=>({}));throw Error(d.error||'KOJA AI is unavailable');}reader=r.body.getReader();let decoder=new TextDecoder();let buffer='';while(true){let part=await reader.read();if(part.done)break;buffer+=decoder.decode(part.value,{stream:true});let events=buffer.split('\n\n');buffer=events.pop()||'';for(let ev of events){let line=ev.split('\n').find(x=>x.startsWith('data:'));if(!line)continue;let payload=JSON.parse(line.slice(5).trim());if(payload.type==='token'){hist[hist.length-1].content+=payload.text;redraw();}else if(payload.type==='error'){throw Error(payload.message||'KOJA AI is unavailable');}}}hist[hist.length-1].content=hist[hist.length-1].content||'No answer returned.';localStorage.setItem('koja_ai_nextgen',JSON.stringify(hist.slice(-30)));as.textContent='Ready';}catch(e){if(hist[hist.length-1]?.role==='assistant'&&!hist[hist.length-1].content)hist[hist.length-1].content=e.message;as.textContent='Unavailable';}finally{send.disabled=false;redraw();}}
 send.onclick=ask;ap.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();ask()}});document.querySelectorAll('.ng-chip').forEach(b=>b.onclick=()=>{ap.value=b.dataset.p;ap.focus()});redraw();
 </script>
 ''')
+
+@app.route('/api/nextgen/ai/stream', methods=['POST'])
+@login_required
+def api_nextgen_ai_stream():
+    d=request.get_json(silent=True) or {}; prompt=clean(d.get('prompt'))
+    if not prompt:
+        return jsonify(error='Enter a message.'),400
+    uid=(current_user() or {}).get('id')
+    if _rate_limited('next-ai:'+str(uid or request.remote_addr),20,300):
+        return jsonify(error='Too many requests. Please wait.'),429
+    hist=d.get('history') or []
+    context='\\n'.join(f"{x.get('role','user')}: {str(x.get('content',''))[:3500]}" for x in hist[-8:] if isinstance(x,dict))
+    system=('You are KOJA AI, an intelligent assistant inside KOJA AFRICA. Be accurate, useful and concise. '
+            'Never claim live browsing unless live sources were actually provided. Help with writing, learning, coding, planning, research and everyday tasks. '
+            'If a request needs current facts, clearly state that verification is needed.')
+    full_prompt=(('Conversation context:\\n'+context+'\\n\\n') if context else '')+'USER: '+prompt
+    def events():
+        yield ': KOJA AI stream connected\\n\\n'
+        for item in _ai_stream(full_prompt,system,max_output_tokens=1200,timeout=90):
+            if item.get('type')=='token':
+                yield 'data: '+json.dumps(item,separators=(',',':'))+'\\n\\n'
+            elif item.get('type')=='error':
+                yield 'data: '+json.dumps({'type':'error','message':_ai_error_message(item.get('error'))},separators=(',',':'))+'\\n\\n'
+                return
+            elif item.get('type')=='done':
+                yield 'data: '+json.dumps({'type':'done'},separators=(',',':'))+'\\n\\n'
+                log_activity('ai_chat','User used next-generation KOJA AI streaming.')
+    return Response(events(),mimetype='text/event-stream',headers={
+        'Cache-Control':'no-cache, no-transform',
+        'X-Accel-Buffering':'no',
+        'Connection':'keep-alive',
+    })
 
 @app.route('/api/nextgen/ai', methods=['POST'])
 @login_required
@@ -5958,22 +6062,18 @@ def communication_nextgen():
 <script>const cs=document.getElementById('chatSearch');cs.oninput=()=>{let q=cs.value.toLowerCase();document.querySelectorAll('.comm-item[data-name]').forEach(x=>x.style.display=x.dataset.name.includes(q)?'block':'none')}</script>
 ''',chats=chats)
 
-@app.route('/videos')
 @app.route('/media-next')
 def media_nextgen():
-    video_only=request.path == '/videos' or clean(request.args.get('type')).lower() == 'video'
     rows=db_select('koja_public_posts',{'is_published':'eq.true'},order='created_at.desc',limit=100) or []
     items=[]
     for p in rows:
         if not p.get('media_url'): continue
-        if video_only and str(p.get('media_type') or '').lower() != 'video': continue
         items.append(p)
-    page_title='KOJA Videos — Public Audience' if video_only else 'KOJA Media'
-    return render_page(page_title,r'''
+    return render_page('KOJA Media',r'''
 <style>.media-feed{height:calc(100vh - 150px);min-height:540px;overflow-y:auto;scroll-snap-type:y mandatory;background:#05070a;border-radius:22px}.media-card{height:100%;min-height:540px;position:relative;scroll-snap-align:start;display:grid;place-items:center;background:#05070a}.media-card img,.media-card video{width:100%;height:100%;object-fit:contain;max-height:calc(100vh - 150px)}.media-overlay{position:absolute;left:18px;right:18px;bottom:18px;color:#fff;text-shadow:0 2px 8px #000;z-index:2}.media-actions{position:absolute;right:16px;bottom:110px;display:flex;flex-direction:column;gap:9px;z-index:3}.media-actions button{width:50px;height:50px;border-radius:50%;padding:0;margin:0;background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.2)}.media-empty{padding:70px;text-align:center;color:#fff}
 </style>
-<div class="hero"><h2>◉ {% if video_only %}KOJA Videos{% else %}KOJA Media{% endif %}</h2><p>{% if video_only %}Public videos are visible to the KOJA audience without requiring an account. Watch, share and discover community videos.{% else %}Immersive media discovery with public audience access, video playback, sharing and watch analytics.{% endif %}</p></div>
-<div class="media-feed" id="mediaFeed">{% for p in items %}<article class="media-card" data-id="{{ p.id }}" data-seen="0">{% if p.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=p.id) }}" playsinline muted loop preload="metadata"></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="KOJA media">{% endif %}<div class="media-actions"><button onclick="likeMedia('{{ p.id }}')">♡</button><button onclick="shareMedia('{{ p.id }}')">↗</button><button onclick="copyMedia('{{ p.id }}')">⧉</button></div><div class="media-overlay"><strong>{{ p.title or 'KOJA Media' }}</strong><div>{{ p.body[:220] }}</div><div class="small" style="color:#ddd">{{ p.post_type|title }} · {{ p.created_at }}</div></div></article>{% else %}<div class="media-empty"><h2>{% if video_only %}No public videos yet{% else %}No media yet{% endif %}</h2><p>{% if video_only %}Published KOJA videos will appear here for everyone to watch.{% else %}Publish a photo or video to start the KOJA media experience.{% endif %}</p></div>{% endfor %}</div>
+<div class="hero"><h2>◉ KOJA Media</h2><p>Immersive media discovery with adaptive interaction, sharing and watch analytics.</p></div>
+<div class="media-feed" id="mediaFeed">{% for p in items %}<article class="media-card" data-id="{{ p.id }}" data-seen="0">{% if p.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=p.id) }}" playsinline muted loop preload="metadata"></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="KOJA media">{% endif %}<div class="media-actions"><button onclick="likeMedia('{{ p.id }}')">♡</button><button onclick="shareMedia('{{ p.id }}')">↗</button><button onclick="copyMedia('{{ p.id }}')">⧉</button></div><div class="media-overlay"><strong>{{ p.title or 'KOJA Media' }}</strong><div>{{ p.body[:220] }}</div><div class="small" style="color:#ddd">{{ p.post_type|title }} · {{ p.created_at }}</div></div></article>{% else %}<div class="media-empty"><h2>No media yet</h2><p>Publish a photo or video to start the KOJA media experience.</p></div>{% endfor %}</div>
 <script>
 const feed=document.getElementById('mediaFeed');const io=new IntersectionObserver(es=>es.forEach(e=>{let v=e.target.querySelector('video');if(e.isIntersecting){if(v)v.play().catch(()=>{});if(e.target.dataset.seen==='0'){e.target.dataset.seen='1';track(e.target.dataset.id,'impression',0,0)}}else if(v)v.pause()}),{root:feed,threshold:.65});document.querySelectorAll('.media-card').forEach(x=>io.observe(x));
 function track(id,type,w,c){fetch('/api/nextgen/media-event',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({post_id:id,event_type:type,watch_seconds:w,completion_percent:c})}).catch(()=>{})}
@@ -5981,7 +6081,7 @@ async function likeMedia(id){await fetch('/public/like/'+id,{method:'POST'});}
 function shareMedia(id){let u=location.origin+'/public#post-'+id;if(navigator.share)navigator.share({title:'KOJA Media',url:u});else navigator.clipboard?.writeText(u)}
 function copyMedia(id){let u=location.origin+'/public#post-'+id;navigator.clipboard?.writeText(u);}
 </script>
-''',items=items,video_only=video_only)
+''',items=items)
 
 @app.route('/api/nextgen/media-event',methods=['POST'])
 def nextgen_media_event():
