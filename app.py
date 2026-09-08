@@ -6750,7 +6750,7 @@ def inject_globals():
 # ============================================================
 # KOJA MARKET V3 + KOJA BUSINESS
 # ============================================================
-KOJA_MARKET_VERSION = '2026.09.08-MARKET-V3-BUSINESS'
+KOJA_MARKET_VERSION = '2026.09.08-V5-MARKET-BUSINESS-PRODUCTION-BUSINESS'
 KOJA_PLATFORM_FEE_RATE = float(os.getenv('KOJA_PLATFORM_FEE_RATE','0.015'))
 KOJA_SELLER_PLANS = {'free':0.0,'pro':99.0,'business':299.0}
 KOJA_BUSINESS_PLANS = {'starter':99.0,'growth':299.0,'pro':699.0}
