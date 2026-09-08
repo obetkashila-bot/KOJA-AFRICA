@@ -105,7 +105,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.08-V6-FULL-BUY-SELL-UI-V52"
+APP_VERSION = "2026.09.08-V6-FULL-BUY-SELL-UI-FIX1-V52"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -3318,6 +3318,7 @@ def market_image_path(url):
 
 @app.route('/market')
 def koja_market():
+    user = current_user()
     q=clean(request.args.get('q')); category=clean(request.args.get('category')); ptype=clean(request.args.get('type'))
     rows=db_select('koja_market_products',order='created_at.desc',limit=300) or []
     products=[]
