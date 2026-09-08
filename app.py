@@ -99,6 +99,7 @@ SUPABASE_SERVICE_KEY = (
 SUPABASE_PUBLISHABLE_KEY = os.getenv("SUPABASE_PUBLISHABLE_KEY", "")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
 FLW_SECRET_KEY = os.getenv("FLW_SECRET_KEY", "").strip()
+FLW_SECRET_HASH = os.getenv("FLW_SECRET_HASH", "").strip()
 FLW_BASE_URL = "https://api.flutterwave.com/v3"
 
 
@@ -3086,6 +3087,7 @@ def marketplace_buy(product_id):
 
 def _flutterwave_verify(transaction_id):
     if not FLW_SECRET_KEY or not transaction_id:
+        logger.error('Flutterwave verification skipped: missing secret key or transaction id')
         return None
     try:
         r=requests.get(
@@ -3095,7 +3097,14 @@ def _flutterwave_verify(transaction_id):
         )
         body=json_or_empty(r)
         tx=(body.get('data') or {}) if isinstance(body,dict) else {}
-        return tx if r.ok else None
+        if not r.ok:
+            logger.error('Flutterwave verification failed HTTP %s: %s',r.status_code,str(body)[:1500])
+            return None
+        if not isinstance(tx,dict) or not tx:
+            logger.error('Flutterwave verification returned no transaction data: %s',str(body)[:1500])
+            return None
+        logger.info('Flutterwave verified transaction id=%s status=%s tx_ref=%s amount=%s currency=%s',transaction_id,tx.get('status'),tx.get('tx_ref') or tx.get('txRef') or tx.get('reference'),tx.get('amount'),tx.get('currency'))
+        return tx
     except Exception:
         logger.exception('Flutterwave transaction verification error')
         return None
@@ -3108,7 +3117,7 @@ def _flutterwave_payment_valid(tx, tx_ref, expected_amount, expected_currency):
         return False
     return bool(
         tx and str(tx.get('status') or '').lower() == 'successful'
-        and str(tx.get('tx_ref') or tx.get('reference') or '') == str(tx_ref)
+        and str(tx.get('tx_ref') or tx.get('txRef') or tx.get('reference') or '') == str(tx_ref)
         and str(tx.get('currency') or '').upper() == str(expected_currency or 'ZMW').upper()
         and paid >= expected
     )
@@ -3152,13 +3161,23 @@ def _finalize_market_order(order, tx):
 def marketplace_payment_callback():
     tx_ref=clean(request.args.get('tx_ref') or request.args.get('reference'))
     transaction_id=clean(request.args.get('transaction_id') or request.args.get('id'))
+    # Flutterwave V3 may return the full transaction response in `resp`, with camelCase fields.
+    resp_raw=clean(request.args.get('resp'))
+    if resp_raw:
+        try:
+            resp_obj=json.loads(resp_raw)
+            resp_data=(resp_obj.get('data') or {}) if isinstance(resp_obj,dict) else {}
+            tx_ref=tx_ref or clean(resp_data.get('tx_ref') or resp_data.get('txRef') or resp_data.get('reference'))
+            transaction_id=transaction_id or clean(resp_data.get('id') or resp_data.get('transaction_id'))
+        except Exception:
+            logger.warning('Flutterwave callback resp could not be parsed')
     uid=(current_user() or {}).get('id')
     tx=None
-    # Flutterwave may return transaction_id without tx_ref. Verify first and recover tx_ref from the verified transaction.
+    # Verify the transaction server-side and recover tx_ref from the verified record when needed.
     if transaction_id:
         tx=_flutterwave_verify(transaction_id)
         if tx and not tx_ref:
-            tx_ref=clean(tx.get('tx_ref') or tx.get('reference'))
+            tx_ref=clean(tx.get('tx_ref') or tx.get('txRef') or tx.get('reference'))
     if not tx_ref:
         flash('Payment reference was missing. Please return to KOJA and check My Orders; the payment will be confirmed from the Flutterwave webhook if it completed.','warning')
         return redirect(url_for('marketplace_my'))
@@ -3490,13 +3509,23 @@ def market_order_create(product_id):
 def market_payment_callback():
     tx_ref=clean(request.args.get('tx_ref') or request.args.get('reference'))
     transaction_id=clean(request.args.get('transaction_id') or request.args.get('id'))
+    # Flutterwave V3 may return the full transaction response in `resp`, with camelCase fields.
+    resp_raw=clean(request.args.get('resp'))
+    if resp_raw:
+        try:
+            resp_obj=json.loads(resp_raw)
+            resp_data=(resp_obj.get('data') or {}) if isinstance(resp_obj,dict) else {}
+            tx_ref=tx_ref or clean(resp_data.get('tx_ref') or resp_data.get('txRef') or resp_data.get('reference'))
+            transaction_id=transaction_id or clean(resp_data.get('id') or resp_data.get('transaction_id'))
+        except Exception:
+            logger.warning('Flutterwave callback resp could not be parsed')
     uid=(current_user() or {}).get('id')
     tx=None
-    # Flutterwave may return transaction_id without tx_ref. Verify first and recover tx_ref from the verified transaction.
+    # Verify the transaction server-side and recover tx_ref from the verified record when needed.
     if transaction_id:
         tx=_flutterwave_verify(transaction_id)
         if tx and not tx_ref:
-            tx_ref=clean(tx.get('tx_ref') or tx.get('reference'))
+            tx_ref=clean(tx.get('tx_ref') or tx.get('txRef') or tx.get('reference'))
     if not tx_ref:
         flash('Payment reference was missing. Please return to KOJA and check My Orders; the payment will be confirmed from the Flutterwave webhook if it completed.','warning')
         return redirect(url_for('market_my'))
@@ -3516,6 +3545,7 @@ def market_payment_callback():
 @app.route('/webhook/flutterwave', methods=['POST'])
 def flutterwave_webhook():
     if not FLW_SECRET_HASH:
+        logger.error('Flutterwave webhook disabled: FLW_SECRET_HASH is not configured')
         return jsonify({'status':'disabled'}), 503
     raw=request.get_data(cache=True) or b''
     signature=clean(request.headers.get('flutterwave-signature'))
@@ -3523,31 +3553,38 @@ def flutterwave_webhook():
     expected=base64.b64encode(hmac.new(FLW_SECRET_HASH.encode('utf-8'),raw,hashlib.sha256).digest()).decode('utf-8')
     valid_signature=bool(signature and hmac.compare_digest(expected,signature)) or bool(legacy and hmac.compare_digest(legacy,FLW_SECRET_HASH))
     if not valid_signature:
+        logger.warning('Flutterwave webhook rejected: invalid signature')
         return jsonify({'status':'unauthorized'}),401
     payload=request.get_json(silent=True) or {}
     data=payload.get('data') or {}
-    tx_ref=clean(data.get('tx_ref') or data.get('txRef') or data.get('reference') or data.get('orderRef'))
-    transaction_id=clean(data.get('id') or data.get('transaction_id') or payload.get('id'))
-    logger.info('Flutterwave webhook received: tx_ref=%s transaction_id=%s', tx_ref, transaction_id)
+    tx_ref=clean(data.get('tx_ref') or data.get('txRef') or data.get('reference') or payload.get('tx_ref') or payload.get('reference'))
+    transaction_id=clean(data.get('id') or data.get('transaction_id') or payload.get('id') or payload.get('transaction_id'))
+    logger.info('Flutterwave webhook received tx_ref=%s transaction_id=%s',tx_ref,transaction_id)
     if not tx_ref or not transaction_id:
         logger.warning('Flutterwave webhook ignored: missing reference or transaction id')
         return jsonify({'status':'ignored','reason':'missing_reference_or_transaction_id'}),200
     tx=_flutterwave_verify(transaction_id)
     if not tx:
-        logger.warning('Flutterwave webhook verification unavailable: tx_ref=%s transaction_id=%s', tx_ref, transaction_id)
+        logger.warning('Flutterwave webhook pending: verification unavailable tx_ref=%s id=%s',tx_ref,transaction_id)
         return jsonify({'status':'pending','reason':'verification_unavailable'}),200
-    if str(tx.get('status') or '').lower() != 'successful':
-        logger.info('Flutterwave webhook transaction not successful: tx_ref=%s status=%s', tx_ref, tx.get('status'))
-        return jsonify({'status':'ignored','reason':'transaction_not_successful'}),200
-    results=[]
+    verified_ref=clean(tx.get('tx_ref') or tx.get('txRef') or tx.get('reference'))
+    if verified_ref != tx_ref:
+        logger.error('Flutterwave webhook rejected: reference mismatch webhook=%s verified=%s',tx_ref,verified_ref)
+        return jsonify({'status':'ignored','reason':'reference_mismatch'}),200
     market_order=first_row('koja_market_orders',{'payment_reference':tx_ref})
-    if market_order:
-        ok=_finalize_market_order(market_order,tx); results.append('market:'+('finalized' if ok else 'finalization_failed'))
     marketplace_order=first_row('koja_marketplace_orders',{'payment_reference':tx_ref})
-    if marketplace_order:
-        ok=_finalize_marketplace_order(marketplace_order,tx); results.append('digital:'+('finalized' if ok else 'finalization_failed'))
-    if not results:
+    if not market_order and not marketplace_order:
+        logger.warning('Flutterwave webhook unknown reference tx_ref=%s',tx_ref)
         return jsonify({'status':'ignored','reason':'unknown_reference'}),200
+    results=[]
+    if market_order:
+        ok=_finalize_market_order(market_order,tx)
+        logger.info('KOJA Market finalization tx_ref=%s order=%s result=%s',tx_ref,market_order.get('id'),ok)
+        results.append('market:'+('finalized_or_paid' if ok else 'failed'))
+    if marketplace_order:
+        ok=_finalize_marketplace_order(marketplace_order,tx)
+        logger.info('KOJA Digital finalization tx_ref=%s order=%s result=%s',tx_ref,marketplace_order.get('id'),ok)
+        results.append('digital:'+('finalized_or_paid' if ok else 'failed'))
     return jsonify({'status':'ok','processed':results}),200
 
 @app.route('/market/sell',methods=['GET','POST'])
