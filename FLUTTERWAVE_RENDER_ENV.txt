@@ -1,19 +1,28 @@
-KOJA AFRICA — Flutterwave OAuth 2.0 Environment Variables
+KOJA AFRICA — FLUTTERWAVE V4 OAUTH RENDER VARIABLES
 
-Add these in Render → KOJA-AFRICA → Environment:
+Render → KOJA-AFRICA → Environment
 
-FLW_CLIENT_ID=YOUR_FLUTTERWAVE_CLIENT_ID
-FLW_CLIENT_SECRET=YOUR_FLUTTERWAVE_CLIENT_SECRET
-FLW_SECRET_HASH=YOUR_FLUTTERWAVE_SECRET_HASH
+TEST / SANDBOX:
+FLW_CLIENT_ID=YOUR_V4_SANDBOX_CLIENT_ID
+FLW_CLIENT_SECRET=YOUR_V4_SANDBOX_CLIENT_SECRET
+FLW_SECRET_HASH=YOUR_FLUTTERWAVE_WEBHOOK_SECRET_HASH
+FLW_ENVIRONMENT=sandbox
+KOJA_MARKET_COMMISSION_RATE=0.10
+PAYMENT_CURRENCY=ZMW
+
+LIVE / PRODUCTION:
+FLW_CLIENT_ID=YOUR_V4_PRODUCTION_CLIENT_ID
+FLW_CLIENT_SECRET=YOUR_V4_PRODUCTION_CLIENT_SECRET
+FLW_SECRET_HASH=YOUR_FLUTTERWAVE_WEBHOOK_SECRET_HASH
 FLW_ENVIRONMENT=production
 KOJA_MARKET_COMMISSION_RATE=0.10
 PAYMENT_CURRENCY=ZMW
 
-Keep the actual values secret. Do not put them in app.py or GitHub.
-
-Flutterwave webhook URL:
+WEBHOOK:
 https://koja-africa.onrender.com/webhook/flutterwave
 
-Flutterwave callback URL is generated automatically by KOJA for each checkout.
+MAIN MARKET CALLBACK:
+https://koja-africa.onrender.com/market/payment/callback
 
-The application uses OAuth 2.0 client credentials to obtain a short-lived access token, then uses that token for checkout creation and server-side transaction verification.
+The callback URL is also generated automatically by KOJA during checkout.
+Do not paste real secrets into chat or GitHub.
