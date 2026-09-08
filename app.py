@@ -105,7 +105,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.08-V51-CHATGPT-FORMATTING-HISTORY"
+APP_VERSION = "2026.09.08-V52-CHATGPT-CLEAN-FORMATTING-CHATGPT-FORMATTING-HISTORY"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -6179,8 +6179,6 @@ def api_nextgen_ai_history_chat(conversation_id):
     resp.headers['X-Robots-Tag']='noindex, nofollow, noarchive'
     return resp
 
-@app.route('/api/nextgen/ai/models', methods=['GET'])
-@login_required
 def api_nextgen_ai_models():
     groq,gemini,openai=_ai_model_candidates()
     return jsonify({
