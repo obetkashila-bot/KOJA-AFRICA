@@ -57,6 +57,7 @@ app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_SECURE"] = os.getenv("SESSION_COOKIE_SECURE", "true").lower() not in ("0", "false", "no")
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
+app.config["SESSION_REFRESH_EACH_REQUEST"] = True
 
 # Lightweight production rate limiting without an extra dependency.
 _rate_hits = {}
@@ -94,7 +95,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.08-V48-OPENAI-GPT-GROQ-GEMINI"
+APP_VERSION = "2026.09.08-V49-AI-PRODUCTIVITY-SECURITY"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -1641,17 +1642,22 @@ def _openai_call(prompt, system_prompt, max_output_tokens=8192, timeout=20):
             logger.warning("OpenAI response error model=%s: %s",model,exc)
     return "", "openai_provider_error"
 
-def _ai_call(prompt, system_prompt, max_output_tokens=8192, timeout=12):
+def _ai_call(prompt, system_prompt, max_output_tokens=8192, timeout=12, preferred_model=None):
     """Fast normal-chat path: prefer configured Groq, then fall back to Gemini."""
     cfg=_ai_config_status()
     groq_key=(os.getenv("GROQ_API_KEY") or "").strip()
     gemini_key=(os.getenv("GEMINI_API_KEY") or "").strip()
+    candidate_groq,candidate_gemini,candidate_openai=_ai_model_candidates()
+    preferred_is_gemini=bool(preferred_model and preferred_model in candidate_gemini)
+    preferred_is_openai=bool(preferred_model and preferred_model in candidate_openai)
 
     # Groq is preferred for normal KOJA AI chats when configured because it is
     # optimized for low-latency text generation. Keep the existing Gemini path
     # as a fallback so the application does not depend on one provider.
-    if groq_key:
-        groq_models,_gemini_models,_openai_models=_ai_model_candidates()
+    if groq_key and not preferred_is_gemini and not preferred_is_openai:
+        groq_models=list(candidate_groq)
+        if preferred_model and preferred_model in groq_models:
+            groq_models=[preferred_model]+[m for m in groq_models if m!=preferred_model]
         for model in groq_models:
             payload={
                 "model":model,
@@ -1675,7 +1681,7 @@ def _ai_call(prompt, system_prompt, max_output_tokens=8192, timeout=12):
             except Exception as exc:
                 logger.warning("Groq response error model=%s: %s",model,exc)
 
-    openai_answer, openai_err = _openai_call(prompt, system_prompt, max_output_tokens=max_output_tokens, timeout=min(int(timeout),30))
+    openai_answer, openai_err = ("", "preferred_other_provider") if preferred_is_gemini else _openai_call(prompt, system_prompt, max_output_tokens=max_output_tokens, timeout=min(int(timeout),30))
     if openai_answer:
         return openai_answer, ""
 
@@ -1716,10 +1722,10 @@ def _ai_call(prompt, system_prompt, max_output_tokens=8192, timeout=12):
             continue
     return "","timeout_or_provider_error"
 
-def _ai_stream(prompt, system_prompt, max_output_tokens=32768, timeout=90):
+def _ai_stream(prompt, system_prompt, max_output_tokens=32768, timeout=90, preferred_model=None):
     """Stream KOJA AI with multiple live model fallbacks."""
     groq_key=(os.getenv("GROQ_API_KEY") or "").strip()
-    if groq_key:
+    if groq_key and not (preferred_model and preferred_model.startswith("gemini-")) and not (preferred_model and preferred_model.startswith("gpt-")):
         groq_models,_gemini_models,_openai_models=_ai_model_candidates()
         for model in groq_models:
             payload={
@@ -1765,8 +1771,10 @@ def _ai_stream(prompt, system_prompt, max_output_tokens=32768, timeout=90):
 
     # OpenAI streaming fallback.
     openai_key=(os.getenv("OPENAI_API_KEY") or "").strip()
-    if openai_key:
+    if openai_key and not (preferred_model and preferred_model.startswith("gemini-")):
         _,_,openai_models=_ai_model_candidates()
+        if preferred_model and preferred_model in openai_models:
+            openai_models=[preferred_model]+[m for m in openai_models if m!=preferred_model]
         for model in openai_models:
             payload={"model":model,"instructions":system_prompt,"input":prompt,"max_output_tokens":max_output_tokens,"stream":True}
             try:
@@ -1798,7 +1806,7 @@ def _ai_stream(prompt, system_prompt, max_output_tokens=32768, timeout=90):
 
     # Final fallback chain. This keeps the browser endpoint responsive even if
     # Groq, OpenAI, or Gemini has a transient failure.
-    answer,err=_ai_call(prompt,system_prompt,max_output_tokens=max_output_tokens,timeout=min(int(timeout),12))
+    answer,err=_ai_call(prompt,system_prompt,max_output_tokens=max_output_tokens,timeout=min(int(timeout),12),preferred_model=preferred_model)
     if answer:
         yield {"type":"token","text":answer}; yield {"type":"done"}
     else:
@@ -6035,9 +6043,30 @@ create table if not exists public.koja_ai_feedback (
 @login_required
 def ai_nextgen():
     return render_page('KOJA AI', r'''<meta charset="utf-8"><style>
-html,body{margin:0!important;padding:0!important}.ng-full{position:fixed;inset:0;width:100vw;height:100dvh;z-index:9999;background:var(--bg,#fff);color:var(--text,#111);display:flex;overflow:hidden}.ng-sidebar{width:280px;flex:0 0 280px;background:var(--surface,#f7f7f8);border-right:1px solid var(--border,#ddd);display:flex;flex-direction:column}.ng-side-close{display:none;width:38px;height:38px;border:0;background:transparent;color:inherit;border-radius:10px;font-size:22px;cursor:pointer}.ng-side-head{display:flex;align-items:center;gap:6px}.ng-side-top{padding:12px;border-bottom:1px solid var(--border,#ddd);position:sticky;top:0;z-index:5;background:var(--surface,#f7f7f8)}.ng-new{width:100%;height:44px;border:1px solid var(--border,#ccc);border-radius:12px;background:var(--surface,#fff);color:inherit;font-weight:600;cursor:pointer}.ng-new:hover,.ng-hitem:hover{background:rgba(127,127,127,.1)}.ng-history-title{padding:14px 14px 7px;font-size:12px;font-weight:700;opacity:.58;text-transform:uppercase;letter-spacing:.06em}.ng-history{flex:1;overflow-y:auto;padding:5px 8px 14px}.ng-hitem{display:block;width:100%;text-align:left;border:0;background:transparent;color:inherit;padding:11px 12px;border-radius:10px;cursor:pointer;margin:2px 0}.ng-hitem strong{display:block;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ng-hitem small{display:block;opacity:.52;margin-top:4px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ng-empty{padding:18px 10px;text-align:center;opacity:.55;font-size:13px}.ng-main{flex:1;min-width:0;height:100%;display:flex;flex-direction:column;background:var(--bg,#fff)}.ng-topbar{height:58px;flex:0 0 58px;border-bottom:1px solid var(--border,#ddd);display:flex;align-items:center;padding:0 18px;gap:10px;background:var(--bg,#fff)}.ng-brand{display:flex;align-items:center;gap:9px;font-weight:700;font-size:16px}.ng-orb{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;background:linear-gradient(135deg,#176b87,#19a7b8);color:#fff;font-size:16px}.ng-status{margin-left:auto;font-size:12px;opacity:.58}.ng-top-new{display:none;height:38px;border:1px solid var(--border,#ccc);background:var(--surface,#fff);color:inherit;border-radius:10px;padding:0 10px;font-weight:600;cursor:pointer}.ng-menu{display:none;width:38px;height:38px;border:0;background:transparent;border-radius:10px;font-size:22px;cursor:pointer;color:inherit}.ng-chat{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior-y:contain;scroll-behavior:smooth;padding:28px 18px 150px;scrollbar-gutter:stable;scrollbar-width:thin}.ng-chat::-webkit-scrollbar,.ng-history::-webkit-scrollbar{width:8px}.ng-chat::-webkit-scrollbar-thumb,.ng-history::-webkit-scrollbar-thumb{background:rgba(127,127,127,.35);border-radius:999px}.ng-latest{position:fixed;right:22px;bottom:118px;z-index:8;border:1px solid var(--border,#ccc);background:var(--surface,#fff);color:inherit;border-radius:999px;padding:8px 12px;box-shadow:0 4px 16px rgba(0,0,0,.12);cursor:pointer;font-size:12px;display:none}.ng-latest.show{display:block}.ng-inner{max-width:850px;margin:0 auto}.ng-welcome{text-align:center;padding:12vh 15px 25px}.ng-welcome h1{font-size:30px;margin:0 0 9px}.ng-welcome p{opacity:.6;margin:0}.ng-msg{display:flex;margin:0 auto;padding:22px 0;gap:13px;max-width:850px}.ng-msg.user{justify-content:flex-end}.ng-avatar{width:30px;height:30px;flex:0 0 30px;border-radius:9px;display:grid;place-items:center;font-size:13px;font-weight:700}.ng-msg.assistant .ng-avatar{background:linear-gradient(135deg,#176b87,#19a7b8);color:#fff}.ng-msg.user .ng-avatar{background:#ececec;color:#333;order:2}.ng-content{max-width:760px;line-height:1.65;font-size:15px;white-space:pre-wrap;overflow-wrap:anywhere}.ng-msg.user .ng-content{background:#f1f1f1;padding:11px 15px;border-radius:18px;line-height:1.5}.ng-composer-wrap{position:absolute;left:280px;right:0;bottom:0;padding:12px 18px 18px;background:linear-gradient(transparent,var(--bg,#fff) 30%)}.ng-composer{max-width:850px;margin:0 auto;border:1px solid #cfcfcf;border-radius:20px;background:var(--surface,#fff);box-shadow:0 3px 18px rgba(0,0,0,.08);display:flex;align-items:flex-end;padding:8px 9px 8px 15px;gap:8px}.ng-composer textarea{flex:1;border:0!important;outline:0!important;box-shadow:none!important;background:transparent!important;color:inherit!important;margin:0!important;padding:8px 0!important;min-height:28px;max-height:180px;resize:none;font:inherit;line-height:1.45}.ng-send{width:40px;height:40px;flex:0 0 40px;border:0;border-radius:12px;background:#176b87;color:#fff;cursor:pointer;font-size:17px}.ng-send:disabled{opacity:.45;cursor:not-allowed}.ng-hint{text-align:center;font-size:11px;opacity:.45;margin-top:7px}.ng-private{font-size:11px;opacity:.62;text-align:center;margin:2px auto 8px;max-width:850px}.ng-private strong{opacity:.9}.ng-koja-logo{width:30px;height:30px;border-radius:9px;display:inline-grid;place-items:center;background:linear-gradient(135deg,#19a7b8,#f2b84b);box-shadow:0 4px 14px rgba(0,0,0,.18);flex:0 0 30px}.ng-koja-logo svg{width:21px;height:21px}.ng-brand{display:flex;align-items:center;gap:8px}.ng-history-note{font-size:11px;line-height:1.45;opacity:.6;padding:8px 10px;border:1px solid var(--border,#ddd);border-radius:10px;margin:8px 10px}.ng-hitem .ng-archived{font-size:10px;opacity:.55;margin-left:6px}.ng-chips{display:none;justify-content:center;gap:7px;flex-wrap:wrap;margin:0 auto 12px;max-width:850px}.ng-chips.show{display:flex}.ng-chip{border:1px solid var(--border,#ddd);border-radius:999px;padding:7px 11px;background:var(--surface,#fff);color:inherit;cursor:pointer;font-size:12px}@media(max-width:800px){.ng-top-new{display:inline-flex;align-items:center;justify-content:center}.ng-sidebar{position:absolute;left:0;top:0;bottom:0;z-index:20;transform:translateX(-100%);transition:transform .2s ease;box-shadow:8px 0 30px rgba(0,0,0,.12)}.ng-sidebar.open{transform:translateX(0)}.ng-menu{display:block}.ng-side-close{display:block}.ng-composer-wrap{left:0;padding:10px 10px 12px}.ng-chat{padding:18px 12px 125px}.ng-msg{padding:17px 3px}.ng-content{font-size:14px}.ng-welcome{padding-top:13vh}.ng-welcome h1{font-size:26px}}@media(prefers-color-scheme:dark){.ng-msg.user .ng-content{background:rgba(255,255,255,.08)}.ng-composer{border-color:#444}}
-</style><div class="ng-full"><aside id="ngSidebar" class="ng-sidebar"><div class="ng-side-top"><div class="ng-side-head"><button id="newChat" class="ng-new">＋ New chat</button><button id="closeMenu" class="ng-side-close" aria-label="Close chat history">×</button></div></div><div class="ng-history-title">History</div><div class="ng-history-note">🔒 Private to your signed-in KOJA account. Chats are not public. Older chats can be outside the quick list, archived, or unavailable if they were never saved.</div><div id="historyList" class="ng-history"><div class="ng-empty">Loading history…</div></div></aside><main class="ng-main"><header class="ng-topbar"><button id="menuBtn" class="ng-menu" aria-label="Open chat history">☰</button><div class="ng-brand"><span class="ng-koja-logo" aria-label="KOJA logo"><svg viewBox="0 0 24 24" fill="none"><path d="M5 18V6h7.2a5.3 5.3 0 0 1 0 10.6H8.5" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 9.1h3.4a1.9 1.9 0 0 1 0 3.8H8.5" stroke="white" stroke-width="2.2" stroke-linecap="round"/></svg></span><span>KOJA AI</span></div><span id="aiState" class="ng-status">Ready</span><button id="topNewChat" class="ng-top-new" type="button">＋ New</button></header><section id="aiChat" class="ng-chat"><div class="ng-inner"></div></section><button id="latestBtn" class="ng-latest" type="button">↓ Latest</button><div class="ng-composer-wrap"><div id="chips" class="ng-chips" aria-label="KOJA AI actions"><button class="ng-chip" data-action="why" title="Ask KOJA AI to explain the reasons or causes behind what you typed">Explain why</button><button class="ng-chip" data-action="research" title="Turn what you typed into a research request">Research</button><button class="ng-chip" data-action="plan" title="Turn what you typed into a practical step-by-step plan">Make a plan</button></div><div class="ng-composer"><textarea id="aiPrompt" placeholder="Message KOJA AI…" maxlength="12000" rows="1" aria-label="Message KOJA AI"></textarea><button id="aiSend" class="ng-send" type="button" aria-label="Send">➤</button></div><div class="ng-private"><strong>🔒 Private history</strong> — your KOJA AI chats are tied to your signed-in account and are not public. <span>Older chats remain saved unless deleted; archived chats are kept too.</span></div><div class="ng-hint">KOJA AI can make mistakes. Check important information.</div></div></main></div><script>
-const ac=document.getElementById('aiChat'),inner=ac.querySelector('.ng-inner'),ap=document.getElementById('aiPrompt'),as=document.getElementById('aiState'),send=document.getElementById('aiSend'),hl=document.getElementById('historyList'),sidebar=document.getElementById('ngSidebar');let hist=[],conversationId=null,actionButtonsLocked=false;function fixText(x){x=String(x??'');if(/[ÃÂâ]/.test(x)){try{return decodeURIComponent(escape(x))}catch(_){}}return x}function esc(x){return fixText(x).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}function redraw(){inner.innerHTML='';if(!hist.length){inner.innerHTML='<div class="ng-welcome"><h1>How can I help you today?</h1><p>Ask KOJA AI anything.</p></div>';return}const wasNearBottom=ac.scrollHeight-ac.scrollTop-ac.clientHeight<120;hist.forEach(m=>{let d=document.createElement('div');d.className='ng-msg '+(m.role==='user'?'user':'assistant');let a=document.createElement('div');a.className='ng-avatar';a.textContent=m.role==='user'?'U':'✦';let c=document.createElement('div');c.className='ng-content';c.innerHTML=esc(m.content);d.appendChild(a);d.appendChild(c);inner.appendChild(d)});if(wasNearBottom||hist.length<=1)ac.scrollTop=ac.scrollHeight;updateLatestButton()}function resizeBox(){ap.style.height='auto';ap.style.height=Math.min(ap.scrollHeight,180)+'px'}async function loadHistory(){try{let r=await fetch('/api/nextgen/ai/history');let d=await r.json();hl.innerHTML='';if(!d.chats?.length){hl.innerHTML='<div class="ng-empty">No previous chats yet.</div>';return}d.chats.forEach(c=>{let b=document.createElement('button');b.className='ng-hitem';let title=fixText(c.title||'KOJA AI chat'),preview=fixText(c.preview||'');let archived=c.is_archived?'<span class="ng-archived">Archived</span>':'';let sub=preview&&preview.trim().toLowerCase()!==title.trim().toLowerCase()?'<small>'+esc(preview)+'</small>':'';b.innerHTML='<strong>'+esc(title)+archived+'</strong>'+sub;b.onclick=()=>openChat(c.id);hl.appendChild(b)})}catch(e){hl.innerHTML='<div class="ng-empty">History unavailable.</div>'}}async function openChat(id){let r=await fetch('/api/nextgen/ai/history/'+encodeURIComponent(id));let d=await r.json();if(!r.ok){as.textContent='Unavailable';return}conversationId=id;hist=d.messages||[];redraw();as.textContent='Ready';sidebar.classList.remove('open')}function newChat(){conversationId=null;hist=[];actionButtonsLocked=false;ap.value='';resizeBox();as.textContent='Ready';redraw();updateActionButtons();ap.focus();sidebar.classList.remove('open')}async function ask(){let q=ap.value.trim();if(!q||send.disabled)return;actionButtonsLocked=true;updateActionButtons();ap.value='';resizeBox();hist.push({role:'user',content:q},{role:'assistant',content:''});redraw();send.disabled=true;as.textContent='Generating…';try{let r=await fetch('/api/nextgen/ai/stream',{method:'POST',headers:{'Content-Type':'application/json','Accept':'text/event-stream'},body:JSON.stringify({prompt:q,history:hist.slice(-12),conversation_id:conversationId})});if(!r.ok){let d=await r.json().catch(()=>({}));throw Error(d.error||'KOJA AI is unavailable')}let reader=r.body.getReader(),dec=new TextDecoder(),buf='';while(true){let z=await reader.read();if(z.done)break;buf+=dec.decode(z.value,{stream:true});let es=buf.split('\n\n');buf=es.pop()||'';for(let ev of es){let line=ev.split('\n').find(x=>x.startsWith('data:'));if(!line)continue;let x;try{x=JSON.parse(line.slice(5).trim())}catch(_){continue}if(x.type==='conversation')conversationId=x.id;else if(x.type==='token'){hist[hist.length-1].content+=x.text||'';redraw()}else if(x.type==='error')throw Error(x.message||'KOJA AI unavailable')}}as.textContent='Ready';loadHistory()}catch(e){if(hist.at(-1)?.role==='assistant')hist.at(-1).content=e.message;as.textContent='Unavailable';redraw()}finally{send.disabled=false;ap.focus()}}const chips=document.getElementById('chips');function updateActionButtons(){const has=ap.value.trim().length>0;chips.classList.toggle('show',has&&!actionButtonsLocked)}const latestBtn=document.getElementById('latestBtn');function updateLatestButton(){const away=ac.scrollHeight-ac.scrollTop-ac.clientHeight>180;latestBtn.classList.toggle('show',away)}latestBtn.onclick=()=>{ac.scrollTo({top:ac.scrollHeight,behavior:'smooth'})};ac.addEventListener('scroll',updateLatestButton);document.getElementById('topNewChat').onclick=newChat;send.onclick=ask;document.getElementById('newChat').onclick=newChat;document.getElementById('menuBtn').onclick=()=>sidebar.classList.toggle('open');document.getElementById('closeMenu').onclick=()=>sidebar.classList.remove('open');ap.addEventListener('input',()=>{resizeBox();updateActionButtons()});ap.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();ask()}});document.querySelectorAll('.ng-chip').forEach(b=>b.onclick=()=>{const q=ap.value.trim();if(!q)return;const action=b.dataset.action;const prompts={why:'Explain why this is true, including the main reasons and causes: '+q,research:'Research this topic thoroughly and give me evidence, key findings and useful sources: '+q,plan:'Make a clear, practical step-by-step plan for this: '+q};ap.value=prompts[action]||q;actionButtonsLocked=true;resizeBox();updateActionButtons();ap.focus();ap.setSelectionRange(ap.value.length,ap.value.length)});redraw();loadHistory();updateActionButtons();</script>''')
+html,body{margin:0!important;padding:0!important}.ng-full{position:fixed;inset:0;width:100vw;height:100dvh;z-index:9999;background:var(--bg,#fff);color:var(--text,#111);display:flex;overflow:hidden}.ng-sidebar{width:280px;flex:0 0 280px;background:var(--surface,#f7f7f8);border-right:1px solid var(--border,#ddd);display:flex;flex-direction:column}.ng-side-close{display:none;width:38px;height:38px;border:0;background:transparent;color:inherit;border-radius:10px;font-size:22px;cursor:pointer}.ng-side-head{display:flex;align-items:center;gap:6px}.ng-side-top{padding:12px;border-bottom:1px solid var(--border,#ddd);position:sticky;top:0;z-index:5;background:var(--surface,#f7f7f8)}.ng-new{width:100%;height:44px;border:1px solid var(--border,#ccc);border-radius:12px;background:var(--surface,#fff);color:inherit;font-weight:600;cursor:pointer}.ng-new:hover,.ng-hitem:hover{background:rgba(127,127,127,.1)}.ng-history-title{padding:14px 14px 7px;font-size:12px;font-weight:700;opacity:.58;text-transform:uppercase;letter-spacing:.06em}.ng-history{flex:1;overflow-y:auto;padding:5px 8px 14px}.ng-hitem{display:block;width:100%;text-align:left;border:0;background:transparent;color:inherit;padding:11px 12px;border-radius:10px;cursor:pointer;margin:2px 0}.ng-hitem strong{display:block;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ng-hitem small{display:block;opacity:.52;margin-top:4px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ng-empty{padding:18px 10px;text-align:center;opacity:.55;font-size:13px}.ng-main{flex:1;min-width:0;height:100%;display:flex;flex-direction:column;background:var(--bg,#fff)}.ng-topbar{height:58px;flex:0 0 58px;border-bottom:1px solid var(--border,#ddd);display:flex;align-items:center;padding:0 18px;gap:10px;background:var(--bg,#fff)}.ng-brand{display:flex;align-items:center;gap:9px;font-weight:700;font-size:16px}.ng-orb{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;background:linear-gradient(135deg,#176b87,#19a7b8);color:#fff;font-size:16px}.ng-status{margin-left:auto;font-size:12px;opacity:.58}.ng-top-new{display:none;height:38px;border:1px solid var(--border,#ccc);background:var(--surface,#fff);color:inherit;border-radius:10px;padding:0 10px;font-weight:600;cursor:pointer}.ng-menu{display:none;width:38px;height:38px;border:0;background:transparent;border-radius:10px;font-size:22px;cursor:pointer;color:inherit}.ng-chat{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior-y:contain;scroll-behavior:smooth;padding:28px 18px 150px;scrollbar-gutter:stable;scrollbar-width:thin}.ng-chat::-webkit-scrollbar,.ng-history::-webkit-scrollbar{width:8px}.ng-chat::-webkit-scrollbar-thumb,.ng-history::-webkit-scrollbar-thumb{background:rgba(127,127,127,.35);border-radius:999px}.ng-latest{position:fixed;right:22px;bottom:118px;z-index:8;border:1px solid var(--border,#ccc);background:var(--surface,#fff);color:inherit;border-radius:999px;padding:8px 12px;box-shadow:0 4px 16px rgba(0,0,0,.12);cursor:pointer;font-size:12px;display:none}.ng-latest.show{display:block}.ng-inner{max-width:850px;margin:0 auto}.ng-welcome{text-align:center;padding:12vh 15px 25px}.ng-welcome h1{font-size:30px;margin:0 0 9px}.ng-welcome p{opacity:.6;margin:0}.ng-msg{display:flex;margin:0 auto;padding:22px 0;gap:13px;max-width:850px}.ng-msg.user{justify-content:flex-end}.ng-avatar{width:30px;height:30px;flex:0 0 30px;border-radius:9px;display:grid;place-items:center;font-size:13px;font-weight:700}.ng-msg.assistant .ng-avatar{background:linear-gradient(135deg,#176b87,#19a7b8);color:#fff}.ng-msg.user .ng-avatar{background:#ececec;color:#333;order:2}.ng-content{max-width:760px;line-height:1.65;font-size:15px;white-space:pre-wrap;overflow-wrap:anywhere}.ng-msg.user .ng-content{background:#f1f1f1;padding:11px 15px;border-radius:18px;line-height:1.5}.ng-composer-wrap{position:absolute;left:280px;right:0;bottom:0;padding:12px 18px 18px;background:linear-gradient(transparent,var(--bg,#fff) 30%)}.ng-composer{max-width:850px;margin:0 auto;border:1px solid #cfcfcf;border-radius:20px;background:var(--surface,#fff);box-shadow:0 3px 18px rgba(0,0,0,.08);display:flex;align-items:flex-end;padding:8px 9px 8px 15px;gap:8px}.ng-composer textarea{flex:1;border:0!important;outline:0!important;box-shadow:none!important;background:transparent!important;color:inherit!important;margin:0!important;padding:8px 0!important;min-height:28px;max-height:180px;resize:none;font:inherit;line-height:1.45}.ng-send{width:40px;height:40px;flex:0 0 40px;border:0;border-radius:12px;background:#176b87;color:#fff;cursor:pointer;font-size:17px}.ng-send:disabled{opacity:.45;cursor:not-allowed}.ng-hint{text-align:center;font-size:11px;opacity:.45;margin-top:7px}.ng-private{font-size:11px;opacity:.62;text-align:center;margin:2px auto 8px;max-width:850px}.ng-private strong{opacity:.9}.ng-koja-logo{width:30px;height:30px;border-radius:9px;display:inline-grid;place-items:center;background:linear-gradient(135deg,#19a7b8,#f2b84b);box-shadow:0 4px 14px rgba(0,0,0,.18);flex:0 0 30px}.ng-koja-logo svg{width:21px;height:21px}.ng-brand{display:flex;align-items:center;gap:8px}.ng-history-note{font-size:11px;line-height:1.45;opacity:.6;padding:8px 10px;border:1px solid var(--border,#ddd);border-radius:10px;margin:8px 10px}.ng-hitem .ng-archived{font-size:10px;opacity:.55;margin-left:6px}.ng-chips{display:none;justify-content:center;gap:7px;flex-wrap:wrap;margin:0 auto 12px;max-width:850px}.ng-chips.show{display:flex}.ng-chip{border:1px solid var(--border,#ddd);border-radius:999px;padding:7px 11px;background:var(--surface,#fff);color:inherit;cursor:pointer;font-size:12px}.ng-tools{display:flex;gap:7px;flex-wrap:wrap;max-width:850px;margin:0 auto 8px;justify-content:center}.ng-tool{border:1px solid var(--border,#ddd);border-radius:10px;padding:7px 9px;background:var(--surface,#fff);color:inherit;cursor:pointer;font-size:12px}.ng-model{height:36px;max-width:150px;border:1px solid var(--border,#ccc);border-radius:9px;background:var(--surface,#fff);color:inherit;padding:0 7px}.ng-model:focus,.ng-tool:focus,.ng-chip:focus{outline:2px solid rgba(23,107,135,.35);outline-offset:1px}@media(max-width:800px){.ng-sidebar{position:absolute;left:0;top:0;bottom:0;z-index:20;transform:translateX(-100%);transition:transform .2s ease;box-shadow:8px 0 30px rgba(0,0,0,.12)}.ng-sidebar.open{transform:translateX(0)}.ng-menu{display:block}.ng-top-new{display:inline-flex;align-items:center;justify-content:center}.ng-side-close{display:block}.ng-composer-wrap{left:0;padding:10px 10px 12px}.ng-chat{padding:18px 12px 125px}.ng-msg{padding:17px 3px}.ng-content{font-size:14px}.ng-welcome{padding-top:13vh}.ng-welcome h1{font-size:26px}}@media(prefers-color-scheme:dark){.ng-msg.user .ng-content{background:rgba(255,255,255,.08)}.ng-composer{border-color:#444}}
+</style><div class="ng-full"><aside id="ngSidebar" class="ng-sidebar"><div class="ng-side-top"><div class="ng-side-head"><button id="newChat" class="ng-new">＋ New chat</button><button id="closeMenu" class="ng-side-close" aria-label="Close chat history">×</button></div></div><div class="ng-history-title">History</div><div class="ng-history-note">🔒 Private to your signed-in KOJA account. Chats are not public. Older chats can be outside the quick list, archived, or unavailable if they were never saved.</div><div id="historyList" class="ng-history"><div class="ng-empty">Loading history…</div></div></aside><main class="ng-main"><header class="ng-topbar"><button id="menuBtn" class="ng-menu" aria-label="Open chat history">☰</button><div class="ng-brand"><span class="ng-koja-logo" aria-label="KOJA logo"><svg viewBox="0 0 24 24" fill="none"><path d="M5 18V6h7.2a5.3 5.3 0 0 1 0 10.6H8.5" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 9.1h3.4a1.9 1.9 0 0 1 0 3.8H8.5" stroke="white" stroke-width="2.2" stroke-linecap="round"/></svg></span><span>KOJA AI</span></div><span id="aiState" class="ng-status">Ready</span><select id="aiModel" class="ng-model" aria-label="AI model"><option value="">Auto</option></select><button id="topNewChat" class="ng-top-new" type="button">＋ New</button></header><section id="aiChat" class="ng-chat"><div class="ng-inner"></div></section><button id="latestBtn" class="ng-latest" type="button">↓ Latest</button><div class="ng-composer-wrap"><div id="tools" class="ng-tools"><button class="ng-tool" data-task="assignment">📝 Assignment</button><button class="ng-tool" data-task="cv">📄 CV</button><button class="ng-tool" data-task="study">🎓 Study</button><button class="ng-tool" data-task="coding">💻 Coding</button><button class="ng-tool" data-task="document">📑 Document</button><button class="ng-tool" data-task="plan">🗺️ Plan</button></div><div id="chips" class="ng-chips" aria-label="KOJA AI actions"><button class="ng-chip" data-action="why" title="Ask KOJA AI to explain the reasons or causes behind what you typed">Explain why</button><button class="ng-chip" data-action="research" title="Turn what you typed into a research request">Research</button><button class="ng-chip" data-action="plan" title="Turn what you typed into a practical step-by-step plan">Make a plan</button></div><div class="ng-composer"><textarea id="aiPrompt" placeholder="Message KOJA AI…" maxlength="12000" rows="1" aria-label="Message KOJA AI"></textarea><button id="aiSend" class="ng-send" type="button" aria-label="Send">➤</button></div><div class="ng-private"><strong>🔒 Private history</strong> — your KOJA AI chats are tied to your signed-in account and are not public. <span>Older chats remain saved unless deleted; archived chats are kept too.</span></div><div class="ng-hint">KOJA AI can make mistakes. Check important information.</div></div></main></div><script>
+const ac=document.getElementById('aiChat'),inner=ac.querySelector('.ng-inner'),ap=document.getElementById('aiPrompt'),modelSel=document.getElementById('aiModel'),as=document.getElementById('aiState'),send=document.getElementById('aiSend'),hl=document.getElementById('historyList'),sidebar=document.getElementById('ngSidebar');let hist=[],conversationId=null,actionButtonsLocked=false;
+function esc(x){return String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function cleanUtf8(x){let s=String(x??'');if(!/[âÂÃð]/.test(s))return s;try{return decodeURIComponent(escape(s));}catch(_){return s;}}
+function scrollLatest(behavior='auto'){requestAnimationFrame(()=>ac.scrollTo({top:ac.scrollHeight,behavior}));}
+function redraw(forceLatest=false){
+  const oldHeight=ac.scrollHeight, oldTop=ac.scrollTop, wasNearBottom=oldHeight-oldTop-ac.clientHeight<120;
+  inner.innerHTML='';
+  if(!hist.length){inner.innerHTML='<div class="ng-welcome"><h1>How can I help you today?</h1><p>Ask KOJA AI anything.</p></div>';updateLatestButton();return;}
+  hist.forEach(m=>{let d=document.createElement('div');d.className='ng-msg '+(m.role==='user'?'user':'assistant');let a=document.createElement('div');a.className='ng-avatar';a.textContent=m.role==='user'?'U':'✦';let c=document.createElement('div');c.className='ng-content';c.innerHTML=esc(cleanUtf8(m.content));d.appendChild(a);d.appendChild(c);inner.appendChild(d)});
+  if(forceLatest||wasNearBottom||hist.length<=1)scrollLatest();else requestAnimationFrame(()=>{const delta=ac.scrollHeight-oldHeight;ac.scrollTop=oldTop+delta;updateLatestButton();});
+  updateLatestButton();
+}
+function resizeBox(){ap.style.height='auto';ap.style.height=Math.min(ap.scrollHeight,180)+'px'}
+async function loadHistory(){try{let r=await fetch('/api/nextgen/ai/history',{cache:'no-store'});let d=await r.json();hl.innerHTML='';if(!d.chats?.length){hl.innerHTML='<div class="ng-empty">No previous chats yet.</div>';return}d.chats.forEach(c=>{let b=document.createElement('button');b.className='ng-hitem';let archived=c.is_archived?'<span class="ng-archived">Archived</span>':'';b.innerHTML='<strong>'+esc(cleanUtf8(c.title||'KOJA AI chat'))+archived+'</strong>';b.onclick=()=>openChat(c.id);hl.appendChild(b)})}catch(e){hl.innerHTML='<div class="ng-empty">History unavailable.</div>'}}
+async function openChat(id){let r=await fetch('/api/nextgen/ai/history/'+encodeURIComponent(id),{cache:'no-store'});let d=await r.json();if(!r.ok){as.textContent='Unavailable';return}conversationId=id;hist=d.messages||[];redraw(true);as.textContent='Ready';sidebar.classList.remove('open');ap.focus()}
+function newChat(){conversationId=null;hist=[];actionButtonsLocked=false;ap.value='';resizeBox();as.textContent='Ready';redraw(true);updateActionButtons();ap.focus();sidebar.classList.remove('open');window.scrollTo(0,0)}
+async function ask(){let q=ap.value.trim();if(!q||send.disabled)return;actionButtonsLocked=true;updateActionButtons();ap.value='';resizeBox();hist.push({role:'user',content:q},{role:'assistant',content:''});redraw(true);send.disabled=true;as.textContent='Generating…';try{let r=await fetch('/api/nextgen/ai/stream',{method:'POST',headers:{'Content-Type':'application/json','Accept':'text/event-stream'},body:JSON.stringify({prompt:q,history:hist.slice(-12),conversation_id:conversationId,model:modelSel.value})});if(!r.ok){let d=await r.json().catch(()=>({}));throw Error(d.error||'KOJA AI is unavailable')}let reader=r.body.getReader(),dec=new TextDecoder(),buf='';while(true){let z=await reader.read();if(z.done)break;buf+=dec.decode(z.value,{stream:true});let es=buf.split('\n\n');buf=es.pop()||'';for(let ev of es){let line=ev.split('\n').find(x=>x.startsWith('data:'));if(!line)continue;let x;try{x=JSON.parse(line.slice(5).trim())}catch(_){continue}if(x.type==='conversation')conversationId=x.id;else if(x.type==='token'){hist[hist.length-1].content+=x.text||'';redraw()}else if(x.type==='error')throw Error(x.message||'KOJA AI unavailable')}}as.textContent='Ready';loadHistory()}catch(e){if(hist.at(-1)?.role==='assistant')hist.at(-1).content=e.message;as.textContent='Unavailable';redraw()}finally{send.disabled=false;ap.focus()}}
+const chips=document.getElementById('chips');function updateActionButtons(){const has=ap.value.trim().length>0;chips.classList.toggle('show',has&&!actionButtonsLocked)}
+async function loadModels(){try{let r=await fetch('/api/nextgen/ai/models',{cache:'no-store'});let d=await r.json();let groups=[['Groq',d.groq||[]],['OpenAI',d.openai||[]],['Gemini',d.gemini||[]]];modelSel.innerHTML='<option value="">Auto</option>';groups.forEach(([label,items])=>{if(!items.length)return;let g=document.createElement('optgroup');g.label=label;items.forEach(m=>{let o=document.createElement('option');o.value=m;o.textContent=m;g.appendChild(o)});modelSel.appendChild(g)})}catch(e){modelSel.innerHTML='<option value="">Auto</option>'}}
+document.querySelectorAll('.ng-tool').forEach(b=>b.onclick=async()=>{let task=b.dataset.task;let q=ap.value.trim();if(!q){ap.focus();ap.placeholder='Type what you want to create first…';return}b.disabled=true;as.textContent='Working…';try{let r=await fetch('/api/nextgen/ai/productivity',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({task,prompt:q,model:modelSel.value})});let d=await r.json();if(!r.ok)throw Error(d.error||'Tool unavailable');ap.value=d.answer||'';resizeBox();actionButtonsLocked=true;updateActionButtons();as.textContent='Ready';ap.focus()}catch(e){as.textContent='Unavailable';alert(e.message)}finally{b.disabled=false}});
+loadModels();
+const latestBtn=document.getElementById('latestBtn');function updateLatestButton(){const away=ac.scrollHeight-ac.scrollTop-ac.clientHeight>180;latestBtn.classList.toggle('show',away)}latestBtn.onclick=()=>scrollLatest('smooth');ac.addEventListener('scroll',updateLatestButton,{passive:true});document.getElementById('topNewChat').onclick=newChat;send.onclick=ask;document.getElementById('newChat').onclick=newChat;document.getElementById('menuBtn').onclick=()=>sidebar.classList.toggle('open');document.getElementById('closeMenu').onclick=()=>sidebar.classList.remove('open');ap.addEventListener('input',()=>{resizeBox();updateActionButtons()});ap.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();ask()}});document.querySelectorAll('.ng-chip').forEach(b=>b.onclick=()=>{const q=ap.value.trim();if(!q)return;const action=b.dataset.action;const prompts={why:'Explain why this is true, including the main reasons and causes: '+q,research:'Research this topic thoroughly and give me evidence, key findings and useful sources: '+q,plan:'Make a clear, practical step-by-step plan for this: '+q};ap.value=prompts[action]||q;actionButtonsLocked=true;resizeBox();updateActionButtons();ap.focus();ap.setSelectionRange(ap.value.length,ap.value.length)});redraw();loadHistory();updateActionButtons();</script>''')
 @app.route('/api/nextgen/ai/history', methods=['GET'])
 @login_required
 def api_nextgen_ai_history():
@@ -6068,11 +6097,12 @@ def api_nextgen_ai_history_chat(conversation_id):
 @app.route('/api/nextgen/ai/models', methods=['GET'])
 @login_required
 def api_nextgen_ai_models():
-    groq,gemini=_ai_model_candidates()
+    groq,gemini,openai=_ai_model_candidates()
     return jsonify({
         "groq":groq if os.getenv("GROQ_API_KEY") else [],
         "gemini":gemini if os.getenv("GEMINI_API_KEY") else [],
-        "default":(groq[0] if os.getenv("GROQ_API_KEY") and groq else (gemini[0] if gemini else None)),
+        "openai":openai if os.getenv("OPENAI_API_KEY") else [],
+        "default":(groq[0] if os.getenv("GROQ_API_KEY") and groq else (openai[0] if os.getenv("OPENAI_API_KEY") and openai else (gemini[0] if gemini else None))),
     })
 
 @app.route('/api/nextgen/ai/stream', methods=['POST'])
@@ -6082,6 +6112,12 @@ def api_nextgen_ai_stream():
     if not prompt:
         return jsonify(error='Enter a message.'),400
     uid=(current_user() or {}).get('id')
+    preferred_model=clean(d.get('model'))[:120]
+    allowed=set(sum((list(x) for x in _ai_model_candidates()), []))
+    if preferred_model and preferred_model not in allowed:
+        preferred_model=''
+    if len(prompt)>12000:
+        return jsonify(error='Message is too long. Maximum 12,000 characters.'),400
     if _rate_limited('next-ai:'+str(uid or request.remote_addr),20,300):
         return jsonify(error='Too many requests. Please wait.'),429
     hist=d.get('history') or []
@@ -6100,7 +6136,7 @@ def api_nextgen_ai_stream():
         parts=[]
         yield ': KOJA AI stream connected\n\n'
         yield 'data: '+json.dumps({'type':'conversation','id':conversation_id},separators=(',',':'))+'\n\n'
-        for item in _ai_stream(full_prompt,system,max_output_tokens=1200,timeout=90):
+        for item in _ai_stream(full_prompt,system,max_output_tokens=1600,timeout=90,preferred_model=preferred_model):
             if item.get('type')=='token':
                 parts.append(item.get('text') or '')
                 yield 'data: '+json.dumps(item,separators=(',',':'))+'\n\n'
@@ -6126,16 +6162,46 @@ def api_nextgen_ai():
     d=request.get_json(silent=True) or {}; prompt=clean(d.get('prompt'))
     if not prompt:return jsonify(error='Enter a message.'),400
     uid=(current_user() or {}).get('id')
+    preferred_model=clean(d.get('model'))[:120]
+    allowed=set(sum((list(x) for x in _ai_model_candidates()), []))
+    if preferred_model and preferred_model not in allowed: preferred_model=''
+    if len(prompt)>12000: return jsonify(error='Message is too long. Maximum 12,000 characters.'),400
     if _rate_limited('next-ai:'+str(uid or request.remote_addr),20,300): return jsonify(error='Too many requests. Please wait.'),429
     hist=d.get('history') or []
     context='\n'.join(f"{x.get('role','user')}: {str(x.get('content',''))[:5000]}" for x in hist[-10:] if isinstance(x,dict))
     system=('You are KOJA AI, an intelligent assistant inside KOJA AFRICA. Be accurate, useful and concise. '
             'Never claim live browsing unless live sources were actually provided. Help with writing, learning, coding, planning, research and everyday tasks. '
             'If a request needs current facts, clearly state that verification is needed.')
-    answer,err=_ai_call(('Conversation context:\n'+context+'\n\n' if context else '')+'USER: '+prompt,system,max_output_tokens=1800,timeout=50)
+    answer,err=_ai_call(('Conversation context:\n'+context+'\n\n' if context else '')+'USER: '+prompt,system,max_output_tokens=2400,timeout=50,preferred_model=preferred_model)
     if not answer:return jsonify(error=_ai_error_message(err)),502
     log_activity('ai_chat','User used next-generation KOJA AI.')
     return jsonify(answer=answer)
+
+@app.route('/api/nextgen/ai/productivity', methods=['POST'])
+@login_required
+def api_nextgen_ai_productivity():
+    """Fast productivity workspace: assignment, CV, study, coding, document and planning helpers."""
+    d=request.get_json(silent=True) or {}
+    task=clean(d.get('task'))[:40].lower()
+    prompt=clean(d.get('prompt'))
+    if task not in {'assignment','cv','study','coding','document','plan'}:
+        return jsonify(error='Choose a valid productivity tool.'),400
+    if not prompt: return jsonify(error='Enter what you want KOJA AI to work on.'),400
+    uid=(current_user() or {}).get('id')
+    if _rate_limited('next-ai-tool:'+str(uid or request.remote_addr),12,300): return jsonify(error='Too many productivity requests. Please wait.'),429
+    instructions={
+      'assignment':'Help produce an academically sound assignment response. Structure it clearly, explain concepts, avoid fabricated citations, and identify where sources are needed.',
+      'cv':'Create or improve a professional CV. Use strong achievement-oriented wording, clear sections and ATS-friendly formatting. Do not invent qualifications.',
+      'study':'Act as a study tutor. Explain the topic simply, then give key points, examples, likely questions and a short self-test.',
+      'coding':'Act as a senior software engineer. Give correct, secure, runnable code and explain important implementation decisions. Preserve existing architecture unless explicitly asked to change it.',
+      'document':'Create polished document-ready content with headings, logical structure and professional language. Do not invent factual sources.',
+      'plan':'Create a practical step-by-step plan with priorities, dependencies, risks, checkpoints and measurable outcomes.'
+    }[task]
+    system='You are KOJA AI Productivity. '+instructions+' Be precise, useful and honest about uncertainty.'
+    answer,err=_ai_call(prompt,system,max_output_tokens=3000,timeout=50,preferred_model=clean(d.get('model'))[:120])
+    if not answer:return jsonify(error=_ai_error_message(err)),502
+    log_activity('ai_productivity',f'User used KOJA AI productivity tool: {task}.')
+    return jsonify(answer=answer,task=task)
 
 @app.route('/communication-next')
 @login_required
@@ -6245,6 +6311,9 @@ def security_headers(response):
     response.headers.setdefault("Permissions-Policy", "camera=(self), microphone=(self), geolocation=(self)")
     response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin-allow-popups")
     response.headers.setdefault("X-XSS-Protection", "0")
+    response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
+    response.headers.setdefault("X-Permitted-Cross-Domain-Policies", "none")
+    response.headers.setdefault("Origin-Agent-Cluster", "?1")
     if request.is_secure:
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     if request.path.startswith("/api/"):
