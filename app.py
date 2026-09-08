@@ -108,7 +108,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.08-V6-FULL-MARKET-MEDIA-FLW-V3-AUDIO-WEBHOOK-FIX4-V52"
+APP_VERSION = "2026.09.08-V6-FULL-MARKET-MEDIA-FLW-V3-AUDIO-WEBHOOK-FIX5-V52"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -3150,17 +3150,28 @@ def _finalize_market_order(order, tx):
 @app.route('/marketplace/payment/callback')
 @login_required
 def marketplace_payment_callback():
-    tx_ref=clean(request.args.get('tx_ref')); transaction_id=clean(request.args.get('transaction_id')); uid=(current_user() or {}).get('id')
-    if not tx_ref: flash('Payment reference was missing.','danger'); return redirect(url_for('marketplace_my'))
-    order=first_row('koja_marketplace_orders',{'payment_reference':tx_ref,'buyer_id':uid})
-    if not order: flash('Marketplace payment order could not be found.','danger'); return redirect(url_for('marketplace_my'))
-    if str(order.get('status') or '').lower()=='paid':
-        return redirect(url_for('marketplace_download',product_id=order.get('product_id')))
+    tx_ref=clean(request.args.get('tx_ref') or request.args.get('reference'))
+    transaction_id=clean(request.args.get('transaction_id') or request.args.get('id'))
+    uid=(current_user() or {}).get('id')
+    tx=None
+    # Flutterwave may return transaction_id without tx_ref. Verify first and recover tx_ref from the verified transaction.
     if transaction_id:
         tx=_flutterwave_verify(transaction_id)
-        if tx and _finalize_marketplace_order(order,tx):
-            flash('Payment verified successfully. Your digital product is now available.','success')
-            return redirect(url_for('marketplace_download',product_id=order.get('product_id')))
+        if tx and not tx_ref:
+            tx_ref=clean(tx.get('tx_ref') or tx.get('reference'))
+    if not tx_ref:
+        flash('Payment reference was missing. Please return to KOJA and check My Orders; the payment will be confirmed from the Flutterwave webhook if it completed.','warning')
+        return redirect(url_for('marketplace_my'))
+    order=first_row('koja_marketplace_orders',{'payment_reference':tx_ref,'buyer_id':uid})
+    if not order:
+        flash('Marketplace payment order could not be found.','danger'); return redirect(url_for('marketplace_my'))
+    if str(order.get('status') or '').lower()=='paid':
+        return redirect(url_for('marketplace_download',product_id=order.get('product_id')))
+    if tx is None and transaction_id:
+        tx=_flutterwave_verify(transaction_id)
+    if tx and _finalize_marketplace_order(order,tx):
+        flash('Payment verified successfully. Your digital product is now available.','success')
+        return redirect(url_for('marketplace_download',product_id=order.get('product_id')))
     flash('Payment is still pending. KOJA will confirm it automatically when Flutterwave reports the successful transaction.','info')
     return redirect(url_for('marketplace_my'))
 
@@ -3477,17 +3488,27 @@ def market_order_create(product_id):
 @app.route('/market/payment/callback')
 @login_required
 def market_payment_callback():
-    tx_ref=clean(request.args.get('tx_ref')); transaction_id=clean(request.args.get('transaction_id')); uid=(current_user() or {}).get('id')
-    if not tx_ref: flash('Payment reference was missing.','danger'); return redirect(url_for('market_my'))
+    tx_ref=clean(request.args.get('tx_ref') or request.args.get('reference'))
+    transaction_id=clean(request.args.get('transaction_id') or request.args.get('id'))
+    uid=(current_user() or {}).get('id')
+    tx=None
+    # Flutterwave may return transaction_id without tx_ref. Verify first and recover tx_ref from the verified transaction.
+    if transaction_id:
+        tx=_flutterwave_verify(transaction_id)
+        if tx and not tx_ref:
+            tx_ref=clean(tx.get('tx_ref') or tx.get('reference'))
+    if not tx_ref:
+        flash('Payment reference was missing. Please return to KOJA and check My Orders; the payment will be confirmed from the Flutterwave webhook if it completed.','warning')
+        return redirect(url_for('market_my'))
     order=first_row('koja_market_orders',{'payment_reference':tx_ref,'buyer_id':uid})
     if not order: flash('Market order not found.','danger'); return redirect(url_for('market_my'))
     if str(order.get('status') or '').lower() in {'paid','completed'}:
         return redirect(url_for('market_my'))
-    if transaction_id:
+    if tx is None and transaction_id:
         tx=_flutterwave_verify(transaction_id)
-        if tx and _finalize_market_order(order,tx):
-            flash('Payment verified. Your KOJA Market order is confirmed.','success')
-            return redirect(url_for('market_my'))
+    if tx and _finalize_market_order(order,tx):
+        flash('Payment verified. Your KOJA Market order is confirmed.','success')
+        return redirect(url_for('market_my'))
     flash('Payment is still pending. KOJA will confirm it automatically when Flutterwave reports the successful transaction.','info')
     return redirect(url_for('market_my'))
 

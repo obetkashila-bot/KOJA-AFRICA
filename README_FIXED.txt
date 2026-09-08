@@ -1,16 +1,25 @@
-KOJA AFRICA V6 FULL — Flutterwave V3 Zambia + Audio FIX2
+KOJA V6 FIX5 - Flutterwave Zambia Mobile Money Callback Fix
 
-Base: KOJA V6 FULL BUY/SELL UI FIX1 V52.
-Preserved: KOJA Market, Digital Marketplace/Media, AI, Research, Communications, Drivers/Delivery and existing services.
-Payment: Flutterwave V3 Zambia Mobile Money charges endpoint with MTN/Airtel/Zamtel, server-side transaction verification, ZMW, existing 10% KOJA commission / seller earnings logic retained.
-Audio: remote call playback gain boost up to 1.8x in supported browsers; device master volume still applies.
+Base: KOJA V6 FULL MARKET/MEDIA + Flutterwave V3 Zambia + Audio/Webhook FIX4.
 
-Render start command:
-gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 120 --graceful-timeout 30 --keep-alive 5
+FIX5 specifically fixes "Payment reference was missing" after Flutterwave returns from the Airtel/MTN/Zamtel mobile-money authorization page. Flutterwave can return a transaction ID without a tx_ref in the browser callback. KOJA now verifies the transaction ID first and recovers the tx_ref from the verified Flutterwave transaction before looking up the order.
 
-Keep existing Render environment variables. Required Flutterwave V3 variables:
+Preserved:
+- KOJA Market
+- Digital Marketplace / Media
+- Existing 10% KOJA commission / seller earnings logic
+- Flutterwave V3 Zambia Mobile Money
+- Server-side verification and webhook finalization
+- Communications and WebRTC
+- Audio volume boost
+- Existing KOJA services
+
+Flutterwave Render variables:
 FLW_SECRET_KEY
-FLW_SECRET_HASH (if using webhook verification)
+FLW_SECRET_HASH
 FLW_ENVIRONMENT=sandbox
 PAYMENT_CURRENCY=ZMW
 KOJA_MARKET_COMMISSION_RATE=0.10
+
+Render start command:
+gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 120 --graceful-timeout 30 --keep-alive 5
