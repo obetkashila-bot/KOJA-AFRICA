@@ -105,7 +105,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.08-KOJA-MARKET-V2-V52"
+APP_VERSION = "2026.09.08-V5-MARKET-BUSINESS-FIX1-V52"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -171,6 +171,16 @@ def json_or_empty(response):
 
 def clean(value):
     return str(value or "").strip()
+
+def as_bool(value):
+    """Safely normalize Supabase boolean-like values from REST responses."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).strip().lower() in {"true", "t", "1", "yes", "y", "on"}
 
 def first_nonempty(*values):
     for value in values:
