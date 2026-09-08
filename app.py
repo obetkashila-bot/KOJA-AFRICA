@@ -99,7 +99,6 @@ SUPABASE_SERVICE_KEY = (
 SUPABASE_PUBLISHABLE_KEY = os.getenv("SUPABASE_PUBLISHABLE_KEY", "")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
 FLW_SECRET_KEY = os.getenv("FLW_SECRET_KEY", "").strip()
-FLW_SECRET_HASH = os.getenv("FLW_SECRET_HASH", "").strip()
 FLW_BASE_URL = "https://api.flutterwave.com/v3"
 
 
@@ -109,7 +108,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.08-V6-FULL-MARKET-MEDIA-FLW-V3-AUDIO-WEBHOOK-FIX6-V52"
+APP_VERSION = "2026.09.08-V6-FULL-MARKET-MEDIA-FLW-V3-AUDIO-WEBHOOK-FIX7-V52"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -844,7 +843,7 @@ footer{text-align:center;color:var(--muted);padding:30px}
 <a href="{{ url_for('public_videos') }}">🎥 Videos</a>
 <a href="{{ url_for('ai_nextgen') }}">✦ AI</a>
 <a href="{{ url_for('communication_nextgen') }}">💬 Connect+</a>
-<a href="{{ url_for('koja_market') }}">🛍️ KOJA Market</a><a href="{{ url_for('marketplace') }}">🛒 Digital Marketplace</a>
+<a href="{{ '/market' }}">🛍️ KOJA Market</a><a href="{{ url_for('marketplace') }}">🛒 Digital Marketplace</a>
 <a href="{{ url_for('connect') }}">💬 Communication</a>
 <a href="{{ url_for('professional_communication') }}">👩‍💼 Professional Communication</a>
 <a href="{{ url_for('settings') }}">⚙️ Settings</a>
@@ -3101,65 +3100,46 @@ def _flutterwave_verify(transaction_id):
         logger.exception('Flutterwave transaction verification error')
         return None
 
-def _flutterwave_field(tx, *names):
-    if not isinstance(tx, dict):
-        return ""
-    for name in names:
-        value=tx.get(name)
-        if value is not None and str(value).strip():
-            return str(value).strip()
-    return ""
-
 def _flutterwave_payment_valid(tx, tx_ref, expected_amount, expected_currency):
     try:
-        paid=float(_flutterwave_field(tx,'amount','charged_amount','chargedAmount') or 0)
+        paid=float(tx.get('amount') or 0)
         expected=float(expected_amount or 0)
     except Exception:
         return False
-    actual_ref=_flutterwave_field(tx,'tx_ref','txRef','reference')
-    actual_currency=_flutterwave_field(tx,'currency').upper()
-    actual_status=_flutterwave_field(tx,'status').lower()
-    return bool(tx and actual_status=='successful' and actual_ref==str(tx_ref) and actual_currency==str(expected_currency or 'ZMW').upper() and paid>=expected)
+    return bool(
+        tx and str(tx.get('status') or '').lower() == 'successful'
+        and str(tx.get('tx_ref') or tx.get('reference') or '') == str(tx_ref)
+        and str(tx.get('currency') or '').upper() == str(expected_currency or 'ZMW').upper()
+        and paid >= expected
+    )
 
 def _finalize_marketplace_order(order, tx):
     if not order or not tx: return False
     tx_ref=str(order.get('payment_reference') or '')
-    if not _flutterwave_payment_valid(tx, tx_ref, order.get('amount'), order.get('currency')):
-        logger.warning('KOJA digital payment rejected: order=%s tx_ref=%s tx=%s',order.get('id'),tx_ref,str(tx)[:1200])
-        return False
+    if not _flutterwave_payment_valid(tx, tx_ref, order.get('amount'), order.get('currency')): return False
     if str(order.get('status') or '').lower() == 'paid': return True
-    updated,err=db_update('koja_marketplace_orders',{'id':order.get('id'),'status':'pending'}, {'status':'paid','payment_method':'flutterwave','payment_transaction_id':str(_flutterwave_field(tx,'id') or ''),'updated_at':utc_now()})
-    if err:
-        logger.error('KOJA digital order finalization update failed: order=%s error=%s',order.get('id'),err[:1000] if isinstance(err,str) else err)
-        return False
-    if not updated:
-        current=first_row('koja_marketplace_orders',{'id':order.get('id')})
-        return str((current or {}).get('status') or '').lower()=='paid'
-    return True
+    updated,_=db_update('koja_marketplace_orders',{'id':order.get('id'),'status':'pending'},
+        {'status':'paid','payment_method':'flutterwave','payment_transaction_id':str(tx.get('id') or ''),'updated_at':utc_now()})
+    return bool(updated)
 
 def _finalize_market_order(order, tx):
     if not order or not tx: return False
     tx_ref=str(order.get('payment_reference') or '')
-    if not _flutterwave_payment_valid(tx, tx_ref, order.get('total_amount'), order.get('currency')):
-        logger.warning('KOJA physical payment rejected: order=%s tx_ref=%s tx=%s',order.get('id'),tx_ref,str(tx)[:1200])
-        return False
+    if not _flutterwave_payment_valid(tx, tx_ref, order.get('total_amount'), order.get('currency')): return False
     if str(order.get('status') or '').lower() in {'paid','completed'}: return True
-    updated,err=db_update('koja_market_orders',{'id':order.get('id'),'status':'pending'}, {'status':'paid','payment_method':'flutterwave','payment_transaction_id':str(_flutterwave_field(tx,'id') or ''),'payout_status':'pending','updated_at':utc_now()})
-    if err:
-        logger.error('KOJA Market order finalization update failed: order=%s error=%s',order.get('id'),err[:1000] if isinstance(err,str) else err)
-        return False
-    if not updated:
-        current=first_row('koja_market_orders',{'id':order.get('id')})
-        if str((current or {}).get('status') or '').lower() in {'paid','completed'}: return True
-        logger.error('KOJA Market order finalization affected no rows: order=%s',order.get('id'))
-        return False
+    # Atomic state transition prevents webhook/callback double-finalization.
+    updated,_=db_update('koja_market_orders',{'id':order.get('id'),'status':'pending'},
+        {'status':'paid','payment_method':'flutterwave','payment_transaction_id':str(tx.get('id') or ''),'payout_status':'pending','updated_at':utc_now()})
+    if not updated: return True
     p=market_product(order.get('product_id'))
     if p and str(p.get('product_type') or 'physical')=='physical':
         try:
             qty=max(1,int(order.get('quantity') or 1)); stock=max(0,int(p.get('stock') or 0)-qty)
             db_update('koja_market_products',{'id':p.get('id')},{'stock':stock,'updated_at':utc_now()})
         except Exception: logger.exception('KOJA Market stock finalization error')
-    buyer_id=order.get('buyer_id'); gross=_money_num(order.get('total_amount')); commission=_money_num(order.get('commission_amount')); platform_fee=_money_num(order.get('platform_fee')); net=max(0,gross-commission-platform_fee)
+    buyer_id=order.get('buyer_id')
+    gross=_money_num(order.get('total_amount')); commission=_money_num(order.get('commission_amount')); platform_fee=_money_num(order.get('platform_fee')); net=max(0,gross-commission-platform_fee)
+    # Ledger/payment-fee/delivery inserts are performed once after the atomic paid transition.
     db_insert('koja_market_ledger',{'order_id':order.get('id'),'seller_id':order.get('seller_id'),'buyer_id':buyer_id,'gross_amount':gross,'commission_amount':commission,'platform_fee':platform_fee,'net_amount':net,'currency':order.get('currency') or 'ZMW','status':'pending','created_at':utc_now()})
     db_insert('koja_market_payment_fees',{'order_id':order.get('id'),'buyer_id':buyer_id,'amount':platform_fee,'currency':order.get('currency') or 'ZMW','fee_type':'platform_service_fee','provider':'flutterwave','reference':tx_ref,'status':'captured','created_at':utc_now()})
     if p and str(p.get('product_type') or 'physical')=='physical':
@@ -3170,82 +3150,404 @@ def _finalize_market_order(order, tx):
 @app.route('/marketplace/payment/callback')
 @login_required
 def marketplace_payment_callback():
-    return _handle_market_payment_callback(digital=True)
+    tx_ref=clean(request.args.get('tx_ref') or request.args.get('reference'))
+    transaction_id=clean(request.args.get('transaction_id') or request.args.get('id'))
+    uid=(current_user() or {}).get('id')
+    tx=None
+    # Flutterwave may return transaction_id without tx_ref. Verify first and recover tx_ref from the verified transaction.
+    if transaction_id:
+        tx=_flutterwave_verify(transaction_id)
+        if tx and not tx_ref:
+            tx_ref=clean(tx.get('tx_ref') or tx.get('reference'))
+    if not tx_ref:
+        flash('Payment reference was missing. Please return to KOJA and check My Orders; the payment will be confirmed from the Flutterwave webhook if it completed.','warning')
+        return redirect(url_for('marketplace_my'))
+    order=first_row('koja_marketplace_orders',{'payment_reference':tx_ref,'buyer_id':uid})
+    if not order:
+        flash('Marketplace payment order could not be found.','danger'); return redirect(url_for('marketplace_my'))
+    if str(order.get('status') or '').lower()=='paid':
+        return redirect(url_for('marketplace_download',product_id=order.get('product_id')))
+    if tx is None and transaction_id:
+        tx=_flutterwave_verify(transaction_id)
+    if tx and _finalize_marketplace_order(order,tx):
+        flash('Payment verified successfully. Your digital product is now available.','success')
+        return redirect(url_for('marketplace_download',product_id=order.get('product_id')))
+    flash('Payment is still pending. KOJA will confirm it automatically when Flutterwave reports the successful transaction.','info')
+    return redirect(url_for('marketplace_my'))
+
+@app.route('/marketplace/cover/<product_id>')
+def marketplace_cover(product_id):
+    product=marketplace_product(product_id)
+    if not product or not product.get('cover_url'): abort(404)
+    if not as_bool(product.get('is_published')):
+        user=current_user() or {}
+        if str(product.get('seller_id') or '') != str(user.get('id') or '') and not user.get('is_admin'):
+            abort(404)
+    media_url=clean(product.get('cover_url')); storage_path=''
+    public_prefix=f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/" if SUPABASE_URL else ''
+    if public_prefix and media_url.startswith(public_prefix):
+        rem=media_url[len(public_prefix):]; bp=f"{STORAGE_BUCKET}/"
+        if rem.startswith(bp): storage_path=unquote(rem[len(bp):])
+    if not storage_path:
+        storage_path=media_url.lstrip('/')
+        if storage_path.startswith(f"{STORAGE_BUCKET}/"): storage_path=storage_path[len(STORAGE_BUCKET)+1:]
+    if not storage_path or not supabase_configured(): abort(404)
+    try:
+        r=requests.get(sb_storage_url(storage_path),headers=sb_headers(),timeout=20)
+        if not r.ok: abort(404)
+        response=send_file(io.BytesIO(r.content),mimetype=r.headers.get('Content-Type') or 'image/jpeg',max_age=3600)
+        response.headers['Cache-Control']='public, max-age=3600'
+        return response
+    except Exception:
+        abort(404)
+
+@app.route('/marketplace/download/<product_id>')
+@login_required
+def marketplace_download(product_id):
+    product=marketplace_product(product_id); uid=(current_user() or {}).get('id')
+    if not product or not as_bool(product.get('is_published')) or not marketplace_has_access(product,uid): abort(404)
+    media_url=clean(product.get('file_url')); storage_path=''
+    public_prefix=f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/" if SUPABASE_URL else ''
+    if public_prefix and media_url.startswith(public_prefix):
+        rem=media_url[len(public_prefix):]; bp=f"{STORAGE_BUCKET}/"
+        if rem.startswith(bp): storage_path=unquote(rem[len(bp):])
+    if not storage_path:
+        storage_path=media_url.lstrip('/')
+        if storage_path.startswith(f"{STORAGE_BUCKET}/"): storage_path=storage_path[len(STORAGE_BUCKET)+1:]
+    if not storage_path or not supabase_configured(): abort(404)
+    try:
+        r=requests.get(sb_storage_url(storage_path),headers=sb_headers(),timeout=30)
+        if not r.ok: abort(404)
+        filename=secure_filename(product.get('file_name') or 'koja-digital-product') or 'koja-digital-product'
+        response=send_file(io.BytesIO(r.content),download_name=filename,mimetype=r.headers.get('Content-Type') or 'application/octet-stream',as_attachment=True,max_age=0)
+        response.headers['X-Content-Type-Options']='nosniff'
+        response.headers['Content-Security-Policy']='sandbox'
+        response.headers['Cache-Control']='private, no-store'
+        return response
+    except Exception as exc:
+        logger.exception('Marketplace download failed: %s',exc); abort(404)
+
+@app.route('/marketplace/sell',methods=['GET','POST'])
+@login_required
+def marketplace_sell():
+    if request.method=='POST':
+        title=clean(request.form.get('title')); description=clean(request.form.get('description')); category=clean(request.form.get('category')) or 'Other'
+        try: price=float(request.form.get('price') or 0)
+        except Exception: price=-1
+        if not title or not description or price<0: flash('Title, description and a valid price are required.','danger'); return redirect(url_for('marketplace_sell'))
+        if category not in MARKETPLACE_CATEGORIES: category='Other'
+        digital=request.files.get('digital_file'); cover=request.files.get('cover')
+        if not digital or not digital.filename: flash('Choose the digital product file to sell.','danger'); return redirect(url_for('marketplace_sell'))
+        ext=digital.filename.lower().rsplit('.',1)[-1] if '.' in digital.filename else ''
+        if ext not in MARKETPLACE_FILE_EXTENSIONS: flash('Unsupported digital file type.','danger'); return redirect(url_for('marketplace_sell'))
+        uploaded,err=upload_storage(digital,'marketplace/products', public=False)
+        if err: flash(f'Digital file upload failed: {err}','danger'); return redirect(url_for('marketplace_sell'))
+        cover_url=None
+        if cover and cover.filename:
+            cext=cover.filename.lower().rsplit('.',1)[-1] if '.' in cover.filename else ''
+            if cext in {'jpg','jpeg','png','webp'}:
+                cu,cerr=upload_storage(cover,'marketplace/covers', public=False)
+                if not cerr: cover_url=(cu or {}).get('path')
+        payload={'seller_id':(current_user() or {}).get('id'),'title':title,'description':description,'category':category,'price':price,'currency':'ZMW','cover_url':cover_url,'file_url':(uploaded or {}).get('path'),'file_name':digital.filename,'file_size':getattr(digital,'content_length',None),'is_published':False}
+        _,err=db_insert('koja_marketplace_products',payload)
+        if err:
+            delete_storage_path((uploaded or {}).get('path'))
+            if cover_url: delete_storage_path(cover_url)
+        flash('Product submitted. It is hidden until published/approved.' if not err else 'Product could not be saved. Run MARKETPLACE.sql in Supabase first.','success' if not err else 'danger')
+        return redirect(url_for('marketplace_my'))
+    return render_page('Sell Digital Product',r'''<div class="hero"><h1>💼 Sell a Digital Product</h1><p>Upload a digital file and create a marketplace listing. New listings are unpublished until approved.</p></div><div class="card"><form method="post" enctype="multipart/form-data"><label>Product title</label><input name="title" maxlength="180" required placeholder="e.g. Grade 12 Mathematics Revision Guide"><label>Description</label><textarea name="description" maxlength="10000" required placeholder="Explain what the buyer receives..."></textarea><div class="grid"><div><label>Category</label><select name="category">{% for c in categories %}<option>{{ c }}</option>{% endfor %}</select></div><div><label>Price (ZMW)</label><input name="price" type="number" min="0" step="0.01" value="0" required></div></div><label>Digital product file</label><input type="file" name="digital_file" required><label>Cover image (optional)</label><input type="file" name="cover" accept="image/jpeg,image/png,image/webp"><button class="btn" type="submit">📤 Submit Product</button></form><p class="small">Maximum upload size follows KOJA's 15 MB server limit.</p></div>''',categories=MARKETPLACE_CATEGORIES)
+
+@app.route('/marketplace/my')
+@login_required
+def marketplace_my():
+    uid=(current_user() or {}).get('id')
+    products=db_select('koja_marketplace_products',{'seller_id':uid},order='created_at.desc',limit=100) or []
+    orders=db_select('koja_marketplace_orders',{'seller_id':uid},order='created_at.desc',limit=100) or []
+    purchases=db_select('koja_marketplace_orders',{'buyer_id':uid},order='created_at.desc',limit=100) or []
+    ids={str(x.get('product_id')) for x in orders+purchases if x.get('product_id')}
+    allp=db_select('koja_marketplace_products',{'id':'in.('+','.join(ids)+')'} if ids else {'id':'eq.__none__'},limit=200) or []
+    pm={str(p.get('id')):p for p in allp}
+    return render_page('My Marketplace',r'''<div class="hero"><h1>📦 My Marketplace</h1><div class="actions"><a class="btn" href="{{ url_for('marketplace_sell') }}">+ Sell Product</a><a class="btn secondary" href="{{ url_for('marketplace') }}">Browse Marketplace</a></div></div><div class="card"><h2>My Products</h2><table><tr><th>Product</th><th>Price</th><th>Status</th></tr>{% for p in products %}<tr><td>{{ p.title }}</td><td>{{ money(p.price,p.currency) if p.price|float>0 else 'FREE' }}</td><td>{{ 'Published' if p.is_published else 'Pending review' }}</td></tr>{% else %}<tr><td colspan="3">No products yet.</td></tr>{% endfor %}</table></div><div class="card"><h2>Sales / Orders</h2><table><tr><th>Product</th><th>Amount</th><th>Status</th></tr>{% for o in orders %}<tr><td>{{ pm.get(o.product_id,{}).get('title','Digital product') }}</td><td>{{ money(o.amount,o.currency) }}</td><td>{{ o.status }}</td></tr>{% else %}<tr><td colspan="3">No orders yet.</td></tr>{% endfor %}</table></div><div class="card"><h2>My Purchases</h2><table><tr><th>Product</th><th>Amount</th><th>Status</th><th></th></tr>{% for o in purchases %}{% set pp=pm.get(o.product_id) %}<tr><td>{{ pp.title if pp else 'Digital product' }}</td><td>{{ money(o.amount,o.currency) }}</td><td>{{ o.status }}</td><td>{% if pp and o.status=='paid' %}<a class="btn success" href="{{ url_for('marketplace_download',product_id=pp.id) }}">Download</a>{% endif %}</td></tr>{% else %}<tr><td colspan="4">No purchases yet.</td></tr>{% endfor %}</table></div>''',products=products,orders=orders,purchases=purchases,pm=pm,money=marketplace_money)
+
+
+# ============================================================
+# KOJA MARKET — V1 (BUILT ON V52 FOUNDATION) — 2026.09.08-MARKET-V1
+# Hybrid African marketplace: physical + digital goods, sellers,
+# orders, checkout, commission accounting and delivery handoff.
+# Existing KOJA Digital Marketplace and Communications are preserved.
+# ============================================================
+
+KOJA_MARKET_SQL = r'''
+create table if not exists public.koja_market_products (
+ id uuid primary key default gen_random_uuid(),
+ seller_id uuid not null,
+ title text not null,
+ description text not null default '',
+ category text not null default 'Other',
+ product_type text not null default 'physical',
+ price numeric(14,2) not null default 0 check (price >= 0),
+ currency text not null default 'ZMW',
+ stock integer not null default 1 check (stock >= 0),
+ sku text,
+ image_url text,
+ digital_file_url text,
+ digital_file_name text,
+ delivery_available boolean not null default true,
+ delivery_fee numeric(14,2) not null default 0 check (delivery_fee >= 0),
+ location text,
+ is_published boolean not null default false,
+ approval_status text not null default 'pending',
+ created_at timestamptz not null default now(),
+ updated_at timestamptz not null default now()
+);
+create index if not exists koja_market_products_feed_idx on public.koja_market_products(is_published,approval_status,created_at desc);
+create index if not exists koja_market_products_seller_idx on public.koja_market_products(seller_id,created_at desc);
+create index if not exists koja_market_products_category_idx on public.koja_market_products(category,created_at desc);
+
+create table if not exists public.koja_market_orders (
+ id uuid primary key default gen_random_uuid(),
+ order_number text unique not null,
+ product_id uuid not null references public.koja_market_products(id) on delete restrict,
+ buyer_id uuid not null,
+ seller_id uuid not null,
+ quantity integer not null default 1 check (quantity > 0),
+ item_amount numeric(14,2) not null default 0,
+ delivery_fee numeric(14,2) not null default 0,
+ total_amount numeric(14,2) not null default 0,
+ commission_amount numeric(14,2) not null default 0,
+ seller_amount numeric(14,2) not null default 0,
+ currency text not null default 'ZMW',
+ status text not null default 'pending',
+ payment_method text,
+ payment_reference text,
+ payment_transaction_id text,
+ recipient_name text,
+ recipient_phone text,
+ delivery_address text,
+ notes text,
+ created_at timestamptz not null default now(),
+ updated_at timestamptz not null default now()
+);
+create index if not exists koja_market_orders_buyer_idx on public.koja_market_orders(buyer_id,created_at desc);
+create index if not exists koja_market_orders_seller_idx on public.koja_market_orders(seller_id,created_at desc);
+create index if not exists koja_market_orders_status_idx on public.koja_market_orders(status,created_at desc);
+
+create table if not exists public.koja_market_sellers (
+ id uuid primary key default gen_random_uuid(),
+ user_id uuid unique not null,
+ store_name text not null,
+ description text default '',
+ phone text,
+ location text,
+ approval_status text not null default 'pending',
+ is_active boolean not null default true,
+ created_at timestamptz not null default now(),
+ updated_at timestamptz not null default now()
+);
+create index if not exists koja_market_sellers_status_idx on public.koja_market_sellers(approval_status,is_active);
+
+-- Safe compatibility additions when the tables already exist.
+alter table public.koja_market_products add column if not exists product_type text default 'physical';
+alter table public.koja_market_products add column if not exists stock integer default 1;
+alter table public.koja_market_products add column if not exists sku text;
+alter table public.koja_market_products add column if not exists image_url text;
+alter table public.koja_market_products add column if not exists digital_file_url text;
+alter table public.koja_market_products add column if not exists digital_file_name text;
+alter table public.koja_market_products add column if not exists delivery_available boolean default true;
+alter table public.koja_market_products add column if not exists delivery_fee numeric(14,2) default 0;
+alter table public.koja_market_products add column if not exists location text;
+alter table public.koja_market_products add column if not exists approval_status text default 'pending';
+create table if not exists public.koja_market_cart (id uuid primary key default gen_random_uuid(), user_id uuid not null, product_id uuid not null references public.koja_market_products(id) on delete cascade, quantity integer not null default 1 check(quantity>0), created_at timestamptz not null default now(), updated_at timestamptz not null default now(), unique(user_id,product_id));
+create table if not exists public.koja_market_wishlist (id uuid primary key default gen_random_uuid(), user_id uuid not null, product_id uuid not null references public.koja_market_products(id) on delete cascade, created_at timestamptz not null default now(), unique(user_id,product_id));
+'''
+
+KOJA_MARKET_CATEGORIES = [
+    'Electronics','Phones & Accessories','Computers','Clothing & Fashion',
+    'Beauty & Personal Care','Home & Furniture','Food & Groceries',
+    'Books & Education','Agriculture','Construction & Hardware',
+    'Vehicles & Parts','Health & Wellness','Business & Office',
+    'Digital Products','Services','Other'
+]
+KOJA_MARKET_TYPES = {'physical','digital'}
+KOJA_MARKET_COMMISSION_RATE = 0.10
+
+def market_product(pid):
+    return first_row('koja_market_products', {'id': pid})
+
+def market_seller(uid):
+    return first_row('koja_market_sellers', {'user_id': uid})
+
+def market_money(v, currency='ZMW'):
+    try: return f'{currency} {float(v or 0):,.2f}'
+    except Exception: return f'{currency} 0.00'
+
+def market_order_number():
+    return 'KJM-' + datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S') + '-' + uuid.uuid4().hex[:6].upper()
+
+def market_image_path(url):
+    u=clean(url); prefix=f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/" if SUPABASE_URL else ''
+    if prefix and u.startswith(prefix):
+        rem=u[len(prefix):]; bp=f'{STORAGE_BUCKET}/'
+        if rem.startswith(bp): return unquote(rem[len(bp):])
+    u=u.lstrip('/')
+    if u.startswith(f'{STORAGE_BUCKET}/'): u=u[len(STORAGE_BUCKET)+1:]
+    return u
+
+@app.route('/market')
+def koja_market():
+    user = current_user()
+    q=clean(request.args.get('q')); category=clean(request.args.get('category')); ptype=clean(request.args.get('type'))
+    rows=db_select('koja_market_products',order='created_at.desc',limit=300) or []
+    products=[]
+    for x in rows:
+        if not as_bool(x.get('is_published')) or str(x.get('approval_status') or 'pending').lower() not in {'approved','active'}: continue
+        if q:
+            hay=' '.join(str(x.get(k) or '') for k in ('title','description','category','location','sku')).lower()
+            if q.lower() not in hay: continue
+        if category and str(x.get('category') or '') != category: continue
+        if ptype and str(x.get('product_type') or 'physical') != ptype: continue
+        x=dict(x); x['seller_name']=(market_seller(x.get('seller_id')) or {}).get('store_name') or marketplace_seller_name(x.get('seller_id'))
+        x['price_display']=market_money(x.get('price'),x.get('currency') or 'ZMW')
+        products.append(x)
+    cart_count=0
+    if user:
+        cart_rows=db_select('koja_market_cart',{'user_id':user.get('id')},limit=100) or []
+        cart_count=sum(max(0,int(x.get('quantity') or 0)) for x in cart_rows)
+    return render_page('KOJA Market',r'''
+<div class="hero"><h1>🛍️ KOJA Market</h1><p>Buy and sell products and services across Africa — physical goods, digital products, local sellers and delivery.</p>
+<div class="actions">
+<a class="btn" href="#products">🛒 Buy / Browse</a>
+<a class="btn" href="{{ url_for('market_sell') if user else url_for('login',next='/market/sell') }}">🏪 Sell a Product</a>
+{% if user %}<a class="btn secondary" href="{{ url_for('market_cart') }}">🛍️ Cart{% if cart_count %} ({{ cart_count }}){% endif %}</a><a class="btn secondary" href="{{ url_for('market_wishlist') }}">❤️ Wishlist</a><a class="btn secondary" href="{{ url_for('market_my') }}">📦 My Orders / Store</a>{% else %}<a class="btn secondary" href="{{ url_for('login',next='/market/cart') }}">🛍️ Cart</a>{% endif %}
+</div></div>
+<div class="card"><div class="actions"><a class="btn" href="{{ url_for('market_sell') if user else url_for('login',next='/market/sell') }}">➕ Add Product</a>{% if user %}<a class="btn secondary" href="{{ url_for('market_my') }}">📊 Seller Dashboard</a><a class="btn secondary" href="{{ url_for('market_seller_register') }}">🏬 My Store</a>{% else %}<a class="btn secondary" href="{{ url_for('login',next='/market/seller/register') }}">📝 Become a Seller</a>{% endif %}</div></div>
+<div class="card"><form method="get" class="actions"><input name="q" value="{{ q }}" placeholder="Search products, shops, services..."><select name="category"><option value="">All categories</option>{% for c in categories %}<option value="{{ c }}" {% if category==c %}selected{% endif %}>{{ c }}</option>{% endfor %}</select><select name="type"><option value="">All types</option><option value="physical" {% if ptype=='physical' %}selected{% endif %}>Physical</option><option value="digital" {% if ptype=='digital' %}selected{% endif %}>Digital</option></select><button class="btn" type="submit">🔎 Search</button></form></div>
+<div id="products" class="grid">{% for p in products %}<div class="card"><h3>{{ p.title }}</h3><p class="small">{{ p.category }} · {{ 'Digital' if p.product_type=='digital' else 'Physical' }} · {{ p.seller_name }}</p>{% if p.image_url %}<img src="{{ url_for('market_image',product_id=p.id) }}" alt="{{ p.title }}" style="width:100%;max-height:240px;object-fit:contain;border-radius:10px">{% endif %}<p>{{ p.description[:220] }}{% if p.description|length>220 %}…{% endif %}</p><h3>{{ p.price_display }}</h3>{% if p.product_type=='physical' %}<p class="small">Stock: {{ p.stock }}{% if p.location %} · {{ p.location }}{% endif %}</p>{% endif %}<div class="actions" style="margin-top:12px"><a class="btn secondary" href="{{ url_for('market_product_view',product_id=p.id) }}">View</a>{% if user and user.id|string != p.seller_id|string and (p.product_type!='physical' or p.stock|int>0) %}<form method="post" action="{{ url_for('market_cart_add',product_id=p.id) }}" style="display:inline"><input type="hidden" name="quantity" value="1"><button class="btn" type="submit">🛒 Add to Cart</button></form><a class="btn" href="{{ url_for('market_product_view',product_id=p.id) }}">⚡ Buy Now</a>{% elif not user %}<a class="btn" href="{{ url_for('login',next=url_for('market_product_view',product_id=p.id)) }}">🔐 Login to Buy</a>{% endif %}</div></div>{% else %}<div class="card"><h3>No products found</h3><p>Try another search or become a seller.</p></div>{% endfor %}</div>
+''',products=products,categories=KOJA_MARKET_CATEGORIES,q=q,category=category,ptype=ptype,user=user,cart_count=cart_count)
+
+@app.route('/market/image/<product_id>')
+def market_image(product_id):
+    p=market_product(product_id)
+    if not p or not p.get('image_url') or not as_bool(p.get('is_published')): abort(404)
+    path=market_image_path(p.get('image_url'))
+    if not path or not supabase_configured(): abort(404)
+    try:
+        r=requests.get(sb_storage_url(path),headers=sb_headers(),timeout=20)
+        if not r.ok: abort(404)
+        resp=send_file(io.BytesIO(r.content),mimetype=r.headers.get('Content-Type') or 'image/jpeg',max_age=3600)
+        resp.headers['Cache-Control']='public,max-age=3600'; return resp
+    except Exception: abort(404)
+
+@app.route('/market/product/<product_id>')
+def market_product_view(product_id):
+    p=market_product(product_id)
+    if not p or not as_bool(p.get('is_published')) or str(p.get('approval_status') or '').lower() not in {'approved','active'}: abort(404)
+    seller=market_seller(p.get('seller_id')) or {}; seller_name=seller.get('store_name') or marketplace_seller_name(p.get('seller_id'))
+    return render_page('Market Product',r'''
+<div class="card"><a href="{{ '/market' }}">← KOJA Market</a>{% if product.image_url %}<img src="{{ url_for('market_image',product_id=product.id) }}" alt="{{ product.title }}" style="display:block;width:100%;max-height:500px;object-fit:contain;margin:14px 0;border-radius:12px">{% endif %}<p class="small">{{ product.category }} · {{ 'Digital product' if product.product_type=='digital' else 'Physical product' }}</p><h1>{{ product.title }}</h1><p style="white-space:pre-wrap;line-height:1.75">{{ product.description }}</p><h2>{{ money(product.price,product.currency) }}</h2><p class="small">Seller: {{ seller_name }}{% if product.location %} · {{ product.location }}{% endif %}</p>{% if product.product_type=='physical' %}<p><strong>Stock:</strong> {{ product.stock }}</p>{% endif %}{% if user and user.id|string != product.seller_id|string and (product.product_type!='physical' or product.stock|int>0) %}<form method="post" action="{{ url_for('market_cart_add',product_id=product.id) }}" class="actions"><label style="width:100%">Quantity<input name="quantity" type="number" min="1" max="{{ product.stock if product.product_type=='physical' else 1 }}" value="1" required></label><button class="btn secondary" type="submit">🛒 Add to Cart</button></form><form method="post" action="{{ url_for('market_order_create',product_id=product.id) }}"><label>Mobile-money network</label><select name="network" required><option value="">Select network</option><option value="MTN">MTN</option><option value="AIRTEL">Airtel</option><option value="ZAMTEL">Zamtel</option></select><label>Mobile-money phone</label><input name="phone" value="{{ user.phone or '' }}" required inputmode="tel"><label>Quantity</label><input name="quantity" type="number" min="1" max="{{ product.stock if product.product_type=='physical' else 1 }}" value="1" required>{% if product.product_type=='physical' %}<label>Recipient name</label><input name="recipient_name" required><label>Phone</label><input name="recipient_phone" required><label>Delivery address</label><textarea name="delivery_address" required placeholder="Town, area, house/shop details"></textarea><label>Notes (optional)</label><textarea name="notes"></textarea>{% endif %}<button class="btn" type="submit">⚡ Buy Now</button></form>{% elif not user %}<a class="btn" href="{{ url_for('login',next=request.path) }}">Login to Buy</a>{% else %}<p class="small">This is your listing.</p>{% endif %}</div>
+''',product=p,seller_name=seller_name,money=market_money)
+
+@app.route('/market/order/<product_id>',methods=['POST'])
+@login_required
+def market_order_create(product_id):
+    p=market_product(product_id); user=current_user() or {}; uid=user.get('id')
+    if not p or not as_bool(p.get('is_published')) or str(p.get('approval_status') or '').lower() not in {'approved','active'}: abort(404)
+    if str(p.get('seller_id'))==str(uid): flash('You cannot purchase your own listing.','warning'); return redirect(url_for('market_product_view',product_id=product_id))
+    try: qty=max(1,int(request.form.get('quantity') or 1))
+    except Exception: qty=1
+    if str(p.get('product_type') or 'physical')=='physical' and qty>int(p.get('stock') or 0): flash('Not enough stock available.','danger'); return redirect(url_for('market_product_view',product_id=product_id))
+    price=float(p.get('price') or 0); delivery=float(p.get('delivery_fee') or 0) if str(p.get('product_type'))=='physical' else 0
+    item=price*qty; total=item+delivery; commission=round(total*KOJA_MARKET_COMMISSION_RATE,2); seller_amount=round(total-commission,2)
+    payload={'order_number':market_order_number(),'product_id':product_id,'buyer_id':uid,'seller_id':p.get('seller_id'),'quantity':qty,'item_amount':item,'delivery_fee':delivery,'total_amount':total,'commission_amount':commission,'seller_amount':seller_amount,'currency':p.get('currency') or 'ZMW','status':'pending','recipient_name':clean(request.form.get('recipient_name')) or user.get('name') or user.get('full_name'),'recipient_phone':clean(request.form.get('recipient_phone')) or user.get('phone'),'delivery_address':clean(request.form.get('delivery_address')),'notes':clean(request.form.get('notes')),'created_at':utc_now(),'updated_at':utc_now()}
+    order,err=db_insert('koja_market_orders',payload)
+    if err: flash('Order could not be created. Run KOJA_MARKET.sql in Supabase.','danger'); return redirect(url_for('market_product_view',product_id=product_id))
+    if total<=0:
+        db_update('koja_market_orders',{'id':order.get('id')},{'status':'paid','updated_at':utc_now()});
+        return redirect(url_for('market_my'))
+    if not FLW_SECRET_KEY:
+        flash('Order created, but online payment is not configured. Add FLW_SECRET_KEY to Render Environment Variables.','warning'); return redirect(url_for('market_my'))
+    tx_ref='KOJA-MARKET-'+str(order.get('order_number'))
+    db_update('koja_market_orders',{'id':order.get('id')},{'payment_reference':tx_ref,'updated_at':utc_now()})
+    email=user.get('email') or ''
+    network=clean(request.form.get('network')).upper()
+    phone=clean(request.form.get('phone')) or clean(request.form.get('recipient_phone')) or clean(user.get('phone'))
+    if network not in ('MTN','AIRTEL','ZAMTEL') or not phone:
+        flash('Select your Zambian mobile-money network and enter the mobile-money phone number.','warning')
+        return redirect(url_for('market_product_view',product_id=product_id))
+    payload_fw={'tx_ref':tx_ref,'amount':int(round(total)),'currency':(p.get('currency') or 'ZMW').upper(),'email':email,'fullname':first_nonempty(user.get('name'),user.get('full_name'),email),'phone_number':phone,'network':network,'order_id':str(order.get('id') or ''),'redirect_url':url_for('market_payment_callback',_external=True,tx_ref=tx_ref),'meta':{'koja_order_id':str(order.get('id') or ''),'koja_product_id':str(product_id)}}
+    try:
+        r=requests.post(FLW_BASE_URL+'/charges?type=mobile_money_zambia',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json'},json=payload_fw,timeout=30); body=json_or_empty(r)
+        authorization=((body.get('meta') or {}).get('authorization') or {}) if isinstance(body,dict) else {}
+        redirect_url=authorization.get('redirect')
+        if r.ok and str(body.get('status') or '').lower()=='success' and redirect_url:
+            return redirect(redirect_url)
+        logger.error('KOJA Market V3 Zambia checkout failed: %s %s',r.status_code,str(body)[:1500])
+    except Exception: logger.exception('KOJA Market checkout error')
+    flash('Order was created, but checkout could not be started.','danger'); return redirect(url_for('market_my'))
 
 @app.route('/market/payment/callback')
 @login_required
 def market_payment_callback():
-    return _handle_market_payment_callback(digital=False)
-
-def _parse_flutterwave_callback():
     tx_ref=clean(request.args.get('tx_ref') or request.args.get('reference'))
     transaction_id=clean(request.args.get('transaction_id') or request.args.get('id'))
-    resp_raw=clean(request.args.get('resp'))
-    if resp_raw:
-        try:
-            obj=json.loads(resp_raw)
-            data=obj.get('data') or {} if isinstance(obj,dict) else {}
-            tx_ref=tx_ref or clean(data.get('tx_ref') or data.get('txRef') or data.get('reference'))
-            transaction_id=transaction_id or clean(data.get('id') or data.get('transaction_id'))
-        except Exception:
-            logger.warning('Flutterwave callback resp could not be parsed')
-    return tx_ref,transaction_id
-
-def _handle_market_payment_callback(digital=False):
-    tx_ref,transaction_id=_parse_flutterwave_callback(); uid=(current_user() or {}).get('id'); tx=None
+    uid=(current_user() or {}).get('id')
+    tx=None
+    # Flutterwave may return transaction_id without tx_ref. Verify first and recover tx_ref from the verified transaction.
     if transaction_id:
         tx=_flutterwave_verify(transaction_id)
-        if tx and not tx_ref: tx_ref=_flutterwave_field(tx,'tx_ref','txRef','reference')
+        if tx and not tx_ref:
+            tx_ref=clean(tx.get('tx_ref') or tx.get('reference'))
     if not tx_ref:
-        flash('Payment reference was missing. KOJA will continue checking Flutterwave for this payment.','warning')
-        return redirect(url_for('marketplace_my' if digital else 'market_my'))
-    table='koja_marketplace_orders' if digital else 'koja_market_orders'
-    order=first_row(table,{'payment_reference':tx_ref,'buyer_id':uid})
-    if not order:
-        logger.error('KOJA payment callback order not found: table=%s tx_ref=%s transaction_id=%s',table,tx_ref,transaction_id)
-        flash('Payment order could not be found.','danger'); return redirect(url_for('marketplace_my' if digital else 'market_my'))
+        flash('Payment reference was missing. Please return to KOJA and check My Orders; the payment will be confirmed from the Flutterwave webhook if it completed.','warning')
+        return redirect(url_for('market_my'))
+    order=first_row('koja_market_orders',{'payment_reference':tx_ref,'buyer_id':uid})
+    if not order: flash('Market order not found.','danger'); return redirect(url_for('market_my'))
     if str(order.get('status') or '').lower() in {'paid','completed'}:
-        return redirect(url_for('marketplace_download',product_id=order.get('product_id')) if digital else url_for('market_my'))
-    if tx and ( _finalize_marketplace_order(order,tx) if digital else _finalize_market_order(order,tx) ):
-        flash('Payment verified successfully. Your order is confirmed.','success')
-        return redirect(url_for('marketplace_download',product_id=order.get('product_id')) if digital else url_for('market_my'))
-    logger.warning('KOJA payment remains pending: table=%s order=%s tx_ref=%s transaction_id=%s',table,order.get('id'),tx_ref,transaction_id)
+        return redirect(url_for('market_my'))
+    if tx is None and transaction_id:
+        tx=_flutterwave_verify(transaction_id)
+    if tx and _finalize_market_order(order,tx):
+        flash('Payment verified. Your KOJA Market order is confirmed.','success')
+        return redirect(url_for('market_my'))
     flash('Payment is still pending. KOJA will confirm it automatically when Flutterwave reports the successful transaction.','info')
-    return redirect(url_for('marketplace_my' if digital else 'market_my'))
+    return redirect(url_for('market_my'))
 
-# Flutterwave V3 webhook: authenticated, server-side verification, retry-safe and idempotent.
+# Flutterwave V3 webhook: signature-authenticated, server-side re-verification and idempotent finalization.
 @app.route('/webhook/flutterwave', methods=['POST'])
 def flutterwave_webhook():
     if not FLW_SECRET_HASH:
-        logger.error('Flutterwave webhook disabled: FLW_SECRET_HASH is missing')
-        return jsonify({'status':'disabled'}),503
-    raw=request.get_data(cache=True) or b''; signature=clean(request.headers.get('flutterwave-signature')); legacy=clean(request.headers.get('verif-hash'))
+        return jsonify({'status':'disabled'}), 503
+    raw=request.get_data(cache=True) or b''
+    signature=clean(request.headers.get('flutterwave-signature'))
+    legacy=clean(request.headers.get('verif-hash'))
     expected=base64.b64encode(hmac.new(FLW_SECRET_HASH.encode('utf-8'),raw,hashlib.sha256).digest()).decode('utf-8')
     valid_signature=bool(signature and hmac.compare_digest(expected,signature)) or bool(legacy and hmac.compare_digest(legacy,FLW_SECRET_HASH))
-    if not valid_signature: return jsonify({'status':'unauthorized'}),401
-    payload=request.get_json(silent=True) or {}; data=payload.get('data') or {}
-    tx_ref=clean(data.get('tx_ref') or data.get('txRef') or data.get('reference')); transaction_id=clean(data.get('id') or data.get('transaction_id') or payload.get('id'))
-    if not transaction_id: return jsonify({'status':'ignored','reason':'missing_transaction_id'}),200
+    if not valid_signature:
+        return jsonify({'status':'unauthorized'}),401
+    payload=request.get_json(silent=True) or {}
+    data=payload.get('data') or {}
+    tx_ref=clean(data.get('tx_ref') or data.get('txRef') or data.get('reference') or data.get('orderRef'))
+    transaction_id=clean(data.get('id') or data.get('transaction_id') or payload.get('id'))
+    logger.info('Flutterwave webhook received: tx_ref=%s transaction_id=%s', tx_ref, transaction_id)
+    if not tx_ref or not transaction_id:
+        logger.warning('Flutterwave webhook ignored: missing reference or transaction id')
+        return jsonify({'status':'ignored','reason':'missing_reference_or_transaction_id'}),200
     tx=_flutterwave_verify(transaction_id)
     if not tx:
-        logger.warning('Flutterwave verification unavailable: transaction_id=%s tx_ref=%s',transaction_id,tx_ref)
-        return jsonify({'status':'retry','reason':'verification_unavailable'}),500
-    verified_ref=_flutterwave_field(tx,'tx_ref','txRef','reference')
-    tx_ref=tx_ref or verified_ref
-    if not tx_ref:
-        logger.error('Verified Flutterwave transaction has no tx_ref: transaction_id=%s tx=%s',transaction_id,str(tx)[:1500])
-        return jsonify({'status':'ignored','reason':'missing_verified_reference'}),200
+        logger.warning('Flutterwave webhook verification unavailable: tx_ref=%s transaction_id=%s', tx_ref, transaction_id)
+        return jsonify({'status':'pending','reason':'verification_unavailable'}),200
+    if str(tx.get('status') or '').lower() != 'successful':
+        logger.info('Flutterwave webhook transaction not successful: tx_ref=%s status=%s', tx_ref, tx.get('status'))
+        return jsonify({'status':'ignored','reason':'transaction_not_successful'}),200
     results=[]
     market_order=first_row('koja_market_orders',{'payment_reference':tx_ref})
     if market_order:
-        ok=_finalize_market_order(market_order,tx); results.append('market:'+('finalized' if ok else 'pending_or_rejected'))
+        ok=_finalize_market_order(market_order,tx); results.append('market:'+('finalized' if ok else 'finalization_failed'))
     marketplace_order=first_row('koja_marketplace_orders',{'payment_reference':tx_ref})
     if marketplace_order:
-        ok=_finalize_marketplace_order(marketplace_order,tx); results.append('digital:'+('finalized' if ok else 'pending_or_rejected'))
+        ok=_finalize_marketplace_order(marketplace_order,tx); results.append('digital:'+('finalized' if ok else 'finalization_failed'))
     if not results:
-        logger.warning('Flutterwave webhook reference not found in KOJA: tx_ref=%s transaction_id=%s',tx_ref,transaction_id)
         return jsonify({'status':'ignored','reason':'unknown_reference'}),200
-    logger.info('Flutterwave webhook processed: tx_ref=%s transaction_id=%s results=%s',tx_ref,transaction_id,results)
     return jsonify({'status':'ok','processed':results}),200
 
 @app.route('/market/sell',methods=['GET','POST'])
@@ -3304,7 +3606,7 @@ def market_seller_register():
 def market_my():
     uid=(current_user() or {}).get('id'); seller=market_seller(uid); products=db_select('koja_market_products',{'seller_id':uid},order='created_at.desc',limit=200) or []; purchases=db_select('koja_market_orders',{'buyer_id':uid},order='created_at.desc',limit=200) or []; sales=db_select('koja_market_orders',{'seller_id':uid},order='created_at.desc',limit=200) or []
     ids={str(o.get('product_id')) for o in purchases+sales if o.get('product_id')}; ps=db_select('koja_market_products',{'id':'in.('+','.join(ids)+')'} if ids else {'id':'eq.__none__'},limit=300) or []; pm={str(x.get('id')):x for x in ps}
-    return render_page('My KOJA Market',r'''<div class="hero"><h1>📦 My KOJA Market</h1><p>Seller status: <strong>{{ seller.approval_status if seller else 'Not registered' }}</strong></p><div class="actions"><a class="btn" href="{{ url_for('market_sell') }}">+ List Product</a><a class="btn secondary" href="{{ url_for('market_seller_register') }}">Seller Profile</a><a class="btn secondary" href="{{ url_for('koja_market') }}">Browse Market</a></div></div><div class="card"><h2>My Listings</h2><table><tr><th>Product</th><th>Price</th><th>Stock</th><th>Status</th></tr>{% for p in products %}<tr><td>{{ p.title }}</td><td>{{ money(p.price,p.currency) }}</td><td>{{ p.stock }}</td><td>{{ p.approval_status }}</td></tr>{% else %}<tr><td colspan="4">No listings.</td></tr>{% endfor %}</table></div><div class="card"><h2>My Purchases</h2><table><tr><th>Order</th><th>Product</th><th>Total</th><th>Status</th></tr>{% for o in purchases %}<tr><td>{{ o.order_number }}</td><td>{{ pm.get(o.product_id,{}).get('title','Product') }}</td><td>{{ money(o.total_amount,o.currency) }}</td><td>{{ o.status }}</td></tr>{% else %}<tr><td colspan="4">No purchases.</td></tr>{% endfor %}</table></div>{% if seller %}<div class="card"><h2>Sales</h2><table><tr><th>Order</th><th>Product</th><th>Total</th><th>KOJA commission</th><th>Status</th></tr>{% for o in sales %}<tr><td>{{ o.order_number }}</td><td>{{ pm.get(o.product_id,{}).get('title','Product') }}</td><td>{{ money(o.total_amount,o.currency) }}</td><td>{{ money(o.commission_amount,o.currency) }}</td><td>{{ o.status }}</td></tr>{% else %}<tr><td colspan="5">No sales yet.</td></tr>{% endfor %}</table></div>{% endif %}''',seller=seller,products=products,purchases=purchases,sales=sales,pm=pm,money=market_money)
+    return render_page('My KOJA Market',r'''<div class="hero"><h1>📦 My KOJA Market</h1><p>Seller status: <strong>{{ seller.approval_status if seller else 'Not registered' }}</strong></p><div class="actions"><a class="btn" href="{{ url_for('market_sell') }}">+ List Product</a><a class="btn secondary" href="{{ url_for('market_seller_register') }}">Seller Profile</a><a class="btn secondary" href="{{ '/market' }}">Browse Market</a></div></div><div class="card"><h2>My Listings</h2><table><tr><th>Product</th><th>Price</th><th>Stock</th><th>Status</th></tr>{% for p in products %}<tr><td>{{ p.title }}</td><td>{{ money(p.price,p.currency) }}</td><td>{{ p.stock }}</td><td>{{ p.approval_status }}</td></tr>{% else %}<tr><td colspan="4">No listings.</td></tr>{% endfor %}</table></div><div class="card"><h2>My Purchases</h2><table><tr><th>Order</th><th>Product</th><th>Total</th><th>Status</th></tr>{% for o in purchases %}<tr><td>{{ o.order_number }}</td><td>{{ pm.get(o.product_id,{}).get('title','Product') }}</td><td>{{ money(o.total_amount,o.currency) }}</td><td>{{ o.status }}</td></tr>{% else %}<tr><td colspan="4">No purchases.</td></tr>{% endfor %}</table></div>{% if seller %}<div class="card"><h2>Sales</h2><table><tr><th>Order</th><th>Product</th><th>Total</th><th>KOJA commission</th><th>Status</th></tr>{% for o in sales %}<tr><td>{{ o.order_number }}</td><td>{{ pm.get(o.product_id,{}).get('title','Product') }}</td><td>{{ money(o.total_amount,o.currency) }}</td><td>{{ money(o.commission_amount,o.currency) }}</td><td>{{ o.status }}</td></tr>{% else %}<tr><td colspan="5">No sales yet.</td></tr>{% endfor %}</table></div>{% endif %}''',seller=seller,products=products,purchases=purchases,sales=sales,pm=pm,money=market_money)
 
 @app.route('/admin/market',methods=['GET','POST'])
 @admin_required
@@ -3326,7 +3628,7 @@ def market_cart():
   p=pm.get(str(c.get('product_id')))
   if not p: continue
   q=max(1,int(c.get('quantity') or 1)); line=float(p.get('price') or 0)*q; total+=line; items.append({'product':p,'quantity':q,'line':line})
- return render_page('KOJA Market Cart',"""<div class='hero'><h1>My Cart</h1><p>Review your items before checkout.</p><a class='btn secondary' href='{{ url_for('koja_market') }}'>Continue Shopping</a></div><div class='card'>{% for x in items %}<div style='padding:14px 0;border-bottom:1px solid var(--border)'><strong>{{ x.product.title }}</strong><p>{{ money(x.product.price,x.product.currency) }} x {{ x.quantity }} = {{ money(x.line,x.product.currency) }}</p><form method='post' action='{{ url_for('market_cart_remove',product_id=x.product.id) }}'><button class='btn danger'>Remove</button></form></div>{% else %}<p>Your cart is empty.</p>{% endfor %}{% if items %}<h2>Total: {{ money(total,'ZMW') }}</h2><a class='btn' href='{{ url_for('market_cart_checkout') }}'>Secure Checkout</a>{% endif %}</div>""",items=items,total=total,money=market_money)
+ return render_page('KOJA Market Cart',"""<div class='hero'><h1>My Cart</h1><p>Review your items before checkout.</p><a class='btn secondary' href='{{ '/market' }}'>Continue Shopping</a></div><div class='card'>{% for x in items %}<div style='padding:14px 0;border-bottom:1px solid var(--border)'><strong>{{ x.product.title }}</strong><p>{{ money(x.product.price,x.product.currency) }} x {{ x.quantity }} = {{ money(x.line,x.product.currency) }}</p><form method='post' action='{{ url_for('market_cart_remove',product_id=x.product.id) }}'><button class='btn danger'>Remove</button></form></div>{% else %}<p>Your cart is empty.</p>{% endfor %}{% if items %}<h2>Total: {{ money(total,'ZMW') }}</h2><a class='btn' href='{{ url_for('market_cart_checkout') }}'>Secure Checkout</a>{% endif %}</div>""",items=items,total=total,money=market_money)
 
 @app.route('/market/cart/add/<product_id>',methods=['POST'])
 @login_required
