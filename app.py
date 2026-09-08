@@ -108,7 +108,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.08-V6-FULL-MARKET-MEDIA-FLW-V3-AUDIO-WEBHOOK-FIX3-V52"
+APP_VERSION = "2026.09.08-V6-FULL-MARKET-MEDIA-FLW-V3-AUDIO-WEBHOOK-FIX4-V52"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -3070,13 +3070,14 @@ def marketplace_buy(product_id):
     if network not in ('MTN','AIRTEL','ZAMTEL') or not phone:
         flash('Select your Zambian mobile-money network and enter the mobile-money phone number.','warning')
         return redirect(url_for('marketplace_product_view',product_id=product_id))
-    payload={'tx_ref':tx_ref,'amount':amount,'currency':product.get('currency') or 'ZMW','redirect_url':url_for('marketplace_payment_callback',_external=True),'customer':{'email':email,'name':first_nonempty(user.get('name'),email),'phonenumber':phone},'payment_options':'mobilemoneyzambia','network':network,'phone_number':phone,'order_id':str(order.get('id') or ''),'meta':[{'key':'koja_order_id','value':str(order.get('id') or '')},{'key':'koja_product_id','value':str(product_id)}]}
+    payload={'tx_ref':tx_ref,'amount':int(round(amount)),'currency':(product.get('currency') or 'ZMW').upper(),'email':email,'fullname':first_nonempty(user.get('name'),user.get('full_name'),email),'phone_number':phone,'network':network,'order_id':str(order.get('id') or ''),'redirect_url':url_for('marketplace_payment_callback',_external=True),'meta':{'koja_order_id':str(order.get('id') or ''),'koja_product_id':str(product_id)}}
     try:
-        r=requests.post(FLW_BASE_URL+'/charges?type=mobile_money_zambia',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json'},json=payload,timeout=30)
+        r=requests.post(FLW_BASE_URL+'/charges?type=mobile_money_zambia',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json'},json=payload,timeout=30)
         data=json_or_empty(r)
-        status=((data.get('data') or {}).get('status')) if isinstance(data,dict) else None
-        if r.ok and status in ('pending','successful'):
-            return redirect(url_for('marketplace_payment_callback',tx_ref=tx_ref,status='pending'))
+        authorization=((data.get('meta') or {}).get('authorization') or {}) if isinstance(data,dict) else {}
+        redirect_url=authorization.get('redirect')
+        if r.ok and str(data.get('status') or '').lower()=='success' and redirect_url:
+            return redirect(redirect_url)
         logger.error('Flutterwave V3 Zambia checkout creation failed: %s %s',r.status_code,str(data)[:1500])
     except Exception as exc:
         logger.exception('Flutterwave checkout error: %s',exc)
@@ -3462,11 +3463,13 @@ def market_order_create(product_id):
     if network not in ('MTN','AIRTEL','ZAMTEL') or not phone:
         flash('Select your Zambian mobile-money network and enter the mobile-money phone number.','warning')
         return redirect(url_for('market_product_view',product_id=product_id))
-    payload_fw={'tx_ref':tx_ref,'amount':total,'currency':p.get('currency') or 'ZMW','redirect_url':url_for('market_payment_callback',_external=True),'customer':{'email':email,'name':first_nonempty(user.get('name'),user.get('full_name'),email),'phonenumber':phone},'payment_options':'mobilemoneyzambia','network':network,'phone_number':phone,'order_id':str(order.get('id') or ''),'meta':[{'key':'koja_order_id','value':str(order.get('id') or '')},{'key':'koja_product_id','value':str(product_id)}]}
+    payload_fw={'tx_ref':tx_ref,'amount':int(round(total)),'currency':(p.get('currency') or 'ZMW').upper(),'email':email,'fullname':first_nonempty(user.get('name'),user.get('full_name'),email),'phone_number':phone,'network':network,'order_id':str(order.get('id') or ''),'redirect_url':url_for('market_payment_callback',_external=True),'meta':{'koja_order_id':str(order.get('id') or ''),'koja_product_id':str(product_id)}}
     try:
-        r=requests.post(FLW_BASE_URL+'/charges?type=mobile_money_zambia',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json'},json=payload_fw,timeout=30); body=json_or_empty(r); st=((body.get('data') or {}).get('status')) if isinstance(body,dict) else None
-        if r.ok and st in ('pending','successful'):
-            return redirect(url_for('market_payment_callback',tx_ref=tx_ref,status='pending'))
+        r=requests.post(FLW_BASE_URL+'/charges?type=mobile_money_zambia',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json'},json=payload_fw,timeout=30); body=json_or_empty(r)
+        authorization=((body.get('meta') or {}).get('authorization') or {}) if isinstance(body,dict) else {}
+        redirect_url=authorization.get('redirect')
+        if r.ok and str(body.get('status') or '').lower()=='success' and redirect_url:
+            return redirect(redirect_url)
         logger.error('KOJA Market V3 Zambia checkout failed: %s %s',r.status_code,str(body)[:1500])
     except Exception: logger.exception('KOJA Market checkout error')
     flash('Order was created, but checkout could not be started.','danger'); return redirect(url_for('market_my'))
