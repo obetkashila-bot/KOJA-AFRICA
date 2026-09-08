@@ -99,6 +99,7 @@ SUPABASE_SERVICE_KEY = (
 SUPABASE_PUBLISHABLE_KEY = os.getenv("SUPABASE_PUBLISHABLE_KEY", "")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
 FLW_SECRET_KEY = os.getenv("FLW_SECRET_KEY", "").strip()
+FLW_SECRET_HASH = os.getenv("FLW_SECRET_HASH", "").strip()
 FLW_BASE_URL = "https://api.flutterwave.com/v3"
 
 
@@ -3152,6 +3153,16 @@ def _finalize_market_order(order, tx):
 def marketplace_payment_callback():
     tx_ref=clean(request.args.get('tx_ref') or request.args.get('reference'))
     transaction_id=clean(request.args.get('transaction_id') or request.args.get('id'))
+    # Flutterwave may return the whole transaction response in `resp`, using camelCase fields.
+    resp_raw=clean(request.args.get('resp'))
+    if resp_raw:
+        try:
+            resp_obj=json.loads(resp_raw)
+            resp_data=(resp_obj.get('data') or {}) if isinstance(resp_obj,dict) else {}
+            tx_ref=tx_ref or clean(resp_data.get('tx_ref') or resp_data.get('txRef') or resp_data.get('reference'))
+            transaction_id=transaction_id or clean(resp_data.get('id') or resp_data.get('transaction_id'))
+        except Exception:
+            logger.warning('Flutterwave callback resp could not be parsed')
     uid=(current_user() or {}).get('id')
     tx=None
     # Flutterwave may return transaction_id without tx_ref. Verify first and recover tx_ref from the verified transaction.
@@ -3490,6 +3501,16 @@ def market_order_create(product_id):
 def market_payment_callback():
     tx_ref=clean(request.args.get('tx_ref') or request.args.get('reference'))
     transaction_id=clean(request.args.get('transaction_id') or request.args.get('id'))
+    # Flutterwave may return the whole transaction response in `resp`, using camelCase fields.
+    resp_raw=clean(request.args.get('resp'))
+    if resp_raw:
+        try:
+            resp_obj=json.loads(resp_raw)
+            resp_data=(resp_obj.get('data') or {}) if isinstance(resp_obj,dict) else {}
+            tx_ref=tx_ref or clean(resp_data.get('tx_ref') or resp_data.get('txRef') or resp_data.get('reference'))
+            transaction_id=transaction_id or clean(resp_data.get('id') or resp_data.get('transaction_id'))
+        except Exception:
+            logger.warning('Flutterwave callback resp could not be parsed')
     uid=(current_user() or {}).get('id')
     tx=None
     # Flutterwave may return transaction_id without tx_ref. Verify first and recover tx_ref from the verified transaction.
