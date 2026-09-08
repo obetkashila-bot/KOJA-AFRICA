@@ -94,7 +94,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.07-V46.2-GROQ-RESEARCH-FALLBACK"
+APP_VERSION = "2026.09.08-V48-OPENAI-GPT-GROQ-GEMINI"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -1548,6 +1548,7 @@ def _ai_config_status():
     """Return safe Gemini configuration diagnostics without exposing secrets."""
     raw_key=(os.getenv("GEMINI_API_KEY") or "").strip()
     groq_key=(os.getenv("GROQ_API_KEY") or "").strip()
+    openai_key=(os.getenv("OPENAI_API_KEY") or "").strip()
     model=(os.getenv("GEMINI_MODEL") or "gemini-3.8-flash").strip()
     fallback=(os.getenv("GEMINI_FALLBACK_MODEL") or "gemini-3.7-flash").strip()
     base=(os.getenv("GEMINI_API_URL") or "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
@@ -1564,6 +1565,10 @@ def _ai_config_status():
         "groq_model": (os.getenv("GROQ_MODEL") or "groq/compound").strip(),
         "groq_key_source": "GROQ_API_KEY" if groq_key else "none",
         "groq_key_length": len(groq_key),
+        "openai_configured": bool(openai_key),
+        "openai_model": (os.getenv("OPENAI_MODEL") or "gpt-5").strip(),
+        "openai_key_source": "OPENAI_API_KEY" if openai_key else "none",
+        "openai_key_length": len(openai_key),
     }
 
 def _ai_model_candidates():
@@ -1594,13 +1599,47 @@ def _ai_model_candidates():
         "gemini-3.5-flash",
         "gemini-3.5-flash-lite",
     ])
+    openai=[]
+    openai.extend(split_env("OPENAI_MODEL"))
+    openai.extend(split_env("OPENAI_FALLBACK_MODELS"))
+    openai.extend(["gpt-5", "gpt-5-mini"])
     def unique(items):
         seen=set(); out=[]
         for x in items:
             if x and x not in seen:
                 seen.add(x); out.append(x)
         return out
-    return unique(groq), unique(gemini)
+    return unique(groq), unique(gemini), unique(openai)
+
+def _openai_call(prompt, system_prompt, max_output_tokens=8192, timeout=20):
+    """OpenAI Responses API fallback for KOJA AI."""
+    api_key=(os.getenv("OPENAI_API_KEY") or "").strip()
+    if not api_key:
+        return "", "missing_openai_api_key"
+    _,_,models=_ai_model_candidates()
+    for model in models:
+        payload={"model":model,"instructions":system_prompt,"input":prompt,"max_output_tokens":max_output_tokens}
+        try:
+            r=requests.post("https://api.openai.com/v1/responses",json=payload,timeout=(5,min(int(timeout),30)),headers={"Authorization":"Bearer "+api_key,"Content-Type":"application/json"})
+            if r.ok:
+                data=r.json(); answer=clean(data.get("output_text") or "")
+                if not answer:
+                    parts=[]
+                    for item in data.get("output") or []:
+                        for part in item.get("content") or []:
+                            if part.get("type")=="output_text" and part.get("text"): parts.append(part["text"])
+                    answer=clean("\n".join(parts))
+                if answer:return answer,""
+            else:
+                logger.warning("OpenAI request failed status=%s model=%s",r.status_code,model)
+                if r.status_code in (401,403,429): break
+        except requests.Timeout:
+            logger.warning("OpenAI request timed out model=%s",model)
+        except requests.RequestException as exc:
+            logger.warning("OpenAI network error model=%s: %s",model,exc)
+        except Exception as exc:
+            logger.warning("OpenAI response error model=%s: %s",model,exc)
+    return "", "openai_provider_error"
 
 def _ai_call(prompt, system_prompt, max_output_tokens=8192, timeout=12):
     """Fast normal-chat path: prefer configured Groq, then fall back to Gemini."""
@@ -1612,7 +1651,7 @@ def _ai_call(prompt, system_prompt, max_output_tokens=8192, timeout=12):
     # optimized for low-latency text generation. Keep the existing Gemini path
     # as a fallback so the application does not depend on one provider.
     if groq_key:
-        groq_models,_gemini_models=_ai_model_candidates()
+        groq_models,_gemini_models,_openai_models=_ai_model_candidates()
         for model in groq_models:
             payload={
                 "model":model,
@@ -1636,6 +1675,10 @@ def _ai_call(prompt, system_prompt, max_output_tokens=8192, timeout=12):
             except Exception as exc:
                 logger.warning("Groq response error model=%s: %s",model,exc)
 
+    openai_answer, openai_err = _openai_call(prompt, system_prompt, max_output_tokens=max_output_tokens, timeout=min(int(timeout),30))
+    if openai_answer:
+        return openai_answer, ""
+
     if not gemini_key:
         return "", "missing_api_key"
 
@@ -1647,7 +1690,7 @@ def _ai_call(prompt, system_prompt, max_output_tokens=8192, timeout=12):
         "generationConfig":{"maxOutputTokens":max_output_tokens,"temperature":0.7},
     }
     headers={"x-goog-api-key":gemini_key,"Content-Type":"application/json"}
-    _groq_models, gemini_models = _ai_model_candidates()
+    _groq_models, gemini_models, openai_models = _ai_model_candidates()
     models=[]
     for model in ([primary, fallback] + gemini_models):
         if model and model not in models: models.append(model)
@@ -1677,7 +1720,7 @@ def _ai_stream(prompt, system_prompt, max_output_tokens=32768, timeout=90):
     """Stream KOJA AI with multiple live model fallbacks."""
     groq_key=(os.getenv("GROQ_API_KEY") or "").strip()
     if groq_key:
-        groq_models,_gemini_models=_ai_model_candidates()
+        groq_models,_gemini_models,_openai_models=_ai_model_candidates()
         for model in groq_models:
             payload={
                 "model":model,
@@ -1720,8 +1763,41 @@ def _ai_stream(prompt, system_prompt, max_output_tokens=32768, timeout=90):
             except Exception as exc:
                 logger.warning("Groq streaming error model=%s: %s",model,exc)
 
-    # Fallback chain. This keeps the browser endpoint responsive even if Groq
-    # has an unavailable model or Gemini has a transient failure.
+    # OpenAI streaming fallback.
+    openai_key=(os.getenv("OPENAI_API_KEY") or "").strip()
+    if openai_key:
+        _,_,openai_models=_ai_model_candidates()
+        for model in openai_models:
+            payload={"model":model,"instructions":system_prompt,"input":prompt,"max_output_tokens":max_output_tokens,"stream":True}
+            try:
+                with requests.post("https://api.openai.com/v1/responses",json=payload,stream=True,timeout=(5,min(int(timeout),90)),headers={"Authorization":"Bearer "+openai_key,"Content-Type":"application/json","Accept":"text/event-stream"}) as r:
+                    if not r.ok:
+                        logger.warning("OpenAI streaming failed status=%s model=%s",r.status_code,model)
+                        if r.status_code in (401,403,429): break
+                        continue
+                    got=False
+                    for line in r.iter_lines(decode_unicode=True):
+                        if not line: continue
+                        if isinstance(line,bytes): line=line.decode("utf-8","ignore")
+                        if not line.startswith("data:"): continue
+                        raw=line[5:].strip()
+                        if raw=="[DONE]": break
+                        try:data=json.loads(raw)
+                        except Exception:continue
+                        delta=data.get("delta") if data.get("type")=="response.output_text.delta" else None
+                        if delta:
+                            got=True; yield {"type":"token","text":delta}
+                    if got:
+                        yield {"type":"done"}; return
+            except requests.Timeout:
+                logger.warning("OpenAI streaming timed out model=%s",model)
+            except requests.RequestException as exc:
+                logger.warning("OpenAI streaming network error model=%s: %s",model,exc)
+            except Exception as exc:
+                logger.warning("OpenAI streaming error model=%s: %s",model,exc)
+
+    # Final fallback chain. This keeps the browser endpoint responsive even if
+    # Groq, OpenAI, or Gemini has a transient failure.
     answer,err=_ai_call(prompt,system_prompt,max_output_tokens=max_output_tokens,timeout=min(int(timeout),12))
     if answer:
         yield {"type":"token","text":answer}; yield {"type":"done"}
