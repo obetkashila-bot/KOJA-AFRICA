@@ -104,13 +104,12 @@ SUPABASE_SERVICE_KEY = (
 SUPABASE_PUBLISHABLE_KEY = os.getenv("SUPABASE_PUBLISHABLE_KEY", "")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
 # Flutterwave OAuth 2.0 (server-side only; never expose credentials to the browser)
-FLW_CLIENT_ID = os.getenv("FLW_CLIENT_ID", "").strip()
-FLW_CLIENT_SECRET = os.getenv("FLW_CLIENT_SECRET", "").strip()
+FLW_SECRET_KEY = os.getenv("FLW_SECRET_KEY", "").strip()
 FLW_SECRET_HASH = os.getenv("FLW_SECRET_HASH", "").strip()
 FLW_ENVIRONMENT = os.getenv("FLW_ENVIRONMENT", "sandbox").strip().lower()
-FLW_BASE_URL = "https://developersandbox-api.flutterwave.com" if FLW_ENVIRONMENT in {"sandbox", "test"} else "https://f4bexperience.flutterwave.com"
-FLW_TOKEN_URL = "https://idp.flutterwave.com/realms/flutterwave/protocol/openid-connect/token"
-_FLW_TOKEN_CACHE = {"access_token": "", "expires_at": 0.0}
+# Flutterwave V3 uses the same API base URL for sandbox/test and production;
+# the credential determines the environment.
+FLW_BASE_URL = "https://api.flutterwave.com/v3"
 
 
 STORAGE_BUCKET = os.getenv(
@@ -3061,8 +3060,8 @@ def marketplace_buy(product_id):
         flash('Free product added to your purchases.','success')
         return redirect(url_for('marketplace_download',product_id=product_id))
 
-    if not (FLW_CLIENT_ID and FLW_CLIENT_SECRET):
-        flash('Online payment is not configured yet. Add FLW_CLIENT_ID and FLW_CLIENT_SECRET to Render Environment Variables.','warning')
+    if not FLW_SECRET_KEY:
+        flash('Online payment is not configured yet. Add FLW_SECRET_KEY to Render Environment Variables.','warning')
         return redirect(url_for('marketplace_product_view',product_id=product_id))
     email=clean(user.get('email')).lower()
     if not email:
@@ -3094,30 +3093,25 @@ def marketplace_buy(product_id):
             'currency':product.get('currency') or os.getenv('PAYMENT_CURRENCY','ZMW'),
             'reference':tx_ref,
             'redirect_url':url_for('marketplace_payment_callback',_external=True),
-            'customer':{
-                'email':email,
-                'name':{'first':first_name,'last':last_name},
-                'phone':{'country_code':'260','number':local}
-            },
-            'payment_method':{
-                'type':'mobile_money',
-                'mobile_money':{'country_code':'260','network':'MTN','phone_number':local}
-            }
+            'email':email,
+            'fullname':full_name,
+            'phone_number':local,
+            'network':'MTN',
+            'order_id':tx_ref
         }
-        r=requests.post(FLW_BASE_URL+'/orchestration/direct-charges',headers=flutterwave_headers({'X-Trace-Id':secrets.token_hex(12),'X-Idempotency-Key':secrets.token_hex(16)}),json=payload,timeout=30)
+        r=requests.post(FLW_BASE_URL+'/charges?type=mobile_money_zambia',headers=flutterwave_headers(),json=payload,timeout=30)
         data=json_or_empty(r)
         charge=((data.get('data') or {}) if isinstance(data,dict) else {})
         charge_id=charge.get('id')
-        if r.ok and charge_id:
-            db_update('koja_marketplace_orders',{'id':order.get('id')},{'payment_transaction_id':str(charge_id),'updated_at':utc_now()})
-            action=charge.get('next_action') or {}
-            red=((action.get('redirect_url') or {}).get('url')) if isinstance(action,dict) else None
+        if r.ok and data.get('status')=='success':
+            db_update('koja_marketplace_orders',{'id':order.get('id')},{'payment_transaction_id':str(charge_id or ''),'updated_at':utc_now()})
+            auth=((data.get('meta') or {}).get('authorization') or {}) if isinstance(data,dict) else {}
+            red=auth.get('redirect') if isinstance(auth,dict) else None
             if red:
                 return redirect(red)
-            note=((action.get('payment_instruction') or {}).get('note')) if isinstance(action,dict) else None
-            flash(note or 'Flutterwave sent a mobile-money authorization request. Approve it on your phone; KOJA will confirm the payment automatically.','info')
+            flash('Flutterwave sent a mobile-money authorization request. Approve it on your phone; KOJA will confirm the payment automatically.','info')
             return redirect(url_for('marketplace_my'))
-        logger.error('Flutterwave V4 digital checkout creation failed: %s %s',r.status_code,str(data)[:1500])
+        logger.error('Flutterwave V3 digital checkout creation failed: %s %s',r.status_code,str(data)[:1500])
     except Exception as exc:
         logger.exception('Flutterwave V4 digital checkout error: %s',exc)
     flash('Payment checkout could not be started. Please try again.','danger')
@@ -3132,13 +3126,13 @@ def marketplace_payment_callback():
     order=first_row('koja_marketplace_orders',{'payment_reference':tx_ref,'buyer_id':uid})
     if not order:
         flash('Marketplace payment order could not be found.','danger'); return redirect(url_for('marketplace_my'))
-    if not (FLW_CLIENT_ID and FLW_CLIENT_SECRET):
-        flash('Payment verification is not configured. Add FLW_CLIENT_ID and FLW_CLIENT_SECRET.','danger'); return redirect(url_for('marketplace_my'))
+    if not FLW_SECRET_KEY:
+        flash('Payment verification is not configured. Add FLW_SECRET_KEY.','danger'); return redirect(url_for('marketplace_my'))
     try:
-        r=requests.get(FLW_BASE_URL+'/charges/'+str(transaction_id),headers=flutterwave_headers({'X-Trace-Id':secrets.token_hex(12)}),timeout=30)
+        r=requests.get(FLW_BASE_URL+'/transactions/'+str(transaction_id)+'/verify',headers=flutterwave_headers(),timeout=30)
         body=json_or_empty(r); tx=(body.get('data') or {}) if isinstance(body,dict) else {}
-        expected_amount=float(order.get('amount') or 0); paid_amount=float(tx.get('amount') or 0); expected_currency=str(order.get('currency') or os.getenv('PAYMENT_CURRENCY', 'ZMW')).upper(); paid_currency=str(tx.get('currency') or '').upper(); paid_ref=str(tx.get('reference') or tx.get('tx_ref') or '')
-        valid=(r.ok and str(tx.get('status') or '').lower() in {'succeeded','successful'} and paid_ref==tx_ref and paid_currency==expected_currency and paid_amount>=expected_amount)
+        expected_amount=float(order.get('amount') or 0); paid_amount=float(tx.get('amount') or 0); expected_currency=str(order.get('currency') or os.getenv('PAYMENT_CURRENCY', 'ZMW')).upper(); paid_currency=str(tx.get('currency') or '').upper(); paid_ref=str(tx.get('tx_ref') or tx.get('reference') or '')
+        valid=(r.ok and str(tx.get('status') or '').lower()=='successful' and paid_ref==tx_ref and paid_currency==expected_currency and paid_amount>=expected_amount)
         if valid:
             db_update('koja_marketplace_orders',{'id':order.get('id')},{'status':'paid','payment_method':'flutterwave','payment_reference':tx_ref,'payment_transaction_id':str(tx.get('id') or transaction_id),'updated_at':utc_now()})
             flash('Payment verified successfully. Your digital product is now available.','success')
@@ -3421,41 +3415,17 @@ def market_product_view(product_id):
 <div class="card"><a href="{{ url_for('koja_market') }}">← KOJA Market</a>{% if product.image_url %}<img src="{{ url_for('market_image',product_id=product.id) }}" alt="{{ product.title }}" style="display:block;width:100%;max-height:500px;object-fit:contain;margin:14px 0;border-radius:12px">{% endif %}<p class="small">{{ product.category }} · {{ 'Digital product' if product.product_type=='digital' else 'Physical product' }}</p><h1>{{ product.title }}</h1><p style="white-space:pre-wrap;line-height:1.75">{{ product.description }}</p><h2>{{ money(product.price,product.currency) }}</h2><p class="small">Seller: {{ seller_name }}{% if product.location %} · {{ product.location }}{% endif %}</p>{% if product.product_type=='physical' %}<p><strong>Stock:</strong> {{ product.stock }}</p>{% endif %}{% if user and user.id|string != product.seller_id|string and (product.product_type!='physical' or product.stock|int>0) %}<form method="post" action="{{ url_for('market_cart_add',product_id=product.id) }}" class="actions"><label style="width:100%">Quantity<input name="quantity" type="number" min="1" max="{{ product.stock if product.product_type=='physical' else 1 }}" value="1" required></label><button class="btn secondary" type="submit">🛒 Add to Cart</button></form><form method="post" action="{{ url_for('market_order_create',product_id=product.id) }}"><label>Mobile money network</label><select name="payment_network"><option value="MTN">MTN</option><option value="AIRTEL">Airtel</option><option value="ZAMTEL">Zamtel</option></select><label>Quantity</label><input name="quantity" type="number" min="1" max="{{ product.stock if product.product_type=='physical' else 1 }}" value="1" required>{% if product.product_type=='physical' %}<label>Recipient name</label><input name="recipient_name" required><label>Phone</label><input name="recipient_phone" required><label>Delivery address</label><textarea name="delivery_address" required placeholder="Town, area, house/shop details"></textarea><label>Notes (optional)</label><textarea name="notes"></textarea>{% endif %}<button class="btn" type="submit">⚡ Buy Now</button></form>{% elif not user %}<a class="btn" href="{{ url_for('login',next=request.path) }}">Login to Buy</a>{% else %}<p class="small">This is your listing.</p>{% endif %}</div>
 ''',product=p,seller_name=seller_name,money=market_money)
 
-def _flutterwave_access_token():
-    """Get and cache a Flutterwave OAuth 2.0 client-credentials token."""
-    if not FLW_CLIENT_ID or not FLW_CLIENT_SECRET:
-        return None
-    now = time.time()
-    if _FLW_TOKEN_CACHE.get("access_token") and now < float(_FLW_TOKEN_CACHE.get("expires_at") or 0) - 30:
-        return _FLW_TOKEN_CACHE["access_token"]
-    try:
-        r = requests.post(
-            FLW_TOKEN_URL,
-            headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
-            data={"grant_type": "client_credentials", "client_id": FLW_CLIENT_ID, "client_secret": FLW_CLIENT_SECRET},
-            timeout=30,
-        )
-        body = json_or_empty(r)
-        token = body.get("access_token") if isinstance(body, dict) else None
-        if not r.ok or not token:
-            logger.error("Flutterwave OAuth token request failed: %s", body)
-            return None
-        expires_in = int(body.get("expires_in") or 600)
-        _FLW_TOKEN_CACHE["access_token"] = token
-        _FLW_TOKEN_CACHE["expires_at"] = now + max(60, min(expires_in, 3600))
-        return token
-    except Exception:
-        logger.exception("Flutterwave OAuth token request error")
-        return None
-
 def flutterwave_headers(extra=None):
-    token = _flutterwave_access_token()
-    if not token:
+    """Headers for Flutterwave V3 requests using the dashboard Secret Key."""
+    if not FLW_SECRET_KEY:
         return {}
-    h = {"Authorization": "Bearer " + token, "Content-Type": "application/json", "Accept": "application/json"}
+    h = {"Authorization": "Bearer " + FLW_SECRET_KEY, "Content-Type": "application/json", "Accept": "application/json"}
     if extra:
         h.update(extra)
     return h
+
+def _flutterwave_v3_configured():
+    return bool(FLW_SECRET_KEY)
 
 @app.route('/market/order/<product_id>',methods=['POST'])
 @login_required
@@ -3474,8 +3444,8 @@ def market_order_create(product_id):
     if total<=0:
         db_update('koja_market_orders',{'id':order.get('id')},{'status':'paid','updated_at':utc_now()});
         return redirect(url_for('market_my'))
-    if not (FLW_CLIENT_ID and FLW_CLIENT_SECRET):
-        flash('Order created, but online payment is not configured. Add FLW_CLIENT_ID and FLW_CLIENT_SECRET to Render Environment Variables.','warning'); return redirect(url_for('market_my'))
+    if not FLW_SECRET_KEY:
+        flash('Order created, but online payment is not configured. Add FLW_SECRET_KEY to Render Environment Variables.','warning'); return redirect(url_for('market_my'))
     tx_ref='KOJA-MARKET-'+str(order.get('order_number'))
     db_update('koja_market_orders',{'id':order.get('id')},{'payment_reference':tx_ref,'updated_at':utc_now()})
     email=user.get('email') or ''
@@ -3501,44 +3471,39 @@ def market_order_create(product_id):
             'currency':p.get('currency') or os.getenv('PAYMENT_CURRENCY','ZMW'),
             'reference':tx_ref,
             'redirect_url':url_for('market_payment_callback',_external=True),
-            'customer':{
-                'email':email or ('buyer-'+str(uid)[:8]+'@koja.local'),
-                'name':{'first':first_name,'last':last_name},
-                'phone':{'country_code':'260','number':local}
-            },
-            'payment_method':{
-                'type':'mobile_money',
-                'mobile_money':{'country_code':'260','network':network,'phone_number':local}
-            }
+            'email':email or ('buyer-'+str(uid)[:8]+'@koja.local'),
+            'fullname':full_name,
+            'phone_number':local,
+            'network':network,
+            'order_id':tx_ref
         }
-        rch=requests.post(FLW_BASE_URL+'/orchestration/direct-charges',headers=flutterwave_headers({'X-Trace-Id':secrets.token_hex(12),'X-Idempotency-Key':secrets.token_hex(16)}),json=charge_payload,timeout=30)
+        rch=requests.post(FLW_BASE_URL+'/charges?type=mobile_money_zambia',headers=flutterwave_headers(),json=charge_payload,timeout=30)
         body=json_or_empty(rch); charge=((body.get('data') or {}) if isinstance(body,dict) else {})
         charge_id=charge.get('id')
-        if rch.ok and charge_id:
-            db_update('koja_market_orders',{'id':order.get('id')},{'payment_transaction_id':str(charge_id),'payment_method':'flutterwave_v4_mobile_money','updated_at':utc_now()})
-            action=charge.get('next_action') or {}
-            red=((action.get('redirect_url') or {}).get('url')) if isinstance(action,dict) else None
+        if rch.ok and body.get('status')=='success':
+            db_update('koja_market_orders',{'id':order.get('id')},{'payment_transaction_id':str(charge_id or ''),'payment_method':'flutterwave_v3_mobile_money','updated_at':utc_now()})
+            auth=((body.get('meta') or {}).get('authorization') or {}) if isinstance(body,dict) else {}
+            red=auth.get('redirect') if isinstance(auth,dict) else None
             if red: return redirect(red)
-            note=((action.get('payment_instruction') or {}).get('note')) if isinstance(action,dict) else None
-            flash(note or 'Flutterwave sent a mobile-money authorization request. Approve it on your phone; KOJA will confirm the payment automatically.','info')
+            flash('Flutterwave sent a mobile-money authorization request. Approve it on your phone; KOJA will confirm the payment automatically.','info')
             return redirect(url_for('market_my'))
-        logger.error('Flutterwave V4 charge failed: %s',body)
+        logger.error('Flutterwave V3 charge failed: %s',body)
     except Exception:
         logger.exception('KOJA Market V4 checkout error')
     flash('Order was created, but Flutterwave V4 checkout could not be started.','danger'); return redirect(url_for('market_my'))
 
 def _verify_flutterwave_transaction(transaction_id, expected_tx_ref, expected_amount, expected_currency):
-    """Server-side Flutterwave V4 charge verification."""
-    if not transaction_id or not (FLW_CLIENT_ID and FLW_CLIENT_SECRET):
+    """Server-side Flutterwave V3 transaction verification."""
+    if not transaction_id or not FLW_SECRET_KEY:
         return None, False
     try:
-        r=requests.get(FLW_BASE_URL+'/charges/'+str(transaction_id),headers=flutterwave_headers({'X-Trace-Id':secrets.token_hex(12)}),timeout=30)
+        r=requests.get(FLW_BASE_URL+'/transactions/'+str(transaction_id)+'/verify',headers=flutterwave_headers(),timeout=30)
         body=json_or_empty(r); tx=(body.get('data') or {}) if isinstance(body,dict) else {}
-        paid=float(tx.get('amount') or 0); cur=str(tx.get('currency') or '').upper(); ref=str(tx.get('reference') or tx.get('tx_ref') or '')
-        valid=(r.ok and str(tx.get('status') or '').lower() in {'succeeded','successful'} and ref==str(expected_tx_ref) and cur==str(expected_currency or 'ZMW').upper() and paid>=float(expected_amount or 0))
+        paid=float(tx.get('amount') or 0); cur=str(tx.get('currency') or '').upper(); ref=str(tx.get('tx_ref') or tx.get('reference') or '')
+        valid=(r.ok and str(tx.get('status') or '').lower()=='successful' and ref==str(expected_tx_ref) and cur==str(expected_currency or 'ZMW').upper() and paid>=float(expected_amount or 0))
         return tx,valid
     except Exception:
-        logger.exception('Flutterwave V4 charge verification error')
+        logger.exception('Flutterwave V3 transaction verification error')
         return None,False
 
 
@@ -3644,8 +3609,8 @@ def market_payment_callback():
     if status=='failed':
         db_update('koja_market_orders',{'id':order.get('id')},{'status':'payment_failed','updated_at':utc_now()})
         flash('Flutterwave reported that the payment failed.','warning'); return redirect(url_for('market_my'))
-    if not (FLW_CLIENT_ID and FLW_CLIENT_SECRET):
-        flash('Payment verification is not configured. Add FLW_CLIENT_ID and FLW_CLIENT_SECRET.','danger'); return redirect(url_for('market_my'))
+    if not FLW_SECRET_KEY:
+        flash('Payment verification is not configured. Add FLW_SECRET_KEY.','danger'); return redirect(url_for('market_my'))
     tx,valid=_verify_flutterwave_transaction(transaction_id,tx_ref,order.get('total_amount'),order.get('currency') or os.getenv('PAYMENT_CURRENCY', 'ZMW'))
     if valid:
         ok,msg=_finalize_market_payment(order,tx,transaction_id)
@@ -3658,7 +3623,7 @@ def market_payment_callback():
 @app.route('/webhook/flutterwave',methods=['POST'])
 def flutterwave_market_webhook():
     """Secure Flutterwave webhook for asynchronous Market payments."""
-    if not (FLW_CLIENT_ID and FLW_CLIENT_SECRET):
+    if not FLW_SECRET_KEY:
         return jsonify(status='disabled'),503
     raw=request.get_data(cache=True)
     signature=request.headers.get('flutterwave-signature','')
