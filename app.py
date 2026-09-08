@@ -3085,29 +3085,67 @@ def marketplace_buy(product_id):
     flash('Payment checkout could not be started. Please try again.','danger')
     return redirect(url_for('marketplace_product_view',product_id=product_id))
 
-def _flutterwave_verify(transaction_id):
-    if not FLW_SECRET_KEY or not transaction_id:
-        logger.error('Flutterwave verification skipped: missing secret key or transaction id')
+def _flutterwave_verify(transaction_id=None, tx_ref=None):
+    """Verify a Flutterwave V3 transaction, with a tx_ref lookup fallback.
+
+    Flutterwave's Zambia test flow can briefly expose the transaction through the
+    callback/webhook before the direct verify response is populated. We therefore
+    retry the ID endpoint and, if it still has no data, query the V3 transactions
+    collection by tx_ref. Value is released only from a verified successful record.
+    """
+    if not FLW_SECRET_KEY:
+        logger.error('Flutterwave verification skipped: FLW_SECRET_KEY is not configured')
         return None
+    headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json'}
+
+    def _extract(body):
+        if not isinstance(body,dict):
+            return None
+        data=body.get('data')
+        if isinstance(data,dict) and data:
+            return data
+        if isinstance(data,list):
+            for item in data:
+                if isinstance(item,dict) and item:
+                    return item
+        return None
+
     try:
-        r=requests.get(
-            FLW_BASE_URL+'/transactions/'+quote(str(transaction_id), safe=''),
-            headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json'},
-            timeout=30
-        )
-        body=json_or_empty(r)
-        tx=(body.get('data') or {}) if isinstance(body,dict) else {}
-        if not r.ok:
-            logger.error('Flutterwave verification failed HTTP %s: %s',r.status_code,str(body)[:1500])
-            return None
-        if not isinstance(tx,dict) or not tx:
-            logger.error('Flutterwave verification returned no transaction data: %s',str(body)[:1500])
-            return None
-        logger.info('Flutterwave verified transaction id=%s status=%s tx_ref=%s amount=%s currency=%s',transaction_id,tx.get('status'),tx.get('tx_ref') or tx.get('txRef') or tx.get('reference'),tx.get('amount'),tx.get('currency'))
-        return tx
+        if transaction_id:
+            for attempt in range(3):
+                url=FLW_BASE_URL+'/transactions/'+quote(str(transaction_id), safe='')+'/verify'
+                r=requests.get(url,headers=headers,timeout=30)
+                raw=r.text or ''
+                body=json_or_empty(r)
+                tx=_extract(body)
+                if tx:
+                    logger.info('Flutterwave verified transaction id=%s status=%s tx_ref=%s amount=%s currency=%s',transaction_id,tx.get('status'),tx.get('tx_ref') or tx.get('txRef') or tx.get('reference'),tx.get('amount'),tx.get('currency'))
+                    return tx
+                logger.error('Flutterwave verification attempt=%s HTTP=%s content_type=%s body=%s',attempt+1,r.status_code,r.headers.get('Content-Type',''),raw[:1200])
+                if attempt < 2:
+                    time.sleep(2)
+
+        if tx_ref:
+            # V3 transaction collection supports querying by merchant tx_ref.
+            from datetime import datetime, timezone, timedelta
+            now=datetime.now(timezone.utc)
+            params={
+                'from':(now-timedelta(days=2)).strftime('%Y-%m-%d'),
+                'to':(now+timedelta(days=1)).strftime('%Y-%m-%d'),
+                'page':1,
+                'tx_ref':str(tx_ref),
+            }
+            r=requests.get(FLW_BASE_URL+'/transactions',headers=headers,params=params,timeout=30)
+            raw=r.text or ''
+            body=json_or_empty(r)
+            tx=_extract(body)
+            if tx:
+                logger.info('Flutterwave verified transaction by tx_ref=%s id=%s status=%s',tx_ref,tx.get('id'),tx.get('status'))
+                return tx
+            logger.error('Flutterwave tx_ref lookup failed HTTP=%s content_type=%s body=%s',r.status_code,r.headers.get('Content-Type',''),raw[:1200])
     except Exception:
         logger.exception('Flutterwave transaction verification error')
-        return None
+    return None
 
 def _flutterwave_payment_valid(tx, tx_ref, expected_amount, expected_currency):
     try:
@@ -3127,9 +3165,16 @@ def _finalize_marketplace_order(order, tx):
     tx_ref=str(order.get('payment_reference') or '')
     if not _flutterwave_payment_valid(tx, tx_ref, order.get('amount'), order.get('currency')): return False
     if str(order.get('status') or '').lower() == 'paid': return True
-    updated,_=db_update('koja_marketplace_orders',{'id':order.get('id'),'status':'pending'},
+    updated,err=db_update('koja_marketplace_orders',{'id':order.get('id'),'status':'pending'},
         {'status':'paid','payment_method':'flutterwave','payment_transaction_id':str(tx.get('id') or ''),'updated_at':utc_now()})
-    return bool(updated)
+    if updated:
+        return True
+    current=first_row('koja_marketplace_orders',{'id':order.get('id')})
+    if str((current or {}).get('status') or '').lower()=='paid':
+        return True
+    if err:
+        logger.error('KOJA Digital order finalization DB error order=%s: %s',order.get('id'),err)
+    return False
 
 def _finalize_market_order(order, tx):
     if not order or not tx: return False
@@ -3137,9 +3182,15 @@ def _finalize_market_order(order, tx):
     if not _flutterwave_payment_valid(tx, tx_ref, order.get('total_amount'), order.get('currency')): return False
     if str(order.get('status') or '').lower() in {'paid','completed'}: return True
     # Atomic state transition prevents webhook/callback double-finalization.
-    updated,_=db_update('koja_market_orders',{'id':order.get('id'),'status':'pending'},
+    updated,err=db_update('koja_market_orders',{'id':order.get('id'),'status':'pending'},
         {'status':'paid','payment_method':'flutterwave','payment_transaction_id':str(tx.get('id') or ''),'payout_status':'pending','updated_at':utc_now()})
-    if not updated: return True
+    if not updated:
+        current=first_row('koja_market_orders',{'id':order.get('id')})
+        if str((current or {}).get('status') or '').lower() in {'paid','completed'}:
+            return True
+        if err:
+            logger.error('KOJA Market order finalization DB error order=%s: %s',order.get('id'),err)
+        return False
     p=market_product(order.get('product_id'))
     if p and str(p.get('product_type') or 'physical')=='physical':
         try:
@@ -3175,7 +3226,7 @@ def marketplace_payment_callback():
     tx=None
     # Verify the transaction server-side and recover tx_ref from the verified record when needed.
     if transaction_id:
-        tx=_flutterwave_verify(transaction_id)
+        tx=_flutterwave_verify(transaction_id, tx_ref)
         if tx and not tx_ref:
             tx_ref=clean(tx.get('tx_ref') or tx.get('txRef') or tx.get('reference'))
     if not tx_ref:
@@ -3187,7 +3238,7 @@ def marketplace_payment_callback():
     if str(order.get('status') or '').lower()=='paid':
         return redirect(url_for('marketplace_download',product_id=order.get('product_id')))
     if tx is None and transaction_id:
-        tx=_flutterwave_verify(transaction_id)
+        tx=_flutterwave_verify(transaction_id, tx_ref)
     if tx and _finalize_marketplace_order(order,tx):
         flash('Payment verified successfully. Your digital product is now available.','success')
         return redirect(url_for('marketplace_download',product_id=order.get('product_id')))
@@ -3523,7 +3574,7 @@ def market_payment_callback():
     tx=None
     # Verify the transaction server-side and recover tx_ref from the verified record when needed.
     if transaction_id:
-        tx=_flutterwave_verify(transaction_id)
+        tx=_flutterwave_verify(transaction_id, tx_ref)
         if tx and not tx_ref:
             tx_ref=clean(tx.get('tx_ref') or tx.get('txRef') or tx.get('reference'))
     if not tx_ref:
@@ -3534,7 +3585,7 @@ def market_payment_callback():
     if str(order.get('status') or '').lower() in {'paid','completed'}:
         return redirect(url_for('market_my'))
     if tx is None and transaction_id:
-        tx=_flutterwave_verify(transaction_id)
+        tx=_flutterwave_verify(transaction_id, tx_ref)
     if tx and _finalize_market_order(order,tx):
         flash('Payment verified. Your KOJA Market order is confirmed.','success')
         return redirect(url_for('market_my'))
@@ -3563,7 +3614,7 @@ def flutterwave_webhook():
     if not tx_ref or not transaction_id:
         logger.warning('Flutterwave webhook ignored: missing reference or transaction id')
         return jsonify({'status':'ignored','reason':'missing_reference_or_transaction_id'}),200
-    tx=_flutterwave_verify(transaction_id)
+    tx=_flutterwave_verify(transaction_id, tx_ref)
     if not tx:
         logger.warning('Flutterwave webhook pending: verification unavailable tx_ref=%s id=%s',tx_ref,transaction_id)
         return jsonify({'status':'pending','reason':'verification_unavailable'}),200
