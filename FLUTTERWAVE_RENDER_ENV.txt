@@ -1,0 +1,19 @@
+KOJA AFRICA — Flutterwave OAuth 2.0 Environment Variables
+
+Add these in Render → KOJA-AFRICA → Environment:
+
+FLW_CLIENT_ID=YOUR_FLUTTERWAVE_CLIENT_ID
+FLW_CLIENT_SECRET=YOUR_FLUTTERWAVE_CLIENT_SECRET
+FLW_SECRET_HASH=YOUR_FLUTTERWAVE_SECRET_HASH
+FLW_ENVIRONMENT=production
+KOJA_MARKET_COMMISSION_RATE=0.10
+PAYMENT_CURRENCY=ZMW
+
+Keep the actual values secret. Do not put them in app.py or GitHub.
+
+Flutterwave webhook URL:
+https://koja-africa.onrender.com/webhook/flutterwave
+
+Flutterwave callback URL is generated automatically by KOJA for each checkout.
+
+The application uses OAuth 2.0 client credentials to obtain a short-lived access token, then uses that token for checkout creation and server-side transaction verification.
