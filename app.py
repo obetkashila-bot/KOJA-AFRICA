@@ -3393,7 +3393,15 @@ def market_payment_callback():
             p=market_product(order.get('product_id'))
             if p and str(p.get('product_type') or 'physical')=='physical':
                 stock=max(0,int(p.get('stock') or 0)-int(order.get('quantity') or 1)); db_update('koja_market_products',{'id':p.get('id')},{'stock':stock,'updated_at':utc_now()})
-            db_update('koja_market_orders',{'id':order.get('id')},{'status':'paid','payment_method':'flutterwave','payment_transaction_id':str(tx.get('id') or transaction_id),'updated_at':utc_now()}); flash('Payment verified. Your KOJA Market order is confirmed.','success'); return redirect(url_for('market_my'))
+            if str(order.get('status') or '') not in {'paid','completed'}:
+                db_update('koja_market_orders',{'id':order.get('id')},{'status':'paid','payment_method':'flutterwave','payment_transaction_id':str(tx.get('id') or transaction_id),'payout_status':'pending','updated_at':utc_now()})
+                gross=_money_num(order.get('total_amount')); commission=_money_num(order.get('commission_amount')); platform_fee=_money_num(order.get('platform_fee')); net=max(0,gross-commission-platform_fee)
+                db_insert('koja_market_ledger',{'order_id':order.get('id'),'seller_id':order.get('seller_id'),'buyer_id':uid,'gross_amount':gross,'commission_amount':commission,'platform_fee':platform_fee,'net_amount':net,'currency':order.get('currency') or 'ZMW','status':'pending','created_at':utc_now()})
+                db_insert('koja_market_payment_fees',{'order_id':order.get('id'),'buyer_id':uid,'amount':platform_fee,'currency':order.get('currency') or 'ZMW','fee_type':'platform_service_fee','provider':'flutterwave','reference':tx_ref,'status':'captured','created_at':utc_now()})
+                if str(p.get('product_type') or 'physical')=='physical':
+                    db_insert('koja_market_delivery_jobs',{'order_id':order.get('id'),'customer_id':uid,'delivery_address':order.get('delivery_address'),'delivery_fee':_money_num(order.get('delivery_fee')),'status':'requested','tracking_code':'KMD-'+secrets.token_hex(5).upper(),'created_at':utc_now(),'updated_at':utc_now()})
+                _sync_market_order_to_business(dict(order, status='paid'))
+            flash('Payment verified. Your KOJA Market order is confirmed.','success'); return redirect(url_for('market_my'))
     except Exception: logger.exception('KOJA Market payment verification error')
     flash('Payment was not verified.','warning'); return redirect(url_for('market_my'))
 
@@ -6866,7 +6874,7 @@ def business_dashboard(business_id):
     if not b: abort(404)
     products=db_select('koja_business_products',{'business_id':business_id},limit=200) or []; sales=db_select('koja_business_sales',{'business_id':business_id},limit=200) or []; expenses=db_select('koja_business_expenses',{'business_id':business_id},limit=200) or []
     revenue=sum(float(x.get('total_amount') or 0) for x in sales); costs=sum(float(x.get('amount') or 0) for x in expenses); profit=revenue-costs
-    return render_page('Business Dashboard',r'''<div class="hero"><h1>{{ b.name }}</h1><p>{{ b.category }} · {{ b.location or '' }}</p><div class="actions"><a class="btn" href="{{ url_for('business_products',business_id=b.id) }}">Inventory / POS</a><a class="btn secondary" href="{{ url_for('business_records',business_id=b.id) }}">Accounting</a><a class="btn secondary" href="{{ url_for('business_subscription',business_id=b.id) }}">Subscription</a></div></div><div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(revenue,'ZMW') }}</h2></div><div class="card"><h3>Expenses</h3><h2>{{ money(costs,'ZMW') }}</h2></div><div class="card"><h3>Profit</h3><h2>{{ money(profit,'ZMW') }}</h2></div><div class="card"><h3>Inventory items</h3><h2>{{ products|length }}</h2></div></div><div class="card"><h2>Business modules</h2><p>POS · Inventory · Accounting · Invoices · Customers · Suppliers · Payroll · Online Store · AI Assistant · Payments · Delivery</p></div>''',b=b,products=products,sales=sales,expenses=expenses,revenue=revenue,costs=costs,profit=profit,money=market_money)
+    return render_page('Business Dashboard',r'''<div class="hero"><h1>{{ b.name }}</h1><p>{{ b.category }} · {{ b.location or '' }}</p><div class="actions"><a class="btn" href="{{ url_for('business_products',business_id=b.id) }}">Inventory / POS</a><a class="btn secondary" href="{{ url_for('business_records',business_id=b.id) }}">Accounting</a><a class="btn secondary" href="{{ url_for('business_subscription',business_id=b.id) }}">Subscription</a><a class="btn secondary" href="{{ url_for('business_customers',business_id=b.id) }}">Customers</a><a class="btn secondary" href="{{ url_for('business_suppliers',business_id=b.id) }}">Suppliers</a><a class="btn secondary" href="{{ url_for('business_invoices',business_id=b.id) }}">Invoices</a><a class="btn secondary" href="{{ url_for('business_employees',business_id=b.id) }}">Employees</a><a class="btn secondary" href="{{ url_for('business_store',business_id=b.id) }}">Online Store</a><a class="btn secondary" href="{{ url_for('business_ai',business_id=b.id) }}">AI Assistant</a><a class="btn secondary" href="{{ url_for('business_payments',business_id=b.id) }}">Payments</a><a class="btn secondary" href="{{ url_for('business_delivery',business_id=b.id) }}">Delivery</a></div></div><div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(revenue,'ZMW') }}</h2></div><div class="card"><h3>Expenses</h3><h2>{{ money(costs,'ZMW') }}</h2></div><div class="card"><h3>Profit</h3><h2>{{ money(profit,'ZMW') }}</h2></div><div class="card"><h3>Inventory items</h3><h2>{{ products|length }}</h2></div></div><div class="card"><h2>Business modules</h2><p>POS · Inventory · Accounting · Invoices · Customers · Suppliers · Payroll · Online Store · AI Assistant · Payments · Delivery</p></div>''',b=b,products=products,sales=sales,expenses=expenses,revenue=revenue,costs=costs,profit=profit,money=market_money)
 
 @app.route('/business/<business_id>/products',methods=['GET','POST'])
 @login_required
@@ -6907,6 +6915,209 @@ def business_subscription(business_id):
         flash('Business plan updated.' if not err else 'Subscription table is not installed.','success' if not err else 'danger'); return redirect(url_for('business_subscription',business_id=business_id))
     return render_page('Business Subscription',r'''<div class="hero"><h1>{{ b.name }} — Business Plans</h1><p>Recurring SaaS revenue for KOJA and scalable tools for businesses.</p></div><div class="grid">{% for key,price in plans.items() %}<div class="card"><h2>{{ key|title }}</h2><h2>{{ money(price,'ZMW') }}/month</h2><p>POS, inventory, accounting, invoices, customers, suppliers, payroll, online store, AI, payments and delivery.</p><form method="post"><input type="hidden" name="plan" value="{{ key }}"><button class="btn">Choose {{ key|title }}</button></form></div>{% endfor %}</div><div class="card"><strong>Current:</strong> {{ current.plan if current else 'starter' }}</div>''',b=b,plans=KOJA_BUSINESS_PLANS,current=current,money=market_money)
 
+
+# ============================================================
+# KOJA MARKET V4 — COMMERCE INTEGRATION & PRODUCTION WORKFLOWS
+# ============================================================
+
+def _biz_owner(business_id):
+    u=current_user() or {}; return first_row('koja_businesses', {'id':business_id,'owner_id':u.get('id')})
+
+def _money_num(v):
+    try:return round(float(v or 0),2)
+    except:return 0.0
+
+def _sync_market_order_to_business(order):
+    if not order or str(order.get('status') or '').lower() not in {'paid','completed'}: return
+    product=market_product(order.get('product_id'))
+    if not product:return
+    links=db_select('koja_business_products', {'market_product_id':order.get('product_id')}, limit=20) or []
+    for bp in links:
+        ref='KOJA Market order '+str(order.get('order_number') or order.get('id'))
+        if db_select('koja_business_sales', {'business_id':bp.get('business_id'),'description':ref}, limit=1): continue
+        qty=max(1,int(order.get('quantity') or 1))
+        db_insert('koja_business_sales', {'business_id':bp.get('business_id'),'product_id':bp.get('id'),'quantity':qty,'total_amount':_money_num(order.get('item_amount')),'payment_method':order.get('payment_method') or 'market','status':'paid','description':ref,'created_at':utc_now()})
+        if str(product.get('product_type') or 'physical')=='physical':
+            old=max(0,int(bp.get('stock') or 0)); new=max(0,old-qty)
+            db_update('koja_business_products', {'id':bp.get('id')}, {'stock':new,'updated_at':utc_now()})
+            db_insert('koja_business_stock_movements', {'business_id':bp.get('business_id'),'product_id':bp.get('id'),'movement_type':'market_sale','quantity':-qty,'reference':str(order.get('order_number') or order.get('id')),'created_at':utc_now()})
+
+@app.route('/market/seller/payouts', methods=['GET','POST'])
+@login_required
+def market_seller_payouts():
+    uid=(current_user() or {}).get('id'); seller=market_seller(uid)
+    if not seller:return redirect(url_for('market_seller_register'))
+    if request.method=='POST':
+        amount=_money_num(request.form.get('amount')); destination=clean(request.form.get('destination')); method=clean(request.form.get('method')) or 'mobile_money'
+        if amount<=0 or not destination: flash('Enter a valid payout amount and destination.','danger')
+        else:
+            _,err=db_insert('koja_market_payouts',{'seller_id':seller.get('id'),'user_id':uid,'amount':amount,'currency':'ZMW','method':method,'destination':destination,'status':'requested','created_at':utc_now(),'updated_at':utc_now()})
+            flash('Payout request submitted.' if not err else 'Payout table is not installed.','success' if not err else 'danger')
+        return redirect(url_for('market_seller_payouts'))
+    rows=db_select('koja_market_payouts',{'seller_id':seller.get('id')},order='created_at.desc',limit=100) or []
+    return render_page('Seller Payouts',"""<div class='hero'><h1>Seller Payouts</h1><p>Request payment of available earnings.</p></div><div class='card'><form method='post'><label>Amount (ZMW)</label><input name='amount' type='number' min='1' step='0.01' required><label>Method</label><select name='method'><option value='mobile_money'>Mobile Money</option><option value='bank'>Bank</option></select><label>Destination / account</label><input name='destination' required><button class='btn'>Request Payout</button></form></div><div class='card'><table><tr><th>Date</th><th>Amount</th><th>Method</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{ x.created_at }}</td><td>{{ money(x.amount,'ZMW') }}</td><td>{{ x.method }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan='4'>No payout requests.</td></tr>{% endfor %}</table></div>""",rows=rows,money=market_money)
+
+@app.route('/market/coupons', methods=['GET','POST'])
+@login_required
+def market_coupons():
+    uid=(current_user() or {}).get('id')
+    if request.method=='POST':
+        code=clean(request.form.get('code')).upper(); pct=max(0,min(100,float(request.form.get('percent') or 0))); limit=max(0,int(request.form.get('usage_limit') or 0))
+        _,err=db_insert('koja_market_coupons',{'seller_id':uid,'code':code,'discount_percent':pct,'usage_limit':limit,'active':True,'created_at':utc_now(),'updated_at':utc_now()})
+        flash('Coupon created.' if not err else 'Coupon table is not installed.','success' if not err else 'danger'); return redirect(url_for('market_coupons'))
+    rows=db_select('koja_market_coupons',{'seller_id':uid},order='created_at.desc',limit=100) or []
+    return render_page('Market Coupons',"""<div class='hero'><h1>Coupons & Promotions</h1><p>Create discounts for customers.</p></div><div class='card'><form method='post'><label>Code</label><input name='code' required><label>Discount %</label><input name='percent' type='number' min='1' max='100' step='0.01' required><label>Usage limit</label><input name='usage_limit' type='number' min='0' value='0'><button class='btn'>Create Coupon</button></form></div><div class='card'><table><tr><th>Code</th><th>Discount</th><th>Uses</th></tr>{% for x in rows %}<tr><td>{{ x.code }}</td><td>{{ x.discount_percent }}%</td><td>{{ x.used_count or 0 }} / {{ x.usage_limit or 'unlimited' }}</td></tr>{% else %}<tr><td colspan='3'>No coupons.</td></tr>{% endfor %}</table></div>""",rows=rows)
+
+@app.route('/market/advertising/<ad_id>/event/<event>',methods=['POST'])
+def market_ad_event(ad_id,event):
+    if event not in {'impression','click'}:abort(400)
+    ad=first_row('koja_market_ads',{'id':ad_id})
+    if not ad or str(ad.get('status'))!='active':abort(404)
+    col='impressions' if event=='impression' else 'clicks'
+    db_update('koja_market_ads',{'id':ad_id},{col:int(ad.get(col) or 0)+1,'updated_at':utc_now()})
+    return jsonify(ok=True)
+
+@app.route('/admin/commerce',methods=['GET','POST'])
+@login_required
+def admin_commerce():
+    u=current_user() or {}
+    if not u.get('is_admin'):abort(403)
+    if request.method=='POST':
+        table=clean(request.form.get('table')); rid=clean(request.form.get('id')); status=clean(request.form.get('status'))
+        allowed={'koja_market_seller_subscriptions','koja_market_featured','koja_market_ads','koja_market_payouts','koja_market_payment_fees','koja_business_subscriptions','koja_business_payments'}
+        if table not in allowed:abort(400)
+        db_update(table,{'id':rid},{'status':status,'updated_at':utc_now()}); flash('Commercial record updated.','success'); return redirect(url_for('admin_commerce'))
+    ss=db_select('koja_market_seller_subscriptions',{},order='created_at.desc',limit=100) or []
+    ft=db_select('koja_market_featured',{},order='created_at.desc',limit=100) or []
+    ads=db_select('koja_market_ads',{},order='created_at.desc',limit=100) or []
+    payouts=db_select('koja_market_payouts',{},order='created_at.desc',limit=100) or []
+    bs=db_select('koja_business_subscriptions',{},order='created_at.desc',limit=100) or []
+    orders=db_select('koja_market_orders',{},limit=1000) or []
+    revenue=sum(_money_num(x.get('commission_amount'))+_money_num(x.get('platform_fee')) for x in orders if str(x.get('status')) in {'paid','completed'})
+    adrev=sum(_money_num(x.get('spent')) for x in ads)
+    return render_page('Commerce Admin',"""<div class='hero'><h1>KOJA Commerce Admin</h1><p>Revenue, subscriptions, advertising, payouts and payments.</p></div><div class='grid'><div class='card'><h3>Market fees</h3><h2>{{ money(revenue,'ZMW') }}</h2></div><div class='card'><h3>Advertising spend</h3><h2>{{ money(adrev,'ZMW') }}</h2></div><div class='card'><h3>Orders</h3><h2>{{ orders|length }}</h2></div><div class='card'><h3>Pending payouts</h3><h2>{{ payouts|selectattr('status','equalto','requested')|list|length }}</h2></div></div>{% for title,table,rows in [('Seller subscriptions','koja_market_seller_subscriptions',ss),('Featured','koja_market_featured',ft),('Advertising','koja_market_ads',ads),('Payouts','koja_market_payouts',payouts),('Business subscriptions','koja_business_subscriptions',bs)] %}<div class='card'><h2>{{ title }}</h2>{% for x in rows[:20] %}<form method='post' style='display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--border);padding:8px 0'><input type='hidden' name='table' value='{{ table }}'><input type='hidden' name='id' value='{{ x.id }}'><span style='flex:1'>{{ x.id }} · {{ x.status }}</span><select name='status'><option>{{ x.status }}</option><option>pending</option><option>active</option><option>approved</option><option>rejected</option><option>paid</option><option>expired</option><option>cancelled</option></select><button class='btn'>Update</button></form>{% else %}<p>No records.</p>{% endfor %}</div>{% endfor %}""",ss=ss,ft=ft,ads=ads,payouts=payouts,bs=bs,orders=orders,revenue=revenue,adrev=adrev,money=market_money)
+
+@app.route('/business/<business_id>/customers',methods=['GET','POST'])
+@login_required
+def business_customers(business_id):
+    b=_biz_owner(business_id)
+    if not b:abort(404)
+    if request.method=='POST':
+        _,err=db_insert('koja_business_customers',{'business_id':business_id,'name':clean(request.form.get('name')),'phone':clean(request.form.get('phone')),'email':clean(request.form.get('email')),'address':clean(request.form.get('address')),'notes':clean(request.form.get('notes')),'created_at':utc_now(),'updated_at':utc_now()})
+        flash('Customer saved.' if not err else 'Customer table is not installed.','success' if not err else 'danger'); return redirect(url_for('business_customers',business_id=business_id))
+    rows=db_select('koja_business_customers',{'business_id':business_id},order='created_at.desc',limit=500) or []
+    return render_page('Business Customers',"""<div class='hero'><h1>Customers</h1><p>{{ b.name }}</p></div><div class='card'><form method='post'><label>Name</label><input name='name' required><label>Phone</label><input name='phone'><label>Email</label><input name='email' type='email'><label>Address</label><input name='address'><label>Notes</label><textarea name='notes'></textarea><button class='btn'>Add Customer</button></form></div><div class='card'><table><tr><th>Name</th><th>Phone</th><th>Email</th><th>Address</th></tr>{% for x in rows %}<tr><td>{{ x.name }}</td><td>{{ x.phone }}</td><td>{{ x.email }}</td><td>{{ x.address }}</td></tr>{% else %}<tr><td colspan='4'>No customers.</td></tr>{% endfor %}</table></div>""",b=b,rows=rows)
+
+@app.route('/business/<business_id>/suppliers',methods=['GET','POST'])
+@login_required
+def business_suppliers(business_id):
+    b=_biz_owner(business_id)
+    if not b:abort(404)
+    if request.method=='POST':
+        _,err=db_insert('koja_business_suppliers',{'business_id':business_id,'name':clean(request.form.get('name')),'phone':clean(request.form.get('phone')),'email':clean(request.form.get('email')),'address':clean(request.form.get('address')),'notes':clean(request.form.get('notes')),'created_at':utc_now(),'updated_at':utc_now()})
+        flash('Supplier saved.' if not err else 'Supplier table is not installed.','success' if not err else 'danger'); return redirect(url_for('business_suppliers',business_id=business_id))
+    rows=db_select('koja_business_suppliers',{'business_id':business_id},order='created_at.desc',limit=500) or []
+    return render_page('Business Suppliers',"""<div class='hero'><h1>Suppliers</h1><p>{{ b.name }}</p></div><div class='card'><form method='post'><label>Name</label><input name='name' required><label>Phone</label><input name='phone'><label>Email</label><input name='email' type='email'><label>Address</label><input name='address'><label>Notes</label><textarea name='notes'></textarea><button class='btn'>Add Supplier</button></form></div><div class='card'><table><tr><th>Name</th><th>Phone</th><th>Email</th></tr>{% for x in rows %}<tr><td>{{ x.name }}</td><td>{{ x.phone }}</td><td>{{ x.email }}</td></tr>{% else %}<tr><td colspan='3'>No suppliers.</td></tr>{% endfor %}</table></div>""",b=b,rows=rows)
+
+@app.route('/business/<business_id>/invoices',methods=['GET','POST'])
+@login_required
+def business_invoices(business_id):
+    b=_biz_owner(business_id)
+    if not b:abort(404)
+    customers=db_select('koja_business_customers',{'business_id':business_id},limit=300) or []
+    if request.method=='POST':
+        num=clean(request.form.get('invoice_number')) or ('INV-'+secrets.token_hex(4).upper()); amount=_money_num(request.form.get('amount')); customer=clean(request.form.get('customer_id')) or None
+        row,err=db_insert('koja_business_invoices',{'business_id':business_id,'invoice_number':num,'customer_id':customer,'subtotal':amount,'tax_amount':0,'total_amount':amount,'status':'issued','due_date':clean(request.form.get('due_date')) or None,'notes':clean(request.form.get('notes')),'created_at':utc_now(),'updated_at':utc_now()})
+        if row and not err: db_insert('koja_business_sales',{'business_id':business_id,'customer_id':customer,'invoice_id':row.get('id'),'quantity':1,'total_amount':amount,'payment_method':'invoice','status':'invoiced','description':'Invoice '+num,'created_at':utc_now()})
+        flash('Invoice created.' if not err else 'Invoice table is not installed.','success' if not err else 'danger'); return redirect(url_for('business_invoices',business_id=business_id))
+    rows=db_select('koja_business_invoices',{'business_id':business_id},order='created_at.desc',limit=300) or []
+    return render_page('Business Invoices',"""<div class='hero'><h1>Invoices</h1><p>{{ b.name }}</p></div><div class='card'><form method='post'><label>Invoice number</label><input name='invoice_number'><label>Customer</label><select name='customer_id'><option value=''>Walk-in customer</option>{% for c in customers %}<option value='{{ c.id }}'>{{ c.name }}</option>{% endfor %}</select><label>Amount (ZMW)</label><input name='amount' type='number' min='0' step='0.01' required><label>Due date</label><input name='due_date' type='date'><label>Notes</label><textarea name='notes'></textarea><button class='btn'>Create Invoice</button></form></div><div class='card'><table><tr><th>Invoice</th><th>Total</th><th>Status</th><th>Due</th></tr>{% for x in rows %}<tr><td>{{ x.invoice_number }}</td><td>{{ money(x.total_amount,'ZMW') }}</td><td>{{ x.status }}</td><td>{{ x.due_date }}</td></tr>{% else %}<tr><td colspan='4'>No invoices.</td></tr>{% endfor %}</table></div>""",b=b,rows=rows,customers=customers,money=market_money)
+
+@app.route('/business/<business_id>/employees',methods=['GET','POST'])
+@login_required
+def business_employees(business_id):
+    b=_biz_owner(business_id)
+    if not b:abort(404)
+    if request.method=='POST':
+        _,err=db_insert('koja_business_employees',{'business_id':business_id,'name':clean(request.form.get('name')),'phone':clean(request.form.get('phone')),'email':clean(request.form.get('email')),'role':clean(request.form.get('role')),'salary':_money_num(request.form.get('salary')),'pay_frequency':clean(request.form.get('frequency')) or 'monthly','status':'active','created_at':utc_now(),'updated_at':utc_now()})
+        flash('Employee added.' if not err else 'Employee table is not installed.','success' if not err else 'danger'); return redirect(url_for('business_employees',business_id=business_id))
+    rows=db_select('koja_business_employees',{'business_id':business_id},order='created_at.desc',limit=300) or []
+    return render_page('Business Employees',"""<div class='hero'><h1>Employees & Payroll</h1><p>{{ b.name }}</p></div><div class='card'><form method='post'><label>Name</label><input name='name' required><label>Phone</label><input name='phone'><label>Email</label><input name='email' type='email'><label>Role</label><input name='role'><label>Salary</label><input name='salary' type='number' min='0' step='0.01'><label>Pay frequency</label><select name='frequency'><option>monthly</option><option>weekly</option><option>biweekly</option></select><button class='btn'>Add Employee</button></form></div><div class='card'><table><tr><th>Name</th><th>Role</th><th>Salary</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{ x.name }}</td><td>{{ x.role }}</td><td>{{ money(x.salary,'ZMW') }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan='4'>No employees.</td></tr>{% endfor %}</table><p><a class='btn secondary' href='{{ url_for('business_payroll',business_id=b.id) }}'>Open Payroll</a></p></div>""",b=b,rows=rows,money=market_money)
+
+@app.route('/business/<business_id>/payroll',methods=['GET','POST'])
+@login_required
+def business_payroll(business_id):
+    b=_biz_owner(business_id)
+    if not b:abort(404)
+    employees=db_select('koja_business_employees',{'business_id':business_id,'status':'active'},limit=300) or []
+    if request.method=='POST':
+        eid=clean(request.form.get('employee_id')); emp=first_row('koja_business_employees',{'id':eid,'business_id':business_id})
+        if not emp:abort(400)
+        gross=_money_num(request.form.get('gross')) or _money_num(emp.get('salary')); deductions=_money_num(request.form.get('deductions')); net=max(0,gross-deductions)
+        _,err=db_insert('koja_business_payroll',{'business_id':business_id,'employee_id':eid,'period_start':clean(request.form.get('period_start')),'period_end':clean(request.form.get('period_end')),'gross_pay':gross,'deductions':deductions,'net_pay':net,'status':'pending','created_at':utc_now()})
+        flash('Payroll record created.' if not err else 'Payroll table is not installed.','success' if not err else 'danger'); return redirect(url_for('business_payroll',business_id=business_id))
+    rows=db_select('koja_business_payroll',{'business_id':business_id},order='created_at.desc',limit=300) or []
+    return render_page('Business Payroll',"""<div class='hero'><h1>Payroll</h1><p>{{ b.name }}</p></div><div class='card'><form method='post'><label>Employee</label><select name='employee_id' required>{% for e in employees %}<option value='{{ e.id }}'>{{ e.name }} — {{ money(e.salary,'ZMW') }}</option>{% endfor %}</select><label>Period start</label><input name='period_start' type='date' required><label>Period end</label><input name='period_end' type='date' required><label>Gross pay</label><input name='gross' type='number' min='0' step='0.01'><label>Deductions</label><input name='deductions' type='number' min='0' step='0.01' value='0'><button class='btn'>Create Payroll</button></form></div><div class='card'><table><tr><th>Employee</th><th>Period</th><th>Net</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{ x.employee_id }}</td><td>{{ x.period_start }} → {{ x.period_end }}</td><td>{{ money(x.net_pay,'ZMW') }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan='4'>No payroll records.</td></tr>{% endfor %}</table></div>""",b=b,employees=employees,rows=rows,money=market_money)
+
+@app.route('/business/<business_id>/store',methods=['GET','POST'])
+@login_required
+def business_store(business_id):
+    b=_biz_owner(business_id)
+    if not b:abort(404)
+    current=first_row('koja_business_stores',{'business_id':business_id})
+    if request.method=='POST':
+        slug=clean(request.form.get('slug')).lower().replace(' ','-'); name=clean(request.form.get('store_name')) or b.get('name'); desc=clean(request.form.get('description')); published=bool(request.form.get('published'))
+        payload={'business_id':business_id,'slug':slug,'store_name':name,'description':desc,'published':published,'market_enabled':True,'updated_at':utc_now()}
+        if current:_,err=db_update('koja_business_stores',{'id':current.get('id')},payload)
+        else:_,err=db_insert('koja_business_stores',payload)
+        flash('Online store saved.' if not err else 'Store table is not installed.','success' if not err else 'danger'); return redirect(url_for('business_store',business_id=business_id))
+    return render_page('Business Online Store',"""<div class='hero'><h1>Online Store</h1><p>Publish your catalogue through KOJA Market.</p></div><div class='card'><form method='post'><label>Store name</label><input name='store_name' value='{{ current.store_name if current else b.name }}' required><label>Store slug</label><input name='slug' value='{{ current.slug if current else '' }}' placeholder='my-store' required><label>Description</label><textarea name='description'>{{ current.description if current else '' }}</textarea><label><input type='checkbox' name='published' {% if current and current.published %}checked{% endif %} style='width:auto'> Publish store</label><button class='btn'>Save Store</button></form>{% if current and current.published %}<p><a class='btn secondary' href='{{ url_for('business_store_public',slug=current.slug) }}' target='_blank'>View Public Store</a></p>{% endif %}</div>""",b=b,current=current)
+
+@app.route('/store/<slug>')
+def business_store_public(slug):
+    store=first_row('koja_business_stores',{'slug':slug,'published':True})
+    if not store:abort(404)
+    products=db_select('koja_business_products',{'business_id':store.get('business_id'),'active':True},limit=300) or []
+    return render_page(store.get('store_name') or 'KOJA Store',"""<div class='hero'><h1>{{ store.store_name }}</h1><p>{{ store.description }}</p></div><div class='grid'>{% for p in products %}<div class='card'><h3>{{ p.name }}</h3><p>SKU: {{ p.sku or '—' }}</p><h2>{{ money(p.selling_price,'ZMW') }}</h2><p>Stock: {{ p.stock }}</p></div>{% else %}<div class='card'><p>No products listed.</p></div>{% endfor %}</div>""",store=store,products=products,money=market_money)
+
+@app.route('/business/<business_id>/ai',methods=['GET','POST'])
+@login_required
+def business_ai(business_id):
+    b=_biz_owner(business_id)
+    if not b:abort(404)
+    usage=db_select('koja_business_ai_usage',{'business_id':business_id},order='created_at.desc',limit=20) or []; answer=''
+    if request.method=='POST':
+        prompt=clean(request.form.get('prompt'))
+        if prompt:
+            answer,err=_ai_call(f"Business: {b.get('name')} Category: {b.get('category')}\nUSER: {prompt}",'You are KOJA Business AI. Give practical advice on sales, inventory, pricing, finance, marketing and operations. Never invent business data.',max_output_tokens=1400,timeout=50,preferred_model=None)
+            if answer:db_insert('koja_business_ai_usage',{'business_id':business_id,'user_id':(current_user() or {}).get('id'),'prompt':prompt,'response_summary':answer[:4000],'tokens':0,'created_at':utc_now()})
+            else:flash(_ai_error_message(err),'danger')
+        else:flash('Enter a business question.','danger')
+    return render_page('Business AI Assistant',"""<div class='hero'><h1>Business AI Assistant</h1><p>{{ b.name }} — pricing, inventory, sales, marketing and operations.</p></div><div class='card'><form method='post'><label>Your question</label><textarea name='prompt' rows='5' required placeholder='How can I improve monthly profit?'></textarea><button class='btn'>Ask KOJA AI</button></form>{% if answer %}<hr><div style='white-space:pre-wrap;line-height:1.75'>{{ answer }}</div>{% endif %}</div><div class='card'><h2>Recent AI usage</h2>{% for x in usage %}<p>{{ x.created_at }} — {{ x.prompt }}</p>{% else %}<p>No usage yet.</p>{% endfor %}</div>""",b=b,usage=usage,answer=answer)
+
+@app.route('/business/<business_id>/payments',methods=['GET','POST'])
+@login_required
+def business_payments(business_id):
+    b=_biz_owner(business_id)
+    if not b:abort(404)
+    if request.method=='POST':
+        amount=_money_num(request.form.get('amount')); method=clean(request.form.get('method')) or 'cash'
+        _,err=db_insert('koja_business_payments',{'business_id':business_id,'amount':amount,'currency':'ZMW','method':method,'provider':clean(request.form.get('provider')),'reference':clean(request.form.get('reference')),'status':'completed','created_at':utc_now()})
+        flash('Payment recorded.' if not err else 'Payment table is not installed.','success' if not err else 'danger'); return redirect(url_for('business_payments',business_id=business_id))
+    rows=db_select('koja_business_payments',{'business_id':business_id},order='created_at.desc',limit=300) or []
+    return render_page('Business Payments',"""<div class='hero'><h1>Payments</h1><p>{{ b.name }}</p></div><div class='card'><form method='post'><label>Amount (ZMW)</label><input name='amount' type='number' min='0' step='0.01' required><label>Method</label><select name='method'><option>cash</option><option>mobile_money</option><option>bank</option><option>card</option><option>flutterwave</option></select><label>Provider</label><input name='provider'><label>Reference</label><input name='reference'><button class='btn'>Record Payment</button></form></div><div class='card'><table><tr><th>Date</th><th>Amount</th><th>Method</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{ x.created_at }}</td><td>{{ money(x.amount,'ZMW') }}</td><td>{{ x.method }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan='4'>No payments.</td></tr>{% endfor %}</table></div>""",b=b,rows=rows,money=market_money)
+
+@app.route('/business/<business_id>/delivery',methods=['GET','POST'])
+@login_required
+def business_delivery(business_id):
+    b=_biz_owner(business_id)
+    if not b:abort(404)
+    if request.method=='POST':
+        tracking='KJB-'+secrets.token_hex(5).upper()
+        _,err=db_insert('koja_business_delivery',{'business_id':business_id,'order_reference':clean(request.form.get('order_reference')),'address':clean(request.form.get('address')),'fee':_money_num(request.form.get('fee')),'status':'requested','tracking_code':tracking,'created_at':utc_now(),'updated_at':utc_now()})
+        flash('Delivery requested: '+tracking if not err else 'Business delivery table is not installed.','success' if not err else 'danger'); return redirect(url_for('business_delivery',business_id=business_id))
+    rows=db_select('koja_business_delivery',{'business_id':business_id},order='created_at.desc',limit=300) or []
+    return render_page('Business Delivery',"""<div class='hero'><h1>Business Delivery</h1><p>{{ b.name }}</p></div><div class='card'><form method='post'><label>Order reference</label><input name='order_reference'><label>Delivery address</label><textarea name='address' required></textarea><label>Delivery fee (ZMW)</label><input name='fee' type='number' min='0' step='0.01'><button class='btn'>Request Delivery</button></form></div><div class='card'><table><tr><th>Tracking</th><th>Address</th><th>Fee</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{ x.tracking_code }}</td><td>{{ x.address }}</td><td>{{ money(x.fee,'ZMW') }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan='4'>No deliveries.</td></tr>{% endfor %}</table></div>""",b=b,rows=rows,money=market_money)
 
 # ============================================================
 # LOCAL / RENDER START
