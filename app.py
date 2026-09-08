@@ -827,7 +827,7 @@ footer{text-align:center;color:var(--muted);padding:30px}
 <a href="{{ url_for('public_videos') }}">🎥 Videos</a>
 <a href="{{ url_for('ai_nextgen') }}">✦ AI</a>
 <a href="{{ url_for('communication_nextgen') }}">💬 Connect+</a>
-<a href="{{ url_for('market') }}">🛍️ KOJA Market</a><a href="{{ url_for('marketplace') }}">🛒 Digital Marketplace</a>
+<a href="{{ url_for('koja_market') }}">🛍️ KOJA Market</a><a href="{{ url_for('marketplace') }}">🛒 Digital Marketplace</a>
 <a href="{{ url_for('connect') }}">💬 Communication</a>
 <a href="{{ url_for('professional_communication') }}">👩‍💼 Professional Communication</a>
 <a href="{{ url_for('settings') }}">⚙️ Settings</a>
