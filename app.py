@@ -7,6 +7,9 @@ import logging
 import smtplib
 from email.message import EmailMessage
 import json
+import hashlib
+import hmac
+import base64
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
@@ -105,7 +108,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.08-V6-FULL-MARKET-MEDIA-FLW-V3-AUDIO-FIX2-V52"
+APP_VERSION = "2026.09.08-V6-FULL-MARKET-MEDIA-FLW-V3-AUDIO-WEBHOOK-FIX3-V52"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -694,6 +697,9 @@ def enforce_csrf():
     # navigator.sendBeacon() cannot attach the CSRF header. This endpoint is
     # authenticated and only changes the caller's own professional presence.
     if request.path == "/api/professional/presence":
+        return None
+    # Flutterwave server-to-server webhook is authenticated by its signature, not browser CSRF.
+    if request.path == "/webhook/flutterwave":
         return None
 
     # KOJA Connect WebRTC signaling: keep login + call-participant authorization
@@ -3077,30 +3083,84 @@ def marketplace_buy(product_id):
     flash('Payment checkout could not be started. Please try again.','danger')
     return redirect(url_for('marketplace_product_view',product_id=product_id))
 
+def _flutterwave_verify(transaction_id):
+    if not FLW_SECRET_KEY or not transaction_id:
+        return None
+    try:
+        r=requests.get(
+            FLW_BASE_URL+'/transactions/'+quote(str(transaction_id), safe=''),
+            headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json'},
+            timeout=30
+        )
+        body=json_or_empty(r)
+        tx=(body.get('data') or {}) if isinstance(body,dict) else {}
+        return tx if r.ok else None
+    except Exception:
+        logger.exception('Flutterwave transaction verification error')
+        return None
+
+def _flutterwave_payment_valid(tx, tx_ref, expected_amount, expected_currency):
+    try:
+        paid=float(tx.get('amount') or 0)
+        expected=float(expected_amount or 0)
+    except Exception:
+        return False
+    return bool(
+        tx and str(tx.get('status') or '').lower() == 'successful'
+        and str(tx.get('tx_ref') or tx.get('reference') or '') == str(tx_ref)
+        and str(tx.get('currency') or '').upper() == str(expected_currency or 'ZMW').upper()
+        and paid >= expected
+    )
+
+def _finalize_marketplace_order(order, tx):
+    if not order or not tx: return False
+    tx_ref=str(order.get('payment_reference') or '')
+    if not _flutterwave_payment_valid(tx, tx_ref, order.get('amount'), order.get('currency')): return False
+    if str(order.get('status') or '').lower() == 'paid': return True
+    updated,_=db_update('koja_marketplace_orders',{'id':order.get('id'),'status':'pending'},
+        {'status':'paid','payment_method':'flutterwave','payment_transaction_id':str(tx.get('id') or ''),'updated_at':utc_now()})
+    return bool(updated)
+
+def _finalize_market_order(order, tx):
+    if not order or not tx: return False
+    tx_ref=str(order.get('payment_reference') or '')
+    if not _flutterwave_payment_valid(tx, tx_ref, order.get('total_amount'), order.get('currency')): return False
+    if str(order.get('status') or '').lower() in {'paid','completed'}: return True
+    # Atomic state transition prevents webhook/callback double-finalization.
+    updated,_=db_update('koja_market_orders',{'id':order.get('id'),'status':'pending'},
+        {'status':'paid','payment_method':'flutterwave','payment_transaction_id':str(tx.get('id') or ''),'payout_status':'pending','updated_at':utc_now()})
+    if not updated: return True
+    p=market_product(order.get('product_id'))
+    if p and str(p.get('product_type') or 'physical')=='physical':
+        try:
+            qty=max(1,int(order.get('quantity') or 1)); stock=max(0,int(p.get('stock') or 0)-qty)
+            db_update('koja_market_products',{'id':p.get('id')},{'stock':stock,'updated_at':utc_now()})
+        except Exception: logger.exception('KOJA Market stock finalization error')
+    buyer_id=order.get('buyer_id')
+    gross=_money_num(order.get('total_amount')); commission=_money_num(order.get('commission_amount')); platform_fee=_money_num(order.get('platform_fee')); net=max(0,gross-commission-platform_fee)
+    # Ledger/payment-fee/delivery inserts are performed once after the atomic paid transition.
+    db_insert('koja_market_ledger',{'order_id':order.get('id'),'seller_id':order.get('seller_id'),'buyer_id':buyer_id,'gross_amount':gross,'commission_amount':commission,'platform_fee':platform_fee,'net_amount':net,'currency':order.get('currency') or 'ZMW','status':'pending','created_at':utc_now()})
+    db_insert('koja_market_payment_fees',{'order_id':order.get('id'),'buyer_id':buyer_id,'amount':platform_fee,'currency':order.get('currency') or 'ZMW','fee_type':'platform_service_fee','provider':'flutterwave','reference':tx_ref,'status':'captured','created_at':utc_now()})
+    if p and str(p.get('product_type') or 'physical')=='physical':
+        db_insert('koja_market_delivery_jobs',{'order_id':order.get('id'),'customer_id':buyer_id,'delivery_address':order.get('delivery_address'),'delivery_fee':_money_num(order.get('delivery_fee')),'status':'requested','tracking_code':'KMD-'+secrets.token_hex(5).upper(),'created_at':utc_now(),'updated_at':utc_now()})
+    _sync_market_order_to_business(dict(order,status='paid'))
+    return True
+
 @app.route('/marketplace/payment/callback')
 @login_required
 def marketplace_payment_callback():
-    tx_ref=clean(request.args.get('tx_ref')); transaction_id=clean(request.args.get('transaction_id')); status=clean(request.args.get('status')).lower(); uid=(current_user() or {}).get('id')
-    if not tx_ref or not transaction_id:
-        flash('Payment response was incomplete.','danger'); return redirect(url_for('marketplace_my'))
+    tx_ref=clean(request.args.get('tx_ref')); transaction_id=clean(request.args.get('transaction_id')); uid=(current_user() or {}).get('id')
+    if not tx_ref: flash('Payment reference was missing.','danger'); return redirect(url_for('marketplace_my'))
     order=first_row('koja_marketplace_orders',{'payment_reference':tx_ref,'buyer_id':uid})
-    if not order:
-        flash('Marketplace payment order could not be found.','danger'); return redirect(url_for('marketplace_my'))
-    if not FLW_SECRET_KEY:
-        flash('Payment verification is not configured.','danger'); return redirect(url_for('marketplace_my'))
-    try:
-        r=requests.get(FLW_BASE_URL+'/transactions/'+transaction_id+'/verify',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json'},timeout=30)
-        body=json_or_empty(r); tx=(body.get('data') or {}) if isinstance(body,dict) else {}
-        expected_amount=float(order.get('amount') or 0); paid_amount=float(tx.get('amount') or 0); expected_currency=str(order.get('currency') or 'ZMW').upper(); paid_currency=str(tx.get('currency') or '').upper()
-        valid=(r.ok and tx.get('status')=='successful' and str(tx.get('tx_ref'))==tx_ref and paid_currency==expected_currency and paid_amount>=expected_amount)
-        if valid:
-            db_update('koja_marketplace_orders',{'id':order.get('id')},{'status':'paid','payment_method':'flutterwave','payment_reference':tx_ref,'payment_transaction_id':str(tx.get('id') or transaction_id),'updated_at':utc_now()})
+    if not order: flash('Marketplace payment order could not be found.','danger'); return redirect(url_for('marketplace_my'))
+    if str(order.get('status') or '').lower()=='paid':
+        return redirect(url_for('marketplace_download',product_id=order.get('product_id')))
+    if transaction_id:
+        tx=_flutterwave_verify(transaction_id)
+        if tx and _finalize_marketplace_order(order,tx):
             flash('Payment verified successfully. Your digital product is now available.','success')
             return redirect(url_for('marketplace_download',product_id=order.get('product_id')))
-        db_update('koja_marketplace_orders',{'id':order.get('id')},{'status':'failed' if status in ('failed','cancelled') else 'pending','updated_at':utc_now()})
-    except Exception as exc:
-        logger.exception('Flutterwave verification error: %s',exc)
-    flash('Payment was not verified, so the digital product has not been released.','warning')
+    flash('Payment is still pending. KOJA will confirm it automatically when Flutterwave reports the successful transaction.','info')
     return redirect(url_for('marketplace_my'))
 
 @app.route('/marketplace/cover/<product_id>')
@@ -3415,27 +3475,52 @@ def market_order_create(product_id):
 @login_required
 def market_payment_callback():
     tx_ref=clean(request.args.get('tx_ref')); transaction_id=clean(request.args.get('transaction_id')); uid=(current_user() or {}).get('id')
+    if not tx_ref: flash('Payment reference was missing.','danger'); return redirect(url_for('market_my'))
     order=first_row('koja_market_orders',{'payment_reference':tx_ref,'buyer_id':uid})
     if not order: flash('Market order not found.','danger'); return redirect(url_for('market_my'))
-    if not FLW_SECRET_KEY: flash('Payment verification is not configured.','danger'); return redirect(url_for('market_my'))
-    try:
-        r=requests.get(FLW_BASE_URL+'/transactions/'+transaction_id+'/verify',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json'},timeout=30); body=json_or_empty(r); tx=(body.get('data') or {}) if isinstance(body,dict) else {}
-        expected=float(order.get('total_amount') or 0); paid=float(tx.get('amount') or 0); cur=str(order.get('currency') or 'ZMW').upper(); valid=(r.ok and tx.get('status')=='successful' and str(tx.get('tx_ref'))==tx_ref and str(tx.get('currency') or '').upper()==cur and paid>=expected)
-        if valid:
-            p=market_product(order.get('product_id'))
-            if p and str(p.get('product_type') or 'physical')=='physical':
-                stock=max(0,int(p.get('stock') or 0)-int(order.get('quantity') or 1)); db_update('koja_market_products',{'id':p.get('id')},{'stock':stock,'updated_at':utc_now()})
-            if str(order.get('status') or '') not in {'paid','completed'}:
-                db_update('koja_market_orders',{'id':order.get('id')},{'status':'paid','payment_method':'flutterwave','payment_transaction_id':str(tx.get('id') or transaction_id),'payout_status':'pending','updated_at':utc_now()})
-                gross=_money_num(order.get('total_amount')); commission=_money_num(order.get('commission_amount')); platform_fee=_money_num(order.get('platform_fee')); net=max(0,gross-commission-platform_fee)
-                db_insert('koja_market_ledger',{'order_id':order.get('id'),'seller_id':order.get('seller_id'),'buyer_id':uid,'gross_amount':gross,'commission_amount':commission,'platform_fee':platform_fee,'net_amount':net,'currency':order.get('currency') or 'ZMW','status':'pending','created_at':utc_now()})
-                db_insert('koja_market_payment_fees',{'order_id':order.get('id'),'buyer_id':uid,'amount':platform_fee,'currency':order.get('currency') or 'ZMW','fee_type':'platform_service_fee','provider':'flutterwave','reference':tx_ref,'status':'captured','created_at':utc_now()})
-                if str(p.get('product_type') or 'physical')=='physical':
-                    db_insert('koja_market_delivery_jobs',{'order_id':order.get('id'),'customer_id':uid,'delivery_address':order.get('delivery_address'),'delivery_fee':_money_num(order.get('delivery_fee')),'status':'requested','tracking_code':'KMD-'+secrets.token_hex(5).upper(),'created_at':utc_now(),'updated_at':utc_now()})
-                _sync_market_order_to_business(dict(order, status='paid'))
-            flash('Payment verified. Your KOJA Market order is confirmed.','success'); return redirect(url_for('market_my'))
-    except Exception: logger.exception('KOJA Market payment verification error')
-    flash('Payment was not verified.','warning'); return redirect(url_for('market_my'))
+    if str(order.get('status') or '').lower() in {'paid','completed'}:
+        return redirect(url_for('market_my'))
+    if transaction_id:
+        tx=_flutterwave_verify(transaction_id)
+        if tx and _finalize_market_order(order,tx):
+            flash('Payment verified. Your KOJA Market order is confirmed.','success')
+            return redirect(url_for('market_my'))
+    flash('Payment is still pending. KOJA will confirm it automatically when Flutterwave reports the successful transaction.','info')
+    return redirect(url_for('market_my'))
+
+# Flutterwave V3 webhook: signature-authenticated, server-side re-verification and idempotent finalization.
+@app.route('/webhook/flutterwave', methods=['POST'])
+def flutterwave_webhook():
+    if not FLW_SECRET_HASH:
+        return jsonify({'status':'disabled'}), 503
+    raw=request.get_data(cache=True) or b''
+    signature=clean(request.headers.get('flutterwave-signature'))
+    legacy=clean(request.headers.get('verif-hash'))
+    expected=base64.b64encode(hmac.new(FLW_SECRET_HASH.encode('utf-8'),raw,hashlib.sha256).digest()).decode('utf-8')
+    valid_signature=bool(signature and hmac.compare_digest(expected,signature)) or bool(legacy and hmac.compare_digest(legacy,FLW_SECRET_HASH))
+    if not valid_signature:
+        return jsonify({'status':'unauthorized'}),401
+    payload=request.get_json(silent=True) or {}
+    data=payload.get('data') or {}
+    tx_ref=clean(data.get('tx_ref') or data.get('reference'))
+    transaction_id=clean(data.get('id') or payload.get('id'))
+    if not tx_ref or not transaction_id:
+        return jsonify({'status':'ignored','reason':'missing_reference_or_transaction_id'}),200
+    tx=_flutterwave_verify(transaction_id)
+    if not tx:
+        return jsonify({'status':'pending','reason':'verification_unavailable'}),200
+    if not _flutterwave_payment_valid(tx,tx_ref,tx.get('amount'),tx.get('currency')):
+        return jsonify({'status':'ignored','reason':'transaction_not_successful'}),200
+    results=[]
+    market_order=first_row('koja_market_orders',{'payment_reference':tx_ref})
+    if market_order:
+        results.append('market:'+('finalized' if _finalize_market_order(market_order,tx) else 'already_finalized'))
+    marketplace_order=first_row('koja_marketplace_orders',{'payment_reference':tx_ref})
+    if marketplace_order:
+        results.append('digital:'+('finalized' if _finalize_marketplace_order(marketplace_order,tx) else 'already_finalized'))
+    if not results:
+        return jsonify({'status':'ignored','reason':'unknown_reference'}),200
+    return jsonify({'status':'ok','processed':results}),200
 
 @app.route('/market/sell',methods=['GET','POST'])
 @login_required
