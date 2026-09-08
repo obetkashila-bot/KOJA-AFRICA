@@ -109,7 +109,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.08-V6-FULL-MARKET-MEDIA-FLW-V3-AUDIO-WEBHOOK-FIX7-V52"
+APP_VERSION = "2026.09.08-V6-FULL-MARKET-MEDIA-FLW-V3-AUDIO-WEBHOOK-FIX9-V52"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -1009,6 +1009,19 @@ def home():
 <div class="card"><h3>🛒 Marketplace</h3><p>Discover digital learning and business resources.</p><a class="btn" href="{{ url_for('marketplace') }}">Marketplace</a></div>
 </div>
 """)
+
+@app.route("/service-worker.js")
+def service_worker():
+    # Keep the browser service-worker request valid without changing KOJA page behavior.
+    script = """
+self.addEventListener('install', function(event) { self.skipWaiting(); });
+self.addEventListener('activate', function(event) { event.waitUntil(self.clients.claim()); });
+self.addEventListener('fetch', function(event) {
+  if (event.request.method !== 'GET') return;
+  event.respondWith(fetch(event.request).catch(function() { return new Response('', {status: 503}); }));
+});
+"""
+    return Response(script, mimetype='application/javascript', headers={'Cache-Control':'no-store'})
 
 @app.route("/health")
 def health():
