@@ -110,7 +110,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.08-V6-FULL-MARKET-MEDIA-FLW-V3-AUDIO-WEBHOOK-FIX11-V52"
+APP_VERSION = "2026.09.08-V7-K100M-MONETIZATION-V52"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -3638,7 +3638,8 @@ def flutterwave_webhook():
         return jsonify({'status':'ignored','reason':'reference_mismatch'}),200
     market_order=first_row('koja_market_orders',{'payment_reference':tx_ref})
     marketplace_order=first_row('koja_marketplace_orders',{'payment_reference':tx_ref})
-    if not market_order and not marketplace_order:
+    monetization_order=_mono_order_for_ref(tx_ref)
+    if not market_order and not marketplace_order and not monetization_order:
         logger.warning('Flutterwave webhook unknown reference tx_ref=%s',tx_ref)
         return jsonify({'status':'ignored','reason':'unknown_reference'}),200
     results=[]
@@ -3649,6 +3650,10 @@ def flutterwave_webhook():
     if marketplace_order:
         ok=_finalize_marketplace_order(marketplace_order,tx)
         logger.info('KOJA Digital finalization tx_ref=%s order=%s result=%s',tx_ref,marketplace_order.get('id'),ok)
+    if monetization_order:
+        ok=_finalize_monetization(monetization_order,tx)
+        logger.info('KOJA monetization finalization tx_ref=%s order=%s result=%s',tx_ref,monetization_order.get('id'),ok)
+        results.append('monetization:'+('finalized_or_paid' if ok else 'failed'))
         results.append('digital:'+('finalized_or_paid' if ok else 'failed'))
     return jsonify({'status':'ok','processed':results}),200
 
@@ -7365,6 +7370,226 @@ def business_delivery(business_id):
         flash('Delivery requested: '+tracking if not err else 'Business delivery table is not installed.','success' if not err else 'danger'); return redirect(url_for('business_delivery',business_id=business_id))
     rows=db_select('koja_business_delivery',{'business_id':business_id},order='created_at.desc',limit=300) or []
     return render_page('Business Delivery',"""<div class='hero'><h1>Business Delivery</h1><p>{{ b.name }}</p></div><div class='card'><form method='post'><label>Order reference</label><input name='order_reference'><label>Delivery address</label><textarea name='address' required></textarea><label>Delivery fee (ZMW)</label><input name='fee' type='number' min='0' step='0.01'><button class='btn'>Request Delivery</button></form></div><div class='card'><table><tr><th>Tracking</th><th>Address</th><th>Fee</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{ x.tracking_code }}</td><td>{{ x.address }}</td><td>{{ money(x.fee,'ZMW') }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan='4'>No deliveries.</td></tr>{% endfor %}</table></div>""",b=b,rows=rows,money=market_money)
+
+
+# ============================================================
+# KOJA V7 — K100M MONETIZATION ENGINE
+# ============================================================
+def _money_value(v):
+    try: return round(float(v or 0),2)
+    except Exception: return 0.0
+
+def _mono_order_for_ref(tx_ref):
+    return first_row('koja_monetization_orders', {'payment_reference': tx_ref})
+
+def _mono_create_checkout(user, order, network, phone):
+    if not FLW_SECRET_KEY: return None, 'Flutterwave is not configured.'
+    email=clean(user.get('email')).lower()
+    if not email: return None, 'Your account needs an email address before payment.'
+    if network not in ('MTN','AIRTEL','ZAMTEL') or not phone: return None, 'Select MTN, Airtel or Zamtel and enter the mobile-money number.'
+    tx_ref='KOJA-MONO-'+uuid.uuid4().hex[:24]
+    _,err=db_update('koja_monetization_orders',{'id':order.get('id')},{'payment_reference':tx_ref,'updated_at':utc_now()})
+    if err: return None, 'Could not save payment reference.'
+    payload={'tx_ref':tx_ref,'amount':int(round(_money_value(order.get('amount')))),'currency':'ZMW','email':email,'fullname':first_nonempty(user.get('name'),user.get('full_name'),email),'phone_number':phone,'network':network,'order_id':str(order.get('id') or ''),'redirect_url':url_for('monetization_payment_callback',_external=True,tx_ref=tx_ref),'meta':{'koja_monetization_order_id':str(order.get('id') or ''),'type':order.get('order_type')}}
+    try:
+        r=requests.post(FLW_BASE_URL+'/charges?type=mobile_money_zambia',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json'},json=payload,timeout=30); body=json_or_empty(r)
+        redirect_url=((body.get('meta') or {}).get('authorization') or {}).get('redirect') if isinstance(body,dict) else None
+        if r.ok and str(body.get('status') or '').lower()=='success' and redirect_url: return redirect_url,None
+        logger.error('KOJA monetization checkout failed: %s %s',r.status_code,str(body)[:1200])
+    except Exception: logger.exception('KOJA monetization checkout error')
+    return None,'Checkout could not be started.'
+
+def _finalize_monetization(order, tx):
+    if not order or not tx: return False
+    status=str(tx.get('status') or '').lower()
+    if status not in ('successful','completed'): return False
+    if str(tx.get('currency') or '').upper()!='ZMW': return False
+    if abs(_money_value(tx.get('amount'))-_money_value(order.get('amount'))) > 0.01: return False
+    if str(order.get('status') or '').lower() in ('paid','completed'): return True
+    oid=order.get('id'); typ=clean(order.get('order_type')); uid=order.get('user_id'); target=clean(order.get('target_id'))
+    now=utc_now()
+    if typ=='seller_plan':
+        seller=first_row('koja_market_sellers',{'user_id':uid})
+        if not seller: return False
+        plan=clean(order.get('plan')) or 'pro'
+        existing=first_row('koja_market_seller_subscriptions',{'seller_id':seller.get('id')})
+        payload={'seller_id':seller.get('id'),'user_id':uid,'plan':plan,'monthly_price':_money_value(order.get('amount')),'status':'active','started_at':now,'expires_at':(datetime.now(timezone.utc)+timedelta(days=30)).isoformat(),'updated_at':now}
+        if existing: db_update('koja_market_seller_subscriptions',{'id':existing.get('id')},payload)
+        else: db_insert('koja_market_seller_subscriptions',payload)
+    elif typ in ('boost','featured'):
+        product=market_product(target) or marketplace_product(target)
+        if not product: return False
+        seller_id=product.get('seller_id')
+        if typ=='featured':
+            days=int(order.get('days') or 7)
+            db_insert('koja_market_featured',{'product_id':target,'seller_id':seller_id,'days':days,'price':_money_value(order.get('amount')),'status':'active','starts_at':now,'ends_at':(datetime.now(timezone.utc)+timedelta(days=days)).isoformat(),'created_at':now})
+        else:
+            db_insert('koja_monetization_events',{'user_id':uid,'event_type':'boost_active','target_id':target,'amount':_money_value(order.get('amount')),'created_at':now})
+    elif typ=='advertising':
+        days=max(1,int(order.get('days') or 7))
+        db_insert('koja_market_ads',{'advertiser_id':uid,'title':order.get('title') or 'KOJA Advertisement','target_url':order.get('target_url') or '/market','placement':order.get('placement') or 'market','budget':_money_value(order.get('amount')),'spent':0,'status':'active','starts_at':now,'ends_at':(datetime.now(timezone.utc)+timedelta(days=days)).isoformat(),'created_at':now,'updated_at':now})
+    db_update('koja_monetization_orders',{'id':oid},{'status':'paid','payment_transaction_id':str(tx.get('id') or ''),'paid_at':now,'updated_at':now})
+    db_insert('koja_monetization_ledger',{'order_id':oid,'user_id':uid,'order_type':typ,'gross_amount':_money_value(order.get('amount')),'platform_revenue':_money_value(order.get('amount')),'seller_payout':0,'currency':'ZMW','status':'posted','created_at':now})
+    return True
+
+@app.route('/market/monetize')
+@login_required
+def monetization_dashboard():
+    user=current_user() or {}; uid=user.get('id')
+    seller=first_row('koja_market_sellers',{'user_id':uid})
+    subs=first_row('koja_market_seller_subscriptions',{'user_id':uid}) if seller else None
+    orders=db_select('koja_monetization_orders',{'user_id':uid},order='created_at.desc',limit=50) or []
+    return render_page('KOJA Monetization',r'''<div class="hero"><h1>🚀 KOJA Monetization</h1><p>Turn your store, products, audience and business into revenue.</p></div><div class="grid">
+<div class="card"><h2>Seller Plans</h2><p>Starter K99 · Pro K299 · Business K999/month.</p><form method="post" action="{{ url_for('monetization_buy_plan') }}"><select name="plan"><option value="starter">Starter — K99/month</option><option value="pro">Pro — K299/month</option><option value="business">Business — K999/month</option></select><select name="network" required><option value="">Mobile-money network</option><option>MTN</option><option>AIRTEL</option><option>ZAMTEL</option></select><input name="phone" value="{{ user.phone or '' }}" required placeholder="Mobile-money phone"><button class="btn">Subscribe</button></form>{% if subs %}<p class="small">Current plan: <b>{{ subs.plan }}</b> · {{ subs.status }}</p>{% endif %}</div>
+<div class="card"><h2>🚀 Boost</h2><form method="post" action="{{ url_for('monetization_buy_boost') }}"><input name="product_id" placeholder="Product ID" required><input name="amount" type="number" min="10" value="50"><select name="network" required><option value="">Network</option><option>MTN</option><option>AIRTEL</option><option>ZAMTEL</option></select><input name="phone" value="{{ user.phone or '' }}" required><button class="btn">Boost Product</button></form></div>
+<div class="card"><h2>⭐ Featured</h2><form method="post" action="{{ url_for('monetization_buy_featured') }}"><input name="product_id" placeholder="Product ID" required><select name="days"><option value="7">7 days — K150</option><option value="14">14 days — K250</option><option value="30">30 days — K450</option></select><select name="network" required><option value="">Network</option><option>MTN</option><option>AIRTEL</option><option>ZAMTEL</option></select><input name="phone" value="{{ user.phone or '' }}" required><button class="btn">Feature Product</button></form></div>
+<div class="card"><h2>📣 Advertising</h2><form method="post" action="{{ url_for('monetization_buy_ad') }}"><input name="title" placeholder="Ad title" required><input name="target_url" placeholder="Destination URL"><input name="amount" type="number" min="50" value="100"><input name="days" type="number" min="1" value="7"><select name="network" required><option value="">Network</option><option>MTN</option><option>AIRTEL</option><option>ZAMTEL</option></select><input name="phone" value="{{ user.phone or '' }}" required><button class="btn">Buy Advertising</button></form></div></div>
+<div class="card"><h2>Payment History</h2><table><tr><th>Date</th><th>Type</th><th>Amount</th><th>Status</th></tr>{% for x in orders %}<tr><td>{{ x.created_at }}</td><td>{{ x.order_type }}</td><td>{{ money(x.amount,'ZMW') }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="4">No monetization payments yet.</td></tr>{% endfor %}</table></div>''',user=user,subs=subs,orders=orders,money=market_money)
+
+def _mono_order(user, typ, amount, target_id=None, **extra):
+    payload={'user_id':user.get('id'),'order_type':typ,'target_id':target_id,'amount':_money_value(amount),'currency':'ZMW','status':'pending','created_at':utc_now(),'updated_at':utc_now()}; payload.update(extra)
+    return db_insert('koja_monetization_orders',payload)
+
+def _mono_start(typ, amount, target_id=None, **extra):
+    user=current_user() or {}; order,err=_mono_order(user,typ,amount,target_id,**extra)
+    if err or not order: flash('Monetization order could not be created. Run KOJA_V7_MONETIZATION.sql in Supabase.','danger'); return redirect(url_for('monetization_dashboard'))
+    url,msg=_mono_create_checkout(user,order,clean(request.form.get('network')).upper(),clean(request.form.get('phone')) or clean(user.get('phone')))
+    if url: return redirect(url)
+    flash(msg or 'Payment could not be started.','danger'); return redirect(url_for('monetization_dashboard'))
+
+@app.route('/market/monetize/plan',methods=['POST'])
+@login_required
+def monetization_buy_plan():
+    plans={'starter':99,'pro':299,'business':999}; plan=clean(request.form.get('plan')).lower(); return _mono_start('seller_plan',plans.get(plan,99),plan=plan)
+
+@app.route('/market/monetize/boost',methods=['POST'])
+@login_required
+def monetization_buy_boost():
+    amount=max(10,_money_value(request.form.get('amount'))); return _mono_start('boost',amount,clean(request.form.get('product_id')))
+
+@app.route('/market/monetize/featured',methods=['POST'])
+@login_required
+def monetization_buy_featured():
+    days=int(request.form.get('days') or 7); prices={7:150,14:250,30:450}; return _mono_start('featured',prices.get(days,150),clean(request.form.get('product_id')),days=days)
+
+@app.route('/market/monetize/ad',methods=['POST'])
+@login_required
+def monetization_buy_ad():
+    amount=max(50,_money_value(request.form.get('amount'))); days=max(1,int(request.form.get('days') or 7)); return _mono_start('advertising',amount,title=clean(request.form.get('title')),target_url=clean(request.form.get('target_url')),days=days)
+
+@app.route('/market/monetize/callback')
+@login_required
+def monetization_payment_callback():
+    tx_ref=clean(request.args.get('tx_ref') or request.args.get('reference')); tid=clean(request.args.get('transaction_id') or request.args.get('id')); tx=None
+    if tid: tx=_flutterwave_verify(tid,tx_ref)
+    if tx and not tx_ref: tx_ref=clean(tx.get('tx_ref') or tx.get('reference'))
+    order=_mono_order_for_ref(tx_ref) if tx_ref else None
+    if order and str(order.get('user_id'))==str((current_user() or {}).get('id')) and tx and _finalize_monetization(order,tx): flash('Payment verified and monetization feature activated.','success')
+    else: flash('Payment is pending. KOJA will confirm it automatically from Flutterwave.','info')
+    return redirect(url_for('monetization_dashboard'))
+
+@app.route('/admin/monetization')
+@admin_required
+def admin_monetization():
+    rows=db_select('koja_monetization_ledger',{},order='created_at.desc',limit=500) or []
+    gross=sum(_money_value(x.get('gross_amount')) for x in rows); revenue=sum(_money_value(x.get('platform_revenue')) for x in rows)
+    pending=db_select('koja_payout_requests',{'status':'pending'},limit=200) or []
+    return render_page('Monetization Admin',r'''<div class="hero"><h1>💰 KOJA Revenue Control</h1><p>Platform revenue and payout requests.</p></div><div class="grid"><div class="card"><h2>Gross</h2><div style="font-size:32px;font-weight:800">{{ money(gross,'ZMW') }}</div></div><div class="card"><h2>KOJA Revenue</h2><div style="font-size:32px;font-weight:800">{{ money(revenue,'ZMW') }}</div></div><div class="card"><h2>Pending Payouts</h2><div style="font-size:32px;font-weight:800">{{ pending|length }}</div></div></div><div class="card"><h2>Revenue Ledger</h2><table><tr><th>Date</th><th>Type</th><th>Gross</th><th>KOJA</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{ x.created_at }}</td><td>{{ x.order_type }}</td><td>{{ money(x.gross_amount,'ZMW') }}</td><td>{{ money(x.platform_revenue,'ZMW') }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="5">No revenue yet.</td></tr>{% endfor %}</table></div>''',rows=rows,gross=gross,revenue=revenue,pending=pending,money=market_money)
+
+@app.route('/market/wallet')
+@login_required
+def seller_wallet():
+    uid=(current_user() or {}).get('id'); rows=db_select('koja_market_orders',{'seller_id':uid,'status':'eq.paid'},limit=500) or []
+    earned=sum(_money_value(x.get('seller_amount')) for x in rows); pending=db_select('koja_payout_requests',{'user_id':uid,'status':'pending'},limit=50) or []
+    return render_page('Seller Wallet',r'''<div class="hero"><h1>💳 Seller Wallet</h1><p>Marketplace earnings after KOJA commission.</p></div><div class="grid"><div class="card"><h2>Available earnings</h2><div style="font-size:34px;font-weight:800">{{ money(earned,'ZMW') }}</div></div><div class="card"><h2>Request payout</h2><form method="post" action="{{ url_for('seller_payout_request') }}"><input name="amount" type="number" min="10" step="0.01" max="{{ earned }}" required placeholder="Amount ZMW"><input name="phone" value="{{ user.phone or '' }}" required placeholder="Mobile-money number"><button class="btn">Request Payout</button></form></div></div><div class="card"><h2>Pending requests</h2>{% for x in pending %}<p>{{ money(x.amount,'ZMW') }} · {{ x.status }} · {{ x.created_at }}</p>{% else %}<p>No pending payout requests.</p>{% endfor %}</div>''',earned=earned,pending=pending,user=current_user() or {},money=market_money)
+
+@app.route('/market/wallet/payout',methods=['POST'])
+@login_required
+def seller_payout_request():
+    user=current_user() or {}; amount=_money_value(request.form.get('amount')); phone=clean(request.form.get('phone')); uid=user.get('id')
+    if amount<10 or not phone: flash('Enter a valid payout amount and mobile-money number.','warning'); return redirect(url_for('seller_wallet'))
+    _,err=db_insert('koja_payout_requests',{'user_id':uid,'amount':amount,'currency':'ZMW','phone':phone,'status':'pending','created_at':utc_now(),'updated_at':utc_now()})
+    flash('Payout request submitted for admin review.' if not err else 'Payout table is not installed. Run KOJA_V7_MONETIZATION.sql.','success' if not err else 'danger'); return redirect(url_for('seller_wallet'))
+
+
+
+# ============================================================
+# KOJA V7.1 — GROWTH, VERIFICATION, REFERRALS & AI MONETIZATION
+# ============================================================
+
+@app.route('/market/seller/verification', methods=['GET','POST'])
+@login_required
+def seller_verification():
+    uid=(current_user() or {}).get('id')
+    if request.method=='POST':
+        payload={'user_id':uid,'legal_name':clean(request.form.get('legal_name')),'phone':clean(request.form.get('phone')),
+                 'document_type':clean(request.form.get('document_type')),'document_number':clean(request.form.get('document_number')),
+                 'status':'pending','updated_at':utc_now()}
+        existing=first_row('koja_seller_verifications',{'user_id':uid})
+        if existing: _,err=db_update('koja_seller_verifications',{'id':existing.get('id')},payload)
+        else: _,err=db_insert('koja_seller_verifications',dict(payload,created_at=utc_now()))
+        flash('Verification submitted for admin review.' if not err else 'Verification table is not installed. Run the V7 SQL.','success' if not err else 'danger')
+        return redirect(url_for('seller_verification'))
+    row=first_row('koja_seller_verifications',{'user_id':uid})
+    return render_page('Seller Verification',r'''<div class="hero"><h1>✓ Seller Verification</h1><p>Build buyer trust and unlock verified-seller status.</p></div><div class="card"><form method="post"><input name="legal_name" value="{{ row.legal_name if row else '' }}" placeholder="Legal / business name" required><select name="document_type"><option value="NRC">NRC</option><option value="passport">Passport</option><option value="business_registration">Business registration</option></select><input name="document_number" value="{{ row.document_number if row else '' }}" placeholder="Document number" required><input name="phone" value="{{ row.phone if row else '' }}" placeholder="Phone" required><button class="btn">Submit verification</button></form>{% if row %}<p>Status: <strong>{{ row.status }}</strong></p>{% endif %}</div>''',row=row)
+
+@app.route('/referrals')
+@login_required
+def referrals():
+    uid=(current_user() or {}).get('id'); code=first_row('koja_referrals',{'referrer_id':uid,'referred_user_id':None})
+    if not code:
+        ref='KOJA-'+secrets.token_hex(4).upper(); db_insert('koja_referrals',{'referrer_id':uid,'code':ref,'status':'active','created_at':utc_now()}); code=first_row('koja_referrals',{'referrer_id':uid,'code':ref})
+    rows=db_select('koja_referrals',{'referrer_id':uid},order='created_at.desc',limit=100) or []
+    rewards=sum(_money_value(x.get('reward_amount')) for x in rows)
+    return render_page('KOJA Referrals',r'''<div class="hero"><h1>🎁 KOJA Referrals</h1><p>Invite buyers and sellers and earn when qualifying activity is completed.</p></div><div class="card"><h2>Your referral code</h2><div style="font-size:28px;font-weight:800">{{ code.code if code else '—' }}</div><p>Share this code with new KOJA users.</p></div><div class="card"><h2>Rewards</h2><p>{{ money(rewards,'ZMW') }}</p><table><tr><th>Date</th><th>Status</th><th>Reward</th></tr>{% for x in rows %}<tr><td>{{ x.created_at }}</td><td>{{ x.status }}</td><td>{{ money(x.reward_amount,'ZMW') }}</td></tr>{% else %}<tr><td colspan="3">No referral activity yet.</td></tr>{% endfor %}</table></div>''',code=code,rows=rows,rewards=rewards,money=market_money)
+
+@app.route('/ai/plan', methods=['GET','POST'])
+@login_required
+def ai_plan():
+    uid=(current_user() or {}).get('id'); plans={'free':0,'plus':99,'pro':299,'business':999}
+    if request.method=='POST':
+        plan=clean(request.form.get('plan')).lower()
+        if plan not in plans: flash('Invalid AI plan.','danger'); return redirect(url_for('ai_plan'))
+        existing=first_row('koja_ai_subscriptions',{'user_id':uid})
+        payload={'user_id':uid,'plan':plan,'monthly_price':plans[plan],'status':'active' if plan=='free' else 'pending','updated_at':utc_now()}
+        if existing: db_update('koja_ai_subscriptions',{'id':existing.get('id')},payload)
+        else: db_insert('koja_ai_subscriptions',dict(payload,created_at=utc_now()))
+        flash('AI plan updated.' if plan=='free' else 'AI upgrade request created. Payment integration is required before activation.','success' if plan=='free' else 'info')
+        return redirect(url_for('ai_plan'))
+    current=first_row('koja_ai_subscriptions',{'user_id':uid})
+    return render_page('KOJA AI Plans',r'''<div class="hero"><h1>🧠 KOJA AI Plans</h1><p>Free AI for everyone, with premium capacity for power users and businesses.</p></div><div class="grid">{% for key,price in plans.items() %}<div class="card"><h2>{{ key|title }}</h2><p style="font-size:28px;font-weight:800">{{ money(price,'ZMW') }}<small>/month</small></p><form method="post"><input type="hidden" name="plan" value="{{ key }}"><button class="btn">Choose {{ key|title }}</button></form></div>{% endfor %}</div><div class="card"><strong>Current plan:</strong> {{ current.plan if current else 'free' }}</div>''',plans=plans,current=current,money=market_money)
+
+@app.route('/admin/growth')
+@admin_required
+def admin_growth():
+    ver=db_select('koja_seller_verifications',{},order='created_at.desc',limit=100) or []
+    refs=db_select('koja_referrals',{},order='created_at.desc',limit=100) or []
+    ai=db_select('koja_ai_subscriptions',{},order='created_at.desc',limit=100) or []
+    return render_page('Growth Admin',r'''<div class="hero"><h1>📈 KOJA Growth Control</h1><p>Seller verification, referrals and AI subscriptions.</p></div><div class="grid"><div class="card"><h2>Pending verification</h2><div style="font-size:32px;font-weight:800">{{ ver|selectattr('status','equalto','pending')|list|length }}</div></div><div class="card"><h2>Referrals</h2><div style="font-size:32px;font-weight:800">{{ refs|length }}</div></div><div class="card"><h2>AI subscriptions</h2><div style="font-size:32px;font-weight:800">{{ ai|length }}</div></div></div><div class="card"><h2>Seller verification</h2>{% for x in ver[:30] %}<form method="post" action="{{ url_for('admin_growth_update') }}" style="padding:8px 0;border-bottom:1px solid var(--border)"><input type="hidden" name="table" value="koja_seller_verifications"><input type="hidden" name="id" value="{{ x.id }}"><span>{{ x.legal_name }} · {{ x.status }}</span><select name="status"><option>pending</option><option>approved</option><option>rejected</option></select><button class="btn">Update</button></form>{% else %}<p>No verification records.</p>{% endfor %}</div>''',ver=ver,refs=refs,ai=ai)
+
+@app.route('/admin/growth/update', methods=['POST'])
+@admin_required
+def admin_growth_update():
+    table=clean(request.form.get('table')); rid=clean(request.form.get('id')); status=clean(request.form.get('status'))
+    if table not in {'koja_seller_verifications','koja_ai_subscriptions'} or status not in {'pending','active','approved','rejected','cancelled'}: flash('Invalid update.','danger')
+    else: db_update(table,{'id':rid},{'status':status,'updated_at':utc_now()}); flash('Growth record updated.','success')
+    return redirect(url_for('admin_growth'))
+
+@app.route('/admin/payments/reconcile', methods=['POST'])
+@admin_required
+def admin_payment_reconcile():
+    refs=db_select('koja_market_orders',{'status':'pending'},order='created_at.asc',limit=100) or []
+    checked=0; finalized=0
+    for order in refs:
+        txref=clean(order.get('payment_reference'))
+        if not txref: continue
+        checked+=1; tx=_flutterwave_verify(tx_ref=txref)
+        if tx:
+            verified_ref=clean(tx.get('tx_ref') or tx.get('txRef') or tx.get('reference'))
+            market_order=first_row('koja_market_orders',{'payment_reference':verified_ref or txref})
+            if market_order and _finalize_market_order(market_order,tx): finalized+=1
+    flash(f'Payment reconciliation checked {checked} pending orders; finalized {finalized}.','success')
+    return redirect(url_for('admin_monetization'))
 
 # ============================================================
 # LOCAL / RENDER START
