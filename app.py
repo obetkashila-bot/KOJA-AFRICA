@@ -38,7 +38,7 @@ except Exception:
     DocxDocument = None
 
 # ============================================================
-# KOJA AFRICA
+# KOJA AFRICA V8 — BUSINESS / POS REVENUE ENGINE
 # Knowledge • Questions • Answers
 #
 # Complete single-file Flask application
@@ -3572,26 +3572,39 @@ def market_order_create(product_id):
 @app.route('/market/payment/callback')
 @login_required
 def market_payment_callback():
-    tx_ref=clean(request.args.get('tx_ref') or request.args.get('reference')); transaction_id=clean(request.args.get('transaction_id') or request.args.get('id')); resp_raw=clean(request.args.get('resp'))
+    tx_ref=clean(request.args.get('tx_ref') or request.args.get('reference'))
+    transaction_id=clean(request.args.get('transaction_id') or request.args.get('id'))
+    # Flutterwave V3 may return the full transaction response in `resp`, with camelCase fields.
+    resp_raw=clean(request.args.get('resp'))
     if resp_raw:
         try:
-            resp_obj=json.loads(resp_raw); resp_data=(resp_obj.get('data') or {}) if isinstance(resp_obj,dict) else {}
-            tx_ref=tx_ref or clean(resp_data.get('tx_ref') or resp_data.get('txRef') or resp_data.get('reference')); transaction_id=transaction_id or clean(resp_data.get('id') or resp_data.get('transaction_id'))
-        except Exception: logger.warning('Flutterwave callback resp could not be parsed')
-    uid=(current_user() or {}).get('id'); tx=None
+            resp_obj=json.loads(resp_raw)
+            resp_data=(resp_obj.get('data') or {}) if isinstance(resp_obj,dict) else {}
+            tx_ref=tx_ref or clean(resp_data.get('tx_ref') or resp_data.get('txRef') or resp_data.get('reference'))
+            transaction_id=transaction_id or clean(resp_data.get('id') or resp_data.get('transaction_id'))
+        except Exception:
+            logger.warning('Flutterwave callback resp could not be parsed')
+    uid=(current_user() or {}).get('id')
+    tx=None
+    # Verify the transaction server-side and recover tx_ref from the verified record when needed.
     if transaction_id:
         tx=_flutterwave_verify(transaction_id, tx_ref)
-        if tx and not tx_ref: tx_ref=clean(tx.get('tx_ref') or tx.get('txRef') or tx.get('reference'))
-    if not tx_ref: flash('Payment reference was missing. Check My Orders; Flutterwave webhook confirmation may still arrive.','warning'); return redirect(url_for('market_my'))
-    orders=db_select('koja_market_orders',{'payment_reference':tx_ref,'buyer_id':uid},order='created_at.asc',limit=100) or []
-    if not orders: flash('Market order not found.','danger'); return redirect(url_for('market_my'))
-    if tx is None and transaction_id: tx=_flutterwave_verify(transaction_id, tx_ref)
-    if tx:
-        finalized=0
-        for order in orders:
-            if _finalize_market_order(order,tx): finalized+=1
-        if finalized: flash(f'Payment verified. {finalized} KOJA Market order(s) confirmed.','success'); return redirect(url_for('market_my'))
-    flash('Payment is still pending. KOJA will confirm it automatically when Flutterwave reports the successful transaction.','info'); return redirect(url_for('market_my'))
+        if tx and not tx_ref:
+            tx_ref=clean(tx.get('tx_ref') or tx.get('txRef') or tx.get('reference'))
+    if not tx_ref:
+        flash('Payment reference was missing. Please return to KOJA and check My Orders; the payment will be confirmed from the Flutterwave webhook if it completed.','warning')
+        return redirect(url_for('market_my'))
+    order=first_row('koja_market_orders',{'payment_reference':tx_ref,'buyer_id':uid})
+    if not order: flash('Market order not found.','danger'); return redirect(url_for('market_my'))
+    if str(order.get('status') or '').lower() in {'paid','completed'}:
+        return redirect(url_for('market_my'))
+    if tx is None and transaction_id:
+        tx=_flutterwave_verify(transaction_id, tx_ref)
+    if tx and _finalize_market_order(order,tx):
+        flash('Payment verified. Your KOJA Market order is confirmed.','success')
+        return redirect(url_for('market_my'))
+    flash('Payment is still pending. KOJA will confirm it automatically when Flutterwave reports the successful transaction.','info')
+    return redirect(url_for('market_my'))
 
 # Flutterwave V3 webhook: signature-authenticated, server-side re-verification and idempotent finalization.
 @app.route('/webhook/flutterwave', methods=['POST'])
@@ -3623,20 +3636,17 @@ def flutterwave_webhook():
     if verified_ref != tx_ref:
         logger.error('Flutterwave webhook rejected: reference mismatch webhook=%s verified=%s',tx_ref,verified_ref)
         return jsonify({'status':'ignored','reason':'reference_mismatch'}),200
-    market_orders=db_select('koja_market_orders',{'payment_reference':tx_ref},order='created_at.asc',limit=100) or []
+    market_order=first_row('koja_market_orders',{'payment_reference':tx_ref})
     marketplace_order=first_row('koja_marketplace_orders',{'payment_reference':tx_ref})
     monetization_order=_mono_order_for_ref(tx_ref)
-    if not market_orders and not marketplace_order and not monetization_order:
+    if not market_order and not marketplace_order and not monetization_order:
         logger.warning('Flutterwave webhook unknown reference tx_ref=%s',tx_ref)
         return jsonify({'status':'ignored','reason':'unknown_reference'}),200
     results=[]
-    if market_orders:
-        ok_count=0
-        for market_order in market_orders:
-            ok=_finalize_market_order(market_order,tx)
-            logger.info('KOJA Market finalization tx_ref=%s order=%s result=%s',tx_ref,market_order.get('id'),ok)
-            if ok: ok_count+=1
-        results.append('market:'+str(ok_count)+'_finalized')
+    if market_order:
+        ok=_finalize_market_order(market_order,tx)
+        logger.info('KOJA Market finalization tx_ref=%s order=%s result=%s',tx_ref,market_order.get('id'),ok)
+        results.append('market:'+('finalized_or_paid' if ok else 'failed'))
     if marketplace_order:
         ok=_finalize_marketplace_order(marketplace_order,tx)
         logger.info('KOJA Digital finalization tx_ref=%s order=%s result=%s',tx_ref,marketplace_order.get('id'),ok)
@@ -3720,7 +3730,7 @@ def admin_market():
 @app.route('/market/cart')
 @login_required
 def market_cart():
- uid=(current_user() or {}).get('id'); carts=db_select('koja_market_cart',{'user_id':uid},limit=100) or []; ids=[str(x.get('product_id')) for x in carts if x.get('product_id')]; ps=db_select('koja_market_products',{'id':'in.('+','.join(ids)+')'} if ids else {},limit=200) or []; pm={str(x.get('id')):x for x in ps}; items=[]; total=0
+ uid=(current_user() or {}).get('id'); carts=db_select('koja_market_cart',{'user_id':uid},limit=100) or []; ids=[str(x.get('product_id')) for x in carts if x.get('product_id')]; ps=db_select('koja_market_products',{'id':'in.('+','.join(ids)+')'} if ids else {'id':'eq.__none__'},limit=200) or []; pm={str(x.get('id')):x for x in ps}; items=[]; total=0
  for c in carts:
   p=pm.get(str(c.get('product_id')))
   if not p: continue
@@ -7003,7 +7013,7 @@ def market_cart_checkout():
     uid=(current_user() or {}).get('id')
     carts=db_select('koja_market_cart',{'user_id':uid},limit=100) or []
     ids=[str(x.get('product_id')) for x in carts if x.get('product_id')]
-    ps=db_select('koja_market_products',{'id':'in.('+','.join(ids)+')'} if ids else {},limit=200) or []
+    ps=db_select('koja_market_products',{'id':'in.('+','.join(ids)+')'} if ids else {'id':'eq.__none__'},limit=200) or []
     pm={str(x.get('id')):x for x in ps}; items=[]; subtotal=0; delivery=0
     for c in carts:
         p=pm.get(str(c.get('product_id')))
@@ -7012,43 +7022,31 @@ def market_cart_checkout():
         if str(p.get('product_type') or 'physical')=='physical' and q>int(p.get('stock') or 0):
             flash(f"Not enough stock for {p.get('title','item')}.",'danger'); return redirect(url_for('market_cart'))
         line=float(p.get('price') or 0)*q; subtotal+=line
-        item_delivery=float(p.get('delivery_fee') or 0) if str(p.get('product_type') or 'physical')=='physical' and as_bool(p.get('delivery_available')) else 0
-        delivery+=item_delivery
-        items.append({'product':p,'quantity':q,'line':line,'delivery':item_delivery})
+        if str(p.get('product_type') or 'physical')=='physical' and as_bool(p.get('delivery_available')): delivery+=float(p.get('delivery_fee') or 0)
+        items.append({'product':p,'quantity':q,'line':line})
     total=round(subtotal+delivery,2); platform_fee=round(total*KOJA_PLATFORM_FEE_RATE,2); grand=round(total+platform_fee,2)
     if request.method=='POST':
         name=clean(request.form.get('recipient_name')); phone=clean(request.form.get('recipient_phone')); address=clean(request.form.get('delivery_address')); notes=clean(request.form.get('notes'))
-        network=clean(request.form.get('network')).upper(); payment_phone=clean(request.form.get('payment_phone')) or phone or clean((current_user() or {}).get('phone'))
         if not items: flash('Your cart is empty.','warning'); return redirect(url_for('market_cart'))
-        if grand<=0: flash('Checkout total must be greater than zero.','danger'); return redirect(url_for('market_cart'))
-        if not FLW_SECRET_KEY:
-            flash('Online payment is not configured. Add FLW_SECRET_KEY to Render Environment Variables.','warning'); return redirect(url_for('market_cart_checkout'))
-        if network not in ('MTN','AIRTEL','ZAMTEL') or not payment_phone:
-            flash('Select MTN, Airtel or Zamtel and enter the mobile-money phone number.','warning'); return redirect(url_for('market_cart_checkout'))
+        groups={}
+        for x in items: groups.setdefault(str(x['product'].get('seller_id')),[]).append(x)
         created=[]
-        for x in items:
-            p=x['product']; qty=x['quantity']; item_total=round(x['line']+x['delivery'],2)
-            commission=round(item_total*KOJA_MARKET_COMMISSION_RATE,2); item_fee=round(item_total*KOJA_PLATFORM_FEE_RATE,2)
-            payload={'order_number':market_order_number(),'product_id':p.get('id'),'buyer_id':uid,'seller_id':p.get('seller_id'),'quantity':qty,'item_amount':x['line'],'delivery_fee':x['delivery'],'total_amount':item_total,'commission_amount':commission,'platform_fee':item_fee,'seller_amount':round(item_total-commission,2),'currency':p.get('currency') or 'ZMW','status':'pending','payment_method':'flutterwave','recipient_name':name or (current_user() or {}).get('name') or (current_user() or {}).get('full_name'),'recipient_phone':phone or (current_user() or {}).get('phone'),'delivery_address':address,'notes':notes,'created_at':utc_now(),'updated_at':utc_now()}
-            row,err=db_insert('koja_market_orders',payload)
-            if err:
-                logger.error('KOJA checkout order creation failed: %s',err); flash('Checkout could not create all orders. Please try again.','danger'); return redirect(url_for('market_cart'))
-            created.append(row)
-        tx_ref='KOJA-CART-'+datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')+'-'+secrets.token_hex(4).upper()
-        for row in created: db_update('koja_market_orders',{'id':row.get('id')},{'payment_reference':tx_ref,'updated_at':utc_now()})
-        payload_fw={'tx_ref':tx_ref,'amount':int(round(grand)),'currency':'ZMW','email':clean((current_user() or {}).get('email')).lower(),'fullname':first_nonempty((current_user() or {}).get('name'),(current_user() or {}).get('full_name'),clean((current_user() or {}).get('email'))),'phone_number':payment_phone,'network':network,'order_id':str(created[0].get('id') or ''),'redirect_url':url_for('market_payment_callback',_external=True,tx_ref=tx_ref),'meta':{'koja_checkout':'cart','koja_order_ids':[str(x.get('id')) for x in created]}}
-        try:
-            r=requests.post(FLW_BASE_URL+'/charges?type=mobile_money_zambia',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json'},json=payload_fw,timeout=30)
-            body=json_or_empty(r); authorization=((body.get('meta') or {}).get('authorization') or {}) if isinstance(body,dict) else {}; redirect_url=authorization.get('redirect')
-            if r.ok and str(body.get('status') or '').lower()=='success' and redirect_url:
-                db_delete('koja_market_cart',{'user_id':uid}); return redirect(redirect_url)
-            logger.error('KOJA cart V3 Zambia checkout failed: %s %s',r.status_code,str(body)[:1500])
-        except Exception: logger.exception('KOJA cart checkout error')
-        flash('Orders were created, but checkout could not be started. Please try again from My Orders.','danger'); return redirect(url_for('market_my'))
+        for seller_id, group in groups.items():
+            seller_sub=sum(x['line'] for x in group); seller_delivery=sum(float(x['product'].get('delivery_fee') or 0) for x in group if str(x['product'].get('product_type') or 'physical')=='physical' and as_bool(x['product'].get('delivery_available')))
+            seller_total=round(seller_sub+seller_delivery,2); fee=round(seller_total*KOJA_PLATFORM_FEE_RATE,2); commission=round(seller_total*KOJA_MARKET_COMMISSION_RATE,2)
+            for x in group:
+                p=x['product']; qty=x['quantity']
+                payload={'order_number':market_order_number(),'product_id':p.get('id'),'buyer_id':uid,'seller_id':seller_id,'quantity':qty,'item_amount':x['line'],'delivery_fee':float(p.get('delivery_fee') or 0) if str(p.get('product_type') or 'physical')=='physical' else 0,'total_amount':round(x['line']+(float(p.get('delivery_fee') or 0) if str(p.get('product_type') or 'physical')=='physical' else 0),2),'commission_amount':commission,'seller_amount':round(seller_total-commission-fee,2),'currency':p.get('currency') or 'ZMW','status':'pending','payment_method':'flutterwave','recipient_name':name or (current_user() or {}).get('name') or (current_user() or {}).get('full_name'),'recipient_phone':phone or (current_user() or {}).get('phone'),'delivery_address':address,'notes':notes,'created_at':utc_now(),'updated_at':utc_now()}
+                row,err=db_insert('koja_market_orders',payload)
+                if not err: created.append(row)
+        if not created: flash('Checkout could not create orders. Run KOJA_MARKET_V3.sql.','danger'); return redirect(url_for('market_cart'))
+        db_delete('koja_market_cart',{'user_id':uid})
+        flash(f'{len(created)} order(s) created. Complete payment through the configured payment flow.','success')
+        return redirect(url_for('market_my'))
     return render_page('Secure Market Checkout',r'''
-<div class="hero"><h1>🔐 Secure Checkout</h1><p>Review your cart. KOJA calculates delivery and the platform fee before payment.</p></div>
-<div class="card">{% for x in items %}<p><strong>{{ x.product.title }}</strong> — {{ x.quantity }} × {{ money(x.product.price,x.product.currency) }}{% if x.delivery %} + {{ money(x.delivery,'ZMW') }} delivery{% endif %} = {{ money(x.line+x.delivery,x.product.currency) }}</p>{% else %}<p>Your cart is empty.</p>{% endfor %}<hr><p>Subtotal: <strong>{{ money(subtotal,'ZMW') }}</strong></p><p>Delivery: <strong>{{ money(delivery,'ZMW') }}</strong></p><p>KOJA platform fee: <strong>{{ money(platform_fee,'ZMW') }}</strong></p><h2>Total to pay: {{ money(grand,'ZMW') }}</h2></div>
-{% if items %}<div class="card"><form method="post"><label>Recipient name</label><input name="recipient_name" required value="{{ (user or {}).get('name','') }}"><label>Delivery phone</label><input name="recipient_phone" required value="{{ (user or {}).get('phone','') }}"><label>Delivery address</label><textarea name="delivery_address" required></textarea><label>Notes</label><textarea name="notes"></textarea><hr><h3>Flutterwave Mobile Money</h3><label>Payment network</label><select name="network" required><option value="">Select network</option><option value="MTN">MTN</option><option value="AIRTEL">Airtel</option><option value="ZAMTEL">Zamtel</option></select><label>Payment phone</label><input name="payment_phone" required inputmode="tel" value="{{ (user or {}).get('phone','') }}"><button class="btn" type="submit">💳 Pay {{ money(grand,'ZMW') }} Securely</button></form></div>{% endif %}''',items=items,subtotal=subtotal,delivery=delivery,platform_fee=platform_fee,grand=grand,money=market_money,user=(current_user() or {}))
+<div class="hero"><h1>🔐 Secure Checkout</h1><p>Review your multi-seller cart. Delivery and KOJA platform fees are calculated before order creation.</p></div>
+<div class="card">{% for x in items %}<p><strong>{{ x.product.title }}</strong> — {{ x.quantity }} × {{ money(x.product.price,x.product.currency) }} = {{ money(x.line,x.product.currency) }}</p>{% else %}<p>Your cart is empty.</p>{% endfor %}<hr><p>Subtotal: <strong>{{ money(subtotal,'ZMW') }}</strong></p><p>Delivery: <strong>{{ money(delivery,'ZMW') }}</strong></p><p>KOJA platform fee: <strong>{{ money(platform_fee,'ZMW') }}</strong></p><h2>Total: {{ money(grand,'ZMW') }}</h2></div>
+{% if items %}<div class="card"><form method="post"><label>Recipient name</label><input name="recipient_name" required><label>Phone</label><input name="recipient_phone" required><label>Delivery address</label><textarea name="delivery_address" required></textarea><label>Notes</label><textarea name="notes"></textarea><button class="btn" type="submit">Create Orders</button></form></div>{% endif %}''',items=items,subtotal=subtotal,delivery=delivery,platform_fee=platform_fee,grand=grand,money=market_money)
 
 @app.route('/market/seller/subscription',methods=['GET','POST'])
 @login_required
