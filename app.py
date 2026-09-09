@@ -7,6 +7,7 @@ import logging
 import smtplib
 from email.message import EmailMessage
 import json
+import hashlib
 import re
 from datetime import datetime, timezone, timedelta
 from functools import wraps
@@ -99,6 +100,11 @@ APP_NAME = "KOJA AFRICA"
 APP_VERSION = "2026.09.09-V8-MARKET-COMPLETE"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
+KOJA_DELIVERY_BASE_FEE = float(os.getenv("KOJA_DELIVERY_BASE_FEE", "15") or 15)
+KOJA_DELIVERY_PER_KM = float(os.getenv("KOJA_DELIVERY_PER_KM", "3") or 3)
+KOJA_DELIVERY_MAX_RADIUS_KM = float(os.getenv("KOJA_DELIVERY_MAX_RADIUS_KM", "50") or 50)
+KOJA_OSRM_URL = os.getenv("KOJA_OSRM_URL", "https://router.project-osrm.org").rstrip("/")
+KOJA_DELIVERY_SPEED_KMH = float(os.getenv("KOJA_DELIVERY_SPEED_KMH", "30") or 30)
 
 # Email delivery (server-side only; never expose SMTP passwords to the browser)
 EMAIL_PROVIDER = os.getenv("EMAIL_PROVIDER", "smtp").strip().lower()
@@ -4629,6 +4635,22 @@ MARKET_V8_CATEGORIES = [
 
 
 
+def _osrm_route(lat1,lon1,lat2,lon2):
+    try:
+        if None in (lat1,lon1,lat2,lon2): return None
+        u=f"{KOJA_OSRM_URL}/route/v1/driving/{float(lon1)},{float(lat1)};{float(lon2)},{float(lat2)}"
+        r=requests.get(u,params={"overview":"full","geometries":"geojson","steps":"false"},timeout=8)
+        data=json_or_empty(r)
+        route=(data.get("routes") or [None])[0]
+        if not route: return None
+        return {"distance_km":round(float(route.get("distance",0))/1000,3),"duration_minutes":round(float(route.get("duration",0))/60),"geometry":(route.get("geometry") or {}).get("coordinates") or []}
+    except Exception:
+        logger.exception("OSRM route lookup failed")
+        return None
+
+def _delivery_route(job):
+    return _osrm_route(safe_float(job.get("last_known_driver_latitude") or job.get("pickup_latitude")),safe_float(job.get("last_known_driver_longitude") or job.get("pickup_longitude")),safe_float(job.get("delivery_latitude")),safe_float(job.get("delivery_longitude")))
+
 def _delivery_haversine_km(a,b,c,d):
     try:
         r=6371.0088; p1=math.radians(float(a)); p2=math.radians(float(c)); dp=math.radians(float(c)-float(a)); dl=math.radians(float(d)-float(b)); x=math.sin(dp/2)**2+math.cos(p1)*math.cos(p2)*math.sin(dl/2)**2
@@ -4640,14 +4662,20 @@ def _delivery_fee(distance, fallback=0):
 
 def _delivery_otp_hash(v): return hashlib.sha256(clean(v).encode()).hexdigest()
 
-def _nearest_driver(lat,lon):
+def _nearest_driver(lat,lon,exclude_driver_id=None):
     if lat is None or lon is None or not table_exists('driver_locations'): return None
     candidates=[]
     for x in latest_driver_locations():
         if not as_bool(x.get('is_online')): continue
+        if exclude_driver_id is not None and str(x.get('driver_id'))==str(exclude_driver_id): continue
         d=_delivery_haversine_km(lat,lon,x.get('latitude'),x.get('longitude'))
         if d is not None and d<=KOJA_DELIVERY_MAX_RADIUS_KM: candidates.append((d,x))
     candidates.sort(key=lambda z:z[0]); return candidates[0] if candidates else None
+
+def _market_notify(uid,kind,title,body,related_id=None):
+    if not uid or not table_exists('koja_notifications'): return
+    try: db_insert('koja_notifications',{'user_id':uid,'notification_type':kind,'title':title,'body':body,'related_id':related_id})
+    except Exception: logger.exception('Market notification failed')
 
 def _create_or_assign_market_delivery(order):
     if not order or str(order.get('status'))!='paid': return None
@@ -4658,7 +4686,10 @@ def _create_or_assign_market_delivery(order):
     assigned=_nearest_driver(plat,plon); otp=str(secrets.randbelow(900000)+100000)
     row,err=db_insert('koja_market_delivery_jobs',{'id':str(uuid.uuid4()),'order_id':order.get('id'),'customer_id':order.get('buyer_id'),'driver_id':assigned[1].get('driver_id') if assigned else None,'pickup_address':seller.get('address') or seller.get('location') or product.get('location'),'delivery_address':order.get('delivery_address'),'delivery_fee':_num(order.get('delivery_fee')),'status':'driver_assigned' if assigned else 'waiting_driver','tracking_code':'KDJ-'+uuid.uuid4().hex[:10].upper(),'pickup_latitude':plat,'pickup_longitude':plon,'delivery_latitude':dlat,'delivery_longitude':dlon,'customer_phone':order.get('recipient_phone'),'seller_phone':seller.get('phone'),'distance_km':_delivery_haversine_km(plat,plon,dlat,dlon),'delivery_otp_hash':_delivery_otp_hash(otp),'delivery_otp':otp,'updated_at':utc_now()})
     if row and not err:
-        db_update('koja_market_orders',{'id':order.get('id')},{'delivery_status':'driver_assigned' if assigned else 'waiting_driver','updated_at':utc_now()}); return row
+        route=_osrm_route(plat,plon,dlat,dlon)
+        if route:
+            db_update('koja_market_delivery_jobs',{'id':row.get('id')},{'route_distance_km':route['distance_km'],'route_duration_minutes':route['duration_minutes'],'route_geometry':json.dumps(route['geometry']),'updated_at':utc_now()}); row.update({'route_distance_km':route['distance_km'],'route_duration_minutes':route['duration_minutes'],'route_geometry':json.dumps(route['geometry'])})
+        db_update('koja_market_orders',{'id':order.get('id')},{'delivery_status':'driver_assigned' if assigned else 'waiting_driver','updated_at':utc_now()}); _market_notify(order.get('buyer_id'),'delivery','Delivery created',f"Delivery {row.get('tracking_code')} is {'assigned to a driver' if assigned else 'waiting for a driver' }.",row.get('id')); _market_notify(order.get('seller_id'),'delivery','Delivery created',f"Delivery {row.get('tracking_code')} has been created.",row.get('id')); return row
     return None
 
 def _market_delivery_job_for_user(job_id,uid):
@@ -4962,7 +4993,7 @@ def market_buy(product_id):
 def market_post_ledger(order, tx_id=None):
     if not order or str(order.get('status'))!='paid': return
     if first_row('koja_market_ledger',{'order_id':order.get('id')}): return
-    gross=round(_num(order.get('total_amount')),2); commission=round(gross*0.10,2); net=round(gross-commission,2)
+    gross=round(_num(order.get('item_amount')),2); commission=round(gross*0.10,2); net=round(gross-commission,2)
     db_insert('koja_market_ledger',{'order_id':order.get('id'),'seller_id':order.get('seller_id'),'buyer_id':order.get('buyer_id'),'gross_amount':gross,'commission_amount':commission,'platform_fee':0,'net_amount':net,'currency':order.get('currency') or 'ZMW','status':'posted'})
 
 
@@ -4995,15 +5026,25 @@ def market_cart_checkout():
     uid=(current_user() or {}).get('id')
     if request.method=='GET':
         return render_page('Cart Delivery Details',r"""<div class="hero"><h2>Cart Delivery Details</h2><p>GPS is preferred; physical address and phone remain the fallback.</p></div><div class="card"><form method="post"><label>Recipient name</label><input name="recipient_name" value="{{ user.full_name or user.name or '' }}" required><label>Phone</label><input name="recipient_phone" value="{{ user.phone or '' }}" required><label>Town / City</label><input name="town" required><label>Area / Compound</label><input name="area"><label>Street / Road</label><input name="street"><label>House / Plot</label><input name="house_number"><label>Landmark</label><input name="landmark"><label>Full delivery address</label><textarea name="delivery_address" required></textarea><label>GPS latitude</label><input id="latitude" name="latitude" type="number" step="any"><label>GPS longitude</label><input id="longitude" name="longitude" type="number" step="any"><button type="button" class="btn secondary" onclick="useLocation()">Use my current GPS location</button><p id="gpsmsg" class="small">GPS optional.</p><label>Delivery notes</label><textarea name="notes"></textarea><button class="btn" type="submit">Continue to Payment</button></form></div><script>function useLocation(){if(!navigator.geolocation){gpsmsg.textContent='GPS is not supported.';return}navigator.geolocation.getCurrentPosition(function(p){latitude.value=p.coords.latitude;longitude.value=p.coords.longitude;gpsmsg.textContent='GPS location captured.'},function(){gpsmsg.textContent='GPS unavailable; use physical address.'},{enableHighAccuracy:true,timeout:15000,maximumAge:3000})}</script>""",user=current_user() or {})
-    cart=db_select('koja_market_cart',{'user_id':uid},limit=100) or []; ids=[str(x.get('product_id')) for x in cart if x.get('product_id')]; products=db_select('koja_market_products',{'id':'in.('+','.join(ids)+')'},limit=200) if ids else []; pm={str(x.get('id')):x for x in products}; total=sum(round(_num((pm.get(str(c.get('product_id'))) or {}).get('price'))*_int(c.get('quantity'),1),2) for c in cart)
+    cart=db_select('koja_market_cart',{'user_id':uid},limit=100) or []; ids=[str(x.get('product_id')) for x in cart if x.get('product_id')]; products=db_select('koja_market_products',{'id':'in.('+','.join(ids)+')'},limit=200) if ids else []; pm={str(x.get('id')):x for x in products}; lat=safe_float(request.form.get('latitude')); lon=safe_float(request.form.get('longitude')); item_total=0; delivery_total=0; prepared=[]
+    for c in cart:
+        p=pm.get(str(c.get('product_id'))); qty=_int(c.get('quantity'),1)
+        if not p or not as_bool(p.get('is_published')) or (p.get('product_type')!='service' and qty>_int(p.get('stock'),0)): continue
+        amount=round(_num(p.get('price'))*qty,2); fee=0
+        if str(p.get('product_type'))=='physical' and as_bool(p.get('delivery_available',True)):
+            plat=safe_float(p.get('pickup_latitude')); plon=safe_float(p.get('pickup_longitude'))
+            if plat is None or plon is None:
+                seller=first_row('koja_market_sellers',{'user_id':p.get('seller_id')}) or {}; plat=safe_float(seller.get('latitude')); plon=safe_float(seller.get('longitude'))
+            dist=_delivery_haversine_km(plat,plon,lat,lon)
+            fee=_delivery_fee(dist,_num(p.get('delivery_fee')))
+        item_total+=amount; delivery_total+=fee; prepared.append((c,p,qty,amount,fee))
+    total=round(item_total+delivery_total,2)
     if total<=0: return redirect(url_for('market_cart'))
     # Use the same verified Flutterwave checkout for the complete cart.
     if not FLW_SECRET_KEY: flash('Flutterwave is not configured on Render.','danger'); return redirect(url_for('market_cart'))
     tx_ref='KOJA-CART-'+uuid.uuid4().hex.upper(); created=[]
-    for c in cart:
-        p=pm.get(str(c.get('product_id'))); qty=_int(c.get('quantity'),1)
-        if not p or not as_bool(p.get('is_published')) or (p.get('product_type')!='service' and qty>_int(p.get('stock'),0)): continue
-        amount=round(_num(p.get('price'))*qty,2); row,err=db_insert('koja_market_orders',{'order_number':'KOJA-'+uuid.uuid4().hex[:10].upper(),'product_id':p.get('id'),'buyer_id':uid,'seller_id':p.get('seller_id'),'quantity':qty,'item_amount':amount,'delivery_fee':0,'total_amount':amount,'commission_amount':round(amount*.10,2),'seller_amount':round(amount*.90,2),'currency':'ZMW','status':'pending','payment_method':'flutterwave','payment_reference':tx_ref,'recipient_name':clean(request.form.get('recipient_name')) or (current_user() or {}).get('full_name'),'recipient_phone':clean(request.form.get('recipient_phone')) or (current_user() or {}).get('phone'),'delivery_address':clean(request.form.get('delivery_address'))+' | '+' | '.join([clean(request.form.get(x)) for x in ('town','area','street','house_number','landmark') if clean(request.form.get(x))]),'delivery_latitude':safe_float(request.form.get('latitude')),'delivery_longitude':safe_float(request.form.get('longitude')),'notes':clean(request.form.get('notes')),'updated_at':utc_now()})
+    for c,p,qty,amount,fee in prepared:
+        row,err=db_insert('koja_market_orders',{'order_number':'KOJA-'+uuid.uuid4().hex[:10].upper(),'product_id':p.get('id'),'buyer_id':uid,'seller_id':p.get('seller_id'),'quantity':qty,'item_amount':amount,'delivery_fee':fee,'total_amount':round(amount+fee,2),'commission_amount':round(amount*.10,2),'seller_amount':round(amount-round(amount*.10,2),2),'currency':'ZMW','status':'pending','payment_method':'flutterwave','payment_reference':tx_ref,'recipient_name':clean(request.form.get('recipient_name')) or (current_user() or {}).get('full_name'),'recipient_phone':clean(request.form.get('recipient_phone')) or (current_user() or {}).get('phone'),'delivery_address':clean(request.form.get('delivery_address'))+' | '+' | '.join([clean(request.form.get(x)) for x in ('town','area','street','house_number','landmark') if clean(request.form.get(x))]),'delivery_latitude':safe_float(request.form.get('latitude')),'delivery_longitude':safe_float(request.form.get('longitude')),'notes':clean(request.form.get('notes')),'updated_at':utc_now()})
         if row and not err: created.append(row)
     if not created: flash('No available cart items.','danger'); return redirect(url_for('market_cart'))
     payload={'tx_ref':tx_ref,'amount':round(sum(_num(x.get('total_amount')) for x in created),2),'currency':'ZMW','redirect_url':url_for('market_payment_callback',_external=True),'customer':{'email':(current_user() or {}).get('email',''),'name':(current_user() or {}).get('full_name') or 'KOJA Customer'},'customizations':{'title':'KOJA Market Cart','description':'KOJA Market cart checkout'}}
@@ -5020,17 +5061,25 @@ def market_cart_checkout():
 def market_delivery_view(job_id):
     uid=(current_user() or {}).get('id'); job=_market_delivery_job_for_user(job_id,uid)
     if not job: abort(404)
-    return render_page('Delivery Tracking',r"""<div class="hero"><h2>Delivery Tracking</h2><p>Shop → Road → Home</p></div><div class="card"><p><strong>Status:</strong> <span id="status">{{ job.status }}</span></p><p><strong>Tracking:</strong> {{ job.tracking_code }}</p><p><strong>Pickup:</strong> {{ job.pickup_address or 'GPS pickup point' }}</p><p><strong>Destination:</strong> {{ job.delivery_address }}</p>{% if job.delivery_otp %}<p><strong>Delivery confirmation code:</strong> {{ job.delivery_otp }}</p>{% endif %}<div id="map" style="height:420px"></div><p id="info" class="small">Waiting for driver location...</p></div><script>const jid={{ job.id|tojson }};const map=L.map('map').setView([{{ job.delivery_latitude or -13.9626 }},{{ job.delivery_longitude or 28.3228 }}],14);L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'OpenStreetMap'}).addTo(map);L.marker([{{ job.delivery_latitude or -13.9626 }},{{ job.delivery_longitude or 28.3228 }}]).addTo(map).bindPopup('Customer destination');let dm=null;async function poll(){try{const d=await (await fetch('/api/market/delivery/'+jid+'/location')).json();if(d.status)status.textContent=d.status;if(d.driver_latitude!=null){if(!dm)dm=L.marker([d.driver_latitude,d.driver_longitude]).addTo(map).bindPopup('Driver');else dm.setLatLng([d.driver_latitude,d.driver_longitude]);info.textContent='Driver GPS updated '+new Date().toLocaleTimeString()+(d.eta_minutes!=null?' · ETA '+d.eta_minutes+' min':'')}}catch(e){}}poll();setInterval(poll,5000);</script>""",job=job)
+    return render_page('Delivery Tracking',r"""<div class="hero"><h2>Delivery Tracking</h2><p>Shop → Road → Home</p></div><div class="card"><p><strong>Status:</strong> <span id="status">{{ job.status }}</span></p><p><strong>Tracking:</strong> {{ job.tracking_code }}</p><p><strong>Pickup:</strong> {{ job.pickup_address or 'GPS pickup point' }}</p><p><strong>Destination:</strong> {{ job.delivery_address }}</p>{% if can_show_otp and job.delivery_otp %}<p><strong>Delivery confirmation code:</strong> {{ job.delivery_otp }}</p><p class="small">Give this code to the driver only when the order reaches you.</p>{% endif %}<div id="map" style="height:420px"></div><p id="info" class="small">Waiting for driver location...</p></div><script>const jid={{ job.id|tojson }};const map=L.map('map').setView([{{ job.delivery_latitude or -13.9626 }},{{ job.delivery_longitude or 28.3228 }}],14);L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'OpenStreetMap'}).addTo(map);L.marker([{{ job.delivery_latitude or -13.9626 }},{{ job.delivery_longitude or 28.3228 }}]).addTo(map).bindPopup('Customer destination');let dm=null;async function poll(){try{const d=await (await fetch('/api/market/delivery/'+jid+'/location')).json();if(d.status)status.textContent=d.status;if(d.driver_latitude!=null){if(!dm)dm=L.marker([d.driver_latitude,d.driver_longitude]).addTo(map).bindPopup('Driver');else dm.setLatLng([d.driver_latitude,d.driver_longitude]);}if(d.route_geometry&&d.route_geometry.length){const pts=d.route_geometry.map(x=>[x[1],x[0]]);if(window.routeLine)routeLine.setLatLngs(pts);else window.routeLine=L.polyline(pts).addTo(map);}info.textContent=(d.driver_latitude!=null?'Driver GPS updated '+new Date().toLocaleTimeString():'Waiting for driver GPS')+(d.eta_minutes!=null?' · ETA '+d.eta_minutes+' min':'')+(d.route_distance_km!=null?' · Road '+d.route_distance_km+' km':'')}catch(e){}}poll();setInterval(poll,5000);</script>""",job=job,can_show_otp=str(uid)==str(job.get('customer_id')))
 
 @app.route('/api/market/delivery/<job_id>/location')
 @login_required
 def market_delivery_location(job_id):
     job=_market_delivery_job_for_user(job_id,(current_user() or {}).get('id'))
     if not job: return jsonify({'ok':False}),404
-    lat=safe_float(job.get('last_known_driver_latitude')); lon=safe_float(job.get('last_known_driver_longitude')); eta=None
+    lat=safe_float(job.get('last_known_driver_latitude')); lon=safe_float(job.get('last_known_driver_longitude')); eta=None; route=None
     if lat is not None and lon is not None and job.get('delivery_latitude') is not None:
-        d=_delivery_haversine_km(lat,lon,job.get('delivery_latitude'),job.get('delivery_longitude')); eta=round(d/30*60) if d is not None else None
-    return jsonify({'ok':True,'status':job.get('status'),'driver_latitude':lat,'driver_longitude':lon,'eta_minutes':eta})
+        route=_osrm_route(lat,lon,safe_float(job.get('delivery_latitude')),safe_float(job.get('delivery_longitude')))
+        if route: eta=route.get('duration_minutes')
+        else:
+            d=_delivery_haversine_km(lat,lon,job.get('delivery_latitude'),job.get('delivery_longitude')); eta=round(d/KOJA_DELIVERY_SPEED_KMH*60) if d is not None else None
+    geometry=[]
+    if route: geometry=route.get('geometry') or []
+    elif job.get('route_geometry'):
+        try: geometry=json.loads(job.get('route_geometry'))
+        except Exception: geometry=[]
+    return jsonify({'ok':True,'status':job.get('status'),'driver_latitude':lat,'driver_longitude':lon,'eta_minutes':eta,'route_distance_km':route.get('distance_km') if route else job.get('route_distance_km'),'route_geometry':geometry})
 
 @app.route('/driver/market-deliveries')
 @driver_required
@@ -5039,22 +5088,43 @@ def driver_market_deliveries():
     for j in waiting:
         d=_delivery_haversine_km(latest.get('latitude'),latest.get('longitude'),j.get('pickup_latitude'),j.get('pickup_longitude')) if latest else None
         if d is not None and d<=KOJA_DELIVERY_MAX_RADIUS_KM: j['distance_km']=round(d,1); nearby.append(j)
-    return render_page('Market Deliveries',r"""<div class="hero"><h2>Market Deliveries</h2><p>Nearby shop-to-home jobs.</p></div><div class="card"><h3>Assigned</h3>{% for j in jobs %}<p>{{ j.tracking_code }} · {{ j.status }} · {{ j.delivery_address }} <a class="btn" href="{{ url_for('market_delivery_view',job_id=j.id) }}">Track</a>{% if j.status=='driver_assigned' %}<form method="post" action="{{ url_for('driver_market_delivery_action',job_id=j.id,action='accept') }}"><button class="btn">Accept</button></form>{% elif j.status=='accepted' %}<form method="post" action="{{ url_for('driver_market_delivery_action',job_id=j.id,action='picked_up') }}"><button class="btn">Picked Up</button></form>{% elif j.status=='picked_up' %}<form method="post" action="{{ url_for('driver_market_delivery_action',job_id=j.id,action='in_transit') }}"><button class="btn">Start Road Delivery</button></form>{% elif j.status=='in_transit' %}<form method="post" action="{{ url_for('driver_market_delivery_action',job_id=j.id,action='delivered') }}"><input name="otp" placeholder="Customer OTP" required><button class="btn">Confirm Delivered</button></form>{% endif %}</p>{% else %}<p>No assigned deliveries.</p>{% endfor %}</div><div class="card"><h3>Nearby Requests</h3>{% for j in nearby %}<div style="padding:12px 0;border-top:1px solid var(--border)"><strong>{{ j.tracking_code }}</strong><p>{{ j.pickup_address }} → {{ j.delivery_address }}</p><p>{{ j.distance_km }} km from pickup · ZMW {{ '%.2f'|format(j.delivery_fee|float) }}</p><form method="post" action="{{ url_for('driver_market_delivery_action',job_id=j.id,action='accept') }}"><button class="btn">Accept</button></form></div>{% else %}<p>No nearby requests.</p>{% endfor %}</div>""",jobs=jobs,nearby=nearby)
+    return render_page('Market Deliveries',r"""<div class="hero"><h2>Market Deliveries</h2><p>Nearby shop-to-home jobs.</p></div><div class="card"><h3>Assigned</h3>{% for j in jobs %}<p>{{ j.tracking_code }} · {{ j.status }} · {{ j.delivery_address }} <a class="btn" href="{{ url_for('market_delivery_view',job_id=j.id) }}">Track</a>{% if j.status=='driver_assigned' %}<form method="post" action="{{ url_for('driver_market_delivery_action',job_id=j.id,action='accept') }}"><button class="btn">Accept</button></form><form method="post" action="{{ url_for('driver_market_delivery_action',job_id=j.id,action='reject') }}"><button class="btn danger">Reject</button></form>{% elif j.status=='accepted' %}<form method="post" action="{{ url_for('driver_market_delivery_action',job_id=j.id,action='picked_up') }}"><button class="btn">Picked Up</button></form>{% elif j.status=='picked_up' %}<form method="post" action="{{ url_for('driver_market_delivery_action',job_id=j.id,action='in_transit') }}"><button class="btn">Start Road Delivery</button></form>{% elif j.status=='in_transit' %}<form method="post" action="{{ url_for('driver_market_delivery_action',job_id=j.id,action='delivered') }}"><input name="otp" placeholder="Customer OTP" required><button class="btn">Confirm Delivered</button></form>{% endif %}</p>{% else %}<p>No assigned deliveries.</p>{% endfor %}</div><div class="card"><h3>Nearby Requests</h3>{% for j in nearby %}<div style="padding:12px 0;border-top:1px solid var(--border)"><strong>{{ j.tracking_code }}</strong><p>{{ j.pickup_address }} → {{ j.delivery_address }}</p><p>{{ j.distance_km }} km from pickup · ZMW {{ '%.2f'|format(j.delivery_fee|float) }}</p><form method="post" action="{{ url_for('driver_market_delivery_action',job_id=j.id,action='accept') }}"><button class="btn">Accept</button></form></div>{% else %}<p>No nearby requests.</p>{% endfor %}</div>""",jobs=jobs,nearby=nearby)
 
 @app.route('/driver/market-deliveries/<job_id>/<action>',methods=['POST'])
 @driver_required
 def driver_market_delivery_action(job_id,action):
     pid=(get_driver_provider((current_user() or {}).get('id')) or {}).get('id'); job=first_row('koja_market_delivery_jobs',{'id':job_id})
     if not job or not pid: abort(404)
-    if action=='accept' and str(job.get('status'))=='waiting_driver':
+    if action=='accept' and str(job.get('status')) in ('waiting_driver','driver_assigned'):
+        fresh=first_row('koja_market_delivery_jobs',{'id':job_id})
+        if str(fresh.get('status')) not in ('waiting_driver','driver_assigned'): flash('This delivery has already been taken.','warning'); return redirect(url_for('driver_market_deliveries'))
         db_update('koja_market_delivery_jobs',{'id':job_id},{'driver_id':pid,'status':'accepted','updated_at':utc_now()})
+        o=first_row('koja_market_orders',{'id':job.get('order_id')}) or {}; db_update('koja_market_orders',{'id':job.get('order_id')},{'delivery_status':'accepted','updated_at':utc_now()}); _market_notify(o.get('buyer_id'),'delivery','Driver accepted',f"Your delivery {job.get('tracking_code')} has been accepted.",job_id); _market_notify(o.get('seller_id'),'delivery','Driver accepted',f"A driver accepted {job.get('tracking_code')}.",job_id)
+    elif action=='reject' and str(job.get('driver_id'))==str(pid):
+        db_update('koja_market_delivery_jobs',{'id':job_id},{'driver_id':None,'status':'waiting_driver','rejected_driver_id':pid,'updated_at':utc_now()})
+        o=first_row('koja_market_orders',{'id':job.get('order_id')}) or {}; db_update('koja_market_orders',{'id':job.get('order_id')},{'delivery_status':'waiting_driver','updated_at':utc_now()})
+        nxt=_nearest_driver(job.get('pickup_latitude'),job.get('pickup_longitude'),exclude_driver_id=pid)
+        if nxt: db_update('koja_market_delivery_jobs',{'id':job_id},{'driver_id':nxt[1].get('driver_id'),'status':'driver_assigned','updated_at':utc_now()}); _market_notify(o.get('buyer_id'),'delivery','Driver reassigned','KOJA is finding another driver for your delivery.',job_id)
     elif str(job.get('driver_id'))==str(pid) and action in ('picked_up','in_transit','delivered'):
         if action=='delivered':
             otp=clean(request.form.get('otp')); fresh=first_row('koja_market_delivery_jobs',{'id':job_id})
             if not otp or _delivery_otp_hash(otp)!=str(fresh.get('delivery_otp_hash') or ''): flash('Invalid delivery confirmation code.','danger'); return redirect(url_for('driver_market_deliveries'))
         db_update('koja_market_delivery_jobs',{'id':job_id},{'status':action,'updated_at':utc_now()})
-        db_update('koja_market_orders',{'id':job.get('order_id')},{'delivery_status':action,'updated_at':utc_now()})
+        o=first_row('koja_market_orders',{'id':job.get('order_id')}) or {}; db_update('koja_market_orders',{'id':job.get('order_id')},{'delivery_status':action,'updated_at':utc_now()})
+        if action=='picked_up': _market_notify(o.get('buyer_id'),'delivery','Order picked up',f"Driver picked up {job.get('tracking_code')}.",job_id); _market_notify(o.get('seller_id'),'delivery','Order picked up',f"Driver picked up {job.get('tracking_code')}.",job_id)
+        elif action=='in_transit': _market_notify(o.get('buyer_id'),'delivery','Out for delivery',f"Your delivery {job.get('tracking_code')} is on the road.",job_id)
+        elif action=='delivered': _market_notify(o.get('buyer_id'),'delivery','Delivered',f"Delivery {job.get('tracking_code')} has been completed.",job_id); db_insert('koja_market_delivery_earnings',{'delivery_job_id':job_id,'driver_id':pid,'order_id':job.get('order_id'),'gross_fee':_num(job.get('delivery_fee')),'driver_amount':_num(job.get('delivery_fee')),'koja_amount':0,'currency':'ZMW','status':'earned'})
     return redirect(url_for('driver_market_deliveries'))
+
+@app.route('/admin/market-deliveries')
+@admin_required
+def admin_market_deliveries():
+    jobs=db_select('koja_market_delivery_jobs',order='created_at.desc',limit=500) or []
+    counts={}
+    for j in jobs: counts[str(j.get('status'))]=counts.get(str(j.get('status')),0)+1
+    earnings=db_select('koja_market_delivery_earnings',order='created_at.desc',limit=500) or []
+    total_driver=sum(_num(x.get('driver_amount')) for x in earnings if str(x.get('status'))=='earned')
+    return render_page('Market Delivery Control',r'''<div class="hero"><h2>Market Delivery Control Center</h2><p>Monitor shop-to-home deliveries, assignments, GPS and driver earnings.</p></div><div class="grid">{% for k,v in counts.items() %}<div class="stat"><div class="small">{{ k }}</div><div class="big">{{ v }}</div></div>{% endfor %}<div class="stat"><div class="small">Driver earnings</div><div class="big">ZMW {{ '%.2f'|format(total_driver) }}</div></div></div><div class="card"><table><tr><th>Tracking</th><th>Status</th><th>Pickup</th><th>Destination</th><th>Fee</th><th>Driver</th><th>Action</th></tr>{% for j in jobs %}<tr><td>{{ j.tracking_code }}</td><td>{{ j.status }}</td><td>{{ j.pickup_address }}</td><td>{{ j.delivery_address }}</td><td>ZMW {{ '%.2f'|format(j.delivery_fee|float) }}</td><td>{{ j.driver_id or 'Unassigned' }}</td><td><a class="btn" href="{{ url_for('market_delivery_view',job_id=j.id) }}">Track</a></td></tr>{% else %}<tr><td colspan="7">No market deliveries.</td></tr>{% endfor %}</table></div>''',jobs=jobs,counts=counts,total_driver=total_driver)
 
 @app.route('/market/my')
 @login_required
@@ -6244,6 +6314,242 @@ def professional_public_post(profession_slug):
 """, profession=profession, posts=posts)
 
 # ============================================================
+
+
+# ============================================================
+# KOJA AFRICA SCALE REVENUE ENGINE V1
+# High-volume African monetization: subscriptions, ads, B2B procurement,
+# enterprise/API access, fulfillment margins, referrals and transaction fees.
+# Does not modify KOJA Communications.
+# ============================================================
+
+KOJA_REVENUE_PLANS = {
+    "seller_pro": {"name":"Seller Pro", "price":49, "currency":"ZMW", "period":"monthly", "features":"Higher listing limits, analytics, boosts and seller tools"},
+    "seller_business": {"name":"Seller Business", "price":199, "currency":"ZMW", "period":"monthly", "features":"Advanced analytics, bulk tools, advertising credit and priority support"},
+    "seller_enterprise": {"name":"Seller Enterprise", "price":999, "currency":"ZMW", "period":"monthly", "features":"Multi-store, API access, procurement and enterprise controls"},
+    "api_pro": {"name":"KOJA API Pro", "price":499, "currency":"ZMW", "period":"monthly", "features":"Commerce, catalog, order and delivery API quota"},
+}
+KOJA_AD_MIN_BUDGET = float(os.getenv("KOJA_AD_MIN_BUDGET", "50"))
+KOJA_PROCUREMENT_FEE_RATE = float(os.getenv("KOJA_PROCUREMENT_FEE_RATE", "0.02"))
+KOJA_ENTERPRISE_FEE_RATE = float(os.getenv("KOJA_ENTERPRISE_FEE_RATE", "0.01"))
+KOJA_AFFILIATE_RATE = float(os.getenv("KOJA_AFFILIATE_RATE", "0.02"))
+
+
+def _revenue_user_id():
+    return (current_user() or {}).get("id")
+
+
+def _revenue_log(user_id, stream, amount=0, currency="ZMW", related_id=None, metadata=None):
+    row, err = db_insert("koja_revenue_events", {
+        "id": str(uuid.uuid4()), "user_id": user_id, "stream": stream,
+        "amount": round(float(amount or 0), 2), "currency": currency,
+        "related_id": related_id, "metadata": metadata or {}, "created_at": utc_now()
+    })
+    return row, err
+
+
+def _revenue_payment_link(kind, item_key, amount, currency="ZMW"):
+    uid = _revenue_user_id()
+    user = current_user() or {}
+    if not uid or not FLW_SECRET_KEY:
+        return None, "Flutterwave is not configured."
+    tx_ref = "KOJA-REV-" + uuid.uuid4().hex.upper()
+    row, err = db_insert("koja_revenue_payments", {
+        "id": str(uuid.uuid4()), "user_id": uid, "kind": kind, "item_key": item_key,
+        "amount": round(float(amount),2), "currency": currency, "tx_ref": tx_ref,
+        "status":"pending", "created_at":utc_now(), "updated_at":utc_now()
+    })
+    if err or not row:
+        return None, "Could not create payment record."
+    payload = {
+        "tx_ref": tx_ref, "amount": round(float(amount),2), "currency": currency,
+        "redirect_url": SITE_URL + "/revenue/payment/callback",
+        "customer": {"email": user.get("email") or "customer@koja.africa", "name": user.get("full_name") or "KOJA Customer"},
+        "customizations": {"title":"KOJA AFRICA", "description":"KOJA platform service"},
+        "meta": {"kind":kind, "item_key":item_key, "revenue_payment_id":row.get("id")}
+    }
+    try:
+        r=requests.post(FLW_BASE_URL+"/payments", headers={"Authorization":"Bearer "+FLW_SECRET_KEY,"Content-Type":"application/json"}, json=payload, timeout=30)
+        body=json_or_empty(r); link=((body.get("data") or {}).get("link") if isinstance(body,dict) else None)
+        if not link:
+            db_update("koja_revenue_payments", {"id":row.get("id")}, {"status":"failed","updated_at":utc_now()})
+            return None, str((body or {}).get("message") or "Payment link unavailable")
+        return link, None
+    except Exception as exc:
+        db_update("koja_revenue_payments", {"id":row.get("id")}, {"status":"failed","updated_at":utc_now()})
+        return None, str(exc)
+
+
+@app.route("/revenue")
+@login_required
+def revenue_hub():
+    plans=[{"key":k,**v} for k,v in KOJA_REVENUE_PLANS.items()]
+    mine=db_select("koja_revenue_payments",{"user_id":_revenue_user_id()},order="created_at.desc",limit=50)
+    return render_page("KOJA Growth & Monetization",r'''
+<div class="hero"><h2>KOJA Growth & Monetization</h2><p>Merchant subscriptions, advertising, procurement, API access and scalable commerce services.</p></div>
+<div class="grid">
+{% for p in plans %}<div class="card"><h3>{{ p.name }}</h3><p>{{ p.features }}</p><p><strong>ZMW {{ '%.2f'|format(p.price|float) }}</strong> / {{ p.period }}</p><form method="post" action="{{ url_for('revenue_subscribe', plan_key=p.key) }}"><button class="btn">Subscribe</button></form></div>{% endfor %}
+<div class="card"><h3>Advertise on KOJA</h3><p>Promoted products, seller campaigns and marketplace visibility.</p><a class="btn" href="{{ url_for('revenue_advertise') }}">Create Campaign</a></div>
+<div class="card"><h3>Business Procurement</h3><p>Source inventory and bulk purchasing through KOJA.</p><a class="btn" href="{{ url_for('revenue_procurement') }}">Request Procurement</a></div>
+<div class="card"><h3>Enterprise/API</h3><p>Integrate KOJA commerce, catalog and delivery capabilities.</p><a class="btn" href="{{ url_for('revenue_enterprise') }}">Enterprise Access</a></div>
+</div>
+<div class="card"><h3>Your revenue-service payments</h3><table><tr><th>Date</th><th>Service</th><th>Amount</th><th>Status</th></tr>{% for x in mine %}<tr><td>{{ x.created_at }}</td><td>{{ x.kind }} / {{ x.item_key }}</td><td>ZMW {{ '%.2f'|format(x.amount|float) }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="4">No payments yet.</td></tr>{% endfor %}</table></div>
+''',plans=plans,mine=mine)
+
+
+@app.route("/revenue/subscribe/<plan_key>", methods=["POST"])
+@login_required
+def revenue_subscribe(plan_key):
+    plan=KOJA_REVENUE_PLANS.get(plan_key)
+    if not plan: abort(404)
+    link,err=_revenue_payment_link("subscription",plan_key,plan["price"],plan["currency"])
+    if err: flash(err,"danger"); return redirect(url_for("revenue_hub"))
+    return redirect(link)
+
+
+@app.route("/revenue/advertise", methods=["GET","POST"])
+@login_required
+def revenue_advertise():
+    uid=_revenue_user_id()
+    if request.method=="POST":
+        title=clean(request.form.get("title")); budget=safe_float(request.form.get("budget")) or 0
+        if not title or budget < KOJA_AD_MIN_BUDGET:
+            flash(f"Campaign title and a minimum budget of ZMW {KOJA_AD_MIN_BUDGET:.2f} are required.","danger")
+            return redirect(url_for("revenue_advertise"))
+        row,err=db_insert("koja_ad_campaigns",{"id":str(uuid.uuid4()),"user_id":uid,"title":title,"product_id":clean(request.form.get("product_id")) or None,"budget":budget,"spent":0,"status":"pending_payment","created_at":utc_now(),"updated_at":utc_now()})
+        if err or not row: flash("Campaign could not be created.","danger"); return redirect(url_for("revenue_advertise"))
+        link,err=_revenue_payment_link("advertising",row["id"],budget,"ZMW")
+        if err: flash(err,"danger"); return redirect(url_for("revenue_advertise"))
+        return redirect(link)
+    campaigns=db_select("koja_ad_campaigns",{"user_id":uid},order="created_at.desc",limit=100)
+    return render_page("KOJA Advertising",r'''
+<div class="hero"><h2>KOJA Advertising</h2><p>Pay to promote products and reach buyers across KOJA.</p></div>
+<div class="card"><form method="post"><label>Campaign title</label><input name="title" required maxlength="180"><label>Product ID (optional)</label><input name="product_id"><label>Campaign budget (ZMW)</label><input name="budget" type="number" min="50" step="0.01" required><button class="btn">Pay & Launch Campaign</button></form></div>
+<div class="card"><h3>Campaigns</h3><table><tr><th>Campaign</th><th>Budget</th><th>Spent</th><th>Status</th></tr>{% for c in campaigns %}<tr><td>{{ c.title }}</td><td>ZMW {{ '%.2f'|format(c.budget|float) }}</td><td>ZMW {{ '%.2f'|format(c.spent|float) }}</td><td>{{ c.status }}</td></tr>{% else %}<tr><td colspan="4">No campaigns.</td></tr>{% endfor %}</table></div>
+''',campaigns=campaigns)
+
+
+@app.route("/revenue/procurement", methods=["GET","POST"])
+@login_required
+def revenue_procurement():
+    uid=_revenue_user_id()
+    if request.method=="POST":
+        item=clean(request.form.get("item")); qty=max(1,int(request.form.get("quantity") or 1)); target=safe_float(request.form.get("target_budget")) or 0
+        if not item: flash("Item is required.","danger"); return redirect(url_for("revenue_procurement"))
+        row,err=db_insert("koja_procurement_requests",{"id":str(uuid.uuid4()),"buyer_id":uid,"item":item,"quantity":qty,"target_budget":target,"status":"open","created_at":utc_now(),"updated_at":utc_now()})
+        if err: flash("Procurement request could not be saved.","danger")
+        else: flash("Procurement request published. KOJA can match suppliers and apply its transaction fee when completed.","success")
+        return redirect(url_for("revenue_procurement"))
+    rows=db_select("koja_procurement_requests",{"buyer_id":uid},order="created_at.desc",limit=100)
+    return render_page("KOJA Procurement",r'''
+<div class="hero"><h2>KOJA Business Procurement</h2><p>Bulk sourcing connects businesses with sellers. KOJA earns a transaction fee when procurement orders complete.</p></div>
+<div class="card"><form method="post"><label>What do you need?</label><input name="item" required maxlength="300" placeholder="Example: 500 bags of cement"><label>Quantity</label><input name="quantity" type="number" min="1" value="1"><label>Target budget (ZMW)</label><input name="target_budget" type="number" min="0" step="0.01"><button class="btn">Post Procurement Request</button></form></div>
+<div class="card"><h3>Your requests</h3>{% for r in rows %}<p><strong>{{ r.item }}</strong> · {{ r.quantity }} · {{ r.status }}</p>{% else %}<p>No requests.</p>{% endfor %}</div>
+''',rows=rows)
+
+
+@app.route("/revenue/enterprise", methods=["GET","POST"])
+@login_required
+def revenue_enterprise():
+    uid=_revenue_user_id()
+    if request.method=="POST":
+        company=clean(request.form.get("company")); use_case=clean(request.form.get("use_case")); volume=safe_float(request.form.get("monthly_volume")) or 0
+        if not company or not use_case: flash("Company and use case are required.","danger")
+        else:
+            row,err=db_insert("koja_enterprise_accounts",{"id":str(uuid.uuid4()),"user_id":uid,"company_name":company,"use_case":use_case,"monthly_volume":volume,"status":"lead","created_at":utc_now(),"updated_at":utc_now()})
+            flash("Enterprise request submitted." if not err else "Could not submit enterprise request.","success" if not err else "danger")
+        return redirect(url_for("revenue_enterprise"))
+    rows=db_select("koja_enterprise_accounts",{"user_id":uid},order="created_at.desc",limit=50)
+    return render_page("KOJA Enterprise",r'''
+<div class="hero"><h2>KOJA Enterprise & API</h2><p>Commerce infrastructure for large retailers, institutions, logistics companies and African businesses.</p></div>
+<div class="card"><form method="post"><label>Company</label><input name="company" required maxlength="180"><label>Use case</label><textarea name="use_case" required maxlength="5000" placeholder="Catalog, orders, procurement, delivery, analytics or API integration"></textarea><label>Estimated monthly transaction volume (ZMW)</label><input name="monthly_volume" type="number" min="0" step="0.01"><button class="btn">Request Enterprise Access</button></form></div>
+<div class="card"><h3>Requests</h3>{% for r in rows %}<p><strong>{{ r.company_name }}</strong> · {{ r.status }} · Estimated volume ZMW {{ '%.2f'|format(r.monthly_volume|float) }}</p>{% else %}<p>No enterprise requests.</p>{% endfor %}</div>
+''',rows=rows)
+
+
+@app.route("/revenue/payment/callback")
+@login_required
+def revenue_payment_callback():
+    txid=clean(request.args.get("transaction_id")); txref=clean(request.args.get("tx_ref") or request.args.get("tx_ref_id")); status=clean(request.args.get("status"))
+    if not txid: flash("Payment transaction was not supplied.","danger"); return redirect(url_for("revenue_hub"))
+    tx,err=verify_flutterwave_transaction(txid)
+    if err or not tx: flash("Payment verification failed.","danger"); return redirect(url_for("revenue_hub"))
+    payment=first_row("koja_revenue_payments",{"tx_ref":txref}) if txref else None
+    if not payment: payment=first_row("koja_revenue_payments",{"user_id":_revenue_user_id()},order=None) if False else None
+    if not payment:
+        flash("Revenue payment record was not found.","danger"); return redirect(url_for("revenue_hub"))
+    expected=float(payment.get("amount") or 0); paid=float(tx.get("amount") or 0); currency=str(tx.get("currency") or "").upper()
+    if str(tx.get("status") or "").lower()!="successful" or abs(paid-expected)>0.01 or currency!=str(payment.get("currency") or "ZMW").upper():
+        db_update("koja_revenue_payments",{"id":payment.get("id")},{"status":"failed","transaction_id":str(txid),"updated_at":utc_now()})
+        flash("Payment verification did not match the expected amount or currency.","danger"); return redirect(url_for("revenue_hub"))
+    if str(payment.get("status"))=="paid": return redirect(url_for("revenue_hub"))
+    db_update("koja_revenue_payments",{"id":payment.get("id")},{"status":"paid","transaction_id":str(txid),"updated_at":utc_now()})
+    kind=str(payment.get("kind")); item=str(payment.get("item_key")); uid=_revenue_user_id()
+    if kind=="subscription":
+        plan=KOJA_REVENUE_PLANS.get(item,{})
+        sub_payload={"user_id":uid,"plan":item,"monthly_price":expected,"status":"active","started_at":utc_now(),"updated_at":utc_now()}; existing_sub=first_row("koja_revenue_subscriptions",{"user_id":uid}); db_update("koja_revenue_subscriptions",{"user_id":uid},sub_payload) if existing_sub else db_insert("koja_revenue_subscriptions",{"id":str(uuid.uuid4()),**sub_payload})
+    elif kind=="advertising":
+        db_update("koja_ad_campaigns",{"id":item,"user_id":uid},{"status":"active","paid_amount":expected,"updated_at":utc_now()})
+    _revenue_log(uid,kind,expected,payment.get("currency") or "ZMW",payment.get("id"),{"item_key":item})
+    flash("Payment verified and service activated.","success")
+    return redirect(url_for("revenue_hub"))
+
+
+@app.route("/admin/growth-revenue")
+@admin_required
+def admin_growth_revenue():
+    events=db_select("koja_revenue_events",order="created_at.desc",limit=5000)
+    payments=db_select("koja_revenue_payments",order="created_at.desc",limit=5000)
+    paid=[x for x in payments if str(x.get("status"))=="paid"]
+    total=sum(_num(x.get("amount")) for x in paid)
+    streams={}
+    for x in paid: streams[x.get("kind") or "other"]=streams.get(x.get("kind") or "other",0)+_num(x.get("amount"))
+    return render_page("KOJA Growth Revenue",r'''
+<div class="hero"><h2>KOJA Growth Revenue</h2><p>Scalable monetization streams and platform revenue.</p></div>
+<div class="grid"><div class="stat"><div class="small">Revenue service payments</div><div class="big">ZMW {{ '%.2f'|format(total) }}</div></div>{% for k,v in streams.items() %}<div class="stat"><div class="small">{{ k }}</div><div class="big">ZMW {{ '%.2f'|format(v) }}</div></div>{% endfor %}</div>
+<div class="card"><h3>Recent revenue events</h3><table><tr><th>Date</th><th>Stream</th><th>Amount</th></tr>{% for x in events[:200] %}<tr><td>{{ x.created_at }}</td><td>{{ x.stream }}</td><td>ZMW {{ '%.2f'|format(x.amount|float) }}</td></tr>{% else %}<tr><td colspan="3">No events.</td></tr>{% endfor %}</table></div>
+''',events=events,total=total,streams=streams)
+
+# KOJA V10 — AFRICA SCALE PLATFORM FOUNDATION
+KOJA_V10_COUNTRIES = {'ZM':('Zambia','ZMW','K'),'CD':('DR Congo','CDF','FC'),'MW':('Malawi','MWK','MK'),'TZ':('Tanzania','TZS','TSh'),'ZW':('Zimbabwe','USD','$'),'BW':('Botswana','BWP','P'),'ZA':('South Africa','ZAR','R'),'KE':('Kenya','KES','KSh'),'UG':('Uganda','UGX','USh'),'RW':('Rwanda','RWF','RF'),'NG':('Nigeria','NGN','₦'),'GH':('Ghana','GHS','GH₵')}
+def _v10_hash(v): return hashlib.sha256(str(v).encode()).hexdigest()
+@app.route('/platform')
+def platform_home():
+ return render_page('KOJA Platform',r'''<div class="hero"><h2>KOJA AFRICA</h2><p>One platform for African commerce, intelligence, business and infrastructure.</p><form action="{{ url_for('platform_search') }}" method="get"><input name="q" required placeholder="Search products, businesses, services, jobs, places and knowledge"><button class="btn">Search KOJA</button></form></div><div class="grid">{% for title,desc,href in services %}<div class="card"><h3>{{ title }}</h3><p>{{ desc }}</p><a class="btn" href="{{ href }}">Open</a></div>{% endfor %}</div>''',services=[('AI','Ask, research, create and automate with KOJA AI',url_for('ai')),('Market','Buy and sell across Africa',url_for('market') if 'market' in app.view_functions else url_for('marketplace')),('Business','POS, inventory, sales and analytics',url_for('business_dashboard') if 'business_dashboard' in app.view_functions else url_for('revenue_hub')),('Ads','Paid promotion across KOJA',url_for('revenue_advertise')),('Procurement','Bulk sourcing and supplier quotes',url_for('revenue_procurement')),('Enterprise','Enterprise integrations and APIs',url_for('revenue_enterprise')),('Growth','KOJA monetization services',url_for('revenue_hub'))])
+@app.route('/platform/search')
+def platform_search():
+ q=clean(request.args.get('q')); results=[]
+ if q:
+  for table,kind,fields in [('koja_marketplace_products','Product',['name','title','description']),('koja_businesses','Business',['business_name','name','description']),('service_providers','Professional',['full_name','profession','bio'])]:
+   try:
+    for row in (db_select(table,limit=80) or []):
+     hay=' '.join(str(row.get(f) or '') for f in fields).lower()
+     if q.lower() in hay: results.append({'kind':kind,'title':first_nonempty(row.get('name'),row.get('title'),row.get('business_name'),row.get('full_name'),'Result'),'description':first_nonempty(row.get('description'),row.get('bio'),'')})
+     if len(results)>=50: break
+   except Exception: pass
+ return render_page('KOJA Search',r'''<div class="hero"><h2>KOJA Search</h2><form method="get"><input name="q" value="{{ q }}" placeholder="Search KOJA"><button class="btn">Search</button></form></div><div class="grid">{% for x in results %}<div class="card"><div class="small">{{ x.kind }}</div><h3>{{ x.title }}</h3><p>{{ x.description }}</p></div>{% else %}<div class="card"><p>{% if q %}No matching results yet.{% else %}Search across KOJA.{% endif %}</p></div>{% endfor %}</div>''',q=q,results=results)
+@app.route('/platform/api-key',methods=['GET','POST'])
+@login_required
+def platform_api_key():
+ uid=_revenue_user_id()
+ if request.method=='POST':
+  name=clean(request.form.get('name')) or 'KOJA API Key'; raw='koja_'+secrets.token_urlsafe(32)
+  db_insert('koja_api_keys',{'id':str(uuid.uuid4()),'user_id':uid,'name':name,'key_prefix':raw[:12],'key_hash':_v10_hash(raw),'scopes':['catalog','orders','delivery'],'monthly_quota':10000,'status':'active','created_at':utc_now()})
+  return render_page('KOJA API Key Created',r'''<div class="hero"><h2>API key created</h2><p>Store this key securely. It will not be shown again.</p><div class="card"><input value="{{ key }}" readonly onclick="this.select()"></div></div>''',key=raw)
+ keys=db_select('koja_api_keys',{'user_id':uid},order='created_at.desc',limit=50)
+ return render_page('KOJA Developer',r'''<div class="hero"><h2>KOJA Developer Platform</h2><p>Build applications using KOJA commerce and infrastructure APIs.</p></div><div class="card"><form method="post"><label>Key name</label><input name="name" maxlength="120" required><button class="btn">Create API Key</button></form></div><div class="card"><h3>Your API keys</h3>{% for k in keys %}<p><strong>{{ k.name }}</strong> — {{ k.key_prefix }}... — {{ k.status }} — quota {{ k.monthly_quota }}</p>{% else %}<p>No API keys.</p>{% endfor %}</div>''',keys=keys)
+@app.route('/api/v10/health')
+def v10_health(): return jsonify({'ok':True,'version':'V10-SCALE','countries':len(KOJA_V10_COUNTRIES),'communications':'unchanged'})
+@app.route('/api/v10/countries')
+def v10_countries(): return jsonify({'countries':[{'code':k,'name':v[0],'currency':v[1],'symbol':v[2]} for k,v in KOJA_V10_COUNTRIES.items()]})
+@app.route('/admin/v10-scale')
+@admin_required
+def admin_v10_scale():
+ tables=['koja_revenue_events','koja_revenue_payments','koja_ad_events','koja_api_usage_events','koja_affiliate_events','koja_procurement_quotes']; counts={}
+ for t in tables:
+  try: counts[t]=len(db_select(t,limit=5000) or [])
+  except Exception: counts[t]=0
+ return render_page('KOJA V10 Scale Control',r'''<div class="hero"><h2>KOJA V10 Scale Control</h2><p>Platform economics across commerce, advertising, APIs, procurement and referrals.</p></div><div class="grid">{% for k,v in counts.items() %}<div class="stat"><div class="small">{{ k }}</div><div class="big">{{ v }}</div></div>{% endfor %}</div><div class="card"><h3>2030 scale model</h3><p>Target engines: commerce, advertising, payments, AI, Business, Cloud, logistics, APIs and enterprise. Actual revenue depends on adoption, pricing, margins, regulation and execution.</p></div>''',counts=counts)
 
 # ERROR HANDLERS
 # ============================================================
