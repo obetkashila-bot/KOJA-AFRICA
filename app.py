@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import base64
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from functools import wraps
@@ -109,7 +110,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.08-V6-FULL-MARKET-MEDIA-FLW-V3-AUDIO-WEBHOOK-FIX9-V52"
+APP_VERSION = "2026.09.08-V6-FULL-MARKET-MEDIA-FLW-V3-AUDIO-WEBHOOK-FIX11-V52"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -3136,7 +3137,7 @@ def _flutterwave_verify(transaction_id=None, tx_ref=None):
                     return tx
                 logger.error('Flutterwave verification attempt=%s HTTP=%s content_type=%s body=%s',attempt+1,r.status_code,r.headers.get('Content-Type',''),raw[:1200])
                 if attempt < 2:
-                    time.sleep(2)
+                    time.sleep(2 if attempt == 0 else 4)
 
         if tx_ref:
             # V3 transaction collection supports querying by merchant tx_ref.
