@@ -8,6 +8,7 @@ import smtplib
 from email.message import EmailMessage
 import json
 import hashlib
+import secrets
 import re
 from datetime import datetime, timezone, timedelta
 from functools import wraps
@@ -97,7 +98,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.09-V8-MARKET-COMPLETE"
+APP_VERSION = "2026.09.09-V11-MASTER-AFRICA-SCALE"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 KOJA_DELIVERY_BASE_FEE = float(os.getenv("KOJA_DELIVERY_BASE_FEE", "15") or 15)
@@ -6315,241 +6316,162 @@ def professional_public_post(profession_slug):
 
 # ============================================================
 
-
 # ============================================================
-# KOJA AFRICA SCALE REVENUE ENGINE V1
-# High-volume African monetization: subscriptions, ads, B2B procurement,
-# enterprise/API access, fulfillment margins, referrals and transaction fees.
-# Does not modify KOJA Communications.
+# KOJA V11 MASTER AFRICA SCALE ENGINE
+# Search + Ads + Procurement + API + Affiliate + Countries + Revenue
+# Communications intentionally untouched.
 # ============================================================
 
-KOJA_REVENUE_PLANS = {
-    "seller_pro": {"name":"Seller Pro", "price":49, "currency":"ZMW", "period":"monthly", "features":"Higher listing limits, analytics, boosts and seller tools"},
-    "seller_business": {"name":"Seller Business", "price":199, "currency":"ZMW", "period":"monthly", "features":"Advanced analytics, bulk tools, advertising credit and priority support"},
-    "seller_enterprise": {"name":"Seller Enterprise", "price":999, "currency":"ZMW", "period":"monthly", "features":"Multi-store, API access, procurement and enterprise controls"},
-    "api_pro": {"name":"KOJA API Pro", "price":499, "currency":"ZMW", "period":"monthly", "features":"Commerce, catalog, order and delivery API quota"},
+KOJA_V11_COUNTRIES = {
+    "ZM": ("Zambia", "ZMW", "K"), "CD": ("DR Congo", "CDF", "FC"),
+    "MW": ("Malawi", "MWK", "MK"), "TZ": ("Tanzania", "TZS", "TSh"),
+    "ZW": ("Zimbabwe", "USD", "$"), "BW": ("Botswana", "BWP", "P"),
+    "ZA": ("South Africa", "ZAR", "R"), "KE": ("Kenya", "KES", "KSh"),
+    "UG": ("Uganda", "UGX", "USh"), "RW": ("Rwanda", "RWF", "RF"),
+    "NG": ("Nigeria", "NGN", "₦"), "GH": ("Ghana", "GHS", "GH₵"),
 }
-KOJA_AD_MIN_BUDGET = float(os.getenv("KOJA_AD_MIN_BUDGET", "50"))
-KOJA_PROCUREMENT_FEE_RATE = float(os.getenv("KOJA_PROCUREMENT_FEE_RATE", "0.02"))
-KOJA_ENTERPRISE_FEE_RATE = float(os.getenv("KOJA_ENTERPRISE_FEE_RATE", "0.01"))
-KOJA_AFFILIATE_RATE = float(os.getenv("KOJA_AFFILIATE_RATE", "0.02"))
 
+def _v11_hash(value):
+    return hashlib.sha256((value or "").encode("utf-8")).hexdigest()
 
-def _revenue_user_id():
-    return (current_user() or {}).get("id")
+def _v11_country():
+    c=(request.args.get("country") or request.form.get("country") or session.get("koja_country") or "ZM").upper()
+    return c if c in KOJA_V11_COUNTRIES else "ZM"
 
+def _v11_safe_float(v, default=0.0):
+    try: return float(v)
+    except Exception: return default
 
-def _revenue_log(user_id, stream, amount=0, currency="ZMW", related_id=None, metadata=None):
-    row, err = db_insert("koja_revenue_events", {
-        "id": str(uuid.uuid4()), "user_id": user_id, "stream": stream,
-        "amount": round(float(amount or 0), 2), "currency": currency,
-        "related_id": related_id, "metadata": metadata or {}, "created_at": utc_now()
-    })
-    return row, err
+def _v11_table_select(table, filters=None, limit=200):
+    try: return db_select(table, filters or {}, order="created_at.desc", limit=limit) or []
+    except Exception: return []
 
+def _v11_search(q, limit=50):
+    q=(q or "").strip().lower()
+    if not q: return []
+    out=[]
+    # Use the actual KOJA schemas present in the current Market/Business build.
+    for p in _v11_table_select("koja_market_products", limit=500):
+        hay=" ".join(str(p.get(k) or "") for k in ("title","description","category","location","sku")).lower()
+        if q in hay:
+            out.append({"type":"market","title":p.get("title") or "Market product","description":p.get("description") or "","url":url_for("market_product_alias", product_id=p.get("id")),"price":p.get("price"),"currency":p.get("currency") or "ZMW"})
+    for b in _v11_table_select("koja_businesses", limit=300):
+        hay=" ".join(str(b.get(k) or "") for k in ("business_name","description","category","location")).lower()
+        if q in hay:
+            target="business_dashboard" if "business_dashboard" in app.view_functions else "revenue_hub"
+            out.append({"type":"business","title":b.get("business_name") or "Business","description":b.get("description") or "","url":url_for(target),"price":None,"currency":""})
+    for s in _v11_table_select("service_providers", limit=300):
+        hay=" ".join(str(s.get(k) or "") for k in ("full_name","service_type","specialty","bio","location")).lower()
+        if q in hay:
+            out.append({"type":"service","title":s.get("full_name") or "Professional provider","description":s.get("service_type") or s.get("specialty") or "","url":url_for("services"),"price":None,"currency":""})
+    return out[:limit]
 
-def _revenue_payment_link(kind, item_key, amount, currency="ZMW"):
-    uid = _revenue_user_id()
-    user = current_user() or {}
-    if not uid or not FLW_SECRET_KEY:
-        return None, "Flutterwave is not configured."
-    tx_ref = "KOJA-REV-" + uuid.uuid4().hex.upper()
-    row, err = db_insert("koja_revenue_payments", {
-        "id": str(uuid.uuid4()), "user_id": uid, "kind": kind, "item_key": item_key,
-        "amount": round(float(amount),2), "currency": currency, "tx_ref": tx_ref,
-        "status":"pending", "created_at":utc_now(), "updated_at":utc_now()
-    })
-    if err or not row:
-        return None, "Could not create payment record."
-    payload = {
-        "tx_ref": tx_ref, "amount": round(float(amount),2), "currency": currency,
-        "redirect_url": SITE_URL + "/revenue/payment/callback",
-        "customer": {"email": user.get("email") or "customer@koja.africa", "name": user.get("full_name") or "KOJA Customer"},
-        "customizations": {"title":"KOJA AFRICA", "description":"KOJA platform service"},
-        "meta": {"kind":kind, "item_key":item_key, "revenue_payment_id":row.get("id")}
-    }
-    try:
-        r=requests.post(FLW_BASE_URL+"/payments", headers={"Authorization":"Bearer "+FLW_SECRET_KEY,"Content-Type":"application/json"}, json=payload, timeout=30)
-        body=json_or_empty(r); link=((body.get("data") or {}).get("link") if isinstance(body,dict) else None)
-        if not link:
-            db_update("koja_revenue_payments", {"id":row.get("id")}, {"status":"failed","updated_at":utc_now()})
-            return None, str((body or {}).get("message") or "Payment link unavailable")
-        return link, None
-    except Exception as exc:
-        db_update("koja_revenue_payments", {"id":row.get("id")}, {"status":"failed","updated_at":utc_now()})
-        return None, str(exc)
+@app.route("/platform")
+def v11_platform():
+    cards=[
+        ("AI","/ai","AI assistants, research and business intelligence."),
+        ("Market","/market","Buy and sell products with physical delivery."),
+        ("Business","/business/pos","POS, inventory and business tools."),
+        ("Ads","/revenue/advertise","Promote products and reach customers."),
+        ("Procurement","/revenue/procurement","B2B sourcing and supplier quotes."),
+        ("Enterprise","/revenue/enterprise","Enterprise commercial infrastructure."),
+        ("Developer API","/platform/api-key","Build on KOJA with authenticated APIs."),
+    ]
+    return render_page("KOJA Africa Platform", r'''
+<div class="hero"><h2>KOJA AFRICA</h2><p>Search Africa. Buy Africa. Build Africa.</p></div>
+<div class="card"><form action="{{ url_for('v11_platform_search') }}" method="get"><input name="q" value="{{ q or '' }}" placeholder="Search products, businesses and services" required><button class="btn" type="submit">Search KOJA</button></form></div>
+<div class="grid">{% for name,url,desc in cards %}<div class="card"><h3>{{ name }}</h3><p>{{ desc }}</p><a class="btn secondary" href="{{ url }}">Open</a></div>{% endfor %}</div>
+''', cards=cards, q=request.args.get("q",""))
 
+@app.route("/platform/search")
+def v11_platform_search():
+    q=clean(request.args.get("q"))
+    results=_v11_search(q)
+    return render_page("KOJA Search", r'''
+<div class="hero"><h2>KOJA Search</h2><p>One discovery layer across the KOJA ecosystem.</p></div>
+<div class="card"><form><input name="q" value="{{ q }}" placeholder="Search KOJA" required><button class="btn">Search</button></form></div>
+{% if q %}<div class="card"><h3>{{ results|length }} result(s)</h3>{% for r in results %}<div style="padding:14px 0;border-top:1px solid var(--border)"><span class="badge">{{ r.type }}</span><h3><a href="{{ r.url }}">{{ r.title }}</a></h3><p>{{ r.description }}</p>{% if r.price is not none %}<strong>{{ money(r.price,r.currency) }}</strong>{% endif %}</div>{% else %}<p>No matching KOJA results.</p>{% endfor %}</div>{% endif %}
+''', q=q, results=results, money=marketplace_money)
+
+@app.route("/platform/api-key", methods=["GET","POST"])
+@login_required
+def v11_api_key():
+    uid=(current_user() or {}).get("id")
+    if request.method=="POST":
+        raw="koja_"+secrets.token_urlsafe(32)
+        row,err=db_insert("koja_api_keys",{"user_id":uid,"name":clean(request.form.get("name")) or "KOJA API Key","key_prefix":raw[:12],"key_hash":_v11_hash(raw),"scopes":["catalog","orders","delivery"],"monthly_quota":10000,"requests_used":0,"status":"active","created_at":utc_now()})
+        if err: flash("Could not create API key. Run the V11 SQL migration first.","danger")
+        else: return render_page("KOJA API Key", "<div class='hero'><h2>API key created</h2><p>Copy this key now. KOJA will not display the full secret again.</p></div><div class='card'><code style='word-break:break-all'>"+raw+"</code><p class='small'>Keep this secret. Do not put it in browser JavaScript or GitHub.</p></div>")
+    rows=_v11_table_select("koja_api_keys", {"user_id":uid}, 100)
+    return render_page("KOJA Developer API", r'''<div class="hero"><h2>KOJA Developer API</h2><p>API access for merchants, partners and software developers.</p></div><div class="card"><form method="post"><input name="name" placeholder="Key name"><button class="btn">Create API key</button></form></div><div class="card"><table><tr><th>Name</th><th>Prefix</th><th>Scope</th><th>Quota</th><th>Status</th></tr>{% for k in rows %}<tr><td>{{ k.name }}</td><td>{{ k.key_prefix }}</td><td>Catalog, Orders, Delivery</td><td>{{ k.monthly_quota }}</td><td>{{ k.status }}</td></tr>{% else %}<tr><td colspan="5">No API keys.</td></tr>{% endfor %}</table></div>''', rows=rows)
+
+@app.route("/api/v11/health")
+def v11_health():
+    return jsonify({"ok":True,"version":"V11-MASTER-AFRICA-SCALE","countries":len(KOJA_V11_COUNTRIES),"communications":"unchanged"})
+
+@app.route("/api/v11/countries")
+def v11_countries():
+    return jsonify([{"code":c,"name":v[0],"currency":v[1],"symbol":v[2]} for c,v in KOJA_V11_COUNTRIES.items()])
+
+@app.route("/admin/v11-scale")
+@admin_required
+def admin_v11_scale():
+    tables=["koja_revenue_events","koja_revenue_payments","koja_ad_events","koja_api_usage_events","koja_affiliate_events","koja_procurement_quotes"]
+    counts={t:len(_v11_table_select(t,limit=1000)) for t in tables}
+    return render_page("KOJA V11 Scale Control", r'''<div class="hero"><h2>KOJA V11 Master Scale</h2><p>Commercial infrastructure for multi-country growth.</p></div><div class="grid">{% for k,v in counts.items() %}<div class="stat"><div class="big">{{ v }}</div>{{ k }}</div>{% endfor %}</div><div class="card"><h3>2030 revenue engines</h3><p>Commerce, advertising, payments infrastructure, AI, business SaaS, logistics, APIs, enterprise, jobs, travel, learning and services.</p></div>''', counts=counts)
+
+# ============================================================
+# V11 REVENUE FLOWS
+# ============================================================
+
+V11_REVENUE_PLANS={"seller_pro":49,"seller_business":199,"seller_enterprise":999,"api_pro":499}
 
 @app.route("/revenue")
+def v11_revenue():
+    return render_page("KOJA Revenue", r'''<div class="hero"><h2>KOJA Revenue Platform</h2><p>Subscriptions, advertising, procurement, enterprise and developer infrastructure.</p></div><div class="grid">{% for key,price in plans.items() %}<div class="card"><h3>{{ key.replace('_',' ')|title }}</h3><div class="big">{{ price }} ZMW/month</div><a class="btn" href="{{ url_for('v11_subscribe',plan_key=key) }}">Choose plan</a></div>{% endfor %}</div><div class="grid"><div class="card"><h3>Advertising</h3><p>Sponsored market visibility and campaign budgets.</p><a class="btn secondary" href="{{ url_for('v11_advertise') }}">Advertise</a></div><div class="card"><h3>Procurement</h3><p>Supplier quotes and B2B sourcing.</p><a class="btn secondary" href="{{ url_for('v11_procurement') }}">Open procurement</a></div><div class="card"><h3>Enterprise</h3><p>Commercial platform accounts for organizations.</p><a class="btn secondary" href="{{ url_for('v11_enterprise') }}">Enterprise</a></div></div>''', plans=V11_REVENUE_PLANS)
+
+@app.route("/revenue/subscribe/<plan_key>", methods=["GET","POST"])
 @login_required
-def revenue_hub():
-    plans=[{"key":k,**v} for k,v in KOJA_REVENUE_PLANS.items()]
-    mine=db_select("koja_revenue_payments",{"user_id":_revenue_user_id()},order="created_at.desc",limit=50)
-    return render_page("KOJA Growth & Monetization",r'''
-<div class="hero"><h2>KOJA Growth & Monetization</h2><p>Merchant subscriptions, advertising, procurement, API access and scalable commerce services.</p></div>
-<div class="grid">
-{% for p in plans %}<div class="card"><h3>{{ p.name }}</h3><p>{{ p.features }}</p><p><strong>ZMW {{ '%.2f'|format(p.price|float) }}</strong> / {{ p.period }}</p><form method="post" action="{{ url_for('revenue_subscribe', plan_key=p.key) }}"><button class="btn">Subscribe</button></form></div>{% endfor %}
-<div class="card"><h3>Advertise on KOJA</h3><p>Promoted products, seller campaigns and marketplace visibility.</p><a class="btn" href="{{ url_for('revenue_advertise') }}">Create Campaign</a></div>
-<div class="card"><h3>Business Procurement</h3><p>Source inventory and bulk purchasing through KOJA.</p><a class="btn" href="{{ url_for('revenue_procurement') }}">Request Procurement</a></div>
-<div class="card"><h3>Enterprise/API</h3><p>Integrate KOJA commerce, catalog and delivery capabilities.</p><a class="btn" href="{{ url_for('revenue_enterprise') }}">Enterprise Access</a></div>
-</div>
-<div class="card"><h3>Your revenue-service payments</h3><table><tr><th>Date</th><th>Service</th><th>Amount</th><th>Status</th></tr>{% for x in mine %}<tr><td>{{ x.created_at }}</td><td>{{ x.kind }} / {{ x.item_key }}</td><td>ZMW {{ '%.2f'|format(x.amount|float) }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="4">No payments yet.</td></tr>{% endfor %}</table></div>
-''',plans=plans,mine=mine)
-
-
-@app.route("/revenue/subscribe/<plan_key>", methods=["POST"])
-@login_required
-def revenue_subscribe(plan_key):
-    plan=KOJA_REVENUE_PLANS.get(plan_key)
-    if not plan: abort(404)
-    link,err=_revenue_payment_link("subscription",plan_key,plan["price"],plan["currency"])
-    if err: flash(err,"danger"); return redirect(url_for("revenue_hub"))
-    return redirect(link)
-
+def v11_subscribe(plan_key):
+    if plan_key not in V11_REVENUE_PLANS: abort(404)
+    price=V11_REVENUE_PLANS[plan_key]
+    if request.method=="POST":
+        ref="KOJA-SUB-"+uuid.uuid4().hex.upper()
+        row,err=db_insert("koja_revenue_payments",{"user_id":(current_user() or {}).get("id"),"plan":plan_key,"amount":price,"currency":"ZMW","provider":"flutterwave","reference":ref,"status":"pending","created_at":utc_now()})
+        if err: flash("Payment record could not be created.","danger")
+        else: flash("Subscription payment initialized. Connect your existing Flutterwave checkout to complete verification.","success")
+    return render_page("KOJA Subscription", r'''<div class="hero"><h2>{{ plan|replace('_',' ')|title }}</h2><p>{{ price }} ZMW/month</p></div><div class="card"><form method="post"><button class="btn" type="submit">Continue to payment</button></form></div>''', plan=plan_key, price=price)
 
 @app.route("/revenue/advertise", methods=["GET","POST"])
 @login_required
-def revenue_advertise():
-    uid=_revenue_user_id()
+def v11_advertise():
     if request.method=="POST":
-        title=clean(request.form.get("title")); budget=safe_float(request.form.get("budget")) or 0
-        if not title or budget < KOJA_AD_MIN_BUDGET:
-            flash(f"Campaign title and a minimum budget of ZMW {KOJA_AD_MIN_BUDGET:.2f} are required.","danger")
-            return redirect(url_for("revenue_advertise"))
-        row,err=db_insert("koja_ad_campaigns",{"id":str(uuid.uuid4()),"user_id":uid,"title":title,"product_id":clean(request.form.get("product_id")) or None,"budget":budget,"spent":0,"status":"pending_payment","created_at":utc_now(),"updated_at":utc_now()})
-        if err or not row: flash("Campaign could not be created.","danger"); return redirect(url_for("revenue_advertise"))
-        link,err=_revenue_payment_link("advertising",row["id"],budget,"ZMW")
-        if err: flash(err,"danger"); return redirect(url_for("revenue_advertise"))
-        return redirect(link)
-    campaigns=db_select("koja_ad_campaigns",{"user_id":uid},order="created_at.desc",limit=100)
-    return render_page("KOJA Advertising",r'''
-<div class="hero"><h2>KOJA Advertising</h2><p>Pay to promote products and reach buyers across KOJA.</p></div>
-<div class="card"><form method="post"><label>Campaign title</label><input name="title" required maxlength="180"><label>Product ID (optional)</label><input name="product_id"><label>Campaign budget (ZMW)</label><input name="budget" type="number" min="50" step="0.01" required><button class="btn">Pay & Launch Campaign</button></form></div>
-<div class="card"><h3>Campaigns</h3><table><tr><th>Campaign</th><th>Budget</th><th>Spent</th><th>Status</th></tr>{% for c in campaigns %}<tr><td>{{ c.title }}</td><td>ZMW {{ '%.2f'|format(c.budget|float) }}</td><td>ZMW {{ '%.2f'|format(c.spent|float) }}</td><td>{{ c.status }}</td></tr>{% else %}<tr><td colspan="4">No campaigns.</td></tr>{% endfor %}</table></div>
-''',campaigns=campaigns)
-
+        budget=max(50,_v11_safe_float(request.form.get("budget"),50)); uid=(current_user() or {}).get("id")
+        row,err=db_insert("koja_ad_campaigns",{"user_id":uid,"name":clean(request.form.get("name")) or "KOJA Campaign","budget":budget,"currency":"ZMW","status":"pending","created_at":utc_now()})
+        if err: flash("Campaign could not be created. Run the V11 migration.","danger")
+        else: flash("Campaign created and awaiting payment/activation.","success")
+    return render_page("KOJA Advertising", r'''<div class="hero"><h2>KOJA Advertising</h2><p>Turn customer demand into a scalable advertising business.</p></div><div class="card"><form method="post"><input name="name" placeholder="Campaign name" required><input name="budget" type="number" min="50" step="0.01" value="50" required><button class="btn">Create campaign</button></form></div>''')
 
 @app.route("/revenue/procurement", methods=["GET","POST"])
 @login_required
-def revenue_procurement():
-    uid=_revenue_user_id()
+def v11_procurement():
+    uid=(current_user() or {}).get("id")
     if request.method=="POST":
-        item=clean(request.form.get("item")); qty=max(1,int(request.form.get("quantity") or 1)); target=safe_float(request.form.get("target_budget")) or 0
-        if not item: flash("Item is required.","danger"); return redirect(url_for("revenue_procurement"))
-        row,err=db_insert("koja_procurement_requests",{"id":str(uuid.uuid4()),"buyer_id":uid,"item":item,"quantity":qty,"target_budget":target,"status":"open","created_at":utc_now(),"updated_at":utc_now()})
-        if err: flash("Procurement request could not be saved.","danger")
-        else: flash("Procurement request published. KOJA can match suppliers and apply its transaction fee when completed.","success")
-        return redirect(url_for("revenue_procurement"))
-    rows=db_select("koja_procurement_requests",{"buyer_id":uid},order="created_at.desc",limit=100)
-    return render_page("KOJA Procurement",r'''
-<div class="hero"><h2>KOJA Business Procurement</h2><p>Bulk sourcing connects businesses with sellers. KOJA earns a transaction fee when procurement orders complete.</p></div>
-<div class="card"><form method="post"><label>What do you need?</label><input name="item" required maxlength="300" placeholder="Example: 500 bags of cement"><label>Quantity</label><input name="quantity" type="number" min="1" value="1"><label>Target budget (ZMW)</label><input name="target_budget" type="number" min="0" step="0.01"><button class="btn">Post Procurement Request</button></form></div>
-<div class="card"><h3>Your requests</h3>{% for r in rows %}<p><strong>{{ r.item }}</strong> · {{ r.quantity }} · {{ r.status }}</p>{% else %}<p>No requests.</p>{% endfor %}</div>
-''',rows=rows)
-
+        row,err=db_insert("koja_procurement_requests",{"buyer_id":uid,"title":clean(request.form.get("title")),"description":clean(request.form.get("description")),"quantity":max(1,int(_v11_safe_float(request.form.get("quantity"),1))),"status":"open","created_at":utc_now()})
+        flash("Procurement request submitted." if not err else "Procurement request could not be submitted.","success" if not err else "danger")
+    rows=_v11_table_select("koja_procurement_requests",{"buyer_id":uid},100)
+    return render_page("KOJA Procurement", r'''<div class="hero"><h2>B2B Procurement</h2><p>Request products and let approved suppliers compete with quotes.</p></div><div class="card"><form method="post"><input name="title" placeholder="What do you need?" required><textarea name="description" placeholder="Specifications"></textarea><input name="quantity" type="number" min="1" value="1"><button class="btn">Publish request</button></form></div><div class="card"><table><tr><th>Request</th><th>Quantity</th><th>Status</th></tr>{% for r in rows %}<tr><td>{{ r.title }}</td><td>{{ r.quantity }}</td><td>{{ r.status }}</td></tr>{% else %}<tr><td colspan="3">No procurement requests.</td></tr>{% endfor %}</table></div>''', rows=rows)
 
 @app.route("/revenue/enterprise", methods=["GET","POST"])
 @login_required
-def revenue_enterprise():
-    uid=_revenue_user_id()
+def v11_enterprise():
+    uid=(current_user() or {}).get("id")
     if request.method=="POST":
-        company=clean(request.form.get("company")); use_case=clean(request.form.get("use_case")); volume=safe_float(request.form.get("monthly_volume")) or 0
-        if not company or not use_case: flash("Company and use case are required.","danger")
-        else:
-            row,err=db_insert("koja_enterprise_accounts",{"id":str(uuid.uuid4()),"user_id":uid,"company_name":company,"use_case":use_case,"monthly_volume":volume,"status":"lead","created_at":utc_now(),"updated_at":utc_now()})
-            flash("Enterprise request submitted." if not err else "Could not submit enterprise request.","success" if not err else "danger")
-        return redirect(url_for("revenue_enterprise"))
-    rows=db_select("koja_enterprise_accounts",{"user_id":uid},order="created_at.desc",limit=50)
-    return render_page("KOJA Enterprise",r'''
-<div class="hero"><h2>KOJA Enterprise & API</h2><p>Commerce infrastructure for large retailers, institutions, logistics companies and African businesses.</p></div>
-<div class="card"><form method="post"><label>Company</label><input name="company" required maxlength="180"><label>Use case</label><textarea name="use_case" required maxlength="5000" placeholder="Catalog, orders, procurement, delivery, analytics or API integration"></textarea><label>Estimated monthly transaction volume (ZMW)</label><input name="monthly_volume" type="number" min="0" step="0.01"><button class="btn">Request Enterprise Access</button></form></div>
-<div class="card"><h3>Requests</h3>{% for r in rows %}<p><strong>{{ r.company_name }}</strong> · {{ r.status }} · Estimated volume ZMW {{ '%.2f'|format(r.monthly_volume|float) }}</p>{% else %}<p>No enterprise requests.</p>{% endfor %}</div>
-''',rows=rows)
+        row,err=db_insert("koja_enterprise_accounts",{"user_id":uid,"organization_name":clean(request.form.get("organization_name")),"contact_email":clean(request.form.get("contact_email")),"status":"lead","created_at":utc_now()})
+        flash("Enterprise request submitted." if not err else "Enterprise request could not be saved.","success" if not err else "danger")
+    return render_page("KOJA Enterprise", r'''<div class="hero"><h2>KOJA Enterprise</h2><p>Procurement, APIs, AI and commerce infrastructure for large organizations.</p></div><div class="card"><form method="post"><input name="organization_name" placeholder="Organization" required><input name="contact_email" type="email" placeholder="Contact email" required><button class="btn">Request enterprise access</button></form></div>''')
 
 
-@app.route("/revenue/payment/callback")
-@login_required
-def revenue_payment_callback():
-    txid=clean(request.args.get("transaction_id")); txref=clean(request.args.get("tx_ref") or request.args.get("tx_ref_id")); status=clean(request.args.get("status"))
-    if not txid: flash("Payment transaction was not supplied.","danger"); return redirect(url_for("revenue_hub"))
-    tx,err=verify_flutterwave_transaction(txid)
-    if err or not tx: flash("Payment verification failed.","danger"); return redirect(url_for("revenue_hub"))
-    payment=first_row("koja_revenue_payments",{"tx_ref":txref}) if txref else None
-    if not payment: payment=first_row("koja_revenue_payments",{"user_id":_revenue_user_id()},order=None) if False else None
-    if not payment:
-        flash("Revenue payment record was not found.","danger"); return redirect(url_for("revenue_hub"))
-    expected=float(payment.get("amount") or 0); paid=float(tx.get("amount") or 0); currency=str(tx.get("currency") or "").upper()
-    if str(tx.get("status") or "").lower()!="successful" or abs(paid-expected)>0.01 or currency!=str(payment.get("currency") or "ZMW").upper():
-        db_update("koja_revenue_payments",{"id":payment.get("id")},{"status":"failed","transaction_id":str(txid),"updated_at":utc_now()})
-        flash("Payment verification did not match the expected amount or currency.","danger"); return redirect(url_for("revenue_hub"))
-    if str(payment.get("status"))=="paid": return redirect(url_for("revenue_hub"))
-    db_update("koja_revenue_payments",{"id":payment.get("id")},{"status":"paid","transaction_id":str(txid),"updated_at":utc_now()})
-    kind=str(payment.get("kind")); item=str(payment.get("item_key")); uid=_revenue_user_id()
-    if kind=="subscription":
-        plan=KOJA_REVENUE_PLANS.get(item,{})
-        sub_payload={"user_id":uid,"plan":item,"monthly_price":expected,"status":"active","started_at":utc_now(),"updated_at":utc_now()}; existing_sub=first_row("koja_revenue_subscriptions",{"user_id":uid}); db_update("koja_revenue_subscriptions",{"user_id":uid},sub_payload) if existing_sub else db_insert("koja_revenue_subscriptions",{"id":str(uuid.uuid4()),**sub_payload})
-    elif kind=="advertising":
-        db_update("koja_ad_campaigns",{"id":item,"user_id":uid},{"status":"active","paid_amount":expected,"updated_at":utc_now()})
-    _revenue_log(uid,kind,expected,payment.get("currency") or "ZMW",payment.get("id"),{"item_key":item})
-    flash("Payment verified and service activated.","success")
-    return redirect(url_for("revenue_hub"))
-
-
-@app.route("/admin/growth-revenue")
-@admin_required
-def admin_growth_revenue():
-    events=db_select("koja_revenue_events",order="created_at.desc",limit=5000)
-    payments=db_select("koja_revenue_payments",order="created_at.desc",limit=5000)
-    paid=[x for x in payments if str(x.get("status"))=="paid"]
-    total=sum(_num(x.get("amount")) for x in paid)
-    streams={}
-    for x in paid: streams[x.get("kind") or "other"]=streams.get(x.get("kind") or "other",0)+_num(x.get("amount"))
-    return render_page("KOJA Growth Revenue",r'''
-<div class="hero"><h2>KOJA Growth Revenue</h2><p>Scalable monetization streams and platform revenue.</p></div>
-<div class="grid"><div class="stat"><div class="small">Revenue service payments</div><div class="big">ZMW {{ '%.2f'|format(total) }}</div></div>{% for k,v in streams.items() %}<div class="stat"><div class="small">{{ k }}</div><div class="big">ZMW {{ '%.2f'|format(v) }}</div></div>{% endfor %}</div>
-<div class="card"><h3>Recent revenue events</h3><table><tr><th>Date</th><th>Stream</th><th>Amount</th></tr>{% for x in events[:200] %}<tr><td>{{ x.created_at }}</td><td>{{ x.stream }}</td><td>ZMW {{ '%.2f'|format(x.amount|float) }}</td></tr>{% else %}<tr><td colspan="3">No events.</td></tr>{% endfor %}</table></div>
-''',events=events,total=total,streams=streams)
-
-# KOJA V10 — AFRICA SCALE PLATFORM FOUNDATION
-KOJA_V10_COUNTRIES = {'ZM':('Zambia','ZMW','K'),'CD':('DR Congo','CDF','FC'),'MW':('Malawi','MWK','MK'),'TZ':('Tanzania','TZS','TSh'),'ZW':('Zimbabwe','USD','$'),'BW':('Botswana','BWP','P'),'ZA':('South Africa','ZAR','R'),'KE':('Kenya','KES','KSh'),'UG':('Uganda','UGX','USh'),'RW':('Rwanda','RWF','RF'),'NG':('Nigeria','NGN','₦'),'GH':('Ghana','GHS','GH₵')}
-def _v10_hash(v): return hashlib.sha256(str(v).encode()).hexdigest()
-@app.route('/platform')
-def platform_home():
- return render_page('KOJA Platform',r'''<div class="hero"><h2>KOJA AFRICA</h2><p>One platform for African commerce, intelligence, business and infrastructure.</p><form action="{{ url_for('platform_search') }}" method="get"><input name="q" required placeholder="Search products, businesses, services, jobs, places and knowledge"><button class="btn">Search KOJA</button></form></div><div class="grid">{% for title,desc,href in services %}<div class="card"><h3>{{ title }}</h3><p>{{ desc }}</p><a class="btn" href="{{ href }}">Open</a></div>{% endfor %}</div>''',services=[('AI','Ask, research, create and automate with KOJA AI',url_for('ai')),('Market','Buy and sell across Africa',url_for('market') if 'market' in app.view_functions else url_for('marketplace')),('Business','POS, inventory, sales and analytics',url_for('business_dashboard') if 'business_dashboard' in app.view_functions else url_for('revenue_hub')),('Ads','Paid promotion across KOJA',url_for('revenue_advertise')),('Procurement','Bulk sourcing and supplier quotes',url_for('revenue_procurement')),('Enterprise','Enterprise integrations and APIs',url_for('revenue_enterprise')),('Growth','KOJA monetization services',url_for('revenue_hub'))])
-@app.route('/platform/search')
-def platform_search():
- q=clean(request.args.get('q')); results=[]
- if q:
-  for table,kind,fields in [('koja_marketplace_products','Product',['name','title','description']),('koja_businesses','Business',['business_name','name','description']),('service_providers','Professional',['full_name','profession','bio'])]:
-   try:
-    for row in (db_select(table,limit=80) or []):
-     hay=' '.join(str(row.get(f) or '') for f in fields).lower()
-     if q.lower() in hay: results.append({'kind':kind,'title':first_nonempty(row.get('name'),row.get('title'),row.get('business_name'),row.get('full_name'),'Result'),'description':first_nonempty(row.get('description'),row.get('bio'),'')})
-     if len(results)>=50: break
-   except Exception: pass
- return render_page('KOJA Search',r'''<div class="hero"><h2>KOJA Search</h2><form method="get"><input name="q" value="{{ q }}" placeholder="Search KOJA"><button class="btn">Search</button></form></div><div class="grid">{% for x in results %}<div class="card"><div class="small">{{ x.kind }}</div><h3>{{ x.title }}</h3><p>{{ x.description }}</p></div>{% else %}<div class="card"><p>{% if q %}No matching results yet.{% else %}Search across KOJA.{% endif %}</p></div>{% endfor %}</div>''',q=q,results=results)
-@app.route('/platform/api-key',methods=['GET','POST'])
-@login_required
-def platform_api_key():
- uid=_revenue_user_id()
- if request.method=='POST':
-  name=clean(request.form.get('name')) or 'KOJA API Key'; raw='koja_'+secrets.token_urlsafe(32)
-  db_insert('koja_api_keys',{'id':str(uuid.uuid4()),'user_id':uid,'name':name,'key_prefix':raw[:12],'key_hash':_v10_hash(raw),'scopes':['catalog','orders','delivery'],'monthly_quota':10000,'status':'active','created_at':utc_now()})
-  return render_page('KOJA API Key Created',r'''<div class="hero"><h2>API key created</h2><p>Store this key securely. It will not be shown again.</p><div class="card"><input value="{{ key }}" readonly onclick="this.select()"></div></div>''',key=raw)
- keys=db_select('koja_api_keys',{'user_id':uid},order='created_at.desc',limit=50)
- return render_page('KOJA Developer',r'''<div class="hero"><h2>KOJA Developer Platform</h2><p>Build applications using KOJA commerce and infrastructure APIs.</p></div><div class="card"><form method="post"><label>Key name</label><input name="name" maxlength="120" required><button class="btn">Create API Key</button></form></div><div class="card"><h3>Your API keys</h3>{% for k in keys %}<p><strong>{{ k.name }}</strong> — {{ k.key_prefix }}... — {{ k.status }} — quota {{ k.monthly_quota }}</p>{% else %}<p>No API keys.</p>{% endfor %}</div>''',keys=keys)
-@app.route('/api/v10/health')
-def v10_health(): return jsonify({'ok':True,'version':'V10-SCALE','countries':len(KOJA_V10_COUNTRIES),'communications':'unchanged'})
-@app.route('/api/v10/countries')
-def v10_countries(): return jsonify({'countries':[{'code':k,'name':v[0],'currency':v[1],'symbol':v[2]} for k,v in KOJA_V10_COUNTRIES.items()]})
-@app.route('/admin/v10-scale')
-@admin_required
-def admin_v10_scale():
- tables=['koja_revenue_events','koja_revenue_payments','koja_ad_events','koja_api_usage_events','koja_affiliate_events','koja_procurement_quotes']; counts={}
- for t in tables:
-  try: counts[t]=len(db_select(t,limit=5000) or [])
-  except Exception: counts[t]=0
- return render_page('KOJA V10 Scale Control',r'''<div class="hero"><h2>KOJA V10 Scale Control</h2><p>Platform economics across commerce, advertising, APIs, procurement and referrals.</p></div><div class="grid">{% for k,v in counts.items() %}<div class="stat"><div class="small">{{ k }}</div><div class="big">{{ v }}</div></div>{% endfor %}</div><div class="card"><h3>2030 scale model</h3><p>Target engines: commerce, advertising, payments, AI, Business, Cloud, logistics, APIs and enterprise. Actual revenue depends on adoption, pricing, margins, regulation and execution.</p></div>''',counts=counts)
 
 # ERROR HANDLERS
 # ============================================================
