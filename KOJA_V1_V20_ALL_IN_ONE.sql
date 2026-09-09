@@ -1740,3 +1740,135 @@ create table if not exists public.koja_developer_api_keys (
  created_at timestamptz not null default now()
 );
 create index if not exists koja_developer_api_keys_owner_idx on public.koja_developer_api_keys(owner_id,created_at desc);
+-- KOJA V12-V20 COMPLETE ENGINE ADD-ON
+-- Additive/idempotent. Communications is not touched.
+
+-- V12 Search & Discovery
+create table if not exists public.koja_v12_search_queries (
+ id uuid primary key default gen_random_uuid(), user_id uuid, query text not null, source text default 'all', filters jsonb not null default '{}'::jsonb, result_count integer default 0, created_at timestamptz not null default now()
+);
+create table if not exists public.koja_v12_search_index (
+ id uuid primary key default gen_random_uuid(), object_type text not null, object_id text not null, title text not null default '', description text default '', country_code text default 'ZM', url text, status text default 'active', metadata jsonb not null default '{}'::jsonb, created_at timestamptz not null default now(), updated_at timestamptz not null default now(), unique(object_type,object_id)
+);
+create index if not exists koja_v12_search_idx on public.koja_v12_search_index(status,country_code,updated_at desc);
+create index if not exists koja_v12_queries_user_idx on public.koja_v12_search_queries(user_id,created_at desc);
+
+-- V13 Ads Network
+create table if not exists public.koja_v13_ad_creatives (
+ id uuid primary key default gen_random_uuid(), campaign_id uuid not null references public.koja_v13_ad_campaigns(id) on delete cascade, title text not null, body text default '', media_url text, destination_url text, status text not null default 'draft', created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+);
+create table if not exists public.koja_v13_ad_placements (
+ id uuid primary key default gen_random_uuid(), placement_key text not null unique, name text not null, pricing_model text not null default 'cpc', price numeric(18,6) not null default 0, status text not null default 'active', metadata jsonb not null default '{}'::jsonb
+);
+create table if not exists public.koja_v13_ad_billing (
+ id uuid primary key default gen_random_uuid(), campaign_id uuid not null references public.koja_v13_ad_campaigns(id) on delete cascade, impressions bigint default 0, clicks bigint default 0, spend numeric(18,2) default 0, currency text default 'ZMW', updated_at timestamptz not null default now(), unique(campaign_id)
+);
+create index if not exists koja_v13_creatives_campaign_idx on public.koja_v13_ad_creatives(campaign_id,created_at desc);
+insert into public.koja_v13_ad_placements(placement_key,name,pricing_model) values
+('search','Search results','cpc'),('marketplace','Marketplace','cpc'),('services','Professional services','cpc'),('home','KOJA home','cpm')
+on conflict(placement_key) do nothing;
+
+-- V14 KOJA Pay
+create table if not exists public.koja_v14_payment_methods (
+ id uuid primary key default gen_random_uuid(), user_id uuid not null, method_type text not null, provider text not null, masked_reference text default '', status text not null default 'active', metadata jsonb not null default '{}'::jsonb, created_at timestamptz not null default now()
+);
+create table if not exists public.koja_v14_ledger_entries (
+ id uuid primary key default gen_random_uuid(), user_id uuid, transaction_id uuid, entry_type text not null, amount numeric(18,2) not null, currency text not null default 'ZMW', direction text not null, reference text, metadata jsonb not null default '{}'::jsonb, created_at timestamptz not null default now()
+);
+create table if not exists public.koja_v14_webhook_events (
+ id uuid primary key default gen_random_uuid(), provider text not null, event_id text not null, event_type text, signature_valid boolean default false, payload jsonb not null default '{}'::jsonb, processed boolean default false, created_at timestamptz not null default now(), unique(provider,event_id)
+);
+create table if not exists public.koja_v14_payouts (
+ id uuid primary key default gen_random_uuid(), user_id uuid not null, amount numeric(18,2) not null, currency text default 'ZMW', destination text not null, status text default 'pending', provider_reference text, created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+);
+create index if not exists koja_v14_ledger_user_idx on public.koja_v14_ledger_entries(user_id,created_at desc);
+create index if not exists koja_v14_webhook_idx on public.koja_v14_webhook_events(provider,created_at desc);
+
+-- V15 Cloud & Developer
+create table if not exists public.koja_cloud_projects (
+ id uuid primary key default gen_random_uuid(), owner_id uuid not null, name text not null, slug text not null, status text not null default 'active', plan text not null default 'free', region text default 'africa-south1', created_at timestamptz not null default now(), updated_at timestamptz not null default now(), unique(owner_id,slug)
+);
+create table if not exists public.koja_developer_api_keys (
+ id uuid primary key default gen_random_uuid(), owner_id uuid not null, name text not null, key_prefix text not null, key_hash text not null, status text not null default 'active', last_used_at timestamptz, created_at timestamptz not null default now()
+);
+create table if not exists public.koja_v15_usage (
+ id uuid primary key default gen_random_uuid(), owner_id uuid, project_id uuid references public.koja_cloud_projects(id) on delete cascade, metric text not null, units numeric(24,6) default 0, period_date date default current_date, created_at timestamptz not null default now()
+);
+create table if not exists public.koja_v15_deployments (
+ id uuid primary key default gen_random_uuid(), project_id uuid not null references public.koja_cloud_projects(id) on delete cascade, version text not null, environment text default 'production', status text default 'queued', commit_ref text, url text, created_at timestamptz not null default now(), completed_at timestamptz
+);
+create index if not exists koja_v15_usage_project_idx on public.koja_v15_usage(project_id,created_at desc);
+create index if not exists koja_v15_deployments_project_idx on public.koja_v15_deployments(project_id,created_at desc);
+
+-- V16 Intelligence & Analytics
+create table if not exists public.koja_v16_dashboards (
+ id uuid primary key default gen_random_uuid(), owner_id uuid not null, name text not null, config jsonb not null default '{}'::jsonb, status text default 'active', created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+);
+create table if not exists public.koja_v16_metrics (
+ id uuid primary key default gen_random_uuid(), metric_key text not null, dimension text default 'global', value numeric(24,6) default 0, period_start timestamptz, period_end timestamptz, metadata jsonb not null default '{}'::jsonb, created_at timestamptz not null default now()
+);
+create table if not exists public.koja_v16_alerts (
+ id uuid primary key default gen_random_uuid(), owner_id uuid, metric_key text not null, condition text not null, threshold numeric(24,6) not null, status text default 'active', created_at timestamptz not null default now()
+);
+create index if not exists koja_v16_metrics_key_idx on public.koja_v16_metrics(metric_key,created_at desc);
+
+-- V17 Identity & Trust
+create table if not exists public.koja_v17_identity_documents (
+ id uuid primary key default gen_random_uuid(), user_id uuid not null, document_type text not null, document_number text default '', storage_path text, status text default 'pending', submitted_at timestamptz not null default now(), reviewed_at timestamptz, reviewer_id uuid, note text default ''
+);
+create table if not exists public.koja_v17_trust_events (
+ id uuid primary key default gen_random_uuid(), user_id uuid, event_type text not null, score_delta numeric(10,2) default 0, source text default 'system', metadata jsonb not null default '{}'::jsonb, created_at timestamptz not null default now()
+);
+create table if not exists public.koja_v17_security_sessions (
+ id uuid primary key default gen_random_uuid(), user_id uuid not null, session_hash text not null, ip_address text default '', user_agent text default '', status text default 'active', created_at timestamptz not null default now(), last_seen_at timestamptz default now()
+);
+create index if not exists koja_v17_docs_user_idx on public.koja_v17_identity_documents(user_id,submitted_at desc);
+create index if not exists koja_v17_trust_user_idx on public.koja_v17_trust_events(user_id,created_at desc);
+
+-- V18 Workspace & Enterprise
+create table if not exists public.koja_workspace_tasks (
+ id uuid primary key default gen_random_uuid(), workspace_id uuid not null references public.koja_workspaces(id) on delete cascade, assignee_id uuid, creator_id uuid not null, title text not null, description text default '', priority text default 'normal', status text default 'todo', due_at timestamptz, created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+);
+create table if not exists public.koja_workspace_invoices (
+ id uuid primary key default gen_random_uuid(), workspace_id uuid references public.koja_workspaces(id) on delete cascade, customer_name text not null, amount numeric(18,2) not null default 0, currency text default 'ZMW', status text default 'draft', due_at timestamptz, created_at timestamptz not null default now()
+);
+create table if not exists public.koja_workspace_roles (
+ id uuid primary key default gen_random_uuid(), workspace_id uuid not null references public.koja_workspaces(id) on delete cascade, role_name text not null, permissions jsonb not null default '[]'::jsonb, unique(workspace_id,role_name)
+);
+create index if not exists koja_workspace_tasks_ws_idx on public.koja_workspace_tasks(workspace_id,status,created_at desc);
+create index if not exists koja_workspace_invoices_ws_idx on public.koja_workspace_invoices(workspace_id,created_at desc);
+
+-- V19 Super-App
+create table if not exists public.koja_v19_service_configs (
+ id uuid primary key default gen_random_uuid(), service_key text not null unique, enabled boolean default true, config jsonb not null default '{}'::jsonb, updated_at timestamptz not null default now()
+);
+create table if not exists public.koja_v19_workflows (
+ id uuid primary key default gen_random_uuid(), owner_id uuid, name text not null, trigger_service text not null, action_service text not null, config jsonb not null default '{}'::jsonb, status text default 'active', created_at timestamptz not null default now()
+);
+create table if not exists public.koja_v19_notifications (
+ id uuid primary key default gen_random_uuid(), user_id uuid not null, service_key text, title text not null, body text not null, channel text default 'in_app', status text default 'queued', created_at timestamptz not null default now()
+);
+create index if not exists koja_v19_workflows_owner_idx on public.koja_v19_workflows(owner_id,created_at desc);
+create index if not exists koja_v19_notifications_user_idx on public.koja_v19_notifications(user_id,status,created_at desc);
+
+-- V20 Autonomous Africa
+create table if not exists public.koja_v20_agent_tools (
+ id uuid primary key default gen_random_uuid(), agent_id uuid not null references public.koja_ai_agents(id) on delete cascade, tool_name text not null, enabled boolean default true, permissions jsonb not null default '{}'::jsonb, created_at timestamptz not null default now(), unique(agent_id,tool_name)
+);
+create table if not exists public.koja_v20_approvals (
+ id uuid primary key default gen_random_uuid(), owner_id uuid, agent_id uuid references public.koja_ai_agents(id) on delete cascade, run_id uuid references public.koja_ai_agent_runs(id) on delete cascade, action_type text not null, risk_level text default 'medium', amount numeric(18,2) default 0, currency text default 'ZMW', status text default 'pending', decision_note text default '', created_at timestamptz not null default now(), decided_at timestamptz
+);
+create table if not exists public.koja_v20_agent_memory (
+ id uuid primary key default gen_random_uuid(), agent_id uuid not null references public.koja_ai_agents(id) on delete cascade, memory_key text not null, memory_value jsonb not null default '{}'::jsonb, created_at timestamptz not null default now(), updated_at timestamptz not null default now(), unique(agent_id,memory_key)
+);
+create table if not exists public.koja_v20_iot_commands (
+ id uuid primary key default gen_random_uuid(), device_id uuid not null references public.koja_iot_devices(id) on delete cascade, command text not null, payload jsonb not null default '{}'::jsonb, status text default 'queued', created_at timestamptz not null default now(), executed_at timestamptz
+);
+create index if not exists koja_v20_approvals_owner_idx on public.koja_v20_approvals(owner_id,status,created_at desc);
+create index if not exists koja_v20_memory_agent_idx on public.koja_v20_agent_memory(agent_id,updated_at desc);
+
+-- Cross-engine safety and ownership indexes
+create index if not exists koja_engine_revenue_created_idx on public.koja_engine_revenue(created_at desc);
+create index if not exists koja_unified_tx_status_idx on public.koja_unified_transactions(status,created_at desc);
+
+-- End complete add-on

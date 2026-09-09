@@ -93,7 +93,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.09-V20-MASTER"
+APP_VERSION = "2026.09.09-V20.1-COMPLETE-ENGINES"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -5193,184 +5193,219 @@ if __name__=="__main__":
     app.run(host="0.0.0.0",port=port,debug=False)
 
 # ============================================================
-# KOJA V12 -> V20 MASTER ENGINES
-# Visible application layer for the additive V12-V20 SQL.
-# Communications routes and logic above remain unchanged/frozen.
+# KOJA V12 -> V20 MASTER ENGINES — COMPLETE APPLICATION LAYER
+# Communications remains frozen above this section.
 # ============================================================
 
 KOJA_ENGINE_DEFS = [
-    ('V12','Search & Discovery','koja_v12','search','Search products, businesses, professionals, documents and KOJA services from one discovery layer.'),
-    ('V13','Ads Network','koja_v13','ads','Campaigns, placements, impressions, clicks and monetization for advertisers.'),
-    ('V14','KOJA Pay','koja_v14','pay','Unified payment intent, transaction tracking and platform-fee accounting.'),
-    ('V15','Cloud & Developer','koja_v15','cloud','Developer projects, API keys, usage metering and cloud resources.'),
-    ('V16','Intelligence & Analytics','koja_v16','data','Cross-service events, metrics and revenue intelligence.'),
-    ('V17','Identity & Trust','koja_v17','identity','KOJA ID, verification levels, trust events and account security.'),
-    ('V18','Workspace & Enterprise','koja_v18','workspace','Team workspaces, files, documents, enterprise contracts and seats.'),
-    ('V19','KOJA Super-App','koja_v19','ecosystem','Unified service registry, service links and cross-service transactions.'),
-    ('V20','Autonomous Africa','koja_v20','autonomy','AI agents, IoT, autonomy jobs and future infrastructure.'),
+ ('V12','Search & Discovery','koja_v12','search','Unified discovery, indexing, filters, search history and ranked results.'),
+ ('V13','Ads Network','koja_v13','ads','Advertiser campaigns, creatives, placements, events, spend and monetization.'),
+ ('V14','KOJA Pay','koja_v14','pay','Payment intents, methods, ledger, webhooks, payouts and fee accounting.'),
+ ('V15','Cloud & Developer','koja_v15','developer','Cloud projects, API keys, usage, deployments and developer infrastructure.'),
+ ('V16','Intelligence & Analytics','koja_v16','data','Events, metrics, dashboards, alerts and revenue intelligence.'),
+ ('V17','Identity & Trust','koja_v17','identity','KOJA ID, verification, identity documents, trust and security controls.'),
+ ('V18','Workspace & Enterprise','koja_v18','workspace','Workspaces, members, roles, files, documents, tasks, invoices and enterprise seats.'),
+ ('V19','KOJA Super-App','koja_v19','ecosystem','Service registry, workflows, cross-service links and notifications.'),
+ ('V20','Autonomous Africa','koja_v20','autonomy','Agents, tools, memory, jobs, approvals, IoT and future infrastructure.'),
 ]
 
-
-def _engine_event(service_key, event_type, object_id=None, metadata=None):
+def _engine_event(service_key,event_type,object_id=None,metadata=None):
     uid=(current_user() or {}).get('id')
-    try:
-        db_insert('koja_user_service_events', {'id':str(uuid.uuid4()), 'user_id':uid, 'service_key':service_key,
-            'event_type':event_type, 'object_id':object_id, 'country_code':(current_user() or {}).get('default_country_code','ZM'),
-            'metadata':metadata or {}, 'created_at':utc_now()})
-    except Exception:
-        pass
+    try: db_insert('koja_user_service_events',{'id':str(uuid.uuid4()),'user_id':uid,'service_key':service_key,'event_type':event_type,'object_id':object_id,'country_code':(current_user() or {}).get('default_country_code','ZM'),'metadata':metadata or {},'created_at':utc_now()})
+    except Exception: pass
 
+def _engine_page(version,name,service_key,description,stats,body=''):
+    cards=''.join(f'<div class="card"><div class="small">{k}</div><div style="font-size:27px;font-weight:800">{v}</div></div>' for k,v in stats)
+    return render_page(f'{version} — {name}',f'<div class="hero"><h1>{version} — {name}</h1><p>{description}</p></div><div class="grid">{cards}</div>{body}')
 
-def _engine_page(version, name, service_key, description, stats, forms='', tables='', actions=''):
-    cards=''.join(f'<div class="card"><div class="small">{k}</div><div style="font-size:28px;font-weight:800">{v}</div></div>' for k,v in stats)
-    return render_page(f'{version} — {name}', f'''<div class="hero"><h1>{version} — {name}</h1><p>{description}</p></div><div class="grid">{cards}</div>{actions}{forms}{tables}''')
+def _safe_float(v,default=0):
+    try: return float(v)
+    except Exception: return default
 
+def _rows(table,filters=None,order='created_at.desc',limit=100):
+    try: return db_select(table,filters=filters or {},order=order,limit=limit)
+    except Exception: return []
 
-def _count(table, filters=None):
-    try: return len(db_select(table, filters=filters or {}, limit=500))
-    except Exception: return 0
-
+def _engine_nav():
+    return '<div class="card"><strong>KOJA V12–V20</strong><div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">'+''.join(f'<a class="btn" href="{url_for(route)}">{version}</a>' for version,_,route,_,_ in KOJA_ENGINE_DEFS)+'</div></div>'
 
 @app.route('/engines')
 @login_required
 def koja_engines():
-    cards=''.join(f'''<a class="card" style="text-decoration:none" href="{{{{ url_for('{route}') }}}}"><div class="small">{version}</div><h2>{name}</h2><p>{desc}</p><span class="btn">Open engine</span></a>''' for version,name,route,key,desc in KOJA_ENGINE_DEFS)
+    cards=''.join(f'<a class="card" style="text-decoration:none" href="{url_for(route)}"><div class="small">{version}</div><h2>{name}</h2><p>{desc}</p><span class="btn">Open</span></a>' for version,name,route,key,desc in KOJA_ENGINE_DEFS)
     _engine_event('ecosystem','engines_viewed')
-    return render_page('KOJA V12–V20 Engines', '<div class="hero"><h1>KOJA V12–V20</h1><p>The visible master engine layer. V1–V11 remain underneath it.</p></div><div class="grid">'+cards+'</div>')
+    return render_page('KOJA V12–V20 Engines','<div class="hero"><h1>KOJA V12–V20 MASTER ENGINES</h1><p>Complete application layer for the nine future engines. V1–V11 remain underneath and Communications is preserved.</p></div><div class="grid">'+cards+'</div>')
 
-
-@app.route('/v12')
+@app.route('/v12',methods=['GET','POST'])
 @login_required
 def koja_v12():
-    q=clean(request.args.get('q'))
-    market=[]
-    try:
-        if q:
-            # Discovery across common existing V1-V8 tables; failure of one table does not break search.
-            market=db_select('koja_market_products', filters={'title':f'ilike.*{q}*'}, order='created_at.desc', limit=20)
-        else: market=db_select('koja_market_products', order='created_at.desc', limit=10)
-    except Exception: market=[]
-    items=''.join(f'<div class="card"><h3>{str(x.get("title") or "KOJA listing")}</h3><p>{str(x.get("description") or "")[:300]}</p></div>' for x in market)
-    form='''<div class="card"><form method="get"><label>Search KOJA</label><input name="q" value="''' + q.replace('"','&quot;') + '''" placeholder="products, services, businesses, professionals..."><button class="btn">Search</button></form></div>'''
-    _engine_event('search','search',metadata={'q':q})
-    return _engine_page('V12','Search & Discovery','search','One discovery layer for the KOJA ecosystem.', [('Results',len(market)),('Services','12+'),('Scope','Africa')], forms=form, tables=items or '<div class="card">Start a search to discover KOJA resources.</div>')
+    uid=(current_user() or {}).get('id'); q=clean(request.values.get('q')); source=clean(request.values.get('source')) or 'all'; results=[]
+    if request.method=='POST' and q: db_insert('koja_v12_search_queries',{'id':str(uuid.uuid4()),'user_id':uid,'query':q,'source':source,'filters':{},'result_count':0,'created_at':utc_now()})
+    if q:
+        results=_rows('koja_v12_search_index',filters={'status':'active','title':f'ilike.*{q}*'},order='updated_at.desc',limit=30)
+        if not results: results=_rows('koja_market_products',filters={'title':f'ilike.*{q}*'},order='created_at.desc',limit=30)
+    else: results=_rows('koja_v12_search_index',filters={'status':'active'},order='updated_at.desc',limit=20)
+    body=_engine_nav()+'<div class="card"><h2>Universal Search</h2><form method="get"><label>Search</label><input name="q" value="'+q.replace('"','&quot;')+'" placeholder="products, services, businesses, documents, people"><label>Source</label><select name="source"><option>all</option><option>market</option><option>services</option><option>documents</option><option>businesses</option></select><button class="btn">Search</button></form></div>'
+    body+='<div class="grid">'+''.join(f'<div class="card"><div class="small">{x.get("object_type", "market")}</div><h3>{x.get("title") or "KOJA result"}</h3><p>{str(x.get("description") or "")[:350]}</p></div>' for x in results)+'</div>'
+    _engine_event('search','search',metadata={'q':q,'source':source,'results':len(results)})
+    return _engine_page('V12','Search & Discovery','search','Unified discovery with an index that can connect Market, services, businesses and documents.', [('Results',len(results)),('Index','Active'),('History','Enabled')],body)
 
-
-@app.route('/v13', methods=['GET','POST'])
+@app.route('/v13',methods=['GET','POST'])
 @login_required
 def koja_v13():
     uid=(current_user() or {}).get('id')
     if request.method=='POST':
-        name=clean(request.form.get('name'))
-        if name:
-            db_insert('koja_v13_ad_campaigns', {'id':str(uuid.uuid4()),'advertiser_id':uid,'name':name,'placement':clean(request.form.get('placement')) or 'search','daily_budget':float(request.form.get('daily_budget') or 0),'total_budget':float(request.form.get('total_budget') or 0),'status':'draft','created_at':utc_now(),'updated_at':utc_now()})
-            flash('V13 campaign created as draft.','success')
-    rows=db_select('koja_v13_ad_campaigns',filters={'advertiser_id':uid},order='created_at.desc',limit=50)
-    table='<div class="card"><h2>Your campaigns</h2><div class="table-wrap"><table><tr><th>Name</th><th>Placement</th><th>Budget</th><th>Status</th></tr>'+''.join(f'<tr><td>{r.get("name")}</td><td>{r.get("placement")}</td><td>{r.get("total_budget")}</td><td>{r.get("status")}</td></tr>' for r in rows)+'</table></div></div>'
-    form='''<div class="card"><h2>Create campaign</h2><form method="post"><label>Name</label><input name="name" required><label>Placement</label><select name="placement"><option>search</option><option>marketplace</option><option>services</option><option>home</option></select><div class="grid"><div><label>Daily budget</label><input name="daily_budget" type="number" min="0" step="0.01"></div><div><label>Total budget</label><input name="total_budget" type="number" min="0" step="0.01"></div></div><button class="btn">Create Draft</button></form></div>'''
+        action=clean(request.form.get('action'))
+        if action=='campaign' and clean(request.form.get('name')):
+            c,err=db_insert('koja_v13_ad_campaigns',{'id':str(uuid.uuid4()),'advertiser_id':uid,'name':clean(request.form.get('name')),'placement':clean(request.form.get('placement')) or 'search','daily_budget':_safe_float(request.form.get('daily_budget')),'total_budget':_safe_float(request.form.get('total_budget')),'status':'draft','created_at':utc_now(),'updated_at':utc_now()})
+            if err: flash(str(err)[:500],'danger')
+            elif c: db_insert('koja_v13_ad_billing',{'id':str(uuid.uuid4()),'campaign_id':c['id'],'impressions':0,'clicks':0,'spend':0,'currency':'ZMW','updated_at':utc_now()}); flash('Campaign created as draft.','success')
+        elif action=='creative' and clean(request.form.get('campaign_id')) and clean(request.form.get('title')):
+            _,err=db_insert('koja_v13_ad_creatives',{'id':str(uuid.uuid4()),'campaign_id':clean(request.form.get('campaign_id')),'title':clean(request.form.get('title')),'body':clean(request.form.get('body')),'destination_url':clean(request.form.get('destination_url')),'status':'draft','created_at':utc_now(),'updated_at':utc_now()})
+            if err: flash(str(err)[:500],'danger')
+            else: flash('Ad creative saved as draft.','success')
+    campaigns=_rows('koja_v13_ad_campaigns',{'advertiser_id':uid}); creatives=[]
+    for c in campaigns[:50]: creatives += _rows('koja_v13_ad_creatives',{'campaign_id':c.get('id')},limit=20)
+    body=_engine_nav()+'<div class="grid"><div class="card"><h2>Create campaign</h2><form method="post"><input type="hidden" name="action" value="campaign"><label>Name</label><input name="name" required><label>Placement</label><select name="placement"><option>search</option><option>marketplace</option><option>services</option><option>home</option></select><div class="grid"><div><label>Daily budget ZMW</label><input name="daily_budget" type="number" min="0" step="0.01"></div><div><label>Total budget ZMW</label><input name="total_budget" type="number" min="0" step="0.01"></div></div><button class="btn">Create Draft</button></form></div><div class="card"><h2>Create creative</h2><form method="post"><input type="hidden" name="action" value="creative"><label>Campaign ID</label><input name="campaign_id" required><label>Title</label><input name="title" required><label>Ad text</label><textarea name="body"></textarea><label>Destination URL</label><input name="destination_url"><button class="btn">Save Creative</button></form></div></div>'
+    body+='<div class="card"><h2>Campaigns</h2><div class="table-wrap"><table><tr><th>Name</th><th>Placement</th><th>Budget</th><th>Status</th></tr>'+''.join(f'<tr><td>{c.get("name")}</td><td>{c.get("placement")}</td><td>{c.get("total_budget")} ZMW</td><td>{c.get("status")}</td></tr>' for c in campaigns)+'</table></div></div>'
     _engine_event('ads','ads_viewed')
-    return _engine_page('V13','Ads Network','ads','Advertising infrastructure for KOJA sellers, businesses and future partners.', [('Campaigns',len(rows)),('Model','CPC/CPM ready'),('Revenue','Enabled')], forms=form,tables=table)
+    return _engine_page('V13','Ads Network','ads','End-to-end advertising foundation: campaigns, creatives, placements, billing and measurable ad events.', [('Campaigns',len(campaigns)),('Creatives',len(creatives)),('Placements',len(_rows('koja_v13_ad_placements')))],body)
 
-
-@app.route('/v14', methods=['GET','POST'])
+@app.route('/v14',methods=['GET','POST'])
 @login_required
 def koja_v14():
     uid=(current_user() or {}).get('id')
     if request.method=='POST':
-        try:
-            amount=float(request.form.get('amount') or 0)
-        except Exception:
-            amount=0
-        if amount > 0:
-            db_insert('koja_unified_transactions', {'id':str(uuid.uuid4()),'user_id':uid,'service_key':clean(request.form.get('service_key')) or 'pay','external_reference':clean(request.form.get('reference')),'amount':amount,'currency':'ZMW','platform_fee':round(amount*0.02,2),'status':'pending','metadata':{'source':'v14_engine'},'created_at':utc_now(),'updated_at':utc_now()})
-            flash('Unified payment transaction created as pending. Existing provider checkout remains unchanged.','success')
-    tx=db_select('koja_unified_transactions',filters={'user_id':uid},order='created_at.desc',limit=50)
-    table='<div class="card"><h2>Recent transactions</h2><div class="table-wrap"><table><tr><th>Service</th><th>Amount</th><th>Fee</th><th>Status</th></tr>'+''.join(f'<tr><td>{r.get("service_key")}</td><td>{r.get("amount")} {r.get("currency")}</td><td>{r.get("platform_fee")}</td><td>{r.get("status")}</td></tr>' for r in tx)+'</table></div></div>'
+        action=clean(request.form.get('action'))
+        if action=='intent' and _safe_float(request.form.get('amount'))>0:
+            amount=_safe_float(request.form.get('amount')); fee=round(amount*0.02,2)
+            tx,err=db_insert('koja_unified_transactions',{'id':str(uuid.uuid4()),'user_id':uid,'service_key':clean(request.form.get('service_key')) or 'pay','external_reference':clean(request.form.get('reference')),'amount':amount,'currency':'ZMW','platform_fee':fee,'status':'pending','metadata':{'source':'v14'},'created_at':utc_now(),'updated_at':utc_now()})
+            if err: flash(str(err)[:500],'danger')
+            else:
+                db_insert('koja_v14_payment_intents',{'id':str(uuid.uuid4()),'user_id':uid,'amount':amount,'currency':'ZMW','purpose':clean(request.form.get('service_key')) or 'pay','provider':clean(request.form.get('provider')) or 'flutterwave','status':'pending','provider_reference':clean(request.form.get('reference')),'metadata':{'unified_transaction_id':(tx or {}).get('id')},'created_at':utc_now(),'updated_at':utc_now()}); flash('Payment intent created as pending. Provider verification is still required.','success')
+        elif action=='method' and clean(request.form.get('method_type')):
+            _,err=db_insert('koja_v14_payment_methods',{'id':str(uuid.uuid4()),'user_id':uid,'method_type':clean(request.form.get('method_type')),'provider':clean(request.form.get('provider')) or 'flutterwave','masked_reference':clean(request.form.get('masked_reference')),'status':'active','metadata':{},'created_at':utc_now()})
+            if err: flash(str(err)[:500],'danger')
+            else: flash('Payment method reference saved.','success')
+    tx=_rows('koja_unified_transactions',{'user_id':uid}); methods=_rows('koja_v14_payment_methods',{'user_id':uid})
+    body=_engine_nav()+'<div class="grid"><div class="card"><h2>Payment intent</h2><form method="post"><input type="hidden" name="action" value="intent"><label>Service</label><select name="service_key"><option>market</option><option>ai</option><option>ads</option><option>workspace</option><option>logistics</option><option>developer</option></select><label>Provider</label><select name="provider"><option>flutterwave</option><option>other</option></select><label>Amount ZMW</label><input name="amount" type="number" min="0.01" step="0.01" required><label>Reference</label><input name="reference"><button class="btn">Create Pending Payment</button></form></div><div class="card"><h2>Payment method</h2><form method="post"><input type="hidden" name="action" value="method"><label>Method</label><select name="method_type"><option>mobile_money</option><option>card</option><option>bank</option></select><label>Provider</label><input name="provider" value="flutterwave"><label>Masked reference</label><input name="masked_reference" placeholder="MTN ****1234"><button class="btn">Save Method</button></form></div></div>'
+    body+='<div class="card"><h2>Transactions</h2><div class="table-wrap"><table><tr><th>Service</th><th>Amount</th><th>Fee</th><th>Status</th></tr>'+''.join(f'<tr><td>{t.get("service_key")}</td><td>{t.get("amount")} {t.get("currency")}</td><td>{t.get("platform_fee")}</td><td>{t.get("status")}</td></tr>' for t in tx)+'</table></div></div>'
     _engine_event('pay','pay_viewed')
-    form='''<div class="card"><h2>Create payment intent</h2><form method="post"><label>KOJA service</label><select name="service_key"><option>market</option><option>ai</option><option>ads</option><option>workspace</option><option>logistics</option><option>other</option></select><label>Amount (ZMW)</label><input name="amount" type="number" min="0.01" step="0.01" required><label>Reference</label><input name="reference"><button class="btn">Create Pending Intent</button></form></div>'''
-    return _engine_page('V14','KOJA Pay','pay','A unified payment orchestration layer that records transactions across KOJA services without replacing existing payment flows.', [('Transactions',len(tx)),('Currency','ZMW'),('Ledger','Unified')],forms=form,tables=table)
+    return _engine_page('V14','KOJA Pay','pay','Unified money orchestration with payment intents, ledger foundations, webhook records and payout foundations. Existing Flutterwave checkout remains preserved.', [('Transactions',len(tx)),('Methods',len(methods)),('Fee model','2% platform')],body)
 
-
-@app.route('/v15', methods=['GET','POST'])
+@app.route('/v15',methods=['GET','POST'])
 @login_required
 def koja_v15():
-    uid=(current_user() or {}).get('id')
+    uid=(current_user() or {}).get('id'); new_key=session.pop('v15_new_key',None)
     if request.method=='POST':
         action=clean(request.form.get('action'))
         if action=='project' and clean(request.form.get('name')):
-            db_insert('koja_cloud_projects', {'id':str(uuid.uuid4()),'owner_id':uid,'name':clean(request.form.get('name')),'slug':secure_filename(clean(request.form.get('name')).lower()).replace('_','-')[:80],'status':'active','plan':'free','created_at':utc_now(),'updated_at':utc_now()})
-            flash('Cloud project created.','success')
+            name=clean(request.form.get('name')); slug=secure_filename(name.lower()).replace('_','-')[:70] or 'project'
+            _,err=db_insert('koja_cloud_projects',{'id':str(uuid.uuid4()),'owner_id':uid,'name':name,'slug':slug,'status':'active','plan':'free','region':clean(request.form.get('region')) or 'africa-south1','created_at':utc_now(),'updated_at':utc_now()})
+            if err: flash(str(err)[:500],'danger')
+            else: flash('Cloud project created.','success')
         elif action=='key' and clean(request.form.get('name')):
-            secret=secrets.token_urlsafe(32)
-            db_insert('koja_developer_api_keys', {'id':str(uuid.uuid4()),'owner_id':uid,'name':clean(request.form.get('name')),'key_prefix':'koja_'+secret[:8],'key_hash':generate_password_hash(secret),'status':'active','created_at':utc_now()})
-            flash('API key created. Store the displayed secret from your secure server logs; KOJA does not expose key hashes.','success')
-    projects=db_select('koja_cloud_projects',filters={'owner_id':uid},order='created_at.desc',limit=50)
-    keys=db_select('koja_developer_api_keys',filters={'owner_id':uid},order='created_at.desc',limit=50)
-    html='<div class="card"><h2>Cloud projects</h2>'+''.join(f'<p><strong>{p.get("name")}</strong> — {p.get("status")}</p>' for p in projects)+'</div><div class="card"><h2>Developer API keys</h2>'+''.join(f'<p>{k.get("name")} — {k.get("status")}</p>' for k in keys)+'</div>'
+            secret='koja_'+secrets.token_urlsafe(32); prefix=secret[:13]
+            _,err=db_insert('koja_developer_api_keys',{'id':str(uuid.uuid4()),'owner_id':uid,'name':clean(request.form.get('name')),'key_prefix':prefix,'key_hash':generate_password_hash(secret),'status':'active','created_at':utc_now()})
+            if err: flash(str(err)[:500],'danger')
+            else: session['v15_new_key']=secret; new_key=secret; flash('API key created. Copy it now; it will not be shown again after this page.','success')
+        elif action=='deploy' and clean(request.form.get('project_id')):
+            _,err=db_insert('koja_v15_deployments',{'id':str(uuid.uuid4()),'project_id':clean(request.form.get('project_id')),'version':clean(request.form.get('version')) or '1.0.0','environment':clean(request.form.get('environment')) or 'production','status':'queued','commit_ref':clean(request.form.get('commit_ref')),'created_at':utc_now()})
+            if err: flash(str(err)[:500],'danger')
+            else: flash('Deployment queued. Connect a deployment runner to execute it.','success')
+    projects=_rows('koja_cloud_projects',{'owner_id':uid}); keys=_rows('koja_developer_api_keys',{'owner_id':uid}); deployments=[]
+    for p in projects: deployments += _rows('koja_v15_deployments',{'project_id':p.get('id')},limit=20)
+    key_notice=f'<div class="card"><h2>New API key — copy now</h2><code>{new_key}</code></div>' if new_key else ''
+    body=_engine_nav()+key_notice+'<div class="grid"><div class="card"><h2>Cloud project</h2><form method="post"><input type="hidden" name="action" value="project"><label>Name</label><input name="name" required><label>Region</label><input name="region" value="africa-south1"><button class="btn">Create Project</button></form></div><div class="card"><h2>API key</h2><form method="post"><input type="hidden" name="action" value="key"><label>Key name</label><input name="name" required><button class="btn">Create Key</button></form></div></div>'
+    body+='<div class="card"><h2>Deployments</h2><form method="post"><input type="hidden" name="action" value="deploy"><label>Project ID</label><input name="project_id" required><label>Version</label><input name="version" value="1.0.0"><label>Environment</label><select name="environment"><option>production</option><option>staging</option><option>development</option></select><label>Commit</label><input name="commit_ref"><button class="btn">Queue Deployment</button></form></div>'
+    body+='<div class="card"><h2>Your projects</h2>'+''.join(f'<p><strong>{p.get("name")}</strong> · {p.get("plan")} · {p.get("region")}</p>' for p in projects)+'</div>'
     _engine_event('developer','developer_viewed')
-    form='''<div class="grid"><div class="card"><h2>New cloud project</h2><form method="post"><input type="hidden" name="action" value="project"><label>Project name</label><input name="name" required><button class="btn">Create Project</button></form></div><div class="card"><h2>New API key</h2><form method="post"><input type="hidden" name="action" value="key"><label>Key name</label><input name="name" required><button class="btn">Create Key</button></form></div></div>'''
-    return _engine_page('V15','Cloud & Developer','developer','Developer infrastructure for APIs, projects, usage and cloud resources.', [('Projects',len(projects)),('API Keys',len(keys)),('Platform','REST')],forms=form,tables=html)
+    return _engine_page('V15','Cloud & Developer','developer','Cloud projects, secure developer keys, usage metering and deployment foundations.', [('Projects',len(projects)),('API Keys',len(keys)),('Deployments',len(deployments))],body)
 
-
-@app.route('/v16')
+@app.route('/v16',methods=['GET','POST'])
 @login_required
 def koja_v16():
     uid=(current_user() or {}).get('id')
-    events=db_select('koja_user_service_events',filters={'user_id':uid},order='created_at.desc',limit=100)
-    revenue=db_select('koja_engine_revenue',order='created_at.desc',limit=100)
-    services={}
-    for e in events: services[e.get('service_key')]=services.get(e.get('service_key'),0)+1
-    service_html=''.join(f'<div class="card"><strong>{k}</strong><div>{v} events</div></div>' for k,v in sorted(services.items(), key=lambda x:-x[1]))
+    if request.method=='POST' and clean(request.form.get('name')):
+        _,err=db_insert('koja_v16_dashboards',{'id':str(uuid.uuid4()),'owner_id':uid,'name':clean(request.form.get('name')),'config':{'widgets':['usage','revenue','services']},'status':'active','created_at':utc_now(),'updated_at':utc_now()})
+        if err: flash(str(err)[:500],'danger')
+        else: flash('Analytics dashboard created.','success')
+    events=_rows('koja_user_service_events',{'user_id':uid},limit=200); dashboards=_rows('koja_v16_dashboards',{'owner_id':uid}); revenue=_rows('koja_engine_revenue',limit=200)
+    counts={}
+    for e in events: counts[e.get('service_key')]=counts.get(e.get('service_key'),0)+1
+    body=_engine_nav()+'<div class="card"><h2>Analytics dashboard</h2><form method="post"><label>Name</label><input name="name" required><button class="btn">Create Dashboard</button></form></div><div class="grid">'+''.join(f'<div class="card"><strong>{k}</strong><div>{v} events</div></div>' for k,v in sorted(counts.items(),key=lambda x:-x[1]))+'</div><div class="card"><h2>Revenue intelligence</h2><p>'+str(len(revenue))+' revenue events recorded. Use these signals for product, pricing and growth decisions.</p></div>'
     _engine_event('data','analytics_viewed')
-    return _engine_page('V16','Intelligence & Analytics','data','Operational intelligence across KOJA services, usage events and revenue signals.', [('Your Events',len(events)),('Revenue Events',len(revenue)),('Services',len(services))],tables='<div class="grid">'+service_html+'</div>')
+    return _engine_page('V16','Intelligence & Analytics','data','Operational intelligence across usage, services, metrics, dashboards, alerts and revenue.', [('Your Events',len(events)),('Dashboards',len(dashboards)),('Revenue Events',len(revenue))],body)
 
-
-@app.route('/v17')
+@app.route('/v17',methods=['GET','POST'])
 @login_required
 def koja_v17():
-    u=current_user() or {}
-    verification=u.get('verification_level','basic')
-    security=db_select('koja_security_events',filters={'user_id':u.get('id')},order='created_at.desc',limit=50)
-    return _engine_page('V17','Identity & Trust','identity','KOJA identity, verification and trust infrastructure.', [('KOJA ID',u.get('koja_id') or 'Not assigned'),('Verification',verification),('Security events',len(security))], tables='<div class="card"><h2>Trust status</h2><p>Your account verification level is <strong>'+str(verification)+'</strong>.</p><p>Higher verification can be used by future services for stronger trust controls.</p></div>')
+    u=current_user() or {}; uid=u.get('id')
+    if request.method=='POST' and clean(request.form.get('document_type')):
+        _,err=db_insert('koja_v17_identity_documents',{'id':str(uuid.uuid4()),'user_id':uid,'document_type':clean(request.form.get('document_type')),'document_number':clean(request.form.get('document_number')),'storage_path':clean(request.form.get('storage_path')),'status':'pending','submitted_at':utc_now()})
+        if err: flash(str(err)[:500],'danger')
+        else: flash('Identity document submitted for review.','success')
+    docs=_rows('koja_v17_identity_documents',{'user_id':uid},order='submitted_at.desc'); trust=_rows('koja_v17_trust_events',{'user_id':uid}); security=_rows('koja_security_events',{'user_id':uid})
+    body=_engine_nav()+'<div class="card"><h2>Identity verification</h2><form method="post"><label>Document type</label><select name="document_type"><option>national_id</option><option>passport</option><option>drivers_license</option><option>business_registration</option></select><label>Document number</label><input name="document_number"><label>Secure storage path (optional)</label><input name="storage_path"><button class="btn">Submit for Review</button></form></div><div class="card"><h2>Verification</h2><p>KOJA ID: <strong>'+str(u.get('koja_id') or 'Not assigned')+'</strong></p><p>Level: <strong>'+str(u.get('verification_level') or 'basic')+'</strong></p></div><div class="card"><h2>Submitted documents</h2>'+''.join(f'<p>{d.get("document_type")} · {d.get("status")}</p>' for d in docs)+'</div>'
+    return _engine_page('V17','Identity & Trust','identity','Identity, verification, trust scoring and account security infrastructure.', [('KOJA ID',u.get('koja_id') or 'Pending'),('Verification',u.get('verification_level') or 'basic'),('Trust events',len(trust)),('Security events',len(security))],body)
 
-
-@app.route('/v18')
+@app.route('/v18',methods=['GET','POST'])
 @login_required
 def koja_v18():
     uid=(current_user() or {}).get('id')
-    memberships=db_select('koja_workspace_members',filters={'user_id':uid},order='created_at.desc',limit=50)
-    contracts=db_select('koja_enterprise_seats',filters={'user_id':uid},order='created_at.desc',limit=50)
-    return _engine_page('V18','Workspace & Enterprise','workspace','Team collaboration, documents, files, enterprise accounts and seats.', [('Workspaces',len(memberships)),('Enterprise seats',len(contracts)),('Mode','Team + Enterprise')],tables='<div class="card"><h2>Your workspaces</h2>'+''.join(f'<p>{m.get("workspace_id")} — {m.get("role")}</p>' for m in memberships)+'</div>')
+    if request.method=='POST':
+        action=clean(request.form.get('action'))
+        if action=='workspace' and clean(request.form.get('name')):
+            ws,err=db_insert('koja_workspaces',{'id':str(uuid.uuid4()),'owner_id':uid,'name':clean(request.form.get('name')),'workspace_type':clean(request.form.get('workspace_type')) or 'business','plan':'free','status':'active','created_at':utc_now(),'updated_at':utc_now()})
+            if err: flash(str(err)[:500],'danger')
+            elif ws: db_insert('koja_workspace_members',{'id':str(uuid.uuid4()),'workspace_id':ws['id'],'user_id':uid,'role':'owner','status':'active','created_at':utc_now()}); flash('Workspace created.','success')
+        elif action=='task' and clean(request.form.get('workspace_id')) and clean(request.form.get('title')):
+            _,err=db_insert('koja_workspace_tasks',{'id':str(uuid.uuid4()),'workspace_id':clean(request.form.get('workspace_id')),'creator_id':uid,'assignee_id':clean(request.form.get('assignee_id')) or None,'title':clean(request.form.get('title')),'description':clean(request.form.get('description')),'priority':clean(request.form.get('priority')) or 'normal','status':'todo','created_at':utc_now(),'updated_at':utc_now()})
+            if err: flash(str(err)[:500],'danger')
+            else: flash('Workspace task created.','success')
+    memberships=_rows('koja_workspace_members',{'user_id':uid}); owned=_rows('koja_workspaces',{'owner_id':uid}); tasks=[]
+    for w in owned: tasks += _rows('koja_workspace_tasks',{'workspace_id':w.get('id')},limit=50)
+    body=_engine_nav()+'<div class="grid"><div class="card"><h2>New workspace</h2><form method="post"><input type="hidden" name="action" value="workspace"><label>Name</label><input name="name" required><label>Type</label><select name="workspace_type"><option>business</option><option>team</option><option>enterprise</option><option>education</option></select><button class="btn">Create Workspace</button></form></div><div class="card"><h2>New task</h2><form method="post"><input type="hidden" name="action" value="task"><label>Workspace ID</label><input name="workspace_id" required><label>Title</label><input name="title" required><label>Description</label><textarea name="description"></textarea><label>Priority</label><select name="priority"><option>normal</option><option>high</option><option>urgent</option></select><button class="btn">Create Task</button></form></div></div><div class="card"><h2>Your workspaces</h2>'+''.join(f'<p><strong>{w.get("name")}</strong> · {w.get("workspace_type")} · {w.get("plan")}</p>' for w in owned)+'</div>'
+    return _engine_page('V18','Workspace & Enterprise','workspace','Collaboration and enterprise foundation with workspaces, roles, files, documents, tasks, invoices and seats.', [('Workspaces',len(owned)),('Memberships',len(memberships)),('Tasks',len(tasks))],body)
 
-
-@app.route('/v19')
+@app.route('/v19',methods=['GET','POST'])
 @login_required
 def koja_v19():
-    services=db_select('koja_service_registry',filters={'status':'active'},order='service_name.asc',limit=100)
-    links=db_select('koja_ecosystem_links',filters={'enabled':True},order='created_at.desc',limit=100)
-    html='<div class="grid">'+''.join(f'<a class="card" href="{url_for("koja_engines")}"><h3>{s.get("service_name")}</h3><p>{s.get("category")} · v{s.get("version")}</p></a>' for s in services)+'</div>'
+    uid=(current_user() or {}).get('id')
+    if request.method=='POST' and clean(request.form.get('name')):
+        _,err=db_insert('koja_v19_workflows',{'id':str(uuid.uuid4()),'owner_id':uid,'name':clean(request.form.get('name')),'trigger_service':clean(request.form.get('trigger_service')),'action_service':clean(request.form.get('action_service')),'config':{},'status':'active','created_at':utc_now()})
+        if err: flash(str(err)[:500],'danger')
+        else: flash('Super-App workflow created.','success')
+    services=_rows('koja_service_registry',{'status':'active'},order='service_name.asc'); links=_rows('koja_ecosystem_links',{'enabled':True}); workflows=_rows('koja_v19_workflows',{'owner_id':uid})
+    body=_engine_nav()+'<div class="card"><h2>Cross-service workflow</h2><form method="post"><label>Workflow name</label><input name="name" required><label>Trigger service</label><input name="trigger_service" placeholder="market"><label>Action service</label><input name="action_service" placeholder="ai"><button class="btn">Create Workflow</button></form></div><div class="grid">'+''.join(f'<div class="card"><h3>{s.get("service_name")}</h3><p>{s.get("category")} · v{s.get("version")}</p></div>' for s in services)+'</div><div class="card"><h2>Your workflows</h2>'+''.join(f'<p>{w.get("name")} · {w.get("trigger_service")} → {w.get("action_service")}</p>' for w in workflows)+'</div>'
     _engine_event('ecosystem','super_app_viewed')
-    return _engine_page('V19','KOJA Super-App','ecosystem','The ecosystem layer that connects KOJA services through a common registry and transaction fabric.', [('Registered services',len(services)),('Service links',len(links)),('Unified layer','Active')],tables=html)
+    return _engine_page('V19','KOJA Super-App','ecosystem','A common service fabric connecting KOJA products, workflows, notifications and transactions.', [('Services',len(services)),('Links',len(links)),('Workflows',len(workflows))],body)
 
-
-@app.route('/v20', methods=['GET','POST'])
+@app.route('/v20',methods=['GET','POST'])
 @login_required
 def koja_v20():
     uid=(current_user() or {}).get('id')
     if request.method=='POST':
-        name=clean(request.form.get('name'))
-        task=clean(request.form.get('task'))
-        if name:
-            agent,err=db_insert('koja_ai_agents',{'id':str(uuid.uuid4()),'owner_id':uid,'name':name,'agent_type':'general','status':'active','instructions':clean(request.form.get('instructions')),'tools':[],'spending_limit':float(request.form.get('spending_limit') or 0),'currency':'ZMW','created_at':utc_now(),'updated_at':utc_now()})
-            if err: flash('Agent could not be created: '+str(err)[:250],'danger')
-            else:
-                if task and agent:
-                    db_insert('koja_ai_agent_runs',{'id':str(uuid.uuid4()),'agent_id':agent['id'],'owner_id':uid,'task':task,'status':'queued','result':{},'cost':0,'created_at':utc_now()})
-                flash('V20 agent created. Tasks are queued for the future execution layer.','success')
-    agents=db_select('koja_ai_agents',filters={'owner_id':uid},order='created_at.desc',limit=50)
-    jobs=db_select('koja_autonomy_jobs',filters={'owner_id':uid},order='created_at.desc',limit=50)
-    form='''<div class="card"><h2>Create an autonomous agent</h2><form method="post"><label>Agent name</label><input name="name" required><label>Instructions</label><textarea name="instructions" placeholder="What should this agent do?"></textarea><label>Optional first task</label><textarea name="task" placeholder="Example: prepare a weekly sales report"></textarea><label>Spending limit (ZMW)</label><input name="spending_limit" type="number" min="0" step="0.01"><button class="btn">Create Agent</button></form></div>'''
-    html='<div class="card"><h2>Your agents</h2>'+''.join(f'<p><strong>{a.get("name")}</strong> — {a.get("status")}</p>' for a in agents)+'</div><div class="card"><h2>Autonomy jobs</h2>'+''.join(f'<p>{j.get("job_type")} — {j.get("status")}</p>' for j in jobs)+'</div>'
-    return _engine_page('V20','Autonomous Africa','autonomy','Future-facing infrastructure for AI agents, IoT, autonomy jobs and African infrastructure intelligence. Human approval remains the control boundary for financial or consequential actions.', [('Agents',len(agents)),('Jobs',len(jobs)),('Safety','Approval boundary')],forms=form,tables=html)
+        action=clean(request.form.get('action'))
+        if action=='agent' and clean(request.form.get('name')):
+            a,err=db_insert('koja_ai_agents',{'id':str(uuid.uuid4()),'owner_id':uid,'name':clean(request.form.get('name')),'agent_type':clean(request.form.get('agent_type')) or 'general','status':'active','instructions':clean(request.form.get('instructions')),'tools':[],'spending_limit':_safe_float(request.form.get('spending_limit')),'currency':'ZMW','created_at':utc_now(),'updated_at':utc_now()})
+            if err: flash(str(err)[:500],'danger')
+            elif a:
+                task=clean(request.form.get('task'))
+                if task: db_insert('koja_ai_agent_runs',{'id':str(uuid.uuid4()),'agent_id':a['id'],'owner_id':uid,'task':task,'status':'queued','result':{},'cost':0,'created_at':utc_now()})
+                flash('Agent created. Consequential actions remain approval-gated.','success')
+        elif action=='approval' and clean(request.form.get('run_id')):
+            _,err=db_insert('koja_v20_approvals',{'id':str(uuid.uuid4()),'owner_id':uid,'agent_id':clean(request.form.get('agent_id')) or None,'run_id':clean(request.form.get('run_id')),'action_type':clean(request.form.get('action_type')) or 'external_action','risk_level':clean(request.form.get('risk_level')) or 'medium','amount':_safe_float(request.form.get('amount')),'currency':'ZMW','status':'pending','decision_note':'','created_at':utc_now()})
+            if err: flash(str(err)[:500],'danger')
+            else: flash('Human approval request created.','success')
+    agents=_rows('koja_ai_agents',{'owner_id':uid}); runs=[]
+    for a in agents: runs += _rows('koja_ai_agent_runs',{'agent_id':a.get('id')},limit=50)
+    approvals=_rows('koja_v20_approvals',{'owner_id':uid}); devices=_rows('koja_iot_devices',{'owner_id':uid}); jobs=_rows('koja_autonomy_jobs',{'owner_id':uid})
+    body=_engine_nav()+'<div class="grid"><div class="card"><h2>AI agent</h2><form method="post"><input type="hidden" name="action" value="agent"><label>Name</label><input name="name" required><label>Type</label><select name="agent_type"><option>general</option><option>business</option><option>research</option><option>logistics</option><option>developer</option></select><label>Instructions</label><textarea name="instructions"></textarea><label>First task</label><textarea name="task"></textarea><label>Spending limit ZMW</label><input name="spending_limit" type="number" min="0" step="0.01"><button class="btn">Create Agent</button></form></div><div class="card"><h2>Approval gate</h2><form method="post"><input type="hidden" name="action" value="approval"><label>Run ID</label><input name="run_id" required><label>Agent ID</label><input name="agent_id"><label>Action type</label><input name="action_type" value="external_action"><label>Risk</label><select name="risk_level"><option>low</option><option>medium</option><option>high</option><option>critical</option></select><label>Amount ZMW</label><input name="amount" type="number" min="0" step="0.01"><button class="btn">Request Human Approval</button></form></div></div><div class="card"><h2>Agents</h2>'+''.join(f'<p><strong>{a.get("name")}</strong> · {a.get("agent_type")} · {a.get("status")}</p>' for a in agents)+'</div><div class="card"><h2>Queued runs</h2>'+''.join(f'<p>{r.get("task")} · {r.get("status")}</p>' for r in runs)+'</div>'
+    _engine_event('autonomy','autonomy_viewed')
+    return _engine_page('V20','Autonomous Africa','autonomy','Future infrastructure for AI agents, tool permissions, memory, jobs, approvals, IoT and African infrastructure intelligence. No autonomous financial or consequential action is executed by this UI.', [('Agents',len(agents)),('Runs',len(runs)),('Approvals',len(approvals)),('IoT Devices',len(devices)),('Jobs',len(jobs))],body)
 
-
+@app.route('/api/engines/status')
+@login_required
+def engines_status():
+    return jsonify({'ok':True,'version':APP_VERSION,'engines':[{'version':v,'name':n,'route':url_for(r),'key':k,'status':'enabled'} for v,n,r,k,d in KOJA_ENGINE_DEFS]})
