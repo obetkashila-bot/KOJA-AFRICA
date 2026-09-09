@@ -98,7 +98,7 @@ STORAGE_BUCKET = os.getenv(
 )
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.09-V11-MASTER-AFRICA-SCALE"
+APP_VERSION = "2026.09.09-V17-AFRICA-ENGINE-SUITE"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 KOJA_DELIVERY_BASE_FEE = float(os.getenv("KOJA_DELIVERY_BASE_FEE", "15") or 15)
@@ -6354,7 +6354,7 @@ def _v11_search(q, limit=50):
     for p in _v11_table_select("koja_market_products", limit=500):
         hay=" ".join(str(p.get(k) or "") for k in ("title","description","category","location","sku")).lower()
         if q in hay:
-            out.append({"type":"market","title":p.get("title") or "Market product","description":p.get("description") or "","url":url_for("market_product_alias", product_id=p.get("id")),"price":p.get("price"),"currency":p.get("currency") or "ZMW"})
+            out.append({"type":"market","title":p.get("title") or "Market product","description":p.get("description") or "","url":url_for("market_product_view", product_id=p.get("id")),"price":p.get("price"),"currency":p.get("currency") or "ZMW"})
     for b in _v11_table_select("koja_businesses", limit=300):
         hay=" ".join(str(b.get(k) or "") for k in ("business_name","description","category","location")).lower()
         if q in hay:
@@ -6471,6 +6471,222 @@ def v11_enterprise():
         flash("Enterprise request submitted." if not err else "Enterprise request could not be saved.","success" if not err else "danger")
     return render_page("KOJA Enterprise", r'''<div class="hero"><h2>KOJA Enterprise</h2><p>Procurement, APIs, AI and commerce infrastructure for large organizations.</p></div><div class="card"><form method="post"><input name="organization_name" placeholder="Organization" required><input name="contact_email" type="email" placeholder="Contact email" required><button class="btn">Request enterprise access</button></form></div>''')
 
+
+
+
+# ============================================================
+# KOJA V12 -> V17 AFRICA ENGINE SUITE
+# Additive infrastructure. Existing services remain intact.
+# Communications is intentionally untouched.
+# ============================================================
+
+KOJA_ENGINE_VERSIONS = {
+    "V12": "Search & Discovery",
+    "V13": "Ads Network",
+    "V14": "Pay Infrastructure",
+    "V15": "Cloud & Developer",
+    "V16": "Data & Intelligence",
+    "V17": "Identity & Trust",
+}
+
+def _engine_admin():
+    u=current_user() or {}
+    return bool(u.get("is_admin"))
+
+def _engine_page(title, intro, cards):
+    body='<div class="hero"><h2>'+title+'</h2><p>'+intro+'</p></div><div class="grid">'
+    for c in cards:
+        body += '<div class="card"><h3>'+c[0]+'</h3><p>'+c[1]+'</p>'+c[2]+'</div>'
+    body += '</div>'
+    return render_page(title, body)
+
+# ---------------- V12 SEARCH & DISCOVERY ----------------
+@app.route('/v12/search')
+def v12_search():
+    q=clean(request.args.get('q'))
+    results=[]
+    if q:
+        try:
+            results=_v11_search(q,80)
+        except Exception as exc:
+            logger.exception('V12 search error: %s',exc)
+    return render_page('KOJA Search', r'''
+<div class="hero"><h2>KOJA Search</h2><p>Search African products, businesses, professionals and knowledge from one place.</p>
+<form action="{{ url_for('v12_search') }}" method="get"><input name="q" value="{{ q }}" placeholder="Search Africa..." autofocus><button class="btn">Search</button></form></div>
+<div class="card"><strong>{{ results|length }}</strong> results</div>
+<div class="grid">{% for r in results %}<div class="card"><small>{{ r.type|upper }}</small><h3>{{ r.title }}</h3><p>{{ r.description }}</p>{% if r.price %}<p><strong>{{ r.currency }} {{ r.price }}</strong></p>{% endif %}<a class="btn" href="{{ r.url }}">Open</a></div>{% else %}{% if q %}<div class="card"><p>No indexed result found yet.</p></div>{% endif %}{% endfor %}</div>
+''',q=q,results=results)
+
+@app.route('/api/v12/search')
+def api_v12_search():
+    q=clean(request.args.get('q'))
+    if not q:return jsonify({'ok':False,'error':'q is required'}),400
+    results=_v11_search(q,80)
+    return jsonify({'ok':True,'version':'V12','query':q,'count':len(results),'results':results})
+
+# ---------------- V13 ADS NETWORK ----------------
+@app.route('/v13/ads', methods=['GET','POST'])
+@login_required
+def v13_ads():
+    uid=(current_user() or {}).get('id')
+    if request.method=='POST':
+        budget=max(1.0,_v11_safe_float(request.form.get('budget'),50))
+        row,err=db_insert('koja_v13_ad_campaigns',{
+            'advertiser_id':uid,'name':clean(request.form.get('name'))[:160],
+            'placement':clean(request.form.get('placement'))[:50] or 'search',
+            'daily_budget':budget,'total_budget':budget,'status':'draft','created_at':utc_now(),'updated_at':utc_now()
+        })
+        flash('Advertising campaign created.' if not err else 'Campaign could not be created. Run the V12-V17 migration.','success' if not err else 'danger')
+    rows=_v11_table_select('koja_v13_ad_campaigns',{'advertiser_id':uid},100)
+    return render_page('KOJA Ads Network',r'''
+<div class="hero"><h2>KOJA Ads Network</h2><p>One campaign can reach Search, Market, Business and local discovery.</p></div>
+<div class="card"><form method="post"><input name="name" placeholder="Campaign name" required><select name="placement"><option value="search">Search</option><option value="market">Market</option><option value="business">Business</option><option value="local">Local</option></select><input name="budget" type="number" min="1" step="0.01" value="50"><button class="btn">Create campaign</button></form></div>
+<div class="card"><table><tr><th>Campaign</th><th>Placement</th><th>Budget</th><th>Status</th></tr>{% for r in rows %}<tr><td>{{r.name}}</td><td>{{r.placement}}</td><td>{{r.total_budget}}</td><td>{{r.status}}</td></tr>{% else %}<tr><td colspan="4">No campaigns yet.</td></tr>{% endfor %}</table></div>
+''',rows=rows)
+
+@app.route('/api/v13/ads/event',methods=['POST'])
+def api_v13_ad_event():
+    data=request.get_json(silent=True) or {}
+    cid=clean(data.get('campaign_id'))
+    event=clean(data.get('event_type')) or 'impression'
+    if not cid:return jsonify({'ok':False,'error':'campaign_id is required'}),400
+    row,err=db_insert('koja_v13_ad_events',{'campaign_id':cid,'event_type':event[:40],'user_id':(current_user() or {}).get('id'),'metadata':data.get('metadata') or {},'created_at':utc_now()})
+    return jsonify({'ok':not bool(err),'event_id':(row or {}).get('id'),'error':err}), (500 if err else 200)
+
+# ---------------- V14 PAY INFRASTRUCTURE ----------------
+@app.route('/v14/pay')
+@login_required
+def v14_pay():
+    uid=(current_user() or {}).get('id')
+    rows=_v11_table_select('koja_v14_payment_intents',{'user_id':uid},100)
+    return render_page('KOJA Pay',r'''
+<div class="hero"><h2>KOJA Pay Infrastructure</h2><p>Unified payment intents and transaction records for Market, Business, Ads and future KOJA services.</p></div>
+<div class="card"><form method="post" action="{{url_for('v14_create_payment')}}"><input name="amount" type="number" min="0.01" step="0.01" placeholder="Amount" required><input name="currency" value="ZMW" maxlength="8"><input name="purpose" placeholder="Purpose" required><button class="btn">Create payment intent</button></form></div>
+<div class="card"><table><tr><th>Purpose</th><th>Amount</th><th>Currency</th><th>Status</th></tr>{% for r in rows %}<tr><td>{{r.purpose}}</td><td>{{r.amount}}</td><td>{{r.currency}}</td><td>{{r.status}}</td></tr>{% else %}<tr><td colspan="4">No payment intents.</td></tr>{% endfor %}</table></div>
+''',rows=rows)
+
+@app.route('/v14/pay/create',methods=['POST'])
+@login_required
+def v14_create_payment():
+    uid=(current_user() or {}).get('id')
+    amount=_v11_safe_float(request.form.get('amount'),0)
+    if amount<=0: flash('Amount must be greater than zero.','danger'); return redirect(url_for('v14_pay'))
+    row,err=db_insert('koja_v14_payment_intents',{'user_id':uid,'amount':amount,'currency':clean(request.form.get('currency')).upper()[:8] or 'ZMW','purpose':clean(request.form.get('purpose'))[:120],'status':'pending','provider':'flutterwave','created_at':utc_now(),'updated_at':utc_now()})
+    flash('Payment intent created.' if not err else 'Payment intent failed.','success' if not err else 'danger')
+    return redirect(url_for('v14_pay'))
+
+@app.route('/api/v14/pay/intents',methods=['POST'])
+@login_required
+def api_v14_pay_intent():
+    data=request.get_json(silent=True) or {}
+    amount=_v11_safe_float(data.get('amount'),0)
+    if amount<=0:return jsonify({'ok':False,'error':'amount must be greater than zero'}),400
+    row,err=db_insert('koja_v14_payment_intents',{'user_id':(current_user() or {}).get('id'),'amount':amount,'currency':clean(data.get('currency')).upper()[:8] or 'ZMW','purpose':clean(data.get('purpose'))[:120] or 'KOJA payment','status':'pending','provider':clean(data.get('provider'))[:40] or 'flutterwave','created_at':utc_now(),'updated_at':utc_now()})
+    return jsonify({'ok':not bool(err),'payment_intent':row,'error':err}), (500 if err else 200)
+
+# ---------------- V15 CLOUD & DEVELOPER ----------------
+def _v15_key_ok():
+    auth=request.headers.get('Authorization','')
+    if not auth.startswith('Bearer '): return None
+    raw=auth[7:].strip()
+    if not raw:return None
+    h=_v11_hash(raw)
+    rows=db_select('koja_api_keys',filters={'key_hash':h},limit=1)
+    return rows[0] if rows else None
+
+@app.route('/v15/cloud')
+@login_required
+def v15_cloud():
+    uid=(current_user() or {}).get('id')
+    keys=_v11_table_select('koja_api_keys',{'user_id':uid},50)
+    return _engine_page('KOJA Cloud & Developer','Build on KOJA through APIs, storage and developer infrastructure.',[
+        ('API Platform','Create and manage keys for KOJA APIs.','<a class="btn" href="'+url_for('v15_create_key')+'">Create API key</a>'),
+        ('Storage','Use the existing KOJA Supabase storage layer for documents and application files.','<p>Storage bucket: '+str(STORAGE_BUCKET)+'</p>'),
+        ('Developer API','Start with Search, Countries and Health endpoints.','<p>Authenticated endpoints use Bearer API keys.</p>')])
+
+@app.route('/v15/cloud/key',methods=['POST','GET'])
+@login_required
+def v15_create_key():
+    uid=(current_user() or {}).get('id')
+    raw='koja_'+secrets.token_urlsafe(30)
+    row,err=db_insert('koja_api_keys',{'user_id':uid,'name':clean(request.form.get('name'))[:80] or 'KOJA API Key','key_hash':_v11_hash(raw),'key_prefix':raw[:12],'status':'active','created_at':utc_now(),'updated_at':utc_now()})
+    if request.method=='GET': return render_page('KOJA API Key', '<div class="card"><h2>API key created</h2><p>Copy this key now. It is shown once.</p><pre>'+raw+'</pre></div>')
+    return jsonify({'ok':not bool(err),'api_key':raw if not err else None,'error':err})
+
+@app.route('/api/v15/countries')
+def api_v15_countries():
+    return jsonify({'ok':True,'version':'V15','countries':KOJA_V11_COUNTRIES})
+
+@app.route('/api/v15/usage',methods=['POST'])
+def api_v15_usage():
+    key=_v15_key_ok()
+    if not key:return jsonify({'ok':False,'error':'Invalid API key'}),401
+    data=request.get_json(silent=True) or {}
+    row,err=db_insert('koja_api_usage_events',{'api_key_id':key.get('id'),'endpoint':request.path[:180],'method':request.method,'status_code':200,'units':max(1,int(_v11_safe_float(data.get('units'),1))),'created_at':utc_now()})
+    return jsonify({'ok':not bool(err),'usage_event_id':(row or {}).get('id'),'error':err}), (500 if err else 200)
+
+# ---------------- V16 DATA & INTELLIGENCE ----------------
+@app.route('/v16/intelligence')
+@login_required
+def v16_intelligence():
+    try:
+        products=len(_v11_table_select('koja_market_products',limit=5000))
+        businesses=len(_v11_table_select('koja_businesses',limit=5000))
+        services=len(_v11_table_select('service_providers',limit=5000))
+        ads=len(_v11_table_select('koja_v13_ad_campaigns',limit=5000))
+    except Exception:
+        products=businesses=services=ads=0
+    return render_page('KOJA Intelligence',r'''
+<div class="hero"><h2>KOJA Data & Intelligence</h2><p>Operational intelligence for commerce, businesses, services and advertising.</p></div>
+<div class="grid"><div class="card"><h3>Market inventory</h3><strong>{{products}}</strong><p>indexed records</p></div><div class="card"><h3>Businesses</h3><strong>{{businesses}}</strong><p>business records</p></div><div class="card"><h3>Professionals</h3><strong>{{services}}</strong><p>service records</p></div><div class="card"><h3>Ad campaigns</h3><strong>{{ads}}</strong><p>campaign records</p></div></div>
+<div class="card"><h3>Intelligence layer</h3><p>Future releases can add forecasting, demand scoring, regional trends and enterprise dashboards on top of these aggregated signals.</p></div>
+''',products=products,businesses=businesses,services=services,ads=ads)
+
+@app.route('/api/v16/intelligence/summary')
+def api_v16_summary():
+    def count(t):
+        try:return len(db_select(t,limit=5000))
+        except Exception:return 0
+    return jsonify({'ok':True,'version':'V16','signals':{'market_products':count('koja_market_products'),'businesses':count('koja_businesses'),'service_providers':count('service_providers'),'ad_campaigns':count('koja_v13_ad_campaigns')}})
+
+# ---------------- V17 IDENTITY & TRUST ----------------
+@app.route('/v17/identity')
+@login_required
+def v17_identity():
+    uid=(current_user() or {}).get('id')
+    row=first_row('koja_v17_identity',{'user_id':uid}) or {}
+    return render_page('KOJA Identity & Trust',r'''
+<div class="hero"><h2>KOJA ID & Trust</h2><p>A common trust layer for users, sellers, businesses, professionals and developers.</p></div>
+<div class="card"><h3>Identity status</h3><p>Status: <strong>{{row.get('status','unverified')}}</strong></p><p>Verification level: <strong>{{row.get('verification_level','basic')}}</strong></p></div>
+<div class="card"><form method="post" action="{{url_for('v17_identity_submit')}}"><input name="legal_name" value="{{row.get('legal_name','')}}" placeholder="Legal name" required><input name="document_type" value="{{row.get('document_type','national_id')}}" placeholder="Document type"><input name="document_number" value="{{row.get('document_number','')}}" placeholder="Document number"><button class="btn">Submit for verification</button></form></div>
+''',row=row)
+
+@app.route('/v17/identity/submit',methods=['POST'])
+@login_required
+def v17_identity_submit():
+    uid=(current_user() or {}).get('id')
+    payload={'user_id':uid,'legal_name':clean(request.form.get('legal_name'))[:180],'document_type':clean(request.form.get('document_type'))[:50],'document_number':clean(request.form.get('document_number'))[:120],'status':'pending','verification_level':'basic','updated_at':utc_now()}
+    existing=first_row('koja_v17_identity',{'user_id':uid})
+    if existing: row,err=db_update('koja_v17_identity',{'user_id':uid},payload)
+    else: row,err=db_insert('koja_v17_identity',dict(payload,created_at=utc_now()))
+    flash('Identity submitted for review.' if not err else 'Identity submission failed.','success' if not err else 'danger')
+    return redirect(url_for('v17_identity'))
+
+@app.route('/api/v17/identity/status')
+@login_required
+def api_v17_identity_status():
+    uid=(current_user() or {}).get('id'); row=first_row('koja_v17_identity',{'user_id':uid}) or {'status':'unverified','verification_level':'basic'}
+    return jsonify({'ok':True,'identity':row})
+
+@app.route('/admin/v12-v17')
+@login_required
+def admin_v12_v17():
+    if not _engine_admin(): abort(403)
+    stats={}
+    for key,table in [('V13 Ads','koja_v13_ad_campaigns'),('V14 Pay','koja_v14_payment_intents'),('V15 API','koja_api_keys'),('V17 Identity','koja_v17_identity')]:
+        try: stats[key]=len(db_select(table,limit=5000))
+        except Exception: stats[key]=0
+    return render_page('KOJA V12-V17 Control Center', '<div class="hero"><h2>KOJA V12-V17 Engine Control Center</h2><p>Search, Ads, Pay, Cloud, Intelligence and Identity.</p></div><div class="grid">'+''.join('<div class="card"><h3>'+k+'</h3><strong>'+str(v)+'</strong></div>' for k,v in stats.items())+'</div>')
 
 
 # ERROR HANDLERS
