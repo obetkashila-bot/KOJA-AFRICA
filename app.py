@@ -3720,7 +3720,7 @@ def admin_market():
 @app.route('/market/cart')
 @login_required
 def market_cart():
- uid=(current_user() or {}).get('id'); carts=db_select('koja_market_cart',{'user_id':uid},limit=100) or []; ids=[str(x.get('product_id')) for x in carts if x.get('product_id')]; ps=db_select('koja_market_products',{'id':'in.('+','.join(ids)+')'} if ids else {'id':'eq.__none__'},limit=200) or []; pm={str(x.get('id')):x for x in ps}; items=[]; total=0
+ uid=(current_user() or {}).get('id'); carts=db_select('koja_market_cart',{'user_id':uid},limit=100) or []; ids=[str(x.get('product_id')) for x in carts if x.get('product_id')]; ps=db_select('koja_market_products',{'id':'in.('+','.join(ids)+')'} if ids else {},limit=200) or []; pm={str(x.get('id')):x for x in ps}; items=[]; total=0
  for c in carts:
   p=pm.get(str(c.get('product_id')))
   if not p: continue
@@ -7003,7 +7003,7 @@ def market_cart_checkout():
     uid=(current_user() or {}).get('id')
     carts=db_select('koja_market_cart',{'user_id':uid},limit=100) or []
     ids=[str(x.get('product_id')) for x in carts if x.get('product_id')]
-    ps=db_select('koja_market_products',{'id':'in.('+','.join(ids)+')'} if ids else {'id':'eq.__none__'},limit=200) or []
+    ps=db_select('koja_market_products',{'id':'in.('+','.join(ids)+')'} if ids else {},limit=200) or []
     pm={str(x.get('id')):x for x in ps}; items=[]; subtotal=0; delivery=0
     for c in carts:
         p=pm.get(str(c.get('product_id')))
@@ -7048,7 +7048,7 @@ def market_cart_checkout():
     return render_page('Secure Market Checkout',r'''
 <div class="hero"><h1>🔐 Secure Checkout</h1><p>Review your cart. KOJA calculates delivery and the platform fee before payment.</p></div>
 <div class="card">{% for x in items %}<p><strong>{{ x.product.title }}</strong> — {{ x.quantity }} × {{ money(x.product.price,x.product.currency) }}{% if x.delivery %} + {{ money(x.delivery,'ZMW') }} delivery{% endif %} = {{ money(x.line+x.delivery,x.product.currency) }}</p>{% else %}<p>Your cart is empty.</p>{% endfor %}<hr><p>Subtotal: <strong>{{ money(subtotal,'ZMW') }}</strong></p><p>Delivery: <strong>{{ money(delivery,'ZMW') }}</strong></p><p>KOJA platform fee: <strong>{{ money(platform_fee,'ZMW') }}</strong></p><h2>Total to pay: {{ money(grand,'ZMW') }}</h2></div>
-{% if items %}<div class="card"><form method="post"><label>Recipient name</label><input name="recipient_name" required value="{{ (current_user() or {}).get('name','') }}"><label>Delivery phone</label><input name="recipient_phone" required value="{{ (current_user() or {}).get('phone','') }}"><label>Delivery address</label><textarea name="delivery_address" required></textarea><label>Notes</label><textarea name="notes"></textarea><hr><h3>Flutterwave Mobile Money</h3><label>Payment network</label><select name="network" required><option value="">Select network</option><option value="MTN">MTN</option><option value="AIRTEL">Airtel</option><option value="ZAMTEL">Zamtel</option></select><label>Payment phone</label><input name="payment_phone" required inputmode="tel" value="{{ (current_user() or {}).get('phone','') }}"><button class="btn" type="submit">💳 Pay {{ money(grand,'ZMW') }} Securely</button></form></div>{% endif %}''',items=items,subtotal=subtotal,delivery=delivery,platform_fee=platform_fee,grand=grand,money=market_money)
+{% if items %}<div class="card"><form method="post"><label>Recipient name</label><input name="recipient_name" required value="{{ (user or {}).get('name','') }}"><label>Delivery phone</label><input name="recipient_phone" required value="{{ (user or {}).get('phone','') }}"><label>Delivery address</label><textarea name="delivery_address" required></textarea><label>Notes</label><textarea name="notes"></textarea><hr><h3>Flutterwave Mobile Money</h3><label>Payment network</label><select name="network" required><option value="">Select network</option><option value="MTN">MTN</option><option value="AIRTEL">Airtel</option><option value="ZAMTEL">Zamtel</option></select><label>Payment phone</label><input name="payment_phone" required inputmode="tel" value="{{ (user or {}).get('phone','') }}"><button class="btn" type="submit">💳 Pay {{ money(grand,'ZMW') }} Securely</button></form></div>{% endif %}''',items=items,subtotal=subtotal,delivery=delivery,platform_fee=platform_fee,grand=grand,money=market_money,user=(current_user() or {}))
 
 @app.route('/market/seller/subscription',methods=['GET','POST'])
 @login_required
