@@ -3257,8 +3257,8 @@ def _finalize_market_order(order, tx):
     # Ledger/payment-fee/delivery inserts are performed once after the atomic paid transition.
     db_insert('koja_market_ledger',{'order_id':order.get('id'),'seller_id':order.get('seller_id'),'buyer_id':buyer_id,'gross_amount':gross,'commission_amount':commission,'platform_fee':platform_fee,'net_amount':net,'currency':order.get('currency') or 'ZMW','status':'pending','created_at':utc_now()})
     db_insert('koja_market_payment_fees',{'order_id':order.get('id'),'buyer_id':buyer_id,'amount':platform_fee,'currency':order.get('currency') or 'ZMW','fee_type':'platform_service_fee','provider':'flutterwave','reference':tx_ref,'status':'captured','created_at':utc_now()})
-    if p and str(p.get('product_type') or 'physical')=='physical':
-        db_insert('koja_market_delivery_jobs',{'order_id':order.get('id'),'customer_id':buyer_id,'delivery_address':order.get('delivery_address'),'delivery_fee':_money_num(order.get('delivery_fee')),'status':'requested','tracking_code':'KMD-'+secrets.token_hex(5).upper(),'created_at':utc_now(),'updated_at':utc_now()})
+    if p and str(p.get('product_type') or 'physical')=='physical' and str(order.get('fulfillment_method') or 'delivery')=='delivery':
+        tracking='KMD-'+secrets.token_hex(5).upper(); db_insert('koja_market_delivery_jobs',{'order_id':order.get('id'),'customer_id':buyer_id,'seller_id':order.get('seller_id'),'delivery_address':order.get('delivery_address'),'delivery_fee':_money_num(order.get('delivery_fee')),'status':'requested','tracking_code':tracking,'created_at':utc_now(),'updated_at':utc_now()}); db_insert('deliveries',{'id':str(uuid.uuid4()),'customer_id':buyer_id,'user_id':buyer_id,'sender_id':order.get('seller_id'),'pickup_location':'KOJA Seller','destination':order.get('delivery_address'),'recipient_name':order.get('recipient_name'),'recipient_phone':order.get('recipient_phone'),'package_description':str((p or {}).get('title') or 'KOJA Market order'),'delivery_fee':_money_num(order.get('delivery_fee')),'currency':'ZMW','status':'requested','tracking_code':tracking,'pickup_code':'KDP-'+secrets.token_hex(4).upper(),'notes':order.get('notes'),'created_at':utc_now(),'updated_at':utc_now()})
     _sync_market_order_to_business(dict(order,status='paid'))
     return True
 
@@ -4403,6 +4403,7 @@ def driver_dashboard():
 <div class="hero"><h2>Driver Dashboard</h2>
 <p>{{ user.name }} — {{ profile.get('vehicle_type') or 'Vehicle' }} {{ profile.get('vehicle_registration') or '' }}</p>
 <p>Verification: <strong>{{ profile.get('verification_status') or 'pending' }}</strong></p></div>
+<div class="card"><a class="btn success" href="{{ url_for('driver_available_deliveries') }}">Available Deliveries</a></div>
 <div class="card"><h3>GPS / Availability</h3>
 <p>Current status:
 <span id="online-status" class="{{ 'online' if latest and latest.get('is_online') else 'offline' }}">
@@ -4458,7 +4459,13 @@ def driver_delivery_action(delivery_id, action):
     payload = {"status": status, "updated_at": utc_now()}
     if action == "accept":
         payload["driver_id"] = provider_id
-    row, error = db_update("deliveries", {"id": delivery_id}, payload)
+    if action == "accept":
+        try:
+            rr=requests.patch(sb_rest_url("deliveries"),headers=sb_headers({"Prefer":"return=representation"}),params={"id":"eq."+str(delivery_id),"status":"eq.requested"},json=payload,timeout=20); data=json_or_empty(rr); row=(data[0] if isinstance(data,list) and data else None); error=None if row else ("This delivery was already accepted by another driver." if rr.ok else rr.text[:700])
+        except Exception as exc:
+            row=None; error=str(exc)
+    else:
+        row, error = db_update("deliveries", {"id": delivery_id}, payload)
     if error:
         flash("Could not update delivery status: " + str(error)[:700], "danger")
     else:
@@ -7181,9 +7188,9 @@ def market_cart_checkout():
             flash('Select MTN, Airtel or Zamtel and enter the mobile-money phone number.','warning'); return redirect(url_for('market_cart_checkout'))
         created=[]
         for x in items:
-            p=x['product']; qty=x['quantity']; item_total=round(x['line']+x['delivery'],2)
+            p=x['product']; qty=x['quantity']; method=clean(request.form.get('fulfillment_method')) or ('delivery' if str(p.get('product_type') or 'physical')=='physical' else 'digital'); item_delivery=x['delivery'] if method=='delivery' else 0; item_total=round(x['line']+item_delivery,2)
             commission=round(item_total*KOJA_MARKET_COMMISSION_RATE,2); item_fee=round(item_total*KOJA_PLATFORM_FEE_RATE,2)
-            payload={'order_number':market_order_number(),'product_id':p.get('id'),'buyer_id':uid,'seller_id':p.get('seller_id'),'quantity':qty,'item_amount':x['line'],'delivery_fee':x['delivery'],'total_amount':item_total,'commission_amount':commission,'platform_fee':item_fee,'seller_amount':round(item_total-commission,2),'currency':p.get('currency') or 'ZMW','status':'pending','payment_method':'flutterwave','recipient_name':name or (current_user() or {}).get('name') or (current_user() or {}).get('full_name'),'recipient_phone':phone or (current_user() or {}).get('phone'),'delivery_address':address,'notes':notes,'created_at':utc_now(),'updated_at':utc_now()}
+            payload={'order_number':market_order_number(),'product_id':p.get('id'),'buyer_id':uid,'seller_id':p.get('seller_id'),'quantity':qty,'item_amount':x['line'],'delivery_fee':item_delivery,'fulfillment_method':method,'total_amount':item_total,'commission_amount':commission,'platform_fee':item_fee,'seller_amount':round(item_total-commission,2),'currency':p.get('currency') or 'ZMW','status':'pending','payment_method':'flutterwave','recipient_name':name or (current_user() or {}).get('name') or (current_user() or {}).get('full_name'),'recipient_phone':phone or (current_user() or {}).get('phone'),'delivery_address':address,'notes':notes,'created_at':utc_now(),'updated_at':utc_now()}
             row,err=db_insert('koja_market_orders',payload)
             if err:
                 logger.error('KOJA checkout order creation failed: %s',err); flash('Checkout could not create all orders. Please try again.','danger'); return redirect(url_for('market_cart'))
@@ -7202,7 +7209,7 @@ def market_cart_checkout():
     return render_page('Secure Market Checkout',r'''
 <div class="hero"><h1>🔐 Secure Checkout</h1><p>Review your cart. KOJA calculates delivery and the platform fee before payment.</p></div>
 <div class="card">{% for x in items %}<p><strong>{{ x.product.title }}</strong> — {{ x.quantity }} × {{ money(x.product.price,x.product.currency) }}{% if x.delivery %} + {{ money(x.delivery,'ZMW') }} delivery{% endif %} = {{ money(x.line+x.delivery,x.product.currency) }}</p>{% else %}<p>Your cart is empty.</p>{% endfor %}<hr><p>Subtotal: <strong>{{ money(subtotal,'ZMW') }}</strong></p><p>Delivery: <strong>{{ money(delivery,'ZMW') }}</strong></p><p>KOJA platform fee: <strong>{{ money(platform_fee,'ZMW') }}</strong></p><h2>Total to pay: {{ money(grand,'ZMW') }}</h2></div>
-{% if items %}<div class="card"><form method="post"><label>Recipient name</label><input name="recipient_name" required value="{{ (current_user() or {}).get('name','') }}"><label>Delivery phone</label><input name="recipient_phone" required value="{{ (current_user() or {}).get('phone','') }}"><label>Delivery address</label><textarea name="delivery_address" required></textarea><label>Notes</label><textarea name="notes"></textarea><hr><h3>Flutterwave Mobile Money</h3><label>Payment network</label><select name="network" required><option value="">Select network</option><option value="MTN">MTN</option><option value="AIRTEL">Airtel</option><option value="ZAMTEL">Zamtel</option></select><label>Payment phone</label><input name="payment_phone" required inputmode="tel" value="{{ (current_user() or {}).get('phone','') }}"><button class="btn" type="submit">💳 Pay {{ money(grand,'ZMW') }} Securely</button></form></div>{% endif %}''',items=items,subtotal=subtotal,delivery=delivery,platform_fee=platform_fee,grand=grand,money=market_money)
+{% if items %}<div class="card"><form method="post"><label>Recipient name</label><input name="recipient_name" required value="{{ (current_user() or {}).get('name','') }}"><label>Delivery phone</label><input name="recipient_phone" required value="{{ (current_user() or {}).get('phone','') }}"><label>Fulfillment</label><select name="fulfillment_method"><option value="delivery">KOJA Delivery</option><option value="self_pickup">Self Pickup / I will collect</option><option value="digital">Digital download</option></select><label>Delivery address (required for KOJA Delivery)</label><textarea name="delivery_address"></textarea><label>Notes</label><textarea name="notes"></textarea><hr><h3>Flutterwave Mobile Money</h3><label>Payment network</label><select name="network" required><option value="">Select network</option><option value="MTN">MTN</option><option value="AIRTEL">Airtel</option><option value="ZAMTEL">Zamtel</option></select><label>Payment phone</label><input name="payment_phone" required inputmode="tel" value="{{ (current_user() or {}).get('phone','') }}"><button class="btn" type="submit">💳 Pay {{ money(grand,'ZMW') }} Securely</button></form></div>{% endif %}''',items=items,subtotal=subtotal,delivery=delivery,platform_fee=platform_fee,grand=grand,money=market_money)
 
 @app.route('/market/seller/subscription',methods=['GET','POST'])
 @login_required
@@ -7312,10 +7319,10 @@ def business_products(business_id):
     if not b: abort(404)
     if request.method=='POST':
         name=clean(request.form.get('name')); sku=clean(request.form.get('sku')); price=float(request.form.get('price') or 0); stock=max(0,int(request.form.get('stock') or 0)); cost=float(request.form.get('cost') or 0)
-        _,err=db_insert('koja_business_products',{'business_id':business_id,'name':name,'sku':sku,'selling_price':price,'cost_price':cost,'stock':stock,'active':True,'created_at':utc_now(),'updated_at':utc_now()})
+        product_type=clean(request.form.get('product_type')) or 'physical'; product_type='digital' if product_type=='digital' else 'physical'; delivery_available=(str(request.form.get('delivery_available') or '').lower() in ('1','true','on','yes')); delivery_fee=_money_num(request.form.get('delivery_fee')); _,err=db_insert('koja_business_products',{'business_id':business_id,'name':name,'sku':sku,'selling_price':price,'cost_price':cost,'stock':stock,'product_type':product_type,'delivery_available':delivery_available,'delivery_fee':delivery_fee,'active':True,'created_at':utc_now(),'updated_at':utc_now()})
         flash('Product saved.' if not err else 'Inventory table is not installed.','success' if not err else 'danger'); return redirect(url_for('business_products',business_id=business_id))
     products=db_select('koja_business_products',{'business_id':business_id},order='created_at.desc',limit=300) or []
-    return render_page('Business Inventory',r'''<div class="hero"><h1>Inventory & POS</h1><p>{{ b.name }}</p></div><div class="card"><form method="post"><label>Product / service</label><input name="name" required><label>SKU</label><input name="sku"><div class="grid"><div><label>Selling price</label><input name="price" type="number" step="0.01" min="0"></div><div><label>Cost price</label><input name="cost" type="number" step="0.01" min="0"></div><div><label>Stock</label><input name="stock" type="number" min="0" value="0"></div></div><button class="btn">Save Product</button></form></div><div class="card"><table><tr><th>Product</th><th>SKU</th><th>Price</th><th>Cost</th><th>Stock</th></tr>{% for p in products %}<tr><td>{{ p.name }}</td><td>{{ p.sku }}</td><td>{{ money(p.selling_price,'ZMW') }}</td><td>{{ money(p.cost_price,'ZMW') }}</td><td>{{ p.stock }}</td></tr>{% else %}<tr><td colspan="5">No products.</td></tr>{% endfor %}</table></div>''',b=b,products=products,money=market_money)
+    return render_page('Business Inventory',r'''<div class="hero"><h1>Inventory & POS</h1><p>{{ b.name }}</p></div><div class="card"><form method="post"><label>Product / service</label><input name="name" required><label>SKU</label><input name="sku"><div class="grid"><div><label>Selling price</label><input name="price" type="number" step="0.01" min="0"></div><div><label>Cost price</label><input name="cost" type="number" step="0.01" min="0"></div><div><label>Stock</label><input name="stock" type="number" min="0" value="0"></div><div><label>Product type</label><select name="product_type"><option value="physical">Physical</option><option value="digital">Digital download</option></select></div><div><label>Delivery fee (ZMW)</label><input name="delivery_fee" type="number" step="0.01" min="0" value="0"></div><div><label><input type="checkbox" name="delivery_available" style="width:auto"> KOJA Delivery available</label></div></div><button class="btn">Save Product</button></form></div><div class="card"><table><tr><th>Product</th><th>SKU</th><th>Price</th><th>Cost</th><th>Stock</th></tr>{% for p in products %}<tr><td>{{ p.name }}</td><td>{{ p.sku }}</td><td>{{ money(p.selling_price,'ZMW') }}</td><td>{{ money(p.cost_price,'ZMW') }}</td><td>{{ p.stock }}</td></tr>{% else %}<tr><td colspan="5">No products.</td></tr>{% endfor %}</table></div>''',b=b,products=products,money=market_money)
 
 @app.route('/business/<business_id>/records',methods=['GET','POST'])
 @login_required
@@ -7502,12 +7509,56 @@ def business_store(business_id):
         flash('Online store saved.' if not err else 'Store table is not installed.','success' if not err else 'danger'); return redirect(url_for('business_store',business_id=business_id))
     return render_page('Business Online Store',"""<div class='hero'><h1>Online Store</h1><p>Publish your catalogue through KOJA Market.</p></div><div class='card'><form method='post'><label>Store name</label><input name='store_name' value='{{ current.store_name if current else b.name }}' required><label>Store slug</label><input name='slug' value='{{ current.slug if current else '' }}' placeholder='my-store' required><label>Description</label><textarea name='description'>{{ current.description if current else '' }}</textarea><label><input type='checkbox' name='published' {% if current and current.published %}checked{% endif %} style='width:auto'> Publish store</label><button class='btn'>Save Store</button></form>{% if current and current.published %}<p><a class='btn secondary' href='{{ url_for('business_store_public',slug=current.slug) }}' target='_blank'>View Public Store</a></p>{% endif %}</div>""",b=b,current=current)
 
+@app.route('/store/<slug>/buy/<product_id>',methods=['GET','POST'])
+@login_required
+def business_store_buy(slug,product_id):
+    store=first_row('koja_business_stores',{'slug':slug,'published':True})
+    if not store: abort(404)
+    product=first_row('koja_business_products',{'id':product_id,'business_id':store.get('business_id'),'active':True})
+    if not product: abort(404)
+    uid=(current_user() or {}).get('id'); ptype=str(product.get('product_type') or 'physical'); delivery_available=as_bool(product.get('delivery_available')) and ptype=='physical'
+    if request.method=='POST':
+        qty=max(1,int(request.form.get('quantity') or 1)); method=clean(request.form.get('fulfillment_method')) or ('digital' if ptype=='digital' else 'delivery')
+        if ptype=='digital': method='digital'
+        if method=='delivery' and not delivery_available: method='self_pickup'
+        if qty>int(product.get('stock') or 0): flash('Not enough stock.','danger'); return redirect(request.url)
+        address=clean(request.form.get('delivery_address')); phone=clean(request.form.get('recipient_phone')) or clean((current_user() or {}).get('phone'))
+        if method=='delivery' and not address: flash('Delivery address is required for KOJA Delivery.','danger'); return redirect(request.url)
+        fee=_money_num(product.get('delivery_fee')) if method=='delivery' else 0; total=round(_money_num(product.get('selling_price'))*qty+fee,2); tx_ref='KOJA-BIZ-'+datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')+'-'+secrets.token_hex(4).upper()
+        row,err=db_insert('koja_business_orders',{'business_id':store.get('business_id'),'product_id':product_id,'buyer_id':uid,'quantity':qty,'item_amount':_money_num(product.get('selling_price'))*qty,'delivery_fee':fee,'total_amount':total,'fulfillment_method':method,'delivery_address':address,'recipient_phone':phone,'payment_reference':tx_ref,'status':'pending','currency':'ZMW','created_at':utc_now(),'updated_at':utc_now()})
+        if err: flash('Business order table is not installed. Run the included SQL migration.','danger'); return redirect(request.url)
+        network=clean(request.form.get('network')).upper(); payment_phone=clean(request.form.get('payment_phone')) or phone
+        if not FLW_SECRET_KEY or network not in ('MTN','AIRTEL','ZAMTEL') or not payment_phone: flash('Select a mobile-money network, phone number, and ensure payment is configured.','warning'); return redirect(request.url)
+        payload={'tx_ref':tx_ref,'amount':int(round(total)),'currency':'ZMW','email':clean((current_user() or {}).get('email')).lower(),'fullname':first_nonempty((current_user() or {}).get('name'),(current_user() or {}).get('full_name'),'KOJA Customer'),'phone_number':payment_phone,'network':network,'order_id':str(row.get('id') or ''),'redirect_url':url_for('business_store_payment_callback',_external=True,tx_ref=tx_ref)}
+        try:
+            r=requests.post(FLW_BASE_URL+'/charges?type=mobile_money_zambia',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json'},json=payload,timeout=30); body=json_or_empty(r); redirect_url=((body.get('meta') or {}).get('authorization') or {}).get('redirect') if isinstance(body,dict) else None
+            if r.ok and str(body.get('status') or '').lower()=='success' and redirect_url: return redirect(redirect_url)
+        except Exception: logger.exception('Business store payment error')
+        flash('Payment could not be started.','danger'); return redirect(request.url)
+    return render_page('Business Store Checkout',r'''<div class="hero"><h1>{{ product.name }}</h1><p>{{ store.store_name }}</p><h2>{{ money(product.selling_price,'ZMW') }}</h2></div><div class="card"><form method="post"><label>Quantity</label><input name="quantity" type="number" min="1" value="1"><label>Fulfillment</label>{% if ptype=='digital' %}<p><strong>Digital — no delivery.</strong></p><input type="hidden" name="fulfillment_method" value="digital">{% else %}<select name="fulfillment_method">{% if delivery_available %}<option value="delivery">KOJA Delivery{% if product.delivery_fee %} (+ {{ money(product.delivery_fee,'ZMW') }}){% endif %}</option>{% endif %}<option value="self_pickup">Self Pickup / I will collect</option></select><label>Delivery address (only for KOJA Delivery)</label><textarea name="delivery_address"></textarea>{% endif %}<label>Recipient phone</label><input name="recipient_phone"><label>Payment network</label><select name="network"><option value="">Select network</option><option>MTN</option><option>AIRTEL</option><option>ZAMTEL</option></select><label>Payment phone</label><input name="payment_phone"><button class="btn" type="submit">Pay with Flutterwave</button></form></div>''',store=store,product=product,ptype=ptype,delivery_available=delivery_available,money=market_money)
+
+@app.route('/business/store/payment/callback')
+@login_required
+def business_store_payment_callback():
+    tx_ref=clean(request.args.get('tx_ref') or request.args.get('reference')); tid=clean(request.args.get('transaction_id') or request.args.get('id')); tx=_flutterwave_verify(tid,tx_ref) if tid else None
+    order=first_row('koja_business_orders',{'payment_reference':tx_ref,'buyer_id':(current_user() or {}).get('id')})
+    if not order: flash('Business order not found.','danger'); return redirect(url_for('market_my'))
+    if str(order.get('status') or '').lower()=='paid': return redirect(url_for('market_my'))
+    if tx and _flutterwave_payment_valid(tx,tx_ref,order.get('total_amount'),order.get('currency')):
+        db_update('koja_business_orders',{'id':order.get('id')},{'status':'paid','payment_transaction_id':str(tx.get('id') or ''),'updated_at':utc_now()})
+        prod=first_row('koja_business_products',{'id':order.get('product_id')}) or {}; qty=max(1,int(order.get('quantity') or 1)); db_update('koja_business_products',{'id':order.get('product_id')},{'stock':max(0,int(prod.get('stock') or 0)-qty),'updated_at':utc_now()})
+        notify_user(prod.get('business_id'),'New business store order',f"Order {order.get('id')} paid for {prod.get('name') or 'product'}.",'market_order',order.get('id'),'/market/my')
+        if str(order.get('fulfillment_method') or '')=='delivery':
+            tracking='KJB-'+secrets.token_hex(5).upper(); b=first_row('koja_businesses',{'id':prod.get('business_id')}) or {}; db_insert('deliveries',{'id':str(uuid.uuid4()),'customer_id':order.get('buyer_id'),'user_id':order.get('buyer_id'),'sender_id':prod.get('business_id'),'pickup_location':clean(b.get('location')) or 'Business','destination':order.get('delivery_address'),'recipient_phone':order.get('recipient_phone'),'package_description':prod.get('name') or 'Business order','delivery_fee':order.get('delivery_fee') or 0,'currency':'ZMW','status':'requested','tracking_code':tracking,'pickup_code':'KDP-'+secrets.token_hex(4).upper(),'created_at':utc_now(),'updated_at':utc_now()}); db_insert('koja_market_delivery_jobs',{'order_id':order.get('id'),'customer_id':order.get('buyer_id'),'seller_id':prod.get('business_id'),'delivery_address':order.get('delivery_address'),'delivery_fee':order.get('delivery_fee') or 0,'status':'requested','tracking_code':tracking,'source_type':'business','source_order_id':order.get('id'),'created_at':utc_now(),'updated_at':utc_now()})
+        flash('Business order paid successfully.','success'); return redirect(url_for('market_my'))
+    flash('Payment is still pending.','info'); return redirect(url_for('market_my'))
+
 @app.route('/store/<slug>')
 def business_store_public(slug):
     store=first_row('koja_business_stores',{'slug':slug,'published':True})
     if not store:abort(404)
     products=db_select('koja_business_products',{'business_id':store.get('business_id'),'active':True},limit=300) or []
-    return render_page(store.get('store_name') or 'KOJA Store',"""<div class='hero'><h1>{{ store.store_name }}</h1><p>{{ store.description }}</p></div><div class='grid'>{% for p in products %}<div class='card'><h3>{{ p.name }}</h3><p>SKU: {{ p.sku or '—' }}</p><h2>{{ money(p.selling_price,'ZMW') }}</h2><p>Stock: {{ p.stock }}</p></div>{% else %}<div class='card'><p>No products listed.</p></div>{% endfor %}</div>""",store=store,products=products,money=market_money)
+    return render_page(store.get('store_name') or 'KOJA Store',"""<div class='hero'><h1>{{ store.store_name }}</h1><p>{{ store.description }}</p></div><div class='grid'>{% for p in products %}<div class='card'><h3>{{ p.name }}</h3><p>SKU: {{ p.sku or '—' }}</p><h2>{{ money(p.selling_price,'ZMW') }}</h2><p>Stock: {{ p.stock }}</p><p>{% if (p.product_type or 'physical') == 'digital' %}<strong>Digital — no delivery</strong>{% elif p.delivery_available %}<strong>KOJA Delivery or Self Pickup</strong>{% else %}<strong>Self Pickup</strong>{% endif %}</p><a class='btn' href='{{ url_for('business_store_buy',slug=store.slug,product_id=p.id) }}'>Buy</a></div>{% else %}<div class='card'><p>No products listed.</p></div>{% endfor %}</div>""",store=store,products=products,money=market_money)
 
 @app.route('/business/<business_id>/ai',methods=['GET','POST'])
 @login_required
@@ -9044,3 +9095,17 @@ html,body{margin:0;padding:0}.live-page-shell{width:100%;max-width:none;margin:0
 @login_required
 def market_live_status():
     return jsonify({'ok': True, 'configured': bool(LIVEKIT_URL and LIVEKIT_API_KEY and LIVEKIT_API_SECRET), 'server_url_set': bool(LIVEKIT_URL), 'api_key_set': bool(LIVEKIT_API_KEY), 'api_secret_set': bool(LIVEKIT_API_SECRET), 'api_key_prefix': LIVEKIT_API_KEY[:8] if LIVEKIT_API_KEY else '', 'server_url': _livekit_server_url() if LIVEKIT_URL else ''})
+
+# ============================================================
+# KOJA UNIFIED FULFILLMENT V3 — MARKET + BUSINESS
+# ============================================================
+@app.route('/driver/available-deliveries')
+@login_required
+def driver_available_deliveries():
+    provider=get_driver_provider((current_user() or {}).get('id'))
+    if not provider: return redirect(url_for('driver_register'))
+    rows=db_select('deliveries',{'status':'requested','driver_id':None},order='created_at.desc',limit=100) or []
+    return render_page('Available KOJA Deliveries',r'''
+<div class="hero"><h1>Available KOJA Deliveries</h1><p>Only unclaimed delivery jobs appear here. The first driver to accept a job claims it; it immediately disappears from this list for every other driver.</p></div>
+<div class="grid">{% for d in rows %}<div class="card"><h3>{{ d.tracking_code }}</h3><p><strong>Pickup:</strong> {{ d.pickup_location }}</p><p><strong>Destination:</strong> {{ d.destination }}</p><p><strong>Fee:</strong> {{ money(d.delivery_fee,'ZMW') }}</p><form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.id,action='accept') }}"><button class="btn success">Accept Delivery</button></form></div>{% else %}<div class="card"><p>No available deliveries right now.</p></div>{% endfor %}</div>
+''',rows=rows,money=market_money)

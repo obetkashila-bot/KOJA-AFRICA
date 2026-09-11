@@ -603,3 +603,33 @@ create table if not exists public.koja_delivery_places (
 create index if not exists koja_delivery_places_public_idx on public.koja_delivery_places(is_public,updated_at desc);
 create index if not exists koja_delivery_places_name_idx on public.koja_delivery_places(place_name,city,area);
 
+
+-- ============================================================
+-- KOJA UNIFIED FULFILLMENT V3 — MARKET + BUSINESS
+-- Physical: KOJA Delivery or Self Pickup
+-- Digital: no delivery/pickup
+-- Driver acceptance is an atomic claim at application level.
+-- ============================================================
+
+alter table public.koja_market_orders add column if not exists fulfillment_method text not null default 'delivery';
+alter table public.koja_market_orders add column if not exists delivery_status text not null default 'not_requested';
+alter table public.koja_market_orders add column if not exists pickup_place text;
+alter table public.koja_market_orders add column if not exists delivery_address text;
+alter table public.koja_market_orders add column if not exists recipient_phone text;
+
+alter table public.koja_market_delivery_jobs add column if not exists pickup_address text;
+alter table public.koja_market_delivery_jobs add column if not exists accepted_at timestamptz;
+alter table public.koja_market_delivery_jobs add column if not exists pickup_verified_at timestamptz;
+alter table public.koja_market_delivery_jobs add column if not exists delivered_at timestamptz;
+alter table public.koja_market_delivery_jobs add column if not exists driver_payout_status text default 'pending';
+create index if not exists koja_market_delivery_jobs_available_idx on public.koja_market_delivery_jobs(status,created_at desc);
+
+alter table public.koja_business_products add column if not exists product_type text default 'physical';
+alter table public.koja_business_products add column if not exists delivery_available boolean default true;
+alter table public.koja_business_products add column if not exists delivery_fee numeric(14,2) default 0;
+create index if not exists koja_business_products_market_link_idx on public.koja_business_products(market_product_id);
+
+-- Existing business products remain physical by default. Digital products can be marked explicitly.
+update public.koja_business_products set product_type='physical' where product_type is null;
+update public.koja_business_products set delivery_available=true where delivery_available is null;
+update public.koja_business_products set delivery_fee=0 where delivery_fee is null;
