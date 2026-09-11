@@ -335,6 +335,12 @@ def first_row(table, filters):
 def current_user():
     return session.get("user")
 
+# Make the authentication helper available inside every Jinja template.
+# Some Market checkout/templates call current_user() directly.
+@app.context_processor
+def inject_current_user():
+    return {"current_user": current_user}
+
 def safe_next_url(value):
     value=clean(value)
     if not value or not value.startswith('/') or value.startswith('//') or value.startswith('\\'):
