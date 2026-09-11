@@ -2319,18 +2319,22 @@ def document_download(document_id):
 @login_required
 def services():
     return render_page("Services", r"""
-<div class="hero"><h2>KOJA Services</h2><p>Choose a service.</p></div>
+<div class="hero"><h2>KOJA Services</h2><p>Choose a service. Shared KOJA core engines work behind the services where they belong.</p></div>
 <div class="grid">
-<div class="card"><h3>🧠 KOJA AI</h3><a class="btn" href="{{ url_for('ai_assistant') }}">Open AI</a></div>
- <div class="card"><h3>📚 Documents</h3><a class="btn" href="{{ url_for('documents') }}">Open Documents</a></div>
- <div class="card"><h3>Academic Questions</h3><a class="btn" href="{{ url_for('questions') }}">Open</a></div>
-<div class="card"><h3>Assignments</h3><a class="btn" href="{{ url_for('assignments') }}">Open</a></div>
-<div class="card"><h3>CV</h3><a class="btn" href="{{ url_for('cv') }}">Open</a></div>
-<div class="card"><h3>Doctors</h3><p>Find doctors, view profiles and request appointments.</p><a class="btn" href="{{ url_for('doctors') }}">Find Doctors</a><a class="btn secondary" href="{{ url_for('professional_register') }}">Register</a></div>
-<div class="card"><h3>Teachers / Tutors</h3><p>Find teachers and tutors by subject, grade and qualification.</p><a class="btn" href="{{ url_for('teachers') }}">Find Tutors</a><a class="btn secondary" href="{{ url_for('professional_register') }}">Register</a></div>
-<div class="card"><h3>All Professionals</h3><p>Register and find professionals in many fields including law, accounting, engineering, ICT, construction, beauty, counselling and more.</p><a class="btn" href="{{ url_for('professionals') }}">Find Professionals</a><a class="btn secondary" href="{{ url_for('professional_register') }}">Register Profession</a></div>
-<div class="card"><h3>Deliveries</h3><a class="btn" href="{{ url_for('deliveries') }}">Open</a></div>
+<div class="card"><h3>KOJA AI</h3><p>AI assistance powered by KOJA Intelligence and Autonomous AI, with Discover and Cloud capabilities.</p><a class="btn" href="{{ url_for('ai_assistant') }}">Open AI</a><button class="btn secondary" type="button" onclick="activateServiceCore('autonomous_ai',this)">Connect AI Core</button></div>
+<div class="card"><h3>Documents</h3><p>Documents and research connected to KOJA Workspace, Intelligence and Discover.</p><a class="btn" href="{{ url_for('documents') }}">Open Documents</a><button class="btn secondary" type="button" onclick="activateServiceCore('workspace',this)">Connect Workspace</button></div>
+<div class="card"><h3>Academic Questions</h3><p>Questions can use KOJA Discover and Intelligence for connected knowledge workflows.</p><a class="btn" href="{{ url_for('questions') }}">Open</a><button class="btn secondary" type="button" onclick="activateServiceCore('discover',this)">Connect Discover</button></div>
+<div class="card"><h3>Assignments</h3><p>Assignment workflows connect to Workspace and Intelligence for documents and analysis.</p><a class="btn" href="{{ url_for('assignments') }}">Open</a><button class="btn secondary" type="button" onclick="activateServiceCore('workspace',this)">Connect Workspace</button></div>
+<div class="card"><h3>CV</h3><p>Identity and Workspace support profile documents and professional identity.</p><a class="btn" href="{{ url_for('cv') }}">Open</a><button class="btn secondary" type="button" onclick="activateServiceCore('identity',this)">Connect Identity</button></div>
+<div class="card"><h3>Doctors</h3><p>Find doctors, view profiles and request appointments with Identity and Pay support.</p><a class="btn" href="{{ url_for('doctors') }}">Find Doctors</a><a class="btn secondary" href="{{ url_for('professional_register') }}">Register</a><button class="btn secondary" type="button" onclick="activateServiceCore('identity',this)">Connect Identity</button></div>
+<div class="card"><h3>Teachers / Tutors</h3><p>Find teachers and tutors with Discover, Identity and Pay connected to the service.</p><a class="btn" href="{{ url_for('teachers') }}">Find Tutors</a><a class="btn secondary" href="{{ url_for('professional_register') }}">Register</a><button class="btn secondary" type="button" onclick="activateServiceCore('discover',this)">Connect Discover</button></div>
+<div class="card"><h3>All Professionals</h3><p>Professional discovery and trusted profiles are connected through Discover and Identity.</p><a class="btn" href="{{ url_for('professionals') }}">Find Professionals</a><a class="btn secondary" href="{{ url_for('professional_register') }}">Register Profession</a><button class="btn secondary" type="button" onclick="activateServiceCore('identity',this)">Connect Identity</button></div>
+<div class="card"><h3>Deliveries</h3><p>Delivery services connect Discover, Pay, Intelligence and the KOJA Ecosystem.</p><a class="btn" href="{{ url_for('deliveries') }}">Open</a><button class="btn secondary" type="button" onclick="activateServiceCore('pay',this)">Connect Pay</button></div>
 </div>
+<div id="serviceCoreStatus" class="card" style="display:none;margin-top:14px"></div>
+<script>
+async function activateServiceCore(engine,button){const box=document.getElementById('serviceCoreStatus');const old=button.textContent;button.disabled=true;button.textContent='Connecting…';box.style.display='block';box.textContent='Connecting '+engine.replace('_',' ')+'…';try{const r=await fetch('/api/platform/engine-access',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({engine})});const d=await r.json();if(!r.ok||!d.ok){box.textContent=d.error||'Core connection failed.';return;}box.textContent=d.engine+' connected to this service. Attached services: '+(d.attached_services||[]).join(', ')+'.';button.textContent='Connected';}catch(e){box.textContent='Network error. Please try again.';}finally{if(button.textContent!=='Connected')button.textContent=old;button.disabled=false;}}
+</script>
 """)
 
 # ============================================================
