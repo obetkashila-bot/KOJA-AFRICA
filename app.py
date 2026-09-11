@@ -3658,6 +3658,10 @@ alter table public.koja_businesses add column if not exists license_type text;
 alter table public.koja_businesses add column if not exists license_expiry date;
 alter table public.koja_businesses add column if not exists license_document_url text;
 alter table public.koja_businesses add column if not exists tax_number text;
+alter table public.koja_businesses add column if not exists last_latitude numeric;
+alter table public.koja_businesses add column if not exists last_longitude numeric;
+alter table public.koja_businesses add column if not exists last_location_at timestamptz;
+alter table public.koja_businesses add column if not exists gps_online boolean default false;
 alter table public.koja_market_sellers add column if not exists license_number text;
 alter table public.koja_market_sellers add column if not exists license_type text;
 alter table public.koja_market_sellers add column if not exists license_expiry date;
@@ -7505,6 +7509,74 @@ def business_verification(business_id):
         return redirect(url_for('business_verification',business_id=business_id))
     return render_page('Business Verification',r'''<div class="hero"><h1>Business Registration & Licences</h1><p>Submit your registration, licence and tax details for KOJA verification.</p></div><div class="card"><p><strong>Status:</strong> {{ b.verification_status or 'pending' }}</p><form method="post" enctype="multipart/form-data"><label>Business registration number</label><input name="registration_number" value="{{ b.registration_number or '' }}"><label>Licence number</label><input name="license_number" value="{{ b.license_number or '' }}"><label>Licence type</label><input name="license_type" value="{{ b.license_type or '' }}"><label>Licence expiry</label><input name="license_expiry" type="date" value="{{ b.license_expiry or '' }}"><label>Tax number</label><input name="tax_number" value="{{ b.tax_number or '' }}"><label>Licence / registration document</label><input name="license_document" type="file" accept="application/pdf,image/jpeg,image/png"><button class="btn">Submit for Verification</button></form></div>''',b=b)
 
+
+@app.route('/business/<business_id>/location', methods=['GET','POST'])
+@login_required
+def business_location(business_id):
+    uid=(current_user() or {}).get('id')
+    b=first_row('koja_businesses',{'id':business_id,'owner_id':uid})
+    if not b: abort(404)
+    if request.method=='POST':
+        lat=safe_float(request.form.get('latitude')); lon=safe_float(request.form.get('longitude'))
+        address=clean(request.form.get('location'))
+        if lat is None or lon is None or not (-90<=lat<=90 and -180<=lon<=180):
+            flash('Enter valid GPS coordinates.','danger'); return redirect(url_for('business_location',business_id=business_id))
+        payload={'latitude':lat,'longitude':lon,'last_latitude':lat,'last_longitude':lon,'last_location_at':utc_now(),'gps_online':True,'updated_at':utc_now()}
+        if address: payload['location']=address
+        _,err=db_update('koja_businesses',{'id':business_id,'owner_id':uid},payload)
+        flash('Business location saved and GPS is now live.' if not err else 'Business location could not be saved.','success' if not err else 'danger')
+        return redirect(url_for('business_location',business_id=business_id))
+    return render_page('Business Location',r"""<div class='hero'><h1>{{ b.name }} — Location & GPS</h1><p>The business map remains visible even when the owner is offline. KOJA keeps the registered location and last known GPS separately.</p></div><div class='card'><p><strong>Registered location:</strong> {{ b.latitude or 'Not set' }}, {{ b.longitude or 'Not set' }}</p><p><strong>Last GPS:</strong> {{ b.last_latitude or 'Not set' }}, {{ b.last_longitude or 'Not set' }}</p><p><strong>GPS status:</strong> {% if b.gps_online %}Live{% else %}Offline / last known location{% endif %}</p><form method='post'><div class='grid'><div><label>Latitude</label><input id='bizLat' name='latitude' type='number' step='any' value='{{ b.latitude or b.last_latitude or '' }}' required></div><div><label>Longitude</label><input id='bizLon' name='longitude' type='number' step='any' value='{{ b.longitude or b.last_longitude or '' }}' required></div></div><label>Business address / map description</label><input name='location' value='{{ b.location or '' }}'><button type='button' class='btn secondary' onclick="navigator.geolocation&&navigator.geolocation.getCurrentPosition(p=>{bizLat.value=p.coords.latitude;bizLon.value=p.coords.longitude},()=>alert('Location permission was not granted.'))">Use Current GPS</button> <button class='btn' type='submit'>Save Location</button></form></div><div class='card'><h2>Public Business Map</h2><a class='btn' target='_blank' href='{{ url_for('business_public_map',business_id=b.id) }}'>Open Public Map</a><p class='small'>Keep this page open to publish live GPS. Closing it leaves the last known location visible.</p><button type='button' class='btn secondary' onclick="startBusinessGPS()">Start Live GPS</button> <button type='button' class='btn secondary' onclick="stopBusinessGPS()">Stop Live GPS</button><span id='gpsMsg' class='small'></span></div><script>let bizWatch=null;function startBusinessGPS(){if(!navigator.geolocation){gpsMsg.textContent='GPS is not supported on this device.';return}if(bizWatch!==null)return;bizWatch=navigator.geolocation.watchPosition(async p=>{try{const r=await fetch('{{ url_for('business_location_update',business_id=b.id) }}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({latitude:p.coords.latitude,longitude:p.coords.longitude})});const j=await r.json();gpsMsg.textContent=j.ok?' Live GPS updated.':' '+(j.message||'Update failed.')}catch(e){gpsMsg.textContent=' GPS update failed.'}},e=>{gpsMsg.textContent=' GPS permission/location unavailable.'},{enableHighAccuracy:true,maximumAge:15000,timeout:15000})}async function stopBusinessGPS(){if(bizWatch!==null){navigator.geolocation.clearWatch(bizWatch);bizWatch=null}try{await fetch('{{ url_for('business_location_offline',business_id=b.id) }}',{method:'POST'})}catch(e){}gpsMsg.textContent=' GPS offline; last known location remains visible.'}</script>""",b=b)
+
+@app.route('/api/business/<business_id>/location', methods=['POST'])
+@login_required
+def business_location_update(business_id):
+    uid=(current_user() or {}).get('id'); b=first_row('koja_businesses',{'id':business_id,'owner_id':uid})
+    if not b: return jsonify({'ok':False,'message':'Business not found.'}),404
+    body=request.get_json(silent=True) or {}; lat=safe_float(body.get('latitude')); lon=safe_float(body.get('longitude'))
+    if lat is None or lon is None or not (-90<=lat<=90 and -180<=lon<=180): return jsonify({'ok':False,'message':'Invalid latitude or longitude.'}),400
+    payload={'last_latitude':lat,'last_longitude':lon,'last_location_at':utc_now(),'gps_online':True,'updated_at':utc_now()}
+    _,err=db_update('koja_businesses',{'id':business_id,'owner_id':uid},payload)
+    return jsonify({'ok':not bool(err),'latitude':lat,'longitude':lon,'updated_at':payload['last_location_at']}),500 if err else 200
+
+@app.route('/api/business/<business_id>/offline', methods=['POST'])
+@login_required
+def business_location_offline(business_id):
+    uid=(current_user() or {}).get('id'); b=first_row('koja_businesses',{'id':business_id,'owner_id':uid})
+    if not b: return jsonify({'ok':False,'message':'Business not found.'}),404
+    _,err=db_update('koja_businesses',{'id':business_id,'owner_id':uid},{'gps_online':False,'updated_at':utc_now()})
+    return jsonify({'ok':not bool(err),'message':'Business GPS is offline. Last known location remains visible.'}),500 if err else 200
+
+@app.route('/business/<business_id>/map')
+def business_public_map(business_id):
+    b=first_row('koja_businesses',{'id':business_id})
+    if not b or str(b.get('status') or 'active').lower() in {'deleted','suspended'}: abort(404)
+    live=False; last_seen=b.get('last_location_at')
+    if b.get('gps_online') and last_seen:
+        try:
+            dt=datetime.fromisoformat(str(last_seen).replace('Z','+00:00')); live=(datetime.now(timezone.utc)-dt).total_seconds() <= 150
+        except Exception: live=False
+    lat=safe_float(b.get('last_latitude')); lon=safe_float(b.get('last_longitude'))
+    if lat is None or lon is None: lat=safe_float(b.get('latitude')); lon=safe_float(b.get('longitude'))
+    state='LIVE GPS' if live else ('LAST KNOWN LOCATION' if lat is not None and lon is not None else 'REGISTERED ADDRESS')
+    return render_page('Business Map',r"""<div class='hero'><h1>{{ b.name }}</h1><p>{{ b.location or b.category or 'KOJA Business' }} · <strong>{{ state }}</strong></p></div><div id='bizmap' style='height:70vh;min-height:420px;border-radius:14px;overflow:hidden'></div>{% if lat is not none and lon is not none %}<link rel='stylesheet' href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'><script src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'></script><script>const m=L.map('bizmap').setView([{{ lat }},{{ lon }}],16);L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap contributors'}).addTo(m);L.marker([{{ lat }},{{ lon }}]).addTo(m).bindPopup({{ b.name|tojson }}+'<br>{{ state }}').openPopup();</script>{% else %}<div class='card'><p>No GPS coordinates have been registered for this business yet.</p></div>{% endif %}<div class='card'><strong>{{ state }}</strong><p class='small'>The map remains available even when the business owner is offline.</p>{% if b.last_location_at %}<p class='small'>Last GPS update: {{ b.last_location_at }}</p>{% endif %}</div>""",b=b,lat=lat,lon=lon,state=state)
+
+@app.route('/admin/business-verification')
+@admin_required
+def admin_business_verification():
+    rows=db_select('koja_businesses',order='updated_at.desc',limit=300) or []
+    rows=[x for x in rows if str(x.get('verification_status') or 'pending').lower() in {'pending','submitted','under_review','rejected','approved','verified'}]
+    return render_page('Business Verification',r"""<div class='hero'><h1>Business Verification</h1><p>Review registration numbers, licences, tax details and submitted documents.</p></div><div class='card'><table><tr><th>Business</th><th>Registration</th><th>Licence</th><th>Expiry</th><th>Status</th><th>Action</th></tr>{% for x in rows %}<tr><td>{{ x.name }}</td><td>{{ x.registration_number or '—' }}</td><td>{{ x.license_number or '—' }}</td><td>{{ x.license_expiry or '—' }}</td><td>{{ x.verification_status or 'pending' }}</td><td><form method='post' action='{{ url_for('admin_business_verification_action',business_id=x.id) }}'><button class='btn success' name='action' value='approved'>Approve</button> <button class='btn secondary' name='action' value='rejected'>Reject</button></form></td></tr>{% else %}<tr><td colspan='6'>No business verification records.</td></tr>{% endfor %}</table></div>""",rows=rows)
+
+@app.route('/admin/business-verification/<business_id>',methods=['POST'])
+@admin_required
+def admin_business_verification_action(business_id):
+    action=clean(request.form.get('action')).lower()
+    if action not in {'approved','rejected','pending','under_review'}: abort(400)
+    _,err=db_update('koja_businesses',{'id':business_id},{'verification_status':action,'updated_at':utc_now()})
+    flash('Business verification updated.' if not err else 'Could not update business verification.','success' if not err else 'danger')
+    return redirect(url_for('admin_business_verification'))
+
 @app.route('/business/<business_id>')
 @login_required
 def business_dashboard(business_id):
@@ -7512,7 +7584,7 @@ def business_dashboard(business_id):
     if not b: abort(404)
     products=db_select('koja_business_products',{'business_id':business_id},limit=200) or []; sales=db_select('koja_business_sales',{'business_id':business_id},limit=200) or []; expenses=db_select('koja_business_expenses',{'business_id':business_id},limit=200) or []
     revenue=sum(float(x.get('total_amount') or 0) for x in sales); costs=sum(float(x.get('amount') or 0) for x in expenses); profit=revenue-costs
-    return render_page('Business Dashboard',r'''<div class="hero"><h1>{{ b.name }}</h1><p>{{ b.category }} · {{ b.location or '' }}</p><div class="actions"><a class="btn" href="{{ url_for('business_products',business_id=b.id) }}">Inventory / POS</a><a class="btn secondary" href="{{ url_for('business_records',business_id=b.id) }}">Accounting</a><a class="btn secondary" href="{{ url_for('business_subscription',business_id=b.id) }}">Subscription</a><a class="btn secondary" href="{{ url_for('business_customers',business_id=b.id) }}">Customers</a><a class="btn secondary" href="{{ url_for('business_suppliers',business_id=b.id) }}">Suppliers</a><a class="btn secondary" href="{{ url_for('business_invoices',business_id=b.id) }}">Invoices</a><a class="btn secondary" href="{{ url_for('business_employees',business_id=b.id) }}">Employees</a><a class="btn secondary" href="{{ url_for('business_store',business_id=b.id) }}">Online Store</a><a class="btn secondary" href="{{ url_for('business_ai',business_id=b.id) }}">AI Assistant</a><a class="btn secondary" href="{{ url_for('business_payments',business_id=b.id) }}">Payments</a><a class="btn secondary" href="{{ url_for('business_delivery',business_id=b.id) }}">Delivery</a><a class="btn secondary" href="{{ url_for('business_verification',business_id=b.id) }}">Registration & Licences</a><a class="btn secondary" href="{{ url_for('business_live',business_id=b.id) }}">KOJA Live</a></div></div><div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(revenue,'ZMW') }}</h2></div><div class="card"><h3>Expenses</h3><h2>{{ money(costs,'ZMW') }}</h2></div><div class="card"><h3>Profit</h3><h2>{{ money(profit,'ZMW') }}</h2></div><div class="card"><h3>Inventory items</h3><h2>{{ products|length }}</h2></div></div><div class="card"><h2>Business modules</h2><p>POS · Inventory · Accounting · Invoices · Customers · Suppliers · Payroll · Online Store · AI Assistant · Payments · Delivery</p></div>''',b=b,products=products,sales=sales,expenses=expenses,revenue=revenue,costs=costs,profit=profit,money=market_money)
+    return render_page('Business Dashboard',r'''<div class="hero"><h1>{{ b.name }}</h1><p>{{ b.category }} · {{ b.location or '' }}</p><div class="actions"><a class="btn" href="{{ url_for('business_products',business_id=b.id) }}">Inventory / POS</a><a class="btn secondary" href="{{ url_for('business_records',business_id=b.id) }}">Accounting</a><a class="btn secondary" href="{{ url_for('business_subscription',business_id=b.id) }}">Subscription</a><a class="btn secondary" href="{{ url_for('business_customers',business_id=b.id) }}">Customers</a><a class="btn secondary" href="{{ url_for('business_suppliers',business_id=b.id) }}">Suppliers</a><a class="btn secondary" href="{{ url_for('business_invoices',business_id=b.id) }}">Invoices</a><a class="btn secondary" href="{{ url_for('business_employees',business_id=b.id) }}">Employees</a><a class="btn secondary" href="{{ url_for('business_store',business_id=b.id) }}">Online Store</a><a class="btn secondary" href="{{ url_for('business_ai',business_id=b.id) }}">AI Assistant</a><a class="btn secondary" href="{{ url_for('business_payments',business_id=b.id) }}">Payments</a><a class="btn secondary" href="{{ url_for('business_delivery',business_id=b.id) }}">Delivery</a><a class="btn secondary" href="{{ url_for('business_verification',business_id=b.id) }}">Registration & Licences</a><a class="btn secondary" href="{{ url_for('business_live',business_id=b.id) }}">KOJA Live</a><a class="btn secondary" href="{{ url_for('business_location',business_id=b.id) }}">Location & GPS</a></div></div><div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(revenue,'ZMW') }}</h2></div><div class="card"><h3>Expenses</h3><h2>{{ money(costs,'ZMW') }}</h2></div><div class="card"><h3>Profit</h3><h2>{{ money(profit,'ZMW') }}</h2></div><div class="card"><h3>Inventory items</h3><h2>{{ products|length }}</h2></div></div><div class="card"><h2>Business modules</h2><p>POS · Inventory · Accounting · Invoices · Customers · Suppliers · Payroll · Online Store · AI Assistant · Payments · Delivery</p></div>''',b=b,products=products,sales=sales,expenses=expenses,revenue=revenue,costs=costs,profit=profit,money=market_money)
 
 @app.route('/business/<business_id>/products',methods=['GET','POST'])
 @login_required
