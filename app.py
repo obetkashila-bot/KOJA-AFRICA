@@ -7596,7 +7596,65 @@ def business_dashboard(business_id):
     if not b: abort(404)
     products=db_select('koja_business_products',{'business_id':business_id},limit=200) or []; sales=db_select('koja_business_sales',{'business_id':business_id},limit=200) or []; expenses=db_select('koja_business_expenses',{'business_id':business_id},limit=200) or []
     revenue=sum(float(x.get('total_amount') or 0) for x in sales); costs=sum(float(x.get('amount') or 0) for x in expenses); profit=revenue-costs
-    return render_page('Business Dashboard',r'''<div class="hero"><h1>{{ b.name }}</h1><p><strong>KOJA Registration Number:</strong> {{ b.koja_registration_number or 'Pending automatic assignment' }}</p><p>{{ b.category }} · {{ b.location or '' }}</p><div class="actions"><a class="btn" href="{{ url_for('business_products',business_id=b.id) }}">Inventory / POS</a><a class="btn secondary" href="{{ url_for('business_records',business_id=b.id) }}">Accounting</a><a class="btn secondary" href="{{ url_for('business_subscription',business_id=b.id) }}">Subscription</a><a class="btn secondary" href="{{ url_for('business_customers',business_id=b.id) }}">Customers</a><a class="btn secondary" href="{{ url_for('business_suppliers',business_id=b.id) }}">Suppliers</a><a class="btn secondary" href="{{ url_for('business_invoices',business_id=b.id) }}">Invoices</a><a class="btn secondary" href="{{ url_for('business_employees',business_id=b.id) }}">Employees</a><a class="btn secondary" href="{{ url_for('business_store',business_id=b.id) }}">Online Store</a><a class="btn secondary" href="{{ url_for('business_ai',business_id=b.id) }}">AI Assistant</a><a class="btn secondary" href="{{ url_for('business_payments',business_id=b.id) }}">Payments</a><a class="btn secondary" href="{{ url_for('business_delivery',business_id=b.id) }}">Delivery</a><a class="btn secondary" href="{{ url_for('business_verification',business_id=b.id) }}">Registration & Licences</a><a class="btn secondary" href="{{ url_for('business_live',business_id=b.id) }}">KOJA Live</a><a class="btn secondary" href="{{ url_for('business_location',business_id=b.id) }}">Location & GPS</a></div></div><div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(revenue,'ZMW') }}</h2></div><div class="card"><h3>Expenses</h3><h2>{{ money(costs,'ZMW') }}</h2></div><div class="card"><h3>Profit</h3><h2>{{ money(profit,'ZMW') }}</h2></div><div class="card"><h3>Inventory items</h3><h2>{{ products|length }}</h2></div></div><div class="card"><h2>Business modules</h2><p>POS · Inventory · Accounting · Invoices · Customers · Suppliers · Payroll · Online Store · AI Assistant · Payments · Delivery</p></div>''',b=b,products=products,sales=sales,expenses=expenses,revenue=revenue,costs=costs,profit=profit,money=market_money)
+    return render_page('Business Dashboard',r'''<div class="hero"><h1>{{ b.name }}</h1><p><strong>KOJA Registration Number:</strong> {{ b.koja_registration_number or 'Pending automatic assignment' }}</p><p>{{ b.category }} · {{ b.location or '' }}</p><div class="actions"><a class="btn" href="{{ url_for('business_products',business_id=b.id) }}">Inventory / POS</a><a class="btn secondary" href="{{ url_for('business_records',business_id=b.id) }}">Accounting</a><a class="btn secondary" href="{{ url_for('business_subscription',business_id=b.id) }}">Subscription</a><a class="btn secondary" href="{{ url_for('business_customers',business_id=b.id) }}">Customers</a><a class="btn secondary" href="{{ url_for('business_suppliers',business_id=b.id) }}">Suppliers</a><a class="btn secondary" href="{{ url_for('business_invoices',business_id=b.id) }}">Invoices</a><a class="btn secondary" href="{{ url_for('business_employees',business_id=b.id) }}">Employees</a><a class="btn secondary" href="{{ url_for('business_store',business_id=b.id) }}">Online Store</a><a class="btn secondary" href="{{ url_for('business_ai',business_id=b.id) }}">AI Assistant</a><a class="btn secondary" href="{{ url_for('business_payments',business_id=b.id) }}">Payments</a><a class="btn secondary" href="{{ url_for('business_delivery',business_id=b.id) }}">Delivery</a><a class="btn secondary" href="{{ url_for('business_verification',business_id=b.id) }}">Registration & Licences</a><a class="btn secondary" href="{{ url_for('business_live',business_id=b.id) }}">KOJA Live</a><a class="btn secondary" href="{{ url_for('business_location',business_id=b.id) }}">Location & GPS</a><a class="btn secondary" href="{{ url_for('business_intelligence',business_id=b.id) }}">Business Intelligence</a></div></div><div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(revenue,'ZMW') }}</h2></div><div class="card"><h3>Expenses</h3><h2>{{ money(costs,'ZMW') }}</h2></div><div class="card"><h3>Profit</h3><h2>{{ money(profit,'ZMW') }}</h2></div><div class="card"><h3>Inventory items</h3><h2>{{ products|length }}</h2></div></div><div class="card"><h2>Business modules</h2><p>POS · Inventory · Accounting · Invoices · Customers · Suppliers · Payroll · Online Store · AI Assistant · Payments · Delivery</p></div>''',b=b,products=products,sales=sales,expenses=expenses,revenue=revenue,costs=costs,profit=profit,money=market_money)
+
+@app.route('/business/<business_id>/intelligence',methods=['GET','POST'])
+@login_required
+def business_intelligence(business_id):
+    """Deterministic business metrics with optional KOJA AI interpretation."""
+    uid=(current_user() or {}).get('id'); b=first_row('koja_businesses',{'id':business_id,'owner_id':uid})
+    if not b: abort(404)
+    try: days=max(7,min(365,int(request.args.get('days') or 30)))
+    except Exception: days=30
+    now=datetime.now(timezone.utc); cutoff=now-timedelta(days=days)
+    sales=db_select('koja_business_sales',{'business_id':business_id},order='created_at.desc',limit=1000) or []
+    expenses=db_select('koja_business_expenses',{'business_id':business_id},order='created_at.desc',limit=1000) or []
+    products=db_select('koja_business_products',{'business_id':business_id},order='created_at.desc',limit=1000) or []
+    def dt(v):
+        try:
+            x=str(v or '').replace('Z','+00:00'); d=datetime.fromisoformat(x)
+            return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+        except Exception: return None
+    rs=[x for x in sales if not dt(x.get('created_at')) or dt(x.get('created_at'))>=cutoff]
+    es=[x for x in expenses if not dt(x.get('created_at')) or dt(x.get('created_at'))>=cutoff]
+    revenue=sum(_money_num(x.get('total_amount') or x.get('amount')) for x in rs)
+    expense_total=sum(_money_num(x.get('amount') or x.get('total_amount')) for x in es)
+    profit=revenue-expense_total; tx_count=len(rs); avg_sale=revenue/tx_count if tx_count else 0
+    prev_cutoff=cutoff-timedelta(days=days)
+    prev_sales=[x for x in sales if dt(x.get('created_at')) and prev_cutoff<=dt(x.get('created_at'))<cutoff]
+    prev_revenue=sum(_money_num(x.get('total_amount') or x.get('amount')) for x in prev_sales)
+    growth=((revenue-prev_revenue)/prev_revenue*100) if prev_revenue else None
+    daily=[]
+    for i in range(days-1,-1,-1):
+        d=(now-timedelta(days=i)).date(); val=sum(_money_num(x.get('total_amount') or x.get('amount')) for x in rs if (dt(x.get('created_at')) or now).date()==d)
+        daily.append({'label':d.strftime('%d %b'),'value':round(val,2)})
+    max_daily=max([x['value'] for x in daily] or [1])
+    by_product={}; pmap={str(x.get('id')):x for x in products}
+    for x in rs:
+        pid=str(x.get('product_id') or ''); key=pid or str(x.get('description') or 'Unspecified')
+        by_product.setdefault(key,{'name':str(x.get('description') or 'Product'),'revenue':0,'units':0})
+        by_product[key]['revenue']+=_money_num(x.get('total_amount') or x.get('amount')); by_product[key]['units']+=int(float(x.get('quantity') or 1))
+    for k,v in by_product.items():
+        if k in pmap: v['name']=pmap[k].get('name') or v['name']
+    top_products=sorted(by_product.values(),key=lambda x:x['revenue'],reverse=True)[:8]
+    expense_groups={}
+    for x in es:
+        name=str(x.get('category') or x.get('description') or 'Other').strip()[:60] or 'Other'; expense_groups[name]=expense_groups.get(name,0)+_money_num(x.get('amount') or x.get('total_amount'))
+    top_expenses=sorted([{'name':k,'amount':v} for k,v in expense_groups.items()],key=lambda x:x['amount'],reverse=True)[:8]
+    low_stock=sorted([x for x in products if int(float(x.get('stock') or 0))<=5],key=lambda x:int(float(x.get('stock') or 0)))[:10]
+    forecast_30=(revenue/days)*30 if days else 0; margin=(profit/revenue*100) if revenue else 0
+    prompt=("Analyze this KOJA business using ONLY the supplied metrics. Be concise and practical. Return sections: Executive view, Opportunities, Risks, Next 7 days. Do not invent missing data.\n"+json.dumps({'period_days':days,'revenue':round(revenue,2),'expenses':round(expense_total,2),'profit':round(profit,2),'margin_pct':round(margin,2),'transactions':tx_count,'average_sale':round(avg_sale,2),'growth_pct':growth,'forecast_next_30_days':round(forecast_30,2),'top_products':top_products[:5],'top_expenses':top_expenses[:5],'low_stock':[{'name':x.get('name'),'stock':x.get('stock')} for x in low_stock[:5]]},default=str))
+    ai_text=''
+    if request.method=='POST':
+        ai_text,_=_ai_call(prompt,'You are KOJA Business Intelligence. Be factual, concise and action-oriented. Use ZMW for money.',max_output_tokens=1800,timeout=18)
+        if not ai_text: ai_text='AI analysis is not available right now. The verified metrics remain available below.'
+    return render_page('Business Intelligence',r"""<div class="hero"><h1>{{ b.name }} - Business Intelligence</h1><p>Sales, expenses, profit, inventory signals and AI recommendations.</p><p><a class="btn secondary" href="{{ url_for('business_intelligence',business_id=b.id,days=7) }}">7 days</a> <a class="btn secondary" href="{{ url_for('business_intelligence',business_id=b.id,days=30) }}">30 days</a> <a class="btn secondary" href="{{ url_for('business_intelligence',business_id=b.id,days=90) }}">90 days</a></p></div>
+<div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(revenue,'ZMW') }}</h2></div><div class="card"><h3>Expenses</h3><h2>{{ money(expense_total,'ZMW') }}</h2></div><div class="card"><h3>Profit</h3><h2>{{ money(profit,'ZMW') }}</h2></div><div class="card"><h3>Margin</h3><h2>{{ '%.1f'|format(margin) }}%</h2></div></div>
+<div class="grid"><div class="card"><h3>Transactions</h3><h2>{{ tx_count }}</h2><p>Average sale: {{ money(avg_sale,'ZMW') }}</p></div><div class="card"><h3>Growth</h3><h2>{% if growth is not none %}{{ '%.1f'|format(growth) }}%{% else %}New baseline{% endif %}</h2><p>Compared with the previous {{ days }} days.</p></div><div class="card"><h3>30-day run rate</h3><h2>{{ money(forecast_30,'ZMW') }}</h2></div></div>
+<div class="card"><h2>Revenue trend</h2>{% for x in daily %}<div style="display:flex;gap:8px;align-items:center;margin:5px 0"><span style="width:55px;font-size:12px">{{ x.label }}</span><div style="height:14px;background:#2563eb;width:{{ ((x.value/max_daily)*100)|round(0,'floor') }}%;min-width:{% if x.value>0 %}3px{% else %}0{% endif %};border-radius:4px"></div><span style="font-size:12px">{{ money(x.value,'ZMW') }}</span></div>{% endfor %}</div>
+<div class="grid"><div class="card"><h2>Top revenue sources</h2>{% for x in top_products %}<p><strong>{{ x.name }}</strong> - {{ money(x.revenue,'ZMW') }} - {{ x.units }} units</p>{% else %}<p>No sales data in this period.</p>{% endfor %}</div><div class="card"><h2>Largest expenses</h2>{% for x in top_expenses %}<p><strong>{{ x.name }}</strong> - {{ money(x.amount,'ZMW') }}</p>{% else %}<p>No expenses in this period.</p>{% endfor %}</div></div>
+<div class="card"><h2>Inventory alerts</h2>{% for x in low_stock %}<p><strong>{{ x.name }}</strong> - {{ x.stock }} units remaining</p>{% else %}<p>No low-stock items detected.</p>{% endfor %}</div>
+<div class="card"><h2>KOJA AI Business Analyst</h2><p>AI interprets the verified metrics above; it does not replace accounting records.</p><form method="post"><button class="btn" type="submit">Run AI Analysis</button></form>{% if ai_text %}<div class="card" style="margin-top:14px;white-space:pre-wrap">{{ ai_text }}</div>{% endif %}</div>""",b=b,revenue=revenue,expense_total=expense_total,profit=profit,margin=margin,tx_count=tx_count,avg_sale=avg_sale,growth=growth,days=days,forecast_30=forecast_30,daily=daily,max_daily=max_daily,top_products=top_products,top_expenses=top_expenses,low_stock=low_stock,ai_text=ai_text,money=market_money)
 
 @app.route('/business/<business_id>/products',methods=['GET','POST'])
 @login_required
