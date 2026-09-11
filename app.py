@@ -761,6 +761,7 @@ BASE_HTML = r"""
 {% if seo_jsonld %}<script type="application/ld+json">{{ seo_jsonld|safe }}</script>{% endif %}
 <title>{{ title or "KOJA AFRICA" }}</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 (function(){
   var meta=document.querySelector('meta[name="csrf-token"]');
@@ -895,7 +896,6 @@ footer{text-align:center;color:var(--muted);padding:30px}
 {{ body|safe }}
 </div>
 <footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services</footer>
-<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 </body>
 </html>
 """
@@ -8809,27 +8809,58 @@ def market_live_room(room_id):
     product = market_product(room.get('pinned_product_id')) if room.get('pinned_product_id') else None
     products = db_select('koja_market_products', {'seller_id': room.get('seller_id')}, order='created_at.desc', limit=100) or []
     is_seller = str(room.get('seller_id')) == str((current_user() or {}).get('id') or '')
-    return render_page('KOJA LIVE', r'''
+    return render_page('KOJA LIVE', r'''<style>
+.live-shell{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:12px}
+.live-video{position:relative;width:100%;min-height:320px;aspect-ratio:16/9;background:#0b1220;border-radius:14px;overflow:hidden;display:flex;align-items:center;justify-content:center;color:#fff}
+.live-video video{display:block;width:100%;height:100%;min-height:320px;object-fit:contain;background:#000}
+.live-placeholder{text-align:center;padding:28px;max-width:520px}.live-status{font-weight:700;margin:8px 0}.live-error{color:#ffb4b4}.live-note{color:#cbd5e1;font-size:13px}
+@media(max-width:760px){.live-video{min-height:230px}.live-video video{min-height:230px}}
+</style>
 <div class="hero"><h1>{{ room.title }}</h1><p>{{ seller.store_name or 'KOJA Seller' }}</p></div>
-<div class="card"><div id="liveStatus" class="small">Connecting to LIVE video…</div><div id="liveVideo" style="min-height:300px;background:#080808;border-radius:14px;display:flex;align-items:center;justify-content:center;color:#fff;overflow:hidden"></div>
-{% if is_seller %}<div class="actions" style="margin-top:12px"><form method="post" action="{{ url_for('market_live_end', room_id=room.id) }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="btn danger" type="submit">End Live</button></form></div>{% endif %}</div>
+<div class="live-shell">
+  <div id="liveStatus" class="live-status">Preparing LIVE video…</div>
+  <div id="liveVideo" class="live-video"><div class="live-placeholder"><h2>KOJA LIVE</h2><p id="liveMessage" class="live-note">Connecting to the live video service…</p></div></div>
+  <div id="liveControls" class="actions" style="margin-top:12px">
+    <button class="btn secondary" type="button" id="retryLive">Retry video</button>
+    {% if is_seller %}<form method="post" action="{{ url_for('market_live_end', room_id=room.id) }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="btn danger" type="submit">End Live</button></form>{% endif %}
+  </div>
+</div>
 {% if is_seller %}<div class="card"><h2>Pin a product</h2><form method="post" action="{{ url_for('market_live_pin', room_id=room.id) }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><select name="product_id" required><option value="">Select product</option>{% for p in products %}<option value="{{ p.id }}" {% if room.pinned_product_id|string == p.id|string %}selected{% endif %}>{{ p.title }} — {{ money(p.price,p.currency) }}</option>{% endfor %}</select><button class="btn" type="submit">Pin Product</button></form></div>{% endif %}
 <div class="card"><h2>Shop this live</h2>{% if product %}<h3>{{ product.title }}</h3><p><strong>{{ money(product.price, product.currency) }}</strong></p><div class="actions"><a class="btn" href="{{ url_for('market_product_view', product_id=product.id) }}">Buy Now</a>{% if not is_seller %}<form method="post" action="{{ url_for('market_cart_add', product_id=product.id) }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="quantity" value="1"><button class="btn secondary" type="submit">Add to Cart</button></form>{% endif %}</div>{% else %}<p>No product is pinned yet.</p>{% endif %}</div>
-<script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
 <script>
-(async function(){
- const status=document.getElementById('liveStatus'),mount=document.getElementById('liveVideo');
- try{
-  if(!window.LivekitClient) throw new Error('Live video client failed to load.');
-  const r=await fetch('{{ url_for('market_live_token', room_id=room.id) }}',{credentials:'same-origin'}); const data=await r.json();
-  if(!r.ok||!data.ok) throw new Error(data.message||'Could not authenticate live video.');
-  const room=new LivekitClient.Room({adaptiveStream:true,dynacast:true});
-  room.on(LivekitClient.RoomEvent.TrackSubscribed,(track)=>{const el=track.attach();el.style.width='100%';el.style.height='100%';el.style.objectFit='contain';mount.innerHTML='';mount.appendChild(el);});
-  room.on(LivekitClient.RoomEvent.TrackUnsubscribed,(track)=>{track.detach().forEach(e=>e.remove());});
-  await room.connect(data.server_url,data.token);
-  status.textContent=data.is_seller?'You are LIVE. Buyers can watch this room.':'You are watching LIVE Shopping.';
-  if(data.is_seller){await room.localParticipant.setCameraEnabled(true);await room.localParticipant.setMicrophoneEnabled(true);}
- }catch(e){console.error(e);status.textContent='Live video unavailable: '+(e.message||'connection failed');mount.innerHTML='<div style="padding:30px;text-align:center">Video could not connect. Refresh and try again.</div>';}
+(function(){
+ const status=document.getElementById('liveStatus'), mount=document.getElementById('liveVideo'), msg=document.getElementById('liveMessage'), retry=document.getElementById('retryLive');
+ let liveRoom=null, connecting=false;
+ function setStatus(text,error){status.textContent=text;status.className='live-status'+(error?' live-error':'');if(msg)msg.textContent=text;}
+ function clearVideo(){if(!mount)return;mount.innerHTML='<div class="live-placeholder"><h2>KOJA LIVE</h2><p id="liveMessage" class="live-note">Connecting to the live video service…</p></div>';}
+ function attach(track){if(!track||!mount)return;try{const el=track.attach();el.style.width='100%';el.style.height='100%';el.style.objectFit='contain';mount.innerHTML='';mount.appendChild(el);}catch(e){console.error('KOJA Live track attach failed',e);}}
+ function clientGlobal(){return window.LivekitClient||window.LiveKitClient||window.livekitClient||null;}
+ function loadScript(src){return new Promise((resolve,reject)=>{const existing=document.querySelector('script[data-koja-livekit]');if(existing&&clientGlobal())return resolve();const sc=document.createElement('script');sc.src=src;sc.async=true;sc.dataset.kojaLivekit='1';sc.onload=()=>clientGlobal()?resolve():reject(new Error('LiveKit client loaded but global object is unavailable.'));sc.onerror=()=>reject(new Error('LiveKit client could not be loaded.'));document.head.appendChild(sc);});}
+ async function ensureClient(){if(clientGlobal())return clientGlobal();try{return await loadScript('https://cdn.jsdelivr.net/npm/livekit-client@2.15.6/dist/livekit-client.umd.min.js')}catch(e){return await loadScript('https://unpkg.com/livekit-client@2.15.6/dist/livekit-client.umd.min.js')}}
+ async function connect(){
+   if(connecting)return; connecting=true; clearVideo(); setStatus('Connecting to LIVE video…');
+   try{
+     const LK=await ensureClient();
+     const r=await fetch('{{ url_for('market_live_token', room_id=room.id) }}',{credentials:'same-origin',cache:'no-store'}); const data=await r.json();
+     if(!r.ok||!data.ok) throw new Error(data.message||'Could not authenticate live video.');
+     liveRoom=new LK.Room({adaptiveStream:true,dynacast:true});
+     liveRoom.on(LK.RoomEvent.TrackSubscribed,(track)=>attach(track));
+     liveRoom.on(LK.RoomEvent.TrackUnsubscribed,(track)=>track.detach().forEach(e=>e.remove()));
+     if(LK.RoomEvent.LocalTrackPublished) liveRoom.on(LK.RoomEvent.LocalTrackPublished,(publication)=>{if(publication&&publication.track)attach(publication.track);});
+     await liveRoom.connect(data.server_url,data.token);
+     setStatus(data.is_seller?'You are LIVE. Start your camera if prompted.':'You are watching LIVE Shopping.');
+     if(data.is_seller){
+       try{await liveRoom.localParticipant.setCameraEnabled(true);await liveRoom.localParticipant.setMicrophoneEnabled(true);}catch(mediaErr){setStatus('LIVE connected. Camera/microphone permission is needed to publish video.',true);console.warn(mediaErr);}
+       liveRoom.localParticipant.videoTrackPublications.forEach(p=>{if(p.track)attach(p.track)});
+     } else {
+       let found=false; liveRoom.remoteParticipants.forEach(participant=>participant.trackPublications.forEach(pub=>{if(pub.track){found=true;attach(pub.track)}}));
+       if(!found)setStatus('Connected. Waiting for the seller video…');
+     }
+   }catch(e){console.error('KOJA LIVE connection failed',e);setStatus('Live video unavailable: '+(e.message||'connection failed'),true);clearVideo();}
+   finally{connecting=false;}
+ }
+ if(retry)retry.addEventListener('click',connect); connect();
+ window.addEventListener('pagehide',()=>{try{if(liveRoom)liveRoom.disconnect()}catch(e){}});
 })();
 </script>
 ''', room=room, seller=seller, product=product, products=products, is_seller=is_seller, money=market_money)

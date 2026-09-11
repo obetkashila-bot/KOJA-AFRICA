@@ -36,3 +36,11 @@ IMPORTANT
 - Do not enable real-money payments until Flutterwave credentials and a controlled
   test transaction have been verified.
 - AI provider keys remain server-side environment variables.
+
+
+LIVE SHOP + GPS SCREEN FIX
+- Live Shop video page now has a visible non-black fallback UI, retry control, pinned product area, and robust LiveKit client loading.
+- Seller local camera tracks are attached to the video element.
+- Existing remote participant tracks are attached for buyers.
+- Leaflet JS is loaded before GPS/map page scripts, fixing map screens that initialized before Leaflet was available.
+- No KOJA Communications/Connect+ routes were changed.
