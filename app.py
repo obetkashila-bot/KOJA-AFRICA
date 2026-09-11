@@ -7689,49 +7689,77 @@ if __name__=="__main__":
 def business_intelligence_v3(business_id):
     b=_biz_owner(business_id)
     if not b: abort(404)
-    from datetime import datetime, timedelta, timezone
     now=datetime.now(timezone.utc)
     sales=db_select('koja_business_sales',{'business_id':business_id},order='created_at.desc',limit=5000) or []
     expenses=db_select('koja_business_expenses',{'business_id':business_id},order='created_at.desc',limit=5000) or []
     products=db_select('koja_business_products',{'business_id':business_id},limit=2000) or []
+    customers=db_select('koja_business_customers',{'business_id':business_id},limit=2000) or []
     def dt(v):
         try:
             x=datetime.fromisoformat(str(v).replace('Z','+00:00'))
             return x if x.tzinfo else x.replace(tzinfo=timezone.utc)
         except Exception:return None
+    def num(v,default=0.0):
+        try:return float(v or default)
+        except Exception:return float(default)
     def amt(x):
-        for k in ('total_amount','amount','total','price'):
-            try:
-                if x.get(k) is not None:return float(x.get(k) or 0)
-            except Exception:pass
+        for k in ('total_amount','amount','total','price','line_total'):
+            if x.get(k) is not None:return num(x.get(k))
         return 0.0
-    paid=[x for x in sales if str(x.get('status') or '').lower() not in {'cancelled','void','refunded'}]
+    def status_ok(x):
+        return str(x.get('status') or 'paid').strip().lower() in {'paid','completed','complete','success','successful','settled','approved'}
+    normalized=[]
+    for x in sales:
+        if status_ok(x):
+            y=dict(x); y['_source']='Business POS'; y['_key']='biz:'+str(x.get('id')); normalized.append(y)
+    linked={str(p.get('market_product_id')):p for p in products if p.get('market_product_id')}
+    market_rows=[]
+    if linked:
+        market_orders=db_select('koja_market_orders',order='created_at.desc',limit=5000) or []
+        existing_refs={clean(x.get('description')) for x in sales if clean(x.get('description')).startswith('KOJA Market order ')}
+        for o in market_orders:
+            if not status_ok(o): continue
+            bp=linked.get(str(o.get('product_id') or ''))
+            if not bp: continue
+            ref='KOJA Market order '+str(o.get('order_number') or o.get('id'))
+            if ref in existing_refs: continue
+            y={'id':o.get('id'),'business_id':business_id,'product_id':bp.get('id'),'customer_id':o.get('buyer_id'),'quantity':max(1,int(num(o.get('quantity'),1))),'total_amount':num(o.get('item_amount') or o.get('total_amount')),'payment_method':o.get('payment_method') or 'market','status':'paid','description':ref,'created_at':o.get('created_at'),'_source':'KOJA Market','_market_order':o,'_business_product':bp}
+            normalized.append(y); market_rows.append(y)
+    product_map={str(p.get('id')):p for p in products}
+    sale_items=[]
+    sale_ids=[str(x.get('id')) for x in sales if x.get('id')]
+    if sale_ids:
+        sale_items=db_select('koja_business_sale_items',{'sale_id':'in.('+','.join(sale_ids)+')'},limit=10000) or []
+    items_by_sale={}
+    for it in sale_items: items_by_sale.setdefault(str(it.get('sale_id')),[]).append(it)
+    def sale_cost(x):
+        items=items_by_sale.get(str(x.get('id')),[])
+        if items:return sum(num(i.get('cost_price'))*max(1,int(num(i.get('quantity'),1))) for i in items)
+        pdt=product_map.get(str(x.get('product_id') or '')) or x.get('_business_product') or {}
+        return num(pdt.get('cost_price'))*max(1,int(num(x.get('quantity'),1)))
+    expense_rows=[x for x in expenses if num(x.get('amount'))>0]
     def period(days):
         st=now-timedelta(days=days)
-        ss=[x for x in paid if dt(x.get('created_at')) and dt(x.get('created_at'))>=st]
-        ee=[x for x in expenses if dt(x.get('created_at')) and dt(x.get('created_at'))>=st]
-        return sum(amt(x) for x in ss),sum(amt(x) for x in ee),len(ss)
-    rev7,exp7,cnt7=period(7); rev30,exp30,cnt30=period(30); rev90,exp90,cnt90=period(90)
-    prev=[x for x in paid if dt(x.get('created_at')) and now-timedelta(days=60)<=dt(x.get('created_at'))<now-timedelta(days=30)]
+        ss=[x for x in normalized if dt(x.get('created_at')) and dt(x.get('created_at'))>=st]
+        ee=[x for x in expense_rows if dt(x.get('created_at')) and dt(x.get('created_at'))>=st]
+        revenue=sum(amt(x) for x in ss); expense=sum(num(x.get('amount')) for x in ee); gross=sum(max(0,amt(x)-sale_cost(x)) for x in ss)
+        return revenue,expense,gross,len(ss)
+    rev7,exp7,gross7,cnt7=period(7); rev30,exp30,gross30,cnt30=period(30); rev90,exp90,gross90,cnt90=period(90)
+    net30=gross30-exp30
+    prev=[x for x in normalized if dt(x.get('created_at')) and now-timedelta(days=60)<=dt(x.get('created_at'))<now-timedelta(days=30)]
     prev30=sum(amt(x) for x in prev); growth=((rev30-prev30)/prev30*100) if prev30 else None
     daily=[]
     for i in range(29,-1,-1):
-        d=(now-timedelta(days=i)).date()
-        r=sum(amt(x) for x in paid if dt(x.get('created_at')) and dt(x.get('created_at')).date()==d)
-        e=sum(amt(x) for x in expenses if dt(x.get('created_at')) and dt(x.get('created_at')).date()==d)
+        d=(now-timedelta(days=i)).date(); r=sum(amt(x) for x in normalized if dt(x.get('created_at')) and dt(x.get('created_at')).date()==d); e=sum(num(x.get('amount')) for x in expense_rows if dt(x.get('created_at')) and dt(x.get('created_at')).date()==d)
         daily.append({'date':d.isoformat(),'revenue':round(r,2),'expense':round(e,2),'profit':round(r-e,2)})
     vals=[x['revenue'] for x in daily]; n=len(vals); sx=sum(range(n)); sy=sum(vals); sxx=sum(i*i for i in range(n)); sxy=sum(i*y for i,y in enumerate(vals)); den=n*sxx-sx*sx
     slope=((n*sxy-sx*sy)/den) if den else 0; intercept=(sy-slope*sx)/n if n else 0
-    forecast7=[round(max(0,intercept+slope*(n+i)),2) for i in range(1,8)]
-    forecast30=round(sum(max(0,intercept+slope*(n+i)) for i in range(1,31)),2) if n else 0
-    recent=vals[-7:]; avg7=sum(recent)/len(recent) if recent else 0; sd=(sum((v-avg7)**2 for v in recent)/len(recent))**0.5 if recent else 0; cv=sd/avg7 if avg7 else 1
-    confidence='High' if cv<.35 and n>=14 else ('Medium' if cv<.75 and n>=7 else 'Low')
+    forecast7=[round(max(0,intercept+slope*(n+i)),2) for i in range(1,8)]; forecast30=round(sum(max(0,intercept+slope*(n+i)) for i in range(1,31)),2) if n else 0
+    recent=vals[-7:]; avg7=sum(recent)/len(recent) if recent else 0; sd7=(sum((v-avg7)**2 for v in recent)/len(recent))**0.5 if recent else 0; cv=sd7/avg7 if avg7 else 1
+    confidence='High' if cv<.35 and cnt30>=14 else ('Medium' if cv<.75 and cnt30>=7 else 'Low')
     stats=[]; low=[]
     for pdt in products:
-        try: stock=float(pdt.get('stock') or 0); price=float(pdt.get('selling_price') or pdt.get('price') or 0); cost=float(pdt.get('cost_price') or 0)
-        except Exception: continue
-        rows=[x for x in paid if x.get('product_id')==pdt.get('id')]
-        q=sum(float(x.get('quantity') or 1) for x in rows); revenue=sum(amt(x) for x in rows); margin=(price-cost)/price*100 if price else 0; days=stock/(q/30) if q else None
+        stock=num(pdt.get('stock')); price=num(pdt.get('selling_price') or pdt.get('price')); cost=num(pdt.get('cost_price')); rows=[x for x in normalized if str(x.get('product_id') or '')==str(pdt.get('id'))]; q=sum(num(x.get('quantity'),1) for x in rows); revenue=sum(amt(x) for x in rows); margin=((price-cost)/price*100) if price else 0; days=(stock/(q/30)) if q else None
         z={'name':pdt.get('name') or pdt.get('title') or 'Unnamed','stock':stock,'qty':q,'revenue':revenue,'margin':margin,'days':days,'price':price,'cost':cost}; stats.append(z)
         if stock<=5 or (days is not None and days<7): low.append(z)
     top=sorted(stats,key=lambda x:x['revenue'],reverse=True)[:10]
@@ -7743,23 +7771,29 @@ def business_intelligence_v3(business_id):
         elif x['margin']>40 and x['stock']<=5: target=x['price']*1.03; action='Consider a small increase while stock is tight'
         else: target=x['price']; action='Maintain price and monitor demand'
         pricing.append({'name':x['name'],'current':x['price'],'recommended':round(target,2),'action':action})
-    ev=[amt(x) for x in expenses if amt(x)>0]; mean_e=sum(ev)/len(ev) if ev else 0; sd_e=(sum((v-mean_e)**2 for v in ev)/len(ev))**0.5 if ev else 0; threshold=mean_e+2*sd_e
-    anomalies=[{'description':x.get('description') or x.get('category') or 'Expense','amount':amt(x),'date':x.get('created_at')} for x in expenses if len(ev)>=4 and amt(x)>threshold][:20]
-    concentration=0.0
-    customer={}
-    for x in paid:
-        key=str(x.get('customer_id') or x.get('customer_name') or 'walk-in'); customer[key]=customer.get(key,0)+amt(x)
-    if rev30: concentration=sum(sorted(customer.values(),reverse=True)[:3])/rev30*100
+    ev=[num(x.get('amount')) for x in expense_rows if num(x.get('amount'))>0]; mean_e=sum(ev)/len(ev) if ev else 0; sd_e=(sum((v-mean_e)**2 for v in ev)/len(ev))**0.5 if ev else 0; threshold=mean_e+2*sd_e
+    anomalies=[{'description':x.get('description') or x.get('title') or x.get('category') or 'Expense','amount':num(x.get('amount')),'date':x.get('created_at')} for x in expense_rows if len(ev)>=4 and num(x.get('amount'))>threshold][:20]
+    customer_totals={}
+    for x in normalized:
+        key=str(x.get('customer_id') or '')
+        if not key:key=str((x.get('_market_order') or {}).get('buyer_id') or '') or 'walk-in'
+        customer_totals[key]=customer_totals.get(key,0)+amt(x)
+    concentration=sum(sorted(customer_totals.values(),reverse=True)[:3])/rev30*100 if rev30 else 0.0
     actions=[]
+    if not normalized: actions.append('Record a POS sale or link a KOJA Market product to this business so BI can learn from real transactions.')
     if growth is not None and growth<0: actions.append('Review declining revenue, pricing and customer acquisition.')
-    if exp30>rev30 and rev30>0: actions.append('Reduce non-essential costs because expenses exceed revenue.')
+    if exp30>gross30 and rev30>0: actions.append('Reduce non-essential costs because operating expenses are exceeding sales.')
     if low: actions.append('Reorder critical stock before projected stock-out.')
     if concentration>70: actions.append('Diversify customer acquisition because revenue concentration is high.')
     if anomalies: actions.append('Review unusually large expenses before the next reporting cycle.')
     if not actions: actions.append('Continue weekly KPI reviews and test the highest-value growth opportunity.')
     ai_report=''
     if request.method=='POST':
-        prompt=('KOJA Business Intelligence V3 for '+str(b.get('name'))+'. Revenue '+f'{rev30:.2f}'+' ZMW; expenses '+f'{exp30:.2f}'+ '; profit '+f'{rev30-exp30:.2f}'+ '; growth '+str(growth)+'%; next-30-day forecast '+f'{forecast30:.2f}'+' ZMW; confidence '+confidence+'; low stock '+str(low[:8])+'; pricing '+str(pricing[:8])+'; anomalies '+str(anomalies[:8])+'; customer concentration '+f'{concentration:.1f}'+'%. Give diagnosis, risks, 7-day actions, 30-day strategy and measurable KPIs. Do not invent facts.')
+        prompt=(f'KOJA Business Intelligence V3 for {b.get("name")}. 30-day revenue {rev30:.2f} ZMW; gross product profit {gross30:.2f} ZMW; expenses {exp30:.2f} ZMW; net profit {net30:.2f} ZMW; growth {growth}; next-30-day revenue forecast {forecast30:.2f} ZMW; confidence {confidence}; low stock {low[:8]}; pricing {pricing[:8]}; anomalies {anomalies[:8]}; customer concentration {concentration:.1f}%; Business/POS sales {cnt30}; Market orders discovered {len(market_rows)}. Give diagnosis, risks, 7-day actions, 30-day strategy and measurable KPIs. Do not invent facts.')
         ai_report,err=_ai_call(prompt,'You are KOJA Business Intelligence AI. Use only supplied data and clearly distinguish measurements, forecasts and recommendations.',max_output_tokens=3000,timeout=55,preferred_model=None)
         if not ai_report: flash(_ai_error_message(err),'danger')
-    return render_page('Business Intelligence V3',r'''<div class="hero"><h1>Business Intelligence V3</h1><p>{{ b.name }} — predictive analytics, forecasting, pricing, inventory and AI strategy.</p></div><div class="grid"><div class="card"><h3>30-day Revenue</h3><h2>{{ money(rev30,'ZMW') }}</h2></div><div class="card"><h3>30-day Profit</h3><h2>{{ money(rev30-exp30,'ZMW') }}</h2></div><div class="card"><h3>Growth</h3><h2>{{ ('%.1f'|format(growth)) ~ '%' if growth is not none else '—' }}</h2></div><div class="card"><h3>Forecast Confidence</h3><h2>{{ confidence }}</h2></div></div><div class="grid"><div class="card"><h3>Next 30-day Forecast</h3><h2>{{ money(forecast30,'ZMW') }}</h2></div><div class="card"><h3>Low-stock Risks</h3><h2>{{ low|length }}</h2></div><div class="card"><h3>Customer Concentration</h3><h2>{{ '%.1f'|format(concentration) }}%</h2></div><div class="card"><h3>7-day Revenue</h3><h2>{{ money(rev7,'ZMW') }}</h2></div></div><div class="card"><h2>7-Day Forecast</h2>{% for v in forecast7 %}<p>Day {{ loop.index }}: <strong>{{ money(v,'ZMW') }}</strong></p>{% endfor %}</div><div class="card"><h2>Recommended Actions</h2>{% for x in actions %}<p>{{ loop.index }}. {{ x }}</p>{% endfor %}</div><div class="card"><h2>Inventory Intelligence</h2><table><tr><th>Product</th><th>Stock</th><th>Units</th><th>Days Cover</th><th>Margin</th></tr>{% for x in top %}<tr><td>{{ x.name }}</td><td>{{ x.stock|int }}</td><td>{{ x.qty|int }}</td><td>{{ '%.1f'|format(x.days) if x.days is not none else '—' }}</td><td>{{ '%.1f'|format(x.margin) }}%</td></tr>{% else %}<tr><td colspan="5">No product-linked sales yet.</td></tr>{% endfor %}</table></div><div class="card"><h2>Pricing Recommendations</h2>{% for x in pricing %}<p><strong>{{ x.name }}</strong>: {{ money(x.current,'ZMW') }} → {{ money(x.recommended,'ZMW') }} — {{ x.action }}</p>{% else %}<p>Not enough product-linked sales data.</p>{% endfor %}</div><div class="card"><h2>Expense Anomalies</h2>{% for x in anomalies %}<p><strong>{{ x.description }}</strong> — {{ money(x.amount,'ZMW') }} on {{ x.date }}</p>{% else %}<p>No statistically unusual expenses detected.</p>{% endfor %}</div><div class="card"><h2>KOJA AI Strategy</h2><form method="post"><button class="btn">Generate V3 AI Strategy</button></form>{% if ai_report %}<hr><div style="white-space:pre-wrap;line-height:1.75">{{ ai_report }}</div>{% endif %}</div>''',b=b,rev30=rev30,exp30=exp30,rev7=rev7,exp7=exp7,rev90=rev90,exp90=exp90,cnt7=cnt7,growth=growth,forecast7=forecast7,forecast30=forecast30,confidence=confidence,low=low,top=top,pricing=pricing,anomalies=anomalies,concentration=concentration,actions=actions,ai_report=ai_report,money=market_money)
+    source_note='Business/POS records are connected.' if sales else 'No Business/POS records yet.'
+    if market_rows: source_note += f' {len(market_rows)} paid/completed KOJA Market order(s) were discovered directly from linked products.'
+    elif linked: source_note += ' Linked Market products found, but no paid/completed Market orders were found.'
+    return render_page('Business Intelligence V3',r'''<div class="hero"><h1>Business Intelligence V3</h1><p>{{ b.name }} — predictive analytics, forecasting, pricing, inventory and AI strategy.</p><div class="actions"><a class="btn secondary" href="{{ url_for('business_products',business_id=b.id) }}">Open POS / Inventory</a><a class="btn secondary" href="{{ url_for('business_records',business_id=b.id) }}">Open Accounting</a></div></div><div class="card"><strong>Data connection:</strong> {{ source_note }}</div><div class="grid"><div class="card"><h3>30-day Revenue</h3><h2>{{ money(rev30,'ZMW') }}</h2></div><div class="card"><h3>30-day Net Profit</h3><h2>{{ money(net30,'ZMW') }}</h2></div><div class="card"><h3>Growth</h3><h2>{{ ('%.1f'|format(growth)) ~ '%' if growth is not none else '—' }}</h2></div><div class="card"><h3>Forecast Confidence</h3><h2>{{ confidence }}</h2></div></div><div class="grid"><div class="card"><h3>Next 30-day Forecast</h3><h2>{{ money(forecast30,'ZMW') }}</h2></div><div class="card"><h3>Low-stock Risks</h3><h2>{{ low|length }}</h2></div><div class="card"><h3>Customer Concentration</h3><h2>{{ '%.1f'|format(concentration) }}%</h2></div><div class="card"><h3>7-day Revenue</h3><h2>{{ money(rev7,'ZMW') }}</h2></div></div><div class="grid"><div class="card"><h3>Business/POS Sales</h3><h2>{{ cnt30 }}</h2><p class="small">Paid/completed transactions in the last 30 days.</p></div><div class="card"><h3>KOJA Market Sales Found</h3><h2>{{ market_count }}</h2><p class="small">Paid/completed orders linked to this business.</p></div><div class="card"><h3>90-day Revenue</h3><h2>{{ money(rev90,'ZMW') }}</h2></div><div class="card"><h3>90-day Profit</h3><h2>{{ money(gross90-exp90,'ZMW') }}</h2></div></div><div class="card"><h2>7-Day Forecast</h2>{% for v in forecast7 %}<p>Day {{ loop.index }}: <strong>{{ money(v,'ZMW') }}</strong></p>{% endfor %}</div><div class="card"><h2>Recommended Actions</h2>{% for x in actions %}<p>{{ loop.index }}. {{ x }}</p>{% endfor %}</div><div class="card"><h2>Inventory Intelligence</h2><table><tr><th>Product</th><th>Stock</th><th>Units Sold</th><th>Days Cover</th><th>Margin</th></tr>{% for x in top %}<tr><td>{{ x.name }}</td><td>{{ x.stock|int }}</td><td>{{ x.qty|int }}</td><td>{{ '%.1f'|format(x.days) if x.days is not none else '—' }}</td><td>{{ '%.1f'|format(x.margin) }}%</td></tr>{% else %}<tr><td colspan="5">No products or product-linked sales yet.</td></tr>{% endfor %}</table></div><div class="card"><h2>Pricing Recommendations</h2>{% for x in pricing %}<p><strong>{{ x.name }}</strong>: {{ money(x.current,'ZMW') }} → {{ money(x.recommended,'ZMW') }} — {{ x.action }}</p>{% else %}<p>Not enough product-linked sales data.</p>{% endfor %}</div><div class="card"><h2>Expense Anomalies</h2>{% for x in anomalies %}<p><strong>{{ x.description }}</strong> — {{ money(x.amount,'ZMW') }} on {{ x.date }}</p>{% else %}<p>No statistically unusual expenses detected.</p>{% endfor %}</div><div class="card"><h2>KOJA AI Strategy</h2><form method="post"><button class="btn">Generate V3 AI Strategy</button></form>{% if ai_report %}<hr><div style="white-space:pre-wrap;line-height:1.75">{{ ai_report }}</div>{% endif %}</div>''',b=b,rev30=rev30,exp30=exp30,rev7=rev7,exp7=exp7,rev90=rev90,exp90=exp90,cnt7=cnt7,growth=growth,forecast7=forecast7,forecast30=forecast30,confidence=confidence,low=low,top=top,pricing=pricing,anomalies=anomalies,concentration=concentration,actions=actions,ai_report=ai_report,money=market_money,net30=net30,gross90=gross90,market_count=len(market_rows),source_note=source_note)
+
