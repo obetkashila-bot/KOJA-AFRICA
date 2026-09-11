@@ -1008,7 +1008,7 @@ def home():
 <div class="card"><h3>Live GPS</h3><p>Drivers can share their live location.</p><a class="btn" href="{{ url_for('tracking') }}">Driver GPS</a></div>
 <div class="card"><h3>🧠 KOJA AI</h3><p>Ask KOJA AI for explanations, planning and practical help.</p><a class="btn" href="{{ url_for('ai_assistant') }}">Open KOJA AI</a></div>
 <div class="card"><h3>📚 Documents</h3><p>Browse and upload KOJA learning and research documents.</p><a class="btn" href="{{ url_for('documents') }}">Open Documents</a></div>
-<div class="card"><h3>KOJA Market</h3><p>Buy and sell physical and digital products and services across Africa.</p><div class="actions"><a class="btn" href="{{ url_for('market') }}">Open KOJA Market</a><a class="btn secondary" href="{{ url_for('market_seller_register') }}">Become a Seller</a></div></div>
+<div class="card"><h3>KOJA Market</h3><p>Buy and sell physical and digital products and services across Africa.</p><div class="actions"><a class="btn" href="{{ url_for('koja_market') }}">Open KOJA Market</a><a class="btn secondary" href="{{ url_for('market_seller_register') }}">Become a Seller</a></div></div>
 <div class="card"><h3>Digital Marketplace</h3><p>Discover digital learning and business resources.</p><a class="btn" href="{{ url_for('marketplace') }}">Open Digital Marketplace</a></div>
 </div>
 """)
