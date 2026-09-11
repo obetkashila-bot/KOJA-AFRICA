@@ -3,3 +3,4 @@ requests>=2.31,<3
 gunicorn>=21,<24
 Werkzeug>=3.0,<4
 python-dotenv>=1.0,<2
+livekit-api>=1.0,<2
