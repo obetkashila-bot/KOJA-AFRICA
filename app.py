@@ -300,6 +300,25 @@ def db_update(table, filters, payload):
         logger.exception("UPDATE error: %s", exc)
         return None, str(exc)
 
+def db_rpc(function_name, payload=None):
+    """Call a Supabase PostgREST RPC function."""
+    if not supabase_configured():
+        return None, "Supabase is not configured."
+    try:
+        r = requests.post(
+            f"{SUPABASE_URL}/rest/v1/rpc/{quote(function_name, safe='')}",
+            headers=sb_headers({"Prefer": "return=representation"}),
+            json=payload or {},
+            timeout=20,
+        )
+        if not r.ok:
+            logger.error("RPC %s failed: %s %s", function_name, r.status_code, r.text[:1800])
+            return None, r.text
+        return json_or_empty(r), None
+    except Exception as exc:
+        logger.exception("RPC error %s: %s", function_name, exc)
+        return None, str(exc)
+
 def db_delete(table, filters):
     if not supabase_configured():
         return False, "Supabase is not configured."
@@ -3243,24 +3262,26 @@ def _finalize_market_order(order, tx):
     tx_ref=str(order.get('payment_reference') or '')
     if not _flutterwave_payment_valid(tx, tx_ref, order.get('total_amount'), order.get('currency')): return False
     if str(order.get('status') or '').lower() in {'paid','completed'}: return True
-    # Atomic state transition prevents webhook/callback double-finalization.
-    updated,err=db_update('koja_market_orders',{'id':order.get('id'),'status':'pending'},
-        {'status':'paid','payment_method':'flutterwave','payment_transaction_id':str(tx.get('id') or ''),'payout_status':'pending','updated_at':utc_now()})
-    if not updated:
+    # V7 hardening: atomically transition the order to paid and decrement stock in one DB transaction.
+    qty=max(1,int(order.get('quantity') or 1))
+    atomic_payload={
+        'p_order_id':str(order.get('id') or ''),
+        'p_product_id':str(order.get('product_id') or ''),
+        'p_quantity':qty,
+        'p_payment_transaction_id':str(tx.get('id') or ''),
+        'p_payment_method':'flutterwave',
+    }
+    rpc_result,rpc_err=db_rpc('koja_finalize_market_order_atomic',atomic_payload)
+    atomic_row=(rpc_result[0] if isinstance(rpc_result,list) and rpc_result else (rpc_result if isinstance(rpc_result,dict) else None))
+    if rpc_err or not atomic_row or not atomic_row.get('ok'):
+        # Idempotent retry: if another webhook already completed the order, treat it as success.
         current=first_row('koja_market_orders',{'id':order.get('id')})
         if str((current or {}).get('status') or '').lower() in {'paid','completed'}:
             return True
-        if err:
-            logger.error('KOJA Market order finalization DB error order=%s: %s',order.get('id'),err)
+        logger.error('KOJA atomic market finalization failed order=%s: %s %s',order.get('id'),rpc_err or '',atomic_row or '')
         return False
     p=market_product(order.get('product_id'))
-    if p and str(p.get('product_type') or 'physical')=='physical':
-        try:
-            qty=max(1,int(order.get('quantity') or 1)); stock=max(0,int(p.get('stock') or 0)-qty)
-            # A one-of-one listing disappears from the public Market when purchased.
-            # Multi-stock listings remain visible and expose the remaining quantity.
-            db_update('koja_market_products',{'id':p.get('id')},{'stock':stock,'is_published':bool(stock>0),'updated_at':utc_now()})
-        except Exception: logger.exception('KOJA Market stock finalization error')
+    # The atomic SQL function owns stock mutation; this process only reads the resulting product state.
     buyer_id=order.get('buyer_id')
     # Notify the seller immediately after the payment is atomically marked paid.
     try:
