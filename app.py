@@ -4614,13 +4614,22 @@ def driver_offline():
 
 @app.route("/drivers")
 @login_required
-def drivers():
+def drivers(tracking_code=None):
     uid=(current_user() or {}).get("id")
     _core_engine_sync(uid, "discover", "open_drivers", {"service":"drivers"})
     _core_engine_sync(uid, "identity", "open_drivers", {"service":"drivers"})
     _core_engine_sync(uid, "ecosystem", "open_drivers", {"service":"drivers"})
     _core_engine_sync(uid, "pay", "open_drivers", {"service":"drivers"})
     return render_page("Nearby Drivers",r"""
+{% if tracking_code %}
+<div class="card" id="aiMatchCard">
+<h2>KOJA AI Driver Matching</h2>
+<p>Delivery <strong>{{ tracking_code }}</strong> is ready. KOJA will use GPS when available, or the physical pickup address when GPS is unavailable, then rank trusted online drivers.</p>
+<button class="btn success" id="aiMatchBtn" onclick="aiMatchDrivers()">AI Find Nearby Driver</button>
+<div id="aiMatchStatus" class="small"></div>
+<div id="aiMatchList"></div>
+</div>
+{% endif %}
 <div class="hero"><h2>Nearby Delivery Drivers</h2><p>Share your pickup/shop location and KOJA will calculate distances to online drivers.</p></div>
 <div class="card"><h3>KOJA Driver Engines</h3><p>Drivers are connected to <strong>KOJA Discover</strong>, <strong>KOJA Identity</strong>, <strong>KOJA Pay</strong> and <strong>KOJA Ecosystem</strong>.</p><p class="small">Identity supports trusted driver profiles, Discover matches nearby drivers, Pay supports delivery commerce, and Ecosystem connects driver activity to KOJA services.</p></div>
 <div class="card">
@@ -4675,6 +4684,24 @@ async function findDrivers(){
   document.getElementById("status").textContent=`Found ${d.drivers.length} online driver(s).`;
  }catch(e){document.getElementById("status").textContent="Unable to search drivers."}
 }
+async function aiMatchDrivers(){
+ const status=document.getElementById("aiMatchStatus"), list=document.getElementById("aiMatchList"), btn=document.getElementById("aiMatchBtn");
+ if(!status||!list)return; btn.disabled=true; status.textContent="KOJA AI is finding the best nearby driver..."; list.innerHTML="";
+ try{
+  const r=await fetch("/api/delivery/{{ tracking_code }}/ai-match",{cache:"no-store"});
+  const d=await r.json();
+  if(!d.ok){status.textContent=d.message||"No driver recommendation available.";return;}
+  status.textContent=d.source_message||"Drivers ranked.";
+  if(!d.drivers.length){list.innerHTML="<p>No suitable online driver is currently available. KOJA will keep the delivery waiting for a driver.</p>";return;}
+  d.drivers.forEach((driver,i)=>{
+   const div=document.createElement("div"); div.className="card driver-card";
+   div.innerHTML=`<h3>${i===0?"Recommended driver: ":"Driver: "}${escapeHtml(driver.name)}</h3><p><strong>Match:</strong> ${escapeHtml(driver.match_reason||"Nearby and available")}</p><p><strong>Distance:</strong> ${driver.distance_km==null?"Physical-address match":escapeHtml(driver.distance_km+" km")}</p><p><strong>Vehicle:</strong> ${escapeHtml(driver.vehicle_type||"Not specified")}</p><p><strong>Status:</strong> <span class="online">ONLINE</span></p><div class="actions"><button class="btn success" onclick="chooseAiDriver('${escapeHtml(driver.driver_id)}')">Choose this driver</button></div>`; list.appendChild(div);
+  });
+ }catch(e){status.textContent="AI matching failed; use the normal nearby-driver search.";} finally{btn.disabled=false;}
+}
+async function chooseAiDriver(driverId){
+ try{const r=await fetch("/api/delivery/{{ tracking_code }}/assign-driver",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({driver_id:driverId})}); const d=await r.json(); alert(d.message||"Driver selection completed."); if(d.ok)location.href="/deliveries";}catch(e){alert("Unable to select this driver.");}
+}
 function escapeHtml(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]))}
 async function requestDriver(driverId){
  const lat=parseFloat(document.getElementById("lat").value),lon=parseFloat(document.getElementById("lon").value);
@@ -4698,6 +4725,97 @@ async function requestDriver(driverId){
 }
 </script>
 """)
+
+@app.route("/api/delivery/<tracking_code>/ai-match")
+@login_required
+def ai_match_delivery_driver(tracking_code):
+    user=current_user() or {}
+    delivery=first_row("deliveries",{"tracking_code":tracking_code})
+    if not delivery:
+        return jsonify({"ok":False,"message":"Delivery not found."}),404
+    if str(delivery.get("customer_id") or delivery.get("user_id") or delivery.get("sender_id") or "") != str(user.get("id")) and not bool(user.get("is_admin")):
+        return jsonify({"ok":False,"message":"You are not allowed to choose a driver for this delivery."}),403
+    if delivery.get("driver_id"):
+        return jsonify({"ok":False,"message":"A driver has already been selected."}),409
+
+    pickup_text=clean(delivery.get("pickup_address") or delivery.get("pickup_location"))
+    lat=safe_float(delivery.get("pickup_latitude")); lon=safe_float(delivery.get("pickup_longitude"))
+    latest=latest_driver_locations()
+    now=datetime.now(timezone.utc)
+    candidates=[]
+    pickup_tokens={x for x in re.findall(r"[a-z0-9]+", pickup_text.lower()) if len(x)>=3}
+    for driver_id,loc in latest.items():
+        if not loc.get("is_online"): continue
+        created=loc.get("created_at")
+        if created:
+            try:
+                dt=datetime.fromisoformat(str(created).replace("Z","+00:00"))
+                if (now-dt).total_seconds()>600: continue
+            except Exception: pass
+        profile=first_row("driver_profiles",{"provider_id":driver_id}) or {}
+        if str(profile.get("verification_status") or "").lower() not in {"approved","active","verified"}: continue
+        provider=first_row("service_providers",{"id":driver_id}) or {}
+        dlat=safe_float(loc.get("latitude")); dlon=safe_float(loc.get("longitude"))
+        distance=haversine_km(lat,lon,dlat,dlon) if lat is not None and lon is not None and dlat is not None and dlon is not None else None
+        driver_place=" ".join(str(provider.get(k) or profile.get(k) or "") for k in ("location","city","area","address"))
+        driver_tokens={x for x in re.findall(r"[a-z0-9]+",driver_place.lower()) if len(x)>=3}
+        overlap=len(pickup_tokens & driver_tokens)
+        # Physical-address mode is a fallback: it uses shared area/place terms, not invented GPS.
+        if distance is not None and distance>100: continue
+        if distance is None and overlap==0 and pickup_tokens: continue
+        base=100-(distance or 0)*1.5+overlap*12
+        candidates.append({"driver_id":str(driver_id),"name":first_nonempty(provider.get("full_name"),provider.get("name"),"Driver"),"phone":provider.get("phone"),"vehicle_type":profile.get("vehicle_type"),"latitude":dlat,"longitude":dlon,"distance_km":round(distance,2) if distance is not None else None,"address_match":overlap,"score":round(base,2)})
+    candidates.sort(key=lambda x:x["score"],reverse=True)
+    top=candidates[:20]
+    if not top:
+        return jsonify({"ok":True,"drivers":[],"source_message":"No trusted online driver matched the GPS location or physical pickup address."})
+
+    prompt={"pickup_address":pickup_text,"pickup_gps":{"latitude":lat,"longitude":lon} if lat is not None and lon is not None else None,"drivers":[{k:v for k,v in d.items() if k not in {"phone","score"}} for d in top]}
+    answer,err=_fulfillment_ai_advice("Rank these available KOJA drivers for this delivery. Use GPS distance when present; otherwise use physical-address/area matching. Prefer trusted verified online drivers, shorter distance, and practical vehicle suitability. Do not invent facts. Return JSON only as an array of objects with driver_id and reason, best first. Facts:\n"+json.dumps(prompt,default=str),1000)
+    ranked=[]
+    try:
+        parsed=json.loads(answer) if answer else []
+        if isinstance(parsed,dict): parsed=parsed.get("drivers") or parsed.get("ranked") or []
+        by_id={d["driver_id"]:d for d in top}
+        for item in parsed:
+            did=str(item.get("driver_id") or "")
+            if did in by_id:
+                d=dict(by_id[did]); d["match_reason"]=clean(item.get("reason")) or "AI-ranked nearby driver"; ranked.append(d)
+    except Exception:
+        ranked=[]
+    if not ranked: ranked=top
+    return jsonify({"ok":True,"drivers":ranked[:10],"source_message":"AI ranked drivers using GPS proximity where available and physical pickup-address matching otherwise.","ai_used":bool(answer),"ai_error":err if not answer else ""})
+
+@app.route("/api/delivery/<tracking_code>/assign-driver",methods=["POST"])
+@login_required
+def assign_delivery_driver(tracking_code):
+    user=current_user() or {}
+    delivery=first_row("deliveries",{"tracking_code":tracking_code})
+    if not delivery: return jsonify({"ok":False,"message":"Delivery not found."}),404
+    if str(delivery.get("customer_id") or delivery.get("user_id") or delivery.get("sender_id") or "") != str(user.get("id")) and not bool(user.get("is_admin")):
+        return jsonify({"ok":False,"message":"Not allowed."}),403
+    if delivery.get("driver_id"):
+        return jsonify({"ok":False,"message":"A driver has already been selected."}),409
+    body=request.get_json(silent=True) or {}
+    driver_id=clean(body.get("driver_id"))
+    profile=first_row("driver_profiles",{"provider_id":driver_id})
+    if not profile or str(profile.get("verification_status") or "").lower() not in {"approved","active","verified"}:
+        return jsonify({"ok":False,"message":"That driver is not approved or is no longer available."}),409
+    provider=first_row("service_providers",{"id":driver_id}) or {}
+    # Conditional claim: if another action assigned the delivery first, this update returns no row.
+    params={"id":f"eq.{delivery.get('id')}","driver_id":"is.null"}
+    try:
+        r=requests.patch(sb_rest_url("deliveries"),headers=sb_headers({"Prefer":"return=representation"}),params=params,json={"driver_id":driver_id,"status":"driver_assigned","updated_at":utc_now()},timeout=20)
+        if not r.ok: return jsonify({"ok":False,"message":"KOJA could not assign the driver."}),500
+        rows=json_or_empty(r) or []
+        if not rows: return jsonify({"ok":False,"message":"Another driver was selected first. Please refresh and choose another."}),409
+    except Exception:
+        return jsonify({"ok":False,"message":"KOJA could not assign the driver."}),500
+    notify_user(user.get("id"),"Driver selected",f"Driver {first_nonempty(provider.get('full_name'),provider.get('name'),'selected driver')} was selected for delivery {tracking_code}.","delivery")
+    try:
+        notify_user(driver_id,"New KOJA delivery",f"You have been selected for delivery {tracking_code}. Go to the pickup location and verify the pickup number.","delivery")
+    except Exception: pass
+    return jsonify({"ok":True,"message":f"Driver {first_nonempty(provider.get('full_name'),provider.get('name'),'selected driver')} selected successfully.","driver_id":driver_id})
 
 @app.route("/api/nearby-drivers")
 @login_required
@@ -4841,6 +4959,8 @@ def deliveries():
             "pickup_address":clean(request.form.get("pickup_location")),
             "delivery_address":clean(request.form.get("destination")),
             "pickup_location":clean(request.form.get("pickup_location")),
+            "pickup_latitude":safe_float(request.form.get("pickup_latitude")),
+            "pickup_longitude":safe_float(request.form.get("pickup_longitude")),
             "destination":clean(request.form.get("destination")),
             "recipient_name":clean(request.form.get("recipient_name")),
             "recipient_phone":clean(request.form.get("recipient_phone")),
@@ -4857,7 +4977,7 @@ def deliveries():
             flash("Delivery could not be registered: "+str(error)[:600],"danger")
         else:
             flash(f"Delivery registered. Tracking code: {tracking}. Now choose a nearby driver.","success")
-            return redirect(url_for("drivers"))
+            return redirect(url_for("drivers", tracking_code=tracking))
         return redirect(url_for("deliveries"))
 
     rows=db_select("deliveries",filters={"customer_id":user["id"]},order="created_at.desc",limit=100)
@@ -4865,7 +4985,11 @@ def deliveries():
 <div class="hero"><h2>Delivery Service</h2><p>Use Nearby Drivers to see drivers around your shop/pickup location.</p><a class="btn success" href="{{ url_for('drivers') }}">Find Nearby Drivers</a></div>
 <div class="card"><h3>KOJA Delivery Engines</h3><p>Delivery is powered by <strong>KOJA Pay</strong>, <strong>KOJA Discover</strong>, <strong>KOJA Intelligence</strong> and <strong>KOJA Ecosystem</strong>.</p><p class="small">Pay handles delivery commerce, Discover helps match drivers, Intelligence supports operational decisions, and Ecosystem connects the delivery workflow to other KOJA services.</p></div>
 <div class="card"><h2>Create Delivery Without Selecting Driver Yet</h2>
-<form method="post">
+<form method="post" id="deliveryForm">
+<input type="hidden" name="pickup_latitude" id="deliveryLat">
+<input type="hidden" name="pickup_longitude" id="deliveryLon">
+<button type="button" class="btn secondary" onclick="captureDeliveryGPS()">Use GPS for Driver Matching</button>
+<span id="gpsStatus" class="small"></span>
 <label>Pickup / Shop Location</label><input name="pickup_location" required>
 <label>Destination</label><input name="destination" required>
 <label>Recipient Name</label><input name="recipient_name" required>
@@ -4878,6 +5002,14 @@ def deliveries():
 <label>Notes</label><textarea name="notes"></textarea>
 <button type="submit">Create Delivery Request</button>
 </form></div>
+<script>
+function captureDeliveryGPS(){
+ const out=document.getElementById("gpsStatus");
+ if(!navigator.geolocation){out.textContent="GPS unavailable; physical address will be used.";return;}
+ out.textContent="Getting GPS...";
+ navigator.geolocation.getCurrentPosition(p=>{document.getElementById("deliveryLat").value=p.coords.latitude;document.getElementById("deliveryLon").value=p.coords.longitude;out.textContent="GPS captured. KOJA AI will use GPS first.";},()=>{out.textContent="GPS unavailable; KOJA AI will use the physical pickup address."},{enableHighAccuracy:true,timeout:15000,maximumAge:30000});
+}
+</script>
 <div class="card"><h2>My Deliveries</h2>
 {% for d in rows %}
 <div class="card"><strong>{{ d.get("tracking_code") }}</strong>
@@ -8495,21 +8627,65 @@ def delivery_places_api():
 @app.route('/api/delivery/<tracking_code>/verify-pickup',methods=['POST'])
 @login_required
 def verify_delivery_pickup(tracking_code):
+    driver=get_driver_provider((current_user() or {}).get('id'))
+    user=current_user() or {}
+    if not driver and not user.get('is_admin'):
+        return jsonify({
+            'valid':False,'status':'invalid',
+            'message':'You are not a registered driver.'
+        }),403
+
+    body=request.get_json(silent=True) or {}
+    entered_code=clean(body.get('pickup_code') or body.get('code')).upper()
     delivery=first_row('deliveries',{'tracking_code':tracking_code})
-    if not delivery:return jsonify({'ok':False,'message':'Delivery not found.'}),404
-    uid=(current_user() or {}).get('id')
-    if not _delivery_driver_is_current_user(delivery,uid) and not (current_user() or {}).get('is_admin'):
-        return jsonify({'ok':False,'message':'Only the assigned driver can verify the pickup.'}),403
-    status=str(delivery.get('status') or '').lower()
-    if status in {'completed','delivered'} or as_bool(delivery.get('pickup_verified')):
-        return jsonify({'ok':False,'already_completed':status in {'completed','delivered'},'message':'Delivery already completed.' if status in {'completed','delivered'} else 'Pickup already verified.'}),409
-    code=clean((request.get_json(silent=True) or {}).get('pickup_code') or request.form.get('pickup_code')).upper()
-    expected=clean(delivery.get('pickup_code')).upper()
-    if not code or code!=expected:
-        return jsonify({'ok':False,'valid':False,'message':'Invalid pickup number.'}),400
-    db_update('deliveries',{'id':delivery.get('id')},{'pickup_verified':True,'status':'picked_up','picked_up_at':utc_now(),'updated_at':utc_now()})
-    notify_user(delivery.get('customer_id'),'Delivery picked up',f'Driver verified pickup {tracking_code}.','delivery',delivery.get('id'),f'/track/{tracking_code}')
-    return jsonify({'ok':True,'valid':True,'message':'Pickup number is valid. Delivery is now in transit.'})
+    if not delivery:
+        return jsonify({'valid':False,'status':'invalid','message':'Delivery not found.'}),404
+
+    current_status=str(delivery.get('status') or '').lower()
+    if current_status in ('delivered','completed','cancelled'):
+        return jsonify({
+            'valid':False,'status':'already_completed',
+            'message':'ALREADY COMPLETED. This delivery cannot be collected again.'
+        }),409
+
+    assigned_driver=str(delivery.get('driver_id') or '')
+    current_driver=str(driver.get('id') or '') if driver else ''
+    if not user.get('is_admin') and assigned_driver and assigned_driver != current_driver:
+        return jsonify({
+            'valid':False,'status':'wrong_driver',
+            'message':'This pickup number belongs to another driver.'
+        }),403
+    if not user.get('is_admin') and not assigned_driver:
+        return jsonify({
+            'valid':False,'status':'not_assigned',
+            'message':'This delivery has not been assigned to you.'
+        }),409
+
+    real_code=clean(delivery.get('pickup_code')).upper()
+    if not entered_code or entered_code != real_code:
+        return jsonify({
+            'valid':False,'status':'invalid',
+            'message':'INVALID PICKUP NUMBER.'
+        }),400
+
+    updated,err=db_update('deliveries',{'id':delivery.get('id')},{
+        'pickup_verified':True,
+        'pickup_verified_at':utc_now(),
+        'status':'in_transit',
+        'updated_at':utc_now()
+    })
+    if err:
+        return jsonify({
+            'valid':False,'status':'error',
+            'message':'KOJA could not verify the pickup. Please try again.'
+        }),500
+
+    notify_user(delivery.get('customer_id'),'Delivery pickup verified',f'Pickup number accepted for {tracking_code}. The delivery is now in transit.','delivery',delivery.get('id'),f'/track/{tracking_code}')
+    return jsonify({
+        'valid':True,'status':'verified',
+        'message':'VALID. Pickup number accepted. Delivery is now in transit.',
+        'tracking_code':tracking_code
+    })
 
 @app.route('/delivery/<tracking_code>/verify-pickup',methods=['GET'])
 @login_required
