@@ -4027,7 +4027,7 @@ def market_sell():
 @login_required
 def market_seller_register():
     uid=(current_user() or {}).get('id'); existing=market_seller(uid)
-    linked_business=first_row('koja_businesses',{'owner_id':uid},order='created_at.desc') if table_exists('koja_businesses') else None
+    linked_business=(db_select('koja_businesses', {'owner_id':uid}, order='created_at.desc', limit=1) or [None])[0] if table_exists('koja_businesses') else None
     if request.method=='POST':
         name=clean(request.form.get('store_name')); desc=clean(request.form.get('description')); phone=clean(request.form.get('phone')); location=clean(request.form.get('location'))
         business_name=clean(request.form.get('business_name')) or name
