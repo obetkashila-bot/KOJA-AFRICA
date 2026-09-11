@@ -8810,23 +8810,22 @@ def market_live_room(room_id):
     products = db_select('koja_market_products', {'seller_id': room.get('seller_id')}, order='created_at.desc', limit=100) or []
     is_seller = str(room.get('seller_id')) == str((current_user() or {}).get('id') or '')
     return render_page('KOJA LIVE', r'''<style>
-.live-shell{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:12px}
-.live-video{position:relative;width:100%;min-height:320px;aspect-ratio:16/9;background:#0b1220;border-radius:14px;overflow:hidden;display:flex;align-items:center;justify-content:center;color:#fff}
-.live-video video{display:block;width:100%;height:100%;min-height:320px;object-fit:contain;background:#000}
-.live-placeholder{text-align:center;padding:28px;max-width:520px}.live-status{font-weight:700;margin:8px 0}.live-error{color:#ffb4b4}.live-note{color:#cbd5e1;font-size:13px}
-@media(max-width:760px){.live-video{min-height:230px}.live-video video{min-height:230px}}
+html,body{margin:0;padding:0}.live-page-shell{width:100%;max-width:none;margin:0;padding:0}.live-shell{position:relative;background:#000;border:0;border-radius:0;padding:0;width:100%;min-height:calc(100vh - 70px);overflow:hidden}.live-video{position:relative;width:100%;height:calc(100vh - 70px);min-height:420px;aspect-ratio:auto;background:#000;overflow:hidden;display:flex;align-items:center;justify-content:center;color:#fff}.live-video video{display:block;width:100%;height:100%;min-height:0;object-fit:cover;background:#000}.live-placeholder{text-align:center;padding:28px;max-width:520px}.live-status{position:absolute;z-index:8;top:12px;left:14px;font-weight:700;margin:0;color:#fff;text-shadow:0 1px 4px #000;pointer-events:none}.live-error{color:#ffb4b4}.live-note{color:#cbd5e1;font-size:13px}.live-top-actions{position:absolute;z-index:10;top:10px;right:10px;display:flex;gap:8px}.live-icon-btn{border:1px solid rgba(255,255,255,.28);background:rgba(0,0,0,.42);color:#fff;border-radius:999px;padding:9px 12px;backdrop-filter:blur(6px);cursor:pointer}.live-watermark{position:absolute;z-index:9;left:14px;bottom:18px;max-width:min(72vw,360px);padding:7px 11px;border-radius:12px;background:rgba(0,0,0,.28);border:1px solid rgba(255,255,255,.18);backdrop-filter:blur(5px);opacity:.78;color:#fff;box-shadow:none}.live-watermark .wm-title{font-weight:700;font-size:13px;line-height:1.2}.live-watermark .wm-price{font-size:12px;opacity:.88}.live-watermark a{color:#fff;text-decoration:none}.live-watermark:hover{opacity:.95}.live-controls{position:absolute;z-index:10;right:12px;bottom:14px;display:flex;gap:7px}.live-controls .btn{box-shadow:0 2px 8px rgba(0,0,0,.28)}.live-pin-panel{margin:14px}
+@media(max-width:760px){.live-shell{min-height:calc(100vh - 58px)}.live-video{height:calc(100vh - 58px);min-height:0}.live-status{font-size:12px}.live-watermark{left:10px;bottom:12px;max-width:58vw;padding:6px 9px}.live-watermark .wm-title{font-size:12px}.live-watermark .wm-price{font-size:11px}}
 </style>
-<div class="hero"><h1>{{ room.title }}</h1><p>{{ seller.store_name or 'KOJA Seller' }}</p></div>
-<div class="live-shell">
+<div class="live-page-shell">
+<div class="live-shell" id="liveShell">
   <div id="liveStatus" class="live-status">Preparing LIVE video…</div>
+  <div class="live-top-actions"><button class="live-icon-btn" type="button" id="fullscreenLive" title="Full screen">Full screen</button></div>
   <div id="liveVideo" class="live-video"><div class="live-placeholder"><h2>KOJA LIVE</h2><p id="liveMessage" class="live-note">Connecting to the live video service…</p></div></div>
-  <div id="liveControls" class="actions" style="margin-top:12px">
-    <button class="btn secondary" type="button" id="retryLive">Retry video</button>
-    {% if is_seller %}<form method="post" action="{{ url_for('market_live_end', room_id=room.id) }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="btn danger" type="submit">End Live</button></form>{% endif %}
+  {% if product %}<div class="live-watermark"><a href="{{ url_for('market_product_view', product_id=product.id) }}"><div class="wm-title">{{ product.title }}</div><div class="wm-price">{{ money(product.price, product.currency) }} · Shop</div></a></div>{% endif %}
+  <div id="liveControls" class="live-controls">
+    <button class="live-icon-btn" type="button" id="retryLive">Retry</button>
+    {% if is_seller %}<form method="post" action="{{ url_for('market_live_end', room_id=room.id) }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="live-icon-btn" type="submit">End Live</button></form>{% endif %}
   </div>
 </div>
-{% if is_seller %}<div class="card"><h2>Pin a product</h2><form method="post" action="{{ url_for('market_live_pin', room_id=room.id) }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><select name="product_id" required><option value="">Select product</option>{% for p in products %}<option value="{{ p.id }}" {% if room.pinned_product_id|string == p.id|string %}selected{% endif %}>{{ p.title }} — {{ money(p.price,p.currency) }}</option>{% endfor %}</select><button class="btn" type="submit">Pin Product</button></form></div>{% endif %}
-<div class="card"><h2>Shop this live</h2>{% if product %}<h3>{{ product.title }}</h3><p><strong>{{ money(product.price, product.currency) }}</strong></p><div class="actions"><a class="btn" href="{{ url_for('market_product_view', product_id=product.id) }}">Buy Now</a>{% if not is_seller %}<form method="post" action="{{ url_for('market_cart_add', product_id=product.id) }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="quantity" value="1"><button class="btn secondary" type="submit">Add to Cart</button></form>{% endif %}</div>{% else %}<p>No product is pinned yet.</p>{% endif %}</div>
+{% if is_seller %}<div class="card live-pin-panel"><h2>Pin a product</h2><form method="post" action="{{ url_for('market_live_pin', room_id=room.id) }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><select name="product_id" required><option value="">Select product</option>{% for p in products %}<option value="{{ p.id }}" {% if room.pinned_product_id|string == p.id|string %}selected{% endif %}>{{ p.title }} — {{ money(p.price,p.currency) }}</option>{% endfor %}</select><button class="btn" type="submit">Pin Product</button></form></div>{% endif %}
+</div>
 <script>
 (function(){
  const status=document.getElementById('liveStatus'), mount=document.getElementById('liveVideo'), msg=document.getElementById('liveMessage'), retry=document.getElementById('retryLive');
@@ -8859,7 +8858,10 @@ def market_live_room(room_id):
    }catch(e){console.error('KOJA LIVE connection failed',e);setStatus('Live video unavailable: '+(e.message||'connection failed'),true);clearVideo();}
    finally{connecting=false;}
  }
- if(retry)retry.addEventListener('click',connect); connect();
+ if(retry)retry.addEventListener('click',connect);
+ const fs=document.getElementById('fullscreenLive'), shell=document.getElementById('liveShell');
+ if(fs&&shell){fs.addEventListener('click',async()=>{try{if(!document.fullscreenElement){await shell.requestFullscreen();fs.textContent='Exit full screen';}else{await document.exitFullscreen();fs.textContent='Full screen';}}catch(e){console.warn('Fullscreen unavailable',e);}});document.addEventListener('fullscreenchange',()=>{if(document.fullscreenElement!==shell)fs.textContent='Full screen';});}
+ connect();
  window.addEventListener('pagehide',()=>{try{if(liveRoom)liveRoom.disconnect()}catch(e){}});
 })();
 </script>
