@@ -8336,10 +8336,15 @@ def koja_cloud_revoke_key():
     if not rows:return jsonify({'error':'key not found'}),404
     row=rows[0]
     if str(row.get('user_id'))!=str(uid) and not (current_user() or {}).get('is_admin'):return jsonify({'error':'forbidden'}),403
+    # Revoke and immediately remove the credential from storage.
+    # The security/audit event is recorded before deletion so the secret
+    # itself is never retained after revocation.
     _,err=db_update('koja_api_keys',{'id':row.get('id')},{'status':'revoked','updated_at':utc_now(),'revoked_at':utc_now()})
     if err:return jsonify({'error':'key could not be revoked'}),500
     _core_engine_sync(uid,'cloud','api_key_revoked',{'key_prefix':row.get('key_prefix')})
-    return jsonify({'ok':True,'status':'revoked'})
+    _,del_err=db_delete('koja_api_keys',{'id':row.get('id')})
+    if del_err:return jsonify({'error':'key was revoked but could not be removed automatically'}),500
+    return jsonify({'ok':True,'status':'revoked','deleted':True})
 
 @app.route('/api/platform/core-status')
 @login_required
