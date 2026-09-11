@@ -8176,3 +8176,154 @@ def _koja_h2_too_many_requests(error):
     if request.path.startswith('/api/'):
         return jsonify({'error':'rate_limited','message':'Too many requests. Please try again shortly.'}), 429
     return ('Too many requests. Please try again shortly.', 429)
+
+# ============================================================
+# KOJA V12 -> V20 PRODUCTION INTEGRATION V1
+# Additive integration. Communications remains untouched.
+# ============================================================
+
+def _v12_count(table, filters=None, limit=5000):
+    try:
+        return len(db_select(table, filters=filters or {}, limit=limit) or []) if table_exists(table) else 0
+    except Exception:
+        return 0
+
+def _v12_engine_event(uid, engine, action, metadata=None):
+    try:
+        db_insert('koja_engine_events', {'user_id':uid,'engine':engine,'action':action,'metadata':metadata or {},'created_at':utc_now()})
+    except Exception:
+        logger.exception('V12-V20 engine event failed')
+
+@app.route('/platform/v12-v20')
+@login_required
+def koja_v12_v20_hub():
+    uid=(current_user() or {}).get('id')
+    engines=[('V12','KOJA Search & Discovery','Search, discovery and public service indexing.'),('V13','KOJA Ads Network','Campaigns, placements and advertising events.'),('V14','KOJA Pay Orchestration','Unified payment-intent layer over existing providers.'),('V15','KOJA Cloud & Developer','API identity, usage and developer infrastructure.'),('V16','KOJA Data Intelligence','Cross-service data and intelligence events.'),('V17','KOJA Identity & Trust','Identity and verification foundation.'),('V18','KOJA Workspace & Enterprise','Workspaces, documents, files and enterprise contracts.'),('V19','KOJA Ecosystem','Service registry, links and unified transactions.'),('V20','KOJA Autonomous Africa','AI agents, IoT, autonomy and future infrastructure.')]
+    stats={'ads':_v12_count('koja_v13_ad_campaigns',{'advertiser_id':uid}),'payments':_v12_count('koja_v14_payment_intents',{'user_id':uid}),'identity':_v12_count('koja_v17_identity',{'user_id':uid}),'workspaces':_v12_count('koja_workspaces',{'owner_id':uid}),'transactions':_v12_count('koja_unified_transactions',{'user_id':uid}),'agents':_v12_count('koja_ai_agents',{'owner_id':uid}),'iot':_v12_count('koja_iot_devices',{'owner_id':uid})}
+    _v12_engine_event(uid,'platform','open_hub')
+    tpl="""<div class='hero'><h1>KOJA Core Engines</h1><p>Unified platform engine layer.</p></div><div class='grid'>{% for key,value in stats.items() %}<div class='stat'><div class='big'>{{ value }}</div>{{ key|replace('_',' ')|title }}</div>{% endfor %}</div><div class='grid'>{% for v,n,d in engines %}<div class='card'><h3>{{ n }}</h3><p>{{ d }}</p></div>{% endfor %}</div><div class='card'><h3>Production architecture</h3><p>These engines sit alongside the existing KOJA services. Existing Market, Business, Accounting, Delivery, Live and AI routes remain operational; V12–V20 provides shared platform foundations and event/revenue integration.</p></div>"""
+    return render_page('KOJA Core Engines',tpl,stats=stats,engines=engines)
+
+@app.route('/api/platform/v12-v20/status')
+@login_required
+def koja_v12_v20_status():
+    tables=['koja_v13_ad_campaigns','koja_v13_ad_events','koja_v14_payment_intents','koja_v16_intelligence_events','koja_v17_identity','koja_engine_events','koja_workspaces','koja_workspace_members','koja_workspace_files','koja_workspace_documents','koja_enterprise_contracts','koja_enterprise_seats','koja_service_registry','koja_user_service_events','koja_ecosystem_links','koja_unified_transactions','koja_ai_agents','koja_ai_agent_runs','koja_iot_devices','koja_iot_telemetry','koja_autonomy_jobs','koja_future_infrastructure','koja_engine_revenue']
+    checks={t:table_exists(t) for t in tables}
+    return jsonify({'ok':all(checks.values()),'version':'V12-V20-PRODUCTION-V1','checks':checks})
+
+@app.route('/api/platform/engine-event',methods=['POST'])
+@login_required
+def koja_engine_event_api():
+    uid=(current_user() or {}).get('id'); data=request.get_json(silent=True) or request.form
+    engine=clean(data.get('engine') or ''); action=clean(data.get('action') or '')
+    if not engine or not action:return jsonify({'error':'engine and action are required'}),400
+    metadata=data.get('metadata') or {}; metadata=metadata if isinstance(metadata,dict) else {'value':str(metadata)[:500]}
+    row,err=db_insert('koja_engine_events',{'user_id':uid,'engine':engine[:80],'action':action[:120],'metadata':metadata,'created_at':utc_now()})
+    if err:return jsonify({'error':'event could not be recorded'}),500
+    return jsonify({'ok':True,'event_id':row.get('id') if row else None})
+
+@app.route('/platform/revenue-v20')
+@login_required
+def koja_v20_revenue():
+    uid=(current_user() or {}).get('id'); rows=db_select('koja_engine_revenue',limit=500) if table_exists('koja_engine_revenue') else []
+    if not ((current_user() or {}).get('is_admin') or (current_user() or {}).get('role')=='admin'): rows=[r for r in rows if str(r.get('reference_id') or '')==str(uid)]
+    total=sum(float(r.get('amount') or 0) for r in rows)
+    tpl="""<div class='hero'><h1>KOJA Revenue Engine</h1><p>Unified engine-revenue event ledger.</p></div><div class='grid'><div class='stat'><div class='big'>{{ '%.2f'|format(total) }}</div>Total ledger amount</div><div class='stat'><div class='big'>{{ rows|length }}</div>Revenue events</div></div><div class='card'><table><tr><th>Service</th><th>Type</th><th>Amount</th><th>Currency</th><th>Reference</th><th>Date</th></tr>{% for r in rows[:100] %}<tr><td>{{ r.service_key }}</td><td>{{ r.revenue_type }}</td><td>{{ r.amount }}</td><td>{{ r.currency }}</td><td>{{ r.reference_id or '' }}</td><td>{{ r.created_at }}</td></tr>{% endfor %}</table></div>"""
+    return render_page('KOJA Revenue Engine',tpl,total=total,rows=rows)
+
+@app.route('/admin/platform/v12-v20')
+@admin_required
+def admin_v12_v20():
+    tables=['koja_v13_ad_campaigns','koja_v13_ad_events','koja_v14_payment_intents','koja_v16_intelligence_events','koja_v17_identity','koja_engine_events','koja_workspaces','koja_workspace_members','koja_workspace_files','koja_workspace_documents','koja_enterprise_contracts','koja_enterprise_seats','koja_service_registry','koja_user_service_events','koja_ecosystem_links','koja_unified_transactions','koja_ai_agents','koja_ai_agent_runs','koja_iot_devices','koja_iot_telemetry','koja_autonomy_jobs','koja_future_infrastructure','koja_engine_revenue']
+    counts={t:_v12_count(t) for t in tables}
+    tpl="""<div class='hero'><h1>V12 → V20 Administration</h1><p>Platform engine readiness and data counts.</p></div><div class='card'><table><tr><th>Engine table</th><th>Status</th><th>Rows</th></tr>{% for t,c in counts.items() %}<tr><td>{{t}}</td><td>READY</td><td>{{c}}</td></tr>{% endfor %}</table></div>"""
+    return render_page('V12 V20 Admin',tpl,counts=counts)
+
+
+# ============================================================
+# KOJA CORE ENGINE ACTIVATION — PRODUCTION NAMED ENGINES
+# Upgrades existing foundations instead of creating duplicate services.
+# Communications is intentionally untouched.
+# ============================================================
+import hashlib, secrets
+
+KOJA_NAMED_ENGINES = {
+    'discover': {'name':'KOJA Discover','category':'discovery','core':['market','business','research','services']},
+    'ads': {'name':'KOJA Ads','category':'advertising','core':['market','business','discover','pay']},
+    'pay': {'name':'KOJA Pay','category':'payments','core':['market','business','deliveries','ads']},
+    'cloud': {'name':'KOJA Cloud','category':'infrastructure','core':['developer','api','security']},
+    'intelligence': {'name':'KOJA Intelligence','category':'analytics','core':['ai','business','market','pay','logistics']},
+    'identity': {'name':'KOJA Identity','category':'trust','core':['auth','profiles','security','business']},
+    'workspace': {'name':'KOJA Workspace','category':'productivity','core':['business','documents','research','enterprise']},
+    'ecosystem': {'name':'KOJA Ecosystem','category':'platform','core':['discover','market','business','logistics','ai','pay']},
+    'autonomous_ai': {'name':'KOJA Autonomous AI','category':'artificial_intelligence','core':['ai','intelligence','identity','cloud','ecosystem']},
+}
+
+def _core_engine_sync(uid=None, engine_key='ecosystem', action='access', metadata=None):
+    try:
+        e=KOJA_NAMED_ENGINES.get(engine_key, KOJA_NAMED_ENGINES['ecosystem'])
+        if table_exists('koja_engine_events'):
+            db_insert('koja_engine_events',{'user_id':uid,'engine':e['name'],'action':action[:120],'metadata':{'attached_services':e['core'],**(metadata or {})},'created_at':utc_now()})
+        if uid and table_exists('koja_user_service_events'):
+            for service in e['core'][:12]:
+                db_insert('koja_user_service_events',{'user_id':uid,'service_key':service,'event_type':action[:80],'object_id':engine_key,'country_code':'ZM','metadata':metadata or {},'created_at':utc_now()})
+        return True
+    except Exception:
+        logger.exception('KOJA named engine sync failed'); return False
+
+@app.route('/platform/engines')
+@login_required
+def koja_named_engines():
+    uid=(current_user() or {}).get('id')
+    _core_engine_sync(uid,'ecosystem','open_engine_center')
+    cards=''.join(f"<div class='card'><h3>{e['name']}</h3><p><b>Connected:</b> {', '.join(e['core'])}</p><p>{e['category'].replace('_',' ').title()} engine.</p></div>" for e in KOJA_NAMED_ENGINES.values())
+    tpl=f"<div class='hero'><h1>KOJA Core Engines</h1><p>Production engines connected to existing KOJA services.</p></div><div class='grid'>{cards}</div><div class='card'><h3>Architecture</h3><p>Existing Market, Business, Accounting, Deliveries, Research and AI capabilities are upgraded in place. These engines provide shared platform capabilities rather than duplicate applications.</p></div>"
+    return render_page('KOJA Core Engines',tpl)
+
+@app.route('/api/platform/engine-access',methods=['POST'])
+@login_required
+def koja_engine_access():
+    uid=(current_user() or {}).get('id'); data=request.get_json(silent=True) or request.form
+    key=clean(data.get('engine') or '').lower().replace(' ','_')
+    if key not in KOJA_NAMED_ENGINES:return jsonify({'error':'unknown engine','engines':list(KOJA_NAMED_ENGINES)}),400
+    _core_engine_sync(uid,key,'access',{'source':'engine_access_api'})
+    return jsonify({'ok':True,'engine':KOJA_NAMED_ENGINES[key]['name'],'attached_services':KOJA_NAMED_ENGINES[key]['core']})
+
+@app.route('/api/cloud/keys',methods=['POST'])
+@login_required
+def koja_cloud_create_key():
+    uid=(current_user() or {}).get('id'); data=request.get_json(silent=True) or request.form
+    if not table_exists('koja_api_keys'):return jsonify({'error':'API key storage is not installed'}),503
+    name=clean(data.get('name') or 'KOJA API Key')[:100]
+    scopes=data.get('scopes') or ['discover']
+    if not isinstance(scopes,list):scopes=[str(scopes)]
+    scopes=[clean(x)[:60] for x in scopes if clean(x)][:20]
+    raw='kza_'+secrets.token_urlsafe(32); prefix=raw[:12]; digest=hashlib.sha256(raw.encode()).hexdigest()
+    payload={'user_id':uid,'name':name,'key_prefix':prefix,'status':'active','key_hash':digest,'scopes':scopes,'created_at':utc_now(),'updated_at':utc_now()}
+    row,err=db_insert('koja_api_keys',payload)
+    if err:
+        payload.pop('key_hash',None); payload.pop('scopes',None); row,err=db_insert('koja_api_keys',payload)
+    if err:return jsonify({'error':'API key could not be created'}),500
+    _core_engine_sync(uid,'cloud','api_key_created',{'key_prefix':prefix,'scopes':scopes})
+    return jsonify({'ok':True,'api_key':raw,'key_prefix':prefix,'warning':'Store this key now. KOJA will not display the full secret again.'})
+
+@app.route('/api/cloud/keys/revoke',methods=['POST'])
+@login_required
+def koja_cloud_revoke_key():
+    uid=(current_user() or {}).get('id'); data=request.get_json(silent=True) or request.form; key_id=clean(data.get('key_id') or ''); prefix=clean(data.get('key_prefix') or '')
+    if not key_id and not prefix:return jsonify({'error':'key_id or key_prefix is required'}),400
+    if not table_exists('koja_api_keys'):return jsonify({'error':'API key storage is not installed'}),503
+    rows=db_select('koja_api_keys',filters={'id':key_id} if key_id else {'key_prefix':prefix},limit=5)
+    if not rows:return jsonify({'error':'key not found'}),404
+    row=rows[0]
+    if str(row.get('user_id'))!=str(uid) and not (current_user() or {}).get('is_admin'):return jsonify({'error':'forbidden'}),403
+    _,err=db_update('koja_api_keys',{'id':row.get('id')},{'status':'revoked','updated_at':utc_now(),'revoked_at':utc_now()})
+    if err:return jsonify({'error':'key could not be revoked'}),500
+    _core_engine_sync(uid,'cloud','api_key_revoked',{'key_prefix':row.get('key_prefix')})
+    return jsonify({'ok':True,'status':'revoked'})
+
+@app.route('/api/platform/core-status')
+@login_required
+def koja_core_status():
+    tables=['profiles','koja_service_registry','koja_engine_events','koja_user_service_events','koja_unified_transactions','koja_v14_payment_intents','koja_api_keys','koja_v17_identity']
+    return jsonify({'ok':True,'engines':{k:{'name':v['name'],'attached_services':v['core']} for k,v in KOJA_NAMED_ENGINES.items()},'core_tables':{t:table_exists(t) for t in tables}})

@@ -1,0 +1,34 @@
+KOJA AFRICA — KOJA Core Engines PRODUCTION INTEGRATION V1
+
+BASE: Production Hardening V2
+
+INCLUDED
+- V12 Search / Discovery foundation
+- V13 Ads Network foundation
+- V14 Payment Intent orchestration over existing payment providers
+- V15 Cloud / Developer metadata
+- V16 Data Intelligence events
+- V17 Identity & Trust foundation
+- V18 Workspace + Enterprise foundation
+- V19 Service Registry, ecosystem links and unified transactions
+- V20 AI agents, IoT, autonomy, future infrastructure and unified revenue foundation
+- V12→V20 user hub, admin dashboard, status API and engine-event API
+- Existing Market, Business, Accounting, Delivery and Live functionality retained
+- Communications is not modified
+
+DEPLOY
+1. Run KOJA_V12_V20_PRODUCTION_V1.sql in Supabase SQL Editor.
+2. Replace app.py in the existing Render KOJA-AFRICA deployment.
+3. Keep: gunicorn app:app
+4. Keep existing environment variables.
+5. After deployment, open /platform/v12-v20 while logged in.
+
+IMPORTANT
+This is a production foundation/integration layer. It does not claim that every V12–V20 concept is fully autonomous or globally deployed. Provider-specific integrations and operational controls are still required before activating real-world payment orchestration, AI-agent execution, IoT control, enterprise contracts or future infrastructure.
+
+
+CORE ENGINE NAMING / ATTACHMENT UPGRADE
+Production names: KOJA Discover, KOJA Ads, KOJA Pay, KOJA Cloud, KOJA Intelligence, KOJA Identity, KOJA Workspace, KOJA Ecosystem, KOJA Autonomous AI.
+Internal V12-V20 labels remain only for migration/version tracking. Existing services are upgraded in place; Communications is untouched.
+Security: API-key hashes, scopes, expiry/revocation fields and audit/service-event bridges are included. Raw API secrets are returned only at creation.
+After running the SQL, use /platform/engines while logged in and /api/platform/core-status to inspect the core attachment map.
