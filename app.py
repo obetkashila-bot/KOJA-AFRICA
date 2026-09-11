@@ -7999,3 +7999,180 @@ def production_health_v2():
     checks['LIVEKIT_CONFIGURED']=bool(os.getenv('LIVEKIT_URL') and os.getenv('LIVEKIT_API_KEY') and os.getenv('LIVEKIT_API_SECRET'))
     tpl="""<div class='hero'><h1>Production Health</h1><p>Remaining-engine readiness.</p></div><div class='card'><table><tr><th>Component</th><th>Status</th></tr>{% for k,v in checks.items() %}<tr><td>{{ k }}</td><td>{{ 'READY' if v else 'MISSING / NOT CONFIGURED' }}</td></tr>{% endfor %}</table></div>"""
     return render_page('KOJA Production Health',tpl,checks=checks)
+
+
+# ============================================================
+# KOJA PRODUCTION HARDENING V2
+# Additive hardening only. Communications routes are untouched.
+# ============================================================
+
+_H2_PUBLIC_RATE_RULES = {
+    '/login': (12, 60),
+    '/register': (8, 300),
+    '/api/delivery/request': (10, 60),
+    '/api/delivery/route': (30, 60),
+}
+
+@app.before_request
+def _koja_h2_rate_guard():
+    # Skip static files and safe GET browsing. Rate-limit sensitive mutation/auth endpoints.
+    path = request.path
+    rule = _H2_PUBLIC_RATE_RULES.get(path)
+    if not rule:
+        return None
+    key = f"{request.remote_addr or 'unknown'}:{path}"
+    if _rate_limited(key, rule[0], rule[1]):
+        return jsonify({'error':'rate_limited','message':'Too many requests. Please try again shortly.'}), 429
+    return None
+
+
+def _h2_idempotency_key():
+    return clean(request.headers.get('Idempotency-Key') or request.form.get('idempotency_key') or request.args.get('idempotency_key'))
+
+
+def _h2_idempotency_get(key, scope):
+    if not key:
+        return None
+    rows = db_select('koja_idempotency_keys_v2', {'idempotency_key': key, 'scope': scope}, limit=1) or []
+    return rows[0] if rows else None
+
+
+def _h2_idempotency_claim(key, scope, user_id=None, request_hash=None):
+    if not key:
+        return None, None
+    existing = _h2_idempotency_get(key, scope)
+    if existing:
+        return existing, None
+    row, err = db_insert('koja_idempotency_keys_v2', {
+        'idempotency_key': key,
+        'scope': scope,
+        'user_id': user_id,
+        'request_hash': request_hash or '',
+        'status': 'processing',
+        'created_at': utc_now(),
+        'updated_at': utc_now(),
+    })
+    if err:
+        # A concurrent request may have won the unique key race.
+        existing = _h2_idempotency_get(key, scope)
+        if existing:
+            return existing, None
+        return None, err
+    return row, None
+
+
+def _h2_idempotency_complete(row, response_payload=None, status='completed'):
+    if not row or not row.get('id'):
+        return
+    db_update('koja_idempotency_keys_v2', {'id': row.get('id')}, {
+        'status': status,
+        'response_payload': response_payload or {},
+        'updated_at': utc_now(),
+    })
+
+
+def _h2_audit(action, entity_type, entity_id, metadata=None):
+    try:
+        _r_audit(action, entity_type, entity_id, metadata or {})
+    except Exception:
+        logger.exception('Hardening audit failed')
+
+
+@app.route('/api/production-health-v2')
+def production_health_api_v2():
+    checks = {}
+    required = [
+        'koja_business_accounts','koja_business_transactions',
+        'koja_business_staff','koja_live_sessions_v2',
+        'koja_market_payout_ledger','koja_delivery_security',
+        'koja_business_verifications_v2','koja_business_directory',
+        'koja_market_promotions','koja_audit_log_v2','koja_idempotency_keys_v2'
+    ]
+    for table in required:
+        checks[table] = table_exists(table)
+    checks['supabase'] = supabase_configured()
+    checks['livekit'] = bool(os.getenv('LIVEKIT_URL') and os.getenv('LIVEKIT_API_KEY') and os.getenv('LIVEKIT_API_SECRET'))
+    checks['flutterwave'] = bool(os.getenv('FLW_SECRET_KEY'))
+    checks['site_url'] = bool(os.getenv('SITE_URL'))
+    ok = all(checks.values())
+    return jsonify({'ok': ok, 'status': 'ready' if ok else 'attention_required', 'checks': checks, 'version': 'PRODUCTION-HARDENING-V2'})
+
+
+@app.route('/admin/production-hardening-v2')
+@admin_required
+def production_hardening_v2():
+    checks = {}
+    for table in ['koja_audit_log_v2','koja_idempotency_keys_v2','koja_delivery_security','koja_market_payout_ledger']:
+        checks[table] = table_exists(table)
+    checks['rate_limiting'] = True
+    checks['supabase'] = supabase_configured()
+    checks['livekit'] = bool(os.getenv('LIVEKIT_URL') and os.getenv('LIVEKIT_API_KEY') and os.getenv('LIVEKIT_API_SECRET'))
+    checks['flutterwave'] = bool(os.getenv('FLW_SECRET_KEY'))
+    checks['secret_key'] = bool(app.secret_key and app.secret_key != 'change-me')
+    tpl = """<div class='hero'><h1>Production Hardening V2</h1><p>Security, idempotency and integration readiness.</p></div><div class='card'><table><tr><th>Control</th><th>Status</th></tr>{% for k,v in checks.items() %}<tr><td>{{ k }}</td><td>{{ 'READY' if v else 'ATTENTION REQUIRED' }}</td></tr>{% endfor %}</table></div><div class='card'><p>Rate limits are applied to sensitive authentication and delivery endpoints. Payment movement remains controlled by the existing payment flow; this page does not move money.</p></div>"""
+    return render_page('Production Hardening V2', tpl, checks=checks)
+
+
+@app.route('/admin/payout-reconciliation-v2/<payout_id>/review', methods=['POST'])
+@admin_required
+def payout_reconciliation_review_v2(payout_id):
+    action = clean(request.form.get('action')).lower()
+    allowed = {'approve':'approved','reject':'rejected','paid':'paid','failed':'failed'}
+    status = allowed.get(action)
+    if not status:
+        return ('Invalid action', 400)
+    rows = db_select('koja_market_payouts', {'id': payout_id}, limit=1) or []
+    if not rows:
+        return ('Payout not found', 404)
+    payload = {'status': status, 'updated_at': utc_now()}
+    if status == 'paid':
+        payload['processed_at'] = utc_now()
+        payload['failure_reason'] = None
+    elif status == 'failed':
+        payload['failure_reason'] = clean(request.form.get('reason')) or 'Marked failed by administrator'
+    _, err = db_update('koja_market_payouts', {'id': payout_id}, payload)
+    if err:
+        flash('Payout update failed.', 'danger')
+    else:
+        _h2_audit('payout_status_update', 'market_payout', payout_id, {'status': status})
+        flash(f'Payout marked {status}.', 'success')
+    return redirect(url_for('payout_reconciliation_v2'))
+
+
+@app.route('/admin/delivery/<delivery_id>/reassign-v2', methods=['POST'])
+@admin_required
+def admin_delivery_reassign_v2(delivery_id):
+    rows = db_select('deliveries', {'id': delivery_id}, limit=1) or []
+    if not rows:
+        return ('Delivery not found', 404)
+    d = rows[0]
+    current = clean(d.get('driver_id'))
+    new_driver = clean(request.form.get('driver_id'))
+    if not new_driver or new_driver == current:
+        return ('A different driver_id is required', 400)
+    drivers = db_select('profiles', {'id': new_driver}, limit=1) or []
+    if not drivers:
+        return ('Driver not found', 404)
+    _, err = db_update('deliveries', {'id': delivery_id}, {
+        'driver_id': new_driver,
+        'rejection_count': int(d.get('rejection_count') or 0) + 1,
+        'last_reassigned_at': utc_now(),
+    })
+    if err:
+        return ('Reassignment failed', 500)
+    _h2_audit('delivery_reassigned', 'delivery', delivery_id, {'old_driver_id': current, 'new_driver_id': new_driver})
+    return redirect(url_for('admin_deliveries'))
+
+
+@app.errorhandler(413)
+def _koja_h2_file_too_large(error):
+    if request.path.startswith('/api/'):
+        return jsonify({'error':'file_too_large','message':'Uploaded file exceeds the allowed size.'}), 413
+    return ('Uploaded file is too large.', 413)
+
+
+@app.errorhandler(429)
+def _koja_h2_too_many_requests(error):
+    if request.path.startswith('/api/'):
+        return jsonify({'error':'rate_limited','message':'Too many requests. Please try again shortly.'}), 429
+    return ('Too many requests. Please try again shortly.', 429)
