@@ -3238,9 +3238,21 @@ def _finalize_market_order(order, tx):
     if p and str(p.get('product_type') or 'physical')=='physical':
         try:
             qty=max(1,int(order.get('quantity') or 1)); stock=max(0,int(p.get('stock') or 0)-qty)
-            db_update('koja_market_products',{'id':p.get('id')},{'stock':stock,'updated_at':utc_now()})
+            # A one-of-one listing disappears from the public Market when purchased.
+            # Multi-stock listings remain visible and expose the remaining quantity.
+            db_update('koja_market_products',{'id':p.get('id')},{'stock':stock,'is_published':bool(stock>0),'updated_at':utc_now()})
         except Exception: logger.exception('KOJA Market stock finalization error')
     buyer_id=order.get('buyer_id')
+    # Notify the seller immediately after the payment is atomically marked paid.
+    try:
+        qty=max(1,int(order.get('quantity') or 1))
+        title='New KOJA Market order'
+        pname=str((p or {}).get('title') or 'Product')
+        remaining=(max(0,int((p or {}).get('stock') or 0)-qty) if p and str(p.get('product_type') or 'physical')=='physical' else None)
+        body=f'{pname} — {qty} item(s) sold. Order {order.get("order_number") or order.get("id")}. '
+        if remaining is not None: body += f'{remaining} remaining in stock.'
+        notify_user(order.get('seller_id'),title,body,'market_order',order.get('id'),'/market/my')
+    except Exception: logger.exception('KOJA seller order notification failed')
     gross=_money_num(order.get('total_amount')); commission=_money_num(order.get('commission_amount')); platform_fee=_money_num(order.get('platform_fee')); net=max(0,gross-commission-platform_fee)
     # Ledger/payment-fee/delivery inserts are performed once after the atomic paid transition.
     db_insert('koja_market_ledger',{'order_id':order.get('id'),'seller_id':order.get('seller_id'),'buyer_id':buyer_id,'gross_amount':gross,'commission_amount':commission,'platform_fee':platform_fee,'net_amount':net,'currency':order.get('currency') or 'ZMW','status':'pending','created_at':utc_now()})
@@ -8152,6 +8164,167 @@ def production_health_v2():
     tpl="""<div class='hero'><h1>Production Health</h1><p>Remaining-engine readiness.</p></div><div class='card'><table><tr><th>Component</th><th>Status</th></tr>{% for k,v in checks.items() %}<tr><td>{{ k }}</td><td>{{ 'READY' if v else 'MISSING / NOT CONFIGURED' }}</td></tr>{% endfor %}</table></div>"""
     return render_page('KOJA Production Health',tpl,checks=checks)
 
+
+# ============================================================
+# KOJA DELIVERY + MARKET ORDER FULFILLMENT UPGRADE
+# Additive only. Communications/Connect+ is untouched.
+# ============================================================
+
+def make_delivery_pickup_code():
+    return 'KDP-' + secrets.token_hex(4).upper()
+
+def _delivery_driver_is_current_user(delivery, uid):
+    provider = get_driver_provider(uid)
+    return bool(provider and str(provider.get('id')) == str(delivery.get('driver_id') or ''))
+
+def _delivery_payout_amount(delivery):
+    return max(0.0, _money_num(delivery.get('delivery_fee')))
+
+def _try_driver_mobile_payout(delivery, driver, amount):
+    if amount <= 0 or not FLW_SECRET_KEY or str(os.getenv('KOJA_DRIVER_AUTO_PAYOUT','false')).lower() not in {'1','true','yes','on'}:
+        return {'ok':False,'status':'ready_to_send','message':'Automatic payout is not enabled.'}
+    phone=clean((driver or {}).get('phone') or (driver or {}).get('mobile_money_phone'))
+    bank_code=clean(os.getenv('KOJA_FLW_ZM_MOMO_BANK_CODE'))
+    name=first_nonempty((driver or {}).get('full_name'),(driver or {}).get('name'),'KOJA Driver')
+    if not phone or not bank_code:
+        return {'ok':False,'status':'ready_to_send','message':'Driver payout phone or Flutterwave ZMW mobile-money bank code is missing.'}
+    reference='KOJA-DRIVER-'+str(delivery.get('tracking_code') or secrets.token_hex(5)).replace('_','-')
+    payload={'account_bank':bank_code,'account_number':phone,'amount':int(round(amount)),'currency':'ZMW','beneficiary_name':name,'reference':reference,'debit_currency':'ZMW','narration':'KOJA delivery payout','meta':{'tracking_code':delivery.get('tracking_code'),'driver_id':delivery.get('driver_id')}}
+    try:
+        r=requests.post(FLW_BASE_URL+'/transfers',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json'},json=payload,timeout=30)
+        body=json_or_empty(r); data=body.get('data') or {}
+        if r.ok and str(body.get('status') or '').lower()=='success':
+            return {'ok':True,'status':'processing','transfer_id':data.get('id'),'reference':reference,'message':'Driver payout initiated.'}
+        logger.error('KOJA driver payout failed: %s %s',r.status_code,str(body)[:1200])
+        return {'ok':False,'status':'ready_to_send','message':'Flutterwave did not accept the driver payout.'}
+    except Exception:
+        logger.exception('KOJA driver payout error')
+        return {'ok':False,'status':'ready_to_send','message':'Driver payout could not be started.'}
+
+@app.route('/delivery/places')
+def delivery_places():
+    q=clean(request.args.get('q'))
+    rows=db_select('koja_delivery_places',{'is_public':'eq.true'},order='updated_at.desc',limit=500) or []
+    if q:
+        needle=q.lower()
+        rows=[x for x in rows if needle in ' '.join(str(x.get(k) or '') for k in ('place_name','city','area','physical_address','contact_name','contact_phone','category')).lower()]
+    shown=rows if q else rows[:2]
+    return render_page('KOJA Delivery Places',r'''
+<div class="hero"><h1>KOJA Delivery Places</h1><p>Public pickup shops, markets, bus stations and physical delivery addresses.</p></div>
+<div class="card"><form method="get"><input name="q" value="{{ request.args.get('q','') }}" placeholder="Search place e.g. Kasama Mulenga Market or Lusaka Bus Station"><button class="btn">Search</button></form><p class="small">KOJA shows two places by default. Search by place name, town, area or contact to find the rest.</p></div>
+<div class="grid">{% for x in shown %}<div class="card"><h2>{{ x.place_name }}</h2><p><strong>{{ x.city or '' }}{% if x.area %}, {{ x.area }}{% endif %}</strong></p><p>{{ x.physical_address }}</p><p>{{ x.category or 'Delivery place' }}</p>{% if x.contact_name %}<p>Contact: {{ x.contact_name }}</p>{% endif %}{% if x.contact_phone %}<p>Phone: <a href="tel:{{ x.contact_phone }}">{{ x.contact_phone }}</a></p>{% endif %}{% if x.notes %}<p class="small">{{ x.notes }}</p>{% endif %}</div>{% else %}<div class="card"><p>No public delivery places found.</p></div>{% endfor %}</div>
+<div id="search" class="card"><h2>Register a physical address</h2><p>Business owners and delivery locations can publish a place name, physical address and contact information.</p>{% if user %}<a class="btn" href="{{ url_for('delivery_place_register') }}">Register Delivery Place</a>{% else %}<a class="btn" href="{{ url_for('login',next='/delivery/places') }}">Login to Register</a>{% endif %}</div>
+''',shown=shown,total_count=len(rows))
+
+@app.route('/delivery/places/register',methods=['GET','POST'])
+@login_required
+def delivery_place_register():
+    if request.method=='POST':
+        uid=(current_user() or {}).get('id')
+        payload={'owner_id':uid,'place_name':clean(request.form.get('place_name')),'city':clean(request.form.get('city')),'area':clean(request.form.get('area')),'physical_address':clean(request.form.get('physical_address')),'category':clean(request.form.get('category')) or 'Delivery place','contact_name':clean(request.form.get('contact_name')),'contact_phone':clean(request.form.get('contact_phone')),'notes':clean(request.form.get('notes')),'is_public':True,'created_at':utc_now(),'updated_at':utc_now()}
+        if not payload['place_name'] or not payload['physical_address'] or not payload['contact_phone']:
+            flash('Place name, physical address and contact phone are required.','danger'); return redirect(url_for('delivery_place_register'))
+        _,err=db_insert('koja_delivery_places',payload)
+        flash('Delivery place registered and published.' if not err else 'Could not register the delivery place. Run the updated production SQL first.','success' if not err else 'danger')
+        return redirect(url_for('delivery_places'))
+    return render_page('Register Delivery Place',r'''
+<div class="hero"><h1>Register Physical Delivery Place</h1><p>Publish a shop, market, bus station, warehouse or other pickup point.</p></div>
+<div class="card"><form method="post"><label>Place name</label><input name="place_name" required placeholder="Kasama Mulenga Market"><label>City / Town</label><input name="city" required placeholder="Kasama"><label>Area</label><input name="area" placeholder="Mulenga"><label>Physical address</label><textarea name="physical_address" required placeholder="Plot, street, market section or other physical directions"></textarea><label>Category</label><select name="category"><option>Shop</option><option>Market</option><option>Bus station</option><option>Warehouse</option><option>Other</option></select><label>Contact name</label><input name="contact_name"><label>Contact phone</label><input name="contact_phone" required inputmode="tel"><label>Notes</label><textarea name="notes"></textarea><button class="btn" type="submit">Publish Delivery Place</button></form></div>
+''')
+
+@app.route('/api/delivery/places')
+def delivery_places_api():
+    q=clean(request.args.get('q')); rows=db_select('koja_delivery_places',{'is_public':'eq.true'},order='updated_at.desc',limit=500) or []
+    if q:
+        n=q.lower(); rows=[x for x in rows if n in ' '.join(str(x.get(k) or '') for k in ('place_name','city','area','physical_address','contact_name','contact_phone','category')).lower()]
+    return jsonify({'ok':True,'places':rows if q else rows[:2],'total':len(rows),'limited':not bool(q)})
+
+@app.route('/api/delivery/<tracking_code>/verify-pickup',methods=['POST'])
+@login_required
+def verify_delivery_pickup(tracking_code):
+    delivery=first_row('deliveries',{'tracking_code':tracking_code})
+    if not delivery:return jsonify({'ok':False,'message':'Delivery not found.'}),404
+    uid=(current_user() or {}).get('id')
+    if not _delivery_driver_is_current_user(delivery,uid) and not (current_user() or {}).get('is_admin'):
+        return jsonify({'ok':False,'message':'Only the assigned driver can verify the pickup.'}),403
+    status=str(delivery.get('status') or '').lower()
+    if status in {'completed','delivered'} or as_bool(delivery.get('pickup_verified')):
+        return jsonify({'ok':False,'already_completed':status in {'completed','delivered'},'message':'Delivery already completed.' if status in {'completed','delivered'} else 'Pickup already verified.'}),409
+    code=clean((request.get_json(silent=True) or {}).get('pickup_code') or request.form.get('pickup_code')).upper()
+    expected=clean(delivery.get('pickup_code')).upper()
+    if not code or code!=expected:
+        return jsonify({'ok':False,'valid':False,'message':'Invalid pickup number.'}),400
+    db_update('deliveries',{'id':delivery.get('id')},{'pickup_verified':True,'status':'picked_up','picked_up_at':utc_now(),'updated_at':utc_now()})
+    notify_user(delivery.get('customer_id'),'Delivery picked up',f'Driver verified pickup {tracking_code}.','delivery',delivery.get('id'),f'/track/{tracking_code}')
+    return jsonify({'ok':True,'valid':True,'message':'Pickup number is valid. Delivery is now in transit.'})
+
+@app.route('/delivery/<tracking_code>/verify-pickup',methods=['GET'])
+@login_required
+def verify_delivery_pickup_page(tracking_code):
+    delivery=first_row('deliveries',{'tracking_code':tracking_code})
+    if not delivery: abort(404)
+    return render_page('Verify Delivery Pickup',r'''
+<div class="hero"><h1>KOJA Delivery Pickup</h1><p>Tracking: <strong>{{ delivery.tracking_code }}</strong></p><p>Pickup: {{ delivery.pickup_location }}</p><p>Destination: {{ delivery.destination }}</p></div>
+<div class="card"><label>Enter pickup number from the shop</label><input id="code" autocomplete="one-time-code" placeholder="KDP-XXXXXXXX"><button class="btn" onclick="verifyPickup()">Verify Number</button><p id="result" class="small"></p></div>
+<script>async function verifyPickup(){const code=document.getElementById('code').value.trim();const r=await fetch({{ url_for('verify_delivery_pickup',tracking_code=delivery.tracking_code)|tojson }},{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pickup_code:code})});const d=await r.json();document.getElementById('result').textContent=d.message||'No response';}</script>
+''',delivery=delivery)
+
+@app.route('/api/delivery/<tracking_code>/complete',methods=['POST'])
+@login_required
+def complete_delivery(tracking_code):
+    delivery=first_row('deliveries',{'tracking_code':tracking_code})
+    if not delivery:return jsonify({'ok':False,'message':'Delivery not found.'}),404
+    uid=(current_user() or {}).get('id')
+    if str(delivery.get('customer_id') or '')!=str(uid) and not (current_user() or {}).get('is_admin'):
+        return jsonify({'ok':False,'message':'Only the delivery owner can confirm receipt.'}),403
+    status=str(delivery.get('status') or '').lower()
+    if status in {'completed','delivered'}: return jsonify({'ok':True,'already_completed':True,'message':'Delivery already completed.'})
+    if not as_bool(delivery.get('pickup_verified')):
+        return jsonify({'ok':False,'message':'The driver pickup number has not been verified yet.'}),400
+    db_update('deliveries',{'id':delivery.get('id')},{'status':'completed','delivery_completed_at':utc_now(),'driver_payout_status':'ready_to_send','updated_at':utc_now()})
+    driver=first_row('service_providers',{'id':delivery.get('driver_id')}) or first_row('driver_profiles',{'provider_id':delivery.get('driver_id')}) or {}
+    amount=_delivery_payout_amount(delivery)
+    payout=_try_driver_mobile_payout(delivery,driver,amount)
+    payout_status=payout.get('status') or 'ready_to_send'
+    db_update('deliveries',{'id':delivery.get('id')},{'driver_payout_status':payout_status,'driver_payout_reference':payout.get('reference'),'driver_payout_transfer_id':str(payout.get('transfer_id') or '') or None,'updated_at':utc_now()})
+    notify_user(delivery.get('driver_id'),'Delivery completed',f'The owner confirmed receipt. Delivery fee: ZMW {amount:.2f}. Payout status: {payout_status}.','delivery',delivery.get('id'),'/deliveries')
+    return jsonify({'ok':True,'message':'Delivery completed. KOJA has recorded the owner confirmation and the driver payout.','payout_status':payout_status,'amount':amount,'driver_phone':first_nonempty(driver.get('phone'),driver.get('mobile_money_phone'))})
+
+@app.route('/delivery/<tracking_code>/complete',methods=['POST','GET'])
+@login_required
+def complete_delivery_page(tracking_code):
+    delivery=first_row('deliveries',{'tracking_code':tracking_code})
+    if not delivery: abort(404)
+    if request.method=='POST':
+        result=complete_delivery(tracking_code)
+        data=result.get_json(silent=True) if hasattr(result,'get_json') else {}
+        flash((data or {}).get('message','Delivery updated.'),'success' if (data or {}).get('ok') else 'danger')
+        return redirect(url_for('track_delivery',tracking_code=tracking_code))
+    driver=first_row('service_providers',{'id':delivery.get('driver_id')}) or first_row('driver_profiles',{'provider_id':delivery.get('driver_id')}) or {}
+    driver_phone=first_nonempty(driver.get('phone'),driver.get('mobile_money_phone'))
+    return render_page('Confirm Delivery',r'''
+<div class="hero"><h1>Confirm Delivery Received</h1><p>Tracking: <strong>{{ delivery.tracking_code }}</strong></p><p>Only confirm after you have physically received the package.</p></div>
+<div class="card"><p><strong>Driver:</strong> {{ delivery.driver_id }}</p><p><strong>Delivery fee:</strong> ZMW {{ delivery.delivery_fee or 0 }}</p><p><strong>Driver payout number:</strong> {{ driver_phone or 'Not available' }}</p><p class="small">Only press confirm after you have received the goods. By confirming, you authorize KOJA to pay the delivery fee to the driver number shown above.</p><form method="post"><button class="btn success" type="submit">Yes, I Received It — Pay Driver</button></form></div>
+''',delivery=delivery,driver_phone=driver_phone)
+
+# Ensure newly created driver-request deliveries receive the same pickup-code fields.
+_original_create_delivery_request=create_delivery_request
+def _upgrade_delivery_request_with_code(*args,**kwargs):
+    result=_original_create_delivery_request(*args,**kwargs)
+    try:
+        data=result.get_json(silent=True) if hasattr(result,'get_json') else None
+        if isinstance(data,dict) and data.get('ok') and data.get('tracking_code'):
+            code=make_delivery_pickup_code()
+            db_update('deliveries',{'tracking_code':data['tracking_code']},{'pickup_code':code,'pickup_verified':False,'delivery_completed_at':None,'driver_payout_status':'pending','updated_at':utc_now()})
+            delivery=first_row('deliveries',{'tracking_code':data['tracking_code']}) or {}
+            if delivery.get('driver_id'):
+                notify_user(delivery.get('driver_id'),'New KOJA Delivery',f'Delivery {data["tracking_code"]} assigned. Pickup number: {code}.','delivery',delivery.get('id'),'/deliveries')
+            data['pickup_code']=code
+            return jsonify(data)
+    except Exception: logger.exception('Delivery pickup-code upgrade failed')
+    return result
+create_delivery_request=_upgrade_delivery_request_with_code
+app.view_functions['create_delivery_request']=_upgrade_delivery_request_with_code
 
 # ============================================================
 # KOJA PRODUCTION HARDENING V2

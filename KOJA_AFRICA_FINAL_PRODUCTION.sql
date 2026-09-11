@@ -566,3 +566,40 @@ create index if not exists koja_market_live_rooms_status_idx on public.koja_mark
 create index if not exists koja_market_live_rooms_seller_idx on public.koja_market_live_rooms(seller_id, started_at desc);
 alter table public.koja_market_live_rooms add column if not exists pinned_product_id uuid;
 alter table public.koja_market_live_rooms add column if not exists ended_at timestamptz;
+
+-- ============================================================
+-- KOJA DELIVERY + MARKET ORDER FULFILLMENT UPGRADE
+-- Additive only. No drops/truncates/recreates.
+-- ============================================================
+
+alter table if exists public.deliveries add column if not exists pickup_code text;
+alter table if exists public.deliveries add column if not exists pickup_verified boolean not null default false;
+alter table if exists public.deliveries add column if not exists picked_up_at timestamptz;
+alter table if exists public.deliveries add column if not exists delivery_completed_at timestamptz;
+alter table if exists public.deliveries add column if not exists driver_payout_status text not null default 'pending';
+alter table if exists public.deliveries add column if not exists driver_payout_reference text;
+alter table if exists public.deliveries add column if not exists driver_payout_transfer_id text;
+create unique index if not exists deliveries_pickup_code_unique_idx on public.deliveries(pickup_code) where pickup_code is not null;
+create index if not exists deliveries_driver_payout_idx on public.deliveries(driver_payout_status,updated_at desc);
+
+alter table if exists public.koja_market_products add column if not exists stock integer not null default 1;
+create index if not exists koja_market_products_public_stock_idx on public.koja_market_products(is_published,approval_status,stock,created_at desc);
+
+create table if not exists public.koja_delivery_places (
+ id uuid primary key default gen_random_uuid(),
+ owner_id uuid,
+ place_name text not null,
+ city text,
+ area text,
+ physical_address text not null,
+ category text not null default 'Delivery place',
+ contact_name text,
+ contact_phone text not null,
+ notes text,
+ is_public boolean not null default true,
+ created_at timestamptz not null default now(),
+ updated_at timestamptz not null default now()
+);
+create index if not exists koja_delivery_places_public_idx on public.koja_delivery_places(is_public,updated_at desc);
+create index if not exists koja_delivery_places_name_idx on public.koja_delivery_places(place_name,city,area);
+
