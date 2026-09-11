@@ -7188,7 +7188,10 @@ def market_cart_checkout():
             flash('Select MTN, Airtel or Zamtel and enter the mobile-money phone number.','warning'); return redirect(url_for('market_cart_checkout'))
         created=[]
         for x in items:
-            p=x['product']; qty=x['quantity']; method=clean(request.form.get('fulfillment_method')) or ('delivery' if str(p.get('product_type') or 'physical')=='physical' else 'digital'); item_delivery=x['delivery'] if method=='delivery' else 0; item_total=round(x['line']+item_delivery,2)
+            p=x['product']; qty=x['quantity']; method=clean(request.form.get('fulfillment_method')) or ('delivery' if str(p.get('product_type') or 'physical')=='physical' else 'digital');
+            if str(p.get('product_type') or 'physical').lower()=='digital': method='digital'
+            elif method=='digital': method='delivery' if bool(p.get('delivery_available',True)) else 'self_pickup'
+            item_delivery=x['delivery'] if method=='delivery' else 0; item_total=round(x['line']+item_delivery,2)
             commission=round(item_total*KOJA_MARKET_COMMISSION_RATE,2); item_fee=round(item_total*KOJA_PLATFORM_FEE_RATE,2)
             payload={'order_number':market_order_number(),'product_id':p.get('id'),'buyer_id':uid,'seller_id':p.get('seller_id'),'quantity':qty,'item_amount':x['line'],'delivery_fee':item_delivery,'fulfillment_method':method,'total_amount':item_total,'commission_amount':commission,'platform_fee':item_fee,'seller_amount':round(item_total-commission,2),'currency':p.get('currency') or 'ZMW','status':'pending','payment_method':'flutterwave','recipient_name':name or (current_user() or {}).get('name') or (current_user() or {}).get('full_name'),'recipient_phone':phone or (current_user() or {}).get('phone'),'delivery_address':address,'notes':notes,'created_at':utc_now(),'updated_at':utc_now()}
             row,err=db_insert('koja_market_orders',payload)
@@ -7209,7 +7212,7 @@ def market_cart_checkout():
     return render_page('Secure Market Checkout',r'''
 <div class="hero"><h1>🔐 Secure Checkout</h1><p>Review your cart. KOJA calculates delivery and the platform fee before payment.</p></div>
 <div class="card">{% for x in items %}<p><strong>{{ x.product.title }}</strong> — {{ x.quantity }} × {{ money(x.product.price,x.product.currency) }}{% if x.delivery %} + {{ money(x.delivery,'ZMW') }} delivery{% endif %} = {{ money(x.line+x.delivery,x.product.currency) }}</p>{% else %}<p>Your cart is empty.</p>{% endfor %}<hr><p>Subtotal: <strong>{{ money(subtotal,'ZMW') }}</strong></p><p>Delivery: <strong>{{ money(delivery,'ZMW') }}</strong></p><p>KOJA platform fee: <strong>{{ money(platform_fee,'ZMW') }}</strong></p><h2>Total to pay: {{ money(grand,'ZMW') }}</h2></div>
-{% if items %}<div class="card"><form method="post"><label>Recipient name</label><input name="recipient_name" required value="{{ (current_user() or {}).get('name','') }}"><label>Delivery phone</label><input name="recipient_phone" required value="{{ (current_user() or {}).get('phone','') }}"><label>Fulfillment</label><select name="fulfillment_method"><option value="delivery">KOJA Delivery</option><option value="self_pickup">Self Pickup / I will collect</option><option value="digital">Digital download</option></select><label>Delivery address (required for KOJA Delivery)</label><textarea name="delivery_address"></textarea><label>Notes</label><textarea name="notes"></textarea><hr><h3>Flutterwave Mobile Money</h3><label>Payment network</label><select name="network" required><option value="">Select network</option><option value="MTN">MTN</option><option value="AIRTEL">Airtel</option><option value="ZAMTEL">Zamtel</option></select><label>Payment phone</label><input name="payment_phone" required inputmode="tel" value="{{ (current_user() or {}).get('phone','') }}"><button class="btn" type="submit">💳 Pay {{ money(grand,'ZMW') }} Securely</button></form></div>{% endif %}''',items=items,subtotal=subtotal,delivery=delivery,platform_fee=platform_fee,grand=grand,money=market_money)
+{% if items %}<div class="card"><form method="post"><label>Recipient name</label><input name="recipient_name" required value="{{ (current_user() or {}).get('name','') }}"><label>Delivery phone</label><input name="recipient_phone" required value="{{ (current_user() or {}).get('phone','') }}"><label>Fulfillment</label>{% set ns=namespace(physical=false) %}{% for it in items %}{% if (it.product.product_type or 'physical')!='digital' %}{% set ns.physical=true %}{% endif %}{% endfor %}{% if ns.physical %}<select name="fulfillment_method"><option value="delivery">KOJA Delivery</option><option value="self_pickup">Self Pickup / I will collect</option></select>{% else %}<p><strong>Digital download — no delivery.</strong></p><input type="hidden" name="fulfillment_method" value="digital">{% endif %}<label>Delivery address (required for KOJA Delivery)</label><textarea name="delivery_address"></textarea><label>Notes</label><textarea name="notes"></textarea><hr><h3>Flutterwave Mobile Money</h3><label>Payment network</label><select name="network" required><option value="">Select network</option><option value="MTN">MTN</option><option value="AIRTEL">Airtel</option><option value="ZAMTEL">Zamtel</option></select><label>Payment phone</label><input name="payment_phone" required inputmode="tel" value="{{ (current_user() or {}).get('phone','') }}"><button class="btn" type="submit">💳 Pay {{ money(grand,'ZMW') }} Securely</button></form></div>{% endif %}''',items=items,subtotal=subtotal,delivery=delivery,platform_fee=platform_fee,grand=grand,money=market_money)
 
 @app.route('/market/seller/subscription',methods=['GET','POST'])
 @login_required
@@ -9095,6 +9098,40 @@ html,body{margin:0;padding:0}.live-page-shell{width:100%;max-width:none;margin:0
 @login_required
 def market_live_status():
     return jsonify({'ok': True, 'configured': bool(LIVEKIT_URL and LIVEKIT_API_KEY and LIVEKIT_API_SECRET), 'server_url_set': bool(LIVEKIT_URL), 'api_key_set': bool(LIVEKIT_API_KEY), 'api_secret_set': bool(LIVEKIT_API_SECRET), 'api_key_prefix': LIVEKIT_API_KEY[:8] if LIVEKIT_API_KEY else '', 'server_url': _livekit_server_url() if LIVEKIT_URL else ''})
+
+# ============================================================
+# KOJA UNIFIED FULFILLMENT V4 — AI LOGISTICS
+# ============================================================
+def _fulfillment_ai_advice(prompt, max_output_tokens=900):
+    system = "You are KOJA Fulfillment Intelligence. Recommend and rank logistics actions using only supplied facts. Digital products never need physical delivery. AI recommends only; secure backend controls payments, delivery state, pickup verification and payouts."
+    return _ai_call(prompt, system, max_output_tokens=max_output_tokens, timeout=25)
+
+@app.route('/api/fulfillment/ai-assist', methods=['POST'])
+@login_required
+def fulfillment_ai_assist():
+    data=request.get_json(silent=True) or {}
+    kind=clean(data.get('kind') or 'fulfillment')
+    if kind=='driver_rank':
+        provider=get_driver_provider((current_user() or {}).get('id'))
+        if not provider: return jsonify({'ok':False,'error':'driver_required'}),403
+        jobs=db_select('deliveries',{'status':'requested','driver_id':None},order='created_at.desc',limit=30) or []
+        compact=[{'id':j.get('id'),'tracking_code':j.get('tracking_code'),'pickup':j.get('pickup_location'),'destination':j.get('destination'),'fee':j.get('delivery_fee'),'created_at':j.get('created_at')} for j in jobs]
+        prompt="Rank these available delivery jobs for the driver. Prefer practical route compatibility when supplied, then fair fee, age and urgency. Do not invent distance. Return concise ranked tracking codes and reasons.\n"+json.dumps(compact,default=str)
+        answer,err=_fulfillment_ai_advice(prompt,1200)
+        return jsonify({'ok':bool(answer),'recommendation':answer or 'AI unavailable; use the normal queue.','jobs':compact,'error':err if not answer else ''})
+    if kind=='buyer_choice':
+        product=(data.get('data') or {}).get('product') or {}
+        if str(product.get('product_type') or 'physical').lower()=='digital':
+            return jsonify({'ok':True,'fulfillment_method':'digital','recommendation':'Digital product: no physical delivery.'})
+        answer,err=_fulfillment_ai_advice('Choose between KOJA Delivery and Self Pickup using only these facts: '+json.dumps(product,default=str),700)
+        return jsonify({'ok':bool(answer),'fulfillment_method':'delivery' if product.get('delivery_available',True) else 'self_pickup','recommendation':answer,'error':err if not answer else ''})
+    answer,err=_fulfillment_ai_advice(json.dumps(data.get('data') or {},default=str),900)
+    return jsonify({'ok':bool(answer),'answer':answer,'error':err if not answer else ''})
+
+@app.route('/fulfillment/ai')
+@login_required
+def fulfillment_ai_dashboard():
+    return render_page('KOJA Fulfillment Intelligence',"""<div class='hero'><h1>KOJA Fulfillment Intelligence</h1><p>AI-assisted logistics for buyers, businesses and drivers.</p></div><div class='card'><button class='btn' id='rank'>AI Optimize Delivery Queue</button><pre id='out' style='white-space:pre-wrap'></pre></div><script>document.getElementById('rank').onclick=async()=>{const o=document.getElementById('out');o.textContent='Analyzing…';try{const r=await fetch('/api/fulfillment/ai-assist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:'driver_rank'})});const d=await r.json();o.textContent=d.recommendation||d.error||'No recommendation.'}catch(e){o.textContent='AI unavailable; normal fulfillment remains active.'}}</script>""")
 
 # ============================================================
 # KOJA UNIFIED FULFILLMENT V3 — MARKET + BUSINESS
