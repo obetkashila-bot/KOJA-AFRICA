@@ -7864,3 +7864,138 @@ def business_intelligence_v3(business_id):
     elif linked: source_note += ' Linked Market products found, but no paid/completed Market orders were found.'
     return render_page('Business Intelligence V3',r'''<div class="hero"><h1>Business Intelligence V3</h1><p>{{ b.name }} — predictive analytics, forecasting, pricing, inventory and AI strategy.</p><div class="actions"><a class="btn secondary" href="{{ url_for('business_products',business_id=b.id) }}">Open POS / Inventory</a><a class="btn secondary" href="{{ url_for('business_accounting_v2',business_id=b.id) }}">Open Accounting</a></div></div><div class="card"><strong>Data connection:</strong> {{ source_note }}</div><div class="grid"><div class="card"><h3>30-day Revenue</h3><h2>{{ money(rev30,'ZMW') }}</h2></div><div class="card"><h3>30-day Net Profit</h3><h2>{{ money(net30,'ZMW') }}</h2></div><div class="card"><h3>Growth</h3><h2>{{ ('%.1f'|format(growth)) ~ '%' if growth is not none else '—' }}</h2></div><div class="card"><h3>Forecast Confidence</h3><h2>{{ confidence }}</h2></div></div><div class="grid"><div class="card"><h3>Next 30-day Forecast</h3><h2>{{ money(forecast30,'ZMW') }}</h2></div><div class="card"><h3>Low-stock Risks</h3><h2>{{ low|length }}</h2></div><div class="card"><h3>Customer Concentration</h3><h2>{{ '%.1f'|format(concentration) }}%</h2></div><div class="card"><h3>7-day Revenue</h3><h2>{{ money(rev7,'ZMW') }}</h2></div></div><div class="grid"><div class="card"><h3>Business/POS Sales</h3><h2>{{ cnt30 }}</h2><p class="small">Paid/completed transactions in the last 30 days.</p></div><div class="card"><h3>KOJA Market Sales Found</h3><h2>{{ market_count }}</h2><p class="small">Paid/completed orders linked to this business.</p></div><div class="card"><h3>90-day Revenue</h3><h2>{{ money(rev90,'ZMW') }}</h2></div><div class="card"><h3>90-day Profit</h3><h2>{{ money(gross90-exp90,'ZMW') }}</h2></div></div><div class="card"><h2>7-Day Forecast</h2>{% for v in forecast7 %}<p>Day {{ loop.index }}: <strong>{{ money(v,'ZMW') }}</strong></p>{% endfor %}</div><div class="card"><h2>Recommended Actions</h2>{% for x in actions %}<p>{{ loop.index }}. {{ x }}</p>{% endfor %}</div><div class="card"><h2>Inventory Intelligence</h2><table><tr><th>Product</th><th>Stock</th><th>Units Sold</th><th>Days Cover</th><th>Margin</th></tr>{% for x in top %}<tr><td>{{ x.name }}</td><td>{{ x.stock|int }}</td><td>{{ x.qty|int }}</td><td>{{ '%.1f'|format(x.days) if x.days is not none else '—' }}</td><td>{{ '%.1f'|format(x.margin) }}%</td></tr>{% else %}<tr><td colspan="5">No products or product-linked sales yet.</td></tr>{% endfor %}</table></div><div class="card"><h2>Pricing Recommendations</h2>{% for x in pricing %}<p><strong>{{ x.name }}</strong>: {{ money(x.current,'ZMW') }} → {{ money(x.recommended,'ZMW') }} — {{ x.action }}</p>{% else %}<p>Not enough product-linked sales data.</p>{% endfor %}</div><div class="card"><h2>Expense Anomalies</h2>{% for x in anomalies %}<p><strong>{{ x.description }}</strong> — {{ money(x.amount,'ZMW') }} on {{ x.date }}</p>{% else %}<p>No statistically unusual expenses detected.</p>{% endfor %}</div><div class="card"><h2>KOJA AI Strategy</h2><form method="post"><button class="btn">Generate V3 AI Strategy</button></form>{% if ai_report %}<hr><div style="white-space:pre-wrap;line-height:1.75">{{ ai_report }}</div>{% endif %}</div>''',b=b,rev30=rev30,exp30=exp30,rev7=rev7,exp7=exp7,rev90=rev90,exp90=exp90,cnt7=cnt7,growth=growth,forecast7=forecast7,forecast30=forecast30,confidence=confidence,low=low,top=top,pricing=pricing,anomalies=anomalies,concentration=concentration,actions=actions,ai_report=ai_report,money=market_money,net30=net30,gross90=gross90,market_count=len(market_rows),source_note=source_note)
 
+import base64 as _b64, hashlib as _hashlib, hmac as _hmac, json as _json, secrets as _secrets
+
+def _r_uid():
+    u=current_user() or {}; return str(u.get('id') or u.get('user_id') or '')
+def _r_business(business_id):
+    uid=_r_uid(); rows=db_select('koja_businesses',{'id':business_id},limit=1) or []
+    if not rows: return None
+    b=rows[0]
+    if str(b.get('owner_id') or '')==uid: return b
+    return b if db_select('koja_business_staff',{'business_id':business_id,'user_id':uid,'status':'active'},limit=1) else None
+def _r_audit(action,rt=None,rid=None,meta=None):
+    try:
+        u=current_user() or {}; db_insert('koja_audit_log_v2',{'user_id':u.get('id'),'action':action,'resource_type':rt,'resource_id':str(rid) if rid else None,'ip_address':request.remote_addr,'user_agent':request.headers.get('User-Agent'),'metadata':meta or {},'created_at':utc_now()})
+    except Exception: pass
+def _r_jwt(payload,secret):
+    def e(x): return _b64.urlsafe_b64encode(_json.dumps(x,separators=(',',':')).encode()).rstrip(b'=').decode()
+    a=e({'alg':'HS256','typ':'JWT'}); b=e(payload); s=_hmac.new(secret.encode(),(a+'.'+b).encode(),_hashlib.sha256).digest(); return a+'.'+b+'.'+_b64.urlsafe_b64encode(s).rstrip(b'=').decode()
+def _r_token(room,identity,name):
+    k=os.getenv('LIVEKIT_API_KEY','').strip(); s=os.getenv('LIVEKIT_API_SECRET','').strip()
+    if not k or not s: return None
+    import time as _time; n=int(_time.time())
+    return _r_jwt({'iss':k,'sub':identity,'name':name,'iat':n,'nbf':n,'exp':n+3600,'video':{'roomJoin':True,'room':room,'canPublish':True,'canSubscribe':True,'canPublishData':True}},s)
+
+@app.route('/business/<business_id>/live-v2',methods=['GET','POST'])
+@login_required
+def business_live_v2(business_id):
+    b=_r_business(business_id)
+    if not b: return ('Not found',404)
+    if request.method=='POST':
+        title=clean(request.form.get('title')) or 'KOJA Live Session'; room='koja-'+str(business_id)[:8]+'-'+_secrets.token_hex(5)
+        _,err=db_insert('koja_live_sessions_v2',{'business_id':business_id,'host_user_id':_r_uid(),'title':title,'description':clean(request.form.get('description')),'room_name':room,'status':'live' if request.form.get('start_now') else 'scheduled','starts_at':utc_now(),'max_participants':max(2,min(int(request.form.get('max_participants') or 100),10000))})
+        flash('Live session created.' if not err else 'Live session table is not installed.','success' if not err else 'danger'); return redirect(url_for('business_live_v2',business_id=business_id))
+    rows=db_select('koja_live_sessions_v2',{'business_id':business_id},order='created_at.desc',limit=100) or []
+    tpl="""<div class='hero'><h1>KOJA Live</h1><p>In-platform LiveKit SFU sessions.</p></div><div class='card'><form method='post'><input name='title' required placeholder='Live class or event'><textarea name='description' placeholder='Description'></textarea><input name='max_participants' type='number' min='2' max='10000' value='100'><label><input type='checkbox' name='start_now'> Start now</label><button class='btn'>Create Live Session</button></form></div><div class='card'><table><tr><th>Title</th><th>Status</th><th>Room</th><th></th></tr>{% for s in rows %}<tr><td>{{ s.title }}</td><td>{{ s.status }}</td><td>{{ s.room_name }}</td><td><a class='btn' href='{{ url_for('live_v2_room',session_id=s.id) }}'>Open</a></td></tr>{% else %}<tr><td colspan='4'>No sessions.</td></tr>{% endfor %}</table></div>"""
+    return render_page('KOJA Live V2',tpl,b=b,rows=rows)
+
+@app.route('/live-v2/<session_id>')
+@login_required
+def live_v2_room(session_id):
+    rows=db_select('koja_live_sessions_v2',{'id':session_id},limit=1) or []
+    if not rows: return ('Not found',404)
+    s=rows[0]; u=current_user() or {}; token=_r_token(s.get('room_name'),_r_uid(),u.get('full_name') or u.get('email') or 'KOJA User'); lk=os.getenv('LIVEKIT_URL','')
+    tpl="""<div class='hero'><h1>{{ s.title }}</h1><p>{{ s.description or 'Live session' }}</p></div><div class='card'><div id='status'>{% if token %}Connecting to LiveKit...{% else %}LiveKit is not configured.{% endif %}</div><div id='video' style='min-height:360px;background:#111;border-radius:14px;margin-top:12px'></div></div>{% if token %}<script src='https://unpkg.com/livekit-client/dist/livekit-client.umd.min.js'></script><script>const token={{ token|tojson }},url={{ lk|tojson }},box=document.getElementById('video'),status=document.getElementById('status');(async()=>{try{const room=new LivekitClient.Room();await room.connect(url,token);status.textContent='Connected to '+room.name;room.on('trackSubscribed',track=>{const el=track.attach();el.style.maxWidth='100%';el.style.width='100%';box.appendChild(el)});await room.localParticipant.enableCameraAndMicrophone();room.localParticipant.videoTrackPublications.forEach(p=>{if(p.track)box.appendChild(p.track.attach())})}catch(e){status.textContent='Connection error: '+e.message}})();</script>{% endif %}"""
+    return render_page('KOJA Live Room',tpl,s=s,token=token,lk=lk)
+
+@app.route('/api/live-v2/<session_id>/token')
+@login_required
+def live_v2_token(session_id):
+    rows=db_select('koja_live_sessions_v2',{'id':session_id},limit=1) or []
+    if not rows: return jsonify({'error':'not_found'}),404
+    s=rows[0]; u=current_user() or {}; token=_r_token(s.get('room_name'),_r_uid(),u.get('full_name') or u.get('email') or 'KOJA User')
+    if not token: return jsonify({'error':'livekit_not_configured'}),503
+    db_insert('koja_live_participants_v2',{'session_id':session_id,'user_id':_r_uid(),'display_name':u.get('full_name') or u.get('email'),'role':'host' if str(s.get('host_user_id'))==_r_uid() else 'participant','joined_at':utc_now()})
+    return jsonify({'token':token,'url':os.getenv('LIVEKIT_URL',''),'room':s.get('room_name')})
+
+@app.route('/business/<business_id>/staff-v2',methods=['GET','POST'])
+@login_required
+def business_staff_v2(business_id):
+    b=_r_business(business_id)
+    if not b or str(b.get('owner_id'))!=_r_uid(): return ('Not found',404)
+    if request.method=='POST':
+        email=clean(request.form.get('email')).lower(); role=clean(request.form.get('role')) or 'staff'; users=db_select('profiles',{'email':email},limit=1) or []
+        if not users: flash('User was not found.','danger')
+        else:
+            perms={'sales':role in ('manager','cashier','staff'),'inventory':role in ('manager','stock','staff'),'accounting':role in ('manager','accountant'),'reports':role in ('manager','accountant'),'employees':role=='manager'}
+            _,err=db_insert('koja_business_staff',{'business_id':business_id,'user_id':users[0].get('id'),'role':role,'permissions':perms,'status':'active','invited_by':_r_uid(),'created_at':utc_now(),'updated_at':utc_now()}); flash('Staff member added.' if not err else 'Could not add staff member.','success' if not err else 'danger'); _r_audit('staff_add','business',business_id,{'role':role})
+        return redirect(url_for('business_staff_v2',business_id=business_id))
+    rows=db_select('koja_business_staff',{'business_id':business_id},order='created_at.desc',limit=200) or []
+    tpl="""<div class='hero'><h1>Staff & Permissions</h1><p>{{ b.name }}</p></div><div class='card'><form method='post'><input name='email' type='email' required placeholder='User email'><select name='role'><option>staff</option><option>cashier</option><option>accountant</option><option>stock</option><option>manager</option></select><button class='btn'>Add Staff</button></form></div><div class='card'><table><tr><th>User</th><th>Role</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{ x.user_id }}</td><td>{{ x.role }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan='3'>No staff.</td></tr>{% endfor %}</table></div>"""
+    return render_page('Business Staff & Permissions',tpl,b=b,rows=rows)
+
+@app.route('/admin/payout-reconciliation-v2')
+@admin_required
+def payout_reconciliation_v2():
+    rows=db_select('koja_market_payouts',{},order='created_at.desc',limit=300) or []
+    tpl="""<div class='hero'><h1>Seller Payout Reconciliation</h1><p>Review payout requests.</p></div><div class='card'><table><tr><th>Date</th><th>Seller</th><th>Amount</th><th>Method</th><th>Status</th></tr>{% for p in rows %}<tr><td>{{ p.created_at }}</td><td>{{ p.seller_id }}</td><td>{{ money(p.amount,'ZMW') }}</td><td>{{ p.method }}</td><td>{{ p.status }}</td></tr>{% else %}<tr><td colspan='5'>No payout requests.</td></tr>{% endfor %}</table></div>"""
+    return render_page('Payout Reconciliation',tpl,rows=rows,money=market_money)
+
+@app.route('/api/delivery/<tracking_code>/security',methods=['GET','POST'])
+@login_required
+def delivery_security_v2(tracking_code):
+    rows=db_select('koja_delivery_security',{'tracking_code':tracking_code},limit=1) or []; row=rows[0] if rows else None
+    if request.method=='POST':
+        action=request.form.get('action')
+        if action=='issue_otp':
+            otp=''.join(str(_secrets.randbelow(10)) for _ in range(6)); payload={'tracking_code':tracking_code,'otp_hash':_hashlib.sha256(otp.encode()).hexdigest(),'otp_expires_at':(datetime.now(timezone.utc)+timedelta(minutes=20)).isoformat(),'otp_attempts':0,'status':'otp_issued','updated_at':utc_now()}
+            if row: db_update('koja_delivery_security',{'id':row.get('id')},payload)
+            else: db_insert('koja_delivery_security',payload)
+            return jsonify({'ok':True,'otp':otp})
+        if action=='verify_otp':
+            otp=clean(request.form.get('otp')); valid=bool(row and row.get('otp_hash')==_hashlib.sha256(otp.encode()).hexdigest() and row.get('status')!='delivered')
+            if valid: db_update('koja_delivery_security',{'id':row.get('id')},{'status':'verified','updated_at':utc_now()})
+            return jsonify({'ok':valid})
+    return jsonify(row or {'tracking_code':tracking_code,'status':'not_initialized'})
+
+@app.route('/admin/business-verification-v2',methods=['GET','POST'])
+@admin_required
+def admin_business_verification_v2():
+    if request.method=='POST':
+        bid=clean(request.form.get('business_id')); status=clean(request.form.get('status')) or 'pending'; payload={'business_id':bid,'status':status,'licence_number':clean(request.form.get('licence_number')),'licence_expires_at':request.form.get('licence_expires_at') or None,'tax_number':clean(request.form.get('tax_number')),'tax_expires_at':request.form.get('tax_expires_at') or None,'rejection_reason':clean(request.form.get('reason')),'reviewer_id':_r_uid(),'reviewed_at':utc_now(),'verified_at':utc_now() if status=='verified' else None,'updated_at':utc_now()}; ex=db_select('koja_business_verifications_v2',{'business_id':bid},limit=1) or []
+        if ex: db_update('koja_business_verifications_v2',{'business_id':bid},payload)
+        else: db_insert('koja_business_verifications_v2',payload)
+        _r_audit('business_verification_update','business',bid,{'status':status}); return redirect(url_for('admin_business_verification_v2'))
+    rows=db_select('koja_business_verifications_v2',{},order='updated_at.desc',limit=300) or []
+    tpl="""<div class='hero'><h1>Business Verification V2</h1><p>Verification, licence and tax expiry control.</p></div><div class='card'><form method='post'><input name='business_id' placeholder='Business ID' required><select name='status'><option>pending</option><option>verified</option><option>rejected</option><option>expired</option></select><input name='licence_number' placeholder='Licence number'><input name='licence_expires_at' type='date'><input name='tax_number' placeholder='Tax number'><input name='tax_expires_at' type='date'><input name='reason' placeholder='Reason'><button class='btn'>Save</button></form></div><div class='card'><table><tr><th>Business</th><th>Status</th><th>Licence</th><th>Tax</th></tr>{% for x in rows %}<tr><td>{{ x.business_id }}</td><td>{{ x.status }}</td><td>{{ x.licence_expires_at or '—' }}</td><td>{{ x.tax_expires_at or '—' }}</td></tr>{% else %}<tr><td colspan='4'>No records.</td></tr>{% endfor %}</table></div>"""
+    return render_page('Business Verification V2',tpl,rows=rows)
+
+@app.route('/business-directory')
+def business_directory_v2():
+    q=clean(request.args.get('q')); rows=db_select('koja_business_directory',{'active':True},order='updated_at.desc',limit=500) or []
+    if q: rows=[x for x in rows if q.lower() in (' '.join(str(x.get(k) or '') for k in ('public_name','description','location','category'))).lower()]
+    tpl="""<div class='hero'><h1>KOJA Business Directory</h1><p>Discover businesses and verified providers.</p></div><div class='card'><form method='get'><input name='q' value='{{ request.args.get('q','') }}' placeholder='Search business, service or location'><button class='btn'>Search</button></form></div><div class='grid'>{% for x in rows %}<div class='card'><h2>{{ x.public_name or x.business_id }}</h2><p>{{ x.category or 'Business' }}</p><p>{{ x.description or '' }}</p><p>{{ x.location or '' }}</p>{% if x.verified %}<strong>Verified</strong>{% endif %}</div>{% else %}<div class='card'>No businesses found.</div>{% endfor %}</div>"""
+    return render_page('KOJA Business Directory',tpl,rows=rows)
+
+@app.route('/market/promotions-v2',methods=['GET','POST'])
+@login_required
+def market_promotions_v2():
+    uid=_r_uid(); sr=db_select('koja_market_sellers',{'user_id':uid},limit=1) or []; seller=sr[0] if sr else None
+    if not seller: return ('Seller registration required',403)
+    if request.method=='POST':
+        payload={'seller_id':seller.get('id'),'name':clean(request.form.get('name')) or 'Promotion','promo_type':'discount','code':clean(request.form.get('code')).upper() or None,'discount_percent':_money_num(request.form.get('discount_percent')),'usage_limit':int(request.form.get('usage_limit') or 0),'active':True,'created_at':utc_now(),'updated_at':utc_now()}; _,err=db_insert('koja_market_promotions',payload); flash('Promotion created.' if not err else 'Could not create promotion.','success' if not err else 'danger'); return redirect(url_for('market_promotions_v2'))
+    rows=db_select('koja_market_promotions',{'seller_id':seller.get('id')},order='created_at.desc',limit=100) or []
+    tpl="""<div class='hero'><h1>Market Growth Engine</h1><p>Promotions and seller growth.</p></div><div class='card'><form method='post'><input name='name' placeholder='Promotion name' required><input name='code' placeholder='Code'><input name='discount_percent' type='number' min='0' max='100' step='0.01' placeholder='Discount %'><input name='usage_limit' type='number' min='0' value='0'><button class='btn'>Create Promotion</button></form></div><div class='card'><table><tr><th>Name</th><th>Code</th><th>Discount</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{ x.name }}</td><td>{{ x.code or '—' }}</td><td>{{ x.discount_percent or 0 }}%</td><td>{{ 'Active' if x.active else 'Inactive' }}</td></tr>{% else %}<tr><td colspan='4'>No promotions.</td></tr>{% endfor %}</table></div>"""
+    return render_page('Market Growth Engine',tpl,rows=rows)
+
+@app.route('/admin/production-health-v2')
+@admin_required
+def production_health_v2():
+    checks={}
+    for t in ['koja_business_accounts','koja_business_transactions','koja_business_staff','koja_live_sessions_v2','koja_market_payout_ledger','koja_delivery_security','koja_business_verifications_v2','koja_business_directory','koja_market_promotions','koja_audit_log_v2','koja_idempotency_keys_v2']:
+        try: checks[t]=db_select(t,{},limit=1) is not None
+        except Exception: checks[t]=False
+    checks['LIVEKIT_CONFIGURED']=bool(os.getenv('LIVEKIT_URL') and os.getenv('LIVEKIT_API_KEY') and os.getenv('LIVEKIT_API_SECRET'))
+    tpl="""<div class='hero'><h1>Production Health</h1><p>Remaining-engine readiness.</p></div><div class='card'><table><tr><th>Component</th><th>Status</th></tr>{% for k,v in checks.items() %}<tr><td>{{ k }}</td><td>{{ 'READY' if v else 'MISSING / NOT CONFIGURED' }}</td></tr>{% endfor %}</table></div>"""
+    return render_page('KOJA Production Health',tpl,checks=checks)
