@@ -3198,6 +3198,184 @@ def _finalize_marketplace_order(order, tx):
         logger.error('KOJA Digital order finalization DB error order=%s: %s',order.get('id'),err)
     return False
 
+
+def _market_geocode_address(address):
+    """Best-effort address -> WGS84 coordinates for Market delivery dispatch."""
+    address=clean(address)
+    if not address:
+        return None, None
+    # Prefer Zambia context when the address does not already name a country.
+    query=address if 'zambia' in address.lower() else address + ', Zambia'
+    try:
+        r=requests.get(
+            'https://nominatim.openstreetmap.org/search',
+            params={'q':query,'format':'jsonv2','limit':1,'countrycodes':'zm'},
+            headers={'User-Agent':'KOJA-AFRICA/1.0 delivery-dispatch'},
+            timeout=8,
+        )
+        if not r.ok:
+            return None, None
+        rows=r.json() or []
+        if not rows:
+            return None, None
+        return safe_float(rows[0].get('lat')), safe_float(rows[0].get('lon'))
+    except Exception:
+        logger.exception('Market geocoding failed for %s', address[:180])
+        return None, None
+
+
+def _market_route_lookup(lat1, lon1, lat2, lon2):
+    """Return road distance/duration/geometry using OSRM, or None on failure."""
+    vals=(safe_float(lat1),safe_float(lon1),safe_float(lat2),safe_float(lon2))
+    if any(v is None for v in vals):
+        return None
+    a,b,c,d=vals
+    try:
+        url=f'https://router.project-osrm.org/route/v1/driving/{b},{a};{d},{c}'
+        r=requests.get(url,params={'overview':'full','geometries':'geojson','steps':'false'},timeout=10)
+        if not r.ok:
+            return None
+        data=r.json() or {}
+        route=(data.get('routes') or [None])[0]
+        if not route:
+            return None
+        return {'distance_m':route.get('distance',0),'duration_s':route.get('duration',0),'geometry':route.get('geometry',{})}
+    except Exception:
+        return None
+
+
+def _market_available_drivers(pickup_lat, pickup_lon, radius_km=50, route_limit=5):
+    """Find fresh, approved, online drivers and rank by road route when possible."""
+    lat=safe_float(pickup_lat); lon=safe_float(pickup_lon)
+    if lat is None or lon is None:
+        return []
+    radius=max(1,min(float(radius_km or 50),200))
+    latest=latest_driver_locations(); now=datetime.now(timezone.utc); candidates=[]
+    for driver_id,loc in latest.items():
+        if not as_bool(loc.get('is_online')):
+            continue
+        dlat=safe_float(loc.get('latitude')); dlon=safe_float(loc.get('longitude'))
+        if dlat is None or dlon is None:
+            continue
+        try:
+            created=loc.get('created_at')
+            if created:
+                ts=datetime.fromisoformat(str(created).replace('Z','+00:00'))
+                if ts.tzinfo is None: ts=ts.replace(tzinfo=timezone.utc)
+                if (now-ts).total_seconds()>120:
+                    continue
+        except Exception:
+            pass
+        profile=first_row('driver_profiles',{'provider_id':str(driver_id)}) or {}
+        verification=str(profile.get('verification_status') or '').lower()
+        if verification and verification not in {'approved','verified','active'}:
+            continue
+        provider=first_row('service_providers',{'id':str(driver_id)}) or {}
+        if provider and provider.get('is_active') is not None and not as_bool(provider.get('is_active')):
+            continue
+        straight=haversine_km(lat,lon,dlat,dlon)
+        if straight>radius:
+            continue
+        candidates.append({
+            'driver_id':str(driver_id),
+            'name':first_nonempty(provider.get('full_name'),provider.get('name'),profile.get('full_name'),'Driver'),
+            'phone':first_nonempty(provider.get('phone'),profile.get('phone')),
+            'vehicle_type':profile.get('vehicle_type'),
+            'vehicle_registration':profile.get('vehicle_registration'),
+            'latitude':dlat,'longitude':dlon,'accuracy':loc.get('accuracy'),
+            'straight_distance_km':round(straight,2),
+            'updated_at':loc.get('created_at')
+        })
+    candidates.sort(key=lambda x:x['straight_distance_km'])
+    for x in candidates[:max(1,int(route_limit or 5))]:
+        route=_market_route_lookup(lat,lon,x['latitude'],x['longitude'])
+        if route:
+            x['route_distance_km']=round(float(route.get('distance_m') or 0)/1000,2)
+            x['route_duration_min']=round(float(route.get('duration_s') or 0)/60,1)
+        else:
+            x['route_distance_km']=x['straight_distance_km']
+            x['route_duration_min']=None
+    candidates.sort(key=lambda x:(x.get('route_distance_km',x['straight_distance_km']),x['straight_distance_km']))
+    return candidates
+
+
+def _market_create_delivery(order, product=None):
+    """Bridge a paid physical Market order into the main KOJA delivery engine."""
+    if not order:
+        return None, 'Market order is missing.'
+    if str((product or {}).get('product_type') or 'physical').lower() != 'physical':
+        return None, 'Digital products do not require driver delivery.'
+
+    existing=first_row('deliveries',{'market_order_id':str(order.get('id'))})
+    if existing:
+        return existing, None
+
+    product=product or market_product(order.get('product_id')) or {}
+    seller=market_seller(order.get('seller_id')) or {}
+    pickup_address=clean(first_nonempty(product.get('location'),seller.get('location'),seller.get('store_name'),'Seller pickup location'))
+    destination=clean(order.get('delivery_address'))
+    if not destination:
+        return None, 'Buyer delivery address is missing.'
+
+    pickup_lat= safe_float(product.get('pickup_latitude') or seller.get('latitude') or product.get('latitude'))
+    pickup_lon= safe_float(product.get('pickup_longitude') or seller.get('longitude') or product.get('longitude'))
+    dest_lat= safe_float(order.get('delivery_latitude') or order.get('latitude'))
+    dest_lon= safe_float(order.get('delivery_longitude') or order.get('longitude'))
+    if pickup_lat is None or pickup_lon is None:
+        pickup_lat,pickup_lon=_market_geocode_address(pickup_address)
+    if dest_lat is None or dest_lon is None:
+        dest_lat,dest_lon=_market_geocode_address(destination)
+
+    drivers=_market_available_drivers(pickup_lat,pickup_lon) if pickup_lat is not None and pickup_lon is not None else []
+    assigned=drivers[0] if drivers else None
+    tracking='KMD-'+secrets.token_hex(5).upper()
+    delivery_id=str(uuid.uuid4())
+    payload={
+        'id':delivery_id,
+        'customer_id':order.get('buyer_id'),'user_id':order.get('buyer_id'),'sender_id':order.get('seller_id'),
+        'driver_id':assigned.get('driver_id') if assigned else None,
+        'pickup_location':pickup_address,'destination':destination,
+        'pickup_address':pickup_address,'delivery_address':destination,
+        'pickup_latitude':pickup_lat,'pickup_longitude':pickup_lon,
+        'delivery_latitude':dest_lat,'delivery_longitude':dest_lon,
+        'recipient_name':order.get('recipient_name'),'recipient_phone':order.get('recipient_phone'),
+        'package_description':f"KOJA Market: {product.get('title') or 'Physical product'} × {order.get('quantity') or 1}",
+        'delivery_fee':order.get('delivery_fee') or 0,'currency':order.get('currency') or 'ZMW',
+        'status':'requested','tracking_code':tracking,
+        'market_order_id':str(order.get('id')),'order_id':str(order.get('id')),
+        'notes':clean(order.get('notes')) or 'KOJA Market delivery',
+        'created_at':utc_now(),'updated_at':utc_now()
+    }
+    row,error=db_insert('deliveries',payload)
+    if error:
+        # Compatibility fallback for older deliveries schemas: keep the core fields.
+        minimal={k:v for k,v in payload.items() if k in {'id','customer_id','user_id','sender_id','driver_id','pickup_location','destination','pickup_address','delivery_address','recipient_name','recipient_phone','package_description','delivery_fee','currency','status','tracking_code','notes','created_at','updated_at'}}
+        row,error=db_insert('deliveries',minimal)
+    if error:
+        logger.error('Market delivery bridge failed order=%s: %s',order.get('id'),error)
+        return None,error
+
+    route=None
+    if pickup_lat is not None and pickup_lon is not None and dest_lat is not None and dest_lon is not None:
+        route=_market_route_lookup(pickup_lat,pickup_lon,dest_lat,dest_lon)
+    job_payload={
+        'order_id':order.get('id'),'customer_id':order.get('buyer_id'),'driver_id':assigned.get('driver_id') if assigned else None,
+        'delivery_address':destination,'delivery_fee':order.get('delivery_fee') or 0,'status':'requested','tracking_code':tracking,
+        'created_at':utc_now(),'updated_at':utc_now()
+    }
+    if route:
+        job_payload.update({'route_distance_m':route.get('distance_m'),'route_duration_s':route.get('duration_s')})
+    # The job table is a Market view/ledger; the main deliveries row is operational truth.
+    if table_exists('koja_market_delivery_jobs'):
+        job_payload['delivery_id']=(row or {}).get('id') if isinstance(row,dict) else None
+        job_payload['pickup_latitude']=pickup_lat; job_payload['pickup_longitude']=pickup_lon
+        job_payload['delivery_latitude']=dest_lat; job_payload['delivery_longitude']=dest_lon
+        db_insert('koja_market_delivery_jobs',job_payload)
+    if assigned:
+        db_insert('koja_notifications',{'user_id':(first_row('service_providers',{'id':assigned['driver_id']}) or {}).get('user_id'),'notification_type':'market_delivery','title':'New KOJA Market delivery','body':f"Delivery {tracking} is ready for pickup. {product.get('title') or 'Order'} → {destination}",'related_id':str(order.get('id'))})
+    db_insert('koja_notifications',{'user_id':order.get('buyer_id'),'notification_type':'market_delivery','title':'Market delivery created','body':f"Your order {order.get('order_number')} has been sent to KOJA Deliveries. Tracking: {tracking}." ,'related_id':str(order.get('id'))})
+    return {'delivery':row,'tracking_code':tracking,'driver':assigned,'drivers':drivers,'route':route,'pickup_latitude':pickup_lat,'pickup_longitude':pickup_lon,'delivery_latitude':dest_lat,'delivery_longitude':dest_lon},None
+
 def _finalize_market_order(order, tx):
     if not order or not tx: return False
     tx_ref=str(order.get('payment_reference') or '')
@@ -3225,7 +3403,9 @@ def _finalize_market_order(order, tx):
     db_insert('koja_market_ledger',{'order_id':order.get('id'),'seller_id':order.get('seller_id'),'buyer_id':buyer_id,'gross_amount':gross,'commission_amount':commission,'platform_fee':platform_fee,'net_amount':net,'currency':order.get('currency') or 'ZMW','status':'pending','created_at':utc_now()})
     db_insert('koja_market_payment_fees',{'order_id':order.get('id'),'buyer_id':buyer_id,'amount':platform_fee,'currency':order.get('currency') or 'ZMW','fee_type':'platform_service_fee','provider':'flutterwave','reference':tx_ref,'status':'captured','created_at':utc_now()})
     if p and str(p.get('product_type') or 'physical')=='physical':
-        db_insert('koja_market_delivery_jobs',{'order_id':order.get('id'),'customer_id':buyer_id,'delivery_address':order.get('delivery_address'),'delivery_fee':_money_num(order.get('delivery_fee')),'status':'requested','tracking_code':'KMD-'+secrets.token_hex(5).upper(),'created_at':utc_now(),'updated_at':utc_now()})
+        delivery_result,delivery_error=_market_create_delivery(dict(order,status='paid'),p)
+        if delivery_error:
+            logger.error('KOJA Market delivery bridge error order=%s: %s',order.get('id'),delivery_error)
     _sync_market_order_to_business(dict(order,status='paid'))
     return True
 
@@ -3554,7 +3734,10 @@ def market_order_create(product_id):
     order,err=db_insert('koja_market_orders',payload)
     if err: flash('Order could not be created. Run KOJA_MARKET.sql in Supabase.','danger'); return redirect(url_for('market_product_view',product_id=product_id))
     if total<=0:
-        db_update('koja_market_orders',{'id':order.get('id')},{'status':'paid','updated_at':utc_now()});
+        db_update('koja_market_orders',{'id':order.get('id')},{'status':'paid','updated_at':utc_now()})
+        if str(p.get('product_type') or 'physical')=='physical':
+            delivery_result,delivery_error=_market_create_delivery(dict(order,status='paid'),p)
+            if delivery_error: logger.error('KOJA Market free-order delivery bridge error order=%s: %s',order.get('id'),delivery_error)
         return redirect(url_for('market_my'))
     if not FLW_SECRET_KEY:
         flash('Order created, but online payment is not configured. Add FLW_SECRET_KEY to Render Environment Variables.','warning'); return redirect(url_for('market_my'))
@@ -3576,6 +3759,68 @@ def market_order_create(product_id):
         logger.error('KOJA Market V3 Zambia checkout failed: %s %s',r.status_code,str(body)[:1500])
     except Exception: logger.exception('KOJA Market checkout error')
     flash('Order was created, but checkout could not be started.','danger'); return redirect(url_for('market_my'))
+
+@app.route('/market/order/<order_id>/delivery', methods=['GET','POST'])
+@login_required
+def market_order_delivery(order_id):
+    '''Show Market delivery dispatch: available drivers, GPS and road route.'''
+    order=first_row('koja_market_orders',{'id':order_id})
+    user=current_user() or {}
+    if not order: abort(404)
+    if not user.get('is_admin') and str(order.get('buyer_id'))!=str(user.get('id')) and str(order.get('seller_id'))!=str(user.get('id')):
+        abort(403)
+    product=market_product(order.get('product_id')) or {}
+    if str(product.get('product_type') or 'physical')!='physical':
+        flash('Digital products do not use driver delivery.','info')
+        return redirect(url_for('market_my'))
+    delivery=first_row('deliveries',{'market_order_id':str(order_id)})
+    if not delivery:
+        # Older delivery schemas may not have market_order_id; locate by the order in notes/tracking is not reliable.
+        jobs=db_select('koja_market_delivery_jobs',{'order_id':str(order_id)},order='created_at.desc',limit=1)
+        if jobs:
+            delivery=first_row('deliveries',{'tracking_code':jobs[0].get('tracking_code')})
+    if request.method=='POST':
+        if not user.get('is_admin') and str(order.get('buyer_id'))!=str(user.get('id')):
+            abort(403)
+        driver_id=clean(request.form.get('driver_id'))
+        if not driver_id: flash('Select a driver.','warning'); return redirect(url_for('market_order_delivery',order_id=order_id))
+        if not delivery: 
+            result,error=_market_create_delivery(order,product)
+            if error: flash('Could not create the delivery: '+str(error)[:500],'danger'); return redirect(url_for('market_order_delivery',order_id=order_id))
+            delivery=result.get('delivery') or {}; delivery_id=delivery.get('id')
+        else: delivery_id=delivery.get('id')
+        # Never assign a driver who is not currently online/approved.
+        pickup_lat=safe_float((delivery or {}).get('pickup_latitude'))
+        pickup_lon=safe_float((delivery or {}).get('pickup_longitude'))
+        if pickup_lat is None or pickup_lon is None:
+            pickup_lat,pickup_lon=_market_geocode_address((delivery or {}).get('pickup_address') or (delivery or {}).get('pickup_location'))
+        candidates=_market_available_drivers(pickup_lat,pickup_lon) if pickup_lat is not None and pickup_lon is not None else []
+        chosen=next((x for x in candidates if str(x.get('driver_id'))==str(driver_id)),None)
+        if not chosen: flash('That driver is no longer available online. Refresh and choose another driver.','warning'); return redirect(url_for('market_order_delivery',order_id=order_id))
+        db_update('deliveries',{'id':delivery_id},{'driver_id':driver_id,'status':'requested','updated_at':utc_now()})
+        if table_exists('koja_market_delivery_jobs'):
+            db_update('koja_market_delivery_jobs',{'order_id':order_id},{'driver_id':driver_id,'delivery_id':delivery_id,'status':'requested','updated_at':utc_now()})
+        provider=first_row('service_providers',{'id':driver_id}) or {}
+        db_insert('koja_notifications',{'user_id':provider.get('user_id'),'notification_type':'market_delivery','title':'KOJA Market delivery request','body':f"Delivery request {((delivery or {}).get('tracking_code') or 'KOJA')} is waiting for your acceptance.",'related_id':str(order_id)})
+        flash('Delivery request sent to the selected driver.','success')
+        return redirect(url_for('market_order_delivery',order_id=order_id))
+
+    pickup_address=clean(first_nonempty(product.get('location'),(market_seller(order.get('seller_id')) or {}).get('location')))
+    pickup_lat=safe_float((delivery or {}).get('pickup_latitude') or product.get('latitude'))
+    pickup_lon=safe_float((delivery or {}).get('pickup_longitude') or product.get('longitude'))
+    if pickup_lat is None or pickup_lon is None: pickup_lat,pickup_lon=_market_geocode_address(pickup_address)
+    drivers=_market_available_drivers(pickup_lat,pickup_lon) if pickup_lat is not None and pickup_lon is not None else []
+    route=None
+    dlat=safe_float((delivery or {}).get('delivery_latitude')); dlon=safe_float((delivery or {}).get('delivery_longitude'))
+    if dlat is None or dlon is None: dlat,dlon=_market_geocode_address(order.get('delivery_address'))
+    if pickup_lat is not None and pickup_lon is not None and dlat is not None and dlon is not None:
+        route=_market_route_lookup(pickup_lat,pickup_lon,dlat,dlon)
+    return render_page('Market Delivery Dispatch',r'''
+<div class="hero"><h2>Market Delivery Dispatch</h2><p>Order {{ order.get('order_number') }} · {{ product.get('title') }}</p></div>
+<div class="card"><p><strong>Pickup:</strong> {{ pickup_address or 'Seller location not available' }}</p><p><strong>Destination:</strong> {{ order.get('delivery_address') or 'Not provided' }}</p>{% if route %}<p><strong>Road route:</strong> {{ '%.2f'|format((route.distance_m or 0)/1000) }} km · {{ '%.0f'|format((route.duration_s or 0)/60) }} min estimated driving time</p>{% endif %}<p class="small">KOJA uses live driver GPS when available. If GPS is unavailable, the physical pickup/delivery address is geocoded for routing.</p></div>
+<div class="card"><h3>Available Drivers</h3>{% if drivers %}{% for d in drivers %}<div class="card"><strong>{{ d.name }}</strong> <span class="badge">ONLINE</span><p>{{ d.vehicle_type or 'Vehicle' }}{% if d.vehicle_registration %} · {{ d.vehicle_registration }}{% endif %}</p><p>Road distance to pickup: {{ d.route_distance_km }} km{% if d.route_duration_min is not none %} · {{ d.route_duration_min }} min{% endif %}</p><p>Contact: {{ d.phone or 'Not available' }}</p><form method="post"><input type="hidden" name="driver_id" value="{{ d.driver_id }}"><button class="btn success" type="submit">Request This Driver</button></form></div>{% endfor %}{% else %}<p>No approved online drivers with fresh GPS were found near the pickup location.</p><p class="small">The seller or buyer can add a clearer physical location, or wait for a driver to come online.</p>{% endif %}</div>
+{% if delivery %}<div class="card"><h3>Delivery</h3><p>Tracking: <strong>{{ delivery.get('tracking_code') }}</strong></p><p>Status: <strong>{{ delivery.get('status') }}</strong></p>{% if delivery.get('driver_id') %}<p>Assigned driver: {{ delivery.get('driver_id') }}</p>{% endif %}<a class="btn" href="{{ url_for('track_delivery',tracking_code=delivery.get('tracking_code')) }}">Open Live Delivery Map</a></div>{% endif %}
+''',order=order,product=product,delivery=delivery,pickup_address=pickup_address,drivers=drivers,route=route)
 
 @app.route('/market/payment/callback')
 @login_required
@@ -3711,7 +3956,7 @@ def market_seller_register():
 def market_my():
     uid=(current_user() or {}).get('id'); seller=market_seller(uid); products=db_select('koja_market_products',{'seller_id':uid},order='created_at.desc',limit=200) or []; purchases=db_select('koja_market_orders',{'buyer_id':uid},order='created_at.desc',limit=200) or []; sales=db_select('koja_market_orders',{'seller_id':uid},order='created_at.desc',limit=200) or []
     ids={str(o.get('product_id')) for o in purchases+sales if o.get('product_id')}; ps=db_select('koja_market_products',{'id':'in.('+','.join(ids)+')'} if ids else {'id':'eq.__none__'},limit=300) or []; pm={str(x.get('id')):x for x in ps}
-    return render_page('My KOJA Market',r'''<div class="hero"><h1>📦 Seller Dashboard</h1><p>Seller status: <strong>{{ seller.approval_status if seller else 'Not registered' }}</strong></p><div class="actions"><a class="btn" href="{{ url_for('market_sell') }}">➕ Add Product</a><a class="btn secondary" href="{{ url_for('market_seller_register') }}">🏬 My Store</a><a class="btn secondary" href="{{ url_for('seller_verification') }}">✓ Seller Verification</a><a class="btn secondary" href="{{ url_for('market_seller_subscription') }}">💎 Seller Subscription</a><a class="btn secondary" href="{{ url_for('market_advertise') }}">📣 Advertising</a><a class="btn secondary" href="{{ url_for('market_earnings') }}">📊 Earnings & Analytics</a><a class="btn secondary" href="{{ url_for('seller_wallet') }}">💰 Wallet</a><a class="btn secondary" href="{{ url_for('market_seller_payouts') }}">💸 Payouts</a><a class="btn secondary" href="{{ url_for('market_coupons') }}">🏷️ Coupons</a><a class="btn secondary" href="{{ url_for('referrals') }}">🤝 Referrals</a><a class="btn secondary" href="{{ '/market' }}">🛍️ Browse Market</a></div></div><div class="card"><h2>My Listings</h2><p class="small">Feature any of your products for K5 per day (1–30 days). Requests are sent for approval.</p><table><tr><th>Product</th><th>Price</th><th>Stock</th><th>Status</th><th>Featured</th></tr>{% for p in products %}<tr><td><a href="{{ url_for('market_product_view',product_id=p.id) }}">{{ p.title }}</a></td><td>{{ money(p.price,p.currency) }}</td><td>{{ p.stock }}</td><td>{{ p.approval_status }}</td><td><form method="post" action="{{ url_for('market_feature_product',product_id=p.id) }}" style="display:flex;gap:6px;align-items:center"><input name="days" type="number" min="1" max="30" value="7" style="max-width:80px"><button class="btn" type="submit">⭐ Feature</button></form></td></tr>{% else %}<tr><td colspan="5">No listings. <a href="{{ url_for('market_sell') }}">List your first product</a>.</td></tr>{% endfor %}</table></div><div class="card"><h2>My Purchases</h2><table><tr><th>Order</th><th>Product</th><th>Total</th><th>Status</th></tr>{% for o in purchases %}<tr><td>{{ o.order_number }}</td><td>{{ pm.get(o.product_id,{}).get('title','Product') }}</td><td>{{ money(o.total_amount,o.currency) }}</td><td>{{ o.status }}</td></tr>{% else %}<tr><td colspan="4">No purchases.</td></tr>{% endfor %}</table></div>{% if seller %}<div class="card"><h2>Sales</h2><table><tr><th>Order</th><th>Product</th><th>Total</th><th>KOJA commission</th><th>Status</th></tr>{% for o in sales %}<tr><td>{{ o.order_number }}</td><td>{{ pm.get(o.product_id,{}).get('title','Product') }}</td><td>{{ money(o.total_amount,o.currency) }}</td><td>{{ money(o.commission_amount,o.currency) }}</td><td>{{ o.status }}</td></tr>{% else %}<tr><td colspan="5">No sales yet.</td></tr>{% endfor %}</table></div>{% endif %}''',seller=seller,products=products,purchases=purchases,sales=sales,pm=pm,money=market_money)
+    return render_page('My KOJA Market',r'''<div class="hero"><h1>📦 Seller Dashboard</h1><p>Seller status: <strong>{{ seller.approval_status if seller else 'Not registered' }}</strong></p><div class="actions"><a class="btn" href="{{ url_for('market_sell') }}">➕ Add Product</a><a class="btn secondary" href="{{ url_for('market_seller_register') }}">🏬 My Store</a><a class="btn secondary" href="{{ url_for('seller_verification') }}">✓ Seller Verification</a><a class="btn secondary" href="{{ url_for('market_seller_subscription') }}">💎 Seller Subscription</a><a class="btn secondary" href="{{ url_for('market_advertise') }}">📣 Advertising</a><a class="btn secondary" href="{{ url_for('market_earnings') }}">📊 Earnings & Analytics</a><a class="btn secondary" href="{{ url_for('seller_wallet') }}">💰 Wallet</a><a class="btn secondary" href="{{ url_for('market_seller_payouts') }}">💸 Payouts</a><a class="btn secondary" href="{{ url_for('market_coupons') }}">🏷️ Coupons</a><a class="btn secondary" href="{{ url_for('referrals') }}">🤝 Referrals</a><a class="btn secondary" href="{{ '/market' }}">🛍️ Browse Market</a></div></div><div class="card"><h2>My Listings</h2><p class="small">Feature any of your products for K5 per day (1–30 days). Requests are sent for approval.</p><table><tr><th>Product</th><th>Price</th><th>Stock</th><th>Status</th><th>Featured</th></tr>{% for p in products %}<tr><td><a href="{{ url_for('market_product_view',product_id=p.id) }}">{{ p.title }}</a></td><td>{{ money(p.price,p.currency) }}</td><td>{{ p.stock }}</td><td>{{ p.approval_status }}</td><td><form method="post" action="{{ url_for('market_feature_product',product_id=p.id) }}" style="display:flex;gap:6px;align-items:center"><input name="days" type="number" min="1" max="30" value="7" style="max-width:80px"><button class="btn" type="submit">⭐ Feature</button></form></td></tr>{% else %}<tr><td colspan="5">No listings. <a href="{{ url_for('market_sell') }}">List your first product</a>.</td></tr>{% endfor %}</table></div><div class="card"><h2>My Purchases</h2><table><tr><th>Order</th><th>Product</th><th>Total</th><th>Status</th></tr>{% for o in purchases %}<tr><td>{{ o.order_number }}</td><td>{{ pm.get(o.product_id,{}).get('title','Product') }}</td><td>{{ money(o.total_amount,o.currency) }}</td><td>{{ o.status }}</td></tr>{% else %}<tr><td colspan="4">No purchases.</td></tr>{% endfor %}</table></div><div class="card"><h2>Delivery Tracking</h2>{% for o in purchases if o.status in ['paid','processing','shipped','completed'] %}{% set pp=pm.get(o.product_id,{}) %}{% if pp.get('product_type','physical')=='physical' %}<p><strong>{{ o.order_number }}</strong> — {{ pp.get('title','Product') }} <a class="btn secondary" href="{{ url_for('market_order_delivery',order_id=o.id) }}">Drivers / Live Delivery</a></p>{% endif %}{% else %}<p>No paid physical Market orders requiring delivery.</p>{% endfor %}</div>{% if seller %}<div class="card"><h2>Sales</h2><table><tr><th>Order</th><th>Product</th><th>Total</th><th>KOJA commission</th><th>Status</th></tr>{% for o in sales %}<tr><td>{{ o.order_number }}</td><td>{{ pm.get(o.product_id,{}).get('title','Product') }}</td><td>{{ money(o.total_amount,o.currency) }}</td><td>{{ money(o.commission_amount,o.currency) }}</td><td>{{ o.status }}</td></tr>{% else %}<tr><td colspan="5">No sales yet.</td></tr>{% endfor %}</table></div>{% endif %}''',seller=seller,products=products,purchases=purchases,sales=sales,pm=pm,money=market_money)
 
 @app.route('/admin/market',methods=['GET','POST'])
 @admin_required
