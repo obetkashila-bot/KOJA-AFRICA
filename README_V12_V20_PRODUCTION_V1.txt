@@ -38,3 +38,11 @@ STEP 3 — KOJA CLOUD UI
 - Added KOJA Cloud to the More menu.
 - Existing API endpoints /api/cloud/keys and /api/cloud/keys/revoke remain the backend.
 - No Communications routes were changed.
+
+NOTIFICATION CENTER
+- Added KOJA Notifications center with unread badge and polling.
+- Added per-user notification preferences for Market, Deliveries, AI, Messages/Calls and System.
+- Added browser/phone push subscription support through Web Push.
+- Optional Render environment variables: VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_CLAIMS_EMAIL.
+- Push permission is enabled by the user from Notification Settings; no push is forced.
+- Existing Communications functionality is not otherwise changed.

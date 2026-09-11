@@ -439,3 +439,16 @@ on conflict(engine_key) do update set engine_name=excluded.engine_name,category=
 create index if not exists koja_core_engine_registry_status_idx on public.koja_core_engine_registry(status,engine_name);
 
 select engine_key,engine_name,status from public.koja_core_engine_registry order by engine_name;
+
+-- KOJA Notification Center / Push (additive, safe)
+create table if not exists public.koja_notification_preferences (
+ user_id uuid primary key, push_enabled boolean default true, sound_enabled boolean default true,
+ market_enabled boolean default true, delivery_enabled boolean default true, ai_enabled boolean default true,
+ messages_enabled boolean default true, system_enabled boolean default true, updated_at timestamptz default now()
+);
+create table if not exists public.koja_push_subscriptions (
+ id uuid primary key default gen_random_uuid(), user_id uuid not null, endpoint text not null,
+ subscription jsonb not null default '{}'::jsonb, user_agent text, created_at timestamptz default now(),
+ updated_at timestamptz default now(), unique(user_id,endpoint)
+);
+create index if not exists koja_push_subscriptions_user_idx on public.koja_push_subscriptions(user_id,created_at desc);
