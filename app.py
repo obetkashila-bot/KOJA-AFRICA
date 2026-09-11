@@ -4568,8 +4568,14 @@ def driver_offline():
 @app.route("/drivers")
 @login_required
 def drivers():
+    uid=(current_user() or {}).get("id")
+    _core_engine_sync(uid, "discover", "open_drivers", {"service":"drivers"})
+    _core_engine_sync(uid, "identity", "open_drivers", {"service":"drivers"})
+    _core_engine_sync(uid, "ecosystem", "open_drivers", {"service":"drivers"})
+    _core_engine_sync(uid, "pay", "open_drivers", {"service":"drivers"})
     return render_page("Nearby Drivers",r"""
 <div class="hero"><h2>Nearby Delivery Drivers</h2><p>Share your pickup/shop location and KOJA will calculate distances to online drivers.</p></div>
+<div class="card"><h3>KOJA Driver Engines</h3><p>Drivers are connected to <strong>KOJA Discover</strong>, <strong>KOJA Identity</strong>, <strong>KOJA Pay</strong> and <strong>KOJA Ecosystem</strong>.</p><p class="small">Identity supports trusted driver profiles, Discover matches nearby drivers, Pay supports delivery commerce, and Ecosystem connects driver activity to KOJA services.</p></div>
 <div class="card">
 <div class="grid">
 <div><label>Your Latitude</label><input id="lat" type="number" step="any" placeholder="-13.96"></div>
@@ -4770,6 +4776,10 @@ def create_delivery_request():
 @login_required
 def deliveries():
     user=current_user()
+    _core_engine_sync(user.get("id"), "pay", "open_deliveries", {"service":"deliveries"})
+    _core_engine_sync(user.get("id"), "discover", "open_deliveries", {"service":"deliveries"})
+    _core_engine_sync(user.get("id"), "intelligence", "open_deliveries", {"service":"deliveries"})
+    _core_engine_sync(user.get("id"), "ecosystem", "open_deliveries", {"service":"deliveries"})
 
     if request.method=="POST":
         # Legacy/manual request. It creates an unassigned delivery,
@@ -4800,6 +4810,7 @@ def deliveries():
     rows=db_select("deliveries",filters={"customer_id":user["id"]},order="created_at.desc",limit=100)
     return render_page("Deliveries",r"""
 <div class="hero"><h2>Delivery Service</h2><p>Use Nearby Drivers to see drivers around your shop/pickup location.</p><a class="btn success" href="{{ url_for('drivers') }}">Find Nearby Drivers</a></div>
+<div class="card"><h3>KOJA Delivery Engines</h3><p>Delivery is powered by <strong>KOJA Pay</strong>, <strong>KOJA Discover</strong>, <strong>KOJA Intelligence</strong> and <strong>KOJA Ecosystem</strong>.</p><p class="small">Pay handles delivery commerce, Discover helps match drivers, Intelligence supports operational decisions, and Ecosystem connects the delivery workflow to other KOJA services.</p></div>
 <div class="card"><h2>Create Delivery Without Selecting Driver Yet</h2>
 <form method="post">
 <label>Pickup / Shop Location</label><input name="pickup_location" required>
