@@ -536,3 +536,21 @@ select coalesce(sum(amount),0) as gross_amount,
        coalesce(sum(credits),0) as credits_sold
 from public.koja_ai_credit_transactions
 where transaction_type='purchase';
+
+-- ============================================================
+-- KOJA BUSINESS IDENTITY V1
+-- Additive/idempotent. Does not drop or truncate existing data.
+-- KOJA generates business_number; TPIN and business_licence are official
+-- identifiers supplied by the business and are never fabricated by KOJA.
+-- ============================================================
+alter table public.koja_businesses add column if not exists business_number text;
+alter table public.koja_businesses add column if not exists tpin text;
+alter table public.koja_businesses add column if not exists business_licence text;
+
+create unique index if not exists koja_businesses_business_number_uidx
+on public.koja_businesses(business_number)
+where business_number is not null;
+
+update public.koja_businesses
+set business_number = 'KJ-BIZ-' || to_char(coalesce(created_at, now()), 'YYYY') || '-' || upper(substr(replace(id::text,'-',''),1,8))
+where coalesce(business_number,'') = '';
