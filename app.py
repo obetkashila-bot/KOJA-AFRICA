@@ -4763,6 +4763,8 @@ def create_delivery_request():
         "user_id":user["id"],
         "sender_id":user["id"],
         "driver_id":driver_id,
+        "pickup_address":clean(body.get("pickup_address") or body.get("pickup_location")),
+        "delivery_address":clean(body.get("delivery_address") or body.get("destination")),
         "pickup_location":clean(body.get("pickup_location")),
         "destination":clean(body.get("destination")),
         "pickup_latitude":lat,
@@ -4783,6 +4785,8 @@ def create_delivery_request():
     if error:
         minimal={
             "id":payload["id"],"customer_id":user["id"],"driver_id":driver_id,
+            "pickup_address":payload["pickup_address"],
+            "delivery_address":payload["delivery_address"],
             "pickup_location":payload["pickup_location"],
             "destination":payload["destination"],
             "recipient_name":payload["recipient_name"],
@@ -4813,6 +4817,8 @@ def deliveries():
         tracking=make_tracking_code()
         payload={
             "id":str(uuid.uuid4()),"customer_id":user["id"],"sender_id":user["id"],
+            "pickup_address":clean(request.form.get("pickup_location")),
+            "delivery_address":clean(request.form.get("destination")),
             "pickup_location":clean(request.form.get("pickup_location")),
             "destination":clean(request.form.get("destination")),
             "recipient_name":clean(request.form.get("recipient_name")),
