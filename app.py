@@ -12,6 +12,7 @@ import hmac
 import base64
 import re
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from functools import wraps
@@ -257,8 +258,16 @@ def db_insert(table, payload, returning="representation"):
             )
             return None, r.text
         data = json_or_empty(r)
+        inserted = data[0] if isinstance(data, list) and data else (data if isinstance(data, dict) else None)
+        # Automatically send newly created approval-queue records to KOJA Approval Intelligence.
+        # The helper is defined later in this module and is resolved at runtime.
+        try:
+            if inserted and "_maybe_ai_auto_approve" in globals():
+                _schedule_ai_auto_approval(table, inserted)
+        except Exception:
+            logger.exception("AI auto-approval scheduling failed for %s", table)
         if isinstance(data, list):
-            return (data[0] if data else None), None
+            return inserted, None
         return data, None
     except Exception as exc:
         logger.exception("INSERT error: %s", exc)
@@ -3219,6 +3228,16 @@ def _finalize_marketplace_order(order, tx):
         logger.error('KOJA Digital order finalization DB error order=%s: %s',order.get('id'),err)
     return False
 
+def _notify_available_drivers(tracking_code, pickup, destination, fee):
+    try:
+        profiles=db_select('driver_profiles',limit=500) or []
+        for d in profiles:
+            if str(d.get('verification_status') or '').lower() not in {'approved','active','verified'}: continue
+            uid=d.get('user_id') or d.get('provider_user_id')
+            if uid:
+                notify_user(uid,'New KOJA delivery available',f'{tracking_code}: {pickup} → {destination}. Fee ZMW {float(fee or 0):.2f}. First approved driver to accept claims it.','delivery',None,'/driver/available-deliveries')
+    except Exception: logger.exception('Available-driver notification failed')
+
 def _finalize_market_order(order, tx):
     if not order or not tx: return False
     tx_ref=str(order.get('payment_reference') or '')
@@ -3258,7 +3277,7 @@ def _finalize_market_order(order, tx):
     db_insert('koja_market_ledger',{'order_id':order.get('id'),'seller_id':order.get('seller_id'),'buyer_id':buyer_id,'gross_amount':gross,'commission_amount':commission,'platform_fee':platform_fee,'net_amount':net,'currency':order.get('currency') or 'ZMW','status':'pending','created_at':utc_now()})
     db_insert('koja_market_payment_fees',{'order_id':order.get('id'),'buyer_id':buyer_id,'amount':platform_fee,'currency':order.get('currency') or 'ZMW','fee_type':'platform_service_fee','provider':'flutterwave','reference':tx_ref,'status':'captured','created_at':utc_now()})
     if p and str(p.get('product_type') or 'physical')=='physical' and str(order.get('fulfillment_method') or 'delivery')=='delivery':
-        tracking='KMD-'+secrets.token_hex(5).upper(); db_insert('koja_market_delivery_jobs',{'order_id':order.get('id'),'customer_id':buyer_id,'seller_id':order.get('seller_id'),'delivery_address':order.get('delivery_address'),'delivery_fee':_money_num(order.get('delivery_fee')),'status':'requested','tracking_code':tracking,'created_at':utc_now(),'updated_at':utc_now()}); db_insert('deliveries',{'id':str(uuid.uuid4()),'customer_id':buyer_id,'user_id':buyer_id,'sender_id':order.get('seller_id'),'pickup_location':'KOJA Seller','destination':order.get('delivery_address'),'recipient_name':order.get('recipient_name'),'recipient_phone':order.get('recipient_phone'),'package_description':str((p or {}).get('title') or 'KOJA Market order'),'delivery_fee':_money_num(order.get('delivery_fee')),'currency':'ZMW','status':'requested','tracking_code':tracking,'pickup_code':'KDP-'+secrets.token_hex(4).upper(),'notes':order.get('notes'),'created_at':utc_now(),'updated_at':utc_now()})
+        tracking='KMD-'+secrets.token_hex(5).upper(); pickup_code='KDP-'+secrets.token_hex(4).upper(); db_insert('koja_market_delivery_jobs',{'order_id':order.get('id'),'customer_id':buyer_id,'seller_id':order.get('seller_id'),'delivery_address':order.get('delivery_address'),'delivery_fee':_money_num(order.get('delivery_fee')),'status':'requested','tracking_code':tracking,'created_at':utc_now(),'updated_at':utc_now()}); drow,derr=db_insert('deliveries',{'id':str(uuid.uuid4()),'customer_id':buyer_id,'user_id':buyer_id,'sender_id':order.get('seller_id'),'pickup_location':'KOJA Seller','pickup_address':'KOJA Seller','destination':order.get('delivery_address'),'delivery_address':order.get('delivery_address'),'recipient_name':order.get('recipient_name'),'recipient_phone':order.get('recipient_phone'),'package_description':str((p or {}).get('title') or 'KOJA Market order'),'delivery_fee':_money_num(order.get('delivery_fee')),'currency':'ZMW','status':'requested','tracking_code':tracking,'pickup_code':pickup_code,'notes':order.get('notes'),'created_at':utc_now(),'updated_at':utc_now()}); _notify_available_drivers(tracking,'KOJA Seller',order.get('delivery_address'),order.get('delivery_fee')); notify_user(order.get('seller_id'),'Delivery pickup number created',f'Order {order.get("order_number") or order.get("id")} is ready for delivery. Give the driver pickup number {pickup_code}.','delivery',order.get('id'),'/deliveries')
     _sync_market_order_to_business(dict(order,status='paid'))
     return True
 
@@ -4395,6 +4414,8 @@ def driver_dashboard():
         return redirect(url_for("driver_register"))
 
     provider_id = str(provider.get("id"))
+    if str(profile.get('verification_status') or '').lower() not in {'approved','active','verified'}:
+        flash('Driver approval is required before accepting deliveries.','warning')
     locations = db_select("driver_locations", filters={"driver_id": provider_id}, order="created_at.desc", limit=1)
     latest = locations[0] if locations else None
     requests_rows = db_select("deliveries", filters={"driver_id": provider_id}, order="created_at.desc", limit=100)
@@ -5599,6 +5620,112 @@ SMTP_USE_TLS=true</pre>
 </div>
 """, gmail_mode=gmail_mode, smtp_host=SMTP_HOST, smtp_port=SMTP_PORT, smtp_from=SMTP_FROM, configured=email_configured())
 
+
+# ============================================================
+# KOJA AI AUTO-APPROVAL ENGINE V1
+# AI recommends; strict policy gates determine whether approval can
+# happen automatically. High-risk identities/professional credentials
+# remain manual-review only.
+# ============================================================
+KOJA_AI_AUTO_APPROVAL = str(os.getenv("KOJA_AI_AUTO_APPROVAL", "true")).strip().lower() in {"1","true","yes","on"}
+KOJA_AI_AUTO_APPROVAL_THRESHOLD = float(os.getenv("KOJA_AI_AUTO_APPROVAL_THRESHOLD", "0.90") or 0.90)
+KOJA_AI_AUTO_APPROVAL_KINDS = {"assignment", "assignment_answer", "document", "delivery", "appointment", "product"}
+KOJA_AI_MANUAL_ONLY_KINDS = {"doctor", "teacher", "driver", "provider"}
+
+def _approval_ai_payload(kind, row):
+    # Send only the fields useful for moderation; never send passwords, tokens or secrets.
+    safe={}
+    for k,v in (row or {}).items():
+        lk=str(k).lower()
+        if any(x in lk for x in ("password","secret","token","api_key","access_token")):
+            continue
+        if isinstance(v,(dict,list)):
+            safe[k]=v
+        else:
+            safe[k]=str(v)[:2000] if v is not None else None
+    return {"kind":kind,"submission":safe}
+
+def _ai_approval_decision(kind, row):
+    if kind in KOJA_AI_MANUAL_ONLY_KINDS:
+        return {"decision":"manual","confidence":1.0,"reason":"High-risk identity/professional submission requires human verification."}, "manual_only"
+    prompt = """Evaluate this KOJA submission for automatic approval. Return ONLY valid JSON with keys decision, confidence, reason. decision must be approve, manual, or reject. confidence must be 0 to 1. Approve only when the submission is complete, internally consistent, ordinary, non-fraudulent, non-dangerous, and suitable for the requested KOJA service. If identity, professional licensing, medical credentials, legal compliance, payment disputes, or ambiguous evidence is involved, choose manual. Never invent missing evidence. Do not reject solely because optional fields are absent.\n\n""" + json.dumps(_approval_ai_payload(kind,row), ensure_ascii=False, default=str)
+    answer, err = _ai_call(prompt, "You are KOJA Approval Intelligence. You are a conservative moderation assistant. Human safety and fraud prevention override automatic approval.", max_output_tokens=500, timeout=10)
+    if not answer:
+        return {"decision":"manual","confidence":0.0,"reason":"AI unavailable; manual review required."}, err or "ai_unavailable"
+    try:
+        text=answer.strip().replace("```json","").replace("```","").strip()
+        obj=json.loads(text)
+        decision=str(obj.get("decision") or "manual").lower()
+        confidence=max(0.0,min(1.0,float(obj.get("confidence") or 0)))
+        reason=clean(obj.get("reason") or "")[:1000]
+        if decision not in {"approve","manual","reject"}: decision="manual"
+        return {"decision":decision,"confidence":confidence,"reason":reason}, ""
+    except Exception:
+        return {"decision":"manual","confidence":0.0,"reason":"AI returned an invalid decision; manual review required."}, "invalid_ai_response"
+
+def _record_ai_approval_event(table, item_id, kind, decision, source="ai_auto"):
+    try:
+        db_insert("koja_ai_approval_events", {
+            "table_name":table, "item_id":str(item_id), "kind":kind,
+            "decision":decision.get("decision"), "confidence":decision.get("confidence",0),
+            "reason":decision.get("reason","")[:1000], "source":source,
+            "created_at":utc_now()
+        })
+    except Exception:
+        logger.exception("Could not record AI approval event")
+
+def _schedule_ai_auto_approval(table, row):
+    if not KOJA_AI_AUTO_APPROVAL or not isinstance(row,dict):
+        return
+    mapping={
+        "assignments":"assignment", "documents":"document", "deliveries":"delivery",
+        "appointments":"appointment", "doctor_profiles":"doctor", "teacher_profiles":"teacher",
+        "driver_profiles":"driver", "service_providers":"provider",
+        "koja_market_products":"product", "koja_market_sellers":"seller"
+    }
+    kind=mapping.get(table)
+    if not kind: return
+    # Seller/identity/professional approvals are never automatic.
+    if kind in KOJA_AI_MANUAL_ONLY_KINDS or kind in {"seller"}: return
+    # Assignment answers use a different approval field.
+    if table=="assignments" and not (row.get("answer") or row.get("answer_file_path")):
+        kind="assignment"
+    def worker():
+        try:
+            _maybe_ai_auto_approve(table, row.get("id"), kind, row)
+        except Exception:
+            logger.exception("AI automatic approval failed for %s/%s", table, row.get("id"))
+    threading.Thread(target=worker,daemon=True,name="koja-ai-approval").start()
+
+def _maybe_ai_auto_approve(table, item_id, kind, row=None):
+    if not KOJA_AI_AUTO_APPROVAL or kind not in KOJA_AI_AUTO_APPROVAL_KINDS:
+        return False, {"decision":"manual","reason":"AI auto-approval disabled or kind is manual-only."}
+    row=row or first_row(table,{"id":item_id}) or {}
+    decision, err = _ai_approval_decision(kind,row)
+    _record_ai_approval_event(table,item_id,kind,decision,"ai_auto")
+    if decision.get("decision") == "approve" and float(decision.get("confidence",0)) >= KOJA_AI_AUTO_APPROVAL_THRESHOLD:
+        field="answer_approval_status" if table=="assignments" and kind=="assignment_answer" else "approval_status"
+        updates={field:"approved","approved_by":None,"approved_at":utc_now(),"approval_note":"AI automatic approval: " + (decision.get("reason") or "criteria satisfied")}
+        if table=="assignments" and kind=="assignment_answer": updates["status"]="answered"
+        elif table=="assignments": updates["updated_at"]=utc_now()
+        elif table=="koja_market_products":
+            seller=first_row('koja_market_sellers',{'id':row.get('seller_id')}) or first_row('koja_market_sellers',{'user_id':row.get('seller_id')})
+            if not seller or str(seller.get('approval_status') or '').lower() not in {'approved','active'}:
+                decision['decision']='manual'; decision['reason']='Seller identity is not approved; product remains for manual review.'; return False, decision
+            updates['is_published']=True
+        updated, uerr=db_update(table,{"id":item_id},updates)
+        if not uerr:
+            log_activity("ai_auto_approval",f"AI automatically approved {table} record {item_id} with confidence {decision.get('confidence'):.2f}.")
+            return True, decision
+        decision["decision"]="manual"; decision["reason"]="AI approved, but database update failed; manual review required."
+    return False, decision
+
+@app.route('/admin/approvals/ai-log')
+@admin_required
+def admin_ai_approval_log():
+    rows=db_select('koja_ai_approval_events',order='created_at.desc',limit=200) or []
+    return render_page('AI Approval Audit',r'''<div class="hero"><h1>AI Approval Audit</h1><p>Every automatic approval decision is recorded for administrator review.</p></div><div class="card"><table><tr><th>Time</th><th>Type</th><th>Decision</th><th>Confidence</th><th>Reason</th></tr>{% for x in rows %}<tr><td>{{ x.created_at }}</td><td>{{ x.kind }}</td><td>{{ x.decision }}</td><td>{{ x.confidence }}</td><td>{{ x.reason }}</td></tr>{% else %}<tr><td colspan="5">No AI approval events.</td></tr>{% endfor %}</table></div>''',rows=rows)
+
 @app.route("/admin/approvals")
 @admin_required
 def admin_approvals():
@@ -5628,7 +5755,7 @@ def admin_approvals():
             sections.append({"label": label, "table": table, "kind": kind, "rows": pending, "title_field": title_field})
     return render_page("Admin Approvals", r"""
 <div class="hero"><h2>✅ Approval & Review Centre</h2><p>Review submissions before they become active, published, approved or sent to users.</p></div>
-<div class="card"><p><strong>Workflow:</strong> User submits → Pending review → Admin approves/rejects → KOJA updates status → optional email notification.</p><p class="small">All approval actions are restricted to administrators and recorded in the activity log.</p></div>
+<div class="card"><p><strong>Workflow:</strong> User submits → KOJA AI checks → safe high-confidence submissions can be approved automatically → uncertain/high-risk submissions remain for admin review.</p><p class="small">AI auto-approval is conservative. Doctors, teachers, drivers and professional providers remain manual-review only. All AI decisions are logged.</p><form method="post" action="{{ url_for('admin_ai_auto_approve_pending') }}"><button class="btn" type="submit">Run AI Auto-Approval Now</button></form> <a class="btn secondary" href="{{ url_for('admin_ai_approval_log') }}">AI Approval Audit</a></div>
 {% for sec in sections %}
 <div class="card"><h3>{{ sec.label }} <span class="badge">{{ sec.rows|length }} pending</span></h3>
 {% for item in sec.rows %}
@@ -5645,6 +5772,30 @@ def admin_approvals():
 {% endfor %}</div>
 {% else %}<div class="card"><h3>🎉 No pending approvals</h3><p>Everything currently in the approval queue has been reviewed.</p></div>{% endfor %}
 """, sections=sections)
+
+@app.route("/admin/approvals/ai-auto", methods=["POST"])
+@admin_required
+def admin_ai_auto_approve_pending():
+    total=0; approved=0; manual=0
+    configs=[
+        ("assignments","approval_status","assignment"),
+        ("assignments","answer_approval_status","assignment_answer"),
+        ("documents","approval_status","document"),
+        ("deliveries","approval_status","delivery"),
+        ("appointments","approval_status","appointment"),
+    ]
+    for table,status_field,kind in configs:
+        rows=db_select(table,order="created_at.desc",limit=100) or []
+        for row in rows:
+            status=str(row.get(status_field) or "pending").lower()
+            if status not in {"pending","submitted","requested","under_review"}: continue
+            if kind=="assignment_answer" and not row.get("answer_file_path") and not row.get("answer"): continue
+            total+=1
+            ok,_decision=_maybe_ai_auto_approve(table,row.get("id"),kind,row)
+            if ok: approved+=1
+            else: manual+=1
+    flash(f"AI approval run complete: {approved} approved automatically; {manual} kept for review; {total} checked.","success")
+    return redirect(url_for("admin_approvals"))
 
 @app.route("/admin/approvals/<table>/<item_id>", methods=["POST"])
 @admin_required
@@ -6118,10 +6269,29 @@ def _send_web_push(uid,title,body,url=None,notification_type='system'):
             if '410' in str(exc) or '404' in str(exc): db_delete('koja_push_subscriptions',{'id':sub.get('id')})
     return sent
 
+def _send_optional_sms(phone, message):
+    phone=clean(phone)
+    if not phone: return False
+    username=os.getenv('AT_USERNAME','').strip(); api_key=os.getenv('AT_API_KEY','').strip(); sender=os.getenv('AT_SENDER_ID','KOJA').strip()
+    if username and api_key:
+        try:
+            rr=requests.post('https://api.africastalking.com/version1/messaging',headers={'apiKey':api_key,'Accept':'application/json'},data={'username':username,'to':phone,'message':message,'from':sender},timeout=20)
+            return rr.ok
+        except Exception: logger.exception('Africa Talking SMS failed')
+    return False
+
 def notify_user(uid,title,body,notification_type='system',related_id=None,url=None):
     if not uid or not _notification_allowed(uid,notification_type): return None
     row,err=db_insert('koja_notifications',{'user_id':str(uid),'notification_type':notification_type,'title':title,'body':body,'related_id':related_id,'is_read':False,'created_at':utc_now()})
-    if not err and row: _send_web_push(uid,title,body,url,notification_type); return row
+    if not err and row:
+        _send_web_push(uid,title,body,url,notification_type)
+        try:
+            u=find_user_by_id(uid) or {}
+            email=clean(u.get('email'))
+            if email and email_configured(): send_plain_email(email,title,body)
+            _send_optional_sms(first_nonempty(u.get('phone'),u.get('mobile_money_phone')), f'{title}: {body}')
+        except Exception: logger.exception('KOJA multi-channel notification failed')
+        return row
     return None
 
 def _connect_user(uid): return find_user_by_id(uid) or {}
@@ -7328,10 +7498,17 @@ def business_products(business_id):
     if not b: abort(404)
     if request.method=='POST':
         name=clean(request.form.get('name')); sku=clean(request.form.get('sku')); price=float(request.form.get('price') or 0); stock=max(0,int(request.form.get('stock') or 0)); cost=float(request.form.get('cost') or 0)
-        product_type=clean(request.form.get('product_type')) or 'physical'; product_type='digital' if product_type=='digital' else 'physical'; delivery_available=(str(request.form.get('delivery_available') or '').lower() in ('1','true','on','yes')); delivery_fee=_money_num(request.form.get('delivery_fee')); _,err=db_insert('koja_business_products',{'business_id':business_id,'name':name,'sku':sku,'selling_price':price,'cost_price':cost,'stock':stock,'product_type':product_type,'delivery_available':delivery_available,'delivery_fee':delivery_fee,'active':True,'created_at':utc_now(),'updated_at':utc_now()})
+        product_type=clean(request.form.get('product_type')) or 'physical'; product_type='digital' if product_type=='digital' else 'physical'; delivery_available=(str(request.form.get('delivery_available') or '').lower() in ('1','true','on','yes')); delivery_fee=_money_num(request.form.get('delivery_fee')); digital_url=None; digital_name=None
+        if product_type=='digital':
+            df=request.files.get('digital_file')
+            if not df or not df.filename: flash('Upload the digital product file.','danger'); return redirect(url_for('business_products',business_id=business_id))
+            up,up_err=upload_storage(df,'koja-business/digital',public=False)
+            if up_err: flash('Digital file upload failed: '+str(up_err)[:300],'danger'); return redirect(url_for('business_products',business_id=business_id))
+            digital_url=(up or {}).get('path'); digital_name=df.filename
+        _,err=db_insert('koja_business_products',{'business_id':business_id,'name':name,'sku':sku,'selling_price':price,'cost_price':cost,'stock':stock,'product_type':product_type,'delivery_available':delivery_available,'delivery_fee':delivery_fee,'digital_file_url':digital_url,'digital_file_name':digital_name,'active':True,'created_at':utc_now(),'updated_at':utc_now()})
         flash('Product saved.' if not err else 'Inventory table is not installed.','success' if not err else 'danger'); return redirect(url_for('business_products',business_id=business_id))
     products=db_select('koja_business_products',{'business_id':business_id},order='created_at.desc',limit=300) or []
-    return render_page('Business Inventory',r'''<div class="hero"><h1>Inventory & POS</h1><p>{{ b.name }}</p></div><div class="card"><form method="post"><label>Product / service</label><input name="name" required><label>SKU</label><input name="sku"><div class="grid"><div><label>Selling price</label><input name="price" type="number" step="0.01" min="0"></div><div><label>Cost price</label><input name="cost" type="number" step="0.01" min="0"></div><div><label>Stock</label><input name="stock" type="number" min="0" value="0"></div><div><label>Product type</label><select name="product_type"><option value="physical">Physical</option><option value="digital">Digital download</option></select></div><div><label>Delivery fee (ZMW)</label><input name="delivery_fee" type="number" step="0.01" min="0" value="0"></div><div><label><input type="checkbox" name="delivery_available" style="width:auto"> KOJA Delivery available</label></div></div><button class="btn">Save Product</button></form></div><div class="card"><table><tr><th>Product</th><th>SKU</th><th>Price</th><th>Cost</th><th>Stock</th></tr>{% for p in products %}<tr><td>{{ p.name }}</td><td>{{ p.sku }}</td><td>{{ money(p.selling_price,'ZMW') }}</td><td>{{ money(p.cost_price,'ZMW') }}</td><td>{{ p.stock }}</td></tr>{% else %}<tr><td colspan="5">No products.</td></tr>{% endfor %}</table></div>''',b=b,products=products,money=market_money)
+    return render_page('Business Inventory',r'''<div class="hero"><h1>Inventory & POS</h1><p>{{ b.name }}</p></div><div class="card"><form method="post"><label>Product / service</label><input name="name" required><label>SKU</label><input name="sku"><div class="grid"><div><label>Selling price</label><input name="price" type="number" step="0.01" min="0"></div><div><label>Cost price</label><input name="cost" type="number" step="0.01" min="0"></div><div><label>Stock</label><input name="stock" type="number" min="0" value="0"></div><div><label>Product type</label><select name="product_type"><option value="physical">Physical</option><option value="digital">Digital download</option></select></div><div><label>Delivery fee (ZMW)</label><input name="delivery_fee" type="number" step="0.01" min="0" value="0"></div><div><label><input type="checkbox" name="delivery_available" style="width:auto"> KOJA Delivery available</label></div></div><label>Digital file (required for Digital download)</label><input type="file" name="digital_file"><button class="btn">Save Product</button></form></div><div class="card"><table><tr><th>Product</th><th>SKU</th><th>Price</th><th>Cost</th><th>Stock</th></tr>{% for p in products %}<tr><td>{{ p.name }}</td><td>{{ p.sku }}</td><td>{{ money(p.selling_price,'ZMW') }}</td><td>{{ money(p.cost_price,'ZMW') }}</td><td>{{ p.stock }}</td></tr>{% else %}<tr><td colspan="5">No products.</td></tr>{% endfor %}</table></div>''',b=b,products=products,money=market_money)
 
 @app.route('/business/<business_id>/records',methods=['GET','POST'])
 @login_required
@@ -7544,7 +7721,23 @@ def business_store_buy(slug,product_id):
             if r.ok and str(body.get('status') or '').lower()=='success' and redirect_url: return redirect(redirect_url)
         except Exception: logger.exception('Business store payment error')
         flash('Payment could not be started.','danger'); return redirect(request.url)
-    return render_page('Business Store Checkout',r'''<div class="hero"><h1>{{ product.name }}</h1><p>{{ store.store_name }}</p><h2>{{ money(product.selling_price,'ZMW') }}</h2></div><div class="card"><form method="post"><label>Quantity</label><input name="quantity" type="number" min="1" value="1"><label>Fulfillment</label>{% if ptype=='digital' %}<p><strong>Digital — no delivery.</strong></p><input type="hidden" name="fulfillment_method" value="digital">{% else %}<select name="fulfillment_method">{% if delivery_available %}<option value="delivery">KOJA Delivery{% if product.delivery_fee %} (+ {{ money(product.delivery_fee,'ZMW') }}){% endif %}</option>{% endif %}<option value="self_pickup">Self Pickup / I will collect</option></select><label>Delivery address (only for KOJA Delivery)</label><textarea name="delivery_address"></textarea>{% endif %}<label>Recipient phone</label><input name="recipient_phone"><label>Payment network</label><select name="network"><option value="">Select network</option><option>MTN</option><option>AIRTEL</option><option>ZAMTEL</option></select><label>Payment phone</label><input name="payment_phone"><button class="btn" type="submit">Pay with Flutterwave</button></form></div>''',store=store,product=product,ptype=ptype,delivery_available=delivery_available,money=market_money)
+    return render_page('Business Store Checkout',r'''<div class="hero"><h1>{{ product.name }}</h1><p>{{ store.store_name }}</p><h2>{{ money(product.selling_price,'ZMW') }}</h2></div><div class="card"><form method="post"><label>Quantity</label><input name="quantity" type="number" min="1" value="1"><label>Fulfillment</label>{% if ptype=='digital' %}<p><strong>Digital — no delivery. After payment, your secure download will be available.</strong></p><input type="hidden" name="fulfillment_method" value="digital">{% else %}<select name="fulfillment_method">{% if delivery_available %}<option value="delivery">KOJA Delivery{% if product.delivery_fee %} (+ {{ money(product.delivery_fee,'ZMW') }}){% endif %}</option>{% endif %}<option value="self_pickup">Self Pickup / I will collect</option></select><label>Delivery address (only for KOJA Delivery)</label><textarea name="delivery_address"></textarea>{% endif %}<label>Recipient phone</label><input name="recipient_phone"><label>Payment network</label><select name="network"><option value="">Select network</option><option>MTN</option><option>AIRTEL</option><option>ZAMTEL</option></select><label>Payment phone</label><input name="payment_phone"><button class="btn" type="submit">Pay with Flutterwave</button></form></div>''',store=store,product=product,ptype=ptype,delivery_available=delivery_available,money=market_money)
+
+@app.route('/business/store/download/<order_id>')
+@login_required
+def business_store_download(order_id):
+    uid=(current_user() or {}).get('id'); order=first_row('koja_business_orders',{'id':order_id,'buyer_id':uid})
+    if not order or str(order.get('status') or '').lower()!='paid': abort(404)
+    if str(order.get('fulfillment_method') or '')!='digital': abort(404)
+    product=first_row('koja_business_products',{'id':order.get('product_id')}) or {}
+    path=clean(product.get('digital_file_url'))
+    if not path: abort(404)
+    try:
+        rr=requests.get(sb_storage_url(path),headers=sb_headers(),timeout=30)
+        if not rr.ok: abort(404)
+        return send_file(io.BytesIO(rr.content),as_attachment=True,download_name=product.get('digital_file_name') or 'koja-digital-download',mimetype=rr.headers.get('Content-Type') or 'application/octet-stream')
+    except Exception:
+        logger.exception('Business digital download failed'); abort(404)
 
 @app.route('/business/store/payment/callback')
 @login_required
@@ -7558,7 +7751,7 @@ def business_store_payment_callback():
         prod=first_row('koja_business_products',{'id':order.get('product_id')}) or {}; qty=max(1,int(order.get('quantity') or 1)); db_update('koja_business_products',{'id':order.get('product_id')},{'stock':max(0,int(prod.get('stock') or 0)-qty),'updated_at':utc_now()})
         notify_user(prod.get('business_id'),'New business store order',f"Order {order.get('id')} paid for {prod.get('name') or 'product'}.",'market_order',order.get('id'),'/market/my')
         if str(order.get('fulfillment_method') or '')=='delivery':
-            tracking='KJB-'+secrets.token_hex(5).upper(); b=first_row('koja_businesses',{'id':prod.get('business_id')}) or {}; db_insert('deliveries',{'id':str(uuid.uuid4()),'customer_id':order.get('buyer_id'),'user_id':order.get('buyer_id'),'sender_id':prod.get('business_id'),'pickup_location':clean(b.get('location')) or 'Business','destination':order.get('delivery_address'),'recipient_phone':order.get('recipient_phone'),'package_description':prod.get('name') or 'Business order','delivery_fee':order.get('delivery_fee') or 0,'currency':'ZMW','status':'requested','tracking_code':tracking,'pickup_code':'KDP-'+secrets.token_hex(4).upper(),'created_at':utc_now(),'updated_at':utc_now()}); db_insert('koja_market_delivery_jobs',{'order_id':order.get('id'),'customer_id':order.get('buyer_id'),'seller_id':prod.get('business_id'),'delivery_address':order.get('delivery_address'),'delivery_fee':order.get('delivery_fee') or 0,'status':'requested','tracking_code':tracking,'source_type':'business','source_order_id':order.get('id'),'created_at':utc_now(),'updated_at':utc_now()})
+            tracking='KJB-'+secrets.token_hex(5).upper(); b=first_row('koja_businesses',{'id':prod.get('business_id')}) or {}; pickup_code='KDP-'+secrets.token_hex(4).upper(); drow,derr=db_insert('deliveries',{'id':str(uuid.uuid4()),'customer_id':order.get('buyer_id'),'user_id':order.get('buyer_id'),'sender_id':prod.get('business_id'),'pickup_location':clean(b.get('location')) or 'Business','pickup_address':clean(b.get('location')) or 'Business','destination':order.get('delivery_address'),'delivery_address':order.get('delivery_address'),'recipient_phone':order.get('recipient_phone'),'package_description':prod.get('name') or 'Business order','delivery_fee':order.get('delivery_fee') or 0,'currency':'ZMW','status':'requested','tracking_code':tracking,'pickup_code':pickup_code,'created_at':utc_now(),'updated_at':utc_now()}); db_insert('koja_market_delivery_jobs',{'order_id':order.get('id'),'customer_id':order.get('buyer_id'),'seller_id':prod.get('business_id'),'delivery_address':order.get('delivery_address'),'delivery_fee':order.get('delivery_fee') or 0,'status':'requested','tracking_code':tracking,'source_type':'business','source_order_id':order.get('id'),'created_at':utc_now(),'updated_at':utc_now()}); _notify_available_drivers(tracking,clean(b.get('location')) or 'Business',order.get('delivery_address'),order.get('delivery_fee')); notify_user(prod.get('business_id'),'Delivery pickup number created',f'Business order {order.get("id")} is ready for delivery. Give the driver pickup number {pickup_code}.','delivery',order.get('id'),'/business/'+str(prod.get('business_id')))
         flash('Business order paid successfully.','success'); return redirect(url_for('market_my'))
     flash('Payment is still pending.','info'); return redirect(url_for('market_my'))
 
@@ -8347,7 +8540,14 @@ def complete_delivery(tracking_code):
     payout=_try_driver_mobile_payout(delivery,driver,amount)
     payout_status=payout.get('status') or 'ready_to_send'
     db_update('deliveries',{'id':delivery.get('id')},{'driver_payout_status':payout_status,'driver_payout_reference':payout.get('reference'),'driver_payout_transfer_id':str(payout.get('transfer_id') or '') or None,'updated_at':utc_now()})
+    try:
+        jobs=db_select('koja_market_delivery_jobs',{'tracking_code':tracking_code},limit=5) or []
+        for j in jobs:
+            db_update('koja_market_delivery_jobs',{'id':j.get('id')},{'status':'completed','completed_at':utc_now(),'updated_at':utc_now()})
+    except Exception: logger.exception('Market delivery job completion sync failed')
     notify_user(delivery.get('driver_id'),'Delivery completed',f'The owner confirmed receipt. Delivery fee: ZMW {amount:.2f}. Payout status: {payout_status}.','delivery',delivery.get('id'),'/deliveries')
+    notify_user(delivery.get('customer_id'),'Delivery completed',f'Your KOJA delivery {tracking_code} was confirmed as received. Driver payout status: {payout_status}.','delivery',delivery.get('id'),f'/track/{tracking_code}')
+    if delivery.get('sender_id'): notify_user(delivery.get('sender_id'),'Customer received delivery',f'Delivery {tracking_code} has been confirmed received. Driver payout status: {payout_status}.','delivery',delivery.get('id'),'/deliveries')
     return jsonify({'ok':True,'message':'Delivery completed. KOJA has recorded the owner confirmation and the driver payout.','payout_status':payout_status,'amount':amount,'driver_phone':first_nonempty(driver.get('phone'),driver.get('mobile_money_phone'))})
 
 @app.route('/delivery/<tracking_code>/complete',methods=['POST','GET'])
@@ -9147,6 +9347,9 @@ def fulfillment_ai_dashboard():
 def driver_available_deliveries():
     provider=get_driver_provider((current_user() or {}).get('id'))
     if not provider: return redirect(url_for('driver_register'))
+    profile=first_row('driver_profiles',{'provider_id':provider.get('id')}) or {}
+    if str(profile.get('verification_status') or '').lower() not in {'approved','active','verified'}:
+        return render_page('Available KOJA Deliveries',"<div class='hero'><h1>Driver approval required</h1><p>Your driver profile must be approved before you can accept deliveries.</p></div>")
     rows=db_select('deliveries',{'status':'requested','driver_id':None},order='created_at.desc',limit=100) or []
     return render_page('Available KOJA Deliveries',r'''
 <div class="hero"><h1>Available KOJA Deliveries</h1><p>Only unclaimed delivery jobs appear here. The first driver to accept a job claims it; it immediately disappears from this list for every other driver.</p></div>
