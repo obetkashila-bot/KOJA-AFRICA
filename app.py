@@ -860,6 +860,7 @@ footer{text-align:center;color:var(--muted);padding:30px}
 <a role="menuitem" href="{{ url_for('professional_communication') }}">Professional Communication</a>
 <a role="menuitem" href="{{ url_for('deliveries') }}">Deliveries</a>
 <a role="menuitem" href="{{ url_for('drivers') }}">Drivers</a>
+<a role="menuitem" href="{{ url_for('koja_cloud_page') }}">KOJA Cloud</a>
 <a role="menuitem" href="{{ url_for('settings') }}">Settings</a>
 {% if user.role in ['driver','admin'] or user.is_admin %}<a role="menuitem" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}
 {% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('admin') }}">Admin</a><a role="menuitem" href="{{ url_for('admin_market') }}">KOJA Market Admin</a><a role="menuitem" href="{{ url_for('admin_marketplace') }}">Digital Marketplace Admin</a>{% endif %}
@@ -8288,6 +8289,24 @@ def koja_engine_access():
     if key not in KOJA_NAMED_ENGINES:return jsonify({'error':'unknown engine','engines':list(KOJA_NAMED_ENGINES)}),400
     _core_engine_sync(uid,key,'access',{'source':'engine_access_api'})
     return jsonify({'ok':True,'engine':KOJA_NAMED_ENGINES[key]['name'],'attached_services':KOJA_NAMED_ENGINES[key]['core']})
+
+
+
+@app.route('/platform/cloud')
+@login_required
+def koja_cloud_page():
+    uid=(current_user() or {}).get('id')
+    rows=[]
+    if table_exists('koja_api_keys'):
+        try:
+            rows=db_select('koja_api_keys',filters={'user_id':uid},order='created_at.desc',limit=100)
+        except Exception:
+            rows=[]
+    safe=[]
+    for r in rows:
+        safe.append({'id':r.get('id'),'name':r.get('name') or 'KOJA API Key','prefix':r.get('key_prefix') or '', 'status':r.get('status') or 'active','scopes':r.get('scopes') or [],'created_at':r.get('created_at'),'last_used_at':r.get('last_used_at'),'expires_at':r.get('expires_at')})
+    tpl='<div class="hero"><h1>KOJA Cloud</h1><p>Secure API access for connected KOJA services.</p></div>\n<div class="card"><h3>Create API key</h3><p class="small">The secret is shown only once. Store it securely. Never put it in public code.</p>\n<form id="cloudKeyForm"><label>Key name</label><input id="cloudKeyName" maxlength="100" value="My KOJA API Key" required>\n<label>Scopes</label><select id="cloudScopes" multiple size="6"><option value="discover" selected>KOJA Discover</option><option value="ads">KOJA Ads</option><option value="pay">KOJA Pay</option><option value="cloud">KOJA Cloud</option><option value="intelligence">KOJA Intelligence</option><option value="identity">KOJA Identity</option><option value="workspace">KOJA Workspace</option><option value="ecosystem">KOJA Ecosystem</option><option value="autonomous_ai">KOJA Autonomous AI</option></select>\n<div class="actions"><button class="btn" type="submit">Create API Key</button></div></form><div id="cloudKeyResult" class="card" style="display:none;margin-top:12px"></div></div>\n<div class="card"><h3>Your API keys</h3>{% if keys %}{% for k in keys %}<div class="card" style="margin:8px 0"><h3>{{ k.name }}</h3><p><b>Prefix:</b> {{ k.prefix or \'—\' }}</p><p><b>Status:</b> {{ k.status }}</p><p><b>Scopes:</b> {{ k.scopes|join(\', \') if k.scopes else \'—\' }}</p><p class="small">Created: {{ k.created_at or \'—\' }}{% if k.last_used_at %} · Last used: {{ k.last_used_at }}{% endif %}</p>{% if k.status != \'revoked\' %}<button class="btn secondary" type="button" onclick="revokeKOJAKey(\'{{ k.id }}\')">Revoke</button>{% endif %}</div>{% endfor %}{% else %}<p>No API keys created yet.</p>{% endif %}</div>\n<div class="card"><h3>Security</h3><p>KOJA stores a hash of the secret, not the full API key. Revoked keys cannot be used.</p><p class="small">Use least-privilege scopes and rotate keys when needed.</p></div>\n<script>\n(function(){const form=document.getElementById(\'cloudKeyForm\'),result=document.getElementById(\'cloudKeyResult\');\nform.addEventListener(\'submit\',async function(e){e.preventDefault();result.style.display=\'block\';result.textContent=\'Creating key…\';const scopes=[...document.getElementById(\'cloudScopes\').selectedOptions].map(o=>o.value);try{const r=await fetch(\'{{ url_for("koja_cloud_create_key") }}\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({name:document.getElementById(\'cloudKeyName\').value,scopes})});const d=await r.json();if(!r.ok||!d.ok){result.textContent=d.error||\'API key could not be created.\';return;}result.innerHTML=\'<b>API key created.</b><p class="small">Copy it now. It will not be shown again.</p><textarea readonly style="width:100%;min-height:80px"></textarea><p><button type="button" class="btn" id="copyKey">Copy key</button></p>\';result.querySelector(\'textarea\').value=d.api_key;document.getElementById(\'copyKey\').onclick=()=>navigator.clipboard&&navigator.clipboard.writeText(d.api_key);setTimeout(()=>location.reload(),12000);}catch(x){result.textContent=\'Network error. Please try again.\';}});\nwindow.revokeKOJAKey=async function(id){if(!confirm(\'Revoke this API key?\'))return;try{const r=await fetch(\'{{ url_for("koja_cloud_revoke_key") }}\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({key_id:id})});const d=await r.json();if(!r.ok||!d.ok){alert(d.error||\'Could not revoke key.\');return;}location.reload();}catch(x){alert(\'Network error. Please try again.\');}};})();\n</script>'
+    return render_page('KOJA Cloud',tpl,keys=safe)
 
 @app.route('/api/cloud/keys',methods=['POST'])
 @login_required

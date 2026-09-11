@@ -32,3 +32,9 @@ Production names: KOJA Discover, KOJA Ads, KOJA Pay, KOJA Cloud, KOJA Intelligen
 Internal V12-V20 labels remain only for migration/version tracking. Existing services are upgraded in place; Communications is untouched.
 Security: API-key hashes, scopes, expiry/revocation fields and audit/service-event bridges are included. Raw API secrets are returned only at creation.
 After running the SQL, use /platform/engines while logged in and /api/platform/core-status to inspect the core attachment map.
+
+STEP 3 — KOJA CLOUD UI
+- Added logged-in /platform/cloud page for API key creation and revocation.
+- Added KOJA Cloud to the More menu.
+- Existing API endpoints /api/cloud/keys and /api/cloud/keys/revoke remain the backend.
+- No Communications routes were changed.
