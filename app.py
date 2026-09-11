@@ -1592,8 +1592,8 @@ def _ai_config_status():
     raw_key=(os.getenv("GEMINI_API_KEY") or "").strip()
     groq_key=(os.getenv("GROQ_API_KEY") or "").strip()
     openai_key=(os.getenv("OPENAI_API_KEY") or "").strip()
-    model=(os.getenv("GEMINI_MODEL") or "gemini-3.8-flash").strip()
-    fallback=(os.getenv("GEMINI_FALLBACK_MODEL") or "gemini-3.7-flash").strip()
+    model=(os.getenv("GEMINI_MODEL") or "gemini-2.5-flash").strip()
+    fallback=(os.getenv("GEMINI_FALLBACK_MODEL") or "gemini-2.5-flash-lite").strip()
     base=(os.getenv("GEMINI_API_URL") or "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
     endpoint=f"{base}/models/{model}:generateContent"
     return {
@@ -1624,23 +1624,27 @@ def _ai_model_candidates():
     groq=[]
     groq.extend(split_env("GROQ_MODEL"))
     groq.extend(split_env("GROQ_FALLBACK_MODELS"))
+    # Current production-safe Groq defaults. Older Llama defaults are intentionally
+    # omitted because Groq retired them for many accounts in August 2026.
     groq.extend([
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
         "openai/gpt-oss-120b",
         "openai/gpt-oss-20b",
         "qwen/qwen3.6-27b",
         "qwen/qwen3.8-27b",
+        "groq/compound",
+        "groq/compound-mini",
     ])
     gemini=[]
     gemini.extend(split_env("GEMINI_MODEL"))
     gemini.extend(split_env("GEMINI_FALLBACK_MODELS"))
+    # Stable REST generateContent fallbacks. Environment variables remain first
+    # so Render can select newer models without changing this file.
     gemini.extend([
-        "gemini-3.8-flash",
-        "gemini-3.7-flash",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
         "gemini-3.6-flash",
         "gemini-3.5-flash",
-        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
     ])
     openai=[]
     openai.extend(split_env("OPENAI_MODEL"))
@@ -1654,6 +1658,23 @@ def _ai_model_candidates():
         return out
     return unique(groq), unique(gemini), unique(openai)
 
+def _ai_provider_output_limit(provider, model, requested):
+    """Keep provider requests inside known model output limits."""
+    try: requested=max(256, int(requested or 8192))
+    except Exception: requested=8192
+    m=(model or "").lower()
+    if provider=="groq":
+        # Avoid oversized Groq requests (which can return HTTP 413) while
+        # retaining a generous response budget for long-form KOJA answers.
+        if "qwen/qwen3.6" in m or "qwen/qwen3.8" in m:
+            return min(requested, 16384)
+        if "compound" in m:
+            return min(requested, 8192)
+        return min(requested, 32768)
+    if provider=="openai":
+        return min(requested, 32768)
+    return min(requested, 32768)
+
 def _openai_call(prompt, system_prompt, max_output_tokens=8192, timeout=20):
     """OpenAI Responses API fallback for KOJA AI."""
     api_key=(os.getenv("OPENAI_API_KEY") or "").strip()
@@ -1661,7 +1682,7 @@ def _openai_call(prompt, system_prompt, max_output_tokens=8192, timeout=20):
         return "", "missing_openai_api_key"
     _,_,models=_ai_model_candidates()
     for model in models:
-        payload={"model":model,"instructions":system_prompt,"input":prompt,"max_output_tokens":max_output_tokens}
+        payload={"model":model,"instructions":system_prompt,"input":prompt,"max_output_tokens":_ai_provider_output_limit("openai",model,max_output_tokens)}
         try:
             r=requests.post("https://api.openai.com/v1/responses",json=payload,timeout=(5,min(int(timeout),30)),headers={"Authorization":"Bearer "+api_key,"Content-Type":"application/json"})
             if r.ok:
@@ -1675,7 +1696,10 @@ def _openai_call(prompt, system_prompt, max_output_tokens=8192, timeout=20):
                 if answer:return answer,""
             else:
                 logger.warning("OpenAI request failed status=%s model=%s",r.status_code,model)
-                if r.status_code in (401,403,429): break
+                if r.status_code in (401,403): break
+                if r.status_code==429:
+                    logger.warning("OpenAI rate limited; trying next model")
+                    continue
         except requests.Timeout:
             logger.warning("OpenAI request timed out model=%s",model)
         except requests.RequestException as exc:
@@ -1704,7 +1728,7 @@ def _ai_call(prompt, system_prompt, max_output_tokens=8192, timeout=12, preferre
             payload={
                 "model":model,
                 "messages":[{"role":"system","content":system_prompt},{"role":"user","content":prompt}],
-                "temperature":0.7,"max_completion_tokens":max_output_tokens,"stream":False,
+                "temperature":0.7,"max_completion_tokens":_ai_provider_output_limit("groq",model,max_output_tokens),"stream":False,
             }
             try:
                 r=requests.post("https://api.groq.com/openai/v1/chat/completions",json=payload,timeout=(5,min(int(timeout),12)),headers={"Authorization":"Bearer "+groq_key,"Content-Type":"application/json"})
@@ -1715,7 +1739,10 @@ def _ai_call(prompt, system_prompt, max_output_tokens=8192, timeout=12, preferre
                     logger.warning("Groq returned an empty response model=%s",model)
                 else:
                     logger.warning("Groq request failed status=%s model=%s",r.status_code,model)
-                    if r.status_code in (401,403,429): break
+                    if r.status_code in (401,403): break
+                    if r.status_code==429:
+                        logger.warning("Groq rate limited; trying next model")
+                        continue
             except requests.Timeout:
                 logger.warning("Groq request timed out model=%s",model)
             except requests.RequestException as exc:
@@ -1754,7 +1781,9 @@ def _ai_call(prompt, system_prompt, max_output_tokens=8192, timeout=12, preferre
                 answer=clean("\n".join(parts))
                 if answer: return answer,""
             elif r.status_code in (401,403): return "","authentication_failed"
-            elif r.status_code==429: return "","rate_limited"
+            elif r.status_code==429:
+                logger.warning("Gemini rate limited model=%s; trying next model",model)
+                continue
         except requests.Timeout:
             logger.warning("Gemini request timed out model=%s",model)
             continue
@@ -1774,7 +1803,7 @@ def _ai_stream(prompt, system_prompt, max_output_tokens=32768, timeout=90, prefe
                 "model":model,
                 "messages":[{"role":"system","content":system_prompt},{"role":"user","content":prompt}],
                 "temperature":0.7,
-                "max_completion_tokens":max_output_tokens,
+                "max_completion_tokens":_ai_provider_output_limit("groq",model,max_output_tokens),
                 "stream":True,
             }
             try:
@@ -1785,8 +1814,11 @@ def _ai_stream(prompt, system_prompt, max_output_tokens=32768, timeout=90, prefe
                 ) as r:
                     if not r.ok:
                         logger.warning("Groq streaming failed status=%s model=%s",r.status_code,model)
-                        if r.status_code in (401,403,429):
+                        if r.status_code in (401,403):
                             break
+                        if r.status_code==429:
+                            logger.warning("Groq streaming rate limited; trying next model")
+                            continue
                         continue
                     got=False
                     for line in r.iter_lines(decode_unicode=True):
@@ -1818,12 +1850,15 @@ def _ai_stream(prompt, system_prompt, max_output_tokens=32768, timeout=90, prefe
         if preferred_model and preferred_model in openai_models:
             openai_models=[preferred_model]+[m for m in openai_models if m!=preferred_model]
         for model in openai_models:
-            payload={"model":model,"instructions":system_prompt,"input":prompt,"max_output_tokens":max_output_tokens,"stream":True}
+            payload={"model":model,"instructions":system_prompt,"input":prompt,"max_output_tokens":_ai_provider_output_limit("openai",model,max_output_tokens),"stream":True}
             try:
                 with requests.post("https://api.openai.com/v1/responses",json=payload,stream=True,timeout=(5,min(int(timeout),90)),headers={"Authorization":"Bearer "+openai_key,"Content-Type":"application/json","Accept":"text/event-stream"}) as r:
                     if not r.ok:
                         logger.warning("OpenAI streaming failed status=%s model=%s",r.status_code,model)
-                        if r.status_code in (401,403,429): break
+                        if r.status_code in (401,403): break
+                        if r.status_code==429:
+                            logger.warning("OpenAI streaming rate limited; trying next model")
+                            continue
                         continue
                     got=False
                     for line in r.iter_lines(decode_unicode=True):
