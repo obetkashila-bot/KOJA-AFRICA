@@ -6932,6 +6932,147 @@ def _memory_file_prompt(uid, prompt):
         chunks.append(f"FILE: {f.get('file_name')}\n{clean(f.get('content'))[:30000]}")
     return 'RELEVANT PREVIOUSLY STORED USER FILES:\n'+'\n\n'.join(chunks)+'\n\n'
 
+
+# ==================== KOJA AI CORE V1 — provider-independent orchestration ====================
+
+def _core_tokens(text):
+    return _memory_tokens(text or '')
+
+def _core_classify(prompt):
+    q=(prompt or '').lower().strip()
+    if not q: return 'empty'
+    if _memory_intent(q) or any(x in q for x in ('previous chat','previous conversation','earlier chat','what did we discuss','what were we working on','remember','memory')):
+        return 'memory'
+    if any(x in q for x in ('calculate','compute','what is ','solve ','+','-','*','/','percent','percentage')) and any(ch.isdigit() for ch in q):
+        return 'calculation'
+    if any(x in q for x in ('file','document','pdf','word document','spreadsheet','uploaded')):
+        return 'file'
+    return 'provider'
+
+def _core_local_calculation(prompt):
+    # Restricted arithmetic fallback. It intentionally does not eval arbitrary Python.
+    import ast, operator as _op, re
+    q=(prompt or '').replace(',','')
+    candidates=re.findall(r'(?<![A-Za-z_])[-+*/().%0-9\s]{3,}(?![A-Za-z_])', q)
+    if not candidates: return None
+    expr=max(candidates,key=len).strip()
+    if not any(c.isdigit() for c in expr): return None
+    expr=expr.replace('%','/100')
+    allowed={ast.Add:_op.add,ast.Sub:_op.sub,ast.Mult:_op.mul,ast.Div:_op.truediv,ast.Pow:_op.pow,ast.USub:_op.neg,ast.UAdd:_op.pos}
+    def ev(n):
+        if isinstance(n,ast.Expression): return ev(n.body)
+        if isinstance(n,ast.Constant) and isinstance(n.value,(int,float)): return n.value
+        if isinstance(n,ast.UnaryOp) and type(n.op) in allowed: return allowed[type(n.op)](ev(n.operand))
+        if isinstance(n,ast.BinOp) and type(n.op) in allowed:
+            a,b=ev(n.left),ev(n.right)
+            if type(n.op) is ast.Pow and abs(b)>20: raise ValueError('power too large')
+            return allowed[type(n.op)](a,b)
+        raise ValueError('unsupported expression')
+    try:
+        tree=ast.parse(expr,mode='eval'); result=ev(tree)
+        if isinstance(result,float) and result.is_integer(): result=int(result)
+        return f"KOJA Core local calculation:\n{expr} = {result}"
+    except Exception:
+        return None
+
+def _core_local_answer(uid, prompt):
+    kind=_core_classify(prompt)
+    if kind=='calculation':
+        ans=_core_local_calculation(prompt)
+        if ans:return ans, 'calculation'
+    if kind=='memory':
+        mem=_memory_relevant(uid,prompt,8)
+        chats=_memory_search_conversations(uid,prompt,12)
+        recent=_memory_recent_chats(uid,6)
+        lines=[]
+        if mem:
+            lines.append('Saved memory:\n'+'\n'.join('- '+clean(x.get('memory')) for x in mem[:6]))
+        if chats:
+            lines.append('Previous conversation evidence:\n'+'\n'.join(f"- {x.get('role','user')}: {clean(x.get('content'))[:700]}" for x in chats[:8]))
+        elif recent:
+            lines.append('Recent chats:\n'+'\n'.join(f"- {c.get('title')}: "+' | '.join(clean(m.get('content'))[:250] for m in c.get('messages',[])[-3:]) for c in recent[:6]))
+        if lines:return 'KOJA Core retrieved your stored information.\n\n'+'\n\n'.join(lines), 'memory'
+    if kind=='file':
+        files=_memory_search_files(uid,prompt,5)
+        if files:
+            return 'KOJA Core found these stored files:\n\n'+'\n\n'.join(f"{f.get('file_name')}\n{clean(f.get('content'))[:1600]}" for f in files), 'file'
+    return None, kind
+
+def _core_table_exists(name):
+    try:return table_exists(name)
+    except Exception:return False
+
+def _core_log_event(kind, uid, prompt='', result='', provider='', status='ok', metadata=None):
+    if not _core_table_exists('koja_ai_core_tasks'): return
+    payload={'user_id':uid,'task_type':kind,'prompt':clean(prompt)[:12000],'result':clean(result)[:12000],
+             'provider':clean(provider)[:120],'status':clean(status)[:40],'metadata':json.dumps(metadata or {},ensure_ascii=False),
+             'created_at':utc_now()}
+    try: db_insert('koja_ai_core_tasks',payload)
+    except Exception: pass
+
+def _core_record_provider(provider, ok, error=''):
+    if not _core_table_exists('koja_ai_provider_health'): return
+    now=utc_now(); name=clean(provider or 'unknown')[:120]
+    rows=db_select('koja_ai_provider_health',{'provider':name},limit=1)
+    if rows:
+        old=rows[0]; failures=int(old.get('failure_count') or 0)
+        payload={'last_checked_at':now,'last_success_at':now if ok else old.get('last_success_at'),
+                 'failure_count':0 if ok else failures+1,'last_error':'' if ok else clean(error)[:1000],
+                 'status':'healthy' if ok else 'degraded','updated_at':now}
+        try: db_update('koja_ai_provider_health',{'id':old.get('id')},payload)
+        except Exception: pass
+    else:
+        try: db_insert('koja_ai_provider_health',{'provider':name,'status':'healthy' if ok else 'degraded','failure_count':0 if ok else 1,
+            'last_error':'' if ok else clean(error)[:1000],'last_checked_at':now,'last_success_at':now if ok else None,'updated_at':now})
+        except Exception: pass
+
+def _core_provider_available():
+    keys=[]
+    for k in ('GROQ_API_KEY','GEMINI_API_KEY','GOOGLE_API_KEY','OPENAI_API_KEY','OPENROUTER_API_KEY'):
+        if clean(os.getenv(k)): keys.append(k)
+    return keys
+
+def _core_status(uid):
+    providers=_core_provider_available()
+    status={'core':'online','memory':_core_table_exists('koja_ai_memories'),'file_memory':_core_table_exists('koja_ai_file_memory'),
+            'knowledge':_core_table_exists('koja_ai_core_knowledge'),'learning':_core_table_exists('koja_ai_core_learnings'),
+            'tasks':_core_table_exists('koja_ai_core_tasks'),'provider_health':_core_table_exists('koja_ai_provider_health'),
+            'local_fallbacks':['memory','file_retrieval','calculation'],'configured_provider_keys':len(providers)}
+    if uid and _core_table_exists('koja_ai_core_learnings'):
+        rows=db_select('koja_ai_core_learnings',{'user_id':uid,'is_verified':True},order='created_at.desc',limit=5)
+        status['recent_verified_learnings']=len(rows)
+    return status
+
+@app.route('/api/nextgen/ai/core/status', methods=['GET'])
+@login_required
+def api_nextgen_ai_core_status():
+    uid=str((current_user() or {}).get('id') or '')
+    return jsonify(ok=True, **_core_status(uid))
+
+@app.route('/api/nextgen/ai/core/learn', methods=['POST'])
+@login_required
+def api_nextgen_ai_core_learn():
+    uid=str((current_user() or {}).get('id') or '')
+    d=request.get_json(silent=True) or {}; learning=clean(d.get('learning')); source=clean(d.get('source') or 'user')
+    if not learning:return jsonify(error='Learning content is required.'),400
+    if len(learning)>12000:return jsonify(error='Learning is too long.'),400
+    if not _core_table_exists('koja_ai_core_learnings'):return jsonify(error='KOJA AI Core learning storage is not installed.'),503
+    row,err=db_insert('koja_ai_core_learnings',{'user_id':uid,'learning':learning[:12000],'source':source[:120],
+        'is_verified':bool(d.get('verified',False)),'created_at':utc_now()})
+    if not row:return jsonify(error=err or 'Could not save learning.'),500
+    return jsonify(ok=True,learning=row)
+
+@app.route('/api/nextgen/ai/core/knowledge', methods=['GET'])
+@login_required
+def api_nextgen_ai_core_knowledge():
+    q=clean(request.args.get('q')); limit=min(max(int(request.args.get('limit') or 10),1),30)
+    rows=[]
+    if _core_table_exists('koja_ai_core_knowledge'):
+        rows=db_select('koja_ai_core_knowledge',{'is_active':True},order='updated_at.desc',limit=100)
+        if q:
+            qt=_core_tokens(q); rows=sorted(rows,key=lambda r:len(qt & _core_tokens((r.get('title') or '')+' '+(r.get('content') or ''))),reverse=True)
+    return jsonify(knowledge=[{'id':r.get('id'),'title':r.get('title'),'content':clean(r.get('content'))[:4000],'source':r.get('source')} for r in rows[:limit]])
+
 @app.route('/api/nextgen/ai/memory', methods=['GET','DELETE'])
 @login_required
 def api_nextgen_ai_memory_v2():
@@ -7096,22 +7237,52 @@ def api_nextgen_ai_stream():
     wants_research=_ai_needs_web_research(prompt) and not file_context
     def events():
         parts=[];yield ': KOJA AI stream connected\n\n';yield 'data: '+json.dumps({'type':'conversation','id':conversation_id},separators=(',',':'))+'\n\n'
+        # KOJA Core can answer selected tasks without any external model.
+        local_answer, local_kind = _core_local_answer(str(uid), prompt)
+        if local_answer:
+            parts.append(local_answer)
+            yield 'data: '+json.dumps({'type':'token','text':local_answer},separators=(',',':'))+'\n\n'
+            db_insert('koja_ai_messages',{'conversation_id':conversation_id,'user_id':uid,'role':'user','content':prompt})
+            db_insert('koja_ai_messages',{'conversation_id':conversation_id,'user_id':uid,'role':'assistant','content':local_answer})
+            db_update('koja_ai_conversations',{'id':conversation_id,'user_id':uid},{'updated_at':utc_now(),'title':prompt[:80] or 'KOJA AI chat'})
+            _core_log_event(local_kind, str(uid), prompt, local_answer, provider='KOJA Core Local', status='ok')
+            yield 'data: '+json.dumps({'type':'core','mode':'local','task':local_kind},separators=(',',':'))+'\n\n'
+            yield 'data: '+json.dumps({'type':'done'},separators=(',',':'))+'\n\n';return
         if wants_research:
             answer,err=_ai_researched_answer(full_prompt,system,max_output_tokens=2400,timeout=55)
             if not answer:
-                yield 'data: '+json.dumps({'type':'error','message':_ai_error_message(err)},separators=(',',':'))+'\n\n';return
+                local_answer, local_kind = _core_local_answer(str(uid), prompt)
+                if local_answer:
+                    parts.append(local_answer); yield 'data: '+json.dumps({'type':'token','text':local_answer},separators=(',',':'))+'\n\n'
+                    _core_log_event(local_kind,str(uid),prompt,local_answer,provider='KOJA Core Local',status='provider_fallback')
+                else:
+                    _core_log_event('provider',str(uid),prompt,'',provider='research',status='failed',metadata={'error':_ai_error_message(err)})
+                    yield 'data: '+json.dumps({'type':'error','message':_ai_error_message(err)},separators=(',',':'))+'\n\n';return
             # Stream researched answers in small chunks so the UI behaves like normal chat.
             for i in range(0,len(answer),120):
                 token=answer[i:i+120];parts.append(token);yield 'data: '+json.dumps({'type':'token','text':token},separators=(',',':'))+'\n\n'
         else:
+            last_error=''; last_provider=''
             for item in _ai_stream(full_prompt,system,max_output_tokens=2400,timeout=90,preferred_model=None):
-                if item.get('type')=='token':parts.append(item.get('text') or '');yield 'data: '+json.dumps(item,separators=(',',':'))+'\n\n'
-                elif item.get('type')=='error':yield 'data: '+json.dumps({'type':'error','message':_ai_error_message(item.get('error'))},separators=(',',':'))+'\n\n';return
-                elif item.get('type')=='done':break
+                if item.get('type')=='token':
+                    parts.append(item.get('text') or ''); yield 'data: '+json.dumps(item,separators=(',',':'))+'\n\n'
+                    if item.get('provider'): last_provider=clean(item.get('provider'))
+                elif item.get('type')=='error':
+                    last_error=item.get('error'); last_provider=clean(item.get('provider') or last_provider)
+                    local_answer, local_kind = _core_local_answer(str(uid), prompt)
+                    if local_answer:
+                        parts.append(local_answer); yield 'data: '+json.dumps({'type':'token','text':'\n\n'+local_answer},separators=(',',':'))+'\n\n'
+                        _core_log_event(local_kind,str(uid),prompt,local_answer,provider='KOJA Core Local',status='provider_fallback',metadata={'provider_error':_ai_error_message(last_error)})
+                        break
+                    _core_log_event('provider',str(uid),prompt,'',provider=last_provider or 'router',status='failed',metadata={'error':_ai_error_message(last_error)})
+                    yield 'data: '+json.dumps({'type':'error','message':_ai_error_message(last_error)},separators=(',',':'))+'\n\n';return
+                elif item.get('done') or item.get('type')=='done':
+                    break
         answer=''.join(parts).strip() or 'No answer returned.'
         db_insert('koja_ai_messages',{'conversation_id':conversation_id,'user_id':uid,'role':'user','content':prompt})
         db_insert('koja_ai_messages',{'conversation_id':conversation_id,'user_id':uid,'role':'assistant','content':answer})
         db_update('koja_ai_conversations',{'id':conversation_id,'user_id':uid},{'updated_at':utc_now(),'title':prompt[:80] or 'KOJA AI chat'})
+        _core_log_event(_core_classify(prompt),str(uid),prompt,answer,provider='remote/research' if wants_research else 'provider-router',status='ok')
         yield 'data: '+json.dumps({'type':'done'},separators=(',',':'))+'\n\n';log_activity('ai_chat','User used next-generation KOJA AI.')
     return Response(stream_with_context(events()),mimetype='text/event-stream',headers={'Cache-Control':'no-cache, no-transform','X-Accel-Buffering':'no','Connection':'keep-alive'})
 
@@ -7135,8 +7306,18 @@ def api_nextgen_ai():
     prompt2=memory_context+stored_file_context+(('Conversation context:\n'+context+'\n\n') if context else '')
     if file_context:prompt2+=f"ATTACHED FILE ({file_name or 'document'}):\n{file_context}\n\n"
     prompt2+='USER: '+prompt
+    local_answer, local_kind=_core_local_answer(str(uid),prompt)
+    if local_answer:
+        _core_log_event(local_kind,str(uid),prompt,local_answer,provider='KOJA Core Local',status='ok')
+        return jsonify(answer=local_answer,core={'mode':'local','task':local_kind})
     answer,err=(_ai_researched_answer(prompt2,system,2400,55) if _ai_needs_web_research(prompt) and not file_context else _ai_call(prompt2,system,max_output_tokens=2400,timeout=50,preferred_model=None))
-    if not answer:return jsonify(error=_ai_error_message(err)),502
+    if not answer:
+        _core_log_event('provider',str(uid),prompt,'',provider='provider-router',status='failed',metadata={'error':_ai_error_message(err)})
+        local_answer, local_kind=_core_local_answer(str(uid),prompt)
+        if local_answer:
+            return jsonify(answer=local_answer,core={'mode':'local_fallback','task':local_kind})
+        return jsonify(error=_ai_error_message(err),core={'mode':'offline','local_fallbacks':_core_status(str(uid)).get('local_fallbacks',[])}),502
+    _core_log_event(_core_classify(prompt),str(uid),prompt,answer,provider='remote/research' if _ai_needs_web_research(prompt) and not file_context else 'provider-router',status='ok')
     log_activity('ai_chat','User used next-generation KOJA AI.')
     return jsonify(answer=answer)
 
