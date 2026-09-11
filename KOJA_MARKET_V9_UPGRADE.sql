@@ -100,7 +100,7 @@ insert into public.koja_market_countries(code,name,currency,currency_symbol) val
 ('TZ','Tanzania','TZS','TSh'),('KE','Kenya','KES','KSh'),('UG','Uganda','UGX','USh'),
 ('RW','Rwanda','RWF','FRw'),('GH','Ghana','GHS','GH₵'),('NG','Nigeria','NGN','₦'),
 ('ZA','South Africa','ZAR','R'),('BW','Botswana','BWP','P'),('MZ','Mozambique','MZN','MT'),
-('NA','Namibia','NAD','N$'),('ZM','Zambia','ZMW','K')
+('NA','Namibia','NAD','N$')
 on conflict (code) do update set name=excluded.name,currency=excluded.currency,currency_symbol=excluded.currency_symbol;
 
 -- Useful status indexes for operational dashboards.
