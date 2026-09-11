@@ -442,10 +442,14 @@ select engine_key,engine_name,status from public.koja_core_engine_registry order
 
 -- KOJA Notification Center / Push (additive, safe)
 create table if not exists public.koja_notification_preferences (
- user_id uuid primary key, push_enabled boolean default true, sound_enabled boolean default true,
+ user_id uuid primary key, push_enabled boolean default true, email_enabled boolean default true, sms_enabled boolean default true, sound_enabled boolean default true,
  market_enabled boolean default true, delivery_enabled boolean default true, ai_enabled boolean default true,
  messages_enabled boolean default true, system_enabled boolean default true, updated_at timestamptz default now()
 );
+alter table public.koja_notification_preferences add column if not exists email_enabled boolean default true;
+alter table public.koja_notification_preferences add column if not exists sms_enabled boolean default true;
+alter table public.profiles add column if not exists phone text;
+alter table public.profiles add column if not exists email text;
 create table if not exists public.koja_push_subscriptions (
  id uuid primary key default gen_random_uuid(), user_id uuid not null, endpoint text not null,
  subscription jsonb not null default '{}'::jsonb, user_agent text, created_at timestamptz default now(),

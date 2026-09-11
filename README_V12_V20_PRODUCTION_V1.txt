@@ -46,3 +46,11 @@ NOTIFICATION CENTER
 - Optional Render environment variables: VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_CLAIMS_EMAIL.
 - Push permission is enabled by the user from Notification Settings; no push is forced.
 - Existing Communications functionality is not otherwise changed.
+
+
+NOTIFICATION CHANNELS
+- KOJA notifications now support in-app + browser/phone push + email + SMS.
+- Email uses SMTP_HOST/SMTP_PORT/SMTP_USERNAME/SMTP_PASSWORD/SMTP_FROM/SMTP_TLS.
+- SMS supports Africa's Talking via AT_USERNAME/AT_API_KEY/AT_SENDER_ID, or Twilio via TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN/TWILIO_FROM_NUMBER.
+- APP_BASE_URL may be set for email links.
+- Users can enable/disable Email and SMS from Notification Settings.
