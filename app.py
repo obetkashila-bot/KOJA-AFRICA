@@ -9338,7 +9338,8 @@ def market_live():
         room['_product'] = product
         visible.append(room)
     return render_page('KOJA LIVE Shopping', r'''
-<div class="hero"><h1>KOJA LIVE Shopping</h1><p>Watch sellers live, discover products and shop while the seller is demonstrating them.</p></div>
+<div class="hero"><h1>KOJA LIVE Shopping</h1><p>Watch sellers live, discover products and shop while the seller is demonstrating them.</p>
+{% if user %}<div class="actions" style="margin-top:14px"><a class="btn success" href="{{ url_for('market_live_start') }}" style="font-size:17px;font-weight:800;padding:12px 22px">GO LIVE</a><a class="btn secondary" href="{{ url_for('market_my') }}">Seller Center</a></div>{% endif %}</div>
 <div class="card"><p class="small">Live video is secured with short-lived LiveKit access tokens. The LiveKit server secret is never sent to the browser.</p></div>
 <div class="grid">
 {% for room in rooms %}<div class="card"><h2>{{ room.title }}</h2><p><strong>{{ room._seller_name }}</strong></p>
@@ -9346,7 +9347,7 @@ def market_live():
 <a class="btn" href="{{ url_for('market_live_room', room_id=room.id) }}">Watch Live</a></div>
 {% else %}<div class="card"><h3>No sellers are live right now.</h3><p>Come back when a KOJA seller starts a live shopping session.</p></div>{% endfor %}
 </div>
-{% if user %}<div class="actions"><a class="btn secondary" href="{{ url_for('market_my') }}">Seller Center</a></div>{% endif %}
+{% if user %}<div class="actions"><a class="btn success" href="{{ url_for('market_live_start') }}">GO LIVE NOW</a><a class="btn secondary" href="{{ url_for('market_my') }}">Seller Center</a></div>{% endif %}
 ''', rooms=visible, user=current_user(), money=market_money)
 
 @app.route('/market/live/start', methods=['GET', 'POST'])
