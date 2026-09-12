@@ -1,6 +1,13 @@
 Flask
 requests
-gunicorn
-Werkzeug
+reportlab
 python-dotenv
-livekit-api>=1.0,<2
+pywebpush
+cryptography
+gunicorn
+google-auth
+openai>=1.0.0
+pypdf>=5.0.0
+python-docx>=1.1.0
+livekit-api>=1.2.1,<2
+Werkzeug>=3.0,<4

@@ -6412,7 +6412,7 @@ def _send_web_push(uid,title,body,url=None,notification_type='system'):
     if not _notification_allowed(uid,notification_type): return 0
     try: from pywebpush import webpush
     except Exception: return 0
-    pk=os.getenv('VAPID_PUBLIC_KEY','').strip(); sk=os.getenv('VAPID_PRIVATE_KEY','').strip(); subject=os.getenv('VAPID_CLAIMS_EMAIL','mailto:admin@koja-africa.com').strip()
+    pk=os.getenv('KOJA_PUSH_VAPID_PUBLIC_KEY') or os.getenv('VAPID_PUBLIC_KEY',''); sk=os.getenv('KOJA_PUSH_VAPID_PRIVATE_KEY') or os.getenv('VAPID_PRIVATE_KEY',''); subject=os.getenv('KOJA_PUSH_VAPID_SUBJECT') or os.getenv('VAPID_CLAIMS_EMAIL','mailto:admin@koja-africa.com'); pk=pk.strip(); sk=sk.strip(); subject=subject.strip()
     if not pk or not sk: return 0
     sent=0
     for sub in db_select('koja_push_subscriptions',filters={'user_id':str(uid)},limit=20):
@@ -6502,7 +6502,7 @@ def api_notification_preferences():
 
 @app.route('/api/notifications/vapid-public-key')
 @login_required
-def api_vapid_public_key(): return (os.getenv('VAPID_PUBLIC_KEY','').strip(),200,{'Content-Type':'text/plain'})
+def api_vapid_public_key(): return ((os.getenv('KOJA_PUSH_VAPID_PUBLIC_KEY') or os.getenv('VAPID_PUBLIC_KEY','')).strip(),200,{'Content-Type':'text/plain'})
 
 @app.route('/api/notifications/subscribe',methods=['POST'])
 @login_required
@@ -7255,11 +7255,14 @@ def api_nextgen_ai_history_chat(conversation_id):
     resp.headers['X-Robots-Tag']='noindex, nofollow, noarchive'
     return resp
 
-@app.route('/api/nextgen/ai/models')
-@login_required
 def api_nextgen_ai_models():
-    c=_ai_config_status()
-    return jsonify(ready=bool(c.get('configured') or c.get('groq_configured') or c.get('openai_configured')),name='KOJA AI',routing='automatic')
+    groq,gemini,openai=_ai_model_candidates()
+    return jsonify({
+        "groq":groq if os.getenv("GROQ_API_KEY") else [],
+        "gemini":gemini if os.getenv("GEMINI_API_KEY") else [],
+        "openai":openai if os.getenv("OPENAI_API_KEY") else [],
+        "default":(groq[0] if os.getenv("GROQ_API_KEY") and groq else (openai[0] if os.getenv("OPENAI_API_KEY") and openai else (gemini[0] if gemini else None))),
+    })
 
 @app.route('/api/nextgen/ai/file', methods=['POST'])
 @login_required
@@ -7287,10 +7290,6 @@ def api_nextgen_ai_stream():
     d=request.get_json(silent=True) or {}; prompt=clean(d.get('prompt'))
     if not prompt:return jsonify(error='Enter a message.'),400
     uid=(current_user() or {}).get('id')
-    memory_reply=_koja_ai_process_memory_command(uid,prompt)
-    if memory_reply:
-        payload='data: '+json.dumps({'type':'token','text':memory_reply},separators=(',',':'))+'\n\n'+'data: '+json.dumps({'type':'done'},separators=(',',':'))+'\n\n'
-        return Response(payload,mimetype='text/event-stream',headers={'Cache-Control':'no-cache, no-store'})
     if len(prompt)>12000:return jsonify(error='Message is too long. Maximum 12,000 characters.'),400
     if _rate_limited('next-ai:'+str(uid or request.remote_addr),20,300):return jsonify(error='Too many requests. Please wait.'),429
     hist=d.get('history') or []; conversation_id=clean(d.get('conversation_id'))
@@ -7302,11 +7301,9 @@ def api_nextgen_ai_stream():
     context='\n'.join(f"{x.get('role','user')}: {str(x.get('content',''))[:3500]}" for x in hist[-8:] if isinstance(x,dict))
     file_context=clean(d.get('file_context'))[:90000]
     file_name=clean(d.get('file_name'))[:180]
-    memory_context=_koja_ai_memory_context(uid)
     system=('You are KOJA AI, an intelligent general-purpose assistant inside KOJA AFRICA. Be accurate, useful, natural and conversational like a modern ChatGPT-style assistant. '
             'Answer directly, explain clearly, help with writing, learning, coding, planning, analysis and everyday tasks. Never invent facts, sources, capabilities or actions. '
             'When fresh evidence is supplied by KOJA, use it carefully and cite it with compact [n] markers. If the user attached a file, treat its contents as user-provided context and answer questions about it faithfully.')
-    if memory_context: system += '\nUser-controlled KOJA AI memory (use only when relevant):\n'+memory_context
     base_prompt=(('Conversation context:\n'+context+'\n\n') if context else '')
     if file_context:
         base_prompt+=f"ATTACHED FILE ({file_name or 'document'}):\n{file_context}\n\n"
@@ -7343,18 +7340,10 @@ def api_nextgen_ai():
     if len(prompt)>12000:return jsonify(error='Message is too long. Maximum 12,000 characters.'),400
     if _rate_limited('next-ai:'+str(uid or request.remote_addr),20,300):return jsonify(error='Too many requests. Please wait.'),429
     hist=d.get('history') or []
-    memory_reply=_koja_ai_process_memory_command(uid,prompt)
-    if memory_reply:return jsonify(answer=memory_reply,conversation_id=None)
-    memory_context=_koja_ai_memory_context(uid)
     context='\n'.join(f"{x.get('role','user')}: {str(x.get('content',''))[:5000]}" for x in hist[-10:] if isinstance(x,dict))
     file_context=clean(d.get('file_context'))[:90000];file_name=clean(d.get('file_name'))[:180]
-    memory_reply=_koja_ai_process_memory_command(uid,prompt)
-    if memory_reply: return jsonify(answer=memory_reply,conversation_id=None)
-    memory_context=_koja_ai_memory_context(uid)
     system=('You are KOJA AI, a general-purpose assistant inside KOJA AFRICA. Be accurate, useful, natural and conversational like ChatGPT. '
             'Help with writing, learning, coding, planning, analysis and everyday tasks. Never fabricate facts or sources. If fresh research evidence is supplied, use it carefully.')
-    if memory_context: system += '\nUser-controlled KOJA AI memory (use only when relevant):\n'+memory_context
-    if memory_context: system += '\nUser-controlled KOJA AI memory (use only when relevant):\n'+memory_context
     prompt2=(('Conversation context:\n'+context+'\n\n') if context else '')
     if file_context:prompt2+=f"ATTACHED FILE ({file_name or 'document'}):\n{file_context}\n\n"
     prompt2+='USER: '+prompt
@@ -9564,124 +9553,3 @@ def driver_available_deliveries():
 <div class="hero"><h1>Available KOJA Deliveries</h1><p>Only unclaimed delivery jobs appear here. The first driver to accept a job claims it; it immediately disappears from this list for every other driver.</p></div>
 <div class="grid">{% for d in rows %}<div class="card"><h3>{{ d.tracking_code }}</h3><p><strong>Pickup:</strong> {{ d.pickup_location }}</p><p><strong>Destination:</strong> {{ d.destination }}</p><p><strong>Fee:</strong> {{ money(d.delivery_fee,'ZMW') }}</p><form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.id,action='accept') }}"><button class="btn success">Accept Delivery</button></form></div>{% else %}<div class="card"><p>No available deliveries right now.</p></div>{% endfor %}</div>
 ''',rows=rows,money=market_money)
-
-# ============================================================
-# KOJA V12-V20 FULL MODULE ACTIVATION V2
-# Communications is intentionally untouched.
-# ============================================================
-KOJA_ENGINE_META={
- 'discover':('KOJA Discover','Search & Discovery'), 'ads':('KOJA Ads','Advertising'), 'pay':('KOJA Pay','Payments'),
- 'cloud':('KOJA Cloud','Developer Infrastructure'), 'intelligence':('KOJA Intelligence','Analytics'),
- 'identity':('KOJA Identity','Trust & Verification'), 'workspace':('KOJA Workspace','Productivity & Enterprise'),
- 'ecosystem':('KOJA Ecosystem','Unified Platform'), 'autonomous_ai':('KOJA Autonomous AI','Automation & Future Infrastructure')
-}
-
-def _engine_uid(): return str((current_user() or {}).get('id') or '')
-def _engine_log(uid,engine,action,metadata=None):
-    try:
-        db_insert('koja_engine_events',{'user_id':uid,'engine':engine,'action':action,'metadata':metadata or {},'created_at':utc_now()})
-        db_insert('koja_user_service_events',{'user_id':uid,'service_key':engine,'event_type':action,'object_id':None,'country_code':'ZM','metadata':metadata or {},'created_at':utc_now()})
-    except Exception: logger.exception('Engine event logging failed')
-
-def _engine_dashboard(engine,uid):
-    name,cat=KOJA_ENGINE_META[engine]
-    if engine=='discover':
-        stats={'Market products':_v12_count('koja_market_products',{'is_published':True}),'Business products':_v12_count('koja_business_products',{'active':True}),'Research documents':_v12_count('documents'),'Public posts':_v12_count('koja_public_posts',{'is_published':True})}
-        action='Search and discovery across KOJA services.'
-    elif engine=='ads': stats={'Campaigns':_v12_count('koja_v13_ad_campaigns',{'advertiser_id':uid}),'Ad events':_v12_count('koja_v13_ad_events',{'user_id':uid})}; action='Create campaigns and record impressions, clicks and conversions.'
-    elif engine=='pay': stats={'Payment intents':_v12_count('koja_v14_payment_intents',{'user_id':uid}),'Unified transactions':_v12_count('koja_unified_transactions',{'user_id':uid}),'Profit orders':_v12_count('koja_profit_orders',{'user_id':uid})}; action='Create payment intents over the existing payment provider layer.'
-    elif engine=='cloud': stats={'API keys':_v12_count('koja_api_keys',{'user_id':uid}),'API usage':_v12_count('koja_api_usage',{'user_id':uid})}; action='Manage developer identities and API usage.'
-    elif engine=='intelligence': stats={'Intelligence events':_v12_count('koja_v16_intelligence_events',{'user_id':uid}),'Service events':_v12_count('koja_user_service_events',{'user_id':uid}),'Engine events':_v12_count('koja_engine_events',{'user_id':uid})}; action='Record cross-service analytics events.'
-    elif engine=='identity': stats={'Verification records':_v12_count('koja_v17_identity',{'user_id':uid}),'Profile':1 if find_user_by_id(uid) else 0}; action='Submit and track identity verification.'
-    elif engine=='workspace': stats={'Workspaces':_v12_count('koja_workspaces',{'owner_id':uid}),'Documents':_v12_count('koja_workspace_documents',{'owner_id':uid}),'Files':_v12_count('koja_workspace_files',{'owner_id':uid})}; action='Create workspaces and organize documents and files.'
-    elif engine=='ecosystem': stats={'Links':_v12_count('koja_ecosystem_links',{'user_id':uid}),'Transactions':_v12_count('koja_unified_transactions',{'user_id':uid}),'Services':_v12_count('koja_service_registry')}; action='Connect KOJA services through a shared transaction layer.'
-    else: stats={'Agents':_v12_count('koja_ai_agents',{'owner_id':uid}),'Agent runs':_v12_count('koja_ai_agent_runs',{'owner_id':uid}),'IoT devices':_v12_count('koja_iot_devices',{'owner_id':uid}),'Autonomy jobs':_v12_count('koja_autonomy_jobs',{'owner_id':uid})}; action='Create bounded AI agents and automation jobs.'
-    _engine_log(uid,engine,'open',{})
-    cards=''.join(f"<div class='stat'><div class='big'>{v}</div>{k}</div>" for k,v in stats.items())
-    form=f"<div class='card'><h3>Module function</h3><p>{action}</p></div>"
-    if engine=='ads': form='<div class="card"><h3>Create campaign</h3><form method="post" action="/api/engines/ads/campaign"><input name="title" placeholder="Campaign title" required><input name="budget" type="number" step="0.01" placeholder="Budget ZMW"><input name="placement" placeholder="Placement" value="market"><button class="btn">Create campaign</button></form></div>'
-    elif engine=='pay': form='<div class="card"><h3>Create payment intent</h3><form method="post" action="/api/engines/pay/intent"><input name="amount" type="number" step="0.01" placeholder="Amount ZMW" required><input name="purpose" placeholder="Purpose"><button class="btn">Create intent</button></form></div>'
-    elif engine=='identity': form='<div class="card"><h3>Identity verification</h3><form method="post" action="/api/engines/identity/request"><input name="document_type" placeholder="Document type"><input name="document_reference" placeholder="Reference"><button class="btn">Submit verification</button></form></div>'
-    elif engine=='workspace': form='<div class="card"><h3>New workspace</h3><form method="post" action="/api/engines/workspace/create"><input name="name" placeholder="Workspace name" required><textarea name="description" placeholder="Description"></textarea><button class="btn">Create workspace</button></form></div>'
-    elif engine=='autonomous_ai': form='<div class="card"><h3>New AI agent</h3><form method="post" action="/api/engines/autonomous-ai/agent"><input name="name" placeholder="Agent name" required><textarea name="goal" placeholder="Agent goal"></textarea><button class="btn">Create agent</button></form></div>'
-    return render_page(name,f"<div class='hero'><h1>{name}</h1><p>{cat} engine.</p></div><div class='grid'>{cards}</div>{form}<div class='card'><a class='btn secondary' href='/platform/engines'>All KOJA Engines</a></div>")
-
-@app.route('/platform/engines/<engine>')
-@login_required
-def koja_engine_module(engine):
-    if engine not in KOJA_ENGINE_META: abort(404)
-    return _engine_dashboard(engine,_engine_uid())
-
-@app.route('/api/engines/ads/campaign',methods=['POST'])
-@login_required
-def engine_ads_campaign():
-    uid=_engine_uid(); d=request.form or (request.get_json(silent=True) or {}); title=clean(d.get('title'))[:180]
-    if not title:return jsonify(error='title required'),400
-    row,err=db_insert('koja_v13_ad_campaigns',{'advertiser_id':uid,'title':title,'budget':_money_num(d.get('budget')),'placement':clean(d.get('placement'))[:80] or 'market','status':'draft','created_at':utc_now(),'updated_at':utc_now()})
-    _engine_log(uid,'ads','campaign_created',{'campaign_id':row.get('id') if row else None})
-    return jsonify(ok=bool(row and not err),campaign=row or {},error=err or '')
-
-@app.route('/api/engines/ads/event',methods=['POST'])
-@login_required
-def engine_ads_event():
-    uid=_engine_uid(); d=request.get_json(silent=True) or {}; event=clean(d.get('event_type'))[:50]
-    if event not in {'impression','click','conversion'}: return jsonify(error='invalid event_type'),400
-    row,err=db_insert('koja_v13_ad_events',{'campaign_id':clean(d.get('campaign_id')) or None,'user_id':uid,'event_type':event,'amount':_money_num(d.get('amount')),'metadata':d.get('metadata') or {},'created_at':utc_now()})
-    return jsonify(ok=bool(row and not err),event=row or {})
-
-@app.route('/api/engines/pay/intent',methods=['POST'])
-@login_required
-def engine_pay_intent():
-    uid=_engine_uid(); d=request.form or (request.get_json(silent=True) or {}); amount=_money_num(d.get('amount'))
-    if amount<=0:return jsonify(error='amount must be greater than zero'),400
-    ref='KOJA-'+secrets.token_hex(10).upper()
-    row,err=db_insert('koja_v14_payment_intents',{'user_id':uid,'amount':amount,'currency':'ZMW','provider':'flutterwave','reference':ref,'status':'created','purpose':clean(d.get('purpose'))[:180],'target_id':clean(d.get('target_id'))[:120],'created_at':utc_now(),'updated_at':utc_now()})
-    return jsonify(ok=bool(row and not err),intent=row or {},error=err or '')
-
-@app.route('/api/engines/identity/request',methods=['POST'])
-@login_required
-def engine_identity_request():
-    uid=_engine_uid(); d=request.form or (request.get_json(silent=True) or {})
-    row,err=db_insert('koja_v17_identity',{'user_id':uid,'identity_type':'account','document_type':clean(d.get('document_type'))[:80],'document_reference':clean(d.get('document_reference'))[:180],'status':'pending','verification_level':0,'created_at':utc_now(),'updated_at':utc_now()})
-    return jsonify(ok=bool(row and not err),verification=row or {},error=err or '')
-
-@app.route('/api/engines/workspace/create',methods=['POST'])
-@login_required
-def engine_workspace_create():
-    uid=_engine_uid(); d=request.form or (request.get_json(silent=True) or {}); name=clean(d.get('name'))[:160]
-    if not name:return jsonify(error='name required'),400
-    row,err=db_insert('koja_workspaces',{'owner_id':uid,'name':name,'description':clean(d.get('description'))[:1000],'status':'active','created_at':utc_now(),'updated_at':utc_now()})
-    if row and not err: db_insert('koja_workspace_members',{'workspace_id':row.get('id'),'user_id':uid,'role':'owner','status':'active','joined_at':utc_now()})
-    return jsonify(ok=bool(row and not err),workspace=row or {},error=err or '')
-
-@app.route('/api/engines/autonomous-ai/agent',methods=['POST'])
-@login_required
-def engine_autonomous_agent():
-    uid=_engine_uid(); d=request.form or (request.get_json(silent=True) or {}); name=clean(d.get('name'))[:160]
-    if not name:return jsonify(error='name required'),400
-    row,err=db_insert('koja_ai_agents',{'owner_id':uid,'name':name,'goal':clean(d.get('goal'))[:2000],'status':'draft','config':{},'created_at':utc_now(),'updated_at':utc_now()})
-    return jsonify(ok=bool(row and not err),agent=row or {},error=err or '')
-
-@app.route('/api/engines/autonomous-ai/run',methods=['POST'])
-@login_required
-def engine_autonomous_run():
-    uid=_engine_uid(); d=request.get_json(silent=True) or {}; aid=clean(d.get('agent_id'))
-    agent=first_row('koja_ai_agents',{'id':aid,'owner_id':uid})
-    if not agent:return jsonify(error='agent not found'),404
-    row,err=db_insert('koja_ai_agent_runs',{'agent_id':aid,'owner_id':uid,'status':'queued','input':d.get('input') or {},'output':{},'created_at':utc_now()})
-    return jsonify(ok=bool(row and not err),run=row or {},error=err or '')
-
-@app.route('/api/engines/intelligence/event',methods=['POST'])
-@login_required
-def engine_intelligence_event():
-    uid=_engine_uid(); d=request.get_json(silent=True) or {}; service=clean(d.get('service_key'))[:80]; event=clean(d.get('event_type'))[:100]
-    if not service or not event:return jsonify(error='service_key and event_type required'),400
-    row,err=db_insert('koja_v16_intelligence_events',{'user_id':uid,'service_key':service,'event_type':event,'object_id':clean(d.get('object_id'))[:120],'value':d.get('value'),'metadata':d.get('metadata') or {},'created_at':utc_now()})
-    return jsonify(ok=bool(row and not err),event=row or {},error=err or '')
-
-@app.route('/api/engines/ecosystem/transaction',methods=['POST'])
-@login_required
-def engine_ecosystem_transaction():
-    uid=_engine_uid(); d=request.get_json(silent=True) or {}
-    row,err=db_insert('koja_unified_transactions',{'user_id':uid,'source_service':clean(d.get('source_service'))[:80],'target_service':clean(d.get('target_service'))[:80],'reference':clean(d.get('reference'))[:180],'amount':_money_num(d.get('amount')),'currency':clean(d.get('currency'))[:8] or 'ZMW','status':'pending','metadata':d.get('metadata') or {},'created_at':utc_now(),'updated_at':utc_now()})
-    return jsonify(ok=bool(row and not err),transaction=row or {},error=err or '')
