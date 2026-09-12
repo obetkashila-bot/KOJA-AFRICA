@@ -6514,6 +6514,18 @@ def api_notification_subscribe():
     else: row,err=db_insert('koja_push_subscriptions',payload); ok=bool(row and not err)
     return jsonify(ok=bool(ok))
 
+@app.route('/api/notifications/test',methods=['POST'])
+@login_required
+def api_notification_test():
+    uid=str(current_user()['id'])
+    pk=(os.getenv('KOJA_PUSH_VAPID_PUBLIC_KEY') or os.getenv('VAPID_PUBLIC_KEY','')).strip()
+    sk=(os.getenv('KOJA_PUSH_VAPID_PRIVATE_KEY') or os.getenv('VAPID_PRIVATE_KEY','')).strip()
+    subs=db_select('koja_push_subscriptions',filters={'user_id':uid},limit=20)
+    if not pk or not sk:
+        return jsonify(ok=False,configured=False,subscriptions=len(subs),sent=0,error='Push VAPID keys are not configured on KOJA.'),400
+    sent=_send_web_push(uid,'KOJA Test Notification','Push notifications are working on this device.','/notifications','system')
+    return jsonify(ok=bool(sent),configured=True,subscriptions=len(subs),sent=sent),200 if sent else 400
+
 @app.route('/koja-sw.js')
 def koja_service_worker():
     js="self.addEventListener('push',e=>{let d=e.data?e.data.json():{};e.waitUntil(self.registration.showNotification(d.title||'KOJA',{body:d.body||'New KOJA update',icon:'/static/favicon.ico',badge:'/static/favicon.ico',data:{url:d.url||'/notifications'}}))});self.addEventListener('notificationclick',e=>{e.notification.close();e.waitUntil(clients.matchAll({type:'window',includeUncontrolled:true}).then(cs=>{for(const c of cs){if('focus'in c){c.navigate(e.notification.data.url||'/notifications');return c.focus()}}return clients.openWindow(e.notification.data.url||'/notifications')}))});"

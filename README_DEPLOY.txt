@@ -1,19 +1,26 @@
-KOJA AFRICA - Production Fix
+KOJA AFRICA PRODUCTION PUSH TEST PATCH — 2026-09-12
 
-This package contains the corrected production app.py from the studied KOJA application.
+Based on app(20260912-052005).py with the additive production fixes.
+
+Added:
+- KOJA-prefixed VAPID environment variable support with legacy fallback.
+- /api/notifications/test (login required) to test the complete browser push delivery chain without exposing secrets.
+- livekit-api requirement.
+- existing additive Supabase migration retained.
 
 Render:
 Build Command: pip install -r requirements.txt
-Start Command: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 120 --graceful-timeout 30 --keep-alive 5
+Start Command: gunicorn app:app
 
-Required environment variables include:
-- SECRET_KEY (or FLASK_SECRET_KEY)
-- SUPABASE_URL
-- SUPABASE_SECRET_KEY (or SUPABASE_SERVICE_KEY / SUPABASE_KEY)
+Required Render environment variables:
+KOJA_PUSH_VAPID_PUBLIC_KEY
+KOJA_PUSH_VAPID_PRIVATE_KEY
+KOJA_PUSH_VAPID_SUBJECT=mailto:your-email@example.com
 
-Do not commit .env or API keys.
+Do not put secret values in GitHub or this ZIP's README.
 
-Validation performed:
-- Python AST/bytecode compilation passed.
-- Flask object named `app` is present in app.py.
-- No changes were made to Communications logic.
+After deployment:
+1. Log into KOJA on the phone/browser.
+2. Open Notification Settings and enable phone/browser notifications.
+3. POST /api/notifications/test while logged in. The endpoint returns JSON with configured, subscriptions and sent.
+4. A successful test should display: KOJA Test Notification.
