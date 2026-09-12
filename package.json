@@ -18,12 +18,12 @@
     "release:ios": "npx cap sync ios && npx cap open ios"
   },
   "dependencies": {
-    "@capacitor/core": "8.4.0",
-    "@capacitor/android": "8.4.0",
-    "@capacitor/ios": "8.4.0"
+    "@capacitor/core": "latest",
+    "@capacitor/android": "latest",
+    "@capacitor/ios": "latest"
   },
   "devDependencies": {
-    "@capacitor/cli": "8.4.0",
+    "@capacitor/cli": "latest",
     "electron": "latest",
     "electron-builder": "latest"
   },

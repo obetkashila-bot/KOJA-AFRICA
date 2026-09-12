@@ -29,10 +29,7 @@ from werkzeug.utils import secure_filename
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 # Live Shopping / LiveKit server SDK
-try:
-    from livekit import api as livekit_api
-except Exception:
-    livekit_api = None
+from livekit import api as livekit_api
 
 # Optional document parsers used by KOJA AI file intelligence.
 try:
@@ -766,7 +763,7 @@ def enforce_csrf():
 BASE_HTML = r"""
 <!doctype html>
 <html lang="en" data-koja-theme="system">
-<head>
+<head><link rel="manifest" href="/manifest.json"><meta name="theme-color" content="#0b2a4a"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><link rel="apple-touch-icon" href="/static/icons/icon-192.png">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <meta name="description" content="{{ meta_description or 'KOJA AFRICA — knowledge, questions, answers, research, assignments, documents, professional services and delivery services.' }}">
@@ -927,7 +924,7 @@ footer{text-align:center;color:var(--muted);padding:30px}
 {{ body|safe }}
 </div>
 <footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services</footer>
-</body>
+<script>if("serviceWorker" in navigator){window.addEventListener("load",()=>navigator.serviceWorker.register("/service-worker.js").catch(()=>{}));}</script></body>
 </html>
 """
 
@@ -1080,17 +1077,24 @@ self.addEventListener('fetch', function(event) {
 """
     return Response(script, mimetype='application/javascript', headers={'Cache-Control':'no-store'})
 
+@app.route("/manifest.json")
+def koja_manifest():
+    return send_from_directory("static", "../manifest.json", mimetype="application/manifest+json")
+
+@app.route("/service-worker.js")
+def koja_service_worker():
+    return send_from_directory("static", "sw.js", mimetype="application/javascript")
+
 @app.route("/health")
 def health():
-    # Render health checks must never depend on Supabase, Storage, AI, payments,
-    # LiveKit, or any other remote service. Keep this endpoint fast and local.
     return jsonify({
         "status": "ok",
         "application": APP_NAME,
-        "health": "live",
+        "supabase_configured": supabase_configured(),
+        "gps_table_available": table_exists("driver_locations"),
         "timestamp": utc_now(),
         "python": os.sys.version.split()[0],
-    }), 200
+    })
 
 # ============================================================
 # REGISTER / LOGIN
