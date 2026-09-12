@@ -6412,7 +6412,7 @@ def _send_web_push(uid,title,body,url=None,notification_type='system'):
     if not _notification_allowed(uid,notification_type): return 0
     try: from pywebpush import webpush
     except Exception: return 0
-    pk=os.getenv('KOJA_PUSH_VAPID_PUBLIC_KEY') or os.getenv('VAPID_PUBLIC_KEY',''); sk=os.getenv('KOJA_PUSH_VAPID_PRIVATE_KEY') or os.getenv('VAPID_PRIVATE_KEY',''); subject=os.getenv('KOJA_PUSH_VAPID_SUBJECT') or os.getenv('VAPID_CLAIMS_EMAIL','mailto:admin@koja-africa.com'); pk=pk.strip(); sk=sk.strip(); subject=subject.strip()
+    pk=os.getenv('VAPID_PUBLIC_KEY','').strip(); sk=os.getenv('VAPID_PRIVATE_KEY','').strip(); subject=os.getenv('VAPID_CLAIMS_EMAIL','mailto:admin@koja-africa.com').strip()
     if not pk or not sk: return 0
     sent=0
     for sub in db_select('koja_push_subscriptions',filters={'user_id':str(uid)},limit=20):
@@ -6502,7 +6502,9 @@ def api_notification_preferences():
 
 @app.route('/api/notifications/vapid-public-key')
 @login_required
-def api_vapid_public_key(): return ((os.getenv('KOJA_PUSH_VAPID_PUBLIC_KEY') or os.getenv('VAPID_PUBLIC_KEY','')).strip(),200,{'Content-Type':'text/plain'})
+def api_vapid_public_key():
+    key=(os.getenv('KOJA_PUSH_VAPID_PUBLIC_KEY') or os.getenv('VAPID_PUBLIC_KEY') or '').strip()
+    return (key,200,{'Content-Type':'text/plain'})
 
 @app.route('/api/notifications/subscribe',methods=['POST'])
 @login_required
@@ -6514,17 +6516,25 @@ def api_notification_subscribe():
     else: row,err=db_insert('koja_push_subscriptions',payload); ok=bool(row and not err)
     return jsonify(ok=bool(ok))
 
-@app.route('/api/notifications/test',methods=['POST'])
+@app.route('/api/notifications/test', methods=['POST'])
 @login_required
-def api_notification_test():
+def api_notifications_test():
+    """Send one controlled Web Push notification to the logged-in user's devices."""
     uid=str(current_user()['id'])
-    pk=(os.getenv('KOJA_PUSH_VAPID_PUBLIC_KEY') or os.getenv('VAPID_PUBLIC_KEY','')).strip()
-    sk=(os.getenv('KOJA_PUSH_VAPID_PRIVATE_KEY') or os.getenv('VAPID_PRIVATE_KEY','')).strip()
+    if not (os.getenv('KOJA_PUSH_VAPID_PRIVATE_KEY') or os.getenv('VAPID_PRIVATE_KEY')):
+        return jsonify(ok=False, error='Push service is not configured.'), 503
     subs=db_select('koja_push_subscriptions',filters={'user_id':uid},limit=20)
-    if not pk or not sk:
-        return jsonify(ok=False,configured=False,subscriptions=len(subs),sent=0,error='Push VAPID keys are not configured on KOJA.'),400
-    sent=_send_web_push(uid,'KOJA Test Notification','Push notifications are working on this device.','/notifications','system')
-    return jsonify(ok=bool(sent),configured=True,subscriptions=len(subs),sent=sent),200 if sent else 400
+    if not subs:
+        return jsonify(ok=False, error='No push subscription found. Enable phone/browser notifications first.', subscriptions=0), 404
+    sent=0; errors=[]
+    for sub in subs:
+        ok,err=_send_web_push(uid,'KOJA Test Notification','KOJA push notifications are working.','/notifications','system')
+        if ok:
+            sent+=1
+        elif err:
+            errors.append(str(err)[:300])
+        break
+    return jsonify(ok=sent>0,sent=sent,subscriptions=len(subs),errors=errors),200 if sent>0 else 502
 
 @app.route('/koja-sw.js')
 def koja_service_worker():
