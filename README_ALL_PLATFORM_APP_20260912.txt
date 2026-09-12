@@ -12,6 +12,3 @@ Added to the current KOJA production Flask application:
 
 This package does not replace Render Production and does not alter Supabase data.
 The native store signing/submission steps still require platform developer accounts and platform-specific build environments.
-
-
-Cross-platform packaging has been added: Capacitor for Android/iOS and Electron/electron-builder for Windows/macOS/Linux.
