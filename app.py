@@ -5055,10 +5055,19 @@ def track_delivery(tracking_code):
     delivery=first_row("deliveries",{"tracking_code":tracking_code})
     if not delivery: abort(404)
     user=current_user() or {}
-    allowed=bool(user.get("is_admin")) or str(delivery.get("customer_id") or "") == str(user.get("id") or "")
-    if not allowed:
-        provider=get_driver_provider(user.get("id"))
-        allowed=bool(provider and str(provider.get("id")) == str(delivery.get("driver_id") or ""))
+    uid=str(user.get("id") or "")
+    is_admin=bool(user.get("is_admin"))
+    is_customer=str(delivery.get("customer_id") or "") == uid
+    provider=get_driver_provider(uid)
+    is_driver=bool(provider and str(provider.get("id")) == str(delivery.get("driver_id") or ""))
+    is_seller=str(delivery.get("sender_id") or "") == uid
+    if not is_seller and delivery.get("sender_id"):
+        try:
+            business=first_row("koja_businesses",{"id":delivery.get("sender_id")}) or {}
+            is_seller=str(business.get("owner_id") or "") == uid
+        except Exception:
+            pass
+    allowed=is_admin or is_customer or is_driver or is_seller
     if not allowed: abort(403)
     return render_page("Track Delivery",r"""
 <div class="hero"><h2>Live Delivery Tracking</h2><p>Tracking code: <strong>{{ delivery.get("tracking_code") }}</strong></p></div>
@@ -5066,6 +5075,17 @@ def track_delivery(tracking_code):
 <p><strong>Pickup:</strong> {{ delivery.get("pickup_location") }}</p>
 <p><strong>Destination:</strong> <span id="destination-text">{{ delivery.get("destination") }}</span></p>
 <p><strong>Status:</strong> <span id="delivery-status">{{ delivery.get("status") }}</span></p>
+<div class="card" style="margin:14px 0 0">
+<h3>Delivery Actions</h3>
+<div class="actions">
+{% if is_customer and not delivery.get("driver_id") %}<a class="btn success" href="{{ url_for('drivers') }}">Find / Select Driver</a>{% endif %}
+{% if is_customer and delivery.get("driver_id") and not delivery.get("pickup_verified") %}<span class="btn secondary" style="opacity:.7;pointer-events:none">Waiting for Seller Handover</span>{% endif %}
+{% if is_seller and not delivery.get("pickup_verified") %}<a class="btn success" href="{{ url_for('seller_confirm_delivery_page',tracking_code=delivery.get('tracking_code')) }}">Confirm Seller Handover</a>{% elif is_seller and delivery.get("pickup_verified") %}<span class="btn secondary" style="opacity:.7;pointer-events:none">Handover Confirmed</span>{% endif %}
+{% if is_driver %}<a class="btn success" href="{{ url_for('tracking') }}?delivery_id={{ delivery.get('id') }}">Start Driver GPS</a><a class="btn secondary" href="{{ url_for('driver_dashboard') }}">Driver Delivery</a>{% elif not delivery.get("driver_id") and not is_customer %}<a class="btn" href="{{ url_for('driver_available_deliveries') }}">Available Deliveries</a>{% endif %}
+{% if is_customer and delivery.get("pickup_verified") and not delivery.get("delivery_confirmation_verified") %}<a class="btn success" href="{{ url_for('confirm_delivery_receipt_page',tracking_code=delivery.get('tracking_code')) }}">Confirm Delivery</a>{% elif is_customer and delivery.get("delivery_confirmation_verified") %}<span class="btn secondary" style="opacity:.7;pointer-events:none">Delivery Confirmed</span>{% endif %}
+</div>
+<p class="small">KOJA flow: select driver → seller confirms handover → driver delivers → buyer confirms receipt.</p>
+</div>
 <div class="grid">
 <div class="stat"><div class="big" id="distance">—</div>Distance</div>
 <div class="stat"><div class="big" id="eta">—</div>ETA</div>
@@ -5149,7 +5169,7 @@ load();
 setInterval(load,5000);
 setInterval(()=>updateRoute(true),15000);
 </script>
-""",delivery=delivery)
+""",delivery=delivery,is_customer=is_customer,is_seller=is_seller,is_driver=is_driver,is_admin=is_admin)
 
 @app.route("/api/delivery/route", methods=["GET"])
 @login_required
