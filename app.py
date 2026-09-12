@@ -3298,7 +3298,7 @@ def _finalize_market_order(order, tx):
     db_insert('koja_market_ledger',{'order_id':order.get('id'),'seller_id':order.get('seller_id'),'buyer_id':buyer_id,'gross_amount':gross,'commission_amount':commission,'platform_fee':platform_fee,'net_amount':net,'currency':order.get('currency') or 'ZMW','status':'pending','created_at':utc_now()})
     db_insert('koja_market_payment_fees',{'order_id':order.get('id'),'buyer_id':buyer_id,'amount':platform_fee,'currency':order.get('currency') or 'ZMW','fee_type':'platform_service_fee','provider':'flutterwave','reference':tx_ref,'status':'captured','created_at':utc_now()})
     if p and str(p.get('product_type') or 'physical')=='physical' and str(order.get('fulfillment_method') or 'delivery')=='delivery':
-        tracking='KMD-'+secrets.token_hex(5).upper(); pickup_code='KDP-'+secrets.token_hex(4).upper(); db_insert('koja_market_delivery_jobs',{'order_id':order.get('id'),'customer_id':buyer_id,'seller_id':order.get('seller_id'),'delivery_address':order.get('delivery_address'),'delivery_fee':_money_num(order.get('delivery_fee')),'status':'requested','tracking_code':tracking,'created_at':utc_now(),'updated_at':utc_now()}); drow,derr=db_insert('deliveries',{'id':str(uuid.uuid4()),'customer_id':buyer_id,'user_id':buyer_id,'sender_id':order.get('seller_id'),'pickup_location':'KOJA Seller','pickup_address':'KOJA Seller','destination':order.get('delivery_address'),'delivery_address':order.get('delivery_address'),'recipient_name':order.get('recipient_name'),'recipient_phone':order.get('recipient_phone'),'package_description':str((p or {}).get('title') or 'KOJA Market order'),'delivery_fee':_money_num(order.get('delivery_fee')),'currency':'ZMW','status':'requested','tracking_code':tracking,'pickup_code':pickup_code,'notes':order.get('notes'),'created_at':utc_now(),'updated_at':utc_now()}); _notify_available_drivers(tracking,'KOJA Seller',order.get('delivery_address'),order.get('delivery_fee')); notify_user(order.get('seller_id'),'Delivery pickup number created',f'Order {order.get("order_number") or order.get("id")} is ready for delivery. Give the driver pickup number {pickup_code}.','delivery',order.get('id'),'/deliveries')
+        tracking='KMD-'+secrets.token_hex(5).upper(); pickup_code=make_delivery_pickup_code(); confirm_code=make_delivery_confirmation_code(); seller_otp=make_seller_pickup_otp(); db_insert('koja_market_delivery_jobs',{'order_id':order.get('id'),'customer_id':buyer_id,'seller_id':order.get('seller_id'),'delivery_address':order.get('delivery_address'),'delivery_fee':_money_num(order.get('delivery_fee')),'status':'requested','tracking_code':tracking,'created_at':utc_now(),'updated_at':utc_now()}); drow,derr=db_insert('deliveries',{'id':str(uuid.uuid4()),'customer_id':buyer_id,'user_id':buyer_id,'sender_id':order.get('seller_id'),'pickup_location':'KOJA Seller','pickup_address':'KOJA Seller','destination':order.get('delivery_address'),'delivery_address':order.get('delivery_address'),'recipient_name':order.get('recipient_name'),'recipient_phone':order.get('recipient_phone'),'package_description':str((p or {}).get('title') or 'KOJA Market order'),'delivery_fee':_money_num(order.get('delivery_fee')),'currency':'ZMW','status':'requested','tracking_code':tracking,'pickup_code':pickup_code,'delivery_confirmation_code':confirm_code,'delivery_confirmation_verified':False,'seller_pickup_otp':seller_otp,'seller_pickup_otp_verified':False,'seller_pickup_otp_attempts':0,'seller_pickup_otp_locked':False,'notes':order.get('notes'),'created_at':utc_now(),'updated_at':utc_now()}); _notify_available_drivers(tracking,'KOJA Seller',order.get('delivery_address'),order.get('delivery_fee')); notify_user(order.get('seller_id'),'Delivery pickup number created',f'Order {order.get("order_number") or order.get("id")} is ready for delivery. KOJA seller pickup OTP: {seller_otp}. Give the driver the pickup number and verify the seller OTP in KOJA.','delivery',order.get('id'),'/deliveries'); notify_user(buyer_id,'KOJA delivery confirmation code',f'Your six-digit delivery confirmation code is {confirm_code}. Give it to the KOJA driver only when you receive your order.','delivery',order.get('id'),f'/track/{tracking}')
     _sync_market_order_to_business(dict(order,status='paid'))
     return True
 
@@ -3710,8 +3710,9 @@ def flutterwave_webhook():
         return jsonify({'status':'ignored','reason':'reference_mismatch'}),200
     market_orders=db_select('koja_market_orders',{'payment_reference':tx_ref},order='created_at.asc',limit=100) or []
     marketplace_order=first_row('koja_marketplace_orders',{'payment_reference':tx_ref})
+    business_order=first_row('koja_business_orders',{'payment_reference':tx_ref})
     monetization_order=_mono_order_for_ref(tx_ref)
-    if not market_orders and not marketplace_order and not monetization_order:
+    if not market_orders and not marketplace_order and not business_order and not monetization_order:
         logger.warning('Flutterwave webhook unknown reference tx_ref=%s',tx_ref)
         return jsonify({'status':'ignored','reason':'unknown_reference'}),200
     results=[]
@@ -3725,6 +3726,10 @@ def flutterwave_webhook():
     if marketplace_order:
         ok=_finalize_marketplace_order(marketplace_order,tx)
         logger.info('KOJA Digital finalization tx_ref=%s order=%s result=%s',tx_ref,marketplace_order.get('id'),ok)
+    if business_order:
+        ok=_finalize_business_store_order(business_order,tx)
+        logger.info('KOJA Business order finalization tx_ref=%s order=%s result=%s',tx_ref,business_order.get('id'),ok)
+        results.append('business:'+('finalized_or_paid' if ok else 'failed'))
     if monetization_order:
         ok=_finalize_monetization(monetization_order,tx)
         logger.info('KOJA monetization finalization tx_ref=%s order=%s result=%s',tx_ref,monetization_order.get('id'),ok)
@@ -6390,9 +6395,7 @@ create table if not exists public.koja_notifications (
  is_read boolean default false, created_at timestamptz default now()
 );
 create index if not exists koja_notifications_user_idx on public.koja_notifications(user_id,is_read,created_at desc);
-create table if not exists public.koja_notification_preferences (user_id uuid primary key, push_enabled boolean default true, sound_enabled boolean default true, market_enabled boolean default true, delivery_enabled boolean default true, ai_enabled boolean default true, messages_enabled boolean default true, business_enabled boolean default true, calls_enabled boolean default true, system_enabled boolean default true, updated_at timestamptz default now());
-alter table if exists public.koja_notification_preferences add column if not exists business_enabled boolean default true;
-alter table if exists public.koja_notification_preferences add column if not exists calls_enabled boolean default true;
+create table if not exists public.koja_notification_preferences (user_id uuid primary key, push_enabled boolean default true, sound_enabled boolean default true, market_enabled boolean default true, delivery_enabled boolean default true, ai_enabled boolean default true, messages_enabled boolean default true, system_enabled boolean default true, updated_at timestamptz default now());
 create table if not exists public.koja_push_subscriptions (id uuid primary key default gen_random_uuid(), user_id uuid not null, endpoint text not null, subscription jsonb not null default '{}'::jsonb, user_agent text, created_at timestamptz default now(), updated_at timestamptz default now(), unique(user_id,endpoint));
 create index if not exists koja_push_subscriptions_user_idx on public.koja_push_subscriptions(user_id,created_at desc);
 create table if not exists public.koja_blocks (
@@ -6407,16 +6410,14 @@ def _notification_allowed(uid, notification_type):
     if t in ('market','order','seller','promotion','sale'): return bool(p.get('market_enabled',True))
     if t in ('delivery','driver','delivery_update'): return bool(p.get('delivery_enabled',True))
     if t in ('ai','ai_update'): return bool(p.get('ai_enabled',True))
-    if t in ('message','chat','friend_request','message_media','voice_message'): return bool(p.get('messages_enabled',True))
-    if t in ('call','group_call','missed_call'): return bool(p.get('calls_enabled',True))
-    if t in ('business','business_order','business_update'): return bool(p.get('business_enabled',True))
+    if t in ('message','chat','call','group_call','friend_request'): return bool(p.get('messages_enabled',True))
     return bool(p.get('system_enabled',True))
 
 def _send_web_push(uid,title,body,url=None,notification_type='system'):
     if not _notification_allowed(uid,notification_type): return 0
     try: from pywebpush import webpush
     except Exception: return 0
-    pk=(os.getenv('KOJA_PUSH_VAPID_PUBLIC_KEY') or os.getenv('VAPID_PUBLIC_KEY') or '').strip(); sk=(os.getenv('KOJA_PUSH_VAPID_PRIVATE_KEY') or os.getenv('VAPID_PRIVATE_KEY') or '').strip(); subject=(os.getenv('KOJA_PUSH_VAPID_SUBJECT') or os.getenv('VAPID_CLAIMS_EMAIL') or 'mailto:admin@koja-africa.com').strip()
+    pk=os.getenv('VAPID_PUBLIC_KEY','').strip(); sk=os.getenv('VAPID_PRIVATE_KEY','').strip(); subject=os.getenv('VAPID_CLAIMS_EMAIL','mailto:admin@koja-africa.com').strip()
     if not pk or not sk: return 0
     sent=0
     for sub in db_select('koja_push_subscriptions',filters={'user_id':str(uid)},limit=20):
@@ -6476,7 +6477,7 @@ def notifications_page():
 @login_required
 def notification_settings():
     uid=str(current_user()['id']); p=first_row('koja_notification_preferences',{'user_id':uid}) or {}
-    return render_page('Notification Settings',"""<div class='card'><h2>Notification Settings</h2><p>Choose what KOJA can notify you about.</p><form id='np'><label><input type='checkbox' name='push_enabled' {% if p.get('push_enabled',True) %}checked{% endif %}> Push notifications</label><label><input type='checkbox' name='sound_enabled' {% if p.get('sound_enabled',True) %}checked{% endif %}> Notification sound</label><label><input type='checkbox' name='market_enabled' {% if p.get('market_enabled',True) %}checked{% endif %}> Market and orders</label><label><input type='checkbox' name='delivery_enabled' {% if p.get('delivery_enabled',True) %}checked{% endif %}> Deliveries and drivers</label><label><input type='checkbox' name='ai_enabled' {% if p.get('ai_enabled',True) %}checked{% endif %}> KOJA AI</label><label><input type='checkbox' name='messages_enabled' {% if p.get('messages_enabled',True) %}checked{% endif %}> Messages and chat</label><label><input type='checkbox' name='business_enabled' {% if p.get('business_enabled',True) %}checked{% endif %}> Business and business orders</label><label><input type='checkbox' name='calls_enabled' {% if p.get('calls_enabled',True) %}checked{% endif %}> Calls and missed calls</label><label><input type='checkbox' name='system_enabled' {% if p.get('system_enabled',True) %}checked{% endif %}> System and account</label><button class='btn' type='submit'>Save settings</button></form><hr><button class='btn secondary' type='button' onclick='enableKOJAPush()'>Enable KOJA notifications</button><p id='push-status' class='small'></p></div><script>const form=document.getElementById('np');form.onsubmit=async e=>{e.preventDefault();let o={};new FormData(form).forEach((v,k)=>o[k]=true);let r=await fetch('/api/notifications/preferences',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)});document.getElementById('push-status').textContent=r.ok?'Saved.':'Could not save settings.'};async function enableKOJAPush(){if(!('Notification'in window)){document.getElementById('push-status').textContent='KOJA notifications are not supported on this device.';return}let perm=await Notification.requestPermission();if(perm!=='granted'){document.getElementById('push-status').textContent='KOJA notification permission was not granted.';return}if(!('serviceWorker'in navigator)){document.getElementById('push-status').textContent='KOJA notification service is not supported on this device.';return}let reg=await navigator.serviceWorker.register('/koja-sw.js');let key=await fetch('/api/notifications/vapid-public-key').then(r=>r.text());if(!key){document.getElementById('push-status').textContent='KOJA notification service is not configured yet.';return}let sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:base64ToUint8(key)});await fetch('/api/notifications/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sub)});document.getElementById('push-status').textContent='KOJA notifications enabled.'}function base64ToUint8(b){let p='='.repeat((4-b.length%4)%4),s=atob((b+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from([...s].map(c=>c.charCodeAt(0)))}</script>""",p=p)
+    return render_page('Notification Settings',"""<div class='card'><h2>Notification Settings</h2><p>Choose what KOJA can notify you about.</p><form id='np'><label><input type='checkbox' name='push_enabled' {% if p.get('push_enabled',True) %}checked{% endif %}> Push notifications</label><label><input type='checkbox' name='sound_enabled' {% if p.get('sound_enabled',True) %}checked{% endif %}> Notification sound</label><label><input type='checkbox' name='market_enabled' {% if p.get('market_enabled',True) %}checked{% endif %}> Market and orders</label><label><input type='checkbox' name='delivery_enabled' {% if p.get('delivery_enabled',True) %}checked{% endif %}> Deliveries and drivers</label><label><input type='checkbox' name='ai_enabled' {% if p.get('ai_enabled',True) %}checked{% endif %}> KOJA AI</label><label><input type='checkbox' name='messages_enabled' {% if p.get('messages_enabled',True) %}checked{% endif %}> Messages and calls</label><label><input type='checkbox' name='system_enabled' {% if p.get('system_enabled',True) %}checked{% endif %}> System and account</label><button class='btn' type='submit'>Save settings</button></form><hr><button class='btn secondary' type='button' onclick='enableKOJAPush()'>Enable phone/browser notifications</button><p id='push-status' class='small'></p></div><script>const form=document.getElementById('np');form.onsubmit=async e=>{e.preventDefault();let o={};new FormData(form).forEach((v,k)=>o[k]=true);let r=await fetch('/api/notifications/preferences',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)});document.getElementById('push-status').textContent=r.ok?'Saved.':'Could not save settings.'};async function enableKOJAPush(){if(!('Notification'in window)){document.getElementById('push-status').textContent='This browser does not support notifications.';return}let perm=await Notification.requestPermission();if(perm!=='granted'){document.getElementById('push-status').textContent='Notification permission was not granted.';return}if(!('serviceWorker'in navigator)){document.getElementById('push-status').textContent='Service workers are not supported here.';return}let reg=await navigator.serviceWorker.register('/koja-sw.js');let key=await fetch('/api/notifications/vapid-public-key').then(r=>r.text());if(!key){document.getElementById('push-status').textContent='Push service is not configured yet.';return}let sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:base64ToUint8(key)});await fetch('/api/notifications/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sub)});document.getElementById('push-status').textContent='Phone/browser notifications enabled.'}function base64ToUint8(b){let p='='.repeat((4-b.length%4)%4),s=atob((b+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from([...s].map(c=>c.charCodeAt(0)))}</script>""",p=p)
 
 @app.route('/api/notifications')
 @login_required
@@ -6499,14 +6500,14 @@ def api_notification_read_all():
 @app.route('/api/notifications/preferences',methods=['POST'])
 @login_required
 def api_notification_preferences():
-    uid=str(current_user()['id']); data=request.get_json(silent=True) or {}; payload={k:bool(data.get(k,False)) for k in ['push_enabled','sound_enabled','market_enabled','delivery_enabled','ai_enabled','messages_enabled','business_enabled','calls_enabled','system_enabled']}; payload['user_id']=uid; payload['updated_at']=utc_now(); old=first_row('koja_notification_preferences',{'user_id':uid})
+    uid=str(current_user()['id']); data=request.get_json(silent=True) or {}; payload={k:bool(data.get(k,False)) for k in ['push_enabled','sound_enabled','market_enabled','delivery_enabled','ai_enabled','messages_enabled','system_enabled']}; payload['user_id']=uid; payload['updated_at']=utc_now(); old=first_row('koja_notification_preferences',{'user_id':uid})
     if old: ok,err=db_update('koja_notification_preferences',{'user_id':uid},payload)
     else: row,err=db_insert('koja_notification_preferences',payload); ok=bool(row and not err)
     return jsonify(ok=bool(ok)),200 if ok else 400
 
 @app.route('/api/notifications/vapid-public-key')
 @login_required
-def api_vapid_public_key(): return ((os.getenv('KOJA_PUSH_VAPID_PUBLIC_KEY') or os.getenv('VAPID_PUBLIC_KEY') or '').strip(),200,{'Content-Type':'text/plain','Cache-Control':'no-store'})
+def api_vapid_public_key(): return (os.getenv('VAPID_PUBLIC_KEY','').strip(),200,{'Content-Type':'text/plain'})
 
 @app.route('/api/notifications/subscribe',methods=['POST'])
 @login_required
@@ -6514,14 +6515,9 @@ def api_notification_subscribe():
     uid=str(current_user()['id']); sub=request.get_json(silent=True) or {}; endpoint=clean(sub.get('endpoint'))
     if not endpoint: return jsonify(error='endpoint required'),400
     existing=first_row('koja_push_subscriptions',{'user_id':uid,'endpoint':endpoint}); payload={'user_id':uid,'endpoint':endpoint,'subscription':sub,'user_agent':request.headers.get('User-Agent',''),'updated_at':utc_now()}
-    if existing:
-        result,err=db_update('koja_push_subscriptions',{'id':existing.get('id')},payload); ok=bool(result is not None and not err)
-    else:
-        row,err=db_insert('koja_push_subscriptions',payload); ok=bool(row and not err)
-    if not ok:
-        logger.error('KOJA push subscription save failed for user %s: %s',uid,err)
-        return jsonify(ok=False,error='KOJA notification subscription could not be saved.'),400
-    return jsonify(ok=True),200
+    if existing: ok,err=db_update('koja_push_subscriptions',{'id':existing.get('id')},payload)
+    else: row,err=db_insert('koja_push_subscriptions',payload); ok=bool(row and not err)
+    return jsonify(ok=bool(ok))
 
 @app.route('/koja-sw.js')
 def koja_service_worker():
@@ -6591,12 +6587,6 @@ def connect_messages(conversation_id):
         if not body:return jsonify(error='Empty message'),400
         row,err=db_insert('koja_messages',{'id':str(uuid.uuid4()),'conversation_id':conversation_id,'sender_id':uid,'message_type':'text','body':body,'created_at':utc_now()})
         if err:return jsonify(error=err),500
-        members=db_select('koja_conversation_members',filters={'conversation_id':conversation_id},limit=100)
-        sender_name=_profile_name(uid)
-        for member in members:
-            target=str(member.get('user_id') or '')
-            if target and target!=str(uid):
-                notify_user(target,f'New message from {sender_name}',body,'message',row.get('id'),f'/connect/chat/{conversation_id}')
         return jsonify(message=row)
     rows=db_select('koja_messages',filters={'conversation_id':conversation_id},order='created_at.asc',limit=300)
     for m in rows:
@@ -6626,12 +6616,6 @@ def connect_upload(conversation_id):
         delete_storage_path(path)
         return jsonify(error=err),500
     if row and row.get('file_url'):
-        members=db_select('koja_conversation_members',filters={'conversation_id':conversation_id},limit=100)
-        sender_name=_profile_name(uid); kind='voice message' if mt=='audio' else ('photo' if mt=='image' else 'file')
-        for member in members:
-            target=str(member.get('user_id') or '')
-            if target and target!=str(uid):
-                notify_user(target,f'New {kind} from {sender_name}',row.get('body') or f'{sender_name} sent a {kind}.','voice_message' if mt=='audio' else 'message_media',row.get('id'),f'/connect/chat/{conversation_id}')
         row['file_url']=url_for('connect_message_media', message_id=row.get('id'))
     return jsonify(message=row)
 
@@ -6740,7 +6724,7 @@ def connect_group_call_create():
         row,err=db_insert('koja_calls',{'id':str(uuid.uuid4()),'conversation_id':cid,'caller_id':uid,'callee_id':callee,'mode':mode,'status':'ringing','created_at':utc_now()})
         if not err and row:
             db_insert('koja_group_call_participants',{'call_id':row['id'],'user_id':callee,'status':'invited'})
-            notify_user(callee,f'Incoming group {mode} call',f'{_profile_name(uid)} started a group call.','group_call',row['id'],f'/connect/answer/{row['id']}');calls.append(row)
+            notify_user(callee,f'Incoming group {mode} call',f'{_profile_name(uid)} started a group call.','group_call',row['id'],'/connect/calls');calls.append(row)
     return jsonify(calls=calls)
 
 @app.route('/connect/status',methods=['GET','POST'])
@@ -6994,7 +6978,7 @@ def connect_call_create():
     if callee==uid or not find_user_by_id(callee) or mode not in ('voice','video'):return jsonify(error='Invalid call'),400
     c=_direct_conversation(uid,callee); row,err=db_insert('koja_calls',{'id':str(uuid.uuid4()),'conversation_id':c['id'],'caller_id':uid,'callee_id':callee,'mode':mode,'status':'ringing','created_at':utc_now()})
     if err:return jsonify(error=err),500
-    notify_user(callee,f'Incoming {mode} call',f'{_profile_name(uid)} is calling you.','call',row['id'],f'/connect/answer/{row['id']}');return jsonify(call=row)
+    notify_user(callee,f'Incoming {mode} call',f'{_profile_name(uid)} is calling you.','call',row['id'],'/connect/calls');return jsonify(call=row)
 
 @app.route('/api/connect/call/offer/<call_id>',methods=['POST'])
 @login_required
@@ -7008,14 +6992,6 @@ def connect_call_offer(call_id):
 def connect_call_check(call_id):
     uid=str(current_user()['id']);c=first_row('koja_calls',{'id':call_id})
     if not c or uid not in (str(c.get('caller_id')),str(c.get('callee_id'))):return jsonify(error='Forbidden'),403
-    if str(c.get('status') or '').lower()=='ringing':
-        try:
-            created=datetime.fromisoformat(str(c.get('created_at')).replace('Z','+00:00'))
-            if datetime.now(timezone.utc)-created >= timedelta(seconds=120):
-                db_update('koja_calls',{'id':call_id},{'status':'ended','ended_at':utc_now()})
-                notify_user(c.get('callee_id'),'Missed KOJA call',f"You missed a {c.get('mode') or 'voice'} call from {_profile_name(c.get('caller_id'))}.",'missed_call',call_id,f'/connect/answer/{call_id}')
-                c=first_row('koja_calls',{'id':call_id}) or c
-        except Exception: pass
     return jsonify(call=c)
 
 @app.route('/api/connect/call/end/<call_id>',methods=['POST'])
@@ -7023,11 +6999,7 @@ def connect_call_check(call_id):
 def connect_call_end(call_id):
     uid=str(current_user()['id']);c=first_row('koja_calls',{'id':call_id})
     if not c or uid not in (str(c.get('caller_id')),str(c.get('callee_id'))):return jsonify(error='Forbidden'),403
-    old_status=str(c.get('status') or '').lower(); db_update('koja_calls',{'id':call_id},{'status':'ended','ended_at':utc_now()});
-    if old_status=='ringing':
-        other=str(c.get('callee_id') if uid==str(c.get('caller_id')) else c.get('caller_id'))
-        notify_user(other,'Missed KOJA call',f'You missed a {c.get('mode') or 'voice'} call from {_profile_name(c.get('caller_id') if other==str(c.get('caller_id')) else c.get('callee_id'))}.','missed_call',call_id,f'/connect/answer/{call_id}')
-    return jsonify(ok=True)
+    db_update('koja_calls',{'id':call_id},{'status':'ended','ended_at':utc_now()});return jsonify(ok=True)
 
 @app.route('/setup/connect-sql')
 def connect_sql():
@@ -7925,6 +7897,34 @@ def business_store_download(order_id):
     except Exception:
         logger.exception('Business digital download failed'); abort(404)
 
+def _finalize_business_store_order(order, tx):
+    if not order or not tx: return False
+    tx_ref=clean(order.get('payment_reference'))
+    if not _flutterwave_payment_valid(tx,tx_ref,order.get('total_amount'),order.get('currency')): return False
+    if str(order.get('status') or '').lower()=='paid': return True
+    updated,err=db_update('koja_business_orders',{'id':order.get('id'),'status':'pending'},{'status':'paid','payment_transaction_id':str(tx.get('id') or ''),'updated_at':utc_now()})
+    if not updated:
+        current=first_row('koja_business_orders',{'id':order.get('id')})
+        if str((current or {}).get('status') or '').lower()=='paid': return True
+        logger.error('KOJA Business order finalization failed order=%s: %s',order.get('id'),err); return False
+    prod=first_row('koja_business_products',{'id':order.get('product_id')}) or {}
+    qty=max(1,int(order.get('quantity') or 1))
+    db_update('koja_business_products',{'id':order.get('product_id')},{'stock':max(0,int(prod.get('stock') or 0)-qty),'updated_at':utc_now()})
+    bid=prod.get('business_id')
+    try:
+        if bid and not db_select('koja_business_sales',{'business_id':bid,'description':'KOJA Business order '+str(order.get('id'))},limit=1):
+            db_insert('koja_business_sales',{'business_id':bid,'product_id':prod.get('id'),'quantity':qty,'total_amount':_money_num(order.get('item_amount') or order.get('total_amount')),'payment_method':'flutterwave','status':'paid','description':'KOJA Business order '+str(order.get('id')),'created_at':utc_now()})
+    except Exception: logger.exception('Business sale ledger sync failed')
+    notify_user(bid,'KOJA Business order paid',f'Business order {order.get("id")} has been verified and paid.','market_order',order.get('id'),'/business/'+str(bid) if bid else '/market/my')
+    if str(order.get('fulfillment_method') or '')=='delivery':
+        tracking='KJB-'+secrets.token_hex(5).upper(); b=first_row('koja_businesses',{'id':bid}) or {}; pickup_code=make_delivery_pickup_code(); confirm_code=make_delivery_confirmation_code(); seller_otp=make_seller_pickup_otp()
+        db_insert('deliveries',{'id':str(uuid.uuid4()),'customer_id':order.get('buyer_id'),'user_id':order.get('buyer_id'),'sender_id':bid,'pickup_location':clean(b.get('location')) or 'Business','pickup_address':clean(b.get('location')) or 'Business','destination':order.get('delivery_address'),'delivery_address':order.get('delivery_address'),'recipient_phone':order.get('recipient_phone'),'package_description':prod.get('name') or 'Business order','delivery_fee':order.get('delivery_fee') or 0,'currency':'ZMW','status':'requested','tracking_code':tracking,'pickup_code':pickup_code,'delivery_confirmation_code':confirm_code,'delivery_confirmation_verified':False,'seller_pickup_otp':seller_otp,'seller_pickup_otp_verified':False,'seller_pickup_otp_attempts':0,'seller_pickup_otp_locked':False,'created_at':utc_now(),'updated_at':utc_now()})
+        db_insert('koja_market_delivery_jobs',{'order_id':order.get('id'),'customer_id':order.get('buyer_id'),'seller_id':bid,'delivery_address':order.get('delivery_address'),'delivery_fee':order.get('delivery_fee') or 0,'status':'requested','tracking_code':tracking,'source_type':'business','source_order_id':order.get('id'),'created_at':utc_now(),'updated_at':utc_now()})
+        _notify_available_drivers(tracking,clean(b.get('location')) or 'Business',order.get('delivery_address'),order.get('delivery_fee'))
+        notify_user(bid,'Delivery pickup number created',f'Business order {order.get("id")} is ready for pickup. KOJA seller pickup OTP: {seller_otp}. Verify the handover in KOJA.','delivery',order.get('id'),'/business/'+str(bid) if bid else '/market/my')
+        notify_user(order.get('buyer_id'),'KOJA delivery confirmation code',f'Your six-digit delivery confirmation code is {confirm_code}. Give it to the KOJA driver only when you receive your order.','delivery',order.get('id'),f'/track/{tracking}')
+    return True
+
 @app.route('/business/store/payment/callback')
 @login_required
 def business_store_payment_callback():
@@ -7932,13 +7932,7 @@ def business_store_payment_callback():
     order=first_row('koja_business_orders',{'payment_reference':tx_ref,'buyer_id':(current_user() or {}).get('id')})
     if not order: flash('Business order not found.','danger'); return redirect(url_for('market_my'))
     if str(order.get('status') or '').lower()=='paid': return redirect(url_for('market_my'))
-    if tx and _flutterwave_payment_valid(tx,tx_ref,order.get('total_amount'),order.get('currency')):
-        db_update('koja_business_orders',{'id':order.get('id')},{'status':'paid','payment_transaction_id':str(tx.get('id') or ''),'updated_at':utc_now()})
-        prod=first_row('koja_business_products',{'id':order.get('product_id')}) or {}; qty=max(1,int(order.get('quantity') or 1)); db_update('koja_business_products',{'id':order.get('product_id')},{'stock':max(0,int(prod.get('stock') or 0)-qty),'updated_at':utc_now()})
-        notify_user(prod.get('business_id'),'New business store order',f"Order {order.get('id')} paid for {prod.get('name') or 'product'}.",'business_order',order.get('id'),f'/business/{prod.get('business_id')}')
-        notify_user(order.get('buyer_id'),'KOJA business order confirmed',f"Your order {order.get('id')} for {prod.get('name') or 'product'} has been paid successfully.",'business_order',order.get('id'),'/market/my')
-        if str(order.get('fulfillment_method') or '')=='delivery':
-            tracking='KJB-'+secrets.token_hex(5).upper(); b=first_row('koja_businesses',{'id':prod.get('business_id')}) or {}; pickup_code='KDP-'+secrets.token_hex(4).upper(); drow,derr=db_insert('deliveries',{'id':str(uuid.uuid4()),'customer_id':order.get('buyer_id'),'user_id':order.get('buyer_id'),'sender_id':prod.get('business_id'),'pickup_location':clean(b.get('location')) or 'Business','pickup_address':clean(b.get('location')) or 'Business','destination':order.get('delivery_address'),'delivery_address':order.get('delivery_address'),'recipient_phone':order.get('recipient_phone'),'package_description':prod.get('name') or 'Business order','delivery_fee':order.get('delivery_fee') or 0,'currency':'ZMW','status':'requested','tracking_code':tracking,'pickup_code':pickup_code,'created_at':utc_now(),'updated_at':utc_now()}); db_insert('koja_market_delivery_jobs',{'order_id':order.get('id'),'customer_id':order.get('buyer_id'),'seller_id':prod.get('business_id'),'delivery_address':order.get('delivery_address'),'delivery_fee':order.get('delivery_fee') or 0,'status':'requested','tracking_code':tracking,'source_type':'business','source_order_id':order.get('id'),'created_at':utc_now(),'updated_at':utc_now()}); _notify_available_drivers(tracking,clean(b.get('location')) or 'Business',order.get('delivery_address'),order.get('delivery_fee')); notify_user(prod.get('business_id'),'Delivery pickup number created',f'Business order {order.get("id")} is ready for delivery. Give the driver pickup number {pickup_code}.','delivery',order.get('id'),'/business/'+str(prod.get('business_id')))
+    if tx and _finalize_business_store_order(order,tx):
         flash('Business order paid successfully.','success'); return redirect(url_for('market_my'))
     flash('Payment is still pending.','info'); return redirect(url_for('market_my'))
 
@@ -8613,6 +8607,28 @@ def production_health_v2():
 def make_delivery_pickup_code():
     return 'KDP-' + secrets.token_hex(4).upper()
 
+def make_delivery_confirmation_code():
+    return f'{secrets.randbelow(900000)+100000:06d}'
+
+def make_seller_pickup_otp():
+    return f'{secrets.randbelow(900000)+100000:06d}'
+
+def _ensure_seller_pickup_otp(delivery):
+    code=clean((delivery or {}).get('seller_pickup_otp'))
+    if code: return code
+    code=make_seller_pickup_otp()
+    if delivery and delivery.get('id'):
+        db_update('deliveries',{'id':delivery.get('id')},{'seller_pickup_otp':code,'seller_pickup_otp_verified':False,'seller_pickup_otp_attempts':0,'seller_pickup_otp_locked':False,'updated_at':utc_now()})
+    return code
+
+def _ensure_delivery_confirmation_code(delivery):
+    code=clean((delivery or {}).get('delivery_confirmation_code'))
+    if code: return code
+    code=make_delivery_confirmation_code()
+    if delivery and delivery.get('id'):
+        db_update('deliveries',{'id':delivery.get('id')},{'delivery_confirmation_code':code,'delivery_confirmation_verified':False,'updated_at':utc_now()})
+    return code
+
 def _delivery_driver_is_current_user(delivery, uid):
     provider = get_driver_provider(uid)
     return bool(provider and str(provider.get('id')) == str(delivery.get('driver_id') or ''))
@@ -8692,6 +8708,7 @@ def verify_delivery_pickup(tracking_code):
 
     body=request.get_json(silent=True) or {}
     entered_code=clean(body.get('pickup_code') or body.get('code')).upper()
+    entered_seller_otp=clean(body.get('seller_otp') or body.get('seller_pickup_otp')).replace(' ','')
     delivery=first_row('deliveries',{'tracking_code':tracking_code})
     if not delivery:
         return jsonify({'valid':False,'status':'invalid','message':'Delivery not found.'}),404
@@ -8723,9 +8740,24 @@ def verify_delivery_pickup(tracking_code):
             'message':'INVALID PICKUP NUMBER.'
         }),400
 
+    seller_otp=_ensure_seller_pickup_otp(delivery)
+    if as_bool(delivery.get('seller_pickup_otp_locked')):
+        return jsonify({'valid':False,'status':'locked','message':'SELLER OTP VERIFICATION IS LOCKED. Contact KOJA support.'}),423
+    if not entered_seller_otp or not entered_seller_otp.isdigit() or len(entered_seller_otp)!=6 or entered_seller_otp != seller_otp:
+        attempts=int(delivery.get('seller_pickup_otp_attempts') or 0)+1
+        locked=attempts>=5
+        updates={'seller_pickup_otp_attempts':attempts,'updated_at':utc_now()}
+        if locked: updates['seller_pickup_otp_locked']=True
+        db_update('deliveries',{'id':delivery.get('id')},updates)
+        msg='INVALID SELLER OTP. KOJA could not verify the seller handover code.'
+        if locked: msg='INVALID SELLER OTP. Too many attempts. Verification is locked; contact KOJA support.'
+        return jsonify({'valid':False,'status':'locked' if locked else 'invalid','message':msg,'attempts_remaining':max(0,5-attempts)}),400
+
     updated,err=db_update('deliveries',{'id':delivery.get('id')},{
         'pickup_verified':True,
         'pickup_verified_at':utc_now(),
+        'seller_pickup_otp_verified':True,
+        'seller_pickup_otp_verified_at':utc_now(),
         'status':'in_transit',
         'updated_at':utc_now()
     })
@@ -8738,7 +8770,7 @@ def verify_delivery_pickup(tracking_code):
     notify_user(delivery.get('customer_id'),'Delivery pickup verified',f'Pickup number accepted for {tracking_code}. The delivery is now in transit.','delivery',delivery.get('id'),f'/track/{tracking_code}')
     return jsonify({
         'valid':True,'status':'verified',
-        'message':'VALID. Pickup number accepted. Delivery is now in transit.',
+        'message':'VALID. KOJA verified the pickup number and seller OTP. Delivery is now in transit.',
         'tracking_code':tracking_code
     })
 
@@ -8749,9 +8781,56 @@ def verify_delivery_pickup_page(tracking_code):
     if not delivery: abort(404)
     return render_page('Verify Delivery Pickup',r'''
 <div class="hero"><h1>KOJA Delivery Pickup</h1><p>Tracking: <strong>{{ delivery.tracking_code }}</strong></p><p>Pickup: {{ delivery.pickup_location }}</p><p>Destination: {{ delivery.destination }}</p></div>
-<div class="card"><label>Enter pickup number from the shop</label><input id="code" autocomplete="one-time-code" placeholder="KDP-XXXXXXXX"><button class="btn" onclick="verifyPickup()">Verify Number</button><p id="result" class="small"></p></div>
-<script>async function verifyPickup(){const code=document.getElementById('code').value.trim();const r=await fetch({{ url_for('verify_delivery_pickup',tracking_code=delivery.tracking_code)|tojson }},{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pickup_code:code})});const d=await r.json();document.getElementById('result').textContent=d.message||'No response';}</script>
+<div class="card"><h2>KOJA Seller Handover Verification</h2><p>Enter both numbers in KOJA. The seller's six-digit OTP is verified by the KOJA server before pickup is accepted.</p><label>Pickup number from seller</label><input id="code" autocomplete="one-time-code" placeholder="KDP-XXXXXXXX"><label>Seller KOJA pickup OTP</label><input id="sellerOtp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000"><button class="btn" onclick="verifyPickup()">VERIFY IN KOJA</button><p id="result" class="small"></p></div>
+<script>async function verifyPickup(){const code=document.getElementById('code').value.trim();const sellerOtp=document.getElementById('sellerOtp').value.trim();const r=await fetch({{ url_for('verify_delivery_pickup',tracking_code=delivery.tracking_code)|tojson }},{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pickup_code:code,seller_otp:sellerOtp})});const d=await r.json();document.getElementById('result').textContent=d.message||'No response';}</script>
 ''',delivery=delivery)
+
+@app.route('/api/delivery/<tracking_code>/verify-delivery-code',methods=['POST'])
+@login_required
+def verify_delivery_confirmation_code(tracking_code):
+    user=current_user() or {}
+    driver=get_driver_provider(user.get('id'))
+    if not driver and not user.get('is_admin'):
+        return jsonify({'valid':False,'status':'invalid','message':'You are not a registered driver.'}),403
+    body=request.get_json(silent=True) or {}
+    entered=clean(body.get('delivery_code') or body.get('code')).replace(' ','')
+    delivery=first_row('deliveries',{'tracking_code':tracking_code})
+    if not delivery: return jsonify({'valid':False,'status':'invalid','message':'Delivery not found.'}),404
+    if str(delivery.get('status') or '').lower() in {'completed','delivered','cancelled'}:
+        return jsonify({'valid':False,'status':'already_completed','message':'This delivery is already closed.'}),409
+    assigned=str(delivery.get('driver_id') or '')
+    current=str(driver.get('id') or '') if driver else ''
+    if not user.get('is_admin') and (not assigned or assigned != current):
+        return jsonify({'valid':False,'status':'wrong_driver','message':'This delivery is not assigned to you.'}),403
+    if not as_bool(delivery.get('pickup_verified')):
+        return jsonify({'valid':False,'status':'pickup_required','message':'Pickup must be verified before final delivery confirmation.'}),400
+    if not entered.isdigit() or len(entered) != 6:
+        return jsonify({'valid':False,'status':'invalid','message':'INVALID. KOJA delivery code must be exactly 6 digits.'}),400
+    if as_bool(delivery.get('delivery_confirmation_locked')):
+        return jsonify({'valid':False,'status':'locked','message':'Delivery code verification is locked. Contact KOJA support.'}),423
+    real=_ensure_delivery_confirmation_code(delivery)
+    if entered != real:
+        attempts=int(delivery.get('delivery_confirmation_attempts') or 0) + 1
+        locked = attempts >= 5
+        updates={'delivery_confirmation_attempts':attempts,'updated_at':utc_now()}
+        if locked: updates['delivery_confirmation_locked']=True
+        db_update('deliveries',{'id':delivery.get('id')},updates)
+        msg='INVALID. The KOJA delivery code is incorrect.'
+        if locked: msg='INVALID. Too many incorrect KOJA delivery code attempts. Verification is locked; contact KOJA support.'
+        return jsonify({'valid':False,'status':'locked' if locked else 'invalid','message':msg,'attempts_remaining':max(0,5-attempts)}),400
+    _,err=db_update('deliveries',{'id':delivery.get('id')},{'delivery_confirmation_verified':True,'delivery_confirmation_verified_at':utc_now(),'status':'delivered','updated_at':utc_now()})
+    if err: return jsonify({'valid':False,'status':'error','message':'KOJA could not confirm the delivery.'}),500
+    notify_user(delivery.get('customer_id'),'Delivery code verified','KOJA verified the six-digit delivery code. Your delivery is now confirmed.','delivery',delivery.get('id'),f'/track/{tracking_code}')
+    if delivery.get('sender_id'):
+        notify_user(delivery.get('sender_id'),'Delivery code verified',f'KOJA verified the customer code for delivery {tracking_code}.','delivery',delivery.get('id'),'/deliveries')
+    return jsonify({'valid':True,'status':'verified','message':'VALID. KOJA verified the customer delivery code. Delivery is now confirmed.','tracking_code':tracking_code})
+
+@app.route('/delivery/<tracking_code>/verify-delivery-code',methods=['GET'])
+@login_required
+def verify_delivery_confirmation_code_page(tracking_code):
+    delivery=first_row('deliveries',{'tracking_code':tracking_code})
+    if not delivery: abort(404)
+    return render_page('Verify Delivery OTP',r'''<div class="hero"><h1>KOJA Verify Delivery OTP</h1><p>Tracking: <strong>{{ delivery.tracking_code }}</strong></p><p>Enter the six-digit code given by the customer. KOJA will verify it on the server.</p></div><div class="card"><label>Customer KOJA delivery OTP</label><input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" placeholder="000000"><button id="verifyBtn" class="btn success" onclick="verifyCode()">VERIFY OTP IN KOJA</button><div id="result" class="small" style="margin-top:12px;font-weight:700"></div></div><script>async function verifyCode(){const input=document.getElementById('code');const btn=document.getElementById('verifyBtn');const result=document.getElementById('result');const code=input.value.trim();result.textContent='KOJA is verifying the OTP...';btn.disabled=true;try{const r=await fetch({{ url_for('verify_delivery_confirmation_code',tracking_code=delivery.tracking_code)|tojson }},{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({delivery_code:code})});const d=await r.json();if(d.valid){result.textContent='VALID OTP — KOJA verified it successfully.';input.disabled=true;btn.textContent='OTP VERIFIED';}else{result.textContent=d.message||'INVALID OTP';btn.disabled=d.status==='locked';if(!btn.disabled)input.focus();}}catch(e){result.textContent='KOJA could not complete the verification. Please try again.';btn.disabled=false;}}</script>''',delivery=delivery)
 
 @app.route('/api/delivery/<tracking_code>/complete',methods=['POST'])
 @login_required
@@ -8762,9 +8841,12 @@ def complete_delivery(tracking_code):
     if str(delivery.get('customer_id') or '')!=str(uid) and not (current_user() or {}).get('is_admin'):
         return jsonify({'ok':False,'message':'Only the delivery owner can confirm receipt.'}),403
     status=str(delivery.get('status') or '').lower()
-    if status in {'completed','delivered'}: return jsonify({'ok':True,'already_completed':True,'message':'Delivery already completed.'})
+    if status == 'completed': return jsonify({'ok':True,'already_completed':True,'message':'Delivery already completed.'})
     if not as_bool(delivery.get('pickup_verified')):
         return jsonify({'ok':False,'message':'The driver pickup number has not been verified yet.'}),400
+    if not as_bool(delivery.get('delivery_confirmation_verified')) and not (current_user() or {}).get('is_admin'):
+        _ensure_delivery_confirmation_code(delivery)
+        return jsonify({'ok':False,'message':'The customer delivery confirmation code must be verified by the driver before completion.'}),400
     db_update('deliveries',{'id':delivery.get('id')},{'status':'completed','delivery_completed_at':utc_now(),'driver_payout_status':'ready_to_send','updated_at':utc_now()})
     driver=first_row('service_providers',{'id':delivery.get('driver_id')}) or first_row('driver_profiles',{'provider_id':delivery.get('driver_id')}) or {}
     amount=_delivery_payout_amount(delivery)
@@ -8806,7 +8888,7 @@ def _upgrade_delivery_request_with_code(*args,**kwargs):
         data=result.get_json(silent=True) if hasattr(result,'get_json') else None
         if isinstance(data,dict) and data.get('ok') and data.get('tracking_code'):
             code=make_delivery_pickup_code()
-            db_update('deliveries',{'tracking_code':data['tracking_code']},{'pickup_code':code,'pickup_verified':False,'delivery_completed_at':None,'driver_payout_status':'pending','updated_at':utc_now()})
+            db_update('deliveries',{'tracking_code':data['tracking_code']},{'pickup_code':code,'pickup_verified':False,'delivery_confirmation_code':make_delivery_confirmation_code(),'delivery_confirmation_verified':False,'seller_pickup_otp':make_seller_pickup_otp(),'seller_pickup_otp_verified':False,'seller_pickup_otp_attempts':0,'seller_pickup_otp_locked':False,'delivery_completed_at':None,'driver_payout_status':'pending','updated_at':utc_now()})
             delivery=first_row('deliveries',{'tracking_code':data['tracking_code']}) or {}
             if delivery.get('driver_id'):
                 notify_user(delivery.get('driver_id'),'New KOJA Delivery',f'Delivery {data["tracking_code"]} assigned. Pickup number: {code}.','delivery',delivery.get('id'),'/deliveries')
