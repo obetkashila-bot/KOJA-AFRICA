@@ -1,4 +1,4 @@
-name: KOJA AFRICA Android Build
+name: KOJA AFRICA Android APK Build
 
 on:
   workflow_dispatch:
@@ -9,41 +9,42 @@ jobs:
   build-android:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout KOJA production
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup Node 20
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
 
-      - name: Install npm dependencies
+      - name: Install dependencies
         run: npm install
 
       - name: Add Android platform
         run: npx cap add android
 
-      - name: Sync Capacitor
+      - name: Sync Capacitor with KOJA production
         run: npx cap sync android
 
-      - name: Setup Java
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Build debug APK
+      - name: Build installable debug APK
         working-directory: android
         run: ./gradlew assembleDebug
 
-      - name: Upload debug APK
+      - name: Upload KOJA APK
         uses: actions/upload-artifact@v4
         with:
-          name: koja-africa-debug-apk
+          name: koja-africa-production-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
 
-      - name: Build release AAB
+      - name: Build signed release APK when signing secrets exist
         if: ${{ secrets.KOJA_KEYSTORE_BASE64 != '' && secrets.KOJA_KEYSTORE_PASSWORD != '' && secrets.KOJA_KEY_ALIAS != '' && secrets.KOJA_KEY_PASSWORD != '' }}
         env:
           KOJA_KEYSTORE_BASE64: ${{ secrets.KOJA_KEYSTORE_BASE64 }}
@@ -59,11 +60,12 @@ jobs:
           keyAlias=$KOJA_KEY_ALIAS
           keyPassword=$KOJA_KEY_PASSWORD
           PROPS
-          ./gradlew bundleRelease
+          ./gradlew assembleRelease
 
-      - name: Upload release AAB
+      - name: Upload signed release APK
         if: ${{ secrets.KOJA_KEYSTORE_BASE64 != '' && secrets.KOJA_KEYSTORE_PASSWORD != '' && secrets.KOJA_KEY_ALIAS != '' && secrets.KOJA_KEY_PASSWORD != '' }}
         uses: actions/upload-artifact@v4
         with:
-          name: koja-africa-release-aab
-          path: android/app/build/outputs/bundle/release/app-release.aab
+          name: koja-africa-production-release-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
