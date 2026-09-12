@@ -1738,84 +1738,64 @@ def _openai_call(prompt, system_prompt, max_output_tokens=8192, timeout=20):
     return "", "openai_provider_error"
 
 def _ai_call(prompt, system_prompt, max_output_tokens=8192, timeout=12, preferred_model=None):
-    """Fast normal-chat path: prefer configured Groq, then fall back to Gemini."""
+    """KOJA AI provider router: Gemini -> Groq -> OpenAI, with model failover."""
     cfg=_ai_config_status()
-    groq_key=(os.getenv("GROQ_API_KEY") or "").strip()
     gemini_key=(os.getenv("GEMINI_API_KEY") or "").strip()
+    groq_key=(os.getenv("GROQ_API_KEY") or "").strip()
+    openai_key=(os.getenv("OPENAI_API_KEY") or "").strip()
     candidate_groq,candidate_gemini,candidate_openai=_ai_model_candidates()
-    preferred_is_gemini=bool(preferred_model and preferred_model in candidate_gemini)
-    preferred_is_openai=bool(preferred_model and preferred_model in candidate_openai)
+    errors=[]
 
-    # Groq is preferred for normal KOJA AI chats when configured because it is
-    # optimized for low-latency text generation. Keep the existing Gemini path
-    # as a fallback so the application does not depend on one provider.
-    if groq_key and not preferred_is_gemini and not preferred_is_openai:
-        groq_models=list(candidate_groq)
-        if preferred_model and preferred_model in groq_models:
-            groq_models=[preferred_model]+[m for m in groq_models if m!=preferred_model]
-        for model in groq_models:
-            payload={
-                "model":model,
-                "messages":[{"role":"system","content":system_prompt},{"role":"user","content":prompt}],
-                "temperature":0.7,"max_completion_tokens":max_output_tokens,"stream":False,
-            }
+    # 1) Gemini first. The explicitly configured model is always tried first.
+    if gemini_key:
+        base=(os.getenv("GEMINI_API_URL") or "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
+        models=[]
+        for model in ([preferred_model] if preferred_model in candidate_gemini else []) + [cfg.get("model"), cfg.get("fallback_model")] + candidate_gemini:
+            if model and model not in models: models.append(model)
+        payload={"systemInstruction":{"parts":[{"text":system_prompt}]},"contents":[{"role":"user","parts":[{"text":prompt}]}],"generationConfig":{"maxOutputTokens":max_output_tokens,"temperature":0.7}}
+        headers={"x-goog-api-key":gemini_key,"Content-Type":"application/json"}
+        for model in models:
             try:
-                r=requests.post("https://api.groq.com/openai/v1/chat/completions",json=payload,timeout=(5,min(int(timeout),12)),headers={"Authorization":"Bearer "+groq_key,"Content-Type":"application/json"})
+                r=requests.post(f"{base}/models/{model}:generateContent",json=payload,timeout=(5,min(int(timeout),20)),headers=headers)
+                if r.ok:
+                    data=r.json(); parts=[]
+                    for candidate in data.get("candidates") or []:
+                        for part in (candidate.get("content") or {}).get("parts") or []:
+                            if part.get("text"): parts.append(part["text"])
+                    answer=clean("\n".join(parts))
+                    if answer: return answer,""
+                    errors.append(f"gemini_{model}_empty")
+                else:
+                    errors.append(f"gemini_{model}_http_{r.status_code}")
+                    if r.status_code in (401,403): break
+            except requests.Timeout: errors.append(f"gemini_{model}_timeout")
+            except requests.RequestException as exc: errors.append(f"gemini_{model}_network")
+            except Exception: errors.append(f"gemini_{model}_error")
+
+    # 2) Groq fallback.
+    if groq_key:
+        for model in candidate_groq:
+            payload={"model":model,"messages":[{"role":"system","content":system_prompt},{"role":"user","content":prompt}],"temperature":0.7,"max_completion_tokens":max_output_tokens,"stream":False}
+            try:
+                r=requests.post("https://api.groq.com/openai/v1/chat/completions",json=payload,timeout=(5,min(int(timeout),20)),headers={"Authorization":"Bearer "+groq_key,"Content-Type":"application/json"})
                 if r.ok:
                     data=r.json(); choices=data.get("choices") or []
                     answer=clean(((choices[0].get("message") or {}).get("content") or "")) if choices else ""
                     if answer: return answer,""
-                    logger.warning("Groq returned an empty response model=%s",model)
                 else:
-                    logger.warning("Groq request failed status=%s model=%s",r.status_code,model)
-                    if r.status_code in (401,403,429): break
-            except requests.Timeout:
-                logger.warning("Groq request timed out model=%s",model)
-            except requests.RequestException as exc:
-                logger.warning("Groq network error model=%s: %s",model,exc)
-            except Exception as exc:
-                logger.warning("Groq response error model=%s: %s",model,exc)
+                    errors.append(f"groq_{model}_http_{r.status_code}")
+                    if r.status_code in (401,403): break
+            except requests.Timeout: errors.append(f"groq_{model}_timeout")
+            except requests.RequestException: errors.append(f"groq_{model}_network")
+            except Exception: errors.append(f"groq_{model}_error")
 
-    openai_answer, openai_err = ("", "preferred_other_provider") if preferred_is_gemini else _openai_call(prompt, system_prompt, max_output_tokens=max_output_tokens, timeout=min(int(timeout),30))
-    if openai_answer:
-        return openai_answer, ""
+    # 3) OpenAI fallback.
+    if openai_key:
+        answer,err=_openai_call(prompt,system_prompt,max_output_tokens=max_output_tokens,timeout=min(int(timeout),25))
+        if answer: return answer,""
+        errors.append(err or "openai_error")
 
-    if not gemini_key:
-        return "", "missing_api_key"
-
-    base=(os.getenv("GEMINI_API_URL") or "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
-    primary=cfg["model"]; fallback=cfg["fallback_model"]
-    payload={
-        "systemInstruction":{"parts":[{"text":system_prompt}]},
-        "contents":[{"role":"user","parts":[{"text":prompt}]}],
-        "generationConfig":{"maxOutputTokens":max_output_tokens,"temperature":0.7},
-    }
-    headers={"x-goog-api-key":gemini_key,"Content-Type":"application/json"}
-    _groq_models, gemini_models, openai_models = _ai_model_candidates()
-    models=[]
-    for model in ([primary, fallback] + gemini_models):
-        if model and model not in models: models.append(model)
-    for model in models:
-        endpoint=f"{base}/models/{model}:generateContent"
-        try:
-            r=requests.post(endpoint,json=payload,timeout=(5,min(int(timeout),12)),headers=headers)
-            if r.ok:
-                data=r.json(); parts=[]
-                for candidate in data.get("candidates") or []:
-                    for part in (candidate.get("content") or {}).get("parts") or []:
-                        if part.get("text"): parts.append(part["text"])
-                answer=clean("\n".join(parts))
-                if answer: return answer,""
-            elif r.status_code in (401,403): return "","authentication_failed"
-            elif r.status_code==429: return "","rate_limited"
-        except requests.Timeout:
-            logger.warning("Gemini request timed out model=%s",model)
-            continue
-        except requests.RequestException:
-            continue
-        except Exception:
-            continue
-    return "","timeout_or_provider_error"
+    return "", (errors[-1] if errors else "missing_api_key")
 
 def _ai_stream(prompt, system_prompt, max_output_tokens=32768, timeout=90, preferred_model=None):
     """Stream KOJA AI with multiple live model fallbacks."""
@@ -3298,7 +3278,36 @@ def _finalize_market_order(order, tx):
     db_insert('koja_market_ledger',{'order_id':order.get('id'),'seller_id':order.get('seller_id'),'buyer_id':buyer_id,'gross_amount':gross,'commission_amount':commission,'platform_fee':platform_fee,'net_amount':net,'currency':order.get('currency') or 'ZMW','status':'pending','created_at':utc_now()})
     db_insert('koja_market_payment_fees',{'order_id':order.get('id'),'buyer_id':buyer_id,'amount':platform_fee,'currency':order.get('currency') or 'ZMW','fee_type':'platform_service_fee','provider':'flutterwave','reference':tx_ref,'status':'captured','created_at':utc_now()})
     if p and str(p.get('product_type') or 'physical')=='physical' and str(order.get('fulfillment_method') or 'delivery')=='delivery':
-        tracking='KMD-'+secrets.token_hex(5).upper(); pickup_code=make_delivery_pickup_code(); confirm_code=make_delivery_confirmation_code(); seller_otp=confirm_code; db_insert('koja_market_delivery_jobs',{'order_id':order.get('id'),'customer_id':buyer_id,'seller_id':order.get('seller_id'),'delivery_address':order.get('delivery_address'),'delivery_fee':_money_num(order.get('delivery_fee')),'status':'requested','tracking_code':tracking,'created_at':utc_now(),'updated_at':utc_now()}); drow,derr=db_insert('deliveries',{'id':str(uuid.uuid4()),'customer_id':buyer_id,'user_id':buyer_id,'sender_id':order.get('seller_id'),'pickup_location':'KOJA Seller','pickup_address':'KOJA Seller','destination':order.get('delivery_address'),'delivery_address':order.get('delivery_address'),'recipient_name':order.get('recipient_name'),'recipient_phone':order.get('recipient_phone'),'package_description':str((p or {}).get('title') or 'KOJA Market order'),'delivery_fee':_money_num(order.get('delivery_fee')),'currency':'ZMW','status':'requested','tracking_code':tracking,'pickup_code':pickup_code,'delivery_confirmation_code':confirm_code,'delivery_confirmation_verified':False,'seller_pickup_otp':seller_otp,'seller_pickup_otp_verified':False,'seller_pickup_otp_attempts':0,'seller_pickup_otp_locked':False,'notes':order.get('notes'),'created_at':utc_now(),'updated_at':utc_now()}); _notify_available_drivers(tracking,'KOJA Seller',order.get('delivery_address'),order.get('delivery_fee')); notify_user(order.get('seller_id'),'Delivery pickup number created',f'Order {order.get("order_number") or order.get("id")} is ready for delivery. KOJA order OTP: {seller_otp}. Enter this same OTP in KOJA to confirm the handover.','delivery',order.get('id'),'/deliveries'); notify_user(buyer_id,'KOJA delivery confirmation code',f'Your KOJA order OTP is {confirm_code}. Use it to confirm your order at pickup and delivery. Do not share it before handover.','delivery',order.get('id'),f'/track/{tracking}')
+        tracking='KMD-'+secrets.token_hex(5).upper(); pickup_code=make_delivery_pickup_code(); confirm_code=make_delivery_confirmation_code(); seller_otp=confirm_code; db_insert('koja_market_delivery_jobs',{'order_id':order.get('id'),'customer_id':buyer_id,'seller_id':order.get('seller_id'),'delivery_address':order.get('delivery_address'),'delivery_fee':_money_num(order.get('delivery_fee')),'status':'requested','tracking_code':tracking,'created_at':utc_now(),'updated_at':utc_now()}); pickup_area=clean((p or {}).get('location')) or 'KOJA Seller'; drow,derr=db_insert('deliveries',{'id':str(uuid.uuid4()),'customer_id':buyer_id,'user_id':buyer_id,'sender_id':order.get('seller_id'),'pickup_location':pickup_area,'pickup_address':pickup_area,'destination':order.get('delivery_address'),'delivery_address':order.get('delivery_address'),'recipient_name':order.get('recipient_name'),'recipient_phone':order.get('recipient_phone'),'package_description':str((p or {}).get('title') or 'KOJA Market order'),'delivery_fee':_money_num(order.get('delivery_fee')),'currency':'ZMW','status':'requested','tracking_code':tracking,'pickup_code':pickup_code,'delivery_confirmation_code':confirm_code,'delivery_confirmation_verified':False,'seller_pickup_otp':seller_otp,'seller_pickup_otp_verified':False,'seller_pickup_otp_attempts':0,'seller_pickup_otp_locked':False,'notes':order.get('notes'),'created_at':utc_now(),'updated_at':utc_now()});
+        notify_user(order.get('seller_id'),'Delivery pickup number created',f'Order {order.get("order_number") or order.get("id")} is ready for delivery. KOJA order OTP: {seller_otp}. Enter this same OTP in KOJA to confirm the handover.','delivery',order.get('id'),'/deliveries'); notify_user(buyer_id,'KOJA delivery confirmation code',f'Your KOJA order OTP is {confirm_code}. Use it to confirm your order at pickup and delivery. Do not share it before handover.','delivery',order.get('id'),f'/market/my')
+        if bool(order.get('auto_driver_request')):
+            ranked_payload=first_row('deliveries',{'tracking_code':tracking}) or {}
+            pickup_lat=safe_float((p or {}).get('latitude')); pickup_lon=safe_float((p or {}).get('longitude'))
+            if pickup_lat is not None: ranked_payload['pickup_latitude']=pickup_lat
+            if pickup_lon is not None: ranked_payload['pickup_longitude']=pickup_lon
+            ranked_candidates=[]
+            try:
+                latest=latest_driver_locations(); now=datetime.now(timezone.utc); pickup_tokens={x for x in re.findall(r'[a-z0-9]+',pickup_area.lower()) if len(x)>=3}
+                for driver_id,loc in latest.items():
+                    if not loc.get('is_online'): continue
+                    created=loc.get('created_at')
+                    if created:
+                        try:
+                            dt=datetime.fromisoformat(str(created).replace('Z','+00:00'))
+                            if (now-dt).total_seconds()>600: continue
+                        except Exception: pass
+                    profile=first_row('driver_profiles',{'provider_id':driver_id}) or {}
+                    if str(profile.get('verification_status') or '').lower() not in {'approved','active','verified'}: continue
+                    provider=first_row('service_providers',{'id':driver_id}) or {}
+                    dlat=safe_float(loc.get('latitude')); dlon=safe_float(loc.get('longitude')); distance=haversine_km(pickup_lat,pickup_lon,dlat,dlon) if pickup_lat is not None and pickup_lon is not None and dlat is not None and dlon is not None else None
+                    driver_place=' '.join(str(provider.get(k) or profile.get(k) or '') for k in ('location','city','area','address')); overlap=len(pickup_tokens & {x for x in re.findall(r'[a-z0-9]+',driver_place.lower()) if len(x)>=3})
+                    if distance is not None and distance>100: continue
+                    if distance is None and overlap==0 and pickup_tokens: continue
+                    ranked_candidates.append({'driver_id':str(driver_id),'name':first_nonempty(provider.get('full_name'),provider.get('name'),'Driver'),'distance_km':round(distance,2) if distance is not None else None,'score':round(100-(distance or 0)*1.5+overlap*12,2)})
+                ranked_candidates.sort(key=lambda x:x['score'],reverse=True)
+            except Exception: logger.exception('KOJA automatic driver candidate search failed')
+            sent=_auto_notify_nearby_delivery_drivers(ranked_payload,ranked_candidates,limit=8)
+            notify_user(buyer_id,'KOJA is finding your driver',f'KOJA sent your delivery request to {len(sent)} nearby approved driver(s). The first driver to accept gets the delivery.','delivery',order.get('id'),'/market/my')
     _sync_market_order_to_business(dict(order,status='paid'))
     return True
 
@@ -3613,7 +3622,7 @@ def market_product_view(product_id):
     if not p or not as_bool(p.get('is_published')) or str(p.get('approval_status') or '').lower() not in {'approved','active'}: abort(404)
     seller=market_seller(p.get('seller_id')) or {}; seller_name=seller.get('store_name') or marketplace_seller_name(p.get('seller_id'))
     return render_page('Market Product',r'''
-<div class="card"><a href="{{ '/market' }}">← KOJA Market</a>{% if product.image_url %}<img src="{{ url_for('market_image',product_id=product.id) }}" alt="{{ product.title }}" style="display:block;width:100%;max-height:500px;object-fit:contain;margin:14px 0;border-radius:12px">{% endif %}<p class="small">{{ product.category }} · {{ 'Digital product' if product.product_type=='digital' else 'Physical product' }}</p><h1>{{ product.title }}</h1><p style="white-space:pre-wrap;line-height:1.75">{{ product.description }}</p><h2>{{ money(product.price,product.currency) }}</h2><p class="small">Seller: {{ seller_name }}{% if product.location %} · {{ product.location }}{% endif %}</p>{% if product.product_type=='physical' %}<p><strong>Stock:</strong> {{ product.stock }}</p>{% endif %}{% if user and user.id|string != product.seller_id|string and (product.product_type!='physical' or product.stock|int>0) %}<form method="post" action="{{ url_for('market_cart_add',product_id=product.id) }}" class="actions"><label style="width:100%">Quantity<input name="quantity" type="number" min="1" max="{{ product.stock if product.product_type=='physical' else 1 }}" value="1" required></label><button class="btn secondary" type="submit">🛒 Add to Cart</button></form><form method="post" action="{{ url_for('market_order_create',product_id=product.id) }}"><label>Mobile-money network</label><select name="network" required><option value="">Select network</option><option value="MTN">MTN</option><option value="AIRTEL">Airtel</option><option value="ZAMTEL">Zamtel</option></select><label>Mobile-money phone</label><input name="phone" value="{{ user.phone or '' }}" required inputmode="tel"><label>Quantity</label><input name="quantity" type="number" min="1" max="{{ product.stock if product.product_type=='physical' else 1 }}" value="1" required>{% if product.product_type=='physical' %}<label>Recipient name</label><input name="recipient_name" required><label>Phone</label><input name="recipient_phone" required><label>Delivery address</label><textarea name="delivery_address" required placeholder="Town, area, house/shop details"></textarea><label>Notes (optional)</label><textarea name="notes"></textarea>{% endif %}<button class="btn" type="submit">⚡ Buy Now</button></form>{% elif not user %}<a class="btn" href="{{ url_for('login',next=request.path) }}">Login to Buy</a>{% else %}<p class="small">This is your listing.</p>{% endif %}</div>
+<div class="card"><a href="{{ '/market' }}">← KOJA Market</a>{% if product.image_url %}<img src="{{ url_for('market_image',product_id=product.id) }}" alt="{{ product.title }}" style="display:block;width:100%;max-height:500px;object-fit:contain;margin:14px 0;border-radius:12px">{% endif %}<p class="small">{{ product.category }} · {{ 'Digital product' if product.product_type=='digital' else 'Physical product' }}</p><h1>{{ product.title }}</h1><p style="white-space:pre-wrap;line-height:1.75">{{ product.description }}</p><h2>{{ money(product.price,product.currency) }}</h2><p class="small">Seller: {{ seller_name }}{% if product.location %} · {{ product.location }}{% endif %}</p>{% if product.product_type=='physical' %}<p><strong>Stock:</strong> {{ product.stock }}</p>{% endif %}{% if user and user.id|string != product.seller_id|string and (product.product_type!='physical' or product.stock|int>0) %}<form method="post" action="{{ url_for('market_cart_add',product_id=product.id) }}" class="actions"><label style="width:100%">Quantity<input name="quantity" type="number" min="1" max="{{ product.stock if product.product_type=='physical' else 1 }}" value="1" required></label><button class="btn secondary" type="submit">🛒 Add to Cart</button></form><form method="post" action="{{ url_for('market_order_create',product_id=product.id) }}"><label>Mobile-money network</label><select name="network" required><option value="">Select network</option><option value="MTN">MTN</option><option value="AIRTEL">Airtel</option><option value="ZAMTEL">Zamtel</option></select><label>Mobile-money phone</label><input name="phone" value="{{ user.phone or '' }}" required inputmode="tel"><label>Quantity</label><input name="quantity" type="number" min="1" max="{{ product.stock if product.product_type=='physical' else 1 }}" value="1" required>{% if product.product_type=='physical' %}<label>Recipient name</label><input name="recipient_name" required><label>Phone</label><input name="recipient_phone" required><label>Delivery address</label><textarea name="delivery_address" required placeholder="Town, area, house/shop details"></textarea><label>Notes (optional)</label><textarea name="notes"></textarea><label style="display:flex;gap:10px;align-items:center;margin-top:12px"><input type="checkbox" name="auto_driver_request" value="1" checked style="width:auto"> <span><strong>KOJA AI — Find a nearby driver automatically</strong><br><span class="small">After payment, KOJA sends the delivery request to the nearest approved drivers. The first driver to accept gets the order.</span></span></label>{% endif %}<button class="btn" type="submit">⚡ Buy Now</button></form>{% elif not user %}<a class="btn" href="{{ url_for('login',next=request.path) }}">Login to Buy</a>{% else %}<p class="small">This is your listing.</p>{% endif %}</div>
 ''',product=p,seller_name=seller_name,money=market_money)
 
 @app.route('/market/order/<product_id>',methods=['POST'])
@@ -3627,7 +3636,7 @@ def market_order_create(product_id):
     if str(p.get('product_type') or 'physical')=='physical' and qty>int(p.get('stock') or 0): flash('Not enough stock available.','danger'); return redirect(url_for('market_product_view',product_id=product_id))
     price=float(p.get('price') or 0); delivery=float(p.get('delivery_fee') or 0) if str(p.get('product_type'))=='physical' else 0
     item=price*qty; total=item+delivery; commission=round(total*KOJA_MARKET_COMMISSION_RATE,2); seller_amount=round(total-commission,2)
-    payload={'order_number':market_order_number(),'product_id':product_id,'buyer_id':uid,'seller_id':p.get('seller_id'),'quantity':qty,'item_amount':item,'delivery_fee':delivery,'total_amount':total,'commission_amount':commission,'seller_amount':seller_amount,'currency':p.get('currency') or 'ZMW','status':'pending','recipient_name':clean(request.form.get('recipient_name')) or user.get('name') or user.get('full_name'),'recipient_phone':clean(request.form.get('recipient_phone')) or user.get('phone'),'delivery_address':clean(request.form.get('delivery_address')),'notes':clean(request.form.get('notes')),'created_at':utc_now(),'updated_at':utc_now()}
+    payload={'order_number':market_order_number(),'product_id':product_id,'buyer_id':uid,'seller_id':p.get('seller_id'),'quantity':qty,'item_amount':item,'delivery_fee':delivery,'total_amount':total,'commission_amount':commission,'seller_amount':seller_amount,'currency':p.get('currency') or 'ZMW','status':'pending','recipient_name':clean(request.form.get('recipient_name')) or user.get('name') or user.get('full_name'),'recipient_phone':clean(request.form.get('recipient_phone')) or user.get('phone'),'delivery_address':clean(request.form.get('delivery_address')),'notes':clean(request.form.get('notes')),'auto_driver_request': bool(request.form.get('auto_driver_request')),'created_at':utc_now(),'updated_at':utc_now()}
     order,err=db_insert('koja_market_orders',payload)
     if err: flash('Order could not be created. Run KOJA_MARKET.sql in Supabase.','danger'); return redirect(url_for('market_product_view',product_id=product_id))
     if total<=0:
@@ -4752,6 +4761,91 @@ async function requestDriver(driverId){
 </script>
 """)
 
+def _auto_notify_nearby_delivery_drivers(delivery, ranked_drivers, limit=8):
+    """Broadcast one delivery request to the best available drivers. First accept wins."""
+    sent=[]
+    tracking=clean(delivery.get("tracking_code"))
+    for d in (ranked_drivers or [])[:max(1,min(int(limit),15))]:
+        did=str(d.get("driver_id") or "")
+        if not did: continue
+        # Re-check the delivery before each notification so we stop as soon as a driver claims it.
+        fresh=first_row("deliveries",{"tracking_code":tracking}) or {}
+        if fresh.get("driver_id") or str(fresh.get("status") or "") not in {"requested","driver_assigned"}:
+            break
+        name=first_nonempty(d.get("name"),"KOJA Driver")
+        dist=d.get("distance_km")
+        distance_text=f" about {dist} km away" if dist is not None else " near the pickup area"
+        body=f"New KOJA delivery request {tracking}. Buyer needs a driver{distance_text}. Open KOJA and accept it if you are available. The first driver to accept gets the delivery."
+        try:
+            notify_user(did,"KOJA Delivery Request",body,"delivery",fresh.get("id"),f"/driver/available-deliveries")
+            sent.append(did)
+        except Exception:
+            logger.exception("KOJA driver request notification failed for %s",did)
+    return sent
+
+@app.route("/api/delivery/<tracking_code>/find-driver-ai",methods=["POST"])
+@login_required
+def find_driver_ai(tracking_code):
+    user=current_user() or {}
+    delivery=first_row("deliveries",{"tracking_code":tracking_code})
+    if not delivery: return jsonify({"ok":False,"message":"Delivery not found."}),404
+    uid=str(user.get("id") or "")
+    if str(delivery.get("customer_id") or delivery.get("user_id") or "")!=uid and not bool(user.get("is_admin")):
+        return jsonify({"ok":False,"message":"Only the buyer can find a driver for this delivery."}),403
+    if delivery.get("driver_id"):
+        return jsonify({"ok":True,"assigned":True,"message":"A driver has already accepted this delivery.","driver_id":delivery.get("driver_id")})
+    if str(delivery.get("status") or "requested") not in {"requested","driver_assigned"}:
+        return jsonify({"ok":False,"message":"This delivery is no longer waiting for a driver."}),409
+
+    # Reuse the same trusted candidate/ranking logic as AI Match.
+    pickup_text=clean(delivery.get("pickup_address") or delivery.get("pickup_location"))
+    lat=safe_float(delivery.get("pickup_latitude")); lon=safe_float(delivery.get("pickup_longitude"))
+    latest=latest_driver_locations(); now=datetime.now(timezone.utc); candidates=[]
+    pickup_tokens={x for x in re.findall(r"[a-z0-9]+",pickup_text.lower()) if len(x)>=3}
+    for driver_id,loc in latest.items():
+        if not loc.get("is_online"): continue
+        created=loc.get("created_at")
+        if created:
+            try:
+                dt=datetime.fromisoformat(str(created).replace("Z","+00:00"))
+                if (now-dt).total_seconds()>600: continue
+            except Exception: pass
+        profile=first_row("driver_profiles",{"provider_id":driver_id}) or {}
+        if str(profile.get("verification_status") or "").lower() not in {"approved","active","verified"}: continue
+        provider=first_row("service_providers",{"id":driver_id}) or {}
+        dlat=safe_float(loc.get("latitude")); dlon=safe_float(loc.get("longitude"))
+        distance=haversine_km(lat,lon,dlat,dlon) if lat is not None and lon is not None and dlat is not None and dlon is not None else None
+        if distance is not None and distance>100: continue
+        driver_place=" ".join(str(provider.get(k) or profile.get(k) or "") for k in ("location","city","area","address"))
+        driver_tokens={x for x in re.findall(r"[a-z0-9]+",driver_place.lower()) if len(x)>=3}
+        overlap=len(pickup_tokens & driver_tokens)
+        if distance is None and overlap==0 and pickup_tokens: continue
+        base=100-(distance or 0)*1.5+overlap*12
+        candidates.append({"driver_id":str(driver_id),"name":first_nonempty(provider.get("full_name"),provider.get("name"),"Driver"),"phone":provider.get("phone"),"vehicle_type":profile.get("vehicle_type"),"latitude":dlat,"longitude":dlon,"distance_km":round(distance,2) if distance is not None else None,"address_match":overlap,"score":round(base,2)})
+    candidates.sort(key=lambda x:x["score"],reverse=True)
+    top=candidates[:15]
+    if not top:
+        return jsonify({"ok":True,"assigned":False,"sent":0,"message":"No trusted online drivers are currently available. KOJA will keep the delivery waiting."})
+
+    # AI ranks when available; deterministic proximity/address score remains the safe fallback.
+    prompt={"pickup_address":pickup_text,"pickup_gps":{"latitude":lat,"longitude":lon} if lat is not None and lon is not None else None,"drivers":[{k:v for k,v in d.items() if k not in {"phone","score"}} for d in top]}
+    answer,err=_fulfillment_ai_advice("Rank these available KOJA drivers. Use GPS distance when present, otherwise physical pickup area matching. Prefer trusted verified online drivers and shorter distance. Do not invent facts. Return JSON array with driver_id and reason, best first. Facts:\n"+json.dumps(prompt,default=str),1200)
+    ranked=[]
+    try:
+        parsed=json.loads(answer) if answer else []
+        if isinstance(parsed,dict): parsed=parsed.get("drivers") or parsed.get("ranked") or []
+        by_id={d["driver_id"]:d for d in top}
+        for item in parsed:
+            did=str(item.get("driver_id") or "")
+            if did in by_id:
+                d=dict(by_id[did]); d["match_reason"]=clean(item.get("reason")) or "Nearby and available"; ranked.append(d)
+    except Exception:
+        ranked=[]
+    if not ranked: ranked=top
+
+    sent=_auto_notify_nearby_delivery_drivers(delivery,ranked,limit=8)
+    return jsonify({"ok":True,"assigned":False,"sent":len(sent),"ai_used":bool(answer),"message":f"KOJA sent the delivery request to {len(sent)} nearby trusted driver(s). The first driver to accept wins the delivery.","ai_error":err if not answer else ""})
+
 @app.route("/api/delivery/<tracking_code>/ai-match")
 @login_required
 def ai_match_delivery_driver(tracking_code):
@@ -5049,6 +5143,17 @@ function captureDeliveryGPS(){
 </div>
 """,rows=rows)
 
+@app.route("/api/delivery/<tracking_code>/status")
+@login_required
+def delivery_status_api(tracking_code):
+    delivery=first_row("deliveries",{"tracking_code":tracking_code})
+    if not delivery: return jsonify({"ok":False,"message":"Delivery not found."}),404
+    uid=str((current_user() or {}).get("id") or "")
+    provider=get_driver_provider(uid)
+    allowed=bool((current_user() or {}).get("is_admin")) or str(delivery.get("customer_id") or "")==uid or str(delivery.get("sender_id") or "")==uid or bool(provider and str(provider.get("id"))==str(delivery.get("driver_id") or ""))
+    if not allowed: return jsonify({"ok":False,"message":"Not allowed."}),403
+    return jsonify({"ok":True,"tracking_code":tracking_code,"status":delivery.get("status"),"driver_id":delivery.get("driver_id"),"pickup_verified":bool(delivery.get("pickup_verified")),"delivery_confirmation_verified":bool(delivery.get("delivery_confirmation_verified"))})
+
 @app.route("/track/<tracking_code>")
 @login_required
 def track_delivery(tracking_code):
@@ -5078,7 +5183,7 @@ def track_delivery(tracking_code):
 <div class="card" style="margin:14px 0 0">
 <h3>Delivery Actions</h3>
 <div class="actions">
-{% if is_customer and not delivery.get("driver_id") %}<a class="btn success" href="{{ url_for('drivers') }}">Find / Select Driver</a>{% endif %}
+{% if is_customer and not delivery.get("driver_id") %}<button class="btn success" id="aiFindDriverBtn" onclick="aiFindDriver()">KOJA AI — Find Nearby Drivers</button><span id="aiFindDriverStatus" class="small"></span>{% endif %}
 {% if is_customer and delivery.get("driver_id") and not delivery.get("pickup_verified") %}<span class="btn secondary" style="opacity:.7;pointer-events:none">Waiting for Seller Handover</span>{% endif %}
 {% if is_seller and not delivery.get("pickup_verified") %}<a class="btn success" href="{{ url_for('seller_confirm_delivery_page',tracking_code=delivery.get('tracking_code')) }}">Confirm Seller Handover</a>{% elif is_seller and delivery.get("pickup_verified") %}<span class="btn secondary" style="opacity:.7;pointer-events:none">Handover Confirmed</span>{% endif %}
 {% if is_driver %}<a class="btn success" href="{{ url_for('tracking') }}?delivery_id={{ delivery.get('id') }}">Start Driver GPS</a><a class="btn secondary" href="{{ url_for('driver_dashboard') }}">Driver Delivery</a>{% elif not delivery.get("driver_id") and not is_customer %}<a class="btn" href="{{ url_for('driver_available_deliveries') }}">Available Deliveries</a>{% endif %}
@@ -5100,6 +5205,22 @@ def track_delivery(tracking_code):
 </div>
 <script>
 const trackingCode={{ delivery.get("tracking_code")|tojson }};
+async function aiFindDriver(){
+ const btn=document.getElementById('aiFindDriverBtn'), status=document.getElementById('aiFindDriverStatus');
+ if(!btn)return; btn.disabled=true; status.textContent='KOJA AI is finding nearby trusted drivers…';
+ try{
+  const r=await fetch('/api/delivery/'+encodeURIComponent(trackingCode)+'/find-driver-ai',{method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store'});
+  const d=await r.json();
+  if(d.assigned){status.textContent='A driver has already accepted this delivery.';setTimeout(()=>location.reload(),700);return;}
+  if(!r.ok||!d.ok) throw new Error(d.message||'Unable to find drivers.');
+  status.textContent=d.message||'Requests sent to nearby drivers. Waiting for the first acceptance…';
+  let tries=0;
+  const poll=setInterval(async()=>{
+   tries++;
+   try{const x=await fetch('/api/delivery/'+encodeURIComponent(trackingCode)+'/status',{cache:'no-store'});const y=await x.json();if(y.driver_id){clearInterval(poll);status.textContent='Driver accepted. Delivery assigned.';setTimeout(()=>location.reload(),700)}else if(tries>=20){clearInterval(poll);btn.disabled=false;status.textContent='Still waiting. KOJA will keep the request open.'}}catch(e){}
+  },3000);
+ }catch(e){btn.disabled=false;status.textContent=e.message||'KOJA could not find drivers.';}
+}
 const destination={{ delivery.get("destination")|tojson }};
 let map=L.map("map").setView([-13.9626,28.3228],6);
 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap contributors"}).addTo(map);
