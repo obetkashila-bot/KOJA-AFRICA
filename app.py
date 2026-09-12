@@ -128,7 +128,7 @@ STORAGE_BUCKET = os.getenv(
 
 APP_NAME = "KOJA AFRICA"
 APP_VERSION = "2026.09.09-V7-K100M-MONETIZATION-V53-SELLER-CENTER"
-APP_TAGLINE = "Knowledge • Questions • Answers"
+APP_TAGLINE = "Africa’s Digital Platform for What’s Next."
 MAX_UPLOAD_MB = 15
 
 # Email delivery (server-side only; never expose SMTP passwords to the browser)
@@ -937,7 +937,7 @@ footer{text-align:center;color:var(--muted);padding:30px}
 {% endwith %}
 {{ body|safe }}
 </div>
-<footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services</footer>
+<footer>KOJA AFRICA — Africa’s Digital Platform for What’s Next.<br>AI • Education • Business • Commerce • Communication • Services</footer>
 </body>
 </html>
 """
@@ -948,7 +948,7 @@ def render_page(title, body_template, **context):
     prefs = session.get("koja_settings", {}) or {}
     theme = prefs.get("theme", "system") if prefs.get("theme") in ("system", "light", "dark") else "system"
     descriptions = {
-        "KOJA AFRICA": "KOJA AFRICA — knowledge, questions, answers, research, assignments, documents, professional services and delivery services.",
+        "KOJA AFRICA": "KOJA AFRICA — Africa’s Digital Platform for What’s Next. AI, education, business, commerce, communication and digital services.",
         "Research": "KOJA AFRICA Research Engine — search web information, scholarly literature and KOJA documents and create structured research notes and citations.",
         "Assignments": "KOJA AFRICA assignments — ask questions, upload assignments and access academic resources.",
         "Documents": "KOJA AFRICA documents and research resources for learning and academic work.",
@@ -1055,8 +1055,8 @@ def home():
     return render_page("KOJA AFRICA", r"""
 <div class="hero">
 <h1>KOJA AFRICA</h1>
-<p>Knowledge • Questions • Answers</p>
-<p>Research, academic questions, assignments, professional services, documents and delivery services.</p>
+<p>Africa’s Digital Platform for What’s Next.</p>
+<p>AI, education, business, commerce, communication and everyday digital services — connected in one platform.</p>
 {% if not user %}
 <div class="actions">
 <a class="btn" href="{{ url_for('register') }}">Create Account</a>
@@ -1069,12 +1069,10 @@ def home():
 <div class="card"><h3>CV</h3><p>Create a professional CV.</p><a class="btn" href="{{ url_for('cv') }}">Create CV</a></div>
 <div class="card"><h3>Doctors</h3><p>Find a doctor and request an appointment.</p><a class="btn" href="{{ url_for('doctors') }}">Doctors</a></div>
 <div class="card"><h3>Teachers</h3><p>Find teachers/tutors by subject and grade.</p><a class="btn" href="{{ url_for('teachers') }}">Teachers</a></div>
-<div class="card"><h3>Deliveries</h3><p>Find nearby drivers and send delivery requests.</p><a class="btn" href="{{ url_for('deliveries') }}">Delivery</a></div>
-<div class="card"><h3>Live GPS</h3><p>Drivers can share their live location.</p><a class="btn" href="{{ url_for('tracking') }}">Driver GPS</a></div>
+<div class="card"><h3>KOJA Delivery</h3><p>Find nearby drivers, request delivery and follow live GPS tracking.</p><div class="actions"><a class="btn" href="{{ url_for('deliveries') }}">Delivery</a><a class="btn secondary" href="{{ url_for('tracking') }}">Live GPS</a></div></div>
 <div class="card"><h3>🧠 KOJA AI</h3><p>Ask KOJA AI for explanations, planning and practical help.</p><a class="btn" href="{{ url_for('ai_assistant') }}">Open KOJA AI</a></div>
 <div class="card"><h3>📚 Documents</h3><p>Browse and upload KOJA learning and research documents.</p><a class="btn" href="{{ url_for('documents') }}">Open Documents</a></div>
-<div class="card"><h3>KOJA Market</h3><p>Buy and sell physical and digital products and services across Africa.</p><div class="actions"><a class="btn" href="{{ url_for('koja_market') }}">Open KOJA Market</a><a class="btn secondary" href="{{ url_for('market_seller_register') }}">Become a Seller</a></div></div>
-<div class="card"><h3>KOJA Market</h3><p>Buy and sell physical and digital products in one marketplace.</p><a class="btn" href="{{ url_for('koja_market') }}">Open KOJA Market</a></div>
+<div class="card"><h3>KOJA Market</h3><p>Buy and sell physical and digital products in one African marketplace.</p><div class="actions"><a class="btn" href="{{ url_for('koja_market') }}">Open KOJA Market</a><a class="btn secondary" href="{{ url_for('market_seller_register') }}">Become a Seller</a></div></div>
 </div>
 """)
 
