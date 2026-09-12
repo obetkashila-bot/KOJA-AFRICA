@@ -29,7 +29,12 @@ from werkzeug.utils import secure_filename
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 # Live Shopping / LiveKit server SDK
-from livekit import api as livekit_api
+# LiveKit is optional at import time so a missing SDK cannot prevent the
+# Flask process from starting and answering Render health checks.
+try:
+    from livekit import api as livekit_api
+except Exception:
+    livekit_api = None
 
 # Optional document parsers used by KOJA AI file intelligence.
 try:
@@ -1088,14 +1093,17 @@ self.addEventListener('fetch', function(event) {
 
 @app.route("/health")
 def health():
+    # Render health checks MUST remain dependency-free and non-blocking.
+    # Do not call Supabase, Storage, Flutterwave, AI providers, or any other
+    # remote service here. Runtime dependencies are checked lazily by the
+    # feature that needs them.
     return jsonify({
         "status": "ok",
         "application": APP_NAME,
-        "supabase_configured": supabase_configured(),
-        "gps_table_available": table_exists("driver_locations"),
+        "health": "live",
         "timestamp": utc_now(),
         "python": os.sys.version.split()[0],
-    })
+    }), 200
 
 # ============================================================
 # REGISTER / LOGIN
