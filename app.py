@@ -6390,10 +6390,11 @@ create table if not exists public.koja_notifications (
  is_read boolean default false, created_at timestamptz default now()
 );
 create index if not exists koja_notifications_user_idx on public.koja_notifications(user_id,is_read,created_at desc);
-create table if not exists public.koja_notification_preferences (user_id uuid primary key, push_enabled boolean default true, sound_enabled boolean default true, market_enabled boolean default true, delivery_enabled boolean default true, ai_enabled boolean default true, messages_enabled boolean default true, system_enabled boolean default true, updated_at timestamptz default now());
+create table if not exists public.koja_notification_preferences (user_id uuid primary key, push_enabled boolean default true, sound_enabled boolean default true, market_enabled boolean default true, delivery_enabled boolean default true, ai_enabled boolean default true, messages_enabled boolean default true, business_enabled boolean default true, calls_enabled boolean default true, system_enabled boolean default true, updated_at timestamptz default now());
+alter table if exists public.koja_notification_preferences add column if not exists business_enabled boolean default true;
+alter table if exists public.koja_notification_preferences add column if not exists calls_enabled boolean default true;
 create table if not exists public.koja_push_subscriptions (id uuid primary key default gen_random_uuid(), user_id uuid not null, endpoint text not null, subscription jsonb not null default '{}'::jsonb, user_agent text, created_at timestamptz default now(), updated_at timestamptz default now(), unique(user_id,endpoint));
 create index if not exists koja_push_subscriptions_user_idx on public.koja_push_subscriptions(user_id,created_at desc);
-alter table if exists public.koja_push_subscriptions add column if not exists user_id uuid; alter table if exists public.koja_push_subscriptions add column if not exists endpoint text; alter table if exists public.koja_push_subscriptions add column if not exists subscription jsonb not null default '{}'::jsonb; alter table if exists public.koja_push_subscriptions add column if not exists user_agent text; alter table if exists public.koja_push_subscriptions add column if not exists created_at timestamptz default now(); alter table if exists public.koja_push_subscriptions add column if not exists updated_at timestamptz default now();
 create table if not exists public.koja_blocks (
  blocker_id uuid not null, blocked_id uuid not null, created_at timestamptz default now(), primary key(blocker_id,blocked_id)
 );
@@ -6406,7 +6407,9 @@ def _notification_allowed(uid, notification_type):
     if t in ('market','order','seller','promotion','sale'): return bool(p.get('market_enabled',True))
     if t in ('delivery','driver','delivery_update'): return bool(p.get('delivery_enabled',True))
     if t in ('ai','ai_update'): return bool(p.get('ai_enabled',True))
-    if t in ('message','chat','call','group_call','friend_request'): return bool(p.get('messages_enabled',True))
+    if t in ('message','chat','friend_request','message_media','voice_message'): return bool(p.get('messages_enabled',True))
+    if t in ('call','group_call','missed_call'): return bool(p.get('calls_enabled',True))
+    if t in ('business','business_order','business_update'): return bool(p.get('business_enabled',True))
     return bool(p.get('system_enabled',True))
 
 def _send_web_push(uid,title,body,url=None,notification_type='system'):
@@ -6473,7 +6476,7 @@ def notifications_page():
 @login_required
 def notification_settings():
     uid=str(current_user()['id']); p=first_row('koja_notification_preferences',{'user_id':uid}) or {}
-    return render_page('Notification Settings',"""<div class='card'><h2>Notification Settings</h2><p>Choose what KOJA can notify you about.</p><form id='np'><label><input type='checkbox' name='push_enabled' {% if p.get('push_enabled',True) %}checked{% endif %}> Push notifications</label><label><input type='checkbox' name='sound_enabled' {% if p.get('sound_enabled',True) %}checked{% endif %}> Notification sound</label><label><input type='checkbox' name='market_enabled' {% if p.get('market_enabled',True) %}checked{% endif %}> Market and orders</label><label><input type='checkbox' name='delivery_enabled' {% if p.get('delivery_enabled',True) %}checked{% endif %}> Deliveries and drivers</label><label><input type='checkbox' name='ai_enabled' {% if p.get('ai_enabled',True) %}checked{% endif %}> KOJA AI</label><label><input type='checkbox' name='messages_enabled' {% if p.get('messages_enabled',True) %}checked{% endif %}> Messages and calls</label><label><input type='checkbox' name='system_enabled' {% if p.get('system_enabled',True) %}checked{% endif %}> System and account</label><button class='btn' type='submit'>Save settings</button></form><hr><button class='btn secondary' type='button' onclick='enableKOJAPush()'>Enable KOJA notifications</button> <button class='btn' id='test-push-btn' type='button' onclick='sendKOJATestNotification()'>Send Test Notification</button><p id='push-status' class='small'></p></div><script>const form=document.getElementById('np');form.onsubmit=async e=>{e.preventDefault();let o={};new FormData(form).forEach((v,k)=>o[k]=true);let r=await fetch('/api/notifications/preferences',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)});document.getElementById('push-status').textContent=r.ok?'Saved.':'Could not save settings.'};async function sendKOJATestNotification(){const s=document.getElementById('push-status'),b=document.getElementById('test-push-btn');b.disabled=true;s.textContent='Sending test notification...';try{const r=await fetch('/api/notifications/test',{method:'POST',headers:{'Accept':'application/json'}});const d=await r.json().catch(()=>({}));if(r.ok&&d.sent>0){s.textContent='Test notification sent. Check your phone/browser.'}else{s.textContent=d.error||'Test notification could not be sent.'}}catch(e){s.textContent='Could not contact the notification service.'}finally{b.disabled=false}}async function enableKOJAPush(){if(!('Notification'in window)){document.getElementById('push-status').textContent='KOJA notifications are not supported on this device.';return}let perm=await Notification.requestPermission();if(perm!=='granted'){document.getElementById('push-status').textContent='KOJA notification permission was not granted.';return}if(!('serviceWorker'in navigator)){document.getElementById('push-status').textContent='KOJA notifications are not supported here.';return}let reg=await navigator.serviceWorker.register('/koja-sw.js');let key=await fetch('/api/notifications/vapid-public-key').then(r=>r.text());if(!key){document.getElementById('push-status').textContent='Push service is not configured yet.';return}let sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:base64ToUint8(key)});await fetch('/api/notifications/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sub)});document.getElementById('push-status').textContent='KOJA notifications enabled.'}function base64ToUint8(b){let p='='.repeat((4-b.length%4)%4),s=atob((b+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from([...s].map(c=>c.charCodeAt(0)))}</script>""",p=p)
+    return render_page('Notification Settings',"""<div class='card'><h2>Notification Settings</h2><p>Choose what KOJA can notify you about.</p><form id='np'><label><input type='checkbox' name='push_enabled' {% if p.get('push_enabled',True) %}checked{% endif %}> Push notifications</label><label><input type='checkbox' name='sound_enabled' {% if p.get('sound_enabled',True) %}checked{% endif %}> Notification sound</label><label><input type='checkbox' name='market_enabled' {% if p.get('market_enabled',True) %}checked{% endif %}> Market and orders</label><label><input type='checkbox' name='delivery_enabled' {% if p.get('delivery_enabled',True) %}checked{% endif %}> Deliveries and drivers</label><label><input type='checkbox' name='ai_enabled' {% if p.get('ai_enabled',True) %}checked{% endif %}> KOJA AI</label><label><input type='checkbox' name='messages_enabled' {% if p.get('messages_enabled',True) %}checked{% endif %}> Messages and chat</label><label><input type='checkbox' name='business_enabled' {% if p.get('business_enabled',True) %}checked{% endif %}> Business and business orders</label><label><input type='checkbox' name='calls_enabled' {% if p.get('calls_enabled',True) %}checked{% endif %}> Calls and missed calls</label><label><input type='checkbox' name='system_enabled' {% if p.get('system_enabled',True) %}checked{% endif %}> System and account</label><button class='btn' type='submit'>Save settings</button></form><hr><button class='btn secondary' type='button' onclick='enableKOJAPush()'>Enable KOJA notifications</button><p id='push-status' class='small'></p></div><script>const form=document.getElementById('np');form.onsubmit=async e=>{e.preventDefault();let o={};new FormData(form).forEach((v,k)=>o[k]=true);let r=await fetch('/api/notifications/preferences',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)});document.getElementById('push-status').textContent=r.ok?'Saved.':'Could not save settings.'};async function enableKOJAPush(){if(!('Notification'in window)){document.getElementById('push-status').textContent='KOJA notifications are not supported on this device.';return}let perm=await Notification.requestPermission();if(perm!=='granted'){document.getElementById('push-status').textContent='KOJA notification permission was not granted.';return}if(!('serviceWorker'in navigator)){document.getElementById('push-status').textContent='KOJA notification service is not supported on this device.';return}let reg=await navigator.serviceWorker.register('/koja-sw.js');let key=await fetch('/api/notifications/vapid-public-key').then(r=>r.text());if(!key){document.getElementById('push-status').textContent='KOJA notification service is not configured yet.';return}let sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:base64ToUint8(key)});await fetch('/api/notifications/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sub)});document.getElementById('push-status').textContent='KOJA notifications enabled.'}function base64ToUint8(b){let p='='.repeat((4-b.length%4)%4),s=atob((b+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from([...s].map(c=>c.charCodeAt(0)))}</script>""",p=p)
 
 @app.route('/api/notifications')
 @login_required
@@ -6496,33 +6499,14 @@ def api_notification_read_all():
 @app.route('/api/notifications/preferences',methods=['POST'])
 @login_required
 def api_notification_preferences():
-    uid=str(current_user()['id']); data=request.get_json(silent=True) or {}; payload={k:bool(data.get(k,False)) for k in ['push_enabled','sound_enabled','market_enabled','delivery_enabled','ai_enabled','messages_enabled','system_enabled']}; payload['user_id']=uid; payload['updated_at']=utc_now(); old=first_row('koja_notification_preferences',{'user_id':uid})
+    uid=str(current_user()['id']); data=request.get_json(silent=True) or {}; payload={k:bool(data.get(k,False)) for k in ['push_enabled','sound_enabled','market_enabled','delivery_enabled','ai_enabled','messages_enabled','business_enabled','calls_enabled','system_enabled']}; payload['user_id']=uid; payload['updated_at']=utc_now(); old=first_row('koja_notification_preferences',{'user_id':uid})
     if old: ok,err=db_update('koja_notification_preferences',{'user_id':uid},payload)
     else: row,err=db_insert('koja_notification_preferences',payload); ok=bool(row and not err)
-    if not ok:
-        logger.error('KOJA notification preferences save failed for user %s: %s', uid, err)
-        return jsonify(ok=False, error='Notification settings could not be saved. The notification preferences table/migration may be missing.'),400
-    return jsonify(ok=True),200
+    return jsonify(ok=bool(ok)),200 if ok else 400
 
 @app.route('/api/notifications/vapid-public-key')
 @login_required
-def api_vapid_public_key():
-    key=(os.getenv('KOJA_PUSH_VAPID_PUBLIC_KEY') or os.getenv('VAPID_PUBLIC_KEY') or '').strip()
-    return (key,200,{'Content-Type':'text/plain'})
-
-
-@app.route('/api/notifications/test', methods=['POST'])
-@login_required
-def api_notifications_test():
-    """Send one controlled Web Push notification to the logged-in user's devices."""
-    uid=str(current_user()['id'])
-    if not (os.getenv('KOJA_PUSH_VAPID_PRIVATE_KEY') or os.getenv('VAPID_PRIVATE_KEY')):
-        return jsonify(ok=False, error='Push service is not configured.'), 503
-    subs=db_select('koja_push_subscriptions',filters={'user_id':uid},limit=20)
-    if not subs:
-        return jsonify(ok=False, error='No push subscription found. Enable KOJA notifications first.', subscriptions=0, sent=0), 404
-    sent=_send_web_push(uid,'KOJA Test Notification','KOJA push notifications are working.','/notifications','system')
-    return jsonify(ok=sent>0,subscriptions=len(subs),sent=sent),200 if sent>0 else 502
+def api_vapid_public_key(): return ((os.getenv('KOJA_PUSH_VAPID_PUBLIC_KEY') or os.getenv('VAPID_PUBLIC_KEY') or '').strip(),200,{'Content-Type':'text/plain','Cache-Control':'no-store'})
 
 @app.route('/api/notifications/subscribe',methods=['POST'])
 @login_required
@@ -6531,11 +6515,9 @@ def api_notification_subscribe():
     if not endpoint: return jsonify(error='endpoint required'),400
     existing=first_row('koja_push_subscriptions',{'user_id':uid,'endpoint':endpoint}); payload={'user_id':uid,'endpoint':endpoint,'subscription':sub,'user_agent':request.headers.get('User-Agent',''),'updated_at':utc_now()}
     if existing:
-        result,err=db_update('koja_push_subscriptions',{'id':existing.get('id')},payload)
-        ok=bool(result is not None and not err)
+        result,err=db_update('koja_push_subscriptions',{'id':existing.get('id')},payload); ok=bool(result is not None and not err)
     else:
-        row,err=db_insert('koja_push_subscriptions',payload)
-        ok=bool(row and not err)
+        row,err=db_insert('koja_push_subscriptions',payload); ok=bool(row and not err)
     if not ok:
         logger.error('KOJA push subscription save failed for user %s: %s',uid,err)
         return jsonify(ok=False,error='KOJA notification subscription could not be saved.'),400
@@ -6609,6 +6591,12 @@ def connect_messages(conversation_id):
         if not body:return jsonify(error='Empty message'),400
         row,err=db_insert('koja_messages',{'id':str(uuid.uuid4()),'conversation_id':conversation_id,'sender_id':uid,'message_type':'text','body':body,'created_at':utc_now()})
         if err:return jsonify(error=err),500
+        members=db_select('koja_conversation_members',filters={'conversation_id':conversation_id},limit=100)
+        sender_name=_profile_name(uid)
+        for member in members:
+            target=str(member.get('user_id') or '')
+            if target and target!=str(uid):
+                notify_user(target,f'New message from {sender_name}',body,'message',row.get('id'),f'/connect/chat/{conversation_id}')
         return jsonify(message=row)
     rows=db_select('koja_messages',filters={'conversation_id':conversation_id},order='created_at.asc',limit=300)
     for m in rows:
@@ -6638,6 +6626,12 @@ def connect_upload(conversation_id):
         delete_storage_path(path)
         return jsonify(error=err),500
     if row and row.get('file_url'):
+        members=db_select('koja_conversation_members',filters={'conversation_id':conversation_id},limit=100)
+        sender_name=_profile_name(uid); kind='voice message' if mt=='audio' else ('photo' if mt=='image' else 'file')
+        for member in members:
+            target=str(member.get('user_id') or '')
+            if target and target!=str(uid):
+                notify_user(target,f'New {kind} from {sender_name}',row.get('body') or f'{sender_name} sent a {kind}.','voice_message' if mt=='audio' else 'message_media',row.get('id'),f'/connect/chat/{conversation_id}')
         row['file_url']=url_for('connect_message_media', message_id=row.get('id'))
     return jsonify(message=row)
 
@@ -6746,7 +6740,7 @@ def connect_group_call_create():
         row,err=db_insert('koja_calls',{'id':str(uuid.uuid4()),'conversation_id':cid,'caller_id':uid,'callee_id':callee,'mode':mode,'status':'ringing','created_at':utc_now()})
         if not err and row:
             db_insert('koja_group_call_participants',{'call_id':row['id'],'user_id':callee,'status':'invited'})
-            notify_user(callee,f'Incoming group {mode} call',f'{_profile_name(uid)} started a group call.','group_call',row['id'],'/connect/calls');calls.append(row)
+            notify_user(callee,f'Incoming group {mode} call',f'{_profile_name(uid)} started a group call.','group_call',row['id'],f'/connect/answer/{row['id']}');calls.append(row)
     return jsonify(calls=calls)
 
 @app.route('/connect/status',methods=['GET','POST'])
@@ -7000,7 +6994,7 @@ def connect_call_create():
     if callee==uid or not find_user_by_id(callee) or mode not in ('voice','video'):return jsonify(error='Invalid call'),400
     c=_direct_conversation(uid,callee); row,err=db_insert('koja_calls',{'id':str(uuid.uuid4()),'conversation_id':c['id'],'caller_id':uid,'callee_id':callee,'mode':mode,'status':'ringing','created_at':utc_now()})
     if err:return jsonify(error=err),500
-    notify_user(callee,f'Incoming {mode} call',f'{_profile_name(uid)} is calling you.','call',row['id'],'/connect/calls');return jsonify(call=row)
+    notify_user(callee,f'Incoming {mode} call',f'{_profile_name(uid)} is calling you.','call',row['id'],f'/connect/answer/{row['id']}');return jsonify(call=row)
 
 @app.route('/api/connect/call/offer/<call_id>',methods=['POST'])
 @login_required
@@ -7014,6 +7008,14 @@ def connect_call_offer(call_id):
 def connect_call_check(call_id):
     uid=str(current_user()['id']);c=first_row('koja_calls',{'id':call_id})
     if not c or uid not in (str(c.get('caller_id')),str(c.get('callee_id'))):return jsonify(error='Forbidden'),403
+    if str(c.get('status') or '').lower()=='ringing':
+        try:
+            created=datetime.fromisoformat(str(c.get('created_at')).replace('Z','+00:00'))
+            if datetime.now(timezone.utc)-created >= timedelta(seconds=120):
+                db_update('koja_calls',{'id':call_id},{'status':'ended','ended_at':utc_now()})
+                notify_user(c.get('callee_id'),'Missed KOJA call',f"You missed a {c.get('mode') or 'voice'} call from {_profile_name(c.get('caller_id'))}.",'missed_call',call_id,f'/connect/answer/{call_id}')
+                c=first_row('koja_calls',{'id':call_id}) or c
+        except Exception: pass
     return jsonify(call=c)
 
 @app.route('/api/connect/call/end/<call_id>',methods=['POST'])
@@ -7021,7 +7023,11 @@ def connect_call_check(call_id):
 def connect_call_end(call_id):
     uid=str(current_user()['id']);c=first_row('koja_calls',{'id':call_id})
     if not c or uid not in (str(c.get('caller_id')),str(c.get('callee_id'))):return jsonify(error='Forbidden'),403
-    db_update('koja_calls',{'id':call_id},{'status':'ended','ended_at':utc_now()});return jsonify(ok=True)
+    old_status=str(c.get('status') or '').lower(); db_update('koja_calls',{'id':call_id},{'status':'ended','ended_at':utc_now()});
+    if old_status=='ringing':
+        other=str(c.get('callee_id') if uid==str(c.get('caller_id')) else c.get('caller_id'))
+        notify_user(other,'Missed KOJA call',f'You missed a {c.get('mode') or 'voice'} call from {_profile_name(c.get('caller_id') if other==str(c.get('caller_id')) else c.get('callee_id'))}.','missed_call',call_id,f'/connect/answer/{call_id}')
+    return jsonify(ok=True)
 
 @app.route('/setup/connect-sql')
 def connect_sql():
@@ -7929,7 +7935,8 @@ def business_store_payment_callback():
     if tx and _flutterwave_payment_valid(tx,tx_ref,order.get('total_amount'),order.get('currency')):
         db_update('koja_business_orders',{'id':order.get('id')},{'status':'paid','payment_transaction_id':str(tx.get('id') or ''),'updated_at':utc_now()})
         prod=first_row('koja_business_products',{'id':order.get('product_id')}) or {}; qty=max(1,int(order.get('quantity') or 1)); db_update('koja_business_products',{'id':order.get('product_id')},{'stock':max(0,int(prod.get('stock') or 0)-qty),'updated_at':utc_now()})
-        notify_user(prod.get('business_id'),'New business store order',f"Order {order.get('id')} paid for {prod.get('name') or 'product'}.",'market_order',order.get('id'),'/market/my')
+        notify_user(prod.get('business_id'),'New business store order',f"Order {order.get('id')} paid for {prod.get('name') or 'product'}.",'business_order',order.get('id'),f'/business/{prod.get('business_id')}')
+        notify_user(order.get('buyer_id'),'KOJA business order confirmed',f"Your order {order.get('id')} for {prod.get('name') or 'product'} has been paid successfully.",'business_order',order.get('id'),'/market/my')
         if str(order.get('fulfillment_method') or '')=='delivery':
             tracking='KJB-'+secrets.token_hex(5).upper(); b=first_row('koja_businesses',{'id':prod.get('business_id')}) or {}; pickup_code='KDP-'+secrets.token_hex(4).upper(); drow,derr=db_insert('deliveries',{'id':str(uuid.uuid4()),'customer_id':order.get('buyer_id'),'user_id':order.get('buyer_id'),'sender_id':prod.get('business_id'),'pickup_location':clean(b.get('location')) or 'Business','pickup_address':clean(b.get('location')) or 'Business','destination':order.get('delivery_address'),'delivery_address':order.get('delivery_address'),'recipient_phone':order.get('recipient_phone'),'package_description':prod.get('name') or 'Business order','delivery_fee':order.get('delivery_fee') or 0,'currency':'ZMW','status':'requested','tracking_code':tracking,'pickup_code':pickup_code,'created_at':utc_now(),'updated_at':utc_now()}); db_insert('koja_market_delivery_jobs',{'order_id':order.get('id'),'customer_id':order.get('buyer_id'),'seller_id':prod.get('business_id'),'delivery_address':order.get('delivery_address'),'delivery_fee':order.get('delivery_fee') or 0,'status':'requested','tracking_code':tracking,'source_type':'business','source_order_id':order.get('id'),'created_at':utc_now(),'updated_at':utc_now()}); _notify_available_drivers(tracking,clean(b.get('location')) or 'Business',order.get('delivery_address'),order.get('delivery_fee')); notify_user(prod.get('business_id'),'Delivery pickup number created',f'Business order {order.get("id")} is ready for delivery. Give the driver pickup number {pickup_code}.','delivery',order.get('id'),'/business/'+str(prod.get('business_id')))
         flash('Business order paid successfully.','success'); return redirect(url_for('market_my'))
