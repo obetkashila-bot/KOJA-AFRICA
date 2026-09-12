@@ -6506,15 +6506,6 @@ def api_vapid_public_key():
     key=(os.getenv('KOJA_PUSH_VAPID_PUBLIC_KEY') or os.getenv('VAPID_PUBLIC_KEY') or '').strip()
     return (key,200,{'Content-Type':'text/plain'})
 
-@app.route('/api/notifications/subscribe',methods=['POST'])
-@login_required
-def api_notification_subscribe():
-    uid=str(current_user()['id']); sub=request.get_json(silent=True) or {}; endpoint=clean(sub.get('endpoint'))
-    if not endpoint: return jsonify(error='endpoint required'),400
-    existing=first_row('koja_push_subscriptions',{'user_id':uid,'endpoint':endpoint}); payload={'user_id':uid,'endpoint':endpoint,'subscription':sub,'user_agent':request.headers.get('User-Agent',''),'updated_at':utc_now()}
-    if existing: ok,err=db_update('koja_push_subscriptions',{'id':existing.get('id')},payload)
-    else: row,err=db_insert('koja_push_subscriptions',payload); ok=bool(row and not err)
-    return jsonify(ok=bool(ok))
 
 @app.route('/api/notifications/test', methods=['POST'])
 @login_required
@@ -6525,16 +6516,19 @@ def api_notifications_test():
         return jsonify(ok=False, error='Push service is not configured.'), 503
     subs=db_select('koja_push_subscriptions',filters={'user_id':uid},limit=20)
     if not subs:
-        return jsonify(ok=False, error='No push subscription found. Enable phone/browser notifications first.', subscriptions=0), 404
-    sent=0; errors=[]
-    for sub in subs:
-        ok,err=_send_web_push(uid,'KOJA Test Notification','KOJA push notifications are working.','/notifications','system')
-        if ok:
-            sent+=1
-        elif err:
-            errors.append(str(err)[:300])
-        break
-    return jsonify(ok=sent>0,sent=sent,subscriptions=len(subs),errors=errors),200 if sent>0 else 502
+        return jsonify(ok=False, error='No push subscription found. Enable phone/browser notifications first.', subscriptions=0, sent=0), 404
+    sent=_send_web_push(uid,'KOJA Test Notification','KOJA push notifications are working.','/notifications','system')
+    return jsonify(ok=sent>0,subscriptions=len(subs),sent=sent),200 if sent>0 else 502
+
+@app.route('/api/notifications/subscribe',methods=['POST'])
+@login_required
+def api_notification_subscribe():
+    uid=str(current_user()['id']); sub=request.get_json(silent=True) or {}; endpoint=clean(sub.get('endpoint'))
+    if not endpoint: return jsonify(error='endpoint required'),400
+    existing=first_row('koja_push_subscriptions',{'user_id':uid,'endpoint':endpoint}); payload={'user_id':uid,'endpoint':endpoint,'subscription':sub,'user_agent':request.headers.get('User-Agent',''),'updated_at':utc_now()}
+    if existing: ok,err=db_update('koja_push_subscriptions',{'id':existing.get('id')},payload)
+    else: row,err=db_insert('koja_push_subscriptions',payload); ok=bool(row and not err)
+    return jsonify(ok=bool(ok))
 
 @app.route('/koja-sw.js')
 def koja_service_worker():
