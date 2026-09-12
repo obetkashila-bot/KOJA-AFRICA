@@ -52,6 +52,12 @@ create table if not exists public.koja_push_subscriptions (
   unique(user_id,endpoint)
 );
 create index if not exists koja_push_subscriptions_user_idx on public.koja_push_subscriptions(user_id,created_at desc);
+alter table if exists public.koja_push_subscriptions add column if not exists user_id uuid;
+alter table if exists public.koja_push_subscriptions add column if not exists endpoint text;
+alter table if exists public.koja_push_subscriptions add column if not exists subscription jsonb not null default '{}'::jsonb;
+alter table if exists public.koja_push_subscriptions add column if not exists user_agent text;
+alter table if exists public.koja_push_subscriptions add column if not exists created_at timestamptz default now();
+alter table if exists public.koja_push_subscriptions add column if not exists updated_at timestamptz default now();
 
 create table if not exists public.koja_media_events (
   id uuid primary key default gen_random_uuid(),
