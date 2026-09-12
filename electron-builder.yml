@@ -1,0 +1,18 @@
+appId: com.kojaafrica.app
+productName: KOJA AFRICA
+asar: true
+files:
+  - electron/**
+  - static/**
+  - manifest.json
+  - package.json
+win:
+  target:
+    - nsis
+mac:
+  target:
+    - dmg
+linux:
+  target:
+    - AppImage
+    - deb

@@ -1,9 +1,57 @@
 {
-  "name": "koja-fcm-relay",
+  "name": "koja-africa-app",
+  "version": "1.0.0",
   "private": true,
-  "engines": { "node": "20" },
+  "description": "KOJA AFRICA cross-platform application shell",
+  "scripts": {
+    "cap:add:android": "npx cap add android",
+    "cap:add:ios": "npx cap add ios",
+    "cap:sync": "npx cap sync",
+    "cap:open:android": "npx cap open android",
+    "cap:open:ios": "npx cap open ios",
+    "desktop": "electron electron/main.cjs",
+    "desktop:build": "electron-builder",
+    "cap:sync:android": "npx cap sync android",
+    "cap:sync:ios": "npx cap sync ios",
+    "release:desktop": "npm run desktop:build",
+    "release:android": "npx cap sync android && npx cap open android",
+    "release:ios": "npx cap sync ios && npx cap open ios"
+  },
   "dependencies": {
-    "firebase-admin": "^13.5.0",
-    "firebase-functions": "^7.0.0"
+    "@capacitor/core": "latest",
+    "@capacitor/android": "latest",
+    "@capacitor/ios": "latest"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "latest",
+    "electron": "latest",
+    "electron-builder": "latest"
+  },
+  "build": {
+    "appId": "com.kojaafrica.app",
+    "productName": "KOJA AFRICA",
+    "files": [
+      "electron/**/*",
+      "static/**/*",
+      "manifest.json",
+      "app.py",
+      "package.json"
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ]
+    }
   }
 }
