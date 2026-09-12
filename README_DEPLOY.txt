@@ -1,18 +1,29 @@
-KOJA DELIVERY BUTTONS V2 — 2026-09-12
+KOJA AFRICA — 11 ENGINES + NOTIFICATIONS PRODUCTION UPDATE
 
-This is an additive UI/navigation upgrade on top of the deployed KOJA ONE-OTP delivery build.
+Built from the current KOJA production app baseline.
 
-Added directly to Live Delivery Tracking:
-- Find / Select Driver when no driver is assigned.
-- Confirm Seller Handover for the seller/business owner.
-- Start Driver GPS and Driver Delivery for the assigned driver.
-- Confirm Delivery for the buyer after pickup is verified.
-- Clear one-OTP flow/status guidance.
+Visible main navigation now includes:
+- KOJA Engines
+- Notifications
 
-No Communications UI changes.
-No destructive SQL migration.
+KOJA Engines page exposes all 11:
+1. V12 — KOJA Search & Discovery
+2. V13 — KOJA Ads Network
+3. V14 — KOJA Pay Orchestration
+4. V15 — KOJA Cloud & Developer
+5. V16 — KOJA Data Intelligence
+6. V17 — KOJA Identity & Trust
+7. V18 — KOJA Workspace & Enterprise
+8. V19 — KOJA Ecosystem
+9. V20 — KOJA Autonomous Africa
+10. KOJA AI
+11. KOJA Profit Engine
 
-IMPORTANT:
-Use this app.py as the replacement for the currently deployed ONE-OTP app.py.
-The SQL file is included for completeness; if the ONE-OTP migration was already run, do not rerun it unless needed.
-Keep Render command: gunicorn app:app
+Existing services are preserved. Communications UI is not redesigned.
+
+Deploy:
+1. Replace Render Production app.py with this app.py.
+2. Keep Start Command: gunicorn app:app
+3. Deploy KOJA-AFRICA Production.
+4. Log in and open KOJA Engines.
+5. Notifications is directly visible in the main navigation.
