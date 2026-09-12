@@ -1,0 +1,72 @@
+KOJA AFRICA — FOUNDATIONS V2 / FULL MODULE ACTIVATION
+
+Purpose
+This package finishes the shared production foundations and activates the V12–V20 engine layer without replacing the existing KOJA services.
+
+IMPORTANT
+- Existing Render Production remains the deployment target.
+- Communications / Connect routes were not intentionally changed by the V12–V20 module block.
+- Do not delete or recreate existing Supabase tables.
+
+1. SUPABASE
+Run KOJA_FOUNDATIONS_V2.sql once in Supabase SQL Editor.
+The migration is additive: CREATE IF NOT EXISTS, indexes, safe additive columns, and idempotent service registration.
+
+2. RENDER
+Replace the deployed app.py with the package app.py.
+Keep the existing requirements.txt and add pywebpush>=2.0.0 from requirements-additions.txt.
+Keep the existing Gunicorn command: gunicorn app:app.
+
+3. REQUIRED ENV FOR PUSH
+VAPID_PUBLIC_KEY
+VAPID_PRIVATE_KEY
+VAPID_CLAIMS_EMAIL
+The application will report push as unavailable until the public/private keys are present.
+
+4. KOJA AI
+Routing is now automatic in this order:
+Gemini -> Groq -> OpenAI
+Each provider has model fallbacks. Provider/model details are not exposed through the AI models endpoint.
+Explicit user memory commands are supported:
+- "Remember that ..."
+- "Forget that ..."
+Memory is stored only when explicitly requested by the user.
+
+5. PUSH
+Open Notification Settings while signed in.
+Enable phone/browser notifications.
+Use the notification test endpoint from the UI/API after permission is granted.
+Expired push subscriptions are removed when the push provider returns 404/410.
+
+6. READINESS
+GET /health/ready checks Supabase and the core production tables.
+GET /health remains the basic liveness endpoint.
+
+7. V12 -> V20
+Visible module routes:
+/platform/engines/discover
+/platform/engines/ads
+/platform/engines/pay
+/platform/engines/cloud
+/platform/engines/intelligence
+/platform/engines/identity
+/platform/engines/workspace
+/platform/engines/ecosystem
+/platform/engines/autonomous_ai
+
+The module layer provides production data foundations and starter operational actions for Ads, Pay, Identity, Workspace and Autonomous AI, plus event/transaction APIs for Intelligence and Ecosystem.
+
+8. MONEY SAFETY
+The new KOJA Pay module creates payment intents only. It does not bypass the existing Flutterwave callback/webhook verification or replace the existing Market/Business payment finalizers.
+
+9. FINAL TEST ORDER
+A. Deploy app.py.
+B. Run SQL.
+C. Confirm /health.
+D. Confirm /health/ready returns ok:true.
+E. Sign in and open KOJA AI.
+F. Test "Remember that my preferred ..." then start another chat and verify it is used.
+G. Configure VAPID keys and enable browser notifications.
+H. Test notification delivery.
+I. Open /platform/engines and verify the engine cards.
+J. Only after the above passes, perform Flutterwave LIVE smoke tests.
