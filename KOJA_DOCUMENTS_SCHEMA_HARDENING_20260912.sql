@@ -90,3 +90,42 @@ create index if not exists idx_koja_document_ai_index_user_id
   on public.koja_document_ai_index(user_id);
 create index if not exists idx_koja_document_ai_index_status
   on public.koja_document_ai_index(status);
+
+-- Document learning workspace: additive only
+create table if not exists public.koja_document_learning_progress (
+  id uuid primary key default gen_random_uuid(),
+  document_id uuid not null,
+  user_id uuid not null,
+  action text not null default 'study',
+  score numeric,
+  total numeric,
+  notes text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+alter table public.koja_document_learning_progress add column if not exists document_id uuid;
+alter table public.koja_document_learning_progress add column if not exists user_id uuid;
+alter table public.koja_document_learning_progress add column if not exists action text not null default 'study';
+alter table public.koja_document_learning_progress add column if not exists score numeric;
+alter table public.koja_document_learning_progress add column if not exists total numeric;
+alter table public.koja_document_learning_progress add column if not exists notes text;
+alter table public.koja_document_learning_progress add column if not exists created_at timestamptz not null default now();
+alter table public.koja_document_learning_progress add column if not exists updated_at timestamptz not null default now();
+create index if not exists idx_koja_doc_learning_document_user on public.koja_document_learning_progress(document_id,user_id,created_at desc);
+
+create table if not exists public.koja_document_ai_memory (
+  id uuid primary key default gen_random_uuid(),
+  document_id uuid not null,
+  user_id uuid not null,
+  memory_type text not null default 'learning',
+  content text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+alter table public.koja_document_ai_memory add column if not exists document_id uuid;
+alter table public.koja_document_ai_memory add column if not exists user_id uuid;
+alter table public.koja_document_ai_memory add column if not exists memory_type text not null default 'learning';
+alter table public.koja_document_ai_memory add column if not exists content text;
+alter table public.koja_document_ai_memory add column if not exists created_at timestamptz not null default now();
+alter table public.koja_document_ai_memory add column if not exists updated_at timestamptz not null default now();
+create index if not exists idx_koja_doc_ai_memory_document_user on public.koja_document_ai_memory(document_id,user_id,created_at desc);
