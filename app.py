@@ -3298,7 +3298,7 @@ def _finalize_market_order(order, tx):
     db_insert('koja_market_ledger',{'order_id':order.get('id'),'seller_id':order.get('seller_id'),'buyer_id':buyer_id,'gross_amount':gross,'commission_amount':commission,'platform_fee':platform_fee,'net_amount':net,'currency':order.get('currency') or 'ZMW','status':'pending','created_at':utc_now()})
     db_insert('koja_market_payment_fees',{'order_id':order.get('id'),'buyer_id':buyer_id,'amount':platform_fee,'currency':order.get('currency') or 'ZMW','fee_type':'platform_service_fee','provider':'flutterwave','reference':tx_ref,'status':'captured','created_at':utc_now()})
     if p and str(p.get('product_type') or 'physical')=='physical' and str(order.get('fulfillment_method') or 'delivery')=='delivery':
-        tracking='KMD-'+secrets.token_hex(5).upper(); pickup_code=make_delivery_pickup_code(); confirm_code=make_delivery_confirmation_code(); seller_otp=make_seller_pickup_otp(); db_insert('koja_market_delivery_jobs',{'order_id':order.get('id'),'customer_id':buyer_id,'seller_id':order.get('seller_id'),'delivery_address':order.get('delivery_address'),'delivery_fee':_money_num(order.get('delivery_fee')),'status':'requested','tracking_code':tracking,'created_at':utc_now(),'updated_at':utc_now()}); drow,derr=db_insert('deliveries',{'id':str(uuid.uuid4()),'customer_id':buyer_id,'user_id':buyer_id,'sender_id':order.get('seller_id'),'pickup_location':'KOJA Seller','pickup_address':'KOJA Seller','destination':order.get('delivery_address'),'delivery_address':order.get('delivery_address'),'recipient_name':order.get('recipient_name'),'recipient_phone':order.get('recipient_phone'),'package_description':str((p or {}).get('title') or 'KOJA Market order'),'delivery_fee':_money_num(order.get('delivery_fee')),'currency':'ZMW','status':'requested','tracking_code':tracking,'pickup_code':pickup_code,'delivery_confirmation_code':confirm_code,'delivery_confirmation_verified':False,'seller_pickup_otp':seller_otp,'seller_pickup_otp_verified':False,'seller_pickup_otp_attempts':0,'seller_pickup_otp_locked':False,'notes':order.get('notes'),'created_at':utc_now(),'updated_at':utc_now()}); _notify_available_drivers(tracking,'KOJA Seller',order.get('delivery_address'),order.get('delivery_fee')); notify_user(order.get('seller_id'),'Delivery pickup number created',f'Order {order.get("order_number") or order.get("id")} is ready for delivery. KOJA seller pickup OTP: {seller_otp}. Give the driver the pickup number and verify the seller OTP in KOJA.','delivery',order.get('id'),'/deliveries'); notify_user(buyer_id,'KOJA delivery confirmation code',f'Your six-digit delivery confirmation code is {confirm_code}. Give it to the KOJA driver only when you receive your order.','delivery',order.get('id'),f'/track/{tracking}')
+        tracking='KMD-'+secrets.token_hex(5).upper(); pickup_code=make_delivery_pickup_code(); confirm_code=make_delivery_confirmation_code(); seller_otp=confirm_code; db_insert('koja_market_delivery_jobs',{'order_id':order.get('id'),'customer_id':buyer_id,'seller_id':order.get('seller_id'),'delivery_address':order.get('delivery_address'),'delivery_fee':_money_num(order.get('delivery_fee')),'status':'requested','tracking_code':tracking,'created_at':utc_now(),'updated_at':utc_now()}); drow,derr=db_insert('deliveries',{'id':str(uuid.uuid4()),'customer_id':buyer_id,'user_id':buyer_id,'sender_id':order.get('seller_id'),'pickup_location':'KOJA Seller','pickup_address':'KOJA Seller','destination':order.get('delivery_address'),'delivery_address':order.get('delivery_address'),'recipient_name':order.get('recipient_name'),'recipient_phone':order.get('recipient_phone'),'package_description':str((p or {}).get('title') or 'KOJA Market order'),'delivery_fee':_money_num(order.get('delivery_fee')),'currency':'ZMW','status':'requested','tracking_code':tracking,'pickup_code':pickup_code,'delivery_confirmation_code':confirm_code,'delivery_confirmation_verified':False,'seller_pickup_otp':seller_otp,'seller_pickup_otp_verified':False,'seller_pickup_otp_attempts':0,'seller_pickup_otp_locked':False,'notes':order.get('notes'),'created_at':utc_now(),'updated_at':utc_now()}); _notify_available_drivers(tracking,'KOJA Seller',order.get('delivery_address'),order.get('delivery_fee')); notify_user(order.get('seller_id'),'Delivery pickup number created',f'Order {order.get("order_number") or order.get("id")} is ready for delivery. KOJA order OTP: {seller_otp}. Enter this same OTP in KOJA to confirm the handover.','delivery',order.get('id'),'/deliveries'); notify_user(buyer_id,'KOJA delivery confirmation code',f'Your KOJA order OTP is {confirm_code}. Use it to confirm your order at pickup and delivery. Do not share it before handover.','delivery',order.get('id'),f'/track/{tracking}')
     _sync_market_order_to_business(dict(order,status='paid'))
     return True
 
@@ -4839,7 +4839,7 @@ def assign_delivery_driver(tracking_code):
         return jsonify({"ok":False,"message":"KOJA could not assign the driver."}),500
     notify_user(user.get("id"),"Driver selected",f"Driver {first_nonempty(provider.get('full_name'),provider.get('name'),'selected driver')} was selected for delivery {tracking_code}.","delivery")
     try:
-        notify_user(driver_id,"New KOJA delivery",f"You have been selected for delivery {tracking_code}. Go to the pickup location and verify the pickup number.","delivery")
+        delivery_for_driver=first_row('deliveries',{'tracking_code':tracking_code}) or {}; shared_otp=_ensure_delivery_confirmation_code(delivery_for_driver) if delivery_for_driver else ''; notify_user(driver_id,"New KOJA delivery",f"You have been selected for delivery {tracking_code}. Go to the seller, enter the pickup number and use the KOJA order OTP to confirm handover. OTP: {shared_otp}","delivery",delivery_for_driver.get('id') if delivery_for_driver else None,'/deliveries')
     except Exception: pass
     return jsonify({"ok":True,"message":f"Driver {first_nonempty(provider.get('full_name'),provider.get('name'),'selected driver')} selected successfully.","driver_id":driver_id})
 
@@ -7917,12 +7917,12 @@ def _finalize_business_store_order(order, tx):
     except Exception: logger.exception('Business sale ledger sync failed')
     notify_user(bid,'KOJA Business order paid',f'Business order {order.get("id")} has been verified and paid.','market_order',order.get('id'),'/business/'+str(bid) if bid else '/market/my')
     if str(order.get('fulfillment_method') or '')=='delivery':
-        tracking='KJB-'+secrets.token_hex(5).upper(); b=first_row('koja_businesses',{'id':bid}) or {}; pickup_code=make_delivery_pickup_code(); confirm_code=make_delivery_confirmation_code(); seller_otp=make_seller_pickup_otp()
+        tracking='KJB-'+secrets.token_hex(5).upper(); b=first_row('koja_businesses',{'id':bid}) or {}; pickup_code=make_delivery_pickup_code(); confirm_code=make_delivery_confirmation_code(); seller_otp=confirm_code
         db_insert('deliveries',{'id':str(uuid.uuid4()),'customer_id':order.get('buyer_id'),'user_id':order.get('buyer_id'),'sender_id':bid,'pickup_location':clean(b.get('location')) or 'Business','pickup_address':clean(b.get('location')) or 'Business','destination':order.get('delivery_address'),'delivery_address':order.get('delivery_address'),'recipient_phone':order.get('recipient_phone'),'package_description':prod.get('name') or 'Business order','delivery_fee':order.get('delivery_fee') or 0,'currency':'ZMW','status':'requested','tracking_code':tracking,'pickup_code':pickup_code,'delivery_confirmation_code':confirm_code,'delivery_confirmation_verified':False,'seller_pickup_otp':seller_otp,'seller_pickup_otp_verified':False,'seller_pickup_otp_attempts':0,'seller_pickup_otp_locked':False,'created_at':utc_now(),'updated_at':utc_now()})
         db_insert('koja_market_delivery_jobs',{'order_id':order.get('id'),'customer_id':order.get('buyer_id'),'seller_id':bid,'delivery_address':order.get('delivery_address'),'delivery_fee':order.get('delivery_fee') or 0,'status':'requested','tracking_code':tracking,'source_type':'business','source_order_id':order.get('id'),'created_at':utc_now(),'updated_at':utc_now()})
         _notify_available_drivers(tracking,clean(b.get('location')) or 'Business',order.get('delivery_address'),order.get('delivery_fee'))
-        notify_user(bid,'Delivery pickup number created',f'Business order {order.get("id")} is ready for pickup. KOJA seller pickup OTP: {seller_otp}. Verify the handover in KOJA.','delivery',order.get('id'),'/business/'+str(bid) if bid else '/market/my')
-        notify_user(order.get('buyer_id'),'KOJA delivery confirmation code',f'Your six-digit delivery confirmation code is {confirm_code}. Give it to the KOJA driver only when you receive your order.','delivery',order.get('id'),f'/track/{tracking}')
+        notify_user(bid,'Delivery pickup number created',f'Business order {order.get("id")} is ready for pickup. KOJA order OTP: {seller_otp}. Enter this same OTP in KOJA to confirm the handover.','delivery',order.get('id'),'/business/'+str(bid) if bid else '/market/my')
+        notify_user(order.get('buyer_id'),'KOJA delivery confirmation code',f'Your KOJA order OTP is {confirm_code}. Use it to confirm your order at pickup and delivery. Do not share it before handover.','delivery',order.get('id'),f'/track/{tracking}')
     return True
 
 @app.route('/business/store/payment/callback')
@@ -8614,11 +8614,11 @@ def make_seller_pickup_otp():
     return f'{secrets.randbelow(900000)+100000:06d}'
 
 def _ensure_seller_pickup_otp(delivery):
-    code=clean((delivery or {}).get('seller_pickup_otp'))
-    if code: return code
-    code=make_seller_pickup_otp()
+    # KOJA ONE-OTP: seller handover and customer delivery use the same order OTP.
+    code=clean((delivery or {}).get('delivery_confirmation_code')) or clean((delivery or {}).get('seller_pickup_otp'))
+    if not code: code=make_delivery_confirmation_code()
     if delivery and delivery.get('id'):
-        db_update('deliveries',{'id':delivery.get('id')},{'seller_pickup_otp':code,'seller_pickup_otp_verified':False,'seller_pickup_otp_attempts':0,'seller_pickup_otp_locked':False,'updated_at':utc_now()})
+        db_update('deliveries',{'id':delivery.get('id')},{'delivery_confirmation_code':code,'seller_pickup_otp':code,'seller_pickup_otp_verified':False if not as_bool(delivery.get('seller_pickup_otp_verified')) else True,'seller_pickup_otp_attempts':int(delivery.get('seller_pickup_otp_attempts') or 0),'seller_pickup_otp_locked':bool(delivery.get('seller_pickup_otp_locked')),'updated_at':utc_now()})
     return code
 
 def _ensure_delivery_confirmation_code(delivery):
@@ -8695,6 +8695,48 @@ def delivery_places_api():
         n=q.lower(); rows=[x for x in rows if n in ' '.join(str(x.get(k) or '') for k in ('place_name','city','area','physical_address','contact_name','contact_phone','category')).lower()]
     return jsonify({'ok':True,'places':rows if q else rows[:2],'total':len(rows),'limited':not bool(q)})
 
+@app.route('/api/delivery/<tracking_code>/seller-confirm-otp',methods=['POST'])
+@login_required
+def seller_confirm_delivery_otp(tracking_code):
+    delivery=first_row('deliveries',{'tracking_code':tracking_code})
+    if not delivery: return jsonify({'ok':False,'message':'Delivery not found.'}),404
+    uid=(current_user() or {}).get('id')
+    allowed=str(delivery.get('sender_id') or '')==str(uid)
+    if not allowed and delivery.get('sender_id'):
+        b=first_row('koja_businesses',{'id':delivery.get('sender_id'),'owner_id':uid})
+        allowed=bool(b)
+    if not allowed and not (current_user() or {}).get('is_admin'):
+        return jsonify({'ok':False,'message':'Only the seller can confirm handover.'}),403
+    if as_bool(delivery.get('seller_pickup_otp_locked')):
+        return jsonify({'ok':False,'status':'locked','message':'KOJA OTP verification is locked. Contact KOJA support.'}),423
+    body=request.get_json(silent=True) or {}
+    entered=clean(body.get('otp') or body.get('seller_otp')).replace(' ','')
+    real=_ensure_seller_pickup_otp(delivery)
+    if not entered or entered!=real:
+        attempts=int(delivery.get('seller_pickup_otp_attempts') or 0)+1
+        locked=attempts>=5
+        updates={'seller_pickup_otp_attempts':attempts,'updated_at':utc_now()}
+        if locked: updates['seller_pickup_otp_locked']=True
+        db_update('deliveries',{'id':delivery.get('id')},updates)
+        return jsonify({'ok':False,'status':'locked' if locked else 'invalid','message':'INVALID KOJA OTP.' if not locked else 'Too many attempts. KOJA OTP verification is locked.','attempts_remaining':max(0,5-attempts)}),400
+    now=utc_now()
+    db_update('deliveries',{'id':delivery.get('id')},{'pickup_verified':True,'pickup_verified_at':now,'seller_pickup_otp_verified':True,'seller_pickup_otp_verified_at':now,'status':'in_transit','updated_at':now})
+    notify_user(delivery.get('customer_id'),'Seller confirmed pickup',f'KOJA has verified seller handover for {tracking_code}. Your order is now in transit.','delivery',delivery.get('id'),f'/track/{tracking_code}')
+    notify_user(delivery.get('driver_id'),'Pickup confirmed',f'Seller confirmed {tracking_code}. You may collect the order and continue delivery.','delivery',delivery.get('id'),'/deliveries')
+    return jsonify({'ok':True,'message':'VALID. KOJA verified the seller handover. The order is now in transit.'})
+
+@app.route('/delivery/<tracking_code>/seller-confirm',methods=['GET','POST'])
+@login_required
+def seller_confirm_delivery_page(tracking_code):
+    delivery=first_row('deliveries',{'tracking_code':tracking_code})
+    if not delivery: abort(404)
+    if request.method=='POST':
+        result=seller_confirm_delivery_otp(tracking_code)
+        data=result.get_json(silent=True) if hasattr(result,'get_json') else {}
+        flash((data or {}).get('message','Handover updated.'),'success' if (data or {}).get('ok') else 'danger')
+        return redirect(url_for('track_delivery',tracking_code=tracking_code))
+    return render_page('KOJA Seller Confirmation',r'''<div class="hero"><h1>Confirm KOJA Handover</h1><p>Enter the order OTP when the driver arrives.</p></div><div class="card"><label>KOJA Order OTP</label><input id="otp" inputmode="numeric" maxlength="6" placeholder="000000"><button class="btn success" onclick="confirmHandover()">CONFIRM HANDOVER</button><div id="result" class="small" style="margin-top:12px;font-weight:700"></div></div><script>async function confirmHandover(){const otp=document.getElementById('otp').value.trim();const r=await fetch({{ url_for('seller_confirm_delivery_otp',tracking_code=delivery.tracking_code)|tojson }},{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({otp})});const d=await r.json();document.getElementById('result').textContent=d.message||'KOJA response';}</script>''',delivery=delivery)
+
 @app.route('/api/delivery/<tracking_code>/verify-pickup',methods=['POST'])
 @login_required
 def verify_delivery_pickup(tracking_code):
@@ -8742,15 +8784,15 @@ def verify_delivery_pickup(tracking_code):
 
     seller_otp=_ensure_seller_pickup_otp(delivery)
     if as_bool(delivery.get('seller_pickup_otp_locked')):
-        return jsonify({'valid':False,'status':'locked','message':'SELLER OTP VERIFICATION IS LOCKED. Contact KOJA support.'}),423
+        return jsonify({'valid':False,'status':'locked','message':'KOJA OTP VERIFICATION IS LOCKED. Contact KOJA support.'}),423
     if not entered_seller_otp or not entered_seller_otp.isdigit() or len(entered_seller_otp)!=6 or entered_seller_otp != seller_otp:
         attempts=int(delivery.get('seller_pickup_otp_attempts') or 0)+1
         locked=attempts>=5
         updates={'seller_pickup_otp_attempts':attempts,'updated_at':utc_now()}
         if locked: updates['seller_pickup_otp_locked']=True
         db_update('deliveries',{'id':delivery.get('id')},updates)
-        msg='INVALID SELLER OTP. KOJA could not verify the seller handover code.'
-        if locked: msg='INVALID SELLER OTP. Too many attempts. Verification is locked; contact KOJA support.'
+        msg='INVALID KOJA OTP. The order OTP could not be verified.'
+        if locked: msg='INVALID KOJA OTP. Too many attempts. Verification is locked; contact KOJA support.'
         return jsonify({'valid':False,'status':'locked' if locked else 'invalid','message':msg,'attempts_remaining':max(0,5-attempts)}),400
 
     updated,err=db_update('deliveries',{'id':delivery.get('id')},{
@@ -8830,7 +8872,60 @@ def verify_delivery_confirmation_code(tracking_code):
 def verify_delivery_confirmation_code_page(tracking_code):
     delivery=first_row('deliveries',{'tracking_code':tracking_code})
     if not delivery: abort(404)
-    return render_page('Verify Delivery OTP',r'''<div class="hero"><h1>KOJA Verify Delivery OTP</h1><p>Tracking: <strong>{{ delivery.tracking_code }}</strong></p><p>Enter the six-digit code given by the customer. KOJA will verify it on the server.</p></div><div class="card"><label>Customer KOJA delivery OTP</label><input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" placeholder="000000"><button id="verifyBtn" class="btn success" onclick="verifyCode()">VERIFY OTP IN KOJA</button><div id="result" class="small" style="margin-top:12px;font-weight:700"></div></div><script>async function verifyCode(){const input=document.getElementById('code');const btn=document.getElementById('verifyBtn');const result=document.getElementById('result');const code=input.value.trim();result.textContent='KOJA is verifying the OTP...';btn.disabled=true;try{const r=await fetch({{ url_for('verify_delivery_confirmation_code',tracking_code=delivery.tracking_code)|tojson }},{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({delivery_code:code})});const d=await r.json();if(d.valid){result.textContent='VALID OTP — KOJA verified it successfully.';input.disabled=true;btn.textContent='OTP VERIFIED';}else{result.textContent=d.message||'INVALID OTP';btn.disabled=d.status==='locked';if(!btn.disabled)input.focus();}}catch(e){result.textContent='KOJA could not complete the verification. Please try again.';btn.disabled=false;}}</script>''',delivery=delivery)
+    return render_page('Verify Delivery OTP',r'''<div class="hero"><h1>KOJA Verify Delivery OTP</h1><p>Tracking: <strong>{{ delivery.tracking_code }}</strong></p><p>Enter the six-digit KOJA order OTP after the customer receives the package.</p></div><div class="card"><label>KOJA Order OTP</label><input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" placeholder="000000"><button id="verifyBtn" class="btn success" onclick="verifyCode()">VERIFY OTP IN KOJA</button><div id="result" class="small" style="margin-top:12px;font-weight:700"></div></div><script>async function verifyCode(){const input=document.getElementById('code');const btn=document.getElementById('verifyBtn');const result=document.getElementById('result');const code=input.value.trim();result.textContent='KOJA is verifying the OTP...';btn.disabled=true;try{const r=await fetch({{ url_for('verify_delivery_confirmation_code',tracking_code=delivery.tracking_code)|tojson }},{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({delivery_code:code})});const d=await r.json();if(d.valid){result.textContent='VALID OTP — KOJA verified it successfully.';input.disabled=true;btn.textContent='OTP VERIFIED';}else{result.textContent=d.message||'INVALID OTP';btn.disabled=d.status==='locked';if(!btn.disabled)input.focus();}}catch(e){result.textContent='KOJA could not complete the verification. Please try again.';btn.disabled=false;}}</script>''',delivery=delivery)
+
+@app.route('/api/delivery/<tracking_code>/confirm-receipt-otp',methods=['POST'])
+@login_required
+def confirm_delivery_receipt_otp(tracking_code):
+    delivery=first_row('deliveries',{'tracking_code':tracking_code})
+    if not delivery: return jsonify({'ok':False,'message':'Delivery not found.'}),404
+    uid=(current_user() or {}).get('id')
+    if str(delivery.get('customer_id') or '')!=str(uid) and not (current_user() or {}).get('is_admin'):
+        return jsonify({'ok':False,'message':'Only the buyer can confirm receipt.'}),403
+    if not as_bool(delivery.get('pickup_verified')):
+        return jsonify({'ok':False,'message':'The seller has not confirmed handover yet.'}),400
+    if as_bool(delivery.get('delivery_confirmation_verified')):
+        return jsonify({'ok':True,'message':'Delivery already confirmed.'})
+    if as_bool(delivery.get('delivery_confirmation_locked')):
+        return jsonify({'ok':False,'status':'locked','message':'KOJA OTP verification is locked. Contact KOJA support.'}),423
+    body=request.get_json(silent=True) or {}
+    entered=clean(body.get('otp') or body.get('delivery_code')).replace(' ','')
+    real=_ensure_delivery_confirmation_code(delivery)
+    if not entered or entered!=real:
+        attempts=int(delivery.get('delivery_confirmation_attempts') or 0)+1
+        locked=attempts>=5
+        updates={'delivery_confirmation_attempts':attempts,'updated_at':utc_now()}
+        if locked: updates['delivery_confirmation_locked']=True
+        db_update('deliveries',{'id':delivery.get('id')},updates)
+        return jsonify({'ok':False,'status':'locked' if locked else 'invalid','message':'INVALID KOJA OTP.' if not locked else 'Too many attempts. KOJA OTP verification is locked.','attempts_remaining':max(0,5-attempts)}),400
+    db_update('deliveries',{'id':delivery.get('id')},{'delivery_confirmation_verified':True,'delivery_confirmation_verified_at':utc_now(),'seller_pickup_otp_verified':True,'seller_pickup_otp_verified_at':delivery.get('seller_pickup_otp_verified_at') or utc_now(),'status':'delivered','updated_at':utc_now()})
+    # Release/record driver payout only after buyer confirmation.
+    delivery=first_row('deliveries',{'id':delivery.get('id')}) or delivery
+    amount=_delivery_payout_amount(delivery)
+    driver=first_row('service_providers',{'id':delivery.get('driver_id')}) or first_row('driver_profiles',{'provider_id':delivery.get('driver_id')}) or {}
+    payout=_try_driver_mobile_payout(delivery,driver,amount)
+    payout_status=payout.get('status') or 'ready_to_send'
+    db_update('deliveries',{'id':delivery.get('id')},{'status':'completed','delivery_completed_at':utc_now(),'driver_payout_status':payout_status,'driver_payout_reference':payout.get('reference'),'driver_payout_transfer_id':str(payout.get('transfer_id') or '') or None,'updated_at':utc_now()})
+    try:
+        jobs=db_select('koja_market_delivery_jobs',{'tracking_code':tracking_code},limit=5) or []
+        for j in jobs: db_update('koja_market_delivery_jobs',{'id':j.get('id')},{'status':'completed','completed_at':utc_now(),'updated_at':utc_now()})
+    except Exception: logger.exception('Market delivery job completion sync failed')
+    notify_user(delivery.get('driver_id'),'Delivery confirmed',f'Buyer confirmed receipt for {tracking_code}. Driver payout status: {payout_status}.','delivery',delivery.get('id'),'/deliveries')
+    if delivery.get('sender_id'): notify_user(delivery.get('sender_id'),'Order delivered',f'Buyer confirmed receipt for {tracking_code}. Driver payout status: {payout_status}.','delivery',delivery.get('id'),'/deliveries')
+    notify_user(delivery.get('customer_id'),'Delivery confirmed',f'Your KOJA order {tracking_code} is confirmed delivered.','delivery',delivery.get('id'),f'/track/{tracking_code}')
+    return jsonify({'ok':True,'message':'Delivery confirmed. KOJA has released the delivery payout.','payout_status':payout_status})
+
+@app.route('/delivery/<tracking_code>/confirm-receipt',methods=['GET','POST'])
+@login_required
+def confirm_delivery_receipt_page(tracking_code):
+    delivery=first_row('deliveries',{'tracking_code':tracking_code})
+    if not delivery: abort(404)
+    if request.method=='POST':
+        result=confirm_delivery_receipt_otp(tracking_code)
+        data=result.get_json(silent=True) if hasattr(result,'get_json') else {}
+        flash((data or {}).get('message','Delivery updated.'),'success' if (data or {}).get('ok') else 'danger')
+        return redirect(url_for('track_delivery',tracking_code=tracking_code))
+    return render_page('Confirm KOJA Delivery',r'''<div class="hero"><h1>Confirm KOJA Delivery</h1><p>Enter your order OTP only after you receive your package.</p></div><div class="card"><label>KOJA Order OTP</label><input id="otp" name="otp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" placeholder="000000"><button class="btn success" onclick="confirmReceipt()">CONFIRM DELIVERY</button><div id="result" class="small" style="margin-top:12px;font-weight:700"></div></div><script>async function confirmReceipt(){const otp=document.getElementById('otp').value.trim();const r=await fetch({{ url_for('confirm_delivery_receipt_otp',tracking_code=delivery.tracking_code)|tojson }},{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({otp})});const d=await r.json();document.getElementById('result').textContent=d.message||'KOJA response';}</script>''',delivery=delivery)
 
 @app.route('/api/delivery/<tracking_code>/complete',methods=['POST'])
 @login_required
@@ -8888,7 +8983,7 @@ def _upgrade_delivery_request_with_code(*args,**kwargs):
         data=result.get_json(silent=True) if hasattr(result,'get_json') else None
         if isinstance(data,dict) and data.get('ok') and data.get('tracking_code'):
             code=make_delivery_pickup_code()
-            db_update('deliveries',{'tracking_code':data['tracking_code']},{'pickup_code':code,'pickup_verified':False,'delivery_confirmation_code':make_delivery_confirmation_code(),'delivery_confirmation_verified':False,'seller_pickup_otp':make_seller_pickup_otp(),'seller_pickup_otp_verified':False,'seller_pickup_otp_attempts':0,'seller_pickup_otp_locked':False,'delivery_completed_at':None,'driver_payout_status':'pending','updated_at':utc_now()})
+            shared_otp=make_delivery_confirmation_code(); db_update('deliveries',{'tracking_code':data['tracking_code']},{'pickup_code':code,'pickup_verified':False,'delivery_confirmation_code':shared_otp,'delivery_confirmation_verified':False,'seller_pickup_otp':shared_otp,'seller_pickup_otp_verified':False,'seller_pickup_otp_attempts':0,'seller_pickup_otp_locked':False,'delivery_completed_at':None,'driver_payout_status':'pending','updated_at':utc_now()})
             delivery=first_row('deliveries',{'tracking_code':data['tracking_code']}) or {}
             if delivery.get('driver_id'):
                 notify_user(delivery.get('driver_id'),'New KOJA Delivery',f'Delivery {data["tracking_code"]} assigned. Pickup number: {code}.','delivery',delivery.get('id'),'/deliveries')
