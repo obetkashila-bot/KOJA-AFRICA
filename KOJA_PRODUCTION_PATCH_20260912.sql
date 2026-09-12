@@ -87,3 +87,25 @@ alter table if exists public.koja_user_service_events add column if not exists m
 alter table if exists public.koja_user_service_events add column if not exists created_at timestamptz default now();
 create index if not exists koja_user_service_events_user_idx on public.koja_user_service_events(user_id,created_at desc);
 create index if not exists koja_user_service_events_service_idx on public.koja_user_service_events(service_key,event_type,created_at desc);
+
+
+-- Notification settings persistence (additive/idempotent)
+create table if not exists public.koja_notification_preferences (
+  user_id uuid primary key,
+  push_enabled boolean default true,
+  sound_enabled boolean default true,
+  market_enabled boolean default true,
+  delivery_enabled boolean default true,
+  ai_enabled boolean default true,
+  messages_enabled boolean default true,
+  system_enabled boolean default true,
+  updated_at timestamptz default now()
+);
+alter table public.koja_notification_preferences add column if not exists push_enabled boolean default true;
+alter table public.koja_notification_preferences add column if not exists sound_enabled boolean default true;
+alter table public.koja_notification_preferences add column if not exists market_enabled boolean default true;
+alter table public.koja_notification_preferences add column if not exists delivery_enabled boolean default true;
+alter table public.koja_notification_preferences add column if not exists ai_enabled boolean default true;
+alter table public.koja_notification_preferences add column if not exists messages_enabled boolean default true;
+alter table public.koja_notification_preferences add column if not exists system_enabled boolean default true;
+alter table public.koja_notification_preferences add column if not exists updated_at timestamptz default now();
