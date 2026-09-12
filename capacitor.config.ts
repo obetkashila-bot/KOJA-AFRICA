@@ -4,7 +4,6 @@ const config: CapacitorConfig = {
   appId: 'com.kojaafrica.app',
   appName: 'KOJA AFRICA',
   webDir: 'static',
-  android: { allowMixedContent: false },
   server: {
     url: 'https://koja-africa.onrender.com',
     cleartext: false
