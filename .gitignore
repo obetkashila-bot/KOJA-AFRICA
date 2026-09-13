@@ -1,7 +1,6 @@
-.env
-.venv/
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.DS_Store
+.gradle/
+build/
+*/build/
+local.properties
+*.iml
+.idea/
