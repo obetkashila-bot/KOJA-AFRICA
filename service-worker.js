@@ -1,5 +1,29 @@
-const CACHE='koja-shell-v1';
-const SHELL=['/','/health','/static/icons/koja-192.png','/static/icons/koja-512.png'];
-self.addEventListener('install',e=>{e.waitUntil(caches.open(CACHE).then(c=>c.addAll(SHELL)).then(()=>self.skipWaiting()))});
-self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim()))});
-self.addEventListener('fetch',e=>{if(e.request.method!=='GET')return; const u=new URL(e.request.url); if(u.origin!==location.origin)return; e.respondWith(fetch(e.request).then(r=>{if(r.ok && (u.pathname==='/'||u.pathname.startsWith('/static/'))) {const x=r.clone();caches.open(CACHE).then(c=>c.put(e.request,x));} return r;}).catch(()=>caches.match(e.request).then(r=>r||caches.match('/'))));});
+const CACHE = 'koja-shell-2026-09-13-v2';
+const SHELL = ['/', '/static/manifest.json', '/static/koja-logo.svg', '/static/favicon-48.png', '/static/favicon-180.png', '/static/favicon-192.png', '/static/icon-512.png', '/static/offline.html'];
+self.addEventListener('install', event => {
+  event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting()));
+});
+self.addEventListener('activate', event => {
+  event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k.startsWith('koja-shell-') && k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim()));
+});
+self.addEventListener('fetch', event => {
+  const req = event.request;
+  if (req.method !== 'GET') return;
+  const url = new URL(req.url);
+  if (url.origin !== self.location.origin) return;
+  event.respondWith((async () => {
+    try {
+      const network = await fetch(req);
+      if (network.ok && (req.destination === 'document' || req.destination === 'script' || req.destination === 'style' || req.destination === 'image' || url.pathname.startsWith('/static/'))) {
+        const copy = network.clone();
+        caches.open(CACHE).then(cache => cache.put(req, copy)).catch(()=>{});
+      }
+      return network;
+    } catch (e) {
+      const cached = await caches.match(req);
+      if (cached) return cached;
+      if (req.destination === 'document') return caches.match('/static/offline.html');
+      return new Response('', {status:503, statusText:'Offline'});
+    }
+  })());
+});

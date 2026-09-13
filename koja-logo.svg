@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#10233f"/><stop offset="1" stop-color="#176b87"/></linearGradient></defs>
+<rect width="512" height="512" rx="96" fill="url(#bg)"/>
+<circle cx="256" cy="256" r="205" fill="#fff"/>
+<path d="M168 168l88-34 88 34-88 34z" fill="#176b87"/>
+<path d="M188 175v52c0 35 136 35 136 0v-52" fill="none" stroke="#176b87" stroke-width="12" stroke-linecap="round"/>
+<path d="M256 202v32" stroke="#f2b84b" stroke-width="12" stroke-linecap="round"/>
+<text x="256" y="292" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-size="68" font-weight="800" fill="#10233f">KOJA</text>
+<text x="256" y="334" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-size="31" font-weight="700" letter-spacing="5" fill="#176b87">AFRICA</text>
+<path d="M165 373q45-35 91 0 46-35 91 0v30q-46-35-91 0-46-35-91 0z" fill="#176b87"/>
+<path d="M256 373v30" stroke="#fff" stroke-width="5"/>
+<circle cx="256" cy="256" r="205" fill="none" stroke="#f2b84b" stroke-width="7"/>
+</svg>
