@@ -774,6 +774,10 @@ BASE_HTML = r"""
 <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
 <link rel="icon" type="image/png" sizes="192x192" href="{{ url_for('static', filename='favicon-192.png') }}">
 <link rel="apple-touch-icon" href="{{ url_for('static', filename='favicon-192.png') }}">
+<link rel="manifest" href="{{ url_for('koja_manifest') }}">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="KOJA AFRICA">
 <meta property="og:title" content="{{ title or 'KOJA AFRICA' }}">
@@ -812,6 +816,15 @@ BASE_HTML = r"""
       }
     });
   });
+})();
+</script>
+<script>
+(function(){
+  if (!('serviceWorker' in navigator)) return;
+  window.addEventListener('load', function(){ navigator.serviceWorker.register('/service-worker.js', {scope:'/'}).catch(function(){}); });
+  var deferredInstall=null;
+  window.addEventListener('beforeinstallprompt', function(e){ e.preventDefault(); deferredInstall=e; window.kojaInstallApp=function(){ if(!deferredInstall) return false; deferredInstall.prompt(); deferredInstall.userChoice.finally(function(){deferredInstall=null;}); return true; }; });
+  window.addEventListener('appinstalled', function(){ deferredInstall=null; });
 })();
 </script>
 <script>
@@ -1064,15 +1077,47 @@ def home():
 </div>
 """)
 
+@app.route("/manifest.json")
+def koja_manifest():
+    return jsonify({
+        "name": "KOJA AFRICA",
+        "short_name": "KOJA",
+        "description": "Knowledge, Questions, Answers, research, documents, marketplace and professional services.",
+        "start_url": "/?source=pwa",
+        "scope": "/",
+        "display": "standalone",
+        "orientation": "portrait-primary",
+        "background_color": "#0b1220",
+        "theme_color": "#0b1220",
+        "lang": "en-ZM",
+        "categories": ["education", "business", "productivity"],
+        "icons": [
+            {"src": "/static/icons/koja-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
+            {"src": "/static/icons/koja-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
+        ],
+        "shortcuts": [
+            {"name": "KOJA AI", "short_name": "AI", "url": "/ai-next", "icons": [{"src": "/static/icons/koja-192.png", "sizes": "192x192"}]},
+            {"name": "KOJA Market", "short_name": "Market", "url": "/market", "icons": [{"src": "/static/icons/koja-192.png", "sizes": "192x192"}]},
+            {"name": "Documents", "short_name": "Documents", "url": "/documents", "icons": [{"src": "/static/icons/koja-192.png", "sizes": "192x192"}]}
+        ]
+    })
+
 @app.route("/service-worker.js")
 def service_worker():
     # Keep the browser service-worker request valid without changing KOJA page behavior.
     script = """
-self.addEventListener('install', function(event) { self.skipWaiting(); });
-self.addEventListener('activate', function(event) { event.waitUntil(self.clients.claim()); });
+const CACHE = 'koja-shell-v1';
+const SHELL = ['/', '/health', '/static/icons/koja-192.png', '/static/icons/koja-512.png'];
+self.addEventListener('install', function(event) { event.waitUntil(caches.open(CACHE).then(function(c){ return c.addAll(SHELL); }).then(function(){ return self.skipWaiting(); })); });
+self.addEventListener('activate', function(event) { event.waitUntil(caches.keys().then(function(keys){ return Promise.all(keys.filter(function(k){ return k !== CACHE; }).map(function(k){ return caches.delete(k); })); }).then(function(){ return self.clients.claim(); })); });
 self.addEventListener('fetch', function(event) {
   if (event.request.method !== 'GET') return;
-  event.respondWith(fetch(event.request).catch(function() { return new Response('', {status: 503}); }));
+  var u = new URL(event.request.url);
+  if (u.origin !== location.origin) return;
+  event.respondWith(fetch(event.request).then(function(r){
+    if (r.ok && (u.pathname === '/' || u.pathname.indexOf('/static/') === 0)) { var copy=r.clone(); caches.open(CACHE).then(function(c){ c.put(event.request, copy); }); }
+    return r;
+  }).catch(function(){ return caches.match(event.request).then(function(r){ return r || caches.match('/'); }); }));
 });
 """
     return Response(script, mimetype='application/javascript', headers={'Cache-Control':'no-store'})

@@ -1,0 +1,15 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["REPLACE_WITH_TEAM_ID.com.kojaafrica.app"],
+        "components": [
+          {"/": "/market/*"},
+          {"/": "/documents/*"},
+          {"/": "/delivery/*"},
+          {"/": "/ai-next"}
+        ]
+      }
+    ]
+  }
+}

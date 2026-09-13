@@ -1,0 +1,35 @@
+KOJA AFRICA STORE RELEASE CHECKLIST
+
+Android / Google Play
+[ ] Create/confirm Play Console app
+[ ] Confirm application ID: com.kojaafrica.app
+[ ] Create release keystore and store it securely
+[ ] Configure signing
+[ ] Build signed AAB
+[ ] Prepare privacy policy URL
+[ ] Prepare terms/support URLs
+[ ] Add store screenshots and feature graphic
+[ ] Complete content rating/data safety
+
+Apple / App Store
+[ ] Apple Developer account
+[ ] Confirm bundle ID
+[ ] Configure signing/provisioning
+[ ] Configure Associated Domains for universal links
+[ ] Configure APNs for native push if required
+[ ] Build archive in Xcode
+[ ] Upload to App Store Connect
+[ ] Add privacy, support, screenshots and age rating
+
+Windows/macOS/Linux
+[ ] Build installer/package
+[ ] Code sign where applicable
+[ ] Publish checksums
+
+Web/PWA
+[ ] Deploy production package
+[ ] Verify /manifest.json
+[ ] Verify /service-worker.js
+[ ] Verify install prompt on supported browsers
+[ ] Verify offline shell
+[ ] Verify deep links
