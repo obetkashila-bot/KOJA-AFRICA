@@ -2452,6 +2452,7 @@ def services():
 <div class="card"><h3>Finance V2</h3><p>Accounts, journal, payments, budgets and financial reports.</p><a class="btn" href="{{ url_for('finance_v2_dashboard') }}">Open Finance V2</a></div>
 <div class="card"><h3>Global Revenue &amp; Payments</h3><p>Unified transactions, settlements, payouts, invoices and payment verification.</p><a class="btn" href="{{ url_for('revenue_v2_dashboard') }}">Open Revenue &amp; Payments</a></div>
 <div class="card"><h3>Identity &amp; Trust</h3><p>Identity verification, trusted devices and account trust signals for safer KOJA services.</p><a class="btn" href="{{ url_for('identity_v2') }}">Open Identity &amp; Trust</a></div>
+<div class="card"><h3>KOJA Workspace V2</h3><p>Connected workspaces, projects, tasks and notes for personal, professional and enterprise productivity.</p><a class="btn" href="{{ url_for('workspace_v2') }}">Open Workspace</a></div>
 
 <div class="card"><h3>KOJA Core Engines</h3><p>Shared platform engines connecting discovery, advertising, payments, cloud, intelligence, identity, workspace, ecosystem and autonomous AI.</p><div class="actions"><a class="btn" href="{{ url_for('koja_named_engines') }}">Open Core Engines</a><a class="btn secondary" href="{{ url_for('koja_v12_v20_hub') }}">V12–V20 Engine Hub</a><a class="btn secondary" href="{{ url_for('koja_v20_revenue') }}">Revenue Engine</a></div></div>
 </div>
@@ -11318,3 +11319,89 @@ def api_identity_v2_audit():
     if err: return jsonify({'ok': False, 'error': err}), 500
     return jsonify({'ok': True, 'event': saved})
 
+
+
+# ============================================================
+# KOJA WORKSPACE V2 — PRODUCTIVITY / PROJECTS / TASKS
+# Additive module. Existing services remain untouched.
+# ============================================================
+
+def _kw2_uid():
+    return (current_user() or {}).get('id')
+
+def _kw2_rows(table, filters=None, limit=100):
+    try:
+        return db_select(table, filters or {}, limit=limit) or []
+    except Exception:
+        logger.exception('Workspace V2 read failed')
+        return []
+
+def _kw2_workspace(uid):
+    rows=_kw2_rows('koja_workspace_v2_workspaces', {'owner_id':uid}, 1)
+    if rows: return rows[0]
+    rows=_kw2_rows('koja_workspace_v2_members', {'user_id':uid}, 1)
+    if rows:
+        ws=_kw2_rows('koja_workspace_v2_workspaces', {'id':rows[0].get('workspace_id')}, 1)
+        if ws: return ws[0]
+    return None
+
+@app.route('/workspace/v2', methods=['GET','POST'])
+@login_required
+def workspace_v2():
+    uid=_kw2_uid()
+    if request.method=='POST':
+        name=clean(request.form.get('name')) or 'My KOJA Workspace'
+        description=clean(request.form.get('description'))
+        row={'owner_id':uid,'name':name[:160],'description':description[:1000],'status':'active','created_at':utc_now(),'updated_at':utc_now()}
+        saved,err=db_insert('koja_workspace_v2_workspaces',row)
+        if err:
+            return render_page('KOJA Workspace V2', '<div class="card"><h3>Workspace could not be created</h3><p>'+str(err)[:500]+'</p></div>')
+        try: db_insert('koja_workspace_v2_members',{'workspace_id':saved.get('id'),'user_id':uid,'role':'owner','created_at':utc_now()})
+        except Exception: logger.exception('Workspace owner member insert failed')
+        return redirect(url_for('workspace_v2'))
+    ws=_kw2_workspace(uid)
+    if not ws:
+        tpl="""<div class="hero"><h1>KOJA Workspace V2</h1><p>Create a workspace for projects, tasks and notes.</p></div><div class="card"><form method="post"><label>Workspace name</label><input name="name" required value="My KOJA Workspace"><label>Description</label><textarea name="description" rows="4"></textarea><button class="btn" type="submit">Create Workspace</button></form></div>"""
+        return render_page('KOJA Workspace V2',tpl)
+    wid=ws.get('id')
+    projects=_kw2_rows('koja_workspace_v2_projects',{'workspace_id':wid},100)
+    tasks=_kw2_rows('koja_workspace_v2_tasks',{'workspace_id':wid},100)
+    notes=_kw2_rows('koja_workspace_v2_notes',{'workspace_id':wid},100)
+    todo=sum(1 for x in tasks if x.get('status')=='todo')
+    done=sum(1 for x in tasks if x.get('status')=='done')
+    tpl="""<div class="hero"><h1>{{ ws.name }}</h1><p>KOJA Workspace V2 — projects, tasks and knowledge notes.</p></div><div class="grid"><div class="stat"><div class="big">{{ projects|length }}</div>Projects</div><div class="stat"><div class="big">{{ todo }}</div>Open Tasks</div><div class="stat"><div class="big">{{ done }}</div>Completed</div><div class="stat"><div class="big">{{ notes|length }}</div>Notes</div></div><div class="grid"><div class="card"><h3>Create project</h3><form method="post" action="{{ url_for('workspace_v2_project') }}"><input type="hidden" name="workspace_id" value="{{ ws.id }}"><label>Project</label><input name="name" required><label>Description</label><textarea name="description" rows="3"></textarea><button class="btn" type="submit">Create Project</button></form></div><div class="card"><h3>Create task</h3><form method="post" action="{{ url_for('workspace_v2_task') }}"><input type="hidden" name="workspace_id" value="{{ ws.id }}"><label>Task</label><input name="title" required><label>Priority</label><select name="priority"><option>normal</option><option>high</option><option>low</option></select><button class="btn" type="submit">Create Task</button></form></div></div><div class="card"><h3>Projects</h3>{% for p in projects %}<p><b>{{ p.name }}</b> — {{ p.status }}{% if p.description %}<br>{{ p.description }}{% endif %}</p>{% else %}<p>No projects yet.</p>{% endfor %}</div><div class="card"><h3>Tasks</h3>{% for t in tasks %}<p><b>{{ t.title }}</b> — {{ t.status }} — {{ t.priority }}</p>{% else %}<p>No tasks yet.</p>{% endfor %}</div>"""
+    return render_page('KOJA Workspace V2',tpl,ws=ws,projects=projects,tasks=tasks,notes=notes,todo=todo,done=done)
+
+@app.route('/workspace/v2/projects', methods=['POST'])
+@login_required
+def workspace_v2_project():
+    uid=_kw2_uid(); wid=clean(request.form.get('workspace_id'))
+    ws=_kw2_rows('koja_workspace_v2_workspaces',{'id':wid},1)
+    if not ws: return jsonify({'ok':False,'error':'workspace_not_found'}),404
+    if ws[0].get('owner_id')!=uid and not _kw2_rows('koja_workspace_v2_members',{'workspace_id':wid,'user_id':uid},1): return jsonify({'ok':False,'error':'forbidden'}),403
+    name=clean(request.form.get('name'))
+    if not name: return jsonify({'ok':False,'error':'name_required'}),400
+    saved,err=db_insert('koja_workspace_v2_projects',{'workspace_id':wid,'owner_id':uid,'name':name[:160],'description':clean(request.form.get('description'))[:2000],'status':'active','created_at':utc_now(),'updated_at':utc_now()})
+    if err: return jsonify({'ok':False,'error':err}),500
+    return redirect(url_for('workspace_v2')) if request.form else jsonify({'ok':True,'project':saved})
+
+@app.route('/workspace/v2/tasks', methods=['POST'])
+@login_required
+def workspace_v2_task():
+    uid=_kw2_uid(); wid=clean(request.form.get('workspace_id'))
+    ws=_kw2_rows('koja_workspace_v2_workspaces',{'id':wid},1)
+    if not ws: return jsonify({'ok':False,'error':'workspace_not_found'}),404
+    if ws[0].get('owner_id')!=uid and not _kw2_rows('koja_workspace_v2_members',{'workspace_id':wid,'user_id':uid},1): return jsonify({'ok':False,'error':'forbidden'}),403
+    title=clean(request.form.get('title'))
+    if not title: return jsonify({'ok':False,'error':'title_required'}),400
+    saved,err=db_insert('koja_workspace_v2_tasks',{'workspace_id':wid,'created_by':uid,'title':title[:200],'description':clean(request.form.get('description'))[:4000],'status':'todo','priority':clean(request.form.get('priority')) or 'normal','created_at':utc_now(),'updated_at':utc_now()})
+    if err: return jsonify({'ok':False,'error':err}),500
+    return redirect(url_for('workspace_v2')) if request.form else jsonify({'ok':True,'task':saved})
+
+@app.route('/api/workspace/v2/summary')
+@login_required
+def api_workspace_v2_summary():
+    uid=_kw2_uid(); ws=_kw2_workspace(uid)
+    if not ws: return jsonify({'ok':True,'workspace':None,'projects':0,'tasks':0,'open_tasks':0,'completed_tasks':0,'notes':0})
+    wid=ws.get('id'); projects=_kw2_rows('koja_workspace_v2_projects',{'workspace_id':wid},500); tasks=_kw2_rows('koja_workspace_v2_tasks',{'workspace_id':wid},500); notes=_kw2_rows('koja_workspace_v2_notes',{'workspace_id':wid},500)
+    return jsonify({'ok':True,'workspace':ws,'projects':len(projects),'tasks':len(tasks),'open_tasks':sum(1 for x in tasks if x.get('status')!='done'),'completed_tasks':sum(1 for x in tasks if x.get('status')=='done'),'notes':len(notes)})
