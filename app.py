@@ -2454,7 +2454,7 @@ def services():
 <div class="card"><h3>Identity &amp; Trust</h3><p>Identity verification, trusted devices and account trust signals for safer KOJA services.</p><a class="btn" href="{{ url_for('identity_v2') }}">Open Identity &amp; Trust</a></div>
 <div class="card"><h3>KOJA Workspace V2</h3><p>Connected workspaces, projects, tasks and notes for personal, professional and enterprise productivity.</p><a class="btn" href="{{ url_for('workspace_v2') }}">Open Workspace</a></div>
 
-<div class="card"><h3>KOJA Core Engines</h3><p>Shared platform engines connecting discovery, advertising, payments, cloud, intelligence, identity, workspace, ecosystem and autonomous AI.</p><div class="actions"><a class="btn" href="{{ url_for('koja_named_engines') }}">Open Core Engines</a><a class="btn secondary" href="{{ url_for('koja_v12_v20_hub') }}">V12–V20 Engine Hub</a><a class="btn secondary" href="{{ url_for('koja_v20_revenue') }}">Revenue Engine</a></div></div>
+{% if user.is_admin %}<div class="card"><h3>KOJA Core Engines — Administration</h3><p>V12–V20 platform engines are restricted to administrators. Existing public KOJA services remain available normally.</p><div class="actions"><a class="btn" href="{{ url_for('koja_named_engines') }}">Open Core Engines</a><a class="btn secondary" href="{{ url_for('koja_v12_v20_hub') }}">V12–V20 Engine Hub</a><a class="btn secondary" href="{{ url_for('koja_v20_revenue') }}">Revenue Engine</a><a class="btn secondary" href="{{ url_for('admin_ecosystem_v2') }}">Ecosystem V2</a></div></div>{% endif %}
 </div>
 """)
 
@@ -9049,6 +9049,7 @@ def _koja_h2_too_many_requests(error):
 # ============================================================
 # KOJA V12 -> V20 PRODUCTION INTEGRATION V1
 # Additive integration. Communications remains untouched.
+# V12-V20 platform/engine surfaces are ADMIN-ONLY; underlying public KOJA services remain operational.
 # ============================================================
 
 def _v12_count(table, filters=None, limit=5000):
@@ -9064,7 +9065,7 @@ def _v12_engine_event(uid, engine, action, metadata=None):
         logger.exception('V12-V20 engine event failed')
 
 @app.route('/platform/v12-v20')
-@login_required
+@admin_required
 def koja_v12_v20_hub():
     uid=(current_user() or {}).get('id')
     engines=[('V12','KOJA Search & Discovery','Search, discovery and public service indexing.'),('V13','KOJA Ads Network','Campaigns, placements and advertising events.'),('V14','KOJA Pay Orchestration','Unified payment-intent layer over existing providers.'),('V15','KOJA Cloud & Developer','API identity, usage and developer infrastructure.'),('V16','KOJA Data Intelligence','Cross-service data and intelligence events.'),('V17','KOJA Identity & Trust','Identity and verification foundation.'),('V18','KOJA Workspace & Enterprise','Workspaces, documents, files and enterprise contracts.'),('V19','KOJA Ecosystem','Service registry, links and unified transactions.'),('V20','KOJA Autonomous Africa','AI agents, IoT, autonomy and future infrastructure.')]
@@ -9074,14 +9075,14 @@ def koja_v12_v20_hub():
     return render_page('KOJA Core Engines',tpl,stats=stats,engines=engines)
 
 @app.route('/api/platform/v12-v20/status')
-@login_required
+@admin_required
 def koja_v12_v20_status():
     tables=['koja_v13_ad_campaigns','koja_v13_ad_events','koja_v14_payment_intents','koja_v16_intelligence_events','koja_v17_identity','koja_engine_events','koja_workspaces','koja_workspace_members','koja_workspace_files','koja_workspace_documents','koja_enterprise_contracts','koja_enterprise_seats','koja_service_registry','koja_user_service_events','koja_ecosystem_links','koja_unified_transactions','koja_ai_agents','koja_ai_agent_runs','koja_iot_devices','koja_iot_telemetry','koja_autonomy_jobs','koja_future_infrastructure','koja_engine_revenue']
     checks={t:table_exists(t) for t in tables}
     return jsonify({'ok':all(checks.values()),'version':'V12-V20-PRODUCTION-V1','checks':checks})
 
 @app.route('/api/platform/engine-event',methods=['POST'])
-@login_required
+@admin_required
 def koja_engine_event_api():
     uid=(current_user() or {}).get('id'); data=request.get_json(silent=True) or request.form
     engine=clean(data.get('engine') or ''); action=clean(data.get('action') or '')
@@ -9092,7 +9093,7 @@ def koja_engine_event_api():
     return jsonify({'ok':True,'event_id':row.get('id') if row else None})
 
 @app.route('/platform/revenue-v20')
-@login_required
+@admin_required
 def koja_v20_revenue():
     uid=(current_user() or {}).get('id'); rows=db_select('koja_engine_revenue',limit=500) if table_exists('koja_engine_revenue') else []
     if not ((current_user() or {}).get('is_admin') or (current_user() or {}).get('role')=='admin'): rows=[r for r in rows if str(r.get('reference_id') or '')==str(uid)]
@@ -9108,6 +9109,50 @@ def admin_v12_v20():
     tpl="""<div class='hero'><h1>V12 → V20 Administration</h1><p>Platform engine readiness and data counts.</p></div><div class='card'><table><tr><th>Engine table</th><th>Status</th><th>Rows</th></tr>{% for t,c in counts.items() %}<tr><td>{{t}}</td><td>READY</td><td>{{c}}</td></tr>{% endfor %}</table></div>"""
     return render_page('V12 V20 Admin',tpl,counts=counts)
 
+
+# ============================================================
+# KOJA ECOSYSTEM V2 — ADMIN PLATFORM CONSOLE
+# V19 is an administration engine, not a public service route.
+# Uses the existing additive V12-V20 foundation tables.
+# ============================================================
+
+@app.route('/admin/platform/ecosystem-v2')
+@admin_required
+def admin_ecosystem_v2():
+    tables = {
+        'Service Registry': 'koja_service_registry',
+        'Ecosystem Links': 'koja_ecosystem_links',
+        'Unified Transactions': 'koja_unified_transactions',
+        'User Service Events': 'koja_user_service_events',
+        'Engine Events': 'koja_engine_events',
+    }
+    counts = {label: _v12_count(table) for label, table in tables.items()}
+    registry = db_select('koja_service_registry', limit=100) if table_exists('koja_service_registry') else []
+    links = db_select('koja_ecosystem_links', limit=100) if table_exists('koja_ecosystem_links') else []
+    transactions = db_select('koja_unified_transactions', limit=100) if table_exists('koja_unified_transactions') else []
+    tpl = """
+    <div class='hero'><h1>KOJA Ecosystem V2</h1><p>Administrator-only V19 platform console for service registry, ecosystem links and unified transactions.</p></div>
+    <div class='grid'>
+      {% for k,v in counts.items() %}<div class='stat'><div class='big'>{{ v }}</div>{{ k }}</div>{% endfor %}
+    </div>
+    <div class='card'><h3>Service Registry</h3>
+      {% if registry %}<table><tr><th>Service</th><th>Status</th><th>Key</th></tr>
+      {% for r in registry[:50] %}<tr><td>{{ r.get('service_name') or r.get('name') or r.get('service_key') or '—' }}</td><td>{{ r.get('status') or '—' }}</td><td>{{ r.get('service_key') or r.get('key') or '—' }}</td></tr>{% endfor %}</table>
+      {% else %}<p>No service registry records found.</p>{% endif %}
+    </div>
+    <div class='card'><h3>Ecosystem Links</h3>
+      {% if links %}<table><tr><th>Source</th><th>Target</th><th>Status</th></tr>
+      {% for r in links[:50] %}<tr><td>{{ r.get('source_service') or r.get('source_key') or r.get('from_service') or '—' }}</td><td>{{ r.get('target_service') or r.get('target_key') or r.get('to_service') or '—' }}</td><td>{{ r.get('status') or 'active' }}</td></tr>{% endfor %}</table>
+      {% else %}<p>No ecosystem links found.</p>{% endif %}
+    </div>
+    <div class='card'><h3>Unified Transactions</h3>
+      {% if transactions %}<table><tr><th>Service</th><th>Type</th><th>Amount</th><th>Currency</th><th>Status</th></tr>
+      {% for r in transactions[:50] %}<tr><td>{{ r.get('service_key') or r.get('service') or '—' }}</td><td>{{ r.get('transaction_type') or r.get('type') or '—' }}</td><td>{{ r.get('amount') or '—' }}</td><td>{{ r.get('currency') or '—' }}</td><td>{{ r.get('status') or '—' }}</td></tr>{% endfor %}</table>
+      {% else %}<p>No unified transactions found.</p>{% endif %}
+    </div>
+    <div class='card'><h3>Access policy</h3><p>V12–V20 platform routes are administrator-only. This does not disable or remove the existing user-facing Market, Delivery, Communication, AI, Research, Identity &amp; Trust, Workspace, Enterprise, Finance or other KOJA services.</p></div>
+    """
+    return render_page('KOJA Ecosystem V2', tpl, counts=counts, registry=registry, links=links, transactions=transactions)
 
 # ============================================================
 # KOJA CORE ENGINE ACTIVATION — PRODUCTION NAMED ENGINES
@@ -9141,7 +9186,7 @@ def _core_engine_sync(uid=None, engine_key='ecosystem', action='access', metadat
         logger.exception('KOJA named engine sync failed'); return False
 
 @app.route('/platform/engines')
-@login_required
+@admin_required
 def koja_named_engines():
     uid=(current_user() or {}).get('id')
     _core_engine_sync(uid,'ecosystem','open_engine_center')
@@ -9150,7 +9195,7 @@ def koja_named_engines():
     return render_page('KOJA Core Engines',tpl)
 
 @app.route('/api/platform/engine-access',methods=['POST'])
-@login_required
+@admin_required
 def koja_engine_access():
     uid=(current_user() or {}).get('id'); data=request.get_json(silent=True) or request.form
     key=clean(data.get('engine') or '').lower().replace(' ','_')
@@ -9161,7 +9206,7 @@ def koja_engine_access():
 
 
 @app.route('/platform/cloud')
-@login_required
+@admin_required
 def koja_cloud_page():
     uid=(current_user() or {}).get('id')
     rows=[]
@@ -9177,7 +9222,7 @@ def koja_cloud_page():
     return render_page('KOJA Cloud',tpl,keys=safe)
 
 @app.route('/api/cloud/keys',methods=['POST'])
-@login_required
+@admin_required
 def koja_cloud_create_key():
     uid=(current_user() or {}).get('id'); data=request.get_json(silent=True) or request.form
     if not table_exists('koja_api_keys'):return jsonify({'error':'API key storage is not installed'}),503
@@ -9195,7 +9240,7 @@ def koja_cloud_create_key():
     return jsonify({'ok':True,'api_key':raw,'key_prefix':prefix,'warning':'Store this key now. KOJA will not display the full secret again.'})
 
 @app.route('/api/cloud/keys/revoke',methods=['POST'])
-@login_required
+@admin_required
 def koja_cloud_revoke_key():
     uid=(current_user() or {}).get('id'); data=request.get_json(silent=True) or request.form; key_id=clean(data.get('key_id') or ''); prefix=clean(data.get('key_prefix') or '')
     if not key_id and not prefix:return jsonify({'error':'key_id or key_prefix is required'}),400
