@@ -9628,3 +9628,298 @@ def driver_available_deliveries():
 <div class="hero"><h1>Available KOJA Deliveries</h1><p>Only unclaimed delivery jobs appear here. The first driver to accept a job claims it; it immediately disappears from this list for every other driver.</p></div>
 <div class="grid">{% for d in rows %}<div class="card"><h3>{{ d.tracking_code }}</h3><p><strong>Pickup:</strong> {{ d.pickup_location }}</p><p><strong>Destination:</strong> {{ d.destination }}</p><p><strong>Fee:</strong> {{ money(d.delivery_fee,'ZMW') }}</p><form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.id,action='accept') }}"><button class="btn success">Accept Delivery</button></form></div>{% else %}<div class="card"><p>No available deliveries right now.</p></div>{% endfor %}</div>
 ''',rows=rows,money=market_money)
+
+# ============================================================
+# KOJA FINANCE V1 — FINANCIAL OPERATING LAYER
+# Additive module. Existing KOJA services remain intact.
+# ============================================================
+
+def _finance_uid():
+    return str((current_user() or {}).get('id') or '')
+
+def _finance_rows(table, filters=None, limit=100):
+    try:
+        if not table_exists(table):
+            return []
+        return db_select(table, filters or {}, order='created_at.desc', limit=limit) or []
+    except Exception:
+        logger.exception('KOJA Finance read failed: %s', table)
+        return []
+
+def _finance_num(value):
+    try:
+        return round(float(value or 0), 2)
+    except Exception:
+        return 0.0
+
+def _finance_insert(table, payload):
+    if not table_exists(table):
+        return None, 'table_not_installed'
+    try:
+        return db_insert(table, payload)
+    except Exception as exc:
+        logger.exception('KOJA Finance insert failed: %s', table)
+        return None, str(exc)
+
+def _finance_summary(uid):
+    invoices=_finance_rows('koja_finance_invoices',{'user_id':uid},500)
+    expenses=_finance_rows('koja_finance_expenses',{'user_id':uid},500)
+    ledger=_finance_rows('koja_finance_ledger',{'user_id':uid},500)
+    payroll=_finance_rows('koja_finance_payroll',{'user_id':uid},500)
+    arap=_finance_rows('koja_finance_ar_ap',{'user_id':uid},500)
+    revenue=sum(_finance_num(x.get('amount')) for x in ledger if str(x.get('entry_type') or '').lower() in ('income','revenue','credit'))
+    expense_total=sum(_finance_num(x.get('amount')) for x in expenses)
+    payroll_total=sum(_finance_num(x.get('net_pay') or x.get('amount')) for x in payroll)
+    invoiced=sum(_finance_num(x.get('total_amount') or x.get('amount')) for x in invoices)
+    paid=sum(_finance_num(x.get('total_amount') or x.get('amount')) for x in invoices if str(x.get('status') or '').lower() in ('paid','settled'))
+    receivable=sum(_finance_num(x.get('amount')) for x in arap if str(x.get('direction') or '').lower() in ('receivable','ar','income'))
+    payable=sum(_finance_num(x.get('amount')) for x in arap if str(x.get('direction') or '').lower() in ('payable','ap','expense'))
+    return {'revenue':round(revenue,2),'expenses':round(expense_total,2),'payroll':round(payroll_total,2),'profit':round(revenue-expense_total-payroll_total,2),'invoiced':round(invoiced,2),'invoice_paid':round(paid,2),'receivable':round(receivable,2),'payable':round(payable,2),'invoice_count':len(invoices),'ledger_count':len(ledger)}
+
+@app.route('/finance')
+@login_required
+def finance_dashboard():
+    summary=_finance_summary(_finance_uid())
+    return render_page('KOJA Finance',r'''
+<div class="hero"><h1>KOJA Finance</h1><p>Financial operating layer for business revenue, invoices, expenses, payroll, receivables, payables and transaction intelligence.</p></div>
+<div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(summary.revenue,'ZMW') }}</h2></div><div class="card"><h3>Expenses</h3><h2>{{ money(summary.expenses,'ZMW') }}</h2></div><div class="card"><h3>Payroll</h3><h2>{{ money(summary.payroll,'ZMW') }}</h2></div><div class="card"><h3>Operating result</h3><h2>{{ money(summary.profit,'ZMW') }}</h2></div><div class="card"><h3>Receivable</h3><h2>{{ money(summary.receivable,'ZMW') }}</h2></div><div class="card"><h3>Payable</h3><h2>{{ money(summary.payable,'ZMW') }}</h2></div></div>
+<div class="grid"><a class="card" href="{{ url_for('finance_invoices') }}"><h2>Invoices</h2><p>Create and track customer and supplier invoices.</p></a><a class="card" href="{{ url_for('finance_expenses') }}"><h2>Expenses</h2><p>Record and control business expenses.</p></a><a class="card" href="{{ url_for('finance_payroll') }}"><h2>Payroll</h2><p>Maintain employee payroll records.</p></a><a class="card" href="{{ url_for('finance_ar_ap') }}"><h2>Receivables & Payables</h2><p>Track money owed to and by the business.</p></a><a class="card" href="{{ url_for('finance_ledger') }}"><h2>Ledger</h2><p>Unified financial transaction history.</p></a></div>
+<div class="card"><h2>KOJA Financial Operating Chain</h2><p>Sale → Invoice → Payment → Ledger → Revenue → Expense → Profit → Settlement.</p><p>Procurement → Supplier Invoice → Payable → Payment → Inventory Cost.</p></div>
+''',summary=summary,money=market_money)
+
+@app.route('/finance/invoices',methods=['GET','POST'])
+@login_required
+def finance_invoices():
+    uid=_finance_uid()
+    if request.method=='POST':
+        payload={'user_id':uid,'invoice_number':clean(request.form.get('invoice_number') or ('KINV-'+secrets.token_hex(5).upper())),'customer_name':clean(request.form.get('customer_name')),'customer_email':clean(request.form.get('customer_email')),'description':clean(request.form.get('description')),'amount':_finance_num(request.form.get('amount')),'total_amount':_finance_num(request.form.get('amount')),'currency':clean(request.form.get('currency') or 'ZMW'),'status':'issued','due_date':clean(request.form.get('due_date')),'created_at':utc_now()}
+        _,err=_finance_insert('koja_finance_invoices',payload)
+        flash('Invoice created.' if not err else 'Finance invoice table is not installed yet.','success' if not err else 'warning')
+        return redirect(url_for('finance_invoices'))
+    rows=_finance_rows('koja_finance_invoices',{'user_id':uid},100)
+    return render_page('KOJA Invoices',r'''
+<div class="hero"><h1>Invoices</h1><p>Issue and monitor customer invoices.</p></div><div class="card"><form method="post"><div class="grid"><input name="invoice_number" placeholder="Invoice number"><input name="customer_name" placeholder="Customer name" required><input name="customer_email" type="email" placeholder="Customer email"><input name="amount" type="number" step="0.01" min="0" placeholder="Amount" required><input name="currency" value="ZMW" placeholder="Currency"><input name="due_date" type="date"><input name="description" placeholder="Description"></div><button class="btn" type="submit">Create Invoice</button></form></div><div class="card"><table><tr><th>Invoice</th><th>Customer</th><th>Amount</th><th>Status</th><th>Due</th></tr>{% for x in rows %}<tr><td>{{ x.invoice_number }}</td><td>{{ x.customer_name }}</td><td>{{ money(x.total_amount or x.amount,'ZMW') }}</td><td>{{ x.status }}</td><td>{{ x.due_date or '' }}</td></tr>{% else %}<tr><td colspan="5">No invoices yet.</td></tr>{% endfor %}</table></div>
+''',rows=rows,money=market_money)
+
+@app.route('/finance/expenses',methods=['GET','POST'])
+@login_required
+def finance_expenses():
+    uid=_finance_uid()
+    if request.method=='POST':
+        payload={'user_id':uid,'category':clean(request.form.get('category') or 'General'),'description':clean(request.form.get('description')),'amount':_finance_num(request.form.get('amount')),'currency':clean(request.form.get('currency') or 'ZMW'),'expense_date':clean(request.form.get('expense_date')),'status':'recorded','created_at':utc_now()}
+        _,err=_finance_insert('koja_finance_expenses',payload)
+        if not err: _finance_insert('koja_finance_ledger',{'user_id':uid,'entry_type':'expense','amount':payload['amount'],'currency':payload['currency'],'description':payload['description'],'reference_type':'expense','created_at':utc_now()})
+        flash('Expense recorded.' if not err else 'Finance expense table is not installed yet.','success' if not err else 'warning')
+        return redirect(url_for('finance_expenses'))
+    rows=_finance_rows('koja_finance_expenses',{'user_id':uid},100)
+    return render_page('KOJA Expenses',r'''
+<div class="hero"><h1>Expenses</h1><p>Record business operating costs and keep the ledger aligned.</p></div><div class="card"><form method="post"><div class="grid"><input name="category" placeholder="Category"><input name="description" placeholder="Description" required><input name="amount" type="number" step="0.01" min="0" placeholder="Amount" required><input name="currency" value="ZMW"><input name="expense_date" type="date"></div><button class="btn" type="submit">Record Expense</button></form></div><div class="card"><table><tr><th>Date</th><th>Category</th><th>Description</th><th>Amount</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{ x.expense_date or x.created_at }}</td><td>{{ x.category }}</td><td>{{ x.description }}</td><td>{{ money(x.amount,'ZMW') }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="5">No expenses yet.</td></tr>{% endfor %}</table></div>
+''',rows=rows,money=market_money)
+
+@app.route('/finance/payroll',methods=['GET','POST'])
+@login_required
+def finance_payroll():
+    uid=_finance_uid()
+    if request.method=='POST':
+        gross=_finance_num(request.form.get('gross_pay')); deductions=_finance_num(request.form.get('deductions')); net=max(0,round(gross-deductions,2))
+        payload={'user_id':uid,'employee_name':clean(request.form.get('employee_name')),'employee_id':clean(request.form.get('employee_id')),'period':clean(request.form.get('period')),'gross_pay':gross,'deductions':deductions,'net_pay':net,'currency':clean(request.form.get('currency') or 'ZMW'),'status':'prepared','created_at':utc_now()}
+        _,err=_finance_insert('koja_finance_payroll',payload)
+        flash('Payroll record saved.' if not err else 'Finance payroll table is not installed yet.','success' if not err else 'warning')
+        return redirect(url_for('finance_payroll'))
+    rows=_finance_rows('koja_finance_payroll',{'user_id':uid},100)
+    return render_page('KOJA Payroll',r'''
+<div class="hero"><h1>Payroll</h1><p>Employee payroll records, gross pay, deductions and net pay.</p></div><div class="card"><form method="post"><div class="grid"><input name="employee_name" placeholder="Employee name" required><input name="employee_id" placeholder="Employee ID"><input name="period" placeholder="Period e.g. September 2026" required><input name="gross_pay" type="number" step="0.01" min="0" placeholder="Gross pay" required><input name="deductions" type="number" step="0.01" min="0" placeholder="Deductions"><input name="currency" value="ZMW"></div><button class="btn" type="submit">Save Payroll Record</button></form></div><div class="card"><table><tr><th>Employee</th><th>Period</th><th>Gross</th><th>Deductions</th><th>Net</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{ x.employee_name }}</td><td>{{ x.period }}</td><td>{{ money(x.gross_pay,'ZMW') }}</td><td>{{ money(x.deductions,'ZMW') }}</td><td>{{ money(x.net_pay,'ZMW') }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="6">No payroll records yet.</td></tr>{% endfor %}</table></div>
+''',rows=rows,money=market_money)
+
+@app.route('/finance/ar-ap',methods=['GET','POST'])
+@login_required
+def finance_ar_ap():
+    uid=_finance_uid()
+    if request.method=='POST':
+        payload={'user_id':uid,'party_name':clean(request.form.get('party_name')),'direction':clean(request.form.get('direction') or 'receivable'),'description':clean(request.form.get('description')),'amount':_finance_num(request.form.get('amount')),'currency':clean(request.form.get('currency') or 'ZMW'),'due_date':clean(request.form.get('due_date')),'status':'open','created_at':utc_now()}
+        _,err=_finance_insert('koja_finance_ar_ap',payload)
+        flash('Receivable/payable recorded.' if not err else 'Finance AR/AP table is not installed yet.','success' if not err else 'warning')
+        return redirect(url_for('finance_ar_ap'))
+    rows=_finance_rows('koja_finance_ar_ap',{'user_id':uid},100)
+    return render_page('KOJA Receivables & Payables',r'''
+<div class="hero"><h1>Receivables & Payables</h1><p>Track money owed to the business and money the business owes.</p></div><div class="card"><form method="post"><div class="grid"><input name="party_name" placeholder="Customer / supplier" required><select name="direction"><option value="receivable">Receivable — owed to business</option><option value="payable">Payable — owed by business</option></select><input name="amount" type="number" step="0.01" min="0" placeholder="Amount" required><input name="currency" value="ZMW"><input name="due_date" type="date"><input name="description" placeholder="Description"></div><button class="btn" type="submit">Record</button></form></div><div class="card"><table><tr><th>Party</th><th>Type</th><th>Amount</th><th>Due</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{ x.party_name }}</td><td>{{ x.direction }}</td><td>{{ money(x.amount,'ZMW') }}</td><td>{{ x.due_date or '' }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="5">No AR/AP records yet.</td></tr>{% endfor %}</table></div>
+''',rows=rows,money=market_money)
+
+@app.route('/finance/ledger')
+@login_required
+def finance_ledger():
+    rows=_finance_rows('koja_finance_ledger',{'user_id':_finance_uid()},300)
+    return render_page('KOJA Finance Ledger',r'''
+<div class="hero"><h1>Financial Ledger</h1><p>Unified financial entries recorded by KOJA Finance.</p></div><div class="card"><table><tr><th>Date</th><th>Type</th><th>Description</th><th>Amount</th><th>Reference</th></tr>{% for x in rows %}<tr><td>{{ x.created_at }}</td><td>{{ x.entry_type }}</td><td>{{ x.description }}</td><td>{{ money(x.amount,x.currency or 'ZMW') }}</td><td>{{ x.reference_type or '' }}</td></tr>{% else %}<tr><td colspan="5">No ledger entries yet.</td></tr>{% endfor %}</table></div>
+''',rows=rows,money=market_money)
+
+@app.route('/api/finance/summary')
+@login_required
+def api_finance_summary():
+    return jsonify({'ok':True,'summary':_finance_summary(_finance_uid())})
+
+# ================= KOJA B2B + PROCUREMENT V1 (ADDITIVE) =================
+# This module is intentionally additive: it does not replace or alter existing
+# KOJA Market, Business, Finance, Communications, AI, Delivery or other routes.
+
+KOJA_B2B_TABLES = {
+    'organizations': 'koja_b2b_organizations',
+    'members': 'koja_b2b_members',
+    'suppliers': 'koja_b2b_suppliers',
+    'rfqs': 'koja_b2b_rfqs',
+    'rfq_items': 'koja_b2b_rfq_items',
+    'quotations': 'koja_b2b_quotations',
+    'quotation_items': 'koja_b2b_quotation_items',
+    'purchase_orders': 'koja_b2b_purchase_orders',
+    'purchase_order_items': 'koja_b2b_purchase_order_items',
+    'contracts': 'koja_b2b_supplier_contracts',
+    'recurring': 'koja_b2b_recurring_procurement',
+    'events': 'koja_b2b_events',
+}
+
+def _b2b_uid():
+    return str((current_user() or {}).get('id') or '')
+
+def _b2b_org_id():
+    uid = _b2b_uid()
+    if not uid:
+        return None
+    try:
+        m = first_row(KOJA_B2B_TABLES['members'], {'user_id': uid, 'status': 'active'})
+        return (m or {}).get('organization_id')
+    except Exception:
+        return None
+
+def _b2b_safe_select(table, filters=None, limit=100):
+    try:
+        return db_select(table, filters or {}, order='created_at.desc', limit=limit) or []
+    except Exception:
+        return []
+
+def _b2b_safe_insert(table, payload):
+    try:
+        return db_insert(table, payload)
+    except Exception:
+        logger.exception('KOJA B2B insert failed: %s', table)
+        return None, 'B2B storage is not installed yet.'
+
+def _b2b_num(value, default=0):
+    try:
+        return round(float(value or default), 2)
+    except Exception:
+        return float(default)
+
+@app.route('/b2b')
+@login_required
+def koja_b2b_dashboard():
+    uid = _b2b_uid()
+    org_id = _b2b_org_id()
+    suppliers = _b2b_safe_select(KOJA_B2B_TABLES['suppliers'], {'organization_id': org_id} if org_id else {'owner_id': uid}, 100)
+    rfqs = _b2b_safe_select(KOJA_B2B_TABLES['rfqs'], {'organization_id': org_id} if org_id else {'buyer_id': uid}, 100)
+    pos = _b2b_safe_select(KOJA_B2B_TABLES['purchase_orders'], {'organization_id': org_id} if org_id else {'buyer_id': uid}, 100)
+    return render_page('KOJA B2B', r'''
+    <div class="hero"><h1>KOJA B2B</h1><p>Business-to-business commerce, suppliers, procurement, quotations and purchase orders in one connected platform.</p></div>
+    <div class="grid">
+      <div class="card"><h2>Suppliers</h2><h1>{{ suppliers|length }}</h1><a class="btn" href="{{ url_for('b2b_suppliers') }}">Supplier Directory</a></div>
+      <div class="card"><h2>RFQs</h2><h1>{{ rfqs|length }}</h1><a class="btn" href="{{ url_for('b2b_rfqs') }}">Requests for Quotation</a></div>
+      <div class="card"><h2>Purchase Orders</h2><h1>{{ pos|length }}</h1><a class="btn" href="{{ url_for('b2b_purchase_orders') }}">Purchase Orders</a></div>
+      <div class="card"><h2>Procurement</h2><p>Supplier → RFQ → Quotation → Approval → PO → Delivery → Invoice → Payment.</p><a class="btn" href="{{ url_for('b2b_procurement') }}">Open Procurement</a></div>
+    </div>
+    <div class="card"><h2>KOJA B2B network</h2><p>Connect businesses to verified suppliers, wholesale products and repeat procurement workflows while reusing KOJA Identity, Pay, Finance, Market, Delivery, AI and Intelligence.</p></div>
+    ''', user=current_user() or {}, suppliers=suppliers, rfqs=rfqs, pos=pos)
+
+@app.route('/b2b/suppliers', methods=['GET','POST'])
+@login_required
+def b2b_suppliers():
+    uid = _b2b_uid(); org_id = _b2b_org_id()
+    if request.method == 'POST':
+        name = clean(request.form.get('name') or '')
+        category = clean(request.form.get('category') or '')
+        phone = clean(request.form.get('phone') or '')
+        email = clean(request.form.get('email') or '')
+        if not name:
+            flash('Supplier name is required.', 'danger')
+        else:
+            row = {'id': str(uuid.uuid4()), 'organization_id': org_id, 'owner_id': uid, 'name': name, 'category': category, 'phone': phone, 'email': email, 'status': 'pending', 'created_at': utc_now(), 'updated_at': utc_now()}
+            result = _b2b_safe_insert(KOJA_B2B_TABLES['suppliers'], row)
+            if result and not (isinstance(result, tuple) and len(result) > 1 and result[1]):
+                flash('Supplier added to the KOJA B2B directory.', 'success')
+            else:
+                flash('Supplier could not be saved. Install the B2B SQL migration first.', 'danger')
+    rows = _b2b_safe_select(KOJA_B2B_TABLES['suppliers'], {'organization_id': org_id} if org_id else {'owner_id': uid}, 300)
+    return render_page('KOJA B2B Suppliers', r'''
+    <div class="hero"><h1>Supplier Directory</h1><p>Manage suppliers and build your B2B procurement network.</p></div>
+    <div class="card"><form method="post"><div class="grid"><input name="name" placeholder="Supplier / company name" required><input name="category" placeholder="Category"><input name="phone" placeholder="Phone"><input name="email" type="email" placeholder="Email"></div><button class="btn" type="submit">Add Supplier</button></form></div>
+    <div class="card"><table><tr><th>Supplier</th><th>Category</th><th>Phone</th><th>Email</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{ x.name }}</td><td>{{ x.category }}</td><td>{{ x.phone }}</td><td>{{ x.email }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="5">No suppliers yet.</td></tr>{% endfor %}</table></div>
+    ''', user=current_user() or {}, rows=rows)
+
+@app.route('/b2b/rfqs', methods=['GET','POST'])
+@login_required
+def b2b_rfqs():
+    uid = _b2b_uid(); org_id = _b2b_org_id()
+    if request.method == 'POST':
+        title = clean(request.form.get('title') or '')
+        description = clean(request.form.get('description') or '')
+        due = clean(request.form.get('due_date') or '')
+        if not title:
+            flash('RFQ title is required.', 'danger')
+        else:
+            row = {'id': str(uuid.uuid4()), 'organization_id': org_id, 'buyer_id': uid, 'title': title, 'description': description, 'due_date': due or None, 'status': 'open', 'created_at': utc_now(), 'updated_at': utc_now()}
+            result = _b2b_safe_insert(KOJA_B2B_TABLES['rfqs'], row)
+            if result and not (isinstance(result, tuple) and len(result) > 1 and result[1]):
+                flash('RFQ published.', 'success')
+            else:
+                flash('RFQ could not be saved. Install the B2B SQL migration first.', 'danger')
+    rows = _b2b_safe_select(KOJA_B2B_TABLES['rfqs'], {'organization_id': org_id} if org_id else {'buyer_id': uid}, 300)
+    return render_page('KOJA B2B RFQs', r'''
+    <div class="hero"><h1>Requests for Quotation</h1><p>Ask suppliers to quote for business requirements.</p></div>
+    <div class="card"><form method="post"><input name="title" placeholder="RFQ title" required><textarea name="description" placeholder="Requirements, quantities and specifications"></textarea><input name="due_date" type="date"><button class="btn" type="submit">Publish RFQ</button></form></div>
+    <div class="card"><table><tr><th>Title</th><th>Due</th><th>Status</th><th>Created</th></tr>{% for x in rows %}<tr><td>{{ x.title }}</td><td>{{ x.due_date or '' }}</td><td>{{ x.status }}</td><td>{{ x.created_at }}</td></tr>{% else %}<tr><td colspan="4">No RFQs yet.</td></tr>{% endfor %}</table></div>
+    ''', user=current_user() or {}, rows=rows)
+
+@app.route('/b2b/purchase-orders', methods=['GET','POST'])
+@login_required
+def b2b_purchase_orders():
+    uid = _b2b_uid(); org_id = _b2b_org_id()
+    if request.method == 'POST':
+        supplier_id = clean(request.form.get('supplier_id') or '')
+        description = clean(request.form.get('description') or '')
+        amount = _b2b_num(request.form.get('amount'))
+        currency = clean(request.form.get('currency') or 'ZMW').upper()[:8]
+        if not supplier_id or amount <= 0:
+            flash('Supplier and positive order amount are required.', 'danger')
+        else:
+            po_number = 'KPO-' + datetime.now(timezone.utc).strftime('%Y%m%d') + '-' + secrets.token_hex(3).upper()
+            row = {'id': str(uuid.uuid4()), 'organization_id': org_id, 'buyer_id': uid, 'supplier_id': supplier_id, 'po_number': po_number, 'description': description, 'total_amount': amount, 'currency': currency, 'status': 'draft', 'created_at': utc_now(), 'updated_at': utc_now()}
+            result = _b2b_safe_insert(KOJA_B2B_TABLES['purchase_orders'], row)
+            if result and not (isinstance(result, tuple) and len(result) > 1 and result[1]):
+                flash('Purchase order created.', 'success')
+            else:
+                flash('Purchase order could not be saved. Install the B2B SQL migration first.', 'danger')
+    suppliers = _b2b_safe_select(KOJA_B2B_TABLES['suppliers'], {'organization_id': org_id} if org_id else {'owner_id': uid}, 300)
+    rows = _b2b_safe_select(KOJA_B2B_TABLES['purchase_orders'], {'organization_id': org_id} if org_id else {'buyer_id': uid}, 300)
+    return render_page('KOJA Purchase Orders', r'''
+    <div class="hero"><h1>Purchase Orders</h1><p>Turn approved procurement into traceable supplier orders.</p></div>
+    <div class="card"><form method="post"><select name="supplier_id" required><option value="">Select supplier</option>{% for s in suppliers %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}</select><textarea name="description" placeholder="Items / specifications"></textarea><input name="amount" type="number" step="0.01" min="0.01" placeholder="Total amount" required><input name="currency" value="ZMW" placeholder="Currency"><button class="btn" type="submit">Create Purchase Order</button></form></div>
+    <div class="card"><table><tr><th>PO</th><th>Supplier</th><th>Amount</th><th>Status</th><th>Created</th></tr>{% for x in rows %}<tr><td>{{ x.po_number }}</td><td>{{ x.supplier_id }}</td><td>{{ x.total_amount }} {{ x.currency }}</td><td>{{ x.status }}</td><td>{{ x.created_at }}</td></tr>{% else %}<tr><td colspan="5">No purchase orders yet.</td></tr>{% endfor %}</table></div>
+    ''', user=current_user() or {}, rows=rows, suppliers=suppliers)
+
+@app.route('/b2b/procurement')
+@login_required
+def b2b_procurement():
+    uid = _b2b_uid(); org_id = _b2b_org_id(); scope = {'organization_id': org_id} if org_id else {'buyer_id': uid}
+    rfqs = _b2b_safe_select(KOJA_B2B_TABLES['rfqs'], scope, 100)
+    pos = _b2b_safe_select(KOJA_B2B_TABLES['purchase_orders'], scope, 100)
+    suppliers = _b2b_safe_select(KOJA_B2B_TABLES['suppliers'], {'organization_id': org_id} if org_id else {'owner_id': uid}, 100)
+    return render_page('KOJA Procurement', r'''
+    <div class="hero"><h1>KOJA Procurement</h1><p>One workflow from supplier discovery to purchase order.</p></div>
+    <div class="card"><h2>Procurement chain</h2><p><strong>Supplier → RFQ → Quotation → Approval → PO → Delivery → Invoice → Payment</strong></p></div>
+    <div class="grid"><div class="card"><h3>Suppliers</h3><h2>{{ suppliers|length }}</h2></div><div class="card"><h3>Open RFQs</h3><h2>{{ rfqs|length }}</h2></div><div class="card"><h3>Purchase Orders</h3><h2>{{ pos|length }}</h2></div></div>
+    <div class="card"><a class="btn" href="{{ url_for('b2b_suppliers') }}">Suppliers</a> <a class="btn" href="{{ url_for('b2b_rfqs') }}">RFQs</a> <a class="btn" href="{{ url_for('b2b_purchase_orders') }}">Purchase Orders</a></div>
+    ''', user=current_user() or {}, suppliers=suppliers, rfqs=rfqs, pos=pos)
+
+@app.route('/api/b2b/summary')
+@login_required
+def api_b2b_summary():
+    uid = _b2b_uid(); org_id = _b2b_org_id()
+    return jsonify({'ok': True, 'organization_id': org_id, 'suppliers': len(_b2b_safe_select(KOJA_B2B_TABLES['suppliers'], {'organization_id': org_id} if org_id else {'owner_id': uid}, 500)), 'rfqs': len(_b2b_safe_select(KOJA_B2B_TABLES['rfqs'], {'organization_id': org_id} if org_id else {'buyer_id': uid}, 500)), 'purchase_orders': len(_b2b_safe_select(KOJA_B2B_TABLES['purchase_orders'], {'organization_id': org_id} if org_id else {'buyer_id': uid}, 500))})
