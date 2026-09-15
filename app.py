@@ -10114,3 +10114,215 @@ def api_enterprise_summary():
     for k,t in KOJA_ENTERPRISE_TABLES.items():
         if k != 'events': data[k]=len(_enterprise_select(t, {'organization_id':org_id} if org_id else {}, 1000))
     return jsonify(data)
+
+
+# ============================================================
+# KOJA B2B + PROCUREMENT V2 — execution layer (ADDITIVE)
+# Supplier verification, RFQ line items, quotation submission,
+# quotation review/approval, PO generation and recurring procurement.
+# Existing KOJA services and Communications are untouched.
+# ============================================================
+
+def _b2b_v2_scope():
+    uid = _b2b_uid(); org_id = _b2b_org_id()
+    return uid, org_id, ({'organization_id': org_id} if org_id else {'buyer_id': uid})
+
+def _b2b_v2_update(table, filters, payload):
+    try:
+        rows, err = db_update(table, filters, payload)
+        return bool(rows) and not err
+    except Exception:
+        logger.exception('B2B V2 update failed: %s', table)
+        return False
+
+def _b2b_v2_event(org_id, actor_id, event_type, entity_type=None, entity_id=None, payload=None):
+    if not org_id:
+        return
+    _b2b_safe_insert(KOJA_B2B_TABLES['events'], {
+        'id': str(uuid.uuid4()), 'organization_id': org_id, 'actor_id': actor_id,
+        'event_type': event_type, 'entity_type': entity_type, 'entity_id': entity_id,
+        'payload': payload or {}, 'created_at': utc_now()
+    })
+
+@app.route('/b2b/v2')
+@login_required
+def b2b_v2_dashboard():
+    uid, org_id, scope = _b2b_v2_scope()
+    suppliers = _b2b_safe_select(KOJA_B2B_TABLES['suppliers'], {'organization_id': org_id} if org_id else {'owner_id': uid}, 500)
+    rfqs = _b2b_safe_select(KOJA_B2B_TABLES['rfqs'], scope, 500)
+    quotes = _b2b_safe_select(KOJA_B2B_TABLES['quotations'], {}, 500)
+    pos = _b2b_safe_select(KOJA_B2B_TABLES['purchase_orders'], scope, 500)
+    return render_page('KOJA B2B Procurement V2', r'''
+    <div class="hero"><h1>KOJA B2B Procurement</h1><p>Execute the business purchasing cycle: supplier verification, RFQs, quotations, approvals and purchase orders.</p></div>
+    <div class="grid">
+      <div class="card"><h3>Suppliers</h3><h1>{{ suppliers|length }}</h1><a class="btn" href="{{ url_for('b2b_v2_suppliers') }}">Verification</a></div>
+      <div class="card"><h3>RFQs</h3><h1>{{ rfqs|length }}</h1><a class="btn" href="{{ url_for('b2b_v2_rfqs') }}">RFQ Workspace</a></div>
+      <div class="card"><h3>Quotations</h3><h1>{{ quotes|length }}</h1><a class="btn" href="{{ url_for('b2b_v2_quotations') }}">Review Quotes</a></div>
+      <div class="card"><h3>Purchase Orders</h3><h1>{{ pos|length }}</h1><a class="btn" href="{{ url_for('b2b_purchase_orders') }}">Open POs</a></div>
+    </div>
+    <div class="card"><h2>Execution chain</h2><p><strong>Supplier verification → RFQ → Quotation → Review → Approval → PO</strong></p></div>
+    ''', user=current_user() or {}, suppliers=suppliers, rfqs=rfqs, quotes=quotes, pos=pos)
+
+@app.route('/b2b/v2/suppliers', methods=['GET','POST'])
+@login_required
+def b2b_v2_suppliers():
+    uid, org_id, _ = _b2b_v2_scope()
+    if request.method == 'POST':
+        sid = clean(request.form.get('supplier_id') or '')
+        action = clean(request.form.get('action') or '')
+        if sid and action in ('verify','reject'):
+            rows = _b2b_safe_select(KOJA_B2B_TABLES['suppliers'], {'id': sid}, 1)
+            if rows:
+                status = 'verified' if action == 'verify' else 'rejected'
+                if _b2b_v2_update(KOJA_B2B_TABLES['suppliers'], {'id': sid}, {'verification_status': status, 'status': status, 'updated_at': utc_now()}):
+                    _b2b_v2_event(org_id, uid, 'supplier_verification_updated', 'supplier', sid, {'status': status})
+                    flash('Supplier verification updated.', 'success')
+        else:
+            flash('Select a supplier and action.', 'danger')
+    rows = _b2b_safe_select(KOJA_B2B_TABLES['suppliers'], {'organization_id': org_id} if org_id else {'owner_id': uid}, 500)
+    return render_page('KOJA B2B Supplier Verification', r'''
+    <div class="hero"><h1>Supplier Verification</h1><p>Control which suppliers can participate in procurement.</p></div>
+    <div class="card"><table><tr><th>Supplier</th><th>Category</th><th>Verification</th><th>Action</th></tr>
+    {% for x in rows %}<tr><td>{{ x.name }}</td><td>{{ x.category or '' }}</td><td>{{ x.verification_status or x.status }}</td><td><form method="post"><input type="hidden" name="supplier_id" value="{{ x.id }}"><button class="btn" name="action" value="verify">Verify</button> <button class="btn" name="action" value="reject">Reject</button></form></td></tr>
+    {% else %}<tr><td colspan="4">No suppliers yet.</td></tr>{% endfor %}</table></div>
+    ''', user=current_user() or {}, rows=rows)
+
+@app.route('/b2b/v2/rfqs', methods=['GET','POST'])
+@login_required
+def b2b_v2_rfqs():
+    uid, org_id, scope = _b2b_v2_scope()
+    if request.method == 'POST':
+        title = clean(request.form.get('title') or '')
+        description = clean(request.form.get('description') or '')
+        due = clean(request.form.get('due_date') or '')
+        item_desc = clean(request.form.get('item_description') or '')
+        qty = _b2b_num(request.form.get('quantity'), 1)
+        unit = clean(request.form.get('unit') or '')
+        if not title or not item_desc or qty <= 0:
+            flash('RFQ title, item description and positive quantity are required.', 'danger')
+        else:
+            rfq_id = str(uuid.uuid4())
+            row = {'id': rfq_id, 'organization_id': org_id, 'buyer_id': uid, 'title': title, 'description': description, 'due_date': due or None, 'status': 'open', 'created_at': utc_now(), 'updated_at': utc_now()}
+            result = _b2b_safe_insert(KOJA_B2B_TABLES['rfqs'], row)
+            if result and not (isinstance(result, tuple) and len(result) > 1 and result[1]):
+                item = _b2b_safe_insert(KOJA_B2B_TABLES['rfq_items'], {'id': str(uuid.uuid4()), 'rfq_id': rfq_id, 'description': item_desc, 'quantity': qty, 'unit': unit, 'currency': 'ZMW', 'created_at': utc_now()})
+                _b2b_v2_event(org_id, uid, 'rfq_created', 'rfq', rfq_id, {'title': title})
+                flash('RFQ and first line item created.', 'success')
+            else:
+                flash('RFQ could not be saved.', 'danger')
+    rows = _b2b_safe_select(KOJA_B2B_TABLES['rfqs'], scope, 300)
+    for x in rows:
+        x['items'] = _b2b_safe_select(KOJA_B2B_TABLES['rfq_items'], {'rfq_id': x.get('id')}, 100)
+    return render_page('KOJA B2B RFQ Workspace', r'''
+    <div class="hero"><h1>RFQ Workspace</h1><p>Create a procurement request with a structured first line item.</p></div>
+    <div class="card"><form method="post"><input name="title" placeholder="RFQ title" required><textarea name="description" placeholder="Requirements and specifications"></textarea><input name="due_date" type="date"><div class="grid"><input name="item_description" placeholder="Item / service description" required><input name="quantity" type="number" step="0.01" min="0.01" value="1" required><input name="unit" placeholder="Unit, e.g. boxes, tonnes, hours"></div><button class="btn" type="submit">Create RFQ</button></form></div>
+    <div class="card"><table><tr><th>RFQ</th><th>Line items</th><th>Status</th><th>Due</th></tr>{% for x in rows %}<tr><td>{{ x.title }}</td><td>{% for i in x.items %}{{ i.description }} × {{ i.quantity }}{% if not loop.last %}<br>{% endif %}{% endfor %}</td><td>{{ x.status }}</td><td>{{ x.due_date or '' }}</td></tr>{% else %}<tr><td colspan="4">No RFQs yet.</td></tr>{% endfor %}</table></div>
+    ''', user=current_user() or {}, rows=rows)
+
+@app.route('/b2b/v2/quotations', methods=['GET','POST'])
+@login_required
+def b2b_v2_quotations():
+    uid, org_id, scope = _b2b_v2_scope()
+    if request.method == 'POST':
+        qid = clean(request.form.get('quotation_id') or '')
+        action = clean(request.form.get('action') or '')
+        if qid and action in ('accept','reject'):
+            status = 'accepted' if action == 'accept' else 'rejected'
+            if _b2b_v2_update(KOJA_B2B_TABLES['quotations'], {'id': qid}, {'status': status, 'updated_at': utc_now()}):
+                _b2b_v2_event(org_id, uid, 'quotation_reviewed', 'quotation', qid, {'status': status})
+                flash('Quotation marked ' + status + '.', 'success')
+        else:
+            flash('Select a quotation and action.', 'danger')
+    rfqs = _b2b_safe_select(KOJA_B2B_TABLES['rfqs'], scope, 500)
+    rfq_ids = {str(x.get('id')) for x in rfqs}
+    all_quotes = _b2b_safe_select(KOJA_B2B_TABLES['quotations'], {}, 1000)
+    rows = [x for x in all_quotes if str(x.get('rfq_id')) in rfq_ids]
+    return render_page('KOJA B2B Quotations', r'''
+    <div class="hero"><h1>Quotation Review</h1><p>Review supplier quotations before converting an accepted quotation into a purchase order.</p></div>
+    <div class="card"><table><tr><th>Quotation</th><th>RFQ</th><th>Supplier</th><th>Total</th><th>Status</th><th>Action</th></tr>{% for x in rows %}<tr><td>{{ x.quotation_number or x.id }}</td><td>{{ x.rfq_id }}</td><td>{{ x.supplier_id }}</td><td>{{ x.total_amount }} {{ x.currency }}</td><td>{{ x.status }}</td><td><form method="post"><input type="hidden" name="quotation_id" value="{{ x.id }}"><button class="btn" name="action" value="accept">Accept</button> <button class="btn" name="action" value="reject">Reject</button></form></td></tr>{% else %}<tr><td colspan="6">No quotations yet.</td></tr>{% endfor %}</table></div>
+    ''', user=current_user() or {}, rows=rows)
+
+@app.route('/b2b/v2/quotations/submit', methods=['POST'])
+@login_required
+def b2b_v2_submit_quotation():
+    uid, org_id, _ = _b2b_v2_scope()
+    rfq_id = clean(request.form.get('rfq_id') or '')
+    supplier_id = clean(request.form.get('supplier_id') or '')
+    amount = _b2b_num(request.form.get('total_amount'))
+    if not rfq_id or not supplier_id or amount <= 0:
+        flash('RFQ, supplier and positive quotation amount are required.', 'danger')
+        return redirect(url_for('b2b_v2_quotations'))
+    rfqs = _b2b_safe_select(KOJA_B2B_TABLES['rfqs'], {'id': rfq_id}, 1)
+    if not rfqs or (org_id and rfqs[0].get('organization_id') != org_id) or (not org_id and rfqs[0].get('buyer_id') != uid):
+        flash('RFQ is not available in your procurement scope.', 'danger')
+        return redirect(url_for('b2b_v2_quotations'))
+    supplier = _b2b_safe_select(KOJA_B2B_TABLES['suppliers'], {'id': supplier_id}, 1)
+    if not supplier:
+        flash('Supplier was not found.', 'danger')
+        return redirect(url_for('b2b_v2_quotations'))
+    supplier_row = supplier[0]
+    if org_id and supplier_row.get('organization_id') not in (None, org_id) and supplier_row.get('owner_id') != uid:
+        flash('Supplier is outside your procurement scope.', 'danger')
+        return redirect(url_for('b2b_v2_quotations'))
+    qid = str(uuid.uuid4())
+    row = {'id': qid, 'rfq_id': rfq_id, 'supplier_id': supplier_id, 'quotation_number': 'KQ-' + datetime.now(timezone.utc).strftime('%Y%m%d') + '-' + secrets.token_hex(3).upper(), 'total_amount': amount, 'currency': clean(request.form.get('currency') or 'ZMW').upper()[:8], 'valid_until': clean(request.form.get('valid_until') or '') or None, 'terms': clean(request.form.get('terms') or ''), 'status': 'submitted', 'created_at': utc_now(), 'updated_at': utc_now()}
+    result = _b2b_safe_insert(KOJA_B2B_TABLES['quotations'], row)
+    if result and not (isinstance(result, tuple) and len(result) > 1 and result[1]):
+        _b2b_v2_event(org_id, uid, 'quotation_submitted', 'quotation', qid, {'rfq_id': rfq_id, 'supplier_id': supplier_id})
+        flash('Quotation submitted.', 'success')
+    else:
+        flash('Quotation could not be saved.', 'danger')
+    return redirect(url_for('b2b_v2_quotations'))
+
+@app.route('/b2b/v2/po/from-quotation/<quotation_id>', methods=['POST'])
+@login_required
+def b2b_v2_po_from_quotation(quotation_id):
+    uid, org_id, _ = _b2b_v2_scope()
+    q = _b2b_safe_select(KOJA_B2B_TABLES['quotations'], {'id': quotation_id}, 1)
+    if not q or q[0].get('status') != 'accepted':
+        flash('Only an accepted quotation can become a purchase order.', 'danger')
+        return redirect(url_for('b2b_v2_quotations'))
+    q = q[0]
+    po_id = str(uuid.uuid4())
+    po_number = 'KPO-' + datetime.now(timezone.utc).strftime('%Y%m%d') + '-' + secrets.token_hex(3).upper()
+    row = {'id': po_id, 'organization_id': org_id, 'buyer_id': uid, 'supplier_id': q.get('supplier_id'), 'rfq_id': q.get('rfq_id'), 'quotation_id': q.get('id'), 'po_number': po_number, 'description': 'Generated from accepted quotation ' + str(q.get('quotation_number') or q.get('id')), 'total_amount': q.get('total_amount') or 0, 'currency': q.get('currency') or 'ZMW', 'status': 'draft', 'approval_status': 'pending', 'created_at': utc_now(), 'updated_at': utc_now()}
+    result = _b2b_safe_insert(KOJA_B2B_TABLES['purchase_orders'], row)
+    if result and not (isinstance(result, tuple) and len(result) > 1 and result[1]):
+        _b2b_v2_event(org_id, uid, 'purchase_order_generated', 'purchase_order', po_id, {'quotation_id': quotation_id})
+        flash('Purchase order generated from accepted quotation.', 'success')
+    else:
+        flash('Purchase order could not be generated.', 'danger')
+    return redirect(url_for('b2b_purchase_orders'))
+
+@app.route('/b2b/v2/recurring', methods=['GET','POST'])
+@login_required
+def b2b_v2_recurring():
+    uid, org_id, _ = _b2b_v2_scope()
+    if request.method == 'POST':
+        title = clean(request.form.get('title') or '')
+        frequency = clean(request.form.get('frequency') or 'monthly').lower()
+        supplier_id = clean(request.form.get('supplier_id') or '')
+        amount = _b2b_num(request.form.get('amount'))
+        if not title or not supplier_id or amount <= 0:
+            flash('Title, supplier and positive amount are required.', 'danger')
+        else:
+            _b2b_safe_insert(KOJA_B2B_TABLES['recurring'], {'id':str(uuid.uuid4()),'organization_id':org_id,'buyer_id':uid,'supplier_id':supplier_id,'title':title,'frequency':frequency,'next_run_at':utc_now(),'amount':amount,'currency':clean(request.form.get('currency') or 'ZMW').upper()[:8],'status':'active','created_at':utc_now(),'updated_at':utc_now()})
+            flash('Recurring procurement schedule created.', 'success')
+    rows = _b2b_safe_select(KOJA_B2B_TABLES['recurring'], {'organization_id': org_id} if org_id else {'buyer_id': uid}, 300)
+    suppliers = _b2b_safe_select(KOJA_B2B_TABLES['suppliers'], {'organization_id': org_id} if org_id else {'owner_id': uid}, 300)
+    return render_page('KOJA Recurring Procurement', r'''
+    <div class="hero"><h1>Recurring Procurement</h1><p>Prepare repeat supplier purchases for monthly, weekly or custom business cycles.</p></div>
+    <div class="card"><form method="post"><input name="title" placeholder="Recurring procurement title" required><select name="supplier_id" required><option value="">Select supplier</option>{% for s in suppliers %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}</select><select name="frequency"><option>monthly</option><option>weekly</option><option>quarterly</option></select><input name="amount" type="number" step="0.01" min="0.01" placeholder="Amount" required><input name="currency" value="ZMW"><button class="btn">Create Schedule</button></form></div>
+    <div class="card"><table><tr><th>Title</th><th>Frequency</th><th>Amount</th><th>Next Run</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{ x.title }}</td><td>{{ x.frequency }}</td><td>{{ x.amount }} {{ x.currency }}</td><td>{{ x.next_run_at }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="5">No recurring procurement schedules.</td></tr>{% endfor %}</table></div>
+    ''', user=current_user() or {}, rows=rows, suppliers=suppliers)
+
+@app.route('/api/b2b/v2/summary')
+@login_required
+def api_b2b_v2_summary():
+    uid, org_id, scope = _b2b_v2_scope()
+    return jsonify({'ok': True, 'version': 'V2', 'organization_id': org_id,
+        'suppliers': len(_b2b_safe_select(KOJA_B2B_TABLES['suppliers'], {'organization_id': org_id} if org_id else {'owner_id': uid}, 1000)),
+        'rfqs': len(_b2b_safe_select(KOJA_B2B_TABLES['rfqs'], scope, 1000)),
+        'quotations': len(_b2b_safe_select(KOJA_B2B_TABLES['quotations'], {}, 1000)),
+        'purchase_orders': len(_b2b_safe_select(KOJA_B2B_TABLES['purchase_orders'], scope, 1000)),
+        'recurring_procurement': len(_b2b_safe_select(KOJA_B2B_TABLES['recurring'], {'organization_id': org_id} if org_id else {'buyer_id': uid}, 1000))})
