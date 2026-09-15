@@ -9923,3 +9923,194 @@ def b2b_procurement():
 def api_b2b_summary():
     uid = _b2b_uid(); org_id = _b2b_org_id()
     return jsonify({'ok': True, 'organization_id': org_id, 'suppliers': len(_b2b_safe_select(KOJA_B2B_TABLES['suppliers'], {'organization_id': org_id} if org_id else {'owner_id': uid}, 500)), 'rfqs': len(_b2b_safe_select(KOJA_B2B_TABLES['rfqs'], {'organization_id': org_id} if org_id else {'buyer_id': uid}, 500)), 'purchase_orders': len(_b2b_safe_select(KOJA_B2B_TABLES['purchase_orders'], {'organization_id': org_id} if org_id else {'buyer_id': uid}, 500))})
+
+# ============================================================
+# KOJA ENTERPRISE V1 — additive enterprise operating layer
+# ============================================================
+KOJA_ENTERPRISE_TABLES = {
+    'departments':'koja_enterprise_departments',
+    'employees':'koja_enterprise_employees',
+    'roles':'koja_enterprise_roles',
+    'role_members':'koja_enterprise_role_members',
+    'workspaces':'koja_enterprise_workspaces',
+    'contracts':'koja_enterprise_contracts',
+    'approvals':'koja_enterprise_approvals',
+    'documents':'koja_enterprise_documents',
+    'billing':'koja_enterprise_billing',
+    'events':'koja_enterprise_events',
+}
+
+def _enterprise_uid():
+    u = current_user() or {}
+    return u.get('id') or u.get('user_id')
+
+def _enterprise_org_id():
+    uid = _enterprise_uid()
+    if not uid:
+        return None
+    # Prefer an organization owned by the current user, then membership.
+    try:
+        row = first_row('koja_b2b_organizations', {'owner_id': uid})
+        if row:
+            return row.get('id')
+        m = first_row('koja_b2b_members', {'user_id': uid, 'status': 'active'})
+        if m:
+            return m.get('organization_id')
+    except Exception:
+        pass
+    return None
+
+def _enterprise_select(table, filters=None, limit=100):
+    if not table_exists(table):
+        return []
+    try:
+        return db_select(table, filters or {}, limit=limit) or []
+    except Exception:
+        return []
+
+def _enterprise_insert(table, payload):
+    if not table_exists(table):
+        return None
+    try:
+        rows = db_insert(table, payload) or []
+        return rows[0] if rows else None
+    except Exception:
+        return None
+
+@app.route('/enterprise', methods=['GET','POST'])
+@login_required
+def enterprise_dashboard():
+    uid = _enterprise_uid(); org_id = _enterprise_org_id()
+    if request.method == 'POST' and not org_id:
+        name = (request.form.get('name') or '').strip()
+        legal_name = (request.form.get('legal_name') or '').strip()
+        country = (request.form.get('country') or 'ZM').strip().upper()
+        currency = (request.form.get('currency') or 'ZMW').strip().upper()
+        if name:
+            org = _enterprise_insert('koja_b2b_organizations', {
+                'owner_id': uid, 'name': name, 'legal_name': legal_name or None,
+                'country': country, 'currency': currency, 'status': 'active'
+            })
+            if org:
+                org_id = org.get('id')
+                _enterprise_insert('koja_b2b_members', {'organization_id': org_id, 'user_id': uid, 'role': 'owner', 'status':'active'})
+                _enterprise_insert(KOJA_ENTERPRISE_TABLES['events'], {'organization_id': org_id, 'actor_id': uid, 'event_type':'organization_created', 'entity_type':'organization', 'entity_id':org_id})
+                return redirect(url_for('enterprise_dashboard'))
+    org = first_row('koja_b2b_organizations', {'id': org_id}) if org_id else None
+    scope = {'organization_id': org_id} if org_id else {'organization_id': '__none__'}
+    counts = {k: len(_enterprise_select(v, scope, 500)) for k,v in KOJA_ENTERPRISE_TABLES.items() if k != 'events'}
+    return render_page('KOJA Enterprise', r'''
+    <div class="hero"><h1>KOJA Enterprise</h1><p>Organizations, people, permissions, workspaces, contracts, approvals, documents and billing in one operating layer.</p></div>
+    {% if not org %}
+    <div class="card"><h2>Create your organization</h2><form method="post">
+      <input name="name" placeholder="Organization name" required>
+      <input name="legal_name" placeholder="Legal name">
+      <input name="country" value="ZM" placeholder="Country">
+      <input name="currency" value="ZMW" placeholder="Currency">
+      <button class="btn" type="submit">Create organization</button>
+    </form></div>
+    {% else %}
+    <div class="card"><h2>{{ org.name }}</h2><p>{{ org.legal_name or '' }} · {{ org.country or 'ZM' }} · {{ org.currency or 'ZMW' }}</p></div>
+    <div class="grid">
+      <div class="card"><h3>Departments</h3><h2>{{ counts.departments }}</h2><a class="btn" href="{{ url_for('enterprise_departments') }}">Manage</a></div>
+      <div class="card"><h3>Employees</h3><h2>{{ counts.employees }}</h2><a class="btn" href="{{ url_for('enterprise_employees') }}">Manage</a></div>
+      <div class="card"><h3>Roles</h3><h2>{{ counts.roles }}</h2><a class="btn" href="{{ url_for('enterprise_roles') }}">Manage</a></div>
+      <div class="card"><h3>Workspaces</h3><h2>{{ counts.workspaces }}</h2><a class="btn" href="{{ url_for('enterprise_workspaces') }}">Manage</a></div>
+      <div class="card"><h3>Contracts</h3><h2>{{ counts.contracts }}</h2><a class="btn" href="{{ url_for('enterprise_contracts') }}">Manage</a></div>
+      <div class="card"><h3>Approvals</h3><h2>{{ counts.approvals }}</h2><a class="btn" href="{{ url_for('enterprise_approvals') }}">Manage</a></div>
+      <div class="card"><h3>Documents</h3><h2>{{ counts.documents }}</h2><a class="btn" href="{{ url_for('enterprise_documents') }}">Manage</a></div>
+      <div class="card"><h3>Billing</h3><h2>{{ counts.billing }}</h2><a class="btn" href="{{ url_for('enterprise_billing') }}">Manage</a></div>
+    </div>
+    <div class="card"><h2>Enterprise operating chain</h2><p><strong>Identity → Organization → Departments → Employees → Roles → Workspaces → Contracts → Approvals → Documents → Billing → Intelligence</strong></p></div>
+    {% endif %}
+    ''', user=current_user() or {}, org=org, counts=counts)
+
+@app.route('/enterprise/departments', methods=['GET','POST'])
+@login_required
+def enterprise_departments():
+    org_id=_enterprise_org_id(); uid=_enterprise_uid()
+    if request.method=='POST' and org_id:
+        name=(request.form.get('name') or '').strip()
+        if name: _enterprise_insert(KOJA_ENTERPRISE_TABLES['departments'], {'organization_id':org_id,'name':name,'code':(request.form.get('code') or '').strip() or None,'head_user_id':(request.form.get('head_user_id') or '').strip() or None,'status':'active'})
+    rows=_enterprise_select(KOJA_ENTERPRISE_TABLES['departments'], {'organization_id':org_id} if org_id else {}, 200)
+    return render_page('Enterprise Departments', '<div class="hero"><h1>Departments</h1><p>Structure the organization into accountable business units.</p></div><div class="card"><form method="post"><input name="name" placeholder="Department name" required><input name="code" placeholder="Code"><input name="head_user_id" placeholder="Head user ID"><button class="btn">Add department</button></form></div><div class="card"><h2>Departments</h2><ul>{% for x in rows %}<li><strong>{{ x.name }}</strong> — {{ x.code or "" }}</li>{% else %}<li>No departments yet.</li>{% endfor %}</ul></div>', user=current_user() or {}, rows=rows)
+
+@app.route('/enterprise/employees', methods=['GET','POST'])
+@login_required
+def enterprise_employees():
+    org_id=_enterprise_org_id(); uid=_enterprise_uid()
+    if request.method=='POST' and org_id:
+        name=(request.form.get('name') or '').strip(); email=(request.form.get('email') or '').strip()
+        if name: _enterprise_insert(KOJA_ENTERPRISE_TABLES['employees'], {'organization_id':org_id,'user_id':(request.form.get('user_id') or '').strip() or None,'full_name':name,'email':email or None,'job_title':(request.form.get('job_title') or '').strip() or None,'department_id':(request.form.get('department_id') or '').strip() or None,'employment_status':'active'})
+    rows=_enterprise_select(KOJA_ENTERPRISE_TABLES['employees'], {'organization_id':org_id} if org_id else {}, 500)
+    deps=_enterprise_select(KOJA_ENTERPRISE_TABLES['departments'], {'organization_id':org_id} if org_id else {}, 200)
+    return render_page('Enterprise Employees', '<div class="hero"><h1>Employees</h1><p>Central enterprise workforce directory.</p></div><div class="card"><form method="post"><input name="name" placeholder="Full name" required><input name="email" placeholder="Email"><input name="job_title" placeholder="Job title"><select name="department_id"><option value="">Department</option>{% for d in deps %}<option value="{{ d.id }}">{{ d.name }}</option>{% endfor %}</select><button class="btn">Add employee</button></form></div><div class="card"><h2>Employees</h2><ul>{% for x in rows %}<li><strong>{{ x.full_name }}</strong> — {{ x.job_title or "" }} — {{ x.email or "" }}</li>{% else %}<li>No employees yet.</li>{% endfor %}</ul></div>', user=current_user() or {}, rows=rows, deps=deps)
+
+@app.route('/enterprise/roles', methods=['GET','POST'])
+@login_required
+def enterprise_roles():
+    org_id=_enterprise_org_id()
+    if request.method=='POST' and org_id:
+        name=(request.form.get('name') or '').strip()
+        if name: _enterprise_insert(KOJA_ENTERPRISE_TABLES['roles'], {'organization_id':org_id,'name':name,'description':(request.form.get('description') or '').strip() or None,'permissions':[],'status':'active'})
+    rows=_enterprise_select(KOJA_ENTERPRISE_TABLES['roles'], {'organization_id':org_id} if org_id else {}, 200)
+    return render_page('Enterprise Roles', '<div class="hero"><h1>Roles & Permissions</h1><p>Define enterprise access boundaries before assigning responsibilities.</p></div><div class="card"><form method="post"><input name="name" placeholder="Role name" required><input name="description" placeholder="Description"><button class="btn">Create role</button></form></div><div class="card"><ul>{% for x in rows %}<li><strong>{{ x.name }}</strong> — {{ x.description or "" }}</li>{% else %}<li>No roles yet.</li>{% endfor %}</ul></div>', user=current_user() or {}, rows=rows)
+
+@app.route('/enterprise/workspaces', methods=['GET','POST'])
+@login_required
+def enterprise_workspaces():
+    org_id=_enterprise_org_id(); uid=_enterprise_uid()
+    if request.method=='POST' and org_id:
+        name=(request.form.get('name') or '').strip()
+        if name: _enterprise_insert(KOJA_ENTERPRISE_TABLES['workspaces'], {'organization_id':org_id,'name':name,'description':(request.form.get('description') or '').strip() or None,'owner_id':uid,'status':'active'})
+    rows=_enterprise_select(KOJA_ENTERPRISE_TABLES['workspaces'], {'organization_id':org_id} if org_id else {}, 200)
+    return render_page('Enterprise Workspaces', '<div class="hero"><h1>Enterprise Workspaces</h1><p>Dedicated spaces for teams, projects and business operations.</p></div><div class="card"><form method="post"><input name="name" placeholder="Workspace name" required><input name="description" placeholder="Description"><button class="btn">Create workspace</button></form></div><div class="card"><ul>{% for x in rows %}<li><strong>{{ x.name }}</strong> — {{ x.status }}</li>{% else %}<li>No workspaces yet.</li>{% endfor %}</ul></div>', user=current_user() or {}, rows=rows)
+
+@app.route('/enterprise/contracts', methods=['GET','POST'])
+@login_required
+def enterprise_contracts():
+    org_id=_enterprise_org_id()
+    if request.method=='POST' and org_id:
+        title=(request.form.get('title') or '').strip()
+        if title: _enterprise_insert(KOJA_ENTERPRISE_TABLES['contracts'], {'organization_id':org_id,'contract_number':(request.form.get('contract_number') or '').strip() or None,'title':title,'counterparty':(request.form.get('counterparty') or '').strip() or None,'start_date':(request.form.get('start_date') or '').strip() or None,'end_date':(request.form.get('end_date') or '').strip() or None,'value':(request.form.get('value') or '0').strip() or 0,'currency':'ZMW','status':'draft'})
+    rows=_enterprise_select(KOJA_ENTERPRISE_TABLES['contracts'], {'organization_id':org_id} if org_id else {}, 200)
+    return render_page('Enterprise Contracts', '<div class="hero"><h1>Contracts</h1><p>Centralize enterprise agreements and commercial obligations.</p></div><div class="card"><form method="post"><input name="contract_number" placeholder="Contract number"><input name="title" placeholder="Contract title" required><input name="counterparty" placeholder="Counterparty"><input type="date" name="start_date"><input type="date" name="end_date"><input name="value" placeholder="Value"><button class="btn">Create contract</button></form></div><div class="card"><ul>{% for x in rows %}<li><strong>{{ x.title }}</strong> — {{ x.counterparty or "" }} — {{ x.status }}</li>{% else %}<li>No contracts yet.</li>{% endfor %}</ul></div>', user=current_user() or {}, rows=rows)
+
+@app.route('/enterprise/approvals', methods=['GET','POST'])
+@login_required
+def enterprise_approvals():
+    org_id=_enterprise_org_id(); uid=_enterprise_uid()
+    if request.method=='POST' and org_id:
+        title=(request.form.get('title') or '').strip()
+        if title: _enterprise_insert(KOJA_ENTERPRISE_TABLES['approvals'], {'organization_id':org_id,'requested_by':uid,'title':title,'entity_type':(request.form.get('entity_type') or '').strip() or None,'entity_id':(request.form.get('entity_id') or '').strip() or None,'status':'pending','notes':(request.form.get('notes') or '').strip() or None})
+    rows=_enterprise_select(KOJA_ENTERPRISE_TABLES['approvals'], {'organization_id':org_id} if org_id else {}, 300)
+    return render_page('Enterprise Approvals', '<div class="hero"><h1>Approvals</h1><p>Route contracts, procurement and business decisions through controlled approval states.</p></div><div class="card"><form method="post"><input name="title" placeholder="Approval request" required><input name="entity_type" placeholder="Entity type, e.g. purchase_order"><input name="entity_id" placeholder="Entity ID"><input name="notes" placeholder="Notes"><button class="btn">Submit approval</button></form></div><div class="card"><ul>{% for x in rows %}<li><strong>{{ x.title }}</strong> — {{ x.status }} — {{ x.created_at }}</li>{% else %}<li>No approvals yet.</li>{% endfor %}</ul></div>', user=current_user() or {}, rows=rows)
+
+@app.route('/enterprise/documents', methods=['GET','POST'])
+@login_required
+def enterprise_documents():
+    org_id=_enterprise_org_id(); uid=_enterprise_uid()
+    if request.method=='POST' and org_id:
+        title=(request.form.get('title') or '').strip()
+        if title: _enterprise_insert(KOJA_ENTERPRISE_TABLES['documents'], {'organization_id':org_id,'owner_id':uid,'title':title,'document_type':(request.form.get('document_type') or 'general').strip(),'file_url':(request.form.get('file_url') or '').strip() or None,'status':'active'})
+    rows=_enterprise_select(KOJA_ENTERPRISE_TABLES['documents'], {'organization_id':org_id} if org_id else {}, 300)
+    return render_page('Enterprise Documents', '<div class="hero"><h1>Enterprise Documents</h1><p>Organize business records, agreements and operational documents.</p></div><div class="card"><form method="post"><input name="title" placeholder="Document title" required><input name="document_type" placeholder="Type"><input name="file_url" placeholder="File URL"><button class="btn">Add document</button></form></div><div class="card"><ul>{% for x in rows %}<li><strong>{{ x.title }}</strong> — {{ x.document_type }}</li>{% else %}<li>No documents yet.</li>{% endfor %}</ul></div>', user=current_user() or {}, rows=rows)
+
+@app.route('/enterprise/billing', methods=['GET','POST'])
+@login_required
+def enterprise_billing():
+    org_id=_enterprise_org_id()
+    if request.method=='POST' and org_id:
+        description=(request.form.get('description') or '').strip()
+        if description: _enterprise_insert(KOJA_ENTERPRISE_TABLES['billing'], {'organization_id':org_id,'description':description,'amount':(request.form.get('amount') or '0').strip() or 0,'currency':'ZMW','billing_type':(request.form.get('billing_type') or 'subscription').strip(),'status':'pending'})
+    rows=_enterprise_select(KOJA_ENTERPRISE_TABLES['billing'], {'organization_id':org_id} if org_id else {}, 300)
+    return render_page('Enterprise Billing', '<div class="hero"><h1>Enterprise Billing</h1><p>Prepare organization-level billing and commercial records for KOJA Pay.</p></div><div class="card"><form method="post"><input name="description" placeholder="Billing item" required><input name="amount" placeholder="Amount"><input name="billing_type" placeholder="Type"><button class="btn">Add billing record</button></form></div><div class="card"><ul>{% for x in rows %}<li><strong>{{ x.description }}</strong> — {{ x.amount }} {{ x.currency }} — {{ x.status }}</li>{% else %}<li>No billing records yet.</li>{% endfor %}</ul></div>', user=current_user() or {}, rows=rows)
+
+@app.route('/api/enterprise/summary')
+@login_required
+def api_enterprise_summary():
+    org_id=_enterprise_org_id()
+    data={'ok':True,'organization_id':org_id}
+    for k,t in KOJA_ENTERPRISE_TABLES.items():
+        if k != 'events': data[k]=len(_enterprise_select(t, {'organization_id':org_id} if org_id else {}, 1000))
+    return jsonify(data)
