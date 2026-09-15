@@ -11985,3 +11985,109 @@ def api_workspace_v2_summary():
     if not ws: return jsonify({'ok':True,'workspace':None,'projects':0,'tasks':0,'open_tasks':0,'completed_tasks':0,'notes':0})
     wid=ws.get('id'); projects=_kw2_rows('koja_workspace_v2_projects',{'workspace_id':wid},500); tasks=_kw2_rows('koja_workspace_v2_tasks',{'workspace_id':wid},500); notes=_kw2_rows('koja_workspace_v2_notes',{'workspace_id':wid},500)
     return jsonify({'ok':True,'workspace':ws,'projects':len(projects),'tasks':len(tasks),'open_tasks':sum(1 for x in tasks if x.get('status')!='done'),'completed_tasks':sum(1 for x in tasks if x.get('status')=='done'),'notes':len(notes)})
+
+
+# ========================= KOJA GLOBAL COMMERCE V2 =========================
+KOJA_GLOBAL_COMMERCE_V2_TABLES = {
+    'countries':'koja_global_countries','currencies':'koja_global_currencies','fx':'koja_global_fx_rates',
+    'tax':'koja_global_tax_profiles','entities':'koja_global_entities','lanes':'koja_global_trade_lanes',
+    'orders':'koja_global_orders','settlements':'koja_global_settlements','compliance':'koja_global_compliance_docs',
+    'events':'koja_global_events'
+}
+
+def _gc_uid(): return (current_user() or {}).get('id')
+def _gc_org():
+    uid=_gc_uid()
+    try:
+        fn=globals().get('_enterprise_org_id')
+        if fn: return fn()
+    except Exception: pass
+    return (current_user() or {}).get('organization_id') or (current_user() or {}).get('org_id')
+def _gc_rows(table, filters=None, limit=1000):
+    try: return db_select(table, filters or {}, limit=limit) or []
+    except Exception: return []
+def _gc_insert(table,payload):
+    return db_insert(table,payload)
+def _gc_update(table,filters,payload):
+    return db_update(table,filters,payload)
+def _gc_num(v):
+    try: return float(v or 0)
+    except Exception: return 0.0
+def _gc_event(org,typ,entity,entity_id,payload=None):
+    try:
+        _gc_insert(KOJA_GLOBAL_COMMERCE_V2_TABLES['events'],{'id':str(uuid.uuid4()),'organization_id':org,'actor_id':_gc_uid(),'event_type':typ,'entity_type':entity,'entity_id':entity_id,'payload':payload or {},'created_at':utc_now()})
+    except Exception: pass
+def _gc_finance(source_id,typ,amount,currency):
+    fn=globals().get('_fv2_post_transaction')
+    if fn and _gc_uid():
+        try: return fn(_gc_uid(),'global_commerce',source_id,typ,_gc_num(amount),currency or 'ZMW','recorded',{'module':'global_commerce_v2'})
+        except Exception: pass
+
+def _gc_summary(org):
+    scope={'organization_id':org} if org else {}
+    orders=_gc_rows(KOJA_GLOBAL_COMMERCE_V2_TABLES['orders'],scope,5000)
+    settlements=_gc_rows(KOJA_GLOBAL_COMMERCE_V2_TABLES['settlements'],scope,5000)
+    docs=_gc_rows(KOJA_GLOBAL_COMMERCE_V2_TABLES['compliance'],scope,5000)
+    return {'version':'V2','countries':len(_gc_rows(KOJA_GLOBAL_COMMERCE_V2_TABLES['countries'],{},300)),
+            'currencies':len(_gc_rows(KOJA_GLOBAL_COMMERCE_V2_TABLES['currencies'],{},300)),
+            'entities':len(_gc_rows(KOJA_GLOBAL_COMMERCE_V2_TABLES['entities'],scope,1000)),
+            'trade_lanes':len(_gc_rows(KOJA_GLOBAL_COMMERCE_V2_TABLES['lanes'],scope,2000)),
+            'orders':len(orders),'order_value':sum(_gc_num(x.get('total_amount')) for x in orders),
+            'settled_value':sum(_gc_num(x.get('amount')) for x in settlements if x.get('status') in ('settled','paid')),
+            'pending_compliance':sum(1 for x in docs if x.get('status') in ('pending','review'))}
+
+@app.route('/global-commerce')
+@login_required
+def global_commerce_v2():
+    uid=_gc_uid(); org=_gc_org(); scope={'organization_id':org} if org else {}
+    summary=_gc_summary(org)
+    countries=_gc_rows('koja_global_countries',{},300); currencies=_gc_rows('koja_global_currencies',{},300)
+    entities=_gc_rows('koja_global_entities',scope,1000); lanes=_gc_rows('koja_global_trade_lanes',scope,2000)
+    orders=_gc_rows('koja_global_orders',scope,3000)
+    if request.method=='POST': pass
+    return render_page('KOJA Global Commerce V2',r'''
+    <div class="hero"><h1>Global Commerce</h1><p>Multi-country commerce, currencies, trade lanes, settlement and compliance.</p></div>
+    <div class="grid">
+      <div class="card"><h3>Countries</h3><h2>{{summary.countries}}</h2></div><div class="card"><h3>Currencies</h3><h2>{{summary.currencies}}</h2></div>
+      <div class="card"><h3>Entities</h3><h2>{{summary.entities}}</h2></div><div class="card"><h3>Trade Lanes</h3><h2>{{summary.trade_lanes}}</h2></div>
+      <div class="card"><h3>Cross-border Orders</h3><h2>{{summary.orders}}</h2></div><div class="card"><h3>Order Value</h3><h2>{{money(summary.order_value,'ZMW')}}</h2></div>
+      <div class="card"><h3>Settled Value</h3><h2>{{money(summary.settled_value,'ZMW')}}</h2></div><div class="card"><h3>Compliance Pending</h3><h2>{{summary.pending_compliance}}</h2></div>
+    </div>
+    <div class="card"><h2>Global operating chain</h2><p>Country → Entity → Currency / FX → Trade Lane → Cross-border Order → Compliance → Settlement → Finance.</p></div>
+    <div class="card"><h2>Recent global orders</h2><table><tr><th>Order</th><th>Origin</th><th>Destination</th><th>Total</th><th>Status</th></tr>{% for x in orders[:30] %}<tr><td>{{x.order_number}}</td><td>{{x.origin_country}}</td><td>{{x.destination_country}}</td><td>{{'%.2f'|format(x.total_amount|float)}} {{x.currency}}</td><td>{{x.status}}</td></tr>{% else %}<tr><td colspan="5">No global orders yet.</td></tr>{% endfor %}</table></div>
+    <div class="card"><h2>Supported infrastructure</h2><p>Country registry, currency registry, FX rates, tax profiles, legal entities, trade lanes, cross-border orders, settlements and compliance records.</p></div>
+    ''',user=current_user() or {},summary=summary,countries=countries,currencies=currencies,entities=entities,lanes=lanes,orders=orders,money=market_money)
+
+@app.route('/global-commerce/countries',methods=['GET','POST'])
+@login_required
+def global_commerce_countries():
+    org=_gc_org(); uid=_gc_uid()
+    if request.method=='POST':
+        code=clean(request.form.get('country_code')).upper(); name=clean(request.form.get('name')); currency=clean(request.form.get('default_currency')).upper()
+        if code and name:
+            rid=str(uuid.uuid4()); _gc_insert('koja_global_countries',{'id':rid,'code':code[:3],'name':name[:120],'default_currency':currency[:10] or None,'active':True,'created_at':utc_now(),'updated_at':utc_now()}); _gc_event(org,'country_created','country',rid,{'code':code}); flash('Country added.','success')
+    return render_page('Global Countries',r'''<div class="hero"><h1>Country Registry</h1><p>Countries available to KOJA commerce operations.</p></div><div class="card"><form method="post"><div class="grid"><input name="country_code" placeholder="ISO code e.g. ZM" required><input name="name" placeholder="Country name" required><input name="default_currency" placeholder="Currency e.g. ZMW"></div><button class="btn">Add Country</button></form></div><div class="card"><table><tr><th>Code</th><th>Country</th><th>Currency</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{x.code}}</td><td>{{x.name}}</td><td>{{x.default_currency or ''}}</td><td>{{'Active' if x.active else 'Inactive'}}</td></tr>{% endfor %}</table></div>''',user=current_user() or {},rows=_gc_rows('koja_global_countries',{},300))
+
+@app.route('/global-commerce/orders',methods=['GET','POST'])
+@login_required
+def global_commerce_orders():
+    org=_gc_org(); uid=_gc_uid()
+    if request.method=='POST':
+        origin=clean(request.form.get('origin_country')).upper(); dest=clean(request.form.get('destination_country')).upper(); amount=_gc_num(request.form.get('total_amount')); currency=clean(request.form.get('currency')).upper() or 'ZMW'
+        if origin and dest and amount>=0:
+            oid=str(uuid.uuid4()); payload={'id':oid,'organization_id':org,'owner_id':uid,'order_number':'GC-'+oid[:8].upper(),'origin_country':origin[:3],'destination_country':dest[:3],'currency':currency[:10],'total_amount':amount,'status':'draft','customer_reference':clean(request.form.get('customer_reference') or '') or None,'created_at':utc_now(),'updated_at':utc_now()}
+            _gc_insert('koja_global_orders',payload); _gc_event(org,'global_order_created','global_order',oid,{'amount':amount,'currency':currency}); flash('Global order created.','success')
+    rows=_gc_rows('koja_global_orders',{'organization_id':org} if org else {},3000)
+    return render_page('Global Orders',r'''<div class="hero"><h1>Cross-border Orders</h1><p>Create and monitor orders across country boundaries.</p></div><div class="card"><form method="post"><div class="grid"><input name="origin_country" placeholder="Origin country" required><input name="destination_country" placeholder="Destination country" required><input name="total_amount" type="number" step="0.01" placeholder="Total amount" required><input name="currency" placeholder="Currency" value="ZMW"><input name="customer_reference" placeholder="Customer reference"></div><button class="btn">Create Global Order</button></form></div><div class="card"><table><tr><th>Order</th><th>Route</th><th>Value</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{x.order_number}}</td><td>{{x.origin_country}} → {{x.destination_country}}</td><td>{{'%.2f'|format(x.total_amount|float)}} {{x.currency}}</td><td>{{x.status}}</td></tr>{% endfor %}</table></div>''',user=current_user() or {},rows=rows)
+
+@app.route('/api/global-commerce/summary')
+@login_required
+def api_global_commerce_summary():
+    return jsonify({'ok':True,'global_commerce':_gc_summary(_gc_org())})
+
+@app.route('/api/global-commerce/fx',methods=['POST'])
+@login_required
+def api_global_commerce_fx():
+    org=_gc_org(); uid=_gc_uid(); base=clean(request.form.get('base_currency') or (request.json or {}).get('base_currency') if request.is_json else request.form.get('base_currency')).upper(); quote=clean((request.json or {}).get('quote_currency')) if request.is_json else clean(request.form.get('quote_currency')); rate=(request.json or {}).get('rate') if request.is_json else request.form.get('rate')
+    if not base or not quote or _gc_num(rate)<=0: return jsonify({'ok':False,'error':'base_currency_quote_currency_and_positive_rate_required'}),400
+    rid=str(uuid.uuid4()); row={'id':rid,'organization_id':org,'base_currency':base[:10],'quote_currency':quote[:10].upper(),'rate':_gc_num(rate),'effective_at':utc_now(),'source':'manual','created_by':uid,'created_at':utc_now()}; _gc_insert('koja_global_fx_rates',row); _gc_event(org,'fx_rate_created','fx_rate',rid,row); return jsonify({'ok':True,'rate':row})

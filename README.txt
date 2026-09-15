@@ -1,30 +1,29 @@
-KOJA ENTERPRISE V2
-==================
+KOJA GLOBAL COMMERCE V2
 
-This package is cumulative from the KOJA Sales & CRM V2 production source.
-It preserves existing KOJA services and adds the Enterprise / Organizations V2 governance layer.
+Cumulative source: preserves the existing KOJA production services and prior B2B, Finance V2, Supply Chain V2, Workforce V2, Sales & CRM V2 and Enterprise V2 layers.
 
-Enterprise V2 adds:
-- Organization foundation compatibility
-- Departments, employees, roles, workspaces, contracts, approvals, documents and billing foundation
-- Multi-location / branch management
-- Cross-functional teams
-- Controlled member invitations
-- Approval decisions
-- Enterprise audit view
-- Enterprise V2 summary API
-- Additive/update-safe SQL migration
+Global Commerce V2 adds:
+- Country and currency registry
+- FX rate infrastructure
+- Tax profiles
+- Multi-country legal/operating entities
+- Cross-border trade lanes
+- Cross-border orders
+- Settlement records
+- Compliance documents
+- Global commerce audit events
+- Finance V2 bridge helper for future settlement posting
+- Global Commerce dashboard and summary API
 
-SQL migration:
-KOJA_ENTERPRISE_V2.sql
+Supabase:
+Run KOJA_GLOBAL_COMMERCE_V2.sql first. It is additive/update-safe and contains no DROP or TRUNCATE operations.
 
-Application:
-app.py
+Render:
+Deploy the included app.py to the existing KOJA AFRICA production service after the SQL completes successfully.
 
-Deployment order:
-1. Run KOJA_ENTERPRISE_V2.sql in Supabase SQL Editor.
-2. Confirm it completes successfully.
-3. Deploy app.py to the existing KOJA AFRICA Render Production service.
-
-No DROP, TRUNCATE or table recreation is used by the migration.
-Communications and existing KOJA services are preserved.
+Routes:
+/global-commerce
+/global-commerce/countries
+/global-commerce/orders
+/api/global-commerce/summary
+/api/global-commerce/fx
