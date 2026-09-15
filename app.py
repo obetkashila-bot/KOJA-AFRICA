@@ -10685,145 +10685,189 @@ def api_supply_chain_summary():
     uid,org_id,scope=_supply_scope(); inventory=_supply_select(KOJA_SUPPLY_TABLES['inventory'],scope,5000); low=[x for x in inventory if _supply_qty(x.get('quantity'))<=_supply_qty(x.get('reorder_level'))]; transfers=_supply_select(KOJA_SUPPLY_TABLES['transfers'],scope,3000); reorders=_supply_select(KOJA_SUPPLY_TABLES['reorders'],scope,3000)
     return jsonify({'ok':True,'version':'V2','organization_id':org_id,'warehouses':len(_supply_select(KOJA_SUPPLY_TABLES['warehouses'],scope,2000)),'inventory_items':len(inventory),'low_stock':len(low),'stock_value':round(sum(_supply_qty(x.get('quantity'))*_supply_qty(x.get('unit_cost')) for x in inventory),2),'movements':len(_supply_select(KOJA_SUPPLY_TABLES['movements'],scope,5000)),'transfers':len(transfers),'pending_transfers':len([x for x in transfers if str(x.get('status')) in ('requested','approved','in_transit')]),'reorder_requests':len(reorders)})
 
-# ========================= KOJA SALES + CRM V1 =========================
+# ========================= KOJA SALES + CRM V2 =========================
 KOJA_SALES_TABLES = {
     'leads':'koja_sales_leads', 'customers':'koja_sales_customers', 'opportunities':'koja_sales_opportunities',
     'quotes':'koja_sales_quotes', 'quote_items':'koja_sales_quote_items', 'orders':'koja_sales_orders',
-    'order_items':'koja_sales_order_items', 'activities':'koja_sales_activities', 'events':'koja_sales_events'
+    'order_items':'koja_sales_order_items', 'activities':'koja_sales_activities', 'events':'koja_sales_events',
+    'targets':'koja_sales_targets'
 }
 
 def _sales_scope():
-    uid = (current_user() or {}).get('id')
-    org_id = _enterprise_org_id() if uid else None
-    if not org_id:
-        org_id = first_row(KOJA_SALES_TABLES['leads'], {'owner_id':uid}, select='organization_id') if uid else None
-        org_id = (org_id or {}).get('organization_id') if isinstance(org_id, dict) else None
-    return uid, org_id
+    uid=(current_user() or {}).get('id'); org_id=_enterprise_org_id() if uid else None
+    if not org_id and uid:
+        row=first_row(KOJA_SALES_TABLES['leads'],{'owner_id':uid},select='organization_id')
+        org_id=(row or {}).get('organization_id') if isinstance(row,dict) else None
+    return uid,org_id
 
 def _sales_select(table, filters=None, limit=500):
-    return db_select(table, filters or {}, select='*', limit=limit) or []
+    try: return db_select(table, filters or {}, select='*', limit=limit) or []
+    except Exception as e: logging.warning('sales select failed: %s',e); return []
 
-def _sales_insert(table, row):
-    try: return db_insert(table, row)
-    except Exception as e:
-        logging.warning('sales insert failed: %s', e); return None
+def _sales_insert(table,row):
+    try: return db_insert(table,row)
+    except Exception as e: logging.warning('sales insert failed: %s',e); return None
 
-def _sales_update(table, filters, row):
-    try: return db_update(table, filters, row)
-    except Exception as e:
-        logging.warning('sales update failed: %s', e); return None
+def _sales_update(table,filters,row):
+    try: return db_update(table,filters,row)
+    except Exception as e: logging.warning('sales update failed: %s',e); return None
 
-def _sales_num(v, default=0):
+def _sales_num(v,default=0):
     try: return float(v)
     except Exception: return default
 
 def _sales_org(uid):
-    org_id = _enterprise_org_id()
+    org_id=_enterprise_org_id()
     if org_id: return org_id
-    oid = str(uuid.uuid4())
-    _sales_insert('koja_b2b_organizations', {'id':oid,'owner_id':uid,'name':'My KOJA Business','status':'active','created_at':utc_now(),'updated_at':utc_now()})
-    return oid
+    oid=str(uuid.uuid4()); _sales_insert('koja_b2b_organizations',{'id':oid,'owner_id':uid,'name':'My KOJA Business','status':'active','created_at':utc_now(),'updated_at':utc_now()}); return oid
 
-def _sales_event(org_id, uid, event_type, entity_type, entity_id, payload=None):
-    _sales_insert(KOJA_SALES_TABLES['events'], {'id':str(uuid.uuid4()),'organization_id':org_id,'actor_id':uid,'event_type':event_type,'entity_type':entity_type,'entity_id':entity_id,'payload':payload or {},'created_at':utc_now()})
+def _sales_event(org_id,uid,event_type,entity_type,entity_id,payload=None):
+    _sales_insert(KOJA_SALES_TABLES['events'],{'id':str(uuid.uuid4()),'organization_id':org_id,'actor_id':uid,'event_type':event_type,'entity_type':entity_type,'entity_id':entity_id,'payload':payload or {},'created_at':utc_now()})
+
+def _sales_finance_post(uid,source_id,amount,transaction_type='sale'):
+    fn=globals().get('_fv2_post_transaction')
+    if not fn or _sales_num(amount)<=0: return None
+    try: return fn(uid,'sales',source_id,transaction_type,_sales_num(amount),'ZMW','recorded',{'module':'sales_crm_v2'})
+    except Exception as e: logging.warning('sales finance bridge failed: %s',e); return None
+
+def _sales_stage_probability(stage):
+    return {'prospecting':10,'qualified':25,'proposal':50,'negotiation':75,'won':100,'lost':0}.get(str(stage or '').lower(),10)
 
 @app.route('/sales')
 @login_required
 def sales_dashboard():
-    uid, org_id = _sales_scope(); org_id = org_id or _sales_org(uid)
-    scope={'organization_id':org_id}
-    leads=_sales_select(KOJA_SALES_TABLES['leads'],scope,2000); customers=_sales_select(KOJA_SALES_TABLES['customers'],scope,2000)
-    opps=_sales_select(KOJA_SALES_TABLES['opportunities'],scope,2000); orders=_sales_select(KOJA_SALES_TABLES['orders'],scope,2000)
-    open_opps=[x for x in opps if x.get('stage') not in ('won','lost')]
-    pipeline=sum(_sales_num(x.get('expected_value')) for x in open_opps)
-    won=sum(_sales_num(x.get('total')) for x in orders if x.get('status') in ('confirmed','fulfilled','paid','completed'))
-    return render_page('KOJA Sales & CRM', r'''
-    <div class="hero"><h1>KOJA Sales & CRM</h1><p>Connect leads, customers, opportunities, quotations and sales orders to the KOJA business chain.</p></div>
-    <div class="grid"><div class="card"><h3>Leads</h3><strong>{{ leads|length }}</strong></div><div class="card"><h3>Customers</h3><strong>{{ customers|length }}</strong></div><div class="card"><h3>Open Pipeline</h3><strong>{{ '%.2f'|format(pipeline) }}</strong></div><div class="card"><h3>Won Sales</h3><strong>{{ '%.2f'|format(won) }}</strong></div></div>
-    <div class="card"><h2>Sales Engine</h2><p><a href="{{ url_for('sales_leads') }}">Leads</a> · <a href="{{ url_for('sales_customers') }}">Customers</a> · <a href="{{ url_for('sales_opportunities') }}">Pipeline</a> · <a href="{{ url_for('sales_quotes') }}">Quotations</a> · <a href="{{ url_for('sales_orders') }}">Sales Orders</a> · <a href="{{ url_for('sales_activities') }}">Activities</a></p></div>
-    ''', user=current_user() or {}, leads=leads, customers=customers, opps=opps, orders=orders, pipeline=pipeline, won=won)
+    uid,org_id=_sales_scope(); org_id=org_id or _sales_org(uid); scope={'organization_id':org_id}
+    leads=_sales_select(KOJA_SALES_TABLES['leads'],scope,3000); customers=_sales_select(KOJA_SALES_TABLES['customers'],scope,3000); opps=_sales_select(KOJA_SALES_TABLES['opportunities'],scope,3000); orders=_sales_select(KOJA_SALES_TABLES['orders'],scope,3000); activities=_sales_select(KOJA_SALES_TABLES['activities'],scope,3000)
+    open_opps=[x for x in opps if x.get('stage') not in ('won','lost')]; pipeline=sum(_sales_num(x.get('expected_value')) for x in open_opps); weighted=sum(_sales_num(x.get('expected_value'))*_sales_num(x.get('probability'))/100 for x in open_opps)
+    won=sum(_sales_num(x.get('total')) for x in orders if x.get('status') in ('confirmed','fulfilled','paid','completed')); overdue=sum(1 for x in activities if x.get('status')=='open' and x.get('due_at') and str(x.get('due_at')) < str(utc_now()))
+    stage_rows=[]
+    for st in ('prospecting','qualified','proposal','negotiation','won','lost'):
+        rr=[x for x in opps if x.get('stage')==st]; val=sum(_sales_num(x.get('expected_value')) for x in rr); stage_rows.append({'name':st,'count':len(rr),'value':val,'weighted':sum(_sales_num(x.get('expected_value'))*_sales_num(x.get('probability'))/100 for x in rr)})
+    return render_page('KOJA Sales & CRM V2',r'''<div class="hero"><h1>KOJA Sales & CRM</h1><p>Customer acquisition, pipeline, quotations, orders and sales intelligence.</p></div><div class="grid"><div class="card"><h3>Leads</h3><strong>{{leads|length}}</strong></div><div class="card"><h3>Customers</h3><strong>{{customers|length}}</strong></div><div class="card"><h3>Open Pipeline</h3><strong>{{'%.2f'|format(pipeline)}} ZMW</strong></div><div class="card"><h3>Weighted Pipeline</h3><strong>{{'%.2f'|format(weighted)}} ZMW</strong></div><div class="card"><h3>Won Sales</h3><strong>{{'%.2f'|format(won)}} ZMW</strong></div><div class="card"><h3>Open/Overdue Activities</h3><strong>{{activities|length}} / {{overdue}}</strong></div></div><div class="card"><h2>Sales workflow</h2><p><a class="btn" href="{{url_for('sales_leads')}}">Leads</a> <a class="btn" href="{{url_for('sales_customers')}}">Customers</a> <a class="btn" href="{{url_for('sales_opportunities')}}">Pipeline</a> <a class="btn" href="{{url_for('sales_quotes')}}">Quotes</a> <a class="btn" href="{{url_for('sales_orders')}}">Orders</a> <a class="btn" href="{{url_for('sales_activities')}}">Activities</a> <a class="btn" href="{{url_for('sales_targets')}}">Targets</a></p></div><div class="card"><h2>Pipeline by stage</h2><table><tr><th>Stage</th><th>Deals</th><th>Value</th><th>Weighted</th></tr>{% for st in stages %}<tr><td>{{st.name}}</td><td>{{st.count}}</td><td>{{'%.2f'|format(st.value)}} ZMW</td><td>{{'%.2f'|format(st.weighted)}} ZMW</td></tr>{% endfor %}</table></div>''',user=current_user() or {},leads=leads,customers=customers,opps=opps,orders=orders,activities=activities,pipeline=pipeline,weighted=weighted,won=won,overdue=overdue,stages=stage_rows)
 
-@app.route('/sales/leads', methods=['GET','POST'])
+@app.route('/sales/leads',methods=['GET','POST'])
 @login_required
 def sales_leads():
-    uid, org_id = _sales_scope(); org_id=org_id or _sales_org(uid); scope={'organization_id':org_id}
+    uid,org_id=_sales_scope(); org_id=org_id or _sales_org(uid); scope={'organization_id':org_id}
     if request.method=='POST':
-        name=clean(request.form.get('name') or ''); email=clean(request.form.get('email') or '') or None; phone=clean(request.form.get('phone') or '') or None
-        if not name: flash('Lead name is required.','danger')
+        action=clean(request.form.get('action') or 'create')
+        if action=='convert':
+            lid=clean(request.form.get('lead_id')); lead=first_row(KOJA_SALES_TABLES['leads'],{'id':lid,'organization_id':org_id})
+            if not lead: flash('Lead not found.','danger')
+            else:
+                cid=str(uuid.uuid4()); _sales_insert(KOJA_SALES_TABLES['customers'],{'id':cid,'organization_id':org_id,'owner_id':uid,'name':lead.get('name'),'company':lead.get('company'),'email':lead.get('email'),'phone':lead.get('phone'),'customer_type':'business','status':'active','notes':lead.get('notes'),'created_at':utc_now(),'updated_at':utc_now()}); _sales_update(KOJA_SALES_TABLES['leads'],{'id':lid,'organization_id':org_id},{'status':'converted','updated_at':utc_now()}); _sales_event(org_id,uid,'lead_converted','lead',lid,{'customer_id':cid}); flash('Lead converted to customer.','success')
         else:
-            lid=str(uuid.uuid4()); _sales_insert(KOJA_SALES_TABLES['leads'], {'id':lid,'organization_id':org_id,'owner_id':uid,'name':name,'email':email,'phone':phone,'company':clean(request.form.get('company') or '') or None,'source':clean(request.form.get('source') or '') or None,'status':'new','notes':clean(request.form.get('notes') or '') or None,'created_at':utc_now(),'updated_at':utc_now()}); _sales_event(org_id,uid,'lead_created','lead',lid); flash('Lead created.','success')
-    rows=_sales_select(KOJA_SALES_TABLES['leads'],scope,2000)
-    return render_page('KOJA Sales Leads', r'''<div class="hero"><h1>Leads</h1><p>Capture prospects and convert them into customers and opportunities.</p></div><div class="card"><form method="post"><input name="name" placeholder="Lead / contact name" required><input name="company" placeholder="Company"><input name="email" type="email" placeholder="Email"><input name="phone" placeholder="Phone"><input name="source" placeholder="Source"><input name="notes" placeholder="Notes"><button class="btn">Create Lead</button></form></div><div class="card"><table><tr><th>Name</th><th>Company</th><th>Email</th><th>Status</th><th>Source</th></tr>{% for x in rows %}<tr><td>{{x.name}}</td><td>{{x.company or ''}}</td><td>{{x.email or ''}}</td><td>{{x.status}}</td><td>{{x.source or ''}}</td></tr>{% else %}<tr><td colspan="5">No leads yet.</td></tr>{% endfor %}</table></div>''',user=current_user() or {},rows=rows)
+            name=clean(request.form.get('name') or '')
+            if not name: flash('Lead name is required.','danger')
+            else:
+                lid=str(uuid.uuid4()); _sales_insert(KOJA_SALES_TABLES['leads'],{'id':lid,'organization_id':org_id,'owner_id':uid,'name':name,'email':clean(request.form.get('email') or '') or None,'phone':clean(request.form.get('phone') or '') or None,'company':clean(request.form.get('company') or '') or None,'source':clean(request.form.get('source') or '') or None,'status':'new','notes':clean(request.form.get('notes') or '') or None,'created_at':utc_now(),'updated_at':utc_now()}); _sales_event(org_id,uid,'lead_created','lead',lid); flash('Lead created.','success')
+    rows=_sales_select(KOJA_SALES_TABLES['leads'],scope,3000)
+    return render_page('KOJA Sales Leads V2',r'''<div class="hero"><h1>Leads</h1><p>Capture, qualify and convert prospects.</p></div><div class="card"><form method="post"><div class="grid"><input name="name" placeholder="Lead / contact name" required><input name="company" placeholder="Company"><input name="email" type="email" placeholder="Email"><input name="phone" placeholder="Phone"><input name="source" placeholder="Source"><input name="notes" placeholder="Notes"></div><button class="btn">Create Lead</button></form></div><div class="card"><table><tr><th>Name</th><th>Company</th><th>Contact</th><th>Status</th><th>Source</th><th>Action</th></tr>{% for x in rows %}<tr><td>{{x.name}}</td><td>{{x.company or ''}}</td><td>{{x.email or ''}} {{x.phone or ''}}</td><td>{{x.status}}</td><td>{{x.source or ''}}</td><td>{% if x.status!='converted' %}<form method="post"><input type="hidden" name="action" value="convert"><input type="hidden" name="lead_id" value="{{x.id}}"><button class="btn secondary">Convert</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="6">No leads yet.</td></tr>{% endfor %}</table></div>''',user=current_user() or {},rows=rows)
 
-@app.route('/sales/customers', methods=['GET','POST'])
+@app.route('/sales/customers',methods=['GET','POST'])
 @login_required
 def sales_customers():
-    uid, org_id=_sales_scope(); org_id=org_id or _sales_org(uid); scope={'organization_id':org_id}
+    uid,org_id=_sales_scope(); org_id=org_id or _sales_org(uid); scope={'organization_id':org_id}
     if request.method=='POST':
-        name=clean(request.form.get('name') or '');
+        name=clean(request.form.get('name') or '')
         if not name: flash('Customer name is required.','danger')
         else:
-            cid=str(uuid.uuid4()); _sales_insert(KOJA_SALES_TABLES['customers'],{'id':cid,'organization_id':org_id,'owner_id':uid,'name':name,'company':clean(request.form.get('company') or '') or None,'email':clean(request.form.get('email') or '') or None,'phone':clean(request.form.get('phone') or '') or None,'customer_type':clean(request.form.get('customer_type') or 'business') or 'business','status':'active','notes':clean(request.form.get('notes') or '') or None,'created_at':utc_now(),'updated_at':utc_now()}); _sales_event(org_id,uid,'customer_created','customer',cid); flash('Customer created.','success')
-    rows=_sales_select(KOJA_SALES_TABLES['customers'],scope,2000)
-    return render_page('KOJA Customers',r'''<div class="hero"><h1>Customers</h1><p>Manage customer relationships across KOJA sales and commerce.</p></div><div class="card"><form method="post"><input name="name" placeholder="Customer name" required><input name="company" placeholder="Company"><input name="email" type="email" placeholder="Email"><input name="phone" placeholder="Phone"><select name="customer_type"><option value="business">Business</option><option value="individual">Individual</option><option value="enterprise">Enterprise</option></select><input name="notes" placeholder="Notes"><button class="btn">Create Customer</button></form></div><div class="card"><table><tr><th>Name</th><th>Company</th><th>Contact</th><th>Type</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{x.name}}</td><td>{{x.company or ''}}</td><td>{{x.email or ''}} {{x.phone or ''}}</td><td>{{x.customer_type}}</td><td>{{x.status}}</td></tr>{% else %}<tr><td colspan="5">No customers yet.</td></tr>{% endfor %}</table></div>''',user=current_user() or {},rows=rows)
+            cid=str(uuid.uuid4()); _sales_insert(KOJA_SALES_TABLES['customers'],{'id':cid,'organization_id':org_id,'owner_id':uid,'name':name,'company':clean(request.form.get('company') or '') or None,'email':clean(request.form.get('email') or '') or None,'phone':clean(request.form.get('phone') or '') or None,'customer_type':clean(request.form.get('customer_type') or 'business'),'status':'active','notes':clean(request.form.get('notes') or '') or None,'created_at':utc_now(),'updated_at':utc_now()}); _sales_event(org_id,uid,'customer_created','customer',cid); flash('Customer created.','success')
+    rows=_sales_select(KOJA_SALES_TABLES['customers'],scope,3000); opps=_sales_select(KOJA_SALES_TABLES['opportunities'],scope,5000); orders=_sales_select(KOJA_SALES_TABLES['orders'],scope,5000)
+    stats={str(x.get('id')):{'opps':0,'pipeline':0,'sales':0} for x in rows}
+    for x in opps:
+        k=str(x.get('customer_id')); 
+        if k in stats and x.get('stage') not in ('won','lost'): stats[k]['opps']+=1; stats[k]['pipeline']+=_sales_num(x.get('expected_value'))
+    for x in orders:
+        k=str(x.get('customer_id'))
+        if k in stats and x.get('status') in ('confirmed','fulfilled','paid','completed'): stats[k]['sales']+=_sales_num(x.get('total'))
+    return render_page('KOJA Customers V2',r'''<div class="hero"><h1>Customer 360</h1><p>Accounts, pipeline exposure and realized sales.</p></div><div class="card"><form method="post"><div class="grid"><input name="name" placeholder="Customer name" required><input name="company" placeholder="Company"><input name="email" type="email" placeholder="Email"><input name="phone" placeholder="Phone"><select name="customer_type"><option>business</option><option>individual</option><option>enterprise</option></select><input name="notes" placeholder="Notes"></div><button class="btn">Create Customer</button></form></div><div class="card"><table><tr><th>Customer</th><th>Company</th><th>Contact</th><th>Open Deals</th><th>Pipeline</th><th>Won Sales</th></tr>{% for x in rows %}<tr><td>{{x.name}}</td><td>{{x.company or ''}}</td><td>{{x.email or ''}} {{x.phone or ''}}</td><td>{{stats[x.id|string].opps}}</td><td>{{'%.2f'|format(stats[x.id|string].pipeline)}} ZMW</td><td>{{'%.2f'|format(stats[x.id|string].sales)}} ZMW</td></tr>{% else %}<tr><td colspan="6">No customers yet.</td></tr>{% endfor %}</table></div>''',user=current_user() or {},rows=rows,stats=stats)
 
-@app.route('/sales/opportunities', methods=['GET','POST'])
+@app.route('/sales/opportunities',methods=['GET','POST'])
 @login_required
 def sales_opportunities():
-    uid, org_id=_sales_scope(); org_id=org_id or _sales_org(uid); scope={'organization_id':org_id}
-    customers=_sales_select(KOJA_SALES_TABLES['customers'],scope,2000)
+    uid,org_id=_sales_scope(); org_id=org_id or _sales_org(uid); scope={'organization_id':org_id}; customers=_sales_select(KOJA_SALES_TABLES['customers'],scope,3000)
     if request.method=='POST':
-        name=clean(request.form.get('name') or ''); value=_sales_num(request.form.get('expected_value'))
-        if not name: flash('Opportunity name is required.','danger')
+        action=clean(request.form.get('action') or 'create')
+        if action=='stage':
+            oid=clean(request.form.get('opportunity_id')); stage=clean(request.form.get('stage')).lower(); row=first_row(KOJA_SALES_TABLES['opportunities'],{'id':oid,'organization_id':org_id})
+            if row and stage in ('prospecting','qualified','proposal','negotiation','won','lost'):
+                _sales_update(KOJA_SALES_TABLES['opportunities'],{'id':oid,'organization_id':org_id},{'stage':stage,'probability':_sales_stage_probability(stage),'updated_at':utc_now()}); _sales_event(org_id,uid,'opportunity_stage_changed','opportunity',oid,{'stage':stage}); flash('Opportunity stage updated.','success')
+            else: flash('Invalid opportunity update.','danger')
         else:
-            oid=str(uuid.uuid4()); _sales_insert(KOJA_SALES_TABLES['opportunities'],{'id':oid,'organization_id':org_id,'owner_id':uid,'customer_id':clean(request.form.get('customer_id') or '') or None,'name':name,'stage':clean(request.form.get('stage') or 'prospecting'),'probability':_sales_num(request.form.get('probability'),10),'expected_value':value,'expected_close_date':clean(request.form.get('expected_close_date') or '') or None,'notes':clean(request.form.get('notes') or '') or None,'created_at':utc_now(),'updated_at':utc_now()}); _sales_event(org_id,uid,'opportunity_created','opportunity',oid,{'value':value}); flash('Opportunity created.','success')
-    rows=_sales_select(KOJA_SALES_TABLES['opportunities'],scope,2000); cmap={str(x.get('id')):x.get('name') for x in customers}
-    return render_page('KOJA Sales Pipeline',r'''<div class="hero"><h1>Sales Pipeline</h1><p>Track opportunities from prospecting through won or lost.</p></div><div class="card"><form method="post"><input name="name" placeholder="Opportunity name" required><select name="customer_id"><option value="">Customer</option>{% for c in customers %}<option value="{{c.id}}">{{c.name}}</option>{% endfor %}</select><select name="stage"><option>prospecting</option><option>qualified</option><option>proposal</option><option>negotiation</option><option>won</option><option>lost</option></select><input name="probability" type="number" step="1" min="0" max="100" placeholder="Probability %"><input name="expected_value" type="number" step="0.01" min="0" placeholder="Expected value"><input name="expected_close_date" type="date"><input name="notes" placeholder="Notes"><button class="btn">Create Opportunity</button></form></div><div class="card"><table><tr><th>Opportunity</th><th>Customer</th><th>Stage</th><th>Probability</th><th>Value</th></tr>{% for x in rows %}<tr><td>{{x.name}}</td><td>{{cmap.get(x.customer_id,'')}}</td><td>{{x.stage}}</td><td>{{x.probability}}%</td><td>{{x.expected_value}}</td></tr>{% else %}<tr><td colspan="5">No opportunities yet.</td></tr>{% endfor %}</table></div>''',user=current_user() or {},rows=rows,customers=customers,cmap=cmap)
+            name=clean(request.form.get('name') or ''); value=_sales_num(request.form.get('expected_value')); stage=clean(request.form.get('stage') or 'prospecting')
+            if not name: flash('Opportunity name is required.','danger')
+            else:
+                oid=str(uuid.uuid4()); _sales_insert(KOJA_SALES_TABLES['opportunities'],{'id':oid,'organization_id':org_id,'owner_id':uid,'customer_id':clean(request.form.get('customer_id') or '') or None,'name':name,'stage':stage,'probability':_sales_stage_probability(stage),'expected_value':value,'expected_close_date':clean(request.form.get('expected_close_date') or '') or None,'notes':clean(request.form.get('notes') or '') or None,'created_at':utc_now(),'updated_at':utc_now()}); _sales_event(org_id,uid,'opportunity_created','opportunity',oid,{'value':value}); flash('Opportunity created.','success')
+    rows=_sales_select(KOJA_SALES_TABLES['opportunities'],scope,3000); cmap={str(x.get('id')):x.get('name') for x in customers}
+    return render_page('KOJA Sales Pipeline V2',r'''<div class="hero"><h1>Sales Pipeline</h1><p>Qualified opportunities with probability-weighted forecasting.</p></div><div class="card"><form method="post"><div class="grid"><input name="name" placeholder="Opportunity name" required><select name="customer_id"><option value="">Customer</option>{% for c in customers %}<option value="{{c.id}}">{{c.name}}</option>{% endfor %}</select><select name="stage"><option>prospecting</option><option>qualified</option><option>proposal</option><option>negotiation</option></select><input name="expected_value" type="number" step="0.01" placeholder="Expected value"><input name="expected_close_date" type="date"><input name="notes" placeholder="Notes"></div><button class="btn">Create Opportunity</button></form></div><div class="card"><table><tr><th>Opportunity</th><th>Customer</th><th>Stage</th><th>Probability</th><th>Value</th><th>Weighted</th><th>Action</th></tr>{% for x in rows %}<tr><td>{{x.name}}</td><td>{{cmap.get(x.customer_id,'')}}</td><td>{{x.stage}}</td><td>{{x.probability}}%</td><td>{{'%.2f'|format(x.expected_value or 0)}} ZMW</td><td>{{'%.2f'|format((x.expected_value or 0)*(x.probability or 0)/100)}} ZMW</td><td><form method="post"><input type="hidden" name="action" value="stage"><input type="hidden" name="opportunity_id" value="{{x.id}}"><select name="stage"><option>prospecting</option><option>qualified</option><option>proposal</option><option>negotiation</option><option>won</option><option>lost</option></select><button class="btn secondary">Update</button></form></td></tr>{% else %}<tr><td colspan="7">No opportunities yet.</td></tr>{% endfor %}</table></div>''',user=current_user() or {},rows=rows,customers=customers,cmap=cmap)
 
-@app.route('/sales/quotes', methods=['GET','POST'])
+@app.route('/sales/quotes',methods=['GET','POST'])
 @login_required
 def sales_quotes():
-    uid, org_id=_sales_scope(); org_id=org_id or _sales_org(uid); scope={'organization_id':org_id}; customers=_sales_select(KOJA_SALES_TABLES['customers'],scope,2000)
+    uid,org_id=_sales_scope(); org_id=org_id or _sales_org(uid); scope={'organization_id':org_id}; customers=_sales_select(KOJA_SALES_TABLES['customers'],scope,3000)
     if request.method=='POST':
-        customer_id=clean(request.form.get('customer_id') or ''); title=clean(request.form.get('title') or '')
-        total=_sales_num(request.form.get('total'))
-        if not title or not customer_id: flash('Quote title and customer are required.','danger')
+        customer_id=clean(request.form.get('customer_id') or '') or None; title=clean(request.form.get('title') or ''); total=_sales_num(request.form.get('total'))
+        if not title or not customer_id: flash('Customer and quote title are required.','danger')
         else:
             qid=str(uuid.uuid4()); _sales_insert(KOJA_SALES_TABLES['quotes'],{'id':qid,'organization_id':org_id,'owner_id':uid,'customer_id':customer_id,'quote_number':'Q-'+qid[:8].upper(),'title':title,'total':total,'currency':clean(request.form.get('currency') or 'ZMW'),'status':'draft','valid_until':clean(request.form.get('valid_until') or '') or None,'notes':clean(request.form.get('notes') or '') or None,'created_at':utc_now(),'updated_at':utc_now()}); _sales_event(org_id,uid,'quote_created','quote',qid,{'total':total}); flash('Quotation created.','success')
-    rows=_sales_select(KOJA_SALES_TABLES['quotes'],scope,2000); cmap={str(x.get('id')):x.get('name') for x in customers}
-    return render_page('KOJA Sales Quotations',r'''<div class="hero"><h1>Quotations</h1><p>Create commercial quotes before converting them into sales orders.</p></div><div class="card"><form method="post"><input name="title" placeholder="Quote title" required><select name="customer_id" required><option value="">Customer</option>{% for c in customers %}<option value="{{c.id}}">{{c.name}}</option>{% endfor %}</select><input name="total" type="number" step="0.01" min="0" placeholder="Total"><input name="currency" value="ZMW" placeholder="Currency"><input name="valid_until" type="date"><input name="notes" placeholder="Notes"><button class="btn">Create Quote</button></form></div><div class="card"><table><tr><th>Quote</th><th>Customer</th><th>Total</th><th>Currency</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{x.quote_number}} — {{x.title}}</td><td>{{cmap.get(x.customer_id,'')}}</td><td>{{x.total}}</td><td>{{x.currency}}</td><td>{{x.status}}</td></tr>{% else %}<tr><td colspan="5">No quotations yet.</td></tr>{% endfor %}</table></div>''',user=current_user() or {},rows=rows,customers=customers,cmap=cmap)
+    rows=_sales_select(KOJA_SALES_TABLES['quotes'],scope,3000); cmap={str(x.get('id')):x.get('name') for x in customers}
+    return render_page('KOJA Sales Quotes V2',r'''<div class="hero"><h1>Quotations</h1><p>Commercial offers ready to move into sales orders.</p></div><div class="card"><form method="post"><div class="grid"><select name="customer_id" required><option value="">Customer</option>{% for c in customers %}<option value="{{c.id}}">{{c.name}}</option>{% endfor %}</select><input name="title" placeholder="Quote title" required><input name="total" type="number" step="0.01" placeholder="Total"><input name="currency" value="ZMW"><input name="valid_until" type="date"><input name="notes" placeholder="Notes"></div><button class="btn">Create Quote</button></form></div><div class="card"><table><tr><th>Quote</th><th>Customer</th><th>Total</th><th>Status</th><th>Valid Until</th></tr>{% for x in rows %}<tr><td>{{x.quote_number}} — {{x.title}}</td><td>{{cmap.get(x.customer_id,'')}}</td><td>{{x.total}} {{x.currency}}</td><td>{{x.status}}</td><td>{{x.valid_until or ''}}</td></tr>{% else %}<tr><td colspan="5">No quotes yet.</td></tr>{% endfor %}</table></div>''',user=current_user() or {},rows=rows,customers=customers,cmap=cmap)
 
-@app.route('/sales/orders', methods=['GET','POST'])
+@app.route('/sales/orders',methods=['GET','POST'])
 @login_required
 def sales_orders():
-    uid, org_id=_sales_scope(); org_id=org_id or _sales_org(uid); scope={'organization_id':org_id}; customers=_sales_select(KOJA_SALES_TABLES['customers'],scope,2000)
+    uid,org_id=_sales_scope(); org_id=org_id or _sales_org(uid); scope={'organization_id':org_id}; customers=_sales_select(KOJA_SALES_TABLES['customers'],scope,3000)
     if request.method=='POST':
-        customer_id=clean(request.form.get('customer_id') or ''); total=_sales_num(request.form.get('total'))
-        if not customer_id: flash('Customer is required.','danger')
+        action=clean(request.form.get('action') or 'create')
+        if action=='status':
+            oid=clean(request.form.get('order_id')); status=clean(request.form.get('status')).lower(); row=first_row(KOJA_SALES_TABLES['orders'],{'id':oid,'organization_id':org_id})
+            allowed={'draft','confirmed','fulfilled','paid','cancelled'}
+            if not row or status not in allowed: flash('Invalid order update.','danger')
+            else:
+                _sales_update(KOJA_SALES_TABLES['orders'],{'id':oid,'organization_id':org_id},{'status':status,'updated_at':utc_now()})
+                if status in ('paid','completed','fulfilled') and row.get('status') not in ('paid','completed','fulfilled'): _sales_finance_post(uid,oid,_sales_num(row.get('total')),'sales_receipt')
+                _sales_event(org_id,uid,'sales_order_status_changed','sales_order',oid,{'status':status}); flash('Sales order updated.','success')
         else:
-            oid=str(uuid.uuid4()); _sales_insert(KOJA_SALES_TABLES['orders'],{'id':oid,'organization_id':org_id,'owner_id':uid,'customer_id':customer_id,'order_number':'SO-'+oid[:8].upper(),'total':total,'currency':clean(request.form.get('currency') or 'ZMW'),'status':'draft','source':clean(request.form.get('source') or 'crm'),'notes':clean(request.form.get('notes') or '') or None,'created_at':utc_now(),'updated_at':utc_now()}); _sales_event(org_id,uid,'sales_order_created','sales_order',oid,{'total':total}); flash('Sales order created.','success')
-    rows=_sales_select(KOJA_SALES_TABLES['orders'],scope,2000); cmap={str(x.get('id')):x.get('name') for x in customers}
-    return render_page('KOJA Sales Orders',r'''<div class="hero"><h1>Sales Orders</h1><p>Turn commercial opportunities into executable customer orders.</p></div><div class="card"><form method="post"><select name="customer_id" required><option value="">Customer</option>{% for c in customers %}<option value="{{c.id}}">{{c.name}}</option>{% endfor %}</select><input name="total" type="number" step="0.01" min="0" placeholder="Order total"><input name="currency" value="ZMW" placeholder="Currency"><input name="source" value="crm" placeholder="Source"><input name="notes" placeholder="Notes"><button class="btn">Create Sales Order</button></form></div><div class="card"><table><tr><th>Order</th><th>Customer</th><th>Total</th><th>Status</th><th>Source</th></tr>{% for x in rows %}<tr><td>{{x.order_number}}</td><td>{{cmap.get(x.customer_id,'')}}</td><td>{{x.total}} {{x.currency}}</td><td>{{x.status}}</td><td>{{x.source}}</td></tr>{% else %}<tr><td colspan="5">No sales orders yet.</td></tr>{% endfor %}</table></div>''',user=current_user() or {},rows=rows,customers=customers,cmap=cmap)
+            customer_id=clean(request.form.get('customer_id') or '') or None; total=_sales_num(request.form.get('total'))
+            if not customer_id: flash('Customer is required.','danger')
+            else:
+                oid=str(uuid.uuid4()); _sales_insert(KOJA_SALES_TABLES['orders'],{'id':oid,'organization_id':org_id,'owner_id':uid,'customer_id':customer_id,'quote_id':clean(request.form.get('quote_id') or '') or None,'order_number':'SO-'+oid[:8].upper(),'total':total,'currency':clean(request.form.get('currency') or 'ZMW'),'status':'draft','source':clean(request.form.get('source') or 'crm'),'notes':clean(request.form.get('notes') or '') or None,'created_at':utc_now(),'updated_at':utc_now()}); _sales_event(org_id,uid,'sales_order_created','sales_order',oid,{'total':total}); flash('Sales order created.','success')
+    rows=_sales_select(KOJA_SALES_TABLES['orders'],scope,3000); cmap={str(x.get('id')):x.get('name') for x in customers}
+    return render_page('KOJA Sales Orders V2',r'''<div class="hero"><h1>Sales Orders</h1><p>Turn commercial demand into confirmed revenue and Finance transactions.</p></div><div class="card"><form method="post"><div class="grid"><select name="customer_id" required><option value="">Customer</option>{% for c in customers %}<option value="{{c.id}}">{{c.name}}</option>{% endfor %}</select><input name="total" type="number" step="0.01" placeholder="Order total"><input name="currency" value="ZMW"><input name="source" value="crm"><input name="quote_id" placeholder="Quote ID (optional)"><input name="notes" placeholder="Notes"></div><button class="btn">Create Sales Order</button></form></div><div class="card"><table><tr><th>Order</th><th>Customer</th><th>Total</th><th>Status</th><th>Action</th></tr>{% for x in rows %}<tr><td>{{x.order_number}}</td><td>{{cmap.get(x.customer_id,'')}}</td><td>{{x.total}} {{x.currency}}</td><td>{{x.status}}</td><td><form method="post"><input type="hidden" name="action" value="status"><input type="hidden" name="order_id" value="{{x.id}}"><select name="status"><option>draft</option><option>confirmed</option><option>fulfilled</option><option>paid</option><option>cancelled</option></select><button class="btn secondary">Update</button></form></td></tr>{% else %}<tr><td colspan="5">No orders yet.</td></tr>{% endfor %}</table></div>''',user=current_user() or {},rows=rows,customers=customers,cmap=cmap)
 
-@app.route('/sales/activities', methods=['GET','POST'])
+@app.route('/sales/activities',methods=['GET','POST'])
 @login_required
 def sales_activities():
-    uid, org_id=_sales_scope(); org_id=org_id or _sales_org(uid); scope={'organization_id':org_id}
+    uid,org_id=_sales_scope(); org_id=org_id or _sales_org(uid); scope={'organization_id':org_id}
     if request.method=='POST':
         subject=clean(request.form.get('subject') or '')
         if not subject: flash('Activity subject is required.','danger')
         else:
             aid=str(uuid.uuid4()); _sales_insert(KOJA_SALES_TABLES['activities'],{'id':aid,'organization_id':org_id,'owner_id':uid,'activity_type':clean(request.form.get('activity_type') or 'note'),'subject':subject,'description':clean(request.form.get('description') or '') or None,'related_type':clean(request.form.get('related_type') or '') or None,'related_id':clean(request.form.get('related_id') or '') or None,'due_at':clean(request.form.get('due_at') or '') or None,'status':'open','created_at':utc_now(),'updated_at':utc_now()}); _sales_event(org_id,uid,'sales_activity_created','activity',aid); flash('Activity recorded.','success')
-    rows=_sales_select(KOJA_SALES_TABLES['activities'],scope,2000)
-    return render_page('KOJA Sales Activities',r'''<div class="hero"><h1>Sales Activities</h1><p>Keep calls, meetings, follow-ups and notes attached to the commercial workflow.</p></div><div class="card"><form method="post"><select name="activity_type"><option>call</option><option>meeting</option><option>email</option><option>follow_up</option><option>note</option></select><input name="subject" placeholder="Subject" required><input name="description" placeholder="Description"><input name="related_type" placeholder="Related type"><input name="related_id" placeholder="Related ID"><input name="due_at" type="datetime-local"><button class="btn">Record Activity</button></form></div><div class="card"><table><tr><th>Type</th><th>Subject</th><th>Related</th><th>Status</th><th>Date</th></tr>{% for x in rows %}<tr><td>{{x.activity_type}}</td><td>{{x.subject}}</td><td>{{x.related_type or ''}} {{x.related_id or ''}}</td><td>{{x.status}}</td><td>{{x.created_at}}</td></tr>{% else %}<tr><td colspan="5">No activities yet.</td></tr>{% endfor %}</table></div>''',user=current_user() or {},rows=rows)
+    rows=_sales_select(KOJA_SALES_TABLES['activities'],scope,3000)
+    return render_page('KOJA Sales Activities V2',r'''<div class="hero"><h1>Sales Activities</h1><p>Calls, meetings, follow-ups and tasks across the sales cycle.</p></div><div class="card"><form method="post"><div class="grid"><select name="activity_type"><option>note</option><option>call</option><option>meeting</option><option>email</option><option>task</option></select><input name="subject" placeholder="Subject" required><input name="description" placeholder="Description"><input name="related_type" placeholder="Related type"><input name="related_id" placeholder="Related ID"><input name="due_at" type="datetime-local"></div><button class="btn">Record Activity</button></form></div><div class="card"><table><tr><th>Type</th><th>Subject</th><th>Related</th><th>Due</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{x.activity_type}}</td><td>{{x.subject}}</td><td>{{x.related_type or ''}}</td><td>{{x.due_at or ''}}</td><td>{{x.status}}</td></tr>{% else %}<tr><td colspan="5">No activities yet.</td></tr>{% endfor %}</table></div>''',user=current_user() or {},rows=rows)
+
+@app.route('/sales/targets',methods=['GET','POST'])
+@login_required
+def sales_targets():
+    uid,org_id=_sales_scope(); org_id=org_id or _sales_org(uid); scope={'organization_id':org_id}
+    if request.method=='POST':
+        period=clean(request.form.get('period') or ''); target=_sales_num(request.form.get('target_amount'))
+        if not period or target<=0: flash('Period and target amount are required.','danger')
+        else:
+            tid=str(uuid.uuid4()); _sales_insert(KOJA_SALES_TABLES['targets'],{'id':tid,'organization_id':org_id,'owner_id':uid,'period':period,'target_amount':target,'currency':clean(request.form.get('currency') or 'ZMW'),'created_at':utc_now(),'updated_at':utc_now()}); _sales_event(org_id,uid,'sales_target_created','target',tid,{'target':target}); flash('Sales target created.','success')
+    targets=_sales_select(KOJA_SALES_TABLES['targets'],scope,1000); orders=_sales_select(KOJA_SALES_TABLES['orders'],scope,5000); won=sum(_sales_num(x.get('total')) for x in orders if x.get('status') in ('confirmed','fulfilled','paid','completed'))
+    return render_page('KOJA Sales Targets V2',r'''<div class="hero"><h1>Sales Targets</h1><p>Track commercial targets against realized sales.</p></div><div class="card"><form method="post"><div class="grid"><input name="period" placeholder="2026-09 or Q4-2026" required><input name="target_amount" type="number" step="0.01" placeholder="Target amount" required><input name="currency" value="ZMW"></div><button class="btn">Create Target</button></form></div><div class="grid"><div class="card"><h3>All-Time Realized Sales</h3><h2>{{'%.2f'|format(won)}} ZMW</h2></div><div class="card"><h3>Targets</h3><h2>{{targets|length}}</h2></div></div><div class="card"><table><tr><th>Period</th><th>Target</th><th>Realized Sales</th><th>Gap</th></tr>{% for x in targets %}<tr><td>{{x.period}}</td><td>{{x.target_amount}} {{x.currency}}</td><td>{{'%.2f'|format(won)}} {{x.currency}}</td><td>{{'%.2f'|format((x.target_amount or 0)-won)}} {{x.currency}}</td></tr>{% else %}<tr><td colspan="4">No targets yet.</td></tr>{% endfor %}</table></div>''',user=current_user() or {},targets=targets,won=won)
 
 @app.route('/api/sales/summary')
 @login_required
 def api_sales_summary():
-    uid, org_id=_sales_scope(); org_id=org_id or _sales_org(uid); scope={'organization_id':org_id}
-    leads=_sales_select(KOJA_SALES_TABLES['leads'],scope,3000); customers=_sales_select(KOJA_SALES_TABLES['customers'],scope,3000); opps=_sales_select(KOJA_SALES_TABLES['opportunities'],scope,3000); orders=_sales_select(KOJA_SALES_TABLES['orders'],scope,3000)
-    open_opps=[x for x in opps if x.get('stage') not in ('won','lost')]
-    return jsonify({'ok':True,'version':'V1','organization_id':org_id,'leads':len(leads),'customers':len(customers),'opportunities':len(opps),'open_pipeline':sum(_sales_num(x.get('expected_value')) for x in open_opps),'sales_orders':len(orders),'sales_value':sum(_sales_num(x.get('total')) for x in orders)})
+    uid,org_id=_sales_scope(); org_id=org_id or _sales_org(uid); scope={'organization_id':org_id}; leads=_sales_select(KOJA_SALES_TABLES['leads'],scope,5000); customers=_sales_select(KOJA_SALES_TABLES['customers'],scope,5000); opps=_sales_select(KOJA_SALES_TABLES['opportunities'],scope,5000); orders=_sales_select(KOJA_SALES_TABLES['orders'],scope,5000)
+    open_opps=[x for x in opps if x.get('stage') not in ('won','lost')]; pipeline=sum(_sales_num(x.get('expected_value')) for x in open_opps); weighted=sum(_sales_num(x.get('expected_value'))*_sales_num(x.get('probability'))/100 for x in open_opps); won=sum(_sales_num(x.get('total')) for x in orders if x.get('status') in ('confirmed','fulfilled','paid','completed'))
+    return jsonify({'ok':True,'version':'V2','organization_id':org_id,'leads':len(leads),'customers':len(customers),'opportunities':len(opps),'open_pipeline':round(pipeline,2),'weighted_pipeline':round(weighted,2),'won_sales':round(won,2),'orders':len(orders)})
+
+# Workforce follows Sales & CRM in the business build sequence.
 
 # ========================= KOJA WORKFORCE / HR V2 =========================
 # Additive upgrade. Preserves the existing Workforce V1 tables and routes while
