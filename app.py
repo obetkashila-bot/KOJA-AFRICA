@@ -11332,6 +11332,75 @@ def _fv2_event(uid, event_type, entity_type='', entity_id=None, data=None):
         'data':json.dumps(data or {},default=str),'created_at':utc_now()
     })
 
+# ============================================================
+# KOJA FINANCE V2 -> PLATFORM FOUNDATIONS V2 INTEGRATION
+# Additive bridge. Existing Finance records remain authoritative.
+# ============================================================
+
+def _fv2_foundation_uid():
+    return str((current_user() or {}).get('id') or '')
+
+def _fv2_foundation_org_id():
+    try:
+        return _fv2_org_id()
+    except Exception:
+        u=current_user() or {}
+        return str(u.get('organization_id') or u.get('org_id') or '') or None
+
+def _fv2_foundation_event(event_type, entity_type='', entity_id=None, payload=None):
+    uid=_fv2_foundation_uid(); org=_fv2_foundation_org_id()
+    if not uid: return None, 'not_authenticated'
+    eid=str(entity_id or uuid.uuid4())
+    key=f"finance:{event_type}:{eid}"
+    try:
+        row,err=db_insert('koja_platform_events',{
+            'event_key':key,'idempotency_key':key,'user_id':uid,
+            'organization_id':org,'service_key':'finance',
+            'event_type':clean(event_type),'entity_type':clean(entity_type),
+            'entity_id':eid,'country_code':(current_user() or {}).get('country_code') or 'ZM',
+            'payload':payload or {},'created_at':utc_now()
+        })
+        return row,err
+    except Exception as exc:
+        logger.warning('Finance platform event bridge unavailable: %s',exc)
+        return None,str(exc)
+
+def _fv2_foundation_transaction(source_type, source_id, amount, currency='ZMW', status='recorded', payment_reference=None, metadata=None):
+    uid=_fv2_foundation_uid(); org=_fv2_foundation_org_id()
+    if not uid: return None, 'not_authenticated'
+    sid=str(source_id or uuid.uuid4()); st=clean(source_type) or 'finance'
+    key=f"finance:tx:{st}:{sid}"
+    try:
+        row,err=db_insert('koja_unified_transactions',{
+            'user_id':uid,'organization_id':org,'source_type':st,'source_id':sid,
+            'amount':_fv2_num(amount),'currency':_fv2_currency(currency),
+            'status':clean(status) or 'recorded','payment_provider':None,
+            'payment_reference':clean(payment_reference) or None,
+            'idempotency_key':key,'metadata':metadata or {},
+            'created_at':utc_now(),
+            'completed_at':utc_now() if clean(status).lower() in ('completed','successful','paid','settled') else None
+        })
+        return row,err
+    except Exception as exc:
+        logger.warning('Finance platform transaction bridge unavailable: %s',exc)
+        return None,str(exc)
+
+def _fv2_foundation_revenue(source_type, source_id, amount, currency='ZMW', payment_reference=None, metadata=None):
+    uid=_fv2_foundation_uid(); org=_fv2_foundation_org_id()
+    if not uid: return None, 'not_authenticated'
+    sid=str(source_id or uuid.uuid4()); key=f"finance:revenue:{clean(source_type) or 'finance'}:{sid}"
+    try:
+        return db_insert('koja_engine_revenue',{
+            'id':str(uuid.uuid4()),'service_key':'finance','transaction_id':None,
+            'gross_amount':_fv2_num(amount),'seller_amount':_fv2_num(amount),
+            'currency':_fv2_currency(currency),'source_type':clean(source_type) or 'finance',
+            'source_id':sid,'user_id':uid,'organization_id':org,
+            'idempotency_key':key,'metadata':dict(metadata or {}, payment_reference=payment_reference)
+        })
+    except Exception as exc:
+        logger.warning('Finance revenue ledger bridge unavailable: %s',exc)
+        return None,str(exc)
+
 def _fv2_integration_summary(uid):
     out={'sales':0.0,'procurement':0.0,'inventory_cost':0.0,'payroll':0.0,'enterprise_billing':0.0,'legacy_revenue':0.0,'legacy_expenses':0.0}
     # Existing KOJA Finance V1
@@ -11410,7 +11479,9 @@ def finance_v2_journal():
                 da=clean(request.form.get('debit_account_id')); ca=clean(request.form.get('credit_account_id'))
                 _fv2_insert(KOJA_FINANCE_V2_TABLES['journal_lines'],{'id':str(uuid.uuid4()),'journal_entry_id':eid,'account_id':da,'line_type':'debit','amount':debit,'description':desc,'created_at':utc_now()})
                 _fv2_insert(KOJA_FINANCE_V2_TABLES['journal_lines'],{'id':str(uuid.uuid4()),'journal_entry_id':eid,'account_id':ca,'line_type':'credit','amount':credit,'description':desc,'created_at':utc_now()})
-                _fv2_event(uid,'journal_posted','journal_entry',eid,{'amount':debit,'description':desc})
+                _fv2_event(uid,'journal_posted','journal_entry',eid,{'amount':debit,'description':desc,'reference':ref})
+                _fv2_foundation_event('journal.posted','journal_entry',eid,{'amount':debit,'currency':clean(request.form.get('currency') or 'ZMW'),'reference':ref})
+                _fv2_foundation_transaction('journal_entry',eid,debit,clean(request.form.get('currency') or 'ZMW'),'recorded',metadata={'description':desc,'reference':ref})
             flash('Journal entry posted.' if not err else 'Could not post journal entry.','success' if not err else 'danger')
         return redirect(url_for('finance_v2_journal'))
     entries=_fv2_rows(KOJA_FINANCE_V2_TABLES['journal_entries'],{'user_id':uid},300)
@@ -11425,7 +11496,12 @@ def finance_v2_payments():
         amount=_fv2_num(request.form.get('amount')); direction=clean(request.form.get('direction') or 'inbound'); status=clean(request.form.get('status') or 'completed')
         payload={'id':str(uuid.uuid4()),'user_id':uid,'payment_number':'KPAY-'+secrets.token_hex(5).upper(),'direction':direction,'party_name':clean(request.form.get('party_name')),'amount':amount,'currency':clean(request.form.get('currency') or 'ZMW'),'method':clean(request.form.get('method') or 'mobile_money'),'status':status,'reference':clean(request.form.get('reference')),'payment_date':clean(request.form.get('payment_date')) or None,'source_type':clean(request.form.get('source_type')),'source_id':clean(request.form.get('source_id')),'created_at':utc_now(),'updated_at':utc_now()}
         _,err=_fv2_insert(KOJA_FINANCE_V2_TABLES['payments'],payload)
-        if not err: _fv2_event(uid,'payment_recorded','payment',payload['id'],{'amount':amount,'direction':direction})
+        if not err:
+            _fv2_event(uid,'payment_recorded','payment',payload['id'],{'amount':amount,'direction':direction,'reference':payload.get('reference')})
+            _fv2_foundation_event('payment.recorded','payment',payload['id'],{'amount':amount,'direction':direction,'status':status,'source_type':payload.get('source_type'),'source_id':payload.get('source_id')})
+            _fv2_foundation_transaction('finance_payment',payload['id'],amount,payload.get('currency') or 'ZMW',status,payload.get('reference'),{'direction':direction,'source_type':payload.get('source_type'),'source_id':payload.get('source_id'),'method':payload.get('method')})
+            if direction.lower() in ('inbound','in','receipt','received') and status.lower() in ('completed','paid','settled','received','successful'):
+                _fv2_foundation_revenue('finance_payment',payload['id'],amount,payload.get('currency') or 'ZMW',payload.get('reference'),{'direction':direction,'source_type':payload.get('source_type'),'source_id':payload.get('source_id')})
         flash('Payment recorded.' if not err else 'Could not record payment.','success' if not err else 'danger')
         return redirect(url_for('finance_v2_payments'))
     rows=_fv2_rows(KOJA_FINANCE_V2_TABLES['payments'],{'user_id':uid},300)
@@ -11515,13 +11591,16 @@ def finance_v2_reconciliation():
     uid=_fv2_uid(); banks=_fv2_user_rows(KOJA_FINANCE_V2_TABLES['bank_accounts'],uid)
     if request.method=='POST':
         d=request.form; statement=_fv2_num(d.get('statement_balance')); ledger=_fv2_num(d.get('ledger_balance')); diff=round(statement-ledger,2)
+        rec_id=str(uuid.uuid4())
         _,err=_fv2_insert(KOJA_FINANCE_V2_TABLES['reconciliations'],{
-            'id':str(uuid.uuid4()),'user_id':uid,'organization_id':_fv2_org_id(),
+            'id':rec_id,'user_id':uid,'organization_id':_fv2_org_id(),
             'bank_account_id':clean(d.get('bank_account_id')) or None,'period':clean(d.get('period')),
             'statement_balance':statement,'ledger_balance':ledger,'difference':diff,
             'status':'reconciled' if diff==0 else 'open','notes':clean(d.get('notes')),
             'created_at':utc_now(),'updated_at':utc_now()
         })
+        if not err:
+            _fv2_foundation_event('reconciliation.recorded','reconciliation',rec_id,{'difference':diff,'status':'reconciled' if diff==0 else 'open','period':clean(d.get('period'))})
         flash('Reconciliation saved.' if not err else 'Could not save reconciliation.','success' if not err else 'danger')
         return redirect(url_for('finance_v2_reconciliation'))
     rows=_fv2_user_rows(KOJA_FINANCE_V2_TABLES['reconciliations'],uid)
@@ -11547,7 +11626,11 @@ def finance_v2_transactions():
     uid=_fv2_uid()
     if request.method=='POST':
         d=request.form; amount=_fv2_num(d.get('amount'))
-        _,err=_fv2_post_transaction(uid,d.get('source_type'),d.get('source_id'),d.get('transaction_type') or 'general',amount,d.get('currency') or 'ZMW',d.get('status') or 'recorded',{'description':clean(d.get('description'))})
+        tx,err=_fv2_post_transaction(uid,d.get('source_type'),d.get('source_id'),d.get('transaction_type') or 'general',amount,d.get('currency') or 'ZMW',d.get('status') or 'recorded',{'description':clean(d.get('description'))})
+        if not err:
+            txid=(tx or {}).get('id') or d.get('source_id') or str(uuid.uuid4())
+            _fv2_foundation_event('transaction.recorded','finance_transaction',txid,{'source_type':clean(d.get('source_type')),'source_id':clean(d.get('source_id')),'transaction_type':clean(d.get('transaction_type') or 'general'),'amount':amount,'currency':clean(d.get('currency') or 'ZMW'),'status':clean(d.get('status') or 'recorded')})
+            _fv2_foundation_transaction(d.get('source_type') or 'finance_transaction',d.get('source_id') or txid,amount,d.get('currency') or 'ZMW',d.get('status') or 'recorded',None,{'transaction_id':txid,'transaction_type':clean(d.get('transaction_type') or 'general'),'description':clean(d.get('description'))})
         flash('Financial transaction recorded.' if not err else 'Could not record transaction.','success' if not err else 'danger')
         return redirect(url_for('finance_v2_transactions'))
     rows=_fv2_user_rows(KOJA_FINANCE_V2_TABLES['transactions'],uid,500)
@@ -11824,25 +11907,16 @@ def identity_v2():
         <form class="it-form" method="post" action="{{ url_for('api_identity_v2_verify') }}">
           <div><label>Legal name</label><input name="legal_name" required autocomplete="name"></div>
           <div><label>Country</label><input name="country" value="ZM" maxlength="2"></div>
-          <div><label>Document type</label><select name="document_type" required><option value="">Select document type</option><option value="national_id">National ID / NRC</option><option value="passport">Passport</option><option value="drivers_license">Driver's Licence</option></select></div>
+          <div><label>Document type</label><input name="document_type" placeholder="National ID / Passport"></div>
           <div><label>Document number</label><input name="document_number" type="password" autocomplete="off" required></div>
           <div class="full"><button class="it-btn" type="submit">Submit Verification</button></div>
         </form>
       </section>
 
       <section class="it-card" style="margin-top:18px">
-        <span class="it-privacy-badge">SECURITY &amp; PRIVACY</span>
-        <h2 class="it-title">How KOJA protects your identity information</h2>
-        <p class="it-note">KOJA is designed to minimize exposure of sensitive identity information. The identity service uses a document hash rather than displaying the raw document number, while verification remains pending until an authorized process changes its status.</p>
-        <div class="it-security-grid">
-          <div class="it-security-item"><h3>Document protection</h3><p>The submitted document number is transformed into a SHA-256 hash for verification records. The raw number is not shown in the Identity &amp; Trust dashboard.</p></div>
-          <div class="it-security-item"><h3>Identity verification</h3><p>Verification status is tracked separately from the account trust score. A pending verification does not automatically mean the identity is verified.</p></div>
-          <div class="it-security-item"><h3>Trusted devices</h3><p>Trusted-device signals contribute to the account trust score and can be reviewed through the Identity &amp; Trust controls.</p></div>
-          <div class="it-security-item"><h3>Security events</h3><p>High and critical audit events can reduce the trust score, providing a security signal for the account.</p></div>
-          <div class="it-security-item"><h3>Data minimization</h3><p>Only the verification information needed by this identity service is used in the verification record. The dashboard does not expose the document hash.</p></div>
-          <div class="it-security-item"><h3>Privacy boundary</h3><p>Trust scoring is a KOJA product security signal. It is not a legal identity decision and does not replace external KYC or regulatory verification.</p></div>
-        </div>
-        <div class="it-api"><a class="it-btn" href="{{ url_for('api_identity_v2_summary') }}">View Safe Identity Summary</a></div>
+        <h2 class="it-title">Security &amp; Privacy</h2>
+        <p class="it-note">KOJA does not need to display or store the raw document number. The verification service stores a SHA-256 hash for the document number and keeps the verification record pending until an authorized verification process changes its status.</p>
+        <div class="it-api"><a class="it-btn" href="{{ url_for('api_identity_v2_summary') }}">View Identity API Response</a></div>
       </section>
     </div>
     """, trust=trust, verification=verification, devices=devices, trusted_count=trusted_count,
@@ -11854,10 +11928,6 @@ def api_identity_v2_summary():
     uid = _kit2_uid()
     verification = (_kit2_rows('koja_identity_v2_verifications', {'user_id': uid}, 1) or [None])[0]
     devices = _kit2_rows('koja_identity_v2_devices', {'user_id': uid}, 100)
-    if verification:
-        verification = dict(verification)
-        verification.pop('document_hash', None)
-        verification.pop('document_number', None)
     return jsonify({'ok': True, 'user_id': uid, 'organization_id': _kit2_org_id(), 'trust': _kit2_trust(), 'verification': verification, 'devices': len(devices)})
 
 @app.route('/api/identity/v2/verify', methods=['POST'])
@@ -11869,24 +11939,16 @@ def api_identity_v2_verify():
     if not legal_name or not document_number:
         return jsonify({'ok': False, 'error': 'legal_name_and_document_number_required'}), 400
     uid = _kit2_uid()
-    document_type = (clean(data.get('document_type')) or '').lower().strip()
-    allowed_document_types = {'national_id', 'nrc', 'passport', 'drivers_license', 'driver_license'}
-    if document_type not in allowed_document_types:
-        return jsonify({'ok': False, 'error': 'valid_document_type_required', 'allowed': ['national_id', 'passport', 'drivers_license']}), 400
-    if '@' in document_type:
-        return jsonify({'ok': False, 'error': 'email_cannot_be_document_type'}), 400
-    if document_type == 'nrc': document_type = 'national_id'
-    if document_type == 'driver_license': document_type = 'drivers_license'
     row = {
         'user_id': uid, 'organization_id': _kit2_org_id(), 'legal_name': legal_name,
-        'country': (clean(data.get('country')) or 'ZM').upper()[:2],
-        'document_type': document_type,
+        'country': clean(data.get('country')) or 'ZM',
+        'document_type': clean(data.get('document_type')) or 'other',
         'document_hash': _kit2_hash(document_number), 'status': 'pending',
         'metadata': {}, 'updated_at': utc_now()
     }
     existing = _kit2_rows('koja_identity_v2_verifications', {'user_id': uid}, 1)
     if existing:
-        saved, err = db_update('koja_identity_v2_verifications', {'id': existing[0].get('id')}, row)
+        saved, err = db_update('koja_identity_v2_verifications', existing[0].get('id'), row)
     else:
         row['created_at'] = utc_now(); saved, err = db_insert('koja_identity_v2_verifications', row)
     if err: return jsonify({'ok': False, 'error': err}), 500
