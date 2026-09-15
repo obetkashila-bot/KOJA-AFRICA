@@ -11182,19 +11182,11 @@ def api_revenue_v2_verify_flutterwave():
 # KOJA INTELLIGENCE & ANALYTICS V2 — additive module
 # ================================================================
 def _ki2_uid():
-    return session.get('user_id') or session.get('uid') or (current_user or {}).get('id')
+    u = current_user() or {}; return session.get('user_id') or session.get('uid') or u.get('id')
 
 def _ki2_org_id():
-    uid=_ki2_uid()
-    try:
-        rows=db_select('koja_b2b_members', {'user_id':uid}, limit=1) or []
-        if rows and rows[0].get('organization_id'): return rows[0].get('organization_id')
-    except Exception: pass
-    try:
-        rows=db_select('koja_enterprise_workspaces', {'user_id':uid}, limit=1) or []
-        if rows and rows[0].get('organization_id'): return rows[0].get('organization_id')
-    except Exception: pass
-    return None
+    u = current_user() or {}
+    return str(u.get('organization_id') or u.get('org_id') or '') or None
 
 def _ki2_num(v):
     try: return float(v or 0)
