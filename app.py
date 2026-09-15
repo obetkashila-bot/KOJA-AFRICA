@@ -11026,6 +11026,19 @@ def _fv2_num(v):
     try: return round(float(v or 0), 2)
     except Exception: return 0.0
 
+def _fv2_currency(v):
+    return (clean(v) or 'ZMW').upper()[:8]
+
+def _fv2_org_id():
+    u=current_user() or {}
+    org=str(u.get('organization_id') or u.get('org_id') or '') or None
+    if org: return org
+    try:
+        m=first_row('koja_b2b_members',{'user_id':_fv2_uid(),'status':'active'}) if _fv2_uid() else None
+        return (m or {}).get('organization_id')
+    except Exception:
+        return None
+
 def _fv2_event(uid, event_type, entity_type='', entity_id=None, data=None):
     org_id=None
     try:
@@ -11082,7 +11095,7 @@ def _fv2_summary(uid):
 def finance_v2_dashboard():
     summary=_fv2_summary(_fv2_uid())
     return render_page('KOJA Finance V2',r'''
-<div class="hero"><h1>KOJA Finance V2</h1><p>Unified financial operating layer connecting Sales, Procurement, Supply Chain, Workforce, Enterprise and KOJA Pay.</p><div class="actions"><a class="btn" href="{{ url_for('finance_v2_accounts') }}">Chart of Accounts</a><a class="btn secondary" href="{{ url_for('finance_v2_journal') }}">Journal</a><a class="btn secondary" href="{{ url_for('finance_v2_payments') }}">Payments</a><a class="btn secondary" href="{{ url_for('finance_v2_reports') }}">Reports</a></div></div>
+<div class="hero"><h1>KOJA Finance V2</h1><p>Unified financial operating layer connecting Sales, Procurement, Supply Chain, Workforce, Enterprise and KOJA Pay.</p><div class="actions"><a class="btn" href="{{ url_for('finance_v2_accounts') }}">Chart of Accounts</a><a class="btn secondary" href="{{ url_for('finance_v2_journal') }}">Journal</a><a class="btn secondary" href="{{ url_for('finance_v2_payments') }}">Payments</a><a class="btn secondary" href="{{ url_for('finance_v2_reports') }}">Reports</a><a class="btn secondary" href="{{ url_for('finance_v2_bank_accounts') }}">Bank Accounts</a><a class="btn secondary" href="{{ url_for('finance_v2_transactions') }}">Transactions</a><a class="btn secondary" href="{{ url_for('finance_v2_tax') }}">Tax</a><a class="btn secondary" href="{{ url_for('finance_v2_reconciliation') }}">Reconciliation</a><a class="btn secondary" href="{{ url_for('finance_v2_periods') }}">Periods</a></div></div>
 <div class="grid"><div class="card"><h3>Journal Debits</h3><h2>{{ money(summary.debits,'ZMW') }}</h2></div><div class="card"><h3>Journal Credits</h3><h2>{{ money(summary.credits,'ZMW') }}</h2></div><div class="card"><h3>Cash In</h3><h2>{{ money(summary.cash_in,'ZMW') }}</h2></div><div class="card"><h3>Cash Out</h3><h2>{{ money(summary.cash_out,'ZMW') }}</h2></div><div class="card"><h3>Tax Records</h3><h2>{{ summary.tax_records }}</h2></div><div class="card"><h3>Accounts</h3><h2>{{ summary.accounts }}</h2></div></div>
 <div class="grid"><div class="card"><h2>Sales</h2><p>{{ money(summary.integrations.sales,'ZMW') }}</p></div><div class="card"><h2>Procurement</h2><p>{{ money(summary.integrations.procurement,'ZMW') }}</p></div><div class="card"><h2>Payroll</h2><p>{{ money(summary.integrations.payroll,'ZMW') }}</p></div><div class="card"><h2>Enterprise Billing</h2><p>{{ money(summary.integrations.enterprise_billing,'ZMW') }}</p></div></div>
 <div class="card"><h2>Unified Financial Chain</h2><p>Sale → Invoice → Payment → Ledger → Revenue → Procurement → Inventory Cost → Payroll → Tax → Profit → Reporting.</p><p>Finance V2 is an operating layer; existing KOJA modules remain the source systems for their own operational records.</p></div>
@@ -11147,6 +11160,117 @@ def finance_v2_budgets():
         flash('Budget created.' if not err else 'Could not create budget.','success' if not err else 'danger'); return redirect(url_for('finance_v2_budgets'))
     rows=_fv2_rows(KOJA_FINANCE_V2_TABLES['budgets'],{'user_id':uid},300)
     return render_page('KOJA Budgets',r'''<div class="hero"><h1>Budgets</h1><p>Set financial limits and planning periods.</p></div><div class="card"><form method="post"><div class="grid"><input name="name" placeholder="Budget name" required><input name="amount" type="number" min="0" step="0.01" placeholder="Budget amount" required><input name="currency" value="ZMW"><input name="period_start" type="date"><input name="period_end" type="date"></div><button class="btn">Create Budget</button></form></div><div class="card"><table><tr><th>Name</th><th>Amount</th><th>Period</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{ x.name }}</td><td>{{ money(x.amount,x.currency or 'ZMW') }}</td><td>{{ x.period_start }} → {{ x.period_end }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="4">No budgets.</td></tr>{% endfor %}</table></div>''',rows=rows,money=market_money)
+
+
+# ============================================================
+# KOJA FINANCE V2 COMPLETION LAYER
+# Exposes existing Finance V2 bank, tax, reconciliation, period
+# and transaction tables without replacing existing modules.
+# ============================================================
+
+def _fv2_date(v):
+    return clean(v) or None
+
+def _fv2_user_rows(table, uid, limit=500):
+    return _fv2_rows(table, {'user_id': uid}, limit) or []
+
+def _fv2_post_transaction(uid, source_type, source_id, transaction_type, amount, currency='ZMW', status='recorded', metadata=None):
+    amount = _fv2_num(amount)
+    if amount <= 0:
+        return None, 'amount_must_be_positive'
+    return _fv2_insert(KOJA_FINANCE_V2_TABLES['transactions'], {
+        'id': str(uuid.uuid4()), 'user_id': uid,
+        'organization_id': _fv2_org_id(), 'source_type': clean(source_type),
+        'source_id': clean(source_id), 'transaction_type': clean(transaction_type),
+        'amount': amount, 'currency': _fv2_currency(currency), 'status': clean(status) or 'recorded',
+        'occurred_at': utc_now(), 'metadata': metadata or {}, 'created_at': utc_now()
+    })
+
+@app.route('/finance/v2/bank-accounts', methods=['GET','POST'])
+@login_required
+def finance_v2_bank_accounts():
+    uid=_fv2_uid()
+    if request.method=='POST':
+        d=request.form
+        name=clean(d.get('name')); bank=clean(d.get('bank_name'))
+        if not name:
+            flash('Bank account name is required.','warning')
+        else:
+            _,err=_fv2_insert(KOJA_FINANCE_V2_TABLES['bank_accounts'],{
+                'id':str(uuid.uuid4()),'user_id':uid,'organization_id':_fv2_org_id(),
+                'name':name,'bank_name':bank,'account_number_masked':clean(d.get('account_number_masked')),
+                'currency':_fv2_currency(d.get('currency')),'opening_balance':_fv2_num(d.get('opening_balance')),
+                'status':clean(d.get('status')) or 'active','created_at':utc_now(),'updated_at':utc_now()
+            })
+            flash('Bank account added.' if not err else 'Could not add bank account.','success' if not err else 'danger')
+        return redirect(url_for('finance_v2_bank_accounts'))
+    rows=_fv2_user_rows(KOJA_FINANCE_V2_TABLES['bank_accounts'],uid)
+    return render_page('KOJA Finance Bank Accounts',r'''<div class="hero"><h1>Bank Accounts</h1><p>Manage the accounts used for cash control and reconciliation.</p></div><div class="card"><form method="post"><div class="grid"><input name="name" placeholder="Account name" required><input name="bank_name" placeholder="Bank / provider"><input name="account_number_masked" placeholder="Account number (masked)"><input name="currency" value="ZMW"><input name="opening_balance" type="number" step="0.01" value="0"><select name="status"><option>active</option><option>inactive</option></select></div><button class="btn">Add Bank Account</button></form></div><div class="card"><table><tr><th>Name</th><th>Bank</th><th>Account</th><th>Opening Balance</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{x.name}}</td><td>{{x.bank_name or ''}}</td><td>{{x.account_number_masked or ''}}</td><td>{{money(x.opening_balance,'ZMW')}}</td><td>{{x.status}}</td></tr>{% else %}<tr><td colspan="5">No bank accounts yet.</td></tr>{% endfor %}</table></div>''',rows=rows,money=market_money)
+
+@app.route('/finance/v2/tax', methods=['GET','POST'])
+@login_required
+def finance_v2_tax():
+    uid=_fv2_uid()
+    if request.method=='POST':
+        d=request.form; amount=_fv2_num(d.get('amount'))
+        if amount<=0: flash('Tax amount must be greater than zero.','warning')
+        else:
+            _,err=_fv2_insert(KOJA_FINANCE_V2_TABLES['tax_records'],{
+                'id':str(uuid.uuid4()),'user_id':uid,'organization_id':_fv2_org_id(),
+                'tax_type':clean(d.get('tax_type')) or 'VAT','period':clean(d.get('period')),
+                'direction':clean(d.get('direction')) or 'payable','amount':amount,
+                'currency':_fv2_currency(d.get('currency')),'status':clean(d.get('status')) or 'open',
+                'reference':clean(d.get('reference')),'due_date':_fv2_date(d.get('due_date')),
+                'created_at':utc_now(),'updated_at':utc_now()
+            })
+            flash('Tax record created.' if not err else 'Could not create tax record.','success' if not err else 'danger')
+        return redirect(url_for('finance_v2_tax'))
+    rows=_fv2_user_rows(KOJA_FINANCE_V2_TABLES['tax_records'],uid)
+    return render_page('KOJA Finance Tax',r'''<div class="hero"><h1>Tax Control</h1><p>Record tax obligations and recoverable tax within the Finance operating layer.</p></div><div class="card"><form method="post"><div class="grid"><input name="tax_type" value="VAT" placeholder="Tax type"><input name="period" placeholder="Period e.g. 2026-09"><select name="direction"><option>payable</option><option>recoverable</option><option>paid</option></select><input name="amount" type="number" step="0.01" min="0.01" required><input name="currency" value="ZMW"><select name="status"><option>open</option><option>paid</option><option>filed</option><option>void</option></select><input name="reference" placeholder="Reference"><input name="due_date" type="date"></div><button class="btn">Create Tax Record</button></form></div><div class="card"><table><tr><th>Type</th><th>Period</th><th>Direction</th><th>Amount</th><th>Status</th><th>Due</th></tr>{% for x in rows %}<tr><td>{{x.tax_type}}</td><td>{{x.period}}</td><td>{{x.direction}}</td><td>{{money(x.amount,x.currency or 'ZMW')}}</td><td>{{x.status}}</td><td>{{x.due_date or ''}}</td></tr>{% else %}<tr><td colspan="6">No tax records yet.</td></tr>{% endfor %}</table></div>''',rows=rows,money=market_money)
+
+@app.route('/finance/v2/reconciliation', methods=['GET','POST'])
+@login_required
+def finance_v2_reconciliation():
+    uid=_fv2_uid(); banks=_fv2_user_rows(KOJA_FINANCE_V2_TABLES['bank_accounts'],uid)
+    if request.method=='POST':
+        d=request.form; statement=_fv2_num(d.get('statement_balance')); ledger=_fv2_num(d.get('ledger_balance')); diff=round(statement-ledger,2)
+        _,err=_fv2_insert(KOJA_FINANCE_V2_TABLES['reconciliations'],{
+            'id':str(uuid.uuid4()),'user_id':uid,'organization_id':_fv2_org_id(),
+            'bank_account_id':clean(d.get('bank_account_id')) or None,'period':clean(d.get('period')),
+            'statement_balance':statement,'ledger_balance':ledger,'difference':diff,
+            'status':'reconciled' if diff==0 else 'open','notes':clean(d.get('notes')),
+            'created_at':utc_now(),'updated_at':utc_now()
+        })
+        flash('Reconciliation saved.' if not err else 'Could not save reconciliation.','success' if not err else 'danger')
+        return redirect(url_for('finance_v2_reconciliation'))
+    rows=_fv2_user_rows(KOJA_FINANCE_V2_TABLES['reconciliations'],uid)
+    return render_page('KOJA Finance Reconciliation',r'''<div class="hero"><h1>Bank Reconciliation</h1><p>Compare bank statements with the Finance ledger and identify differences.</p></div><div class="card"><form method="post"><div class="grid"><select name="bank_account_id"><option value="">Select bank account</option>{% for b in banks %}<option value="{{b.id}}">{{b.name}}{% if b.bank_name %} - {{b.bank_name}}{% endif %}</option>{% endfor %}</select><input name="period" placeholder="Period e.g. 2026-09"><input name="statement_balance" type="number" step="0.01" placeholder="Statement balance"><input name="ledger_balance" type="number" step="0.01" placeholder="Ledger balance"><input name="notes" placeholder="Notes"></div><button class="btn">Save Reconciliation</button></form></div><div class="card"><table><tr><th>Period</th><th>Statement</th><th>Ledger</th><th>Difference</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{x.period or ''}}</td><td>{{money(x.statement_balance,'ZMW')}}</td><td>{{money(x.ledger_balance,'ZMW')}}</td><td>{{money(x.difference,'ZMW')}}</td><td>{{x.status}}</td></tr>{% else %}<tr><td colspan="5">No reconciliation records yet.</td></tr>{% endfor %}</table></div>''',rows=rows,banks=banks,money=market_money)
+
+@app.route('/finance/v2/periods', methods=['GET','POST'])
+@login_required
+def finance_v2_periods():
+    uid=_fv2_uid()
+    if request.method=='POST':
+        d=request.form; start=_fv2_date(d.get('start_date')); end=_fv2_date(d.get('end_date')); code=clean(d.get('period_code'))
+        if not code or not start or not end: flash('Period code, start date and end date are required.','warning')
+        else:
+            _,err=_fv2_insert(KOJA_FINANCE_V2_TABLES['periods'],{'id':str(uuid.uuid4()),'user_id':uid,'organization_id':_fv2_org_id(),'period_code':code,'start_date':start,'end_date':end,'status':'open','created_at':utc_now()})
+            flash('Financial period created.' if not err else 'Could not create financial period.','success' if not err else 'danger')
+        return redirect(url_for('finance_v2_periods'))
+    rows=_fv2_user_rows(KOJA_FINANCE_V2_TABLES['periods'],uid)
+    return render_page('KOJA Finance Periods',r'''<div class="hero"><h1>Financial Periods</h1><p>Define accounting periods used for reporting and future close controls.</p></div><div class="card"><form method="post"><div class="grid"><input name="period_code" placeholder="Period code e.g. 2026-09" required><input name="start_date" type="date" required><input name="end_date" type="date" required></div><button class="btn">Open Financial Period</button></form></div><div class="card"><table><tr><th>Period</th><th>Start</th><th>End</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{x.period_code}}</td><td>{{x.start_date}}</td><td>{{x.end_date}}</td><td>{{x.status}}</td></tr>{% else %}<tr><td colspan="4">No financial periods yet.</td></tr>{% endfor %}</table></div>''',rows=rows)
+
+@app.route('/finance/v2/transactions', methods=['GET','POST'])
+@login_required
+def finance_v2_transactions():
+    uid=_fv2_uid()
+    if request.method=='POST':
+        d=request.form; amount=_fv2_num(d.get('amount'))
+        _,err=_fv2_post_transaction(uid,d.get('source_type'),d.get('source_id'),d.get('transaction_type') or 'general',amount,d.get('currency') or 'ZMW',d.get('status') or 'recorded',{'description':clean(d.get('description'))})
+        flash('Financial transaction recorded.' if not err else 'Could not record transaction.','success' if not err else 'danger')
+        return redirect(url_for('finance_v2_transactions'))
+    rows=_fv2_user_rows(KOJA_FINANCE_V2_TABLES['transactions'],uid,500)
+    return render_page('KOJA Finance Transactions',r'''<div class="hero"><h1>Financial Transactions</h1><p>Unified source-linked financial transaction register for connected KOJA modules.</p></div><div class="card"><form method="post"><div class="grid"><input name="source_type" placeholder="Source e.g. sales_order"><input name="source_id" placeholder="Source ID"><input name="transaction_type" value="general" placeholder="Transaction type"><input name="amount" type="number" step="0.01" min="0.01" required><input name="currency" value="ZMW"><select name="status"><option>recorded</option><option>pending</option><option>settled</option><option>void</option></select><input name="description" placeholder="Description"></div><button class="btn">Record Transaction</button></form></div><div class="card"><table><tr><th>Date</th><th>Source</th><th>Type</th><th>Amount</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{x.occurred_at or x.created_at}}</td><td>{{x.source_type or ''}}{% if x.source_id %} / {{x.source_id}}{% endif %}</td><td>{{x.transaction_type}}</td><td>{{money(x.amount,x.currency or 'ZMW')}}</td><td>{{x.status}}</td></tr>{% else %}<tr><td colspan="5">No transactions yet.</td></tr>{% endfor %}</table></div>''',rows=rows,money=market_money)
 
 @app.route('/finance/v2/reports')
 @login_required
