@@ -819,49 +819,29 @@ BASE_HTML = r"""
 </script>
 <style>
 *{box-sizing:border-box}
-:root{color-scheme:light;--bg:#f5f7fb;--surface:#fff;--text:#172033;--muted:#667085;--border:#e4e7ec;--nav:#10233f;--accent:#176b87;--focus:#f2b84b}
-html[data-koja-theme="dark"]{color-scheme:dark;--bg:#0f1720;--surface:#17212b;--text:#edf2f7;--muted:#aab7c4;--border:#30404f;--nav:#091522;--accent:#2aa7b8;--focus:#f2c15b}
-@media(prefers-color-scheme:dark){html[data-koja-theme="system"]{color-scheme:dark;--bg:#0f1720;--surface:#17212b;--text:#edf2f7;--muted:#aab7c4;--border:#30404f;--nav:#091522;--accent:#2aa7b8;--focus:#f2c15b}}
-body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);line-height:1.55}
-
-nav{background:#10233f;color:#fff;padding:10px 15px;position:sticky;top:0;z-index:1000;box-shadow:0 4px 18px rgba(0,0,0,.12)}
-.nav-inner{max-width:1250px;margin:auto;display:flex;align-items:center;gap:7px}
-.brand{font-weight:800;font-size:19px;margin-right:auto;display:flex;align-items:center;gap:8px;letter-spacing:.2px}.brand-mark{width:32px;height:32px;border-radius:9px;display:inline-grid;place-items:center;background:linear-gradient(135deg,#19a7b8,#f2b84b);box-shadow:0 5px 18px rgba(0,0,0,.22);animation:logoFloat 4s ease-in-out infinite}.brand-mark svg{width:22px;height:22px}.brand-name{white-space:nowrap}
-.menu-toggle{display:none;width:auto;margin:0;padding:8px 12px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);color:#fff;border-radius:9px;font-weight:700;cursor:pointer}
-.menu-toggle:hover{background:rgba(255,255,255,.18);transform:none}
-.nav-links{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
-nav a{color:#fff;text-decoration:none;padding:8px 9px;border-radius:7px;transition:background .2s ease,transform .2s ease}
-nav a:hover{background:rgba(255,255,255,.12);transform:translateY(-1px)}
-.notification-bell{position:relative}.notif-badge{display:inline-flex;min-width:18px;height:18px;padding:0 5px;align-items:center;justify-content:center;border-radius:99px;background:#e11d48;color:#fff;font-size:11px;font-weight:800;margin-left:4px}.notification-row{display:flex;gap:12px;padding:15px;border-bottom:1px solid var(--border);cursor:pointer}.notification-row.unread{background:rgba(23,107,135,.07)}.notification-dot{width:9px;height:9px;border-radius:50%;background:var(--accent);margin-top:7px;flex:none}.notification-row:not(.unread) .notification-dot{background:transparent}#np label{display:block;padding:12px 0;border-bottom:1px solid var(--border)}
-.menu-group{position:relative}.menu-group>button{width:auto;margin:0;padding:8px 10px;background:rgba(255,255,255,.08);color:#fff;border:0;border-radius:7px;cursor:pointer;font:inherit}.menu-group>button:hover{background:rgba(255,255,255,.15);transform:none}
-.dropdown{display:none;position:absolute;right:0;top:calc(100% + 7px);min-width:210px;background:var(--surface);border-radius:11px;padding:7px;box-shadow:0 12px 35px rgba(0,0,0,.2);border:1px solid #e5e7eb}
-.dropdown.open{display:block;animation:menuDrop .18s ease both}.dropdown a{display:block;color:var(--text)!important;padding:10px 11px;white-space:nowrap}.dropdown a:hover{background:#eef5f8;transform:none}
-@keyframes menuDrop{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:translateY(0)}}
-.container{width:min(1250px,calc(100% - 24px));margin:20px auto 50px}
-.card{background:var(--surface);border-radius:13px;padding:18px;margin-bottom:16px;box-shadow:0 3px 14px rgba(0,0,0,.06);animation:fadeUp .45s ease both}.card:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.09);transition:transform .2s ease,box-shadow .2s ease}
-.hero{background:linear-gradient(135deg,#10233f,#176b87);color:#fff;padding:28px 20px;border-radius:15px;margin-bottom:18px}
-h1,h2,h3{margin-top:0}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:15px}
-input,select,textarea,button{width:100%;padding:11px 12px;margin-top:6px;margin-bottom:12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font:inherit}
-textarea{min-height:150px;line-height:1.55;resize:vertical} textarea[name="prompt"]{min-height:190px;padding:16px;border-radius:16px;font-size:1rem} textarea[name="q"]{min-height:90px;resize:vertical}
-button,.btn{display:inline-block;background:#176b87;color:#fff;border:0;text-decoration:none;cursor:pointer;padding:10px 14px;border-radius:8px;transition:transform .2s ease,box-shadow .2s ease,filter .2s ease}button:hover,.btn:hover{transform:translateY(-2px);box-shadow:0 7px 18px rgba(0,0,0,.12);filter:brightness(1.04)}button:active,.btn:active{transform:translateY(0)}
-.btn.secondary{background:#5f6b7a}.btn.success{background:#177245}.btn.danger{background:#a62d2d}.btn.warning{background:#9b6b00}
-table{width:100%;border-collapse:collapse}
-th,td{border-bottom:1px solid var(--border);padding:9px;text-align:left;vertical-align:top}
-.alert{padding:12px;border-radius:8px;margin-bottom:10px;background:#eaf2ff}
-.stat{padding:18px;background:var(--surface);border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,.05)}
-.big{font-size:28px;font-weight:800}
-.small{color:var(--muted);font-size:13px}.badge{display:inline-block;padding:4px 8px;border-radius:20px;background:#e7eef5;font-size:12px}
-#map{height:430px;border-radius:12px;overflow:hidden}
-.map-small{height:300px!important}
-.driver-card{border:2px solid #e4e7ec}
-.driver-card.selected{border-color:#176b87}
-.online{color:#177245;font-weight:700}
-.offline{color:#a62d2d;font-weight:700}
-footer{text-align:center;color:var(--muted);padding:30px}
-.actions{display:flex;gap:8px;flex-wrap:wrap}.actions .btn,.actions button{width:auto}
-@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}@keyframes logoFloat{0%,100%{transform:translateY(0) rotate(0deg)}50%{transform:translateY(-2px) rotate(1deg)}}@keyframes pulseSoft{0%,100%{box-shadow:0 0 0 0 rgba(25,167,184,.18)}50%{box-shadow:0 0 0 7px rgba(25,167,184,0)}}:focus-visible{outline:3px solid var(--focus);outline-offset:2px}.hero{animation:fadeUp .55s ease both}.stat{animation:fadeUp .5s ease both}.online{animation:pulseSoft 2.4s ease-in-out infinite}@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition:none!important;transform:none!important}}
-@media(max-width:760px){nav{padding:9px 12px}.nav-inner{position:relative;flex-wrap:wrap}.menu-toggle{display:block}.nav-links{display:none;width:100%;flex-direction:column;align-items:stretch;gap:3px;padding-top:8px}.nav-links.open{display:flex;animation:fadeUp .2s ease both}.nav-links>a{font-size:14px;padding:11px 12px;background:rgba(255,255,255,.05)}.menu-group{width:100%}.menu-group>button{width:100%;text-align:left;padding:11px 12px}.dropdown{position:static;width:100%;box-shadow:none;margin-top:4px;background:var(--surface)}.dropdown a{font-size:14px}.container{width:min(100% - 14px,1250px)}table{display:block;overflow-x:auto}#map{height:350px}.actions .btn,.actions button{width:100%}}
+:root{color-scheme:light;--bg:#f4f7fb;--surface:#fff;--surface2:#eef3f8;--text:#122033;--muted:#66758a;--border:#dce4ee;--nav:#071a33;--nav2:#0d2b50;--accent:#1268a8;--accent2:#e32936;--focus:#f5b83d;--shadow:0 8px 28px rgba(8,30,58,.08)}
+html[data-koja-theme="dark"]{color-scheme:dark;--bg:#0b111b;--surface:#121c29;--surface2:#172536;--text:#edf4fb;--muted:#a9b7c7;--border:#29394c;--nav:#050d18;--nav2:#0b1d34;--accent:#42a5e8;--accent2:#ff5660;--focus:#f6c45c;--shadow:0 10px 30px rgba(0,0,0,.28)}
+@media(prefers-color-scheme:dark){html[data-koja-theme="system"]{color-scheme:dark;--bg:#0b111b;--surface:#121c29;--surface2:#172536;--text:#edf4fb;--muted:#a9b7c7;--border:#29394c;--nav:#050d18;--nav2:#0b1d34;--accent:#42a5e8;--accent2:#ff5660;--focus:#f6c45c;--shadow:0 10px 30px rgba(0,0,0,.28)}}
+body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);line-height:1.55}
+a{color:var(--accent)}
+nav{background:linear-gradient(135deg,var(--nav),var(--nav2));color:#fff;padding:10px 16px;position:sticky;top:0;z-index:1000;box-shadow:0 5px 22px rgba(0,0,0,.18)}
+.nav-inner{max-width:1320px;margin:auto;display:flex;align-items:center;gap:10px;min-height:48px}
+.brand{font-weight:900;font-size:18px;margin-right:auto;display:flex;align-items:center;gap:10px;letter-spacing:.25px}.brand-mark{width:36px;height:36px;border-radius:10px;display:inline-grid;place-items:center;background:linear-gradient(135deg,#1689cf,#e32936);box-shadow:0 5px 18px rgba(0,0,0,.25)}.brand-mark svg{width:24px;height:24px}.brand-name{white-space:nowrap}
+.menu-toggle{display:none;width:auto;margin:0;padding:9px 12px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.2);color:#fff;border-radius:9px;font-weight:800;cursor:pointer}
+.menu-toggle:hover{background:rgba(255,255,255,.16);transform:none}
+.nav-links{display:flex;align-items:center;gap:4px;flex-wrap:wrap}.nav-links>a,nav a{color:#fff;text-decoration:none;padding:9px 10px;border-radius:8px;transition:background .2s ease,transform .2s ease}.nav-links>a:hover,nav a:hover{background:rgba(255,255,255,.1);transform:translateY(-1px)}
+.notification-bell{position:relative}.notif-badge{display:inline-flex;min-width:18px;height:18px;padding:0 5px;align-items:center;justify-content:center;border-radius:99px;background:var(--accent2);color:#fff;font-size:11px;font-weight:800;margin-left:4px}
+.menu-group{position:relative}.menu-group>button{width:auto;margin:0;padding:9px 11px;background:rgba(255,255,255,.08);color:#fff;border:0;border-radius:8px;cursor:pointer;font:inherit}.menu-group>button:hover{background:rgba(255,255,255,.15);transform:none}
+.dropdown{display:none;position:absolute;right:0;top:calc(100% + 7px);min-width:245px;max-height:75vh;overflow:auto;background:var(--surface);border-radius:12px;padding:7px;box-shadow:0 15px 40px rgba(0,0,0,.22);border:1px solid var(--border)}.dropdown.open{display:block}.dropdown a{display:block;color:var(--text)!important;padding:10px 11px;white-space:nowrap}.dropdown a:hover{background:var(--surface2);transform:none}
+.container{width:min(1320px,calc(100% - 28px));margin:24px auto 60px}.card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:20px;margin-bottom:16px;box-shadow:var(--shadow)}.card:hover{transform:translateY(-1px);transition:.2s ease}.hero{background:linear-gradient(135deg,#071a33 0%,#0d4778 65%,#1268a8 100%);color:#fff;padding:34px 24px;border-radius:20px;margin-bottom:20px;position:relative;overflow:hidden}.hero:after{content:"";position:absolute;right:-70px;top:-90px;width:250px;height:250px;border:42px solid rgba(255,255,255,.06);border-radius:50%}.hero>*{position:relative;z-index:1}
+h1,h2,h3{margin-top:0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px}.stat{padding:20px;background:var(--surface);border:1px solid var(--border);border-radius:15px;box-shadow:var(--shadow)}.big{font-size:30px;font-weight:900}.small{color:var(--muted);font-size:13px}.badge{display:inline-block;padding:4px 8px;border-radius:20px;background:var(--surface2);font-size:12px}
+input,select,textarea,button{width:100%;padding:11px 12px;margin-top:6px;margin-bottom:12px;border-radius:9px;border:1px solid var(--border);background:var(--surface);color:var(--text);font:inherit}textarea{min-height:150px;line-height:1.55}textarea[name="prompt"]{min-height:190px;padding:16px;border-radius:16px;font-size:1rem}
+button,.btn{display:inline-block;background:var(--accent);color:#fff;border:0;text-decoration:none;cursor:pointer;padding:10px 15px;border-radius:9px;transition:transform .2s ease,box-shadow .2s ease,filter .2s ease}button:hover,.btn:hover{transform:translateY(-2px);box-shadow:0 7px 18px rgba(0,0,0,.12);filter:brightness(1.04)}.btn.secondary{background:#58677a}.btn.success{background:#177245}.btn.danger{background:#b42318}.btn.warning{background:#9b6b00}.actions{display:flex;gap:9px;flex-wrap:wrap}.actions .btn,.actions button{width:auto}
+.koja-section{margin:26px 0}.koja-section-head{display:flex;align-items:end;justify-content:space-between;gap:12px;margin-bottom:12px}.koja-section-head h2,.koja-section-head h3{margin-bottom:0}.service-card{display:block;color:var(--text);text-decoration:none;background:var(--surface);border:1px solid var(--border);border-radius:15px;padding:18px;box-shadow:var(--shadow)}.service-card:hover{border-color:var(--accent);transform:translateY(-2px)}.service-kicker{font-size:11px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}.service-card h3{margin:7px 0 5px}.service-card p{margin:0;color:var(--muted);font-size:14px}
+.quick-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.quick{padding:15px;border-radius:13px;background:var(--surface2);border:1px solid var(--border);text-decoration:none;color:var(--text)}.quick strong{display:block}.quick span{font-size:12px;color:var(--muted)}
+table{width:100%;border-collapse:collapse}th,td{border-bottom:1px solid var(--border);padding:9px;text-align:left;vertical-align:top}.alert{padding:12px;border-radius:9px;margin-bottom:10px;background:#eaf2ff;color:#18324d}#map{height:430px;border-radius:12px;overflow:hidden}.map-small{height:300px!important}.driver-card{border:2px solid var(--border)}.driver-card.selected{border-color:var(--accent)}.online{color:#177245;font-weight:700}.offline{color:#b42318;font-weight:700}footer{text-align:center;color:var(--muted);padding:34px 20px;border-top:1px solid var(--border);background:var(--surface)}
+@media(max-width:900px){.quick-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:760px){nav{padding:9px 12px}.nav-inner{position:relative;flex-wrap:wrap}.menu-toggle{display:block}.nav-links{display:none;width:100%;flex-direction:column;align-items:stretch;gap:3px;padding-top:9px}.nav-links.open{display:flex}.nav-links>a{font-size:14px;padding:12px;background:rgba(255,255,255,.05)}.menu-group{width:100%}.menu-group>button{width:100%;text-align:left;padding:12px}.dropdown{position:static;width:100%;box-shadow:none;margin-top:4px}.dropdown a{font-size:14px}.container{width:min(100% - 14px,1320px)}table{display:block;overflow-x:auto}#map{height:350px}.actions .btn,.actions button{width:100%}.quick-grid{grid-template-columns:1fr 1fr}.hero{padding:28px 18px;border-radius:16px}}
 @media(min-width:761px){.nav-links{display:flex!important}}
 </style>
 </head>
@@ -869,44 +849,20 @@ footer{text-align:center;color:var(--muted);padding:30px}
 <nav aria-label="Primary navigation">
 <div class="nav-inner">
 <div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 18V6h7.2a5.3 5.3 0 0 1 0 10.6H8.5" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 9.1h3.4a1.9 1.9 0 0 1 0 3.8H8.5" stroke="white" stroke-width="2.2" stroke-linecap="round"/></svg></span><span class="brand-name">KOJA AFRICA</span></div>
-<button class="menu-toggle" id="menuToggle" type="button" aria-expanded="false" aria-controls="navLinks" aria-label="Open menu"> Menu</button>
+<button class="menu-toggle" id="menuToggle" type="button" aria-expanded="false" aria-controls="navLinks">Menu</button>
 <div class="nav-links" id="navLinks">
 <a href="{{ url_for('home') }}">Home</a>
 {% if user %}
 <a href="{{ url_for('dashboard') }}">Dashboard</a>
+<a href="{{ url_for('ai_nextgen') }}">KOJA AI</a>
 <a href="{{ url_for('services') }}">Services</a>
 <a href="{{ url_for('research') }}">Research</a>
-<a href="{{ url_for('ai_nextgen') }}">KOJA AI</a>
-<a class="notification-bell" href="{{ url_for('notifications_page') }}" aria-label="Notifications">Notifications <span id="kojaNotifBadge" class="notif-badge" hidden></span></a>
-<a href="{{ '/market' }}">KOJA Market</a> <a href="{{ url_for('market_live') }}">Live Shop</a>
-<a href="{{ url_for('communication_nextgen') }}">Connect+</a>
-<div class="menu-group">
-<button type="button" id="moreMenuButton" aria-expanded="false" aria-haspopup="true">More ▾</button>
-<div class="dropdown" id="moreMenu" role="menu">
-<a role="menuitem" href="{{ url_for('questions') }}">Questions</a>
-<a role="menuitem" href="{{ url_for('assignments') }}">Assignments</a>
-<a role="menuitem" href="{{ url_for('public_feed') }}">Public</a>
-<a role="menuitem" href="{{ url_for('news_nextgen') }}">News</a>
-<a role="menuitem" href="{{ url_for('media_nextgen') }}">Media</a>
-<a role="menuitem" href="{{ url_for('public_videos') }}">Videos</a>
-<a role="menuitem" href="{{ url_for('marketplace') }}">Digital Marketplace</a>
-<a role="menuitem" href="{{ url_for('connect') }}">Communication</a>
-<a role="menuitem" href="{{ url_for('professional_communication') }}">Professional Communication</a>
-<a role="menuitem" href="{{ url_for('deliveries') }}">Deliveries</a>
-<a role="menuitem" href="{{ url_for('drivers') }}">Drivers</a>
-<a role="menuitem" href="{{ url_for('koja_cloud_page') }}">KOJA Cloud</a>
-<a role="menuitem" href="{{ url_for('settings') }}">Settings</a>
-{% if user.role in ['driver','admin'] or user.is_admin %}<a role="menuitem" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}
-{% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('admin') }}">Admin</a><a role="menuitem" href="{{ url_for('admin_market') }}">KOJA Market Admin</a><a role="menuitem" href="{{ url_for('admin_marketplace') }}">Digital Marketplace Admin</a>{% endif %}
-<a role="menuitem" href="{{ url_for('logout') }}">Logout</a>
+<a class="notification-bell" href="{{ url_for('notifications_page') }}">Notifications <span id="kojaNotifBadge" class="notif-badge" hidden></span></a>
+<div class="menu-group"><button type="button" id="moreMenuButton" aria-expanded="false">Explore ▾</button><div class="dropdown" id="moreMenu" role="menu">
+<a href="{{ url_for('questions') }}">Questions</a><a href="{{ url_for('assignments') }}">Assignments</a><a href="{{ url_for('documents') }}">Documents</a><a href="{{ url_for('public_feed') }}">Public</a><a href="{{ url_for('news_nextgen') }}">News</a><a href="{{ url_for('media_nextgen') }}">Media</a><a href="{{ url_for('marketplace') }}">Digital Marketplace</a><a href="{{ url_for('koja_market') }}">KOJA Market</a><a href="{{ url_for('deliveries') }}">Delivery</a><a href="{{ url_for('tracking') }}">Live GPS</a><a href="{{ url_for('connect') }}">Communication</a><a href="{{ url_for('professional_communication') }}">Professional Communication</a><a href="{{ url_for('koja_cloud_page') }}">KOJA Cloud</a><a href="{{ url_for('settings') }}">Settings</a>{% if user.role in ['driver','admin'] or user.is_admin %}<a href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}{% if user.is_admin %}<a href="{{ url_for('admin') }}">Admin</a>{% endif %}<a href="{{ url_for('logout') }}">Logout</a>
 </div></div>
-{% else %}
-<a href="{{ url_for('login') }}">Login</a>
-<a href="{{ url_for('register') }}">Register</a>
-{% endif %}
-</div>
-</div>
-</nav>
+{% else %}<a href="{{ url_for('login') }}">Login</a><a href="{{ url_for('register') }}">Create Account</a>{% endif %}
+</div></div></nav>
 <script>
 (function(){
  const toggle=document.getElementById('menuToggle'), links=document.getElementById('navLinks'), more=document.getElementById('moreMenuButton'), drop=document.getElementById('moreMenu');
@@ -1039,29 +995,18 @@ async function activateEngine(engine,button){const box=document.getElementById('
 @app.route("/")
 def home():
     return render_page("KOJA AFRICA", r"""
-<div class="hero">
-<h1>KOJA AFRICA</h1>
-<p>Knowledge • Questions • Answers</p>
-<p>Research, academic questions, assignments, professional services, documents and delivery services.</p>
-{% if not user %}
-<div class="actions">
-<a class="btn" href="{{ url_for('register') }}">Create Account</a>
-<a class="btn secondary" href="{{ url_for('login') }}">Login</a>
-</div>
-{% endif %}
-</div>
-<div class="grid">
-<div class="card"><h3>Academic</h3><p>Questions, assignments and learning resources.</p><a class="btn" href="{{ url_for('questions') }}">Questions</a></div>
-<div class="card"><h3>CV</h3><p>Create a professional CV.</p><a class="btn" href="{{ url_for('cv') }}">Create CV</a></div>
-<div class="card"><h3>Doctors</h3><p>Find a doctor and request an appointment.</p><a class="btn" href="{{ url_for('doctors') }}">Doctors</a></div>
-<div class="card"><h3>Teachers</h3><p>Find teachers/tutors by subject and grade.</p><a class="btn" href="{{ url_for('teachers') }}">Teachers</a></div>
-<div class="card"><h3>Deliveries</h3><p>Find nearby drivers and send delivery requests.</p><a class="btn" href="{{ url_for('deliveries') }}">Delivery</a></div>
-<div class="card"><h3>Live GPS</h3><p>Drivers can share their live location.</p><a class="btn" href="{{ url_for('tracking') }}">Driver GPS</a></div>
-<div class="card"><h3> KOJA AI</h3><p>Ask KOJA AI for explanations, planning and practical help.</p><a class="btn" href="{{ url_for('ai_assistant') }}">Open KOJA AI</a></div>
-<div class="card"><h3> Documents</h3><p>Browse and upload KOJA learning and research documents.</p><a class="btn" href="{{ url_for('documents') }}">Open Documents</a></div>
-<div class="card"><h3>KOJA Market</h3><p>Buy and sell physical and digital products and services across Africa.</p><div class="actions"><a class="btn" href="{{ url_for('koja_market') }}">Open KOJA Market</a><a class="btn secondary" href="{{ url_for('market_seller_register') }}">Become a Seller</a></div></div>
-<div class="card"><h3>Digital Marketplace</h3><p>Discover digital learning and business resources.</p><a class="btn" href="{{ url_for('marketplace') }}">Open Digital Marketplace</a></div>
-</div>
+<div class="hero"><div class="service-kicker" style="color:#8ed4ff">KNOWLEDGE • QUESTIONS • ANSWERS</div><h1>KOJA AFRICA</h1><p>One connected platform for Africa to learn, work, research, communicate, trade and grow.</p><div class="actions">{% if not user %}<a class="btn" href="{{ url_for('register') }}">Create Account</a><a class="btn secondary" href="{{ url_for('login') }}">Login</a>{% else %}<a class="btn" href="{{ url_for('dashboard') }}">Open Dashboard</a><a class="btn secondary" href="{{ url_for('ai_nextgen') }}">Open KOJA AI</a>{% endif %}</div></div>
+<div class="koja-section"><div class="koja-section-head"><h2>Explore KOJA</h2><span class="small">Connected services</span></div><div class="grid">
+<a class="service-card" href="{{ url_for('ai_nextgen') }}"><div class="service-kicker">Intelligence</div><h3>KOJA AI</h3><p>Ask questions, analyse information, create and plan.</p></a>
+<a class="service-card" href="{{ url_for('research') }}"><div class="service-kicker">Knowledge</div><h3>Research</h3><p>Web, academic and KOJA document research with citations.</p></a>
+<a class="service-card" href="{{ url_for('questions') }}"><div class="service-kicker">Education</div><h3>Questions & Assignments</h3><p>Academic questions, assignments and learning resources.</p></a>
+<a class="service-card" href="{{ url_for('documents') }}"><div class="service-kicker">Documents</div><h3>Documents</h3><p>Access KOJA learning and research documents.</p></a>
+<a class="service-card" href="{{ url_for('koja_market') }}"><div class="service-kicker">Commerce</div><h3>KOJA Market</h3><p>Buy and sell physical and digital products and services.</p></a>
+<a class="service-card" href="{{ url_for('marketplace') }}"><div class="service-kicker">Digital Commerce</div><h3>Digital Marketplace</h3><p>Discover digital learning and business resources.</p></a>
+<a class="service-card" href="{{ url_for('doctors') }}"><div class="service-kicker">Professional</div><h3>Doctors</h3><p>Find doctors and request appointments.</p></a>
+<a class="service-card" href="{{ url_for('teachers') }}"><div class="service-kicker">Professional</div><h3>Teachers</h3><p>Find teachers and tutors by subject and grade.</p></a>
+<a class="service-card" href="{{ url_for('deliveries') }}"><div class="service-kicker">Logistics</div><h3>Delivery & Live GPS</h3><p>Find drivers and follow delivery movement.</p></a>
+</div></div>
 """)
 
 @app.route("/service-worker.js")
@@ -1240,21 +1185,23 @@ def dashboard():
     deliveries_count = len(db_select("deliveries",filters={"customer_id":user["id"]},limit=1000))
     appointments_count = len(db_select("appointments",filters={"client_id":user["id"]},limit=1000))
     return render_page("Dashboard", r"""
-<div class="hero"><h2>Welcome, {{ user.name }}</h2><p>{{ user.email }}</p></div>
-<div class="grid">
-<div class="stat"><div class="big">{{ questions_count }}</div>Academic Questions</div>
-<div class="stat"><div class="big">{{ deliveries_count }}</div>Deliveries</div>
-<div class="stat"><div class="big">{{ appointments_count }}</div>Appointments</div>
-<div class="stat"><div class="big">{{ "ADMIN" if user.is_admin else user.role|upper }}</div>Account</div>
+<div class="hero"><div class="service-kicker" style="color:#8ed4ff">KOJA AFRICA</div><h1>Welcome, {{ user.name }}</h1><p>{{ user.email }}</p><p>One platform for knowledge, business, research, commerce and services.</p></div>
+<div class="quick-grid">
+<a class="quick" href="{{ url_for('ai_nextgen') }}"><strong>KOJA AI</strong><span>Ask, analyse and create</span></a>
+<a class="quick" href="{{ url_for('research') }}"><strong>Research</strong><span>Evidence and citations</span></a>
+<a class="quick" href="{{ url_for('koja_market') }}"><strong>KOJA Market</strong><span>Buy and sell</span></a>
+<a class="quick" href="{{ url_for('deliveries') }}"><strong>Delivery</strong><span>Track and move</span></a>
 </div>
-<div class="card"><h3>KOJA Services</h3>
-<div class="grid">
-<a class="btn" href="{{ url_for('cv') }}">Create CV</a>
-<a class="btn" href="{{ url_for('doctors') }}">Doctor Booking</a>
-<a class="btn" href="{{ url_for('teachers') }}">Teacher Booking</a>
-<a class="btn" href="{{ url_for('deliveries') }}">Find Driver / Delivery</a>
-{% if user.role in ['driver','admin'] or user.is_admin %}<a class="btn" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}
+<div class="koja-section"><div class="koja-section-head"><h2>Your activity</h2><span class="small">KOJA overview</span></div><div class="grid"><div class="stat"><div class="big">{{ questions_count }}</div><div class="small">Academic Questions</div></div><div class="stat"><div class="big">{{ deliveries_count }}</div><div class="small">Deliveries</div></div><div class="stat"><div class="big">{{ appointments_count }}</div><div class="small">Appointments</div></div><div class="stat"><div class="big">{{ "ADMIN" if user.is_admin else user.role|upper }}</div><div class="small">Account</div></div></div></div>
+<div class="koja-section"><div class="koja-section-head"><h2>KOJA Services</h2><a href="{{ url_for('services') }}">View all</a></div><div class="grid">
+<a class="service-card" href="{{ url_for('questions') }}"><div class="service-kicker">Learning</div><h3>Questions & Assignments</h3><p>Academic questions, assignments and learning support.</p></a>
+<a class="service-card" href="{{ url_for('documents') }}"><div class="service-kicker">Intelligence</div><h3>Documents & AI</h3><p>Work with documents and use KOJA intelligence.</p></a>
+<a class="service-card" href="{{ url_for('cv') }}"><div class="service-kicker">Professional</div><h3>Professional Services</h3><p>CVs, doctors, teachers and professional support.</p></a>
+<a class="service-card" href="{{ url_for('koja_market') }}"><div class="service-kicker">Commerce</div><h3>KOJA Market</h3><p>Physical and digital commerce across Africa.</p></a>
+<a class="service-card" href="{{ url_for('deliveries') }}"><div class="service-kicker">Logistics</div><h3>Delivery & Live GPS</h3><p>Drivers, delivery requests and live tracking.</p></a>
+<a class="service-card" href="{{ url_for('connect') }}"><div class="service-kicker">Communication</div><h3>Connect+</h3><p>Communication and professional collaboration.</p></a>
 </div></div>
+{% if user.role in ['driver','admin'] or user.is_admin %}<div class="card"><h3>Driver tools</h3><a class="btn" href="{{ url_for('driver_dashboard') }}">Open Driver Dashboard</a></div>{% endif %}
 """,questions_count=questions_count,deliveries_count=deliveries_count,appointments_count=appointments_count)
 
 # ============================================================
@@ -11332,75 +11279,6 @@ def _fv2_event(uid, event_type, entity_type='', entity_id=None, data=None):
         'data':json.dumps(data or {},default=str),'created_at':utc_now()
     })
 
-# ============================================================
-# KOJA FINANCE V2 -> PLATFORM FOUNDATIONS V2 INTEGRATION
-# Additive bridge. Existing Finance records remain authoritative.
-# ============================================================
-
-def _fv2_foundation_uid():
-    return str((current_user() or {}).get('id') or '')
-
-def _fv2_foundation_org_id():
-    try:
-        return _fv2_org_id()
-    except Exception:
-        u=current_user() or {}
-        return str(u.get('organization_id') or u.get('org_id') or '') or None
-
-def _fv2_foundation_event(event_type, entity_type='', entity_id=None, payload=None):
-    uid=_fv2_foundation_uid(); org=_fv2_foundation_org_id()
-    if not uid: return None, 'not_authenticated'
-    eid=str(entity_id or uuid.uuid4())
-    key=f"finance:{event_type}:{eid}"
-    try:
-        row,err=db_insert('koja_platform_events',{
-            'event_key':key,'idempotency_key':key,'user_id':uid,
-            'organization_id':org,'service_key':'finance',
-            'event_type':clean(event_type),'entity_type':clean(entity_type),
-            'entity_id':eid,'country_code':(current_user() or {}).get('country_code') or 'ZM',
-            'payload':payload or {},'created_at':utc_now()
-        })
-        return row,err
-    except Exception as exc:
-        logger.warning('Finance platform event bridge unavailable: %s',exc)
-        return None,str(exc)
-
-def _fv2_foundation_transaction(source_type, source_id, amount, currency='ZMW', status='recorded', payment_reference=None, metadata=None):
-    uid=_fv2_foundation_uid(); org=_fv2_foundation_org_id()
-    if not uid: return None, 'not_authenticated'
-    sid=str(source_id or uuid.uuid4()); st=clean(source_type) or 'finance'
-    key=f"finance:tx:{st}:{sid}"
-    try:
-        row,err=db_insert('koja_unified_transactions',{
-            'user_id':uid,'organization_id':org,'source_type':st,'source_id':sid,
-            'amount':_fv2_num(amount),'currency':_fv2_currency(currency),
-            'status':clean(status) or 'recorded','payment_provider':None,
-            'payment_reference':clean(payment_reference) or None,
-            'idempotency_key':key,'metadata':metadata or {},
-            'created_at':utc_now(),
-            'completed_at':utc_now() if clean(status).lower() in ('completed','successful','paid','settled') else None
-        })
-        return row,err
-    except Exception as exc:
-        logger.warning('Finance platform transaction bridge unavailable: %s',exc)
-        return None,str(exc)
-
-def _fv2_foundation_revenue(source_type, source_id, amount, currency='ZMW', payment_reference=None, metadata=None):
-    uid=_fv2_foundation_uid(); org=_fv2_foundation_org_id()
-    if not uid: return None, 'not_authenticated'
-    sid=str(source_id or uuid.uuid4()); key=f"finance:revenue:{clean(source_type) or 'finance'}:{sid}"
-    try:
-        return db_insert('koja_engine_revenue',{
-            'id':str(uuid.uuid4()),'service_key':'finance','transaction_id':None,
-            'gross_amount':_fv2_num(amount),'seller_amount':_fv2_num(amount),
-            'currency':_fv2_currency(currency),'source_type':clean(source_type) or 'finance',
-            'source_id':sid,'user_id':uid,'organization_id':org,
-            'idempotency_key':key,'metadata':dict(metadata or {}, payment_reference=payment_reference)
-        })
-    except Exception as exc:
-        logger.warning('Finance revenue ledger bridge unavailable: %s',exc)
-        return None,str(exc)
-
 def _fv2_integration_summary(uid):
     out={'sales':0.0,'procurement':0.0,'inventory_cost':0.0,'payroll':0.0,'enterprise_billing':0.0,'legacy_revenue':0.0,'legacy_expenses':0.0}
     # Existing KOJA Finance V1
@@ -11479,9 +11357,7 @@ def finance_v2_journal():
                 da=clean(request.form.get('debit_account_id')); ca=clean(request.form.get('credit_account_id'))
                 _fv2_insert(KOJA_FINANCE_V2_TABLES['journal_lines'],{'id':str(uuid.uuid4()),'journal_entry_id':eid,'account_id':da,'line_type':'debit','amount':debit,'description':desc,'created_at':utc_now()})
                 _fv2_insert(KOJA_FINANCE_V2_TABLES['journal_lines'],{'id':str(uuid.uuid4()),'journal_entry_id':eid,'account_id':ca,'line_type':'credit','amount':credit,'description':desc,'created_at':utc_now()})
-                _fv2_event(uid,'journal_posted','journal_entry',eid,{'amount':debit,'description':desc,'reference':ref})
-                _fv2_foundation_event('journal.posted','journal_entry',eid,{'amount':debit,'currency':clean(request.form.get('currency') or 'ZMW'),'reference':ref})
-                _fv2_foundation_transaction('journal_entry',eid,debit,clean(request.form.get('currency') or 'ZMW'),'recorded',metadata={'description':desc,'reference':ref})
+                _fv2_event(uid,'journal_posted','journal_entry',eid,{'amount':debit,'description':desc})
             flash('Journal entry posted.' if not err else 'Could not post journal entry.','success' if not err else 'danger')
         return redirect(url_for('finance_v2_journal'))
     entries=_fv2_rows(KOJA_FINANCE_V2_TABLES['journal_entries'],{'user_id':uid},300)
@@ -11496,12 +11372,7 @@ def finance_v2_payments():
         amount=_fv2_num(request.form.get('amount')); direction=clean(request.form.get('direction') or 'inbound'); status=clean(request.form.get('status') or 'completed')
         payload={'id':str(uuid.uuid4()),'user_id':uid,'payment_number':'KPAY-'+secrets.token_hex(5).upper(),'direction':direction,'party_name':clean(request.form.get('party_name')),'amount':amount,'currency':clean(request.form.get('currency') or 'ZMW'),'method':clean(request.form.get('method') or 'mobile_money'),'status':status,'reference':clean(request.form.get('reference')),'payment_date':clean(request.form.get('payment_date')) or None,'source_type':clean(request.form.get('source_type')),'source_id':clean(request.form.get('source_id')),'created_at':utc_now(),'updated_at':utc_now()}
         _,err=_fv2_insert(KOJA_FINANCE_V2_TABLES['payments'],payload)
-        if not err:
-            _fv2_event(uid,'payment_recorded','payment',payload['id'],{'amount':amount,'direction':direction,'reference':payload.get('reference')})
-            _fv2_foundation_event('payment.recorded','payment',payload['id'],{'amount':amount,'direction':direction,'status':status,'source_type':payload.get('source_type'),'source_id':payload.get('source_id')})
-            _fv2_foundation_transaction('finance_payment',payload['id'],amount,payload.get('currency') or 'ZMW',status,payload.get('reference'),{'direction':direction,'source_type':payload.get('source_type'),'source_id':payload.get('source_id'),'method':payload.get('method')})
-            if direction.lower() in ('inbound','in','receipt','received') and status.lower() in ('completed','paid','settled','received','successful'):
-                _fv2_foundation_revenue('finance_payment',payload['id'],amount,payload.get('currency') or 'ZMW',payload.get('reference'),{'direction':direction,'source_type':payload.get('source_type'),'source_id':payload.get('source_id')})
+        if not err: _fv2_event(uid,'payment_recorded','payment',payload['id'],{'amount':amount,'direction':direction})
         flash('Payment recorded.' if not err else 'Could not record payment.','success' if not err else 'danger')
         return redirect(url_for('finance_v2_payments'))
     rows=_fv2_rows(KOJA_FINANCE_V2_TABLES['payments'],{'user_id':uid},300)
@@ -11591,16 +11462,13 @@ def finance_v2_reconciliation():
     uid=_fv2_uid(); banks=_fv2_user_rows(KOJA_FINANCE_V2_TABLES['bank_accounts'],uid)
     if request.method=='POST':
         d=request.form; statement=_fv2_num(d.get('statement_balance')); ledger=_fv2_num(d.get('ledger_balance')); diff=round(statement-ledger,2)
-        rec_id=str(uuid.uuid4())
         _,err=_fv2_insert(KOJA_FINANCE_V2_TABLES['reconciliations'],{
-            'id':rec_id,'user_id':uid,'organization_id':_fv2_org_id(),
+            'id':str(uuid.uuid4()),'user_id':uid,'organization_id':_fv2_org_id(),
             'bank_account_id':clean(d.get('bank_account_id')) or None,'period':clean(d.get('period')),
             'statement_balance':statement,'ledger_balance':ledger,'difference':diff,
             'status':'reconciled' if diff==0 else 'open','notes':clean(d.get('notes')),
             'created_at':utc_now(),'updated_at':utc_now()
         })
-        if not err:
-            _fv2_foundation_event('reconciliation.recorded','reconciliation',rec_id,{'difference':diff,'status':'reconciled' if diff==0 else 'open','period':clean(d.get('period'))})
         flash('Reconciliation saved.' if not err else 'Could not save reconciliation.','success' if not err else 'danger')
         return redirect(url_for('finance_v2_reconciliation'))
     rows=_fv2_user_rows(KOJA_FINANCE_V2_TABLES['reconciliations'],uid)
@@ -11626,11 +11494,7 @@ def finance_v2_transactions():
     uid=_fv2_uid()
     if request.method=='POST':
         d=request.form; amount=_fv2_num(d.get('amount'))
-        tx,err=_fv2_post_transaction(uid,d.get('source_type'),d.get('source_id'),d.get('transaction_type') or 'general',amount,d.get('currency') or 'ZMW',d.get('status') or 'recorded',{'description':clean(d.get('description'))})
-        if not err:
-            txid=(tx or {}).get('id') or d.get('source_id') or str(uuid.uuid4())
-            _fv2_foundation_event('transaction.recorded','finance_transaction',txid,{'source_type':clean(d.get('source_type')),'source_id':clean(d.get('source_id')),'transaction_type':clean(d.get('transaction_type') or 'general'),'amount':amount,'currency':clean(d.get('currency') or 'ZMW'),'status':clean(d.get('status') or 'recorded')})
-            _fv2_foundation_transaction(d.get('source_type') or 'finance_transaction',d.get('source_id') or txid,amount,d.get('currency') or 'ZMW',d.get('status') or 'recorded',None,{'transaction_id':txid,'transaction_type':clean(d.get('transaction_type') or 'general'),'description':clean(d.get('description'))})
+        _,err=_fv2_post_transaction(uid,d.get('source_type'),d.get('source_id'),d.get('transaction_type') or 'general',amount,d.get('currency') or 'ZMW',d.get('status') or 'recorded',{'description':clean(d.get('description'))})
         flash('Financial transaction recorded.' if not err else 'Could not record transaction.','success' if not err else 'danger')
         return redirect(url_for('finance_v2_transactions'))
     rows=_fv2_user_rows(KOJA_FINANCE_V2_TABLES['transactions'],uid,500)

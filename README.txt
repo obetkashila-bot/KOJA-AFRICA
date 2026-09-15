@@ -1,29 +1,22 @@
-KOJA GLOBAL COMMERCE V2
+KOJA AFRICA — UI / PLATFORM SHELL REDESIGN
 
-Cumulative source: preserves the existing KOJA production services and prior B2B, Finance V2, Supply Chain V2, Workforce V2, Sales & CRM V2 and Enterprise V2 layers.
+This package rearranges and redesigns the existing Flask interface without intentionally changing the service/database logic.
 
-Global Commerce V2 adds:
-- Country and currency registry
-- FX rate infrastructure
-- Tax profiles
-- Multi-country legal/operating entities
-- Cross-border trade lanes
-- Cross-border orders
-- Settlement records
-- Compliance documents
-- Global commerce audit events
-- Finance V2 bridge helper for future settlement posting
-- Global Commerce dashboard and summary API
+UI changes:
+- New KOJA AFRICA master visual shell
+- Navy/black professional navigation with blue/red accents
+- Cleaner mobile navigation drawer
+- Reorganised navigation: Home, Dashboard, KOJA AI, Services, Research, Notifications, Explore
+- Explore menu groups the existing secondary services
+- Redesigned public home page
+- Redesigned authenticated dashboard
+- Responsive service cards and quick actions
+- Existing routes, APIs and service handlers are preserved
 
-Supabase:
-Run KOJA_GLOBAL_COMMERCE_V2.sql first. It is additive/update-safe and contains no DROP or TRUNCATE operations.
+Important:
+- No Communications feature code was intentionally changed.
+- No database tables or SQL schema were changed by the UI redesign.
+- app.py syntax was checked with Python compile validation.
+- Deploy this app.py only when it matches the cumulative production source you intend to use.
 
-Render:
-Deploy the included app.py to the existing KOJA AFRICA production service after the SQL completes successfully.
-
-Routes:
-/global-commerce
-/global-commerce/countries
-/global-commerce/orders
-/api/global-commerce/summary
-/api/global-commerce/fx
+Run command: gunicorn app:app
