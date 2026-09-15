@@ -1,23 +1,29 @@
-KOJA AFRICA — Workforce / HR V2
+KOJA GLOBAL COMMERCE V2
 
-This package upgrades the existing Workforce V1 module in the cumulative production app.
+Cumulative source: preserves the existing KOJA production services and prior B2B, Finance V2, Supply Chain V2, Workforce V2, Sales & CRM V2 and Enterprise V2 layers.
 
-Added:
-- Workforce V2 dashboard and KPIs
-- Candidate pipeline and stage updates
-- Job status workflow
-- Employee lifecycle status workflow
-- Attendance tracking
-- Leave approval/rejection workflow
-- Payroll creation and mark-paid workflow
-- Payroll -> Finance V2 transaction bridge when Finance V2 is installed
-- Training cost -> Finance V2 bridge when available
-- Performance reviews
-- Workforce summary API V2
-- Additive SQL migration only
+Global Commerce V2 adds:
+- Country and currency registry
+- FX rate infrastructure
+- Tax profiles
+- Multi-country legal/operating entities
+- Cross-border trade lanes
+- Cross-border orders
+- Settlement records
+- Compliance documents
+- Global commerce audit events
+- Finance V2 bridge helper for future settlement posting
+- Global Commerce dashboard and summary API
 
-Deploy:
-1. Run KOJA_WORKFORCE_V2.sql in the Supabase SQL Editor.
-2. Deploy app.py to the existing KOJA-AFRICA Render production service.
+Supabase:
+Run KOJA_GLOBAL_COMMERCE_V2.sql first. It is additive/update-safe and contains no DROP or TRUNCATE operations.
 
-Existing KOJA services are preserved. Communications is untouched.
+Render:
+Deploy the included app.py to the existing KOJA AFRICA production service after the SQL completes successfully.
+
+Routes:
+/global-commerce
+/global-commerce/countries
+/global-commerce/orders
+/api/global-commerce/summary
+/api/global-commerce/fx
