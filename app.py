@@ -2451,6 +2451,7 @@ def services():
 <div class="card"><h3>Workforce</h3><p>Recruitment, employees, attendance, leave, payroll, performance and training.</p><a class="btn" href="{{ url_for('workforce_dashboard') }}">Open Workforce</a></div>
 <div class="card"><h3>Finance V2</h3><p>Accounts, journal, payments, budgets and financial reports.</p><a class="btn" href="{{ url_for('finance_v2_dashboard') }}">Open Finance V2</a></div>
 <div class="card"><h3>Global Revenue &amp; Payments</h3><p>Unified transactions, settlements, payouts, invoices and payment verification.</p><a class="btn" href="{{ url_for('revenue_v2_dashboard') }}">Open Revenue &amp; Payments</a></div>
+<div class="card"><h3>Identity &amp; Trust</h3><p>Identity verification, trusted devices and account trust signals for safer KOJA services.</p><a class="btn" href="{{ url_for('identity_v2') }}">Open Identity &amp; Trust</a></div>
 
 <div class="card"><h3>KOJA Core Engines</h3><p>Shared platform engines connecting discovery, advertising, payments, cloud, intelligence, identity, workspace, ecosystem and autonomous AI.</p><div class="actions"><a class="btn" href="{{ url_for('koja_named_engines') }}">Open Core Engines</a><a class="btn secondary" href="{{ url_for('koja_v12_v20_hub') }}">V12–V20 Engine Hub</a><a class="btn secondary" href="{{ url_for('koja_v20_revenue') }}">Revenue Engine</a></div></div>
 </div>
@@ -11185,4 +11186,135 @@ def api_revenue_v2_verify_flutterwave():
     saved,err=db_insert('koja_revenue_v2_transactions',row)
     if err: return jsonify({'ok':False,'error':err}),500
     return jsonify({'ok':True,'transaction':saved})
+
+
+
+# KOJA IDENTITY & TRUST V2
+# Additive module. Does not replace authentication or existing services.
+# ============================================================
+
+def _kit2_uid():
+    u = current_user() or {}
+    return session.get('user_id') or session.get('uid') or u.get('id')
+
+def _kit2_org_id():
+    u = current_user() or {}
+    return str(u.get('organization_id') or u.get('org_id') or '') or None
+
+def _kit2_hash(value):
+    return hashlib.sha256(str(value or '').strip().encode('utf-8')).hexdigest()
+
+def _kit2_rows(table, filters=None, limit=100):
+    try:
+        return db_select(table, filters or {}, limit=limit) or []
+    except Exception:
+        return []
+
+def _kit2_trust():
+    uid = _kit2_uid()
+    score = 20
+    factors = {}
+    ver = _kit2_rows('koja_identity_v2_verifications', {'user_id': uid}, 1)
+    if ver and str(ver[0].get('status','')).lower() == 'verified':
+        score += 40; factors['identity_verified'] = 40
+    else:
+        factors['identity_verified'] = 0
+    devices = _kit2_rows('koja_identity_v2_devices', {'user_id': uid}, 100)
+    trusted_devices = [d for d in devices if d.get('trusted') is True]
+    score += min(20, len(trusted_devices) * 10); factors['trusted_devices'] = min(20, len(trusted_devices) * 10)
+    events = _kit2_rows('koja_identity_v2_audit_events', {'user_id': uid}, 100)
+    high = sum(1 for e in events if str(e.get('severity','')).lower() in ('high','critical'))
+    penalty = min(30, high * 10)
+    score -= penalty; factors['risk_events'] = -penalty
+    score = max(0, min(100, score))
+    level = 'low' if score < 40 else ('standard' if score < 70 else ('trusted' if score < 90 else 'high_trust'))
+    return {'score': score, 'level': level, 'factors': factors}
+
+@app.route('/identity/v2')
+@login_required
+def identity_v2():
+    uid = _kit2_uid()
+    verification = (_kit2_rows('koja_identity_v2_verifications', {'user_id': uid}, 1) or [None])[0]
+    devices = _kit2_rows('koja_identity_v2_devices', {'user_id': uid}, 20)
+    trust = _kit2_trust()
+    return render_page('KOJA Identity & Trust', """
+    <div class="hero"><h1>KOJA Identity & Trust</h1><p>Identity verification, trusted devices and account trust signals for safer KOJA services.</p></div>
+    <div class="grid">
+      <div class="card"><h3>Trust Score</h3><div class="metric">{{ trust.score }}/100</div></div>
+      <div class="card"><h3>Trust Level</h3><div class="metric">{{ trust.level|replace('_',' ')|title }}</div></div>
+      <div class="card"><h3>Identity</h3><div class="metric">{{ verification.status|title if verification else 'Not submitted' }}</div></div>
+      <div class="card"><h3>Trusted Devices</h3><div class="metric">{{ devices|selectattr('trusted','equalto',true)|list|length }}</div></div>
+    </div>
+    <div class="card"><h2>Identity Verification</h2>
+      <form method="post" action="{{ url_for('api_identity_v2_verify') }}">
+        <label>Legal name</label><input name="legal_name" required>
+        <label>Country</label><input name="country" value="ZM">
+        <label>Document type</label><input name="document_type" placeholder="National ID / Passport">
+        <label>Document number</label><input name="document_number" type="password" autocomplete="off">
+        <button class="btn" type="submit">Submit verification</button>
+      </form>
+    </div>
+    <div class="card"><h2>Trust Signals</h2><p>Score is calculated from verified identity, trusted devices and recorded security-risk events. It is not a legal identity decision or a substitute for external KYC.</p></div>
+    <div class="card"><a class="btn" href="{{ url_for('api_identity_v2_summary') }}">Open Identity API</a></div>
+    """, trust=trust, verification=verification, devices=devices)
+
+@app.route('/api/identity/v2/summary')
+@login_required
+def api_identity_v2_summary():
+    uid = _kit2_uid()
+    verification = (_kit2_rows('koja_identity_v2_verifications', {'user_id': uid}, 1) or [None])[0]
+    devices = _kit2_rows('koja_identity_v2_devices', {'user_id': uid}, 100)
+    return jsonify({'ok': True, 'user_id': uid, 'organization_id': _kit2_org_id(), 'trust': _kit2_trust(), 'verification': verification, 'devices': len(devices)})
+
+@app.route('/api/identity/v2/verify', methods=['POST'])
+@login_required
+def api_identity_v2_verify():
+    data = request.form.to_dict() if request.form else (request.get_json(silent=True) or {})
+    legal_name = clean(data.get('legal_name'))
+    document_number = clean(data.get('document_number'))
+    if not legal_name or not document_number:
+        return jsonify({'ok': False, 'error': 'legal_name_and_document_number_required'}), 400
+    uid = _kit2_uid()
+    row = {
+        'user_id': uid, 'organization_id': _kit2_org_id(), 'legal_name': legal_name,
+        'country': clean(data.get('country')) or 'ZM',
+        'document_type': clean(data.get('document_type')) or 'other',
+        'document_hash': _kit2_hash(document_number), 'status': 'pending',
+        'metadata': {}, 'updated_at': utc_now()
+    }
+    existing = _kit2_rows('koja_identity_v2_verifications', {'user_id': uid}, 1)
+    if existing:
+        saved, err = db_update('koja_identity_v2_verifications', existing[0].get('id'), row)
+    else:
+        row['created_at'] = utc_now(); saved, err = db_insert('koja_identity_v2_verifications', row)
+    if err: return jsonify({'ok': False, 'error': err}), 500
+    if request.form: return redirect(url_for('identity_v2'))
+    return jsonify({'ok': True, 'verification': saved})
+
+@app.route('/api/identity/v2/devices', methods=['POST'])
+@login_required
+def api_identity_v2_devices():
+    data = request.get_json(silent=True) or {}
+    fingerprint = clean(data.get('fingerprint'))
+    if not fingerprint: return jsonify({'ok': False, 'error': 'fingerprint_required'}), 400
+    uid = _kit2_uid(); hashed = _kit2_hash(fingerprint)
+    existing = _kit2_rows('koja_identity_v2_devices', {'user_id': uid, 'fingerprint_hash': hashed}, 1)
+    row = {'user_id': uid, 'organization_id': _kit2_org_id(), 'fingerprint_hash': hashed, 'platform': clean(data.get('platform')) or '', 'user_agent': request.headers.get('User-Agent','')[:500], 'trusted': bool(data.get('trusted', False)), 'last_seen_at': utc_now()}
+    if existing:
+        saved, err = db_update('koja_identity_v2_devices', existing[0].get('id'), row)
+    else:
+        row['created_at'] = utc_now(); saved, err = db_insert('koja_identity_v2_devices', row)
+    if err: return jsonify({'ok': False, 'error': err}), 500
+    return jsonify({'ok': True, 'device': saved})
+
+@app.route('/api/identity/v2/audit', methods=['POST'])
+@login_required
+def api_identity_v2_audit():
+    data = request.get_json(silent=True) or {}
+    event_type = clean(data.get('event_type'))
+    if not event_type: return jsonify({'ok': False, 'error': 'event_type_required'}), 400
+    row = {'user_id': _kit2_uid(), 'organization_id': _kit2_org_id(), 'event_type': event_type, 'severity': clean(data.get('severity')) or 'info', 'metadata': data.get('metadata') or {}, 'created_at': utc_now()}
+    saved, err = db_insert('koja_identity_v2_audit_events', row)
+    if err: return jsonify({'ok': False, 'error': err}), 500
+    return jsonify({'ok': True, 'event': saved})
 
