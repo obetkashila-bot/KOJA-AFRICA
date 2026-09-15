@@ -2454,7 +2454,6 @@ def services():
 <div class="card"><h3>Identity &amp; Trust</h3><p>Identity verification, trusted devices and account trust signals for safer KOJA services.</p><a class="btn" href="{{ url_for('identity_v2') }}">Open Identity &amp; Trust</a></div>
 <div class="card"><h3>KOJA Workspace V2</h3><p>Connected workspaces, projects, tasks and notes for personal, professional and enterprise productivity.</p><a class="btn" href="{{ url_for('workspace_v2') }}">Open Workspace</a></div>
 
-{% if user.is_admin %}<div class="card"><h3>KOJA Core Engines — Administration</h3><p>V12–V20 platform engines are restricted to administrators. Existing public KOJA services remain available normally.</p><div class="actions"><a class="btn" href="{{ url_for('koja_named_engines') }}">Open Core Engines</a><a class="btn secondary" href="{{ url_for('koja_v12_v20_hub') }}">V12–V20 Engine Hub</a><a class="btn secondary" href="{{ url_for('koja_v20_revenue') }}">Revenue Engine</a><a class="btn secondary" href="{{ url_for('admin_ecosystem_v2') }}">Ecosystem V2</a></div></div>{% endif %}
 </div>
 """)
 
@@ -5670,6 +5669,11 @@ def admin():
 <a class="btn success" href="{{ url_for('admin_live_tracking') }}"> Live GPS Tracking</a>
 <a class="btn" href="{{ url_for('admin_appointments') }}">Appointments</a>
 <a class="btn success" href="{{ url_for('admin_search_distribution') }}"> Google Search & Distribution</a>
+<a class="btn" href="{{ url_for('koja_named_engines') }}">Core Engines</a>
+<a class="btn" href="{{ url_for('koja_v12_v20_hub') }}">V12–V20 Engine Hub</a>
+<a class="btn" href="{{ url_for('koja_v20_revenue') }}">Revenue Engine</a>
+<a class="btn" href="{{ url_for('admin_ecosystem_v2') }}">Ecosystem V2</a>
+<a class="btn" href="{{ url_for('admin_autonomous_v2') }}">Autonomous Africa V2</a>
 </div></div>
 """,counts=counts)
 
@@ -9153,6 +9157,71 @@ def admin_ecosystem_v2():
     <div class='card'><h3>Access policy</h3><p>V12–V20 platform routes are administrator-only. This does not disable or remove the existing user-facing Market, Delivery, Communication, AI, Research, Identity &amp; Trust, Workspace, Enterprise, Finance or other KOJA services.</p></div>
     """
     return render_page('KOJA Ecosystem V2', tpl, counts=counts, registry=registry, links=links, transactions=transactions)
+
+# ============================================================
+# KOJA AUTONOMOUS AFRICA V2 — ADMIN-ONLY V20 CONSOLE
+# V20 is a platform engine/control layer, not a public user service.
+# Uses the existing V12-V20 foundation tables.
+# ============================================================
+
+@app.route('/admin/platform/autonomous-v2')
+@admin_required
+def admin_autonomous_v2():
+    tables = {
+        'AI Agents': 'koja_ai_agents',
+        'AI Agent Runs': 'koja_ai_agent_runs',
+        'IoT Devices': 'koja_iot_devices',
+        'IoT Telemetry': 'koja_iot_telemetry',
+        'Autonomy Jobs': 'koja_autonomy_jobs',
+        'Future Infrastructure': 'koja_future_infrastructure',
+    }
+    counts = {label: _v12_count(table) for label, table in tables.items()}
+    agents = db_select('koja_ai_agents', order='created_at.desc', limit=50) if table_exists('koja_ai_agents') else []
+    runs = db_select('koja_ai_agent_runs', order='created_at.desc', limit=50) if table_exists('koja_ai_agent_runs') else []
+    devices = db_select('koja_iot_devices', order='created_at.desc', limit=50) if table_exists('koja_iot_devices') else []
+    jobs = db_select('koja_autonomy_jobs', order='created_at.desc', limit=50) if table_exists('koja_autonomy_jobs') else []
+    infrastructure = db_select('koja_future_infrastructure', order='created_at.desc', limit=50) if table_exists('koja_future_infrastructure') else []
+    tpl = """
+    <div class='hero'><h1>KOJA Autonomous Africa V2</h1><p>Administrator-only V20 control and monitoring console for AI agents, IoT, autonomy jobs and future infrastructure.</p></div>
+    <div class='grid'>
+      {% for k,v in counts.items() %}<div class='stat'><div class='big'>{{ v }}</div>{{ k }}</div>{% endfor %}
+    </div>
+    <div class='card'><h3>AI Agents</h3>
+      {% if agents %}<table><tr><th>Name</th><th>Status</th><th>Owner</th><th>Created</th></tr>
+      {% for r in agents[:50] %}<tr><td>{{ r.get('name') or r.get('agent_name') or r.get('id') or '—' }}</td><td>{{ r.get('status') or '—' }}</td><td>{{ r.get('owner_id') or r.get('user_id') or '—' }}</td><td>{{ r.get('created_at') or '—' }}</td></tr>{% endfor %}</table>
+      {% else %}<p>No AI agent records found.</p>{% endif %}
+    </div>
+    <div class='card'><h3>Agent Runs</h3>
+      {% if runs %}<table><tr><th>Agent</th><th>Status</th><th>Started</th><th>Completed</th></tr>
+      {% for r in runs[:50] %}<tr><td>{{ r.get('agent_id') or r.get('agent_name') or '—' }}</td><td>{{ r.get('status') or '—' }}</td><td>{{ r.get('started_at') or r.get('created_at') or '—' }}</td><td>{{ r.get('completed_at') or '—' }}</td></tr>{% endfor %}</table>
+      {% else %}<p>No agent runs found.</p>{% endif %}
+    </div>
+    <div class='card'><h3>IoT Devices</h3>
+      {% if devices %}<table><tr><th>Device</th><th>Type</th><th>Status</th><th>Owner</th></tr>
+      {% for r in devices[:50] %}<tr><td>{{ r.get('device_name') or r.get('name') or r.get('id') or '—' }}</td><td>{{ r.get('device_type') or r.get('type') or '—' }}</td><td>{{ r.get('status') or '—' }}</td><td>{{ r.get('owner_id') or r.get('user_id') or '—' }}</td></tr>{% endfor %}</table>
+      {% else %}<p>No IoT devices found.</p>{% endif %}
+    </div>
+    <div class='card'><h3>Autonomy Jobs</h3>
+      {% if jobs %}<table><tr><th>Job</th><th>Status</th><th>Type</th><th>Created</th></tr>
+      {% for r in jobs[:50] %}<tr><td>{{ r.get('job_name') or r.get('name') or r.get('id') or '—' }}</td><td>{{ r.get('status') or '—' }}</td><td>{{ r.get('job_type') or r.get('type') or '—' }}</td><td>{{ r.get('created_at') or '—' }}</td></tr>{% endfor %}</table>
+      {% else %}<p>No autonomy jobs found.</p>{% endif %}
+    </div>
+    <div class='card'><h3>Future Infrastructure</h3>
+      {% if infrastructure %}<table><tr><th>Asset</th><th>Type</th><th>Country</th><th>Status</th></tr>
+      {% for r in infrastructure[:50] %}<tr><td>{{ r.get('asset_name') or r.get('name') or '—' }}</td><td>{{ r.get('asset_type') or '—' }}</td><td>{{ r.get('country_code') or 'ZM' }}</td><td>{{ r.get('status') or 'planned' }}</td></tr>{% endfor %}</table>
+      {% else %}<p>No future-infrastructure records found.</p>{% endif %}
+    </div>
+    <div class='card'><h3>Access policy</h3><p>V20 is administrator-only. This console monitors the autonomous platform layer; it does not expose autonomous controls as a normal user-facing KOJA service.</p></div>
+    """
+    return render_page('KOJA Autonomous Africa V2', tpl, counts=counts, agents=agents, runs=runs, devices=devices, jobs=jobs, infrastructure=infrastructure)
+
+@app.route('/api/admin/platform/autonomous-v2/status')
+@admin_required
+def admin_autonomous_v2_status():
+    tables = ['koja_ai_agents','koja_ai_agent_runs','koja_iot_devices','koja_iot_telemetry','koja_autonomy_jobs','koja_future_infrastructure']
+    checks = {t: table_exists(t) for t in tables}
+    return jsonify({'ok': all(checks.values()), 'version': 'V20-AUTONOMOUS-AFRICA-V2', 'checks': checks})
+
 
 # ============================================================
 # KOJA CORE ENGINE ACTIVATION — PRODUCTION NAMED ENGINES
