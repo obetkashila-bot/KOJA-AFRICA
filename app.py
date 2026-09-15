@@ -10460,12 +10460,10 @@ def api_b2b_v2_summary():
 # ============================================================
 
 KOJA_SUPPLY_TABLES = {
-    'warehouses': 'koja_supply_warehouses',
-    'inventory': 'koja_supply_inventory',
-    'movements': 'koja_supply_stock_movements',
-    'transfers': 'koja_supply_transfers',
-    'forecasts': 'koja_supply_forecasts',
-    'events': 'koja_supply_events',
+    'warehouses':'koja_supply_warehouses', 'inventory':'koja_supply_inventory',
+    'movements':'koja_supply_stock_movements', 'transfers':'koja_supply_transfers',
+    'forecasts':'koja_supply_forecasts', 'events':'koja_supply_events',
+    'reorders':'koja_supply_reorder_requests'
 }
 
 def _supply_scope():
@@ -10473,14 +10471,11 @@ def _supply_scope():
     return uid, org_id, ({'organization_id': org_id} if org_id else {'owner_id': uid})
 
 def _supply_select(table, filters=None, limit=300):
-    try:
-        return db_select(table, filters or {}, order='created_at.desc', limit=limit) or []
-    except Exception:
-        return []
+    try: return db_select(table, filters or {}, order='created_at.desc', limit=limit) or []
+    except Exception: return []
 
 def _supply_insert(table, payload):
-    try:
-        return db_insert(table, payload)
+    try: return db_insert(table, payload)
     except Exception:
         logger.exception('KOJA Supply Chain insert failed: %s', table)
         return None, 'Supply Chain storage is not installed yet.'
@@ -10494,211 +10489,201 @@ def _supply_update(table, filters, payload):
         return False
 
 def _supply_event(org_id, actor_id, event_type, entity_type=None, entity_id=None, payload=None):
-    if not org_id:
-        return
+    if not org_id: return
     _supply_insert(KOJA_SUPPLY_TABLES['events'], {
-        'id': str(uuid.uuid4()), 'organization_id': org_id, 'actor_id': actor_id,
-        'event_type': event_type, 'entity_type': entity_type, 'entity_id': entity_id,
-        'payload': payload or {}, 'created_at': utc_now()
+        'id':str(uuid.uuid4()), 'organization_id':org_id, 'actor_id':actor_id,
+        'event_type':event_type, 'entity_type':entity_type, 'entity_id':entity_id,
+        'payload':payload or {}, 'created_at':utc_now()
     })
 
 def _supply_qty(value):
+    try: return round(float(value or 0), 3)
+    except Exception: return 0.0
+
+def _supply_finance_event(uid, org_id, event_type, amount, source_id, currency='ZMW'):
+    # Bridge material stock value changes into Finance V2 transaction/event streams.
     try:
-        return round(float(value or 0), 3)
-    except Exception:
-        return 0.0
+        if amount and '_fv2_insert' in globals() and 'KOJA_FINANCE_V2_TABLES' in globals():
+            _fv2_insert(KOJA_FINANCE_V2_TABLES['transactions'], {
+                'id':str(uuid.uuid4()), 'user_id':uid, 'organization_id':org_id,
+                'source_type':'supply_chain', 'source_id':source_id,
+                'transaction_type':event_type, 'amount':round(float(amount),2),
+                'currency':currency, 'status':'posted', 'occurred_at':utc_now(),
+                'metadata':{'module':'supply_chain','source_id':source_id}
+            })
+    except Exception: logger.exception('Supply-to-Finance bridge failed')
 
 @app.route('/supply-chain')
 @login_required
 def supply_chain_dashboard():
     uid, org_id, scope = _supply_scope()
-    warehouses = _supply_select(KOJA_SUPPLY_TABLES['warehouses'], scope, 500)
-    inventory = _supply_select(KOJA_SUPPLY_TABLES['inventory'], scope, 2000)
-    transfers = _supply_select(KOJA_SUPPLY_TABLES['transfers'], scope, 500)
-    low_stock = [x for x in inventory if _supply_qty(x.get('quantity')) <= _supply_qty(x.get('reorder_level'))]
-    return render_page('KOJA Supply Chain', r'''
-    <div class="hero"><h1>KOJA Supply Chain</h1><p>Connect procurement to warehouses, inventory, distribution and stock intelligence.</p></div>
+    warehouses=_supply_select(KOJA_SUPPLY_TABLES['warehouses'],scope,1000)
+    inventory=_supply_select(KOJA_SUPPLY_TABLES['inventory'],scope,5000)
+    transfers=_supply_select(KOJA_SUPPLY_TABLES['transfers'],scope,2000)
+    reorders=_supply_select(KOJA_SUPPLY_TABLES['reorders'],scope,1000)
+    low=[x for x in inventory if _supply_qty(x.get('quantity'))<=_supply_qty(x.get('reorder_level'))]
+    stock_value=sum(_supply_qty(x.get('quantity'))*_supply_qty(x.get('unit_cost')) for x in inventory)
+    pending=[x for x in transfers if str(x.get('status')) in ('requested','approved','in_transit')]
+    return render_page('KOJA Supply Chain',r'''
+    <div class="hero"><h1>KOJA Supply Chain</h1><p>Inventory, warehouses, transfers, replenishment and stock intelligence connected to procurement and finance.</p></div>
     <div class="grid">
-      <div class="card"><h3>Warehouses</h3><h1>{{ warehouses|length }}</h1><a class="btn" href="{{ url_for('supply_warehouses') }}">Manage Warehouses</a></div>
+      <div class="card"><h3>Warehouses</h3><h1>{{ warehouses|length }}</h1><a class="btn" href="{{ url_for('supply_warehouses') }}">Manage</a></div>
       <div class="card"><h3>Inventory SKUs</h3><h1>{{ inventory|length }}</h1><a class="btn" href="{{ url_for('supply_inventory') }}">Inventory</a></div>
-      <div class="card"><h3>Low Stock</h3><h1>{{ low_stock|length }}</h1><a class="btn" href="{{ url_for('supply_inventory') }}">Replenishment</a></div>
-      <div class="card"><h3>Transfers</h3><h1>{{ transfers|length }}</h1><a class="btn" href="{{ url_for('supply_transfers') }}">Distribution</a></div>
+      <div class="card"><h3>Stock Value</h3><h1>{{ '%.2f'|format(stock_value) }}</h1><span>{{ currency }}</span></div>
+      <div class="card"><h3>Low Stock</h3><h1>{{ low_stock|length }}</h1><a class="btn" href="{{ url_for('supply_reorders') }}">Replenishment</a></div>
+      <div class="card"><h3>Pending Transfers</h3><h1>{{ pending|length }}</h1><a class="btn" href="{{ url_for('supply_transfers') }}">Distribution</a></div>
+      <div class="card"><h3>Reorder Requests</h3><h1>{{ reorders|length }}</h1><a class="btn" href="{{ url_for('supply_reorders') }}">Open Queue</a></div>
     </div>
-    <div class="card"><h2>Supply chain chain</h2><p><strong>Supplier → Procurement → Warehouse → Inventory → Distribution → Delivery → Sales → Accounting → Intelligence</strong></p></div>
-    <div class="card"><h2>Stock alerts</h2><table><tr><th>SKU</th><th>Item</th><th>Quantity</th><th>Reorder level</th><th>Status</th></tr>{% for x in low_stock[:50] %}<tr><td>{{ x.sku }}</td><td>{{ x.name }}</td><td>{{ x.quantity }}</td><td>{{ x.reorder_level }}</td><td>Reorder required</td></tr>{% else %}<tr><td colspan="5">No low-stock items.</td></tr>{% endfor %}</table></div>
-    ''', user=current_user() or {}, warehouses=warehouses, inventory=inventory, low_stock=low_stock, transfers=transfers)
+    <div class="card"><h2>Operational chain</h2><p><strong>Supplier → Procurement → Receiving → Warehouse → Inventory → Transfer → Delivery → Sales → Finance</strong></p></div>
+    <div class="card"><h2>Critical stock</h2><table><tr><th>SKU</th><th>Item</th><th>Qty</th><th>Reorder</th><th>Value</th><th>Status</th></tr>{% for x in low_stock[:100] %}<tr><td>{{x.sku}}</td><td>{{x.name}}</td><td>{{x.quantity}}</td><td>{{x.reorder_level}}</td><td>{{ '%.2f'|format(x.quantity|float*x.unit_cost|float) }} {{x.currency}}</td><td>Reorder required</td></tr>{% else %}<tr><td colspan="6">No low-stock items.</td></tr>{% endfor %}</table></div>
+    ''',user=current_user() or {},warehouses=warehouses,inventory=inventory,low_stock=low,transfers=transfers,pending=pending,reorders=reorders,stock_value=stock_value,currency='ZMW')
 
-@app.route('/supply-chain/warehouses', methods=['GET','POST'])
+@app.route('/supply-chain/warehouses',methods=['GET','POST'])
 @login_required
 def supply_warehouses():
-    uid, org_id, scope = _supply_scope()
-    if request.method == 'POST':
-        name = clean(request.form.get('name') or '')
-        code = clean(request.form.get('code') or '').upper()
-        address = clean(request.form.get('address') or '')
-        if not name:
-            flash('Warehouse name is required.', 'danger')
+    uid,org_id,scope=_supply_scope()
+    if request.method=='POST':
+        name=clean(request.form.get('name') or ''); code=clean(request.form.get('code') or '').upper(); address=clean(request.form.get('address') or '')
+        if not name: flash('Warehouse name is required.','danger')
         else:
-            row = {'id': str(uuid.uuid4()), 'organization_id': org_id, 'owner_id': uid,
-                   'name': name, 'code': code or ('WH-' + secrets.token_hex(3).upper()),
-                   'address': address or None, 'manager_id': uid, 'status': 'active', 'created_at': utc_now(), 'updated_at': utc_now()}
-            result = _supply_insert(KOJA_SUPPLY_TABLES['warehouses'], row)
-            if result and not (isinstance(result, tuple) and len(result) > 1 and result[1]):
-                _supply_event(org_id, uid, 'warehouse_created', 'warehouse', row['id'], {'name': name})
-                flash('Warehouse created.', 'success')
-            else:
-                flash('Warehouse could not be saved.', 'danger')
-    rows = _supply_select(KOJA_SUPPLY_TABLES['warehouses'], scope, 500)
-    return render_page('KOJA Supply Warehouses', r'''
-    <div class="hero"><h1>Warehouses</h1><p>Define the physical locations that hold business stock.</p></div>
+            row={'id':str(uuid.uuid4()),'organization_id':org_id,'owner_id':uid,'name':name,'code':code or ('WH-'+secrets.token_hex(3).upper()),'address':address or None,'manager_id':uid,'status':'active','created_at':utc_now(),'updated_at':utc_now()}
+            result=_supply_insert(KOJA_SUPPLY_TABLES['warehouses'],row)
+            if result and not(isinstance(result,tuple) and len(result)>1 and result[1]): _supply_event(org_id,uid,'warehouse_created','warehouse',row['id'],{'name':name}); flash('Warehouse created.','success')
+            else: flash('Warehouse could not be saved.','danger')
+    rows=_supply_select(KOJA_SUPPLY_TABLES['warehouses'],scope,1000)
+    return render_page('KOJA Supply Warehouses',r'''
+    <div class="hero"><h1>Warehouses</h1><p>Manage physical stock locations and operating status.</p></div>
     <div class="card"><form method="post"><input name="name" placeholder="Warehouse name" required><input name="code" placeholder="Warehouse code"><input name="address" placeholder="Address / location"><button class="btn">Create Warehouse</button></form></div>
-    <div class="card"><table><tr><th>Name</th><th>Code</th><th>Address</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{ x.name }}</td><td>{{ x.code }}</td><td>{{ x.address or '' }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="4">No warehouses yet.</td></tr>{% endfor %}</table></div>
-    ''', user=current_user() or {}, rows=rows)
+    <div class="card"><table><tr><th>Name</th><th>Code</th><th>Address</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{x.name}}</td><td>{{x.code}}</td><td>{{x.address or ''}}</td><td>{{x.status}}</td></tr>{% else %}<tr><td colspan="4">No warehouses yet.</td></tr>{% endfor %}</table></div>
+    ''',user=current_user() or {},rows=rows)
 
-@app.route('/supply-chain/inventory', methods=['GET','POST'])
+@app.route('/supply-chain/inventory',methods=['GET','POST'])
 @login_required
 def supply_inventory():
-    uid, org_id, scope = _supply_scope()
-    warehouses = _supply_select(KOJA_SUPPLY_TABLES['warehouses'], scope, 500)
-    if request.method == 'POST':
-        warehouse_id = clean(request.form.get('warehouse_id') or '')
-        sku = clean(request.form.get('sku') or '').upper()
-        name = clean(request.form.get('name') or '')
-        qty = _supply_qty(request.form.get('quantity'))
-        reorder = _supply_qty(request.form.get('reorder_level'))
-        unit = clean(request.form.get('unit') or 'unit')
-        cost = _b2b_num(request.form.get('unit_cost'))
-        if not warehouse_id or not sku or not name:
-            flash('Warehouse, SKU and item name are required.', 'danger')
+    uid,org_id,scope=_supply_scope(); warehouses=_supply_select(KOJA_SUPPLY_TABLES['warehouses'],scope,1000)
+    if request.method=='POST':
+        warehouse_id=clean(request.form.get('warehouse_id') or ''); sku=clean(request.form.get('sku') or '').upper(); name=clean(request.form.get('name') or '')
+        qty=_supply_qty(request.form.get('quantity')); reorder=_supply_qty(request.form.get('reorder_level')); unit=clean(request.form.get('unit') or 'unit'); cost=_b2b_num(request.form.get('unit_cost'))
+        if not warehouse_id or not sku or not name: flash('Warehouse, SKU and item name are required.','danger')
         else:
-            wh = _supply_select(KOJA_SUPPLY_TABLES['warehouses'], {'id': warehouse_id}, 1)
-            if not wh or (org_id and wh[0].get('organization_id') != org_id) or (not org_id and wh[0].get('owner_id') != uid):
-                flash('Warehouse is outside your scope.', 'danger')
+            wh=_supply_select(KOJA_SUPPLY_TABLES['warehouses'],{'id':warehouse_id},1)
+            if not wh or (org_id and wh[0].get('organization_id')!=org_id) or (not org_id and wh[0].get('owner_id')!=uid): flash('Warehouse is outside your scope.','danger')
             else:
-                row = {'id': str(uuid.uuid4()), 'organization_id': org_id, 'owner_id': uid, 'warehouse_id': warehouse_id,
-                       'sku': sku, 'name': name, 'category': clean(request.form.get('category') or '') or None,
-                       'unit': unit, 'quantity': qty, 'reorder_level': reorder, 'unit_cost': cost,
-                       'currency': clean(request.form.get('currency') or 'ZMW').upper()[:8], 'status': 'active',
-                       'created_at': utc_now(), 'updated_at': utc_now()}
-                result = _supply_insert(KOJA_SUPPLY_TABLES['inventory'], row)
-                if result and not (isinstance(result, tuple) and len(result) > 1 and result[1]):
-                    if qty:
-                        _supply_insert(KOJA_SUPPLY_TABLES['movements'], {'id':str(uuid.uuid4()),'organization_id':org_id,'owner_id':uid,'warehouse_id':warehouse_id,'inventory_item_id':row['id'],'movement_type':'opening_balance','quantity':qty,'reference_type':'inventory','reference_id':row['id'],'unit_cost':cost,'notes':'Opening inventory','actor_id':uid,'created_at':utc_now()})
-                    _supply_event(org_id, uid, 'inventory_item_created', 'inventory', row['id'], {'sku': sku, 'quantity': qty})
-                    flash('Inventory item created.', 'success')
-                else:
-                    flash('Inventory item could not be saved.', 'danger')
-    rows = _supply_select(KOJA_SUPPLY_TABLES['inventory'], scope, 2000)
-    whmap = {str(x.get('id')): x.get('name') for x in warehouses}
-    return render_page('KOJA Supply Inventory', r'''
-    <div class="hero"><h1>Inventory</h1><p>Track stock by warehouse, SKU, reorder level and cost.</p></div>
-    <div class="card"><form method="post"><select name="warehouse_id" required><option value="">Select warehouse</option>{% for w in warehouses %}<option value="{{ w.id }}">{{ w.name }} ({{ w.code }})</option>{% endfor %}</select><input name="sku" placeholder="SKU" required><input name="name" placeholder="Item name" required><input name="category" placeholder="Category"><input name="unit" value="unit" placeholder="Unit"><input name="quantity" type="number" step="0.001" min="0" value="0"><input name="reorder_level" type="number" step="0.001" min="0" value="0"><input name="unit_cost" type="number" step="0.01" min="0" value="0"><input name="currency" value="ZMW"><button class="btn">Add Inventory Item</button></form></div>
-    <div class="card"><table><tr><th>SKU</th><th>Item</th><th>Warehouse</th><th>Qty</th><th>Reorder</th><th>Cost</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{ x.sku }}</td><td>{{ x.name }}</td><td>{{ whmap.get(x.warehouse_id, x.warehouse_id) }}</td><td>{{ x.quantity }}</td><td>{{ x.reorder_level }}</td><td>{{ x.unit_cost }} {{ x.currency }}</td><td>{% if x.quantity <= x.reorder_level %}Reorder required{% else %}In stock{% endif %}</td></tr>{% else %}<tr><td colspan="7">No inventory items yet.</td></tr>{% endfor %}</table></div>
-    ''', user=current_user() or {}, rows=rows, warehouses=warehouses, whmap=whmap)
+                row={'id':str(uuid.uuid4()),'organization_id':org_id,'owner_id':uid,'warehouse_id':warehouse_id,'sku':sku,'name':name,'category':clean(request.form.get('category') or '') or None,'unit':unit,'quantity':qty,'reorder_level':reorder,'unit_cost':cost,'currency':clean(request.form.get('currency') or 'ZMW').upper()[:8],'status':'active','created_at':utc_now(),'updated_at':utc_now()}
+                result=_supply_insert(KOJA_SUPPLY_TABLES['inventory'],row)
+                if result and not(isinstance(result,tuple) and len(result)>1 and result[1]):
+                    if qty: _supply_insert(KOJA_SUPPLY_TABLES['movements'],{'id':str(uuid.uuid4()),'organization_id':org_id,'owner_id':uid,'warehouse_id':warehouse_id,'inventory_item_id':row['id'],'movement_type':'opening_balance','quantity':qty,'reference_type':'inventory','reference_id':row['id'],'unit_cost':cost,'notes':'Opening inventory','actor_id':uid,'created_at':utc_now()}); _supply_finance_event(uid,org_id,'inventory_opening_balance',qty*float(cost or 0),row['id'],row['currency'])
+                    _supply_event(org_id,uid,'inventory_item_created','inventory',row['id'],{'sku':sku,'quantity':qty}); flash('Inventory item created.','success')
+                else: flash('Inventory item could not be saved.','danger')
+    q=clean(request.args.get('q') or '').lower(); rows=_supply_select(KOJA_SUPPLY_TABLES['inventory'],scope,5000)
+    if q: rows=[x for x in rows if q in str(x.get('sku','')).lower() or q in str(x.get('name','')).lower() or q in str(x.get('category','')).lower()]
+    whmap={str(x.get('id')):x.get('name') for x in warehouses}
+    return render_page('KOJA Supply Inventory',r'''
+    <div class="hero"><h1>Inventory</h1><p>Track stock by warehouse, SKU, quantity, reorder level and cost.</p></div>
+    <div class="card"><form method="post"><select name="warehouse_id" required><option value="">Select warehouse</option>{% for w in warehouses %}<option value="{{w.id}}">{{w.name}} ({{w.code}})</option>{% endfor %}</select><input name="sku" placeholder="SKU" required><input name="name" placeholder="Item name" required><input name="category" placeholder="Category"><input name="unit" value="unit" placeholder="Unit"><input name="quantity" type="number" step="0.001" min="0" value="0"><input name="reorder_level" type="number" step="0.001" min="0" value="0"><input name="unit_cost" type="number" step="0.01" min="0" value="0"><input name="currency" value="ZMW"><button class="btn">Add Inventory Item</button></form></div>
+    <div class="card"><form method="get"><input name="q" value="{{request.args.get('q','')}}" placeholder="Search SKU, item or category"><button class="btn">Search</button></form></div>
+    <div class="card"><table><tr><th>SKU</th><th>Item</th><th>Warehouse</th><th>Qty</th><th>Reorder</th><th>Unit Cost</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{x.sku}}</td><td>{{x.name}}</td><td>{{whmap.get(x.warehouse_id,x.warehouse_id)}}</td><td>{{x.quantity}}</td><td>{{x.reorder_level}}</td><td>{{x.unit_cost}} {{x.currency}}</td><td>{% if x.quantity|float <= x.reorder_level|float %}Reorder required{% else %}In stock{% endif %}</td></tr>{% else %}<tr><td colspan="7">No inventory items found.</td></tr>{% endfor %}</table></div>
+    ''',user=current_user() or {},rows=rows,warehouses=warehouses,whmap=whmap)
 
-@app.route('/supply-chain/movements', methods=['GET','POST'])
+@app.route('/supply-chain/movements',methods=['GET','POST'])
 @login_required
 def supply_movements():
-    uid, org_id, scope = _supply_scope()
-    warehouses = _supply_select(KOJA_SUPPLY_TABLES['warehouses'], scope, 500)
-    inventory = _supply_select(KOJA_SUPPLY_TABLES['inventory'], scope, 2000)
-    if request.method == 'POST':
-        item_id = clean(request.form.get('inventory_item_id') or '')
-        movement_type = clean(request.form.get('movement_type') or 'adjustment').lower()
-        qty = _supply_qty(request.form.get('quantity'))
-        if not item_id or qty <= 0 or movement_type not in ('receipt','issue','adjustment'):
-            flash('Select an item, a valid movement type and positive quantity.', 'danger')
+    uid,org_id,scope=_supply_scope(); inventory=_supply_select(KOJA_SUPPLY_TABLES['inventory'],scope,5000)
+    if request.method=='POST':
+        item_id=clean(request.form.get('inventory_item_id') or ''); typ=clean(request.form.get('movement_type') or 'receipt'); qty=_supply_qty(request.form.get('quantity'))
+        item=_supply_select(KOJA_SUPPLY_TABLES['inventory'],{'id':item_id},1)
+        if not item or qty<=0: flash('Select a valid item and positive quantity.','danger')
         else:
-            item = _supply_select(KOJA_SUPPLY_TABLES['inventory'], {'id': item_id}, 1)
-            if not item:
-                flash('Inventory item not found.', 'danger')
-            else:
-                item = item[0]
-                current = _supply_qty(item.get('quantity'))
-                new_qty = current + qty if movement_type in ('receipt','adjustment') else current - qty
-                if new_qty < 0:
-                    flash('Stock cannot become negative.', 'danger')
-                elif _supply_update(KOJA_SUPPLY_TABLES['inventory'], {'id': item_id}, {'quantity': new_qty, 'updated_at': utc_now()}):
-                    _supply_insert(KOJA_SUPPLY_TABLES['movements'], {'id':str(uuid.uuid4()),'organization_id':org_id,'owner_id':uid,'warehouse_id':item.get('warehouse_id'),'inventory_item_id':item_id,'movement_type':movement_type,'quantity':qty,'reference_type':clean(request.form.get('reference_type') or '') or None,'reference_id':clean(request.form.get('reference_id') or '') or None,'unit_cost':_b2b_num(item.get('unit_cost')),'notes':clean(request.form.get('notes') or '') or None,'actor_id':uid,'created_at':utc_now()})
-                    _supply_event(org_id, uid, 'stock_movement_posted', 'inventory', item_id, {'type':movement_type,'quantity':qty})
-                    flash('Stock movement posted.', 'success')
-    rows = _supply_select(KOJA_SUPPLY_TABLES['movements'], scope, 1000)
-    imap = {str(x.get('id')): x.get('sku') + ' — ' + x.get('name','') for x in inventory}
-    return render_page('KOJA Stock Movements', r'''
-    <div class="hero"><h1>Stock Movements</h1><p>Record receipts, issues and inventory adjustments with an audit trail.</p></div>
-    <div class="card"><form method="post"><select name="inventory_item_id" required><option value="">Select inventory item</option>{% for i in inventory %}<option value="{{ i.id }}">{{ i.sku }} — {{ i.name }}</option>{% endfor %}</select><select name="movement_type"><option value="receipt">Receipt</option><option value="issue">Issue</option><option value="adjustment">Adjustment</option></select><input name="quantity" type="number" step="0.001" min="0.001" placeholder="Quantity" required><input name="reference_type" placeholder="Reference type, e.g. PO"><input name="reference_id" placeholder="Reference ID"><input name="notes" placeholder="Notes"><button class="btn">Post Movement</button></form></div>
-    <div class="card"><table><tr><th>Item</th><th>Movement</th><th>Quantity</th><th>Reference</th><th>Actor</th><th>Date</th></tr>{% for x in rows %}<tr><td>{{ imap.get(x.inventory_item_id, x.inventory_item_id) }}</td><td>{{ x.movement_type }}</td><td>{{ x.quantity }}</td><td>{{ x.reference_type or '' }} {{ x.reference_id or '' }}</td><td>{{ x.actor_id }}</td><td>{{ x.created_at }}</td></tr>{% else %}<tr><td colspan="6">No stock movements yet.</td></tr>{% endfor %}</table></div>
-    ''', user=current_user() or {}, rows=rows, inventory=inventory, warehouses=warehouses, imap=imap)
+            it=item[0]; current=_supply_qty(it.get('quantity')); new_qty=current+qty if typ in ('receipt','adjustment') else current-qty
+            if typ not in ('receipt','issue','adjustment') or (typ=='issue' and new_qty<0): flash('Invalid movement or insufficient stock.','danger')
+            elif _supply_update(KOJA_SUPPLY_TABLES['inventory'],{'id':item_id},{'quantity':new_qty,'updated_at':utc_now()}):
+                mid=str(uuid.uuid4()); amount=qty*_supply_qty(it.get('unit_cost'))
+                _supply_insert(KOJA_SUPPLY_TABLES['movements'],{'id':mid,'organization_id':org_id,'owner_id':uid,'warehouse_id':it.get('warehouse_id'),'inventory_item_id':item_id,'movement_type':typ,'quantity':qty,'reference_type':clean(request.form.get('reference_type') or '') or None,'reference_id':clean(request.form.get('reference_id') or '') or None,'unit_cost':_supply_qty(it.get('unit_cost')),'notes':clean(request.form.get('notes') or '') or None,'actor_id':uid,'created_at':utc_now()})
+                _supply_event(org_id,uid,'stock_movement_posted','inventory',item_id,{'type':typ,'quantity':qty}); _supply_finance_event(uid,org_id,'inventory_'+typ,amount,mid,it.get('currency') or 'ZMW'); flash('Stock movement posted.','success')
+    rows=_supply_select(KOJA_SUPPLY_TABLES['movements'],scope,3000); imap={str(x.get('id')):x.get('sku')+' — '+x.get('name','') for x in inventory}
+    return render_page('KOJA Stock Movements',r'''
+    <div class="hero"><h1>Stock Movements</h1><p>Receipts, issues and adjustments with an audit trail and Finance V2 value events.</p></div>
+    <div class="card"><form method="post"><select name="inventory_item_id" required><option value="">Select inventory item</option>{% for i in inventory %}<option value="{{i.id}}">{{i.sku}} — {{i.name}}</option>{% endfor %}</select><select name="movement_type"><option value="receipt">Receipt</option><option value="issue">Issue</option><option value="adjustment">Adjustment</option></select><input name="quantity" type="number" step="0.001" min="0.001" placeholder="Quantity" required><input name="reference_type" placeholder="Reference type, e.g. PO"><input name="reference_id" placeholder="Reference ID"><input name="notes" placeholder="Notes"><button class="btn">Post Movement</button></form></div>
+    <div class="card"><table><tr><th>Item</th><th>Movement</th><th>Quantity</th><th>Reference</th><th>Date</th></tr>{% for x in rows %}<tr><td>{{imap.get(x.inventory_item_id,x.inventory_item_id)}}</td><td>{{x.movement_type}}</td><td>{{x.quantity}}</td><td>{{x.reference_type or ''}} {{x.reference_id or ''}}</td><td>{{x.created_at}}</td></tr>{% else %}<tr><td colspan="5">No stock movements yet.</td></tr>{% endfor %}</table></div>
+    ''',user=current_user() or {},rows=rows,inventory=inventory,imap=imap)
 
-@app.route('/supply-chain/transfers', methods=['GET','POST'])
+@app.route('/supply-chain/transfers',methods=['GET','POST'])
 @login_required
 def supply_transfers():
-    uid, org_id, scope = _supply_scope()
-    warehouses = _supply_select(KOJA_SUPPLY_TABLES['warehouses'], scope, 500)
-    inventory = _supply_select(KOJA_SUPPLY_TABLES['inventory'], scope, 2000)
-    if request.method == 'POST':
-        item_id = clean(request.form.get('inventory_item_id') or '')
-        from_id = clean(request.form.get('from_warehouse_id') or '')
-        to_id = clean(request.form.get('to_warehouse_id') or '')
-        qty = _supply_qty(request.form.get('quantity'))
-        if not item_id or not from_id or not to_id or from_id == to_id or qty <= 0:
-            flash('Select different source/destination warehouses and a positive quantity.', 'danger')
+    uid,org_id,scope=_supply_scope(); warehouses=_supply_select(KOJA_SUPPLY_TABLES['warehouses'],scope,1000); inventory=_supply_select(KOJA_SUPPLY_TABLES['inventory'],scope,5000)
+    if request.method=='POST':
+        action=clean(request.form.get('action') or 'request'); tid=clean(request.form.get('transfer_id') or '')
+        if action=='complete' and tid:
+            tr=_supply_select(KOJA_SUPPLY_TABLES['transfers'],{'id':tid},1)
+            if tr:
+                t=tr[0]; item=_supply_select(KOJA_SUPPLY_TABLES['inventory'],{'id':t.get('inventory_item_id')},1)
+                if item and str(t.get('status')) in ('approved','in_transit','requested') and _supply_qty(item[0].get('quantity'))>=_supply_qty(t.get('quantity')):
+                    it=item[0]; qty=_supply_qty(t.get('quantity')); source_new=_supply_qty(it.get('quantity'))-qty
+                    if _supply_update(KOJA_SUPPLY_TABLES['inventory'],{'id':it['id']},{'quantity':source_new,'updated_at':utc_now()}):
+                        dest=_supply_select(KOJA_SUPPLY_TABLES['inventory'],{'warehouse_id':t.get('to_warehouse_id'),'sku':it.get('sku')},1)
+                        if dest: _supply_update(KOJA_SUPPLY_TABLES['inventory'],{'id':dest[0]['id']},{'quantity':_supply_qty(dest[0].get('quantity'))+qty,'updated_at':utc_now()}); dest_id=dest[0]['id']
+                        else:
+                            dest_id=str(uuid.uuid4()); _supply_insert(KOJA_SUPPLY_TABLES['inventory'],dict(it,id=dest_id,warehouse_id=t.get('to_warehouse_id'),quantity=qty,created_at=utc_now(),updated_at=utc_now()))
+                        _supply_insert(KOJA_SUPPLY_TABLES['movements'],{'id':str(uuid.uuid4()),'organization_id':org_id,'owner_id':uid,'warehouse_id':t.get('from_warehouse_id'),'inventory_item_id':it['id'],'movement_type':'transfer_out','quantity':qty,'reference_type':'transfer','reference_id':tid,'unit_cost':_supply_qty(it.get('unit_cost')),'actor_id':uid,'created_at':utc_now()})
+                        _supply_insert(KOJA_SUPPLY_TABLES['movements'],{'id':str(uuid.uuid4()),'organization_id':org_id,'owner_id':uid,'warehouse_id':t.get('to_warehouse_id'),'inventory_item_id':dest_id,'movement_type':'transfer_in','quantity':qty,'reference_type':'transfer','reference_id':tid,'unit_cost':_supply_qty(it.get('unit_cost')),'actor_id':uid,'created_at':utc_now()})
+                        _supply_update(KOJA_SUPPLY_TABLES['transfers'],{'id':tid},{'status':'completed','updated_at':utc_now()}); _supply_event(org_id,uid,'stock_transfer_completed','transfer',tid,{'quantity':qty}); flash('Transfer completed.','success')
+                    else: flash('Transfer could not be completed.','danger')
+                else: flash('Transfer cannot be completed from its current state or stock is insufficient.','danger')
+        elif action in ('approve','in_transit','cancel') and tid:
+            status={'approve':'approved','in_transit':'in_transit','cancel':'cancelled'}[action]
+            if _supply_update(KOJA_SUPPLY_TABLES['transfers'],{'id':tid},{'status':status,'updated_at':utc_now()}): flash('Transfer status updated.','success')
         else:
-            item = _supply_select(KOJA_SUPPLY_TABLES['inventory'], {'id': item_id}, 1)
-            if not item or item[0].get('warehouse_id') != from_id:
-                flash('Inventory item is not stored in the selected source warehouse.', 'danger')
-            elif _supply_qty(item[0].get('quantity')) < qty:
-                flash('Insufficient stock for transfer.', 'danger')
+            item_id=clean(request.form.get('inventory_item_id') or ''); from_id=clean(request.form.get('from_warehouse_id') or ''); to_id=clean(request.form.get('to_warehouse_id') or ''); qty=_supply_qty(request.form.get('quantity'))
+            item=_supply_select(KOJA_SUPPLY_TABLES['inventory'],{'id':item_id},1)
+            if not item or not from_id or not to_id or from_id==to_id or qty<=0 or _supply_qty(item[0].get('quantity'))<qty: flash('Select valid warehouses, item and sufficient stock.','danger')
             else:
-                tid = str(uuid.uuid4())
-                row = {'id':tid,'organization_id':org_id,'owner_id':uid,'from_warehouse_id':from_id,'to_warehouse_id':to_id,'inventory_item_id':item_id,'quantity':qty,'status':'requested','requested_by':uid,'notes':clean(request.form.get('notes') or '') or None,'created_at':utc_now(),'updated_at':utc_now()}
-                result = _supply_insert(KOJA_SUPPLY_TABLES['transfers'], row)
-                if result and not (isinstance(result, tuple) and len(result) > 1 and result[1]):
-                    _supply_event(org_id, uid, 'stock_transfer_requested', 'transfer', tid, {'quantity':qty})
-                    flash('Stock transfer requested.', 'success')
-                else:
-                    flash('Transfer could not be saved.', 'danger')
-    rows = _supply_select(KOJA_SUPPLY_TABLES['transfers'], scope, 500)
-    wmap = {str(x.get('id')): x.get('name') for x in warehouses}
-    imap = {str(x.get('id')): x.get('sku') for x in inventory}
-    return render_page('KOJA Stock Transfers', r'''
-    <div class="hero"><h1>Distribution & Transfers</h1><p>Move stock between warehouses while preserving source and destination records.</p></div>
-    <div class="card"><form method="post"><select name="inventory_item_id" required><option value="">Inventory item</option>{% for i in inventory %}<option value="{{ i.id }}">{{ i.sku }} — {{ i.name }}</option>{% endfor %}</select><select name="from_warehouse_id" required><option value="">From warehouse</option>{% for w in warehouses %}<option value="{{ w.id }}">{{ w.name }}</option>{% endfor %}</select><select name="to_warehouse_id" required><option value="">To warehouse</option>{% for w in warehouses %}<option value="{{ w.id }}">{{ w.name }}</option>{% endfor %}</select><input name="quantity" type="number" step="0.001" min="0.001" placeholder="Quantity" required><input name="notes" placeholder="Transfer notes"><button class="btn">Request Transfer</button></form></div>
-    <div class="card"><table><tr><th>SKU</th><th>From</th><th>To</th><th>Quantity</th><th>Status</th><th>Date</th></tr>{% for x in rows %}<tr><td>{{ imap.get(x.inventory_item_id, x.inventory_item_id) }}</td><td>{{ wmap.get(x.from_warehouse_id, x.from_warehouse_id) }}</td><td>{{ wmap.get(x.to_warehouse_id, x.to_warehouse_id) }}</td><td>{{ x.quantity }}</td><td>{{ x.status }}</td><td>{{ x.created_at }}</td></tr>{% else %}<tr><td colspan="6">No transfers yet.</td></tr>{% endfor %}</table></div>
-    ''', user=current_user() or {}, rows=rows, warehouses=warehouses, inventory=inventory, wmap=wmap, imap=imap)
+                tid=str(uuid.uuid4()); row={'id':tid,'organization_id':org_id,'owner_id':uid,'from_warehouse_id':from_id,'to_warehouse_id':to_id,'inventory_item_id':item_id,'quantity':qty,'status':'requested','requested_by':uid,'notes':clean(request.form.get('notes') or '') or None,'created_at':utc_now(),'updated_at':utc_now()}; result=_supply_insert(KOJA_SUPPLY_TABLES['transfers'],row)
+                if result and not(isinstance(result,tuple) and len(result)>1 and result[1]): _supply_event(org_id,uid,'stock_transfer_requested','transfer',tid,{'quantity':qty}); flash('Stock transfer requested.','success')
+                else: flash('Transfer could not be saved.','danger')
+    rows=_supply_select(KOJA_SUPPLY_TABLES['transfers'],scope,2000); wmap={str(x.get('id')):x.get('name') for x in warehouses}; imap={str(x.get('id')):x.get('sku') for x in inventory}
+    return render_page('KOJA Stock Transfers',r'''
+    <div class="hero"><h1>Distribution & Transfers</h1><p>Request, approve, move and complete inter-warehouse stock transfers.</p></div>
+    <div class="card"><form method="post"><input type="hidden" name="action" value="request"><select name="inventory_item_id" required><option value="">Inventory item</option>{% for i in inventory %}<option value="{{i.id}}">{{i.sku}} — {{i.name}}</option>{% endfor %}</select><select name="from_warehouse_id" required><option value="">From warehouse</option>{% for w in warehouses %}<option value="{{w.id}}">{{w.name}}</option>{% endfor %}</select><select name="to_warehouse_id" required><option value="">To warehouse</option>{% for w in warehouses %}<option value="{{w.id}}">{{w.name}}</option>{% endfor %}</select><input name="quantity" type="number" step="0.001" min="0.001" placeholder="Quantity" required><input name="notes" placeholder="Transfer notes"><button class="btn">Request Transfer</button></form></div>
+    <div class="card"><table><tr><th>SKU</th><th>From</th><th>To</th><th>Qty</th><th>Status</th><th>Action</th></tr>{% for x in rows %}<tr><td>{{imap.get(x.inventory_item_id,x.inventory_item_id)}}</td><td>{{wmap.get(x.from_warehouse_id,x.from_warehouse_id)}}</td><td>{{wmap.get(x.to_warehouse_id,x.to_warehouse_id)}}</td><td>{{x.quantity}}</td><td>{{x.status}}</td><td>{% if x.status=='requested' %}<form method="post"><input type="hidden" name="action" value="approve"><input type="hidden" name="transfer_id" value="{{x.id}}"><button class="btn">Approve</button></form>{% elif x.status in ('approved','in_transit') %}<form method="post"><input type="hidden" name="action" value="complete"><input type="hidden" name="transfer_id" value="{{x.id}}"><button class="btn">Complete</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="6">No transfers yet.</td></tr>{% endfor %}</table></div>
+    ''',user=current_user() or {},rows=rows,warehouses=warehouses,inventory=inventory,wmap=wmap,imap=imap)
+
+@app.route('/supply-chain/reorders',methods=['GET','POST'])
+@login_required
+def supply_reorders():
+    uid,org_id,scope=_supply_scope(); inventory=_supply_select(KOJA_SUPPLY_TABLES['inventory'],scope,5000)
+    if request.method=='POST':
+        item_id=clean(request.form.get('inventory_item_id') or ''); qty=_supply_qty(request.form.get('quantity')); item=_supply_select(KOJA_SUPPLY_TABLES['inventory'],{'id':item_id},1)
+        if not item or qty<=0: flash('Select an inventory item and positive requested quantity.','danger')
+        else:
+            row={'id':str(uuid.uuid4()),'organization_id':org_id,'owner_id':uid,'inventory_item_id':item_id,'quantity':qty,'status':'requested','source':'supply_chain','notes':clean(request.form.get('notes') or '') or None,'requested_by':uid,'created_at':utc_now(),'updated_at':utc_now()}
+            result=_supply_insert(KOJA_SUPPLY_TABLES['reorders'],row)
+            if result and not(isinstance(result,tuple) and len(result)>1 and result[1]): _supply_event(org_id,uid,'reorder_requested','reorder',row['id'],{'quantity':qty}); flash('Reorder request created.','success')
+            else: flash('Reorder request could not be saved.','danger')
+    rows=_supply_select(KOJA_SUPPLY_TABLES['reorders'],scope,2000); imap={str(x.get('id')):x.get('sku')+' — '+x.get('name','') for x in inventory}
+    return render_page('KOJA Replenishment',r'''
+    <div class="hero"><h1>Replenishment</h1><p>Convert stock alerts into actionable reorder requests for procurement.</p></div>
+    <div class="card"><form method="post"><select name="inventory_item_id" required><option value="">Inventory item</option>{% for i in inventory %}<option value="{{i.id}}">{{i.sku}} — {{i.name}}</option>{% endfor %}</select><input name="quantity" type="number" step="0.001" min="0.001" placeholder="Requested quantity" required><input name="notes" placeholder="Notes"><button class="btn">Create Reorder Request</button></form></div>
+    <div class="card"><table><tr><th>Item</th><th>Qty</th><th>Status</th><th>Date</th></tr>{% for x in rows %}<tr><td>{{imap.get(x.inventory_item_id,x.inventory_item_id)}}</td><td>{{x.quantity}}</td><td>{{x.status}}</td><td>{{x.created_at}}</td></tr>{% else %}<tr><td colspan="4">No reorder requests yet.</td></tr>{% endfor %}</table></div>
+    ''',user=current_user() or {},rows=rows,inventory=inventory,imap=imap)
 
 @app.route('/supply-chain/forecast')
 @login_required
 def supply_forecast():
-    uid, org_id, scope = _supply_scope()
-    inventory = _supply_select(KOJA_SUPPLY_TABLES['inventory'], scope, 2000)
-    forecasts = _supply_select(KOJA_SUPPLY_TABLES['forecasts'], scope, 1000)
-    existing = {str(x.get('inventory_item_id')): x for x in forecasts}
-    generated = []
-    for item in inventory[:500]:
-        qty = _supply_qty(item.get('quantity'))
-        reorder = _supply_qty(item.get('reorder_level'))
-        if qty <= reorder:
-            demand = max(reorder * 1.5, 1)
-            recommended = max(demand - qty, reorder or demand)
-            generated.append({'sku': item.get('sku'), 'name': item.get('name'), 'quantity': qty, 'projected_demand': round(demand,3), 'recommended_reorder': round(recommended,3)})
-    return render_page('KOJA Supply Forecast', r'''
-    <div class="hero"><h1>Stock Forecasting</h1><p>Turn current inventory and reorder thresholds into a first replenishment signal. This V1 is a rules-based foundation, not a predictive ML model.</p></div>
-    <div class="card"><table><tr><th>SKU</th><th>Item</th><th>Current</th><th>Projected demand</th><th>Recommended reorder</th></tr>{% for x in generated %}<tr><td>{{ x.sku }}</td><td>{{ x.name }}</td><td>{{ x.quantity }}</td><td>{{ x.projected_demand }}</td><td>{{ x.recommended_reorder }}</td></tr>{% else %}<tr><td colspan="5">No replenishment signals currently required.</td></tr>{% endfor %}</table></div>
-    ''', user=current_user() or {}, generated=generated, forecasts=forecasts)
+    uid,org_id,scope=_supply_scope(); inventory=_supply_select(KOJA_SUPPLY_TABLES['inventory'],scope,5000); forecasts=_supply_select(KOJA_SUPPLY_TABLES['forecasts'],scope,3000); generated=[]
+    for item in inventory:
+        qty=_supply_qty(item.get('quantity')); reorder=_supply_qty(item.get('reorder_level'))
+        if qty<=reorder:
+            demand=max(reorder*1.5,1); recommended=max(demand-qty,reorder or demand); generated.append({'sku':item.get('sku'),'name':item.get('name'),'quantity':qty,'projected_demand':round(demand,3),'recommended_reorder':round(recommended,3),'inventory_item_id':item.get('id')})
+    return render_page('KOJA Supply Forecast',r'''
+    <div class="hero"><h1>Stock Forecasting</h1><p>Rules-based replenishment signals using current stock and reorder thresholds.</p></div>
+    <div class="card"><table><tr><th>SKU</th><th>Item</th><th>Current</th><th>Projected demand</th><th>Recommended reorder</th><th>Action</th></tr>{% for x in generated %}<tr><td>{{x.sku}}</td><td>{{x.name}}</td><td>{{x.quantity}}</td><td>{{x.projected_demand}}</td><td>{{x.recommended_reorder}}</td><td><a class="btn" href="{{url_for('supply_reorders')}}">Create Reorder</a></td></tr>{% else %}<tr><td colspan="6">No replenishment signals currently required.</td></tr>{% endfor %}</table></div>
+    ''',user=current_user() or {},generated=generated,forecasts=forecasts)
 
 @app.route('/api/supply-chain/summary')
 @login_required
 def api_supply_chain_summary():
-    uid, org_id, scope = _supply_scope()
-    inventory = _supply_select(KOJA_SUPPLY_TABLES['inventory'], scope, 2000)
-    low = [x for x in inventory if _supply_qty(x.get('quantity')) <= _supply_qty(x.get('reorder_level'))]
-    return jsonify({'ok':True,'version':'V1','organization_id':org_id,
-        'warehouses':len(_supply_select(KOJA_SUPPLY_TABLES['warehouses'],scope,1000)),
-        'inventory_items':len(inventory),'low_stock':len(low),
-        'movements':len(_supply_select(KOJA_SUPPLY_TABLES['movements'],scope,2000)),
-        'transfers':len(_supply_select(KOJA_SUPPLY_TABLES['transfers'],scope,1000))})
-
+    uid,org_id,scope=_supply_scope(); inventory=_supply_select(KOJA_SUPPLY_TABLES['inventory'],scope,5000); low=[x for x in inventory if _supply_qty(x.get('quantity'))<=_supply_qty(x.get('reorder_level'))]; transfers=_supply_select(KOJA_SUPPLY_TABLES['transfers'],scope,3000); reorders=_supply_select(KOJA_SUPPLY_TABLES['reorders'],scope,3000)
+    return jsonify({'ok':True,'version':'V2','organization_id':org_id,'warehouses':len(_supply_select(KOJA_SUPPLY_TABLES['warehouses'],scope,2000)),'inventory_items':len(inventory),'low_stock':len(low),'stock_value':round(sum(_supply_qty(x.get('quantity'))*_supply_qty(x.get('unit_cost')) for x in inventory),2),'movements':len(_supply_select(KOJA_SUPPLY_TABLES['movements'],scope,5000)),'transfers':len(transfers),'pending_transfers':len([x for x in transfers if str(x.get('status')) in ('requested','approved','in_transit')]),'reorder_requests':len(reorders)})
 
 # ========================= KOJA SALES + CRM V1 =========================
 KOJA_SALES_TABLES = {
