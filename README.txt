@@ -1,19 +1,23 @@
-KOJA AFRICA — SUPPLY CHAIN V2
+KOJA AFRICA — Workforce / HR V2
 
-This package contains the cumulative production app.py with Supply Chain V2 completion.
+This package upgrades the existing Workforce V1 module in the cumulative production app.
 
-Key additions:
-- Supply Chain V2 dashboard KPIs
-- inventory search
-- replenishment/reorder requests
-- transfer approval and completion workflow
-- stock movement to Finance V2 transaction bridge
-- expanded supply-chain summary API
-- additive SQL for reorder requests
+Added:
+- Workforce V2 dashboard and KPIs
+- Candidate pipeline and stage updates
+- Job status workflow
+- Employee lifecycle status workflow
+- Attendance tracking
+- Leave approval/rejection workflow
+- Payroll creation and mark-paid workflow
+- Payroll -> Finance V2 transaction bridge when Finance V2 is installed
+- Training cost -> Finance V2 bridge when available
+- Performance reviews
+- Workforce summary API V2
+- Additive SQL migration only
 
-Preserved: existing KOJA services and modules.
+Deploy:
+1. Run KOJA_WORKFORCE_V2.sql in the Supabase SQL Editor.
+2. Deploy app.py to the existing KOJA-AFRICA Render production service.
 
-Deployment:
-1. Replace production app.py with this app.py.
-2. Run KOJA_SUPPLY_CHAIN_V2.sql in Supabase SQL Editor after the existing Supply Chain V1 and Finance V2 SQL.
-3. Deploy normally with gunicorn app:app.
+Existing KOJA services are preserved. Communications is untouched.

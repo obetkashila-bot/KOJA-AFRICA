@@ -10825,7 +10825,10 @@ def api_sales_summary():
     open_opps=[x for x in opps if x.get('stage') not in ('won','lost')]
     return jsonify({'ok':True,'version':'V1','organization_id':org_id,'leads':len(leads),'customers':len(customers),'opportunities':len(opps),'open_pipeline':sum(_sales_num(x.get('expected_value')) for x in open_opps),'sales_orders':len(orders),'sales_value':sum(_sales_num(x.get('total')) for x in orders)})
 
-# ========================= KOJA WORKFORCE / HR V1 =========================
+# ========================= KOJA WORKFORCE / HR V2 =========================
+# Additive upgrade. Preserves the existing Workforce V1 tables and routes while
+# adding operational workflows for recruitment, employee lifecycle, leave,
+# payroll payment status, performance, training and Finance V2 integration.
 KOJA_WORKFORCE_TABLES = {
     'jobs':'koja_workforce_jobs','candidates':'koja_workforce_candidates','employees':'koja_workforce_employees',
     'attendance':'koja_workforce_attendance','leave':'koja_workforce_leave','payroll':'koja_workforce_payroll',
@@ -10839,132 +10842,236 @@ def _wf_scope(uid=None):
         org_id = _sales_org(uid) if '_sales_org' in globals() else None
     except Exception:
         org_id = None
+    if not org_id:
+        try:
+            u=current_user() or {}
+            org_id=str(u.get('organization_id') or u.get('org_id') or '') or None
+        except Exception: org_id=None
     return uid, org_id
 
 def _wf_select(table, filters=None, limit=2000):
-    try: return db_select(table, filters or {}, limit=limit) or []
+    try: return db_select(table, filters or {}, order='created_at.desc', limit=limit) or []
     except Exception: return []
 
 def _wf_insert(table, payload):
-    try: return db_insert(table, payload) or []
+    try: return db_insert(table, payload)
     except Exception as e:
-        logging.exception('workforce insert failed: %s', e); return []
+        logging.exception('workforce insert failed: %s', e); return None, str(e)
+
+def _wf_update(table, filters, payload):
+    try: return db_update(table, filters, payload)
+    except Exception as e:
+        logging.exception('workforce update failed: %s', e); return None, str(e)
 
 def _wf_event(org_id, uid, event_type, entity_type, entity_id, meta=None):
     if not org_id: return
     _wf_insert(KOJA_WORKFORCE_TABLES['events'], {'id':str(uuid.uuid4()),'organization_id':org_id,'actor_id':uid,'event_type':event_type,'entity_type':entity_type,'entity_id':entity_id,'metadata':meta or {},'created_at':utc_now()})
 
 def _wf_num(v):
-    try: return float(v or 0)
+    try: return round(float(v or 0),2)
     except Exception: return 0.0
 
 def _wf_org(uid):
-    uid, org_id = _wf_scope(uid)
+    _, org_id = _wf_scope(uid)
     if org_id: return org_id
     try:
-        org_id = str(uuid.uuid4())
-        _wf_insert('koja_b2b_organizations', {'id':org_id,'owner_id':uid,'name':'KOJA Workforce Organization','status':'active','created_at':utc_now(),'updated_at':utc_now()})
-        return org_id
+        # Reuse an existing B2B organization owned by the user before creating one.
+        existing=first_row('koja_b2b_organizations',{'owner_id':uid}) if uid else None
+        if existing and existing.get('id'): return existing.get('id')
+        org_id=str(uuid.uuid4())
+        row,err=_wf_insert('koja_b2b_organizations', {'id':org_id,'owner_id':uid,'name':'KOJA Workforce Organization','status':'active','created_at':utc_now(),'updated_at':utc_now()})
+        return org_id if not err else None
     except Exception: return None
+
+def _wf_money(v,c='ZMW'):
+    try: return market_money(_wf_num(v), c)
+    except Exception: return f'{_wf_num(v):,.2f} {c}'
+
+def _wf_employee_map(employees):
+    return {str(x.get('id')):f"{x.get('first_name','')} {x.get('last_name','')}".strip() for x in employees}
+
+def _wf_finance_post(uid, source_id, transaction_type, amount, currency='ZMW', metadata=None):
+    # Bridge completed payroll/training spend into Finance V2 when available.
+    try:
+        fn=globals().get('_fv2_post_transaction')
+        if callable(fn) and _wf_num(amount)>0:
+            return fn(uid,'workforce',source_id,transaction_type,_wf_num(amount),currency,'recorded',metadata or {})
+    except Exception:
+        logger.exception('Workforce Finance V2 bridge failed')
+    return None, 'finance_bridge_unavailable'
 
 @app.route('/workforce')
 @login_required
 def workforce_dashboard():
-    uid, org_id = _wf_scope(); org_id = org_id or _wf_org(uid); scope={'organization_id':org_id}
-    employees=_wf_select(KOJA_WORKFORCE_TABLES['employees'],scope,3000); jobs=_wf_select(KOJA_WORKFORCE_TABLES['jobs'],scope,3000); candidates=_wf_select(KOJA_WORKFORCE_TABLES['candidates'],scope,3000); leaves=_wf_select(KOJA_WORKFORCE_TABLES['leave'],scope,3000); payroll=_wf_select(KOJA_WORKFORCE_TABLES['payroll'],scope,3000); training=_wf_select(KOJA_WORKFORCE_TABLES['training'],scope,3000)
-    return render_page('KOJA Workforce',r'''<div class="hero"><h1>KOJA Workforce</h1><p>Recruit, manage, pay, develop and retain your workforce from one platform.</p></div><div class="grid"><div class="card"><h3>Employees</h3><p>{{employees|length}}</p></div><div class="card"><h3>Open Jobs</h3><p>{{open_jobs}}</p></div><div class="card"><h3>Candidates</h3><p>{{candidates|length}}</p></div><div class="card"><h3>Pending Leave</h3><p>{{pending_leave}}</p></div><div class="card"><h3>Payroll Records</h3><p>{{payroll|length}}</p></div><div class="card"><h3>Training Records</h3><p>{{training|length}}</p></div></div><div class="card"><h2>Workforce Modules</h2><p><a href="/workforce/recruitment">Recruitment</a> · <a href="/workforce/employees">Employees</a> · <a href="/workforce/attendance">Attendance</a> · <a href="/workforce/leave">Leave</a> · <a href="/workforce/payroll">Payroll</a> · <a href="/workforce/performance">Performance</a> · <a href="/workforce/training">Training</a></p></div>''',user=current_user() or {},employees=employees,open_jobs=sum(1 for x in jobs if x.get('status','open')=='open'),candidates=candidates,pending_leave=sum(1 for x in leaves if x.get('status')=='pending'),payroll=payroll,training=training)
+    uid, org_id=_wf_scope(); org_id=org_id or _wf_org(uid); scope={'organization_id':org_id}
+    employees=_wf_select(KOJA_WORKFORCE_TABLES['employees'],scope,5000); jobs=_wf_select(KOJA_WORKFORCE_TABLES['jobs'],scope,5000); candidates=_wf_select(KOJA_WORKFORCE_TABLES['candidates'],scope,5000); leaves=_wf_select(KOJA_WORKFORCE_TABLES['leave'],scope,5000); payroll=_wf_select(KOJA_WORKFORCE_TABLES['payroll'],scope,5000); training=_wf_select(KOJA_WORKFORCE_TABLES['training'],scope,5000); attendance=_wf_select(KOJA_WORKFORCE_TABLES['attendance'],scope,5000)
+    active=sum(1 for x in employees if str(x.get('status') or 'active').lower()=='active')
+    open_jobs=sum(1 for x in jobs if str(x.get('status') or 'open').lower()=='open')
+    pending_leave=sum(1 for x in leaves if str(x.get('status') or '').lower()=='pending')
+    payroll_net=sum(_wf_num(x.get('net_pay')) for x in payroll)
+    return render_page('KOJA Workforce V2',r'''<div class="hero"><h1>KOJA Workforce V2</h1><p>Recruit, manage, pay, develop and retain your workforce from one operating layer.</p><div class="actions"><a class="btn" href="{{ url_for('workforce_recruitment') }}">Recruitment</a><a class="btn secondary" href="{{ url_for('workforce_employees') }}">Employees</a><a class="btn secondary" href="{{ url_for('workforce_attendance') }}">Attendance</a><a class="btn secondary" href="{{ url_for('workforce_leave') }}">Leave</a><a class="btn secondary" href="{{ url_for('workforce_payroll') }}">Payroll</a><a class="btn secondary" href="{{ url_for('workforce_performance') }}">Performance</a><a class="btn secondary" href="{{ url_for('workforce_training') }}">Training</a></div></div>
+<div class="grid"><div class="card"><h3>Active Employees</h3><h2>{{ active }}</h2></div><div class="card"><h3>Open Jobs</h3><h2>{{ open_jobs }}</h2></div><div class="card"><h3>Candidates</h3><h2>{{ candidates|length }}</h2></div><div class="card"><h3>Pending Leave</h3><h2>{{ pending_leave }}</h2></div><div class="card"><h3>Payroll Records</h3><h2>{{ payroll|length }}</h2></div><div class="card"><h3>Payroll Net</h3><h2>{{ money(payroll_net,'ZMW') }}</h2></div><div class="card"><h3>Training Records</h3><h2>{{ training|length }}</h2></div><div class="card"><h3>Attendance Records</h3><h2>{{ attendance|length }}</h2></div></div>
+<div class="card"><h2>Workforce operating chain</h2><p>Job → Candidate → Employee → Attendance → Leave → Payroll → Performance → Training.</p></div>''',user=current_user() or {},active=active,open_jobs=open_jobs,candidates=candidates,pending_leave=pending_leave,payroll=payroll,training=training,attendance=attendance,payroll_net=payroll_net,money=market_money)
 
 @app.route('/workforce/recruitment', methods=['GET','POST'])
 @login_required
 def workforce_recruitment():
-    uid, org_id=_wf_scope(); org_id=org_id or _wf_org(uid); scope={'organization_id':org_id}
+    uid,org_id=_wf_scope(); org_id=org_id or _wf_org(uid); scope={'organization_id':org_id}
     if request.method=='POST':
-        title=clean(request.form.get('title') or '')
-        if not title: flash('Job title is required.','danger')
+        action=clean(request.form.get('action') or 'create_job')
+        if action=='add_candidate':
+            jid=clean(request.form.get('job_id')); first=clean(request.form.get('first_name')); last=clean(request.form.get('last_name'))
+            if not jid or not first or not last: flash('Job, first name and last name are required.','danger')
+            else:
+                job=first_row(KOJA_WORKFORCE_TABLES['jobs'],{'id':jid,'organization_id':org_id})
+                if not job: flash('Job opening not found.','danger')
+                else:
+                    cid=str(uuid.uuid4()); _,err=_wf_insert(KOJA_WORKFORCE_TABLES['candidates'],{'id':cid,'organization_id':org_id,'job_id':jid,'first_name':first,'last_name':last,'email':clean(request.form.get('email')) or None,'phone':clean(request.form.get('phone')) or None,'resume_url':clean(request.form.get('resume_url')) or None,'stage':'applied','notes':clean(request.form.get('notes')) or None,'created_at':utc_now(),'updated_at':utc_now()}); _wf_event(org_id,uid,'candidate_added','candidate',cid,{'job_id':jid}); flash('Candidate added.' if not err else 'Candidate could not be added.','success' if not err else 'danger')
         else:
-            jid=str(uuid.uuid4()); _wf_insert(KOJA_WORKFORCE_TABLES['jobs'],{'id':jid,'organization_id':org_id,'owner_id':uid,'title':title,'department':clean(request.form.get('department') or '') or None,'location':clean(request.form.get('location') or '') or None,'employment_type':clean(request.form.get('employment_type') or 'full_time'),'salary_min':_wf_num(request.form.get('salary_min')),'salary_max':_wf_num(request.form.get('salary_max')),'status':'open','description':clean(request.form.get('description') or '') or None,'created_at':utc_now(),'updated_at':utc_now()}); _wf_event(org_id,uid,'job_created','job',jid); flash('Job opening created.','success')
-    jobs=_wf_select(KOJA_WORKFORCE_TABLES['jobs'],scope,3000); candidates=_wf_select(KOJA_WORKFORCE_TABLES['candidates'],scope,3000)
-    return render_page('KOJA Workforce Recruitment',r'''<div class="hero"><h1>Recruitment</h1><p>Create vacancies and maintain a central candidate pipeline.</p></div><div class="card"><form method="post"><input name="title" placeholder="Job title" required><input name="department" placeholder="Department"><input name="location" placeholder="Location"><select name="employment_type"><option>full_time</option><option>part_time</option><option>contract</option><option>internship</option></select><input name="salary_min" type="number" step="0.01" placeholder="Salary min"><input name="salary_max" type="number" step="0.01" placeholder="Salary max"><input name="description" placeholder="Description"><button class="btn">Create Job</button></form></div><div class="card"><table><tr><th>Job</th><th>Department</th><th>Type</th><th>Status</th></tr>{% for x in jobs %}<tr><td>{{x.title}}</td><td>{{x.department or ''}}</td><td>{{x.employment_type}}</td><td>{{x.status}}</td></tr>{% else %}<tr><td colspan="4">No jobs yet.</td></tr>{% endfor %}</table></div>''',user=current_user() or {},jobs=jobs,candidates=candidates)
+            title=clean(request.form.get('title'))
+            if not title: flash('Job title is required.','danger')
+            else:
+                jid=str(uuid.uuid4()); _,err=_wf_insert(KOJA_WORKFORCE_TABLES['jobs'],{'id':jid,'organization_id':org_id,'owner_id':uid,'title':title,'department':clean(request.form.get('department')) or None,'location':clean(request.form.get('location')) or None,'employment_type':clean(request.form.get('employment_type') or 'full_time'),'salary_min':_wf_num(request.form.get('salary_min')),'salary_max':_wf_num(request.form.get('salary_max')),'status':'open','description':clean(request.form.get('description')) or None,'created_at':utc_now(),'updated_at':utc_now()}); _wf_event(org_id,uid,'job_created','job',jid); flash('Job opening created.' if not err else 'Job could not be created.','success' if not err else 'danger')
+    jobs=_wf_select(KOJA_WORKFORCE_TABLES['jobs'],scope,3000); candidates=_wf_select(KOJA_WORKFORCE_TABLES['candidates'],scope,3000); jmap={str(x.get('id')):x for x in jobs}
+    return render_page('KOJA Workforce Recruitment V2',r'''<div class="hero"><h1>Recruitment</h1><p>Vacancies, candidate pipeline and hiring stages.</p></div><div class="card"><h2>Create Job</h2><form method="post"><input type="hidden" name="action" value="create_job"><div class="grid"><input name="title" placeholder="Job title" required><input name="department" placeholder="Department"><input name="location" placeholder="Location"><select name="employment_type"><option>full_time</option><option>part_time</option><option>contract</option><option>internship</option></select><input name="salary_min" type="number" step="0.01" placeholder="Salary min"><input name="salary_max" type="number" step="0.01" placeholder="Salary max"><input name="description" placeholder="Description"></div><button class="btn">Create Job</button></form></div><div class="card"><h2>Add Candidate</h2><form method="post"><input type="hidden" name="action" value="add_candidate"><div class="grid"><select name="job_id" required><option value="">Select job</option>{% for j in jobs if j.status=='open' %}<option value="{{j.id}}">{{j.title}}</option>{% endfor %}</select><input name="first_name" placeholder="First name" required><input name="last_name" placeholder="Last name" required><input name="email" type="email" placeholder="Email"><input name="phone" placeholder="Phone"><input name="resume_url" placeholder="Resume URL"><input name="notes" placeholder="Notes"></div><button class="btn">Add Candidate</button></form></div><div class="card"><h2>Jobs</h2><table><tr><th>Job</th><th>Department</th><th>Type</th><th>Status</th></tr>{% for x in jobs %}<tr><td>{{x.title}}</td><td>{{x.department or ''}}</td><td>{{x.employment_type}}</td><td>{{x.status}}</td></tr>{% else %}<tr><td colspan="4">No jobs yet.</td></tr>{% endfor %}</table></div><div class="card"><h2>Candidate Pipeline</h2><table><tr><th>Candidate</th><th>Job</th><th>Stage</th><th>Contact</th><th>Action</th></tr>{% for x in candidates %}<tr><td>{{x.first_name}} {{x.last_name}}</td><td>{{jmap.get(x.job_id,{}).get('title','')}}</td><td>{{x.stage}}</td><td>{{x.email or x.phone or ''}}</td><td><form method="post" action="{{ url_for('workforce_candidate_stage',candidate_id=x.id) }}"><select name="stage"><option>applied</option><option>screening</option><option>interview</option><option>offer</option><option>hired</option><option>rejected</option></select><button class="btn secondary">Update</button></form></td></tr>{% else %}<tr><td colspan="5">No candidates yet.</td></tr>{% endfor %}</table></div>''',user=current_user() or {},jobs=jobs,candidates=candidates,jmap=jmap)
+
+@app.route('/workforce/candidate/<candidate_id>/stage',methods=['POST'])
+@login_required
+def workforce_candidate_stage(candidate_id):
+    uid,org_id=_wf_scope(); org_id=org_id or _wf_org(uid)
+    stage=clean(request.form.get('stage') or '').lower(); allowed={'applied','screening','interview','offer','hired','rejected'}
+    row=first_row(KOJA_WORKFORCE_TABLES['candidates'],{'id':candidate_id,'organization_id':org_id})
+    if stage not in allowed or not row: flash('Invalid candidate update.','danger')
+    else:
+        _,err=_wf_update(KOJA_WORKFORCE_TABLES['candidates'],{'id':candidate_id,'organization_id':org_id},{'stage':stage,'updated_at':utc_now()}); _wf_event(org_id,uid,'candidate_stage_changed','candidate',candidate_id,{'stage':stage}); flash('Candidate stage updated.' if not err else 'Candidate update failed.','success' if not err else 'danger')
+    return redirect(url_for('workforce_recruitment'))
+
+@app.route('/workforce/job/<job_id>/status',methods=['POST'])
+@login_required
+def workforce_job_status(job_id):
+    uid,org_id=_wf_scope(); org_id=org_id or _wf_org(uid); status=clean(request.form.get('status') or '').lower(); allowed={'open','paused','closed'}
+    if status not in allowed: flash('Invalid job status.','danger')
+    else:
+        row=first_row(KOJA_WORKFORCE_TABLES['jobs'],{'id':job_id,'organization_id':org_id})
+        if not row: flash('Job not found.','danger')
+        else:
+            _,err=_wf_update(KOJA_WORKFORCE_TABLES['jobs'],{'id':job_id,'organization_id':org_id},{'status':status,'updated_at':utc_now()}); _wf_event(org_id,uid,'job_status_changed','job',job_id,{'status':status}); flash('Job status updated.' if not err else 'Job update failed.','success' if not err else 'danger')
+    return redirect(url_for('workforce_recruitment'))
 
 @app.route('/workforce/employees', methods=['GET','POST'])
 @login_required
 def workforce_employees():
-    uid, org_id=_wf_scope(); org_id=org_id or _wf_org(uid); scope={'organization_id':org_id}
+    uid,org_id=_wf_scope(); org_id=org_id or _wf_org(uid); scope={'organization_id':org_id}
     if request.method=='POST':
-        first=clean(request.form.get('first_name') or ''); last=clean(request.form.get('last_name') or '')
+        first=clean(request.form.get('first_name')); last=clean(request.form.get('last_name'))
         if not first or not last: flash('First and last name are required.','danger')
         else:
-            eid=str(uuid.uuid4()); _wf_insert(KOJA_WORKFORCE_TABLES['employees'],{'id':eid,'organization_id':org_id,'owner_id':uid,'employee_number':'EMP-'+eid[:8].upper(),'first_name':first,'last_name':last,'email':clean(request.form.get('email') or '') or None,'phone':clean(request.form.get('phone') or '') or None,'department':clean(request.form.get('department') or '') or None,'job_title':clean(request.form.get('job_title') or '') or None,'employment_type':clean(request.form.get('employment_type') or 'full_time'),'hire_date':clean(request.form.get('hire_date') or '') or None,'base_salary':_wf_num(request.form.get('base_salary')),'currency':clean(request.form.get('currency') or 'ZMW'),'status':'active','created_at':utc_now(),'updated_at':utc_now()}); _wf_event(org_id,uid,'employee_created','employee',eid); flash('Employee added.','success')
+            eid=str(uuid.uuid4()); _,err=_wf_insert(KOJA_WORKFORCE_TABLES['employees'],{'id':eid,'organization_id':org_id,'owner_id':uid,'employee_number':'EMP-'+eid[:8].upper(),'first_name':first,'last_name':last,'email':clean(request.form.get('email')) or None,'phone':clean(request.form.get('phone')) or None,'department':clean(request.form.get('department')) or None,'job_title':clean(request.form.get('job_title')) or None,'employment_type':clean(request.form.get('employment_type') or 'full_time'),'hire_date':clean(request.form.get('hire_date')) or None,'base_salary':_wf_num(request.form.get('base_salary')),'currency':clean(request.form.get('currency') or 'ZMW'),'status':'active','created_at':utc_now(),'updated_at':utc_now()}); _wf_event(org_id,uid,'employee_created','employee',eid); flash('Employee added.' if not err else 'Employee could not be added.','success' if not err else 'danger')
     rows=_wf_select(KOJA_WORKFORCE_TABLES['employees'],scope,3000)
-    return render_page('KOJA Workforce Employees',r'''<div class="hero"><h1>Employees</h1><p>Central employee records for the organization.</p></div><div class="card"><form method="post"><input name="first_name" placeholder="First name" required><input name="last_name" placeholder="Last name" required><input name="email" type="email" placeholder="Email"><input name="phone" placeholder="Phone"><input name="department" placeholder="Department"><input name="job_title" placeholder="Job title"><select name="employment_type"><option>full_time</option><option>part_time</option><option>contract</option><option>internship</option></select><input name="hire_date" type="date"><input name="base_salary" type="number" step="0.01" placeholder="Base salary"><input name="currency" value="ZMW"><button class="btn">Add Employee</button></form></div><div class="card"><table><tr><th>Employee</th><th>Department</th><th>Job</th><th>Salary</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{x.employee_number}} — {{x.first_name}} {{x.last_name}}</td><td>{{x.department or ''}}</td><td>{{x.job_title or ''}}</td><td>{{x.base_salary}} {{x.currency}}</td><td>{{x.status}}</td></tr>{% else %}<tr><td colspan="5">No employees yet.</td></tr>{% endfor %}</table></div>''',user=current_user() or {},rows=rows)
+    return render_page('KOJA Workforce Employees V2',r'''<div class="hero"><h1>Employees</h1><p>Central employee records and lifecycle status.</p></div><div class="card"><form method="post"><div class="grid"><input name="first_name" placeholder="First name" required><input name="last_name" placeholder="Last name" required><input name="email" type="email" placeholder="Email"><input name="phone" placeholder="Phone"><input name="department" placeholder="Department"><input name="job_title" placeholder="Job title"><select name="employment_type"><option>full_time</option><option>part_time</option><option>contract</option><option>internship</option></select><input name="hire_date" type="date"><input name="base_salary" type="number" step="0.01" placeholder="Base salary"><input name="currency" value="ZMW"><input name="tax_number" placeholder="Tax number"><input name="national_id" placeholder="National ID"><input name="emergency_contact" placeholder="Emergency contact"></div><button class="btn">Add Employee</button></form></div><div class="card"><table><tr><th>Employee</th><th>Department</th><th>Job</th><th>Salary</th><th>Status</th><th>Action</th></tr>{% for x in rows %}<tr><td>{{x.employee_number}} — {{x.first_name}} {{x.last_name}}</td><td>{{x.department or ''}}</td><td>{{x.job_title or ''}}</td><td>{{x.base_salary}} {{x.currency}}</td><td>{{x.status}}</td><td><form method="post" action="{{url_for('workforce_employee_status',employee_id=x.id)}}"><select name="status"><option>active</option><option>on_leave</option><option>suspended</option><option>terminated</option></select><button class="btn secondary">Update</button></form></td></tr>{% else %}<tr><td colspan="6">No employees yet.</td></tr>{% endfor %}</table></div>''',user=current_user() or {},rows=rows)
+
+@app.route('/workforce/employee/<employee_id>/status',methods=['POST'])
+@login_required
+def workforce_employee_status(employee_id):
+    uid,org_id=_wf_scope(); org_id=org_id or _wf_org(uid); status=clean(request.form.get('status') or '').lower(); allowed={'active','on_leave','suspended','terminated'}
+    if status not in allowed: flash('Invalid employee status.','danger')
+    else:
+        row=first_row(KOJA_WORKFORCE_TABLES['employees'],{'id':employee_id,'organization_id':org_id})
+        if not row: flash('Employee not found.','danger')
+        else:
+            _,err=_wf_update(KOJA_WORKFORCE_TABLES['employees'],{'id':employee_id,'organization_id':org_id},{'status':status,'updated_at':utc_now()}); _wf_event(org_id,uid,'employee_status_changed','employee',employee_id,{'status':status}); flash('Employee status updated.' if not err else 'Employee update failed.','success' if not err else 'danger')
+    return redirect(url_for('workforce_employees'))
 
 @app.route('/workforce/attendance', methods=['GET','POST'])
 @login_required
 def workforce_attendance():
-    uid, org_id=_wf_scope(); org_id=org_id or _wf_org(uid); scope={'organization_id':org_id}; employees=_wf_select(KOJA_WORKFORCE_TABLES['employees'],scope,3000)
+    uid,org_id=_wf_scope(); org_id=org_id or _wf_org(uid); scope={'organization_id':org_id}; employees=_wf_select(KOJA_WORKFORCE_TABLES['employees'],scope,3000)
     if request.method=='POST':
-        eid=clean(request.form.get('employee_id') or ''); day=clean(request.form.get('attendance_date') or '')
+        eid=clean(request.form.get('employee_id')); day=clean(request.form.get('attendance_date'))
         if not eid or not day: flash('Employee and date are required.','danger')
         else:
-            aid=str(uuid.uuid4()); _wf_insert(KOJA_WORKFORCE_TABLES['attendance'],{'id':aid,'organization_id':org_id,'employee_id':eid,'attendance_date':day,'status':clean(request.form.get('status') or 'present'),'check_in':clean(request.form.get('check_in') or '') or None,'check_out':clean(request.form.get('check_out') or '') or None,'hours':_wf_num(request.form.get('hours')),'notes':clean(request.form.get('notes') or '') or None,'created_at':utc_now(),'updated_at':utc_now()}); _wf_event(org_id,uid,'attendance_recorded','attendance',aid); flash('Attendance recorded.','success')
-    rows=_wf_select(KOJA_WORKFORCE_TABLES['attendance'],scope,3000); emap={str(x.get('id')):f"{x.get('first_name','')} {x.get('last_name','')}" for x in employees}
-    return render_page('KOJA Workforce Attendance',r'''<div class="hero"><h1>Attendance</h1><p>Track presence, working hours and attendance status.</p></div><div class="card"><form method="post"><select name="employee_id" required><option value="">Employee</option>{% for e in employees %}<option value="{{e.id}}">{{e.first_name}} {{e.last_name}}</option>{% endfor %}</select><input name="attendance_date" type="date" required><select name="status"><option>present</option><option>absent</option><option>late</option><option>remote</option><option>holiday</option></select><input name="check_in" type="datetime-local"><input name="check_out" type="datetime-local"><input name="hours" type="number" step="0.25" placeholder="Hours"><input name="notes" placeholder="Notes"><button class="btn">Record Attendance</button></form></div><div class="card"><table><tr><th>Employee</th><th>Date</th><th>Status</th><th>Hours</th></tr>{% for x in rows %}<tr><td>{{emap.get(x.employee_id,'')}}</td><td>{{x.attendance_date}}</td><td>{{x.status}}</td><td>{{x.hours}}</td></tr>{% else %}<tr><td colspan="4">No attendance records.</td></tr>{% endfor %}</table></div>''',user=current_user() or {},rows=rows,employees=employees,emap=emap)
+            aid=str(uuid.uuid4()); _,err=_wf_insert(KOJA_WORKFORCE_TABLES['attendance'],{'id':aid,'organization_id':org_id,'employee_id':eid,'attendance_date':day,'status':clean(request.form.get('status') or 'present'),'check_in':clean(request.form.get('check_in')) or None,'check_out':clean(request.form.get('check_out')) or None,'hours':_wf_num(request.form.get('hours')),'notes':clean(request.form.get('notes')) or None,'created_at':utc_now(),'updated_at':utc_now()}); _wf_event(org_id,uid,'attendance_recorded','attendance',aid); flash('Attendance recorded.' if not err else 'Attendance could not be recorded.','success' if not err else 'danger')
+    rows=_wf_select(KOJA_WORKFORCE_TABLES['attendance'],scope,3000); emap=_wf_employee_map(employees)
+    return render_page('KOJA Workforce Attendance V2',r'''<div class="hero"><h1>Attendance</h1><p>Track presence, working hours and attendance status.</p></div><div class="card"><form method="post"><div class="grid"><select name="employee_id" required><option value="">Employee</option>{% for e in employees %}<option value="{{e.id}}">{{e.first_name}} {{e.last_name}}</option>{% endfor %}</select><input name="attendance_date" type="date" required><select name="status"><option>present</option><option>absent</option><option>late</option><option>remote</option><option>holiday</option></select><input name="check_in" type="datetime-local"><input name="check_out" type="datetime-local"><input name="hours" type="number" step="0.25" placeholder="Hours"><input name="notes" placeholder="Notes"></div><button class="btn">Record Attendance</button></form></div><div class="card"><table><tr><th>Employee</th><th>Date</th><th>Status</th><th>Hours</th><th>Notes</th></tr>{% for x in rows %}<tr><td>{{emap.get(x.employee_id,'')}}</td><td>{{x.attendance_date}}</td><td>{{x.status}}</td><td>{{x.hours}}</td><td>{{x.notes or ''}}</td></tr>{% else %}<tr><td colspan="5">No attendance records.</td></tr>{% endfor %}</table></div>''',user=current_user() or {},rows=rows,employees=employees,emap=emap)
 
 @app.route('/workforce/leave', methods=['GET','POST'])
 @login_required
 def workforce_leave():
-    uid, org_id=_wf_scope(); org_id=org_id or _wf_org(uid); scope={'organization_id':org_id}; employees=_wf_select(KOJA_WORKFORCE_TABLES['employees'],scope,3000)
+    uid,org_id=_wf_scope(); org_id=org_id or _wf_org(uid); scope={'organization_id':org_id}; employees=_wf_select(KOJA_WORKFORCE_TABLES['employees'],scope,3000)
     if request.method=='POST':
-        eid=clean(request.form.get('employee_id') or ''); start=clean(request.form.get('start_date') or ''); end=clean(request.form.get('end_date') or '')
+        eid=clean(request.form.get('employee_id')); start=clean(request.form.get('start_date')); end=clean(request.form.get('end_date'))
         if not eid or not start or not end: flash('Employee and leave dates are required.','danger')
         else:
-            lid=str(uuid.uuid4()); _wf_insert(KOJA_WORKFORCE_TABLES['leave'],{'id':lid,'organization_id':org_id,'employee_id':eid,'leave_type':clean(request.form.get('leave_type') or 'annual'),'start_date':start,'end_date':end,'days':_wf_num(request.form.get('days')),'reason':clean(request.form.get('reason') or '') or None,'status':'pending','approved_by':None,'created_at':utc_now(),'updated_at':utc_now()}); _wf_event(org_id,uid,'leave_requested','leave',lid); flash('Leave request submitted.','success')
-    rows=_wf_select(KOJA_WORKFORCE_TABLES['leave'],scope,3000); emap={str(x.get('id')):f"{x.get('first_name','')} {x.get('last_name','')}" for x in employees}
-    return render_page('KOJA Workforce Leave',r'''<div class="hero"><h1>Leave Management</h1><p>Manage annual, sick, study and other employee leave.</p></div><div class="card"><form method="post"><select name="employee_id" required><option value="">Employee</option>{% for e in employees %}<option value="{{e.id}}">{{e.first_name}} {{e.last_name}}</option>{% endfor %}</select><select name="leave_type"><option>annual</option><option>sick</option><option>study</option><option>maternity</option><option>other</option></select><input name="start_date" type="date" required><input name="end_date" type="date" required><input name="days" type="number" step="0.5" placeholder="Days"><input name="reason" placeholder="Reason"><button class="btn">Request Leave</button></form></div><div class="card"><table><tr><th>Employee</th><th>Type</th><th>Dates</th><th>Days</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{emap.get(x.employee_id,'')}}</td><td>{{x.leave_type}}</td><td>{{x.start_date}} → {{x.end_date}}</td><td>{{x.days}}</td><td>{{x.status}}</td></tr>{% else %}<tr><td colspan="5">No leave requests.</td></tr>{% endfor %}</table></div>''',user=current_user() or {},rows=rows,employees=employees,emap=emap)
+            lid=str(uuid.uuid4()); _,err=_wf_insert(KOJA_WORKFORCE_TABLES['leave'],{'id':lid,'organization_id':org_id,'employee_id':eid,'leave_type':clean(request.form.get('leave_type') or 'annual'),'start_date':start,'end_date':end,'days':_wf_num(request.form.get('days')),'reason':clean(request.form.get('reason')) or None,'status':'pending','approved_by':None,'created_at':utc_now(),'updated_at':utc_now()}); _wf_event(org_id,uid,'leave_requested','leave',lid); flash('Leave request submitted.' if not err else 'Leave request failed.','success' if not err else 'danger')
+    rows=_wf_select(KOJA_WORKFORCE_TABLES['leave'],scope,3000); emap=_wf_employee_map(employees)
+    return render_page('KOJA Workforce Leave V2',r'''<div class="hero"><h1>Leave Management</h1><p>Manage annual, sick, study, maternity and other employee leave.</p></div><div class="card"><form method="post"><div class="grid"><select name="employee_id" required><option value="">Employee</option>{% for e in employees %}<option value="{{e.id}}">{{e.first_name}} {{e.last_name}}</option>{% endfor %}</select><select name="leave_type"><option>annual</option><option>sick</option><option>study</option><option>maternity</option><option>other</option></select><input name="start_date" type="date" required><input name="end_date" type="date" required><input name="days" type="number" step="0.5" placeholder="Days"><input name="reason" placeholder="Reason"></div><button class="btn">Request Leave</button></form></div><div class="card"><table><tr><th>Employee</th><th>Type</th><th>Dates</th><th>Days</th><th>Status</th><th>Action</th></tr>{% for x in rows %}<tr><td>{{emap.get(x.employee_id,'')}}</td><td>{{x.leave_type}}</td><td>{{x.start_date}} → {{x.end_date}}</td><td>{{x.days}}</td><td>{{x.status}}</td><td>{% if x.status=='pending' %}<form method="post" action="{{url_for('workforce_leave_decision',leave_id=x.id)}}"><button class="btn" name="status" value="approved">Approve</button> <button class="btn secondary" name="status" value="rejected">Reject</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="6">No leave requests.</td></tr>{% endfor %}</table></div>''',user=current_user() or {},rows=rows,employees=employees,emap=emap)
+
+@app.route('/workforce/leave/<leave_id>/decision',methods=['POST'])
+@login_required
+def workforce_leave_decision(leave_id):
+    uid,org_id=_wf_scope(); org_id=org_id or _wf_org(uid); status=clean(request.form.get('status') or '').lower()
+    if status not in {'approved','rejected'}: flash('Invalid leave decision.','danger')
+    else:
+        row=first_row(KOJA_WORKFORCE_TABLES['leave'],{'id':leave_id,'organization_id':org_id})
+        if not row: flash('Leave request not found.','danger')
+        else:
+            _,err=_wf_update(KOJA_WORKFORCE_TABLES['leave'],{'id':leave_id,'organization_id':org_id},{'status':status,'approved_by':uid,'updated_at':utc_now()}); _wf_event(org_id,uid,'leave_'+status,'leave',leave_id); flash('Leave request '+status+'.' if not err else 'Leave update failed.','success' if not err else 'danger')
+    return redirect(url_for('workforce_leave'))
 
 @app.route('/workforce/payroll', methods=['GET','POST'])
 @login_required
 def workforce_payroll():
-    uid, org_id=_wf_scope(); org_id=org_id or _wf_org(uid); scope={'organization_id':org_id}; employees=_wf_select(KOJA_WORKFORCE_TABLES['employees'],scope,3000)
+    uid,org_id=_wf_scope(); org_id=org_id or _wf_org(uid); scope={'organization_id':org_id}; employees=_wf_select(KOJA_WORKFORCE_TABLES['employees'],scope,3000)
     if request.method=='POST':
-        eid=clean(request.form.get('employee_id') or ''); period=clean(request.form.get('pay_period') or '')
-        gross=_wf_num(request.form.get('gross')); deductions=_wf_num(request.form.get('deductions')); net=max(0,gross-deductions)
-        if not eid or not period: flash('Employee and pay period are required.','danger')
+        action=clean(request.form.get('action') or 'create')
+        if action=='mark_paid':
+            pid=clean(request.form.get('payroll_id')); row=first_row(KOJA_WORKFORCE_TABLES['payroll'],{'id':pid,'organization_id':org_id})
+            if not row: flash('Payroll record not found.','danger')
+            else:
+                _,err=_wf_update(KOJA_WORKFORCE_TABLES['payroll'],{'id':pid,'organization_id':org_id},{'status':'paid','paid_at':utc_now(),'updated_at':utc_now()})
+                if not err: _wf_finance_post(uid,pid,'payroll',row.get('net_pay'),row.get('currency') or 'ZMW',{'employee_id':row.get('employee_id'),'pay_period':row.get('pay_period')}); _wf_event(org_id,uid,'payroll_paid','payroll',pid,{'net_pay':row.get('net_pay')})
+                flash('Payroll marked paid and sent to Finance V2.' if not err else 'Payroll update failed.','success' if not err else 'danger')
         else:
-            pid=str(uuid.uuid4()); _wf_insert(KOJA_WORKFORCE_TABLES['payroll'],{'id':pid,'organization_id':org_id,'employee_id':eid,'pay_period':period,'gross_pay':gross,'deductions':deductions,'net_pay':net,'currency':clean(request.form.get('currency') or 'ZMW'),'status':'draft','paid_at':None,'created_at':utc_now(),'updated_at':utc_now()}); _wf_event(org_id,uid,'payroll_created','payroll',pid,{'net_pay':net}); flash('Payroll record created.','success')
-    rows=_wf_select(KOJA_WORKFORCE_TABLES['payroll'],scope,3000); emap={str(x.get('id')):f"{x.get('first_name','')} {x.get('last_name','')}" for x in employees}
-    return render_page('KOJA Workforce Payroll',r'''<div class="hero"><h1>Payroll</h1><p>Prepare employee payroll records and net-pay calculations.</p></div><div class="card"><form method="post"><select name="employee_id" required><option value="">Employee</option>{% for e in employees %}<option value="{{e.id}}">{{e.first_name}} {{e.last_name}}</option>{% endfor %}</select><input name="pay_period" placeholder="2026-09" required><input name="gross" type="number" step="0.01" placeholder="Gross pay"><input name="deductions" type="number" step="0.01" placeholder="Deductions"><input name="currency" value="ZMW"><button class="btn">Create Payroll</button></form></div><div class="card"><table><tr><th>Employee</th><th>Period</th><th>Gross</th><th>Deductions</th><th>Net</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{emap.get(x.employee_id,'')}}</td><td>{{x.pay_period}}</td><td>{{x.gross_pay}}</td><td>{{x.deductions}}</td><td>{{x.net_pay}} {{x.currency}}</td><td>{{x.status}}</td></tr>{% else %}<tr><td colspan="6">No payroll records.</td></tr>{% endfor %}</table></div>''',user=current_user() or {},rows=rows,employees=employees,emap=emap)
+            eid=clean(request.form.get('employee_id')); period=clean(request.form.get('pay_period')); gross=_wf_num(request.form.get('gross')); deductions=_wf_num(request.form.get('deductions')); net=max(0,gross-deductions)
+            if not eid or not period: flash('Employee and pay period are required.','danger')
+            else:
+                pid=str(uuid.uuid4()); _,err=_wf_insert(KOJA_WORKFORCE_TABLES['payroll'],{'id':pid,'organization_id':org_id,'employee_id':eid,'pay_period':period,'gross_pay':gross,'deductions':deductions,'net_pay':net,'currency':clean(request.form.get('currency') or 'ZMW'),'status':'draft','paid_at':None,'created_at':utc_now(),'updated_at':utc_now()}); _wf_event(org_id,uid,'payroll_created','payroll',pid,{'net_pay':net}); flash('Payroll record created.' if not err else 'Payroll creation failed.','success' if not err else 'danger')
+    rows=_wf_select(KOJA_WORKFORCE_TABLES['payroll'],scope,3000); emap=_wf_employee_map(employees)
+    return render_page('KOJA Workforce Payroll V2',r'''<div class="hero"><h1>Payroll</h1><p>Prepare payroll, calculate net pay and mark completed payroll as paid.</p></div><div class="card"><form method="post"><input type="hidden" name="action" value="create"><div class="grid"><select name="employee_id" required><option value="">Employee</option>{% for e in employees %}<option value="{{e.id}}">{{e.first_name}} {{e.last_name}}</option>{% endfor %}</select><input name="pay_period" placeholder="2026-09" required><input name="gross" type="number" step="0.01" placeholder="Gross pay"><input name="deductions" type="number" step="0.01" placeholder="Deductions"><input name="currency" value="ZMW"></div><button class="btn">Create Payroll</button></form></div><div class="card"><table><tr><th>Employee</th><th>Period</th><th>Gross</th><th>Deductions</th><th>Net</th><th>Status</th><th>Action</th></tr>{% for x in rows %}<tr><td>{{emap.get(x.employee_id,'')}}</td><td>{{x.pay_period}}</td><td>{{x.gross_pay}}</td><td>{{x.deductions}}</td><td>{{x.net_pay}} {{x.currency}}</td><td>{{x.status}}</td><td>{% if x.status!='paid' %}<form method="post"><input type="hidden" name="action" value="mark_paid"><input type="hidden" name="payroll_id" value="{{x.id}}"><button class="btn">Mark Paid</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="7">No payroll records.</td></tr>{% endfor %}</table></div>''',user=current_user() or {},rows=rows,employees=employees,emap=emap)
 
 @app.route('/workforce/performance', methods=['GET','POST'])
 @login_required
 def workforce_performance():
-    uid, org_id=_wf_scope(); org_id=org_id or _wf_org(uid); scope={'organization_id':org_id}; employees=_wf_select(KOJA_WORKFORCE_TABLES['employees'],scope,3000)
+    uid,org_id=_wf_scope(); org_id=org_id or _wf_org(uid); scope={'organization_id':org_id}; employees=_wf_select(KOJA_WORKFORCE_TABLES['employees'],scope,3000)
     if request.method=='POST':
-        eid=clean(request.form.get('employee_id') or ''); period=clean(request.form.get('period') or '')
+        eid=clean(request.form.get('employee_id')); period=clean(request.form.get('period'))
+        score=max(0,min(100,_wf_num(request.form.get('score'))))
         if not eid or not period: flash('Employee and review period are required.','danger')
         else:
-            pid=str(uuid.uuid4()); _wf_insert(KOJA_WORKFORCE_TABLES['performance'],{'id':pid,'organization_id':org_id,'employee_id':eid,'period':period,'score':_wf_num(request.form.get('score')),'rating':clean(request.form.get('rating') or '') or None,'goals':clean(request.form.get('goals') or '') or None,'feedback':clean(request.form.get('feedback') or '') or None,'reviewer_id':uid,'created_at':utc_now(),'updated_at':utc_now()}); _wf_event(org_id,uid,'performance_review_created','performance',pid); flash('Performance review recorded.','success')
-    rows=_wf_select(KOJA_WORKFORCE_TABLES['performance'],scope,3000); emap={str(x.get('id')):f"{x.get('first_name','')} {x.get('last_name','')}" for x in employees}
-    return render_page('KOJA Workforce Performance',r'''<div class="hero"><h1>Performance</h1><p>Record employee reviews, goals, ratings and feedback.</p></div><div class="card"><form method="post"><select name="employee_id" required><option value="">Employee</option>{% for e in employees %}<option value="{{e.id}}">{{e.first_name}} {{e.last_name}}</option>{% endfor %}</select><input name="period" placeholder="Q3 2026" required><input name="score" type="number" step="0.1" min="0" max="100" placeholder="Score / 100"><input name="rating" placeholder="Rating"><input name="goals" placeholder="Goals"><input name="feedback" placeholder="Feedback"><button class="btn">Save Review</button></form></div><div class="card"><table><tr><th>Employee</th><th>Period</th><th>Score</th><th>Rating</th></tr>{% for x in rows %}<tr><td>{{emap.get(x.employee_id,'')}}</td><td>{{x.period}}</td><td>{{x.score}}</td><td>{{x.rating or ''}}</td></tr>{% else %}<tr><td colspan="4">No performance reviews.</td></tr>{% endfor %}</table></div>''',user=current_user() or {},rows=rows,employees=employees,emap=emap)
+            pid=str(uuid.uuid4()); _,err=_wf_insert(KOJA_WORKFORCE_TABLES['performance'],{'id':pid,'organization_id':org_id,'employee_id':eid,'period':period,'score':score,'rating':clean(request.form.get('rating')) or None,'goals':clean(request.form.get('goals')) or None,'feedback':clean(request.form.get('feedback')) or None,'reviewer_id':uid,'created_at':utc_now(),'updated_at':utc_now()}); _wf_event(org_id,uid,'performance_review_created','performance',pid,{'score':score}); flash('Performance review recorded.' if not err else 'Performance review failed.','success' if not err else 'danger')
+    rows=_wf_select(KOJA_WORKFORCE_TABLES['performance'],scope,3000); emap=_wf_employee_map(employees)
+    return render_page('KOJA Workforce Performance V2',r'''<div class="hero"><h1>Performance</h1><p>Reviews, goals, ratings and feedback.</p></div><div class="card"><form method="post"><div class="grid"><select name="employee_id" required><option value="">Employee</option>{% for e in employees %}<option value="{{e.id}}">{{e.first_name}} {{e.last_name}}</option>{% endfor %}</select><input name="period" placeholder="Q3 2026" required><input name="score" type="number" step="0.1" min="0" max="100" placeholder="Score / 100"><input name="rating" placeholder="Rating"><input name="goals" placeholder="Goals"><input name="feedback" placeholder="Feedback"></div><button class="btn">Save Review</button></form></div><div class="card"><table><tr><th>Employee</th><th>Period</th><th>Score</th><th>Rating</th></tr>{% for x in rows %}<tr><td>{{emap.get(x.employee_id,'')}}</td><td>{{x.period}}</td><td>{{x.score}}</td><td>{{x.rating or ''}}</td></tr>{% else %}<tr><td colspan="4">No performance reviews.</td></tr>{% endfor %}</table></div>''',user=current_user() or {},rows=rows,employees=employees,emap=emap)
 
 @app.route('/workforce/training', methods=['GET','POST'])
 @login_required
 def workforce_training():
-    uid, org_id=_wf_scope(); org_id=org_id or _wf_org(uid); scope={'organization_id':org_id}; employees=_wf_select(KOJA_WORKFORCE_TABLES['employees'],scope,3000)
+    uid,org_id=_wf_scope(); org_id=org_id or _wf_org(uid); scope={'organization_id':org_id}; employees=_wf_select(KOJA_WORKFORCE_TABLES['employees'],scope,3000)
     if request.method=='POST':
-        title=clean(request.form.get('title') or ''); eid=clean(request.form.get('employee_id') or '')
+        title=clean(request.form.get('title')); eid=clean(request.form.get('employee_id'))
         if not title or not eid: flash('Training title and employee are required.','danger')
         else:
-            tid=str(uuid.uuid4()); _wf_insert(KOJA_WORKFORCE_TABLES['training'],{'id':tid,'organization_id':org_id,'employee_id':eid,'title':title,'provider':clean(request.form.get('provider') or '') or None,'training_date':clean(request.form.get('training_date') or '') or None,'status':clean(request.form.get('status') or 'planned'),'cost':_wf_num(request.form.get('cost')),'currency':clean(request.form.get('currency') or 'ZMW'),'certificate_ref':clean(request.form.get('certificate_ref') or '') or None,'created_at':utc_now(),'updated_at':utc_now()}); _wf_event(org_id,uid,'training_created','training',tid); flash('Training record created.','success')
-    rows=_wf_select(KOJA_WORKFORCE_TABLES['training'],scope,3000); emap={str(x.get('id')):f"{x.get('first_name','')} {x.get('last_name','')}" for x in employees}
-    return render_page('KOJA Workforce Training',r'''<div class="hero"><h1>Training</h1><p>Manage employee development, training costs and certification records.</p></div><div class="card"><form method="post"><select name="employee_id" required><option value="">Employee</option>{% for e in employees %}<option value="{{e.id}}">{{e.first_name}} {{e.last_name}}</option>{% endfor %}</select><input name="title" placeholder="Training title" required><input name="provider" placeholder="Provider"><input name="training_date" type="date"><select name="status"><option>planned</option><option>in_progress</option><option>completed</option><option>cancelled</option></select><input name="cost" type="number" step="0.01" placeholder="Cost"><input name="currency" value="ZMW"><input name="certificate_ref" placeholder="Certificate reference"><button class="btn">Add Training</button></form></div><div class="card"><table><tr><th>Employee</th><th>Training</th><th>Provider</th><th>Status</th><th>Cost</th></tr>{% for x in rows %}<tr><td>{{emap.get(x.employee_id,'')}}</td><td>{{x.title}}</td><td>{{x.provider or ''}}</td><td>{{x.status}}</td><td>{{x.cost}} {{x.currency}}</td></tr>{% else %}<tr><td colspan="5">No training records.</td></tr>{% endfor %}</table></div>''',user=current_user() or {},rows=rows,employees=employees,emap=emap)
+            tid=str(uuid.uuid4()); cost=_wf_num(request.form.get('cost')); cur=clean(request.form.get('currency') or 'ZMW'); _,err=_wf_insert(KOJA_WORKFORCE_TABLES['training'],{'id':tid,'organization_id':org_id,'employee_id':eid,'title':title,'provider':clean(request.form.get('provider')) or None,'training_date':clean(request.form.get('training_date')) or None,'status':clean(request.form.get('status') or 'planned'),'cost':cost,'currency':cur,'certificate_ref':clean(request.form.get('certificate_ref')) or None,'created_at':utc_now(),'updated_at':utc_now()});
+            if not err and cost>0: _wf_finance_post(uid,tid,'training',cost,cur,{'employee_id':eid,'title':title})
+            _wf_event(org_id,uid,'training_created','training',tid,{'cost':cost}); flash('Training record created.' if not err else 'Training creation failed.','success' if not err else 'danger')
+    rows=_wf_select(KOJA_WORKFORCE_TABLES['training'],scope,3000); emap=_wf_employee_map(employees)
+    return render_page('KOJA Workforce Training V2',r'''<div class="hero"><h1>Training</h1><p>Employee development, training cost and certification records.</p></div><div class="card"><form method="post"><div class="grid"><select name="employee_id" required><option value="">Employee</option>{% for e in employees %}<option value="{{e.id}}">{{e.first_name}} {{e.last_name}}</option>{% endfor %}</select><input name="title" placeholder="Training title" required><input name="provider" placeholder="Provider"><input name="training_date" type="date"><select name="status"><option>planned</option><option>in_progress</option><option>completed</option><option>cancelled</option></select><input name="cost" type="number" step="0.01" placeholder="Cost"><input name="currency" value="ZMW"><input name="certificate_ref" placeholder="Certificate reference"></div><button class="btn">Add Training</button></form></div><div class="card"><table><tr><th>Employee</th><th>Training</th><th>Provider</th><th>Status</th><th>Cost</th></tr>{% for x in rows %}<tr><td>{{emap.get(x.employee_id,'')}}</td><td>{{x.title}}</td><td>{{x.provider or ''}}</td><td>{{x.status}}</td><td>{{x.cost}} {{x.currency}}</td></tr>{% else %}<tr><td colspan="5">No training records.</td></tr>{% endfor %}</table></div>''',user=current_user() or {},rows=rows,employees=employees,emap=emap)
 
 @app.route('/api/workforce/summary')
 @login_required
 def api_workforce_summary():
-    uid, org_id=_wf_scope(); org_id=org_id or _wf_org(uid); scope={'organization_id':org_id}
-    employees=_wf_select(KOJA_WORKFORCE_TABLES['employees'],scope,5000); jobs=_wf_select(KOJA_WORKFORCE_TABLES['jobs'],scope,5000); candidates=_wf_select(KOJA_WORKFORCE_TABLES['candidates'],scope,5000); leave=_wf_select(KOJA_WORKFORCE_TABLES['leave'],scope,5000); payroll=_wf_select(KOJA_WORKFORCE_TABLES['payroll'],scope,5000); training=_wf_select(KOJA_WORKFORCE_TABLES['training'],scope,5000)
-    return jsonify({'ok':True,'version':'V1','organization_id':org_id,'employees':len(employees),'active_employees':sum(1 for x in employees if x.get('status','active')=='active'),'open_jobs':sum(1 for x in jobs if x.get('status','open')=='open'),'candidates':len(candidates),'pending_leave':sum(1 for x in leave if x.get('status')=='pending'),'payroll_records':len(payroll),'payroll_net':sum(_wf_num(x.get('net_pay')) for x in payroll),'training_records':len(training)})
+    uid,org_id=_wf_scope(); org_id=org_id or _wf_org(uid); scope={'organization_id':org_id}
+    employees=_wf_select(KOJA_WORKFORCE_TABLES['employees'],scope,5000); jobs=_wf_select(KOJA_WORKFORCE_TABLES['jobs'],scope,5000); candidates=_wf_select(KOJA_WORKFORCE_TABLES['candidates'],scope,5000); leave=_wf_select(KOJA_WORKFORCE_TABLES['leave'],scope,5000); payroll=_wf_select(KOJA_WORKFORCE_TABLES['payroll'],scope,5000); training=_wf_select(KOJA_WORKFORCE_TABLES['training'],scope,5000); attendance=_wf_select(KOJA_WORKFORCE_TABLES['attendance'],scope,5000)
+    return jsonify({'ok':True,'version':'V2','organization_id':org_id,'employees':len(employees),'active_employees':sum(1 for x in employees if str(x.get('status') or 'active').lower()=='active'),'open_jobs':sum(1 for x in jobs if str(x.get('status') or 'open').lower()=='open'),'candidates':len(candidates),'candidate_stages':{s:sum(1 for x in candidates if str(x.get('stage') or '')==s) for s in ('applied','screening','interview','offer','hired','rejected')},'pending_leave':sum(1 for x in leave if str(x.get('status') or '')=='pending'),'approved_leave':sum(1 for x in leave if str(x.get('status') or '')=='approved'),'payroll_records':len(payroll),'payroll_net':round(sum(_wf_num(x.get('net_pay')) for x in payroll),2),'paid_payroll':round(sum(_wf_num(x.get('net_pay')) for x in payroll if str(x.get('status') or '')=='paid'),2),'training_records':len(training),'training_cost':round(sum(_wf_num(x.get('cost')) for x in training),2),'attendance_records':len(attendance)})
 
 # ================= KOJA FINANCE V2 — UNIFIED FINANCIAL OPERATING LAYER =================
 
