@@ -11176,3 +11176,100 @@ def api_revenue_v2_verify_flutterwave():
     if err: return jsonify({'ok':False,'error':err}),500
     return jsonify({'ok':True,'transaction':saved})
 
+
+
+# ================================================================
+# KOJA INTELLIGENCE & ANALYTICS V2 — additive module
+# ================================================================
+def _ki2_uid():
+    return session.get('user_id') or session.get('uid') or (current_user or {}).get('id')
+
+def _ki2_org_id():
+    uid=_ki2_uid()
+    try:
+        rows=db_select('koja_b2b_members', {'user_id':uid}, limit=1) or []
+        if rows and rows[0].get('organization_id'): return rows[0].get('organization_id')
+    except Exception: pass
+    try:
+        rows=db_select('koja_enterprise_workspaces', {'user_id':uid}, limit=1) or []
+        if rows and rows[0].get('organization_id'): return rows[0].get('organization_id')
+    except Exception: pass
+    return None
+
+def _ki2_num(v):
+    try: return float(v or 0)
+    except Exception: return 0.0
+
+def _ki2_count(table, filters=None):
+    try:
+        return len(db_select(table, filters or {}, limit=10000) or [])
+    except Exception:
+        return 0
+
+def _ki2_revenue():
+    uid=_ki2_uid(); org=_ki2_org_id()
+    rows=[]
+    try: rows=db_select('koja_revenue_v2_transactions', {'user_id':uid}, limit=10000) or []
+    except Exception: pass
+    paid=[x for x in rows if str(x.get('status','')).lower()=='paid']
+    gross=sum(_ki2_num(x.get('amount')) for x in paid)
+    fees=sum(_ki2_num(x.get('fee_amount')) for x in paid)
+    return {'transactions':len(rows),'paid_transactions':len(paid),'gross_paid':gross,'fees':fees,'net_paid':gross-fees}
+
+def _ki2_summary():
+    uid=_ki2_uid(); org=_ki2_org_id(); rev=_ki2_revenue()
+    counts={
+      'procurement':_ki2_count('koja_b2b_purchase_orders', {'user_id':uid}),
+      'inventory':_ki2_count('koja_supply_inventory', {'user_id':uid}),
+      'sales_orders':_ki2_count('koja_sales_orders', {'user_id':uid}),
+      'customers':_ki2_count('koja_sales_customers', {'user_id':uid}),
+      'employees':_ki2_count('koja_workforce_employees', {'user_id':uid}),
+      'enterprise_workspaces':_ki2_count('koja_enterprise_workspaces', {'user_id':uid}),
+      'invoices':_ki2_count('koja_revenue_v2_invoices', {'user_id':uid}),
+    }
+    return {'ok':True,'user_id':uid,'organization_id':org,'revenue':rev,'counts':counts}
+
+@app.route('/intelligence/v2')
+@login_required
+def intelligence_v2():
+    return render_page('KOJA Intelligence & Analytics',"""
+    <div class="hero"><h1>KOJA Intelligence & Analytics</h1><p>Unified operating intelligence across revenue, sales, procurement, inventory, workforce and enterprise.</p></div>
+    <div class="grid">
+      <div class="card"><h3>Gross Paid</h3><div class="metric">{{ '%.2f'|format(s.revenue.gross_paid) }}</div></div>
+      <div class="card"><h3>Net Paid</h3><div class="metric">{{ '%.2f'|format(s.revenue.net_paid) }}</div></div>
+      <div class="card"><h3>Transactions</h3><div class="metric">{{ s.revenue.transactions }}</div></div>
+      <div class="card"><h3>Sales Orders</h3><div class="metric">{{ s.counts.sales_orders }}</div></div>
+      <div class="card"><h3>Customers</h3><div class="metric">{{ s.counts.customers }}</div></div>
+      <div class="card"><h3>Inventory Records</h3><div class="metric">{{ s.counts.inventory }}</div></div>
+      <div class="card"><h3>Purchase Orders</h3><div class="metric">{{ s.counts.procurement }}</div></div>
+      <div class="card"><h3>Employees</h3><div class="metric">{{ s.counts.employees }}</div></div>
+    </div>
+    <div class="card"><h2>Operating Intelligence</h2><p>Use the API for dashboards, alerts, reporting and future forecasting models.</p><a class="btn" href="{{ url_for('api_intelligence_v2_summary') }}">Open Intelligence API</a></div>
+    """,s=_ki2_summary())
+
+@app.route('/api/intelligence/v2/summary')
+@login_required
+def api_intelligence_v2_summary():
+    return jsonify(_ki2_summary())
+
+@app.route('/api/intelligence/v2/metrics', methods=['POST'])
+@login_required
+def api_intelligence_v2_metrics():
+    data=request.get_json(silent=True) or {}
+    name=clean(data.get('metric_name')); value=_ki2_num(data.get('metric_value'))
+    if not name: return jsonify({'ok':False,'error':'metric_name_required'}),400
+    row={'user_id':_ki2_uid(),'organization_id':_ki2_org_id(),'metric_name':name,'metric_value':value,'metric_unit':clean(data.get('metric_unit')) or 'number','period_start':clean(data.get('period_start')) or None,'period_end':clean(data.get('period_end')) or None,'metadata':data.get('metadata') or {},'created_at':utc_now()}
+    saved,err=db_insert('koja_intelligence_v2_metrics',row)
+    if err: return jsonify({'ok':False,'error':err}),500
+    return jsonify({'ok':True,'metric':saved})
+
+@app.route('/api/intelligence/v2/events', methods=['POST'])
+@login_required
+def api_intelligence_v2_events():
+    data=request.get_json(silent=True) or {}
+    name=clean(data.get('event_name'))
+    if not name: return jsonify({'ok':False,'error':'event_name_required'}),400
+    row={'user_id':_ki2_uid(),'organization_id':_ki2_org_id(),'event_name':name,'entity_type':clean(data.get('entity_type')),'entity_id':clean(data.get('entity_id')) or None,'value':_ki2_num(data.get('value')),'metadata':data.get('metadata') or {},'created_at':utc_now()}
+    saved,err=db_insert('koja_intelligence_v2_events',row)
+    if err: return jsonify({'ok':False,'error':err}),500
+    return jsonify({'ok':True,'event':saved})
