@@ -11036,3 +11036,143 @@ def finance_v2_reports():
 def api_finance_v2_summary():
     return jsonify({'ok':True,'summary':_fv2_summary(_fv2_uid())})
 
+
+
+# ============================================================
+# KOJA GLOBAL REVENUE + PAYMENTS V2
+# Additive operating-layer revenue orchestration.
+# Does not replace existing KOJA payment, marketplace, delivery,
+# Finance V2, or Communications modules.
+# ============================================================
+
+def _rv2_uid():
+    u = current_user() or {}
+    return str(u.get('id') or '')
+
+def _rv2_org_id():
+    u = current_user() or {}
+    return str(u.get('organization_id') or u.get('org_id') or '') or None
+
+def _rv2_num(v, default=0.0):
+    try:
+        return round(float(v), 2)
+    except Exception:
+        return default
+
+def _rv2_currency(v):
+    return (clean(v) or 'ZMW').upper()[:8]
+
+def _rv2_summary():
+    uid = _rv2_uid()
+    if not uid:
+        return {'ok': False, 'error': 'login_required'}
+    txs = db_select('koja_revenue_v2_transactions', {'user_id': uid}, order='created_at.desc', limit=1000) or []
+    settlements = db_select('koja_revenue_v2_settlements', {'user_id': uid}, order='created_at.desc', limit=1000) or []
+    payouts = db_select('koja_revenue_v2_payouts', {'user_id': uid}, order='created_at.desc', limit=1000) or []
+    commissions = db_select('koja_revenue_v2_commissions', {'user_id': uid}, order='created_at.desc', limit=1000) or []
+    paid = sum(_rv2_num(x.get('amount')) for x in txs if str(x.get('status','')).lower() in {'paid','successful','completed','settled'})
+    pending = sum(_rv2_num(x.get('amount')) for x in txs if str(x.get('status','')).lower() in {'pending','initiated','processing'})
+    failed = sum(_rv2_num(x.get('amount')) for x in txs if str(x.get('status','')).lower() in {'failed','cancelled','canceled'})
+    fees = sum(_rv2_num(x.get('fee_amount')) for x in txs)
+    commission = sum(_rv2_num(x.get('amount')) for x in commissions if str(x.get('status','')).lower() not in {'cancelled','reversed'})
+    settled = sum(_rv2_num(x.get('amount')) for x in settlements if str(x.get('status','')).lower() in {'settled','completed'})
+    payout = sum(_rv2_num(x.get('amount')) for x in payouts if str(x.get('status','')).lower() in {'paid','completed'})
+    return {'ok': True, 'currency': 'ZMW', 'transactions': len(txs), 'successful_volume': round(paid,2), 'pending_volume': round(pending,2), 'failed_volume': round(failed,2), 'provider_fees': round(fees,2), 'commission_volume': round(commission,2), 'settled_volume': round(settled,2), 'payout_volume': round(payout,2), 'settlement_count': len(settlements), 'payout_count': len(payouts), 'commission_count': len(commissions)}
+
+@app.route('/revenue/v2')
+@login_required
+def revenue_v2_dashboard():
+    s = _rv2_summary()
+    return render_page('KOJA Global Revenue & Payments', '''
+<div class="hero"><h1>KOJA Global Revenue &amp; Payments</h1><p>Unified transaction, commission, settlement, payout and invoice operating layer.</p></div>
+<div class="grid">
+ <div class="card"><h3>Successful volume</h3><p style="font-size:28px"><strong>{{ s.successful_volume }}</strong> {{ s.currency }}</p></div>
+ <div class="card"><h3>Pending volume</h3><p style="font-size:28px"><strong>{{ s.pending_volume }}</strong> {{ s.currency }}</p></div>
+ <div class="card"><h3>Commissions</h3><p style="font-size:28px"><strong>{{ s.commission_volume }}</strong> {{ s.currency }}</p></div>
+ <div class="card"><h3>Settled</h3><p style="font-size:28px"><strong>{{ s.settled_volume }}</strong> {{ s.currency }}</p></div>
+</div>
+<div class="card"><h2>Revenue controls</h2><p>Record verified provider payments, commissions, settlements and seller/provider payouts. Existing KOJA Pay, Flutterwave, Market and Finance modules remain intact.</p>
+<a class="btn" href="{{ url_for('revenue_v2_transactions') }}">Transactions</a>
+<a class="btn" href="{{ url_for('revenue_v2_settlements') }}">Settlements</a>
+<a class="btn" href="{{ url_for('revenue_v2_payouts') }}">Payouts</a>
+<a class="btn" href="{{ url_for('revenue_v2_invoices') }}">Invoices</a></div>
+<div class="card"><h2>Flutterwave verification</h2><form method="post" action="{{ url_for('revenue_v2_verify_flutterwave') }}"><label>Transaction ID</label><input name="transaction_id" required><label>Reference (optional)</label><input name="tx_ref"><button class="btn" type="submit">Verify &amp; Record</button></form></div>
+''', s=s)
+
+@app.route('/revenue/v2/transactions', methods=['GET','POST'])
+@login_required
+def revenue_v2_transactions():
+    uid = _rv2_uid()
+    if request.method == 'POST':
+        d = request.form
+        amount = _rv2_num(d.get('amount'))
+        if amount <= 0:
+            return render_page('Revenue Transactions', '<div class="hero"><h1>Invalid amount</h1><p>Transaction amount must be greater than zero.</p></div>'), 400
+        row = {'user_id':uid,'organization_id':_rv2_org_id(),'external_reference':clean(d.get('reference')) or None,'provider':clean(d.get('provider')) or 'manual','payment_method':clean(d.get('method')) or 'manual','amount':amount,'currency':_rv2_currency(d.get('currency')),'fee_amount':_rv2_num(d.get('fee')),'status':clean(d.get('status')) or 'paid','transaction_type':clean(d.get('transaction_type')) or 'sale','description':clean(d.get('description')),'created_at':utc_now(),'updated_at':utc_now()}
+        db_insert('koja_revenue_v2_transactions', row)
+    rows = db_select('koja_revenue_v2_transactions', {'user_id':uid}, order='created_at.desc', limit=100) or []
+    return render_page('Revenue Transactions', '''<div class="hero"><h1>Revenue Transactions</h1><p>Unified transaction ledger for the KOJA operating layer.</p></div><div class="card"><form method="post"><label>Amount</label><input name="amount" type="number" step="0.01" min="0.01" required><label>Currency</label><input name="currency" value="ZMW"><label>Provider</label><input name="provider" value="manual"><label>Method</label><input name="method" value="manual"><label>Reference</label><input name="reference"><label>Fee</label><input name="fee" type="number" step="0.01" min="0" value="0"><label>Status</label><select name="status"><option>paid</option><option>pending</option><option>failed</option><option>processing</option></select><label>Type</label><input name="transaction_type" value="sale"><label>Description</label><input name="description"><button class="btn">Record Transaction</button></form></div><div class="card"><table><tr><th>Date</th><th>Amount</th><th>Provider</th><th>Status</th><th>Reference</th></tr>{% for x in rows %}<tr><td>{{ x.created_at }}</td><td>{{ x.amount }} {{ x.currency }}</td><td>{{ x.provider }}</td><td>{{ x.status }}</td><td>{{ x.external_reference or '' }}</td></tr>{% else %}<tr><td colspan="5">No transactions.</td></tr>{% endfor %}</table></div>''', rows=rows)
+
+@app.route('/revenue/v2/settlements', methods=['GET','POST'])
+@login_required
+def revenue_v2_settlements():
+    uid = _rv2_uid()
+    if request.method == 'POST':
+        d=request.form; amount=_rv2_num(d.get('amount'))
+        if amount<=0: return redirect(url_for('revenue_v2_settlements'))
+        db_insert('koja_revenue_v2_settlements', {'user_id':uid,'organization_id':_rv2_org_id(),'provider':clean(d.get('provider')) or 'flutterwave','reference':clean(d.get('reference')),'amount':amount,'currency':_rv2_currency(d.get('currency')),'status':clean(d.get('status')) or 'settled','settlement_date':clean(d.get('settlement_date')) or None,'created_at':utc_now(),'updated_at':utc_now()})
+    rows=db_select('koja_revenue_v2_settlements',{'user_id':uid},order='created_at.desc',limit=100) or []
+    return render_page('Revenue Settlements','''<div class="hero"><h1>Settlements</h1><p>Provider settlement records linked to KOJA revenue operations.</p></div><div class="card"><form method="post"><label>Amount</label><input name="amount" type="number" step="0.01" min="0.01" required><label>Currency</label><input name="currency" value="ZMW"><label>Provider</label><input name="provider" value="flutterwave"><label>Reference</label><input name="reference"><label>Status</label><select name="status"><option>settled</option><option>processing</option><option>pending</option><option>failed</option></select><label>Settlement date</label><input name="settlement_date" type="date"><button class="btn">Record Settlement</button></form></div><div class="card"><table><tr><th>Date</th><th>Amount</th><th>Provider</th><th>Status</th><th>Reference</th></tr>{% for x in rows %}<tr><td>{{ x.created_at }}</td><td>{{ x.amount }} {{ x.currency }}</td><td>{{ x.provider }}</td><td>{{ x.status }}</td><td>{{ x.reference or '' }}</td></tr>{% else %}<tr><td colspan="5">No settlements.</td></tr>{% endfor %}</table></div>''',rows=rows)
+
+@app.route('/revenue/v2/payouts', methods=['GET','POST'])
+@login_required
+def revenue_v2_payouts():
+    uid=_rv2_uid()
+    if request.method=='POST':
+        d=request.form; amount=_rv2_num(d.get('amount'))
+        if amount<=0: return redirect(url_for('revenue_v2_payouts'))
+        db_insert('koja_revenue_v2_payouts', {'user_id':uid,'organization_id':_rv2_org_id(),'recipient_id':clean(d.get('recipient_id')) or None,'provider':clean(d.get('provider')) or 'flutterwave','destination':clean(d.get('destination')),'reference':clean(d.get('reference')),'amount':amount,'currency':_rv2_currency(d.get('currency')),'status':clean(d.get('status')) or 'pending','created_at':utc_now(),'updated_at':utc_now()})
+    rows=db_select('koja_revenue_v2_payouts',{'user_id':uid},order='created_at.desc',limit=100) or []
+    return render_page('Revenue Payouts','''<div class="hero"><h1>Seller &amp; Provider Payouts</h1><p>Controlled payout records. This screen does not initiate a bank or mobile-money transfer by itself.</p></div><div class="card"><form method="post"><label>Recipient ID</label><input name="recipient_id"><label>Amount</label><input name="amount" type="number" step="0.01" min="0.01" required><label>Currency</label><input name="currency" value="ZMW"><label>Provider</label><input name="provider" value="flutterwave"><label>Destination</label><input name="destination" placeholder="Mobile money or bank destination reference"><label>Reference</label><input name="reference"><label>Status</label><select name="status"><option>pending</option><option>processing</option><option>paid</option><option>failed</option></select><button class="btn">Record Payout</button></form></div><div class="card"><table><tr><th>Date</th><th>Recipient</th><th>Amount</th><th>Status</th><th>Reference</th></tr>{% for x in rows %}<tr><td>{{ x.created_at }}</td><td>{{ x.recipient_id or '' }}</td><td>{{ x.amount }} {{ x.currency }}</td><td>{{ x.status }}</td><td>{{ x.reference or '' }}</td></tr>{% else %}<tr><td colspan="5">No payouts.</td></tr>{% endfor %}</table></div>''',rows=rows)
+
+@app.route('/revenue/v2/invoices', methods=['GET','POST'])
+@login_required
+def revenue_v2_invoices():
+    uid=_rv2_uid()
+    if request.method=='POST':
+        d=request.form; amount=_rv2_num(d.get('amount'))
+        if amount<=0: return redirect(url_for('revenue_v2_invoices'))
+        db_insert('koja_revenue_v2_invoices', {'user_id':uid,'organization_id':_rv2_org_id(),'invoice_number':clean(d.get('invoice_number')) or ('KINV-'+str(uuid.uuid4())[:8].upper()),'customer_name':clean(d.get('customer_name')),'customer_email':clean(d.get('customer_email')),'amount':amount,'currency':_rv2_currency(d.get('currency')),'status':clean(d.get('status')) or 'issued','due_date':clean(d.get('due_date')) or None,'description':clean(d.get('description')),'created_at':utc_now(),'updated_at':utc_now()})
+    rows=db_select('koja_revenue_v2_invoices',{'user_id':uid},order='created_at.desc',limit=100) or []
+    return render_page('Revenue Invoices','''<div class="hero"><h1>Revenue Invoices</h1><p>Unified invoice records for revenue operations.</p></div><div class="card"><form method="post"><label>Invoice number</label><input name="invoice_number"><label>Customer</label><input name="customer_name"><label>Customer email</label><input name="customer_email" type="email"><label>Amount</label><input name="amount" type="number" step="0.01" min="0.01" required><label>Currency</label><input name="currency" value="ZMW"><label>Status</label><select name="status"><option>issued</option><option>paid</option><option>overdue</option><option>cancelled</option></select><label>Due date</label><input name="due_date" type="date"><label>Description</label><input name="description"><button class="btn">Create Invoice</button></form></div><div class="card"><table><tr><th>Invoice</th><th>Customer</th><th>Amount</th><th>Status</th><th>Due</th></tr>{% for x in rows %}<tr><td>{{ x.invoice_number }}</td><td>{{ x.customer_name or '' }}</td><td>{{ x.amount }} {{ x.currency }}</td><td>{{ x.status }}</td><td>{{ x.due_date or '' }}</td></tr>{% else %}<tr><td colspan="5">No invoices.</td></tr>{% endfor %}</table></div>''',rows=rows)
+
+@app.route('/revenue/v2/verify/flutterwave', methods=['POST'])
+@login_required
+def revenue_v2_verify_flutterwave():
+    tid=clean(request.form.get('transaction_id')); tx_ref=clean(request.form.get('tx_ref'))
+    tx=_flutterwave_verify(tid,tx_ref) if tid or tx_ref else None
+    if not tx: return render_page('Flutterwave Verification','<div class="hero"><h1>Verification failed</h1><p>Flutterwave transaction could not be verified.</p></div>'), 400
+    uid=_rv2_uid(); amount=_rv2_num(tx.get('amount')); currency=_rv2_currency(tx.get('currency')); status=str(tx.get('status') or '').lower()
+    mapped='paid' if status in {'successful','success'} else ('failed' if status in {'failed','cancelled','cancelled_by_user'} else 'processing')
+    ref=clean(tx.get('tx_ref')) or tx_ref or str(tx.get('id') or tid)
+    db_insert('koja_revenue_v2_transactions', {'user_id':uid,'organization_id':_rv2_org_id(),'external_reference':ref,'provider':'flutterwave','provider_transaction_id':str(tx.get('id') or tid or ''),'payment_method':clean(tx.get('payment_type')) or 'flutterwave','amount':amount,'currency':currency,'fee_amount':_rv2_num(tx.get('app_fee')),'status':mapped,'transaction_type':'payment','description':'Verified Flutterwave transaction','created_at':utc_now(),'updated_at':utc_now()})
+    return redirect(url_for('revenue_v2_transactions'))
+
+@app.route('/api/revenue/v2/summary')
+@login_required
+def api_revenue_v2_summary():
+    return jsonify(_rv2_summary())
+
+@app.route('/api/revenue/v2/verify/flutterwave', methods=['POST'])
+@login_required
+def api_revenue_v2_verify_flutterwave():
+    data=request.get_json(silent=True) or {}
+    tid=clean(data.get('transaction_id') or data.get('id')); tx_ref=clean(data.get('tx_ref') or data.get('reference'))
+    tx=_flutterwave_verify(tid,tx_ref) if tid or tx_ref else None
+    if not tx: return jsonify({'ok':False,'error':'flutterwave_verification_failed'}),400
+    status=str(tx.get('status') or '').lower(); mapped='paid' if status in {'successful','success'} else ('failed' if status in {'failed','cancelled','cancelled_by_user'} else 'processing')
+    row={'user_id':_rv2_uid(),'organization_id':_rv2_org_id(),'external_reference':clean(tx.get('tx_ref')) or tx_ref or str(tx.get('id') or tid),'provider':'flutterwave','provider_transaction_id':str(tx.get('id') or tid or ''),'payment_method':clean(tx.get('payment_type')) or 'flutterwave','amount':_rv2_num(tx.get('amount')),'currency':_rv2_currency(tx.get('currency')),'fee_amount':_rv2_num(tx.get('app_fee')),'status':mapped,'transaction_type':'payment','description':'Verified Flutterwave transaction','created_at':utc_now(),'updated_at':utc_now()}
+    saved,err=db_insert('koja_revenue_v2_transactions',row)
+    if err: return jsonify({'ok':False,'error':err}),500
+    return jsonify({'ok':True,'transaction':saved})
+
