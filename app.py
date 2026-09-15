@@ -10147,7 +10147,7 @@ def enterprise_dashboard():
       <div class="card"><h3>Documents</h3><h2>{{ counts.documents }}</h2><a class="btn" href="{{ url_for('enterprise_documents') }}">Manage</a></div>
       <div class="card"><h3>Billing</h3><h2>{{ counts.billing }}</h2><a class="btn" href="{{ url_for('enterprise_billing') }}">Manage</a></div>
     </div>
-    <div class="card"><h2>Enterprise operating chain</h2><p><strong>Identity → Organization → Departments → Employees → Roles → Workspaces → Contracts → Approvals → Documents → Billing → Intelligence</strong></p></div>
+    <div class="card"><h2>Enterprise operating chain</h2><p><strong>Identity → Organization → Departments → Employees → Roles → Workspaces → Contracts → Approvals → Documents → Billing → Intelligence</strong></p><p><a class="btn" href="{{ url_for('enterprise_locations') }}">Locations</a> <a class="btn" href="{{ url_for('enterprise_teams') }}">Teams</a> <a class="btn" href="{{ url_for('enterprise_invitations') }}">Invitations</a> <a class="btn" href="{{ url_for('enterprise_audit') }}">Audit</a></p></div>
     {% endif %}
     ''', user=current_user() or {}, org=org, counts=counts)
 
@@ -10241,6 +10241,151 @@ def api_enterprise_summary():
         if k != 'events': data[k]=len(_enterprise_select(t, {'organization_id':org_id} if org_id else {}, 1000))
     return jsonify(data)
 
+
+# ============================================================
+# KOJA ENTERPRISE V2 — organization governance + execution layer
+# ============================================================
+KOJA_ENTERPRISE_V2_TABLES = {
+    'locations':'koja_enterprise_locations',
+    'teams':'koja_enterprise_teams',
+    'team_members':'koja_enterprise_team_members',
+    'invitations':'koja_enterprise_invitations',
+    'settings':'koja_enterprise_settings',
+    'access_policies':'koja_enterprise_access_policies',
+}
+
+def _enterprise_v2_scope():
+    uid = _enterprise_uid(); org_id = _enterprise_org_id()
+    return uid, org_id, ({'organization_id': org_id} if org_id else {'organization_id':'__none__'})
+
+def _enterprise_v2_select(table, filters=None, limit=500):
+    try:
+        if not table_exists(table): return []
+        return db_select(table, filters or {}, order='created_at.desc', limit=limit) or []
+    except Exception:
+        return []
+
+def _enterprise_v2_insert(table, payload):
+    try:
+        if not table_exists(table): return None
+        rows = db_insert(table, payload) or []
+        return rows[0] if rows else None
+    except Exception:
+        logger.exception('Enterprise V2 insert failed: %s', table)
+        return None
+
+def _enterprise_v2_event(uid, org_id, event_type, entity_type, entity_id=None, payload=None):
+    if not org_id: return
+    _enterprise_insert(KOJA_ENTERPRISE_TABLES['events'], {
+        'id':str(uuid.uuid4()), 'organization_id':org_id, 'actor_id':uid,
+        'event_type':event_type, 'entity_type':entity_type, 'entity_id':entity_id,
+        'metadata':payload or {}, 'created_at':utc_now()
+    })
+
+@app.route('/enterprise/locations', methods=['GET','POST'])
+@login_required
+def enterprise_locations():
+    uid, org_id, scope = _enterprise_v2_scope()
+    if request.method == 'POST' and org_id:
+        name=(request.form.get('name') or '').strip()
+        if name:
+            row=_enterprise_v2_insert(KOJA_ENTERPRISE_V2_TABLES['locations'], {
+                'id':str(uuid.uuid4()), 'organization_id':org_id, 'name':name,
+                'code':(request.form.get('code') or '').strip() or None,
+                'country':(request.form.get('country') or 'ZM').strip().upper(),
+                'city':(request.form.get('city') or '').strip() or None,
+                'address':(request.form.get('address') or '').strip() or None,
+                'status':'active', 'created_at':utc_now(), 'updated_at':utc_now()
+            })
+            if row: _enterprise_v2_event(uid,org_id,'location_created','location',row.get('id'))
+    rows=_enterprise_v2_select(KOJA_ENTERPRISE_V2_TABLES['locations'], {'organization_id':org_id} if org_id else {}, 300)
+    return render_page('Enterprise Locations', r'''
+    <div class="hero"><h1>Locations</h1><p>Manage branches, offices, warehouses and operating locations under the organization.</p></div>
+    <div class="card"><form method="post"><div class="grid"><input name="name" placeholder="Location name" required><input name="code" placeholder="Code"><input name="country" value="ZM" placeholder="Country"><input name="city" placeholder="City"><input name="address" placeholder="Address"></div><button class="btn">Add location</button></form></div>
+    <div class="card"><table><tr><th>Location</th><th>Code</th><th>City</th><th>Country</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{x.name}}</td><td>{{x.code or ''}}</td><td>{{x.city or ''}}</td><td>{{x.country}}</td><td>{{x.status}}</td></tr>{% else %}<tr><td colspan="5">No locations yet.</td></tr>{% endfor %}</table></div>
+    ''', user=current_user() or {}, rows=rows)
+
+@app.route('/enterprise/teams', methods=['GET','POST'])
+@login_required
+def enterprise_teams():
+    uid, org_id, scope = _enterprise_v2_scope()
+    if request.method == 'POST' and org_id:
+        name=(request.form.get('name') or '').strip()
+        if name:
+            row=_enterprise_v2_insert(KOJA_ENTERPRISE_V2_TABLES['teams'], {
+                'id':str(uuid.uuid4()), 'organization_id':org_id, 'name':name,
+                'description':(request.form.get('description') or '').strip() or None,
+                'department_id':(request.form.get('department_id') or '').strip() or None,
+                'leader_user_id':(request.form.get('leader_user_id') or '').strip() or None,
+                'status':'active', 'created_at':utc_now(), 'updated_at':utc_now()
+            })
+            if row: _enterprise_v2_event(uid,org_id,'team_created','team',row.get('id'))
+    rows=_enterprise_v2_select(KOJA_ENTERPRISE_V2_TABLES['teams'], {'organization_id':org_id} if org_id else {}, 300)
+    deps=_enterprise_select(KOJA_ENTERPRISE_TABLES['departments'], {'organization_id':org_id} if org_id else {}, 200)
+    return render_page('Enterprise Teams', r'''
+    <div class="hero"><h1>Teams</h1><p>Organize cross-functional teams and accountable leaders.</p></div>
+    <div class="card"><form method="post"><div class="grid"><input name="name" placeholder="Team name" required><input name="description" placeholder="Description"><select name="department_id"><option value="">Department</option>{% for d in deps %}<option value="{{d.id}}">{{d.name}}</option>{% endfor %}</select><input name="leader_user_id" placeholder="Leader user ID"></div><button class="btn">Create team</button></form></div>
+    <div class="card"><table><tr><th>Team</th><th>Department</th><th>Leader</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{x.name}}</td><td>{{x.department_id or ''}}</td><td>{{x.leader_user_id or ''}}</td><td>{{x.status}}</td></tr>{% else %}<tr><td colspan="4">No teams yet.</td></tr>{% endfor %}</table></div>
+    ''', user=current_user() or {}, rows=rows, deps=deps)
+
+@app.route('/enterprise/invitations', methods=['GET','POST'])
+@login_required
+def enterprise_invitations():
+    uid, org_id, scope = _enterprise_v2_scope()
+    if request.method == 'POST' and org_id:
+        email=(request.form.get('email') or '').strip().lower()
+        role=(request.form.get('role') or 'member').strip()
+        if email:
+            row=_enterprise_v2_insert(KOJA_ENTERPRISE_V2_TABLES['invitations'], {
+                'id':str(uuid.uuid4()), 'organization_id':org_id, 'email':email,
+                'role':role, 'invited_by':uid, 'status':'pending', 'created_at':utc_now(), 'updated_at':utc_now()
+            })
+            if row: _enterprise_v2_event(uid,org_id,'invitation_created','invitation',row.get('id'),{'email':email,'role':role})
+    rows=_enterprise_v2_select(KOJA_ENTERPRISE_V2_TABLES['invitations'], {'organization_id':org_id} if org_id else {}, 300)
+    return render_page('Enterprise Invitations', r'''
+    <div class="hero"><h1>Member Invitations</h1><p>Prepare controlled organization access for employees, managers and external collaborators.</p></div>
+    <div class="card"><form method="post"><input name="email" type="email" placeholder="Member email" required><select name="role"><option>member</option><option>manager</option><option>admin</option></select><button class="btn">Create invitation</button></form></div>
+    <div class="card"><table><tr><th>Email</th><th>Role</th><th>Status</th><th>Created</th></tr>{% for x in rows %}<tr><td>{{x.email}}</td><td>{{x.role}}</td><td>{{x.status}}</td><td>{{x.created_at}}</td></tr>{% else %}<tr><td colspan="4">No invitations yet.</td></tr>{% endfor %}</table></div>
+    ''', user=current_user() or {}, rows=rows)
+
+@app.route('/enterprise/approvals/<approval_id>/decision', methods=['POST'])
+@login_required
+def enterprise_approval_decision(approval_id):
+    uid, org_id, scope = _enterprise_v2_scope()
+    if not org_id: return jsonify({'ok':False,'error':'Organization not found'}), 400
+    rows=_enterprise_select(KOJA_ENTERPRISE_TABLES['approvals'], {'id':approval_id,'organization_id':org_id}, 1)
+    if not rows: return jsonify({'ok':False,'error':'Approval not found'}), 404
+    decision=(request.form.get('decision') or (request.json or {}).get('decision') or '').strip().lower()
+    if decision not in ('approved','rejected'): return jsonify({'ok':False,'error':'Invalid decision'}), 400
+    try:
+        db_update(KOJA_ENTERPRISE_TABLES['approvals'], {'id':approval_id}, {'status':decision,'approved_by':uid,'decision_at':utc_now(),'updated_at':utc_now()})
+    except Exception:
+        try: db_update(KOJA_ENTERPRISE_TABLES['approvals'], {'id':approval_id}, {'status':decision,'updated_at':utc_now()})
+        except Exception: return jsonify({'ok':False,'error':'Approval update failed'}), 500
+    _enterprise_v2_event(uid,org_id,'approval_'+decision,'approval',approval_id)
+    return redirect(url_for('enterprise_approvals'))
+
+@app.route('/enterprise/audit')
+@login_required
+def enterprise_audit():
+    uid, org_id, scope = _enterprise_v2_scope()
+    rows=_enterprise_select(KOJA_ENTERPRISE_TABLES['events'], {'organization_id':org_id} if org_id else {}, 300)
+    return render_page('Enterprise Audit', r'''
+    <div class="hero"><h1>Enterprise Audit</h1><p>Organization-level operational event history.</p></div>
+    <div class="card"><table><tr><th>Time</th><th>Event</th><th>Entity</th><th>Actor</th></tr>{% for x in rows %}<tr><td>{{x.created_at}}</td><td>{{x.event_type}}</td><td>{{x.entity_type}} {{x.entity_id or ''}}</td><td>{{x.actor_id or ''}}</td></tr>{% else %}<tr><td colspan="4">No enterprise events yet.</td></tr>{% endfor %}</table></div>
+    ''', user=current_user() or {}, rows=rows)
+
+@app.route('/api/enterprise/v2/summary')
+@login_required
+def api_enterprise_v2_summary():
+    uid, org_id, scope = _enterprise_v2_scope()
+    data={'ok':True,'version':'V2','organization_id':org_id}
+    for k,t in KOJA_ENTERPRISE_TABLES.items():
+        if k != 'events': data[k]=len(_enterprise_select(t, {'organization_id':org_id} if org_id else {}, 2000))
+    for k,t in KOJA_ENTERPRISE_V2_TABLES.items(): data[k]=len(_enterprise_v2_select(t, {'organization_id':org_id} if org_id else {}, 2000))
+    data['members']=len(_b2b_safe_select('koja_b2b_members', {'organization_id':org_id} if org_id else {}, 2000))
+    data['audit_events']=len(_enterprise_select(KOJA_ENTERPRISE_TABLES['events'], {'organization_id':org_id} if org_id else {}, 2000))
+    return jsonify(data)
 
 # ============================================================
 # KOJA B2B + PROCUREMENT V2 — execution layer (ADDITIVE)

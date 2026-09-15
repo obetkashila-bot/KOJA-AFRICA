@@ -1,21 +1,30 @@
-KOJA SALES + CRM V2
+KOJA ENTERPRISE V2
+==================
 
-Cumulative source: KOJA Supply Chain V2 + Finance V2 + Workforce V2 + Sales & CRM V2.
+This package is cumulative from the KOJA Sales & CRM V2 production source.
+It preserves existing KOJA services and adds the Enterprise / Organizations V2 governance layer.
 
-Deploy order:
-1. Run KOJA_SALES_CRM_V2.sql in the existing KOJA Supabase SQL Editor.
-2. Confirm SQL completes successfully.
-3. Deploy app.py to the existing KOJA AFRICA Render production service.
+Enterprise V2 adds:
+- Organization foundation compatibility
+- Departments, employees, roles, workspaces, contracts, approvals, documents and billing foundation
+- Multi-location / branch management
+- Cross-functional teams
+- Controlled member invitations
+- Approval decisions
+- Enterprise audit view
+- Enterprise V2 summary API
+- Additive/update-safe SQL migration
 
-V2 includes:
-- Lead qualification and conversion to customer
-- Customer 360 with pipeline and realized sales
-- Opportunity pipeline with probability-weighted forecasting
-- Quotations and sales orders
-- Sales activities/follow-ups
-- Sales targets
-- Sales -> Finance V2 bridge when an order becomes paid/fulfilled/completed
-- /api/sales/summary V2
+SQL migration:
+KOJA_ENTERPRISE_V2.sql
 
-Migration is additive/update-safe. It does not drop, truncate, recreate, or delete existing KOJA business tables.
-Communications and other unrelated KOJA services are not intentionally modified.
+Application:
+app.py
+
+Deployment order:
+1. Run KOJA_ENTERPRISE_V2.sql in Supabase SQL Editor.
+2. Confirm it completes successfully.
+3. Deploy app.py to the existing KOJA AFRICA Render Production service.
+
+No DROP, TRUNCATE or table recreation is used by the migration.
+Communications and existing KOJA services are preserved.
