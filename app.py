@@ -11352,26 +11352,87 @@ def identity_v2():
     verification = (_kit2_rows('koja_identity_v2_verifications', {'user_id': uid}, 1) or [None])[0]
     devices = _kit2_rows('koja_identity_v2_devices', {'user_id': uid}, 20)
     trust = _kit2_trust()
+    trusted_count = len([d for d in devices if d.get('trusted') is True])
+    identity_points = int(trust.get('factors', {}).get('identity_verified', 0) or 0)
+    device_points = int(trust.get('factors', {}).get('trusted_devices', 0) or 0)
+    risk_points = int(trust.get('factors', {}).get('risk_events', 0) or 0)
     return render_page('KOJA Identity & Trust', """
-    <div class="hero"><h1>KOJA Identity & Trust</h1><p>Identity verification, trusted devices and account trust signals for safer KOJA services.</p></div>
-    <div class="grid">
-      <div class="card"><h3>Trust Score</h3><div class="metric">{{ trust.score }}/100</div></div>
-      <div class="card"><h3>Trust Level</h3><div class="metric">{{ trust.level|replace('_',' ')|title }}</div></div>
-      <div class="card"><h3>Identity</h3><div class="metric">{{ verification.status|title if verification else 'Not submitted' }}</div></div>
-      <div class="card"><h3>Trusted Devices</h3><div class="metric">{{ devices|selectattr('trusted','equalto',true)|list|length }}</div></div>
+    <style>
+      .it-wrap{max-width:1100px;margin:0 auto;padding-bottom:30px}
+      .it-hero{background:linear-gradient(135deg,#0b1220,#17233b);color:#fff;border:1px solid #263652;border-radius:22px;padding:28px;margin-bottom:18px;box-shadow:0 14px 35px rgba(0,0,0,.16)}
+      .it-hero h1{margin:0 0 8px;font-size:clamp(28px,5vw,42px)}
+      .it-hero p{margin:0;color:#cbd5e1;max-width:760px;line-height:1.6}
+      .it-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin:18px 0}
+      .it-card{background:#fff;border:1px solid #dbe3ee;border-radius:18px;padding:20px;box-shadow:0 8px 24px rgba(15,23,42,.07)}
+      .it-label{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#64748b;font-weight:700}
+      .it-value{font-size:28px;font-weight:800;color:#0f172a;margin-top:7px}
+      .it-sub{font-size:13px;color:#64748b;margin-top:5px}
+      .it-main{display:grid;grid-template-columns:1.25fr .75fr;gap:18px}
+      .it-title{margin:0 0 16px;color:#0f172a;font-size:20px}
+      .it-row{margin:16px 0}.it-row-head{display:flex;justify-content:space-between;gap:10px;font-size:13px;font-weight:700;color:#334155;margin-bottom:7px}
+      .it-bar{height:9px;background:#e2e8f0;border-radius:99px;overflow:hidden}.it-fill{height:100%;border-radius:99px;background:linear-gradient(90deg,#2563eb,#0ea5e9)}
+      .it-score{width:150px;height:150px;border-radius:50%;margin:4px auto 18px;display:grid;place-items:center;background:conic-gradient(#2563eb calc(var(--score)*1%),#e2e8f0 0);position:relative}
+      .it-score:after{content:"";position:absolute;width:112px;height:112px;border-radius:50%;background:#fff}.it-score span{position:relative;z-index:1;font-size:32px;font-weight:900;color:#0f172a}
+      .it-level{text-align:center;font-weight:800;text-transform:capitalize;color:#2563eb}
+      .it-status{display:inline-block;padding:7px 11px;border-radius:999px;background:#eff6ff;color:#1d4ed8;font-size:12px;font-weight:800;text-transform:capitalize}
+      .it-form{display:grid;grid-template-columns:1fr 1fr;gap:14px}.it-form .full{grid-column:1/-1}
+      .it-form label{display:block;font-size:13px;font-weight:700;color:#334155;margin-bottom:6px}
+      .it-form input{width:100%;box-sizing:border-box;padding:12px 13px;border:1px solid #cbd5e1;border-radius:10px;background:#fff;color:#0f172a}
+      .it-form input:focus{outline:2px solid #93c5fd;border-color:#2563eb}
+      .it-btn{display:inline-block;border:0;border-radius:10px;padding:12px 17px;background:#2563eb;color:#fff;font-weight:800;cursor:pointer;text-decoration:none}
+      .it-btn:hover{background:#1d4ed8}.it-note{font-size:13px;line-height:1.6;color:#64748b}.it-api{margin-top:14px}
+      @media(max-width:850px){.it-grid{grid-template-columns:1fr 1fr}.it-main{grid-template-columns:1fr}}
+      @media(max-width:560px){.it-grid,.it-form{grid-template-columns:1fr}.it-form .full{grid-column:auto}.it-card{padding:16px}.it-hero{padding:22px}}
+    </style>
+    <div class="it-wrap">
+      <section class="it-hero">
+        <h1>KOJA Identity &amp; Trust</h1>
+        <p>Manage identity verification, trusted devices and account trust signals. Your document number is converted to a secure hash before storage.</p>
+      </section>
+
+      <div class="it-grid">
+        <div class="it-card"><div class="it-label">Trust Score</div><div class="it-value">{{ trust.score }}/100</div><div class="it-sub">Current account trust signal</div></div>
+        <div class="it-card"><div class="it-label">Trust Level</div><div class="it-value">{{ trust.level|replace('_',' ')|title }}</div><div class="it-sub">Based on current factors</div></div>
+        <div class="it-card"><div class="it-label">Identity</div><div class="it-value">{{ verification.status|title if verification else 'Not submitted' }}</div><div class="it-sub">Verification status</div></div>
+        <div class="it-card"><div class="it-label">Trusted Devices</div><div class="it-value">{{ trusted_count }}</div><div class="it-sub">Registered trusted devices</div></div>
+      </div>
+
+      <div class="it-main">
+        <section class="it-card">
+          <h2 class="it-title">Trust Factors</h2>
+          <div class="it-row"><div class="it-row-head"><span>Identity verified</span><span>{{ identity_points }} / 40</span></div><div class="it-bar"><div class="it-fill" style="width:{{ (identity_points / 40 * 100)|round|int }}%"></div></div></div>
+          <div class="it-row"><div class="it-row-head"><span>Trusted devices</span><span>{{ device_points }} / 20</span></div><div class="it-bar"><div class="it-fill" style="width:{{ (device_points / 20 * 100)|round|int }}%"></div></div></div>
+          <div class="it-row"><div class="it-row-head"><span>Risk events</span><span>{{ risk_points }}</span></div><div class="it-bar"><div class="it-fill" style="width:{{ (100 + risk_points / 30 * 100)|round|int if risk_points < 0 else 100 }}%"></div></div></div>
+          <p class="it-note">The baseline trust score is 20. Verification can add up to 40 points, trusted devices up to 20 points, while high or critical risk events reduce the score.</p>
+        </section>
+
+        <section class="it-card">
+          <h2 class="it-title">Account Trust</h2>
+          <div class="it-score" style="--score:{{ trust.score }}"><span>{{ trust.score }}</span></div>
+          <div class="it-level">{{ trust.level|replace('_',' ') }}</div>
+          <p class="it-note" style="text-align:center;margin-top:12px">This is a KOJA product trust signal, not a legal identity decision or a substitute for external KYC.</p>
+        </section>
+      </div>
+
+      <section class="it-card" style="margin-top:18px">
+        <h2 class="it-title">Identity Verification</h2>
+        <form class="it-form" method="post" action="{{ url_for('api_identity_v2_verify') }}">
+          <div><label>Legal name</label><input name="legal_name" required autocomplete="name"></div>
+          <div><label>Country</label><input name="country" value="ZM" maxlength="2"></div>
+          <div><label>Document type</label><input name="document_type" placeholder="National ID / Passport"></div>
+          <div><label>Document number</label><input name="document_number" type="password" autocomplete="off" required></div>
+          <div class="full"><button class="it-btn" type="submit">Submit Verification</button></div>
+        </form>
+      </section>
+
+      <section class="it-card" style="margin-top:18px">
+        <h2 class="it-title">Security &amp; Privacy</h2>
+        <p class="it-note">KOJA does not need to display or store the raw document number. The verification service stores a SHA-256 hash for the document number and keeps the verification record pending until an authorized verification process changes its status.</p>
+        <div class="it-api"><a class="it-btn" href="{{ url_for('api_identity_v2_summary') }}">View Identity API Response</a></div>
+      </section>
     </div>
-    <div class="card"><h2>Identity Verification</h2>
-      <form method="post" action="{{ url_for('api_identity_v2_verify') }}">
-        <label>Legal name</label><input name="legal_name" required>
-        <label>Country</label><input name="country" value="ZM">
-        <label>Document type</label><input name="document_type" placeholder="National ID / Passport">
-        <label>Document number</label><input name="document_number" type="password" autocomplete="off">
-        <button class="btn" type="submit">Submit verification</button>
-      </form>
-    </div>
-    <div class="card"><h2>Trust Signals</h2><p>Score is calculated from verified identity, trusted devices and recorded security-risk events. It is not a legal identity decision or a substitute for external KYC.</p></div>
-    <div class="card"><a class="btn" href="{{ url_for('api_identity_v2_summary') }}">Open Identity API</a></div>
-    """, trust=trust, verification=verification, devices=devices)
+    """, trust=trust, verification=verification, devices=devices, trusted_count=trusted_count,
+       identity_points=identity_points, device_points=device_points, risk_points=risk_points)
 
 @app.route('/api/identity/v2/summary')
 @login_required
