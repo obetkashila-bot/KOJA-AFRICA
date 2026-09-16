@@ -2440,7 +2440,7 @@ def services():
 <div class="card"><h3>Learning and Research</h3><p>One connected workspace for academic questions, assignments, documents, research and document-based AI.</p><div class="actions"><a class="btn" href="{{ url_for('questions') }}">Questions</a><a class="btn" href="{{ url_for('assignments') }}">Assignments</a><a class="btn" href="{{ url_for('documents') }}">Documents and AI</a><a class="btn secondary" href="{{ url_for('research') }}">Research</a></div></div>
 <div class="card"><h3>AI and Workspace</h3><p>General AI, document intelligence, connected knowledge and productivity tools use the same KOJA AI foundation.</p><div class="actions"><a class="btn" href="{{ url_for('ai_assistant') }}">KOJA AI</a><a class="btn secondary" href="{{ url_for('documents') }}">Document AI</a><a class="btn secondary" href="{{ url_for('cv') }}">CV and Documents</a></div></div>
 <div class="card"><h3>Professional Services</h3><p>Doctors, teachers, tutors and other professionals are grouped under one discovery and identity workflow.</p><div class="actions"><a class="btn" href="{{ url_for('professionals') }}">Professionals</a><a class="btn secondary" href="{{ url_for('doctors') }}">Doctors</a><a class="btn secondary" href="{{ url_for('teachers') }}">Teachers and Tutors</a><a class="btn secondary" href="{{ url_for('professional_register') }}">Register Profession</a></div></div>
-<div class="card"><h3>Market and Business</h3><p>Buying, selling, business operations, payments, accounting and seller tools share the same commerce foundation.</p><div class="actions"><a class="btn" href="{{ url_for('koja_market') }}">KOJA Market</a><a class="btn secondary" href="{{ url_for('marketplace') }}">Digital Marketplace</a></div></div>
+<div class="card"><h3>Market and Business</h3><p>Buying, selling, business operations, payments, accounting and seller tools share the same commerce foundation.</p><div class="actions"><a class="btn" href="{{ url_for('market') }}">KOJA Market</a><a class="btn secondary" href="{{ url_for('marketplace') }}">Digital Marketplace</a></div></div>
 <div class="card"><h3>Delivery and Logistics</h3><p>Orders, drivers, live GPS, delivery requests, tracking and delivery security operate as one logistics workflow.</p><div class="actions"><a class="btn" href="{{ url_for('deliveries') }}">Delivery</a><a class="btn secondary" href="{{ url_for('tracking') }}">Live GPS</a></div></div>
 <div class="card"><h3>Communication</h3><p>Messaging, voice, video, groups, presence and status remain one connected communication service.</p><a class="btn" href="{{ url_for('connect') }}">Open Communication</a></div>
 </div>
@@ -9628,3 +9628,107 @@ def driver_available_deliveries():
 <div class="hero"><h1>Available KOJA Deliveries</h1><p>Only unclaimed delivery jobs appear here. The first driver to accept a job claims it; it immediately disappears from this list for every other driver.</p></div>
 <div class="grid">{% for d in rows %}<div class="card"><h3>{{ d.tracking_code }}</h3><p><strong>Pickup:</strong> {{ d.pickup_location }}</p><p><strong>Destination:</strong> {{ d.destination }}</p><p><strong>Fee:</strong> {{ money(d.delivery_fee,'ZMW') }}</p><form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.id,action='accept') }}"><button class="btn success">Accept Delivery</button></form></div>{% else %}<div class="card"><p>No available deliveries right now.</p></div>{% endfor %}</div>
 ''',rows=rows,money=market_money)
+
+# ============================================================
+# KOJA BUSINESS — UNIFIED OPERATING SYSTEM HUB V1
+# Presentation/integration layer over existing KOJA services.
+# Additive only. Communications is intentionally untouched.
+# ============================================================
+
+def _kb_current_business(business_id):
+    uid=(current_user() or {}).get('id')
+    b=first_row('koja_businesses',{'id':business_id,'owner_id':uid})
+    if b: return b
+    try:
+        m=first_row('koja_business_members',{'business_id':business_id,'user_id':uid,'status':'active'})
+        if m:
+            return first_row('koja_businesses',{'id':business_id})
+    except Exception:
+        pass
+    return None
+
+def _kb_activity(business_id,event_type,entity_type=None,entity_id=None,payload=None):
+    try:
+        if table_exists('koja_business_activity'):
+            db_insert('koja_business_activity',{
+                'business_id':business_id,
+                'actor_id':(current_user() or {}).get('id'),
+                'event_type':event_type,
+                'entity_type':entity_type,
+                'entity_id':entity_id,
+                'payload':payload or {},
+                'created_at':utc_now()
+            })
+    except Exception:
+        pass
+
+def _kb_card(title,description,endpoint=None,button='Open',business_id=None,kind=''):
+    href=''
+    if endpoint:
+        try:
+            href=url_for(endpoint,**({'business_id':business_id} if business_id else {}))
+        except Exception:
+            href=''
+    badge=f'<span class="small">{kind}</span>' if kind else ''
+    action=f'<a class="btn secondary" href="{href}">{button}</a>' if href else '<span class="small">Connected foundation</span>'
+    return f'<div class="card"><h3>{title}</h3>{badge}<p>{description}</p>{action}</div>'
+
+@app.route('/business/hub')
+@login_required
+def business_unified_hub():
+    uid=(current_user() or {}).get('id')
+    businesses=db_select('koja_businesses',{'owner_id':uid},order='created_at.desc',limit=50) or []
+    if not businesses:
+        return render_page('KOJA Business',r'''<div class="hero"><h1>KOJA BUSINESS</h1><p>One connected operating platform for organisations to work, buy, sell, manage people, manage money and use AI.</p><div class="actions"><a class="btn" href="{{ url_for('business_new') }}">Create Business</a></div></div><div class="card"><h2>Business Account</h2><p>Create your organisation first. KOJA will then provide the Business Workspace and connected operating modules.</p></div>''')
+    if len(businesses)==1:
+        return redirect(url_for('business_unified_dashboard',business_id=businesses[0].get('id')))
+    return render_page('KOJA Business',r'''<div class="hero"><h1>KOJA BUSINESS</h1><p>Select an organisation to open its connected business operating system.</p><div class="actions"><a class="btn" href="{{ url_for('business_new') }}">Create Business</a></div></div><div class="grid">{% for b in businesses %}<div class="card"><h2>{{ b.name }}</h2><p>{{ b.category or 'Business' }}{% if b.location %} · {{ b.location }}{% endif %}</p><a class="btn" href="{{ url_for('business_unified_dashboard',business_id=b.id) }}">Open Business</a></div>{% endfor %}</div>''',businesses=businesses)
+
+@app.route('/business/<business_id>/unified')
+@login_required
+def business_unified_dashboard(business_id):
+    b=_kb_current_business(business_id)
+    if not b: abort(404)
+    _kb_activity(business_id,'business_hub_opened','business',business_id)
+    products=db_select('koja_business_products',{'business_id':business_id},limit=500) or []
+    sales=db_select('koja_business_sales',{'business_id':business_id},limit=500) or []
+    expenses=db_select('koja_business_expenses',{'business_id':business_id},limit=500) or []
+    members=db_select('koja_business_members',{'business_id':business_id},limit=500) or []
+    departments=db_select('koja_business_departments',{'business_id':business_id},limit=200) or []
+    workspaces=db_select('koja_business_workspaces',{'business_id':business_id},limit=100) or []
+    revenue=sum(float(x.get('total_amount') or 0) for x in sales)
+    costs=sum(float(x.get('amount') or 0) for x in expenses)
+    profit=revenue-costs
+    cards=[]
+    cards.append(_kb_card('Organisation Core','Members, roles, departments, workspace and business activity/audit.','business_organisation_core',business_id=business_id,button='Open Organisation')) if 'business_organisation_core' in app.view_functions else None
+    cards.append(_kb_card('Identity & Trust','Organisation identity and trusted access foundation.','settings',button='Open Account',kind='Trust')) if 'settings' in app.view_functions else None
+    cards.append(_kb_card('Business Workspace','Working environment for documents, research, files and team operations.','business_unified_workspace',business_id=business_id,button='Open Workspace')) if 'business_unified_workspace' in app.view_functions else None
+    cards.append(_kb_card('Workforce','Employees, people operations and workforce management.','business_employees',business_id=business_id,button='Open Workforce')) if 'business_employees' in app.view_functions else None
+    cards.append(_kb_card('CRM & Sales','Customers, sales activity and commercial operations.','business_customers',business_id=business_id,button='Open CRM')) if 'business_customers' in app.view_functions else None
+    cards.append(_kb_card('Procurement','Purchasing and supplier operations.'))
+    cards.append(_kb_card('Supply Chain','Inventory, stock movement, fulfilment and logistics foundation.','business_products',business_id=business_id,button='Open Supply')) if 'business_products' in app.view_functions else None
+    cards.append(_kb_card('Finance','Accounting, invoices, payments and financial records.','business_accounting_v2',business_id=business_id,button='Open Finance')) if 'business_accounting_v2' in app.view_functions else None
+    cards.append(_kb_card('KOJA AI','AI assistance for business analysis, planning and decision support.','business_ai',business_id=business_id,button='Open AI')) if 'business_ai' in app.view_functions else None
+    cards.append(_kb_card('KOJA Market','Commerce, products, sellers and marketplace operations.','koja_market',button='Open Market')) if 'koja_market' in app.view_functions else None
+    cards.append(_kb_card('Payments','Payment and revenue workflows.','business_payments',business_id=business_id,button='Open Payments')) if 'business_payments' in app.view_functions else None
+    cards.append(_kb_card('Delivery','Delivery and logistics workflows.','business_delivery',business_id=business_id,button='Open Delivery')) if 'business_delivery' in app.view_functions else None
+    cards.append(_kb_card('Platform Engines','Shared KOJA engines connecting Business, Market, AI, Pay, Identity and Workspace.','business_core_status',business_id=business_id,button='View Engines')) if 'business_core_status' in app.view_functions else None
+    return render_page('KOJA Business',r'''<div class="hero"><h1>KOJA BUSINESS</h1><p>{{ b.name }} · One connected operating platform for organisations.</p><div class="actions"><a class="btn" href="{{ url_for('business_dashboard',business_id=b.id) }}">Business Dashboard</a><a class="btn secondary" href="{{ url_for('business_new') }}">Add Business</a></div></div><div class="grid"><div class="card"><h3>Business Account</h3><p><strong>Business number:</strong> {{ b.business_number or 'Pending' }}</p><p><strong>Industry:</strong> {{ b.category or 'General' }}</p><p><strong>Location:</strong> {{ b.location or 'Not set' }}</p></div><div class="card"><h3>People</h3><h2>{{ members|length }}</h2><p>Business members</p></div><div class="card"><h3>Departments</h3><h2>{{ departments|length }}</h2><p>Organisation departments</p></div><div class="card"><h3>Workspaces</h3><h2>{{ workspaces|length }}</h2><p>Business workspaces</p></div><div class="card"><h3>Revenue</h3><h2>{{ money(revenue,'ZMW') }}</h2><p>Recorded sales</p></div><div class="card"><h3>Expenses</h3><h2>{{ money(costs,'ZMW') }}</h2><p>Recorded expenses</p></div><div class="card"><h3>Operating result</h3><h2>{{ money(profit,'ZMW') }}</h2><p>Sales less recorded expenses</p></div><div class="card"><h3>Inventory</h3><h2>{{ products|length }}</h2><p>Business products</p></div></div><div class="card"><h2>Business Operating System</h2><p>KOJA Business connects the organisation layer to people, customers, purchasing, supply, finance, AI, commerce, payments and delivery without replacing the existing modules.</p></div><div class="grid">''' + ''.join(cards) + r'''</div>''',b=b,members=members,departments=departments,workspaces=workspaces,revenue=revenue,costs=costs,profit=profit,products=products,money=market_money)
+
+@app.route('/business/<business_id>/organisation')
+@login_required
+def business_organisation_core(business_id):
+    b=_kb_current_business(business_id)
+    if not b: abort(404)
+    members=db_select('koja_business_members',{'business_id':business_id},order='created_at.desc',limit=500) or []
+    departments=db_select('koja_business_departments',{'business_id':business_id},order='created_at.desc',limit=200) or []
+    workspaces=db_select('koja_business_workspaces',{'business_id':business_id},order='created_at.desc',limit=100) or []
+    return render_page('Organisation Core',r'''<div class="hero"><h1>Organisation Core</h1><p>{{ b.name }} · Members, roles, departments, workspaces and audit foundation.</p><div class="actions"><a class="btn" href="{{ url_for('business_unified_dashboard',business_id=b.id) }}">Back to Business</a></div></div><div class="grid"><div class="card"><h2>Members & Roles</h2><p>{{ members|length }} member(s)</p>{% for m in members[:20] %}<p>{{ m.user_id }} — <strong>{{ m.role }}</strong> — {{ m.status }}</p>{% endfor %}</div><div class="card"><h2>Departments</h2><p>{{ departments|length }} department(s)</p>{% for d in departments %}<p><strong>{{ d.name }}</strong>{% if d.description %} — {{ d.description }}{% endif %}</p>{% endfor %}</div><div class="card"><h2>Business Workspace</h2><p>{{ workspaces|length }} workspace(s)</p>{% for w in workspaces %}<p><strong>{{ w.name }}</strong> — {{ w.status }}</p>{% endfor %}</div></div>''',b=b,members=members,departments=departments,workspaces=workspaces)
+
+@app.route('/business/<business_id>/workspace')
+@login_required
+def business_unified_workspace(business_id):
+    b=_kb_current_business(business_id)
+    if not b: abort(404)
+    workspaces=db_select('koja_business_workspaces',{'business_id':business_id},order='created_at.desc',limit=100) or []
+    return render_page('Business Workspace',r'''<div class="hero"><h1>Business Workspace</h1><p>{{ b.name }} · Shared working environment.</p><div class="actions"><a class="btn" href="{{ url_for('business_unified_dashboard',business_id=b.id) }}">Back to Business</a></div></div><div class="grid">{% for w in workspaces %}<div class="card"><h2>{{ w.name }}</h2><p>{{ w.description or 'Business workspace' }}</p><p>Status: {{ w.status }}</p></div>{% else %}<div class="card"><h2>No business workspace yet</h2><p>The organisation workspace foundation is ready. A workspace can be created as the next operational action.</p></div>{% endfor %}</div>''',b=b,workspaces=workspaces)
