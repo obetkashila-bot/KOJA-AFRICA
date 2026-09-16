@@ -2439,8 +2439,8 @@ def services():
 <div class="grid">
 <div class="card"><h3>Learning and Research</h3><p>One connected workspace for academic questions, assignments, documents, research and document-based AI.</p><div class="actions"><a class="btn" href="{{ url_for('questions') }}">Questions</a><a class="btn" href="{{ url_for('assignments') }}">Assignments</a><a class="btn" href="{{ url_for('documents') }}">Documents and AI</a><a class="btn secondary" href="{{ url_for('research') }}">Research</a></div></div>
 <div class="card"><h3>AI and Workspace</h3><p>General AI, document intelligence, connected knowledge and productivity tools use the same KOJA AI foundation.</p><div class="actions"><a class="btn" href="{{ url_for('ai_assistant') }}">KOJA AI</a><a class="btn secondary" href="{{ url_for('documents') }}">Document AI</a><a class="btn secondary" href="{{ url_for('cv') }}">CV and Documents</a></div></div>
-<div class="card"><h3>Professional Services</h3><p>One professional-services economy: appointments, live sessions, project jobs, quotations, payments, verification, reviews and professional earnings.</p><div class="actions"><a class="btn" href="{{ url_for('professional_marketplace') }}">Professional Marketplace</a><a class="btn" href="{{ url_for('professionals') }}">Find Professionals</a><a class="btn secondary" href="{{ url_for('professional_request') }}">Post Request</a><a class="btn secondary" href="{{ url_for('professional_dashboard') }}">Professional Dashboard</a><a class="btn secondary" href="{{ url_for('professional_register') }}">Register Profession</a></div></div>
-<div class="card"><h3>Market and Business</h3><p>Buying, selling, business operations, payments, accounting and seller tools share the same commerce foundation.</p><div class="actions"><a class="btn" href="{{ url_for('koja_market') }}">KOJA Market</a><a class="btn secondary" href="{{ url_for('marketplace') }}">Digital Marketplace</a></div></div>
+<div class="card"><h3>Professional Services</h3><p>Doctors, teachers, tutors and other professionals are grouped under one discovery and identity workflow.</p><div class="actions"><a class="btn" href="{{ url_for('professionals') }}">Professionals</a><a class="btn secondary" href="{{ url_for('doctors') }}">Doctors</a><a class="btn secondary" href="{{ url_for('teachers') }}">Teachers and Tutors</a><a class="btn secondary" href="{{ url_for('professional_register') }}">Register Profession</a></div></div>
+<div class="card"><h3>Market and Business</h3><p>Buying, selling, business operations, payments, accounting and seller tools share the same commerce foundation.</p><div class="actions"><a class="btn" href="{{ url_for('market') }}">KOJA Market</a><a class="btn secondary" href="{{ url_for('marketplace') }}">Digital Marketplace</a></div></div>
 <div class="card"><h3>Delivery and Logistics</h3><p>Orders, drivers, live GPS, delivery requests, tracking and delivery security operate as one logistics workflow.</p><div class="actions"><a class="btn" href="{{ url_for('deliveries') }}">Delivery</a><a class="btn secondary" href="{{ url_for('tracking') }}">Live GPS</a></div></div>
 <div class="card"><h3>Communication</h3><p>Messaging, voice, video, groups, presence and status remain one connected communication service.</p><a class="btn" href="{{ url_for('connect') }}">Open Communication</a></div>
 </div>
@@ -4109,340 +4109,7 @@ def book_professional(provider_id):
 <button class="btn" type="submit">{{ title }}</button>
 </form>
 </div>
-""", provider=provider, purpose=purpose)
-
-
-# ============================================================
-# KOJA PROFESSIONAL SERVICES MARKETPLACE V1
-# Additive marketplace layer. Existing professional routes remain.
-# Connect+ is intentionally untouched.
-# ============================================================
-PROFESSIONAL_MARKETPLACE_SQL = r"""
-create extension if not exists pgcrypto;
-create table if not exists public.koja_professional_services (
- id uuid primary key default gen_random_uuid(), provider_id uuid not null, title text not null,
- description text, category text, service_type text not null default 'project', price numeric(14,2) default 0,
- currency text default 'ZMW', duration_minutes integer, online_available boolean default true,
- in_person_available boolean default false, location text, status text default 'pending',
- created_at timestamptz default now(), updated_at timestamptz default now()
-);
-create index if not exists koja_ps_services_provider_idx on public.koja_professional_services(provider_id,status);
-create table if not exists public.koja_professional_requests (
- id uuid primary key default gen_random_uuid(), customer_id uuid not null, provider_id uuid, service_id uuid,
- title text not null, description text not null, category text, request_type text default 'project',
- budget numeric(14,2), currency text default 'ZMW', location text, deadline date, status text default 'open',
- created_at timestamptz default now(), updated_at timestamptz default now()
-);
-create index if not exists koja_ps_requests_customer_idx on public.koja_professional_requests(customer_id,status,created_at desc);
-create index if not exists koja_ps_requests_provider_idx on public.koja_professional_requests(provider_id,status,created_at desc);
-create table if not exists public.koja_professional_quotes (
- id uuid primary key default gen_random_uuid(), request_id uuid not null, provider_id uuid not null,
- customer_id uuid not null, amount numeric(14,2) not null, currency text default 'ZMW', delivery_days integer,
- message text, status text default 'submitted', created_at timestamptz default now(), updated_at timestamptz default now()
-);
-create index if not exists koja_ps_quotes_request_idx on public.koja_professional_quotes(request_id,status);
-create table if not exists public.koja_professional_jobs (
- id uuid primary key default gen_random_uuid(), request_id uuid, quote_id uuid, service_id uuid,
- customer_id uuid not null, provider_id uuid not null, title text not null, amount numeric(14,2) default 0,
- currency text default 'ZMW', status text default 'awaiting_payment', payment_status text default 'pending',
- due_date date, submitted_at timestamptz, completed_at timestamptz, created_at timestamptz default now(), updated_at timestamptz default now()
-);
-create index if not exists koja_ps_jobs_customer_idx on public.koja_professional_jobs(customer_id,status,created_at desc);
-create index if not exists koja_ps_jobs_provider_idx on public.koja_professional_jobs(provider_id,status,created_at desc);
-create table if not exists public.koja_professional_live_sessions (
- id uuid primary key default gen_random_uuid(), provider_id uuid not null, title text not null, description text,
- scheduled_at timestamptz, duration_minutes integer default 60, capacity integer default 1,
- price numeric(14,2) default 0, currency text default 'ZMW', mode text default 'online', status text default 'scheduled', created_at timestamptz default now()
-);
-create table if not exists public.koja_professional_live_attendees (
- id uuid primary key default gen_random_uuid(), session_id uuid not null, customer_id uuid not null,
- payment_status text default 'pending', attendance_status text default 'registered', created_at timestamptz default now(), unique(session_id,customer_id)
-);
-create table if not exists public.koja_professional_transactions (
- id uuid primary key default gen_random_uuid(), customer_id uuid, provider_id uuid, job_id uuid, session_id uuid,
- transaction_type text not null default 'service', external_reference text, provider_transaction_id text,
- gross_amount numeric(14,2) not null, commission_rate numeric(8,4) default 0, commission_amount numeric(14,2) default 0,
- processing_fee numeric(14,2) default 0, professional_amount numeric(14,2) default 0, currency text default 'ZMW',
- status text default 'pending', payout_status text default 'pending', metadata jsonb default '{}'::jsonb,
- created_at timestamptz default now(), updated_at timestamptz default now()
-);
-create index if not exists koja_ps_tx_provider_idx on public.koja_professional_transactions(provider_id,status,created_at desc);
-create table if not exists public.koja_professional_reviews (
- id uuid primary key default gen_random_uuid(), customer_id uuid not null, provider_id uuid not null, job_id uuid,
- rating integer not null check (rating between 1 and 5), review text, created_at timestamptz default now()
-);
-create index if not exists koja_ps_reviews_provider_idx on public.koja_professional_reviews(provider_id,created_at desc);
-create table if not exists public.koja_professional_verifications (
- id uuid primary key default gen_random_uuid(), provider_id uuid not null, verification_type text not null,
- status text default 'pending', document_url text, admin_note text, verified_at timestamptz, created_at timestamptz default now(), updated_at timestamptz default now()
-);
-create index if not exists koja_ps_verify_provider_idx on public.koja_professional_verifications(provider_id,status);
-create table if not exists public.koja_professional_commission_settings (
- id uuid primary key default gen_random_uuid(), service_type text not null unique, commission_rate numeric(8,4) not null default 10,
- currency text default 'ZMW', is_active boolean default true, updated_at timestamptz default now()
-);
-insert into public.koja_professional_commission_settings(service_type,commission_rate)
-values ('appointment',10),('live',10),('project',10),('digital',10)
-on conflict(service_type) do nothing;
-"""
-
-def _ps_provider(provider_id):
-    return first_row('service_providers', {'id': provider_id}) or {}
-def _ps_commission(service_type):
-    row=first_row('koja_professional_commission_settings', {'service_type': service_type, 'is_active': True}) or {}
-    try: return float(row.get('commission_rate') or 10)
-    except Exception: return 10.0
-def _ps_money(v):
-    try: return max(0.0,float(v or 0))
-    except Exception: return 0.0
-
-@app.route('/professional/marketplace')
-@login_required
-def professional_marketplace():
-    q=clean(request.args.get('q')); category=clean(request.args.get('category')); service_type=clean(request.args.get('type'))
-    rows=db_select('koja_professional_services', {'status':'approved'}, order='created_at.desc', limit=500); providers={}; visible=[]
-    for service in rows:
-        p=providers.setdefault(str(service.get('provider_id')), _ps_provider(service.get('provider_id')))
-        hay=(' '.join(str(service.get(k) or '') for k in ('title','description','category','location'))+' '+str(p.get('full_name') or p.get('name') or '')).lower()
-        if q and q.lower() not in hay: continue
-        if category and category.lower() not in str(service.get('category') or '').lower(): continue
-        if service_type and service_type != str(service.get('service_type') or ''): continue
-        visible.append({**service,'provider':p})
-    return render_page('KOJA Professional Services Marketplace', r'''
-<div class="hero"><h1>KOJA Professional Services</h1><p>Find professionals, book appointments, join live sessions, or hire professionals for project work.</p><div class="actions"><a class="btn" href="{{ url_for('professional_request') }}">Post a Service Request</a><a class="btn secondary" href="{{ url_for('professional_dashboard') }}">Professional Dashboard</a></div></div>
-<div class="card"><form method="get" class="actions"><input name="q" value="{{ q }}" placeholder="What service do you need?"><select name="type"><option value="">All service models</option><option value="appointment">Appointments</option><option value="live">Live sessions</option><option value="project">Projects</option><option value="digital">Digital products</option></select><input name="category" value="{{ category }}" placeholder="Profession/category"><button class="btn">Search</button></form></div>
-<div class="grid">{% for s in services %}<div class="card"><h3>{{ s.title }}</h3><p><strong>{{ s.provider.get('full_name') or s.provider.get('name') or 'Professional' }}</strong> · {{ s.category or s.provider.get('profession') }}</p><p>{{ s.description or s.provider.get('service_description') or '' }}</p><p><strong>{{ s.currency or 'ZMW' }} {{ s.price or 0 }}</strong> · {{ s.service_type|title }}</p><p class="small">{{ s.location or 'Online available' }}</p><a class="btn" href="{{ url_for('professional_service_view',service_id=s.id) }}">View Service</a></div>{% else %}<div class="card"><h3>No services found</h3><p>Try another search or post a request.</p></div>{% endfor %}</div>
-''', services=visible,q=q,category=category)
-
-@app.route('/professional/service/<service_id>', methods=['GET','POST'])
-@login_required
-def professional_service_view(service_id):
-    service=first_row('koja_professional_services', {'id':service_id})
-    if not service: abort(404)
-    provider=_ps_provider(service.get('provider_id'))
-    if request.method=='POST':
-        if str(provider.get('user_id'))==str((current_user() or {}).get('id')): flash('You cannot hire your own service.','warning'); return redirect(request.path)
-        row,err=db_insert('koja_professional_requests',{'customer_id':(current_user() or {}).get('id'),'provider_id':service.get('provider_id'),'service_id':service_id,'title':service.get('title'),'description':clean(request.form.get('description')) or service.get('description') or 'Service request','category':service.get('category') or provider.get('profession'),'request_type':service.get('service_type') or 'project','budget':_ps_money(service.get('price')),'currency':service.get('currency') or 'ZMW','location':clean(request.form.get('location')) or service.get('location') or 'Online','deadline':request.form.get('deadline') or None,'status':'open','created_at':utc_now(),'updated_at':utc_now()})
-        if err: flash('Service request could not be created. Run the Professional Services SQL migration first.','danger')
-        else: flash('Service request sent to the professional.','success')
-        return redirect(url_for('professional_customer_dashboard'))
-    reviews=db_select('koja_professional_reviews',{'provider_id':service.get('provider_id')},order='created_at.desc',limit=30)
-    return render_page(service.get('title') or 'Professional Service',r'''
-<div class="hero"><h1>{{ service.title }}</h1><p><strong>{{ provider.get('full_name') or provider.get('name') or 'Professional' }}</strong> · {{ provider.get('profession') }}</p><p>{{ service.description }}</p><p><strong>{{ service.currency or 'ZMW' }} {{ service.price or 0 }}</strong> · {{ service.service_type|title }}</p></div>
-<div class="card"><form method="post"><label>Request details</label><textarea name="description" required placeholder="Describe exactly what you need"></textarea><label>Location / Online</label><input name="location" value="{{ service.location or 'Online' }}"><label>Deadline</label><input type="date" name="deadline"><button class="btn">Request This Service</button></form></div>
-<div class="card"><h3>Reviews</h3>{% for r in reviews %}<p><strong>{{ r.rating }}/5</strong> {{ r.review or '' }}</p>{% else %}<p>No reviews yet.</p>{% endfor %}</div>
-''',service=service,provider=provider,reviews=reviews)
-
-@app.route('/professional/request', methods=['GET','POST'])
-@login_required
-def professional_request():
-    if request.method=='POST':
-        row,err=db_insert('koja_professional_requests',{'customer_id':(current_user() or {}).get('id'),'title':clean(request.form.get('title')),'description':clean(request.form.get('description')),'category':clean(request.form.get('category')),'request_type':clean(request.form.get('request_type')) or 'project','budget':_ps_money(request.form.get('budget')),'currency':clean(request.form.get('currency')) or 'ZMW','location':clean(request.form.get('location')) or 'Online','deadline':request.form.get('deadline') or None,'status':'open','created_at':utc_now(),'updated_at':utc_now()})
-        if err: flash('Request could not be posted. Run the Professional Services SQL migration first.','danger')
-        else: flash('Your professional service request is now open for quotations.','success')
-        return redirect(url_for('professional_customer_dashboard'))
-    return render_page('Post Professional Service Request',r'''
-<div class="hero"><h2>Post a Professional Service Request</h2><p>Describe the outcome you need. Professionals can respond with quotations.</p></div><div class="card"><form method="post"><label>Request title</label><input name="title" required placeholder="Example: Build a website for my business"><label>What do you need?</label><textarea name="description" required></textarea><label>Profession/category</label><input name="category" placeholder="ICT, Engineer, Designer, Teacher..."><label>Service model</label><select name="request_type"><option value="project">Project</option><option value="appointment">Appointment</option><option value="live">Live session</option></select><label>Budget</label><input name="budget" type="number" min="0" step="0.01"><label>Currency</label><select name="currency"><option>ZMW</option><option>USD</option></select><label>Location / Online</label><input name="location" value="Online"><label>Deadline</label><input name="deadline" type="date"><button class="btn">Post Request</button></form></div>
-''')
-
-@app.route('/professional/dashboard')
-@login_required
-def professional_dashboard():
-    me=(current_user() or {}).get('id'); provider=first_row('service_providers',{'user_id':me})
-    if not provider: return redirect(url_for('professional_register'))
-    services=db_select('koja_professional_services',{'provider_id':provider.get('id')},order='created_at.desc',limit=100); requests=db_select('koja_professional_requests',{'provider_id':provider.get('id')},order='created_at.desc',limit=100); jobs=db_select('koja_professional_jobs',{'provider_id':provider.get('id')},order='created_at.desc',limit=100); tx=db_select('koja_professional_transactions',{'provider_id':provider.get('id'),'status':'paid'},order='created_at.desc',limit=500)
-    gross=sum(_ps_money(x.get('gross_amount')) for x in tx); earnings=sum(_ps_money(x.get('professional_amount')) for x in tx)
-    return render_page('Professional Dashboard',r'''
-<div class="hero"><h1>Professional Dashboard</h1><p>{{ provider.get('profession') }} · {{ provider.get('full_name') or provider.get('name') }}</p><div class="actions"><a class="btn" href="{{ url_for('professional_service_new') }}">Add Service</a><a class="btn secondary" href="{{ url_for('professional_marketplace') }}">Marketplace</a></div></div>
-<div class="grid"><div class="card"><h3>Today</h3><p>Pending requests: {{ requests|length }}</p><p>Active jobs: {{ jobs|length }}</p></div><div class="card"><h3>Money</h3><p>Gross revenue: ZMW {{ '%.2f'|format(gross) }}</p><p>Professional earnings: ZMW {{ '%.2f'|format(earnings) }}</p><a href="{{ url_for('professional_earnings') }}">Earnings & payouts</a></div><div class="card"><h3>Trust</h3><p>Verification: {{ provider.get('verification_status') or 'pending' }}</p><a href="{{ url_for('professional_verification') }}">Manage verification</a></div></div>
-<div class="card"><h2>Your Services</h2>{% for s in services %}<p><strong>{{ s.title }}</strong> · {{ s.service_type }} · {{ s.status }} · {{ s.currency }} {{ s.price }}</p>{% else %}<p>No services yet.</p>{% endfor %}</div><div class="card"><h2>Requests</h2>{% for r in requests %}<p><strong>{{ r.title }}</strong> · {{ r.status }} · budget {{ r.currency }} {{ r.budget }}</p>{% else %}<p>No requests yet.</p>{% endfor %}</div>
-''',provider=provider,services=services,requests=requests,jobs=jobs,gross=gross,earnings=earnings)
-
-@app.route('/professional/service/new', methods=['GET','POST'])
-@login_required
-def professional_service_new():
-    provider=first_row('service_providers',{'user_id':(current_user() or {}).get('id')})
-    if not provider: return redirect(url_for('professional_register'))
-    if request.method=='POST':
-        row,err=db_insert('koja_professional_services',{'provider_id':provider.get('id'),'title':clean(request.form.get('title')),'description':clean(request.form.get('description')),'category':clean(request.form.get('category')) or provider.get('profession'),'service_type':clean(request.form.get('service_type')) or 'project','price':_ps_money(request.form.get('price')),'currency':clean(request.form.get('currency')) or 'ZMW','duration_minutes':int(request.form.get('duration_minutes') or 60),'online_available':bool(request.form.get('online_available')),'in_person_available':bool(request.form.get('in_person_available')),'location':clean(request.form.get('location')),'status':'pending','created_at':utc_now(),'updated_at':utc_now()})
-        if err: flash('Service could not be created. Run the Professional Services SQL migration first.','danger')
-        else: flash('Service submitted for administrator approval.','success')
-        return redirect(url_for('professional_dashboard'))
-    return render_page('Add Professional Service',r'''
-<div class="hero"><h2>Add a Profession-Specific Service</h2><p>Choose the service model that fits your profession.</p></div><div class="card"><form method="post"><label>Service name</label><input name="title" required><label>Description</label><textarea name="description" required></textarea><label>Category</label><input name="category"><label>Service model</label><select name="service_type"><option value="appointment">Paid appointment</option><option value="live">Paid live session</option><option value="project">Project/service</option><option value="digital">Digital product</option></select><label>Price</label><input name="price" type="number" min="0" step="0.01" required><label>Currency</label><select name="currency"><option>ZMW</option><option>USD</option><option>ZAR</option></select><label>Duration (minutes)</label><input name="duration_minutes" type="number" value="60"><label>Location / service area</label><input name="location" placeholder="Online, Lusaka, etc."><label><input type="checkbox" name="online_available" checked> Online</label><label><input type="checkbox" name="in_person_available"> In person</label><button class="btn">Submit Service</button></form></div>
-''')
-
-@app.route('/professional/customer')
-@login_required
-def professional_customer_dashboard():
-    me=(current_user() or {}).get('id'); reqs=db_select('koja_professional_requests',{'customer_id':me},order='created_at.desc',limit=100); jobs=db_select('koja_professional_jobs',{'customer_id':me},order='created_at.desc',limit=100)
-    return render_page('Customer Professional Services',r'''
-<div class="hero"><h1>Professional Services</h1><p>Find professionals, post requests, compare quotations, manage jobs, payments and reviews.</p><a class="btn" href="{{ url_for('professional_marketplace') }}">Find Professionals</a></div><div class="card"><h2>Your Requests</h2>{% for r in requests %}<p><strong>{{ r.title }}</strong> · {{ r.status }} · {{ r.request_type }}</p>{% else %}<p>No requests yet.</p>{% endfor %}</div><div class="card"><h2>Your Jobs</h2>{% for j in jobs %}<p><strong>{{ j.title }}</strong> · {{ j.status }} · {{ j.payment_status }} · {{ j.currency }} {{ j.amount }}</p>{% else %}<p>No active jobs yet.</p>{% endfor %}</div>
-''',requests=reqs,jobs=jobs)
-
-@app.route('/professional/earnings')
-@login_required
-def professional_earnings():
-    provider=first_row('service_providers',{'user_id':(current_user() or {}).get('id')})
-    if not provider: return redirect(url_for('professional_register'))
-    tx=db_select('koja_professional_transactions',{'provider_id':provider.get('id')},order='created_at.desc',limit=500); gross=sum(_ps_money(x.get('gross_amount')) for x in tx if str(x.get('status'))=='paid'); earnings=sum(_ps_money(x.get('professional_amount')) for x in tx if str(x.get('status'))=='paid'); pending=sum(_ps_money(x.get('professional_amount')) for x in tx if str(x.get('payout_status'))=='pending' and str(x.get('status'))=='paid')
-    return render_page('Professional Earnings',r'''
-<div class="hero"><h1>Earnings</h1><p>Gross customer payments, KOJA commission, professional earnings and payout status.</p></div><div class="grid"><div class="card"><h3>Gross</h3><h2>{{ '%.2f'|format(gross) }}</h2></div><div class="card"><h3>Professional earnings</h3><h2>{{ '%.2f'|format(earnings) }}</h2></div><div class="card"><h3>Pending payout</h3><h2>{{ '%.2f'|format(pending) }}</h2></div></div><div class="card"><h2>Transactions</h2>{% for t in transactions %}<p>{{ t.created_at }} · {{ t.transaction_type }} · {{ t.currency }} {{ t.gross_amount }} · KOJA {{ t.commission_amount }} · You {{ t.professional_amount }} · {{ t.status }}/{{ t.payout_status }}</p>{% else %}<p>No transactions yet.</p>{% endfor %}</div>
-''',provider=provider,transactions=tx,gross=gross,earnings=earnings,pending=pending)
-
-@app.route('/professional/verification')
-@login_required
-def professional_verification():
-    provider=first_row('service_providers',{'user_id':(current_user() or {}).get('id')})
-    if not provider: return redirect(url_for('professional_register'))
-    rows=db_select('koja_professional_verifications',{'provider_id':provider.get('id')},order='created_at.desc',limit=100)
-    return render_page('Professional Verification',r'''
-<div class="hero"><h1>Professional Verification</h1><p>Registered, identity verified, qualification verified and licence verified are separate states. Requirements depend on the profession.</p></div><div class="card"><form method="post" action="{{ url_for('professional_verification_request') }}"><label>Verification type</label><select name="verification_type"><option>identity</option><option>qualification</option><option>licence</option><option>business</option></select><label>Document URL</label><input name="document_url"><button class="btn">Submit Verification</button></form></div><div class="card">{% for r in rows %}<p><strong>{{ r.verification_type }}</strong> · {{ r.status }} · {{ r.admin_note or '' }}</p>{% else %}<p>No verification requests yet.</p>{% endfor %}</div>
-''',provider=provider,rows=rows)
-
-@app.route('/professional/verification/request',methods=['POST'])
-@login_required
-def professional_verification_request():
-    provider=first_row('service_providers',{'user_id':(current_user() or {}).get('id')})
-    if not provider: return redirect(url_for('professional_register'))
-    _,err=db_insert('koja_professional_verifications',{'provider_id':provider.get('id'),'verification_type':clean(request.form.get('verification_type')) or 'identity','document_url':clean(request.form.get('document_url')),'status':'pending','created_at':utc_now(),'updated_at':utc_now()})
-    flash('Verification request submitted.' if not err else 'Verification request could not be submitted. Run the Professional Services SQL migration first.', 'success' if not err else 'danger')
-    return redirect(url_for('professional_verification'))
-
-@app.route('/professional/match')
-@login_required
-def professional_match():
-    q=clean(request.args.get('q'))
-    if not q: return render_page('KOJA Professional Matching',r'''<div class="hero"><h2>KOJA Professional Matching</h2><p>Describe what you need in normal language.</p><form><input name="q" placeholder="I need someone to build a website for my business"><button class="btn">Find Professionals</button></form></div>''')
-    text=q.lower(); keywords={'website':['IT / Software / Web Developer'],'software':['IT / Software / Web Developer'],'math':['Teacher / Tutor'],'teacher':['Teacher / Tutor'],'law':['Lawyer / Legal Services'],'tax':['Accountant / Auditor'],'accounting':['Accountant / Auditor'],'design':['Graphic Designer','Architect'],'electric':['Electrician'],'plumb':['Plumber'],'build':['Builder / Contractor','Engineer','Architect'],'photo':['Photographer / Videographer'],'video':['Photographer / Videographer'],'marketing':['Marketing / Advertising'],'translate':['Writer / Editor / Translator'],'cv':['Career Professional','Consultant']}
-    cats=[]
-    for k,v in keywords.items():
-        if k in text: cats.extend(v)
-    cats=list(dict.fromkeys(cats)) or PROFESSIONAL_CATEGORIES
-    services=db_select('koja_professional_services',{'status':'approved'},order='created_at.desc',limit=500); matched=[]
-    for s in services:
-        if str(s.get('category') or '') in cats or any(c.lower() in str(s.get('category') or '').lower() for c in cats): matched.append(s)
-    return render_page('KOJA Professional Matching',r'''<div class="hero"><h2>KOJA Professional Matching</h2><p><strong>Request:</strong> {{ q }}</p><p>Detected service categories: {{ cats|join(', ') }}</p></div><div class="grid">{% for s in services %}<div class="card"><h3>{{ s.title }}</h3><p>{{ s.category }}</p><p>{{ s.currency }} {{ s.price }}</p><a class="btn" href="{{ url_for('professional_service_view',service_id=s.id) }}">View Service</a></div>{% else %}<div class="card"><p>No matching approved services found. Post a request so professionals can quote.</p><a class="btn" href="{{ url_for('professional_request') }}">Post Request</a></div>{% endfor %}</div>''',q=q,cats=cats,services=matched)
-
-@app.route('/professional/requests')
-@login_required
-def professional_requests():
-    provider=first_row('service_providers',{'user_id':(current_user() or {}).get('id')})
-    if not provider: return redirect(url_for('professional_register'))
-    rows=db_select('koja_professional_requests',{'status':'open'},order='created_at.desc',limit=200)
-    return render_page('Professional Requests',r'''
-<div class="hero"><h1>Service Requests</h1><p>Open customer requests matching your profession.</p></div>
-<div class="grid">{% for r in requests %}<div class="card"><h3>{{ r.title }}</h3><p>{{ r.description }}</p><p>{{ r.category or 'General' }} · Budget {{ r.currency }} {{ r.budget or 0 }} · {{ r.location }}</p><form method="post" action="{{ url_for('professional_quote',request_id=r.id) }}"><label>Your quotation</label><input name="amount" type="number" min="0" step="0.01" required><label>Delivery days</label><input name="delivery_days" type="number" min="1" value="7"><textarea name="message" placeholder="Explain your quotation"></textarea><button class="btn">Send Quotation</button></form></div>{% else %}<div class="card"><p>No open requests currently.</p></div>{% endfor %}</div>
-''',provider=provider,requests=rows)
-
-@app.route('/professional/request/<request_id>/quote',methods=['POST'])
-@login_required
-def professional_quote(request_id):
-    provider=first_row('service_providers',{'user_id':(current_user() or {}).get('id')})
-    req=first_row('koja_professional_requests',{'id':request_id})
-    if not provider or not req: return 'Request not found.',404
-    amount=_ps_money(request.form.get('amount'))
-    if amount<=0: flash('Enter a valid quotation amount.','warning'); return redirect(url_for('professional_requests'))
-    _,err=db_insert('koja_professional_quotes',{'request_id':request_id,'provider_id':provider.get('id'),'customer_id':req.get('customer_id'),'amount':amount,'currency':req.get('currency') or 'ZMW','delivery_days':int(request.form.get('delivery_days') or 7),'message':clean(request.form.get('message')),'status':'submitted','created_at':utc_now(),'updated_at':utc_now()})
-    flash('Quotation sent.' if not err else 'Quotation could not be sent. Run the Professional Services SQL migration first.','success' if not err else 'danger')
-    return redirect(url_for('professional_requests'))
-
-@app.route('/professional/quotes')
-@login_required
-def professional_quotes():
-    me=(current_user() or {}).get('id')
-    rows=db_select('koja_professional_quotes',{'customer_id':me},order='created_at.desc',limit=200)
-    return render_page('Professional Quotations',r'''
-<div class="hero"><h1>Quotations</h1><p>Compare professional quotations for your requests.</p></div><div class="grid">{% for q in quotes %}<div class="card"><h3>{{ q.currency }} {{ q.amount }}</h3><p>{{ q.message or '' }}</p><p>Delivery: {{ q.delivery_days }} days · {{ q.status }}</p>{% if q.status=='submitted' %}<form method="post" action="{{ url_for('professional_quote_accept',quote_id=q.id) }}"><button class="btn">Accept Quotation</button></form>{% endif %}</div>{% else %}<div class="card"><p>No quotations yet.</p></div>{% endfor %}</div>
-''',quotes=rows)
-
-@app.route('/professional/quote/<quote_id>/accept',methods=['POST'])
-@login_required
-def professional_quote_accept(quote_id):
-    me=(current_user() or {}).get('id'); q=first_row('koja_professional_quotes',{'id':quote_id})
-    if not q or str(q.get('customer_id'))!=str(me): return 'Quotation not found.',404
-    req=first_row('koja_professional_requests',{'id':q.get('request_id')}) or {}
-    if str(q.get('status'))!='submitted': flash('Quotation is no longer available.','warning'); return redirect(url_for('professional_quotes'))
-    job,err=db_insert('koja_professional_jobs',{'request_id':q.get('request_id'),'quote_id':quote_id,'service_id':req.get('service_id'),'customer_id':me,'provider_id':q.get('provider_id'),'title':req.get('title') or 'Professional service','amount':q.get('amount') or 0,'currency':q.get('currency') or 'ZMW','status':'awaiting_payment','payment_status':'pending','due_date':req.get('deadline'),'created_at':utc_now(),'updated_at':utc_now()})
-    if err or not job: flash('Job could not be created.','danger'); return redirect(url_for('professional_quotes'))
-    rate=_ps_commission(req.get('request_type') or 'project'); gross=_ps_money(q.get('amount')); commission=round(gross*rate/100,2); professional=round(gross-commission,2)
-    tx,err=db_insert('koja_professional_transactions',{'customer_id':me,'provider_id':q.get('provider_id'),'job_id':job.get('id'),'transaction_type':req.get('request_type') or 'project','gross_amount':gross,'commission_rate':rate,'commission_amount':commission,'professional_amount':professional,'currency':q.get('currency') or 'ZMW','status':'pending','payout_status':'pending','metadata':{'quote_id':quote_id},'created_at':utc_now(),'updated_at':utc_now()})
-    if err or not tx: flash('Payment record could not be created.','danger'); return redirect(url_for('professional_quotes'))
-    db_update('koja_professional_quotes',{'id':quote_id},{'status':'accepted','updated_at':utc_now()}); db_update('koja_professional_requests',{'id':q.get('request_id')},{'status':'awarded','updated_at':utc_now()})
-    return redirect(url_for('professional_payment',payment_id=tx.get('id')))
-
-@app.route('/professional/payment/<payment_id>',methods=['GET','POST'])
-@login_required
-def professional_payment(payment_id):
-    tx=first_row('koja_professional_transactions',{'id':payment_id}); me=(current_user() or {}).get('id')
-    if not tx or str(tx.get('customer_id'))!=str(me): return 'Payment not found.',404
-    if request.method=='POST':
-        network=clean(request.form.get('network')).upper(); phone=clean(request.form.get('phone')); user=current_user() or {}; email=clean(user.get('email')).lower()
-        if network not in ('MTN','AIRTEL','ZAMTEL') or not phone or not email: flash('Select a Zambian mobile-money network, phone and valid account email.','warning'); return redirect(request.path)
-        tx_ref='KOJA-PS-'+uuid.uuid4().hex[:24]
-        db_update('koja_professional_transactions',{'id':payment_id},{'external_reference':tx_ref,'updated_at':utc_now()})
-        payload={'tx_ref':tx_ref,'amount':int(round(_ps_money(tx.get('gross_amount')))),'currency':(tx.get('currency') or 'ZMW').upper(),'email':email,'fullname':first_nonempty(user.get('name'),user.get('full_name'),email),'phone_number':phone,'network':network,'order_id':payment_id,'redirect_url':url_for('professional_payment_callback',_external=True,payment_id=payment_id,tx_ref=tx_ref),'meta':{'koja_professional_payment':payment_id}}
-        try:
-            r=requests.post(FLW_BASE_URL+'/charges?type=mobile_money_zambia',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json','Accept':'application/json'},json=payload,timeout=30); body=json_or_empty(r); redirect_url=((body.get('meta') or {}).get('authorization') or {}).get('redirect') if isinstance(body,dict) else None
-            if r.ok and str(body.get('status') or '').lower()=='success' and redirect_url: return redirect(redirect_url)
-        except Exception: logger.exception('Professional services Flutterwave checkout error')
-        flash('Payment checkout could not be started.','danger')
-    return render_page('Pay for Professional Service',r'''
-<div class="hero"><h1>Secure Service Payment</h1><p>Gross {{ tx.currency }} {{ tx.gross_amount }} · KOJA platform fee {{ tx.commission_amount }} · Professional earnings {{ tx.professional_amount }}.</p></div><div class="card"><form method="post"><label>Mobile-money network</label><select name="network" required><option value="">Select network</option><option>MTN</option><option>AIRTEL</option><option>ZAMTEL</option></select><label>Mobile-money phone</label><input name="phone" required inputmode="tel"><button class="btn">Pay {{ tx.currency }} {{ tx.gross_amount }}</button></form></div>
-''',tx=tx)
-
-@app.route('/professional/payment/callback')
-@login_required
-def professional_payment_callback():
-    payment_id=clean(request.args.get('payment_id')); tx_ref=clean(request.args.get('tx_ref') or request.args.get('reference')); transaction_id=clean(request.args.get('transaction_id') or request.args.get('id'))
-    tx=first_row('koja_professional_transactions',{'id':payment_id})
-    if not tx: return 'Payment not found.',404
-    verified=_flutterwave_verify(transaction_id=transaction_id,tx_ref=tx_ref or tx.get('external_reference'))
-    if verified and _flutterwave_payment_valid(verified,tx.get('external_reference') or tx_ref,tx.get('gross_amount'),tx.get('currency') or 'ZMW'):
-        db_update('koja_professional_transactions',{'id':payment_id},{'status':'paid','provider_transaction_id':str(verified.get('id') or transaction_id or ''),'updated_at':utc_now()})
-        if tx.get('job_id'): db_update('koja_professional_jobs',{'id':tx.get('job_id')},{'status':'funded','payment_status':'paid','updated_at':utc_now()})
-        flash('Payment verified. The professional job is now funded.','success')
-    else: flash('Payment could not yet be verified.','warning')
-    return redirect(url_for('professional_customer_dashboard'))
-
-@app.route('/professional/review/<job_id>',methods=['POST'])
-@login_required
-def professional_review(job_id):
-    me=(current_user() or {}).get('id'); job=first_row('koja_professional_jobs',{'id':job_id})
-    if not job or str(job.get('customer_id'))!=str(me): return 'Job not found.',404
-    rating=int(request.form.get('rating') or 0)
-    if rating<1 or rating>5: flash('Rating must be between 1 and 5.','warning'); return redirect(url_for('professional_customer_dashboard'))
-    _,err=db_insert('koja_professional_reviews',{'customer_id':me,'provider_id':job.get('provider_id'),'job_id':job_id,'rating':rating,'review':clean(request.form.get('review')),'created_at':utc_now()})
-    flash('Review submitted.' if not err else 'Review could not be submitted.','success' if not err else 'danger'); return redirect(url_for('professional_customer_dashboard'))
-
-@app.route('/setup/professional-services-sql')
-def professional_services_sql():
-    return '<pre style="white-space:pre-wrap">'+PROFESSIONAL_MARKETPLACE_SQL.replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')+'</pre>'
-
-
-@app.route('/admin/professional-services', methods=['GET','POST'])
-@admin_required
-def admin_professional_services():
-    if request.method=='POST':
-        action=clean(request.form.get('action')); rid=clean(request.form.get('id'))
-        if action=='service': db_update('koja_professional_services',{'id':rid},{'status':clean(request.form.get('status')) or 'approved','updated_at':utc_now()})
-        elif action=='verification': db_update('koja_professional_verifications',{'id':rid},{'status':clean(request.form.get('status')) or 'verified','verified_at':utc_now(),'updated_at':utc_now()})
-        elif action=='commission':
-            st=clean(request.form.get('service_type')) or 'project'
-            try: rate=float(request.form.get('rate') or 10)
-            except Exception: rate=10
-            existing=first_row('koja_professional_commission_settings',{'service_type':st})
-            if existing: db_update('koja_professional_commission_settings',{'id':existing.get('id')},{'commission_rate':rate,'updated_at':utc_now()})
-            else: db_insert('koja_professional_commission_settings',{'service_type':st,'commission_rate':rate,'currency':'ZMW','is_active':True,'updated_at':utc_now()})
-        flash('Professional Services admin update saved.','success')
-    services=db_select('koja_professional_services',order='created_at.desc',limit=300); ver=db_select('koja_professional_verifications',order='created_at.desc',limit=300); settings=db_select('koja_professional_commission_settings',order='service_type.asc',limit=20)
-    return render_page('Professional Services Admin',r'''
-<div class="hero"><h1>Professional Services Control Centre</h1><p>Registrations, service approval, verification, commission, payments, reviews and marketplace oversight.</p></div>
-<div class="card"><h2>Configurable Commission</h2>{% for c in settings %}<form method="post" class="actions"><input type="hidden" name="action" value="commission"><input type="hidden" name="service_type" value="{{ c.service_type }}"><strong>{{ c.service_type|title }}</strong><input name="rate" type="number" step="0.01" min="0" max="100" value="{{ c.commission_rate }}"><button class="btn">Save %</button></form>{% endfor %}</div>
-<div class="card"><h2>Service Approval</h2>{% for s in services %}<form method="post" class="actions"><input type="hidden" name="action" value="service"><input type="hidden" name="id" value="{{ s.id }}"><span><strong>{{ s.title }}</strong> · {{ s.category }} · {{ s.status }}</span><select name="status"><option>approved</option><option>pending</option><option>rejected</option><option>suspended</option></select><button class="btn">Update</button></form>{% else %}<p>No services submitted.</p>{% endfor %}</div>
-<div class="card"><h2>Verification</h2>{% for v in ver %}<form method="post" class="actions"><input type="hidden" name="action" value="verification"><input type="hidden" name="id" value="{{ v.id }}"><span><strong>{{ v.verification_type }}</strong> · {{ v.status }}</span><select name="status"><option>verified</option><option>pending</option><option>rejected</option></select><button class="btn">Update</button></form>{% else %}<p>No verification requests.</p>{% endfor %}</div>
-''',services=services,ver=ver,settings=settings)
-
+""", provider=provider, purpose=purpose, title=labels[purpose])
 
 def professional_is_connected(provider):
     """Return True when an approved professional has an active recent presence."""
@@ -8727,183 +8394,111 @@ def business_accounting_v2(business_id):
 
 
 # ============================================================
-# KOJA PROFESSIONAL SERVICES V2 — WORKFLOW ENGINE
-# Profession-specific templates + live session enrollment + milestones
-# + appointment payment linkage. Connect+ is intentionally untouched.
+# KOJA B2B + PROFESSIONAL SERVICES UNIFIED V3
+# Integration/presentation layer. Existing modules remain source of truth.
+# Communications/Connect+ is intentionally untouched.
 # ============================================================
-PROFESSION_SERVICE_MODELS = {
-    'Teacher / Tutor': ('live','appointment','digital'),
-    'Doctor / Medical Practitioner': ('appointment',),
-    'Nurse / Midwife': ('appointment',),
-    'Dentist': ('appointment',),
-    'Nutritionist / Dietitian': ('appointment','live'),
-    'Physiotherapist': ('appointment',),
-    'Pharmacist': ('appointment',),
-    'Counsellor / Psychologist': ('appointment','live'),
-    'Lawyer': ('appointment','project'),
-    'Accountant': ('appointment','project'),
-    'Engineer': ('appointment','project'),
-    'Architect': ('appointment','project'),
-    'IT / Software / Web Developer': ('project','appointment'),
-    'Graphic Designer': ('project','digital'),
-    'Photographer / Videographer': ('project','appointment'),
-    'Electrician': ('appointment','project'),
-    'Plumber': ('appointment','project'),
-    'Builder / Contractor': ('project','appointment'),
-    'Mechanic': ('appointment','project'),
-    'Tailor / Fashion Designer': ('project','appointment'),
-    'Hairdresser / Barber / Beauty Professional': ('appointment','project'),
-    'Writer / Editor / Translator': ('project','digital'),
-    'Marketing / Advertising': ('project','appointment'),
-    'Business Consultant': ('appointment','project','live'),
-    'Consultant': ('appointment','project','live'),
-    'Trainer / Coach': ('appointment','live','digital'),
-    'Researcher': ('project','appointment'),
-    'Other Professional Service': ('appointment','project'),
-}
 
-PROFESSION_FIELD_HINTS = {
-    'Teacher / Tutor':'Subject, level, syllabus, frequency and learning goal',
-    'Doctor / Medical Practitioner':'Consultation reason, appointment type and follow-up needs',
-    'Lawyer':'Matter type, jurisdiction and desired legal service',
-    'Accountant':'Accounting period, records available and required report',
-    'Engineer':'Project scope, site/location, technical discipline and deliverable',
-    'Architect':'Project type, site, design stage and required drawings',
-    'IT / Software / Web Developer':'Platform, features, integrations, deadline and technical requirements',
-    'Graphic Designer':'Design type, dimensions, brand assets and delivery format',
-    'Builder / Contractor':'Project type, site, quantities and target completion date',
-    'Electrician':'Installation/repair type, site and equipment involved',
-    'Plumber':'Installation/repair issue, property type and site',
-    'Mechanic':'Vehicle make/model, symptoms and requested service',
-    'Photographer / Videographer':'Event type, date, location, coverage hours and deliverables',
-    'Writer / Editor / Translator':'Language, word count, subject and delivery format',
-}
+def _b2b3_user_id(): return (current_user() or {}).get('id')
+def _b2b3_event(event_type, entity_type, entity_id=None, business_id=None, metadata=None):
+    try: db_insert('koja_b2b_unified_events', {'user_id':_b2b3_user_id(),'business_id':business_id,'event_type':event_type,'entity_type':entity_type,'entity_id':entity_id,'metadata':metadata or {},'created_at':utc_now()})
+    except Exception: pass
+def _b2b3_owned_businesses(uid): return db_select('koja_businesses',{'owner_id':uid},order='created_at.desc',limit=100) or []
+def _b2b3_business(uid,business_id): return first_row('koja_businesses',{'id':business_id,'owner_id':uid})
+def _b2b3_money(value):
+    try: return float(value or 0)
+    except Exception: return 0.0
 
-def _ps_allowed_models(profession):
-    return PROFESSION_SERVICE_MODELS.get(profession) or ('appointment','project','live','digital')
-
-def _ps_provider_for_user():
-    return first_row('service_providers', {'user_id': (current_user() or {}).get('id')}) or {}
-
-def _ps_milestones(job_id):
-    return db_select('koja_professional_job_milestones', {'job_id': job_id}, order='position.asc', limit=100) or []
-
-def _ps_payment_for(kind, customer_id, provider_id, amount, currency='ZMW', job_id=None, session_id=None, appointment_id=None, metadata=None):
-    rate=_ps_commission(kind)
-    gross=_ps_money(amount)
-    commission=round(gross*rate/100,2)
-    professional=round(gross-commission,2)
-    row,err=db_insert('koja_professional_transactions', {
-        'customer_id':customer_id,'provider_id':provider_id,'job_id':job_id,'session_id':session_id,
-        'appointment_id':appointment_id,'transaction_type':kind,'gross_amount':gross,
-        'commission_rate':rate,'commission_amount':commission,'processing_fee':0,
-        'professional_amount':professional,'currency':currency or 'ZMW','status':'pending',
-        'payout_status':'pending','metadata':metadata or {},'created_at':utc_now(),'updated_at':utc_now()
-    })
-    return row,err
-
-@app.route('/professional/workflow/<service_id>', methods=['GET','POST'])
+@app.route('/b2b')
 @login_required
-def professional_workflow(service_id):
-    service=first_row('koja_professional_services', {'id':service_id})
-    if not service: abort(404)
-    provider=_ps_provider(service.get('provider_id'))
-    profession=provider.get('profession') or service.get('category') or 'Other Professional Service'
-    allowed=_ps_allowed_models(profession)
+def b2b_unified_home():
+    uid=_b2b3_user_id(); businesses=_b2b3_owned_businesses(uid)
+    if len(businesses)==1: return redirect(url_for('b2b_unified_dashboard',business_id=businesses[0]['id']))
+    return render_page('KOJA B2B', """
+    <div class='hero'><h1>KOJA B2B</h1><p>One connected business-to-business centre for buying, selling, professional services, payments, supply and delivery.</p></div>
+    <div class='grid'><div class='card'><h2>Buy</h2><p>Suppliers, procurement requests, RFQs, quotations and purchase workflows.</p></div><div class='card'><h2>Sell</h2><p>Business products, services, quotations, orders and customer requests.</p></div><div class='card'><h2>Professional Services</h2><p>Appointments, live sessions and project services can participate in B2B demand.</p><a class='btn' href='{{ url_for("professional_marketplace") }}'>Open Professional Services</a></div></div>
+    {% if businesses %}<div class='card'><h2>Select Business</h2>{% for b in businesses %}<p><a class='btn' href='{{ url_for("b2b_unified_dashboard",business_id=b.id) }}'>{{ b.name }}</a></p>{% endfor %}</div>{% else %}<div class='card'><h2>Create Business</h2><a class='btn' href='{{ url_for("business_new") }}'>Create Business Account</a></div>{% endif %}
+    """,businesses=businesses)
+
+@app.route('/b2b/<business_id>')
+@login_required
+def b2b_unified_dashboard(business_id):
+    uid=_b2b3_user_id(); b=_b2b3_business(uid,business_id)
+    if not b: abort(404)
+    listings=db_select('koja_b2b_unified_listings',{'business_id':business_id},order='created_at.desc',limit=100) or []
+    requests=db_select('koja_b2b_unified_requests',{'buyer_business_id':business_id},order='created_at.desc',limit=100) or []
+    orders=db_select('koja_b2b_unified_orders',{'buyer_business_id':business_id},order='created_at.desc',limit=100) or []
+    return render_page('KOJA B2B Business Centre',"""
+    <div class='hero'><h1>{{ b.name }} — KOJA B2B</h1><p>Unified buying, selling and professional-service operations.</p><div class='actions'><a class='btn' href='{{ url_for("b2b_unified_listing_new",business_id=b.id) }}'>List Product / Service</a><a class='btn' href='{{ url_for("b2b_unified_request_new",business_id=b.id) }}'>Create B2B Request</a><a class='btn secondary' href='{{ url_for("business_dashboard",business_id=b.id) }}'>Business Dashboard</a></div></div>
+    <div class='grid'><div class='card'><h2>Buying</h2><p>{{ requests|length }} requests</p><a class='btn' href='{{ url_for("b2b_unified_requests",business_id=b.id) }}'>Open Requests</a></div><div class='card'><h2>Selling</h2><p>{{ listings|length }} listings</p><a class='btn' href='{{ url_for("b2b_unified_listings",business_id=b.id) }}'>My Listings</a></div><div class='card'><h2>Orders</h2><p>{{ orders|length }} buyer orders</p></div><div class='card'><h2>Professional Services</h2><p>Appointments, live sessions and projects can serve organisations.</p><a class='btn' href='{{ url_for("professional_dashboard") }}'>Professional Dashboard</a></div></div>
+    <div class='card'><h2>Connected KOJA systems</h2><p>Procurement · Supply Chain · CRM &amp; Sales · Finance · Payments · Marketplace · Delivery · Professional Services · KOJA AI.</p></div>
+    """,b=b,listings=listings,requests=requests,orders=orders)
+
+@app.route('/b2b/<business_id>/listings')
+@login_required
+def b2b_unified_listings(business_id):
+    uid=_b2b3_user_id(); b=_b2b3_business(uid,business_id)
+    if not b: abort(404)
+    rows=db_select('koja_b2b_unified_listings',{'business_id':business_id},order='created_at.desc',limit=300) or []
+    return render_page('B2B Listings',"""<div class='hero'><h1>My B2B Listings</h1><a class='btn' href='{{ url_for("b2b_unified_listing_new",business_id=b.id) }}'>Add Listing</a></div><div class='card'><table><tr><th>Title</th><th>Type</th><th>Category</th><th>Price</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{ x.title }}</td><td>{{ x.listing_type }}</td><td>{{ x.category or x.profession }}</td><td>{{ x.currency }} {{ x.price }}</td><td>{{ 'Active' if x.active else 'Inactive' }}</td></tr>{% else %}<tr><td colspan='5'>No listings.</td></tr>{% endfor %}</table></div>""",b=b,rows=rows)
+
+@app.route('/b2b/<business_id>/listing/new',methods=['GET','POST'])
+@login_required
+def b2b_unified_listing_new(business_id):
+    uid=_b2b3_user_id(); b=_b2b3_business(uid,business_id)
+    if not b: abort(404)
     if request.method=='POST':
-        chosen=clean(request.form.get('service_type')) or service.get('service_type') or 'project'
-        if chosen not in allowed:
-            flash('That workflow is not enabled for this profession.','warning')
-            return redirect(request.path)
-        if chosen=='appointment':
-            me=(current_user() or {}).get('id')
-            if str(provider.get('user_id'))==str(me):
-                flash('You cannot book your own professional service.','warning'); return redirect(request.path)
-            row,err=db_insert('appointments', {
-                'id':str(uuid.uuid4()),'client_id':me,'provider_id':provider.get('id'),
-                'appointment_type':'professional','appointment_date':request.form.get('date'),
-                'start_time':request.form.get('start_time'),'end_time':request.form.get('end_time'),
-                'location':clean(request.form.get('location')) or service.get('location') or 'Online',
-                'status':'requested','notes':clean(request.form.get('notes')),'created_at':utc_now(),'updated_at':utc_now()
-            })
-            if err or not row: flash('Appointment could not be created.','danger'); return redirect(request.path)
-            tx,terr=_ps_payment_for('appointment',me,provider.get('id'),service.get('price') or 0,service.get('currency') or 'ZMW',appointment_id=row.get('id'),metadata={'service_id':service_id})
-            if terr or not tx: flash('Appointment payment record could not be created.','danger'); return redirect(request.path)
-            return redirect(url_for('professional_payment',payment_id=tx.get('id')))
-        if chosen=='live':
-            return redirect(url_for('professional_live_create',service_id=service_id))
-        return redirect(url_for('professional_service_view',service_id=service_id))
-    return render_page('Professional Workflow', r'''
-<div class="hero"><h1>{{ service.title }}</h1><p>{{ profession }}</p><p>{{ hint }}</p></div>
-<div class="card"><h2>Choose the workflow</h2><form method="post"><select name="service_type" id="stype">{% for x in allowed %}<option value="{{ x }}">{{ x|title }}</option>{% endfor %}</select><div id="appointment" style="margin-top:12px"><label>Date</label><input type="date" name="date"><label>Start time</label><input type="time" name="start_time"><label>End time</label><input type="time" name="end_time"><label>Location / Online</label><input name="location" value="{{ service.location or 'Online' }}"><label>Notes</label><textarea name="notes"></textarea></div><button class="btn">Continue</button></form></div>
-<script>const s=document.getElementById('stype'),a=document.getElementById('appointment');function f(){a.style.display=s.value==='appointment'?'block':'none'}s.onchange=f;f();</script>
-''',service=service,provider=provider,profession=profession,allowed=allowed,hint=PROFESSION_FIELD_HINTS.get(profession,'Describe the outcome, scope, location and deadline you need.'))
+        title=clean(request.form.get('title')); description=clean(request.form.get('description')); typ=clean(request.form.get('listing_type')) or 'product'; category=clean(request.form.get('category')); profession=clean(request.form.get('profession')); mode=clean(request.form.get('service_mode')) or 'project'; price=max(0,_b2b3_money(request.form.get('price'))); currency=clean(request.form.get('currency')) or 'ZMW'
+        if not title: flash('Title is required.','danger'); return redirect(url_for('b2b_unified_listing_new',business_id=business_id))
+        row,err=db_insert('koja_b2b_unified_listings',{'business_id':business_id,'owner_user_id':uid,'listing_type':typ,'title':title,'description':description,'category':category,'profession':profession,'service_mode':mode,'location':clean(request.form.get('location')),'online_available':bool(request.form.get('online_available')),'price':price,'currency':currency,'unit':clean(request.form.get('unit')) or 'service','active':True,'created_at':utc_now(),'updated_at':utc_now()})
+        if err: flash('B2B listing could not be saved. Run the V3 SQL migration.','danger')
+        else: flash('B2B listing created.','success'); _b2b3_event('listing_created','listing',row.get('id') if row else None,business_id)
+        return redirect(url_for('b2b_unified_listings',business_id=business_id))
+    return render_page('Create B2B Listing',"""<div class='hero'><h1>List for B2B</h1><p>Offer a product, business service or professional service to organisations.</p></div><div class='card'><form method='post'><label>Title</label><input name='title' required><label>Type</label><select name='listing_type'><option value='product'>Product</option><option value='service'>Business Service</option><option value='professional_service'>Professional Service</option></select><label>Category</label><input name='category'><label>Profession, if applicable</label><input name='profession'><label>Service model</label><select name='service_mode'><option value='project'>Project</option><option value='appointment'>Appointment</option><option value='live_session'>Live Session</option><option value='product'>Product</option></select><label>Description</label><textarea name='description' rows='5'></textarea><div class='grid'><div><label>Price</label><input name='price' type='number' step='0.01' min='0'></div><div><label>Currency</label><input name='currency' value='ZMW'></div><div><label>Unit</label><input name='unit' value='service'></div></div><label>Location / service area</label><input name='location'><label><input type='checkbox' name='online_available' checked style='width:auto'> Available online</label><button class='btn'>Publish B2B Listing</button></form></div>""")
 
-@app.route('/professional/live/create/<service_id>', methods=['GET','POST'])
+@app.route('/b2b/<business_id>/requests')
 @login_required
-def professional_live_create(service_id):
-    provider=_ps_provider_for_user(); service=first_row('koja_professional_services',{'id':service_id})
-    if not provider or not service or str(service.get('provider_id'))!=str(provider.get('id')): return 'Service not found.',404
+def b2b_unified_requests(business_id):
+    uid=_b2b3_user_id(); b=_b2b3_business(uid,business_id)
+    if not b: abort(404)
+    rows=db_select('koja_b2b_unified_requests',{'buyer_business_id':business_id},order='created_at.desc',limit=300) or []
+    return render_page('B2B Requests',"""<div class='hero'><h1>Buying Requests</h1><a class='btn' href='{{ url_for("b2b_unified_request_new",business_id=b.id) }}'>New Request</a></div><div class='card'><table><tr><th>Request</th><th>Type</th><th>Category</th><th>Budget</th><th>Status</th></tr>{% for x in rows %}<tr><td><a href='{{ url_for("b2b_unified_request_view",request_id=x.id) }}'>{{ x.title }}</a></td><td>{{ x.request_type }}</td><td>{{ x.category or x.profession }}</td><td>{{ x.currency }} {{ x.budget or 'Open' }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan='5'>No requests.</td></tr>{% endfor %}</table></div>""",b=b,rows=rows)
+
+@app.route('/b2b/<business_id>/request/new',methods=['GET','POST'])
+@login_required
+def b2b_unified_request_new(business_id):
+    uid=_b2b3_user_id(); b=_b2b3_business(uid,business_id)
+    if not b: abort(404)
     if request.method=='POST':
-        row,err=db_insert('koja_professional_live_sessions', {
-            'provider_id':provider.get('id'),'service_id':service_id,'title':clean(request.form.get('title')) or service.get('title'),
-            'description':clean(request.form.get('description')),'scheduled_at':request.form.get('scheduled_at') or None,
-            'duration_minutes':int(request.form.get('duration_minutes') or service.get('duration_minutes') or 60),
-            'capacity':max(1,int(request.form.get('capacity') or 1)),'price':_ps_money(request.form.get('price') or service.get('price')),
-            'currency':service.get('currency') or 'ZMW','mode':'online','status':'scheduled','created_at':utc_now()
-        })
-        if err: flash('Live session could not be created. Run V2 SQL first.','danger')
-        else: flash('Live session created. Customers can register and pay.','success'); return redirect(url_for('professional_live_view',session_id=row.get('id')))
-    return render_page('Create Live Session',r'''<div class="hero"><h1>Create Paid Live Session</h1><p>Teach, train, coach or consult live.</p></div><div class="card"><form method="post"><label>Title</label><input name="title" required value="{{ service.title }}"><label>Description</label><textarea name="description"></textarea><label>Start</label><input type="datetime-local" name="scheduled_at"><label>Duration</label><input type="number" name="duration_minutes" value="60"><label>Capacity</label><input type="number" name="capacity" min="1" value="10"><label>Price</label><input type="number" name="price" min="0" step="0.01" value="{{ service.price }}"><button class="btn">Create Session</button></form></div>''',service=service)
+        title=clean(request.form.get('title')); desc=clean(request.form.get('description')); typ=clean(request.form.get('request_type')) or 'procurement'; category=clean(request.form.get('category')); profession=clean(request.form.get('profession')); budget=_b2b3_money(request.form.get('budget')) if request.form.get('budget') else None
+        row,err=db_insert('koja_b2b_unified_requests',{'buyer_business_id':business_id,'requester_user_id':uid,'request_type':typ,'title':title,'description':desc,'category':category,'profession':profession,'location':clean(request.form.get('location')),'online_allowed':bool(request.form.get('online_allowed')),'budget':budget,'currency':clean(request.form.get('currency')) or 'ZMW','status':'open','created_at':utc_now(),'updated_at':utc_now()})
+        if err: flash('Request could not be created. Run the V3 SQL migration.','danger'); return redirect(url_for('b2b_unified_request_new',business_id=business_id))
+        _b2b3_event('request_created','request',row.get('id'),business_id,{'request_type':typ}); return redirect(url_for('b2b_unified_request_view',request_id=row.get('id')))
+    return render_page('New B2B Request',"""<div class='hero'><h1>Create B2B Request</h1><p>Request a product, supplier, business service or professional service.</p></div><div class='card'><form method='post'><label>Request title</label><input name='title' required><label>Request type</label><select name='request_type'><option value='procurement'>Procurement</option><option value='service'>Business Service</option><option value='professional_service'>Professional Service</option><option value='product'>Product</option></select><label>Category</label><input name='category'><label>Profession, if applicable</label><input name='profession' placeholder='Teacher, developer, accountant, engineer...'><label>Description / requirements</label><textarea name='description' rows='6' required></textarea><div class='grid'><div><label>Budget</label><input name='budget' type='number' min='0' step='0.01'></div><div><label>Currency</label><input name='currency' value='ZMW'></div><div><label>Location</label><input name='location'></div></div><label><input type='checkbox' name='online_allowed' checked style='width:auto'> Online service acceptable</label><button class='btn'>Publish Request</button></form></div>""")
 
-@app.route('/professional/live/<session_id>', methods=['GET','POST'])
+@app.route('/b2b/request/<request_id>')
 @login_required
-def professional_live_view(session_id):
-    session=first_row('koja_professional_live_sessions',{'id':session_id})
-    if not session: abort(404)
-    provider=_ps_provider(session.get('provider_id')); me=(current_user() or {}).get('id')
-    attendee=first_row('koja_professional_live_attendees',{'session_id':session_id,'customer_id':me})
-    if request.method=='POST' and str(provider.get('user_id'))!=str(me):
-        existing=attendee
-        if existing and str(existing.get('payment_status'))=='paid': flash('You are already registered.','success'); return redirect(request.path)
-        count=len(db_select('koja_professional_live_attendees',{'session_id':session_id},limit=1000) or [])
-        if count >= int(session.get('capacity') or 1): flash('This live session is full.','warning'); return redirect(request.path)
-        if not existing:
-            existing,err=db_insert('koja_professional_live_attendees',{'session_id':session_id,'customer_id':me,'payment_status':'pending','attendance_status':'registered','created_at':utc_now()})
-            if err: flash('Registration could not be created.','danger'); return redirect(request.path)
-        tx,err=_ps_payment_for('live',me,session.get('provider_id'),session.get('price') or 0,session.get('currency') or 'ZMW',session_id=session_id,metadata={'session_id':session_id})
-        if err or not tx: flash('Payment record could not be created.','danger'); return redirect(request.path)
-        return redirect(url_for('professional_payment',payment_id=tx.get('id')))
-    attendees=db_select('koja_professional_live_attendees',{'session_id':session_id},limit=1000)
-    paid=attendee and str(attendee.get('payment_status'))=='paid'
-    owner=str(provider.get('user_id'))==str(me)
-    return render_page('Professional Live Session',r'''
-<div class="hero"><h1>{{ session.title }}</h1><p>{{ session.description or '' }}</p><p>{{ session.scheduled_at or 'Schedule pending' }} · {{ session.duration_minutes }} minutes · {{ session.currency }} {{ session.price }}</p></div>
-<div class="card">{% if owner %}<h2>Host controls</h2><p>Registered attendees: {{ attendees|length }}</p><p>Use the existing KOJA communication/call tools for the actual media session; this module handles service registration, payment and access.</p>{% elif paid %}<h2>Access confirmed</h2><p>Your payment is verified and your live-session seat is active.</p><a class="btn" href="{{ url_for('professional_contact',provider_id=provider.id) }}">Open Professional Communication</a>{% else %}<h2>Reserve your seat</h2><form method="post"><button class="btn">Pay & Register · {{ session.currency }} {{ session.price }}</button></form>{% endif %}</div>
-''',session=session,provider=provider,attendees=attendees,paid=paid,owner=owner)
+def b2b_unified_request_view(request_id):
+    uid=_b2b3_user_id(); r=first_row('koja_b2b_unified_requests',{'id':request_id,'requester_user_id':uid})
+    if not r: abort(404)
+    quotes=db_select('koja_b2b_unified_quotes',{'request_id':request_id},order='created_at.desc',limit=100) or []
+    listings=db_select('koja_b2b_unified_listings',{'active':True},order='created_at.desc',limit=300) or []
+    q=' '.join([r.get('title') or '',r.get('category') or '',r.get('profession') or '']).lower(); matches=[]
+    for x in listings:
+        hay=' '.join([x.get('title') or '',x.get('category') or '',x.get('profession') or '']).lower(); score=sum(1 for term in set(q.split()) if len(term)>2 and term in hay)
+        if score: matches.append((score,x))
+    matches=[x for _,x in sorted(matches,key=lambda z:z[0],reverse=True)[:20]]
+    return render_page('B2B Request',"""<div class='hero'><h1>{{ r.title }}</h1><p>{{ r.request_type }} · {{ r.category or r.profession }} · {{ r.status }}</p></div><div class='card'><p>{{ r.description }}</p><p><strong>Budget:</strong> {{ r.currency }} {{ r.budget or 'Open' }}</p></div><div class='card'><h2>Matching B2B listings</h2>{% for x in matches %}<div class='card'><h3>{{ x.title }}</h3><p>{{ x.listing_type }} · {{ x.category or x.profession }} · {{ x.currency }} {{ x.price }}</p></div>{% else %}<p>No matching listings yet.</p>{% endfor %}</div><div class='card'><h2>Quotes</h2>{% for q in quotes %}<p>{{ q.currency }} {{ q.amount }} — {{ q.status }}{% if q.proposal %} — {{ q.proposal }}{% endif %}</p>{% else %}<p>No quotes yet.</p>{% endfor %}</div>""",r=r,quotes=quotes,matches=matches)
 
-@app.route('/professional/job/<job_id>', methods=['GET','POST'])
+@app.route('/b2b/api/match',methods=['POST'])
 @login_required
-def professional_job_workspace(job_id):
-    me=(current_user() or {}).get('id'); job=first_row('koja_professional_jobs',{'id':job_id})
-    if not job or str(me) not in {str(job.get('customer_id')),str(job.get('provider_id'))}: return 'Job not found.',404
-    if request.method=='POST':
-        action=clean(request.form.get('action'))
-        if action=='milestone':
-            pos=len(_ps_milestones(job_id))+1
-            _,err=db_insert('koja_professional_job_milestones',{'job_id':job_id,'position':pos,'title':clean(request.form.get('title')),'description':clean(request.form.get('description')),'amount':_ps_money(request.form.get('amount')),'status':'pending','created_at':utc_now(),'updated_at':utc_now()})
-            flash('Milestone added.' if not err else 'Milestone could not be added.','success' if not err else 'danger')
-        elif action=='submit' and str(job.get('provider_id'))==str(me):
-            db_update('koja_professional_jobs',{'id':job_id},{'status':'submitted','submitted_at':utc_now(),'updated_at':utc_now()}); flash('Work submitted to the customer.','success')
-        elif action=='approve' and str(job.get('customer_id'))==str(me):
-            db_update('koja_professional_jobs',{'id':job_id},{'status':'completed','completed_at':utc_now(),'updated_at':utc_now()}); flash('Job completed.','success')
-        return redirect(request.path)
-    milestones=_ps_milestones(job_id); provider=_ps_provider(job.get('provider_id')); customer=first_row('profiles',{'id':job.get('customer_id')}) or {}
-    return render_page('Professional Job Workspace',r'''
-<div class="hero"><h1>{{ job.title }}</h1><p>{{ job.currency }} {{ job.amount }} · {{ job.status }} · payment {{ job.payment_status }}</p></div>
-<div class="card"><h2>Job workspace</h2><p>Customer: {{ customer.get('full_name') or customer.get('name') or customer.get('email') or 'Customer' }}</p><p>Professional: {{ provider.get('full_name') or provider.get('name') or 'Professional' }}</p>{% if job.provider_id|string == me|string %}<form method="post"><input type="hidden" name="action" value="submit"><button class="btn">Submit Work</button></form>{% endif %}{% if job.customer_id|string == me|string and job.status=='submitted' %}<form method="post"><input type="hidden" name="action" value="approve"><button class="btn">Approve Completion</button></form>{% endif %}</div>
-<div class="card"><h2>Milestones</h2>{% for m in milestones %}<p><strong>{{ m.position }}. {{ m.title }}</strong> · {{ m.status }} · {{ m.currency or job.currency }} {{ m.amount }}</p>{% else %}<p>No milestones yet.</p>{% endfor %}{% if job.provider_id|string == me|string %}<form method="post"><input type="hidden" name="action" value="milestone"><input name="title" placeholder="Milestone title" required><input name="amount" type="number" step="0.01" placeholder="Amount"><textarea name="description" placeholder="Deliverable"></textarea><button class="btn secondary">Add Milestone</button></form>{% endif %}</div>
-''',job=job,milestones=milestones,provider=provider,customer=customer,me=me)
+def b2b_unified_match_api():
+    data=request.get_json(silent=True) or {}; text=' '.join(str(data.get(k) or '') for k in ('query','category','profession','location')).lower(); rows=db_select('koja_b2b_unified_listings',{'active':True},order='created_at.desc',limit=500) or []; out=[]
+    for x in rows:
+        hay=' '.join(str(x.get(k) or '') for k in ('title','description','category','profession','location')).lower(); score=sum(1 for t in set(text.split()) if len(t)>2 and t in hay)
+        if score: out.append((score,x))
+    out=sorted(out,key=lambda z:z[0],reverse=True)[:20]
+    return jsonify({'ok':True,'matches':[{'listing':x,'match_score':score} for score,x in out],'count':len(out)})
 
 if __name__=="__main__":
     port=int(os.getenv("PORT","5000"))
