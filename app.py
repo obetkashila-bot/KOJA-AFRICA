@@ -3786,7 +3786,8 @@ def flutterwave_webhook():
     market_orders=db_select('koja_market_orders',{'payment_reference':tx_ref},order='created_at.asc',limit=100) or []
     marketplace_order=first_row('koja_marketplace_orders',{'payment_reference':tx_ref})
     monetization_order=_mono_order_for_ref(tx_ref)
-    if not market_orders and not marketplace_order and not monetization_order:
+    b2b_orders=db_select('koja_b2b_v4_orders',{'payment_reference':tx_ref},order='created_at.asc',limit=100) or []
+    if not market_orders and not marketplace_order and not monetization_order and not b2b_orders:
         logger.warning('Flutterwave webhook unknown reference tx_ref=%s',tx_ref)
         return jsonify({'status':'ignored','reason':'unknown_reference'}),200
     results=[]
@@ -3804,7 +3805,13 @@ def flutterwave_webhook():
         ok=_finalize_monetization(monetization_order,tx)
         logger.info('KOJA monetization finalization tx_ref=%s order=%s result=%s',tx_ref,monetization_order.get('id'),ok)
         results.append('monetization:'+('finalized_or_paid' if ok else 'failed'))
-        results.append('digital:'+('finalized_or_paid' if ok else 'failed'))
+    if b2b_orders:
+        ok_count=0
+        for b2b_order in b2b_orders:
+            ok=_b2bv4_finalize_payment(b2b_order,tx,as_webhook=True)
+            if ok: ok_count+=1
+            logger.info('KOJA B2B V4 finalization tx_ref=%s order=%s result=%s',tx_ref,b2b_order.get('id'),ok)
+        results.append('b2b_v4:'+str(ok_count)+'_finalized')
     return jsonify({'status':'ok','processed':results}),200
 
 @app.route('/market/sell',methods=['GET','POST'])
@@ -9628,3 +9635,333 @@ def driver_available_deliveries():
 <div class="hero"><h1>Available KOJA Deliveries</h1><p>Only unclaimed delivery jobs appear here. The first driver to accept a job claims it; it immediately disappears from this list for every other driver.</p></div>
 <div class="grid">{% for d in rows %}<div class="card"><h3>{{ d.tracking_code }}</h3><p><strong>Pickup:</strong> {{ d.pickup_location }}</p><p><strong>Destination:</strong> {{ d.destination }}</p><p><strong>Fee:</strong> {{ money(d.delivery_fee,'ZMW') }}</p><form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.id,action='accept') }}"><button class="btn success">Accept Delivery</button></form></div>{% else %}<div class="card"><p>No available deliveries right now.</p></div>{% endfor %}</div>
 ''',rows=rows,money=market_money)
+
+
+
+# ============================================================
+# KOJA B2B V4 COMPLETE TRANSACTION ENGINE
+# Additive layer: RFQ -> Quote -> Approval -> Order -> Payment
+# -> Fulfilment -> Delivery -> Completion -> Review / Ledger.
+# Existing Procurement, Professional Services, Connect+, Market,
+# Payments and Delivery systems remain source-of-truth and are reused.
+# ============================================================
+
+def _b2bv4_uid():
+    return str((current_user() or {}).get('id') or '')
+
+def _b2bv4_business(business_id):
+    uid=_b2bv4_uid()
+    if not uid or not business_id:
+        return None
+    return first_row('koja_businesses', {'id':business_id,'owner_id':uid})
+
+def _b2bv4_money(v):
+    try: return round(float(v or 0),2)
+    except Exception: return 0.0
+
+def _b2bv4_event(order_id=None, request_id=None, event_type='', old_status=None, new_status=None, metadata=None):
+    try:
+        u=current_user() or {}
+        db_insert('koja_b2b_v4_events',{
+            'order_id':order_id,'request_id':request_id,'actor_user_id':u.get('id'),
+            'event_type':event_type,'old_status':old_status,'new_status':new_status,
+            'metadata':metadata or {},'created_at':utc_now()
+        })
+    except Exception:
+        logger.exception('B2B V4 event write failed')
+
+def _b2bv4_notify(uid,title,body,link='/b2b'):
+    try:
+        if uid: notify_user(uid,title,body,'b2b',None,link)
+    except Exception: logger.exception('B2B V4 notification failed')
+
+def _b2bv4_quote(quote_id):
+    return first_row('koja_b2b_v4_quotes', {'id':quote_id})
+
+def _b2bv4_order(order_id):
+    return first_row('koja_b2b_v4_orders', {'id':order_id})
+
+def _b2bv4_create_delivery(order):
+    if not order or not order.get('delivery_address'):
+        return None
+    existing=first_row('deliveries', {'id':order.get('delivery_id')}) if order.get('delivery_id') else None
+    if existing: return existing
+    req=first_row('koja_b2b_requests', {'id':order.get('request_id')})
+    pickup='B2B Supplier'
+    seller=first_row('koja_businesses', {'id':order.get('seller_business_id')}) or {}
+    pickup=clean(seller.get('location')) or clean(seller.get('name')) or pickup
+    tracking='KBD-'+secrets.token_hex(5).upper()
+    pickup_code='KDP-'+secrets.token_hex(4).upper()
+    row,err=db_insert('deliveries',{
+        'id':str(uuid.uuid4()),'customer_id':order.get('buyer_user_id'),'user_id':order.get('buyer_user_id'),
+        'sender_id':order.get('seller_business_id'),'pickup_location':pickup,'pickup_address':pickup,
+        'destination':(req or {}).get('location') or (req or {}).get('delivery_address') or 'B2B Buyer',
+        'delivery_address':(req or {}).get('delivery_address') or (req or {}).get('location'),
+        'recipient_name':clean((current_user() or {}).get('name')),'package_description':(req or {}).get('title') or 'KOJA B2B order',
+        'delivery_fee':0,'currency':order.get('currency') or 'ZMW','status':'requested','tracking_code':tracking,
+        'pickup_code':pickup_code,'notes':'KOJA B2B V4 order '+str(order.get('id')),
+        'created_at':utc_now(),'updated_at':utc_now()
+    })
+    if not row: return None
+    db_update('koja_b2b_v4_orders',{'id':order.get('id')},{'delivery_id':row.get('id'),'fulfillment_status':'delivery_requested','updated_at':utc_now()})
+    _notify_available_drivers(tracking,pickup,row.get('destination'),0)
+    _b2bv4_event(order.get('id'),order.get('request_id'),'delivery_requested',order.get('fulfillment_status'),'delivery_requested',{'delivery_id':row.get('id'),'tracking_code':tracking})
+    return row
+
+def _b2bv4_payment_start(order):
+    if not FLW_SECRET_KEY:
+        return None,'Flutterwave payment is not configured. Add FLW_SECRET_KEY in Render environment variables.'
+    user=current_user() or {}
+    email=clean(user.get('email'))
+    if not email: return None,'Your account needs an email address before payment can start.'
+    amount=_b2bv4_money(order.get('amount'))
+    if amount<=0: return None,'Order amount must be greater than zero.'
+    tx_ref='KOJA-B2B-'+secrets.token_hex(10).upper()
+    db_update('koja_b2b_v4_orders',{'id':order.get('id')},{'payment_reference':tx_ref,'updated_at':utc_now()})
+    network=clean(request.form.get('network')) or 'MTN'
+    phone=clean(request.form.get('phone')) or clean(user.get('phone'))
+    payload={
+      'tx_ref':tx_ref,'amount':amount,'currency':(order.get('currency') or 'ZMW').upper(),
+      'email':email,'fullname':first_nonempty(user.get('name'),user.get('full_name'),email),
+      'phone_number':phone,'network':network,
+      'order_id':str(order.get('id')),
+      'redirect_url':url_for('b2bv4_payment_callback',_external=True),
+      'meta':{'koja_b2b_order_id':str(order.get('id')),'request_id':str(order.get('request_id'))}
+    }
+    try:
+        r=requests.post(FLW_BASE_URL+'/charges?type=mobile_money_zambia',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json'},json=payload,timeout=40)
+        body=json_or_empty(r)
+        if r.ok and isinstance(body,dict):
+            return body,None
+        return None,'Flutterwave could not start the payment: '+(r.text or '')[:500]
+    except Exception as exc:
+        logger.exception('B2B V4 payment start failed')
+        return None,str(exc)
+
+@app.route('/b2b/v4')
+@login_required
+def b2bv4_home():
+    uid=_b2bv4_uid()
+    businesses=db_select('koja_businesses',{'owner_id':uid},order='created_at.desc',limit=50) or []
+    if len(businesses)==1:
+        return redirect(url_for('b2bv4_centre',business_id=businesses[0].get('id')))
+    return render_page('KOJA B2B Transaction Centre',r'''
+<div class="hero"><h1>KOJA B2B Transaction Centre</h1><p>Run the complete business transaction cycle: request, quote, approval, order, payment, fulfilment, delivery and completion.</p></div>
+<div class="card"><h2>Select Business</h2>{% for b in businesses %}<div class="card"><h3>{{ b.get('name') }}</h3><a class="btn" href="{{ url_for('b2bv4_centre',business_id=b.get('id')) }}">Open B2B Centre</a></div>{% else %}<p>Create a business account first.</p><a class="btn" href="{{ url_for('business_new') }}">Create Business</a>{% endfor %}</div>
+''',businesses=businesses)
+
+@app.route('/b2b/v4/<business_id>')
+@login_required
+def b2bv4_centre(business_id):
+    b=_b2bv4_business(business_id)
+    if not b: abort(404)
+    uid=_b2bv4_uid()
+    requests_rows=db_select('koja_b2b_requests',{'buyer_business_id':business_id},order='created_at.desc',limit=100) or []
+    quotes=db_select('koja_b2b_v4_quotes',{'seller_user_id':uid},order='created_at.desc',limit=100) or []
+    orders=db_select('koja_b2b_v4_orders',{'buyer_business_id':business_id},order='created_at.desc',limit=100) or []
+    return render_page('B2B Transaction Centre',r'''
+<div class="hero"><h1>{{ b.get('name') }} · B2B</h1><p>One transaction engine for procurement, professional services, products and fulfilment.</p><div class="actions"><a class="btn" href="{{ url_for('b2bv4_request_new',business_id=b.get('id')) }}">New Request</a><a class="btn secondary" href="{{ url_for('b2bv4_home') }}">B2B Home</a></div></div>
+<div class="card"><h2>My Requests</h2>{% for r in requests_rows %}<div class="card"><strong>{{ r.get('title') }}</strong><p>{{ r.get('request_type') }} · {{ r.get('status') }}</p><a class="btn" href="{{ url_for('b2bv4_request',request_id=r.get('id')) }}">Open Request</a></div>{% else %}<p>No requests yet.</p>{% endfor %}</div>
+<div class="card"><h2>Orders</h2>{% for o in orders %}<div class="card"><strong>Order {{ o.get('id') }}</strong><p>{{ o.get('order_status') }} · Payment: {{ o.get('payment_status') }} · {{ o.get('amount') }} {{ o.get('currency') }}</p><a class="btn" href="{{ url_for('b2bv4_order',order_id=o.get('id')) }}">Open Order</a></div>{% else %}<p>No orders yet.</p>{% endfor %}</div>
+<div class="card"><h2>Seller Quotes</h2>{% for q in quotes %}<div class="card"><strong>{{ q.get('amount') }} {{ q.get('currency') }}</strong><p>Status: {{ q.get('status') }}</p><a class="btn" href="{{ url_for('b2bv4_request',request_id=q.get('request_id')) }}">Open Request</a></div>{% else %}<p>No quotes requiring your attention.</p>{% endfor %}</div>
+''',b=b,requests_rows=requests_rows,orders=orders,quotes=quotes)
+
+@app.route('/b2b/v4/<business_id>/request/new',methods=['GET','POST'])
+@login_required
+def b2bv4_request_new(business_id):
+    b=_b2bv4_business(business_id)
+    if not b: abort(404)
+    if request.method=='POST':
+        uid=_b2bv4_uid()
+        payload={'buyer_business_id':business_id,'requester_user_id':uid,'request_type':clean(request.form.get('request_type')) or 'procurement','title':clean(request.form.get('title')),'description':clean(request.form.get('description')),'category':clean(request.form.get('category')),'profession':clean(request.form.get('profession')),'location':clean(request.form.get('location')),'online_allowed':bool(request.form.get('online_allowed')),'budget':_b2bv4_money(request.form.get('budget')),'currency':clean(request.form.get('currency')) or 'ZMW','deadline':clean(request.form.get('deadline')) or None,'status':'open','created_at':utc_now(),'updated_at':utc_now()}
+        if not payload['title'] or not payload['description']:
+            flash('Title and description are required.','warning')
+        else:
+            row,err=db_insert('koja_b2b_requests',payload)
+            if err: flash('Could not create request: '+str(err)[:500],'danger')
+            else:
+                _b2bv4_event(request_id=(row or {}).get('id'),event_type='request_created',metadata={'business_id':business_id})
+                flash('B2B request created. Suppliers and professionals can now quote.','success')
+                return redirect(url_for('b2bv4_request',request_id=(row or {}).get('id')))
+    return render_page('New B2B Request',r'''
+<div class="hero"><h1>New B2B Request</h1><p>Describe exactly what the business needs. KOJA can match product suppliers and professional providers.</p></div>
+<div class="card"><form method="post"><label>Request type<select name="request_type"><option value="procurement">Procurement</option><option value="professional_service">Professional Service</option><option value="product">Product</option><option value="project">Project</option></select></label><label>Title<input name="title" required></label><label>Description<textarea name="description" required rows="6"></textarea></label><label>Category<input name="category"></label><label>Profession (if applicable)<input name="profession"></label><label>Location<input name="location"></label><label>Budget<input name="budget" type="number" step="0.01" min="0"></label><label>Currency<select name="currency"><option>ZMW</option><option>USD</option></select></label><label>Deadline<input name="deadline" type="date"></label><label><input type="checkbox" name="online_allowed"> Online delivery/service allowed</label><button class="btn success" type="submit">Publish Request</button></form></div>
+''')
+
+@app.route('/b2b/v4/request/<request_id>')
+@login_required
+def b2bv4_request(request_id):
+    req=first_row('koja_b2b_requests',{'id':request_id})
+    if not req: abort(404)
+    uid=_b2bv4_uid(); businesses=db_select('koja_businesses',{'owner_id':uid},limit=100) or []
+    owned={str(x.get('id')) for x in businesses}
+    if str(req.get('buyer_business_id')) not in owned:
+        # Sellers can see an open request, but only buyer can accept a quote.
+        if str(req.get('status') or '').lower() not in {'open','quoted'}: abort(403)
+    quotes=db_select('koja_b2b_v4_quotes',{'request_id':request_id},order='created_at.desc',limit=100) or []
+    return render_page('B2B Request',r'''
+<div class="hero"><h1>{{ req.get('title') }}</h1><p>{{ req.get('description') }}</p><p>Status: <strong>{{ req.get('status') }}</strong> · Budget: {{ req.get('budget') or 'Open' }} {{ req.get('currency') or 'ZMW' }}</p></div>
+<div class="card"><h2>Submit Quote</h2><form method="post" action="{{ url_for('b2bv4_quote_submit',request_id=req.get('id')) }}"><label>Seller Business<select name="seller_business_id" required>{% for b in businesses %}<option value="{{ b.get('id') }}">{{ b.get('name') }}</option>{% endfor %}</select></label><label>Amount<input name="amount" type="number" step="0.01" min="0" required></label><label>Delivery days<input name="delivery_days" type="number" min="1" value="1"></label><label>Proposal<textarea name="proposal" rows="5"></textarea></label><button class="btn" type="submit">Submit Quote</button></form></div>
+<div class="card"><h2>Quotes</h2>{% for q in quotes %}<div class="card"><h3>{{ q.get('amount') }} {{ q.get('currency') }}</h3><p>{{ q.get('proposal') }}</p><p>Status: <strong>{{ q.get('status') }}</strong> · {{ q.get('delivery_days') }} day(s)</p>{% if str(req.get('buyer_business_id')) in owned and q.get('status') == 'submitted' %}<form method="post" action="{{ url_for('b2bv4_quote_accept',quote_id=q.get('id')) }}"><button class="btn success">Accept Quote</button></form>{% endif %}</div>{% else %}<p>No quotes yet.</p>{% endfor %}</div>
+''',req=req,quotes=quotes,businesses=businesses,owned=owned,str=str)
+
+@app.route('/b2b/v4/request/<request_id>/quote',methods=['POST'])
+@login_required
+def b2bv4_quote_submit(request_id):
+    req=first_row('koja_b2b_requests',{'id':request_id})
+    if not req: abort(404)
+    uid=_b2bv4_uid(); business_id=clean(request.form.get('seller_business_id')); b=_b2bv4_business(business_id)
+    if not b: abort(403)
+    if str(req.get('buyer_business_id'))==str(business_id):
+        flash('A buyer business cannot quote its own request.','warning'); return redirect(url_for('b2bv4_request',request_id=request_id))
+    amount=_b2bv4_money(request.form.get('amount'))
+    if amount<=0: flash('Quote amount must be greater than zero.','warning'); return redirect(url_for('b2bv4_request',request_id=request_id))
+    row,err=db_insert('koja_b2b_v4_quotes',{'request_id':request_id,'seller_business_id':business_id,'seller_user_id':uid,'amount':amount,'currency':req.get('currency') or 'ZMW','delivery_days':max(1,int(request.form.get('delivery_days') or 1)),'proposal':clean(request.form.get('proposal')),'status':'submitted','created_at':utc_now(),'updated_at':utc_now()})
+    if err: flash('Could not submit quote: '+str(err)[:500],'danger')
+    else:
+        db_update('koja_b2b_requests',{'id':request_id},{'status':'quoted','updated_at':utc_now()})
+        _b2bv4_event(request_id=request_id,event_type='quote_submitted',metadata={'quote_id':(row or {}).get('id'),'seller_business_id':business_id})
+        buyer=first_row('koja_businesses',{'id':req.get('buyer_business_id')}) or {}
+        _b2bv4_notify(buyer.get('owner_id'),'New B2B quote',f'A supplier submitted a quote for {req.get("title")}.','/b2b/v4/request/'+str(request_id))
+        flash('Quote submitted.','success')
+    return redirect(url_for('b2bv4_request',request_id=request_id))
+
+@app.route('/b2b/v4/quote/<quote_id>/accept',methods=['POST'])
+@login_required
+def b2bv4_quote_accept(quote_id):
+    q=_b2bv4_quote(quote_id)
+    if not q: abort(404)
+    req=first_row('koja_b2b_requests',{'id':q.get('request_id')})
+    b=_b2bv4_business(req.get('buyer_business_id')) if req else None
+    if not b: abort(403)
+    if str(q.get('status'))!='submitted': flash('This quote is no longer available.','warning'); return redirect(url_for('b2bv4_request',request_id=req.get('id')))
+    # Accept exactly one quote. Competing quotes are rejected as part of the state transition.
+    db_update('koja_b2b_v4_quotes',{'id':quote_id},{'status':'accepted','accepted_at':utc_now(),'updated_at':utc_now()})
+    db_update('koja_b2b_requests',{'id':req.get('id')},{'status':'accepted','selected_quote_id':quote_id,'updated_at':utc_now()})
+    others=db_select('koja_b2b_v4_quotes',{'request_id':req.get('id')},limit=200) or []
+    for other in others:
+        if str(other.get('id'))!=str(quote_id) and str(other.get('status'))=='submitted':
+            db_update('koja_b2b_v4_quotes',{'id':other.get('id')},{'status':'rejected','rejected_at':utc_now(),'updated_at':utc_now()})
+    amount=_b2bv4_money(q.get('amount')); commission_rate=max(0.0,min(0.50,float(os.getenv('KOJA_B2B_COMMISSION_RATE','0.10') or 0.10))); platform_fee=round(amount*commission_rate,2); seller_net=round(amount-platform_fee,2)
+    order,err=db_insert('koja_b2b_v4_orders',{'request_id':req.get('id'),'quote_id':quote_id,'buyer_business_id':req.get('buyer_business_id'),'buyer_user_id':req.get('requester_user_id'),'seller_business_id':q.get('seller_business_id'),'seller_user_id':q.get('seller_user_id'),'professional_provider_id':q.get('professional_provider_id'),'order_type':req.get('request_type') or 'b2b_service','amount':amount,'platform_fee':platform_fee,'professional_fee':0,'seller_net':seller_net,'currency':q.get('currency') or 'ZMW','payment_status':'unpaid','order_status':'awaiting_payment','fulfillment_status':'not_started','delivery_address':req.get('location'),'created_at':utc_now(),'updated_at':utc_now()})
+    if err or not order:
+        flash('Quote accepted, but order creation failed: '+str(err)[:500],'danger')
+        return redirect(url_for('b2bv4_request',request_id=req.get('id')))
+    db_insert('koja_b2b_v4_order_items',{'order_id':order.get('id'),'description':req.get('title') or 'B2B order','quantity':1,'unit_price':amount,'total':amount,'created_at':utc_now()})
+    _b2bv4_event(order.get('id'),req.get('id'),'quote_accepted','quoted','accepted',{'quote_id':quote_id})
+    _b2bv4_notify(q.get('seller_user_id'),'B2B quote accepted',f'Your quote for {req.get("title")} was accepted. Awaiting buyer payment.','/b2b/v4')
+    flash('Quote accepted. The order is ready for payment.','success')
+    return redirect(url_for('b2bv4_order',order_id=order.get('id')))
+
+@app.route('/b2b/v4/order/<order_id>')
+@login_required
+def b2bv4_order(order_id):
+    order=_b2bv4_order(order_id)
+    if not order: abort(404)
+    uid=_b2bv4_uid()
+    if str(uid) not in {str(order.get('buyer_user_id')),str(order.get('seller_user_id'))}: abort(403)
+    req=first_row('koja_b2b_requests',{'id':order.get('request_id')}) or {}
+    delivery=first_row('deliveries',{'id':order.get('delivery_id')}) if order.get('delivery_id') else None
+    return render_page('B2B Order',r'''
+<div class="hero"><h1>B2B Order</h1><p>{{ req.get('title') }}</p><p>Order status: <strong>{{ order.get('order_status') }}</strong> · Payment: <strong>{{ order.get('payment_status') }}</strong> · Fulfilment: <strong>{{ order.get('fulfillment_status') }}</strong></p></div>
+<div class="card"><h2>Financials</h2><p>Amount: <strong>{{ order.get('amount') }} {{ order.get('currency') }}</strong></p><p>KOJA platform fee: {{ order.get('platform_fee') }} {{ order.get('currency') }}</p><p>Seller net: {{ order.get('seller_net') }} {{ order.get('currency') }}</p>{% if order.get('payment_status') != 'paid' and str(order.get('buyer_user_id')) == str(uid) %}<form method="post" action="{{ url_for('b2bv4_order_pay',order_id=order.get('id')) }}"><label>Mobile-money network<select name="network"><option>MTN</option><option>AIRTEL</option><option>ZAMTEL</option></select></label><label>Phone<input name="phone" value="{{ user.get('phone') or '' }}"></label><button class="btn success" type="submit">Pay {{ order.get('amount') }} {{ order.get('currency') }}</button></form>{% endif %}</div>
+<div class="card"><h2>Fulfilment</h2>{% if order.get('payment_status') == 'paid' %}<p>Payment verified. The supplier can now fulfil the order.</p>{% if str(order.get('seller_user_id')) == str(uid) and order.get('order_status') not in ['completed','cancelled'] %}<form method="post" action="{{ url_for('b2bv4_order_fulfil',order_id=order.get('id')) }}"><button class="btn" type="submit">Mark Ready for Fulfilment</button></form>{% endif %}{% else %}<p>Fulfilment unlocks after verified payment.</p>{% endif %}</div>
+{% if delivery %}<div class="card"><h2>Delivery</h2><p>Tracking: <strong>{{ delivery.get('tracking_code') }}</strong></p><p>Status: {{ delivery.get('status') }}</p><a class="btn" href="{{ url_for('track_delivery',tracking_code=delivery.get('tracking_code')) }}">Track Delivery</a></div>{% endif %}
+{% if order.get('payment_status') == 'paid' and str(order.get('buyer_user_id')) == str(uid) and order.get('order_status') not in ['completed','cancelled'] %}<div class="card"><h2>Completion</h2><form method="post" action="{{ url_for('b2bv4_order_complete',order_id=order.get('id')) }}"><label>Completion note<textarea name="completion_note"></textarea></label><button class="btn success" type="submit">Confirm Completion</button></form></div>{% endif %}
+<div class="card"><h2>Review</h2>{% if order.get('order_status') == 'completed' %}<form method="post" action="{{ url_for('b2bv4_order_review',order_id=order.get('id')) }}"><label>Rating<select name="rating"><option>5</option><option>4</option><option>3</option><option>2</option><option>1</option></select></label><label>Review<textarea name="review"></textarea></label><button class="btn" type="submit">Submit Review</button></form>{% else %}<p>Review becomes available after completion.</p>{% endif %}</div>
+''',order=order,req=req,delivery=delivery,uid=uid,user=current_user() or {},str=str)
+
+@app.route('/b2b/v4/order/<order_id>/pay',methods=['POST'])
+@login_required
+def b2bv4_order_pay(order_id):
+    order=_b2bv4_order(order_id)
+    if not order or str(order.get('buyer_user_id'))!=_b2bv4_uid(): abort(403)
+    if str(order.get('payment_status'))=='paid': return redirect(url_for('b2bv4_order',order_id=order_id))
+    result,err=_b2bv4_payment_start(order)
+    if err:
+        flash(err,'danger'); return redirect(url_for('b2bv4_order',order_id=order_id))
+    data=result.get('data') if isinstance(result,dict) else None
+    link=(data or {}).get('link') or (data or {}).get('meta',{}).get('authorization')
+    if link:
+        return redirect(link)
+    flash('Payment request sent. Complete the mobile-money prompt, then return to the order.','success')
+    return redirect(url_for('b2bv4_order',order_id=order_id))
+
+@app.route('/b2b/v4/payment/callback')
+def b2bv4_payment_callback():
+    tx_id=clean(request.args.get('transaction_id')); tx_ref=clean(request.args.get('tx_ref') or request.args.get('reference'))
+    tx=_flutterwave_verify(tx_id,tx_ref)
+    order=None
+    if tx:
+        ref=str(tx.get('tx_ref') or tx.get('txRef') or tx.get('reference') or tx_ref or '')
+        order=first_row('koja_b2b_v4_orders',{'payment_reference':ref})
+    if not order:
+        flash('Payment is still being verified. Please open your B2B order again.','warning')
+        return redirect(url_for('b2bv4_home'))
+    if not _flutterwave_payment_valid(tx,order.get('payment_reference'),order.get('amount'),order.get('currency')):
+        flash('Payment verification failed. The order has not been marked paid.','danger')
+        return redirect(url_for('b2bv4_order',order_id=order.get('id')))
+    return _b2bv4_finalize_payment(order,tx)
+
+def _b2bv4_finalize_payment(order,tx,as_webhook=False):
+    if not order or not tx: return False if as_webhook else redirect(url_for('b2bv4_home'))
+    if str(order.get('payment_status'))=='paid': return True if as_webhook else redirect(url_for('b2bv4_order',order_id=order.get('id')))
+    if not _flutterwave_payment_valid(tx,order.get('payment_reference'),order.get('amount'),order.get('currency')):
+        flash('Verified transaction does not match this order.','danger'); return False if as_webhook else redirect(url_for('b2bv4_order',order_id=order.get('id')))
+    updated,err=db_update('koja_b2b_v4_orders',{'id':order.get('id'),'payment_status':'unpaid'},{'payment_status':'paid','payment_transaction_id':str(tx.get('id') or ''),'order_status':'paid','fulfillment_status':'ready','updated_at':utc_now()})
+    current=_b2bv4_order(order.get('id')) or order
+    if str(current.get('payment_status'))!='paid':
+        flash('Payment verification succeeded but the order update failed.','danger'); return False if as_webhook else redirect(url_for('b2bv4_order',order_id=order.get('id')))
+    db_insert('koja_b2b_v4_ledger',{'order_id':order.get('id'),'buyer_business_id':order.get('buyer_business_id'),'seller_business_id':order.get('seller_business_id'),'professional_provider_id':order.get('professional_provider_id'),'gross_amount':order.get('amount'),'platform_fee':order.get('platform_fee'),'seller_amount':order.get('seller_net'),'professional_amount':order.get('professional_fee'),'currency':order.get('currency') or 'ZMW','status':'pending','created_at':utc_now(),'updated_at':utc_now()})
+    _b2bv4_event(order.get('id'),order.get('request_id'),'payment_verified','awaiting_payment','paid',{'transaction_id':str(tx.get('id') or '')})
+    _b2bv4_notify(order.get('seller_user_id'),'B2B payment received',f'Payment for B2B order {order.get("id")} has been verified. Fulfilment is now unlocked.','/b2b/v4/order/'+str(order.get('id')))
+    flash('Payment verified. The order is now active.','success')
+    return True if as_webhook else redirect(url_for('b2bv4_order',order_id=order.get('id')))
+
+@app.route('/b2b/v4/order/<order_id>/fulfil',methods=['POST'])
+@login_required
+def b2bv4_order_fulfil(order_id):
+    order=_b2bv4_order(order_id)
+    if not order or str(order.get('seller_user_id'))!=_b2bv4_uid(): abort(403)
+    if str(order.get('payment_status'))!='paid':
+        flash('Payment must be verified before fulfilment.','warning'); return redirect(url_for('b2bv4_order',order_id=order_id))
+    req=first_row('koja_b2b_requests',{'id':order.get('request_id')}) or {}
+    # Physical/delivery orders use the existing KOJA delivery engine; online services remain in the B2B workspace.
+    if str(req.get('request_type') or '').lower() in {'product','procurement'} and (req.get('location') or req.get('delivery_address')):
+        delivery=_b2bv4_create_delivery(order)
+        new_status='delivery_requested' if delivery else 'in_progress'
+    else:
+        new_status='in_progress'
+    db_update('koja_b2b_v4_orders',{'id':order_id},{'order_status':'in_progress','fulfillment_status':new_status,'updated_at':utc_now()})
+    _b2bv4_event(order_id,order.get('request_id'),'fulfilment_started','ready','in_progress',{'fulfillment_status':new_status})
+    _b2bv4_notify(order.get('buyer_user_id'),'B2B order in progress',f'Order {order_id} is now being fulfilled.','/b2b/v4/order/'+str(order_id))
+    flash('Fulfilment started.','success')
+    return redirect(url_for('b2bv4_order',order_id=order_id))
+
+@app.route('/b2b/v4/order/<order_id>/complete',methods=['POST'])
+@login_required
+def b2bv4_order_complete(order_id):
+    order=_b2bv4_order(order_id)
+    if not order or str(order.get('buyer_user_id'))!=_b2bv4_uid(): abort(403)
+    if str(order.get('payment_status'))!='paid': flash('Order cannot be completed before payment.','warning'); return redirect(url_for('b2bv4_order',order_id=order_id))
+    delivery=first_row('deliveries',{'id':order.get('delivery_id')}) if order.get('delivery_id') else None
+    if delivery and str(delivery.get('status') or '').lower() not in {'delivered','completed'}:
+        flash('This order has a delivery in progress. Completion unlocks after delivery is marked delivered.','warning'); return redirect(url_for('b2bv4_order',order_id=order_id))
+    note=clean(request.form.get('completion_note'))
+    db_update('koja_b2b_v4_orders',{'id':order_id},{'order_status':'completed','fulfillment_status':'completed','completion_note':note,'completed_at':utc_now(),'updated_at':utc_now()})
+    db_update('koja_b2b_v4_ledger',{'order_id':order_id},{'status':'released','updated_at':utc_now()})
+    _b2bv4_event(order_id,order.get('request_id'),'order_completed','in_progress','completed',{'note':note})
+    _b2bv4_notify(order.get('seller_user_id'),'B2B order completed',f'Order {order_id} was confirmed completed by the buyer.','/b2b/v4')
+    flash('Order completed and seller earnings released in the B2B ledger.','success')
+    return redirect(url_for('b2bv4_order',order_id=order_id))
+
+@app.route('/b2b/v4/order/<order_id>/review',methods=['POST'])
+@login_required
+def b2bv4_order_review(order_id):
+    order=_b2bv4_order(order_id)
+    if not order or str(order.get('buyer_user_id'))!=_b2bv4_uid() or str(order.get('order_status'))!='completed': abort(403)
+    rating=max(1,min(5,int(request.form.get('rating') or 5)))
+    row,err=db_insert('koja_b2b_v4_reviews',{'order_id':order_id,'reviewer_user_id':_b2bv4_uid(),'seller_business_id':order.get('seller_business_id'),'professional_provider_id':order.get('professional_provider_id'),'rating':rating,'review':clean(request.form.get('review')),'created_at':utc_now()})
+    flash('Review submitted.' if row else 'Review could not be submitted: '+str(err)[:300],'success' if row else 'danger')
+    return redirect(url_for('b2bv4_order',order_id=order_id))
+
