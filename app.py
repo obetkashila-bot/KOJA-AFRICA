@@ -2435,15 +2435,59 @@ def document_download(document_id):
 @login_required
 def services():
     return render_page("Services", r"""
-<div class="hero"><h2>KOJA Services</h2><p>Related capabilities are grouped into unified modules. Existing routes remain available behind each module.</p></div>
-<div class="grid">
-<div class="card"><h3>Learning and Research</h3><p>One connected workspace for academic questions, assignments, documents, research and document-based AI.</p><div class="actions"><a class="btn" href="{{ url_for('questions') }}">Questions</a><a class="btn" href="{{ url_for('assignments') }}">Assignments</a><a class="btn" href="{{ url_for('documents') }}">Documents and AI</a><a class="btn secondary" href="{{ url_for('research') }}">Research</a></div></div>
-<div class="card"><h3>AI and Workspace</h3><p>General AI, document intelligence, connected knowledge and productivity tools use the same KOJA AI foundation.</p><div class="actions"><a class="btn" href="{{ url_for('ai_assistant') }}">KOJA AI</a><a class="btn secondary" href="{{ url_for('documents') }}">Document AI</a><a class="btn secondary" href="{{ url_for('cv') }}">CV and Documents</a></div></div>
-<div class="card"><h3>Professional Services</h3><p>Doctors, teachers, tutors and other professionals are grouped under one discovery and identity workflow.</p><div class="actions"><a class="btn" href="{{ url_for('professionals') }}">Professionals</a><a class="btn secondary" href="{{ url_for('doctors') }}">Doctors</a><a class="btn secondary" href="{{ url_for('teachers') }}">Teachers and Tutors</a><a class="btn secondary" href="{{ url_for('professional_register') }}">Register Profession</a></div></div>
-<div class="card"><h3>Market and Business</h3><p>Buying, selling, business operations, payments, accounting and seller tools share the same commerce foundation.</p><div class="actions"><a class="btn" href="{{ url_for('koja_market') }}">KOJA Market</a><a class="btn secondary" href="{{ url_for('marketplace') }}">Digital Marketplace</a></div></div>
-<div class="card"><h3>Delivery and Logistics</h3><p>Orders, drivers, live GPS, delivery requests, tracking and delivery security operate as one logistics workflow.</p><div class="actions"><a class="btn" href="{{ url_for('deliveries') }}">Delivery</a><a class="btn secondary" href="{{ url_for('tracking') }}">Live GPS</a></div></div>
-<div class="card"><h3>Communication</h3><p>Messaging, voice, video, groups, presence and status remain one connected communication service.</p><a class="btn" href="{{ url_for('connect') }}">Open Communication</a></div>
+<style>
+.koja-services-intro{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}.koja-services-intro .service-badge{display:inline-flex;align-items:center;border:1px solid rgba(255,255,255,.25);border-radius:999px;padding:7px 11px;font-size:12px;background:rgba(255,255,255,.08)}
+.service-section{margin:22px 0 10px}.service-section h3{margin:0 0 5px}.service-section p{margin:0;color:var(--muted)}
+.service-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(245px,1fr));gap:13px}.service-card{position:relative;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px;box-shadow:0 3px 14px rgba(0,0,0,.05);transition:.2s}.service-card:hover{transform:translateY(-2px);box-shadow:0 9px 24px rgba(0,0,0,.09)}
+.service-card h4{margin:0 0 6px}.service-card p{color:var(--muted);font-size:13px;margin:0 0 13px}.service-links{display:flex;gap:7px;flex-wrap:wrap}.service-links .btn{font-size:13px;padding:8px 10px}
+.service-card.global{border-left:4px solid #176b87}.service-card.trade{border-left:4px solid #c23b3b}.service-card.engine{border-left:4px solid #8a6d1d}.service-flow{display:flex;gap:7px;flex-wrap:wrap;align-items:center}.service-flow span{border:1px solid var(--border);border-radius:999px;padding:7px 10px;background:var(--surface);font-size:12px}.service-flow b{color:var(--muted)}
+@media(max-width:760px){.service-grid{grid-template-columns:1fr}.service-card{padding:14px}.service-links .btn{width:auto}.service-flow{align-items:stretch}.service-flow span{flex:1;min-width:130px;text-align:center}}
+</style>
+<div class="hero koja-services-intro"><div><h2>KOJA Services</h2><p>One connected service center for learning, AI, professional work, commerce, global business, trade, logistics and communication.</p></div><span class="service-badge">KOJA GLOBAL ECOSYSTEM</span></div>
+
+<div class="service-section"><h3>Learning and Research</h3><p>Academic questions, assignments, documents, research and document intelligence.</p></div>
+<div class="service-grid">
+<div class="service-card"><h4>Questions & Assignments</h4><p>Academic questions, assignments and learning workflows.</p><div class="service-links"><a class="btn" href="{{ url_for('questions') }}">Questions</a><a class="btn secondary" href="{{ url_for('assignments') }}">Assignments</a></div></div>
+<div class="service-card"><h4>Documents & Research</h4><p>Document intelligence, research and connected knowledge.</p><div class="service-links"><a class="btn" href="{{ url_for('documents') }}">Documents</a><a class="btn secondary" href="{{ url_for('research') }}">Research</a></div></div>
 </div>
+
+<div class="service-section"><h3>AI and Workspace</h3><p>KOJA AI, document intelligence and productivity tools.</p></div>
+<div class="service-grid">
+<div class="service-card"><h4>KOJA AI</h4><p>General AI and connected knowledge for work, learning and business.</p><div class="service-links"><a class="btn" href="{{ url_for('ai_assistant') }}">KOJA AI</a><a class="btn secondary" href="{{ url_for('cv') }}">CV & Documents</a></div></div>
+<div class="service-card engine"><h4>KOJA Platform Engines</h4><p>Discover, Ads, Pay, Intelligence, Identity, Workspace, Ecosystem and Autonomous AI.</p><a class="btn secondary" href="{{ url_for('koja_named_engines') }}">Open Engines</a></div>
+</div>
+
+<div class="service-section"><h3>Professional Services</h3><p>Discover professionals, teaching, health and other service workflows.</p></div>
+<div class="service-grid">
+<div class="service-card"><h4>Professionals</h4><p>Professional identity, discovery and service workflows.</p><div class="service-links"><a class="btn" href="{{ url_for('professionals') }}">Professionals</a><a class="btn secondary" href="{{ url_for('professional_register') }}">Register</a></div></div>
+<div class="service-card"><h4>Teaching & Health</h4><p>Teacher, tutor and doctor discovery remains connected to the professional service layer.</p><div class="service-links"><a class="btn secondary" href="{{ url_for('teachers') }}">Teachers</a><a class="btn secondary" href="{{ url_for('doctors') }}">Doctors</a></div></div>
+</div>
+
+<div class="service-section"><h3>Market, Business & Global Trade</h3><p>From creating a business to connecting with companies and handling international trade.</p></div>
+<div class="service-grid">
+<div class="service-card global"><h4>KOJA Business</h4><p>Business identity, organisation, CRM, workforce, procurement, finance, accounting, store and AI.</p><div class="service-links"><a class="btn" href="{{ url_for('koja_business') }}">Business</a><a class="btn secondary" href="{{ url_for('business_new') }}">Create Business</a></div></div>
+<div class="service-card global"><h4>Global Business</h4><p>Global operating workspace connecting B2B, commerce, services, finance, workforce, logistics and AI.</p><a class="btn secondary" href="{{ url_for('koja_business') }}">Open Business Workspace</a></div>
+<div class="service-card global"><h4>Business Connect</h4><p>Connect businesses by KOJA Business Code for B2B relationships, communication, sourcing and collaboration.</p><a class="btn secondary" href="{{ url_for('koja_business') }}">Open Business</a></div>
+<div class="service-card"><h4>KOJA Market</h4><p>Physical and digital commerce with seller tools, payments and delivery workflows.</p><div class="service-links"><a class="btn" href="{{ url_for('koja_market') }}">KOJA Market</a><a class="btn secondary" href="{{ url_for('marketplace') }}">Digital Market</a></div></div>
+<div class="service-card trade"><h4>Import & Export</h4><p>International orders, commercial documents, customs declarations, duties, taxes, brokers, freight and clearance.</p><a class="btn secondary" href="{{ url_for('koja_business') }}">Open Global Business</a></div>
+<div class="service-card trade"><h4>Customs & Clearance</h4><p>Country and product-specific customs workflow with HS classification, permits, inspection, release and clearance tracking.</p><a class="btn secondary" href="{{ url_for('koja_business') }}">Open Trade Workspace</a></div>
+<div class="service-card trade"><h4>International Trade</h4><p>Suppliers, procurement, quotations, contracts, trade documents and cross-border fulfilment.</p><a class="btn secondary" href="{{ url_for('koja_business') }}">Open B2B Workspace</a></div>
+<div class="service-card"><h4>Finance, Payments & Payouts</h4><p>Business accounting, transaction workflows, settlement and payout requests.</p><div class="service-links"><a class="btn secondary" href="{{ url_for('koja_business') }}">Business Finance</a></div></div>
+</div>
+
+<div class="service-section"><h3>Delivery, Freight & Logistics</h3><p>Domestic and international fulfilment can continue through the same KOJA logistics foundation.</p></div>
+<div class="service-grid">
+<div class="service-card"><h4>Delivery & Live GPS</h4><p>Orders, drivers, delivery requests, live tracking and delivery security.</p><div class="service-links"><a class="btn" href="{{ url_for('deliveries') }}">Delivery</a><a class="btn secondary" href="{{ url_for('tracking') }}">Live GPS</a></div></div>
+<div class="service-card trade"><h4>Freight & Forwarding</h4><p>International shipping, carrier tracking, ports, borders and handoff into customs clearance.</p><a class="btn secondary" href="{{ url_for('deliveries') }}">Logistics</a></div>
+<div class="service-card trade"><h4>Trade Flow</h4><p>Seller → freight → destination country → customs → clearance → local delivery → buyer.</p><div class="service-flow"><span>Seller</span><b>→</b><span>Freight</span><b>→</b><span>Customs</span><b>→</b><span>Delivery</span><b>→</b><span>Buyer</span></div></div>
+</div>
+
+<div class="service-section"><h3>Communication</h3><p>One communication service for messaging, voice, video, groups, presence and business collaboration.</p></div>
+<div class="service-grid">
+<div class="service-card"><h4>Connect+</h4><p>Existing KOJA communication remains the shared communication layer for users and connected businesses.</p><div class="service-links"><a class="btn" href="{{ url_for('communication_nextgen') }}">Open Connect+</a><a class="btn secondary" href="{{ url_for('connect') }}">Communication</a></div></div>
+</div>
+
+<div class="card"><h3>KOJA service architecture</h3><p>These are unified entry points into existing KOJA routes and engines. The Services page does not create a second marketplace, communication system or logistics platform.</p><div class="service-flow"><span>Learning</span><b>+</b><span>AI</span><b>+</b><span>Professional</span><b>+</b><span>Business</span><b>+</b><span>Trade</span><b>+</b><span>Logistics</span><b>+</b><span>Connect+</span></div></div>
 """)
 
 # ============================================================

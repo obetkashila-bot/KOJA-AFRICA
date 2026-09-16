@@ -1,24 +1,26 @@
-KOJA GLOBAL IMPORT & EXPORT V1
+KOJA SERVICES GLOBAL V1
 
-Added on top of the existing KOJA Global Business layer.
+This upgrade replaces the /services screen in the current KOJA AFRICA app with a unified global service center.
 
-Features:
-- Import/export trade orders
-- Country of origin and destination
-- HS/tariff classification field
-- Landed-cost calculation
-- Freight, insurance, duty, tax and destination fees
-- Customs and clearance workflow
-- Trade documents
-- Customs broker/clearing-agent assignment
-- Carrier/tracking/port/customs reference
-- Workflow audit trail
-- Country-specific customs rules table for future verified rules
+Added service groups:
+- Learning and Research
+- AI and Workspace
+- Professional Services
+- Market, Business and Global Trade
+- KOJA Business / Global Business
+- Business Connect entry point
+- Import & Export
+- Customs & Clearance
+- International Trade
+- Finance, Payments and Payouts
+- Delivery, Freight and Logistics
+- Connect+
+- KOJA Platform Engines
 
-Deploy:
-1. Run KOJA_GLOBAL_IMPORT_EXPORT_V1.sql in the existing Supabase SQL editor.
-2. Replace the existing app.py with the supplied app.py.
-3. Keep the current Render service and environment variables.
-4. Open a business Global Business page, then Global Import & Export.
+Important:
+- Existing backend routes and services are preserved.
+- No Supabase migration is required for this UI-only services-center upgrade.
+- Import/export/customs cards are connected to existing KOJA Business/Global Business entry points until the dedicated trade route is deployed.
+- Communications/Connect+ backend is not modified.
 
-This migration is additive: it does not drop or recreate existing KOJA tables.
+Deploy by replacing the production app.py with this file and keeping the existing requirements.txt and environment variables.
