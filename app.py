@@ -819,29 +819,49 @@ BASE_HTML = r"""
 </script>
 <style>
 *{box-sizing:border-box}
-:root{color-scheme:light;--bg:#f4f7fb;--surface:#fff;--surface2:#eef3f8;--text:#122033;--muted:#66758a;--border:#dce4ee;--nav:#071a33;--nav2:#0d2b50;--accent:#1268a8;--accent2:#e32936;--focus:#f5b83d;--shadow:0 8px 28px rgba(8,30,58,.08)}
-html[data-koja-theme="dark"]{color-scheme:dark;--bg:#0b111b;--surface:#121c29;--surface2:#172536;--text:#edf4fb;--muted:#a9b7c7;--border:#29394c;--nav:#050d18;--nav2:#0b1d34;--accent:#42a5e8;--accent2:#ff5660;--focus:#f6c45c;--shadow:0 10px 30px rgba(0,0,0,.28)}
-@media(prefers-color-scheme:dark){html[data-koja-theme="system"]{color-scheme:dark;--bg:#0b111b;--surface:#121c29;--surface2:#172536;--text:#edf4fb;--muted:#a9b7c7;--border:#29394c;--nav:#050d18;--nav2:#0b1d34;--accent:#42a5e8;--accent2:#ff5660;--focus:#f6c45c;--shadow:0 10px 30px rgba(0,0,0,.28)}}
-body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);line-height:1.55}
-a{color:var(--accent)}
-nav{background:linear-gradient(135deg,var(--nav),var(--nav2));color:#fff;padding:10px 16px;position:sticky;top:0;z-index:1000;box-shadow:0 5px 22px rgba(0,0,0,.18)}
-.nav-inner{max-width:1320px;margin:auto;display:flex;align-items:center;gap:10px;min-height:48px}
-.brand{font-weight:900;font-size:18px;margin-right:auto;display:flex;align-items:center;gap:10px;letter-spacing:.25px}.brand-mark{width:36px;height:36px;border-radius:10px;display:inline-grid;place-items:center;background:linear-gradient(135deg,#1689cf,#e32936);box-shadow:0 5px 18px rgba(0,0,0,.25)}.brand-mark svg{width:24px;height:24px}.brand-name{white-space:nowrap}
-.menu-toggle{display:none;width:auto;margin:0;padding:9px 12px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.2);color:#fff;border-radius:9px;font-weight:800;cursor:pointer}
-.menu-toggle:hover{background:rgba(255,255,255,.16);transform:none}
-.nav-links{display:flex;align-items:center;gap:4px;flex-wrap:wrap}.nav-links>a,nav a{color:#fff;text-decoration:none;padding:9px 10px;border-radius:8px;transition:background .2s ease,transform .2s ease}.nav-links>a:hover,nav a:hover{background:rgba(255,255,255,.1);transform:translateY(-1px)}
-.notification-bell{position:relative}.notif-badge{display:inline-flex;min-width:18px;height:18px;padding:0 5px;align-items:center;justify-content:center;border-radius:99px;background:var(--accent2);color:#fff;font-size:11px;font-weight:800;margin-left:4px}
-.menu-group{position:relative}.menu-group>button{width:auto;margin:0;padding:9px 11px;background:rgba(255,255,255,.08);color:#fff;border:0;border-radius:8px;cursor:pointer;font:inherit}.menu-group>button:hover{background:rgba(255,255,255,.15);transform:none}
-.dropdown{display:none;position:absolute;right:0;top:calc(100% + 7px);min-width:245px;max-height:75vh;overflow:auto;background:var(--surface);border-radius:12px;padding:7px;box-shadow:0 15px 40px rgba(0,0,0,.22);border:1px solid var(--border)}.dropdown.open{display:block}.dropdown a{display:block;color:var(--text)!important;padding:10px 11px;white-space:nowrap}.dropdown a:hover{background:var(--surface2);transform:none}
-.container{width:min(1320px,calc(100% - 28px));margin:24px auto 60px}.card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:20px;margin-bottom:16px;box-shadow:var(--shadow)}.card:hover{transform:translateY(-1px);transition:.2s ease}.hero{background:linear-gradient(135deg,#071a33 0%,#0d4778 65%,#1268a8 100%);color:#fff;padding:34px 24px;border-radius:20px;margin-bottom:20px;position:relative;overflow:hidden}.hero:after{content:"";position:absolute;right:-70px;top:-90px;width:250px;height:250px;border:42px solid rgba(255,255,255,.06);border-radius:50%}.hero>*{position:relative;z-index:1}
-h1,h2,h3{margin-top:0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px}.stat{padding:20px;background:var(--surface);border:1px solid var(--border);border-radius:15px;box-shadow:var(--shadow)}.big{font-size:30px;font-weight:900}.small{color:var(--muted);font-size:13px}.badge{display:inline-block;padding:4px 8px;border-radius:20px;background:var(--surface2);font-size:12px}
-input,select,textarea,button{width:100%;padding:11px 12px;margin-top:6px;margin-bottom:12px;border-radius:9px;border:1px solid var(--border);background:var(--surface);color:var(--text);font:inherit}textarea{min-height:150px;line-height:1.55}textarea[name="prompt"]{min-height:190px;padding:16px;border-radius:16px;font-size:1rem}
-button,.btn{display:inline-block;background:var(--accent);color:#fff;border:0;text-decoration:none;cursor:pointer;padding:10px 15px;border-radius:9px;transition:transform .2s ease,box-shadow .2s ease,filter .2s ease}button:hover,.btn:hover{transform:translateY(-2px);box-shadow:0 7px 18px rgba(0,0,0,.12);filter:brightness(1.04)}.btn.secondary{background:#58677a}.btn.success{background:#177245}.btn.danger{background:#b42318}.btn.warning{background:#9b6b00}.actions{display:flex;gap:9px;flex-wrap:wrap}.actions .btn,.actions button{width:auto}
-.koja-section{margin:26px 0}.koja-section-head{display:flex;align-items:end;justify-content:space-between;gap:12px;margin-bottom:12px}.koja-section-head h2,.koja-section-head h3{margin-bottom:0}.service-card{display:block;color:var(--text);text-decoration:none;background:var(--surface);border:1px solid var(--border);border-radius:15px;padding:18px;box-shadow:var(--shadow)}.service-card:hover{border-color:var(--accent);transform:translateY(-2px)}.service-kicker{font-size:11px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}.service-card h3{margin:7px 0 5px}.service-card p{margin:0;color:var(--muted);font-size:14px}
-.quick-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.quick{padding:15px;border-radius:13px;background:var(--surface2);border:1px solid var(--border);text-decoration:none;color:var(--text)}.quick strong{display:block}.quick span{font-size:12px;color:var(--muted)}
-table{width:100%;border-collapse:collapse}th,td{border-bottom:1px solid var(--border);padding:9px;text-align:left;vertical-align:top}.alert{padding:12px;border-radius:9px;margin-bottom:10px;background:#eaf2ff;color:#18324d}#map{height:430px;border-radius:12px;overflow:hidden}.map-small{height:300px!important}.driver-card{border:2px solid var(--border)}.driver-card.selected{border-color:var(--accent)}.online{color:#177245;font-weight:700}.offline{color:#b42318;font-weight:700}footer{text-align:center;color:var(--muted);padding:34px 20px;border-top:1px solid var(--border);background:var(--surface)}
-@media(max-width:900px){.quick-grid{grid-template-columns:repeat(2,1fr)}}
-@media(max-width:760px){nav{padding:9px 12px}.nav-inner{position:relative;flex-wrap:wrap}.menu-toggle{display:block}.nav-links{display:none;width:100%;flex-direction:column;align-items:stretch;gap:3px;padding-top:9px}.nav-links.open{display:flex}.nav-links>a{font-size:14px;padding:12px;background:rgba(255,255,255,.05)}.menu-group{width:100%}.menu-group>button{width:100%;text-align:left;padding:12px}.dropdown{position:static;width:100%;box-shadow:none;margin-top:4px}.dropdown a{font-size:14px}.container{width:min(100% - 14px,1320px)}table{display:block;overflow-x:auto}#map{height:350px}.actions .btn,.actions button{width:100%}.quick-grid{grid-template-columns:1fr 1fr}.hero{padding:28px 18px;border-radius:16px}}
+:root{color-scheme:light;--bg:#f5f7fb;--surface:#fff;--text:#172033;--muted:#667085;--border:#e4e7ec;--nav:#10233f;--accent:#176b87;--focus:#f2b84b}
+html[data-koja-theme="dark"]{color-scheme:dark;--bg:#0f1720;--surface:#17212b;--text:#edf2f7;--muted:#aab7c4;--border:#30404f;--nav:#091522;--accent:#2aa7b8;--focus:#f2c15b}
+@media(prefers-color-scheme:dark){html[data-koja-theme="system"]{color-scheme:dark;--bg:#0f1720;--surface:#17212b;--text:#edf2f7;--muted:#aab7c4;--border:#30404f;--nav:#091522;--accent:#2aa7b8;--focus:#f2c15b}}
+body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);line-height:1.55}
+
+nav{background:#10233f;color:#fff;padding:10px 15px;position:sticky;top:0;z-index:1000;box-shadow:0 4px 18px rgba(0,0,0,.12)}
+.nav-inner{max-width:1250px;margin:auto;display:flex;align-items:center;gap:7px}
+.brand{font-weight:800;font-size:19px;margin-right:auto;display:flex;align-items:center;gap:8px;letter-spacing:.2px}.brand-mark{width:32px;height:32px;border-radius:9px;display:inline-grid;place-items:center;background:linear-gradient(135deg,#19a7b8,#f2b84b);box-shadow:0 5px 18px rgba(0,0,0,.22);animation:logoFloat 4s ease-in-out infinite}.brand-mark svg{width:22px;height:22px}.brand-name{white-space:nowrap}
+.menu-toggle{display:none;width:auto;margin:0;padding:8px 12px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);color:#fff;border-radius:9px;font-weight:700;cursor:pointer}
+.menu-toggle:hover{background:rgba(255,255,255,.18);transform:none}
+.nav-links{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+nav a{color:#fff;text-decoration:none;padding:8px 9px;border-radius:7px;transition:background .2s ease,transform .2s ease}
+nav a:hover{background:rgba(255,255,255,.12);transform:translateY(-1px)}
+.notification-bell{position:relative}.notif-badge{display:inline-flex;min-width:18px;height:18px;padding:0 5px;align-items:center;justify-content:center;border-radius:99px;background:#e11d48;color:#fff;font-size:11px;font-weight:800;margin-left:4px}.notification-row{display:flex;gap:12px;padding:15px;border-bottom:1px solid var(--border);cursor:pointer}.notification-row.unread{background:rgba(23,107,135,.07)}.notification-dot{width:9px;height:9px;border-radius:50%;background:var(--accent);margin-top:7px;flex:none}.notification-row:not(.unread) .notification-dot{background:transparent}#np label{display:block;padding:12px 0;border-bottom:1px solid var(--border)}
+.menu-group{position:relative}.menu-group>button{width:auto;margin:0;padding:8px 10px;background:rgba(255,255,255,.08);color:#fff;border:0;border-radius:7px;cursor:pointer;font:inherit}.menu-group>button:hover{background:rgba(255,255,255,.15);transform:none}
+.dropdown{display:none;position:absolute;right:0;top:calc(100% + 7px);min-width:210px;background:var(--surface);border-radius:11px;padding:7px;box-shadow:0 12px 35px rgba(0,0,0,.2);border:1px solid #e5e7eb}
+.dropdown.open{display:block;animation:menuDrop .18s ease both}.dropdown a{display:block;color:var(--text)!important;padding:10px 11px;white-space:nowrap}.dropdown a:hover{background:#eef5f8;transform:none}
+@keyframes menuDrop{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:translateY(0)}}
+.container{width:min(1250px,calc(100% - 24px));margin:20px auto 50px}
+.card{background:var(--surface);border-radius:13px;padding:18px;margin-bottom:16px;box-shadow:0 3px 14px rgba(0,0,0,.06);animation:fadeUp .45s ease both}.card:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.09);transition:transform .2s ease,box-shadow .2s ease}
+.hero{background:linear-gradient(135deg,#10233f,#176b87);color:#fff;padding:28px 20px;border-radius:15px;margin-bottom:18px}
+h1,h2,h3{margin-top:0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:15px}
+input,select,textarea,button{width:100%;padding:11px 12px;margin-top:6px;margin-bottom:12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font:inherit}
+textarea{min-height:150px;line-height:1.55;resize:vertical} textarea[name="prompt"]{min-height:190px;padding:16px;border-radius:16px;font-size:1rem} textarea[name="q"]{min-height:90px;resize:vertical}
+button,.btn{display:inline-block;background:#176b87;color:#fff;border:0;text-decoration:none;cursor:pointer;padding:10px 14px;border-radius:8px;transition:transform .2s ease,box-shadow .2s ease,filter .2s ease}button:hover,.btn:hover{transform:translateY(-2px);box-shadow:0 7px 18px rgba(0,0,0,.12);filter:brightness(1.04)}button:active,.btn:active{transform:translateY(0)}
+.btn.secondary{background:#5f6b7a}.btn.success{background:#177245}.btn.danger{background:#a62d2d}.btn.warning{background:#9b6b00}
+table{width:100%;border-collapse:collapse}
+th,td{border-bottom:1px solid var(--border);padding:9px;text-align:left;vertical-align:top}
+.alert{padding:12px;border-radius:8px;margin-bottom:10px;background:#eaf2ff}
+.stat{padding:18px;background:var(--surface);border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,.05)}
+.big{font-size:28px;font-weight:800}
+.small{color:var(--muted);font-size:13px}.badge{display:inline-block;padding:4px 8px;border-radius:20px;background:#e7eef5;font-size:12px}
+#map{height:430px;border-radius:12px;overflow:hidden}
+.map-small{height:300px!important}
+.driver-card{border:2px solid #e4e7ec}
+.driver-card.selected{border-color:#176b87}
+.online{color:#177245;font-weight:700}
+.offline{color:#a62d2d;font-weight:700}
+footer{text-align:center;color:var(--muted);padding:30px}
+.actions{display:flex;gap:8px;flex-wrap:wrap}.actions .btn,.actions button{width:auto}
+@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}@keyframes logoFloat{0%,100%{transform:translateY(0) rotate(0deg)}50%{transform:translateY(-2px) rotate(1deg)}}@keyframes pulseSoft{0%,100%{box-shadow:0 0 0 0 rgba(25,167,184,.18)}50%{box-shadow:0 0 0 7px rgba(25,167,184,0)}}:focus-visible{outline:3px solid var(--focus);outline-offset:2px}.hero{animation:fadeUp .55s ease both}.stat{animation:fadeUp .5s ease both}.online{animation:pulseSoft 2.4s ease-in-out infinite}@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition:none!important;transform:none!important}}
+@media(max-width:760px){nav{padding:9px 12px}.nav-inner{position:relative;flex-wrap:wrap}.menu-toggle{display:block}.nav-links{display:none;width:100%;flex-direction:column;align-items:stretch;gap:3px;padding-top:8px}.nav-links.open{display:flex;animation:fadeUp .2s ease both}.nav-links>a{font-size:14px;padding:11px 12px;background:rgba(255,255,255,.05)}.menu-group{width:100%}.menu-group>button{width:100%;text-align:left;padding:11px 12px}.dropdown{position:static;width:100%;box-shadow:none;margin-top:4px;background:var(--surface)}.dropdown a{font-size:14px}.container{width:min(100% - 14px,1250px)}table{display:block;overflow-x:auto}#map{height:350px}.actions .btn,.actions button{width:100%}}
 @media(min-width:761px){.nav-links{display:flex!important}}
 </style>
 </head>
@@ -849,20 +869,44 @@ table{width:100%;border-collapse:collapse}th,td{border-bottom:1px solid var(--bo
 <nav aria-label="Primary navigation">
 <div class="nav-inner">
 <div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 18V6h7.2a5.3 5.3 0 0 1 0 10.6H8.5" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 9.1h3.4a1.9 1.9 0 0 1 0 3.8H8.5" stroke="white" stroke-width="2.2" stroke-linecap="round"/></svg></span><span class="brand-name">KOJA AFRICA</span></div>
-<button class="menu-toggle" id="menuToggle" type="button" aria-expanded="false" aria-controls="navLinks">Menu</button>
+<button class="menu-toggle" id="menuToggle" type="button" aria-expanded="false" aria-controls="navLinks" aria-label="Open menu"> Menu</button>
 <div class="nav-links" id="navLinks">
 <a href="{{ url_for('home') }}">Home</a>
 {% if user %}
 <a href="{{ url_for('dashboard') }}">Dashboard</a>
-<a href="{{ url_for('ai_nextgen') }}">KOJA AI</a>
 <a href="{{ url_for('services') }}">Services</a>
 <a href="{{ url_for('research') }}">Research</a>
-<a class="notification-bell" href="{{ url_for('notifications_page') }}">Notifications <span id="kojaNotifBadge" class="notif-badge" hidden></span></a>
-<div class="menu-group"><button type="button" id="moreMenuButton" aria-expanded="false">Explore ▾</button><div class="dropdown" id="moreMenu" role="menu">
-<a href="{{ url_for('questions') }}">Questions</a><a href="{{ url_for('assignments') }}">Assignments</a><a href="{{ url_for('documents') }}">Documents</a><a href="{{ url_for('public_feed') }}">Public</a><a href="{{ url_for('news_nextgen') }}">News</a><a href="{{ url_for('media_nextgen') }}">Media</a><a href="{{ url_for('marketplace') }}">Digital Marketplace</a><a href="{{ url_for('koja_market') }}">KOJA Market</a><a href="{{ url_for('deliveries') }}">Delivery</a><a href="{{ url_for('tracking') }}">Live GPS</a><a href="{{ url_for('connect') }}">Communication</a><a href="{{ url_for('professional_communication') }}">Professional Communication</a><a href="{{ url_for('koja_cloud_page') }}">KOJA Cloud</a><a href="{{ url_for('settings') }}">Settings</a>{% if user.role in ['driver','admin'] or user.is_admin %}<a href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}{% if user.is_admin %}<a href="{{ url_for('admin') }}">Admin</a>{% endif %}<a href="{{ url_for('logout') }}">Logout</a>
+<a href="{{ url_for('ai_nextgen') }}">KOJA AI</a>
+<a class="notification-bell" href="{{ url_for('notifications_page') }}" aria-label="Notifications">Notifications <span id="kojaNotifBadge" class="notif-badge" hidden></span></a>
+<a href="{{ '/market' }}">KOJA Market</a> <a href="{{ url_for('market_live') }}">Live Shop</a>
+<a href="{{ url_for('communication_nextgen') }}">Connect+</a>
+<div class="menu-group">
+<button type="button" id="moreMenuButton" aria-expanded="false" aria-haspopup="true">More ▾</button>
+<div class="dropdown" id="moreMenu" role="menu">
+<a role="menuitem" href="{{ url_for('questions') }}">Questions</a>
+<a role="menuitem" href="{{ url_for('assignments') }}">Assignments</a>
+<a role="menuitem" href="{{ url_for('public_feed') }}">Public</a>
+<a role="menuitem" href="{{ url_for('news_nextgen') }}">News</a>
+<a role="menuitem" href="{{ url_for('media_nextgen') }}">Media</a>
+<a role="menuitem" href="{{ url_for('public_videos') }}">Videos</a>
+<a role="menuitem" href="{{ url_for('marketplace') }}">Digital Marketplace</a>
+<a role="menuitem" href="{{ url_for('connect') }}">Communication</a>
+<a role="menuitem" href="{{ url_for('professional_communication') }}">Professional Communication</a>
+<a role="menuitem" href="{{ url_for('deliveries') }}">Deliveries</a>
+<a role="menuitem" href="{{ url_for('drivers') }}">Drivers</a>
+<a role="menuitem" href="{{ url_for('koja_cloud_page') }}">KOJA Cloud</a>
+<a role="menuitem" href="{{ url_for('settings') }}">Settings</a>
+{% if user.role in ['driver','admin'] or user.is_admin %}<a role="menuitem" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}
+{% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('admin') }}">Admin</a><a role="menuitem" href="{{ url_for('admin_market') }}">KOJA Market Admin</a><a role="menuitem" href="{{ url_for('admin_marketplace') }}">Digital Marketplace Admin</a>{% endif %}
+<a role="menuitem" href="{{ url_for('logout') }}">Logout</a>
 </div></div>
-{% else %}<a href="{{ url_for('login') }}">Login</a><a href="{{ url_for('register') }}">Create Account</a>{% endif %}
-</div></div></nav>
+{% else %}
+<a href="{{ url_for('login') }}">Login</a>
+<a href="{{ url_for('register') }}">Register</a>
+{% endif %}
+</div>
+</div>
+</nav>
 <script>
 (function(){
  const toggle=document.getElementById('menuToggle'), links=document.getElementById('navLinks'), more=document.getElementById('moreMenuButton'), drop=document.getElementById('moreMenu');
@@ -995,19 +1039,31 @@ async function activateEngine(engine,button){const box=document.getElementById('
 @app.route("/")
 def home():
     return render_page("KOJA AFRICA", r"""
-<div class="hero"><div class="service-kicker" style="color:#8ed4ff">KNOWLEDGE • QUESTIONS • ANSWERS</div><h1>KOJA AFRICA</h1><p>One connected platform for Africa to learn, work, research, communicate, trade and grow.</p><div class="actions">{% if not user %}<a class="btn" href="{{ url_for('register') }}">Create Account</a><a class="btn secondary" href="{{ url_for('login') }}">Login</a>{% else %}<a class="btn" href="{{ url_for('dashboard') }}">Open Dashboard</a><a class="btn secondary" href="{{ url_for('ai_nextgen') }}">Open KOJA AI</a>{% endif %}</div></div>
-<div class="koja-section"><div class="koja-section-head"><h2>Explore KOJA</h2><span class="small">Connected services</span></div><div class="grid">
-<a class="service-card" href="{{ url_for('ai_nextgen') }}"><div class="service-kicker">Intelligence</div><h3>KOJA AI</h3><p>Ask questions, analyse information, create and plan.</p></a>
-<a class="service-card" href="{{ url_for('research') }}"><div class="service-kicker">Knowledge</div><h3>Research</h3><p>Web, academic and KOJA document research with citations.</p></a>
-<a class="service-card" href="{{ url_for('questions') }}"><div class="service-kicker">Education</div><h3>Questions & Assignments</h3><p>Academic questions, assignments and learning resources.</p></a>
-<a class="service-card" href="{{ url_for('documents') }}"><div class="service-kicker">Documents</div><h3>Documents</h3><p>Access KOJA learning and research documents.</p></a>
-<a class="service-card" href="{{ url_for('koja_market') }}"><div class="service-kicker">Commerce</div><h3>KOJA Market</h3><p>Buy and sell physical and digital products and services.</p></a>
-<a class="service-card" href="{{ url_for('marketplace') }}"><div class="service-kicker">Digital Commerce</div><h3>Digital Marketplace</h3><p>Discover digital learning and business resources.</p></a>
-<a class="service-card" href="{{ url_for('doctors') }}"><div class="service-kicker">Professional</div><h3>Doctors</h3><p>Find doctors and request appointments.</p></a>
-<a class="service-card" href="{{ url_for('teachers') }}"><div class="service-kicker">Professional</div><h3>Teachers</h3><p>Find teachers and tutors by subject and grade.</p></a>
-<a class="service-card" href="{{ url_for('deliveries') }}"><div class="service-kicker">Logistics</div><h3>Delivery & Live GPS</h3><p>Find drivers and follow delivery movement.</p></a>
-</div></div>
+<div class="hero">
+<h1>KOJA AFRICA</h1>
+<p>Knowledge • Questions • Answers</p>
+<p>Research, academic questions, assignments, professional services, documents and delivery services.</p>
+{% if not user %}
+<div class="actions">
+<a class="btn" href="{{ url_for('register') }}">Create Account</a>
+<a class="btn secondary" href="{{ url_for('login') }}">Login</a>
+</div>
+{% endif %}
+</div>
+<div class="grid">
+<div class="card"><h3>Academic</h3><p>Questions, assignments and learning resources.</p><a class="btn" href="{{ url_for('questions') }}">Questions</a></div>
+<div class="card"><h3>CV</h3><p>Create a professional CV.</p><a class="btn" href="{{ url_for('cv') }}">Create CV</a></div>
+<div class="card"><h3>Doctors</h3><p>Find a doctor and request an appointment.</p><a class="btn" href="{{ url_for('doctors') }}">Doctors</a></div>
+<div class="card"><h3>Teachers</h3><p>Find teachers/tutors by subject and grade.</p><a class="btn" href="{{ url_for('teachers') }}">Teachers</a></div>
+<div class="card"><h3>Deliveries</h3><p>Find nearby drivers and send delivery requests.</p><a class="btn" href="{{ url_for('deliveries') }}">Delivery</a></div>
+<div class="card"><h3>Live GPS</h3><p>Drivers can share their live location.</p><a class="btn" href="{{ url_for('tracking') }}">Driver GPS</a></div>
+<div class="card"><h3> KOJA AI</h3><p>Ask KOJA AI for explanations, planning and practical help.</p><a class="btn" href="{{ url_for('ai_assistant') }}">Open KOJA AI</a></div>
+<div class="card"><h3> Documents</h3><p>Browse and upload KOJA learning and research documents.</p><a class="btn" href="{{ url_for('documents') }}">Open Documents</a></div>
+<div class="card"><h3>KOJA Market</h3><p>Buy and sell physical and digital products and services across Africa.</p><div class="actions"><a class="btn" href="{{ url_for('koja_market') }}">Open KOJA Market</a><a class="btn secondary" href="{{ url_for('market_seller_register') }}">Become a Seller</a></div></div>
+<div class="card"><h3>Digital Marketplace</h3><p>Discover digital learning and business resources.</p><a class="btn" href="{{ url_for('marketplace') }}">Open Digital Marketplace</a></div>
+</div>
 """)
+
 @app.route("/service-worker.js")
 def service_worker():
     # Keep the browser service-worker request valid without changing KOJA page behavior.
@@ -1184,20 +1240,21 @@ def dashboard():
     deliveries_count = len(db_select("deliveries",filters={"customer_id":user["id"]},limit=1000))
     appointments_count = len(db_select("appointments",filters={"client_id":user["id"]},limit=1000))
     return render_page("Dashboard", r"""
-<div class="ng-shell">
-  <section class="ng-hero"><div class="ng-eyebrow">KOJA AFRICA · PERSONAL COMMAND CENTER</div><h1>Welcome, {{ user.name }}</h1><p>One connected platform for knowledge, business, research, commerce, communication and professional services.</p><div class="actions"><a class="btn" href="{{ url_for('ai_nextgen') }}">Open KOJA AI</a><a class="btn secondary" href="{{ url_for('services') }}">Explore Services</a></div></section>
-  <div class="ng-grid">
-    <a class="ng-card" href="{{ url_for('ai_nextgen') }}"><div class="ng-icon">AI</div><h3>KOJA AI</h3><p>Ask, analyse, create and work with authorised KOJA context.</p></a>
-    <a class="ng-card" href="{{ url_for('koja_business') }}"><div class="ng-icon">B</div><h3>KOJA Business</h3><p>Run organisations, teams, commerce, finance and operations.</p></a>
-    <a class="ng-card" href="{{ url_for('research') }}"><div class="ng-icon">R</div><h3>Research</h3><p>Research sources, evidence and knowledge workflows.</p></a>
-    <a class="ng-card" href="{{ url_for('koja_market') }}"><div class="ng-icon">M</div><h3>KOJA Market</h3><p>Buy, sell and connect commerce with delivery.</p></a>
-  </div>
-  <div class="ng-row">
-    <section class="ng-card"><div class="ng-kicker">Your activity</div><h2>At a glance</h2><div class="ng-grid"><div class="ng-card"><div class="ng-stat"><strong>{{ questions_count }}</strong><span>Questions</span></div></div><div class="ng-card"><div class="ng-stat"><strong>{{ deliveries_count }}</strong><span>Deliveries</span></div></div><div class="ng-card"><div class="ng-stat"><strong>{{ appointments_count }}</strong><span>Appointments</span></div></div><div class="ng-card"><div class="ng-stat"><strong>{{ "ADMIN" if user.is_admin else user.role|upper }}</strong><span>Account</span></div></div></div></section>
-    <aside class="ng-card"><div class="ng-kicker">Quick access</div><h3>Continue</h3><div class="ng-list"><a class="ng-link" href="{{ url_for('questions') }}"><span>Questions<small>Academic help</small></span><b>→</b></a><a class="ng-link" href="{{ url_for('documents') }}"><span>Documents<small>Files and AI</small></span><b>→</b></a><a class="ng-link" href="{{ url_for('connect') }}"><span>Connect+<small>Communication</small></span><b>→</b></a></div></aside>
-  </div>
-  {% if user.role in ['driver','admin'] or user.is_admin %}<div class="ng-card"><div class="ng-kicker">Operations</div><h3>Driver tools</h3><a class="btn" href="{{ url_for('driver_dashboard') }}">Open Driver Dashboard</a></div>{% endif %}
+<div class="hero"><h2>Welcome, {{ user.name }}</h2><p>{{ user.email }}</p></div>
+<div class="grid">
+<div class="stat"><div class="big">{{ questions_count }}</div>Academic Questions</div>
+<div class="stat"><div class="big">{{ deliveries_count }}</div>Deliveries</div>
+<div class="stat"><div class="big">{{ appointments_count }}</div>Appointments</div>
+<div class="stat"><div class="big">{{ "ADMIN" if user.is_admin else user.role|upper }}</div>Account</div>
 </div>
+<div class="card"><h3>KOJA Services</h3>
+<div class="grid">
+<a class="btn" href="{{ url_for('cv') }}">Create CV</a>
+<a class="btn" href="{{ url_for('doctors') }}">Doctor Booking</a>
+<a class="btn" href="{{ url_for('teachers') }}">Teacher Booking</a>
+<a class="btn" href="{{ url_for('deliveries') }}">Find Driver / Delivery</a>
+{% if user.role in ['driver','admin'] or user.is_admin %}<a class="btn" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}
+</div></div>
 """,questions_count=questions_count,deliveries_count=deliveries_count,appointments_count=appointments_count)
 
 # ============================================================
@@ -2041,6 +2098,8 @@ def research_ai_notes(query, results, style='apa'):
         if evidence: lines += [f"## {i}. {r.get('title','Untitled')} [{i}]",evidence,""]
     lines += ["## Conclusion","The available evidence is source-dependent and should be checked against the original publications before formal submission."]
     return '\n'.join(lines)
+
+
 @app.route('/research/notes')
 def research_notes():
     q=_research_normalize_query(request.args.get('q','')); style=clean(request.args.get('style','apa')).lower() or 'apa'
@@ -2334,7 +2393,7 @@ def documents():
             visible.append(row)
     return render_page("Documents", r"""
 <div class="hero"><h2>KOJA Documents</h2><p>Upload, find and use research and learning documents with built-in document intelligence.</p></div>
-<div class="card"><h3>Upload Document</h3><form method="post" enctype="multipart/form-data"><label>Title</label><input name="title" maxlength="220" required><label>Description</label><textarea name="description" maxlength="4000" placeholder="What is this document about?"></textarea><label>Category</label><select name="category"><option>Research</option><option>Academic</option><option>Notes</option><option>Reports</option><option>Books</option><option>Other</option></select><label>File</label><input name="file" type="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp" required><button class="btn" type="submit">Upload for Approval</button></form></div>
+<div class="card"><div class="actions">{% if current_user and current_user.get("is_admin") %}<a class="btn secondary" href="{{ url_for('admin_documents') }}">Admin Document Center</a>{% endif %}</div><h3>Upload Document</h3><form method="post" enctype="multipart/form-data"><label>Title</label><input name="title" maxlength="220" required><label>Description</label><textarea name="description" maxlength="4000" placeholder="What is this document about?"></textarea><label>Category</label><select name="category"><option>Research</option><option>Academic</option><option>Notes</option><option>Reports</option><option>Books</option><option>Other</option></select><label>File</label><input name="file" type="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp" required><button class="btn" type="submit">Upload for Approval</button></form></div>
 <div class="grid">{% for d in documents %}<div class="card"><h3>{{ d.get('title') or d.get('name') or d.get('filename') or 'KOJA Document' }}</h3><p>{{ d.get('description') or d.get('content') or '' }}</p><p class="small">Category: {{ d.get('category') or 'Research' }} · Status: {{ d.get('approval_status') or d.get('status') or '—' }}</p>{% set did=d.get('id') %}{% if did %}<div class="actions"><a class="btn secondary" href="{{ url_for('document_download', document_id=did) }}">Open / Download</a><button class="btn" type="button" onclick="openDocumentAI('{{ did }}')">Ask KOJA AI</button></div><div id="docai-{{ did }}" style="display:none;margin-top:14px"><label>Ask about this document</label><textarea id="docq-{{ did }}" rows="3" placeholder="Ask a question, or choose an action below."></textarea><div class="actions"><button class="btn" type="button" onclick="runDocumentAI('{{ did }}','ask')">Ask</button><button class="btn secondary" type="button" onclick="runDocumentAI('{{ did }}','summarize')">Summarize</button><button class="btn secondary" type="button" onclick="runDocumentAI('{{ did }}','key_points')">Key Points</button><button class="btn secondary" type="button" onclick="runDocumentAI('{{ did }}','study_questions')">Study Questions</button><button class="btn secondary" type="button" onclick="runDocumentAI('{{ did }}','explain')">Explain</button><button class="btn secondary" type="button" onclick="runDocumentAI('{{ did }}','research')">Research Analysis</button></div><div id="docai-result-{{ did }}" class="card" style="display:none;margin-top:12px;white-space:pre-wrap"></div></div>{% endif %}</div>{% else %}<div class="card"><h3>No documents yet</h3><p>Upload the first KOJA research or learning document.</p></div>{% endfor %}</div>
 <script>
 function openDocumentAI(id){document.getElementById('docai-'+id).style.display='block';document.getElementById('docq-'+id).focus();}
@@ -2376,19 +2435,14 @@ def document_download(document_id):
 @login_required
 def services():
     return render_page("Services", r"""
-<div class="ng-shell">
-<section class="ng-hero"><div class="ng-eyebrow">KOJA AFRICA · SERVICE PLATFORM</div><h1>Everything connected.</h1><p>KOJA brings learning, intelligence, business, commerce, finance, logistics, communication and professional services into one platform. Existing services remain available through their current routes.</p></section>
-<div class="ng-card"><div class="ng-kicker">KOJA Business</div><h2>One operating layer for organisations</h2><p>Enterprise, workforce, procurement, supply, CRM, finance, payments, marketplace, delivery and AI can be organised around a business workspace.</p><div class="ng-business-nav"><a href="{{ url_for('koja_business') }}">Business Home</a><a href="{{ url_for('ai_assistant') }}">KOJA AI</a><a href="{{ url_for('enterprise') }}">Enterprise</a><a href="{{ url_for('workforce') }}">Workforce</a><a href="{{ url_for('sales') }}">Sales & CRM</a><a href="{{ url_for('finance_v2_dashboard') }}">Finance</a><a href="{{ url_for('koja_market') }}">Market</a></div></div>
-<div class="ng-grid">
-<a class="ng-card" href="{{ url_for('questions') }}"><div class="ng-icon">L</div><div class="ng-kicker">Learning</div><h3>Questions & Assignments</h3><p>Academic questions, assignments, documents and research.</p></a>
-<a class="ng-card" href="{{ url_for('documents') }}"><div class="ng-icon">D</div><div class="ng-kicker">Intelligence</div><h3>Documents & AI</h3><p>Document workflows and AI-assisted knowledge work.</p></a>
-<a class="ng-card" href="{{ url_for('research') }}"><div class="ng-icon">R</div><div class="ng-kicker">Knowledge</div><h3>Research</h3><p>Research sources, evidence and analysis.</p></a>
-<a class="ng-card" href="{{ url_for('professionals') }}"><div class="ng-icon">P</div><div class="ng-kicker">Professional</div><h3>Professional Services</h3><p>Discover doctors, teachers, tutors and professionals.</p></a>
-<a class="ng-card" href="{{ url_for('koja_market') }}"><div class="ng-icon">C</div><div class="ng-kicker">Commerce</div><h3>KOJA Market</h3><p>Commerce, sellers, products and transactions.</p></a>
-<a class="ng-card" href="{{ url_for('deliveries') }}"><div class="ng-icon">G</div><div class="ng-kicker">Logistics</div><h3>Delivery & GPS</h3><p>Drivers, tracking and delivery workflows.</p></a>
-<a class="ng-card" href="{{ url_for('connect') }}"><div class="ng-icon">+</div><div class="ng-kicker">Communication</div><h3>Connect+</h3><p>Messaging, voice, video, groups and presence.</p></a>
-<a class="ng-card" href="{{ url_for('platform_v12_v20') }}"><div class="ng-icon">E</div><div class="ng-kicker">Platform</div><h3>KOJA Engines</h3><p>Discover, Pay, Intelligence, Identity, Workspace and Ecosystem engines.</p></a>
-</div>
+<div class="hero"><h2>KOJA Services</h2><p>Related capabilities are grouped into unified modules. Existing routes remain available behind each module.</p></div>
+<div class="grid">
+<div class="card"><h3>Learning and Research</h3><p>One connected workspace for academic questions, assignments, documents, research and document-based AI.</p><div class="actions"><a class="btn" href="{{ url_for('questions') }}">Questions</a><a class="btn" href="{{ url_for('assignments') }}">Assignments</a><a class="btn" href="{{ url_for('documents') }}">Documents and AI</a><a class="btn secondary" href="{{ url_for('research') }}">Research</a></div></div>
+<div class="card"><h3>AI and Workspace</h3><p>General AI, document intelligence, connected knowledge and productivity tools use the same KOJA AI foundation.</p><div class="actions"><a class="btn" href="{{ url_for('ai_assistant') }}">KOJA AI</a><a class="btn secondary" href="{{ url_for('documents') }}">Document AI</a><a class="btn secondary" href="{{ url_for('cv') }}">CV and Documents</a></div></div>
+<div class="card"><h3>Professional Services</h3><p>Doctors, teachers, tutors and other professionals are grouped under one discovery and identity workflow.</p><div class="actions"><a class="btn" href="{{ url_for('professionals') }}">Professionals</a><a class="btn secondary" href="{{ url_for('doctors') }}">Doctors</a><a class="btn secondary" href="{{ url_for('teachers') }}">Teachers and Tutors</a><a class="btn secondary" href="{{ url_for('professional_register') }}">Register Profession</a></div></div>
+<div class="card"><h3>Market and Business</h3><p>Buying, selling, business operations, payments, accounting and seller tools share the same commerce foundation.</p><div class="actions"><a class="btn" href="{{ url_for('market') }}">KOJA Market</a><a class="btn secondary" href="{{ url_for('marketplace') }}">Digital Marketplace</a></div></div>
+<div class="card"><h3>Delivery and Logistics</h3><p>Orders, drivers, live GPS, delivery requests, tracking and delivery security operate as one logistics workflow.</p><div class="actions"><a class="btn" href="{{ url_for('deliveries') }}">Delivery</a><a class="btn secondary" href="{{ url_for('tracking') }}">Live GPS</a></div></div>
+<div class="card"><h3>Communication</h3><p>Messaging, voice, video, groups, presence and status remain one connected communication service.</p><a class="btn" href="{{ url_for('connect') }}">Open Communication</a></div>
 </div>
 """)
 
@@ -2410,7 +2464,7 @@ def questions():
         payload = {
             "id":str(uuid.uuid4()),"user_id":user["id"],
             "question":question_text,"subject":subject or None,
-            "status":"submitted","created_at":utc_now()
+            "status":"pending","created_at":utc_now()
         }
         row,error = db_insert("questions",payload)
         if error:
@@ -2484,7 +2538,7 @@ def assignments():
             "sender_id":user["id"],
             "tracking_code":make_assignment_tracking_code(),
             "title":title,"description":description,
-            "status":"submitted","created_at":utc_now()
+            "status":"pending","created_at":utc_now()
         }
         if uploaded:
             payload.update({
@@ -2518,6 +2572,22 @@ def assignments():
         rows=db_select("assignments",filters={"owner_id":user["id"]},order="created_at.desc",limit=100)
         if not rows:
             rows=db_select("assignments",filters={"user_id":user["id"]},order="created_at.desc",limit=100)
+    # Normalize legacy status names for the new assignment workflow.
+    for _item in rows:
+        _st = str(_item.get("status") or "pending").lower()
+        if _st == "submitted":
+            _item["status_display"] = "Pending"
+        elif _st == "completed":
+            _item["status_display"] = "Complete"
+        elif _st == "answered":
+            _item["status_display"] = "Answered"
+        elif _st == "under_review":
+            _item["status_display"] = "Under Review"
+        else:
+            _item["status_display"] = _st.replace("_", " ").title()
+    pending_count = sum(1 for x in rows if str(x.get("status") or "pending").lower() in ("pending", "submitted", "under_review"))
+    answered_count = sum(1 for x in rows if str(x.get("status") or "").lower() in ("answered", "answer_approved", "answer_sent"))
+    complete_count = sum(1 for x in rows if str(x.get("status") or "").lower() in ("complete", "completed"))
     return render_page("Assignments",r"""
 <div class="card"><h2>Upload Assignment</h2>
 <p class="small">Each assignment is linked to your account as its specific sender and owner. Other users cannot see your assignment documents.</p>
@@ -2528,10 +2598,16 @@ def assignments():
 <button type="submit">Upload Assignment</button>
 </form></div>
 <div class="card"><h2>{% if current_user and current_user.get("is_admin") %}All Assignments{% else %}My Assignments{% endif %}</h2>
+<div class="actions" style="margin-bottom:16px">
+<span class="badge">Pending: {{ pending_count }}</span>
+<span class="badge">Answered: {{ answered_count }}</span>
+<span class="badge">Complete: {{ complete_count }}</span>
+</div>
 {% for item in rows %}
 <div class="card"><h3>{{ item.get("title") or "Assignment" }}</h3>
 <p>{{ item.get("description") or "" }}</p>
 <p class="small"><strong>Sender/Owner:</strong> {{ item.get("sender_id") or item.get("owner_id") or item.get("user_id") or item.get("student_id") }}{% if item.get("tracking_code") %} · <strong>Tracking:</strong> {{ item.get("tracking_code") }}{% endif %}</p>
+<p><strong>Status:</strong> <span class="badge">{{ item.get("status_display") }}</span></p>
 <a class="btn secondary" href="{{ url_for('assignment_question_download',assignment_id=item.get('id')) }}">⬇️ Download Question</a>
 <a class="btn secondary" href="{{ url_for('assignment_question_view',assignment_id=item.get('id')) }}"> Read Question</a>
 {% if item.get("file_path") %}<a class="btn" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='original') }}">⬇️ Download Assignment File</a>{% endif %}
@@ -5617,6 +5693,78 @@ def admin_users():
 </table></div>
 """,rows=rows)
 
+@app.route("/admin/documents", methods=["GET", "POST"])
+@admin_required
+def admin_documents():
+    """Administrator document center: write, upload, approve and download documents."""
+    admin = current_user() or {}
+    if request.method == "POST":
+        title = clean(request.form.get("title"))
+        description = clean(request.form.get("description"))
+        category = clean(request.form.get("category")) or "Academic"
+        file = request.files.get("file")
+        if not title:
+            flash("Document title is required.", "danger")
+            return redirect(url_for("admin_documents"))
+        uploaded = None
+        if file and file.filename:
+            uploaded, error = upload_storage(file, "documents", public=False)
+            if error:
+                flash("Document upload failed: " + str(error)[:500], "danger")
+                return redirect(url_for("admin_documents"))
+        payload = {
+            "id": str(uuid.uuid4()), "title": title, "description": description,
+            "category": category, "user_id": admin.get("id"),
+            "approval_status": "approved", "is_public": True, "is_active": True,
+            "created_at": utc_now(), "updated_at": utc_now()
+        }
+        if uploaded:
+            payload.update({"file_name": uploaded["file_name"], "file_path": uploaded["path"],
+                            "file_url": uploaded["path"]})
+        row, error = db_insert("documents", payload)
+        if error:
+            if uploaded:
+                delete_storage_path(uploaded.get("path"))
+            flash("Document could not be saved. Check the documents table schema.", "danger")
+        else:
+            flash("Administrator document published successfully.", "success")
+            log_activity("admin_document_published", f"Admin published document: {title}")
+        return redirect(url_for("admin_documents"))
+
+    rows = db_select("documents", order="created_at.desc", limit=300)
+    return render_page("Admin Documents", r"""
+<div class="hero"><h2>KOJA Admin Documents</h2><p>Write documents, upload files, publish learning and research material, and download existing documents.</p></div>
+<div class="card">
+<h3>Create / Write Document</h3>
+<form method="post" enctype="multipart/form-data">
+<label>Title</label><input name="title" maxlength="220" required>
+<label>Document content / description</label><textarea name="description" maxlength="40000" rows="12" placeholder="Write the document content here. You can also attach a file."></textarea>
+<label>Category</label><select name="category"><option>Academic</option><option>Research</option><option>Notes</option><option>Reports</option><option>Books</option><option>Announcements</option><option>Other</option></select>
+<label>Upload document file (optional)</label><input name="file" type="file" accept=".pdf,.doc,.docx,.txt,.ppt,.pptx,.xls,.xlsx,.jpg,.jpeg,.png,.webp">
+<button class="btn" type="submit">Publish Document</button>
+</form></div>
+<div class="card"><h3>Document Library</h3>
+{% for d in rows %}<div class="card"><h3>{{ d.get('title') or 'Document' }}</h3><p>{{ d.get('description') or '' }}</p><p class="small">{{ d.get('category') or 'Other' }} · {{ d.get('approval_status') or d.get('status') or '—' }}</p>
+<div class="actions">
+{% if d.get('file_path') %}<a class="btn secondary" href="{{ url_for('document_download', document_id=d.get('id')) }}">Download File</a>{% endif %}
+<a class="btn secondary" href="{{ url_for('admin_document_text_download', document_id=d.get('id')) }}">Download Written Document</a>
+</div></div>{% else %}<p>No documents found.</p>{% endfor %}
+</div>
+""", rows=rows)
+
+@app.route("/admin/documents/<document_id>/text/download")
+@admin_required
+def admin_document_text_download(document_id):
+    doc = first_row("documents", {"id": document_id})
+    if not doc:
+        return "Document not found.", 404
+    title = doc.get("title") or "KOJA Document"
+    category = doc.get("category") or "Other"
+    content = doc.get("description") or ""
+    text = f"KOJA AFRICA — {title}\n\nCategory: {category}\n\n{content}\n"
+    filename = re.sub(r"[^A-Za-z0-9._-]+", "-", str(title)).strip("-") or "koja-document"
+    return send_file(io.BytesIO(text.encode("utf-8")), download_name=f"{filename}.txt", mimetype="text/plain", as_attachment=True)
+
 @app.route("/admin/assignments", methods=["GET"])
 @admin_required
 def admin_assignments():
@@ -5698,7 +5846,7 @@ def admin_assignment_answer(assignment_id):
 <div class="hero"><h2>️ Answer Assignment</h2><p>{{ item.get("title") or "Assignment" }} · {{ item.get("tracking_code") or "No tracking code" }}</p></div>
 <div class="card"><p><strong>Specific user:</strong> {{ recipient_name }}</p><p><strong>Email:</strong> {{ recipient_email or "No email found" }}</p><p><strong>Current status:</strong> <span class="badge">{{ item.get("status") or "submitted" }}</span></p><p class="small">The answer belongs only to this assignment owner.</p></div>
 <div class="card"><h3> Read Uploaded Assignment Question</h3><p><strong>{{ item.get("title") or "Assignment" }}</strong></p><div style="white-space:pre-wrap;line-height:1.7">{{ item.get("description") or "No written question was provided." }}</div><div class="actions" style="margin-top:14px"><a class="btn secondary" href="{{ url_for('assignment_question_download',assignment_id=item.get('id')) }}">⬇️ Download Question</a>{% if item.get("file_path") %}<a class="btn" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='original') }}">⬇️ Download Uploaded Assignment</a>{% endif %}</div></div>
-<div class="card"><h3> Update Assignment Status</h3><form method="post" action="{{ url_for('admin_assignment_status', assignment_id=item.get('id')) }}"><select name="status" required><option value="submitted" {% if item.get('status')=='submitted' %}selected{% endif %}>Submitted</option><option value="under_review" {% if item.get('status')=='under_review' %}selected{% endif %}>Under Review</option><option value="answered" {% if item.get('status')=='answered' %}selected{% endif %}>Answered</option><option value="answer_approved" {% if item.get('status')=='answer_approved' %}selected{% endif %}>Answer Approved</option><option value="answer_sent" {% if item.get('status')=='answer_sent' %}selected{% endif %}>Answer Sent</option><option value="completed" {% if item.get('status')=='completed' %}selected{% endif %}>Completed</option><option value="rejected" {% if item.get('status')=='rejected' %}selected{% endif %}>Rejected</option></select><button class="btn success" type="submit">Update Status</button></form></div>
+<div class="card"><h3> Update Assignment Status</h3><form method="post" action="{{ url_for('admin_assignment_status', assignment_id=item.get('id')) }}"><select name="status" required><option value="pending" {% if item.get('status') in ('pending','submitted') %}selected{% endif %}>Pending</option><option value="under_review" {% if item.get('status')=='under_review' %}selected{% endif %}>Under Review</option><option value="answered" {% if item.get('status')=='answered' %}selected{% endif %}>Answered</option><option value="answer_approved" {% if item.get('status')=='answer_approved' %}selected{% endif %}>Answer Approved</option><option value="answer_sent" {% if item.get('status')=='answer_sent' %}selected{% endif %}>Answer Sent</option><option value="complete" {% if item.get('status') in ('complete','completed') %}selected{% endif %}>Complete</option><option value="rejected" {% if item.get('status')=='rejected' %}selected{% endif %}>Rejected</option></select><button class="btn success" type="submit">Update Status</button></form></div>
 <div class="card"><form method="post" enctype="multipart/form-data">
 <label>Written Answer / User Message</label><textarea name="answer" placeholder="Write the answer or explanation for the user...">{{ item.get("answer") or "" }}</textarea>
 <label>Answer PDF</label><input type="file" name="answer_pdf" accept="application/pdf">
@@ -5723,8 +5871,10 @@ def admin_assignment_status(assignment_id):
     item = first_row("assignments", {"id": assignment_id})
     if not item:
         return "Assignment not found.", 404
-    allowed_statuses = {"submitted", "under_review", "answered", "answer_approved", "answer_sent", "completed", "rejected"}
+    allowed_statuses = {"pending", "under_review", "answered", "answer_approved", "answer_sent", "complete", "rejected", "submitted", "completed"}
     status = clean(request.form.get("status")).lower()
+    if status == "submitted": status = "pending"
+    if status == "completed": status = "complete"
     if status not in allowed_statuses:
         flash("Invalid assignment status.", "danger")
         return redirect(url_for("admin_assignment_answer", assignment_id=assignment_id))
@@ -7615,103 +7765,6 @@ def market_earnings():
     uid=(current_user() or {}).get('id'); rows=db_select('koja_market_ledger',{'seller_id':uid},order='created_at.desc',limit=300) or []
     gross=sum(float(x.get('gross_amount') or 0) for x in rows); fees=sum(float(x.get('platform_fee') or 0) for x in rows); commission=sum(float(x.get('commission_amount') or 0) for x in rows); net=sum(float(x.get('net_amount') or 0) for x in rows)
     return render_page('Seller Earnings',r'''<div class="hero"><h1>Seller Earnings</h1><p>Transparent transaction ledger for your KOJA Market sales.</p></div><div class="grid"><div class="card"><h3>Gross</h3><h2>{{ money(gross,'ZMW') }}</h2></div><div class="card"><h3>KOJA fees</h3><h2>{{ money(fees+commission,'ZMW') }}</h2></div><div class="card"><h3>Net</h3><h2>{{ money(net,'ZMW') }}</h2></div></div><div class="card"><table><tr><th>Date</th><th>Order</th><th>Gross</th><th>Fees</th><th>Net</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{ x.created_at }}</td><td>{{ x.order_id }}</td><td>{{ money(x.gross_amount,'ZMW') }}</td><td>{{ money((x.platform_fee or 0)+(x.commission_amount or 0),'ZMW') }}</td><td>{{ money(x.net_amount,'ZMW') }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="6">No earnings yet.</td></tr>{% endfor %}</table></div>''',rows=rows,gross=gross,fees=fees,commission=commission,net=net,money=market_money)
-
-# ---------------- KOJA BUSINESS ORGANISATION CORE ----------------
-def _business_core(uid=None, business_id=None):
-    uid=uid or (current_user() or {}).get('id')
-    if not uid: return None, None
-    if business_id:
-        b=first_row('koja_businesses', {'id':business_id})
-        if not b: return None, None
-        member=first_row('koja_business_memberships', {'business_id':business_id,'user_id':uid,'status':'active'})
-        if not member and str(b.get('owner_id')) != str(uid): return None, None
-        return b, member or {'role':'owner','user_id':uid}
-    rows=db_select('koja_businesses', {'owner_id':uid}, order='created_at.desc', limit=1) or []
-    if not rows: return None, None
-    b=rows[0]; member=first_row('koja_business_memberships', {'business_id':b.get('id'),'user_id':uid,'status':'active'})
-    return b, member or {'role':'owner','user_id':uid}
-
-def _business_core_ensure(business_id, uid):
-    b,member=_business_core(uid,business_id)
-    if not b: return None
-    core=first_row('koja_business_organizations', {'business_id':business_id})
-    if not core:
-        core,_=db_insert('koja_business_organizations', {'business_id':business_id,'owner_id':uid,'status':'active','created_at':utc_now(),'updated_at':utc_now()})
-    try:
-        if not first_row('koja_business_memberships', {'business_id':business_id,'user_id':uid}):
-            db_insert('koja_business_memberships', {'business_id':business_id,'user_id':uid,'role':'owner','status':'active','invited_by':uid,'created_at':utc_now(),'updated_at':utc_now()})
-    except Exception: pass
-    return core
-
-def _business_core_event(business_id, uid, event_type, entity_type='', entity_id=None, payload=None):
-    try: db_insert('koja_business_core_events', {'business_id':business_id,'actor_id':uid,'event_type':event_type,'entity_type':entity_type,'entity_id':entity_id,'payload':payload or {},'created_at':utc_now()})
-    except Exception: pass
-
-@app.route('/business/core')
-@login_required
-def business_core_home():
-    uid=(current_user() or {}).get('id'); b,_=_business_core(uid)
-    if not b: return redirect(url_for('business_new'))
-    return redirect(url_for('business_core_dashboard',business_id=b.get('id')))
-
-@app.route('/business/<business_id>/core')
-@login_required
-def business_core_dashboard(business_id):
-    uid=(current_user() or {}).get('id'); b,member=_business_core(uid,business_id)
-    if not b: abort(404)
-    _business_core_ensure(business_id,uid)
-    members=db_select('koja_business_memberships',{'business_id':business_id,'status':'active'},limit=500) or []
-    departments=db_select('koja_business_departments',{'business_id':business_id},order='name.asc',limit=200) or []
-    workspaces=db_select('koja_business_workspaces',{'business_id':business_id},order='created_at.desc',limit=100) or []
-    events=db_select('koja_business_core_events',{'business_id':business_id},order='created_at.desc',limit=20) or []
-    return render_page('Business Organisation Core',r'''<div class="hero"><h1>{{ b.name }} — Organisation Core</h1><p>One business identity connecting people, departments, workspaces and KOJA services.</p><div class="actions"><a class="btn" href="{{ url_for('business_core_members',business_id=b.id) }}">Members & Roles</a><a class="btn secondary" href="{{ url_for('business_core_departments',business_id=b.id) }}">Departments</a><a class="btn secondary" href="{{ url_for('business_core_workspace',business_id=b.id) }}">Business Workspace</a><a class="btn secondary" href="{{ url_for('business_dashboard',business_id=b.id) }}">Business Operations</a></div></div><div class="grid"><div class="card"><h3>Organisation</h3><h2>Active</h2><p>Business identity and ownership layer.</p></div><div class="card"><h3>Members</h3><h2>{{ members|length }}</h2><p>Users connected to this organisation.</p></div><div class="card"><h3>Departments</h3><h2>{{ departments|length }}</h2><p>Organisation structure.</p></div><div class="card"><h3>Workspaces</h3><h2>{{ workspaces|length }}</h2><p>Shared work environments.</p></div></div><div class="card"><h2>Connected KOJA platform</h2><p>Enterprise · Identity & Trust · Workforce · Workspace · CRM & Sales · Procurement · Supply Chain · Finance · Payments · Marketplace · Delivery · KOJA AI</p></div><div class="card"><h2>Recent organisation activity</h2>{% for e in events %}<p><strong>{{ e.event_type }}</strong> · {{ e.created_at }}</p>{% else %}<p>No organisation activity recorded yet.</p>{% endfor %}</div>''',b=b,members=members,departments=departments,workspaces=workspaces,events=events)
-
-@app.route('/business/<business_id>/core/members',methods=['GET','POST'])
-@login_required
-def business_core_members(business_id):
-    uid=(current_user() or {}).get('id'); b,member=_business_core(uid,business_id)
-    if not b: abort(404)
-    if request.method=='POST':
-        email=clean(request.form.get('email')).lower(); role=clean(request.form.get('role')) or 'employee'
-        if email:
-            existing=first_row('profiles',{'email':email}); user_id=(existing or {}).get('id')
-            if user_id:
-                row,err=db_insert('koja_business_memberships',{'business_id':business_id,'user_id':user_id,'role':role,'status':'active','invited_by':uid,'created_at':utc_now(),'updated_at':utc_now()})
-                if not err: _business_core_event(business_id,uid,'member_added','membership',row.get('id') if row else None,{'role':role})
-                flash('Member added.' if not err else 'Member could not be added.','success' if not err else 'danger')
-            else: flash('No KOJA account was found for that email.','warning')
-        return redirect(url_for('business_core_members',business_id=business_id))
-    members=db_select('koja_business_memberships',{'business_id':business_id,'status':'active'},order='created_at.asc',limit=500) or []
-    return render_page('Business Members',r'''<div class="hero"><h1>{{ b.name }} — Members & Roles</h1><p>Organisation-scoped access control.</p></div><div class="card"><form method="post"><label>KOJA account email</label><input type="email" name="email" required><label>Role</label><select name="role"><option value="employee">Employee</option><option value="manager">Manager</option><option value="finance">Finance</option><option value="procurement">Procurement</option><option value="hr">HR</option><option value="admin">Administrator</option></select><button class="btn">Add Member</button></form></div><div class="card"><h2>Active Members</h2>{% for m in members %}<p><strong>{{ m.user_id }}</strong> — {{ m.role }}</p>{% else %}<p>No members added yet.</p>{% endfor %}</div>''',b=b,members=members)
-
-@app.route('/business/<business_id>/core/departments',methods=['GET','POST'])
-@login_required
-def business_core_departments(business_id):
-    uid=(current_user() or {}).get('id'); b,member=_business_core(uid,business_id)
-    if not b: abort(404)
-    if request.method=='POST':
-        name=clean(request.form.get('name')); description=clean(request.form.get('description'))
-        if name:
-            row,err=db_insert('koja_business_departments',{'business_id':business_id,'name':name,'description':description,'created_by':uid,'created_at':utc_now(),'updated_at':utc_now()})
-            if not err: _business_core_event(business_id,uid,'department_created','department',row.get('id') if row else None,{'name':name})
-            flash('Department created.' if not err else 'Department could not be created.','success' if not err else 'danger')
-        return redirect(url_for('business_core_departments',business_id=business_id))
-    departments=db_select('koja_business_departments',{'business_id':business_id},order='name.asc',limit=200) or []
-    return render_page('Business Departments',r'''<div class="hero"><h1>{{ b.name }} — Departments</h1><p>Organise teams and operating units.</p></div><div class="card"><form method="post"><label>Department name</label><input name="name" required><label>Description</label><textarea name="description"></textarea><button class="btn">Create Department</button></form></div><div class="grid">{% for d in departments %}<div class="card"><h3>{{ d.name }}</h3><p>{{ d.description or 'No description' }}</p></div>{% else %}<div class="card"><p>No departments yet.</p></div>{% endfor %}</div>''',b=b,departments=departments)
-
-@app.route('/business/<business_id>/core/workspace',methods=['GET','POST'])
-@login_required
-def business_core_workspace(business_id):
-    uid=(current_user() or {}).get('id'); b,member=_business_core(uid,business_id)
-    if not b: abort(404)
-    if request.method=='POST':
-        name=clean(request.form.get('name')) or 'Main Workspace'
-        row,err=db_insert('koja_business_workspaces',{'business_id':business_id,'name':name,'owner_id':uid,'status':'active','created_at':utc_now(),'updated_at':utc_now()})
-        if not err: _business_core_event(business_id,uid,'workspace_created','workspace',row.get('id') if row else None,{'name':name})
-        flash('Workspace created.' if not err else 'Workspace could not be created.','success' if not err else 'danger')
-        return redirect(url_for('business_core_workspace',business_id=business_id))
-    workspaces=db_select('koja_business_workspaces',{'business_id':business_id},order='created_at.desc',limit=100) or []
-    return render_page('Business Workspace',r'''<div class="hero"><h1>{{ b.name }} — Business Workspace</h1><p>Shared operating space for authorised organisation members.</p></div><div class="card"><form method="post"><label>Workspace name</label><input name="name" placeholder="Main Workspace"><button class="btn">Create Workspace</button></form></div><div class="grid">{% for w in workspaces %}<div class="card"><h3>{{ w.name }}</h3><p>Status: {{ w.status }}</p></div>{% else %}<div class="card"><p>No workspace yet.</p></div>{% endfor %}</div>''',b=b,workspaces=workspaces)
 
 # ---------------- KOJA BUSINESS SaaS ----------------
 @app.route('/business')

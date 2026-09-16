@@ -1,15 +1,22 @@
-KOJA AFRICA — NEXT-GENERATION BUSINESS UI
+KOJA AFRICA — Assignments & Documents V2
 
-Presentation-layer upgrade based on the deployed KOJA AFRICA UI-fixed source.
+Adds/strengthens:
+- Student assignment file upload.
+- Student download of submitted assignment files.
+- Student download of admin answers.
+- Admin assignment management with written answers and PDF answer upload.
+- Admin Document Center for writing documents, uploading document files, publishing them, and downloading them.
+- Admin written-document TXT download.
+- Additive SQL migration for assignment/document file and answer fields.
 
-Changes:
-- Next-generation responsive personal dashboard.
-- KOJA Business promoted as the organisation operating layer.
-- Services reorganised into connected platform categories.
-- Business navigation surfaced without removing existing routes.
-- No SQL changes.
-- No intentional Communications/backend/service changes.
+Preservation:
+- Existing Flask routes and services preserved.
+- Communications is not intentionally modified.
+- No tables are dropped or recreated.
+- Existing Supabase storage configuration is reused.
 
-The upgrade is UI/presentation only. Existing routes and backend logic are preserved.
-
-Deploy app.py using the existing command: gunicorn app:app
+Deployment:
+1. Run KOJA_ASSIGNMENTS_DOCUMENTS_V2.sql in Supabase SQL Editor.
+2. Replace app.py in the existing KOJA-AFRICA Render service.
+3. Keep existing environment variables unchanged.
+4. Test /health, /assignments, /documents, /admin/assignments and /admin/documents.
