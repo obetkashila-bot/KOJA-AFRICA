@@ -9614,6 +9614,43 @@ def market_live_share(room_id):
     if not room: return jsonify({'ok':False,'message':'LIVE not found.'}),404
     return jsonify({'ok':True,'url':url_for('market_live_room',room_id=room_id,_external=True),'title':room.get('title') or 'KOJA LIVE Shopping'})
 
+@app.route('/market/live/<room_id>/buy', methods=['POST'])
+@login_required
+def market_live_buy(room_id):
+    """LIVE Shop Buy: add the pinned product to the buyer cart and go straight to checkout."""
+    room = _live_room(room_id)
+    if not room:
+        abort(404)
+    uid = str((current_user() or {}).get('id') or '')
+    product_id = room.get('pinned_product_id')
+    product = market_product(product_id) if product_id else None
+    if not product or not as_bool(product.get('is_published')) or str(product.get('approval_status') or '').lower() not in {'approved','active'}:
+        flash('The LIVE product is no longer available.', 'warning')
+        return redirect(url_for('market_live_room', room_id=room_id))
+    if str(product.get('seller_id')) == uid:
+        flash('You cannot buy your own product.', 'warning')
+        return redirect(url_for('market_live_room', room_id=room_id))
+    if str(product.get('product_type') or 'physical').lower() == 'physical' and int(product.get('stock') or 0) < 1:
+        flash('This product is currently out of stock.', 'warning')
+        return redirect(url_for('market_live_room', room_id=room_id))
+
+    existing = first_row('koja_market_cart', {'user_id': uid, 'product_id': product_id})
+    if existing:
+        current_qty = max(0, int(existing.get('quantity') or 0))
+        if str(product.get('product_type') or 'physical').lower() == 'physical':
+            new_qty = min(current_qty + 1, max(1, int(product.get('stock') or 1)))
+        else:
+            new_qty = 1
+        _, err = db_update('koja_market_cart', {'id': existing.get('id')}, {'quantity': new_qty, 'updated_at': utc_now()})
+    else:
+        _, err = db_insert('koja_market_cart', {'user_id': uid, 'product_id': product_id, 'quantity': 1, 'created_at': utc_now(), 'updated_at': utc_now()})
+    if err:
+        logger.error('LIVE Buy could not add product to cart: %s', err)
+        flash('The product could not be added to your cart. Please try again.', 'danger')
+        return redirect(url_for('market_live_room', room_id=room_id))
+    return redirect(url_for('market_cart_checkout'))
+
+
 @app.route('/market/live/<room_id>')
 @login_required
 def market_live_room(room_id):
@@ -9649,7 +9686,7 @@ html,body{margin:0;padding:0}.live-page-shell{width:100%;max-width:none;margin:0
   <div id="liveVideo" class="live-video"><div class="live-placeholder"><h2>KOJA LIVE</h2><p id="liveMessage" class="live-note">Connecting to the live video service…</p></div></div>
   {% if product %}<div class="live-watermark"><a href="{{ url_for('market_product_view', product_id=product.id) }}"><div class="wm-title">{{ product.title }}</div><div class="wm-price">{{ money(product.price, product.currency) }} · Shop</div></a></div>{% endif %}
   <div class="live-shop-actions" id="liveShopActions">
-    {% if product %}<a class="live-shop-btn live-buy" href="{{ url_for('market_product_view', product_id=product.id) }}" id="liveBuyBtn">Buy</a>{% endif %}
+    {% if product %}<form method="post" action="{{ url_for('market_live_buy', room_id=room.id) }}" style="margin:0"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="live-shop-btn live-buy" type="submit" id="liveBuyBtn">Buy</button></form>{% endif %}
     <button class="live-shop-btn live-like" type="button" id="liveLikeBtn" aria-pressed="false"><span class="live-like-heart">♡</span><span>Like</span><span id="liveLikeCount">0</span></button>
     <button class="live-shop-btn" type="button" id="liveCommentBtn"><span>Comment</span><span id="liveCommentCount">0</span></button>
     <button class="live-shop-btn" type="button" id="liveShareBtn">Share</button>
