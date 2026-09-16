@@ -1,11 +1,15 @@
-KOJA AFRICA FINAL PRODUCTION UI — SERVICES ROUTE FIX
+KOJA AFRICA — NEXT-GENERATION BUSINESS UI
 
-Fixes the live Services 500 error caused by url_for('market').
-The actual Flask endpoint for /market is 'koja_market', so the Services page now uses url_for('koja_market').
+Presentation-layer upgrade based on the deployed KOJA AFRICA UI-fixed source.
 
-No database or SQL changes.
-No Communications changes.
-No service logic changes.
+Changes:
+- Next-generation responsive personal dashboard.
+- KOJA Business promoted as the organisation operating layer.
+- Services reorganised into connected platform categories.
+- Business navigation surfaced without removing existing routes.
+- No SQL changes.
+- No intentional Communications/backend/service changes.
 
-Deploy app.py with the existing Render command:
-gunicorn app:app
+The upgrade is UI/presentation only. Existing routes and backend logic are preserved.
+
+Deploy app.py using the existing command: gunicorn app:app

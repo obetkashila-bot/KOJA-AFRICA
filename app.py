@@ -1184,23 +1184,20 @@ def dashboard():
     deliveries_count = len(db_select("deliveries",filters={"customer_id":user["id"]},limit=1000))
     appointments_count = len(db_select("appointments",filters={"client_id":user["id"]},limit=1000))
     return render_page("Dashboard", r"""
-<div class="hero"><div class="service-kicker" style="color:#8ed4ff">KOJA AFRICA</div><h1>Welcome, {{ user.name }}</h1><p>{{ user.email }}</p><p>One platform for knowledge, business, research, commerce and services.</p></div>
-<div class="quick-grid">
-<a class="quick" href="{{ url_for('ai_nextgen') }}"><strong>KOJA AI</strong><span>Ask, analyse and create</span></a>
-<a class="quick" href="{{ url_for('research') }}"><strong>Research</strong><span>Evidence and citations</span></a>
-<a class="quick" href="{{ url_for('koja_market') }}"><strong>KOJA Market</strong><span>Buy and sell</span></a>
-<a class="quick" href="{{ url_for('deliveries') }}"><strong>Delivery</strong><span>Track and move</span></a>
+<div class="ng-shell">
+  <section class="ng-hero"><div class="ng-eyebrow">KOJA AFRICA · PERSONAL COMMAND CENTER</div><h1>Welcome, {{ user.name }}</h1><p>One connected platform for knowledge, business, research, commerce, communication and professional services.</p><div class="actions"><a class="btn" href="{{ url_for('ai_nextgen') }}">Open KOJA AI</a><a class="btn secondary" href="{{ url_for('services') }}">Explore Services</a></div></section>
+  <div class="ng-grid">
+    <a class="ng-card" href="{{ url_for('ai_nextgen') }}"><div class="ng-icon">AI</div><h3>KOJA AI</h3><p>Ask, analyse, create and work with authorised KOJA context.</p></a>
+    <a class="ng-card" href="{{ url_for('koja_business') }}"><div class="ng-icon">B</div><h3>KOJA Business</h3><p>Run organisations, teams, commerce, finance and operations.</p></a>
+    <a class="ng-card" href="{{ url_for('research') }}"><div class="ng-icon">R</div><h3>Research</h3><p>Research sources, evidence and knowledge workflows.</p></a>
+    <a class="ng-card" href="{{ url_for('koja_market') }}"><div class="ng-icon">M</div><h3>KOJA Market</h3><p>Buy, sell and connect commerce with delivery.</p></a>
+  </div>
+  <div class="ng-row">
+    <section class="ng-card"><div class="ng-kicker">Your activity</div><h2>At a glance</h2><div class="ng-grid"><div class="ng-card"><div class="ng-stat"><strong>{{ questions_count }}</strong><span>Questions</span></div></div><div class="ng-card"><div class="ng-stat"><strong>{{ deliveries_count }}</strong><span>Deliveries</span></div></div><div class="ng-card"><div class="ng-stat"><strong>{{ appointments_count }}</strong><span>Appointments</span></div></div><div class="ng-card"><div class="ng-stat"><strong>{{ "ADMIN" if user.is_admin else user.role|upper }}</strong><span>Account</span></div></div></div></section>
+    <aside class="ng-card"><div class="ng-kicker">Quick access</div><h3>Continue</h3><div class="ng-list"><a class="ng-link" href="{{ url_for('questions') }}"><span>Questions<small>Academic help</small></span><b>→</b></a><a class="ng-link" href="{{ url_for('documents') }}"><span>Documents<small>Files and AI</small></span><b>→</b></a><a class="ng-link" href="{{ url_for('connect') }}"><span>Connect+<small>Communication</small></span><b>→</b></a></div></aside>
+  </div>
+  {% if user.role in ['driver','admin'] or user.is_admin %}<div class="ng-card"><div class="ng-kicker">Operations</div><h3>Driver tools</h3><a class="btn" href="{{ url_for('driver_dashboard') }}">Open Driver Dashboard</a></div>{% endif %}
 </div>
-<div class="koja-section"><div class="koja-section-head"><h2>Your activity</h2><span class="small">KOJA overview</span></div><div class="grid"><div class="stat"><div class="big">{{ questions_count }}</div><div class="small">Academic Questions</div></div><div class="stat"><div class="big">{{ deliveries_count }}</div><div class="small">Deliveries</div></div><div class="stat"><div class="big">{{ appointments_count }}</div><div class="small">Appointments</div></div><div class="stat"><div class="big">{{ "ADMIN" if user.is_admin else user.role|upper }}</div><div class="small">Account</div></div></div></div>
-<div class="koja-section"><div class="koja-section-head"><h2>KOJA Services</h2><a href="{{ url_for('services') }}">View all</a></div><div class="grid">
-<a class="service-card" href="{{ url_for('questions') }}"><div class="service-kicker">Learning</div><h3>Questions & Assignments</h3><p>Academic questions, assignments and learning support.</p></a>
-<a class="service-card" href="{{ url_for('documents') }}"><div class="service-kicker">Intelligence</div><h3>Documents & AI</h3><p>Work with documents and use KOJA intelligence.</p></a>
-<a class="service-card" href="{{ url_for('cv') }}"><div class="service-kicker">Professional</div><h3>Professional Services</h3><p>CVs, doctors, teachers and professional support.</p></a>
-<a class="service-card" href="{{ url_for('koja_market') }}"><div class="service-kicker">Commerce</div><h3>KOJA Market</h3><p>Physical and digital commerce across Africa.</p></a>
-<a class="service-card" href="{{ url_for('deliveries') }}"><div class="service-kicker">Logistics</div><h3>Delivery & Live GPS</h3><p>Drivers, delivery requests and live tracking.</p></a>
-<a class="service-card" href="{{ url_for('connect') }}"><div class="service-kicker">Communication</div><h3>Connect+</h3><p>Communication and professional collaboration.</p></a>
-</div></div>
-{% if user.role in ['driver','admin'] or user.is_admin %}<div class="card"><h3>Driver tools</h3><a class="btn" href="{{ url_for('driver_dashboard') }}">Open Driver Dashboard</a></div>{% endif %}
 """,questions_count=questions_count,deliveries_count=deliveries_count,appointments_count=appointments_count)
 
 # ============================================================
@@ -2379,14 +2376,19 @@ def document_download(document_id):
 @login_required
 def services():
     return render_page("Services", r"""
-<div class="hero"><h2>KOJA Services</h2><p>Related capabilities are grouped into unified modules. Existing routes remain available behind each module.</p></div>
-<div class="grid">
-<div class="card"><h3>Learning and Research</h3><p>One connected workspace for academic questions, assignments, documents, research and document-based AI.</p><div class="actions"><a class="btn" href="{{ url_for('questions') }}">Questions</a><a class="btn" href="{{ url_for('assignments') }}">Assignments</a><a class="btn" href="{{ url_for('documents') }}">Documents and AI</a><a class="btn secondary" href="{{ url_for('research') }}">Research</a></div></div>
-<div class="card"><h3>AI and Workspace</h3><p>General AI, document intelligence, connected knowledge and productivity tools use the same KOJA AI foundation.</p><div class="actions"><a class="btn" href="{{ url_for('ai_assistant') }}">KOJA AI</a><a class="btn secondary" href="{{ url_for('documents') }}">Document AI</a><a class="btn secondary" href="{{ url_for('cv') }}">CV and Documents</a></div></div>
-<div class="card"><h3>Professional Services</h3><p>Doctors, teachers, tutors and other professionals are grouped under one discovery and identity workflow.</p><div class="actions"><a class="btn" href="{{ url_for('professionals') }}">Professionals</a><a class="btn secondary" href="{{ url_for('doctors') }}">Doctors</a><a class="btn secondary" href="{{ url_for('teachers') }}">Teachers and Tutors</a><a class="btn secondary" href="{{ url_for('professional_register') }}">Register Profession</a></div></div>
-<div class="card"><h3>Market and Business</h3><p>Buying, selling, business operations, payments, accounting and seller tools share the same commerce foundation.</p><div class="actions"><a class="btn" href="{{ url_for('koja_market') }}">KOJA Market</a><a class="btn secondary" href="{{ url_for('marketplace') }}">Digital Marketplace</a></div></div>
-<div class="card"><h3>Delivery and Logistics</h3><p>Orders, drivers, live GPS, delivery requests, tracking and delivery security operate as one logistics workflow.</p><div class="actions"><a class="btn" href="{{ url_for('deliveries') }}">Delivery</a><a class="btn secondary" href="{{ url_for('tracking') }}">Live GPS</a></div></div>
-<div class="card"><h3>Communication</h3><p>Messaging, voice, video, groups, presence and status remain one connected communication service.</p><a class="btn" href="{{ url_for('connect') }}">Open Communication</a></div>
+<div class="ng-shell">
+<section class="ng-hero"><div class="ng-eyebrow">KOJA AFRICA · SERVICE PLATFORM</div><h1>Everything connected.</h1><p>KOJA brings learning, intelligence, business, commerce, finance, logistics, communication and professional services into one platform. Existing services remain available through their current routes.</p></section>
+<div class="ng-card"><div class="ng-kicker">KOJA Business</div><h2>One operating layer for organisations</h2><p>Enterprise, workforce, procurement, supply, CRM, finance, payments, marketplace, delivery and AI can be organised around a business workspace.</p><div class="ng-business-nav"><a href="{{ url_for('koja_business') }}">Business Home</a><a href="{{ url_for('ai_assistant') }}">KOJA AI</a><a href="{{ url_for('enterprise') }}">Enterprise</a><a href="{{ url_for('workforce') }}">Workforce</a><a href="{{ url_for('sales') }}">Sales & CRM</a><a href="{{ url_for('finance_v2_dashboard') }}">Finance</a><a href="{{ url_for('koja_market') }}">Market</a></div></div>
+<div class="ng-grid">
+<a class="ng-card" href="{{ url_for('questions') }}"><div class="ng-icon">L</div><div class="ng-kicker">Learning</div><h3>Questions & Assignments</h3><p>Academic questions, assignments, documents and research.</p></a>
+<a class="ng-card" href="{{ url_for('documents') }}"><div class="ng-icon">D</div><div class="ng-kicker">Intelligence</div><h3>Documents & AI</h3><p>Document workflows and AI-assisted knowledge work.</p></a>
+<a class="ng-card" href="{{ url_for('research') }}"><div class="ng-icon">R</div><div class="ng-kicker">Knowledge</div><h3>Research</h3><p>Research sources, evidence and analysis.</p></a>
+<a class="ng-card" href="{{ url_for('professionals') }}"><div class="ng-icon">P</div><div class="ng-kicker">Professional</div><h3>Professional Services</h3><p>Discover doctors, teachers, tutors and professionals.</p></a>
+<a class="ng-card" href="{{ url_for('koja_market') }}"><div class="ng-icon">C</div><div class="ng-kicker">Commerce</div><h3>KOJA Market</h3><p>Commerce, sellers, products and transactions.</p></a>
+<a class="ng-card" href="{{ url_for('deliveries') }}"><div class="ng-icon">G</div><div class="ng-kicker">Logistics</div><h3>Delivery & GPS</h3><p>Drivers, tracking and delivery workflows.</p></a>
+<a class="ng-card" href="{{ url_for('connect') }}"><div class="ng-icon">+</div><div class="ng-kicker">Communication</div><h3>Connect+</h3><p>Messaging, voice, video, groups and presence.</p></a>
+<a class="ng-card" href="{{ url_for('platform_v12_v20') }}"><div class="ng-icon">E</div><div class="ng-kicker">Platform</div><h3>KOJA Engines</h3><p>Discover, Pay, Intelligence, Identity, Workspace and Ecosystem engines.</p></a>
+</div>
 </div>
 """)
 
@@ -7613,6 +7615,103 @@ def market_earnings():
     uid=(current_user() or {}).get('id'); rows=db_select('koja_market_ledger',{'seller_id':uid},order='created_at.desc',limit=300) or []
     gross=sum(float(x.get('gross_amount') or 0) for x in rows); fees=sum(float(x.get('platform_fee') or 0) for x in rows); commission=sum(float(x.get('commission_amount') or 0) for x in rows); net=sum(float(x.get('net_amount') or 0) for x in rows)
     return render_page('Seller Earnings',r'''<div class="hero"><h1>Seller Earnings</h1><p>Transparent transaction ledger for your KOJA Market sales.</p></div><div class="grid"><div class="card"><h3>Gross</h3><h2>{{ money(gross,'ZMW') }}</h2></div><div class="card"><h3>KOJA fees</h3><h2>{{ money(fees+commission,'ZMW') }}</h2></div><div class="card"><h3>Net</h3><h2>{{ money(net,'ZMW') }}</h2></div></div><div class="card"><table><tr><th>Date</th><th>Order</th><th>Gross</th><th>Fees</th><th>Net</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{ x.created_at }}</td><td>{{ x.order_id }}</td><td>{{ money(x.gross_amount,'ZMW') }}</td><td>{{ money((x.platform_fee or 0)+(x.commission_amount or 0),'ZMW') }}</td><td>{{ money(x.net_amount,'ZMW') }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="6">No earnings yet.</td></tr>{% endfor %}</table></div>''',rows=rows,gross=gross,fees=fees,commission=commission,net=net,money=market_money)
+
+# ---------------- KOJA BUSINESS ORGANISATION CORE ----------------
+def _business_core(uid=None, business_id=None):
+    uid=uid or (current_user() or {}).get('id')
+    if not uid: return None, None
+    if business_id:
+        b=first_row('koja_businesses', {'id':business_id})
+        if not b: return None, None
+        member=first_row('koja_business_memberships', {'business_id':business_id,'user_id':uid,'status':'active'})
+        if not member and str(b.get('owner_id')) != str(uid): return None, None
+        return b, member or {'role':'owner','user_id':uid}
+    rows=db_select('koja_businesses', {'owner_id':uid}, order='created_at.desc', limit=1) or []
+    if not rows: return None, None
+    b=rows[0]; member=first_row('koja_business_memberships', {'business_id':b.get('id'),'user_id':uid,'status':'active'})
+    return b, member or {'role':'owner','user_id':uid}
+
+def _business_core_ensure(business_id, uid):
+    b,member=_business_core(uid,business_id)
+    if not b: return None
+    core=first_row('koja_business_organizations', {'business_id':business_id})
+    if not core:
+        core,_=db_insert('koja_business_organizations', {'business_id':business_id,'owner_id':uid,'status':'active','created_at':utc_now(),'updated_at':utc_now()})
+    try:
+        if not first_row('koja_business_memberships', {'business_id':business_id,'user_id':uid}):
+            db_insert('koja_business_memberships', {'business_id':business_id,'user_id':uid,'role':'owner','status':'active','invited_by':uid,'created_at':utc_now(),'updated_at':utc_now()})
+    except Exception: pass
+    return core
+
+def _business_core_event(business_id, uid, event_type, entity_type='', entity_id=None, payload=None):
+    try: db_insert('koja_business_core_events', {'business_id':business_id,'actor_id':uid,'event_type':event_type,'entity_type':entity_type,'entity_id':entity_id,'payload':payload or {},'created_at':utc_now()})
+    except Exception: pass
+
+@app.route('/business/core')
+@login_required
+def business_core_home():
+    uid=(current_user() or {}).get('id'); b,_=_business_core(uid)
+    if not b: return redirect(url_for('business_new'))
+    return redirect(url_for('business_core_dashboard',business_id=b.get('id')))
+
+@app.route('/business/<business_id>/core')
+@login_required
+def business_core_dashboard(business_id):
+    uid=(current_user() or {}).get('id'); b,member=_business_core(uid,business_id)
+    if not b: abort(404)
+    _business_core_ensure(business_id,uid)
+    members=db_select('koja_business_memberships',{'business_id':business_id,'status':'active'},limit=500) or []
+    departments=db_select('koja_business_departments',{'business_id':business_id},order='name.asc',limit=200) or []
+    workspaces=db_select('koja_business_workspaces',{'business_id':business_id},order='created_at.desc',limit=100) or []
+    events=db_select('koja_business_core_events',{'business_id':business_id},order='created_at.desc',limit=20) or []
+    return render_page('Business Organisation Core',r'''<div class="hero"><h1>{{ b.name }} — Organisation Core</h1><p>One business identity connecting people, departments, workspaces and KOJA services.</p><div class="actions"><a class="btn" href="{{ url_for('business_core_members',business_id=b.id) }}">Members & Roles</a><a class="btn secondary" href="{{ url_for('business_core_departments',business_id=b.id) }}">Departments</a><a class="btn secondary" href="{{ url_for('business_core_workspace',business_id=b.id) }}">Business Workspace</a><a class="btn secondary" href="{{ url_for('business_dashboard',business_id=b.id) }}">Business Operations</a></div></div><div class="grid"><div class="card"><h3>Organisation</h3><h2>Active</h2><p>Business identity and ownership layer.</p></div><div class="card"><h3>Members</h3><h2>{{ members|length }}</h2><p>Users connected to this organisation.</p></div><div class="card"><h3>Departments</h3><h2>{{ departments|length }}</h2><p>Organisation structure.</p></div><div class="card"><h3>Workspaces</h3><h2>{{ workspaces|length }}</h2><p>Shared work environments.</p></div></div><div class="card"><h2>Connected KOJA platform</h2><p>Enterprise · Identity & Trust · Workforce · Workspace · CRM & Sales · Procurement · Supply Chain · Finance · Payments · Marketplace · Delivery · KOJA AI</p></div><div class="card"><h2>Recent organisation activity</h2>{% for e in events %}<p><strong>{{ e.event_type }}</strong> · {{ e.created_at }}</p>{% else %}<p>No organisation activity recorded yet.</p>{% endfor %}</div>''',b=b,members=members,departments=departments,workspaces=workspaces,events=events)
+
+@app.route('/business/<business_id>/core/members',methods=['GET','POST'])
+@login_required
+def business_core_members(business_id):
+    uid=(current_user() or {}).get('id'); b,member=_business_core(uid,business_id)
+    if not b: abort(404)
+    if request.method=='POST':
+        email=clean(request.form.get('email')).lower(); role=clean(request.form.get('role')) or 'employee'
+        if email:
+            existing=first_row('profiles',{'email':email}); user_id=(existing or {}).get('id')
+            if user_id:
+                row,err=db_insert('koja_business_memberships',{'business_id':business_id,'user_id':user_id,'role':role,'status':'active','invited_by':uid,'created_at':utc_now(),'updated_at':utc_now()})
+                if not err: _business_core_event(business_id,uid,'member_added','membership',row.get('id') if row else None,{'role':role})
+                flash('Member added.' if not err else 'Member could not be added.','success' if not err else 'danger')
+            else: flash('No KOJA account was found for that email.','warning')
+        return redirect(url_for('business_core_members',business_id=business_id))
+    members=db_select('koja_business_memberships',{'business_id':business_id,'status':'active'},order='created_at.asc',limit=500) or []
+    return render_page('Business Members',r'''<div class="hero"><h1>{{ b.name }} — Members & Roles</h1><p>Organisation-scoped access control.</p></div><div class="card"><form method="post"><label>KOJA account email</label><input type="email" name="email" required><label>Role</label><select name="role"><option value="employee">Employee</option><option value="manager">Manager</option><option value="finance">Finance</option><option value="procurement">Procurement</option><option value="hr">HR</option><option value="admin">Administrator</option></select><button class="btn">Add Member</button></form></div><div class="card"><h2>Active Members</h2>{% for m in members %}<p><strong>{{ m.user_id }}</strong> — {{ m.role }}</p>{% else %}<p>No members added yet.</p>{% endfor %}</div>''',b=b,members=members)
+
+@app.route('/business/<business_id>/core/departments',methods=['GET','POST'])
+@login_required
+def business_core_departments(business_id):
+    uid=(current_user() or {}).get('id'); b,member=_business_core(uid,business_id)
+    if not b: abort(404)
+    if request.method=='POST':
+        name=clean(request.form.get('name')); description=clean(request.form.get('description'))
+        if name:
+            row,err=db_insert('koja_business_departments',{'business_id':business_id,'name':name,'description':description,'created_by':uid,'created_at':utc_now(),'updated_at':utc_now()})
+            if not err: _business_core_event(business_id,uid,'department_created','department',row.get('id') if row else None,{'name':name})
+            flash('Department created.' if not err else 'Department could not be created.','success' if not err else 'danger')
+        return redirect(url_for('business_core_departments',business_id=business_id))
+    departments=db_select('koja_business_departments',{'business_id':business_id},order='name.asc',limit=200) or []
+    return render_page('Business Departments',r'''<div class="hero"><h1>{{ b.name }} — Departments</h1><p>Organise teams and operating units.</p></div><div class="card"><form method="post"><label>Department name</label><input name="name" required><label>Description</label><textarea name="description"></textarea><button class="btn">Create Department</button></form></div><div class="grid">{% for d in departments %}<div class="card"><h3>{{ d.name }}</h3><p>{{ d.description or 'No description' }}</p></div>{% else %}<div class="card"><p>No departments yet.</p></div>{% endfor %}</div>''',b=b,departments=departments)
+
+@app.route('/business/<business_id>/core/workspace',methods=['GET','POST'])
+@login_required
+def business_core_workspace(business_id):
+    uid=(current_user() or {}).get('id'); b,member=_business_core(uid,business_id)
+    if not b: abort(404)
+    if request.method=='POST':
+        name=clean(request.form.get('name')) or 'Main Workspace'
+        row,err=db_insert('koja_business_workspaces',{'business_id':business_id,'name':name,'owner_id':uid,'status':'active','created_at':utc_now(),'updated_at':utc_now()})
+        if not err: _business_core_event(business_id,uid,'workspace_created','workspace',row.get('id') if row else None,{'name':name})
+        flash('Workspace created.' if not err else 'Workspace could not be created.','success' if not err else 'danger')
+        return redirect(url_for('business_core_workspace',business_id=business_id))
+    workspaces=db_select('koja_business_workspaces',{'business_id':business_id},order='created_at.desc',limit=100) or []
+    return render_page('Business Workspace',r'''<div class="hero"><h1>{{ b.name }} — Business Workspace</h1><p>Shared operating space for authorised organisation members.</p></div><div class="card"><form method="post"><label>Workspace name</label><input name="name" placeholder="Main Workspace"><button class="btn">Create Workspace</button></form></div><div class="grid">{% for w in workspaces %}<div class="card"><h3>{{ w.name }}</h3><p>Status: {{ w.status }}</p></div>{% else %}<div class="card"><p>No workspace yet.</p></div>{% endfor %}</div>''',b=b,workspaces=workspaces)
 
 # ---------------- KOJA BUSINESS SaaS ----------------
 @app.route('/business')
