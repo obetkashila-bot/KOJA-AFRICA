@@ -2435,66 +2435,14 @@ def document_download(document_id):
 @login_required
 def services():
     return render_page("Services", r"""
-<style>
-.services-shell{position:relative;padding-left:68px}
-.koja-rail{position:fixed;left:12px;top:50%;transform:translateY(-50%);z-index:80;display:flex;flex-direction:column;gap:8px;padding:8px 6px;border:1px solid rgba(30,64,175,.18);border-radius:22px;background:rgba(255,255,255,.96);box-shadow:0 12px 35px rgba(15,23,42,.14);backdrop-filter:blur(12px)}
-.koja-round{width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;text-decoration:none!important;border:1px solid rgba(15,23,42,.12);background:#fff;color:#0f172a;position:relative;transition:transform .16s ease,box-shadow .16s ease,background .16s ease,color .16s ease}
-.koja-round:hover,.koja-round:focus{transform:scale(1.08);background:#0f2a5f;color:#fff;box-shadow:0 8px 20px rgba(15,42,95,.25);outline:none}
-.koja-round svg{width:19px;height:19px;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
-.koja-round[data-tip]:hover:after,.koja-round[data-tip]:focus:after{content:attr(data-tip);position:absolute;left:52px;top:50%;transform:translateY(-50%);white-space:nowrap;background:#0f172a;color:#fff;padding:7px 10px;border-radius:8px;font-size:12px;box-shadow:0 6px 18px rgba(0,0,0,.18);pointer-events:none}
-.koja-rail .rail-sep{height:1px;background:rgba(15,23,42,.1);margin:2px 5px}
-.services-hero{border-radius:22px;padding:25px;background:linear-gradient(135deg,#081a36 0%,#123f88 70%,#b91c1c 160%);color:#fff;box-shadow:0 18px 45px rgba(8,26,54,.16)}
-.services-hero h1{margin:0 0 7px;font-size:clamp(25px,5vw,38px)}
-.services-hero p{margin:0;max-width:760px;opacity:.88}
-.service-section{margin-top:18px}.service-section h2{font-size:17px;margin:0 0 10px}
-.service-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
-.service-card{background:#fff;border:1px solid rgba(15,23,42,.09);border-radius:16px;padding:16px;box-shadow:0 7px 24px rgba(15,23,42,.06)}
-.service-card h3{margin:0 0 6px;font-size:16px}.service-card p{margin:0 0 12px;color:#64748b;font-size:13px;line-height:1.5}
-.service-open{display:inline-flex;align-items:center;gap:7px;padding:8px 12px;border-radius:999px;text-decoration:none;background:#0f2a5f;color:#fff;font-size:12px}
-.service-open:hover{background:#123f88}
-@media(max-width:760px){.services-shell{padding-left:0;padding-bottom:82px}.koja-rail{position:fixed;left:50%;top:auto;bottom:10px;transform:translateX(-50%);flex-direction:row;max-width:calc(100vw - 18px);overflow-x:auto;border-radius:22px;padding:6px 8px;gap:6px}.koja-round{width:38px;height:38px;flex:0 0 38px}.koja-round[data-tip]:hover:after,.koja-round[data-tip]:focus:after{display:none}.koja-rail .rail-sep{width:1px;height:26px;margin:6px 1px}.service-grid{grid-template-columns:1fr 1fr}.services-hero{padding:20px}}
-@media(max-width:420px){.service-grid{grid-template-columns:1fr}}
-</style>
-<div class="services-shell">
-<div class="koja-rail" aria-label="KOJA service launcher">
-<a class="koja-round" data-tip="Business" aria-label="Business" href="{{ url_for('business') }}"><svg viewBox="0 0 24 24"><path d="M4 20V9h16v11M8 9V5h8v4M2 20h20M9 13h2m2 0h2m-6 3h2m2 0h2"/></svg></a>
-<a class="koja-round" data-tip="Business Connect" aria-label="Business Connect" href="{{ url_for('b2b_v4') }}"><svg viewBox="0 0 24 24"><path d="M9 12a4 4 0 1 1 1.2-2.85M15 12a4 4 0 1 0-1.2-2.85M8 16h8M5 20c.7-2.2 2.3-3.3 4.8-3.3M19 20c-.7-2.2-2.3-3.3-4.8-3.3"/></svg></a>
-<a class="koja-round" data-tip="CRM" aria-label="CRM" href="{{ url_for('business') }}"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20c.5-3.5 2.5-5 6-5s5.5 1.5 6 5M16 6h5M18.5 3.5v5"/></svg></a>
-<a class="koja-round" data-tip="Procurement" aria-label="Procurement" href="{{ url_for('b2b_v4') }}"><svg viewBox="0 0 24 24"><path d="M4 7h16v13H4zM8 7V5h8v2M8 11h8M8 15h5"/></svg></a>
-<a class="koja-round" data-tip="Market" aria-label="KOJA Market" href="{{ url_for('koja_market') }}"><svg viewBox="0 0 24 24"><path d="M4 9h16l-1 11H5L4 9zM7 9a5 5 0 0 1 10 0M9 13h6"/></svg></a>
-<a class="koja-round" data-tip="Professional Services" aria-label="Professional Services" href="{{ url_for('professionals') }}"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3"/><path d="M5 20c.7-4 3-6 7-6s6.3 2 7 6M8 5h8"/></svg></a>
-<a class="koja-round" data-tip="Projects" aria-label="Projects" href="{{ url_for('b2b_v4') }}"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4zM8 9h8M8 13h5"/></svg></a>
-<a class="koja-round" data-tip="Finance" aria-label="Finance" href="{{ url_for('business') }}"><svg viewBox="0 0 24 24"><path d="M4 19V5M4 19h16M8 16v-4M12 16V8M16 16v-6M20 16V4"/></svg></a>
-<a class="koja-round" data-tip="Logistics" aria-label="Logistics" href="{{ url_for('deliveries') }}"><svg viewBox="0 0 24 24"><path d="M3 6h11v10H3zM14 10h4l3 3v3h-7M7 19a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm11 0a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/></svg></a>
-<div class="rail-sep"></div>
-<a class="koja-round" data-tip="KOJA AI" aria-label="KOJA AI" href="{{ url_for('ai_nextgen') }}"><svg viewBox="0 0 24 24"><path d="M12 3l1.5 5.5L19 10l-5.5 1.5L12 17l-1.5-5.5L5 10l5.5-1.5L12 3zM19 16l.7 2.3L22 19l-2.3.7L19 22l-.7-2.3L16 19l2.3-.7L19 16z"/></svg></a>
-<a class="koja-round" data-tip="Connect+" aria-label="Connect+" href="{{ url_for('communication_nextgen') }}"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H8l-4 4V5zM8 9h8M8 12h5"/></svg></a>
-<a class="koja-round" data-tip="Research" aria-label="Research" href="{{ url_for('research') }}"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg></a>
-<a class="koja-round" data-tip="Settings" aria-label="Settings" href="{{ url_for('settings') }}"><svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM4 12h-2m20 0h-2M12 4V2m0 20v-2M5.6 5.6 4.2 4.2m15.6 15.6-1.4-1.4M18.4 5.6l1.4-1.4M4.2 19.8l1.4-1.4"/></svg></a>
-</div>
-
-<div class="services-hero"><h1>KOJA Global Business</h1><p>One operating workspace for business connections, commerce, professional services, finance, logistics, intelligence and communication.</p></div>
-
-<div class="service-section"><h2>Business</h2><div class="service-grid">
-<div class="service-card"><h3>Business Center</h3><p>Manage your business identity, customers, suppliers, products, employees and operating records.</p><a class="service-open" href="{{ url_for('business') }}">Open</a></div>
-<div class="service-card"><h3>Business Connect</h3><p>Connect with another business and continue into B2B requests, quotations and orders.</p><a class="service-open" href="{{ url_for('b2b_v4') }}">Open</a></div>
-<div class="service-card"><h3>CRM</h3><p>Keep business relationships and customer activity inside the same operating workspace.</p><a class="service-open" href="{{ url_for('business') }}">Open</a></div>
-<div class="service-card"><h3>Procurement</h3><p>Create and manage B2B buying requests through the existing commerce workflow.</p><a class="service-open" href="{{ url_for('b2b_v4') }}">Open</a></div>
-</div></div>
-
-<div class="service-section"><h2>Commerce & Operations</h2><div class="service-grid">
-<div class="service-card"><h3>KOJA Market</h3><p>Buy and sell products through the existing KOJA commerce system.</p><a class="service-open" href="{{ url_for('koja_market') }}">Open</a></div>
-<div class="service-card"><h3>Professional Services</h3><p>Discover and work with registered professionals and service providers.</p><a class="service-open" href="{{ url_for('professionals') }}">Open</a></div>
-<div class="service-card"><h3>Projects</h3><p>Use the B2B workspace for structured business requests and collaboration.</p><a class="service-open" href="{{ url_for('b2b_v4') }}">Open</a></div>
-<div class="service-card"><h3>Logistics</h3><p>Track delivery requests, drivers and logistics operations.</p><a class="service-open" href="{{ url_for('deliveries') }}">Open</a></div>
-</div></div>
-
-<div class="service-section"><h2>KOJA Intelligence</h2><div class="service-grid">
-<div class="service-card"><h3>KOJA AI</h3><p>AI assistance for business, education, research, documents and productivity.</p><a class="service-open" href="{{ url_for('ai_nextgen') }}">Open</a></div>
-<div class="service-card"><h3>Research</h3><p>Search, investigate and work with research resources.</p><a class="service-open" href="{{ url_for('research') }}">Open</a></div>
-<div class="service-card"><h3>Connect+</h3><p>Use the existing KOJA communication engine for messaging, calls and collaboration.</p><a class="service-open" href="{{ url_for('communication_nextgen') }}">Open</a></div>
-<div class="service-card"><h3>Settings</h3><p>Manage your account and KOJA platform preferences.</p><a class="service-open" href="{{ url_for('settings') }}">Open</a></div>
-</div></div>
+<div class="hero"><h2>KOJA Services</h2><p>Related capabilities are grouped into unified modules. Existing routes remain available behind each module.</p></div>
+<div class="grid">
+<div class="card"><h3>Learning and Research</h3><p>One connected workspace for academic questions, assignments, documents, research and document-based AI.</p><div class="actions"><a class="btn" href="{{ url_for('questions') }}">Questions</a><a class="btn" href="{{ url_for('assignments') }}">Assignments</a><a class="btn" href="{{ url_for('documents') }}">Documents and AI</a><a class="btn secondary" href="{{ url_for('research') }}">Research</a></div></div>
+<div class="card"><h3>AI and Workspace</h3><p>General AI, document intelligence, connected knowledge and productivity tools use the same KOJA AI foundation.</p><div class="actions"><a class="btn" href="{{ url_for('ai_assistant') }}">KOJA AI</a><a class="btn secondary" href="{{ url_for('documents') }}">Document AI</a><a class="btn secondary" href="{{ url_for('cv') }}">CV and Documents</a></div></div>
+<div class="card"><h3>Professional Services</h3><p>Doctors, teachers, tutors and other professionals are grouped under one discovery and identity workflow.</p><div class="actions"><a class="btn" href="{{ url_for('professionals') }}">Professionals</a><a class="btn secondary" href="{{ url_for('doctors') }}">Doctors</a><a class="btn secondary" href="{{ url_for('teachers') }}">Teachers and Tutors</a><a class="btn secondary" href="{{ url_for('professional_register') }}">Register Profession</a></div></div>
+<div class="card"><h3>Market and Business</h3><p>Buying, selling, business operations, payments, accounting and seller tools share the same commerce foundation.</p><div class="actions"><a class="btn" href="{{ url_for('koja_market') }}">KOJA Market</a><a class="btn secondary" href="{{ url_for('marketplace') }}">Digital Marketplace</a></div></div>
+<div class="card"><h3>Delivery and Logistics</h3><p>Orders, drivers, live GPS, delivery requests, tracking and delivery security operate as one logistics workflow.</p><div class="actions"><a class="btn" href="{{ url_for('deliveries') }}">Delivery</a><a class="btn secondary" href="{{ url_for('tracking') }}">Live GPS</a></div></div>
+<div class="card"><h3>Communication</h3><p>Messaging, voice, video, groups, presence and status remain one connected communication service.</p><a class="btn" href="{{ url_for('connect') }}">Open Communication</a></div>
 </div>
 """)
 
@@ -7747,6 +7695,7 @@ def _global_business_modules(business_id):
         ('AI Business Intelligence','Forecasting and business intelligence','business_intelligence_v3'),
         ('Payments','KOJA Pay transaction workflows','business_payments'),
         ('Delivery & Logistics','KOJA Delivery and live tracking','business_delivery'),
+        ('Global Import & Export','Cross-border orders, customs, landed cost, trade documents, brokers and clearance','global_import_export'),
         ('Live / Training','Live sessions and events','business_live_v2'),
         ('Connect+','Business communication','communication_next'),
         ('Platform Engines','Discover, Ads, Pay, Identity, Workspace, Intelligence','koja_named_engines'),
@@ -10117,6 +10066,96 @@ def b2bv4_order_complete(order_id):
     _b2bv4_notify(order.get('seller_user_id'),'B2B order completed',f'Order {order_id} was confirmed completed by the buyer.','/b2b/v4')
     flash('Order completed and seller earnings released in the B2B ledger.','success')
     return redirect(url_for('b2bv4_order',order_id=order_id))
+
+
+# ============================================================
+# KOJA GLOBAL IMPORT & EXPORT / CUSTOMS ENGINE V1
+# ============================================================
+def _gx_uid(): return str((current_user() or {}).get('id') or '')
+def _gx_business(business_id): return _r_business(business_id) if '_r_business' in globals() else first_row('koja_businesses', {'id':business_id,'owner_id':_gx_uid()})
+def _gx_money(v):
+    try: return round(float(v or 0),2)
+    except Exception: return 0.0
+def _gx_access(business_id): return bool(_gx_business(business_id))
+def _gx_code(): return 'KX-' + secrets.token_hex(5).upper()
+def _gx_audit(business_id,action,object_id=None,meta=None):
+    if table_exists('koja_global_trade_audit'): db_insert('koja_global_trade_audit',{'business_id':business_id,'user_id':_gx_uid(),'action':action,'object_id':str(object_id) if object_id else None,'metadata':meta or {},'created_at':utc_now()})
+def _gx_landed(t):
+    cv=sum(_gx_money(t.get(k)) for k in ('goods_value','freight_cost','insurance_cost','origin_charges'))
+    duty=round(cv*max(0,_gx_money(t.get('duty_rate')))/100,2)
+    tax=round((cv+duty)*max(0,_gx_money(t.get('tax_rate')))/100,2)
+    fees=sum(_gx_money(t.get(k)) for k in ('customs_fee','broker_fee','port_fee','local_delivery_cost','other_destination_cost'))
+    return {'customs_value':round(cv,2),'duty_amount':duty,'tax_amount':tax,'destination_fees':round(fees,2),'landed_cost':round(cv+duty+tax+fees,2)}
+
+@app.route('/business/<business_id>/global/import-export')
+@login_required
+def global_import_export(business_id):
+    b=_gx_business(business_id)
+    if not b: abort(403)
+    rows=db_select('koja_global_trade_orders',{'business_id':business_id},order='created_at.desc',limit=200) or []
+    pending=sum(1 for x in rows if str(x.get('status') or '') not in ('delivered','cancelled','closed'))
+    return render_page('KOJA Global Import & Export',r'''
+<div class="hero"><h1>Global Import & Export</h1><p>Cross-border trade from order to customs clearance, landed cost and local delivery.</p><div class="actions"><a class="btn" href="{{ url_for('global_business_hub',business_id=business_id) }}">Global Business</a><a class="btn secondary" href="#new">Create Trade</a></div></div>
+<div class="grid"><div class="stat"><div class="small">Trade Orders</div><div class="big">{{ rows|length }}</div></div><div class="stat"><div class="small">Open</div><div class="big">{{ pending }}</div></div><div class="stat"><div class="small">Workflow</div><div>Order → Documents → Freight → Customs → Clearance → Delivery</div></div></div>
+<div class="card" id="new"><h2>New Cross-Border Trade</h2><form method="post" action="{{ url_for('global_import_export_create',business_id=business_id) }}"><div class="grid"><div><label>Direction</label><select name="direction"><option value="import">Import</option><option value="export">Export</option></select></div><div><label>Trade title</label><input name="title" required maxlength="180"></div><div><label>Origin country</label><input name="origin_country" required></div><div><label>Destination country</label><input name="destination_country" required></div><div><label>Currency</label><input name="currency" value="ZMW" maxlength="3" required></div><div><label>HS / tariff code</label><input name="hs_code"></div><div><label>Goods value</label><input name="goods_value" type="number" min="0" step="0.01" value="0"></div><div><label>Freight</label><input name="freight_cost" type="number" min="0" step="0.01" value="0"></div><div><label>Insurance</label><input name="insurance_cost" type="number" min="0" step="0.01" value="0"></div><div><label>Duty rate %</label><input name="duty_rate" type="number" min="0" step="0.01" value="0"></div><div><label>Tax / VAT rate %</label><input name="tax_rate" type="number" min="0" step="0.01" value="0"></div><div><label>Broker fee</label><input name="broker_fee" type="number" min="0" step="0.01" value="0"></div></div><label>Notes</label><textarea name="notes"></textarea><button class="btn" type="submit">Create Trade Order</button></form></div>
+<div class="card"><h2>Trade Pipeline</h2>{% for x in rows %}<div class="card" style="margin:10px 0"><h3>{{ x.title }}</h3><p><b>{{ x.direction|upper }}</b> · {{ x.origin_country }} → {{ x.destination_country }} · {{ x.status }}</p><p>HS: {{ x.hs_code or 'Not classified' }} · Customs: {{ x.customs_status or 'Not started' }} · Clearance: {{ x.clearance_status or 'Not started' }}</p><p>Landed cost: <b>{{ '%.2f'|format(x.landed_cost or 0) }} {{ x.currency }}</b></p><a class="btn" href="{{ url_for('global_import_export_order',business_id=business_id,trade_id=x.id) }}">Open Trade</a></div>{% else %}<p>No cross-border trades yet.</p>{% endfor %}</div>
+''',business_id=business_id,b=b,rows=rows,pending=pending)
+
+@app.route('/business/<business_id>/global/import-export/create',methods=['POST'])
+@login_required
+def global_import_export_create(business_id):
+    if not _gx_access(business_id): abort(403)
+    p={'business_id':business_id,'created_by':_gx_uid(),'trade_code':_gx_code(),'direction':clean(request.form.get('direction')) or 'import','title':clean(request.form.get('title')),'origin_country':clean(request.form.get('origin_country')).upper(),'destination_country':clean(request.form.get('destination_country')).upper(),'currency':clean(request.form.get('currency')).upper()[:3] or 'ZMW','hs_code':clean(request.form.get('hs_code')) or None,'goods_value':_gx_money(request.form.get('goods_value')),'freight_cost':_gx_money(request.form.get('freight_cost')),'insurance_cost':_gx_money(request.form.get('insurance_cost')),'duty_rate':_gx_money(request.form.get('duty_rate')),'tax_rate':_gx_money(request.form.get('tax_rate')),'broker_fee':_gx_money(request.form.get('broker_fee')),'notes':clean(request.form.get('notes')),'status':'draft','customs_status':'not_started','clearance_status':'not_started','created_at':utc_now(),'updated_at':utc_now()}
+    p.update(_gx_landed(p)); row,err=db_insert('koja_global_trade_orders',p)
+    if row:
+        _gx_audit(business_id,'trade_created',row.get('id'),{'trade_code':row.get('trade_code')}); flash('Cross-border trade created.','success'); return redirect(url_for('global_import_export_order',business_id=business_id,trade_id=row.get('id')))
+    flash('Trade order could not be created: '+str(err)[:400],'danger'); return redirect(url_for('global_import_export',business_id=business_id))
+
+@app.route('/business/<business_id>/global/import-export/<trade_id>')
+@login_required
+def global_import_export_order(business_id,trade_id):
+    if not _gx_access(business_id): abort(403)
+    trade=first_row('koja_global_trade_orders',{'id':trade_id,'business_id':business_id})
+    if not trade: abort(404)
+    docs=db_select('koja_global_trade_documents',{'trade_id':trade_id},order='created_at.desc',limit=100) or []
+    events=db_select('koja_global_trade_events',{'trade_id':trade_id},order='created_at.desc',limit=100) or []
+    brokers=db_select('koja_global_trade_brokers',{'trade_id':trade_id},order='created_at.desc',limit=50) or []
+    calc=_gx_landed(trade); db_update('koja_global_trade_orders',{'id':trade_id},{**calc,'updated_at':utc_now()}); trade.update(calc)
+    return render_page('Trade '+str(trade.get('trade_code')),r'''
+<div class="hero"><h1>{{ trade.trade_code }}</h1><p>{{ trade.title }} · {{ trade.direction|upper }}</p><p>{{ trade.origin_country }} → {{ trade.destination_country }} · Status: <b>{{ trade.status }}</b></p></div>
+<div class="grid"><div class="stat"><div class="small">Customs Value</div><div class="big">{{ '%.2f'|format(trade.customs_value or 0) }} {{ trade.currency }}</div></div><div class="stat"><div class="small">Duty</div><div class="big">{{ '%.2f'|format(trade.duty_amount or 0) }}</div></div><div class="stat"><div class="small">Tax</div><div class="big">{{ '%.2f'|format(trade.tax_amount or 0) }}</div></div><div class="stat"><div class="small">Landed Cost</div><div class="big">{{ '%.2f'|format(trade.landed_cost or 0) }} {{ trade.currency }}</div></div></div>
+<div class="card"><h2>Customs & Clearance</h2><form method="post" action="{{ url_for('global_import_export_update',business_id=business_id,trade_id=trade.id) }}"><div class="grid"><div><label>Status</label><select name="status">{% for v in ['draft','ordered','in_transit','customs','cleared','delivered','cancelled'] %}<option value="{{ v }}" {% if trade.status==v %}selected{% endif %}>{{ v.replace('_',' ').title() }}</option>{% endfor %}</select></div><div><label>Customs status</label><select name="customs_status">{% for v in ['not_started','documents_ready','declared','inspection','duty_assessed','released'] %}<option value="{{ v }}" {% if trade.customs_status==v %}selected{% endif %}>{{ v.replace('_',' ').title() }}</option>{% endfor %}</select></div><div><label>Clearance status</label><select name="clearance_status">{% for v in ['not_started','assigned','in_review','cleared','held'] %}<option value="{{ v }}" {% if trade.clearance_status==v %}selected{% endif %}>{{ v.replace('_',' ').title() }}</option>{% endfor %}</select></div><div><label>Tracking number</label><input name="tracking_number" value="{{ trade.tracking_number or '' }}"></div><div><label>Carrier</label><input name="carrier" value="{{ trade.carrier or '' }}"></div><div><label>Broker</label><input name="broker_name" value="{{ trade.broker_name or '' }}"></div><div><label>Port / border</label><input name="entry_port" value="{{ trade.entry_port or '' }}"></div><div><label>Customs reference</label><input name="customs_reference" value="{{ trade.customs_reference or '' }}"></div></div><button class="btn" type="submit">Update Trade</button></form></div>
+<div class="card"><h2>Trade Documents</h2>{% for d in docs %}<p><b>{{ d.document_type }}</b> · {{ d.status }} · {{ d.reference or 'No reference' }}</p>{% else %}<p>No documents recorded.</p>{% endfor %}<form method="post" action="{{ url_for('global_import_export_document',business_id=business_id,trade_id=trade.id) }}"><div class="grid"><input name="document_type" placeholder="Commercial Invoice / Packing List / Certificate of Origin / Permit" required><input name="reference"><select name="status"><option>required</option><option>submitted</option><option>approved</option><option>rejected</option></select></div><button class="btn secondary">Add Document</button></form></div>
+<div class="card"><h2>Customs Broker / Clearing Agent</h2>{% for x in brokers %}<p><b>{{ x.name }}</b> · {{ x.country }} · {{ x.status }}</p>{% else %}<p>No broker assigned.</p>{% endfor %}<form method="post" action="{{ url_for('global_import_export_broker',business_id=business_id,trade_id=trade.id) }}"><div class="grid"><input name="name" placeholder="Broker / clearing agent name" required><input name="country" placeholder="Country"><input name="contact" placeholder="Contact"><input name="license_number" placeholder="Licence / registration"></div><button class="btn secondary">Assign Broker</button></form></div>
+<div class="card"><h2>Workflow Audit</h2>{% for e in events %}<p>{{ e.created_at }} · <b>{{ e.event_type }}</b> · {{ e.description or '' }}</p>{% else %}<p>No workflow events yet.</p>{% endfor %}</div>
+''',business_id=business_id,trade=trade,docs=docs,events=events,brokers=brokers)
+
+@app.route('/business/<business_id>/global/import-export/<trade_id>/update',methods=['POST'])
+@login_required
+def global_import_export_update(business_id,trade_id):
+    if not _gx_access(business_id): abort(403)
+    trade=first_row('koja_global_trade_orders',{'id':trade_id,'business_id':business_id})
+    if not trade: abort(404)
+    payload={k:clean(request.form.get(k)) or None for k in ('status','customs_status','clearance_status','tracking_number','carrier','broker_name','entry_port','customs_reference')}; payload['updated_at']=utc_now()
+    db_update('koja_global_trade_orders',{'id':trade_id},payload)
+    db_insert('koja_global_trade_events',{'trade_id':trade_id,'business_id':business_id,'event_type':'trade_updated','description':'Trade workflow updated','created_by':_gx_uid(),'created_at':utc_now()})
+    _gx_audit(business_id,'trade_updated',trade_id,payload); flash('Trade workflow updated.','success'); return redirect(url_for('global_import_export_order',business_id=business_id,trade_id=trade_id))
+
+@app.route('/business/<business_id>/global/import-export/<trade_id>/document',methods=['POST'])
+@login_required
+def global_import_export_document(business_id,trade_id):
+    if not _gx_access(business_id): abort(403)
+    if not first_row('koja_global_trade_orders',{'id':trade_id,'business_id':business_id}): abort(404)
+    db_insert('koja_global_trade_documents',{'trade_id':trade_id,'business_id':business_id,'document_type':clean(request.form.get('document_type')),'reference':clean(request.form.get('reference')) or None,'status':clean(request.form.get('status')) or 'required','created_by':_gx_uid(),'created_at':utc_now(),'updated_at':utc_now()})
+    _gx_audit(business_id,'trade_document_added',trade_id,{'document_type':clean(request.form.get('document_type'))}); flash('Trade document recorded.','success'); return redirect(url_for('global_import_export_order',business_id=business_id,trade_id=trade_id))
+
+@app.route('/business/<business_id>/global/import-export/<trade_id>/broker',methods=['POST'])
+@login_required
+def global_import_export_broker(business_id,trade_id):
+    if not _gx_access(business_id): abort(403)
+    if not first_row('koja_global_trade_orders',{'id':trade_id,'business_id':business_id}): abort(404)
+    db_insert('koja_global_trade_brokers',{'trade_id':trade_id,'business_id':business_id,'name':clean(request.form.get('name')),'country':clean(request.form.get('country')).upper() or None,'contact':clean(request.form.get('contact')) or None,'license_number':clean(request.form.get('license_number')) or None,'status':'assigned','created_by':_gx_uid(),'created_at':utc_now(),'updated_at':utc_now()})
+    _gx_audit(business_id,'customs_broker_assigned',trade_id,{'broker':clean(request.form.get('name'))}); flash('Broker / clearing agent assigned.','success'); return redirect(url_for('global_import_export_order',business_id=business_id,trade_id=trade_id))
 
 @app.route('/b2b/v4/order/<order_id>/review',methods=['POST'])
 @login_required
