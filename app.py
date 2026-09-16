@@ -2440,7 +2440,7 @@ def services():
 <div class="card"><h3>Learning and Research</h3><p>One connected workspace for academic questions, assignments, documents, research and document-based AI.</p><div class="actions"><a class="btn" href="{{ url_for('questions') }}">Questions</a><a class="btn" href="{{ url_for('assignments') }}">Assignments</a><a class="btn" href="{{ url_for('documents') }}">Documents and AI</a><a class="btn secondary" href="{{ url_for('research') }}">Research</a></div></div>
 <div class="card"><h3>AI and Workspace</h3><p>General AI, document intelligence, connected knowledge and productivity tools use the same KOJA AI foundation.</p><div class="actions"><a class="btn" href="{{ url_for('ai_assistant') }}">KOJA AI</a><a class="btn secondary" href="{{ url_for('documents') }}">Document AI</a><a class="btn secondary" href="{{ url_for('cv') }}">CV and Documents</a></div></div>
 <div class="card"><h3>Professional Services</h3><p>Doctors, teachers, tutors and other professionals are grouped under one discovery and identity workflow.</p><div class="actions"><a class="btn" href="{{ url_for('professionals') }}">Professionals</a><a class="btn secondary" href="{{ url_for('doctors') }}">Doctors</a><a class="btn secondary" href="{{ url_for('teachers') }}">Teachers and Tutors</a><a class="btn secondary" href="{{ url_for('professional_register') }}">Register Profession</a></div></div>
-<div class="card"><h3>Market and Business</h3><p>Buying, selling, business operations, payments, accounting and seller tools share the same commerce foundation.</p><div class="actions"><a class="btn" href="{{ url_for('market') }}">KOJA Market</a><a class="btn secondary" href="{{ url_for('marketplace') }}">Digital Marketplace</a></div></div>
+<div class="card"><h3>Market and Business</h3><p>Buying, selling, business operations, payments, accounting and seller tools share the same commerce foundation.</p><div class="actions"><a class="btn" href="{{ url_for('koja_market') }}">KOJA Market</a><a class="btn secondary" href="{{ url_for('marketplace') }}">Digital Marketplace</a></div></div>
 <div class="card"><h3>Delivery and Logistics</h3><p>Orders, drivers, live GPS, delivery requests, tracking and delivery security operate as one logistics workflow.</p><div class="actions"><a class="btn" href="{{ url_for('deliveries') }}">Delivery</a><a class="btn secondary" href="{{ url_for('tracking') }}">Live GPS</a></div></div>
 <div class="card"><h3>Communication</h3><p>Messaging, voice, video, groups, presence and status remain one connected communication service.</p><a class="btn" href="{{ url_for('connect') }}">Open Communication</a></div>
 </div>
@@ -8391,114 +8391,6 @@ def business_accounting_v2(business_id):
     accounts=db_select('koja_business_bi_account_balances',{'business_id':business_id},order='account_code.asc',limit=100) or []
     summary=first_row('koja_business_bi_accounting_summary',{'business_id':business_id}) or {}
     return render_page('Business Accounting V2',r"""<div class="hero"><h1>Accounting</h1><p>{{ b.name }} — connected double-entry ledger.</p><div class="actions"><a class="btn secondary" href="{{ url_for('business_dashboard',business_id=b.id) }}">Business Dashboard</a><a class="btn secondary" href="{{ url_for('business_intelligence_v3',business_id=b.id) }}">AI Intelligence</a></div></div><div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(summary.accounting_revenue or 0,'ZMW') }}</h2></div><div class="card"><h3>Expenses</h3><h2>{{ money(summary.accounting_expenses or 0,'ZMW') }}</h2></div><div class="card"><h3>Net Result</h3><h2>{{ money(summary.accounting_net_result or 0,'ZMW') }}</h2></div><div class="card"><h3>Transactions</h3><h2>{{ summary.transaction_count or 0 }}</h2></div></div><div class="card"><h2>Record Transaction</h2><form method="post"><label>Type</label><select name="kind"><option value="sale">Sale / Income</option><option value="expense">Expense</option></select><label>Description</label><input name="description" required><label>Amount (ZMW)</label><input name="amount" type="number" min="0" step="0.01" required><label>Payment Method</label><select name="payment_method"><option value="cash">Cash</option><option value="bank">Bank</option><option value="mobile_money">Mobile Money</option></select><label>Expense Category</label><select name="category"><option value="other">Other</option><option value="rent">Rent</option><option value="salary">Salary</option><option value="transport">Transport</option><option value="marketing">Marketing</option><option value="utilities">Utilities</option><option value="tax">Tax</option></select><button class="btn">Save & Post to Ledger</button></form></div><div class="card"><h2>Chart of Accounts</h2><table><tr><th>Code</th><th>Account</th><th>Type</th><th>Balance</th></tr>{% for a in accounts %}<tr><td>{{ a.account_code }}</td><td>{{ a.account_name }}</td><td>{{ a.account_type }}</td><td>{{ money(a.balance or 0,'ZMW') }}</td></tr>{% else %}<tr><td colspan="4">No accounts.</td></tr>{% endfor %}</table></div><div class="card"><h2>Recent Ledger Transactions</h2><table><tr><th>Date</th><th>Type</th><th>Description</th><th>Amount</th><th>Status</th></tr>{% for x in txs %}<tr><td>{{ x.transaction_date }}</td><td>{{ x.transaction_type }}</td><td>{{ x.description }}</td><td>{{ money(x.total_amount or 0,'ZMW') }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="5">No accounting transactions yet.</td></tr>{% endfor %}</table></div>""",b=b,summary=summary,accounts=accounts,txs=txs,money=market_money)
-
-
-# ============================================================
-# KOJA B2B + PROFESSIONAL SERVICES UNIFIED V3
-# Integration/presentation layer. Existing modules remain source of truth.
-# Communications/Connect+ is intentionally untouched.
-# ============================================================
-
-def _b2b3_user_id(): return (current_user() or {}).get('id')
-def _b2b3_event(event_type, entity_type, entity_id=None, business_id=None, metadata=None):
-    try: db_insert('koja_b2b_unified_events', {'user_id':_b2b3_user_id(),'business_id':business_id,'event_type':event_type,'entity_type':entity_type,'entity_id':entity_id,'metadata':metadata or {},'created_at':utc_now()})
-    except Exception: pass
-def _b2b3_owned_businesses(uid): return db_select('koja_businesses',{'owner_id':uid},order='created_at.desc',limit=100) or []
-def _b2b3_business(uid,business_id): return first_row('koja_businesses',{'id':business_id,'owner_id':uid})
-def _b2b3_money(value):
-    try: return float(value or 0)
-    except Exception: return 0.0
-
-@app.route('/b2b')
-@login_required
-def b2b_unified_home():
-    uid=_b2b3_user_id(); businesses=_b2b3_owned_businesses(uid)
-    if len(businesses)==1: return redirect(url_for('b2b_unified_dashboard',business_id=businesses[0]['id']))
-    return render_page('KOJA B2B', """
-    <div class='hero'><h1>KOJA B2B</h1><p>One connected business-to-business centre for buying, selling, professional services, payments, supply and delivery.</p></div>
-    <div class='grid'><div class='card'><h2>Buy</h2><p>Suppliers, procurement requests, RFQs, quotations and purchase workflows.</p></div><div class='card'><h2>Sell</h2><p>Business products, services, quotations, orders and customer requests.</p></div><div class='card'><h2>Professional Services</h2><p>Appointments, live sessions and project services can participate in B2B demand.</p><a class='btn' href='{{ url_for("professional_marketplace") }}'>Open Professional Services</a></div></div>
-    {% if businesses %}<div class='card'><h2>Select Business</h2>{% for b in businesses %}<p><a class='btn' href='{{ url_for("b2b_unified_dashboard",business_id=b.id) }}'>{{ b.name }}</a></p>{% endfor %}</div>{% else %}<div class='card'><h2>Create Business</h2><a class='btn' href='{{ url_for("business_new") }}'>Create Business Account</a></div>{% endif %}
-    """,businesses=businesses)
-
-@app.route('/b2b/<business_id>')
-@login_required
-def b2b_unified_dashboard(business_id):
-    uid=_b2b3_user_id(); b=_b2b3_business(uid,business_id)
-    if not b: abort(404)
-    listings=db_select('koja_b2b_unified_listings',{'business_id':business_id},order='created_at.desc',limit=100) or []
-    requests=db_select('koja_b2b_unified_requests',{'buyer_business_id':business_id},order='created_at.desc',limit=100) or []
-    orders=db_select('koja_b2b_unified_orders',{'buyer_business_id':business_id},order='created_at.desc',limit=100) or []
-    return render_page('KOJA B2B Business Centre',"""
-    <div class='hero'><h1>{{ b.name }} — KOJA B2B</h1><p>Unified buying, selling and professional-service operations.</p><div class='actions'><a class='btn' href='{{ url_for("b2b_unified_listing_new",business_id=b.id) }}'>List Product / Service</a><a class='btn' href='{{ url_for("b2b_unified_request_new",business_id=b.id) }}'>Create B2B Request</a><a class='btn secondary' href='{{ url_for("business_dashboard",business_id=b.id) }}'>Business Dashboard</a></div></div>
-    <div class='grid'><div class='card'><h2>Buying</h2><p>{{ requests|length }} requests</p><a class='btn' href='{{ url_for("b2b_unified_requests",business_id=b.id) }}'>Open Requests</a></div><div class='card'><h2>Selling</h2><p>{{ listings|length }} listings</p><a class='btn' href='{{ url_for("b2b_unified_listings",business_id=b.id) }}'>My Listings</a></div><div class='card'><h2>Orders</h2><p>{{ orders|length }} buyer orders</p></div><div class='card'><h2>Professional Services</h2><p>Appointments, live sessions and projects can serve organisations.</p><a class='btn' href='{{ url_for("professional_dashboard") }}'>Professional Dashboard</a></div></div>
-    <div class='card'><h2>Connected KOJA systems</h2><p>Procurement · Supply Chain · CRM &amp; Sales · Finance · Payments · Marketplace · Delivery · Professional Services · KOJA AI.</p></div>
-    """,b=b,listings=listings,requests=requests,orders=orders)
-
-@app.route('/b2b/<business_id>/listings')
-@login_required
-def b2b_unified_listings(business_id):
-    uid=_b2b3_user_id(); b=_b2b3_business(uid,business_id)
-    if not b: abort(404)
-    rows=db_select('koja_b2b_unified_listings',{'business_id':business_id},order='created_at.desc',limit=300) or []
-    return render_page('B2B Listings',"""<div class='hero'><h1>My B2B Listings</h1><a class='btn' href='{{ url_for("b2b_unified_listing_new",business_id=b.id) }}'>Add Listing</a></div><div class='card'><table><tr><th>Title</th><th>Type</th><th>Category</th><th>Price</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{ x.title }}</td><td>{{ x.listing_type }}</td><td>{{ x.category or x.profession }}</td><td>{{ x.currency }} {{ x.price }}</td><td>{{ 'Active' if x.active else 'Inactive' }}</td></tr>{% else %}<tr><td colspan='5'>No listings.</td></tr>{% endfor %}</table></div>""",b=b,rows=rows)
-
-@app.route('/b2b/<business_id>/listing/new',methods=['GET','POST'])
-@login_required
-def b2b_unified_listing_new(business_id):
-    uid=_b2b3_user_id(); b=_b2b3_business(uid,business_id)
-    if not b: abort(404)
-    if request.method=='POST':
-        title=clean(request.form.get('title')); description=clean(request.form.get('description')); typ=clean(request.form.get('listing_type')) or 'product'; category=clean(request.form.get('category')); profession=clean(request.form.get('profession')); mode=clean(request.form.get('service_mode')) or 'project'; price=max(0,_b2b3_money(request.form.get('price'))); currency=clean(request.form.get('currency')) or 'ZMW'
-        if not title: flash('Title is required.','danger'); return redirect(url_for('b2b_unified_listing_new',business_id=business_id))
-        row,err=db_insert('koja_b2b_unified_listings',{'business_id':business_id,'owner_user_id':uid,'listing_type':typ,'title':title,'description':description,'category':category,'profession':profession,'service_mode':mode,'location':clean(request.form.get('location')),'online_available':bool(request.form.get('online_available')),'price':price,'currency':currency,'unit':clean(request.form.get('unit')) or 'service','active':True,'created_at':utc_now(),'updated_at':utc_now()})
-        if err: flash('B2B listing could not be saved. Run the V3 SQL migration.','danger')
-        else: flash('B2B listing created.','success'); _b2b3_event('listing_created','listing',row.get('id') if row else None,business_id)
-        return redirect(url_for('b2b_unified_listings',business_id=business_id))
-    return render_page('Create B2B Listing',"""<div class='hero'><h1>List for B2B</h1><p>Offer a product, business service or professional service to organisations.</p></div><div class='card'><form method='post'><label>Title</label><input name='title' required><label>Type</label><select name='listing_type'><option value='product'>Product</option><option value='service'>Business Service</option><option value='professional_service'>Professional Service</option></select><label>Category</label><input name='category'><label>Profession, if applicable</label><input name='profession'><label>Service model</label><select name='service_mode'><option value='project'>Project</option><option value='appointment'>Appointment</option><option value='live_session'>Live Session</option><option value='product'>Product</option></select><label>Description</label><textarea name='description' rows='5'></textarea><div class='grid'><div><label>Price</label><input name='price' type='number' step='0.01' min='0'></div><div><label>Currency</label><input name='currency' value='ZMW'></div><div><label>Unit</label><input name='unit' value='service'></div></div><label>Location / service area</label><input name='location'><label><input type='checkbox' name='online_available' checked style='width:auto'> Available online</label><button class='btn'>Publish B2B Listing</button></form></div>""")
-
-@app.route('/b2b/<business_id>/requests')
-@login_required
-def b2b_unified_requests(business_id):
-    uid=_b2b3_user_id(); b=_b2b3_business(uid,business_id)
-    if not b: abort(404)
-    rows=db_select('koja_b2b_unified_requests',{'buyer_business_id':business_id},order='created_at.desc',limit=300) or []
-    return render_page('B2B Requests',"""<div class='hero'><h1>Buying Requests</h1><a class='btn' href='{{ url_for("b2b_unified_request_new",business_id=b.id) }}'>New Request</a></div><div class='card'><table><tr><th>Request</th><th>Type</th><th>Category</th><th>Budget</th><th>Status</th></tr>{% for x in rows %}<tr><td><a href='{{ url_for("b2b_unified_request_view",request_id=x.id) }}'>{{ x.title }}</a></td><td>{{ x.request_type }}</td><td>{{ x.category or x.profession }}</td><td>{{ x.currency }} {{ x.budget or 'Open' }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan='5'>No requests.</td></tr>{% endfor %}</table></div>""",b=b,rows=rows)
-
-@app.route('/b2b/<business_id>/request/new',methods=['GET','POST'])
-@login_required
-def b2b_unified_request_new(business_id):
-    uid=_b2b3_user_id(); b=_b2b3_business(uid,business_id)
-    if not b: abort(404)
-    if request.method=='POST':
-        title=clean(request.form.get('title')); desc=clean(request.form.get('description')); typ=clean(request.form.get('request_type')) or 'procurement'; category=clean(request.form.get('category')); profession=clean(request.form.get('profession')); budget=_b2b3_money(request.form.get('budget')) if request.form.get('budget') else None
-        row,err=db_insert('koja_b2b_unified_requests',{'buyer_business_id':business_id,'requester_user_id':uid,'request_type':typ,'title':title,'description':desc,'category':category,'profession':profession,'location':clean(request.form.get('location')),'online_allowed':bool(request.form.get('online_allowed')),'budget':budget,'currency':clean(request.form.get('currency')) or 'ZMW','status':'open','created_at':utc_now(),'updated_at':utc_now()})
-        if err: flash('Request could not be created. Run the V3 SQL migration.','danger'); return redirect(url_for('b2b_unified_request_new',business_id=business_id))
-        _b2b3_event('request_created','request',row.get('id'),business_id,{'request_type':typ}); return redirect(url_for('b2b_unified_request_view',request_id=row.get('id')))
-    return render_page('New B2B Request',"""<div class='hero'><h1>Create B2B Request</h1><p>Request a product, supplier, business service or professional service.</p></div><div class='card'><form method='post'><label>Request title</label><input name='title' required><label>Request type</label><select name='request_type'><option value='procurement'>Procurement</option><option value='service'>Business Service</option><option value='professional_service'>Professional Service</option><option value='product'>Product</option></select><label>Category</label><input name='category'><label>Profession, if applicable</label><input name='profession' placeholder='Teacher, developer, accountant, engineer...'><label>Description / requirements</label><textarea name='description' rows='6' required></textarea><div class='grid'><div><label>Budget</label><input name='budget' type='number' min='0' step='0.01'></div><div><label>Currency</label><input name='currency' value='ZMW'></div><div><label>Location</label><input name='location'></div></div><label><input type='checkbox' name='online_allowed' checked style='width:auto'> Online service acceptable</label><button class='btn'>Publish Request</button></form></div>""")
-
-@app.route('/b2b/request/<request_id>')
-@login_required
-def b2b_unified_request_view(request_id):
-    uid=_b2b3_user_id(); r=first_row('koja_b2b_unified_requests',{'id':request_id,'requester_user_id':uid})
-    if not r: abort(404)
-    quotes=db_select('koja_b2b_unified_quotes',{'request_id':request_id},order='created_at.desc',limit=100) or []
-    listings=db_select('koja_b2b_unified_listings',{'active':True},order='created_at.desc',limit=300) or []
-    q=' '.join([r.get('title') or '',r.get('category') or '',r.get('profession') or '']).lower(); matches=[]
-    for x in listings:
-        hay=' '.join([x.get('title') or '',x.get('category') or '',x.get('profession') or '']).lower(); score=sum(1 for term in set(q.split()) if len(term)>2 and term in hay)
-        if score: matches.append((score,x))
-    matches=[x for _,x in sorted(matches,key=lambda z:z[0],reverse=True)[:20]]
-    return render_page('B2B Request',"""<div class='hero'><h1>{{ r.title }}</h1><p>{{ r.request_type }} · {{ r.category or r.profession }} · {{ r.status }}</p></div><div class='card'><p>{{ r.description }}</p><p><strong>Budget:</strong> {{ r.currency }} {{ r.budget or 'Open' }}</p></div><div class='card'><h2>Matching B2B listings</h2>{% for x in matches %}<div class='card'><h3>{{ x.title }}</h3><p>{{ x.listing_type }} · {{ x.category or x.profession }} · {{ x.currency }} {{ x.price }}</p></div>{% else %}<p>No matching listings yet.</p>{% endfor %}</div><div class='card'><h2>Quotes</h2>{% for q in quotes %}<p>{{ q.currency }} {{ q.amount }} — {{ q.status }}{% if q.proposal %} — {{ q.proposal }}{% endif %}</p>{% else %}<p>No quotes yet.</p>{% endfor %}</div>""",r=r,quotes=quotes,matches=matches)
-
-@app.route('/b2b/api/match',methods=['POST'])
-@login_required
-def b2b_unified_match_api():
-    data=request.get_json(silent=True) or {}; text=' '.join(str(data.get(k) or '') for k in ('query','category','profession','location')).lower(); rows=db_select('koja_b2b_unified_listings',{'active':True},order='created_at.desc',limit=500) or []; out=[]
-    for x in rows:
-        hay=' '.join(str(x.get(k) or '') for k in ('title','description','category','profession','location')).lower(); score=sum(1 for t in set(text.split()) if len(t)>2 and t in hay)
-        if score: out.append((score,x))
-    out=sorted(out,key=lambda z:z[0],reverse=True)[:20]
-    return jsonify({'ok':True,'matches':[{'listing':x,'match_score':score} for score,x in out],'count':len(out)})
 
 if __name__=="__main__":
     port=int(os.getenv("PORT","5000"))

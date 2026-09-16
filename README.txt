@@ -1,18 +1,12 @@
-KOJA B2B + PROFESSIONAL SERVICES UNIFIED V3
+KOJA AFRICA Services endpoint fix - 2026-09-16
 
-Base: current production app(20260915-070637).py
+Root cause:
+The /services template called url_for('market'), but the actual Flask endpoint is koja_market for route /market. This caused BuildError and HTTP 500 on /services.
 
-Adds a unified B2B front door around existing Procurement, Supply Chain, CRM, Finance, Marketplace, Payments, Delivery and Professional Services.
+Fix:
+Changed only the broken template reference from url_for('market') to url_for('koja_market').
 
-New routes:
-/b2b
-/b2b/<business_id>
-/b2b/<business_id>/listings
-/b2b/<business_id>/listing/new
-/b2b/<business_id>/requests
-/b2b/<business_id>/request/new
-/b2b/request/<request_id>
-/b2b/api/match
+No database migration. No service/module logic changed.
 
-Communications / Connect+ is untouched.
-SQL is additive/idempotent. Run SQL before using the new B2B pages.
+Deploy:
+Replace the production app.py with this file and deploy normally to KOJA-AFRICA on Render.
