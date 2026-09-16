@@ -8725,6 +8725,186 @@ def business_accounting_v2(business_id):
     summary=first_row('koja_business_bi_accounting_summary',{'business_id':business_id}) or {}
     return render_page('Business Accounting V2',r"""<div class="hero"><h1>Accounting</h1><p>{{ b.name }} — connected double-entry ledger.</p><div class="actions"><a class="btn secondary" href="{{ url_for('business_dashboard',business_id=b.id) }}">Business Dashboard</a><a class="btn secondary" href="{{ url_for('business_intelligence_v3',business_id=b.id) }}">AI Intelligence</a></div></div><div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(summary.accounting_revenue or 0,'ZMW') }}</h2></div><div class="card"><h3>Expenses</h3><h2>{{ money(summary.accounting_expenses or 0,'ZMW') }}</h2></div><div class="card"><h3>Net Result</h3><h2>{{ money(summary.accounting_net_result or 0,'ZMW') }}</h2></div><div class="card"><h3>Transactions</h3><h2>{{ summary.transaction_count or 0 }}</h2></div></div><div class="card"><h2>Record Transaction</h2><form method="post"><label>Type</label><select name="kind"><option value="sale">Sale / Income</option><option value="expense">Expense</option></select><label>Description</label><input name="description" required><label>Amount (ZMW)</label><input name="amount" type="number" min="0" step="0.01" required><label>Payment Method</label><select name="payment_method"><option value="cash">Cash</option><option value="bank">Bank</option><option value="mobile_money">Mobile Money</option></select><label>Expense Category</label><select name="category"><option value="other">Other</option><option value="rent">Rent</option><option value="salary">Salary</option><option value="transport">Transport</option><option value="marketing">Marketing</option><option value="utilities">Utilities</option><option value="tax">Tax</option></select><button class="btn">Save & Post to Ledger</button></form></div><div class="card"><h2>Chart of Accounts</h2><table><tr><th>Code</th><th>Account</th><th>Type</th><th>Balance</th></tr>{% for a in accounts %}<tr><td>{{ a.account_code }}</td><td>{{ a.account_name }}</td><td>{{ a.account_type }}</td><td>{{ money(a.balance or 0,'ZMW') }}</td></tr>{% else %}<tr><td colspan="4">No accounts.</td></tr>{% endfor %}</table></div><div class="card"><h2>Recent Ledger Transactions</h2><table><tr><th>Date</th><th>Type</th><th>Description</th><th>Amount</th><th>Status</th></tr>{% for x in txs %}<tr><td>{{ x.transaction_date }}</td><td>{{ x.transaction_type }}</td><td>{{ x.description }}</td><td>{{ money(x.total_amount or 0,'ZMW') }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="5">No accounting transactions yet.</td></tr>{% endfor %}</table></div>""",b=b,summary=summary,accounts=accounts,txs=txs,money=market_money)
 
+
+# ============================================================
+# KOJA PROFESSIONAL SERVICES V2 — WORKFLOW ENGINE
+# Profession-specific templates + live session enrollment + milestones
+# + appointment payment linkage. Connect+ is intentionally untouched.
+# ============================================================
+PROFESSION_SERVICE_MODELS = {
+    'Teacher / Tutor': ('live','appointment','digital'),
+    'Doctor / Medical Practitioner': ('appointment',),
+    'Nurse / Midwife': ('appointment',),
+    'Dentist': ('appointment',),
+    'Nutritionist / Dietitian': ('appointment','live'),
+    'Physiotherapist': ('appointment',),
+    'Pharmacist': ('appointment',),
+    'Counsellor / Psychologist': ('appointment','live'),
+    'Lawyer': ('appointment','project'),
+    'Accountant': ('appointment','project'),
+    'Engineer': ('appointment','project'),
+    'Architect': ('appointment','project'),
+    'IT / Software / Web Developer': ('project','appointment'),
+    'Graphic Designer': ('project','digital'),
+    'Photographer / Videographer': ('project','appointment'),
+    'Electrician': ('appointment','project'),
+    'Plumber': ('appointment','project'),
+    'Builder / Contractor': ('project','appointment'),
+    'Mechanic': ('appointment','project'),
+    'Tailor / Fashion Designer': ('project','appointment'),
+    'Hairdresser / Barber / Beauty Professional': ('appointment','project'),
+    'Writer / Editor / Translator': ('project','digital'),
+    'Marketing / Advertising': ('project','appointment'),
+    'Business Consultant': ('appointment','project','live'),
+    'Consultant': ('appointment','project','live'),
+    'Trainer / Coach': ('appointment','live','digital'),
+    'Researcher': ('project','appointment'),
+    'Other Professional Service': ('appointment','project'),
+}
+
+PROFESSION_FIELD_HINTS = {
+    'Teacher / Tutor':'Subject, level, syllabus, frequency and learning goal',
+    'Doctor / Medical Practitioner':'Consultation reason, appointment type and follow-up needs',
+    'Lawyer':'Matter type, jurisdiction and desired legal service',
+    'Accountant':'Accounting period, records available and required report',
+    'Engineer':'Project scope, site/location, technical discipline and deliverable',
+    'Architect':'Project type, site, design stage and required drawings',
+    'IT / Software / Web Developer':'Platform, features, integrations, deadline and technical requirements',
+    'Graphic Designer':'Design type, dimensions, brand assets and delivery format',
+    'Builder / Contractor':'Project type, site, quantities and target completion date',
+    'Electrician':'Installation/repair type, site and equipment involved',
+    'Plumber':'Installation/repair issue, property type and site',
+    'Mechanic':'Vehicle make/model, symptoms and requested service',
+    'Photographer / Videographer':'Event type, date, location, coverage hours and deliverables',
+    'Writer / Editor / Translator':'Language, word count, subject and delivery format',
+}
+
+def _ps_allowed_models(profession):
+    return PROFESSION_SERVICE_MODELS.get(profession) or ('appointment','project','live','digital')
+
+def _ps_provider_for_user():
+    return first_row('service_providers', {'user_id': (current_user() or {}).get('id')}) or {}
+
+def _ps_milestones(job_id):
+    return db_select('koja_professional_job_milestones', {'job_id': job_id}, order='position.asc', limit=100) or []
+
+def _ps_payment_for(kind, customer_id, provider_id, amount, currency='ZMW', job_id=None, session_id=None, appointment_id=None, metadata=None):
+    rate=_ps_commission(kind)
+    gross=_ps_money(amount)
+    commission=round(gross*rate/100,2)
+    professional=round(gross-commission,2)
+    row,err=db_insert('koja_professional_transactions', {
+        'customer_id':customer_id,'provider_id':provider_id,'job_id':job_id,'session_id':session_id,
+        'appointment_id':appointment_id,'transaction_type':kind,'gross_amount':gross,
+        'commission_rate':rate,'commission_amount':commission,'processing_fee':0,
+        'professional_amount':professional,'currency':currency or 'ZMW','status':'pending',
+        'payout_status':'pending','metadata':metadata or {},'created_at':utc_now(),'updated_at':utc_now()
+    })
+    return row,err
+
+@app.route('/professional/workflow/<service_id>', methods=['GET','POST'])
+@login_required
+def professional_workflow(service_id):
+    service=first_row('koja_professional_services', {'id':service_id})
+    if not service: abort(404)
+    provider=_ps_provider(service.get('provider_id'))
+    profession=provider.get('profession') or service.get('category') or 'Other Professional Service'
+    allowed=_ps_allowed_models(profession)
+    if request.method=='POST':
+        chosen=clean(request.form.get('service_type')) or service.get('service_type') or 'project'
+        if chosen not in allowed:
+            flash('That workflow is not enabled for this profession.','warning')
+            return redirect(request.path)
+        if chosen=='appointment':
+            me=(current_user() or {}).get('id')
+            if str(provider.get('user_id'))==str(me):
+                flash('You cannot book your own professional service.','warning'); return redirect(request.path)
+            row,err=db_insert('appointments', {
+                'id':str(uuid.uuid4()),'client_id':me,'provider_id':provider.get('id'),
+                'appointment_type':'professional','appointment_date':request.form.get('date'),
+                'start_time':request.form.get('start_time'),'end_time':request.form.get('end_time'),
+                'location':clean(request.form.get('location')) or service.get('location') or 'Online',
+                'status':'requested','notes':clean(request.form.get('notes')),'created_at':utc_now(),'updated_at':utc_now()
+            })
+            if err or not row: flash('Appointment could not be created.','danger'); return redirect(request.path)
+            tx,terr=_ps_payment_for('appointment',me,provider.get('id'),service.get('price') or 0,service.get('currency') or 'ZMW',appointment_id=row.get('id'),metadata={'service_id':service_id})
+            if terr or not tx: flash('Appointment payment record could not be created.','danger'); return redirect(request.path)
+            return redirect(url_for('professional_payment',payment_id=tx.get('id')))
+        if chosen=='live':
+            return redirect(url_for('professional_live_create',service_id=service_id))
+        return redirect(url_for('professional_service_view',service_id=service_id))
+    return render_page('Professional Workflow', r'''
+<div class="hero"><h1>{{ service.title }}</h1><p>{{ profession }}</p><p>{{ hint }}</p></div>
+<div class="card"><h2>Choose the workflow</h2><form method="post"><select name="service_type" id="stype">{% for x in allowed %}<option value="{{ x }}">{{ x|title }}</option>{% endfor %}</select><div id="appointment" style="margin-top:12px"><label>Date</label><input type="date" name="date"><label>Start time</label><input type="time" name="start_time"><label>End time</label><input type="time" name="end_time"><label>Location / Online</label><input name="location" value="{{ service.location or 'Online' }}"><label>Notes</label><textarea name="notes"></textarea></div><button class="btn">Continue</button></form></div>
+<script>const s=document.getElementById('stype'),a=document.getElementById('appointment');function f(){a.style.display=s.value==='appointment'?'block':'none'}s.onchange=f;f();</script>
+''',service=service,provider=provider,profession=profession,allowed=allowed,hint=PROFESSION_FIELD_HINTS.get(profession,'Describe the outcome, scope, location and deadline you need.'))
+
+@app.route('/professional/live/create/<service_id>', methods=['GET','POST'])
+@login_required
+def professional_live_create(service_id):
+    provider=_ps_provider_for_user(); service=first_row('koja_professional_services',{'id':service_id})
+    if not provider or not service or str(service.get('provider_id'))!=str(provider.get('id')): return 'Service not found.',404
+    if request.method=='POST':
+        row,err=db_insert('koja_professional_live_sessions', {
+            'provider_id':provider.get('id'),'service_id':service_id,'title':clean(request.form.get('title')) or service.get('title'),
+            'description':clean(request.form.get('description')),'scheduled_at':request.form.get('scheduled_at') or None,
+            'duration_minutes':int(request.form.get('duration_minutes') or service.get('duration_minutes') or 60),
+            'capacity':max(1,int(request.form.get('capacity') or 1)),'price':_ps_money(request.form.get('price') or service.get('price')),
+            'currency':service.get('currency') or 'ZMW','mode':'online','status':'scheduled','created_at':utc_now()
+        })
+        if err: flash('Live session could not be created. Run V2 SQL first.','danger')
+        else: flash('Live session created. Customers can register and pay.','success'); return redirect(url_for('professional_live_view',session_id=row.get('id')))
+    return render_page('Create Live Session',r'''<div class="hero"><h1>Create Paid Live Session</h1><p>Teach, train, coach or consult live.</p></div><div class="card"><form method="post"><label>Title</label><input name="title" required value="{{ service.title }}"><label>Description</label><textarea name="description"></textarea><label>Start</label><input type="datetime-local" name="scheduled_at"><label>Duration</label><input type="number" name="duration_minutes" value="60"><label>Capacity</label><input type="number" name="capacity" min="1" value="10"><label>Price</label><input type="number" name="price" min="0" step="0.01" value="{{ service.price }}"><button class="btn">Create Session</button></form></div>''',service=service)
+
+@app.route('/professional/live/<session_id>', methods=['GET','POST'])
+@login_required
+def professional_live_view(session_id):
+    session=first_row('koja_professional_live_sessions',{'id':session_id})
+    if not session: abort(404)
+    provider=_ps_provider(session.get('provider_id')); me=(current_user() or {}).get('id')
+    attendee=first_row('koja_professional_live_attendees',{'session_id':session_id,'customer_id':me})
+    if request.method=='POST' and str(provider.get('user_id'))!=str(me):
+        existing=attendee
+        if existing and str(existing.get('payment_status'))=='paid': flash('You are already registered.','success'); return redirect(request.path)
+        count=len(db_select('koja_professional_live_attendees',{'session_id':session_id},limit=1000) or [])
+        if count >= int(session.get('capacity') or 1): flash('This live session is full.','warning'); return redirect(request.path)
+        if not existing:
+            existing,err=db_insert('koja_professional_live_attendees',{'session_id':session_id,'customer_id':me,'payment_status':'pending','attendance_status':'registered','created_at':utc_now()})
+            if err: flash('Registration could not be created.','danger'); return redirect(request.path)
+        tx,err=_ps_payment_for('live',me,session.get('provider_id'),session.get('price') or 0,session.get('currency') or 'ZMW',session_id=session_id,metadata={'session_id':session_id})
+        if err or not tx: flash('Payment record could not be created.','danger'); return redirect(request.path)
+        return redirect(url_for('professional_payment',payment_id=tx.get('id')))
+    attendees=db_select('koja_professional_live_attendees',{'session_id':session_id},limit=1000)
+    paid=attendee and str(attendee.get('payment_status'))=='paid'
+    owner=str(provider.get('user_id'))==str(me)
+    return render_page('Professional Live Session',r'''
+<div class="hero"><h1>{{ session.title }}</h1><p>{{ session.description or '' }}</p><p>{{ session.scheduled_at or 'Schedule pending' }} · {{ session.duration_minutes }} minutes · {{ session.currency }} {{ session.price }}</p></div>
+<div class="card">{% if owner %}<h2>Host controls</h2><p>Registered attendees: {{ attendees|length }}</p><p>Use the existing KOJA communication/call tools for the actual media session; this module handles service registration, payment and access.</p>{% elif paid %}<h2>Access confirmed</h2><p>Your payment is verified and your live-session seat is active.</p><a class="btn" href="{{ url_for('professional_contact',provider_id=provider.id) }}">Open Professional Communication</a>{% else %}<h2>Reserve your seat</h2><form method="post"><button class="btn">Pay & Register · {{ session.currency }} {{ session.price }}</button></form>{% endif %}</div>
+''',session=session,provider=provider,attendees=attendees,paid=paid,owner=owner)
+
+@app.route('/professional/job/<job_id>', methods=['GET','POST'])
+@login_required
+def professional_job_workspace(job_id):
+    me=(current_user() or {}).get('id'); job=first_row('koja_professional_jobs',{'id':job_id})
+    if not job or str(me) not in {str(job.get('customer_id')),str(job.get('provider_id'))}: return 'Job not found.',404
+    if request.method=='POST':
+        action=clean(request.form.get('action'))
+        if action=='milestone':
+            pos=len(_ps_milestones(job_id))+1
+            _,err=db_insert('koja_professional_job_milestones',{'job_id':job_id,'position':pos,'title':clean(request.form.get('title')),'description':clean(request.form.get('description')),'amount':_ps_money(request.form.get('amount')),'status':'pending','created_at':utc_now(),'updated_at':utc_now()})
+            flash('Milestone added.' if not err else 'Milestone could not be added.','success' if not err else 'danger')
+        elif action=='submit' and str(job.get('provider_id'))==str(me):
+            db_update('koja_professional_jobs',{'id':job_id},{'status':'submitted','submitted_at':utc_now(),'updated_at':utc_now()}); flash('Work submitted to the customer.','success')
+        elif action=='approve' and str(job.get('customer_id'))==str(me):
+            db_update('koja_professional_jobs',{'id':job_id},{'status':'completed','completed_at':utc_now(),'updated_at':utc_now()}); flash('Job completed.','success')
+        return redirect(request.path)
+    milestones=_ps_milestones(job_id); provider=_ps_provider(job.get('provider_id')); customer=first_row('profiles',{'id':job.get('customer_id')}) or {}
+    return render_page('Professional Job Workspace',r'''
+<div class="hero"><h1>{{ job.title }}</h1><p>{{ job.currency }} {{ job.amount }} · {{ job.status }} · payment {{ job.payment_status }}</p></div>
+<div class="card"><h2>Job workspace</h2><p>Customer: {{ customer.get('full_name') or customer.get('name') or customer.get('email') or 'Customer' }}</p><p>Professional: {{ provider.get('full_name') or provider.get('name') or 'Professional' }}</p>{% if job.provider_id|string == me|string %}<form method="post"><input type="hidden" name="action" value="submit"><button class="btn">Submit Work</button></form>{% endif %}{% if job.customer_id|string == me|string and job.status=='submitted' %}<form method="post"><input type="hidden" name="action" value="approve"><button class="btn">Approve Completion</button></form>{% endif %}</div>
+<div class="card"><h2>Milestones</h2>{% for m in milestones %}<p><strong>{{ m.position }}. {{ m.title }}</strong> · {{ m.status }} · {{ m.currency or job.currency }} {{ m.amount }}</p>{% else %}<p>No milestones yet.</p>{% endfor %}{% if job.provider_id|string == me|string %}<form method="post"><input type="hidden" name="action" value="milestone"><input name="title" placeholder="Milestone title" required><input name="amount" type="number" step="0.01" placeholder="Amount"><textarea name="description" placeholder="Deliverable"></textarea><button class="btn secondary">Add Milestone</button></form>{% endif %}</div>
+''',job=job,milestones=milestones,provider=provider,customer=customer,me=me)
+
 if __name__=="__main__":
     port=int(os.getenv("PORT","5000"))
     app.run(host="0.0.0.0",port=port,debug=False)
