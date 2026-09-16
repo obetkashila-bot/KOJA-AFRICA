@@ -766,7 +766,7 @@ BASE_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<meta name="description" content="{{ meta_description or 'KOJA AFRICA — Knowledge, Questions, Answers.' }}">
+<meta name="description" content="{{ meta_description or 'KOJA AFRICA — knowledge, questions, answers, research, assignments, documents, professional services and delivery services.' }}">
 <meta name="robots" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] %}noindex,nofollow{% else %}index,follow,max-image-preview:large{% endif %}">
 <meta name="googlebot" content="{% if request.path.startswith('/admin') or request.path.startswith('/api/') or request.path in ['/login','/register','/dashboard'] %}noindex,nofollow{% else %}index,follow{% endif %}">
 <meta name="google-site-verification" content="u4nfIf5MfXm0iVvECSQeYAov4Tz4601ayY5kYzNc4ko">
@@ -774,75 +774,159 @@ BASE_HTML = r"""
 <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
 <link rel="icon" type="image/png" sizes="192x192" href="{{ url_for('static', filename='favicon-192.png') }}">
 <link rel="apple-touch-icon" href="{{ url_for('static', filename='favicon-192.png') }}">
-<meta property="og:type" content="website"><meta property="og:site_name" content="KOJA AFRICA">
-<meta property="og:title" content="{{ title or 'KOJA AFRICA' }}"><meta property="og:description" content="{{ meta_description or 'KOJA AFRICA — Knowledge, Questions, Answers.' }}">
-<meta name="theme-color" content="#0b1220"><meta name="csrf-token" content="{{ csrf_token() }}">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="KOJA AFRICA">
+<meta property="og:title" content="{{ title or 'KOJA AFRICA' }}">
+<meta property="og:description" content="{{ meta_description or 'KOJA AFRICA — knowledge, questions, answers, research, assignments, documents, professional services and delivery services.' }}">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="{{ title or 'KOJA AFRICA' }}">
+<meta name="twitter:description" content="{{ meta_description or 'KOJA AFRICA — knowledge, questions, answers, research, assignments, documents, professional services and delivery services.' }}">
+<meta property="og:url" content="{{ SITE_URL }}{{ request.path }}">
+<meta name="author" content="KOJA AFRICA">
+<meta name="application-name" content="KOJA AFRICA">
+<meta name="csrf-token" content="{{ csrf_token() }}">
+<meta name="theme-color" content="#0b1220">
 {% if seo_jsonld %}<script type="application/ld+json">{{ seo_jsonld|safe }}</script>{% endif %}
 <title>{{ title or "KOJA AFRICA" }}</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-(function(){var meta=document.querySelector('meta[name="csrf-token"]'),token=meta?meta.getAttribute('content'):'';var nativeFetch=window.fetch;window.fetch=function(input,init){init=init||{};var method=String(init.method||'GET').toUpperCase();if(token&&['POST','PUT','PATCH','DELETE'].indexOf(method)>=0){var h=new Headers(init.headers||{});if(!h.has('X-CSRF-Token'))h.set('X-CSRF-Token',token);init.headers=h;}return nativeFetch(input,init)};document.addEventListener('DOMContentLoaded',function(){document.querySelectorAll('form').forEach(function(f){if(['GET',''].indexOf((f.method||'GET').toUpperCase())===-1&&token&&!f.querySelector('input[name="_csrf_token"]')){var i=document.createElement('input');i.type='hidden';i.name='_csrf_token';i.value=token;f.appendChild(i)}})});})();
-(function(){try{var t={{ theme|tojson }};var saved=localStorage.getItem('koja_theme');if(['light','dark','system'].indexOf(saved)>=0)t=saved;document.documentElement.dataset.kojaTheme=t||'system'}catch(e){}})();
+(function(){
+  var meta=document.querySelector('meta[name="csrf-token"]');
+  var token=meta?meta.getAttribute('content'):'';
+  var nativeFetch=window.fetch;
+  window.fetch=function(input,init){
+    init=init||{};
+    var method=String(init.method||'GET').toUpperCase();
+    if(token && ['POST','PUT','PATCH','DELETE'].indexOf(method)>=0){
+      var h=new Headers(init.headers||{});
+      if(!h.has('X-CSRF-Token')) h.set('X-CSRF-Token',token);
+      init.headers=h;
+    }
+    return nativeFetch(input,init);
+  };
+  document.addEventListener('DOMContentLoaded',function(){
+    document.querySelectorAll('form').forEach(function(form){
+      if(['GET',''].indexOf((form.method||'GET').toUpperCase())===-1 && token && !form.querySelector('input[name="_csrf_token"]')){
+        var input=document.createElement('input'); input.type='hidden'; input.name='_csrf_token'; input.value=token; form.appendChild(input);
+      }
+    });
+  });
+})();
+</script>
+<script>
+(function(){try{var t={{ theme|tojson }};var saved=localStorage.getItem("koja_theme");if(saved==="light"||saved==="dark"||saved==="system")t=saved;document.documentElement.dataset.kojaTheme=t||"system";}catch(e){}})();
 </script>
 <style>
-*{box-sizing:border-box} :root{color-scheme:light;--bg:#f4f7fb;--surface:#fff;--surface2:#eef3f8;--text:#142033;--muted:#66758a;--border:#dfe6ee;--nav:#0b1b31;--nav2:#102947;--blue:#1677b8;--blue2:#0e5c91;--red:#c93636;--focus:#f2b84b;--shadow:0 10px 30px rgba(15,31,52,.07)}
-html[data-koja-theme="dark"]{color-scheme:dark;--bg:#0b111b;--surface:#121b27;--surface2:#172334;--text:#eef4fb;--muted:#a8b5c4;--border:#2a394b;--nav:#071321;--nav2:#0d2138;--blue:#2b9bd6;--blue2:#1677b8;--red:#e15b5b;--shadow:0 12px 34px rgba(0,0,0,.25)}
-@media(prefers-color-scheme:dark){html[data-koja-theme="system"]{color-scheme:dark;--bg:#0b111b;--surface:#121b27;--surface2:#172334;--text:#eef4fb;--muted:#a8b5c4;--border:#2a394b;--nav:#071321;--nav2:#0d2138;--blue:#2b9bd6;--blue2:#1677b8;--red:#e15b5b;--shadow:0 12px 34px rgba(0,0,0,.25)}}
-html,body{min-height:100%;margin:0}body{font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);line-height:1.55}
-a{color:var(--blue)}button,input,select,textarea{font:inherit}button,.btn{cursor:pointer}
-.koja-shell{min-height:100vh}.koja-sidebar{position:fixed;inset:0 auto 0 0;width:266px;background:linear-gradient(180deg,var(--nav),#091629);color:#fff;z-index:1200;display:flex;flex-direction:column;box-shadow:8px 0 30px rgba(0,0,0,.12)}
-.koja-brand{height:72px;display:flex;align-items:center;gap:11px;padding:0 20px;border-bottom:1px solid rgba(255,255,255,.09);text-decoration:none;color:#fff}.koja-brand-mark{width:39px;height:39px;border-radius:10px;background:linear-gradient(135deg,#1687c6,#c93636);display:grid;place-items:center;box-shadow:0 7px 20px rgba(0,0,0,.25)}.koja-brand-mark svg{width:25px;height:25px}.koja-brand strong{font-size:18px;letter-spacing:.2px}.koja-brand small{display:block;color:#9fb2c8;font-size:10px;margin-top:1px}
-.koja-nav{padding:14px 11px;overflow:auto;flex:1}.koja-section{padding:13px 11px 7px;color:#7f97b2;font-size:10px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase}.koja-nav a{display:flex;align-items:center;gap:10px;color:#d9e5f2;text-decoration:none;padding:10px 12px;margin:2px 0;border-radius:8px;font-size:13px}.koja-nav a:hover{background:rgba(255,255,255,.08);color:#fff}.koja-nav a.active{background:linear-gradient(90deg,rgba(22,119,184,.3),rgba(22,119,184,.08));color:#fff;border-left:3px solid var(--blue);padding-left:9px}.koja-nav .sub{padding-left:26px;font-size:12px;color:#afc0d3}.koja-sidebar-foot{padding:13px 17px;border-top:1px solid rgba(255,255,255,.08);font-size:11px;color:#8fa5bc}
-.koja-main{margin-left:266px;min-height:100vh}.koja-topbar{height:72px;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;padding:0 28px;position:sticky;top:0;z-index:900;box-shadow:0 2px 12px rgba(15,31,52,.04)}.koja-mobile-toggle{display:none;background:var(--nav);color:#fff;border:0;border-radius:8px;padding:9px 12px;width:auto}.koja-top-title{font-size:18px;font-weight:750;margin-right:auto}.koja-top-actions{display:flex;align-items:center;gap:8px}.koja-top-actions a{color:var(--text);text-decoration:none;padding:8px 10px;border-radius:8px}.koja-top-actions a:hover{background:var(--surface2)}.koja-notif{position:relative}.notif-badge{display:inline-flex;min-width:18px;height:18px;padding:0 5px;align-items:center;justify-content:center;border-radius:99px;background:var(--red);color:#fff;font-size:10px;font-weight:800;margin-left:4px}
-.koja-content{width:min(1440px,calc(100% - 46px));margin:24px auto 55px}.container{width:100%;margin:0}.koja-content>.hero:first-child,.hero{border-radius:14px}.hero{background:linear-gradient(135deg,#0b1b31,#145d8f);color:#fff;padding:28px 25px;margin-bottom:18px;box-shadow:var(--shadow)}h1,h2,h3{margin-top:0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px}.card,.stat{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;box-shadow:var(--shadow)}.card{margin-bottom:16px}.card:hover{transform:translateY(-1px);transition:.18s}.stat{min-height:105px}.big{font-size:28px;font-weight:800}.small{color:var(--muted);font-size:13px}.badge{display:inline-block;padding:4px 8px;border-radius:20px;background:var(--surface2);font-size:12px}
-input,select,textarea{width:100%;padding:11px 12px;margin-top:6px;margin-bottom:12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text)}textarea{min-height:150px;line-height:1.55}button,.btn{display:inline-block;background:var(--blue);color:#fff;border:0;text-decoration:none;padding:10px 14px;border-radius:8px;transition:.18s}.btn.secondary{background:#657386}.btn.success{background:#177245}.btn.danger{background:var(--red)}.btn.warning{background:#a16d00}.actions{display:flex;gap:8px;flex-wrap:wrap}.actions .btn,.actions button{width:auto}table{width:100%;border-collapse:collapse}th,td{border-bottom:1px solid var(--border);padding:9px;text-align:left;vertical-align:top}.alert{padding:12px;border-radius:8px;margin-bottom:10px;background:#eaf2ff;color:#18314d}footer{text-align:center;color:var(--muted);padding:25px 15px;border-top:1px solid var(--border)}#map{height:430px;border-radius:12px;overflow:hidden}.map-small{height:300px!important}.online{color:#177245;font-weight:700}.offline{color:var(--red);font-weight:700}
-.koja-overlay{display:none}.koja-mobile-drawer-close{display:none}
-@media(max-width:900px){.koja-sidebar{transform:translateX(-100%);transition:transform .2s ease}.koja-sidebar.open{transform:translateX(0)}.koja-main{margin-left:0}.koja-mobile-toggle{display:block}.koja-topbar{padding:0 14px}.koja-content{width:min(100% - 18px,1440px);margin-top:14px}.koja-overlay.open{display:block;position:fixed;inset:0;background:rgba(0,0,0,.48);z-index:1100}.koja-mobile-drawer-close{display:block;position:absolute;right:12px;top:18px;background:transparent;border:0;color:#fff;font-size:22px;width:auto;padding:2px}.koja-top-actions .hide-mobile{display:none}}
-@media(max-width:600px){.koja-top-title{font-size:16px}.koja-content{width:calc(100% - 12px)}.grid{grid-template-columns:1fr}.actions .btn,.actions button{width:100%}table{display:block;overflow-x:auto}.hero{padding:22px 17px}}
+*{box-sizing:border-box}
+:root{color-scheme:light;--bg:#f5f7fb;--surface:#fff;--text:#172033;--muted:#667085;--border:#e4e7ec;--nav:#10233f;--accent:#176b87;--focus:#f2b84b}
+html[data-koja-theme="dark"]{color-scheme:dark;--bg:#0f1720;--surface:#17212b;--text:#edf2f7;--muted:#aab7c4;--border:#30404f;--nav:#091522;--accent:#2aa7b8;--focus:#f2c15b}
+@media(prefers-color-scheme:dark){html[data-koja-theme="system"]{color-scheme:dark;--bg:#0f1720;--surface:#17212b;--text:#edf2f7;--muted:#aab7c4;--border:#30404f;--nav:#091522;--accent:#2aa7b8;--focus:#f2c15b}}
+body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);line-height:1.55}
+
+nav{background:#10233f;color:#fff;padding:10px 15px;position:sticky;top:0;z-index:1000;box-shadow:0 4px 18px rgba(0,0,0,.12)}
+.nav-inner{max-width:1250px;margin:auto;display:flex;align-items:center;gap:7px}
+.brand{font-weight:800;font-size:19px;margin-right:auto;display:flex;align-items:center;gap:8px;letter-spacing:.2px}.brand-mark{width:32px;height:32px;border-radius:9px;display:inline-grid;place-items:center;background:linear-gradient(135deg,#19a7b8,#f2b84b);box-shadow:0 5px 18px rgba(0,0,0,.22);animation:logoFloat 4s ease-in-out infinite}.brand-mark svg{width:22px;height:22px}.brand-name{white-space:nowrap}
+.menu-toggle{display:none;width:auto;margin:0;padding:8px 12px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);color:#fff;border-radius:9px;font-weight:700;cursor:pointer}
+.menu-toggle:hover{background:rgba(255,255,255,.18);transform:none}
+.nav-links{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+nav a{color:#fff;text-decoration:none;padding:8px 9px;border-radius:7px;transition:background .2s ease,transform .2s ease}
+nav a:hover{background:rgba(255,255,255,.12);transform:translateY(-1px)}
+.notification-bell{position:relative}.notif-badge{display:inline-flex;min-width:18px;height:18px;padding:0 5px;align-items:center;justify-content:center;border-radius:99px;background:#e11d48;color:#fff;font-size:11px;font-weight:800;margin-left:4px}.notification-row{display:flex;gap:12px;padding:15px;border-bottom:1px solid var(--border);cursor:pointer}.notification-row.unread{background:rgba(23,107,135,.07)}.notification-dot{width:9px;height:9px;border-radius:50%;background:var(--accent);margin-top:7px;flex:none}.notification-row:not(.unread) .notification-dot{background:transparent}#np label{display:block;padding:12px 0;border-bottom:1px solid var(--border)}
+.menu-group{position:relative}.menu-group>button{width:auto;margin:0;padding:8px 10px;background:rgba(255,255,255,.08);color:#fff;border:0;border-radius:7px;cursor:pointer;font:inherit}.menu-group>button:hover{background:rgba(255,255,255,.15);transform:none}
+.dropdown{display:none;position:absolute;right:0;top:calc(100% + 7px);min-width:210px;background:var(--surface);border-radius:11px;padding:7px;box-shadow:0 12px 35px rgba(0,0,0,.2);border:1px solid #e5e7eb}
+.dropdown.open{display:block;animation:menuDrop .18s ease both}.dropdown a{display:block;color:var(--text)!important;padding:10px 11px;white-space:nowrap}.dropdown a:hover{background:#eef5f8;transform:none}
+@keyframes menuDrop{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:translateY(0)}}
+.container{width:min(1250px,calc(100% - 24px));margin:20px auto 50px}
+.card{background:var(--surface);border-radius:13px;padding:18px;margin-bottom:16px;box-shadow:0 3px 14px rgba(0,0,0,.06);animation:fadeUp .45s ease both}.card:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.09);transition:transform .2s ease,box-shadow .2s ease}
+.hero{background:linear-gradient(135deg,#10233f,#176b87);color:#fff;padding:28px 20px;border-radius:15px;margin-bottom:18px}
+h1,h2,h3{margin-top:0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:15px}
+input,select,textarea,button{width:100%;padding:11px 12px;margin-top:6px;margin-bottom:12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font:inherit}
+textarea{min-height:150px;line-height:1.55;resize:vertical} textarea[name="prompt"]{min-height:190px;padding:16px;border-radius:16px;font-size:1rem} textarea[name="q"]{min-height:90px;resize:vertical}
+button,.btn{display:inline-block;background:#176b87;color:#fff;border:0;text-decoration:none;cursor:pointer;padding:10px 14px;border-radius:8px;transition:transform .2s ease,box-shadow .2s ease,filter .2s ease}button:hover,.btn:hover{transform:translateY(-2px);box-shadow:0 7px 18px rgba(0,0,0,.12);filter:brightness(1.04)}button:active,.btn:active{transform:translateY(0)}
+.btn.secondary{background:#5f6b7a}.btn.success{background:#177245}.btn.danger{background:#a62d2d}.btn.warning{background:#9b6b00}
+table{width:100%;border-collapse:collapse}
+th,td{border-bottom:1px solid var(--border);padding:9px;text-align:left;vertical-align:top}
+.alert{padding:12px;border-radius:8px;margin-bottom:10px;background:#eaf2ff}
+.stat{padding:18px;background:var(--surface);border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,.05)}
+.big{font-size:28px;font-weight:800}
+.small{color:var(--muted);font-size:13px}.badge{display:inline-block;padding:4px 8px;border-radius:20px;background:#e7eef5;font-size:12px}
+#map{height:430px;border-radius:12px;overflow:hidden}
+.map-small{height:300px!important}
+.driver-card{border:2px solid #e4e7ec}
+.driver-card.selected{border-color:#176b87}
+.online{color:#177245;font-weight:700}
+.offline{color:#a62d2d;font-weight:700}
+footer{text-align:center;color:var(--muted);padding:30px}
+.actions{display:flex;gap:8px;flex-wrap:wrap}.actions .btn,.actions button{width:auto}
+@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}@keyframes logoFloat{0%,100%{transform:translateY(0) rotate(0deg)}50%{transform:translateY(-2px) rotate(1deg)}}@keyframes pulseSoft{0%,100%{box-shadow:0 0 0 0 rgba(25,167,184,.18)}50%{box-shadow:0 0 0 7px rgba(25,167,184,0)}}:focus-visible{outline:3px solid var(--focus);outline-offset:2px}.hero{animation:fadeUp .55s ease both}.stat{animation:fadeUp .5s ease both}.online{animation:pulseSoft 2.4s ease-in-out infinite}@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition:none!important;transform:none!important}}
+@media(max-width:760px){nav{padding:9px 12px}.nav-inner{position:relative;flex-wrap:wrap}.menu-toggle{display:block}.nav-links{display:none;width:100%;flex-direction:column;align-items:stretch;gap:3px;padding-top:8px}.nav-links.open{display:flex;animation:fadeUp .2s ease both}.nav-links>a{font-size:14px;padding:11px 12px;background:rgba(255,255,255,.05)}.menu-group{width:100%}.menu-group>button{width:100%;text-align:left;padding:11px 12px}.dropdown{position:static;width:100%;box-shadow:none;margin-top:4px;background:var(--surface)}.dropdown a{font-size:14px}.container{width:min(100% - 14px,1250px)}table{display:block;overflow-x:auto}#map{height:350px}.actions .btn,.actions button{width:100%}}
+@media(min-width:761px){.nav-links{display:flex!important}}
 </style>
 </head>
 <body>
-<div class="koja-shell">
-<aside class="koja-sidebar" id="kojaSidebar">
-<button class="koja-mobile-drawer-close" type="button" onclick="closeKOJADrawer()" aria-label="Close menu">×</button>
-<a class="koja-brand" href="{{ url_for('home') }}"><span class="koja-brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 18V6h7.2a5.3 5.3 0 0 1 0 10.6H8.5" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 9.1h3.4a1.9 1.9 0 0 1 0 3.8H8.5" stroke="white" stroke-width="2.2" stroke-linecap="round"/></svg></span><span><strong>KOJA AFRICA</strong><small>Knowledge • Questions • Answers</small></span></a>
-<nav class="koja-nav" aria-label="KOJA navigation">
-<div class="koja-section">Home</div>
-<a href="{{ url_for('home') }}">Overview</a>{% if user %}<a href="{{ url_for('dashboard') }}">Dashboard</a>{% endif %}
-{% if user %}<div class="koja-section">KOJA Business</div>
-<a href="{{ url_for('business') }}">Business Dashboard</a><a class="sub" href="{{ url_for('business') }}">Business Organisation</a><a class="sub" href="{{ url_for('services') }}">Business Services</a>
-<div class="koja-section">Intelligence</div>
-<a href="{{ url_for('ai_nextgen') }}">KOJA AI</a><a href="{{ url_for('research') }}">Research</a><a href="{{ url_for('documents') }}">Documents & AI</a><a href="{{ url_for('koja_named_engines') }}">Core Engines</a>
-<div class="koja-section">Commerce</div>
-<a href="{{ url_for('koja_market') }}">KOJA Market</a><a href="{{ url_for('marketplace') }}">Digital Marketplace</a><a href="{{ url_for('deliveries') }}">Delivery</a><a href="{{ url_for('drivers') }}">Drivers</a>
-<div class="koja-section">Professional</div>
-<a href="{{ url_for('services') }}">Professional Services</a>
-<div class="koja-section">Communication</div>
+<nav aria-label="Primary navigation">
+<div class="nav-inner">
+<div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 18V6h7.2a5.3 5.3 0 0 1 0 10.6H8.5" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 9.1h3.4a1.9 1.9 0 0 1 0 3.8H8.5" stroke="white" stroke-width="2.2" stroke-linecap="round"/></svg></span><span class="brand-name">KOJA AFRICA</span></div>
+<button class="menu-toggle" id="menuToggle" type="button" aria-expanded="false" aria-controls="navLinks" aria-label="Open menu"> Menu</button>
+<div class="nav-links" id="navLinks">
+<a href="{{ url_for('home') }}">Home</a>
+{% if user %}
+<a href="{{ url_for('dashboard') }}">Dashboard</a>
+<a href="{{ url_for('services') }}">Services</a>
+<a href="{{ url_for('research') }}">Research</a>
+<a href="{{ url_for('ai_nextgen') }}">KOJA AI</a>
+<a class="notification-bell" href="{{ url_for('notifications_page') }}" aria-label="Notifications">Notifications <span id="kojaNotifBadge" class="notif-badge" hidden></span></a>
+<a href="{{ '/market' }}">KOJA Market</a> <a href="{{ url_for('market_live') }}">Live Shop</a>
 <a href="{{ url_for('communication_nextgen') }}">Connect+</a>
-<div class="koja-section">Account</div>
-<a href="{{ url_for('notifications_page') }}">Notifications <span id="kojaNotifBadge" class="notif-badge" hidden></span></a><a href="{{ url_for('settings') }}">Settings</a>{% if user.role in ['driver','admin'] or user.is_admin %}<a href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}{% if user and user.is_admin %}<a href="{{ url_for('admin') }}">Admin</a>{% endif %}<a href="{{ url_for('logout') }}">Logout</a>
-{% else %}<div class="koja-section">Account</div><a href="{{ url_for('login') }}">Login</a><a href="{{ url_for('register') }}">Register</a>{% endif %}
-</nav><div class="koja-sidebar-foot">KOJA AFRICA Platform<br>Existing services and engines connected</div>
-</aside>
-<div class="koja-overlay" id="kojaOverlay" onclick="closeKOJADrawer()"></div>
-<main class="koja-main">
-<header class="koja-topbar"><button class="koja-mobile-toggle" type="button" onclick="openKOJADrawer()" aria-label="Open menu">Menu</button><div class="koja-top-title">{{ title or 'KOJA AFRICA' }}</div><div class="koja-top-actions">{% if user %}<a class="hide-mobile" href="{{ url_for('home') }}">Home</a><a class="koja-notif" href="{{ url_for('notifications_page') }}">Notifications <span class="notif-badge" id="kojaNotifBadgeTop" hidden></span></a>{% endif %}</div></header>
-<div class="koja-content">
-{% with messages=get_flashed_messages(with_categories=true) %}{% for category,message in messages %}<div class="alert">{{ message }}</div>{% endfor %}{% endwith %}
+<div class="menu-group">
+<button type="button" id="moreMenuButton" aria-expanded="false" aria-haspopup="true">More ▾</button>
+<div class="dropdown" id="moreMenu" role="menu">
+<a role="menuitem" href="{{ url_for('questions') }}">Questions</a>
+<a role="menuitem" href="{{ url_for('assignments') }}">Assignments</a>
+<a role="menuitem" href="{{ url_for('public_feed') }}">Public</a>
+<a role="menuitem" href="{{ url_for('news_nextgen') }}">News</a>
+<a role="menuitem" href="{{ url_for('media_nextgen') }}">Media</a>
+<a role="menuitem" href="{{ url_for('public_videos') }}">Videos</a>
+<a role="menuitem" href="{{ url_for('marketplace') }}">Digital Marketplace</a>
+<a role="menuitem" href="{{ url_for('connect') }}">Communication</a>
+<a role="menuitem" href="{{ url_for('professional_communication') }}">Professional Communication</a>
+<a role="menuitem" href="{{ url_for('deliveries') }}">Deliveries</a>
+<a role="menuitem" href="{{ url_for('drivers') }}">Drivers</a>
+<a role="menuitem" href="{{ url_for('koja_cloud_page') }}">KOJA Cloud</a>
+<a role="menuitem" href="{{ url_for('settings') }}">Settings</a>
+{% if user.role in ['driver','admin'] or user.is_admin %}<a role="menuitem" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}
+{% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('admin') }}">Admin</a><a role="menuitem" href="{{ url_for('admin_market') }}">KOJA Market Admin</a><a role="menuitem" href="{{ url_for('admin_marketplace') }}">Digital Marketplace Admin</a>{% endif %}
+<a role="menuitem" href="{{ url_for('logout') }}">Logout</a>
+</div></div>
+{% else %}
+<a href="{{ url_for('login') }}">Login</a>
+<a href="{{ url_for('register') }}">Register</a>
+{% endif %}
+</div>
+</div>
+</nav>
+<script>
+(function(){
+ const toggle=document.getElementById('menuToggle'), links=document.getElementById('navLinks'), more=document.getElementById('moreMenuButton'), drop=document.getElementById('moreMenu');
+ if(toggle){toggle.addEventListener('click',function(){const open=links.classList.toggle('open');toggle.setAttribute('aria-expanded',open);toggle.setAttribute('aria-label',open?'Close menu':'Open menu');toggle.innerHTML=open?' Close':' Menu';});}
+ if(more&&drop){more.addEventListener('click',function(e){e.stopPropagation();const open=drop.classList.toggle('open');more.setAttribute('aria-expanded',open);});document.addEventListener('click',function(e){if(!e.target.closest('.menu-group')){drop.classList.remove('open');more.setAttribute('aria-expanded','false');}});}
+ document.querySelectorAll('#navLinks a').forEach(function(a){a.addEventListener('click',function(){if(window.innerWidth<=760&&links.classList.contains('open')){links.classList.remove('open');toggle.setAttribute('aria-expanded','false');toggle.setAttribute('aria-label','Open menu');toggle.innerHTML=' Menu';}});});
+ window.addEventListener('resize',function(){if(window.innerWidth>760){links.classList.remove('open');toggle&&toggle.setAttribute('aria-expanded','false');toggle&&(toggle.innerHTML=' Menu');}});
+})();
+</script>
+{% if user %}<script>async function refreshKOJANotifications(){try{let r=await fetch('/api/notifications');if(!r.ok)return;let d=await r.json(),b=document.getElementById('kojaNotifBadge');if(!b)return;if(d.unread>0){b.hidden=false;b.textContent=d.unread>99?'99+':d.unread}else b.hidden=true}catch(e){}}refreshKOJANotifications();setInterval(refreshKOJANotifications,20000);</script>{% endif %}
+<div class="container">
+{% with messages=get_flashed_messages(with_categories=true) %}
+{% for category,message in messages %}<div class="alert">{{ message }}</div>{% endfor %}
+{% endwith %}
 {{ body|safe }}
 </div>
-<footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Business • Intelligence • Commerce • Professional • Communication</footer>
-</main></div>
-<script>
-function openKOJADrawer(){document.getElementById('kojaSidebar').classList.add('open');document.getElementById('kojaOverlay').classList.add('open');document.body.style.overflow='hidden'}
-function closeKOJADrawer(){document.getElementById('kojaSidebar').classList.remove('open');document.getElementById('kojaOverlay').classList.remove('open');document.body.style.overflow=''}
-document.querySelectorAll('.koja-nav a').forEach(function(a){if(a.pathname===location.pathname)a.classList.add('active');a.addEventListener('click',closeKOJADrawer)});
-{% if user %}async function refreshKOJANotifications(){try{let r=await fetch('/api/notifications');if(!r.ok)return;let d=await r.json();document.querySelectorAll('.notif-badge').forEach(function(b){if(d.unread>0){b.hidden=false;b.textContent=d.unread>99?'99+':d.unread}else b.hidden=true})}catch(e){}}refreshKOJANotifications();setInterval(refreshKOJANotifications,20000);{% endif %}
-</script>
-</body></html>
+<footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services</footer>
+</body>
+</html>
 """
-
 
 def render_page(title, body_template, **context):
     context["user"] = current_user()
@@ -3705,6 +3789,9 @@ def flutterwave_webhook():
     if not market_orders and not marketplace_order and not monetization_order:
         logger.warning('Flutterwave webhook unknown reference tx_ref=%s',tx_ref)
         return jsonify({'status':'ignored','reason':'unknown_reference'}),200
+    bridge_user = (market_orders[0].get('buyer_id') if market_orders else None) or (marketplace_order or {}).get('buyer_id') or (monetization_order or {}).get('user_id')
+    bridge_source = 'koja_market' if market_orders else ('koja_marketplace' if marketplace_order else 'koja_monetization')
+    bridge = _rpv2_sync_verified_payment(tx, tx_ref, user_id=bridge_user, source_type=bridge_source, metadata={'market_orders':len(market_orders),'marketplace_order_id':(marketplace_order or {}).get('id'),'monetization_order_id':(monetization_order or {}).get('id')})
     results=[]
     if market_orders:
         ok_count=0
@@ -3721,7 +3808,7 @@ def flutterwave_webhook():
         logger.info('KOJA monetization finalization tx_ref=%s order=%s result=%s',tx_ref,monetization_order.get('id'),ok)
         results.append('monetization:'+('finalized_or_paid' if ok else 'failed'))
         results.append('digital:'+('finalized_or_paid' if ok else 'failed'))
-    return jsonify({'status':'ok','processed':results}),200
+    return jsonify({'status':'ok','processed':results,'revenue_foundation':bridge}),200
 
 @app.route('/market/sell',methods=['GET','POST'])
 @login_required
@@ -9123,6 +9210,137 @@ def koja_cloud_revoke_key():
 def koja_core_status():
     tables=['profiles','koja_service_registry','koja_engine_events','koja_user_service_events','koja_unified_transactions','koja_v14_payment_intents','koja_api_keys','koja_v17_identity']
     return jsonify({'ok':True,'engines':{k:{'name':v['name'],'attached_services':v['core']} for k,v in KOJA_NAMED_ENGINES.items()},'core_tables':{t:table_exists(t) for t in tables}})
+
+# ============================================================
+# KOJA REVENUE & PAYMENTS V2 -> PLATFORM FOUNDATIONS V2
+# Additive bridge. Existing Flutterwave/payment finalizers remain the source of truth.
+# Communications intentionally untouched.
+# ============================================================
+
+def _rpv2_uid():
+    return str((current_user() or {}).get('id') or '') or None
+
+def _rpv2_org_id():
+    u=current_user() or {}
+    return str(u.get('organization_id') or u.get('org_id') or '') or None
+
+def _rpv2_event(event_type, entity_type='', entity_id=None, payload=None, user_id=None, organization_id=None):
+    try:
+        uid=user_id or _rpv2_uid()
+        eid=str(entity_id or uuid.uuid4())
+        key=f"revenue:{clean(event_type)}:{eid}"
+        row,err=db_insert('koja_platform_events',{
+            'event_key':key,'idempotency_key':key,'user_id':uid,
+            'organization_id':organization_id or _rpv2_org_id(),
+            'service_key':'revenue_payments','event_type':clean(event_type),
+            'entity_type':clean(entity_type),'entity_id':eid,
+            'country_code':(current_user() or {}).get('country_code') or 'ZM',
+            'payload':payload or {},'created_at':utc_now()
+        })
+        return row,err
+    except Exception as exc:
+        logger.warning('Revenue platform event bridge unavailable: %s',exc)
+        return None,str(exc)
+
+def _rpv2_foundation_transaction(source_type, source_id, amount, currency='ZMW', status='completed',
+                                 payment_reference=None, provider='flutterwave', metadata=None,
+                                 user_id=None, organization_id=None):
+    try:
+        uid=user_id or _rpv2_uid()
+        sid=str(source_id or uuid.uuid4()); st=clean(source_type) or 'payment'
+        key=f"revenue:tx:{st}:{sid}"
+        row,err=db_insert('koja_unified_transactions',{
+            'user_id':uid,'organization_id':organization_id or _rpv2_org_id(),
+            'service_key':'revenue_payments','source_type':st,'source_id':sid,
+            'external_reference':clean(payment_reference) or None,
+            'amount':float(amount or 0),'currency':clean(currency) or 'ZMW',
+            'status':clean(status) or 'completed','payment_provider':clean(provider) or None,
+            'payment_reference':clean(payment_reference) or None,
+            'idempotency_key':key,'metadata':metadata or {},'created_at':utc_now(),
+            'completed_at':utc_now() if str(status).lower() in ('completed','successful','paid','settled') else None,
+            'updated_at':utc_now()
+        })
+        return row,err
+    except Exception as exc:
+        logger.warning('Revenue unified transaction bridge unavailable: %s',exc)
+        return None,str(exc)
+
+def _rpv2_engine_revenue(amount, currency='ZMW', reference_id=None, source_type='payment',
+                         user_id=None, organization_id=None, metadata=None):
+    try:
+        ref=clean(reference_id) or str(uuid.uuid4())
+        payload={
+            'service_key':'revenue_payments','revenue_type':'payment_received',
+            'amount':float(amount or 0),'currency':clean(currency) or 'ZMW',
+            'reference_id':ref,'user_id':user_id or _rpv2_uid(),
+            'organization_id':organization_id or _rpv2_org_id(),
+            'source_type':clean(source_type) or 'payment','source_id':ref,
+            'gross_amount':float(amount or 0),'seller_amount':float(amount or 0),
+            'idempotency_key':f"revenue:ledger:{ref}",
+            'metadata':metadata or {},'created_at':utc_now()
+        }
+        return db_insert('koja_engine_revenue',payload)
+    except Exception as exc:
+        logger.warning('Revenue engine ledger bridge unavailable: %s',exc)
+        return None,str(exc)
+
+def _rpv2_sync_verified_payment(tx, tx_ref, user_id=None, organization_id=None, source_type='flutterwave_payment', source_id=None, metadata=None):
+    """Fail-soft, idempotent bridge for a verified Flutterwave payment."""
+    try:
+        if not tx: return {'ok':False,'reason':'missing_transaction'}
+        status=clean(tx.get('status')).lower()
+        if status not in ('successful','completed','paid','settled'):
+            return {'ok':False,'reason':'not_successful'}
+        ref=clean(tx_ref or tx.get('tx_ref') or tx.get('reference'))
+        if not ref: return {'ok':False,'reason':'missing_reference'}
+        amount=float(tx.get('amount') or 0)
+        currency=clean(tx.get('currency') or 'ZMW')
+        provider_id=clean(tx.get('id') or tx.get('transaction_id'))
+        sid=str(source_id or provider_id or ref)
+        meta=dict(metadata or {})
+        meta.update({'provider':'flutterwave','provider_transaction_id':provider_id,'payment_reference':ref})
+        if table_exists('koja_revenue_v2_transactions'):
+            existing=first_row('koja_revenue_v2_transactions',{'external_reference':ref})
+            if existing:
+                rtx=existing
+            else:
+                rtx,_=db_insert('koja_revenue_v2_transactions',{
+                    'user_id':user_id or _rpv2_uid(),'organization_id':organization_id or _rpv2_org_id(),
+                    'external_reference':ref,'provider':'flutterwave','provider_transaction_id':provider_id,
+                    'payment_method':clean(tx.get('payment_type') or tx.get('payment_method') or 'mobile_money'),
+                    'transaction_type':'payment','amount':amount,'currency':currency,'fee_amount':0,
+                    'status':'completed','description':'Verified Flutterwave payment',
+                    'metadata':meta,'created_at':utc_now(),'updated_at':utc_now()
+                })
+        else:
+            rtx=None
+        rtx_id=(rtx or {}).get('id') or sid
+        _rpv2_foundation_transaction('revenue_payment',rtx_id,amount,currency,'completed',ref,'flutterwave',meta,user_id,organization_id)
+        _rpv2_event('payment.completed','revenue_payment',rtx_id,{'amount':amount,'currency':currency,'reference':ref,'provider_transaction_id':provider_id},user_id,organization_id)
+        _rpv2_engine_revenue(amount,currency,ref,source_type,user_id,organization_id,meta)
+        if table_exists('koja_revenue_v2_events'):
+            try:
+                db_insert('koja_revenue_v2_events',{
+                    'user_id':user_id or _rpv2_uid(),'organization_id':organization_id or _rpv2_org_id(),
+                    'event_type':'payment.completed','entity_type':'revenue_payment','entity_id':rtx_id,
+                    'payload':meta,'created_at':utc_now()
+                })
+            except Exception: pass
+        return {'ok':True,'transaction_id':rtx_id,'reference':ref}
+    except Exception as exc:
+        logger.warning('Revenue V2 foundation sync failed (fail-soft): %s',exc)
+        return {'ok':False,'reason':str(exc)}
+
+@app.route('/api/platform/revenue-payments/status')
+@login_required
+def revenue_payments_foundation_status():
+    tables=['koja_revenue_v2_transactions','koja_revenue_v2_commissions','koja_revenue_v2_settlements',
+            'koja_revenue_v2_payouts','koja_revenue_v2_invoices','koja_revenue_v2_events',
+            'koja_platform_events','koja_unified_transactions','koja_engine_revenue']
+    return jsonify({'ok':all(table_exists(t) for t in tables),
+                    'version':'REVENUE-PAYMENTS-V2-FOUNDATION-V1',
+                    'checks':{t:table_exists(t) for t in tables}})
+
 # KOJA PROFIT ENGINE V1 — unified monetization, AI credits,
 # platform revenue ledger and profit dashboard
 # SAFE/ADDITIVE: existing services and Communications are untouched.
