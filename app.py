@@ -2440,7 +2440,7 @@ def services():
 <div class="card"><h3>Learning and Research</h3><p>One connected workspace for academic questions, assignments, documents, research and document-based AI.</p><div class="actions"><a class="btn" href="{{ url_for('questions') }}">Questions</a><a class="btn" href="{{ url_for('assignments') }}">Assignments</a><a class="btn" href="{{ url_for('documents') }}">Documents and AI</a><a class="btn secondary" href="{{ url_for('research') }}">Research</a></div></div>
 <div class="card"><h3>AI and Workspace</h3><p>General AI, document intelligence, connected knowledge and productivity tools use the same KOJA AI foundation.</p><div class="actions"><a class="btn" href="{{ url_for('ai_assistant') }}">KOJA AI</a><a class="btn secondary" href="{{ url_for('documents') }}">Document AI</a><a class="btn secondary" href="{{ url_for('cv') }}">CV and Documents</a></div></div>
 <div class="card"><h3>Professional Services</h3><p>Doctors, teachers, tutors and other professionals are grouped under one discovery and identity workflow.</p><div class="actions"><a class="btn" href="{{ url_for('professionals') }}">Professionals</a><a class="btn secondary" href="{{ url_for('doctors') }}">Doctors</a><a class="btn secondary" href="{{ url_for('teachers') }}">Teachers and Tutors</a><a class="btn secondary" href="{{ url_for('professional_register') }}">Register Profession</a></div></div>
-<div class="card"><h3>Market and Business</h3><p>Buying, selling, business operations, payments, accounting and seller tools share the same commerce foundation.</p><div class="actions"><a class="btn" href="{{ url_for('market') }}">KOJA Market</a><a class="btn secondary" href="{{ url_for('marketplace') }}">Digital Marketplace</a></div></div>
+<div class="card"><h3>Market and Business</h3><p>Buying, selling, business operations, payments, accounting and seller tools share the same commerce foundation.</p><div class="actions"><a class="btn" href="{{ url_for('koja_market') }}">KOJA Market</a><a class="btn secondary" href="{{ url_for('marketplace') }}">Digital Marketplace</a></div></div>
 <div class="card"><h3>Delivery and Logistics</h3><p>Orders, drivers, live GPS, delivery requests, tracking and delivery security operate as one logistics workflow.</p><div class="actions"><a class="btn" href="{{ url_for('deliveries') }}">Delivery</a><a class="btn secondary" href="{{ url_for('tracking') }}">Live GPS</a></div></div>
 <div class="card"><h3>Communication</h3><p>Messaging, voice, video, groups, presence and status remain one connected communication service.</p><a class="btn" href="{{ url_for('connect') }}">Open Communication</a></div>
 </div>
@@ -3789,9 +3789,6 @@ def flutterwave_webhook():
     if not market_orders and not marketplace_order and not monetization_order:
         logger.warning('Flutterwave webhook unknown reference tx_ref=%s',tx_ref)
         return jsonify({'status':'ignored','reason':'unknown_reference'}),200
-    bridge_user = (market_orders[0].get('buyer_id') if market_orders else None) or (marketplace_order or {}).get('buyer_id') or (monetization_order or {}).get('user_id')
-    bridge_source = 'koja_market' if market_orders else ('koja_marketplace' if marketplace_order else 'koja_monetization')
-    bridge = _rpv2_sync_verified_payment(tx, tx_ref, user_id=bridge_user, source_type=bridge_source, metadata={'market_orders':len(market_orders),'marketplace_order_id':(marketplace_order or {}).get('id'),'monetization_order_id':(monetization_order or {}).get('id')})
     results=[]
     if market_orders:
         ok_count=0
@@ -3808,7 +3805,7 @@ def flutterwave_webhook():
         logger.info('KOJA monetization finalization tx_ref=%s order=%s result=%s',tx_ref,monetization_order.get('id'),ok)
         results.append('monetization:'+('finalized_or_paid' if ok else 'failed'))
         results.append('digital:'+('finalized_or_paid' if ok else 'failed'))
-    return jsonify({'status':'ok','processed':results,'revenue_foundation':bridge}),200
+    return jsonify({'status':'ok','processed':results}),200
 
 @app.route('/market/sell',methods=['GET','POST'])
 @login_required
@@ -9210,137 +9207,6 @@ def koja_cloud_revoke_key():
 def koja_core_status():
     tables=['profiles','koja_service_registry','koja_engine_events','koja_user_service_events','koja_unified_transactions','koja_v14_payment_intents','koja_api_keys','koja_v17_identity']
     return jsonify({'ok':True,'engines':{k:{'name':v['name'],'attached_services':v['core']} for k,v in KOJA_NAMED_ENGINES.items()},'core_tables':{t:table_exists(t) for t in tables}})
-
-# ============================================================
-# KOJA REVENUE & PAYMENTS V2 -> PLATFORM FOUNDATIONS V2
-# Additive bridge. Existing Flutterwave/payment finalizers remain the source of truth.
-# Communications intentionally untouched.
-# ============================================================
-
-def _rpv2_uid():
-    return str((current_user() or {}).get('id') or '') or None
-
-def _rpv2_org_id():
-    u=current_user() or {}
-    return str(u.get('organization_id') or u.get('org_id') or '') or None
-
-def _rpv2_event(event_type, entity_type='', entity_id=None, payload=None, user_id=None, organization_id=None):
-    try:
-        uid=user_id or _rpv2_uid()
-        eid=str(entity_id or uuid.uuid4())
-        key=f"revenue:{clean(event_type)}:{eid}"
-        row,err=db_insert('koja_platform_events',{
-            'event_key':key,'idempotency_key':key,'user_id':uid,
-            'organization_id':organization_id or _rpv2_org_id(),
-            'service_key':'revenue_payments','event_type':clean(event_type),
-            'entity_type':clean(entity_type),'entity_id':eid,
-            'country_code':(current_user() or {}).get('country_code') or 'ZM',
-            'payload':payload or {},'created_at':utc_now()
-        })
-        return row,err
-    except Exception as exc:
-        logger.warning('Revenue platform event bridge unavailable: %s',exc)
-        return None,str(exc)
-
-def _rpv2_foundation_transaction(source_type, source_id, amount, currency='ZMW', status='completed',
-                                 payment_reference=None, provider='flutterwave', metadata=None,
-                                 user_id=None, organization_id=None):
-    try:
-        uid=user_id or _rpv2_uid()
-        sid=str(source_id or uuid.uuid4()); st=clean(source_type) or 'payment'
-        key=f"revenue:tx:{st}:{sid}"
-        row,err=db_insert('koja_unified_transactions',{
-            'user_id':uid,'organization_id':organization_id or _rpv2_org_id(),
-            'service_key':'revenue_payments','source_type':st,'source_id':sid,
-            'external_reference':clean(payment_reference) or None,
-            'amount':float(amount or 0),'currency':clean(currency) or 'ZMW',
-            'status':clean(status) or 'completed','payment_provider':clean(provider) or None,
-            'payment_reference':clean(payment_reference) or None,
-            'idempotency_key':key,'metadata':metadata or {},'created_at':utc_now(),
-            'completed_at':utc_now() if str(status).lower() in ('completed','successful','paid','settled') else None,
-            'updated_at':utc_now()
-        })
-        return row,err
-    except Exception as exc:
-        logger.warning('Revenue unified transaction bridge unavailable: %s',exc)
-        return None,str(exc)
-
-def _rpv2_engine_revenue(amount, currency='ZMW', reference_id=None, source_type='payment',
-                         user_id=None, organization_id=None, metadata=None):
-    try:
-        ref=clean(reference_id) or str(uuid.uuid4())
-        payload={
-            'service_key':'revenue_payments','revenue_type':'payment_received',
-            'amount':float(amount or 0),'currency':clean(currency) or 'ZMW',
-            'reference_id':ref,'user_id':user_id or _rpv2_uid(),
-            'organization_id':organization_id or _rpv2_org_id(),
-            'source_type':clean(source_type) or 'payment','source_id':ref,
-            'gross_amount':float(amount or 0),'seller_amount':float(amount or 0),
-            'idempotency_key':f"revenue:ledger:{ref}",
-            'metadata':metadata or {},'created_at':utc_now()
-        }
-        return db_insert('koja_engine_revenue',payload)
-    except Exception as exc:
-        logger.warning('Revenue engine ledger bridge unavailable: %s',exc)
-        return None,str(exc)
-
-def _rpv2_sync_verified_payment(tx, tx_ref, user_id=None, organization_id=None, source_type='flutterwave_payment', source_id=None, metadata=None):
-    """Fail-soft, idempotent bridge for a verified Flutterwave payment."""
-    try:
-        if not tx: return {'ok':False,'reason':'missing_transaction'}
-        status=clean(tx.get('status')).lower()
-        if status not in ('successful','completed','paid','settled'):
-            return {'ok':False,'reason':'not_successful'}
-        ref=clean(tx_ref or tx.get('tx_ref') or tx.get('reference'))
-        if not ref: return {'ok':False,'reason':'missing_reference'}
-        amount=float(tx.get('amount') or 0)
-        currency=clean(tx.get('currency') or 'ZMW')
-        provider_id=clean(tx.get('id') or tx.get('transaction_id'))
-        sid=str(source_id or provider_id or ref)
-        meta=dict(metadata or {})
-        meta.update({'provider':'flutterwave','provider_transaction_id':provider_id,'payment_reference':ref})
-        if table_exists('koja_revenue_v2_transactions'):
-            existing=first_row('koja_revenue_v2_transactions',{'external_reference':ref})
-            if existing:
-                rtx=existing
-            else:
-                rtx,_=db_insert('koja_revenue_v2_transactions',{
-                    'user_id':user_id or _rpv2_uid(),'organization_id':organization_id or _rpv2_org_id(),
-                    'external_reference':ref,'provider':'flutterwave','provider_transaction_id':provider_id,
-                    'payment_method':clean(tx.get('payment_type') or tx.get('payment_method') or 'mobile_money'),
-                    'transaction_type':'payment','amount':amount,'currency':currency,'fee_amount':0,
-                    'status':'completed','description':'Verified Flutterwave payment',
-                    'metadata':meta,'created_at':utc_now(),'updated_at':utc_now()
-                })
-        else:
-            rtx=None
-        rtx_id=(rtx or {}).get('id') or sid
-        _rpv2_foundation_transaction('revenue_payment',rtx_id,amount,currency,'completed',ref,'flutterwave',meta,user_id,organization_id)
-        _rpv2_event('payment.completed','revenue_payment',rtx_id,{'amount':amount,'currency':currency,'reference':ref,'provider_transaction_id':provider_id},user_id,organization_id)
-        _rpv2_engine_revenue(amount,currency,ref,source_type,user_id,organization_id,meta)
-        if table_exists('koja_revenue_v2_events'):
-            try:
-                db_insert('koja_revenue_v2_events',{
-                    'user_id':user_id or _rpv2_uid(),'organization_id':organization_id or _rpv2_org_id(),
-                    'event_type':'payment.completed','entity_type':'revenue_payment','entity_id':rtx_id,
-                    'payload':meta,'created_at':utc_now()
-                })
-            except Exception: pass
-        return {'ok':True,'transaction_id':rtx_id,'reference':ref}
-    except Exception as exc:
-        logger.warning('Revenue V2 foundation sync failed (fail-soft): %s',exc)
-        return {'ok':False,'reason':str(exc)}
-
-@app.route('/api/platform/revenue-payments/status')
-@login_required
-def revenue_payments_foundation_status():
-    tables=['koja_revenue_v2_transactions','koja_revenue_v2_commissions','koja_revenue_v2_settlements',
-            'koja_revenue_v2_payouts','koja_revenue_v2_invoices','koja_revenue_v2_events',
-            'koja_platform_events','koja_unified_transactions','koja_engine_revenue']
-    return jsonify({'ok':all(table_exists(t) for t in tables),
-                    'version':'REVENUE-PAYMENTS-V2-FOUNDATION-V1',
-                    'checks':{t:table_exists(t) for t in tables}})
-
 # KOJA PROFIT ENGINE V1 — unified monetization, AI credits,
 # platform revenue ledger and profit dashboard
 # SAFE/ADDITIVE: existing services and Communications are untouched.
