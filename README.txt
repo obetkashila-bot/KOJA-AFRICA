@@ -1,5 +1,30 @@
-KOJA B2B V4 COMPLETE TRANSACTION ENGINE
+KOJA GLOBAL BUSINESS V7 — COMPLETE BUSINESS CONNECT
 
-Additive layer: RFQ/request -> quote -> quote approval -> order -> Flutterwave payment verification -> fulfilment -> existing KOJA delivery engine -> completion -> review -> ledger.
+This package extends the existing KOJA AFRICA single-file Flask application.
 
-Apply SQL before deploying app.py. No existing table is dropped or recreated. Connect+ is untouched.
+Files:
+- app.py: latest KOJA app plus complete Business Connect V7 routes/UI/API.
+- KOJA_GLOBAL_BUSINESS_V7_CONNECT.sql: additive Supabase migration.
+
+Business Connect includes:
+- Permanent KOJA Business Code
+- Business-code lookup without exposing private data
+- Connection requests
+- Accept/reject/disconnect/revoke
+- Connected Businesses
+- Relationship types
+- Per-business permissions
+- Relationship contacts
+- Relationship notes
+- Relationship activity/audit trail
+- Business relationship workspace
+- Connect+ reuse
+- API endpoints for integration with other KOJA modules
+
+Deployment:
+1. Run the SQL migration in the Supabase SQL Editor.
+2. Replace the existing KOJA-AFRICA app.py with this app.py.
+3. Keep the existing requirements.txt and environment variables.
+4. Deploy to the existing KOJA-AFRICA Render service.
+
+No existing KOJA service is intentionally removed by this package.

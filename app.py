@@ -2440,7 +2440,7 @@ def services():
 <div class="card"><h3>Learning and Research</h3><p>One connected workspace for academic questions, assignments, documents, research and document-based AI.</p><div class="actions"><a class="btn" href="{{ url_for('questions') }}">Questions</a><a class="btn" href="{{ url_for('assignments') }}">Assignments</a><a class="btn" href="{{ url_for('documents') }}">Documents and AI</a><a class="btn secondary" href="{{ url_for('research') }}">Research</a></div></div>
 <div class="card"><h3>AI and Workspace</h3><p>General AI, document intelligence, connected knowledge and productivity tools use the same KOJA AI foundation.</p><div class="actions"><a class="btn" href="{{ url_for('ai_assistant') }}">KOJA AI</a><a class="btn secondary" href="{{ url_for('documents') }}">Document AI</a><a class="btn secondary" href="{{ url_for('cv') }}">CV and Documents</a></div></div>
 <div class="card"><h3>Professional Services</h3><p>Doctors, teachers, tutors and other professionals are grouped under one discovery and identity workflow.</p><div class="actions"><a class="btn" href="{{ url_for('professionals') }}">Professionals</a><a class="btn secondary" href="{{ url_for('doctors') }}">Doctors</a><a class="btn secondary" href="{{ url_for('teachers') }}">Teachers and Tutors</a><a class="btn secondary" href="{{ url_for('professional_register') }}">Register Profession</a></div></div>
-<div class="card"><h3>Market and Business</h3><p>Buying, selling, business operations, payments, accounting and seller tools share the same commerce foundation.</p><div class="actions"><a class="btn" href="{{ url_for('koja_market') }}">KOJA Market</a><a class="btn secondary" href="{{ url_for('marketplace') }}">Digital Marketplace</a></div></div>
+<div class="card"><h3>Market and Business</h3><p>Buying, selling, business operations, payments, accounting and seller tools share the same commerce foundation.</p><div class="actions"><a class="btn" href="{{ url_for('market') }}">KOJA Market</a><a class="btn secondary" href="{{ url_for('marketplace') }}">Digital Marketplace</a></div></div>
 <div class="card"><h3>Delivery and Logistics</h3><p>Orders, drivers, live GPS, delivery requests, tracking and delivery security operate as one logistics workflow.</p><div class="actions"><a class="btn" href="{{ url_for('deliveries') }}">Delivery</a><a class="btn secondary" href="{{ url_for('tracking') }}">Live GPS</a></div></div>
 <div class="card"><h3>Communication</h3><p>Messaging, voice, video, groups, presence and status remain one connected communication service.</p><a class="btn" href="{{ url_for('connect') }}">Open Communication</a></div>
 </div>
@@ -3786,8 +3786,7 @@ def flutterwave_webhook():
     market_orders=db_select('koja_market_orders',{'payment_reference':tx_ref},order='created_at.asc',limit=100) or []
     marketplace_order=first_row('koja_marketplace_orders',{'payment_reference':tx_ref})
     monetization_order=_mono_order_for_ref(tx_ref)
-    b2b_orders=db_select('koja_b2b_v4_orders',{'payment_reference':tx_ref},order='created_at.asc',limit=100) or []
-    if not market_orders and not marketplace_order and not monetization_order and not b2b_orders:
+    if not market_orders and not marketplace_order and not monetization_order:
         logger.warning('Flutterwave webhook unknown reference tx_ref=%s',tx_ref)
         return jsonify({'status':'ignored','reason':'unknown_reference'}),200
     results=[]
@@ -3805,13 +3804,7 @@ def flutterwave_webhook():
         ok=_finalize_monetization(monetization_order,tx)
         logger.info('KOJA monetization finalization tx_ref=%s order=%s result=%s',tx_ref,monetization_order.get('id'),ok)
         results.append('monetization:'+('finalized_or_paid' if ok else 'failed'))
-    if b2b_orders:
-        ok_count=0
-        for b2b_order in b2b_orders:
-            ok=_b2bv4_finalize_payment(b2b_order,tx,as_webhook=True)
-            if ok: ok_count+=1
-            logger.info('KOJA B2B V4 finalization tx_ref=%s order=%s result=%s',tx_ref,b2b_order.get('id'),ok)
-        results.append('b2b_v4:'+str(ok_count)+'_finalized')
+        results.append('digital:'+('finalized_or_paid' if ok else 'failed'))
     return jsonify({'status':'ok','processed':results}),200
 
 @app.route('/market/sell',methods=['GET','POST'])
@@ -9636,332 +9629,383 @@ def driver_available_deliveries():
 <div class="grid">{% for d in rows %}<div class="card"><h3>{{ d.tracking_code }}</h3><p><strong>Pickup:</strong> {{ d.pickup_location }}</p><p><strong>Destination:</strong> {{ d.destination }}</p><p><strong>Fee:</strong> {{ money(d.delivery_fee,'ZMW') }}</p><form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.id,action='accept') }}"><button class="btn success">Accept Delivery</button></form></div>{% else %}<div class="card"><p>No available deliveries right now.</p></div>{% endfor %}</div>
 ''',rows=rows,money=market_money)
 
-
-
 # ============================================================
-# KOJA B2B V4 COMPLETE TRANSACTION ENGINE
-# Additive layer: RFQ -> Quote -> Approval -> Order -> Payment
-# -> Fulfilment -> Delivery -> Completion -> Review / Ledger.
-# Existing Procurement, Professional Services, Connect+, Market,
-# Payments and Delivery systems remain source-of-truth and are reused.
+# KOJA GLOBAL BUSINESS V7 — COMPLETE BUSINESS CONNECT
 # ============================================================
+# This module is additive. It reuses the existing Flask/Supabase
+# helpers and Connect+ routes and does not replace existing KOJA
+# marketplace, delivery, AI or communication services.
 
-def _b2bv4_uid():
-    return str((current_user() or {}).get('id') or '')
+BC_RELATIONSHIP_TYPES = [
+    'partner', 'supplier', 'customer', 'distributor', 'contractor',
+    'professional_service_provider', 'logistics_partner', 'manufacturer',
+    'reseller', 'strategic_partner', 'other'
+]
+BC_PERMISSION_KEYS = [
+    'connect_plus', 'profile', 'contacts', 'projects', 'rfq', 'quotations',
+    'purchase_orders', 'contracts', 'documents', 'deliveries',
+    'professional_services', 'relationship_activity'
+]
 
-def _b2bv4_business(business_id):
-    uid=_b2bv4_uid()
-    if not uid or not business_id:
+
+def bc_code():
+    # Cryptographically random public identifier; never expose internal UUIDs.
+    alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+    token = ''.join(secrets.choice(alphabet) for _ in range(6))
+    return 'KOJA-ZM-BUS-' + token
+
+
+def bc_business(uid, business_id=None):
+    if not uid:
         return None
-    return first_row('koja_businesses', {'id':business_id,'owner_id':uid})
+    if business_id:
+        b = first_row('koja_businesses', {'id': business_id})
+        if b and str(b.get('owner_id')) == str(uid):
+            return b
+        members = db_select('koja_business_members', {'business_id': business_id, 'user_id': uid}, limit=1)
+        if members and b:
+            return b
+        return None
+    owned = db_select('koja_businesses', {'owner_id': uid}, order='created_at.desc', limit=1)
+    if owned:
+        return owned[0]
+    members = db_select('koja_business_members', {'user_id': uid, 'status': 'active'}, order='created_at.desc', limit=1)
+    if members:
+        return first_row('koja_businesses', {'id': members[0].get('business_id')})
+    return None
 
-def _b2bv4_money(v):
-    try: return round(float(v or 0),2)
-    except Exception: return 0.0
 
-def _b2bv4_event(order_id=None, request_id=None, event_type='', old_status=None, new_status=None, metadata=None):
+def bc_business_by_code(code):
+    code = clean(code).upper()
+    if not re.fullmatch(r'KOJA-[A-Z]{2}-BUS-[A-Z0-9]{6}', code):
+        return None
+    row = first_row('koja_business_codes', {'public_code': code, 'status': 'active'})
+    if row:
+        return first_row('koja_businesses', {'id': row.get('business_id')})
+    # Backward compatibility for businesses created before V7 migration.
+    return first_row('koja_businesses', {'business_code': code})
+
+
+def bc_ensure_code(business):
+    if not business:
+        return None
+    existing = clean(business.get('business_code'))
+    if existing:
+        return existing
+    for _ in range(10):
+        code = bc_code()
+        if not first_row('koja_business_codes', {'public_code': code}):
+            row, err = db_insert('koja_business_codes', {
+                'business_id': business.get('id'), 'public_code': code,
+                'status': 'active', 'created_at': utc_now(), 'updated_at': utc_now()
+            })
+            if not err:
+                db_update('koja_businesses', {'id': business.get('id')}, {'business_code': code, 'updated_at': utc_now()})
+                business['business_code'] = code
+                return code
+    return None
+
+
+def bc_access(uid, business_id, owner_only=False):
+    b = first_row('koja_businesses', {'id': business_id})
+    if not b:
+        return None, None
+    if str(b.get('owner_id')) == str(uid):
+        return b, {'role': 'owner', 'permissions': BC_PERMISSION_KEYS[:]}
+    if owner_only:
+        return None, None
+    rows = db_select('koja_business_members', {'business_id': business_id, 'user_id': uid, 'status': 'active'}, limit=1)
+    if not rows:
+        return None, None
+    member = rows[0]
+    return b, {'role': member.get('role') or 'member', 'permissions': member.get('permissions') or []}
+
+
+def bc_permission(uid, business_id, permission):
+    b, access = bc_access(uid, business_id)
+    if not b or not access:
+        return False
+    return access.get('role') == 'owner' or permission in (access.get('permissions') or [])
+
+
+def bc_pair(a, b):
+    a, b = str(a), str(b)
+    return (a, b) if a < b else (b, a)
+
+
+def bc_connection(a, b):
+    x, y = bc_pair(a, b)
+    rows = db_select('koja_business_connections', {'business_a_id': x, 'business_b_id': y}, limit=1)
+    return rows[0] if rows else None
+
+
+def bc_activity(connection_id, actor_business_id, event_type, details=None):
+    db_insert('koja_business_relationship_activity', {
+        'connection_id': connection_id,
+        'actor_business_id': actor_business_id,
+        'event_type': event_type,
+        'details': details or {},
+        'created_at': utc_now()
+    })
+
+
+def bc_notify_user(user_id, title, body, link='/business/connect'):
+    # Reuse existing KOJA notification table when available.
     try:
-        u=current_user() or {}
-        db_insert('koja_b2b_v4_events',{
-            'order_id':order_id,'request_id':request_id,'actor_user_id':u.get('id'),
-            'event_type':event_type,'old_status':old_status,'new_status':new_status,
-            'metadata':metadata or {},'created_at':utc_now()
+        db_insert('notifications', {
+            'user_id': user_id, 'title': title, 'message': body,
+            'link': link, 'is_read': False, 'created_at': utc_now()
         })
     except Exception:
-        logger.exception('B2B V4 event write failed')
+        pass
 
-def _b2bv4_notify(uid,title,body,link='/b2b'):
-    try:
-        if uid: notify_user(uid,title,body,'b2b',None,link)
-    except Exception: logger.exception('B2B V4 notification failed')
 
-def _b2bv4_quote(quote_id):
-    return first_row('koja_b2b_v4_quotes', {'id':quote_id})
+@app.route('/business')
+@login_required
+def global_business_home():
+    uid = (current_user() or {}).get('id')
+    businesses = db_select('koja_businesses', {'owner_id': uid}, order='created_at.desc', limit=50) or []
+    members = db_select('koja_business_members', {'user_id': uid, 'status': 'active'}, limit=50) or []
+    for b in businesses:
+        bc_ensure_code(b)
+    if businesses:
+        return redirect(url_for('business_dashboard', business_id=businesses[0].get('id')))
+    return redirect(url_for('business_new'))
 
-def _b2bv4_order(order_id):
-    return first_row('koja_b2b_v4_orders', {'id':order_id})
 
-def _b2bv4_create_delivery(order):
-    if not order or not order.get('delivery_address'):
-        return None
-    existing=first_row('deliveries', {'id':order.get('delivery_id')}) if order.get('delivery_id') else None
-    if existing: return existing
-    req=first_row('koja_b2b_requests', {'id':order.get('request_id')})
-    pickup='B2B Supplier'
-    seller=first_row('koja_businesses', {'id':order.get('seller_business_id')}) or {}
-    pickup=clean(seller.get('location')) or clean(seller.get('name')) or pickup
-    tracking='KBD-'+secrets.token_hex(5).upper()
-    pickup_code='KDP-'+secrets.token_hex(4).upper()
-    row,err=db_insert('deliveries',{
-        'id':str(uuid.uuid4()),'customer_id':order.get('buyer_user_id'),'user_id':order.get('buyer_user_id'),
-        'sender_id':order.get('seller_business_id'),'pickup_location':pickup,'pickup_address':pickup,
-        'destination':(req or {}).get('location') or (req or {}).get('delivery_address') or 'B2B Buyer',
-        'delivery_address':(req or {}).get('delivery_address') or (req or {}).get('location'),
-        'recipient_name':clean((current_user() or {}).get('name')),'package_description':(req or {}).get('title') or 'KOJA B2B order',
-        'delivery_fee':0,'currency':order.get('currency') or 'ZMW','status':'requested','tracking_code':tracking,
-        'pickup_code':pickup_code,'notes':'KOJA B2B V4 order '+str(order.get('id')),
-        'created_at':utc_now(),'updated_at':utc_now()
+@app.route('/business/<business_id>/connect')
+@login_required
+def business_connect(business_id):
+    uid = (current_user() or {}).get('id')
+    b, access = bc_access(uid, business_id)
+    if not b:
+        abort(404)
+    bc_ensure_code(b)
+    x = str(b.get('id'))
+    connections = db_select('koja_business_connections', {'business_a_id': x}, order='updated_at.desc', limit=100) or []
+    reverse = db_select('koja_business_connections', {'business_b_id': x}, order='updated_at.desc', limit=100) or []
+    connections += reverse
+    connected = []
+    for c in connections:
+        other_id = c.get('business_b_id') if str(c.get('business_a_id')) == x else c.get('business_a_id')
+        other = first_row('koja_businesses', {'id': other_id}) or {}
+        c['other'] = other
+        perms = first_row('koja_business_connection_permissions', {'connection_id': c.get('id'), 'business_id': x}) or {}
+        c['permissions'] = perms
+        connected.append(c)
+    pending_in = db_select('koja_business_connections', {'business_b_id': x, 'status': 'pending'}, order='created_at.desc', limit=100) or []
+    pending_out = db_select('koja_business_connections', {'business_a_id': x, 'status': 'pending'}, order='created_at.desc', limit=100) or []
+    for c in pending_in + pending_out:
+        oid = c.get('business_a_id') if str(c.get('business_b_id')) == x else c.get('business_b_id')
+        c['other'] = first_row('koja_businesses', {'id': oid}) or {}
+    return render_page('Business Connect', r'''
+<div class="hero"><h1>Business Connect</h1><p>Connect directly with businesses without requiring a transaction.</p><div class="card"><strong>Your KOJA Business Code</strong><h2 style="letter-spacing:1px">{{ b.business_code or 'Generating...' }}</h2><p class="small">Share this code when another business needs to connect with your organisation.</p></div></div>
+<div class="card"><h2>Connect a Business</h2><form method="post" action="{{ url_for('business_connect_request',business_id=b.id) }}"><label>KOJA Business Code</label><input name="business_code" placeholder="KOJA-ZM-BUS-7F82K4" required><button class="btn">Find and Send Request</button></form></div>
+<div class="card"><h2>Connection Requests</h2><table><tr><th>Business</th><th>Direction</th><th>Status</th><th>Action</th></tr>{% for c in pending_in %}<tr><td>{{ c.other.name }}</td><td>Incoming</td><td>Pending</td><td><form method="post" action="{{ url_for('business_connect_action',business_id=b.id,connection_id=c.id,action='accept') }}"><button class="btn">Accept</button></form><form method="post" action="{{ url_for('business_connect_action',business_id=b.id,connection_id=c.id,action='reject') }}"><button class="btn secondary">Reject</button></form></td></tr>{% endfor %}{% for c in pending_out %}<tr><td>{{ c.other.name }}</td><td>Outgoing</td><td>Pending</td><td>Waiting</td></tr>{% endfor %}{% if not pending_in and not pending_out %}<tr><td colspan="4">No pending connection requests.</td></tr>{% endif %}</table></div>
+<div class="card"><h2>Connected Businesses</h2><table><tr><th>Business</th><th>Relationship</th><th>Status</th><th>Workspace</th></tr>{% for c in connected if c.status=='accepted' %}<tr><td><strong>{{ c.other.name }}</strong><div class="small">{{ c.other.category or '' }}</div></td><td>{{ (c.relationship_type or 'partner')|replace('_',' ')|title }}</td><td>Connected</td><td><a class="btn" href="{{ url_for('business_relationship',business_id=b.id,connection_id=c.id) }}">Open</a></td></tr>{% else %}<tr><td colspan="4">No connected businesses yet.</td></tr>{% endfor %}</table></div>
+''', b=b, connected=connected, pending_in=pending_in, pending_out=pending_out)
+
+
+@app.route('/business/<business_id>/connect/request', methods=['POST'])
+@login_required
+def business_connect_request(business_id):
+    uid = (current_user() or {}).get('id')
+    source, access = bc_access(uid, business_id)
+    if not source:
+        abort(404)
+    if access.get('role') != 'owner' and 'profile' not in access.get('permissions', []):
+        return jsonify(ok=False, error='Business permission required.'), 403
+    target = bc_business_by_code(request.form.get('business_code') or (request.get_json(silent=True) or {}).get('business_code'))
+    if not target:
+        flash('Business code was not found.', 'danger')
+        return redirect(url_for('business_connect', business_id=business_id))
+    if str(target.get('id')) == str(source.get('id')):
+        flash('A business cannot connect to itself.', 'danger')
+        return redirect(url_for('business_connect', business_id=business_id))
+    existing = bc_connection(source.get('id'), target.get('id'))
+    if existing:
+        flash('A connection or request already exists.', 'warning')
+        return redirect(url_for('business_connect', business_id=business_id))
+    x, y = bc_pair(source.get('id'), target.get('id'))
+    # requester is stored separately so ordering the pair never changes meaning.
+    row, err = db_insert('koja_business_connections', {
+        'business_a_id': x, 'business_b_id': y,
+        'requested_by_business_id': source.get('id'),
+        'status': 'pending', 'created_at': utc_now(), 'updated_at': utc_now()
     })
-    if not row: return None
-    db_update('koja_b2b_v4_orders',{'id':order.get('id')},{'delivery_id':row.get('id'),'fulfillment_status':'delivery_requested','updated_at':utc_now()})
-    _notify_available_drivers(tracking,pickup,row.get('destination'),0)
-    _b2bv4_event(order.get('id'),order.get('request_id'),'delivery_requested',order.get('fulfillment_status'),'delivery_requested',{'delivery_id':row.get('id'),'tracking_code':tracking})
-    return row
-
-def _b2bv4_payment_start(order):
-    if not FLW_SECRET_KEY:
-        return None,'Flutterwave payment is not configured. Add FLW_SECRET_KEY in Render environment variables.'
-    user=current_user() or {}
-    email=clean(user.get('email'))
-    if not email: return None,'Your account needs an email address before payment can start.'
-    amount=_b2bv4_money(order.get('amount'))
-    if amount<=0: return None,'Order amount must be greater than zero.'
-    tx_ref='KOJA-B2B-'+secrets.token_hex(10).upper()
-    db_update('koja_b2b_v4_orders',{'id':order.get('id')},{'payment_reference':tx_ref,'updated_at':utc_now()})
-    network=clean(request.form.get('network')) or 'MTN'
-    phone=clean(request.form.get('phone')) or clean(user.get('phone'))
-    payload={
-      'tx_ref':tx_ref,'amount':amount,'currency':(order.get('currency') or 'ZMW').upper(),
-      'email':email,'fullname':first_nonempty(user.get('name'),user.get('full_name'),email),
-      'phone_number':phone,'network':network,
-      'order_id':str(order.get('id')),
-      'redirect_url':url_for('b2bv4_payment_callback',_external=True),
-      'meta':{'koja_b2b_order_id':str(order.get('id')),'request_id':str(order.get('request_id'))}
-    }
-    try:
-        r=requests.post(FLW_BASE_URL+'/charges?type=mobile_money_zambia',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json'},json=payload,timeout=40)
-        body=json_or_empty(r)
-        if r.ok and isinstance(body,dict):
-            return body,None
-        return None,'Flutterwave could not start the payment: '+(r.text or '')[:500]
-    except Exception as exc:
-        logger.exception('B2B V4 payment start failed')
-        return None,str(exc)
-
-@app.route('/b2b/v4')
-@login_required
-def b2bv4_home():
-    uid=_b2bv4_uid()
-    businesses=db_select('koja_businesses',{'owner_id':uid},order='created_at.desc',limit=50) or []
-    if len(businesses)==1:
-        return redirect(url_for('b2bv4_centre',business_id=businesses[0].get('id')))
-    return render_page('KOJA B2B Transaction Centre',r'''
-<div class="hero"><h1>KOJA B2B Transaction Centre</h1><p>Run the complete business transaction cycle: request, quote, approval, order, payment, fulfilment, delivery and completion.</p></div>
-<div class="card"><h2>Select Business</h2>{% for b in businesses %}<div class="card"><h3>{{ b.get('name') }}</h3><a class="btn" href="{{ url_for('b2bv4_centre',business_id=b.get('id')) }}">Open B2B Centre</a></div>{% else %}<p>Create a business account first.</p><a class="btn" href="{{ url_for('business_new') }}">Create Business</a>{% endfor %}</div>
-''',businesses=businesses)
-
-@app.route('/b2b/v4/<business_id>')
-@login_required
-def b2bv4_centre(business_id):
-    b=_b2bv4_business(business_id)
-    if not b: abort(404)
-    uid=_b2bv4_uid()
-    requests_rows=db_select('koja_b2b_requests',{'buyer_business_id':business_id},order='created_at.desc',limit=100) or []
-    quotes=db_select('koja_b2b_v4_quotes',{'seller_user_id':uid},order='created_at.desc',limit=100) or []
-    orders=db_select('koja_b2b_v4_orders',{'buyer_business_id':business_id},order='created_at.desc',limit=100) or []
-    return render_page('B2B Transaction Centre',r'''
-<div class="hero"><h1>{{ b.get('name') }} · B2B</h1><p>One transaction engine for procurement, professional services, products and fulfilment.</p><div class="actions"><a class="btn" href="{{ url_for('b2bv4_request_new',business_id=b.get('id')) }}">New Request</a><a class="btn secondary" href="{{ url_for('b2bv4_home') }}">B2B Home</a></div></div>
-<div class="card"><h2>My Requests</h2>{% for r in requests_rows %}<div class="card"><strong>{{ r.get('title') }}</strong><p>{{ r.get('request_type') }} · {{ r.get('status') }}</p><a class="btn" href="{{ url_for('b2bv4_request',request_id=r.get('id')) }}">Open Request</a></div>{% else %}<p>No requests yet.</p>{% endfor %}</div>
-<div class="card"><h2>Orders</h2>{% for o in orders %}<div class="card"><strong>Order {{ o.get('id') }}</strong><p>{{ o.get('order_status') }} · Payment: {{ o.get('payment_status') }} · {{ o.get('amount') }} {{ o.get('currency') }}</p><a class="btn" href="{{ url_for('b2bv4_order',order_id=o.get('id')) }}">Open Order</a></div>{% else %}<p>No orders yet.</p>{% endfor %}</div>
-<div class="card"><h2>Seller Quotes</h2>{% for q in quotes %}<div class="card"><strong>{{ q.get('amount') }} {{ q.get('currency') }}</strong><p>Status: {{ q.get('status') }}</p><a class="btn" href="{{ url_for('b2bv4_request',request_id=q.get('request_id')) }}">Open Request</a></div>{% else %}<p>No quotes requiring your attention.</p>{% endfor %}</div>
-''',b=b,requests_rows=requests_rows,orders=orders,quotes=quotes)
-
-@app.route('/b2b/v4/<business_id>/request/new',methods=['GET','POST'])
-@login_required
-def b2bv4_request_new(business_id):
-    b=_b2bv4_business(business_id)
-    if not b: abort(404)
-    if request.method=='POST':
-        uid=_b2bv4_uid()
-        payload={'buyer_business_id':business_id,'requester_user_id':uid,'request_type':clean(request.form.get('request_type')) or 'procurement','title':clean(request.form.get('title')),'description':clean(request.form.get('description')),'category':clean(request.form.get('category')),'profession':clean(request.form.get('profession')),'location':clean(request.form.get('location')),'online_allowed':bool(request.form.get('online_allowed')),'budget':_b2bv4_money(request.form.get('budget')),'currency':clean(request.form.get('currency')) or 'ZMW','deadline':clean(request.form.get('deadline')) or None,'status':'open','created_at':utc_now(),'updated_at':utc_now()}
-        if not payload['title'] or not payload['description']:
-            flash('Title and description are required.','warning')
-        else:
-            row,err=db_insert('koja_b2b_requests',payload)
-            if err: flash('Could not create request: '+str(err)[:500],'danger')
-            else:
-                _b2bv4_event(request_id=(row or {}).get('id'),event_type='request_created',metadata={'business_id':business_id})
-                flash('B2B request created. Suppliers and professionals can now quote.','success')
-                return redirect(url_for('b2bv4_request',request_id=(row or {}).get('id')))
-    return render_page('New B2B Request',r'''
-<div class="hero"><h1>New B2B Request</h1><p>Describe exactly what the business needs. KOJA can match product suppliers and professional providers.</p></div>
-<div class="card"><form method="post"><label>Request type<select name="request_type"><option value="procurement">Procurement</option><option value="professional_service">Professional Service</option><option value="product">Product</option><option value="project">Project</option></select></label><label>Title<input name="title" required></label><label>Description<textarea name="description" required rows="6"></textarea></label><label>Category<input name="category"></label><label>Profession (if applicable)<input name="profession"></label><label>Location<input name="location"></label><label>Budget<input name="budget" type="number" step="0.01" min="0"></label><label>Currency<select name="currency"><option>ZMW</option><option>USD</option></select></label><label>Deadline<input name="deadline" type="date"></label><label><input type="checkbox" name="online_allowed"> Online delivery/service allowed</label><button class="btn success" type="submit">Publish Request</button></form></div>
-''')
-
-@app.route('/b2b/v4/request/<request_id>')
-@login_required
-def b2bv4_request(request_id):
-    req=first_row('koja_b2b_requests',{'id':request_id})
-    if not req: abort(404)
-    uid=_b2bv4_uid(); businesses=db_select('koja_businesses',{'owner_id':uid},limit=100) or []
-    owned={str(x.get('id')) for x in businesses}
-    if str(req.get('buyer_business_id')) not in owned:
-        # Sellers can see an open request, but only buyer can accept a quote.
-        if str(req.get('status') or '').lower() not in {'open','quoted'}: abort(403)
-    quotes=db_select('koja_b2b_v4_quotes',{'request_id':request_id},order='created_at.desc',limit=100) or []
-    return render_page('B2B Request',r'''
-<div class="hero"><h1>{{ req.get('title') }}</h1><p>{{ req.get('description') }}</p><p>Status: <strong>{{ req.get('status') }}</strong> · Budget: {{ req.get('budget') or 'Open' }} {{ req.get('currency') or 'ZMW' }}</p></div>
-<div class="card"><h2>Submit Quote</h2><form method="post" action="{{ url_for('b2bv4_quote_submit',request_id=req.get('id')) }}"><label>Seller Business<select name="seller_business_id" required>{% for b in businesses %}<option value="{{ b.get('id') }}">{{ b.get('name') }}</option>{% endfor %}</select></label><label>Amount<input name="amount" type="number" step="0.01" min="0" required></label><label>Delivery days<input name="delivery_days" type="number" min="1" value="1"></label><label>Proposal<textarea name="proposal" rows="5"></textarea></label><button class="btn" type="submit">Submit Quote</button></form></div>
-<div class="card"><h2>Quotes</h2>{% for q in quotes %}<div class="card"><h3>{{ q.get('amount') }} {{ q.get('currency') }}</h3><p>{{ q.get('proposal') }}</p><p>Status: <strong>{{ q.get('status') }}</strong> · {{ q.get('delivery_days') }} day(s)</p>{% if str(req.get('buyer_business_id')) in owned and q.get('status') == 'submitted' %}<form method="post" action="{{ url_for('b2bv4_quote_accept',quote_id=q.get('id')) }}"><button class="btn success">Accept Quote</button></form>{% endif %}</div>{% else %}<p>No quotes yet.</p>{% endfor %}</div>
-''',req=req,quotes=quotes,businesses=businesses,owned=owned,str=str)
-
-@app.route('/b2b/v4/request/<request_id>/quote',methods=['POST'])
-@login_required
-def b2bv4_quote_submit(request_id):
-    req=first_row('koja_b2b_requests',{'id':request_id})
-    if not req: abort(404)
-    uid=_b2bv4_uid(); business_id=clean(request.form.get('seller_business_id')); b=_b2bv4_business(business_id)
-    if not b: abort(403)
-    if str(req.get('buyer_business_id'))==str(business_id):
-        flash('A buyer business cannot quote its own request.','warning'); return redirect(url_for('b2bv4_request',request_id=request_id))
-    amount=_b2bv4_money(request.form.get('amount'))
-    if amount<=0: flash('Quote amount must be greater than zero.','warning'); return redirect(url_for('b2bv4_request',request_id=request_id))
-    row,err=db_insert('koja_b2b_v4_quotes',{'request_id':request_id,'seller_business_id':business_id,'seller_user_id':uid,'amount':amount,'currency':req.get('currency') or 'ZMW','delivery_days':max(1,int(request.form.get('delivery_days') or 1)),'proposal':clean(request.form.get('proposal')),'status':'submitted','created_at':utc_now(),'updated_at':utc_now()})
-    if err: flash('Could not submit quote: '+str(err)[:500],'danger')
-    else:
-        db_update('koja_b2b_requests',{'id':request_id},{'status':'quoted','updated_at':utc_now()})
-        _b2bv4_event(request_id=request_id,event_type='quote_submitted',metadata={'quote_id':(row or {}).get('id'),'seller_business_id':business_id})
-        buyer=first_row('koja_businesses',{'id':req.get('buyer_business_id')}) or {}
-        _b2bv4_notify(buyer.get('owner_id'),'New B2B quote',f'A supplier submitted a quote for {req.get("title")}.','/b2b/v4/request/'+str(request_id))
-        flash('Quote submitted.','success')
-    return redirect(url_for('b2bv4_request',request_id=request_id))
-
-@app.route('/b2b/v4/quote/<quote_id>/accept',methods=['POST'])
-@login_required
-def b2bv4_quote_accept(quote_id):
-    q=_b2bv4_quote(quote_id)
-    if not q: abort(404)
-    req=first_row('koja_b2b_requests',{'id':q.get('request_id')})
-    b=_b2bv4_business(req.get('buyer_business_id')) if req else None
-    if not b: abort(403)
-    if str(q.get('status'))!='submitted': flash('This quote is no longer available.','warning'); return redirect(url_for('b2bv4_request',request_id=req.get('id')))
-    # Accept exactly one quote. Competing quotes are rejected as part of the state transition.
-    db_update('koja_b2b_v4_quotes',{'id':quote_id},{'status':'accepted','accepted_at':utc_now(),'updated_at':utc_now()})
-    db_update('koja_b2b_requests',{'id':req.get('id')},{'status':'accepted','selected_quote_id':quote_id,'updated_at':utc_now()})
-    others=db_select('koja_b2b_v4_quotes',{'request_id':req.get('id')},limit=200) or []
-    for other in others:
-        if str(other.get('id'))!=str(quote_id) and str(other.get('status'))=='submitted':
-            db_update('koja_b2b_v4_quotes',{'id':other.get('id')},{'status':'rejected','rejected_at':utc_now(),'updated_at':utc_now()})
-    amount=_b2bv4_money(q.get('amount')); commission_rate=max(0.0,min(0.50,float(os.getenv('KOJA_B2B_COMMISSION_RATE','0.10') or 0.10))); platform_fee=round(amount*commission_rate,2); seller_net=round(amount-platform_fee,2)
-    order,err=db_insert('koja_b2b_v4_orders',{'request_id':req.get('id'),'quote_id':quote_id,'buyer_business_id':req.get('buyer_business_id'),'buyer_user_id':req.get('requester_user_id'),'seller_business_id':q.get('seller_business_id'),'seller_user_id':q.get('seller_user_id'),'professional_provider_id':q.get('professional_provider_id'),'order_type':req.get('request_type') or 'b2b_service','amount':amount,'platform_fee':platform_fee,'professional_fee':0,'seller_net':seller_net,'currency':q.get('currency') or 'ZMW','payment_status':'unpaid','order_status':'awaiting_payment','fulfillment_status':'not_started','delivery_address':req.get('location'),'created_at':utc_now(),'updated_at':utc_now()})
-    if err or not order:
-        flash('Quote accepted, but order creation failed: '+str(err)[:500],'danger')
-        return redirect(url_for('b2bv4_request',request_id=req.get('id')))
-    db_insert('koja_b2b_v4_order_items',{'order_id':order.get('id'),'description':req.get('title') or 'B2B order','quantity':1,'unit_price':amount,'total':amount,'created_at':utc_now()})
-    _b2bv4_event(order.get('id'),req.get('id'),'quote_accepted','quoted','accepted',{'quote_id':quote_id})
-    _b2bv4_notify(q.get('seller_user_id'),'B2B quote accepted',f'Your quote for {req.get("title")} was accepted. Awaiting buyer payment.','/b2b/v4')
-    flash('Quote accepted. The order is ready for payment.','success')
-    return redirect(url_for('b2bv4_order',order_id=order.get('id')))
-
-@app.route('/b2b/v4/order/<order_id>')
-@login_required
-def b2bv4_order(order_id):
-    order=_b2bv4_order(order_id)
-    if not order: abort(404)
-    uid=_b2bv4_uid()
-    if str(uid) not in {str(order.get('buyer_user_id')),str(order.get('seller_user_id'))}: abort(403)
-    req=first_row('koja_b2b_requests',{'id':order.get('request_id')}) or {}
-    delivery=first_row('deliveries',{'id':order.get('delivery_id')}) if order.get('delivery_id') else None
-    return render_page('B2B Order',r'''
-<div class="hero"><h1>B2B Order</h1><p>{{ req.get('title') }}</p><p>Order status: <strong>{{ order.get('order_status') }}</strong> · Payment: <strong>{{ order.get('payment_status') }}</strong> · Fulfilment: <strong>{{ order.get('fulfillment_status') }}</strong></p></div>
-<div class="card"><h2>Financials</h2><p>Amount: <strong>{{ order.get('amount') }} {{ order.get('currency') }}</strong></p><p>KOJA platform fee: {{ order.get('platform_fee') }} {{ order.get('currency') }}</p><p>Seller net: {{ order.get('seller_net') }} {{ order.get('currency') }}</p>{% if order.get('payment_status') != 'paid' and str(order.get('buyer_user_id')) == str(uid) %}<form method="post" action="{{ url_for('b2bv4_order_pay',order_id=order.get('id')) }}"><label>Mobile-money network<select name="network"><option>MTN</option><option>AIRTEL</option><option>ZAMTEL</option></select></label><label>Phone<input name="phone" value="{{ user.get('phone') or '' }}"></label><button class="btn success" type="submit">Pay {{ order.get('amount') }} {{ order.get('currency') }}</button></form>{% endif %}</div>
-<div class="card"><h2>Fulfilment</h2>{% if order.get('payment_status') == 'paid' %}<p>Payment verified. The supplier can now fulfil the order.</p>{% if str(order.get('seller_user_id')) == str(uid) and order.get('order_status') not in ['completed','cancelled'] %}<form method="post" action="{{ url_for('b2bv4_order_fulfil',order_id=order.get('id')) }}"><button class="btn" type="submit">Mark Ready for Fulfilment</button></form>{% endif %}{% else %}<p>Fulfilment unlocks after verified payment.</p>{% endif %}</div>
-{% if delivery %}<div class="card"><h2>Delivery</h2><p>Tracking: <strong>{{ delivery.get('tracking_code') }}</strong></p><p>Status: {{ delivery.get('status') }}</p><a class="btn" href="{{ url_for('track_delivery',tracking_code=delivery.get('tracking_code')) }}">Track Delivery</a></div>{% endif %}
-{% if order.get('payment_status') == 'paid' and str(order.get('buyer_user_id')) == str(uid) and order.get('order_status') not in ['completed','cancelled'] %}<div class="card"><h2>Completion</h2><form method="post" action="{{ url_for('b2bv4_order_complete',order_id=order.get('id')) }}"><label>Completion note<textarea name="completion_note"></textarea></label><button class="btn success" type="submit">Confirm Completion</button></form></div>{% endif %}
-<div class="card"><h2>Review</h2>{% if order.get('order_status') == 'completed' %}<form method="post" action="{{ url_for('b2bv4_order_review',order_id=order.get('id')) }}"><label>Rating<select name="rating"><option>5</option><option>4</option><option>3</option><option>2</option><option>1</option></select></label><label>Review<textarea name="review"></textarea></label><button class="btn" type="submit">Submit Review</button></form>{% else %}<p>Review becomes available after completion.</p>{% endif %}</div>
-''',order=order,req=req,delivery=delivery,uid=uid,user=current_user() or {},str=str)
-
-@app.route('/b2b/v4/order/<order_id>/pay',methods=['POST'])
-@login_required
-def b2bv4_order_pay(order_id):
-    order=_b2bv4_order(order_id)
-    if not order or str(order.get('buyer_user_id'))!=_b2bv4_uid(): abort(403)
-    if str(order.get('payment_status'))=='paid': return redirect(url_for('b2bv4_order',order_id=order_id))
-    result,err=_b2bv4_payment_start(order)
     if err:
-        flash(err,'danger'); return redirect(url_for('b2bv4_order',order_id=order_id))
-    data=result.get('data') if isinstance(result,dict) else None
-    link=(data or {}).get('link') or (data or {}).get('meta',{}).get('authorization')
-    if link:
-        return redirect(link)
-    flash('Payment request sent. Complete the mobile-money prompt, then return to the order.','success')
-    return redirect(url_for('b2bv4_order',order_id=order_id))
-
-@app.route('/b2b/v4/payment/callback')
-def b2bv4_payment_callback():
-    tx_id=clean(request.args.get('transaction_id')); tx_ref=clean(request.args.get('tx_ref') or request.args.get('reference'))
-    tx=_flutterwave_verify(tx_id,tx_ref)
-    order=None
-    if tx:
-        ref=str(tx.get('tx_ref') or tx.get('txRef') or tx.get('reference') or tx_ref or '')
-        order=first_row('koja_b2b_v4_orders',{'payment_reference':ref})
-    if not order:
-        flash('Payment is still being verified. Please open your B2B order again.','warning')
-        return redirect(url_for('b2bv4_home'))
-    if not _flutterwave_payment_valid(tx,order.get('payment_reference'),order.get('amount'),order.get('currency')):
-        flash('Payment verification failed. The order has not been marked paid.','danger')
-        return redirect(url_for('b2bv4_order',order_id=order.get('id')))
-    return _b2bv4_finalize_payment(order,tx)
-
-def _b2bv4_finalize_payment(order,tx,as_webhook=False):
-    if not order or not tx: return False if as_webhook else redirect(url_for('b2bv4_home'))
-    if str(order.get('payment_status'))=='paid': return True if as_webhook else redirect(url_for('b2bv4_order',order_id=order.get('id')))
-    if not _flutterwave_payment_valid(tx,order.get('payment_reference'),order.get('amount'),order.get('currency')):
-        flash('Verified transaction does not match this order.','danger'); return False if as_webhook else redirect(url_for('b2bv4_order',order_id=order.get('id')))
-    updated,err=db_update('koja_b2b_v4_orders',{'id':order.get('id'),'payment_status':'unpaid'},{'payment_status':'paid','payment_transaction_id':str(tx.get('id') or ''),'order_status':'paid','fulfillment_status':'ready','updated_at':utc_now()})
-    current=_b2bv4_order(order.get('id')) or order
-    if str(current.get('payment_status'))!='paid':
-        flash('Payment verification succeeded but the order update failed.','danger'); return False if as_webhook else redirect(url_for('b2bv4_order',order_id=order.get('id')))
-    db_insert('koja_b2b_v4_ledger',{'order_id':order.get('id'),'buyer_business_id':order.get('buyer_business_id'),'seller_business_id':order.get('seller_business_id'),'professional_provider_id':order.get('professional_provider_id'),'gross_amount':order.get('amount'),'platform_fee':order.get('platform_fee'),'seller_amount':order.get('seller_net'),'professional_amount':order.get('professional_fee'),'currency':order.get('currency') or 'ZMW','status':'pending','created_at':utc_now(),'updated_at':utc_now()})
-    _b2bv4_event(order.get('id'),order.get('request_id'),'payment_verified','awaiting_payment','paid',{'transaction_id':str(tx.get('id') or '')})
-    _b2bv4_notify(order.get('seller_user_id'),'B2B payment received',f'Payment for B2B order {order.get("id")} has been verified. Fulfilment is now unlocked.','/b2b/v4/order/'+str(order.get('id')))
-    flash('Payment verified. The order is now active.','success')
-    return True if as_webhook else redirect(url_for('b2bv4_order',order_id=order.get('id')))
-
-@app.route('/b2b/v4/order/<order_id>/fulfil',methods=['POST'])
-@login_required
-def b2bv4_order_fulfil(order_id):
-    order=_b2bv4_order(order_id)
-    if not order or str(order.get('seller_user_id'))!=_b2bv4_uid(): abort(403)
-    if str(order.get('payment_status'))!='paid':
-        flash('Payment must be verified before fulfilment.','warning'); return redirect(url_for('b2bv4_order',order_id=order_id))
-    req=first_row('koja_b2b_requests',{'id':order.get('request_id')}) or {}
-    # Physical/delivery orders use the existing KOJA delivery engine; online services remain in the B2B workspace.
-    if str(req.get('request_type') or '').lower() in {'product','procurement'} and (req.get('location') or req.get('delivery_address')):
-        delivery=_b2bv4_create_delivery(order)
-        new_status='delivery_requested' if delivery else 'in_progress'
+        flash('Connection could not be created. Run the KOJA Business V7 migration first.', 'danger')
     else:
-        new_status='in_progress'
-    db_update('koja_b2b_v4_orders',{'id':order_id},{'order_status':'in_progress','fulfillment_status':new_status,'updated_at':utc_now()})
-    _b2bv4_event(order_id,order.get('request_id'),'fulfilment_started','ready','in_progress',{'fulfillment_status':new_status})
-    _b2bv4_notify(order.get('buyer_user_id'),'B2B order in progress',f'Order {order_id} is now being fulfilled.','/b2b/v4/order/'+str(order_id))
-    flash('Fulfilment started.','success')
-    return redirect(url_for('b2bv4_order',order_id=order_id))
+        bc_activity(row.get('id'), source.get('id'), 'connection_requested', {'target_business_id': target.get('id')})
+        bc_notify_user(target.get('owner_id'), 'Business connection request', source.get('name', 'A KOJA business') + ' sent a Business Connect request.', '/business/connect')
+        flash('Connection request sent.', 'success')
+    return redirect(url_for('business_connect', business_id=business_id))
 
-@app.route('/b2b/v4/order/<order_id>/complete',methods=['POST'])
+
+@app.route('/api/business/<business_id>/connect/search', methods=['POST'])
 @login_required
-def b2bv4_order_complete(order_id):
-    order=_b2bv4_order(order_id)
-    if not order or str(order.get('buyer_user_id'))!=_b2bv4_uid(): abort(403)
-    if str(order.get('payment_status'))!='paid': flash('Order cannot be completed before payment.','warning'); return redirect(url_for('b2bv4_order',order_id=order_id))
-    delivery=first_row('deliveries',{'id':order.get('delivery_id')}) if order.get('delivery_id') else None
-    if delivery and str(delivery.get('status') or '').lower() not in {'delivered','completed'}:
-        flash('This order has a delivery in progress. Completion unlocks after delivery is marked delivered.','warning'); return redirect(url_for('b2bv4_order',order_id=order_id))
-    note=clean(request.form.get('completion_note'))
-    db_update('koja_b2b_v4_orders',{'id':order_id},{'order_status':'completed','fulfillment_status':'completed','completion_note':note,'completed_at':utc_now(),'updated_at':utc_now()})
-    db_update('koja_b2b_v4_ledger',{'order_id':order_id},{'status':'released','updated_at':utc_now()})
-    _b2bv4_event(order_id,order.get('request_id'),'order_completed','in_progress','completed',{'note':note})
-    _b2bv4_notify(order.get('seller_user_id'),'B2B order completed',f'Order {order_id} was confirmed completed by the buyer.','/b2b/v4')
-    flash('Order completed and seller earnings released in the B2B ledger.','success')
-    return redirect(url_for('b2bv4_order',order_id=order_id))
+def api_business_connect_search(business_id):
+    uid = (current_user() or {}).get('id')
+    b, _ = bc_access(uid, business_id)
+    if not b:
+        return jsonify(ok=False, error='Business not found.'), 404
+    data = request.get_json(silent=True) or {}
+    target = bc_business_by_code(data.get('business_code'))
+    if not target:
+        return jsonify(ok=False, error='Business code not found.'), 404
+    if str(target.get('id')) == str(b.get('id')):
+        return jsonify(ok=False, error='Cannot connect to yourself.'), 400
+    # Deliberately return only public/discoverable identity fields.
+    return jsonify(ok=True, business={
+        'id': target.get('id'), 'name': target.get('name'),
+        'category': target.get('category'), 'location': target.get('location'),
+        'status': target.get('status'), 'verified': bool(target.get('verified') or target.get('verification_status') in ('verified','approved','active'))
+    })
 
-@app.route('/b2b/v4/order/<order_id>/review',methods=['POST'])
+
+@app.route('/business/<business_id>/connect/<connection_id>/<action>', methods=['POST'])
 @login_required
-def b2bv4_order_review(order_id):
-    order=_b2bv4_order(order_id)
-    if not order or str(order.get('buyer_user_id'))!=_b2bv4_uid() or str(order.get('order_status'))!='completed': abort(403)
-    rating=max(1,min(5,int(request.form.get('rating') or 5)))
-    row,err=db_insert('koja_b2b_v4_reviews',{'order_id':order_id,'reviewer_user_id':_b2bv4_uid(),'seller_business_id':order.get('seller_business_id'),'professional_provider_id':order.get('professional_provider_id'),'rating':rating,'review':clean(request.form.get('review')),'created_at':utc_now()})
-    flash('Review submitted.' if row else 'Review could not be submitted: '+str(err)[:300],'success' if row else 'danger')
-    return redirect(url_for('b2bv4_order',order_id=order_id))
+def business_connect_action(business_id, connection_id, action):
+    uid = (current_user() or {}).get('id')
+    b, access = bc_access(uid, business_id)
+    c = first_row('koja_business_connections', {'id': connection_id})
+    if not b or not c:
+        abort(404)
+    if str(b.get('id')) not in (str(c.get('business_a_id')), str(c.get('business_b_id'))):
+        abort(403)
+    if action == 'accept':
+        if str(c.get('business_b_id')) != str(b.get('id')) or c.get('status') != 'pending':
+            flash('Only the receiving business can accept this request.', 'danger')
+        else:
+            db_update('koja_business_connections', {'id': connection_id}, {'status': 'accepted', 'accepted_at': utc_now(), 'updated_at': utc_now()})
+            for bid in (c.get('business_a_id'), c.get('business_b_id')):
+                db_insert('koja_business_connection_permissions', {'connection_id': connection_id, 'business_id': bid, 'permissions': ['profile','connect_plus','relationship_activity'], 'created_at': utc_now(), 'updated_at': utc_now()})
+            bc_activity(connection_id, b.get('id'), 'connection_accepted')
+            other_id = c.get('business_a_id') if str(c.get('business_b_id')) == str(b.get('id')) else c.get('business_b_id')
+            other = first_row('koja_businesses', {'id': other_id}) or {}
+            bc_notify_user(other.get('owner_id'), 'Business connection accepted', b.get('name','Business') + ' accepted your connection request.', '/business/connect')
+            flash('Business connection accepted.', 'success')
+    elif action == 'reject':
+        db_update('koja_business_connections', {'id': connection_id}, {'status': 'rejected', 'updated_at': utc_now()})
+        bc_activity(connection_id, b.get('id'), 'connection_rejected')
+        flash('Connection request rejected.', 'success')
+    elif action == 'disconnect':
+        db_update('koja_business_connections', {'id': connection_id}, {'status': 'disconnected', 'disconnected_at': utc_now(), 'updated_at': utc_now()})
+        bc_activity(connection_id, b.get('id'), 'connection_disconnected')
+        flash('Business disconnected.', 'success')
+    elif action == 'revoke':
+        db_update('koja_business_connections', {'id': connection_id}, {'status': 'revoked', 'updated_at': utc_now()})
+        bc_activity(connection_id, b.get('id'), 'connection_revoked')
+        flash('Business access revoked.', 'success')
+    else:
+        abort(400)
+    return redirect(url_for('business_connect', business_id=business_id))
 
+
+@app.route('/business/<business_id>/relationship/<connection_id>')
+@login_required
+def business_relationship(business_id, connection_id):
+    uid = (current_user() or {}).get('id')
+    b, access = bc_access(uid, business_id)
+    c = first_row('koja_business_connections', {'id': connection_id})
+    if not b or not c or str(b.get('id')) not in (str(c.get('business_a_id')), str(c.get('business_b_id'))):
+        abort(404)
+    other_id = c.get('business_b_id') if str(c.get('business_a_id')) == str(b.get('id')) else c.get('business_a_id')
+    other = first_row('koja_businesses', {'id': other_id}) or {}
+    perms = first_row('koja_business_connection_permissions', {'connection_id': connection_id, 'business_id': business_id}) or {}
+    activity = db_select('koja_business_relationship_activity', {'connection_id': connection_id}, order='created_at.desc', limit=100) or []
+    notes = db_select('koja_business_relationship_notes', {'connection_id': connection_id, 'business_id': business_id}, order='created_at.desc', limit=100) or []
+    contacts = db_select('koja_business_relationship_contacts', {'connection_id': connection_id, 'business_id': business_id}, order='created_at.desc', limit=100) or []
+    return render_page('Business Relationship', r'''
+<div class="hero"><h1>{{ other.name }}</h1><p>Business relationship workspace with {{ b.name }}.</p><div class="actions"><a class="btn" href="{{ url_for('communication_nextgen') }}">Open Connect+</a><a class="btn secondary" href="{{ url_for('business_connect',business_id=b.id) }}">Back to Business Connect</a></div></div>
+<div class="grid"><div class="card"><h2>Relationship</h2><p><strong>Status:</strong> {{ c.status|title }}</p><form method="post" action="{{ url_for('business_relationship_update',business_id=b.id,connection_id=c.id) }}"><label>Relationship type</label><select name="relationship_type">{% for x in relationship_types %}<option value="{{ x }}" {% if c.relationship_type==x %}selected{% endif %}>{{ x|replace('_',' ')|title }}</option>{% endfor %}</select><button class="btn">Save Relationship</button></form></div><div class="card"><h2>Permissions</h2><form method="post" action="{{ url_for('business_permissions_update',business_id=b.id,connection_id=c.id) }}">{% for p in permissions %}<label><input type="checkbox" name="permissions" value="{{ p }}" {% if p in current_permissions %}checked{% endif %} style="width:auto"> {{ p|replace('_',' ')|title }}</label>{% endfor %}<button class="btn">Save Permissions</button></form></div></div>
+<div class="card"><h2>Business Functions</h2><div class="actions"><a class="btn secondary" href="{{ url_for('communication_nextgen') }}">Connect+</a><a class="btn secondary" href="{{ url_for('business_connect',business_id=b.id) }}">Business Connect</a><a class="btn secondary" href="/services">Professional Services</a><a class="btn secondary" href="/market">Market</a><a class="btn secondary" href="/business/{{ b.id }}/products">Procurement / Inventory</a></div></div>
+<div class="card"><h2>Contacts</h2><form method="post" action="{{ url_for('business_relationship_contact_add',business_id=b.id,connection_id=c.id) }}"><div class="grid"><input name="name" placeholder="Contact name" required><input name="role" placeholder="Role"><input name="email" placeholder="Email"><input name="phone" placeholder="Phone"></div><button class="btn">Add Contact</button></form>{% for x in contacts %}<p><strong>{{ x.name }}</strong> — {{ x.role or '' }} · {{ x.email or '' }} · {{ x.phone or '' }}</p>{% else %}<p>No relationship contacts.</p>{% endfor %}</div>
+<div class="card"><h2>Relationship Notes</h2><form method="post" action="{{ url_for('business_relationship_note_add',business_id=b.id,connection_id=c.id) }}"><textarea name="note" required placeholder="Internal relationship note"></textarea><button class="btn">Save Note</button></form>{% for x in notes %}<p><strong>{{ x.created_at }}</strong><br>{{ x.note }}</p>{% else %}<p>No notes.</p>{% endfor %}</div>
+<div class="card"><h2>Relationship Activity</h2>{% for x in activity %}<div style="padding:10px 0;border-bottom:1px solid var(--border)"><strong>{{ x.event_type|replace('_',' ')|title }}</strong><div class="small">{{ x.created_at }}</div><div>{{ x.details }}</div></div>{% else %}<p>No activity yet.</p>{% endfor %}</div>
+<div class="card"><form method="post" action="{{ url_for('business_connect_action',business_id=b.id,connection_id=c.id,action='disconnect') }}"><button class="btn secondary">Disconnect Business</button></form></div>
+''', b=b, other=other, c=c, perms=perms, relationship_types=BC_RELATIONSHIP_TYPES, permissions=BC_PERMISSION_KEYS, current_permissions=perms.get('permissions') or [], activity=activity, notes=notes, contacts=contacts)
+
+
+@app.route('/business/<business_id>/relationship/<connection_id>/update', methods=['POST'])
+@login_required
+def business_relationship_update(business_id, connection_id):
+    uid=(current_user() or {}).get('id'); b, access=bc_access(uid,business_id)
+    if not b or access.get('role') != 'owner': abort(403)
+    relationship=clean(request.form.get('relationship_type'))
+    if relationship not in BC_RELATIONSHIP_TYPES: abort(400)
+    db_update('koja_business_connections', {'id':connection_id}, {'relationship_type':relationship,'updated_at':utc_now()})
+    bc_activity(connection_id,business_id,'relationship_type_changed',{'relationship_type':relationship})
+    flash('Business relationship updated.','success')
+    return redirect(url_for('business_relationship',business_id=business_id,connection_id=connection_id))
+
+
+@app.route('/business/<business_id>/relationship/<connection_id>/permissions', methods=['POST'])
+@login_required
+def business_permissions_update(business_id, connection_id):
+    uid=(current_user() or {}).get('id'); b, access=bc_access(uid,business_id)
+    if not b or access.get('role') != 'owner': abort(403)
+    permissions=[p for p in request.form.getlist('permissions') if p in BC_PERMISSION_KEYS]
+    row=first_row('koja_business_connection_permissions',{'connection_id':connection_id,'business_id':business_id})
+    payload={'permissions':permissions,'updated_at':utc_now()}
+    if row: db_update('koja_business_connection_permissions',{'id':row.get('id')},payload)
+    else: db_insert('koja_business_connection_permissions',{'connection_id':connection_id,'business_id':business_id,**payload,'created_at':utc_now()})
+    bc_activity(connection_id,business_id,'permissions_changed',{'permissions':permissions})
+    flash('Business permissions updated.','success')
+    return redirect(url_for('business_relationship',business_id=business_id,connection_id=connection_id))
+
+
+@app.route('/business/<business_id>/relationship/<connection_id>/contact', methods=['POST'])
+@login_required
+def business_relationship_contact_add(business_id,connection_id):
+    uid=(current_user() or {}).get('id')
+    if not bc_permission(uid,business_id,'contacts'): abort(403)
+    db_insert('koja_business_relationship_contacts',{'connection_id':connection_id,'business_id':business_id,'name':clean(request.form.get('name')),'role':clean(request.form.get('role')),'email':clean(request.form.get('email')),'phone':clean(request.form.get('phone')),'created_at':utc_now(),'updated_at':utc_now()})
+    bc_activity(connection_id,business_id,'relationship_contact_added')
+    return redirect(url_for('business_relationship',business_id=business_id,connection_id=connection_id))
+
+
+@app.route('/business/<business_id>/relationship/<connection_id>/note', methods=['POST'])
+@login_required
+def business_relationship_note_add(business_id,connection_id):
+    uid=(current_user() or {}).get('id')
+    if not bc_permission(uid,business_id,'relationship_activity'): abort(403)
+    db_insert('koja_business_relationship_notes',{'connection_id':connection_id,'business_id':business_id,'author_user_id':uid,'note':clean(request.form.get('note')),'created_at':utc_now()})
+    bc_activity(connection_id,business_id,'relationship_note_added')
+    return redirect(url_for('business_relationship',business_id=business_id,connection_id=connection_id))
+
+
+@app.route('/api/business/<business_id>/connect', methods=['POST'])
+@login_required
+def api_business_connect_create(business_id):
+    uid=(current_user() or {}).get('id'); source,_=bc_access(uid,business_id)
+    if not source: return jsonify(ok=False,error='Business not found'),404
+    data=request.get_json(silent=True) or {}
+    target=bc_business_by_code(data.get('business_code'))
+    if not target: return jsonify(ok=False,error='Business code not found'),404
+    if str(target.get('id'))==str(source.get('id')): return jsonify(ok=False,error='Cannot connect to yourself'),400
+    if bc_connection(source.get('id'),target.get('id')): return jsonify(ok=False,error='Connection already exists'),409
+    x,y=bc_pair(source.get('id'),target.get('id'))
+    row,err=db_insert('koja_business_connections',{'business_a_id':x,'business_b_id':y,'requested_by_business_id':source.get('id'),'status':'pending','created_at':utc_now(),'updated_at':utc_now()})
+    if err:return jsonify(ok=False,error='Database migration required',detail=str(err)[:500]),500
+    bc_activity(row.get('id'),source.get('id'),'connection_requested',{'target_business_id':target.get('id')})
+    bc_notify_user(target.get('owner_id'),'Business connection request',source.get('name','Business')+' sent a Business Connect request.','/business/connect')
+    return jsonify(ok=True,connection=row)
+
+
+@app.route('/api/business/<business_id>/connections')
+@login_required
+def api_business_connections(business_id):
+    uid=(current_user() or {}).get('id'); b,_=bc_access(uid,business_id)
+    if not b:return jsonify(ok=False,error='Business not found'),404
+    x=str(business_id); rows=(db_select('koja_business_connections',{'business_a_id':x},order='updated_at.desc',limit=200) or [])+(db_select('koja_business_connections',{'business_b_id':x},order='updated_at.desc',limit=200) or [])
+    out=[]
+    for c in rows:
+        oid=c.get('business_b_id') if str(c.get('business_a_id'))==x else c.get('business_a_id')
+        o=first_row('koja_businesses',{'id':oid}) or {}
+        out.append({'id':c.get('id'),'status':c.get('status'),'relationship_type':c.get('relationship_type'),'business':{'id':o.get('id'),'name':o.get('name'),'category':o.get('category'),'location':o.get('location')}})
+    return jsonify(ok=True,connections=out)
+
+# ============================================================
+# END KOJA GLOBAL BUSINESS V7 BUSINESS CONNECT
+# ============================================================
