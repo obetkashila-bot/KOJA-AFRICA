@@ -7770,6 +7770,160 @@ def business_subscription(business_id):
 # KOJA MARKET V4 — COMMERCE INTEGRATION & PRODUCTION WORKFLOWS
 # ============================================================
 
+
+# ============================================================
+# KOJA BUSINESS ORGANISATION CORE V1
+# Additive organisation layer for existing KOJA Business.
+# Communications and existing business modules remain untouched.
+# ============================================================
+
+def _org_core_owner(business_id):
+    uid=(current_user() or {}).get('id')
+    return first_row('koja_businesses', {'id':business_id,'owner_id':uid})
+
+def _org_core_log(business_id, action, entity_type=None, entity_id=None, details=None):
+    try:
+        db_insert('koja_business_activity', {
+            'business_id':business_id,
+            'actor_id':(current_user() or {}).get('id'),
+            'action':clean(action)[:160],
+            'entity_type':clean(entity_type)[:80] if entity_type else None,
+            'entity_id':str(entity_id) if entity_id else None,
+            'details':details or {},
+            'created_at':utc_now()
+        })
+    except Exception:
+        logger.exception('Business organisation audit event failed')
+
+def _org_core_ensure_owner_member(business):
+    if not business or not business.get('id') or not business.get('owner_id'): return
+    try:
+        existing=first_row('koja_business_members',{'business_id':business.get('id'),'user_id':business.get('owner_id')})
+        if not existing:
+            db_insert('koja_business_members', {
+                'business_id':business.get('id'), 'user_id':business.get('owner_id'),
+                'role':'owner', 'status':'active', 'created_at':utc_now(), 'updated_at':utc_now()
+            })
+            _org_core_log(business.get('id'),'owner_member_created','member',business.get('owner_id'),{'role':'owner'})
+    except Exception:
+        logger.exception('Business owner membership ensure failed')
+
+def _org_core_member(business_id):
+    uid=(current_user() or {}).get('id')
+    return first_row('koja_business_members',{'business_id':business_id,'user_id':uid,'status':'active'})
+
+@app.route('/business/core')
+@login_required
+def business_core_index():
+    uid=(current_user() or {}).get('id')
+    businesses=db_select('koja_businesses',{'owner_id':uid},order='created_at.desc',limit=100) or []
+    for b in businesses: _org_core_ensure_owner_member(b)
+    return render_page('Business Organisation Core',r'''
+<div class="hero"><h1>Business Organisation Core</h1><p>Organisation identity, members, departments, workspaces and activity for KOJA Business.</p></div>
+<div class="grid">
+{% for b in businesses %}<div class="card"><h2>{{ b.name }}</h2><p>{{ b.category or 'Business' }} · {{ b.business_number or 'KOJA Business' }}</p><div class="actions"><a class="btn" href="{{ url_for('business_core',business_id=b.id) }}">Open Organisation Core</a><a class="btn secondary" href="{{ url_for('business_dashboard',business_id=b.id) }}">Business Dashboard</a></div></div>
+{% else %}<div class="card"><h3>No businesses yet</h3><p>Create a KOJA Business first.</p><a class="btn" href="{{ url_for('business_new') }}">Create Business</a></div>{% endfor %}
+</div>''',businesses=businesses)
+
+@app.route('/business/<business_id>/core',methods=['GET','POST'])
+@login_required
+def business_core(business_id):
+    b=_org_core_owner(business_id)
+    if not b: abort(404)
+    _org_core_ensure_owner_member(b)
+    if request.method=='POST':
+        name=clean(request.form.get('name'))
+        description=clean(request.form.get('description'))
+        if name:
+            db_update('koja_businesses',{'id':business_id},{'description':description,'updated_at':utc_now()})
+            _org_core_log(business_id,'organisation_identity_updated','business',business_id,{'name':name,'description':description})
+            flash('Organisation information updated.','success')
+        else: flash('Organisation name is required.','danger')
+        return redirect(url_for('business_core',business_id=business_id))
+    b=first_row('koja_businesses',{'id':business_id,'owner_id':(current_user() or {}).get('id')}) or b
+    members=db_select('koja_business_members',{'business_id':business_id},order='created_at.asc',limit=500) or []
+    departments=db_select('koja_business_departments',{'business_id':business_id},order='name.asc',limit=500) or []
+    workspaces=db_select('koja_business_workspaces',{'business_id':business_id},order='created_at.desc',limit=200) or []
+    events=db_select('koja_business_activity',{'business_id':business_id},order='created_at.desc',limit=20) or []
+    return render_page('Business Organisation Core',r'''
+<div class="hero"><h1>{{ b.name }}</h1><p>Organisation Core</p><div class="actions"><a class="btn" href="{{ url_for('business_core_members',business_id=b.id) }}">Members & Roles</a><a class="btn secondary" href="{{ url_for('business_core_departments',business_id=b.id) }}">Departments</a><a class="btn secondary" href="{{ url_for('business_core_workspace',business_id=b.id) }}">Workspaces</a><a class="btn secondary" href="{{ url_for('business_dashboard',business_id=b.id) }}">Business Dashboard</a></div></div>
+<div class="grid"><div class="card"><h3>Organisation Identity</h3><form method="post"><label>Organisation name</label><input name="name" value="{{ b.name }}" required><label>Category</label><input value="{{ b.category or '' }}" readonly><label>Business Number</label><input value="{{ b.business_number or '' }}" readonly><label>TPIN</label><input value="{{ b.tpin or '' }}" readonly><label>Business Licence</label><input value="{{ b.business_licence or '' }}" readonly><label>Description</label><textarea name="description">{{ b.description or '' }}</textarea><button class="btn">Save Organisation</button></form></div>
+<div class="card"><h3>Organisation Summary</h3><p><strong>Members:</strong> {{ members|length }}</p><p><strong>Departments:</strong> {{ departments|length }}</p><p><strong>Workspaces:</strong> {{ workspaces|length }}</p><p><strong>Activity events:</strong> {{ events|length }}</p><p>Owner membership is automatically maintained as the organisation's owner role.</p></div></div>
+<div class="card"><h3>Recent Activity</h3>{% for e in events %}<p><strong>{{ e.action }}</strong> — {{ e.created_at }}{% if e.entity_type %} · {{ e.entity_type }}{% endif %}</p>{% else %}<p>No organisation activity yet.</p>{% endfor %}</div>
+''',b=b,members=members,departments=departments,workspaces=workspaces,events=events)
+
+@app.route('/business/<business_id>/core/members',methods=['GET','POST'])
+@login_required
+def business_core_members(business_id):
+    b=_org_core_owner(business_id)
+    if not b: abort(404)
+    _org_core_ensure_owner_member(b)
+    if request.method=='POST':
+        user_id=clean(request.form.get('user_id')); role=clean(request.form.get('role')) or 'member'
+        allowed={'owner','admin','manager','member','viewer'}
+        if role not in allowed: abort(400)
+        if not user_id: flash('Enter the KOJA user UUID.','danger')
+        elif role=='owner' and user_id != b.get('owner_id'): flash('The organisation owner is fixed to the business owner.','danger')
+        else:
+            existing=first_row('koja_business_members',{'business_id':business_id,'user_id':user_id})
+            payload={'business_id':business_id,'user_id':user_id,'role':role,'status':'active','updated_at':utc_now()}
+            if existing: _,err=db_update('koja_business_members',{'id':existing.get('id')},payload)
+            else: payload['created_at']=utc_now(); _,err=db_insert('koja_business_members',payload)
+            if err: flash('Member could not be saved. Check that the user UUID exists and run the Core V1 SQL.','danger')
+            else:
+                _org_core_log(business_id,'member_role_updated' if existing else 'member_added','member',user_id,{'role':role})
+                flash('Member saved.','success')
+        return redirect(url_for('business_core_members',business_id=business_id))
+    rows=db_select('koja_business_members',{'business_id':business_id},order='created_at.asc',limit=500) or []
+    return render_page('Business Organisation Members',r'''
+<div class="hero"><h1>{{ b.name }} — Members & Roles</h1><p>Manage organisation membership and access roles.</p><a class="btn secondary" href="{{ url_for('business_core',business_id=b.id) }}">Back to Organisation Core</a></div>
+<div class="card"><h3>Add or update member</h3><form method="post"><label>KOJA User UUID</label><input name="user_id" required placeholder="User UUID from KOJA account"><label>Role</label><select name="role"><option value="member">Member</option><option value="viewer">Viewer</option><option value="manager">Manager</option><option value="admin">Admin</option><option value="owner">Owner</option></select><button class="btn">Save Member</button></form></div>
+<div class="card"><table><tr><th>User</th><th>Role</th><th>Status</th><th>Joined</th></tr>{% for m in rows %}<tr><td>{{ m.user_id }}</td><td>{{ m.role }}</td><td>{{ m.status }}</td><td>{{ m.created_at }}</td></tr>{% else %}<tr><td colspan="4">No members.</td></tr>{% endfor %}</table></div>''',b=b,rows=rows)
+
+@app.route('/business/<business_id>/core/departments',methods=['GET','POST'])
+@login_required
+def business_core_departments(business_id):
+    b=_org_core_owner(business_id)
+    if not b: abort(404)
+    _org_core_ensure_owner_member(b)
+    if request.method=='POST':
+        name=clean(request.form.get('name')); description=clean(request.form.get('description'))
+        if not name: flash('Department name is required.','danger')
+        else:
+            _,err=db_insert('koja_business_departments',{'business_id':business_id,'name':name,'description':description,'status':'active','created_at':utc_now(),'updated_at':utc_now()})
+            if err: flash('Department could not be created. Run the Core V1 SQL first.','danger')
+            else: _org_core_log(business_id,'department_created','department',name,{'name':name}); flash('Department created.','success')
+        return redirect(url_for('business_core_departments',business_id=business_id))
+    rows=db_select('koja_business_departments',{'business_id':business_id},order='name.asc',limit=500) or []
+    return render_page('Business Departments',r'''
+<div class="hero"><h1>{{ b.name }} — Departments</h1><p>Organise teams and operational areas.</p><a class="btn secondary" href="{{ url_for('business_core',business_id=b.id) }}">Back to Organisation Core</a></div>
+<div class="card"><form method="post"><label>Department name</label><input name="name" required placeholder="Finance, Sales, Operations..."><label>Description</label><textarea name="description"></textarea><button class="btn">Create Department</button></form></div>
+<div class="card"><table><tr><th>Department</th><th>Description</th><th>Status</th></tr>{% for d in rows %}<tr><td>{{ d.name }}</td><td>{{ d.description or '' }}</td><td>{{ d.status }}</td></tr>{% else %}<tr><td colspan="3">No departments.</td></tr>{% endfor %}</table></div>''',b=b,rows=rows)
+
+@app.route('/business/<business_id>/core/workspace',methods=['GET','POST'])
+@login_required
+def business_core_workspace(business_id):
+    b=_org_core_owner(business_id)
+    if not b: abort(404)
+    _org_core_ensure_owner_member(b)
+    if request.method=='POST':
+        name=clean(request.form.get('name')); description=clean(request.form.get('description')); visibility=clean(request.form.get('visibility')) or 'private'
+        if visibility not in {'private','organisation'}: abort(400)
+        if not name: flash('Workspace name is required.','danger')
+        else:
+            row,err=db_insert('koja_business_workspaces',{'business_id':business_id,'name':name,'description':description,'visibility':visibility,'status':'active','created_by':(current_user() or {}).get('id'),'created_at':utc_now(),'updated_at':utc_now()})
+            if err: flash('Workspace could not be created. Run the Core V1 SQL first.','danger')
+            else:
+                if row and row.get('id'):
+                    db_insert('koja_business_workspace_members',{'workspace_id':row.get('id'),'user_id':(current_user() or {}).get('id'),'role':'owner','status':'active','created_at':utc_now(),'updated_at':utc_now()})
+                _org_core_log(business_id,'workspace_created','workspace',row.get('id') if row else None,{'name':name,'visibility':visibility}); flash('Workspace created.','success')
+        return redirect(url_for('business_core_workspace',business_id=business_id))
+    rows=db_select('koja_business_workspaces',{'business_id':business_id},order='created_at.desc',limit=300) or []
+    return render_page('Business Workspaces',r'''
+<div class="hero"><h1>{{ b.name }} — Workspaces</h1><p>Business work areas for teams, documents, projects and future KOJA Enterprise features.</p><a class="btn secondary" href="{{ url_for('business_core',business_id=b.id) }}">Back to Organisation Core</a></div>
+<div class="card"><form method="post"><label>Workspace name</label><input name="name" required placeholder="Operations Workspace"><label>Description</label><textarea name="description"></textarea><label>Visibility</label><select name="visibility"><option value="private">Private</option><option value="organisation">Organisation</option></select><button class="btn">Create Workspace</button></form></div>
+<div class="card"><table><tr><th>Workspace</th><th>Visibility</th><th>Status</th><th>Created</th></tr>{% for w in rows %}<tr><td>{{ w.name }}</td><td>{{ w.visibility }}</td><td>{{ w.status }}</td><td>{{ w.created_at }}</td></tr>{% else %}<tr><td colspan="4">No workspaces.</td></tr>{% endfor %}</table></div>''',b=b,rows=rows)
+
 def _biz_owner(business_id):
     u=current_user() or {}; return first_row('koja_businesses', {'id':business_id,'owner_id':u.get('id')})
 
