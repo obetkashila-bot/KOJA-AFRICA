@@ -864,6 +864,28 @@ footer{text-align:center;color:var(--muted);padding:30px}
 @media(max-width:760px){nav{padding:9px 12px}.nav-inner{position:relative;flex-wrap:wrap}.menu-toggle{display:block}.nav-links{display:none;width:100%;flex-direction:column;align-items:stretch;gap:3px;padding-top:8px}.nav-links.open{display:flex;animation:fadeUp .2s ease both}.nav-links>a{font-size:14px;padding:11px 12px;background:rgba(255,255,255,.05)}.menu-group{width:100%}.menu-group>button{width:100%;text-align:left;padding:11px 12px}.dropdown{position:static;width:100%;box-shadow:none;margin-top:4px;background:var(--surface)}.dropdown a{font-size:14px}.container{width:min(100% - 14px,1250px)}table{display:block;overflow-x:auto}#map{height:350px}.actions .btn,.actions button{width:100%}}
 @media(min-width:761px){.nav-links{display:flex!important}}
 </style>
+<style id="koja-global-business-ui">
+:root{--bg:#f4f7fb;--surface:#ffffff;--surface2:#f8fafc;--text:#101828;--muted:#667085;--border:#dfe5ec;--nav:#071a33;--accent:#146ef5;--accent2:#e33b4f;--success:#16835b;--warning:#b7791f;--shadow:0 10px 30px rgba(16,24,40,.07)}
+html[data-koja-theme="dark"]{--bg:#0a1220;--surface:#111c2d;--surface2:#0d1727;--text:#eef4ff;--muted:#a8b4c5;--border:#26364b;--nav:#050e1b;--accent:#4b91ff;--accent2:#ff5a68;--shadow:0 10px 30px rgba(0,0,0,.24)}
+body{background:radial-gradient(circle at 15% -10%,rgba(20,110,245,.10),transparent 28%),var(--bg);font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--text)}
+nav{background:rgba(7,26,51,.96);backdrop-filter:blur(16px);padding:9px 16px;border-bottom:1px solid rgba(255,255,255,.09);box-shadow:0 8px 30px rgba(7,26,51,.18)}
+.nav-inner{max-width:1380px;min-height:54px;gap:10px}.brand{font-size:18px;letter-spacing:.35px}.brand-mark{width:35px;height:35px;border-radius:10px;background:linear-gradient(135deg,#146ef5,#e33b4f);animation:none}.brand-name{font-weight:850}
+.nav-links{gap:3px}.nav-links>a,.menu-group>button{font-size:13px;font-weight:650;border-radius:9px;padding:9px 10px;color:#eef5ff}.nav-links>a:hover,.menu-group>button:hover{background:rgba(255,255,255,.10);transform:none}.notification-bell{display:none!important}
+.container{width:min(1380px,calc(100% - 28px));margin:24px auto 60px}.card,.stat{border:1px solid var(--border);border-radius:18px;background:var(--surface);box-shadow:var(--shadow);padding:20px}.card:hover{transform:none;box-shadow:0 14px 34px rgba(16,24,40,.09)}
+.hero{border-radius:22px;padding:30px;background:linear-gradient(125deg,#071a33 0%,#103b71 58%,#146ef5 100%);box-shadow:0 18px 45px rgba(7,26,51,.20)}.hero h1,.hero h2{font-size:clamp(25px,4vw,38px);letter-spacing:-.8px;margin-bottom:7px}.hero p{opacity:.86;max-width:760px}
+.grid{gap:18px}.stat{min-height:120px}.big{font-size:31px;letter-spacing:-1px}.small{color:var(--muted)}
+.btn,button{background:var(--accent);border-radius:10px;font-weight:700;border:1px solid transparent;box-shadow:none}.btn.secondary{background:var(--surface2);color:var(--text);border-color:var(--border)}.btn.danger{background:var(--accent2)}.btn.success{background:var(--success)}
+input,select,textarea{border-radius:11px;border:1px solid var(--border);background:var(--surface2);min-height:44px}.badge{background:rgba(20,110,245,.10);color:var(--accent);font-weight:700;border:1px solid rgba(20,110,245,.14)}
+table{border:1px solid var(--border);border-radius:14px;overflow:hidden}th{background:var(--surface2);font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}th,td{padding:13px;border-bottom:1px solid var(--border)}
+.koja-section-head{display:flex;justify-content:space-between;gap:15px;align-items:end;margin:8px 0 14px}.koja-section-head h2,.koja-section-head h3{margin:0}.koja-kicker{text-transform:uppercase;letter-spacing:.09em;font-size:11px;font-weight:800;color:var(--accent)}
+.koja-metric-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}.koja-metric{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:18px}.koja-metric .value{font-size:28px;font-weight:850;margin:4px 0}.koja-metric .label{font-size:12px;color:var(--muted)}
+.koja-command{display:flex;gap:10px;align-items:center;background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:12px;box-shadow:var(--shadow)}.koja-command input{margin:0;flex:1}.koja-command button{width:auto;margin:0}.koja-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:20px;font-weight:850;letter-spacing:.08em;padding:13px 15px;border-radius:12px;background:var(--surface2);border:1px dashed #75a7ff;display:inline-block}
+.koja-panel{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:20px;box-shadow:var(--shadow)}.koja-panel h3{margin-bottom:6px}.koja-panel p{color:var(--muted)}
+.koja-status{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:800}.koja-status:before{content:"";width:8px;height:8px;border-radius:50%;background:var(--success)}
+footer{border-top:1px solid var(--border);margin-top:45px;padding:28px 12px;color:var(--muted)}
+@media(max-width:900px){.koja-metric-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:760px){nav{padding:8px 11px}.container{width:calc(100% - 14px);margin-top:15px}.hero{padding:22px 17px;border-radius:18px}.card,.stat,.koja-panel{padding:16px;border-radius:15px}.koja-command{flex-direction:column;align-items:stretch}.koja-command button{width:100%}.koja-metric-grid{grid-template-columns:1fr 1fr}.brand-name{font-size:16px}}
+</style>
 </head>
 <body>
 <nav aria-label="Primary navigation">
@@ -1239,23 +1261,45 @@ def dashboard():
     questions_count = len(db_select("questions",filters={"user_id":user["id"]},limit=1000))
     deliveries_count = len(db_select("deliveries",filters={"customer_id":user["id"]},limit=1000))
     appointments_count = len(db_select("appointments",filters={"client_id":user["id"]},limit=1000))
-    return render_page("Dashboard", r"""
-<div class="hero"><h2>Welcome, {{ user.name }}</h2><p>{{ user.email }}</p></div>
-<div class="grid">
-<div class="stat"><div class="big">{{ questions_count }}</div>Academic Questions</div>
-<div class="stat"><div class="big">{{ deliveries_count }}</div>Deliveries</div>
-<div class="stat"><div class="big">{{ appointments_count }}</div>Appointments</div>
-<div class="stat"><div class="big">{{ "ADMIN" if user.is_admin else user.role|upper }}</div>Account</div>
+    businesses = db_select('koja_businesses', {'owner_id': user['id']}, order='created_at.desc', limit=20) or []
+    business = businesses[0] if businesses else None
+    if business:
+        if 'bc_ensure_code' in globals(): bc_ensure_code(business)
+        pending = len(db_select('koja_business_connections', {'business_b_id': business.get('id'), 'status':'pending'}, limit=100))
+        connected_a = db_select('koja_business_connections', {'business_a_id': business.get('id'), 'status':'accepted'}, limit=100)
+        connected_b = db_select('koja_business_connections', {'business_b_id': business.get('id'), 'status':'accepted'}, limit=100)
+        connected_count = len(connected_a)+len(connected_b)
+    else:
+        pending = 0; connected_count = 0
+    return render_page("Dashboard", r''' 
+<div class="hero">
+  <div class="koja-kicker" style="color:#9fc4ff">KOJA GLOBAL BUSINESS</div>
+  <h1>{{ user.name }}</h1>
+  <p>One workspace for your business relationships, commerce, professional services, logistics, documents and KOJA AI.</p>
+  <div class="actions">
+    {% if business %}<a class="btn" href="{{ url_for('business_dashboard',business_id=business.id) }}">Open Business Workspace</a><a class="btn secondary" href="{{ url_for('business_connect',business_id=business.id) }}">Business Connect</a>{% else %}<a class="btn" href="{{ url_for('business_new') }}">Create Business</a>{% endif %}
+    <a class="btn secondary" href="{{ url_for('ai_nextgen') }}">Open KOJA AI</a>
+  </div>
 </div>
-<div class="card"><h3>KOJA Services</h3>
+{% if business %}
+<div class="koja-command" style="margin:18px 0"><input readonly value="{{ business.business_code or 'Business code generating...' }}"><a class="btn" href="{{ url_for('business_connect',business_id=business.id) }}">Manage Connections</a></div>
+<div class="koja-metric-grid">
+  <div class="koja-metric"><div class="label">CONNECTED BUSINESSES</div><div class="value">{{ connected_count }}</div><div class="small">Active relationships</div></div>
+  <div class="koja-metric"><div class="label">PENDING REQUESTS</div><div class="value">{{ pending }}</div><div class="small">Needs attention</div></div>
+  <div class="koja-metric"><div class="label">QUESTIONS</div><div class="value">{{ questions_count }}</div><div class="small">Academic workspace</div></div>
+  <div class="koja-metric"><div class="label">DELIVERIES</div><div class="value">{{ deliveries_count }}</div><div class="small">Customer deliveries</div></div>
+</div>
+{% endif %}
+<div class="koja-section-head" style="margin-top:28px"><div><div class="koja-kicker">Workspace</div><h2>Business and KOJA services</h2></div></div>
 <div class="grid">
-<a class="btn" href="{{ url_for('cv') }}">Create CV</a>
-<a class="btn" href="{{ url_for('doctors') }}">Doctor Booking</a>
-<a class="btn" href="{{ url_for('teachers') }}">Teacher Booking</a>
-<a class="btn" href="{{ url_for('deliveries') }}">Find Driver / Delivery</a>
-{% if user.role in ['driver','admin'] or user.is_admin %}<a class="btn" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}
-</div></div>
-""",questions_count=questions_count,deliveries_count=deliveries_count,appointments_count=appointments_count)
+  <div class="koja-panel"><h3>Business Connect</h3><p>Find verified businesses by permanent KOJA Business Code and build controlled working relationships.</p>{% if business %}<a class="btn" href="{{ url_for('business_connect',business_id=business.id) }}">Open Business Connect</a>{% else %}<a class="btn" href="{{ url_for('business_new') }}">Create Business</a>{% endif %}</div>
+  <div class="koja-panel"><h3>Commerce</h3><p>Marketplace, POS, products, orders, payments and delivery workflows.</p><a class="btn" href="{{ url_for('marketplace') }}">Open KOJA Market</a></div>
+  <div class="koja-panel"><h3>Professional Services</h3><p>Discover and manage professional services through one identity and service workflow.</p><a class="btn" href="{{ url_for('professionals') }}">Open Professionals</a></div>
+  <div class="koja-panel"><h3>Connect+</h3><p>Use KOJA's existing communication engine for business and personal conversations.</p><a class="btn" href="{{ url_for('communication_nextgen') }}">Open Connect+</a></div>
+</div>
+<div class="koja-section-head" style="margin-top:28px"><div><div class="koja-kicker">Personal Workspace</div><h2>Quick access</h2></div></div>
+<div class="actions"><a class="btn secondary" href="{{ url_for('questions') }}">Questions</a><a class="btn secondary" href="{{ url_for('assignments') }}">Assignments</a><a class="btn secondary" href="{{ url_for('research') }}">Research</a><a class="btn secondary" href="{{ url_for('documents') }}">Documents</a><a class="btn secondary" href="{{ url_for('deliveries') }}">Deliveries</a><a class="btn secondary" href="{{ url_for('settings') }}">Settings</a></div>
+''',questions_count=questions_count,deliveries_count=deliveries_count,appointments_count=appointments_count,business=business,pending=pending,connected_count=connected_count)
 
 # ============================================================
 # KOJA RESEARCH ENGINE V2
@@ -9798,11 +9842,38 @@ def business_connect(business_id):
     for c in pending_in + pending_out:
         oid = c.get('business_a_id') if str(c.get('business_b_id')) == x else c.get('business_b_id')
         c['other'] = first_row('koja_businesses', {'id': oid}) or {}
-    return render_page('Business Connect', r'''
-<div class="hero"><h1>Business Connect</h1><p>Connect directly with businesses without requiring a transaction.</p><div class="card"><strong>Your KOJA Business Code</strong><h2 style="letter-spacing:1px">{{ b.business_code or 'Generating...' }}</h2><p class="small">Share this code when another business needs to connect with your organisation.</p></div></div>
-<div class="card"><h2>Connect a Business</h2><form method="post" action="{{ url_for('business_connect_request',business_id=b.id) }}"><label>KOJA Business Code</label><input name="business_code" placeholder="KOJA-ZM-BUS-7F82K4" required><button class="btn">Find and Send Request</button></form></div>
-<div class="card"><h2>Connection Requests</h2><table><tr><th>Business</th><th>Direction</th><th>Status</th><th>Action</th></tr>{% for c in pending_in %}<tr><td>{{ c.other.name }}</td><td>Incoming</td><td>Pending</td><td><form method="post" action="{{ url_for('business_connect_action',business_id=b.id,connection_id=c.id,action='accept') }}"><button class="btn">Accept</button></form><form method="post" action="{{ url_for('business_connect_action',business_id=b.id,connection_id=c.id,action='reject') }}"><button class="btn secondary">Reject</button></form></td></tr>{% endfor %}{% for c in pending_out %}<tr><td>{{ c.other.name }}</td><td>Outgoing</td><td>Pending</td><td>Waiting</td></tr>{% endfor %}{% if not pending_in and not pending_out %}<tr><td colspan="4">No pending connection requests.</td></tr>{% endif %}</table></div>
-<div class="card"><h2>Connected Businesses</h2><table><tr><th>Business</th><th>Relationship</th><th>Status</th><th>Workspace</th></tr>{% for c in connected if c.status=='accepted' %}<tr><td><strong>{{ c.other.name }}</strong><div class="small">{{ c.other.category or '' }}</div></td><td>{{ (c.relationship_type or 'partner')|replace('_',' ')|title }}</td><td>Connected</td><td><a class="btn" href="{{ url_for('business_relationship',business_id=b.id,connection_id=c.id) }}">Open</a></td></tr>{% else %}<tr><td colspan="4">No connected businesses yet.</td></tr>{% endfor %}</table></div>
+    return render_page('Business Connect', r'''<div class="hero">
+  <div class="koja-kicker" style="color:#9fc4ff">KOJA BUSINESS CONNECT</div>
+  <h1>Connect businesses. Then work together.</h1>
+  <p>Use a permanent KOJA Business Code to discover a company, request a relationship and unlock only the business permissions you approve.</p>
+  <div class="koja-code">{{ b.business_code or 'Generating...' }}</div>
+  <div class="small" style="color:#d9e7ff;margin-top:9px">Your permanent KOJA Business Code</div>
+</div>
+<div class="koja-command" style="margin:18px 0"><input id="bcCode" placeholder="Enter KOJA-ZM-BUS-7F82K4" autocomplete="off"><button type="button" id="bcFind">Find Business</button></div>
+<div id="bcPreview" class="koja-panel" style="display:none;margin-bottom:18px"></div>
+<div class="grid">
+  <div class="koja-panel"><div class="koja-kicker">Incoming</div><h3>Connection Requests</h3><p>Review businesses asking to connect with your organisation.</p>{% for c in pending_in %}<div class="card" style="margin:10px 0;padding:14px;box-shadow:none"><strong>{{ c.other.name }}</strong><div class="small">{{ c.other.category or 'Business' }}</div><div class="actions" style="margin-top:10px"><form method="post" action="{{ url_for('business_connect_action',business_id=b.id,connection_id=c.id,action='accept') }}"><button class="btn success">Accept</button></form><form method="post" action="{{ url_for('business_connect_action',business_id=b.id,connection_id=c.id,action='reject') }}"><button class="btn secondary">Reject</button></form></div></div>{% else %}<div class="small">No incoming requests.</div>{% endfor %}</div>
+  <div class="koja-panel"><div class="koja-kicker">Outgoing</div><h3>Requests Sent</h3><p>Businesses you have asked to connect with.</p>{% for c in pending_out %}<div class="card" style="margin:10px 0;padding:14px;box-shadow:none"><strong>{{ c.other.name }}</strong><div class="small">{{ c.other.category or 'Business' }}</div><span class="koja-status" style="margin-top:8px">Pending</span></div>{% else %}<div class="small">No outgoing requests.</div>{% endfor %}</div>
+</div>
+<div class="koja-section-head" style="margin-top:28px"><div><div class="koja-kicker">Relationships</div><h2>Connected Businesses</h2></div></div>
+<div class="grid">{% for c in connected if c.status=='accepted' %}<div class="koja-panel"><div style="display:flex;justify-content:space-between;gap:10px"><div><h3>{{ c.other.name }}</h3><div class="small">{{ c.other.category or 'Business' }}</div></div><span class="koja-status">Connected</span></div><p>{{ (c.relationship_type or 'partner')|replace('_',' ')|title }}</p><a class="btn" href="{{ url_for('business_relationship',business_id=b.id,connection_id=c.id) }}">Open Relationship</a></div>{% else %}<div class="koja-panel"><h3>No connected businesses yet</h3><p>Enter another company's Business Code above to start a relationship.</p></div>{% endfor %}</div>
+<script>
+(function(){
+ const input=document.getElementById('bcCode'),btn=document.getElementById('bcFind'),box=document.getElementById('bcPreview');
+ if(!input||!btn||!box)return;
+ btn.addEventListener('click',async function(){
+   const code=input.value.trim(); if(!code){box.style.display='block';box.innerHTML='<strong>Enter a Business Code.</strong>';return;}
+   btn.disabled=true;btn.textContent='Searching...';
+   try{const r=await fetch('{{ url_for('api_business_connect_search',business_id=b.id) }}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({business_code:code})});const d=await r.json();
+     box.style.display='block';
+     if(!d.ok){box.innerHTML='<strong>Business not found.</strong><p>'+((d.error||'Check the code and try again.'))+'</p>';return;}
+     const x=d.business||{};
+     box.innerHTML='<div class="koja-kicker">BUSINESS FOUND</div><h3>'+esc(x.name||'Business')+'</h3><p>'+esc(x.category||'Business')+' · '+esc(x.location||'')+'</p><p><span class="koja-status">Verified identity available</span></p><form method="post" action="{{ url_for('business_connect_request',business_id=b.id) }}"><input type="hidden" name="business_code" value="'+esc(code)+'"><button class="btn">Send Connection Request</button></form>';
+   }catch(e){box.style.display='block';box.innerHTML='<strong>Search unavailable.</strong><p>Please try again.</p>'}finally{btn.disabled=false;btn.textContent='Find Business'}
+ });
+ function esc(v){return String(v).replace(/[&<>'"]/g,s=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;',""":'&quot;'}[s]))}
+})();
+</script>
 ''', b=b, connected=connected, pending_in=pending_in, pending_out=pending_out)
 
 
