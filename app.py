@@ -2393,7 +2393,7 @@ def documents():
             visible.append(row)
     return render_page("Documents", r"""
 <div class="hero"><h2>KOJA Documents</h2><p>Upload, find and use research and learning documents with built-in document intelligence.</p></div>
-<div class="card"><div class="actions">{% if current_user and current_user.get("is_admin") %}<a class="btn secondary" href="{{ url_for('admin_documents') }}">Admin Document Center</a>{% endif %}</div><h3>Upload Document</h3><form method="post" enctype="multipart/form-data"><label>Title</label><input name="title" maxlength="220" required><label>Description</label><textarea name="description" maxlength="4000" placeholder="What is this document about?"></textarea><label>Category</label><select name="category"><option>Research</option><option>Academic</option><option>Notes</option><option>Reports</option><option>Books</option><option>Other</option></select><label>File</label><input name="file" type="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp" required><button class="btn" type="submit">Upload for Approval</button></form></div>
+<div class="card"><h3>Upload Document</h3><form method="post" enctype="multipart/form-data"><label>Title</label><input name="title" maxlength="220" required><label>Description</label><textarea name="description" maxlength="4000" placeholder="What is this document about?"></textarea><label>Category</label><select name="category"><option>Research</option><option>Academic</option><option>Notes</option><option>Reports</option><option>Books</option><option>Other</option></select><label>File</label><input name="file" type="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp" required><button class="btn" type="submit">Upload for Approval</button></form></div>
 <div class="grid">{% for d in documents %}<div class="card"><h3>{{ d.get('title') or d.get('name') or d.get('filename') or 'KOJA Document' }}</h3><p>{{ d.get('description') or d.get('content') or '' }}</p><p class="small">Category: {{ d.get('category') or 'Research' }} · Status: {{ d.get('approval_status') or d.get('status') or '—' }}</p>{% set did=d.get('id') %}{% if did %}<div class="actions"><a class="btn secondary" href="{{ url_for('document_download', document_id=did) }}">Open / Download</a><button class="btn" type="button" onclick="openDocumentAI('{{ did }}')">Ask KOJA AI</button></div><div id="docai-{{ did }}" style="display:none;margin-top:14px"><label>Ask about this document</label><textarea id="docq-{{ did }}" rows="3" placeholder="Ask a question, or choose an action below."></textarea><div class="actions"><button class="btn" type="button" onclick="runDocumentAI('{{ did }}','ask')">Ask</button><button class="btn secondary" type="button" onclick="runDocumentAI('{{ did }}','summarize')">Summarize</button><button class="btn secondary" type="button" onclick="runDocumentAI('{{ did }}','key_points')">Key Points</button><button class="btn secondary" type="button" onclick="runDocumentAI('{{ did }}','study_questions')">Study Questions</button><button class="btn secondary" type="button" onclick="runDocumentAI('{{ did }}','explain')">Explain</button><button class="btn secondary" type="button" onclick="runDocumentAI('{{ did }}','research')">Research Analysis</button></div><div id="docai-result-{{ did }}" class="card" style="display:none;margin-top:12px;white-space:pre-wrap"></div></div>{% endif %}</div>{% else %}<div class="card"><h3>No documents yet</h3><p>Upload the first KOJA research or learning document.</p></div>{% endfor %}</div>
 <script>
 function openDocumentAI(id){document.getElementById('docai-'+id).style.display='block';document.getElementById('docq-'+id).focus();}
@@ -2464,7 +2464,7 @@ def questions():
         payload = {
             "id":str(uuid.uuid4()),"user_id":user["id"],
             "question":question_text,"subject":subject or None,
-            "status":"pending","created_at":utc_now()
+            "status":"submitted","created_at":utc_now()
         }
         row,error = db_insert("questions",payload)
         if error:
@@ -2538,7 +2538,7 @@ def assignments():
             "sender_id":user["id"],
             "tracking_code":make_assignment_tracking_code(),
             "title":title,"description":description,
-            "status":"pending","created_at":utc_now()
+            "status":"submitted","created_at":utc_now()
         }
         if uploaded:
             payload.update({
@@ -2572,22 +2572,6 @@ def assignments():
         rows=db_select("assignments",filters={"owner_id":user["id"]},order="created_at.desc",limit=100)
         if not rows:
             rows=db_select("assignments",filters={"user_id":user["id"]},order="created_at.desc",limit=100)
-    # Normalize legacy status names for the new assignment workflow.
-    for _item in rows:
-        _st = str(_item.get("status") or "pending").lower()
-        if _st == "submitted":
-            _item["status_display"] = "Pending"
-        elif _st == "completed":
-            _item["status_display"] = "Complete"
-        elif _st == "answered":
-            _item["status_display"] = "Answered"
-        elif _st == "under_review":
-            _item["status_display"] = "Under Review"
-        else:
-            _item["status_display"] = _st.replace("_", " ").title()
-    pending_count = sum(1 for x in rows if str(x.get("status") or "pending").lower() in ("pending", "submitted", "under_review"))
-    answered_count = sum(1 for x in rows if str(x.get("status") or "").lower() in ("answered", "answer_approved", "answer_sent"))
-    complete_count = sum(1 for x in rows if str(x.get("status") or "").lower() in ("complete", "completed"))
     return render_page("Assignments",r"""
 <div class="card"><h2>Upload Assignment</h2>
 <p class="small">Each assignment is linked to your account as its specific sender and owner. Other users cannot see your assignment documents.</p>
@@ -2598,16 +2582,10 @@ def assignments():
 <button type="submit">Upload Assignment</button>
 </form></div>
 <div class="card"><h2>{% if current_user and current_user.get("is_admin") %}All Assignments{% else %}My Assignments{% endif %}</h2>
-<div class="actions" style="margin-bottom:16px">
-<span class="badge">Pending: {{ pending_count }}</span>
-<span class="badge">Answered: {{ answered_count }}</span>
-<span class="badge">Complete: {{ complete_count }}</span>
-</div>
 {% for item in rows %}
 <div class="card"><h3>{{ item.get("title") or "Assignment" }}</h3>
 <p>{{ item.get("description") or "" }}</p>
 <p class="small"><strong>Sender/Owner:</strong> {{ item.get("sender_id") or item.get("owner_id") or item.get("user_id") or item.get("student_id") }}{% if item.get("tracking_code") %} · <strong>Tracking:</strong> {{ item.get("tracking_code") }}{% endif %}</p>
-<p><strong>Status:</strong> <span class="badge">{{ item.get("status_display") }}</span></p>
 <a class="btn secondary" href="{{ url_for('assignment_question_download',assignment_id=item.get('id')) }}">⬇️ Download Question</a>
 <a class="btn secondary" href="{{ url_for('assignment_question_view',assignment_id=item.get('id')) }}"> Read Question</a>
 {% if item.get("file_path") %}<a class="btn" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='original') }}">⬇️ Download Assignment File</a>{% endif %}
@@ -5693,78 +5671,6 @@ def admin_users():
 </table></div>
 """,rows=rows)
 
-@app.route("/admin/documents", methods=["GET", "POST"])
-@admin_required
-def admin_documents():
-    """Administrator document center: write, upload, approve and download documents."""
-    admin = current_user() or {}
-    if request.method == "POST":
-        title = clean(request.form.get("title"))
-        description = clean(request.form.get("description"))
-        category = clean(request.form.get("category")) or "Academic"
-        file = request.files.get("file")
-        if not title:
-            flash("Document title is required.", "danger")
-            return redirect(url_for("admin_documents"))
-        uploaded = None
-        if file and file.filename:
-            uploaded, error = upload_storage(file, "documents", public=False)
-            if error:
-                flash("Document upload failed: " + str(error)[:500], "danger")
-                return redirect(url_for("admin_documents"))
-        payload = {
-            "id": str(uuid.uuid4()), "title": title, "description": description,
-            "category": category, "user_id": admin.get("id"),
-            "approval_status": "approved", "is_public": True, "is_active": True,
-            "created_at": utc_now(), "updated_at": utc_now()
-        }
-        if uploaded:
-            payload.update({"file_name": uploaded["file_name"], "file_path": uploaded["path"],
-                            "file_url": uploaded["path"]})
-        row, error = db_insert("documents", payload)
-        if error:
-            if uploaded:
-                delete_storage_path(uploaded.get("path"))
-            flash("Document could not be saved. Check the documents table schema.", "danger")
-        else:
-            flash("Administrator document published successfully.", "success")
-            log_activity("admin_document_published", f"Admin published document: {title}")
-        return redirect(url_for("admin_documents"))
-
-    rows = db_select("documents", order="created_at.desc", limit=300)
-    return render_page("Admin Documents", r"""
-<div class="hero"><h2>KOJA Admin Documents</h2><p>Write documents, upload files, publish learning and research material, and download existing documents.</p></div>
-<div class="card">
-<h3>Create / Write Document</h3>
-<form method="post" enctype="multipart/form-data">
-<label>Title</label><input name="title" maxlength="220" required>
-<label>Document content / description</label><textarea name="description" maxlength="40000" rows="12" placeholder="Write the document content here. You can also attach a file."></textarea>
-<label>Category</label><select name="category"><option>Academic</option><option>Research</option><option>Notes</option><option>Reports</option><option>Books</option><option>Announcements</option><option>Other</option></select>
-<label>Upload document file (optional)</label><input name="file" type="file" accept=".pdf,.doc,.docx,.txt,.ppt,.pptx,.xls,.xlsx,.jpg,.jpeg,.png,.webp">
-<button class="btn" type="submit">Publish Document</button>
-</form></div>
-<div class="card"><h3>Document Library</h3>
-{% for d in rows %}<div class="card"><h3>{{ d.get('title') or 'Document' }}</h3><p>{{ d.get('description') or '' }}</p><p class="small">{{ d.get('category') or 'Other' }} · {{ d.get('approval_status') or d.get('status') or '—' }}</p>
-<div class="actions">
-{% if d.get('file_path') %}<a class="btn secondary" href="{{ url_for('document_download', document_id=d.get('id')) }}">Download File</a>{% endif %}
-<a class="btn secondary" href="{{ url_for('admin_document_text_download', document_id=d.get('id')) }}">Download Written Document</a>
-</div></div>{% else %}<p>No documents found.</p>{% endfor %}
-</div>
-""", rows=rows)
-
-@app.route("/admin/documents/<document_id>/text/download")
-@admin_required
-def admin_document_text_download(document_id):
-    doc = first_row("documents", {"id": document_id})
-    if not doc:
-        return "Document not found.", 404
-    title = doc.get("title") or "KOJA Document"
-    category = doc.get("category") or "Other"
-    content = doc.get("description") or ""
-    text = f"KOJA AFRICA — {title}\n\nCategory: {category}\n\n{content}\n"
-    filename = re.sub(r"[^A-Za-z0-9._-]+", "-", str(title)).strip("-") or "koja-document"
-    return send_file(io.BytesIO(text.encode("utf-8")), download_name=f"{filename}.txt", mimetype="text/plain", as_attachment=True)
-
 @app.route("/admin/assignments", methods=["GET"])
 @admin_required
 def admin_assignments():
@@ -5846,7 +5752,7 @@ def admin_assignment_answer(assignment_id):
 <div class="hero"><h2>️ Answer Assignment</h2><p>{{ item.get("title") or "Assignment" }} · {{ item.get("tracking_code") or "No tracking code" }}</p></div>
 <div class="card"><p><strong>Specific user:</strong> {{ recipient_name }}</p><p><strong>Email:</strong> {{ recipient_email or "No email found" }}</p><p><strong>Current status:</strong> <span class="badge">{{ item.get("status") or "submitted" }}</span></p><p class="small">The answer belongs only to this assignment owner.</p></div>
 <div class="card"><h3> Read Uploaded Assignment Question</h3><p><strong>{{ item.get("title") or "Assignment" }}</strong></p><div style="white-space:pre-wrap;line-height:1.7">{{ item.get("description") or "No written question was provided." }}</div><div class="actions" style="margin-top:14px"><a class="btn secondary" href="{{ url_for('assignment_question_download',assignment_id=item.get('id')) }}">⬇️ Download Question</a>{% if item.get("file_path") %}<a class="btn" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='original') }}">⬇️ Download Uploaded Assignment</a>{% endif %}</div></div>
-<div class="card"><h3> Update Assignment Status</h3><form method="post" action="{{ url_for('admin_assignment_status', assignment_id=item.get('id')) }}"><select name="status" required><option value="pending" {% if item.get('status') in ('pending','submitted') %}selected{% endif %}>Pending</option><option value="under_review" {% if item.get('status')=='under_review' %}selected{% endif %}>Under Review</option><option value="answered" {% if item.get('status')=='answered' %}selected{% endif %}>Answered</option><option value="answer_approved" {% if item.get('status')=='answer_approved' %}selected{% endif %}>Answer Approved</option><option value="answer_sent" {% if item.get('status')=='answer_sent' %}selected{% endif %}>Answer Sent</option><option value="complete" {% if item.get('status') in ('complete','completed') %}selected{% endif %}>Complete</option><option value="rejected" {% if item.get('status')=='rejected' %}selected{% endif %}>Rejected</option></select><button class="btn success" type="submit">Update Status</button></form></div>
+<div class="card"><h3> Update Assignment Status</h3><form method="post" action="{{ url_for('admin_assignment_status', assignment_id=item.get('id')) }}"><select name="status" required><option value="submitted" {% if item.get('status')=='submitted' %}selected{% endif %}>Submitted</option><option value="under_review" {% if item.get('status')=='under_review' %}selected{% endif %}>Under Review</option><option value="answered" {% if item.get('status')=='answered' %}selected{% endif %}>Answered</option><option value="answer_approved" {% if item.get('status')=='answer_approved' %}selected{% endif %}>Answer Approved</option><option value="answer_sent" {% if item.get('status')=='answer_sent' %}selected{% endif %}>Answer Sent</option><option value="completed" {% if item.get('status')=='completed' %}selected{% endif %}>Completed</option><option value="rejected" {% if item.get('status')=='rejected' %}selected{% endif %}>Rejected</option></select><button class="btn success" type="submit">Update Status</button></form></div>
 <div class="card"><form method="post" enctype="multipart/form-data">
 <label>Written Answer / User Message</label><textarea name="answer" placeholder="Write the answer or explanation for the user...">{{ item.get("answer") or "" }}</textarea>
 <label>Answer PDF</label><input type="file" name="answer_pdf" accept="application/pdf">
@@ -5871,10 +5777,8 @@ def admin_assignment_status(assignment_id):
     item = first_row("assignments", {"id": assignment_id})
     if not item:
         return "Assignment not found.", 404
-    allowed_statuses = {"pending", "under_review", "answered", "answer_approved", "answer_sent", "complete", "rejected", "submitted", "completed"}
+    allowed_statuses = {"submitted", "under_review", "answered", "answer_approved", "answer_sent", "completed", "rejected"}
     status = clean(request.form.get("status")).lower()
-    if status == "submitted": status = "pending"
-    if status == "completed": status = "complete"
     if status not in allowed_statuses:
         flash("Invalid assignment status.", "danger")
         return redirect(url_for("admin_assignment_answer", assignment_id=assignment_id))
@@ -9634,7 +9538,7 @@ html,body{margin:0;padding:0}.live-page-shell{width:100%;max-width:none;margin:0
  let liveRoom=null, connecting=false;
  function setStatus(text,error){status.textContent=text;status.className='live-status'+(error?' live-error':'');if(msg)msg.textContent=text;}
  function clearVideo(){if(!mount)return;mount.innerHTML='<div class="live-placeholder"><h2>KOJA LIVE</h2><p id="liveMessage" class="live-note">Connecting to the live video service…</p></div>';}
- function attach(track){if(!track||!mount)return;try{const el=track.attach();el.style.width='100%';el.style.height='100%';el.style.objectFit='contain';mount.innerHTML='';mount.appendChild(el);}catch(e){console.error('KOJA Live track attach failed',e);}}
+ function attach(track){if(!track||!mount)return;try{const el=track.attach();el.style.display='block';el.style.width='100%';el.style.height='100%';el.style.minWidth='100%';el.style.minHeight='100%';el.style.objectFit='contain';el.setAttribute('playsinline','');el.autoplay=true;mount.innerHTML='';mount.appendChild(el);if(el.play){const pr=el.play();if(pr&&pr.catch)pr.catch(()=>{});}setStatus('LIVE video connected.');}catch(e){console.error('KOJA Live track attach failed',e);setStatus('Video could not be displayed: '+(e.message||'track error'),true);}}
  function clientGlobal(){return window.LivekitClient||window.LiveKitClient||window.livekitClient||null;}
  function loadScript(src){return new Promise((resolve,reject)=>{const existing=document.querySelector('script[data-koja-livekit]');if(existing&&clientGlobal())return resolve();const sc=document.createElement('script');sc.src=src;sc.async=true;sc.dataset.kojaLivekit='1';sc.onload=()=>clientGlobal()?resolve():reject(new Error('LiveKit client loaded but global object is unavailable.'));sc.onerror=()=>reject(new Error('LiveKit client could not be loaded.'));document.head.appendChild(sc);});}
  async function ensureClient(){if(clientGlobal())return clientGlobal();try{return await loadScript('https://cdn.jsdelivr.net/npm/livekit-client@2.15.6/dist/livekit-client.umd.min.js')}catch(e){return await loadScript('https://unpkg.com/livekit-client@2.15.6/dist/livekit-client.umd.min.js')}}
@@ -9654,7 +9558,7 @@ html,body{margin:0;padding:0}.live-page-shell{width:100%;max-width:none;margin:0
        try{await liveRoom.localParticipant.setCameraEnabled(true);await liveRoom.localParticipant.setMicrophoneEnabled(true);}catch(mediaErr){setStatus('LIVE connected. Camera/microphone permission is needed to publish video.',true);console.warn(mediaErr);}
        liveRoom.localParticipant.videoTrackPublications.forEach(p=>{if(p.track)attach(p.track)});
      } else {
-       let found=false; liveRoom.remoteParticipants.forEach(participant=>participant.trackPublications.forEach(pub=>{if(pub.track){found=true;attach(pub.track)}}));
+       let found=false; liveRoom.remoteParticipants.forEach(participant=>participant.trackPublications.forEach(pub=>{if(pub.track){found=true;attach(pub.track)} else if(pub.isSubscribed===false && pub.kind===LK.Track.Kind.Video){try{pub.setSubscribed(true)}catch(e){}}})); liveRoom.on(LK.RoomEvent.ParticipantConnected,participant=>{participant.trackPublications.forEach(pub=>{if(pub.kind===LK.Track.Kind.Video){try{pub.setSubscribed(true)}catch(e){}}})});
        if(!found)setStatus('Connected. Waiting for the seller video…');
      }
    }catch(e){console.error('KOJA LIVE connection failed',e);setStatus('Live video unavailable: '+(e.message||'connection failed'),true);clearVideo();}
