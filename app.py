@@ -9506,6 +9506,114 @@ def market_live_token(room_id):
         logger.exception('KOJA LiveKit token generation failed')
         return jsonify({'ok': False, 'message': 'Live video authentication is temporarily unavailable.'}), 503
 
+# ============================================================
+# KOJA LIVE SHOP V4 — persistent likes/comments + instant UI
+# ============================================================
+# Additive Supabase migration for the LIVE social layer.
+# Run this SQL once in Supabase SQL Editor. It does not recreate
+# or modify existing KOJA tables.
+LIVE_SHOP_V4_SQL = """
+create extension if not exists pgcrypto;
+
+create table if not exists public.koja_market_live_likes (
+    live_id text not null references public.koja_market_live_rooms(id) on delete cascade,
+    user_id uuid not null,
+    created_at timestamptz not null default now(),
+    primary key (live_id, user_id)
+);
+create index if not exists koja_market_live_likes_live_idx
+    on public.koja_market_live_likes(live_id, created_at desc);
+
+create table if not exists public.koja_market_live_comments (
+    id uuid primary key default gen_random_uuid(),
+    live_id text not null references public.koja_market_live_rooms(id) on delete cascade,
+    user_id uuid not null,
+    body text not null check (char_length(body) between 1 and 1000),
+    is_hidden boolean not null default false,
+    created_at timestamptz not null default now()
+);
+create index if not exists koja_market_live_comments_live_idx
+    on public.koja_market_live_comments(live_id, created_at asc);
+"""
+
+def _live_social_rows(room_id):
+    likes = db_select('koja_market_live_likes', {'live_id': room_id}, select='user_id', limit=100000) or []
+    comments = db_select('koja_market_live_comments', {'live_id': room_id, 'is_hidden': 'eq.false'}, order='created_at.asc', limit=200) or []
+    enriched=[]
+    for c in comments:
+        profile = first_row('profiles', {'id': c.get('user_id')}) or {}
+        enriched.append({
+            'id': c.get('id'),
+            'body': c.get('body') or '',
+            'created_at': c.get('created_at'),
+            'user_id': c.get('user_id'),
+            'author_name': profile.get('full_name') or profile.get('name') or profile.get('email') or 'KOJA User'
+        })
+    uid=str((current_user() or {}).get('id') or '')
+    liked=bool(uid and any(str(x.get('user_id')) == uid for x in likes))
+    return {'like_count': len(likes), 'liked': liked, 'comments': enriched}
+
+@app.route('/api/market/live/<room_id>/social')
+@login_required
+def market_live_social(room_id):
+    room=_live_room(room_id)
+    if not room: return jsonify({'ok':False,'message':'LIVE not found.'}),404
+    try:
+        data=_live_social_rows(room_id)
+        data.update({'ok':True,'live_id':room_id})
+        return jsonify(data)
+    except Exception:
+        logger.exception('LIVE social read failed')
+        return jsonify({'ok':False,'message':'LIVE social data is temporarily unavailable.'}),503
+
+@app.route('/api/market/live/<room_id>/like', methods=['POST'])
+@login_required
+def market_live_like(room_id):
+    room=_live_room(room_id)
+    if not room: return jsonify({'ok':False,'message':'LIVE not found.'}),404
+    uid=str((current_user() or {}).get('id') or '')
+    if not uid: return jsonify({'ok':False,'message':'Login required.'}),401
+    try:
+        existing=first_row('koja_market_live_likes', {'live_id':room_id,'user_id':uid})
+        if existing:
+            db_delete('koja_market_live_likes', {'live_id':room_id,'user_id':uid})
+            liked=False
+        else:
+            _,err=db_insert('koja_market_live_likes', {'live_id':room_id,'user_id':uid})
+            if err:
+                return jsonify({'ok':False,'message':'Like could not be saved.'}),503
+            liked=True
+        likes=db_select('koja_market_live_likes', {'live_id':room_id}, select='user_id', limit=100000) or []
+        return jsonify({'ok':True,'liked':liked,'like_count':len(likes)})
+    except Exception:
+        logger.exception('LIVE like toggle failed')
+        return jsonify({'ok':False,'message':'Like could not be saved.'}),503
+
+@app.route('/api/market/live/<room_id>/comment', methods=['POST'])
+@login_required
+def market_live_comment(room_id):
+    room=_live_room(room_id)
+    if not room: return jsonify({'ok':False,'message':'LIVE not found.'}),404
+    uid=str((current_user() or {}).get('id') or '')
+    data=request.get_json(silent=True) or {}
+    body=clean(data.get('body'))[:1000]
+    if not body: return jsonify({'ok':False,'message':'Write a comment first.'}),400
+    try:
+        row,err=db_insert('koja_market_live_comments', {'live_id':room_id,'user_id':uid,'body':body,'is_hidden':False})
+        if err or not row: return jsonify({'ok':False,'message':'Comment could not be saved.'}),503
+        profile=current_user() or {}
+        return jsonify({'ok':True,'comment':{'id':row.get('id'),'body':body,'created_at':row.get('created_at') or utc_now(),'user_id':uid,'author_name':profile.get('name') or profile.get('full_name') or profile.get('email') or 'KOJA User'}})
+    except Exception:
+        logger.exception('LIVE comment save failed')
+        return jsonify({'ok':False,'message':'Comment could not be saved.'}),503
+
+@app.route('/api/market/live/<room_id>/share')
+@login_required
+def market_live_share(room_id):
+    room=_live_room(room_id)
+    if not room: return jsonify({'ok':False,'message':'LIVE not found.'}),404
+    return jsonify({'ok':True,'url':url_for('market_live_room',room_id=room_id,_external=True),'title':room.get('title') or 'KOJA LIVE Shopping'})
+
 @app.route('/market/live/<room_id>')
 @login_required
 def market_live_room(room_id):
@@ -9516,7 +9624,22 @@ def market_live_room(room_id):
     products = db_select('koja_market_products', {'seller_id': room.get('seller_id')}, order='created_at.desc', limit=100) or []
     is_seller = str(room.get('seller_id')) == str((current_user() or {}).get('id') or '')
     return render_page('KOJA LIVE', r'''<style>
-html,body{margin:0;padding:0}.live-page-shell{width:100%;max-width:none;margin:0;padding:0}.live-shell{position:relative;background:#000;border:0;border-radius:0;padding:0;width:100%;min-height:calc(100vh - 70px);overflow:hidden}.live-video{position:relative;width:100%;height:calc(100vh - 70px);min-height:420px;aspect-ratio:auto;background:#000;overflow:hidden;display:flex;align-items:center;justify-content:center;color:#fff}.live-video video{display:block;width:100%;height:100%;min-height:0;object-fit:cover;background:#000}.live-placeholder{text-align:center;padding:28px;max-width:520px}.live-status{position:absolute;z-index:8;top:12px;left:14px;font-weight:700;margin:0;color:#fff;text-shadow:0 1px 4px #000;pointer-events:none}.live-error{color:#ffb4b4}.live-note{color:#cbd5e1;font-size:13px}.live-top-actions{position:absolute;z-index:10;top:10px;right:10px;display:flex;gap:8px}.live-icon-btn{border:1px solid rgba(255,255,255,.28);background:rgba(0,0,0,.42);color:#fff;border-radius:999px;padding:9px 12px;backdrop-filter:blur(6px);cursor:pointer}.live-watermark{position:absolute;z-index:9;left:14px;bottom:18px;max-width:min(72vw,360px);padding:7px 11px;border-radius:12px;background:rgba(0,0,0,.28);border:1px solid rgba(255,255,255,.18);backdrop-filter:blur(5px);opacity:.78;color:#fff;box-shadow:none}.live-watermark .wm-title{font-weight:700;font-size:13px;line-height:1.2}.live-watermark .wm-price{font-size:12px;opacity:.88}.live-watermark a{color:#fff;text-decoration:none}.live-watermark:hover{opacity:.95}.live-controls{position:absolute;z-index:10;right:12px;bottom:14px;display:flex;gap:7px}.live-controls .btn{box-shadow:0 2px 8px rgba(0,0,0,.28)}.live-pin-panel{margin:14px}
+html,body{margin:0;padding:0}.live-page-shell{width:100%;max-width:none;margin:0;padding:0}.live-shell{position:relative;background:#000;border:0;border-radius:0;padding:0;width:100%;min-height:calc(100vh - 70px);overflow:hidden}.live-video{position:relative;width:100%;height:calc(100vh - 70px);min-height:420px;aspect-ratio:auto;background:#000;overflow:hidden;display:flex;align-items:center;justify-content:center;color:#fff}.live-video video{display:block;width:100%;height:100%;min-height:0;object-fit:cover;background:#000}.live-placeholder{text-align:center;padding:28px;max-width:520px}.live-status{position:absolute;z-index:8;top:12px;left:14px;font-weight:700;margin:0;color:#fff;text-shadow:0 1px 4px #000;pointer-events:none}.live-error{color:#ffb4b4}.live-note{color:#cbd5e1;font-size:13px}.live-top-actions{position:absolute;z-index:10;top:10px;right:10px;display:flex;gap:8px}.live-icon-btn{border:1px solid rgba(255,255,255,.28);background:rgba(0,0,0,.42);color:#fff;border-radius:999px;padding:9px 12px;backdrop-filter:blur(6px);cursor:pointer}.live-watermark{position:absolute;z-index:9;left:14px;bottom:18px;max-width:min(72vw,360px);padding:7px 11px;border-radius:12px;background:rgba(0,0,0,.28);border:1px solid rgba(255,255,255,.18);backdrop-filter:blur(5px);opacity:.78;color:#fff;box-shadow:none}.live-watermark .wm-title{font-weight:700;font-size:13px;line-height:1.2}.live-watermark .wm-price{font-size:12px;opacity:.88}.live-watermark a{color:#fff;text-decoration:none}.live-watermark:hover{opacity:.95}.live-controls{position:absolute;z-index:10;right:12px;bottom:14px;display:flex;gap:7px}.live-controls .btn{box-shadow:0 2px 8px rgba(0,0,0,.28)}
+.live-shop-actions{position:absolute;z-index:20;right:10px;bottom:70px;display:flex;flex-direction:column;gap:8px;align-items:stretch}
+.live-shop-btn{border:1px solid rgba(255,255,255,.28);background:rgba(0,0,0,.55);color:#fff;border-radius:999px;min-width:76px;padding:10px 12px;backdrop-filter:blur(7px);cursor:pointer;text-decoration:none;font:inherit;font-size:13px;font-weight:800;display:flex;align-items:center;justify-content:center;gap:5px;box-shadow:0 2px 9px rgba(0,0,0,.3);transition:transform .12s ease,background .12s ease,color .12s ease,border-color .12s ease}
+.live-shop-btn:active{transform:scale(.94)}
+.live-shop-btn.live-like.is-liked{background:rgba(255,255,255,.95);color:#e11d48;border-color:#e11d48}
+.live-shop-btn.live-like.is-liked .live-like-heart{color:#e11d48}
+.live-like-heart{font-size:19px;line-height:1;font-weight:900}
+.live-comment-panel{position:absolute;z-index:30;right:10px;bottom:125px;width:min(390px,calc(100vw - 28px));height:min(55vh,500px);background:rgba(10,14,22,.96);border:1px solid rgba(255,255,255,.2);border-radius:18px;display:none;flex-direction:column;overflow:hidden;box-shadow:0 8px 30px rgba(0,0,0,.4);backdrop-filter:blur(12px)}
+.live-comment-panel.open{display:flex}
+.live-comment-head{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid rgba(255,255,255,.12);color:#fff}.live-comment-head button{border:0;background:transparent;color:#cbd5e1;cursor:pointer}.live-comment-list{flex:1;overflow:auto;padding:10px 12px}.live-comment-empty{padding:30px 10px;text-align:center;color:#94a3b8}.live-comment{padding:8px 10px;margin-bottom:7px;border-radius:12px;background:rgba(255,255,255,.07);color:#fff}.live-comment-name{font-size:12px;font-weight:800;color:#93c5fd}.live-comment-body{font-size:14px;line-height:1.4;margin-top:2px;white-space:pre-wrap;word-break:break-word}.live-comment-time{font-size:10px;color:#94a3b8;margin-top:3px}.live-comment-form{display:flex;gap:7px;padding:10px;border-top:1px solid rgba(255,255,255,.12)}.live-comment-form input{min-width:0;flex:1;margin:0;background:#fff;color:#111;border:0;border-radius:999px;padding:10px 13px}.live-comment-form button{border:0;border-radius:999px;padding:10px 14px;background:#2563eb;color:#fff;font-weight:800;cursor:pointer}
+.live-buy{background:#dc2626;border-color:#ef4444}
+.live-buy:hover{background:#b91c1c}
+.live-shop-btn[disabled]{opacity:.55;cursor:wait}
+.live-shop-btn.live-like.is-liked .live-like-heart{animation:kojaLikePop .18s ease-out}
+@keyframes kojaLikePop{50%{transform:scale(1.35)}100%{transform:scale(1)}}
+.live-pin-panel{margin:14px}
 @media(max-width:760px){.live-shell{min-height:calc(100vh - 58px)}.live-video{height:calc(100vh - 58px);min-height:0}.live-status{font-size:12px}.live-watermark{left:10px;bottom:12px;max-width:58vw;padding:6px 9px}.live-watermark .wm-title{font-size:12px}.live-watermark .wm-price{font-size:11px}}
 </style>
 <div class="live-page-shell">
@@ -9525,6 +9648,17 @@ html,body{margin:0;padding:0}.live-page-shell{width:100%;max-width:none;margin:0
   <div class="live-top-actions"><button class="live-icon-btn" type="button" id="fullscreenLive" title="Full screen">Full screen</button></div>
   <div id="liveVideo" class="live-video"><div class="live-placeholder"><h2>KOJA LIVE</h2><p id="liveMessage" class="live-note">Connecting to the live video service…</p></div></div>
   {% if product %}<div class="live-watermark"><a href="{{ url_for('market_product_view', product_id=product.id) }}"><div class="wm-title">{{ product.title }}</div><div class="wm-price">{{ money(product.price, product.currency) }} · Shop</div></a></div>{% endif %}
+  <div class="live-shop-actions" id="liveShopActions">
+    {% if product %}<a class="live-shop-btn live-buy" href="{{ url_for('market_product_view', product_id=product.id) }}" id="liveBuyBtn">Buy</a>{% endif %}
+    <button class="live-shop-btn live-like" type="button" id="liveLikeBtn" aria-pressed="false"><span class="live-like-heart">♡</span><span>Like</span><span id="liveLikeCount">0</span></button>
+    <button class="live-shop-btn" type="button" id="liveCommentBtn"><span>Comment</span><span id="liveCommentCount">0</span></button>
+    <button class="live-shop-btn" type="button" id="liveShareBtn">Share</button>
+  </div>
+  <div class="live-comment-panel" id="liveCommentPanel" aria-hidden="true">
+    <div class="live-comment-head"><strong>LIVE Comments</strong><button type="button" id="liveCommentClose">Close</button></div>
+    <div class="live-comment-list" id="liveCommentList"><div class="live-comment-empty">No comments yet.</div></div>
+    <form class="live-comment-form" id="liveCommentForm"><input id="liveCommentInput" maxlength="1000" autocomplete="off" placeholder="Write a comment…" required><button type="submit">Send</button></form>
+  </div>
   <div id="liveControls" class="live-controls">
     <button class="live-icon-btn" type="button" id="retryLive">Retry</button>
     {% if is_seller %}<form method="post" action="{{ url_for('market_live_end', room_id=room.id) }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="live-icon-btn" type="submit">End Live</button></form>{% endif %}
@@ -9538,7 +9672,7 @@ html,body{margin:0;padding:0}.live-page-shell{width:100%;max-width:none;margin:0
  let liveRoom=null, connecting=false;
  function setStatus(text,error){status.textContent=text;status.className='live-status'+(error?' live-error':'');if(msg)msg.textContent=text;}
  function clearVideo(){if(!mount)return;mount.innerHTML='<div class="live-placeholder"><h2>KOJA LIVE</h2><p id="liveMessage" class="live-note">Connecting to the live video service…</p></div>';}
- function attach(track){if(!track||!mount)return;try{const el=track.attach();el.style.display='block';el.style.width='100%';el.style.height='100%';el.style.minWidth='100%';el.style.minHeight='100%';el.style.objectFit='contain';el.setAttribute('playsinline','');el.autoplay=true;mount.innerHTML='';mount.appendChild(el);if(el.play){const pr=el.play();if(pr&&pr.catch)pr.catch(()=>{});}setStatus('LIVE video connected.');}catch(e){console.error('KOJA Live track attach failed',e);setStatus('Video could not be displayed: '+(e.message||'track error'),true);}}
+ function attach(track){if(!track||!mount)return;try{const el=track.attach();el.style.width='100%';el.style.height='100%';el.style.objectFit='contain';mount.innerHTML='';mount.appendChild(el);}catch(e){console.error('KOJA Live track attach failed',e);}}
  function clientGlobal(){return window.LivekitClient||window.LiveKitClient||window.livekitClient||null;}
  function loadScript(src){return new Promise((resolve,reject)=>{const existing=document.querySelector('script[data-koja-livekit]');if(existing&&clientGlobal())return resolve();const sc=document.createElement('script');sc.src=src;sc.async=true;sc.dataset.kojaLivekit='1';sc.onload=()=>clientGlobal()?resolve():reject(new Error('LiveKit client loaded but global object is unavailable.'));sc.onerror=()=>reject(new Error('LiveKit client could not be loaded.'));document.head.appendChild(sc);});}
  async function ensureClient(){if(clientGlobal())return clientGlobal();try{return await loadScript('https://cdn.jsdelivr.net/npm/livekit-client@2.15.6/dist/livekit-client.umd.min.js')}catch(e){return await loadScript('https://unpkg.com/livekit-client@2.15.6/dist/livekit-client.umd.min.js')}}
@@ -9558,7 +9692,7 @@ html,body{margin:0;padding:0}.live-page-shell{width:100%;max-width:none;margin:0
        try{await liveRoom.localParticipant.setCameraEnabled(true);await liveRoom.localParticipant.setMicrophoneEnabled(true);}catch(mediaErr){setStatus('LIVE connected. Camera/microphone permission is needed to publish video.',true);console.warn(mediaErr);}
        liveRoom.localParticipant.videoTrackPublications.forEach(p=>{if(p.track)attach(p.track)});
      } else {
-       let found=false; liveRoom.remoteParticipants.forEach(participant=>participant.trackPublications.forEach(pub=>{if(pub.track){found=true;attach(pub.track)} else if(pub.isSubscribed===false && pub.kind===LK.Track.Kind.Video){try{pub.setSubscribed(true)}catch(e){}}})); liveRoom.on(LK.RoomEvent.ParticipantConnected,participant=>{participant.trackPublications.forEach(pub=>{if(pub.kind===LK.Track.Kind.Video){try{pub.setSubscribed(true)}catch(e){}}})});
+       let found=false; liveRoom.remoteParticipants.forEach(participant=>participant.trackPublications.forEach(pub=>{if(pub.track){found=true;attach(pub.track)}}));
        if(!found)setStatus('Connected. Waiting for the seller video…');
      }
    }catch(e){console.error('KOJA LIVE connection failed',e);setStatus('Live video unavailable: '+(e.message||'connection failed'),true);clearVideo();}
@@ -9567,6 +9701,29 @@ html,body{margin:0;padding:0}.live-page-shell{width:100%;max-width:none;margin:0
  if(retry)retry.addEventListener('click',connect);
  const fs=document.getElementById('fullscreenLive'), shell=document.getElementById('liveShell');
  if(fs&&shell){fs.addEventListener('click',async()=>{try{if(!document.fullscreenElement){await shell.requestFullscreen();fs.textContent='Exit full screen';}else{await document.exitFullscreen();fs.textContent='Full screen';}}catch(e){console.warn('Fullscreen unavailable',e);}});document.addEventListener('fullscreenchange',()=>{if(document.fullscreenElement!==shell)fs.textContent='Full screen';});}
+
+ const likeBtn=document.getElementById('liveLikeBtn'), likeCount=document.getElementById('liveLikeCount');
+ const commentBtn=document.getElementById('liveCommentBtn'), commentCount=document.getElementById('liveCommentCount');
+ const commentPanel=document.getElementById('liveCommentPanel'), commentClose=document.getElementById('liveCommentClose');
+ const commentList=document.getElementById('liveCommentList'), commentForm=document.getElementById('liveCommentForm'), commentInput=document.getElementById('liveCommentInput');
+ const shareBtn=document.getElementById('liveShareBtn');
+ const socialUrl='{{ url_for('market_live_social', room_id=room.id) }}';
+ const likeUrl='{{ url_for('market_live_like', room_id=room.id) }}';
+ const commentUrl='{{ url_for('market_live_comment', room_id=room.id) }}';
+ const shareUrl='{{ url_for('market_live_share', room_id=room.id) }}';
+ let socialBusy=false, lastCommentSignature='';
+ function setLiked(v){if(!likeBtn)return;likeBtn.classList.toggle('is-liked',!!v);likeBtn.setAttribute('aria-pressed',v?'true':'false');const h=likeBtn.querySelector('.live-like-heart');if(h)h.textContent=v?'♥':'♡';const t=likeBtn.querySelector('span:nth-child(2)');if(t)t.textContent=v?'Liked':'Like';}
+ function esc(v){return String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','\"':'&quot;'}[c]));}
+ function renderComments(items){if(!commentList)return;const arr=items||[];const sig=arr.map(x=>String(x.id||x.created_at)+'|'+x.body).join('||');if(sig===lastCommentSignature)return;lastCommentSignature=sig;commentList.innerHTML=arr.length?arr.map(c=>'<div class="live-comment"><div class="live-comment-name">'+esc(c.author_name||'KOJA User')+'</div><div class="live-comment-body">'+esc(c.body||'')+'</div><div class="live-comment-time">'+esc(c.created_at||'')+'</div></div>').join(''):'<div class="live-comment-empty">No comments yet.</div>';commentList.scrollTop=commentList.scrollHeight;}
+ async function refreshSocial(){try{const r=await fetch(socialUrl,{credentials:'same-origin',cache:'no-store'});const d=await r.json();if(!r.ok||!d.ok)return;if(likeCount)likeCount.textContent=d.like_count??0;if(commentCount)commentCount.textContent=(d.comments||[]).length;setLiked(!!d.liked);renderComments(d.comments||[]);}catch(e){console.warn('LIVE social refresh failed',e)}}
+ if(likeBtn)likeBtn.addEventListener('click',async()=>{if(socialBusy)return;const previous=likeBtn.classList.contains('is-liked');const next=!previous;setLiked(next);const oldCount=Number(likeCount&&likeCount.textContent||0);if(likeCount)likeCount.textContent=Math.max(0,oldCount+(next?1:-1));socialBusy=true;likeBtn.disabled=true;try{const r=await fetch(likeUrl,{method:'POST',credentials:'same-origin',headers:{'X-CSRF-Token':'{{ csrf_token() }}','Content-Type':'application/json'},body:'{}'});const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.message||'Like failed');setLiked(!!d.liked);if(likeCount)likeCount.textContent=d.like_count??0;}catch(e){setLiked(previous);if(likeCount)likeCount.textContent=oldCount;console.warn(e)}finally{socialBusy=false;likeBtn.disabled=false;}});
+ if(commentBtn&&commentPanel)commentBtn.addEventListener('click',()=>{commentPanel.classList.add('open');commentPanel.setAttribute('aria-hidden','false');if(commentInput)commentInput.focus();});
+ if(commentClose&&commentPanel)commentClose.addEventListener('click',()=>{commentPanel.classList.remove('open');commentPanel.setAttribute('aria-hidden','true');});
+ if(commentForm)commentForm.addEventListener('submit',async e=>{e.preventDefault();const body=(commentInput.value||'').trim();if(!body)return;const send=commentForm.querySelector('button');if(send)send.disabled=true;try{const r=await fetch(commentUrl,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRF-Token':'{{ csrf_token() }}'},body:JSON.stringify({body})});const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.message||'Comment failed');commentInput.value='';lastCommentSignature='';await refreshSocial();if(commentPanel)commentPanel.classList.add('open');}catch(err){alert(err.message||'Comment could not be sent.')}finally{if(send)send.disabled=false;}});
+ if(shareBtn)shareBtn.addEventListener('click',async()=>{try{const r=await fetch(shareUrl,{credentials:'same-origin',cache:'no-store'});const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.message||'Share unavailable');if(navigator.share){await navigator.share({title:d.title,url:d.url});}else{await navigator.clipboard.writeText(d.url);const old=shareBtn.textContent;shareBtn.textContent='Copied';setTimeout(()=>shareBtn.textContent=old,1400);}}catch(e){if(e&&e.name!=='AbortError')console.warn('LIVE share failed',e)}});
+ refreshSocial();
+ const socialTimer=setInterval(refreshSocial,2500);
+ window.addEventListener('pagehide',()=>clearInterval(socialTimer));
  connect();
  window.addEventListener('pagehide',()=>{try{if(liveRoom)liveRoom.disconnect()}catch(e){}});
 })();
