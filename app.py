@@ -1493,7 +1493,24 @@ def _research_deduplicate(results, query):
             if not old.get(fld) and r.get(fld): old[fld]=r.get(fld)
         sources=set(str(old.get('source','')).split(' + ')); sources.add(str(r.get('source',''))); old['source']=' + '.join(sorted(x for x in sources if x))
         old['_relevance']=max(old.get('_relevance',0),r.get('_relevance',0))
-    return sorted(merged.values(),key=lambda r:(r.get('_relevance',0),r.get('citations') or 0,r.get('year') or 0),reverse=True)
+    def _research_num(value, default=0):
+        if value is None or value == '':
+            return default
+        try:
+            if isinstance(value, bool):
+                return int(value)
+            return float(str(value).replace(',', '').strip())
+        except (TypeError, ValueError):
+            return default
+    return sorted(
+        merged.values(),
+        key=lambda r: (
+            _research_num(r.get('_relevance')),
+            _research_num(r.get('citations')),
+            _research_num(r.get('year')),
+        ),
+        reverse=True,
+    )
 
 def _research_normalize_query(query):
     q=clean(query)
@@ -2079,49 +2096,26 @@ def _groq_grounded_research(query, results):
 
 
 def research_ai_summary(query, results):
-    """Research synthesis through KOJA's existing multi-provider AI router.
-    Gemini is not a single point of failure: _ai_call handles configured Groq,
-    OpenAI and Gemini/fallback models.
-    """
-    if not query:
-        return '', []
-    if not results:
-        return 'No sufficiently relevant evidence was retrieved for this research question.', []
-    source_text='\n\n'.join(
-        f"[{i+1}] {r.get('title','')} | {r.get('source','')} | {r.get('year') or 'n.d.'}\n"
-        f"{clean(r.get('snippet',''))[:1600]}\nURL: {r.get('url','')}"
-        for i,r in enumerate(results[:12])
-    )
-    system=(
-        "You are KOJA Research, a rigorous evidence-grounded research assistant. "
-        "Answer the exact question using only the retrieved evidence supplied below. "
-        "Do not invent facts, citations, authors, dates, quotations or conclusions. "
-        "Put source-number citations [1], [2], etc. immediately after factual claims. "
-        "For a definition question, define the exact requested concept first. "
-        "If evidence is insufficient, say so clearly. End with a short Evidence Scope note."
-    )
-    prompt=(f"Research question: {query}\n\nRETRIEVED EVIDENCE:\n{source_text}")
-    try:
-        answer,error=_ai_call(prompt,system,max_output_tokens=1200,timeout=45)
-    except Exception as exc:
-        logger.warning("Research AI router error: %s",exc)
-        answer,error='', 'provider_error'
+    if not query: return '', []
+    answer, grounded, error=_gemini_grounded_research(query, results)
     if answer:
-        return answer, []
+        return answer, grounded
+    groq_answer, groq_error=_groq_grounded_research(query, results)
+    if groq_answer:
+        return groq_answer, []
+    # Deterministic fallback: never call a loose snippet concatenation a synthesized AI answer.
+    # Do not turn a rate-limit event into a misleading list of loosely related
+    # search snippets. The relevance gate above is the last line of defence.
+    if not results:
+        return ("AI research synthesis is temporarily unavailable. " + _ai_error_message(error) +
+                "\n\nNo sufficiently relevant evidence passed KOJA's research-quality filter."), []
     highlights=[]
-    for i,r in enumerate(results[:5],1):
+    for r in results[:2]:
         ss=clean(r.get('snippet','')).replace('\n',' ')
-        if ss:
-            highlights.append(f"[{i}] {r.get('title','Source')}: {ss[:450]}")
-    reason={
-        'rate_limited':'The configured AI provider was rate-limited and the available fallback providers did not return a response.',
-        'missing_api_key':'No configured AI provider was available on the running service.',
-        'authentication_failed':'A configured AI provider rejected its credentials.',
-        'timeout':'The configured AI providers timed out.',
-        'network_error':'KOJA could not reach the configured AI providers.',
-    }.get(error,'The configured AI providers could not return a synthesis.')
-    return (f"Evidence synthesis is temporarily unavailable. {reason}"
-            "\n\nRetrieved evidence remains available below:\n\n" + '\n\n'.join(highlights)), []
+        if ss: highlights.append(f"{r.get('title','Source')}: {ss[:500]}")
+    fallback=("AI research synthesis is temporarily unavailable. " + _ai_error_message(error) +
+              "\n\nVerified relevant evidence:\n\n" + '\n\n'.join(highlights))
+    return fallback, []
 
 
 # KOJA V4 citation engine: source-type-aware bibliography fields
@@ -2184,13 +2178,33 @@ def research_notes():
     bibliography=make_bibliography(results,style) if results else []
     return render_page('Research Notes', r'''<style>
 .notes-shell{max-width:1000px;margin:auto}.notes-toolbar{display:grid;grid-template-columns:1fr auto auto;gap:10px}.notes-body{line-height:1.8;font-size:1rem}.notes-body pre{white-space:pre-wrap;font:inherit}.ref{margin:10px 0}.note-actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}@media(max-width:700px){.notes-toolbar{grid-template-columns:1fr}.notes-body{font-size:.97rem}}
-</style><div class="notes-shell"><div class="hero"><h2> KOJA Research Notes</h2><p>Turn ranked research evidence into clear, connected academic notes.</p><form method="get" action="{{ url_for('research_notes') }}" class="notes-toolbar"><input name="q" value="{{ q }}" placeholder="Enter your research topic…" required><select name="style">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select><button class="btn">Write Notes</button></form></div>{% if q %}<div class="note-actions"><button class="btn secondary" type="button" onclick="copyKOJANotes()">Copy Notes</button><button class="btn secondary" type="button" onclick="window.print()">Print</button><a class="btn secondary" href="{{ url_for('research',q=q,style=style) }}">View Evidence</a></div><div class="card"><strong>{{ results|length }} ranked evidence sources</strong></div><div id="koja-notes" class="card notes-body"><pre>{{ notes }}</pre></div>{% if bibliography %}<div class="card"><h3>References</h3>{% for n,ref in bibliography %}<div class="ref">{{ n }}. {{ ref|safe }}</div>{% endfor %}</div>{% endif %}<script>function copyKOJANotes(){const el=document.getElementById('koja-notes');navigator.clipboard.writeText(el.innerText).then(()=>alert('Research notes copied.')).catch(()=>alert('Select and copy the notes manually.'))}</script>{% else %}{% endif %}</div>''',q=q,style=style,citation_styles=CITATION_STYLES,results=results,notes=notes,bibliography=bibliography)
+</style><div class="notes-shell"><div class="hero"><h2> KOJA Research Notes</h2><p>Turn ranked research evidence into clear, connected academic notes.</p><form method="get" action="{{ url_for('research_notes') }}" class="notes-toolbar"><input name="q" value="{{ q }}" placeholder="Enter your research topic…" required><select name="style">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select><button class="btn">Write Notes</button></form></div>{% if q %}<div class="note-actions"><button class="btn secondary" type="button" onclick="copyKOJANotes()">Copy Notes</button><button class="btn secondary" type="button" onclick="window.print()">Print</button><a class="btn secondary" href="{{ url_for('research',q=q,style=style) }}">View Evidence</a></div><div class="card"><strong>{{ results|length }} ranked evidence sources</strong></div><div id="koja-notes" class="card notes-body"><pre>{{ notes }}</pre></div>{% if bibliography %}<div class="card"><h3>References</h3>{% for n,ref in bibliography %}<div class="ref">{{ n }}. {{ ref|safe }}</div>{% endfor %}</div>{% endif %}<script>function copyKOJANotes(){const el=document.getElementById('koja-notes');navigator.clipboard.writeText(el.innerText).then(()=>alert('Research notes copied.')).catch(()=>alert('Select and copy the notes manually.'))}</script>{% else %}<div class="card"><h3>How KOJA writes notes</h3><p>1. Searches multiple evidence sources.</p><p>2. Removes duplicates and ranks relevance.</p><p>3. Gives the AI only the strongest evidence.</p><p>4. Produces connected academic paragraphs with source citations.</p><p>5. Generates a bibliography in your selected citation style.</p></div>{% endif %}</div>''',q=q,style=style,citation_styles=CITATION_STYLES,results=results,notes=notes,bibliography=bibliography)
 
 @app.route('/research')
 def research():
-    q=_research_normalize_query(request.args.get('q',''))
-    kind=clean(request.args.get('kind','all')).lower() or 'all'
-    return redirect(url_for('research_unified', q=q, kind=kind) if q else url_for('research_unified'))
+    q=_research_normalize_query(request.args.get('q','')); source_filter=clean(request.args.get('source','all')).lower() or 'all'; sort=clean(request.args.get('sort','relevance')).lower() or 'relevance'; year=_research_year(request.args.get('year','')); author=clean(request.args.get('author','')); style=clean(request.args.get('style','apa')).lower() or 'apa'; source_type=clean(request.args.get('source_type','all')).lower() or 'all'
+    if style not in CITATION_STYLES: style='apa'
+    results=[]
+    if q:
+        results=_research_collect(q,year,author)
+        results=_research_filter(results,source_filter,year,sort)
+        if source_type!='all': results=[r for r in results if _source_type(r)==source_type]
+    summary, grounded_sources=research_ai_summary(q,results) if q else ('', [])
+    if grounded_sources:
+        # Grounded Google sources become the primary visible evidence; retain only a few
+        # highly relevant KOJA/academic records as supplementary context.
+        existing=[r for r in results if str(r.get('source','')).lower() in ('openalex','crossref','koja documents')][:4]
+        results=grounded_sources + existing
+    bibliography=make_bibliography(results,style) if results else []
+    return render_page('Research', r'''
+<style>
+.research-shell{max-width:920px;margin:auto}.research-search{display:flex;flex-direction:column;gap:8px;background:rgba(127,127,127,.08);border:1px solid rgba(127,127,127,.18);padding:10px 12px;border-radius:24px}.research-search textarea{width:100%;min-width:0;resize:none;min-height:105px;max-height:280px;border:0!important;background:transparent!important;box-shadow:none!important;font-size:1.05rem;padding:14px 10px!important;outline:none}.research-composer-bottom{display:flex;align-items:center;gap:8px}.research-composer-actions{display:flex;align-items:center;gap:6px}.research-icon{width:42px!important;height:42px!important;margin:0!important;padding:0!important;border-radius:50%!important;display:inline-flex!important;align-items:center;justify-content:center;font-size:1.2rem;cursor:pointer}.research-send{margin-left:auto!important;width:44px!important;height:44px!important;border-radius:50%!important;padding:0!important;display:inline-flex!important;align-items:center;justify-content:center;font-size:1.15rem}.research-file-name{font-size:.78rem;opacity:.72;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:55%}.research-recording{font-size:.78rem;font-weight:700;display:none}.research-search .btn{border-radius:22px;padding:10px 18px}.research-filters{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px}.research-filters label{font-size:.78rem;font-weight:700;opacity:.9}.research-filters select,.research-filters input{width:100%;margin-top:5px}.research-tabs{display:flex;gap:8px;overflow:auto;margin:14px 0;padding-bottom:2px}.research-tabs a{white-space:nowrap;border-radius:20px}.source-badge{display:inline-block;padding:5px 10px;border-radius:999px;background:rgba(80,150,255,.14);font-size:.74rem;font-weight:800}.research-result{border-radius:18px!important;margin-bottom:12px}.research-result h3{line-height:1.35;margin:9px 0}.research-result h3 a{text-decoration:none}.research-meta{font-size:.82rem;opacity:.72}.research-summary{border:1px solid rgba(98,168,255,.28);border-radius:18px!important;background:rgba(98,168,255,.06)}.research-summary pre{white-space:pre-wrap;font:inherit;line-height:1.7;margin:0}.research-count{font-weight:700}.research-empty{padding:35px;text-align:center;border-radius:18px!important}.research-welcome{text-align:center;padding:20px 10px 8px}.research-welcome h2{font-size:1.8rem;margin-bottom:8px}.research-welcome p{opacity:.75}.research-answer-label{font-weight:800;margin-bottom:10px}.research-source-list{margin-top:6px}.research-source-list .card{border-radius:18px!important}@media(max-width:700px){.research-search{border-radius:18px}.research-filters{grid-template-columns:1fr 1fr}.research-result{padding:16px!important}}@media(max-width:480px){.research-filters{grid-template-columns:1fr}}
+</style>
+<div class="research-shell"><div class="research-welcome"><h2> What would you like to research?</h2><p>Ask a full question, attach a document, or use your voice. KOJA Research searches web, academic literature, Wikipedia and your KOJA documents, then brings the evidence together.</p></div><div class="hero"><form method="get" action="{{ url_for('research') }}" class="research-search" id="research-composer"><textarea name="q" rows="3" maxlength="2000" placeholder="Ask anything you want to research…" aria-label="Research question" autofocus>{{ q }}</textarea><div class="research-composer-bottom"><div class="research-composer-actions"><label class="btn secondary research-icon" title="Attach a document" aria-label="Attach a document"><input id="research-file" type="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp" hidden></label><button class="btn secondary research-icon" id="research-record" type="button" title="Record voice" aria-label="Record voice">️</button><span class="research-recording" id="research-recording">● Recording…</span><span class="research-file-name" id="research-file-name"></span></div><button class="btn research-send" type="submit" title="Send research question" aria-label="Send research question"></button></div></form>
+<script>(function(){const box=document.querySelector('#research-composer textarea[name="q"]');const file=document.getElementById('research-file');const name=document.getElementById('research-file-name');const rec=document.getElementById('research-record');const recLabel=document.getElementById('research-recording');let media=null,chunks=[];if(box){const grow=()=>{box.style.height='auto';box.style.height=Math.min(box.scrollHeight,280)+'px'};box.addEventListener('input',grow);grow()}if(file){file.addEventListener('change',()=>{name.textContent=file.files&&file.files[0]?file.files[0].name:''})}if(rec&&navigator.mediaDevices&&window.MediaRecorder){rec.addEventListener('click',async()=>{if(media){media.stop();return}try{const stream=await navigator.mediaDevices.getUserMedia({audio:true});media=new MediaRecorder(stream);chunks=[];media.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};media.onstop=()=>{const blob=new Blob(chunks,{type:'audio/webm'});const url=URL.createObjectURL(blob);name.textContent='Voice recording ready ('+Math.round(blob.size/1024)+' KB)';const a=document.createElement('a');a.href=url;a.download='koja-research-question.webm';a.style.display='none';document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(url);a.remove()},1000);stream.getTracks().forEach(t=>t.stop());media=null;rec.textContent='️';recLabel.style.display='none'};media.start();rec.textContent='⏹️';recLabel.style.display='inline';}catch(e){alert('Microphone permission is required to record.')}})}})();</script><div class="research-filters"><label>Source<select name="source" form="research-filter-form"><option value="all" {% if source_filter=='all' %}selected{% endif %}>All sources</option><option value="academic" {% if source_filter=='academic' %}selected{% endif %}>Academic</option><option value="web" {% if source_filter=='web' %}selected{% endif %}>Web</option><option value="wikipedia" {% if source_filter=='wikipedia' %}selected{% endif %}>Wikipedia</option><option value="koja" {% if source_filter=='koja' %}selected{% endif %}>KOJA Documents</option></select></label><label>Year<input name="year" form="research-filter-form" value="{{ year or '' }}" placeholder="e.g. 2025" inputmode="numeric"></label><label>Author<input name="author" form="research-filter-form" value="{{ author }}" placeholder="Academic author"></label><label>Citation style<select name="style" form="research-filter-form">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Source type<select name="source_type" form="research-filter-form"><option value="all">All source types</option>{% for k,v in source_types.items() %}<option value="{{k}}" {% if source_type==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Sort<select name="sort" form="research-filter-form"><option value="relevance" {% if sort=='relevance' %}selected{% endif %}>Relevance</option><option value="date" {% if sort=='date' %}selected{% endif %}>Newest first</option><option value="citations" {% if sort=='citations' %}selected{% endif %}>Most cited</option></select></label></div><form id="research-filter-form" method="get" action="{{ url_for('research') }}"><input type="hidden" name="q" value="{{ q }}"></form></div>
+{% if q %}<div class="note-actions"><a class="btn" href="{{ url_for('research_notes',q=q,style=style) }}"> Write Research Notes</a><a class="btn secondary" href="{{ url_for('research') }}">＋ New research</a></div><div class="research-tabs"><a class="btn" href="{{ url_for('research_unified',q=q) }}">Unified Research</a><a class="btn secondary" href="{{ url_for('research_workspace') }}">Workspace</a><a class="btn secondary" href="{{ url_for('research_history') }}">History</a><a class="btn secondary" href="{{ url_for('research_compare',q1=q) }}">Compare</a><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}"> Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}"> Web</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}"> KOJA Documents</a></div><div class="card"><span class="research-count">{{ results|length }} ranked sources</span> found for <strong>“{{ q }}”</strong><p class="small" style="margin-top:8px">KOJA combines multiple research angles, academic literature, web sources and KOJA Documents; it removes duplicates, filters weak matches, ranks evidence and then uses KOJA AI to synthesize the strongest evidence.</p></div>{% if summary %}<div class="card research-summary"><div class="research-answer-label"> KOJA Research Answer</div><pre>{{ summary }}</pre><p class="small">AI summaries use configured AI credentials when available; otherwise KOJA shows source-based highlights. Verify important claims against original sources.</p></div>{% endif %}{% for r in results %}<div class="card research-result"><span class="source-badge">{{ r.source }}</span><h3><a href="{{ r.url or '#' }}" {% if r.url %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a></h3>{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p><p><strong>In-text:</strong> {{ make_intext(r,style,loop.index) }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open original source ↗</a>{% endif %}</div>{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endfor %}{% if bibliography %}<div class="card"><h2>References</h2><p class="small">Generated from available source metadata. Verify against the original source.</p>{% for n,ref in bibliography %}<p style="padding-left:28px;text-indent:-28px;line-height:1.6">{{ ref|safe }}</p>{% endfor %}</div>{% endif %}{% else %}{% endif %}</div>
+''',q=q,results=results,summary=summary,source_filter=source_filter,sort=sort,year=year,author=author,style=style,source_type=source_type,citation_styles=CITATION_STYLES,source_types=SOURCE_TYPES,bibliography=bibliography,make_intext=make_intext,SITE_URL=SITE_URL)
+
 
 
 # ============================================================
@@ -2385,65 +2399,21 @@ def _research_save_history(query):
 def research_unified():
     q=_research_normalize_query(request.args.get('q',''))
     kind=clean(request.args.get('kind','all')).lower() or 'all'
-    allowed={'all','web','academic','video','news','image','book','documents'}
-    if kind not in allowed: kind='all'
     results=_research_unified(q) if q else []
     if q: _research_save_history(q)
+    allowed={'all','web','academic','video','news','image','book','documents'}
+    if kind not in allowed: kind='all'
     if kind!='all':
         mapping={'academic':('openalex','crossref','arxiv'),'documents':('koja documents',),'web':('web','google search','wikipedia'),'video':('youtube',),'news':('news',),'image':('wikimedia commons',),'book':('open library','internet archive','project gutenberg')}
         results=[r for r in results if str(r.get('source','')).lower() in mapping[kind]]
-    summary, _grounded = research_ai_summary(q, results) if q else ('', [])
-    return render_page('KOJA Research',r'''
-<style>
-.kr{max-width:1180px;margin:0 auto}.kr-top{display:flex;align-items:center;gap:12px;padding:8px 0 14px}.kr-brand{font-weight:850;font-size:1.15rem;white-space:nowrap}.kr-url{flex:1;display:flex;align-items:center;border:1px solid rgba(127,127,127,.22);background:rgba(127,127,127,.07);border-radius:18px;padding:4px 6px}.kr-url input{border:0!important;background:transparent!important;box-shadow:none!important;outline:none!important;margin:0!important;min-width:0}.kr-url button{border-radius:14px!important;padding:9px 14px!important}.kr-nav{display:flex;gap:5px;overflow:auto;border-bottom:1px solid rgba(127,127,127,.18);padding:0 0 8px;margin-bottom:18px}.kr-nav a{white-space:nowrap;text-decoration:none;padding:8px 12px;border-radius:12px;font-size:.86rem}.kr-nav a.active{background:rgba(60,120,240,.13);font-weight:800}.kr-layout{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:22px}.kr-answer{padding:0 0 20px;border-bottom:1px solid rgba(127,127,127,.18);margin-bottom:16px}.kr-answer h2{font-size:1.05rem;margin:0 0 9px}.kr-answer pre{white-space:pre-wrap;font:inherit;line-height:1.75;margin:0}.kr-result{padding:14px 0;border-bottom:1px solid rgba(127,127,127,.16)}.kr-result h3{margin:5px 0 6px;line-height:1.35;font-size:1.06rem}.kr-result h3 a{text-decoration:none}.kr-domain{font-size:.78rem;opacity:.72;overflow-wrap:anywhere}.kr-snippet{line-height:1.6;margin:5px 0}.kr-meta{font-size:.76rem;opacity:.65}.kr-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.kr-actions a{font-size:.78rem;padding:7px 10px;border-radius:10px}.kr-side{border-left:1px solid rgba(127,127,127,.16);padding-left:18px}.kr-side h3{font-size:.9rem;margin:0 0 10px}.kr-side a{display:block;text-decoration:none;padding:8px 0;font-size:.84rem}.kr-side p{font-size:.78rem;opacity:.7;line-height:1.5}.kr-media{max-width:180px;max-height:120px;object-fit:cover;border-radius:10px;margin-top:7px}.kr-empty{padding:32px 0;text-align:center;opacity:.75}.kr-count{font-size:.8rem;opacity:.65;margin:4px 0 10px}.kr-mobile-tools{display:none}@media(max-width:800px){.kr-layout{grid-template-columns:1fr}.kr-side{display:none}.kr-top{gap:7px}.kr-brand{font-size:1rem}.kr-mobile-tools{display:block;margin-bottom:10px}.kr-result{padding:13px 0}}
-</style>
-<div class="kr">
-  <div class="kr-top">
-    <div class="kr-brand">KOJA Research</div>
-    <form class="kr-url" method="get" action="{{ url_for('research_unified') }}">
-      <input name="q" value="{{ q }}" placeholder="Search or ask anything…" aria-label="Research search">
-      <button class="btn" type="submit">Search</button>
-    </form>
-  </div>
-  <nav class="kr-nav" aria-label="Research categories">
-  {% for k,n in [('all','All'),('web','Web'),('image','Images'),('video','Videos'),('news','News'),('academic','Academic'),('book','Books'),('documents','Documents')] %}
-    <a class="{% if kind==k %}active{% endif %}" href="{{ url_for('research_unified',q=q,kind=k) }}">{{ n }}</a>
-  {% endfor %}
-  </nav>
-  <div class="kr-layout">
-    <main>
-      {% if q %}
-        {% if summary %}<section class="kr-answer"><h2>Answer</h2><pre>{{ summary }}</pre></section>{% endif %}
-        <div class="kr-count">{{ results|length }} sources · {{ kind|capitalize }}</div>
-        {% for r in results %}
-        <article class="kr-result">
-          <div class="kr-domain">{{ r.source }}{% if r.year %} · {{ r.year }}{% endif %}{% if r.channel %} · {{ r.channel }}{% endif %}</div>
-          <h3>{% if r.url %}<a href="{{ url_for('research_read',url=r.url) }}">{{ r.title }}</a>{% else %}{{ r.title }}{% endif %}</h3>
-          {% if r.image_url %}<img class="kr-media" src="{{ r.image_url }}" loading="lazy" alt="{{ r.title }}">{% endif %}
-          <p class="kr-snippet">{{ r.snippet }}</p>
-          <div class="kr-meta">{% if r.authors %}{{ r.authors|join(', ') }}{% endif %}{% if r.citations %}{% if r.authors %} · {% endif %}{{ r.citations }} citations{% endif %}</div>
-          <div class="kr-actions">
-            {% if r.url %}<a class="btn secondary" href="{{ url_for('research_read',url=r.url) }}">Read in KOJA</a><a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Original</a>{% endif %}
-            <a class="btn secondary" href="{{ url_for('research_workspace_add') }}?title={{ r.title|urlencode }}&url={{ r.url|urlencode }}&source={{ r.source|urlencode }}">Save</a>
-          </div>
-        </article>
-        {% else %}<div class="kr-empty">No useful sources were found. Try a broader query.</div>{% endfor %}
-      {% else %}
-        <div class="kr-empty"><h2>Search, read and ask</h2><p>Search the web, academic literature, books, media and your KOJA documents from one workspace.</p></div>
-      {% endif %}
-    </main>
-    <aside class="kr-side">
-      <h3>Research workspace</h3>
-      <a href="{{ url_for('research_workspace') }}">Saved sources</a>
-      <a href="{{ url_for('research_history') }}">History</a>
-      <a href="{{ url_for('research_notes',q=q) }}">Research notes</a>
-      <a href="{{ url_for('research_compare',q1=q) }}">Compare</a>
-      <p>Sources stay inside KOJA. Open the original only when you choose.</p>
-    </aside>
-  </div>
-</div>
+    return render_page('KOJA Unified Research',r'''
+<style>.ur{max-width:1150px;margin:auto}.ur-search{display:flex;gap:10px}.ur-search input{flex:1}.ur-tabs{display:flex;gap:7px;overflow:auto;margin:14px 0}.ur-tabs a{white-space:nowrap}.ur-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.ur-card{overflow:hidden}.ur-img{width:100%;max-height:250px;object-fit:cover;border-radius:14px}.ur-video{width:100%;aspect-ratio:16/9;border:0;border-radius:14px}.ur-meta{font-size:.8rem;opacity:.7}.ur-actions{display:flex;gap:8px;flex-wrap:wrap}@media(max-width:700px){.ur-grid{grid-template-columns:1fr}.ur-search{flex-direction:column}}</style>
+<div class="ur"><div class="hero"><h1>KOJA Unified Research</h1><p>Search web, academic literature, books, videos, news, images and KOJA Documents from one place.</p><form class="ur-search" method="get"><input name="q" value="{{q}}" placeholder="Research anything…" autofocus><button class="btn">Search</button></form></div>
+{% if q %}<div class="ur-tabs">{% for k,n in [('all','All'),('web','Web'),('academic','Academic'),('book','Books'),('video','Videos'),('news','News'),('image','Images'),('documents','Documents')] %}<a class="btn secondary" href="{{url_for('research_unified',q=q,kind=k)}}">{{n}}</a>{% endfor %}</div>
+<div class="card"><strong>{{results|length}} results</strong> for “{{q}}” <span class="small"> · source retrieval is cached briefly for speed.</span></div>
+<div class="ur-grid">{% for r in results %}<div class="card ur-card"><span class="source-badge">{{r.source}}</span><h3>{{r.title}}</h3>{% if r.image_url %}<img class="ur-img" src="{{r.image_url}}" loading="lazy">{% endif %}{% if r.embed_url %}<iframe class="ur-video" src="{{r.embed_url}}" title="{{r.title}}" allowfullscreen loading="lazy"></iframe>{% endif %}<p class="ur-meta">{% if r.year %}{{r.year}} · {% endif %}{{r.channel or r.publisher or ''}}</p><p>{{r.snippet}}</p><div class="ur-actions">{% if r.url %}<a class="btn secondary" href="{{url_for('research_read',url=r.url)}}">Read in KOJA</a><a class="btn secondary" href="{{r.url}}" target="_blank" rel="noopener noreferrer">Original</a>{% endif %}{% if r.download_url %}<a class="btn" href="{{r.download_url}}" target="_blank" rel="noopener noreferrer">Download {{r.download_format|upper}}</a>{% endif %}<a class="btn secondary" href="{{url_for('research_workspace_add')}}?title={{r.title|urlencode}}&url={{r.url|urlencode}}&source={{r.source|urlencode}}">Save</a></div></div>{% else %}<div class="card"><h3>No results</h3><p>Try another query or source category.</p></div>{% endfor %}</div>{% else %}<div class="grid"><div class="card"><h3>Web</h3><p>General web discovery.</p></div><div class="card"><h3>Academic</h3><p>OpenAlex, Crossref and arXiv.</p></div><div class="card"><h3>Books</h3><p>Open Library, Internet Archive and Project Gutenberg.</p></div><div class="card"><h3>Media</h3><p>YouTube, news and Wikimedia images.</p></div></div>{% endif %}</div>
+''',q=q,kind=kind,results=results)
 
-''',q=q,kind=kind,results=results,summary=summary)
 
 @app.route('/research/workspace')
 @login_required

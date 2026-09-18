@@ -1,5 +1,6 @@
-KOJA AFRICA — Research Unified Browser UI
+KOJA Research Error Fix
 
-Modern unified Research interface: browser-style search, Google-style discovery, ChatGPT-style answers, native source reading, and cloud-style workspace/history/notes.
-
-No raw Google homepage. No promotional Research cards. Existing providers and KOJA services preserved. No SQL migration required.
+Fixes /research/unified TypeError caused by mixed string/integer values in research result sorting.
+No SQL migration.
+The DuckDuckGo timeout is a source warning and does not itself cause the 500.
+Replace app.py and redeploy KOJA-AFRICA.
