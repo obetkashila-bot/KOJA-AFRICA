@@ -2259,12 +2259,52 @@ def research_books_gutenberg(query, limit=10):
     except Exception as exc:
         logger.warning('Project Gutenberg search failed: %s',exc); return []
 
+
+def research_books_internet_archive(query, limit=10):
+    q=clean(query)
+    if not q: return []
+    try:
+        params={'q':f'(title:({q}) OR creator:({q}) OR subject:({q})) AND mediatype:texts','fl[]':['identifier,title,creator,date,description,publisher,language,subject,downloads,format,rights,publicdate'],'rows':max(1,min(int(limit or 10),20)),'page':1}
+        r=requests.get('https://archive.org/advancedsearch.php',params=params,timeout=10,headers={'User-Agent':'KOJA-AFRICA Research Books/1.0'})
+        if not r.ok: return []
+        docs=(r.json().get('response') or {}).get('docs') or []
+        out=[]
+        for x in docs:
+            title=clean(x.get('title') or '')
+            ident=clean(x.get('identifier') or '')
+            if not title or not ident: continue
+            creators=x.get('creator') or []
+            if isinstance(creators,str): creators=[creators]
+            authors=[clean(a) for a in creators if clean(a)]
+            fmts=x.get('format') or []
+            if isinstance(fmts,str): fmts=[fmts]
+            rights=clean(x.get('rights') or '')
+            landing=f'https://archive.org/details/{ident}'
+            pdf=any('pdf' in clean(f).lower() for f in fmts)
+            epub=any('epub' in clean(f).lower() for f in fmts)
+            # Only advertise direct file downloads when the record itself declares an open/public-domain style right.
+            open_rights=bool(re.search(r'public.?domain|creativecommons|cc-by|cc0|open access',rights,re.I))
+            download_url=''; download_format=''
+            if open_rights and pdf:
+                download_url=f'https://archive.org/download/{ident}/{ident}.pdf'; download_format='pdf'
+            elif open_rights and epub:
+                download_url=f'https://archive.org/download/{ident}/{ident}.epub'; download_format='epub'
+            access='download_available' if download_url else ('open_access' if open_rights else 'read_or_borrow')
+            desc=clean(x.get('description') or '')
+            if isinstance(x.get('description'),list): desc=clean(' '.join(map(str,x.get('description'))))
+            year=clean(str(x.get('date') or '')[:4]) or None
+            out.append(_book_result('Internet Archive',ident,title,authors,int(year) if year and year.isdigit() else None,clean(x.get('publisher') or ''),'',desc,landing,landing,download_url,download_format,access,'',clean((x.get('language') or '') if isinstance(x.get('language'),str) else ''),extra={'rights':rights,'formats':fmts,'downloads':x.get('downloads') or 0}))
+        return out
+    except Exception as exc:
+        logger.warning('Internet Archive book search failed: %s',exc); return []
+
 def research_books_collect(query, source='all', limit=12):
     source=clean(source or 'all').lower(); funcs=[]
     if source in ('all','openlibrary'): funcs.append(research_books_openlibrary)
     if source in ('all','google'): funcs.append(research_books_google)
     if source in ('all','doab'): funcs.append(research_books_doab)
     if source in ('all','gutenberg'): funcs.append(research_books_gutenberg)
+    if source in ('all','internet_archive','archive'): funcs.append(research_books_internet_archive)
     out=[]
     for fn in funcs: out.extend(fn(query,max(3,min(12,int(limit or 12)))))
     seen=set(); ded=[]
@@ -2282,8 +2322,8 @@ def research_books():
 <style>
 .books-shell{max-width:1100px;margin:auto}.books-search{display:grid;grid-template-columns:1fr 180px auto;gap:9px}.books-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:12px;margin-top:15px}.book-card{position:relative}.book-cover{width:88px;height:120px;object-fit:cover;border-radius:8px;background:rgba(127,127,127,.12);float:left;margin:0 14px 10px 0}.book-card:after{content:"";display:block;clear:both}.book-source{font-size:.76rem;font-weight:800;opacity:.75}.book-meta{font-size:.82rem;opacity:.72}.book-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:12px}.book-access{display:inline-block;padding:4px 8px;border-radius:999px;font-size:.72rem;font-weight:800;background:rgba(80,150,255,.12)}.books-note{font-size:.83rem;opacity:.75}.books-tabs{display:flex;gap:8px;overflow:auto;margin:12px 0}.books-tabs a{white-space:nowrap}@media(max-width:700px){.books-search{grid-template-columns:1fr}.book-card{padding:15px}}
 </style>
-<div class="books-shell"><div class="hero"><h2>KOJA Research Books</h2><p>Search books across library catalogs, open-access scholarly books and free eBook collections.</p><div class="books-tabs"><a class="btn secondary" href="{{ url_for('research') }}">Research</a><a class="btn secondary" href="{{ url_for('research_books_library') }}">My Book Library</a></div><form method="get" class="books-search"><input name="q" value="{{ q }}" placeholder="Book title, author, ISBN or topic" required><select name="source"><option value="all" {% if source=='all' %}selected{% endif %}>All book sources</option><option value="openlibrary" {% if source=='openlibrary' %}selected{% endif %}>Open Library</option><option value="google" {% if source=='google' %}selected{% endif %}>Google Books</option><option value="doab" {% if source=='doab' %}selected{% endif %}>DOAB</option><option value="gutenberg" {% if source=='gutenberg' %}selected{% endif %}>Project Gutenberg</option></select><button class="btn" type="submit">Search Books</button></form></div>
-<p class="books-note">Availability labels come from the source. KOJA only exposes source-provided public/open routes; it does not bypass DRM, paywalls or access controls.</p>
+<div class="books-shell"><div class="hero"><h2>KOJA Research Books</h2><p>Search books across library catalogs, open-access scholarly books and free eBook collections.</p><div class="books-tabs"><a class="btn secondary" href="{{ url_for('research') }}">Research</a><a class="btn secondary" href="{{ url_for('research_books_library') }}">My Book Library</a></div><form method="get" class="books-search"><input name="q" value="{{ q }}" placeholder="Book title, author, ISBN or topic" required><select name="source"><option value="all" {% if source=='all' %}selected{% endif %}>All book sources</option><option value="openlibrary" {% if source=='openlibrary' %}selected{% endif %}>Open Library</option><option value="google" {% if source=='google' %}selected{% endif %}>Google Books</option><option value="doab" {% if source=='doab' %}selected{% endif %}>DOAB</option><option value="gutenberg" {% if source=='gutenberg' %}selected{% endif %}>Project Gutenberg</option><option value="internet_archive" {% if source=='internet_archive' %}selected{% endif %}>Internet Archive</option></select><button class="btn" type="submit">Search Books</button></form></div>
+<p class="books-note">Availability labels come from the source. KOJA only exposes source-provided public/open routes; it does not bypass DRM, paywalls, authentication or access controls.</p>
 {% if q %}<div class="books-grid">{% for b in results %}<div class="card book-card">{% if b.cover_url %}<img class="book-cover" src="{{ b.cover_url }}" alt="Book cover" loading="lazy">{% endif %}<div class="book-source">{{ b.source }}</div><h3>{{ b.title }}</h3><div class="book-meta">{% if b.authors %}{{ b.authors|join(', ') }}{% endif %}{% if b.year %} · {{ b.year }}{% endif %}{% if b.publisher %} · {{ b.publisher }}{% endif %}</div><span class="book-access">{{ b.access|replace('_',' ')|title }}</span>{% if b.isbn %}<div class="book-meta">ISBN: {{ b.isbn }}</div>{% endif %}<p>{{ b.description[:500] }}</p><div class="book-actions">{% if b.landing_url %}<a class="btn secondary" href="{{ b.landing_url }}" target="_blank" rel="noopener">Open Source</a>{% endif %}{% if b.preview_url and b.preview_url != b.landing_url %}<a class="btn secondary" href="{{ b.preview_url }}" target="_blank" rel="noopener">Preview</a>{% endif %}{% if b.download_url %}<a class="btn" href="{{ b.download_url }}" target="_blank" rel="noopener" download>Download {{ b.download_format|upper or 'File' }}</a>{% elif b.access=='download_available' %}<a class="btn" href="{{ b.landing_url }}" target="_blank" rel="noopener">Open Download Page</a>{% endif %}<form method="post" action="{{ url_for('research_books_save') }}" style="display:inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="book" value='{{ b|tojson|forceescape }}'><button class="btn secondary" type="submit">Save</button></form></div></div>{% else %}<div class="card"><h3>No books found</h3><p>Try the title, author, ISBN or a broader topic.</p></div>{% endfor %}</div>{% else %}<div class="card"><h3>Search the book universe</h3><p>Examples: educational psychology, physics, adolescent development, ISBN, or an author's name.</p></div>{% endif %}</div>
 ''',q=q,source=source,results=results)
 
@@ -2303,13 +2343,28 @@ def research_books_save():
     else: flash('Book is already in My Book Library.','success')
     return redirect(request.referrer or url_for('research_books_library'))
 
+@app.route('/research/books/remove/<book_id>',methods=['POST'])
+@login_required
+def research_books_remove(book_id):
+    uid=str((current_user() or {}).get('id') or '')
+    row=first_row('koja_research_books',{'id':book_id,'user_id':uid})
+    if not row:
+        flash('Book not found in your library.','error')
+        return redirect(url_for('research_books_library'))
+    try:
+        db_delete('koja_research_books',{'id':book_id,'user_id':uid})
+        flash('Book removed from My Book Library.','success')
+    except Exception:
+        flash('Book could not be removed.','error')
+    return redirect(url_for('research_books_library'))
+
 @app.route('/research/books/library')
 @login_required
 def research_books_library():
     uid=str((current_user() or {}).get('id') or '')
     books=db_select('koja_research_books',{'user_id':uid},order='created_at.desc',limit=100) or []
     return render_page('My Book Library',r'''
-<div class="hero"><h2>My Book Library</h2><p>Saved research books and source links.</p><a class="btn secondary" href="{{ url_for('research_books') }}">Search Books</a></div><div class="grid">{% for b in books %}<div class="card"><h3>{{ b.title }}</h3><p>{{ (b.authors or [])|join(', ') }}{% if b.year %} · {{ b.year }}{% endif %}</p><p class="small">{{ b.source }} · {{ (b.access or 'metadata')|replace('_',' ')|title }}</p><div class="actions">{% if b.landing_url %}<a class="btn secondary" href="{{ b.landing_url }}" target="_blank" rel="noopener">Open Source</a>{% endif %}{% if b.download_url %}<a class="btn" href="{{ b.download_url }}" target="_blank" rel="noopener" download>Download {{ b.download_format|upper or 'File' }}</a>{% endif %}</div></div>{% else %}<div class="card"><h3>No saved books</h3><p>Search Research Books and save titles here.</p></div>{% endfor %}</div>
+<div class="hero"><h2>My Book Library</h2><p>Saved research books and source links.</p><a class="btn secondary" href="{{ url_for('research_books') }}">Search Books</a></div><div class="grid">{% for b in books %}<div class="card"><h3>{{ b.title }}</h3><p>{{ (b.authors or [])|join(', ') }}{% if b.year %} · {{ b.year }}{% endif %}</p><p class="small">{{ b.source }} · {{ (b.access or 'metadata')|replace('_',' ')|title }}</p><div class="actions">{% if b.landing_url %}<a class="btn secondary" href="{{ b.landing_url }}" target="_blank" rel="noopener">Open Source</a>{% endif %}{% if b.preview_url and b.preview_url != b.landing_url %}<a class="btn secondary" href="{{ b.preview_url }}" target="_blank" rel="noopener">Preview</a>{% endif %}{% if b.download_url %}<a class="btn" href="{{ b.download_url }}" target="_blank" rel="noopener" download>Download {{ b.download_format|upper or 'File' }}</a>{% endif %}<form method="post" action="{{ url_for('research_books_remove',book_id=b.id) }}" style="display:inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="btn secondary" type="submit">Remove</button></form></div></div>{% else %}<div class="card"><h3>No saved books</h3><p>Search Research Books and save titles here.</p></div>{% endfor %}</div>
 ''',books=books)
 
 @app.route('/research')
