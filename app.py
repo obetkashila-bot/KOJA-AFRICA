@@ -6885,7 +6885,8 @@ def connect_call_answer_page_alias(call_id):
 def connect_answer(call_id):
     uid=current_user()['id']; c=first_row('koja_calls',{'id':call_id})
     if not c or str(c.get('callee_id'))!=str(uid) or c.get('status') not in ('ringing','answered'):
-        abort(404)
+        flash('This call is no longer available.', 'danger')
+        return redirect(url_for('connect_calls'))
     turn_urls=json.dumps([x.strip() for x in os.environ.get('KOJA_TURN_URLS','').split(',') if x.strip()])
     turn_user=json.dumps(os.environ.get('KOJA_TURN_USERNAME',''))
     turn_cred=json.dumps(os.environ.get('KOJA_TURN_CREDENTIAL',''))
@@ -7056,7 +7057,9 @@ def connect_incoming_calls():
 @login_required
 def connect_call(user_id):
     uid=current_user()['id']; mode=clean(request.args.get('mode','video')).lower()
-    if user_id==uid or not find_user_by_id(user_id) or mode not in ('voice','video'):abort(404)
+    if user_id==uid or not find_user_by_id(user_id) or mode not in ('voice','video'):
+        flash('The selected KOJA user or call mode is not available.', 'danger')
+        return redirect(url_for('connect'))
     c=_direct_conversation(uid,user_id)
     if not c:return 'Run KOJA Connect SQL first.',500
     turn_urls=json.dumps([x.strip() for x in os.environ.get('KOJA_TURN_URLS','').split(',') if x.strip()])
