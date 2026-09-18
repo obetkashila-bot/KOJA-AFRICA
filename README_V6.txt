@@ -1,19 +1,42 @@
-KOJA AFRICA Unified Fulfillment V6
+KOJA AFRICA END-TO-END V6 — EVERYTHING PURCHASABLE
 
-Includes V5 Complete plus AI nearby-driver selection and secure pickup-number verification.
+V6 adds a customer-facing purchasing layer on top of the existing KOJA modules.
 
-Pickup verification:
-- Driver enters the pickup number supplied by the seller/shop.
-- KOJA checks the delivery, assigned driver, completion/cancellation state, and exact pickup code.
-- Results: VALID, INVALID PICKUP NUMBER, WRONG DRIVER, NOT ASSIGNED, or ALREADY COMPLETED.
-- Valid verification changes delivery status to in_transit and records pickup_verified_at.
-- Buyer receives a pickup verification notification.
+Customer paths:
+  /buy
+  /buy/business-product/<product_id>
+  /buy/professional/<provider_id>
+  /buy/service/<service_id>
 
-AI driver matching:
-- Uses delivery GPS when available.
-- Falls back to physical pickup address/area matching when GPS is unavailable.
-- Only approved/active/verified online drivers with recent locations are considered.
-- AI ranks candidates, but the server performs the final assignment.
-- Driver assignment is conditional so a delivery cannot be claimed twice.
+What V6 makes directly purchasable:
+  1. Business POS products — customers can buy active business products even when the owner has not separately configured a public store.
+  2. Professional services — approved professionals can publish a paid hourly/service rate; customers choose service type/date/time/location, then pay by mobile money.
+  3. Published E2E services — any published KOJA E2E service can be purchased through the common checkout.
+  4. KOJA Market remains available through its existing production checkout and is surfaced in the Buy Center.
 
-Communications/Connect+ remains untouched.
+Payment:
+  - Flutterwave Mobile Money: MTN, AIRTEL, ZAMTEL.
+  - V6 creates an idempotent checkout session with a unique tx_ref.
+  - Payment is verified server-side before the E2E order becomes paid.
+  - Earnings are created for the provider/business using the existing E2E fee configuration.
+
+Lifecycle:
+  Discover -> Buy/Book -> Payment -> Verified -> Provider fulfilment -> Complete -> Settlement -> Review.
+
+Source-of-truth rule:
+  Existing business orders, appointments and Market orders remain the source records.
+  E2E is the universal transaction layer and does not replace those modules.
+
+V6 migration order:
+  1. KOJA_E2E_V1_MIGRATION.sql
+  2. KOJA_E2E_V2_MIGRATION.sql
+  3. KOJA_E2E_V4_MIGRATION.sql
+  4. KOJA_E2E_V5_MIGRATION.sql
+  5. KOJA_E2E_V6_MIGRATION.sql
+
+Production:
+  Keep the existing KOJA AFRICA Render Production deployment.
+  Connect+ / Communications was not modified.
+
+Important:
+  This package has been syntax-checked, but the production Supabase/Flutterwave environment must be tested with a real sandbox/live payment before claiming live payment success.

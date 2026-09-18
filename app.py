@@ -11237,3 +11237,373 @@ _e2e_v5_wrap_endpoint('global_import_export_update',
     lambda business_id,trade_id,*a,**kw: first_row('koja_global_trade_orders',{'id':trade_id,'business_id':business_id}),
     _e2e_v5_sync_trade)
 
+
+# ============================================================
+# KOJA AFRICA END-TO-END V6 — EVERYTHING PURCHASABLE
+# Customer-facing commerce layer. Existing modules remain source of truth.
+# Connect+ is intentionally untouched.
+# ============================================================
+KOJA_E2E_VERSION = '2026.09.18-V6'
+
+
+def _e2e_v6_money(v):
+    try:
+        return round(float(v or 0), 2)
+    except Exception:
+        return 0.0
+
+
+def _e2e_v6_tx_ref(prefix='KOJA-V6'):
+    return prefix + '-' + datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S') + '-' + secrets.token_hex(5).upper()
+
+
+def _e2e_v6_session(tx_ref):
+    return first_row('koja_e2e_checkout_sessions', {'tx_ref': tx_ref}) if tx_ref else None
+
+
+def _e2e_v6_start_mobile_money(amount, currency, email, fullname, phone, network, tx_ref, order_id, callback_endpoint='e2e_v6_payment_callback'):
+    if not FLW_SECRET_KEY:
+        return None, 'Flutterwave is not configured.'
+    network = clean(network).upper()
+    phone = clean(phone)
+    if network not in ('MTN', 'AIRTEL', 'ZAMTEL') or not phone:
+        return None, 'Select MTN, AIRTEL or ZAMTEL and enter a payment phone number.'
+    payload = {
+        'tx_ref': tx_ref,
+        'amount': int(round(float(amount))),
+        'currency': clean(currency).upper() or 'ZMW',
+        'email': clean(email).lower(),
+        'fullname': clean(fullname) or 'KOJA Customer',
+        'phone_number': phone,
+        'network': network,
+        'order_id': str(order_id or ''),
+        'redirect_url': url_for(callback_endpoint, _external=True, tx_ref=tx_ref),
+    }
+    try:
+        r = requests.post(
+            FLW_BASE_URL + '/charges?type=mobile_money_zambia',
+            headers={'Authorization': 'Bearer ' + FLW_SECRET_KEY, 'Content-Type': 'application/json', 'Accept': 'application/json'},
+            json=payload,
+            timeout=40,
+        )
+        body = json_or_empty(r)
+        redirect_url = ((body.get('meta') or {}).get('authorization') or {}).get('redirect') if isinstance(body, dict) else None
+        if r.ok and str(body.get('status') or '').lower() == 'success' and redirect_url:
+            return redirect_url, None
+        message = body.get('message') if isinstance(body, dict) else None
+        return None, message or 'Flutterwave did not return a payment redirect.'
+    except Exception as exc:
+        logger.exception('KOJA V6 mobile money start failed')
+        return None, str(exc)[:300]
+
+
+def _e2e_v6_create_session(order_id, customer_id, source_type, source_id, tx_ref, amount, currency, metadata=None):
+    if not table_exists('koja_e2e_checkout_sessions'):
+        return None, 'Run KOJA_E2E_V6_MIGRATION.sql first.'
+    return db_insert('koja_e2e_checkout_sessions', {
+        'id': _e2e_id(), 'order_id': order_id, 'customer_id': customer_id,
+        'source_type': clean(source_type), 'source_id': str(source_id) if source_id else None,
+        'tx_ref': tx_ref, 'amount': _e2e_v6_money(amount), 'currency': clean(currency).upper() or 'ZMW',
+        'status': 'pending', 'metadata': metadata or {}, 'created_at': utc_now(), 'updated_at': utc_now()
+    })
+
+
+def _e2e_v6_mark_source_paid(session, order):
+    source_type = clean(session.get('source_type')).lower()
+    source_id = clean(session.get('source_id'))
+    try:
+        if source_type == 'professional_appointment' and source_id:
+            db_update('appointments', {'id': source_id}, {'status': 'paid', 'updated_at': utc_now()})
+        elif source_type == 'global_trade' and source_id:
+            db_update('koja_global_trade_orders', {'id': source_id}, {'status': 'booked', 'updated_at': utc_now()})
+        elif source_type == 'e2e_service':
+            pass
+    except Exception:
+        logger.exception('KOJA V6 source payment sync failed: %s/%s', source_type, source_id)
+
+
+def _e2e_v6_verify_session_payment(tx_ref, transaction_id=None):
+    session = _e2e_v6_session(tx_ref)
+    if not session:
+        return None, None, 'checkout_session_not_found'
+    order = _e2e_order(session.get('order_id'))
+    if not order:
+        return session, None, 'e2e_order_not_found'
+    tx = _flutterwave_verify(transaction_id, tx_ref) if (transaction_id or tx_ref) else None
+    if not tx:
+        return session, order, 'payment_not_verified'
+    if not _flutterwave_payment_valid(tx, tx_ref, session.get('amount'), session.get('currency') or 'ZMW'):
+        return session, order, 'payment_amount_or_currency_mismatch'
+    now = utc_now()
+    ref = tx.get('tx_ref') or tx.get('txRef') or tx.get('reference') or tx_ref
+    existing = first_row('koja_e2e_payments', {'order_id': order.get('id')})
+    if existing:
+        payment, err = db_update('koja_e2e_payments', {'id': existing.get('id')}, {
+            'status': 'successful', 'payment_reference': ref,
+            'transaction_id': str(tx.get('id') or transaction_id or ''), 'verified_at': now, 'updated_at': now
+        })
+    else:
+        payment, err = db_insert('koja_e2e_payments', {
+            'id': _e2e_id(), 'order_id': order.get('id'), 'user_id': session.get('customer_id'),
+            'provider': 'flutterwave', 'payment_reference': ref,
+            'transaction_id': str(tx.get('id') or transaction_id or ''),
+            'amount': _e2e_v6_money(tx.get('amount')), 'currency': clean(session.get('currency')).upper() or 'ZMW',
+            'status': 'successful', 'verified_at': now, 'created_at': now, 'updated_at': now
+        })
+    if not payment:
+        return session, order, 'payment_record_failed'
+    current = _e2e_order(order.get('id')) or order
+    if clean(current.get('status')) in ('requested', 'confirmed'):
+        current, transition_error = _e2e_transition(current, 'paid', actor_id=session.get('customer_id'), note='KOJA V6 customer payment verified')
+        if not current:
+            return session, order, transition_error or 'payment_transition_failed'
+    current = _e2e_order(order.get('id')) or current
+    try:
+        fee_rate = float(globals().get('KOJA_PLATFORM_FEE_RATE', 0.015) or 0.015)
+    except Exception:
+        fee_rate = 0.015
+    gross = _e2e_v6_money(session.get('amount'))
+    fee = round(gross * fee_rate, 2)
+    net = round(gross - fee, 2)
+    earning = first_row('koja_e2e_earnings', {'order_id': current.get('id')})
+    if not earning:
+        db_insert('koja_e2e_earnings', {
+            'id': _e2e_id(), 'order_id': current.get('id'), 'provider_id': current.get('provider_id'),
+            'business_id': current.get('business_id'), 'gross_amount': gross, 'koja_fee': fee,
+            'net_amount': net, 'currency': clean(session.get('currency')).upper() or 'ZMW',
+            'status': 'pending', 'created_at': now, 'updated_at': now
+        })
+    db_update('koja_e2e_checkout_sessions', {'id': session.get('id')}, {
+        'status': 'paid', 'transaction_id': str(tx.get('id') or transaction_id or ''),
+        'verified_at': now, 'updated_at': now
+    })
+    _e2e_v6_mark_source_paid(session, current)
+    if current.get('provider_id'):
+        _e2e_notify(current.get('provider_id'), 'payment', 'Payment received', 'A customer payment has been verified on KOJA.', '/e2e/orders/' + str(current.get('id')), 'order', current.get('id'))
+    _e2e_notify(current.get('customer_id'), 'payment', 'Payment confirmed', 'Your KOJA payment has been verified.', '/e2e/orders/' + str(current.get('id')), 'order', current.get('id'))
+    return session, current, None
+
+
+@app.route('/buy')
+def e2e_v6_buy_center():
+    """Customer-facing catalogue spanning KOJA business products, professionals, Market and published E2E services."""
+    products = []
+    try:
+        stores = db_select('koja_business_stores', {'published': True}, order='created_at.desc', limit=500) or []
+        for store in stores:
+            rows = db_select('koja_business_products', {'business_id': store.get('business_id'), 'active': True}, order='created_at.desc', limit=500) or []
+            for p in rows:
+                stock = int(p.get('stock') or 0)
+                if stock <= 0 and str(p.get('product_type') or 'physical').lower() != 'digital':
+                    continue
+                products.append({'id': p.get('id'), 'name': p.get('name') or 'Business Product', 'price': p.get('selling_price') or 0, 'currency': p.get('currency') or 'ZMW', 'business_id': p.get('business_id'), 'store_slug': store.get('slug'), 'store_name': store.get('store_name') or 'KOJA Business', 'type': p.get('product_type') or 'physical'})
+    except Exception:
+        logger.exception('KOJA V6 business catalogue load failed')
+    professionals = []
+    try:
+        rows = db_select('service_providers', order='created_at.desc', limit=500) or []
+        for p in rows:
+            status = str(p.get('approval_status') or p.get('verification_status') or 'pending').lower()
+            if status not in {'approved', 'active', 'verified'} or p.get('is_active') is False:
+                continue
+            if str(p.get('provider_type') or '').lower() in {'driver', 'doctor', 'teacher', 'tutor'}:
+                continue
+            price = _e2e_v6_money(p.get('hourly_rate'))
+            if price <= 0:
+                continue
+            professionals.append({'id': p.get('id'), 'name': p.get('full_name') or p.get('name') or 'Professional', 'profession': p.get('profession') or 'Professional Service', 'description': p.get('service_description') or p.get('bio') or '', 'price': price, 'currency': p.get('currency') or 'ZMW'})
+    except Exception:
+        logger.exception('KOJA V6 professional catalogue load failed')
+    market = []
+    try:
+        rows = db_select('koja_market_products', {'is_published': 'eq.true'}, order='created_at.desc', limit=500) or []
+        market = [{'id': p.get('id'), 'name': p.get('title') or 'KOJA Market Product', 'price': p.get('price') or 0, 'currency': p.get('currency') or 'ZMW'} for p in rows]
+    except Exception:
+        logger.exception('KOJA V6 Market catalogue load failed')
+    services = db_select('koja_e2e_services', {'status': 'published'}, order='created_at.desc', limit=500) or []
+    return render_page('KOJA Buy Center', r'''
+<div class="hero"><h1>KOJA Buy Center</h1><p>Find products and professional services, then purchase or book through one customer checkout experience.</p>{% if current_user() %}<a class="btn" href="{{ url_for('e2e_v5_universal_dashboard') }}">My Orders</a>{% else %}<a class="btn" href="{{ url_for('login') }}">Sign in to buy</a>{% endif %}</div>
+<div class="card"><h2>Business POS / Online Products</h2><div class="grid">{% for p in products %}<div class="card"><h3>{{ p.name }}</h3><p>{{ p.store_name }} · {{ p.type }}</p><h3>{{ money(p.price,p.currency) }}</h3><a class="btn" href="{{ url_for('e2e_v6_business_product_buy',product_id=p.id) }}">Buy Now</a></div>{% else %}<p>No published business products are currently available.</p>{% endfor %}</div></div>
+<div class="card"><h2>Professional Services</h2><div class="grid">{% for p in professionals %}<div class="card"><h3>{{ p.name }}</h3><p>{{ p.profession }}</p><p>{{ p.description }}</p><h3>{{ money(p.price,p.currency) }} / service hour</h3><a class="btn" href="{{ url_for('e2e_v6_professional_buy',provider_id=p.id) }}">Book & Pay</a></div>{% else %}<p>No paid professional services are currently listed.</p>{% endfor %}</div></div>
+<div class="card"><h2>KOJA Market</h2><div class="grid">{% for p in market %}<div class="card"><h3>{{ p.name }}</h3><h3>{{ money(p.price,p.currency) }}</h3><a class="btn" href="{{ url_for('market_product_view',product_id=p.id) }}">View & Buy</a></div>{% else %}<p>No Market products are currently published.</p>{% endfor %}</div></div>
+<div class="card"><h2>Other Published KOJA Services</h2><div class="grid">{% for s in services %}<div class="card"><h3>{{ s.name }}</h3><p>{{ s.description }}</p><h3>{{ money(s.price,s.currency) }}</h3><a class="btn" href="{{ url_for('e2e_service_public_checkout',service_id=s.id) }}">Buy Service</a></div>{% else %}<p>Other E2E services will appear here when published.</p>{% endfor %}</div></div>
+''', products=products, professionals=professionals, market=market, services=services, money=market_money)
+
+
+@app.route('/buy/business-product/<product_id>', methods=['GET', 'POST'])
+@login_required
+def e2e_v6_business_product_buy(product_id):
+    product = first_row('koja_business_products', {'id': product_id, 'active': True})
+    if not product:
+        abort(404)
+    uid = (current_user() or {}).get('id')
+    ptype = str(product.get('product_type') or 'physical').lower()
+    delivery_available = as_bool(product.get('delivery_available')) and ptype == 'physical'
+    business_id = product.get('business_id')
+    if request.method == 'POST':
+        try:
+            qty = max(1, int(request.form.get('quantity') or 1))
+        except Exception:
+            qty = 1
+        if ptype != 'digital' and qty > int(product.get('stock') or 0):
+            flash('Not enough stock.', 'danger'); return redirect(request.url)
+        method = clean(request.form.get('fulfillment_method')) or ('digital' if ptype == 'digital' else 'delivery')
+        if ptype == 'digital': method = 'digital'
+        if method == 'delivery' and not delivery_available: method = 'self_pickup'
+        address = clean(request.form.get('delivery_address'))
+        phone = clean(request.form.get('recipient_phone')) or clean((current_user() or {}).get('phone'))
+        if method == 'delivery' and not address:
+            flash('Delivery address is required for delivery.', 'danger'); return redirect(request.url)
+        fee = _e2e_v6_money(product.get('delivery_fee')) if method == 'delivery' else 0
+        total = round(_e2e_v6_money(product.get('selling_price')) * qty + fee, 2)
+        if total <= 0:
+            flash('This product does not have a valid selling price.', 'danger'); return redirect(request.url)
+        tx_ref = _e2e_v6_tx_ref('KOJA-POS')
+        row, err = db_insert('koja_business_orders', {
+            'business_id': business_id, 'product_id': product_id, 'buyer_id': uid, 'quantity': qty,
+            'item_amount': _e2e_v6_money(product.get('selling_price')) * qty, 'delivery_fee': fee,
+            'total_amount': total, 'fulfillment_method': method, 'delivery_address': address,
+            'recipient_phone': phone, 'payment_reference': tx_ref, 'status': 'pending', 'currency': 'ZMW',
+            'created_at': utc_now(), 'updated_at': utc_now()
+        })
+        if err or not row:
+            flash('Business POS order could not be created: ' + str(err or 'unknown error')[:400], 'danger'); return redirect(request.url)
+        try:
+            network = clean(request.form.get('network')).upper()
+            payment_phone = clean(request.form.get('payment_phone')) or phone
+            redirect_url, pay_err = _e2e_v6_start_mobile_money(total, 'ZMW', (current_user() or {}).get('email'), (current_user() or {}).get('name') or (current_user() or {}).get('full_name'), payment_phone, network, tx_ref, row.get('id'), 'business_store_payment_callback')
+            if not redirect_url:
+                flash(pay_err or 'Payment could not be started.', 'danger'); return redirect(request.url)
+            return redirect(redirect_url)
+        except Exception:
+            logger.exception('KOJA V6 POS checkout failed')
+            flash('Payment could not be started.', 'danger'); return redirect(request.url)
+    return render_page('Buy Business Product', r'''
+<div class="hero"><h1>{{ product.name }}</h1><p>Business product · {{ product.product_type or 'physical' }}</p><h2>{{ money(product.selling_price,'ZMW') }}</h2></div>
+<div class="card"><form method="post"><label>Quantity</label><input name="quantity" type="number" min="1" value="1"><label>Fulfillment</label>{% if ptype=='digital' %}<input type="hidden" name="fulfillment_method" value="digital"><p>Digital delivery after verified payment.</p>{% else %}<select name="fulfillment_method">{% if delivery_available %}<option value="delivery">KOJA Delivery{% if product.delivery_fee %} (+ {{ money(product.delivery_fee,'ZMW') }}){% endif %}</option>{% endif %}<option value="self_pickup">Self Pickup</option></select><label>Delivery address</label><textarea name="delivery_address"></textarea>{% endif %}<label>Recipient phone</label><input name="recipient_phone"><label>Mobile-money network</label><select name="network" required><option value="">Select network</option><option>MTN</option><option>AIRTEL</option><option>ZAMTEL</option></select><label>Payment phone</label><input name="payment_phone" required><button class="btn" type="submit">Pay Now</button></form></div>
+''', product=product, ptype=ptype, delivery_available=delivery_available, money=market_money)
+
+
+@app.route('/buy/professional/<provider_id>', methods=['GET', 'POST'])
+@login_required
+def e2e_v6_professional_buy(provider_id):
+    provider = first_row('service_providers', {'id': provider_id})
+    if not provider:
+        abort(404)
+    status = str(provider.get('approval_status') or provider.get('verification_status') or 'pending').lower()
+    if status not in {'approved', 'active', 'verified'} or provider.get('is_active') is False:
+        abort(404)
+    if str(provider.get('provider_type') or '').lower() in {'driver', 'doctor', 'teacher', 'tutor'}:
+        abort(404)
+    price = _e2e_v6_money(provider.get('hourly_rate'))
+    if price <= 0:
+        return 'This professional has not published a paid service rate yet.', 409
+    uid = (current_user() or {}).get('id')
+    if request.method == 'POST':
+        purpose = clean(request.form.get('purpose')).lower() or 'booking'
+        if purpose not in {'booking', 'advice', 'counselling'}: purpose = 'booking'
+        appointment_id = str(uuid.uuid4())
+        appointment, err = db_insert('appointments', {
+            'id': appointment_id, 'client_id': uid, 'provider_id': provider_id,
+            'appointment_type': 'professional_' + purpose,
+            'appointment_date': request.form.get('appointment_date'), 'start_time': request.form.get('start_time'),
+            'end_time': request.form.get('end_time') or None, 'location': clean(request.form.get('location')) or 'Online',
+            'status': 'requested', 'notes': clean(request.form.get('notes')), 'created_at': utc_now(), 'updated_at': utc_now()
+        })
+        if err or not appointment:
+            flash('Professional booking could not be created: ' + str(err or 'unknown error')[:400], 'danger'); return redirect(request.url)
+        service, link = _e2e_source_service('professional_appointment', appointment_id, provider.get('user_id') or provider_id, None,
+            provider.get('profession') or 'Professional Service', provider.get('service_description') or provider.get('bio') or 'Professional appointment',
+            price, provider.get('currency') or 'ZMW', 'booking')
+        order, link = _e2e_source_order(service, uid, 'professional_appointment', appointment_id, 1, appointment.get('notes'), 'booking') if service else (None, None)
+        if not order:
+            flash('Universal order could not be created.', 'danger'); return redirect(request.url)
+        tx_ref = _e2e_v6_tx_ref('KOJA-PRO')
+        session, serr = _e2e_v6_create_session(order.get('id'), uid, 'professional_appointment', appointment_id, tx_ref, price, provider.get('currency') or 'ZMW', {'purpose': purpose, 'appointment_date': appointment.get('appointment_date'), 'start_time': appointment.get('start_time')})
+        if serr or not session:
+            flash(serr or 'Checkout session could not be created.', 'danger'); return redirect(request.url)
+        redirect_url, pay_err = _e2e_v6_start_mobile_money(price, provider.get('currency') or 'ZMW', (current_user() or {}).get('email'), (current_user() or {}).get('name') or (current_user() or {}).get('full_name'), clean(request.form.get('payment_phone')) or clean((current_user() or {}).get('phone')), clean(request.form.get('network')).upper(), tx_ref, order.get('id'))
+        if not redirect_url:
+            flash(pay_err or 'Payment could not be started.', 'danger'); return redirect(request.url)
+        return redirect(redirect_url)
+    return render_page('Book & Pay Professional Service', r'''
+<div class="hero"><h1>{{ provider.full_name or provider.name or 'Professional' }}</h1><p>{{ provider.profession or 'Professional Service' }}</p><h2>{{ money(price,provider.currency or 'ZMW') }} / service hour</h2></div>
+<div class="card"><form method="post"><label>Service type</label><select name="purpose"><option value="booking">Book Service</option><option value="advice">Professional Advice</option><option value="counselling">Counselling</option></select><label>Date</label><input type="date" name="appointment_date" required><label>Start time</label><input type="time" name="start_time" required><label>End time</label><input type="time" name="end_time"><label>Location / Online</label><input name="location" value="Online"><label>What do you need?</label><textarea name="notes" required></textarea><label>Mobile-money network</label><select name="network" required><option value="">Select network</option><option>MTN</option><option>AIRTEL</option><option>ZAMTEL</option></select><label>Payment phone</label><input name="payment_phone" required><button class="btn" type="submit">Book & Pay</button></form></div>
+''', provider=provider, price=price, money=market_money)
+
+
+@app.route('/e2e/v6/payment/callback')
+def e2e_v6_payment_callback():
+    tx_ref = clean(request.args.get('tx_ref') or request.args.get('reference'))
+    transaction_id = clean(request.args.get('transaction_id') or request.args.get('id'))
+    session, order, err = _e2e_v6_verify_session_payment(tx_ref, transaction_id)
+    if err:
+        return render_page('KOJA Payment', '<div class="hero"><h1>Payment verification</h1><p>We could not verify this payment yet: {{ error }}</p><a class="btn" href="{{ url_for(\'e2e_v6_buy_center\') }}">Return to KOJA Buy Center</a></div>', error=err), 409
+    return redirect(url_for('e2e_v6_order_page', order_id=order.get('id')))
+
+
+@app.route('/e2e/v6/order/<order_id>')
+@login_required
+def e2e_v6_order_page(order_id):
+    order = _e2e_order(order_id)
+    if not order or not _e2e_can_order(order):
+        abort(404)
+    link = first_row('koja_e2e_source_links', {'order_id': order_id}) or {}
+    service = _e2e_service(order.get('service_id')) if order.get('service_id') else {}
+    return render_page('KOJA Order', r'''
+<div class="hero"><h1>KOJA Order</h1><p>{{ service.name if service else 'KOJA Service' }}</p><h2>{{ money(order.gross_amount,order.currency) }}</h2><p>Status: <strong>{{ order.status }}</strong></p></div>
+<div class="card"><p>Source: {{ link.source_type or 'KOJA E2E' }} · {{ link.source_id or order.id }}</p>{% if order.status in ['requested','confirmed'] and order.customer_id==uid %}<p>Payment is still pending.</p>{% endif %}{% if order.status in ['paid','processing','fulfilling'] and order.provider_id==uid %}<form method="post" action="{{ url_for('e2e_v6_order_start',order_id=order.id) }}"><button class="btn">Start Fulfilment</button></form>{% endif %}{% if order.status in ['processing','fulfilling'] and order.provider_id==uid %}<form method="post" action="{{ url_for('e2e_order_complete',order_id=order.id) }}"><button class="btn">Mark Service Complete</button></form>{% endif %}{% if order.status=='completed' and order.customer_id==uid %}<form method="post" action="{{ url_for('e2e_order_settle',order_id=order.id) }}"><button class="btn">Release Settlement</button></form>{% endif %}</div>
+''', order=order, service=service or {}, link=link, uid=(current_user() or {}).get('id'), money=market_money)
+
+
+@app.route('/e2e/v6/order/<order_id>/start', methods=['POST'])
+@login_required
+def e2e_v6_order_start(order_id):
+    order = _e2e_order(order_id)
+    uid = _e2e_uid()
+    if not order or str(order.get('provider_id')) != str(uid) and str(order.get('business_id')) != str(uid) and not (current_user() or {}).get('is_admin'):
+        return _e2e_json({'ok': False, 'error': 'forbidden'}, 403)
+    status = clean(order.get('status'))
+    target = 'processing' if status == 'paid' else 'fulfilling' if status == 'processing' else None
+    if not target:
+        return _e2e_json({'ok': False, 'error': 'order_not_ready', 'status': status}, 409)
+    updated, err = _e2e_transition(order, target, actor_id=uid, note='KOJA V6 provider started fulfilment')
+    link = first_row('koja_e2e_source_links', {'order_id': order_id}) or {}
+    if updated and link.get('source_type') and link.get('source_id'):
+        _e2e_sync_source_status(link.get('source_type'), link.get('source_id'), updated)
+    if updated:
+        _e2e_notify(updated.get('customer_id'), 'fulfillment', 'Service started', 'Your KOJA service is now being fulfilled.', '/e2e/v6/order/' + order_id, 'order', order_id)
+    return _e2e_json({'ok': bool(updated), 'order': updated, 'error': err}, 200 if updated else 400)
+
+
+@app.route('/api/e2e/v6/admin/catalog', methods=['GET'])
+@admin_required
+def e2e_v6_admin_catalog():
+    return _e2e_json({'ok': True, 'version': KOJA_E2E_VERSION, 'services': db_select('koja_e2e_services', {}, order='created_at.desc', limit=1000) or []})
+
+@app.route('/buy/service/<service_id>', methods=['GET', 'POST'])
+@login_required
+def e2e_service_public_checkout(service_id):
+    service = _e2e_service(service_id)
+    if not service or clean(service.get('status')) != 'published':
+        abort(404)
+    price = _e2e_v6_money(service.get('price'))
+    if price <= 0:
+        return 'This service does not have a valid purchase price.', 409
+    uid = _e2e_uid()
+    if request.method == 'POST':
+        order, err = _e2e_create_order(service, uid, max(1, int(request.form.get('quantity') or 1)), clean(request.form.get('notes')), service.get('fulfillment_mode'))
+        if not order:
+            flash(err or 'Order could not be created.', 'danger'); return redirect(request.url)
+        tx_ref = _e2e_v6_tx_ref('KOJA-SVC')
+        session, serr = _e2e_v6_create_session(order.get('id'), uid, 'e2e_service', service_id, tx_ref, order.get('gross_amount'), order.get('currency') or 'ZMW', {})
+        if serr or not session:
+            flash(serr or 'Checkout session could not be created.', 'danger'); return redirect(request.url)
+        redirect_url, pay_err = _e2e_v6_start_mobile_money(order.get('gross_amount'), order.get('currency') or 'ZMW', (current_user() or {}).get('email'), (current_user() or {}).get('name') or (current_user() or {}).get('full_name'), clean(request.form.get('payment_phone')) or clean((current_user() or {}).get('phone')), clean(request.form.get('network')).upper(), tx_ref, order.get('id'))
+        if not redirect_url:
+            flash(pay_err or 'Payment could not be started.', 'danger'); return redirect(request.url)
+        return redirect(redirect_url)
+    return render_page('Buy KOJA Service', r'''
+<div class="hero"><h1>{{ service.name }}</h1><p>{{ service.description }}</p><h2>{{ money(service.price,service.currency) }}</h2></div>
+<div class="card"><form method="post"><label>Quantity</label><input type="number" name="quantity" min="1" value="1"><label>Notes</label><textarea name="notes"></textarea><label>Mobile-money network</label><select name="network" required><option value="">Select network</option><option>MTN</option><option>AIRTEL</option><option>ZAMTEL</option></select><label>Payment phone</label><input name="payment_phone" required><button class="btn" type="submit">Buy Now</button></form></div>
+''', service=service, money=market_money)
