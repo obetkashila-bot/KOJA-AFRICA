@@ -16,7 +16,8 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from functools import wraps
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlparse
+import xml.etree.ElementTree as ET
 
 import requests
 from dotenv import load_dotenv
@@ -2099,77 +2100,6 @@ def research_ai_notes(query, results, style='apa'):
     lines += ["## Conclusion","The available evidence is source-dependent and should be checked against the original publications before formal submission."]
     return '\n'.join(lines)
 
-# KOJA BOOK RESEARCH V14
-
-def _book_search_openlibrary(q, limit=10):
-    q=clean(q)
-    if not q: return []
-    try:
-        r=requests.get('https://openlibrary.org/search.json',params={'q':q,'limit':limit,'fields':'key,title,author_name,first_publish_year,isbn,cover_i,has_fulltext,public_scan_b'},timeout=7,headers={'User-Agent':'KOJA-AFRICA-Books/1.0'})
-        if not r.ok: return []
-        out=[]
-        for d in r.json().get('docs',[]):
-            title=clean(d.get('title',''))
-            if not title: continue
-            key=clean(d.get('key',''))
-            url='https://openlibrary.org'+key if key.startswith('/works/') else 'https://openlibrary.org/search?q='+quote(title)
-            out.append({'source':'Open Library','title':title,'authors':', '.join((d.get('author_name') or [])[:4]),'year':d.get('first_publish_year'),'url':url,'snippet':'Book catalog record. Download availability depends on the edition and rights shown by the source.'})
-        return out
-    except Exception as exc:
-        logger.warning('Open Library book search failed: %s',exc); return []
-
-def _book_search_gutenberg(q, limit=10):
-    q=clean(q)
-    if not q: return []
-    try:
-        r=requests.get('https://gutendex.com/books/',params={'search':q},timeout=7,headers={'User-Agent':'KOJA-AFRICA-Books/1.0'})
-        if not r.ok: return []
-        out=[]
-        for d in r.json().get('results',[])[:limit]:
-            title=clean(d.get('title',''))
-            if not title: continue
-            formats=d.get('formats') or {}
-            pdf=next((u for mime,u in formats.items() if 'pdf' in mime.lower()),'')
-            epub=next((u for mime,u in formats.items() if 'epub' in mime.lower()),'')
-            html=next((u for mime,u in formats.items() if 'text/html' in mime.lower()),'')
-            authors=', '.join(clean((a or {}).get('name','')) for a in (d.get('authors') or []) if clean((a or {}).get('name','')))
-            out.append({'source':'Project Gutenberg','title':title,'authors':authors,'year':d.get('copyright_year'),'url':'https://www.gutenberg.org/ebooks/%s'%d.get('id'),'snippet':'Public-domain ebook listing. KOJA exposes only formats published by the source.','pdf_url':pdf,'epub_url':epub,'html_url':html})
-        return out
-    except Exception as exc:
-        logger.warning('Gutenberg search failed: %s',exc); return []
-
-def _book_download_allowed(url):
-    try:
-        from urllib.parse import urlparse
-        h=(urlparse(clean(url)).hostname or '').lower()
-        return h in ('gutenberg.org','www.gutenberg.org','archive.org','openlibrary.org') or h.endswith('.gutenberg.org') or h.endswith('.archive.org') or h.endswith('.openlibrary.org')
-    except Exception: return False
-
-@app.route('/research/books')
-def research_books():
-    q=clean(request.args.get('q',''))[:300]
-    results=_book_search_gutenberg(q)+_book_search_openlibrary(q) if q else []
-    return render_page('KOJA Books', """
-<style>.book-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.book-card{border:1px solid #d7e0ea;border-radius:18px;padding:18px;background:#fff}.book-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}@media(max-width:720px){.book-grid{grid-template-columns:1fr}}</style>
-<div class='hero'><h2>KOJA Books & Research</h2><p>Search public book catalogs and sources that publish reading or download options.</p><form method='get' action='{{ url_for("research_books") }}' class='actions'><input style='flex:1;min-width:220px' name='q' value='{{ q }}' maxlength='300' placeholder='Book title, author, ISBN or subject' required><button class='btn'>Search Books</button></form></div>
-{% if q %}<div class='card'><strong>{{ results|length }}</strong> book records found. Download buttons appear only where the source publishes a downloadable file.</div><div class='book-grid'>{% for b in results %}<article class='book-card'><div class='source-badge'>{{ b.source }}</div><h3>{{ b.title }}</h3><p>{{ b.authors or 'Author information unavailable' }}{% if b.year %} · {{ b.year }}{% endif %}</p><p>{{ b.snippet }}</p><div class='book-actions'><a class='btn secondary' href='{{ b.url }}' target='_blank' rel='noopener noreferrer'>Open Source</a>{% if b.pdf_url %}<a class='btn' href='{{ url_for("research_book_download") }}?url={{ b.pdf_url|urlencode }}&name={{ (b.title~".pdf")|urlencode }}'>Download PDF</a>{% endif %}{% if b.epub_url %}<a class='btn secondary' href='{{ b.epub_url }}' target='_blank' rel='noopener noreferrer'>EPUB</a>{% endif %}{% if b.html_url %}<a class='btn secondary' href='{{ b.html_url }}' target='_blank' rel='noopener noreferrer'>Read Online</a>{% endif %}</div></article>{% else %}<div class='card'><h3>No books found</h3><p>Try another title, author, ISBN or subject.</p></div>{% endfor %}</div>{% else %}<div class='grid'><div class='card'><h3>Search Books</h3><p>Search by title, author, ISBN or subject.</p></div><div class='card'><h3>PDF downloads</h3><p>KOJA downloads PDFs only when the source publishes the file.</p></div></div>{% endif %}
-""",q=q,results=results)
-
-@app.route('/research/books/download')
-def research_book_download():
-    url=clean(request.args.get('url',''))
-    name=secure_filename(clean(request.args.get('name','book.pdf')) or 'book.pdf')
-    if not _book_download_allowed(url): return 'Download source not permitted.',403
-    try:
-        r=requests.get(url,timeout=25,headers={'User-Agent':'KOJA-AFRICA-Books/1.0'})
-        if not r.ok: return 'The source did not provide the requested file.',502
-        ctype=(r.headers.get('Content-Type') or '').split(';')[0].lower()
-        if not (ctype=='application/pdf' or url.lower().split('?')[0].endswith('.pdf')): return redirect(url)
-        if len(r.content)>25*1024*1024: return 'Book file is larger than KOJA download limit.',413
-        return Response(r.content,headers={'Content-Type':'application/pdf','Content-Disposition':'attachment; filename="%s"'%name,'Cache-Control':'private, max-age=0'})
-    except Exception as exc:
-        logger.warning('Book download failed: %s',exc); return 'Book download failed. Open the original source instead.',502
-
 
 @app.route('/research/notes')
 def research_notes():
@@ -2183,6 +2113,204 @@ def research_notes():
     return render_page('Research Notes', r'''<style>
 .notes-shell{max-width:1000px;margin:auto}.notes-toolbar{display:grid;grid-template-columns:1fr auto auto;gap:10px}.notes-body{line-height:1.8;font-size:1rem}.notes-body pre{white-space:pre-wrap;font:inherit}.ref{margin:10px 0}.note-actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}@media(max-width:700px){.notes-toolbar{grid-template-columns:1fr}.notes-body{font-size:.97rem}}
 </style><div class="notes-shell"><div class="hero"><h2> KOJA Research Notes</h2><p>Turn ranked research evidence into clear, connected academic notes.</p><form method="get" action="{{ url_for('research_notes') }}" class="notes-toolbar"><input name="q" value="{{ q }}" placeholder="Enter your research topic…" required><select name="style">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select><button class="btn">Write Notes</button></form></div>{% if q %}<div class="note-actions"><button class="btn secondary" type="button" onclick="copyKOJANotes()">Copy Notes</button><button class="btn secondary" type="button" onclick="window.print()">Print</button><a class="btn secondary" href="{{ url_for('research',q=q,style=style) }}">View Evidence</a></div><div class="card"><strong>{{ results|length }} ranked evidence sources</strong></div><div id="koja-notes" class="card notes-body"><pre>{{ notes }}</pre></div>{% if bibliography %}<div class="card"><h3>References</h3>{% for n,ref in bibliography %}<div class="ref">{{ n }}. {{ ref|safe }}</div>{% endfor %}</div>{% endif %}<script>function copyKOJANotes(){const el=document.getElementById('koja-notes');navigator.clipboard.writeText(el.innerText).then(()=>alert('Research notes copied.')).catch(()=>alert('Select and copy the notes manually.'))}</script>{% else %}<div class="card"><h3>How KOJA writes notes</h3><p>1. Searches multiple evidence sources.</p><p>2. Removes duplicates and ranks relevance.</p><p>3. Gives the AI only the strongest evidence.</p><p>4. Produces connected academic paragraphs with source citations.</p><p>5. Generates a bibliography in your selected citation style.</p></div>{% endif %}</div>''',q=q,style=style,citation_styles=CITATION_STYLES,results=results,notes=notes,bibliography=bibliography)
+
+# ============================================================
+# KOJA RESEARCH BOOKS ENGINE V2
+# External book discovery + legal availability + personal library.
+# Sources: Open Library, Google Books, DOAB, Project Gutenberg.
+# ============================================================
+
+def _book_clean_url(value):
+    u=clean(value or '')
+    if not u or not u.startswith(('https://','http://')):
+        return ''
+    return u
+
+def _book_result(source, external_id, title, authors=None, year=None, publisher='', isbn='', description='', landing_url='', preview_url='', download_url='', download_format='', access='metadata', cover_url='', language='', source_type='book', extra=None):
+    return {'source':source,'external_id':clean(external_id),'title':clean(title) or 'Untitled','authors':authors or [],'year':year,'publisher':clean(publisher),'isbn':clean(isbn),'description':clean(description)[:1800],'landing_url':_book_clean_url(landing_url),'preview_url':_book_clean_url(preview_url),'download_url':_book_clean_url(download_url),'download_format':clean(download_format).lower(),'access':clean(access).lower() or 'metadata','cover_url':_book_clean_url(cover_url),'language':clean(language),'source_type':source_type or 'book','extra':extra or {}}
+
+def research_books_openlibrary(query, limit=10):
+    q=clean(query)
+    if not q: return []
+    try:
+        params={'q':q,'limit':max(1,min(int(limit or 10),20)),'fields':'key,title,author_name,first_publish_year,publisher,isbn,cover_i,language,ebook_access,has_fulltext,ia'}
+        r=requests.get('https://openlibrary.org/search.json',params=params,timeout=7,headers={'User-Agent':'KOJA-AFRICA Research Books/1.0'})
+        if not r.ok: return []
+        out=[]
+        for x in r.json().get('docs',[]):
+            title=clean(x.get('title') or '')
+            if not title: continue
+            key=clean(x.get('key') or ''); work_id=key.rsplit('/',1)[-1] if key else ''
+            authors=[clean(a) for a in (x.get('author_name') or []) if clean(a)]
+            publishers=[clean(a) for a in (x.get('publisher') or []) if clean(a)]
+            isbns=[clean(a) for a in (x.get('isbn') or []) if clean(a)]
+            langs=[clean(a) for a in (x.get('language') or []) if clean(a)]
+            access=clean(x.get('ebook_access') or '')
+            public=access in ('public','borrowable') or bool(x.get('has_fulltext'))
+            landing='https://openlibrary.org'+key if key.startswith('/') else 'https://openlibrary.org'
+            cover=f"https://covers.openlibrary.org/b/id/{x.get('cover_i')}-L.jpg" if x.get('cover_i') else ''
+            out.append(_book_result('Open Library',work_id,title,authors,x.get('first_publish_year'),publishers[0] if publishers else '',isbns[0] if isbns else '', 'Open Library bibliographic record. Availability is determined by the source.',landing,landing,'','read_or_borrow' if public else 'metadata',cover,langs[0] if langs else '',extra={'ebook_access':access,'has_fulltext':bool(x.get('has_fulltext')),'ia':x.get('ia') or []}))
+        return out
+    except Exception as exc:
+        logger.warning('Open Library book search failed: %s',exc); return []
+
+def research_books_google(query, limit=10):
+    q=clean(query)
+    if not q: return []
+    try:
+        params={'q':q,'maxResults':max(1,min(int(limit or 10),20)),'printType':'books','projection':'full'}
+        key=os.getenv('GOOGLE_BOOKS_API_KEY','').strip()
+        if key: params['key']=key
+        r=requests.get('https://www.googleapis.com/books/v1/volumes',params=params,timeout=7,headers={'User-Agent':'KOJA-AFRICA Research Books/1.0'})
+        if not r.ok: return []
+        out=[]
+        for x in r.json().get('items',[]):
+            vi=x.get('volumeInfo') or {}; ai=x.get('accessInfo') or {}; title=clean(vi.get('title') or '')
+            if not title: continue
+            authors=[clean(a) for a in (vi.get('authors') or []) if clean(a)]
+            isbn=''
+            for ident in vi.get('industryIdentifiers') or []:
+                if ident.get('type') in ('ISBN_13','ISBN_10'):
+                    isbn=clean(ident.get('identifier') or '')
+                    if isbn: break
+            view=clean(ai.get('viewability') or ''); epub=ai.get('epub') or {}; pdf=ai.get('pdf') or ''
+            landing=clean(vi.get('infoLink') or x.get('selfLink') or ''); preview=clean(vi.get('previewLink') or landing)
+            access='preview' if view in ('PARTIAL','ALL_PAGES') else 'metadata'
+            if epub.get('isAvailable') or (isinstance(pdf,dict) and pdf.get('isAvailable')): access='download_available'
+            cover=clean((vi.get('imageLinks') or {}).get('thumbnail') or '')
+            out.append(_book_result('Google Books',clean(x.get('id') or ''),title,authors,(clean(vi.get('publishedDate') or '')[:4] or None),clean(vi.get('publisher') or ''),isbn,clean(vi.get('description') or ''),landing,preview,'','',access,cover,clean(vi.get('language') or ''),extra={'viewability':view,'epub_available':bool(epub.get('isAvailable')),'pdf_available':bool(pdf.get('isAvailable')),'categories':vi.get('categories') or []}))
+        return out
+    except Exception as exc:
+        logger.warning('Google Books search failed: %s',exc); return []
+
+def _doab_values(node):
+    vals=[]
+    if isinstance(node,dict):
+        for k,v in node.items():
+            if isinstance(v,(str,int,float)): vals.append((str(k),str(v)))
+            elif isinstance(v,(dict,list)): vals.extend(_doab_values(v))
+    elif isinstance(node,list):
+        for v in node: vals.extend(_doab_values(v))
+    return vals
+
+def _doab_extract_bitstreams(data):
+    urls=[]
+    def walk(v):
+        if isinstance(v,dict):
+            for k,x in v.items():
+                lk=str(k).lower()
+                if lk in ('url','uri','retrieve','retrieveurl','bitstreamurl','downloadurl','content') and isinstance(x,str):
+                    u=_book_clean_url(x)
+                    if u and any(ext in u.lower() for ext in ('.pdf','.epub','.mobi','.html')): urls.append(u)
+                else: walk(x)
+        elif isinstance(v,list):
+            for x in v: walk(x)
+    walk(data)
+    return list(dict.fromkeys(urls))
+
+def research_books_doab(query, limit=10):
+    q=clean(query)
+    if not q: return []
+    try:
+        r=requests.get('https://directory.doabooks.org/rest/search',params={'query':q,'expand':'metadata,bitstreams'},headers={'Accept':'application/json','User-Agent':'KOJA-AFRICA Research Books/1.0'},timeout=9)
+        if not r.ok: return []
+        data=r.json(); results=data.get('results') or data.get('items') or data.get('searchResults') or []
+        if isinstance(results,dict): results=results.get('items') or results.get('docs') or []
+        out=[]
+        for item in results[:max(1,min(int(limit or 10),20))]:
+            vals=dict(_doab_values(item)); raw_title=vals.get('dc.title') or vals.get('title') or (item.get('title') if isinstance(item,dict) else '')
+            title=clean(raw_title)
+            if not title: continue
+            authors=[]
+            for k,v in _doab_values(item):
+                if 'creator' in k.lower() or 'author' in k.lower():
+                    if clean(v) and clean(v) not in authors: authors.append(clean(v))
+            landing=''
+            for k,v in _doab_values(item):
+                if k.lower() in ('handle','uri','identifier') and ('20.' in v or v.startswith('http')):
+                    landing=_book_clean_url(v if v.startswith('http') else 'https://directory.doabooks.org/handle/'+v); break
+            bits=_doab_extract_bitstreams(item); dl=bits[0] if bits else ''
+            fmt='pdf' if dl.lower().split('?')[0].endswith('.pdf') else ('epub' if '.epub' in dl.lower() else '')
+            out.append(_book_result('DOAB',clean(vals.get('dc.identifier') or vals.get('handle') or title),title,authors,clean(vals.get('dc.date.issued') or '')[:4] or None,clean(vals.get('dc.publisher') or ''),clean(vals.get('dc.identifier.isbn') or ''),clean(vals.get('dc.description.abstract') or vals.get('dc.description') or ''),landing,landing,dl,fmt,'download_available' if dl else 'open_access','',clean(vals.get('dc.language') or ''),extra={'bitstreams':bits}))
+        return out
+    except Exception as exc:
+        logger.warning('DOAB book search failed: %s',exc); return []
+
+def research_books_gutenberg(query, limit=10):
+    q=clean(query)
+    if not q: return []
+    try:
+        r=requests.get('https://www.gutenberg.org/ebooks/search.opds/',params={'query':q},timeout=8,headers={'User-Agent':'KOJA-AFRICA Research Books/1.0'})
+        if not r.ok: return []
+        root=ET.fromstring(r.content); out=[]; ns={'a':'http://www.w3.org/2005/Atom'}
+        for e in root.findall('a:entry',ns)[:max(1,min(int(limit or 10),20))]:
+            title=clean(e.findtext('a:title','',ns)); landing=''; authors=[]
+            for a in e.findall('a:author',ns):
+                nm=clean(a.findtext('a:name','',ns))
+                if nm: authors.append(nm)
+            for l in e.findall('a:link',ns):
+                href=_book_clean_url(l.attrib.get('href','')); rel=l.attrib.get('rel','')
+                if rel=='alternate' and href: landing=href
+                if not landing and href and '/ebooks/' in href and 'search.opds' not in href: landing=href
+            m=re.search(r'/ebooks/(\d+)',landing); eid=m.group(1) if m else ''
+            if not title or not landing: continue
+            out.append(_book_result('Project Gutenberg',eid,title,authors,None,'','','Free eBook record; check local copyright law.',landing,landing,'','','download_available',extra={'canonical_landing':landing}))
+        return out
+    except Exception as exc:
+        logger.warning('Project Gutenberg search failed: %s',exc); return []
+
+def research_books_collect(query, source='all', limit=12):
+    source=clean(source or 'all').lower(); funcs=[]
+    if source in ('all','openlibrary'): funcs.append(research_books_openlibrary)
+    if source in ('all','google'): funcs.append(research_books_google)
+    if source in ('all','doab'): funcs.append(research_books_doab)
+    if source in ('all','gutenberg'): funcs.append(research_books_gutenberg)
+    out=[]
+    for fn in funcs: out.extend(fn(query,max(3,min(12,int(limit or 12)))))
+    seen=set(); ded=[]
+    for x in out:
+        key=(clean(x.get('source')).lower(),clean(x.get('external_id')).lower(),re.sub(r'\W+',' ',clean(x.get('title')).lower()).strip())
+        if key in seen: continue
+        seen.add(key); ded.append(x)
+    return ded[:max(1,min(50,int(limit or 12)))]
+
+@app.route('/research/books')
+@login_required
+def research_books():
+    q=clean(request.args.get('q','')); source=clean(request.args.get('source','all')).lower() or 'all'; results=research_books_collect(q,source,30) if q else []
+    return render_page('Research Books', r'''
+<style>
+.books-shell{max-width:1100px;margin:auto}.books-search{display:grid;grid-template-columns:1fr 180px auto;gap:9px}.books-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:12px;margin-top:15px}.book-card{position:relative}.book-cover{width:88px;height:120px;object-fit:cover;border-radius:8px;background:rgba(127,127,127,.12);float:left;margin:0 14px 10px 0}.book-card:after{content:"";display:block;clear:both}.book-source{font-size:.76rem;font-weight:800;opacity:.75}.book-meta{font-size:.82rem;opacity:.72}.book-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:12px}.book-access{display:inline-block;padding:4px 8px;border-radius:999px;font-size:.72rem;font-weight:800;background:rgba(80,150,255,.12)}.books-note{font-size:.83rem;opacity:.75}.books-tabs{display:flex;gap:8px;overflow:auto;margin:12px 0}.books-tabs a{white-space:nowrap}@media(max-width:700px){.books-search{grid-template-columns:1fr}.book-card{padding:15px}}
+</style>
+<div class="books-shell"><div class="hero"><h2>KOJA Research Books</h2><p>Search books across library catalogs, open-access scholarly books and free eBook collections.</p><div class="books-tabs"><a class="btn secondary" href="{{ url_for('research') }}">Research</a><a class="btn secondary" href="{{ url_for('research_books_library') }}">My Book Library</a></div><form method="get" class="books-search"><input name="q" value="{{ q }}" placeholder="Book title, author, ISBN or topic" required><select name="source"><option value="all" {% if source=='all' %}selected{% endif %}>All book sources</option><option value="openlibrary" {% if source=='openlibrary' %}selected{% endif %}>Open Library</option><option value="google" {% if source=='google' %}selected{% endif %}>Google Books</option><option value="doab" {% if source=='doab' %}selected{% endif %}>DOAB</option><option value="gutenberg" {% if source=='gutenberg' %}selected{% endif %}>Project Gutenberg</option></select><button class="btn" type="submit">Search Books</button></form></div>
+<p class="books-note">Availability labels come from the source. KOJA only exposes source-provided public/open routes; it does not bypass DRM, paywalls or access controls.</p>
+{% if q %}<div class="books-grid">{% for b in results %}<div class="card book-card">{% if b.cover_url %}<img class="book-cover" src="{{ b.cover_url }}" alt="Book cover" loading="lazy">{% endif %}<div class="book-source">{{ b.source }}</div><h3>{{ b.title }}</h3><div class="book-meta">{% if b.authors %}{{ b.authors|join(', ') }}{% endif %}{% if b.year %} · {{ b.year }}{% endif %}{% if b.publisher %} · {{ b.publisher }}{% endif %}</div><span class="book-access">{{ b.access|replace('_',' ')|title }}</span>{% if b.isbn %}<div class="book-meta">ISBN: {{ b.isbn }}</div>{% endif %}<p>{{ b.description[:500] }}</p><div class="book-actions">{% if b.landing_url %}<a class="btn secondary" href="{{ b.landing_url }}" target="_blank" rel="noopener">Open Source</a>{% endif %}{% if b.preview_url and b.preview_url != b.landing_url %}<a class="btn secondary" href="{{ b.preview_url }}" target="_blank" rel="noopener">Preview</a>{% endif %}{% if b.download_url %}<a class="btn" href="{{ b.download_url }}" target="_blank" rel="noopener" download>Download {{ b.download_format|upper or 'File' }}</a>{% elif b.access=='download_available' %}<a class="btn" href="{{ b.landing_url }}" target="_blank" rel="noopener">Open Download Page</a>{% endif %}<form method="post" action="{{ url_for('research_books_save') }}" style="display:inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="book" value='{{ b|tojson|forceescape }}'><button class="btn secondary" type="submit">Save</button></form></div></div>{% else %}<div class="card"><h3>No books found</h3><p>Try the title, author, ISBN or a broader topic.</p></div>{% endfor %}</div>{% else %}<div class="card"><h3>Search the book universe</h3><p>Examples: educational psychology, physics, adolescent development, ISBN, or an author's name.</p></div>{% endif %}</div>
+''',q=q,source=source,results=results)
+
+@app.route('/research/books/save',methods=['POST'])
+@login_required
+def research_books_save():
+    raw=request.form.get('book','')
+    try: book=json.loads(raw)
+    except Exception: return jsonify(ok=False,error='Invalid book record.'),400
+    uid=str((current_user() or {}).get('id') or '')
+    if not uid or not clean(book.get('title')): return jsonify(ok=False,error='Invalid book.'),400
+    existing=first_row('koja_research_books',{'user_id':uid,'source':clean(book.get('source')),'external_id':clean(book.get('external_id'))})
+    if not existing:
+        row,err=db_insert('koja_research_books',{'user_id':uid,'source':clean(book.get('source')),'external_id':clean(book.get('external_id')),'title':clean(book.get('title')),'authors':book.get('authors') or [],'year':book.get('year'),'publisher':clean(book.get('publisher')),'isbn':clean(book.get('isbn')),'landing_url':_book_clean_url(book.get('landing_url')),'preview_url':_book_clean_url(book.get('preview_url')),'download_url':_book_clean_url(book.get('download_url')),'download_format':clean(book.get('download_format')),'access':clean(book.get('access')),'cover_url':_book_clean_url(book.get('cover_url')),'language':clean(book.get('language')),'metadata':book.get('extra') or {},'created_at':utc_now(),'updated_at':utc_now()})
+        if err: flash('Book could not be saved. Run the Research Books migration first.','error')
+        else: flash('Book saved to My Book Library.','success')
+    else: flash('Book is already in My Book Library.','success')
+    return redirect(request.referrer or url_for('research_books_library'))
+
+@app.route('/research/books/library')
+@login_required
+def research_books_library():
+    uid=str((current_user() or {}).get('id') or '')
+    books=db_select('koja_research_books',{'user_id':uid},order='created_at.desc',limit=100) or []
+    return render_page('My Book Library',r'''
+<div class="hero"><h2>My Book Library</h2><p>Saved research books and source links.</p><a class="btn secondary" href="{{ url_for('research_books') }}">Search Books</a></div><div class="grid">{% for b in books %}<div class="card"><h3>{{ b.title }}</h3><p>{{ (b.authors or [])|join(', ') }}{% if b.year %} · {{ b.year }}{% endif %}</p><p class="small">{{ b.source }} · {{ (b.access or 'metadata')|replace('_',' ')|title }}</p><div class="actions">{% if b.landing_url %}<a class="btn secondary" href="{{ b.landing_url }}" target="_blank" rel="noopener">Open Source</a>{% endif %}{% if b.download_url %}<a class="btn" href="{{ b.download_url }}" target="_blank" rel="noopener" download>Download {{ b.download_format|upper or 'File' }}</a>{% endif %}</div></div>{% else %}<div class="card"><h3>No saved books</h3><p>Search Research Books and save titles here.</p></div>{% endfor %}</div>
+''',books=books)
 
 @app.route('/research')
 def research():
@@ -2206,7 +2334,7 @@ def research():
 </style>
 <div class="research-shell"><div class="research-welcome"><h2> What would you like to research?</h2><p>Ask a full question, attach a document, or use your voice. KOJA Research searches web, academic literature, Wikipedia and your KOJA documents, then brings the evidence together.</p></div><div class="hero"><form method="get" action="{{ url_for('research') }}" class="research-search" id="research-composer"><textarea name="q" rows="3" maxlength="2000" placeholder="Ask anything you want to research…" aria-label="Research question" autofocus>{{ q }}</textarea><div class="research-composer-bottom"><div class="research-composer-actions"><label class="btn secondary research-icon" title="Attach a document" aria-label="Attach a document"><input id="research-file" type="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp" hidden></label><button class="btn secondary research-icon" id="research-record" type="button" title="Record voice" aria-label="Record voice">️</button><span class="research-recording" id="research-recording">● Recording…</span><span class="research-file-name" id="research-file-name"></span></div><button class="btn research-send" type="submit" title="Send research question" aria-label="Send research question"></button></div></form>
 <script>(function(){const box=document.querySelector('#research-composer textarea[name="q"]');const file=document.getElementById('research-file');const name=document.getElementById('research-file-name');const rec=document.getElementById('research-record');const recLabel=document.getElementById('research-recording');let media=null,chunks=[];if(box){const grow=()=>{box.style.height='auto';box.style.height=Math.min(box.scrollHeight,280)+'px'};box.addEventListener('input',grow);grow()}if(file){file.addEventListener('change',()=>{name.textContent=file.files&&file.files[0]?file.files[0].name:''})}if(rec&&navigator.mediaDevices&&window.MediaRecorder){rec.addEventListener('click',async()=>{if(media){media.stop();return}try{const stream=await navigator.mediaDevices.getUserMedia({audio:true});media=new MediaRecorder(stream);chunks=[];media.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};media.onstop=()=>{const blob=new Blob(chunks,{type:'audio/webm'});const url=URL.createObjectURL(blob);name.textContent='Voice recording ready ('+Math.round(blob.size/1024)+' KB)';const a=document.createElement('a');a.href=url;a.download='koja-research-question.webm';a.style.display='none';document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(url);a.remove()},1000);stream.getTracks().forEach(t=>t.stop());media=null;rec.textContent='️';recLabel.style.display='none'};media.start();rec.textContent='⏹️';recLabel.style.display='inline';}catch(e){alert('Microphone permission is required to record.')}})}})();</script><div class="research-filters"><label>Source<select name="source" form="research-filter-form"><option value="all" {% if source_filter=='all' %}selected{% endif %}>All sources</option><option value="academic" {% if source_filter=='academic' %}selected{% endif %}>Academic</option><option value="web" {% if source_filter=='web' %}selected{% endif %}>Web</option><option value="wikipedia" {% if source_filter=='wikipedia' %}selected{% endif %}>Wikipedia</option><option value="koja" {% if source_filter=='koja' %}selected{% endif %}>KOJA Documents</option></select></label><label>Year<input name="year" form="research-filter-form" value="{{ year or '' }}" placeholder="e.g. 2025" inputmode="numeric"></label><label>Author<input name="author" form="research-filter-form" value="{{ author }}" placeholder="Academic author"></label><label>Citation style<select name="style" form="research-filter-form">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Source type<select name="source_type" form="research-filter-form"><option value="all">All source types</option>{% for k,v in source_types.items() %}<option value="{{k}}" {% if source_type==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Sort<select name="sort" form="research-filter-form"><option value="relevance" {% if sort=='relevance' %}selected{% endif %}>Relevance</option><option value="date" {% if sort=='date' %}selected{% endif %}>Newest first</option><option value="citations" {% if sort=='citations' %}selected{% endif %}>Most cited</option></select></label></div><form id="research-filter-form" method="get" action="{{ url_for('research') }}"><input type="hidden" name="q" value="{{ q }}"></form></div>
-{% if q %}<div class="note-actions"><a class="btn" href="{{ url_for('research_notes',q=q,style=style) }}"> Write Research Notes</a><a class="btn secondary" href="{{ url_for('research') }}">＋ New research</a></div><div class="research-tabs"><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}"> Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}"> Web</a><a class="btn secondary" href="https://www.google.com/search?q={{ q|urlencode }}" target="_blank" rel="noopener"> Google</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}"> KOJA Documents</a></div><div class="card"><span class="research-count">{{ results|length }} ranked sources</span> found for <strong>“{{ q }}”</strong><p class="small" style="margin-top:8px">KOJA combines multiple research angles, academic literature, web sources and KOJA Documents; it removes duplicates, filters weak matches, ranks evidence and then uses KOJA AI to synthesize the strongest evidence.</p></div>{% if summary %}<div class="card research-summary"><div class="research-answer-label"> KOJA Research Answer</div><pre>{{ summary }}</pre><p class="small">AI summaries use configured AI credentials when available; otherwise KOJA shows source-based highlights. Verify important claims against original sources.</p></div>{% endif %}{% for r in results %}<div class="card research-result"><span class="source-badge">{{ r.source }}</span><h3><a href="{{ r.url or '#' }}" {% if r.url %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a></h3>{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p><p><strong>In-text:</strong> {{ make_intext(r,style,loop.index) }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open original source ↗</a>{% endif %}</div>{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endfor %}{% if bibliography %}<div class="card"><h2>References</h2><p class="small">Generated from available source metadata. Verify against the original source.</p>{% for n,ref in bibliography %}<p style="padding-left:28px;text-indent:-28px;line-height:1.6">{{ ref|safe }}</p>{% endfor %}</div>{% endif %}{% else %}<div class="grid"><div class="card"><h3> Research Discovery</h3><p>KOJA searches across multiple research sources and filters weak or unrelated matches.</p></div><div class="card"><h3> Academic Search</h3><p>OpenAlex and Crossref provide scholarly metadata, authors, years and citation information.</p></div><div class="card"><h3> KOJA Documents</h3><p>Search documents already connected to your KOJA Supabase database.</p></div><div class="card"><h3> AI Research Summary</h3><p>Configure an AI API key to synthesize retrieved evidence with source-number citations.</p></div></div>{% endif %}</div>
+{% if q %}<div class="note-actions"><a class="btn" href="{{ url_for('research_notes',q=q,style=style) }}"> Write Research Notes</a><a class="btn secondary" href="{{ url_for('research') }}">＋ New research</a></div><div class="research-tabs"><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}"> Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}"> Web</a><a class="btn secondary" href="https://www.google.com/search?q={{ q|urlencode }}" target="_blank" rel="noopener"> Google</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}"> KOJA Documents</a><a class="btn secondary" href="{{ url_for('research_books') }}">Books</a></div><div class="card"><span class="research-count">{{ results|length }} ranked sources</span> found for <strong>“{{ q }}”</strong><p class="small" style="margin-top:8px">KOJA combines multiple research angles, academic literature, web sources and KOJA Documents; it removes duplicates, filters weak matches, ranks evidence and then uses KOJA AI to synthesize the strongest evidence.</p></div>{% if summary %}<div class="card research-summary"><div class="research-answer-label"> KOJA Research Answer</div><pre>{{ summary }}</pre><p class="small">AI summaries use configured AI credentials when available; otherwise KOJA shows source-based highlights. Verify important claims against original sources.</p></div>{% endif %}{% for r in results %}<div class="card research-result"><span class="source-badge">{{ r.source }}</span><h3><a href="{{ r.url or '#' }}" {% if r.url %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a></h3>{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p><p><strong>In-text:</strong> {{ make_intext(r,style,loop.index) }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open original source ↗</a>{% endif %}</div>{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endfor %}{% if bibliography %}<div class="card"><h2>References</h2><p class="small">Generated from available source metadata. Verify against the original source.</p>{% for n,ref in bibliography %}<p style="padding-left:28px;text-indent:-28px;line-height:1.6">{{ ref|safe }}</p>{% endfor %}</div>{% endif %}{% else %}<div class="grid"><div class="card"><h3> Research Discovery</h3><p>KOJA searches across multiple research sources and filters weak or unrelated matches.</p></div><div class="card"><h3> Academic Search</h3><p>OpenAlex and Crossref provide scholarly metadata, authors, years and citation information.</p></div><div class="card"><h3> KOJA Documents</h3><p>Search documents already connected to your KOJA Supabase database.</p></div><div class="card"><h3> AI Research Summary</h3><p>Configure an AI API key to synthesize retrieved evidence with source-number citations.</p></div></div>{% endif %}</div>
 ''',q=q,results=results,summary=summary,source_filter=source_filter,sort=sort,year=year,author=author,style=style,source_type=source_type,citation_styles=CITATION_STYLES,source_types=SOURCE_TYPES,bibliography=bibliography,make_intext=make_intext,SITE_URL=SITE_URL)
 
 
