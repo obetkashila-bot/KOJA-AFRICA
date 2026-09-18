@@ -6627,7 +6627,16 @@ def notify_user(uid,title,body,notification_type='system',related_id=None,url=No
     if not uid or not _notification_allowed(uid,notification_type): return None
     row,err=db_insert('koja_notifications',{'user_id':str(uid),'notification_type':notification_type,'title':title,'body':body,'related_id':related_id,'is_read':False,'created_at':utc_now()})
     if not err and row:
-        _send_web_push(uid,title,body,url,notification_type)
+        # Send through the existing native FCM relay as well as optional web push.
+        # Native Android push must not depend on VAPID/web-push configuration.
+        try:
+            _send_native_fcm(uid,title,body,url,notification_type,related_id)
+        except Exception:
+            logger.exception('KOJA native FCM notification failed')
+        try:
+            _send_web_push(uid,title,body,url,notification_type,related_id)
+        except Exception:
+            logger.exception('KOJA web push notification failed')
         try:
             u=find_user_by_id(uid) or {}
             email=clean(u.get('email'))
@@ -6662,7 +6671,7 @@ def notifications_page():
 @login_required
 def notification_settings():
     uid=str(current_user()['id']); p=first_row('koja_notification_preferences',{'user_id':uid}) or {}
-    return render_page('Notification Settings',"""<div class='card'><h2>Notification Settings</h2><p>Choose what KOJA can notify you about.</p><form id='np'><label><input type='checkbox' name='push_enabled' {% if p.get('push_enabled',True) %}checked{% endif %}> Push notifications</label><label><input type='checkbox' name='sound_enabled' {% if p.get('sound_enabled',True) %}checked{% endif %}> Notification sound</label><label><input type='checkbox' name='market_enabled' {% if p.get('market_enabled',True) %}checked{% endif %}> Market and orders</label><label><input type='checkbox' name='delivery_enabled' {% if p.get('delivery_enabled',True) %}checked{% endif %}> Deliveries and drivers</label><label><input type='checkbox' name='ai_enabled' {% if p.get('ai_enabled',True) %}checked{% endif %}> KOJA AI</label><label><input type='checkbox' name='messages_enabled' {% if p.get('messages_enabled',True) %}checked{% endif %}> Messages and calls</label><label><input type='checkbox' name='system_enabled' {% if p.get('system_enabled',True) %}checked{% endif %}> System and account</label><button class='btn' type='submit'>Save settings</button></form><hr><button class='btn secondary' type='button' onclick='enableKOJAPush()'>Enable phone/browser notifications</button><p id='push-status' class='small'></p></div><script>const form=document.getElementById('np');form.onsubmit=async e=>{e.preventDefault();let o={};new FormData(form).forEach((v,k)=>o[k]=true);let r=await fetch('/api/notifications/preferences',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)});document.getElementById('push-status').textContent=r.ok?'Saved.':'Could not save settings.'};async function enableKOJAPush(){if(!('Notification'in window)){document.getElementById('push-status').textContent='This browser does not support notifications.';return}let perm=await Notification.requestPermission();if(perm!=='granted'){document.getElementById('push-status').textContent='Notification permission was not granted.';return}if(!('serviceWorker'in navigator)){document.getElementById('push-status').textContent='Service workers are not supported here.';return}let reg=await navigator.serviceWorker.register('/koja-sw.js');let key=await fetch('/api/notifications/vapid-public-key').then(r=>r.text());if(!key){document.getElementById('push-status').textContent='Push service is not configured yet.';return}let sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:base64ToUint8(key)});await fetch('/api/notifications/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sub)});document.getElementById('push-status').textContent='Phone/browser notifications enabled.'}function base64ToUint8(b){let p='='.repeat((4-b.length%4)%4),s=atob((b+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from([...s].map(c=>c.charCodeAt(0)))}</script>""",p=p)
+    return render_page('Notification Settings',"""<div class='card'><h2>Notification Settings</h2><p>Choose what KOJA can notify you about.</p><form id='np'><label><input type='checkbox' name='push_enabled' {% if p.get('push_enabled',True) %}checked{% endif %}> Push notifications</label><label><input type='checkbox' name='sound_enabled' {% if p.get('sound_enabled',True) %}checked{% endif %}> Notification sound</label><label><input type='checkbox' name='market_enabled' {% if p.get('market_enabled',True) %}checked{% endif %}> Market and orders</label><label><input type='checkbox' name='delivery_enabled' {% if p.get('delivery_enabled',True) %}checked{% endif %}> Deliveries and drivers</label><label><input type='checkbox' name='ai_enabled' {% if p.get('ai_enabled',True) %}checked{% endif %}> KOJA AI</label><label><input type='checkbox' name='messages_enabled' {% if p.get('messages_enabled',True) %}checked{% endif %}> Messages and calls</label><label><input type='checkbox' name='system_enabled' {% if p.get('system_enabled',True) %}checked{% endif %}> System and account</label><button class='btn' type='submit'>Save settings</button></form><hr><button class='btn secondary' type='button' onclick='enableKOJAPush()'>Enable phone/browser notifications</button><p id='push-status' class='small'></p></div><script>const form=document.getElementById('np');form.onsubmit=async e=>{e.preventDefault();let o={};new FormData(form).forEach((v,k)=>o[k]=true);let r=await fetch('/api/notifications/preferences',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)});document.getElementById('push-status').textContent=r.ok?'Saved.':'Could not save settings.'};async function enableKOJAPush(){try{let st=await fetch('/api/notifications/push-status').then(r=>r.json());if(st.native_push_configured&&st.native_devices>0){document.getElementById('push-status').textContent='KOJA phone push is enabled on this device.';return}if(!('Notification'in window)){document.getElementById('push-status').textContent='Native phone push is not registered yet. Browser notifications are not supported here.';return}let perm=await Notification.requestPermission();if(perm!=='granted'){document.getElementById('push-status').textContent='Notification permission was not granted.';return}if(!('serviceWorker'in navigator)){document.getElementById('push-status').textContent='Native phone push is not registered yet.';return}let reg=await navigator.serviceWorker.register('/koja-sw.js');let key=await fetch('/api/notifications/vapid-public-key').then(r=>r.text());if(!key){document.getElementById('push-status').textContent='KOJA phone push is handled by the Android app; web push is not configured.';return}let sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:base64ToUint8(key)});await fetch('/api/notifications/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sub)});document.getElementById('push-status').textContent='Phone/browser notifications enabled.'}catch(e){document.getElementById('push-status').textContent='Could not enable notifications.'}}function base64ToUint8(b){let p='='.repeat((4-b.length%4)%4),s=atob((b+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from([...s].map(c=>c.charCodeAt(0)))}</script>""",p=p)
 
 @app.route('/api/notifications')
 @login_required
@@ -6717,6 +6726,16 @@ def api_push_status():
     relay=bool((os.getenv('FCM_RELAY_URL') or os.getenv('KOJA_FCM_RELAY_URL') or os.getenv('PUSH_RELAY_URL') or os.getenv('FCM_RELAY_ENDPOINT') or '').strip() and os.getenv('FCM_RELAY_SECRET','').strip())
     web=bool(os.getenv('VAPID_PUBLIC_KEY','').strip() and os.getenv('VAPID_PRIVATE_KEY','').strip())
     return jsonify(native_push_configured=relay,native_devices=len(devices),web_push_configured=web)
+
+@app.route('/api/notifications/test-native-push',methods=['POST'])
+@login_required
+def api_test_native_push():
+    uid=str(current_user()['id'])
+    devices=db_select('koja_fcm_devices',filters={'user_id':uid},limit=20) if table_exists('koja_fcm_devices') else []
+    if not devices:
+        return jsonify(ok=False,error='No Android FCM device is registered for this account'),400
+    sent=_send_native_fcm(uid,'KOJA Push Test','KOJA phone push is working.','/notifications','system',None)
+    return jsonify(ok=sent>0,sent=sent,devices=len(devices))
 
 @app.route('/api/notifications/vapid-public-key')
 @login_required
@@ -7127,7 +7146,8 @@ def connect_call_slash():
         members=db_select('koja_conversation_members',filters={'conversation_id':cid},limit=20)
         other=next((m for m in members if str(m.get('user_id'))!=uid),None)
         target=clean(other.get('user_id')) if other else ''
-    if not target or target==uid or not find_user_by_id(target) or mode not in ('voice','video'): return redirect(url_for('connect'))
+    if not target or target==uid or not find_user_by_id(target) or mode not in ('voice','video'):
+        return render_page('KOJA Call', r'''<div class="card"><h2>KOJA Call</h2><p>Select a person from Connect to start a voice or video call.</p><a class="btn" href="{{ url_for('connect') }}">Open Connect</a><a class="btn secondary" href="{{ url_for('connect_calls') }}">Call History</a></div>''')
     return redirect(url_for('connect_call',user_id=target,mode=mode))
 
 @app.route('/connect/call/<user_id>')
