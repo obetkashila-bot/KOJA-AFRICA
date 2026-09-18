@@ -7877,7 +7877,7 @@ def business_module_dispatch(business_id, module_key):
         'suppliers':'business_suppliers','invoices':'business_invoices',
         'employees':'business_employees','payroll':'business_payroll',
         'store':'business_store','online-store':'business_store',
-        'commerce':'business_commerce','orders':'business_commerce_orders',
+        'commerce':'business_commerce','orders':'business_commerce_orders','commerce-orders':'business_commerce_orders',
         'ai':'business_ai','intelligence':'business_intelligence_v3',
         'payments':'business_payments','delivery':'business_delivery',
         'engines':'business_core_status','core':'business_core_status',
@@ -8192,7 +8192,7 @@ def business_store_public(slug):
     store=first_row('koja_business_stores',{'slug':slug,'published':True})
     if not store:abort(404)
     products=db_select('koja_business_products',{'business_id':store.get('business_id'),'active':True},limit=300) or []
-    return render_page(store.get('store_name') or 'KOJA Store',"""<div class='hero'><h1>{{ store.store_name }}</h1><p>{{ store.description }}</p></div><div class='grid'>{% for p in products %}<div class='card'><h3>{{ p.name }}</h3><p>SKU: {{ p.sku or '—' }}</p><h2>{{ money(p.selling_price,'ZMW') }}</h2><p>Stock: {{ p.stock }}</p><p>{% if (p.product_type or 'physical') == 'digital' %}<strong>Digital — no delivery</strong>{% elif p.delivery_available %}<strong>KOJA Delivery or Self Pickup</strong>{% else %}<strong>Self Pickup</strong>{% endif %}</p><a class='btn' href='{{ url_for('business_store_buy',slug=store.slug,product_id=p.id) }}'>Buy</a></div>{% else %}<div class='card'><p>No products listed.</p></div>{% endfor %}</div>""",store=store,products=products,money=market_money)
+    return render_page(store.get('store_name') or 'KOJA Store',"""<div class='hero'><h1>{{ store.store_name }}</h1><p>{{ store.description }}</p></div><div class='grid'>{% for p in products %}<div class='card'><h3>{{ p.name }}</h3><p>SKU: {{ p.sku or '—' }}</p><h2>{{ money(p.selling_price,'ZMW') }}</h2><p>Stock: {{ p.stock }}</p><p>{% if (p.product_type or 'physical') == 'digital' %}<strong>Digital — no delivery</strong>{% elif p.delivery_available %}<strong>KOJA Delivery or Self Pickup</strong>{% else %}<strong>Self Pickup</strong>{% endif %}</p>{% if (p.stock or 0)|int > 0 or (p.product_type or 'physical') == 'digital' %}<a class='btn' href='{{ url_for('business_store_buy',slug=store.slug,product_id=p.id) }}'>Buy</a>{% else %}<span class='btn secondary'>Out of stock</span>{% endif %}</div>{% else %}<div class='card'><p>No products listed.</p></div>{% endfor %}</div>""",store=store,products=products,money=market_money)
 
 @app.route('/business/<business_id>/ai',methods=['GET','POST'])
 @login_required
@@ -8566,7 +8566,31 @@ def business_commerce_orders(business_id):
         return redirect(url_for('business_commerce_orders',business_id=business_id))
     orders=db_select('koja_business_orders',{'business_id':business_id},order='created_at.desc',limit=500) or []
     products={str(x.get('id')):x for x in (db_select('koja_business_products',{'business_id':business_id},limit=500) or [])}
-    return render_page('Business Commerce Orders',r'''<div class="hero"><h1>{{ b.name }} — Customer Orders</h1><p>One control panel for paid, processing, completed and cancelled business purchases.</p></div><div class="card"><table><tr><th>Order</th><th>Item</th><th>Amount</th><th>Fulfilment</th><th>Status</th><th>Update</th></tr>{% for o in orders %}<tr><td>{{ o.id }}</td><td>{{ products.get(o.product_id|string,{}).get('name','Product') }}</td><td>{{ money(o.total_amount,'ZMW') }}</td><td>{{ o.fulfillment_method }}</td><td>{{ o.status }}</td><td><form method="post" style="display:flex;gap:6px"><input type="hidden" name="order_id" value="{{ o.id }}"><select name="status"><option>{{ o.status }}</option><option>processing</option><option>completed</option><option>cancelled</option><option>refunded</option></select><button class="btn">Update</button></form></td></tr>{% else %}<tr><td colspan="6">No customer orders yet.</td></tr>{% endfor %}</table></div>''',b=b,orders=orders,products=products,money=market_money)
+    return render_page('Business Commerce Orders',r'''<div class="hero"><h1>{{ b.name }} — Customer Orders</h1><p>One control panel for paid, processing, completed and cancelled business purchases.</p></div><div class="card"><table><tr><th>Order</th><th>Item</th><th>Amount</th><th>Fulfilment</th><th>Status</th><th>Update</th></tr>{% for o in orders %}<tr><td><a href='{{ url_for('business_commerce_order_detail',business_id=b.id,order_id=o.id) }}'>{{ o.id }}</a></td><td>{{ products.get(o.product_id|string,{}).get('name','Product') }}</td><td>{{ money(o.total_amount,'ZMW') }}</td><td>{{ o.fulfillment_method }}</td><td>{{ o.status }}</td><td><form method="post" style="display:flex;gap:6px"><input type="hidden" name="order_id" value="{{ o.id }}"><select name="status"><option>{{ o.status }}</option><option>processing</option><option>completed</option><option>cancelled</option><option>refunded</option></select><button class="btn">Update</button></form></td></tr>{% else %}<tr><td colspan="6">No customer orders yet.</td></tr>{% endfor %}</table></div>''',b=b,orders=orders,products=products,money=market_money)
+
+@app.route('/business/<business_id>/commerce/order/<order_id>')
+@login_required
+def business_commerce_order_detail(business_id, order_id):
+    b=_biz_owner(business_id)
+    if not b: abort(404)
+    order=first_row('koja_business_orders',{'id':order_id,'business_id':business_id})
+    if not order: abort(404)
+    product=first_row('koja_business_products',{'id':order.get('product_id'),'business_id':business_id}) or {}
+    buyer=first_row('profiles',{'id':order.get('buyer_id')}) or {}
+    return render_page('Business Order',r'''<div class="hero"><h1>{{ b.name }} — Order</h1><p>Customer commerce order and fulfilment control.</p><div class="actions"><a class="btn secondary" href="{{ url_for('business_commerce_orders',business_id=b.id) }}">All Orders</a><a class="btn secondary" href="{{ url_for('business_commerce_hub',business_id=b.id) }}">Commerce Hub</a></div></div><div class="grid"><div class="card"><h3>Order</h3><p><strong>ID:</strong> {{ order.id }}</p><p><strong>Status:</strong> {{ order.status }}</p><p><strong>Created:</strong> {{ order.created_at }}</p><p><strong>Payment:</strong> {{ order.payment_transaction_id or order.payment_reference or 'Pending' }}</p></div><div class="card"><h3>Customer</h3><p><strong>Name:</strong> {{ buyer.full_name or buyer.name or 'Customer' }}</p><p><strong>Email:</strong> {{ buyer.email or '—' }}</p><p><strong>Phone:</strong> {{ order.recipient_phone or '—' }}</p></div><div class="card"><h3>Item</h3><p><strong>{{ product.name or 'Product' }}</strong></p><p>Quantity: {{ order.quantity }}</p><p>Total: {{ money(order.total_amount,'ZMW') }}</p><p>Fulfilment: {{ order.fulfillment_method }}</p></div></div><div class="card"><h2>Update order</h2><form method="post" action="{{ url_for('business_commerce_orders',business_id=b.id) }}"><input type="hidden" name="order_id" value="{{ order.id }}"><select name="status"><option value="{{ order.status }}">{{ order.status }}</option><option>processing</option><option>completed</option><option>cancelled</option><option>refunded</option></select><button class="btn">Save status</button></form>{% if order.delivery_address %}<p><strong>Delivery address:</strong> {{ order.delivery_address }}</p>{% endif %}</div>''',b=b,order=order,product=product,buyer=buyer,money=market_money)
+
+@app.route('/business/<business_id>/commerce/product/<product_id>/stock', methods=['POST'])
+@login_required
+def business_commerce_stock(business_id, product_id):
+    b=_biz_owner(business_id)
+    if not b: abort(404)
+    product=first_row('koja_business_products',{'id':product_id,'business_id':business_id})
+    if not product: abort(404)
+    try: stock=max(0,int(request.form.get('stock') or 0))
+    except Exception: stock=int(product.get('stock') or 0)
+    _,err=db_update('koja_business_products',{'id':product_id},{'stock':stock,'updated_at':utc_now()})
+    flash('Stock updated.' if not err else 'Could not update stock.', 'success' if not err else 'danger')
+    return redirect(url_for('business_commerce_hub',business_id=business_id))
 
 @app.route('/business/<business_id>/commerce/product/<product_id>/link')
 @login_required
