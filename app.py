@@ -7885,6 +7885,13 @@ def business_module_dispatch(business_id, module_key):
         'global':'global_business_hub',
     }
     key=(module_key or '').strip().lower()
+    # Commerce Hub must remain directly reachable even if an older deployment
+    # has the dispatcher but has not registered the commerce endpoint yet.
+    if key == 'commerce':
+        commerce_fn = globals().get('business_commerce_hub')
+        if callable(commerce_fn):
+            return commerce_fn(business_id)
+        return render_page('Business Commerce Hub', r'''<div class="hero"><h1>Commerce Hub</h1><p>Customer commerce control for this business.</p></div><div class="card"><p>The Commerce Hub code is not loaded in this deployment. Deploy the latest KOJA Business package.</p><a class="btn" href="{{ url_for('business_dashboard',business_id=b.id) }}">Business Dashboard</a></div>''', b=b)
     endpoint=targets.get(key)
     if not endpoint or endpoint not in app.view_functions:
         flash('This Business module is not available in this deployment yet.', 'danger')
