@@ -1323,9 +1323,15 @@ def research_google(query, limit=8):
     api_key=clean(os.getenv('GOOGLE_SEARCH_API_KEY',''))
     cse_id=clean(os.getenv('GOOGLE_CSE_ID',''))
     if not (api_key and cse_id):
-        return [{'source':'Google Search','title':f'Google results for: {q}',
-                 'url':'https://www.google.com/search?q='+quote(q),
-                 'snippet':'Open Google Search to review live web results for this research query.','year':None,'_google_link':True}]
+        # Google is a backend discovery provider only. Never expose the Google
+        # homepage/search UI inside KOJA Research. If the Programmable Search
+        # credentials are absent, use KOJA's native web discovery as the safe
+        # fallback and render those results in the KOJA interface.
+        fallback = research_web(q, limit) if 'research_web' in globals() else []
+        for item in fallback:
+            item['source'] = 'Web'
+            item['source_type'] = 'website'
+        return fallback
     try:
         r=requests.get('https://www.googleapis.com/customsearch/v1',
                        params={'key':api_key,'cx':cse_id,'q':q,'num':min(max(limit,1),10)},
@@ -1558,7 +1564,6 @@ def _research_obviously_irrelevant(r, query):
     topic_terms=_research_topic_terms(query)
     text=title+' '+snippet
     if not title and not snippet: return True
-    if r.get('_google_link') or (source=='google search' and 'google.com/search' in clean(r.get('url','')).lower()): return True
     if domain=='science':
         negative_title=('album','song','band','film','movie','novel','war','battle','military','telepathy','mind over','materialism','philosophy','philosophical','plab','licensing','football','sport','game','video game','fiction','character','literature','poem','poetry')
         if any(x in title for x in negative_title): return True
@@ -1685,217 +1690,416 @@ def _research_filter(results, source='all', year=None, sort='relevance'):
     else: results.sort(key=lambda r:r.get('_relevance',0),reverse=True)
     return results
 
-# ============================================================
-# KOJA V8 AI ENGINE — MULTI-PROVIDER ROUTER
-# Priority: Gemini -> Groq -> OpenAI -> configured fallbacks.
-# Providers are attempted only when their server-side key exists.
-# ============================================================
-
-_AI_PROVIDER_COOLDOWN = {}
-_AI_PROVIDER_FAILURES = {}
-
-AI_PLAN_LIMITS = {
-    "free": int(os.getenv("AI_FREE_DAILY_REQUESTS", "20")),
-    "starter": int(os.getenv("AI_STARTER_DAILY_REQUESTS", "100")),
-    "basic": int(os.getenv("AI_BASIC_DAILY_REQUESTS", "200")),
-    "pro": int(os.getenv("AI_PRO_DAILY_REQUESTS", "500")),
-    "business": int(os.getenv("AI_BUSINESS_DAILY_REQUESTS", "2000")),
-    "enterprise": int(os.getenv("AI_ENTERPRISE_DAILY_REQUESTS", "10000")),
-}
-AI_MAX_PROVIDER_ATTEMPTS = max(1, int(os.getenv("AI_MAX_PROVIDER_ATTEMPTS", "14")))
-AI_PROVIDER_COOLDOWN_SECONDS = max(5, int(os.getenv("AI_PROVIDER_COOLDOWN_SECONDS", "30")))
-AI_RETRY_TRANSIENT = max(0, int(os.getenv("AI_RETRY_TRANSIENT", "1")))
-AI_DEFAULT_TIMEOUT = max(10, int(os.getenv("AI_DEFAULT_TIMEOUT", "35")))
-
-
-def _ai_provider_specs():
-    """Return providers in the required failover order."""
-    return [
-        {"name":"gemini","kind":"gemini","key":os.getenv("GEMINI_API_KEY","").strip(),"model":os.getenv("GEMINI_MODEL","gemini-2.5-flash").strip(),"endpoint":os.getenv("GEMINI_API_URL","https://generativelanguage.googleapis.com/v1beta").rstrip("/")},
-        {"name":"groq","kind":"chat","key":os.getenv("GROQ_API_KEY","").strip(),"model":os.getenv("GROQ_MODEL","llama-3.3-70b-versatile").strip(),"endpoint":os.getenv("GROQ_API_URL","https://api.groq.com/openai/v1/chat/completions").strip()},
-        {"name":"openai","kind":"responses","key":(os.getenv("OPENAI_API_KEY","") or os.getenv("AI_API_KEY","")).strip(),"model":os.getenv("OPENAI_MODEL",os.getenv("AI_MODEL","gpt-5")).strip(),"endpoint":os.getenv("OPENAI_API_URL",os.getenv("AI_API_URL","https://api.openai.com/v1/responses")).strip()},
-        {"name":"openrouter","kind":"chat","key":os.getenv("OPENROUTER_API_KEY","").strip(),"model":os.getenv("OPENROUTER_MODEL","openai/gpt-oss-20b").strip(),"endpoint":os.getenv("OPENROUTER_API_URL","https://openrouter.ai/api/v1/chat/completions").strip()},
-        {"name":"together","kind":"chat","key":os.getenv("TOGETHER_API_KEY","").strip(),"model":os.getenv("TOGETHER_MODEL","meta-llama/Llama-3.3-70B-Instruct-Turbo").strip(),"endpoint":os.getenv("TOGETHER_API_URL","https://api.together.xyz/v1/chat/completions").strip()},
-        {"name":"mistral","kind":"chat","key":os.getenv("MISTRAL_API_KEY","").strip(),"model":os.getenv("MISTRAL_MODEL","mistral-small-latest").strip(),"endpoint":os.getenv("MISTRAL_API_URL","https://api.mistral.ai/v1/chat/completions").strip()},
-        {"name":"deepseek","kind":"chat","key":os.getenv("DEEPSEEK_API_KEY","").strip(),"model":os.getenv("DEEPSEEK_MODEL","deepseek-chat").strip(),"endpoint":os.getenv("DEEPSEEK_API_URL","https://api.deepseek.com/chat/completions").strip()},
-        {"name":"xai","kind":"chat","key":os.getenv("XAI_API_KEY","").strip(),"model":os.getenv("XAI_MODEL","grok-3-mini").strip(),"endpoint":os.getenv("XAI_API_URL","https://api.x.ai/v1/chat/completions").strip()},
-        {"name":"cerebras","kind":"chat","key":os.getenv("CEREBRAS_API_KEY","").strip(),"model":os.getenv("CEREBRAS_MODEL","llama-3.3-70b").strip(),"endpoint":os.getenv("CEREBRAS_API_URL","https://api.cerebras.ai/v1/chat/completions").strip()},
-        {"name":"fireworks","kind":"chat","key":os.getenv("FIREWORKS_API_KEY","").strip(),"model":os.getenv("FIREWORKS_MODEL","accounts/fireworks/models/llama-v3p1-70b-instruct").strip(),"endpoint":os.getenv("FIREWORKS_API_URL","https://api.fireworks.ai/inference/v1/chat/completions").strip()},
-        {"name":"sambanova","kind":"chat","key":os.getenv("SAMBANOVA_API_KEY","").strip(),"model":os.getenv("SAMBANOVA_MODEL","Meta-Llama-3.3-70B-Instruct").strip(),"endpoint":os.getenv("SAMBANOVA_API_URL","https://api.sambanova.ai/v1/chat/completions").strip()},
-        {"name":"cohere","kind":"cohere","key":os.getenv("COHERE_API_KEY","").strip(),"model":os.getenv("COHERE_MODEL","command-a-03-2025").strip(),"endpoint":os.getenv("COHERE_API_URL","https://api.cohere.com/v2/chat").strip()},
-        {"name":"huggingface","kind":"chat","key":os.getenv("HUGGINGFACE_API_KEY","").strip(),"model":os.getenv("HUGGINGFACE_MODEL","meta-llama/Llama-3.3-70B-Instruct").strip(),"endpoint":os.getenv("HUGGINGFACE_API_URL","https://router.huggingface.co/v1/chat/completions").strip()},
-        {"name":"custom","kind":"chat","key":os.getenv("AI_FALLBACK_API_KEY","").strip(),"model":os.getenv("AI_FALLBACK_MODEL","").strip(),"endpoint":os.getenv("AI_FALLBACK_API_URL","").strip()},
-    ]
-
-
 def _ai_config_status():
-    specs=_ai_provider_specs(); configured=[p for p in specs if p.get("key") and p.get("endpoint") and p.get("model")]; primary=next((p for p in configured),None)
-    return {"configured":bool(configured),"provider":primary["name"] if primary else "none","model":primary.get("model") if primary else "","endpoint":primary.get("endpoint") if primary else "","providers_configured":[p["name"] for p in configured],"provider_count":len(configured),"key_source":(primary["name"]+"_api_key") if primary else "none","key_length":len(primary["key"]) if primary else 0}
+    """Return safe Gemini configuration diagnostics without exposing secrets."""
+    raw_key=(os.getenv("GEMINI_API_KEY") or "").strip()
+    groq_key=(os.getenv("GROQ_API_KEY") or "").strip()
+    openai_key=(os.getenv("OPENAI_API_KEY") or "").strip()
+    model=(os.getenv("GEMINI_MODEL") or "gemini-3.8-flash").strip()
+    fallback=(os.getenv("GEMINI_FALLBACK_MODEL") or "gemini-3.7-flash").strip()
+    base=(os.getenv("GEMINI_API_URL") or "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
+    endpoint=f"{base}/models/{model}:generateContent"
+    return {
+        "configured": bool(raw_key),
+        "provider": "gemini",
+        "endpoint": endpoint,
+        "model": model,
+        "fallback_model": fallback,
+        "key_source": "GEMINI_API_KEY" if raw_key else "none",
+        "key_length": len(raw_key),
+        "groq_configured": bool(groq_key),
+        "groq_model": (os.getenv("GROQ_MODEL") or "groq/compound").strip(),
+        "groq_key_source": "GROQ_API_KEY" if groq_key else "none",
+        "groq_key_length": len(groq_key),
+        "openai_configured": bool(openai_key),
+        "openai_model": (os.getenv("OPENAI_MODEL") or "gpt-5").strip(),
+        "openai_key_source": "OPENAI_API_KEY" if openai_key else "none",
+        "openai_key_length": len(openai_key),
+    }
 
+def _ai_model_candidates():
+    """Build an ordered, duplicate-free model fallback chain from Render env vars.
+    KOJA can survive a retired/unavailable model by trying the next configured model.
+    """
+    def split_env(name):
+        raw=(os.getenv(name) or "").strip()
+        return [x.strip() for x in raw.split(",") if x.strip()]
+    groq=[]
+    groq.extend(split_env("GROQ_MODEL"))
+    groq.extend(split_env("GROQ_FALLBACK_MODELS"))
+    groq.extend([
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+        "qwen/qwen3.6-27b",
+        "qwen/qwen3.8-27b",
+    ])
+    gemini=[]
+    gemini.extend(split_env("GEMINI_MODEL"))
+    gemini.extend(split_env("GEMINI_FALLBACK_MODELS"))
+    gemini.extend([
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
+    ])
+    openai=[]
+    openai.extend(split_env("OPENAI_MODEL"))
+    openai.extend(split_env("OPENAI_FALLBACK_MODELS"))
+    openai.extend(["gpt-5", "gpt-5-mini"])
+    def unique(items):
+        seen=set(); out=[]
+        for x in items:
+            if x and x not in seen:
+                seen.add(x); out.append(x)
+        return out
+    return unique(groq), unique(gemini), unique(openai)
 
-def _ai_provider_available(provider):
-    return datetime.now(timezone.utc).timestamp() >= _AI_PROVIDER_COOLDOWN.get(provider.get("name"),0)
-
-
-def _ai_mark_provider_failure(name,error):
-    if error in {"rate_limited","timeout","network_error","provider_server_error"}:
-        _AI_PROVIDER_COOLDOWN[name]=datetime.now(timezone.utc).timestamp()+AI_PROVIDER_COOLDOWN_SECONDS
-    _AI_PROVIDER_FAILURES[name]=_AI_PROVIDER_FAILURES.get(name,0)+1
-
-
-def _ai_extract_usage(data):
-    u=data.get("usage") or {}; return int(u.get("input_tokens") or u.get("prompt_tokens") or 0),int(u.get("output_tokens") or u.get("completion_tokens") or 0)
-
-
-def _ai_call_provider(provider,prompt,system_prompt,max_output_tokens=900,timeout=None):
-    timeout=timeout or AI_DEFAULT_TIMEOUT; name=provider["name"]; key=provider["key"]; endpoint=provider["endpoint"]; model=provider["model"]
-    headers={"Authorization":"Bearer "+key,"Content-Type":"application/json"}
-    if name=="gemini":
-        endpoint=endpoint+"/models/"+quote(model,safe="")+":generateContent?key="+quote(key,safe="")
-        payload={"systemInstruction":{"parts":[{"text":system_prompt}]},"contents":[{"role":"user","parts":[{"text":prompt}]}],"generationConfig":{"maxOutputTokens":max_output_tokens}}; headers={"Content-Type":"application/json"}
-    elif name=="cohere": payload={"model":model,"messages":[{"role":"system","content":system_prompt},{"role":"user","content":prompt}],"max_tokens":max_output_tokens}
-    elif provider["kind"]=="responses": payload={"model":model,"input":[{"role":"system","content":[{"type":"input_text","text":system_prompt}]},{"role":"user","content":[{"type":"input_text","text":prompt}]}],"max_output_tokens":max_output_tokens,"store":False}
-    else:
-        payload={"model":model,"messages":[{"role":"system","content":system_prompt},{"role":"user","content":prompt}],"max_tokens":max_output_tokens}
-        if name=="openrouter": headers["HTTP-Referer"]=SITE_URL; headers["X-Title"]=APP_NAME
-    try:
-        r=requests.post(endpoint,json=payload,timeout=timeout,headers=headers)
-        if not r.ok:
-            if r.status_code in (401,403): return "","authentication_failed",0,0
-            if r.status_code==404: return "","endpoint_or_model_not_found",0,0
-            if r.status_code==429: return "","rate_limited",0,0
-            if 500<=r.status_code<=599: return "","provider_server_error",0,0
-            return "",f"provider_http_{r.status_code}",0,0
-        data=r.json(); in_tokens=out_tokens=0
-        if name=="gemini":
-            candidates=data.get("candidates") or []; parts=[]
-            if candidates:
-                for part in (candidates[0].get("content") or {}).get("parts") or []:
-                    if part.get("text"): parts.append(part["text"])
-            text=clean("\n".join(parts)); meta=data.get("usageMetadata") or {}; in_tokens=int(meta.get("promptTokenCount") or 0); out_tokens=int(meta.get("candidatesTokenCount") or 0)
-        elif name=="cohere":
-            msg=data.get("message") or {}; content=msg.get("content") or []; text=clean("\n".join(x.get("text","") for x in content if isinstance(x,dict))); meta=data.get("usage") or {}; tok=meta.get("tokens") or {}; in_tokens=int(tok.get("input_tokens") or 0); out_tokens=int(tok.get("output_tokens") or 0)
-        elif provider["kind"]=="responses":
-            text=clean(data.get("output_text") or "")
-            if not text:
-                parts=[]
-                for item in data.get("output") or []:
-                    for content in item.get("content") or []:
-                        if content.get("type") in ("output_text","text") and content.get("text"): parts.append(content["text"])
-                text=clean("\n".join(parts))
-            in_tokens,out_tokens=_ai_extract_usage(data)
-        else:
-            choices=data.get("choices") or []; text=clean(((choices[0].get("message") or {}).get("content")) if choices else ""); in_tokens,out_tokens=_ai_extract_usage(data)
-        return (text,"",in_tokens,out_tokens) if text else ("","empty_provider_response",in_tokens,out_tokens)
-    except requests.Timeout: return "","timeout",0,0
-    except requests.RequestException: return "","network_error",0,0
-    except Exception: return "","invalid_provider_response",0,0
-
-
-def _ai_usage_limit(user_id):
-    if not user_id: return int(os.getenv("AI_ANONYMOUS_DAILY_REQUESTS","10"))
-    sub=first_row("koja_ai_subscriptions",{"user_id":user_id}) or {}; plan=clean(sub.get("plan") or "free").lower(); status=clean(sub.get("status") or "active").lower(); expires=clean(sub.get("expires_at"))
-    if plan!="free" and status not in ("active","paid","trialing"): plan="free"
-    if plan!="free" and expires:
+def _openai_call(prompt, system_prompt, max_output_tokens=8192, timeout=20):
+    """OpenAI Responses API fallback for KOJA AI."""
+    api_key=(os.getenv("OPENAI_API_KEY") or "").strip()
+    if not api_key:
+        return "", "missing_openai_api_key"
+    _,_,models=_ai_model_candidates()
+    for model in models:
+        payload={"model":model,"instructions":system_prompt,"input":prompt,"max_output_tokens":max_output_tokens}
         try:
-            if datetime.fromisoformat(expires.replace("Z","+00:00"))<datetime.now(timezone.utc): plan="free"
-        except Exception: pass
-    return AI_PLAN_LIMITS.get(plan,AI_PLAN_LIMITS["free"])
+            r=requests.post("https://api.openai.com/v1/responses",json=payload,timeout=(5,min(int(timeout),30)),headers={"Authorization":"Bearer "+api_key,"Content-Type":"application/json"})
+            if r.ok:
+                data=r.json(); answer=clean(data.get("output_text") or "")
+                if not answer:
+                    parts=[]
+                    for item in data.get("output") or []:
+                        for part in item.get("content") or []:
+                            if part.get("type")=="output_text" and part.get("text"): parts.append(part["text"])
+                    answer=clean("\n".join(parts))
+                if answer:return answer,""
+            else:
+                logger.warning("OpenAI request failed status=%s model=%s",r.status_code,model)
+                if r.status_code in (401,403,429): break
+        except requests.Timeout:
+            logger.warning("OpenAI request timed out model=%s",model)
+        except requests.RequestException as exc:
+            logger.warning("OpenAI network error model=%s: %s",model,exc)
+        except Exception as exc:
+            logger.warning("OpenAI response error model=%s: %s",model,exc)
+    return "", "openai_provider_error"
 
+def _ai_call(prompt, system_prompt, max_output_tokens=8192, timeout=12, preferred_model=None):
+    """Fast normal-chat path: prefer configured Groq, then fall back to Gemini."""
+    cfg=_ai_config_status()
+    groq_key=(os.getenv("GROQ_API_KEY") or "").strip()
+    gemini_key=(os.getenv("GEMINI_API_KEY") or "").strip()
+    candidate_groq,candidate_gemini,candidate_openai=_ai_model_candidates()
+    preferred_is_gemini=bool(preferred_model and preferred_model in candidate_gemini)
+    preferred_is_openai=bool(preferred_model and preferred_model in candidate_openai)
 
-def _ai_usage_today(user_id):
-    if not user_id: return 0
-    row=first_row("koja_ai_usage",{"user_id":user_id,"usage_date":datetime.now(timezone.utc).date().isoformat()})
-    try: return int(row.get("requests") or 0) if row else 0
-    except Exception: return 0
+    # Groq is preferred for normal KOJA AI chats when configured because it is
+    # optimized for low-latency text generation. Keep the existing Gemini path
+    # as a fallback so the application does not depend on one provider.
+    if groq_key and not preferred_is_gemini and not preferred_is_openai:
+        groq_models=list(candidate_groq)
+        if preferred_model and preferred_model in groq_models:
+            groq_models=[preferred_model]+[m for m in groq_models if m!=preferred_model]
+        for model in groq_models:
+            payload={
+                "model":model,
+                "messages":[{"role":"system","content":system_prompt},{"role":"user","content":prompt}],
+                "temperature":0.7,"max_completion_tokens":max_output_tokens,"stream":False,
+            }
+            try:
+                r=requests.post("https://api.groq.com/openai/v1/chat/completions",json=payload,timeout=(5,min(int(timeout),12)),headers={"Authorization":"Bearer "+groq_key,"Content-Type":"application/json"})
+                if r.ok:
+                    data=r.json(); choices=data.get("choices") or []
+                    answer=clean(((choices[0].get("message") or {}).get("content") or "")) if choices else ""
+                    if answer: return answer,""
+                    logger.warning("Groq returned an empty response model=%s",model)
+                else:
+                    logger.warning("Groq request failed status=%s model=%s",r.status_code,model)
+                    if r.status_code in (401,403,429): break
+            except requests.Timeout:
+                logger.warning("Groq request timed out model=%s",model)
+            except requests.RequestException as exc:
+                logger.warning("Groq network error model=%s: %s",model,exc)
+            except Exception as exc:
+                logger.warning("Groq response error model=%s: %s",model,exc)
 
+    openai_answer, openai_err = ("", "preferred_other_provider") if preferred_is_gemini else _openai_call(prompt, system_prompt, max_output_tokens=max_output_tokens, timeout=min(int(timeout),30))
+    if openai_answer:
+        return openai_answer, ""
 
-def _ai_usage_allowed(user_id):
-    used=_ai_usage_today(user_id); limit=_ai_usage_limit(user_id); return used<limit,used,limit
+    if not gemini_key:
+        return "", "missing_api_key"
 
+    base=(os.getenv("GEMINI_API_URL") or "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
+    primary=cfg["model"]; fallback=cfg["fallback_model"]
+    payload={
+        "systemInstruction":{"parts":[{"text":system_prompt}]},
+        "contents":[{"role":"user","parts":[{"text":prompt}]}],
+        "generationConfig":{"maxOutputTokens":max_output_tokens,"temperature":0.7},
+    }
+    headers={"x-goog-api-key":gemini_key,"Content-Type":"application/json"}
+    _groq_models, gemini_models, openai_models = _ai_model_candidates()
+    models=[]
+    for model in ([primary, fallback] + gemini_models):
+        if model and model not in models: models.append(model)
+    for model in models:
+        endpoint=f"{base}/models/{model}:generateContent"
+        try:
+            r=requests.post(endpoint,json=payload,timeout=(5,min(int(timeout),12)),headers=headers)
+            if r.ok:
+                data=r.json(); parts=[]
+                for candidate in data.get("candidates") or []:
+                    for part in (candidate.get("content") or {}).get("parts") or []:
+                        if part.get("text"): parts.append(part["text"])
+                answer=clean("\n".join(parts))
+                if answer: return answer,""
+            elif r.status_code in (401,403): return "","authentication_failed"
+            elif r.status_code==429: return "","rate_limited"
+        except requests.Timeout:
+            logger.warning("Gemini request timed out model=%s",model)
+            continue
+        except requests.RequestException:
+            continue
+        except Exception:
+            continue
+    return "","timeout_or_provider_error"
 
-def _ai_record_usage(user_id,input_tokens=0,output_tokens=0):
-    if not user_id: return
-    today=datetime.now(timezone.utc).date().isoformat(); row=first_row("koja_ai_usage",{"user_id":user_id,"usage_date":today})
-    if row:
-        db_update("koja_ai_usage",{"id":row.get("id")},{"requests":int(row.get("requests") or 0)+1,"input_tokens":int(row.get("input_tokens") or 0)+int(input_tokens or 0),"output_tokens":int(row.get("output_tokens") or 0)+int(output_tokens or 0),"updated_at":utc_now()})
+def _ai_stream(prompt, system_prompt, max_output_tokens=32768, timeout=90, preferred_model=None):
+    """Stream KOJA AI with multiple live model fallbacks."""
+    groq_key=(os.getenv("GROQ_API_KEY") or "").strip()
+    if groq_key and not (preferred_model and preferred_model.startswith("gemini-")) and not (preferred_model and preferred_model.startswith("gpt-")):
+        groq_models,_gemini_models,_openai_models=_ai_model_candidates()
+        for model in groq_models:
+            payload={
+                "model":model,
+                "messages":[{"role":"system","content":system_prompt},{"role":"user","content":prompt}],
+                "temperature":0.7,
+                "max_completion_tokens":max_output_tokens,
+                "stream":True,
+            }
+            try:
+                with requests.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    json=payload, stream=True, timeout=(5,min(int(timeout),90)),
+                    headers={"Authorization":"Bearer "+groq_key,"Content-Type":"application/json","Accept":"text/event-stream"},
+                ) as r:
+                    if not r.ok:
+                        logger.warning("Groq streaming failed status=%s model=%s",r.status_code,model)
+                        if r.status_code in (401,403,429):
+                            break
+                        continue
+                    got=False
+                    for line in r.iter_lines(decode_unicode=True):
+                        if not line: continue
+                        if isinstance(line,bytes): line=line.decode("utf-8","ignore")
+                        if not line.startswith("data:"): continue
+                        raw=line[5:].strip()
+                        if raw=="[DONE]": break
+                        try: data=json.loads(raw)
+                        except Exception: continue
+                        choices=data.get("choices") or []
+                        delta=(choices[0].get("delta") or {}).get("content") if choices else None
+                        if delta:
+                            got=True; yield {"type":"token","text":delta}
+                    if got:
+                        yield {"type":"done"}; return
+                    logger.warning("Groq streaming returned no text model=%s",model)
+            except requests.Timeout:
+                logger.warning("Groq streaming timed out model=%s",model)
+            except requests.RequestException as exc:
+                logger.warning("Groq streaming network error model=%s: %s",model,exc)
+            except Exception as exc:
+                logger.warning("Groq streaming error model=%s: %s",model,exc)
+
+    # OpenAI streaming fallback.
+    openai_key=(os.getenv("OPENAI_API_KEY") or "").strip()
+    if openai_key and not (preferred_model and preferred_model.startswith("gemini-")):
+        _,_,openai_models=_ai_model_candidates()
+        if preferred_model and preferred_model in openai_models:
+            openai_models=[preferred_model]+[m for m in openai_models if m!=preferred_model]
+        for model in openai_models:
+            payload={"model":model,"instructions":system_prompt,"input":prompt,"max_output_tokens":max_output_tokens,"stream":True}
+            try:
+                with requests.post("https://api.openai.com/v1/responses",json=payload,stream=True,timeout=(5,min(int(timeout),90)),headers={"Authorization":"Bearer "+openai_key,"Content-Type":"application/json","Accept":"text/event-stream"}) as r:
+                    if not r.ok:
+                        logger.warning("OpenAI streaming failed status=%s model=%s",r.status_code,model)
+                        if r.status_code in (401,403,429): break
+                        continue
+                    got=False
+                    for line in r.iter_lines(decode_unicode=True):
+                        if not line: continue
+                        if isinstance(line,bytes): line=line.decode("utf-8","ignore")
+                        if not line.startswith("data:"): continue
+                        raw=line[5:].strip()
+                        if raw=="[DONE]": break
+                        try:data=json.loads(raw)
+                        except Exception:continue
+                        delta=data.get("delta") if data.get("type")=="response.output_text.delta" else None
+                        if delta:
+                            got=True; yield {"type":"token","text":delta}
+                    if got:
+                        yield {"type":"done"}; return
+            except requests.Timeout:
+                logger.warning("OpenAI streaming timed out model=%s",model)
+            except requests.RequestException as exc:
+                logger.warning("OpenAI streaming network error model=%s: %s",model,exc)
+            except Exception as exc:
+                logger.warning("OpenAI streaming error model=%s: %s",model,exc)
+
+    # Final fallback chain. This keeps the browser endpoint responsive even if
+    # Groq, OpenAI, or Gemini has a transient failure.
+    answer,err=_ai_call(prompt,system_prompt,max_output_tokens=max_output_tokens,timeout=min(int(timeout),12),preferred_model=preferred_model)
+    if answer:
+        yield {"type":"token","text":answer}; yield {"type":"done"}
     else:
-        db_insert("koja_ai_usage",{"user_id":user_id,"usage_date":today,"requests":1,"input_tokens":int(input_tokens or 0),"output_tokens":int(output_tokens or 0),"created_at":utc_now(),"updated_at":utc_now()})
-
-
-def _ai_record_provider_event(user_id,provider,ok,error="",input_tokens=0,output_tokens=0):
-    if not table_exists("koja_ai_provider_events"): return
-    db_insert("koja_ai_provider_events",{"user_id":user_id,"provider":provider,"success":bool(ok),"error_code":error or None,"input_tokens":int(input_tokens or 0),"output_tokens":int(output_tokens or 0),"created_at":utc_now()})
-
-
-def _ai_call(prompt,system_prompt,max_output_tokens=900,timeout=40,user_id=None):
-    allowed,used,limit=_ai_usage_allowed(user_id)
-    if not allowed: return "","plan_limit","none",0,0
-    specs=[p for p in _ai_provider_specs() if p.get("key") and p.get("endpoint") and p.get("model")]
-    if not specs: return "","missing_api_key","none",0,0
-    attempts=0; errors=[]
-    for provider in specs:
-        if attempts>=AI_MAX_PROVIDER_ATTEMPTS: break
-        if not _ai_provider_available(provider): continue
-        for retry in range(AI_RETRY_TRANSIENT+1):
-            attempts+=1; text,error,in_tokens,out_tokens=_ai_call_provider(provider,prompt,system_prompt,max_output_tokens,timeout); _ai_record_provider_event(user_id,provider["name"],bool(text),error,in_tokens,out_tokens)
-            if text:
-                _ai_record_usage(user_id,in_tokens or max(1,len(prompt)//4),out_tokens or max(1,len(text)//4)); return text,"",provider["name"],in_tokens,out_tokens
-            errors.append(provider["name"]+":"+error)
-            if error in {"rate_limited","timeout","network_error","provider_server_error"}:
-                _ai_mark_provider_failure(provider["name"],error)
-                if retry<AI_RETRY_TRANSIENT: continue
-            break
-    return "","all_providers_failed:"+",".join(errors[-8:]),"none",0,0
-
-
-def _openai_text(prompt,system_prompt,max_output_tokens=900,timeout=40):
-    text,_error,_provider,_in,_out=_ai_call(prompt,system_prompt,max_output_tokens,timeout,(current_user() or {}).get("id")); return text
+        yield {"type":"error","error":err or "timeout_or_provider_error"}
 
 
 def _ai_error_message(code):
-    if code=="plan_limit": return "Your KOJA AI daily plan limit has been reached. Upgrade your AI plan or try again tomorrow."
-    if code.startswith("all_providers_failed:"): return "All configured KOJA AI providers failed or were unavailable. KOJA will automatically retry healthy providers on the next request."
-    return {"missing_api_key":"No KOJA AI provider is configured on the running Render service.","authentication_failed":"An AI provider rejected its API key. Check the provider key in Render Environment Variables.","endpoint_or_model_not_found":"An AI endpoint or model was not found. Check the provider model and endpoint settings.","rate_limited":"An AI provider rate-limited the request; KOJA is failing over to another provider.","provider_server_error":"An AI provider returned a server error; KOJA is failing over to another provider.","timeout":"An AI provider timed out; KOJA is failing over to another provider.","network_error":"KOJA could not reach an AI provider from Render; another provider will be tried.","empty_provider_response":"The AI provider returned no usable text.","invalid_provider_response":"KOJA received an unexpected AI response format."}.get(code,"KOJA AI could not obtain a response from the configured providers.")
+    return {
+        "missing_api_key":"Gemini API key is missing from the running Render service.",
+        "authentication_failed":"Gemini rejected the API key. Check that the key is valid and belongs to the configured Google AI project.",
+        "endpoint_or_model_not_found":"The Gemini endpoint or model was not found. Check GEMINI_MODEL.",
+        "rate_limited":"Gemini rate-limited the request. Wait and try again.",
+        "provider_server_error":"Gemini returned a server error. Try again shortly.",
+        "timeout":"The Gemini request timed out.",
+        "network_error":"KOJA could not reach Gemini from Render.",
+        "empty_provider_response":"Gemini returned no usable text.",
+        "invalid_provider_response":"KOJA received an unexpected Gemini response format.",
+        "safety_blocked":"Gemini blocked the request under its safety policies.",
+    }.get(code, "Gemini returned an error. Check the Render logs.")
+
+def _gemini_grounded_research(query, results):
+    """Primary KOJA Research synthesis: Gemini + native Google Search grounding.
+    Returns (answer, grounded_sources, error_code)."""
+    cfg=_ai_config_status()
+    api_key=(os.getenv("GEMINI_API_KEY") or "").strip()
+    if not api_key:
+        return "", [], "missing_api_key"
+    base=(os.getenv("GEMINI_API_URL") or "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
+    models=[]
+    for model in (cfg.get("model"), cfg.get("fallback_model")):
+        if model and model not in models: models.append(model)
+    intent=_research_intent(query)
+    domain=_research_domain(query)
+    source_text='\n\n'.join(
+        f"LOCAL EVIDENCE [{i+1}] {r.get('title','')} | {r.get('source','')} | {r.get('year') or 'n.d.'}\n"
+        f"{clean(r.get('snippet',''))[:1200]}\nURL: {r.get('url','')}"
+        for i,r in enumerate(results[:8])
+    )
+    system=(
+        "You are KOJA Research, a rigorous research assistant. "
+        "Use Google Search grounding to independently find and verify the best sources for the user's exact question. "
+        "Answer the exact question, not merely related topics. For definition questions, define the exact concept requested first. "
+        "Prefer authoritative sources, universities, government agencies, professional bodies, peer-reviewed literature and primary sources. "
+        "Reject keyword-only matches and unrelated pages. Do not use an album, song, film, fictional work, or unrelated philosophical page as evidence for a scientific definition. "
+        "Do not invent facts or citations. Keep the answer concise but useful. "
+        "Use numbered source citations [1], [2] immediately after factual claims. "
+        "Only cite sources that actually support the claim."
+    )
+    prompt=(
+        f"Research question: {query}\n"
+        f"Detected intent: {intent}; domain: {domain}.\n\n"
+        "First perform Google Search grounding as needed. Then synthesize the strongest evidence. "
+        "The local evidence below is supplementary; do not trust it merely because it contains matching words. "
+        "Return a direct answer followed by a short Evidence/Scope note.\n\n"
+        f"LOCAL EVIDENCE:\n{source_text or '(none)'}"
+    )
+    payload={
+        "systemInstruction":{"parts":[{"text":system}]},
+        "contents":[{"role":"user","parts":[{"text":prompt}]}],
+        "tools":[{"google_search":{}}],
+        "generationConfig":{"maxOutputTokens":1000,"temperature":0.2},
+    }
+    headers={"x-goog-api-key":api_key,"Content-Type":"application/json"}
+    last_error="provider_server_error"
+    for mi,model in enumerate(models):
+        try:
+            endpoint=f"{base}/models/{model}:generateContent"
+            resp=requests.post(endpoint,json=payload,timeout=35,headers=headers)
+            if not resp.ok:
+                if resp.status_code in (401,403): return "", [], "authentication_failed"
+                if resp.status_code==404:
+                    last_error="endpoint_or_model_not_found"; continue
+                if resp.status_code==429:
+                    last_error="rate_limited"; continue
+                last_error=f"provider_http_{resp.status_code}"; continue
+            data=resp.json()
+            cand=(data.get("candidates") or [{}])[0]
+            content=cand.get("content") or {}
+            parts=content.get("parts") or []
+            answer=clean("\n".join(str(x.get("text")) for x in parts if x.get("text")))
+            gm=cand.get("groundingMetadata") or {}
+            chunks=gm.get("groundingChunks") or []
+            grounded=[]
+            for i,ch in enumerate(chunks):
+                web=ch.get("web") or {}
+                url=clean(web.get("uri"))
+                title=clean(web.get("title")) or url
+                if not url: continue
+                grounded.append({"title":title,"url":url,"source":"Google Search","snippet":"Google-grounded source supporting KOJA Research.","year":None,"citations":0,"_grounded_index":i})
+            if answer:
+                return answer, grounded, ""
+            last_error="empty_provider_response"
+        except requests.Timeout:
+            last_error="timeout"
+        except requests.RequestException:
+            last_error="network_error"
+        except Exception as exc:
+            logger.warning("Grounded research parsing failed: %s",exc)
+            last_error="invalid_provider_response"
+    return "", [], last_error
 
 
+def _groq_grounded_research(query, results):
+    """Fallback KOJA Research synthesis using Groq Compound web search."""
+    api_key=(os.getenv("GROQ_API_KEY") or "").strip()
+    if not api_key: return "", "missing_groq_api_key"
+    model=(os.getenv("GROQ_MODEL") or "groq/compound").strip()
+    intent=_research_intent(query); domain=_research_domain(query)
+    local='\n\n'.join(f"LOCAL EVIDENCE [{i+1}] {r.get('title','')} | {r.get('source','')} | {r.get('year') or 'n.d.'}\n{clean(r.get('snippet',''))[:1000]}\nURL: {r.get('url','')}" for i,r in enumerate(results[:8]))
+    system=("You are KOJA Research, a rigorous research assistant. Answer the exact research question. For definition questions, define the exact concept first. Use your built-in web search to verify information when needed. Prefer universities, government agencies, professional bodies, peer-reviewed literature and primary sources. Reject keyword-only or unrelated matches. Do not invent facts or citations. Use numbered source citations [1], [2] only when the source actually supports the claim. Return a direct answer followed by a concise Evidence/Scope note.")
+    prompt=f"Research question: {query}\nDetected intent: {intent}; domain: {domain}.\n\nLOCAL EVIDENCE (supplementary):\n{local or '(none)'}"
+    payload={"model":model,"messages":[{"role":"system","content":system},{"role":"user","content":prompt}],"temperature":0.2,"max_completion_tokens":1000}
+    try:
+        resp=requests.post("https://api.groq.com/openai/v1/chat/completions",json=payload,timeout=35,headers={"Authorization":f"Bearer {api_key}","Content-Type":"application/json"})
+        if not resp.ok:
+            if resp.status_code in (401,403): return "", "groq_authentication_failed"
+            if resp.status_code==429: return "", "groq_rate_limited"
+            return "", f"groq_http_{resp.status_code}"
+        data=resp.json(); choices=data.get("choices") or []
+        answer=clean(((choices[0].get("message") or {}).get("content") or "")) if choices else ""
+        return (answer, "") if answer else ("", "groq_empty_response")
+    except requests.Timeout: return "", "groq_timeout"
+    except requests.RequestException: return "", "groq_network_error"
+    except Exception: return "", "groq_invalid_response"
 
 
 def research_ai_summary(query, results):
-    if not query:
-        return '', []
+    if not query: return '', []
+    answer, grounded, error=_gemini_grounded_research(query, results)
+    if answer:
+        return answer, grounded
+    groq_answer, groq_error=_groq_grounded_research(query, results)
+    if groq_answer:
+        return groq_answer, []
+    # Deterministic fallback: never call a loose snippet concatenation a synthesized AI answer.
+    # Do not turn a rate-limit event into a misleading list of loosely related
+    # search snippets. The relevance gate above is the last line of defence.
     if not results:
-        return 'No sufficiently relevant evidence was retrieved for this research question.', []
-    source_text='\n\n'.join(
-        f"[{i+1}] {r.get('title','')} ({r.get('source','')})\n"
-        f"{clean(r.get('snippet',''))[:1600]}\nURL: {r.get('url','')}"
-        for i,r in enumerate(results[:12])
-    )
-    user_id=(current_user() or {}).get('id') if current_user() else None
-    prompt=(
-        f"Research question: {query}\n\n"
-        "Use ONLY the retrieved evidence below. Answer the exact question. "
-        "Do not invent facts, citations, authors, dates or conclusions. "
-        "Put source-number citations [1], [2], etc. immediately after factual claims. "
-        "If evidence is insufficient, state that clearly. Finish with a concise Evidence Scope note.\n\n"
-        f"RETRIEVED EVIDENCE:\n{source_text}"
-    )
-    system=(
-        "You are KOJA Research, a rigorous evidence-grounded research assistant. "
-        "Synthesize only the supplied retrieved evidence. Prefer precise, professional answers. "
-        "Every substantive factual claim must be supported by the numbered evidence sources. "
-        "Never fabricate citations or claim to have verified information that is not supplied."
-    )
-    text,error,provider,_in,_out=_ai_call(prompt,system,1200,45,user_id)
-    if text:
-        return text, []
+        return ("AI research synthesis is temporarily unavailable. " + _ai_error_message(error) +
+                "\n\nNo sufficiently relevant evidence passed KOJA's research-quality filter."), []
     highlights=[]
-    for i,r in enumerate(results[:5],1):
+    for r in results[:2]:
         ss=clean(r.get('snippet','')).replace('\n',' ')
-        if ss:
-            highlights.append(f"[{i}] {r.get('title','Source')}: {ss[:450]}")
-    msg=_ai_error_message(error)
-    return f"Evidence synthesis is temporarily unavailable. {msg}\n\nRetrieved evidence remains available below:\n\n"+'\n\n'.join(highlights), []
+        if ss: highlights.append(f"{r.get('title','Source')}: {ss[:500]}")
+    fallback=("AI research synthesis is temporarily unavailable. " + _ai_error_message(error) +
+              "\n\nVerified relevant evidence:\n\n" + '\n\n'.join(highlights))
+    return fallback, []
+
 
 # KOJA V4 citation engine: source-type-aware bibliography fields
 CITATION_STYLES={"apa":"APA 7th edition","mla":"MLA 9th edition","chicago":"Chicago Author–Date","harvard":"Harvard","vancouver":"Vancouver","ieee":"IEEE","ama":"AMA","oscola":"OSCOLA"}
@@ -1977,12 +2181,11 @@ def research():
     bibliography=make_bibliography(results,style) if results else []
     return render_page('Research', r'''
 <style>
-/* KOJA RESEARCH 2090 — visual layer only */
-.research-shell{max-width:1180px;margin:auto;position:relative}.research-shell:before{content:"";position:fixed;inset:0;pointer-events:none;background-image:radial-gradient(circle at 15% 20%,rgba(60,140,255,.12) 0 1px,transparent 1px),radial-gradient(circle at 80% 70%,rgba(255,60,90,.08) 0 1px,transparent 1px);background-size:28px 28px,42px 42px;z-index:-1}.research-welcome{padding:42px 16px 24px;text-align:center}.research-welcome h2{font-size:clamp(2rem,5vw,4rem);letter-spacing:-.045em;margin:0;background:linear-gradient(90deg,#fff,#78b7ff,#ff7184);-webkit-background-clip:text;background-clip:text;color:transparent}.research-welcome p{max-width:760px;margin:14px auto;color:rgba(255,255,255,.68);font-size:1rem}.research-shell .hero{background:linear-gradient(135deg,rgba(10,20,38,.92),rgba(18,28,52,.78));border:1px solid rgba(120,180,255,.22);box-shadow:0 20px 70px rgba(0,0,0,.28),inset 0 1px rgba(255,255,255,.06);backdrop-filter:blur(18px);border-radius:28px}.research-search{display:flex;flex-direction:column;gap:8px;background:rgba(127,127,127,.08);border:1px solid rgba(127,127,127,.18);padding:10px 12px;border-radius:24px}.research-search textarea{width:100%;min-width:0;resize:none;min-height:105px;max-height:280px;border:0!important;background:transparent!important;box-shadow:none!important;font-size:1.05rem;padding:14px 10px!important;outline:none}.research-composer-bottom{display:flex;align-items:center;gap:8px}.research-composer-actions{display:flex;align-items:center;gap:6px}.research-icon{width:42px!important;height:42px!important;margin:0!important;padding:0!important;border-radius:50%!important;display:inline-flex!important;align-items:center;justify-content:center;font-size:1.2rem;cursor:pointer}.research-send{margin-left:auto!important;width:44px!important;height:44px!important;border-radius:50%!important;padding:0!important;display:inline-flex!important;align-items:center;justify-content:center;font-size:1.15rem}.research-file-name{font-size:.78rem;opacity:.72;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:55%}.research-recording{font-size:.78rem;font-weight:700;display:none}.research-search .btn{border-radius:22px;padding:10px 18px}.research-filters{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px}.research-filters label{font-size:.78rem;font-weight:700;opacity:.9}.research-filters select,.research-filters input{width:100%;margin-top:5px}.research-tabs{display:flex;gap:8px;overflow:auto;margin:14px 0;padding-bottom:2px}.research-tabs a{white-space:nowrap;border-radius:20px}.source-badge{display:inline-block;padding:5px 10px;border-radius:999px;background:rgba(80,150,255,.14);font-size:.74rem;font-weight:800}.research-result{border-radius:18px!important;margin-bottom:12px}.research-result h3{line-height:1.35;margin:9px 0}.research-result h3 a{text-decoration:none}.research-meta{font-size:.82rem;opacity:.72}.research-summary{border:1px solid rgba(98,168,255,.28);border-radius:18px!important;background:rgba(98,168,255,.06)}.research-summary pre{white-space:pre-wrap;font:inherit;line-height:1.7;margin:0}.research-count{font-weight:700}.research-empty{padding:35px;text-align:center;border-radius:18px!important}.research-command{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}.research-command .btn{border-radius:999px}.research-result{position:relative;overflow:hidden}.research-result:before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:linear-gradient(#4da3ff,#ff536b);opacity:.85}.research-result h3 a{color:inherit}.research-answer-label{letter-spacing:.08em;text-transform:uppercase;font-size:.78rem}.research-tabs{scrollbar-width:thin}.research-answer-label{font-weight:800;margin-bottom:10px}.research-source-list{margin-top:6px}.research-source-list .card{border-radius:18px!important}@media(max-width:700px){.research-search{border-radius:18px}.research-filters{grid-template-columns:1fr 1fr}.research-result{padding:16px!important}}@media(max-width:480px){.research-filters{grid-template-columns:1fr}}
+.research-shell{max-width:920px;margin:auto}.research-search{display:flex;flex-direction:column;gap:8px;background:rgba(127,127,127,.08);border:1px solid rgba(127,127,127,.18);padding:10px 12px;border-radius:24px}.research-search textarea{width:100%;min-width:0;resize:none;min-height:105px;max-height:280px;border:0!important;background:transparent!important;box-shadow:none!important;font-size:1.05rem;padding:14px 10px!important;outline:none}.research-composer-bottom{display:flex;align-items:center;gap:8px}.research-composer-actions{display:flex;align-items:center;gap:6px}.research-icon{width:42px!important;height:42px!important;margin:0!important;padding:0!important;border-radius:50%!important;display:inline-flex!important;align-items:center;justify-content:center;font-size:1.2rem;cursor:pointer}.research-send{margin-left:auto!important;width:44px!important;height:44px!important;border-radius:50%!important;padding:0!important;display:inline-flex!important;align-items:center;justify-content:center;font-size:1.15rem}.research-file-name{font-size:.78rem;opacity:.72;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:55%}.research-recording{font-size:.78rem;font-weight:700;display:none}.research-search .btn{border-radius:22px;padding:10px 18px}.research-filters{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px}.research-filters label{font-size:.78rem;font-weight:700;opacity:.9}.research-filters select,.research-filters input{width:100%;margin-top:5px}.research-tabs{display:flex;gap:8px;overflow:auto;margin:14px 0;padding-bottom:2px}.research-tabs a{white-space:nowrap;border-radius:20px}.source-badge{display:inline-block;padding:5px 10px;border-radius:999px;background:rgba(80,150,255,.14);font-size:.74rem;font-weight:800}.research-result{border-radius:18px!important;margin-bottom:12px}.research-result h3{line-height:1.35;margin:9px 0}.research-result h3 a{text-decoration:none}.research-meta{font-size:.82rem;opacity:.72}.research-summary{border:1px solid rgba(98,168,255,.28);border-radius:18px!important;background:rgba(98,168,255,.06)}.research-summary pre{white-space:pre-wrap;font:inherit;line-height:1.7;margin:0}.research-count{font-weight:700}.research-empty{padding:35px;text-align:center;border-radius:18px!important}.research-welcome{text-align:center;padding:20px 10px 8px}.research-welcome h2{font-size:1.8rem;margin-bottom:8px}.research-welcome p{opacity:.75}.research-answer-label{font-weight:800;margin-bottom:10px}.research-source-list{margin-top:6px}.research-source-list .card{border-radius:18px!important}@media(max-width:700px){.research-search{border-radius:18px}.research-filters{grid-template-columns:1fr 1fr}.research-result{padding:16px!important}}@media(max-width:480px){.research-filters{grid-template-columns:1fr}}
 </style>
-<div class="research-shell"><div class="research-welcome"><div style="font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;opacity:.62;margin-bottom:8px">KOJA RESEARCH // 2090</div><h2>Research anything. Understand everything.</h2><p>Ask a full question, attach a document, or use your voice. KOJA Research searches web, academic literature, Wikipedia and your KOJA documents, then brings the evidence together.</p></div><div class="hero"><form method="get" action="{{ url_for('research') }}" class="research-search" id="research-composer"><textarea name="q" rows="3" maxlength="2000" placeholder="Ask anything you want to research…" aria-label="Research question" autofocus>{{ q }}</textarea><div class="research-composer-bottom"><div class="research-composer-actions"><label class="btn secondary research-icon" title="Attach a document" aria-label="Attach a document"><input id="research-file" type="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp" hidden></label><button class="btn secondary research-icon" id="research-record" type="button" title="Record voice" aria-label="Record voice">️</button><span class="research-recording" id="research-recording">● Recording…</span><span class="research-file-name" id="research-file-name"></span></div><button class="btn research-send" type="submit" title="Send research question" aria-label="Send research question"></button></div></form>
+<div class="research-shell"><div class="research-welcome"><h2> What would you like to research?</h2><p>Ask a full question, attach a document, or use your voice. KOJA Research searches web, academic literature, Wikipedia and your KOJA documents, then brings the evidence together.</p></div><div class="hero"><form method="get" action="{{ url_for('research') }}" class="research-search" id="research-composer"><textarea name="q" rows="3" maxlength="2000" placeholder="Ask anything you want to research…" aria-label="Research question" autofocus>{{ q }}</textarea><div class="research-composer-bottom"><div class="research-composer-actions"><label class="btn secondary research-icon" title="Attach a document" aria-label="Attach a document"><input id="research-file" type="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp" hidden></label><button class="btn secondary research-icon" id="research-record" type="button" title="Record voice" aria-label="Record voice">️</button><span class="research-recording" id="research-recording">● Recording…</span><span class="research-file-name" id="research-file-name"></span></div><button class="btn research-send" type="submit" title="Send research question" aria-label="Send research question"></button></div></form>
 <script>(function(){const box=document.querySelector('#research-composer textarea[name="q"]');const file=document.getElementById('research-file');const name=document.getElementById('research-file-name');const rec=document.getElementById('research-record');const recLabel=document.getElementById('research-recording');let media=null,chunks=[];if(box){const grow=()=>{box.style.height='auto';box.style.height=Math.min(box.scrollHeight,280)+'px'};box.addEventListener('input',grow);grow()}if(file){file.addEventListener('change',()=>{name.textContent=file.files&&file.files[0]?file.files[0].name:''})}if(rec&&navigator.mediaDevices&&window.MediaRecorder){rec.addEventListener('click',async()=>{if(media){media.stop();return}try{const stream=await navigator.mediaDevices.getUserMedia({audio:true});media=new MediaRecorder(stream);chunks=[];media.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};media.onstop=()=>{const blob=new Blob(chunks,{type:'audio/webm'});const url=URL.createObjectURL(blob);name.textContent='Voice recording ready ('+Math.round(blob.size/1024)+' KB)';const a=document.createElement('a');a.href=url;a.download='koja-research-question.webm';a.style.display='none';document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(url);a.remove()},1000);stream.getTracks().forEach(t=>t.stop());media=null;rec.textContent='️';recLabel.style.display='none'};media.start();rec.textContent='⏹️';recLabel.style.display='inline';}catch(e){alert('Microphone permission is required to record.')}})}})();</script><div class="research-filters"><label>Source<select name="source" form="research-filter-form"><option value="all" {% if source_filter=='all' %}selected{% endif %}>All sources</option><option value="academic" {% if source_filter=='academic' %}selected{% endif %}>Academic</option><option value="web" {% if source_filter=='web' %}selected{% endif %}>Web</option><option value="wikipedia" {% if source_filter=='wikipedia' %}selected{% endif %}>Wikipedia</option><option value="koja" {% if source_filter=='koja' %}selected{% endif %}>KOJA Documents</option></select></label><label>Year<input name="year" form="research-filter-form" value="{{ year or '' }}" placeholder="e.g. 2025" inputmode="numeric"></label><label>Author<input name="author" form="research-filter-form" value="{{ author }}" placeholder="Academic author"></label><label>Citation style<select name="style" form="research-filter-form">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Source type<select name="source_type" form="research-filter-form"><option value="all">All source types</option>{% for k,v in source_types.items() %}<option value="{{k}}" {% if source_type==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Sort<select name="sort" form="research-filter-form"><option value="relevance" {% if sort=='relevance' %}selected{% endif %}>Relevance</option><option value="date" {% if sort=='date' %}selected{% endif %}>Newest first</option><option value="citations" {% if sort=='citations' %}selected{% endif %}>Most cited</option></select></label></div><form id="research-filter-form" method="get" action="{{ url_for('research') }}"><input type="hidden" name="q" value="{{ q }}"></form></div>
-{% if q %}<div class="note-actions"><a class="btn" href="{{ url_for('research_notes',q=q,style=style) }}"> Write Research Notes</a><a class="btn secondary" href="{{ url_for('research') }}">＋ New research</a></div><div class="research-tabs"><a class="btn" href="{{ url_for('research_unified',q=q) }}">Unified Research</a><a class="btn secondary" href="{{ url_for('research_workspace') }}">Workspace</a><a class="btn secondary" href="{{ url_for('research_history') }}">History</a><a class="btn secondary" href="{{ url_for('research_compare',q1=q) }}">Compare</a><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}"> Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}"> Web</a><a class="btn secondary" href="{{ url_for('research_unified',q=q,kind='web') }}">Web Search</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}"> KOJA Documents</a></div><div class="card"><span class="research-count">{{ results|length }} ranked sources</span> found for <strong>“{{ q }}”</strong><p class="small" style="margin-top:8px">KOJA combines multiple research angles, academic literature, web sources and KOJA Documents; it removes duplicates, filters weak matches, ranks evidence and then uses KOJA AI to synthesize the strongest evidence.</p></div>{% if summary %}<div class="card research-summary"><div class="research-answer-label"> KOJA Research Answer</div><pre>{{ summary }}</pre><p class="small">Evidence synthesis uses the KOJA multi-provider AI router. Source citations correspond to the retrieved evidence shown on this page.</p></div>{% endif %}{% for r in results %}<div class="card research-result"><span class="source-badge">{{ r.source }}</span><h3><a href="{{ r.url or '#' }}" {% if r.url %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a></h3>{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p><p><strong>In-text:</strong> {{ make_intext(r,style,loop.index) }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open original source ↗</a>{% endif %}</div>{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endfor %}{% if bibliography %}<div class="card"><h2>References</h2><p class="small">Generated from available source metadata. Verify against the original source.</p>{% for n,ref in bibliography %}<p style="padding-left:28px;text-indent:-28px;line-height:1.6">{{ ref|safe }}</p>{% endfor %}</div>{% endif %}{% else %}<div class="grid"><div class="card"><h3> Research Discovery</h3><p>KOJA searches across multiple research sources and filters weak or unrelated matches.</p></div><div class="card"><h3> Academic Search</h3><p>OpenAlex and Crossref provide scholarly metadata, authors, years and citation information.</p></div><div class="card"><h3> KOJA Documents</h3><p>Search documents already connected to your KOJA Supabase database.</p></div><div class="card"><h3>Evidence Synthesis</h3><p>KOJA AI uses the configured multi-provider research router to synthesize retrieved evidence with source-number citations.</p></div></div>{% endif %}</div>
+{% if q %}<div class="note-actions"><a class="btn" href="{{ url_for('research_notes',q=q,style=style) }}"> Write Research Notes</a><a class="btn secondary" href="{{ url_for('research') }}">＋ New research</a></div><div class="research-tabs"><a class="btn" href="{{ url_for('research_unified',q=q) }}">Unified Research</a><a class="btn secondary" href="{{ url_for('research_workspace') }}">Workspace</a><a class="btn secondary" href="{{ url_for('research_history') }}">History</a><a class="btn secondary" href="{{ url_for('research_compare',q1=q) }}">Compare</a><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}"> Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}"> Web</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}"> KOJA Documents</a></div><div class="card"><span class="research-count">{{ results|length }} ranked sources</span> found for <strong>“{{ q }}”</strong><p class="small" style="margin-top:8px">KOJA combines multiple research angles, academic literature, web sources and KOJA Documents; it removes duplicates, filters weak matches, ranks evidence and then uses KOJA AI to synthesize the strongest evidence.</p></div>{% if summary %}<div class="card research-summary"><div class="research-answer-label"> KOJA Research Answer</div><pre>{{ summary }}</pre><p class="small">AI summaries use configured AI credentials when available; otherwise KOJA shows source-based highlights. Verify important claims against original sources.</p></div>{% endif %}{% for r in results %}<div class="card research-result"><span class="source-badge">{{ r.source }}</span><h3><a href="{{ r.url or '#' }}" {% if r.url %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a></h3>{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p><p><strong>In-text:</strong> {{ make_intext(r,style,loop.index) }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open original source ↗</a>{% endif %}</div>{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endfor %}{% if bibliography %}<div class="card"><h2>References</h2><p class="small">Generated from available source metadata. Verify against the original source.</p>{% for n,ref in bibliography %}<p style="padding-left:28px;text-indent:-28px;line-height:1.6">{{ ref|safe }}</p>{% endfor %}</div>{% endif %}{% else %}{% endif %}</div>
 ''',q=q,results=results,summary=summary,source_filter=source_filter,sort=sort,year=year,author=author,style=style,source_type=source_type,citation_styles=CITATION_STYLES,source_types=SOURCE_TYPES,bibliography=bibliography,make_intext=make_intext,SITE_URL=SITE_URL)
 
 
@@ -2187,7 +2390,7 @@ def research_unified():
         mapping={'academic':('openalex','crossref','arxiv'),'documents':('koja documents',),'web':('web','google search','wikipedia'),'video':('youtube',),'news':('news',),'image':('wikimedia commons',),'book':('open library','internet archive','project gutenberg')}
         results=[r for r in results if str(r.get('source','')).lower() in mapping[kind]]
     return render_page('KOJA Unified Research',r'''
-<style>.ur{max-width:1240px;margin:auto;position:relative}.ur:before{content:"";position:fixed;inset:0;pointer-events:none;background-image:linear-gradient(rgba(80,150,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(80,150,255,.035) 1px,transparent 1px);background-size:36px 36px;z-index:-1}.ur .hero{background:linear-gradient(135deg,rgba(8,18,35,.94),rgba(24,28,55,.8));border:1px solid rgba(100,170,255,.2);box-shadow:0 24px 80px rgba(0,0,0,.3);backdrop-filter:blur(20px);border-radius:30px;padding:28px}.ur h1{font-size:clamp(2rem,5vw,4rem);letter-spacing:-.05em;background:linear-gradient(90deg,#fff,#70b4ff,#ff657b);-webkit-background-clip:text;background-clip:text;color:transparent}.ur-search{display:flex;gap:10px}.ur-search input{flex:1;border-radius:999px!important;padding:16px 20px!important}.ur-search button{border-radius:999px!important;padding:0 26px!important}.ur-tabs{display:flex;gap:8px;overflow:auto;margin:18px 0;padding-bottom:4px}.ur-tabs a{white-space:nowrap;border-radius:999px}.ur-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.ur-card{overflow:hidden;border-radius:22px!important;border:1px solid rgba(120,180,255,.13);background:rgba(12,20,35,.72);box-shadow:0 12px 40px rgba(0,0,0,.2)}.ur-card h3{line-height:1.35}.ur-img{width:100%;max-height:280px;object-fit:cover;border-radius:16px}.ur-video{width:100%;aspect-ratio:16/9;border:0;border-radius:16px}.ur-meta{font-size:.8rem;opacity:.7}.ur-actions{display:flex;gap:8px;flex-wrap:wrap}.ur-actions .btn{border-radius:999px}@media(max-width:700px){.ur-grid{grid-template-columns:1fr}.ur-search{flex-direction:column}.ur-search button{min-height:48px}} </style>
+<style>.ur{max-width:1150px;margin:auto}.ur-search{display:flex;gap:10px}.ur-search input{flex:1}.ur-tabs{display:flex;gap:7px;overflow:auto;margin:14px 0}.ur-tabs a{white-space:nowrap}.ur-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.ur-card{overflow:hidden}.ur-img{width:100%;max-height:250px;object-fit:cover;border-radius:14px}.ur-video{width:100%;aspect-ratio:16/9;border:0;border-radius:14px}.ur-meta{font-size:.8rem;opacity:.7}.ur-actions{display:flex;gap:8px;flex-wrap:wrap}@media(max-width:700px){.ur-grid{grid-template-columns:1fr}.ur-search{flex-direction:column}}</style>
 <div class="ur"><div class="hero"><h1>KOJA Unified Research</h1><p>Search web, academic literature, books, videos, news, images and KOJA Documents from one place.</p><form class="ur-search" method="get"><input name="q" value="{{q}}" placeholder="Research anything…" autofocus><button class="btn">Search</button></form></div>
 {% if q %}<div class="ur-tabs">{% for k,n in [('all','All'),('web','Web'),('academic','Academic'),('book','Books'),('video','Videos'),('news','News'),('image','Images'),('documents','Documents')] %}<a class="btn secondary" href="{{url_for('research_unified',q=q,kind=k)}}">{{n}}</a>{% endfor %}</div>
 <div class="card"><strong>{{results|length}} results</strong> for “{{q}}” <span class="small"> · source retrieval is cached briefly for speed.</span></div>
