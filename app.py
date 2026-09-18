@@ -976,24 +976,6 @@ footer{text-align:center;color:var(--muted);padding:30px}
 def render_page(title, body_template, **context):
     context["user"] = current_user()
     body = render_template_string(body_template, **context)
-    if request.path.startswith("/research"):
-        research_ui_css = r"""
-<style id="koja-research-2090-ui">
-:root{--r2090-bg:#050914;--r2090-panel:rgba(11,18,34,.82);--r2090-panel2:rgba(16,25,46,.72);--r2090-line:rgba(117,166,255,.20);--r2090-text:#f5f7fb;--r2090-muted:#a9b4c8;--r2090-blue:#4b8dff;--r2090-red:#ef5367}
-body:has(.research-shell),body:has(.ur),body:has(.notes-shell){background:radial-gradient(circle at 8% 5%,rgba(57,112,255,.13),transparent 30%),radial-gradient(circle at 92% 22%,rgba(239,83,103,.10),transparent 28%),linear-gradient(180deg,#050914,#08101f 52%,#050914)!important;color:var(--r2090-text)}
-body:has(.research-shell) .container,body:has(.ur) .container,body:has(.notes-shell) .container{max-width:1280px;padding:18px 14px 50px}
-body:has(.research-shell) .card,body:has(.ur) .card,body:has(.notes-shell) .card{background:linear-gradient(145deg,var(--r2090-panel),var(--r2090-panel2))!important;border:1px solid var(--r2090-line)!important;border-radius:22px!important;box-shadow:0 18px 55px rgba(0,0,0,.24),inset 0 1px rgba(255,255,255,.045)!important;backdrop-filter:blur(16px)}
-body:has(.research-shell) input,body:has(.research-shell) select,body:has(.ur) input,body:has(.notes-shell) input,body:has(.notes-shell) select{background:rgba(3,8,18,.78)!important;color:#fff!important;border:1px solid rgba(117,166,255,.24)!important;border-radius:14px!important}
-body:has(.research-shell) .btn,body:has(.ur) .btn,body:has(.notes-shell) .btn{border-radius:12px!important;letter-spacing:.01em;font-weight:700}
-.research-2090-kicker{display:inline-flex;align-items:center;gap:8px;padding:7px 12px;border:1px solid rgba(117,166,255,.22);border-radius:999px;background:rgba(75,141,255,.08);color:#c9d8f5;font-size:.74rem;font-weight:800;letter-spacing:.12em;text-transform:uppercase}
-.research-2090-title{font-size:clamp(2.2rem,6vw,4.7rem);line-height:.98;letter-spacing:-.055em;margin:14px 0;background:linear-gradient(100deg,#fff 10%,#79adff 58%,#ff7888 100%);-webkit-background-clip:text;background-clip:text;color:transparent}
-.research-2090-subtitle{max-width:820px;color:var(--r2090-muted);font-size:1rem;line-height:1.7}
-.research-professional-nav{display:flex;gap:8px;overflow:auto;padding:8px 0 12px;scrollbar-width:none}.research-professional-nav::-webkit-scrollbar{display:none}.research-professional-nav a{white-space:nowrap}
-.research-2090-section{margin:18px 0}.research-2090-label{font-size:.72rem;text-transform:uppercase;letter-spacing:.13em;color:#91a8c9;font-weight:800;margin-bottom:9px}
-@media(max-width:700px){body:has(.research-shell) .container,body:has(.ur) .container,body:has(.notes-shell) .container{padding-left:10px;padding-right:10px}.research-2090-title{font-size:2.35rem}}
-</style>
-"""
-        body = research_ui_css + body
     prefs = session.get("koja_settings", {}) or {}
     theme = prefs.get("theme", "system") if prefs.get("theme") in ("system", "light", "dark") else "system"
     descriptions = {
@@ -1080,7 +1062,7 @@ def settings():
     return render_page('Settings', r'''<div class="hero"><h2>KOJA Settings</h2><p>Manage your account, preferences, security and the platform engines connected to your KOJA services.</p></div>
 <div class="grid">
 <div class="card"><h3>Account</h3><p><strong>Name:</strong> {{ user.name or "KOJA User" }}</p><p><strong>Email:</strong> {{ user.email or "Not provided" }}</p><p><strong>Role:</strong> {{ user.role or "student" }}</p><p class="small">KOJA Identity protects account identity, verification and security across connected services.</p><button class="btn secondary" type="button" onclick="activateEngine('identity',this)">Activate KOJA Identity</button></div>
-<div class="card"><h3>Appearance & Research</h3><form method="post"><input type="hidden" name="action" value="preferences"><label>Theme</label><select name="theme"><option value="system" {% if prefs.theme == 'system' %}selected{% endif %}>System</option><option value="light" {% if prefs.theme == 'light' %}selected{% endif %}>Light</option><option value="dark" {% if prefs.theme == 'dark' %}selected{% endif %}>Dark</option></select><label style="display:block;margin-top:12px"><input type="checkbox" name="allow_research" value="1" style="width:auto" {% if prefs.allow_research %}checked{% endif %}> Allow external research sources</label><button class="btn" type="submit">Save to Workspace Settings</button></form></div>
+<div class="card"><h3>Appearance & Research</h3><form method="post"><input type="hidden" name="action" value="preferences"><label>Theme</label><select name="theme"><option value="system" {% if prefs.theme == 'system' %}selected{% endif %}>System</option><option value="light" {% if prefs.theme == 'light' %}selected{% endif %}>Light</option><option value="dark" {% if prefs.theme == 'dark' %}selected{% endif %}>Dark</option></select><label style="display:block;margin-top:12px"><input type="checkbox" name="allow_research" value="1" style="width:auto" {% if prefs.allow_research %}checked{% endif %}> Allow external research sources</label><button class="btn" type="submit">Save Settings</button></form></div>
 <div class="card"><h3>KOJA Intelligence</h3><p>Shared intelligence for AI, Business, Market, payments and logistics. Settings access is recorded as a platform event.</p><button class="btn" type="button" onclick="activateEngine('intelligence',this)">Connect Intelligence</button></div>
 <div class="card"><h3>KOJA Workspace</h3><p>Workspace, documents, research and enterprise capabilities connected to your account.</p><button class="btn" type="button" onclick="activateEngine('workspace',this)">Connect Workspace</button></div>
 <div class="card"><h3>KOJA Ecosystem</h3><p>Connects Discovery, Market, Business, Logistics, AI and Pay into one platform layer.</p><button class="btn" type="button" onclick="activateEngine('ecosystem',this)">Connect Ecosystem</button></div>
@@ -1703,416 +1685,217 @@ def _research_filter(results, source='all', year=None, sort='relevance'):
     else: results.sort(key=lambda r:r.get('_relevance',0),reverse=True)
     return results
 
+# ============================================================
+# KOJA V8 AI ENGINE — MULTI-PROVIDER ROUTER
+# Priority: Gemini -> Groq -> OpenAI -> configured fallbacks.
+# Providers are attempted only when their server-side key exists.
+# ============================================================
+
+_AI_PROVIDER_COOLDOWN = {}
+_AI_PROVIDER_FAILURES = {}
+
+AI_PLAN_LIMITS = {
+    "free": int(os.getenv("AI_FREE_DAILY_REQUESTS", "20")),
+    "starter": int(os.getenv("AI_STARTER_DAILY_REQUESTS", "100")),
+    "basic": int(os.getenv("AI_BASIC_DAILY_REQUESTS", "200")),
+    "pro": int(os.getenv("AI_PRO_DAILY_REQUESTS", "500")),
+    "business": int(os.getenv("AI_BUSINESS_DAILY_REQUESTS", "2000")),
+    "enterprise": int(os.getenv("AI_ENTERPRISE_DAILY_REQUESTS", "10000")),
+}
+AI_MAX_PROVIDER_ATTEMPTS = max(1, int(os.getenv("AI_MAX_PROVIDER_ATTEMPTS", "14")))
+AI_PROVIDER_COOLDOWN_SECONDS = max(5, int(os.getenv("AI_PROVIDER_COOLDOWN_SECONDS", "30")))
+AI_RETRY_TRANSIENT = max(0, int(os.getenv("AI_RETRY_TRANSIENT", "1")))
+AI_DEFAULT_TIMEOUT = max(10, int(os.getenv("AI_DEFAULT_TIMEOUT", "35")))
+
+
+def _ai_provider_specs():
+    """Return providers in the required failover order."""
+    return [
+        {"name":"gemini","kind":"gemini","key":os.getenv("GEMINI_API_KEY","").strip(),"model":os.getenv("GEMINI_MODEL","gemini-2.5-flash").strip(),"endpoint":os.getenv("GEMINI_API_URL","https://generativelanguage.googleapis.com/v1beta").rstrip("/")},
+        {"name":"groq","kind":"chat","key":os.getenv("GROQ_API_KEY","").strip(),"model":os.getenv("GROQ_MODEL","llama-3.3-70b-versatile").strip(),"endpoint":os.getenv("GROQ_API_URL","https://api.groq.com/openai/v1/chat/completions").strip()},
+        {"name":"openai","kind":"responses","key":(os.getenv("OPENAI_API_KEY","") or os.getenv("AI_API_KEY","")).strip(),"model":os.getenv("OPENAI_MODEL",os.getenv("AI_MODEL","gpt-5")).strip(),"endpoint":os.getenv("OPENAI_API_URL",os.getenv("AI_API_URL","https://api.openai.com/v1/responses")).strip()},
+        {"name":"openrouter","kind":"chat","key":os.getenv("OPENROUTER_API_KEY","").strip(),"model":os.getenv("OPENROUTER_MODEL","openai/gpt-oss-20b").strip(),"endpoint":os.getenv("OPENROUTER_API_URL","https://openrouter.ai/api/v1/chat/completions").strip()},
+        {"name":"together","kind":"chat","key":os.getenv("TOGETHER_API_KEY","").strip(),"model":os.getenv("TOGETHER_MODEL","meta-llama/Llama-3.3-70B-Instruct-Turbo").strip(),"endpoint":os.getenv("TOGETHER_API_URL","https://api.together.xyz/v1/chat/completions").strip()},
+        {"name":"mistral","kind":"chat","key":os.getenv("MISTRAL_API_KEY","").strip(),"model":os.getenv("MISTRAL_MODEL","mistral-small-latest").strip(),"endpoint":os.getenv("MISTRAL_API_URL","https://api.mistral.ai/v1/chat/completions").strip()},
+        {"name":"deepseek","kind":"chat","key":os.getenv("DEEPSEEK_API_KEY","").strip(),"model":os.getenv("DEEPSEEK_MODEL","deepseek-chat").strip(),"endpoint":os.getenv("DEEPSEEK_API_URL","https://api.deepseek.com/chat/completions").strip()},
+        {"name":"xai","kind":"chat","key":os.getenv("XAI_API_KEY","").strip(),"model":os.getenv("XAI_MODEL","grok-3-mini").strip(),"endpoint":os.getenv("XAI_API_URL","https://api.x.ai/v1/chat/completions").strip()},
+        {"name":"cerebras","kind":"chat","key":os.getenv("CEREBRAS_API_KEY","").strip(),"model":os.getenv("CEREBRAS_MODEL","llama-3.3-70b").strip(),"endpoint":os.getenv("CEREBRAS_API_URL","https://api.cerebras.ai/v1/chat/completions").strip()},
+        {"name":"fireworks","kind":"chat","key":os.getenv("FIREWORKS_API_KEY","").strip(),"model":os.getenv("FIREWORKS_MODEL","accounts/fireworks/models/llama-v3p1-70b-instruct").strip(),"endpoint":os.getenv("FIREWORKS_API_URL","https://api.fireworks.ai/inference/v1/chat/completions").strip()},
+        {"name":"sambanova","kind":"chat","key":os.getenv("SAMBANOVA_API_KEY","").strip(),"model":os.getenv("SAMBANOVA_MODEL","Meta-Llama-3.3-70B-Instruct").strip(),"endpoint":os.getenv("SAMBANOVA_API_URL","https://api.sambanova.ai/v1/chat/completions").strip()},
+        {"name":"cohere","kind":"cohere","key":os.getenv("COHERE_API_KEY","").strip(),"model":os.getenv("COHERE_MODEL","command-a-03-2025").strip(),"endpoint":os.getenv("COHERE_API_URL","https://api.cohere.com/v2/chat").strip()},
+        {"name":"huggingface","kind":"chat","key":os.getenv("HUGGINGFACE_API_KEY","").strip(),"model":os.getenv("HUGGINGFACE_MODEL","meta-llama/Llama-3.3-70B-Instruct").strip(),"endpoint":os.getenv("HUGGINGFACE_API_URL","https://router.huggingface.co/v1/chat/completions").strip()},
+        {"name":"custom","kind":"chat","key":os.getenv("AI_FALLBACK_API_KEY","").strip(),"model":os.getenv("AI_FALLBACK_MODEL","").strip(),"endpoint":os.getenv("AI_FALLBACK_API_URL","").strip()},
+    ]
+
+
 def _ai_config_status():
-    """Return safe Gemini configuration diagnostics without exposing secrets."""
-    raw_key=(os.getenv("GEMINI_API_KEY") or "").strip()
-    groq_key=(os.getenv("GROQ_API_KEY") or "").strip()
-    openai_key=(os.getenv("OPENAI_API_KEY") or "").strip()
-    model=(os.getenv("GEMINI_MODEL") or "gemini-3.8-flash").strip()
-    fallback=(os.getenv("GEMINI_FALLBACK_MODEL") or "gemini-3.7-flash").strip()
-    base=(os.getenv("GEMINI_API_URL") or "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
-    endpoint=f"{base}/models/{model}:generateContent"
-    return {
-        "configured": bool(raw_key),
-        "provider": "gemini",
-        "endpoint": endpoint,
-        "model": model,
-        "fallback_model": fallback,
-        "key_source": "GEMINI_API_KEY" if raw_key else "none",
-        "key_length": len(raw_key),
-        "groq_configured": bool(groq_key),
-        "groq_model": (os.getenv("GROQ_MODEL") or "groq/compound").strip(),
-        "groq_key_source": "GROQ_API_KEY" if groq_key else "none",
-        "groq_key_length": len(groq_key),
-        "openai_configured": bool(openai_key),
-        "openai_model": (os.getenv("OPENAI_MODEL") or "gpt-5").strip(),
-        "openai_key_source": "OPENAI_API_KEY" if openai_key else "none",
-        "openai_key_length": len(openai_key),
-    }
+    specs=_ai_provider_specs(); configured=[p for p in specs if p.get("key") and p.get("endpoint") and p.get("model")]; primary=next((p for p in configured),None)
+    return {"configured":bool(configured),"provider":primary["name"] if primary else "none","model":primary.get("model") if primary else "","endpoint":primary.get("endpoint") if primary else "","providers_configured":[p["name"] for p in configured],"provider_count":len(configured),"key_source":(primary["name"]+"_api_key") if primary else "none","key_length":len(primary["key"]) if primary else 0}
 
-def _ai_model_candidates():
-    """Build an ordered, duplicate-free model fallback chain from Render env vars.
-    KOJA can survive a retired/unavailable model by trying the next configured model.
-    """
-    def split_env(name):
-        raw=(os.getenv(name) or "").strip()
-        return [x.strip() for x in raw.split(",") if x.strip()]
-    groq=[]
-    groq.extend(split_env("GROQ_MODEL"))
-    groq.extend(split_env("GROQ_FALLBACK_MODELS"))
-    groq.extend([
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
-        "openai/gpt-oss-120b",
-        "openai/gpt-oss-20b",
-        "qwen/qwen3.6-27b",
-        "qwen/qwen3.8-27b",
-    ])
-    gemini=[]
-    gemini.extend(split_env("GEMINI_MODEL"))
-    gemini.extend(split_env("GEMINI_FALLBACK_MODELS"))
-    gemini.extend([
-        "gemini-3.8-flash",
-        "gemini-3.7-flash",
-        "gemini-3.6-flash",
-        "gemini-3.5-flash",
-        "gemini-3.5-flash-lite",
-    ])
-    openai=[]
-    openai.extend(split_env("OPENAI_MODEL"))
-    openai.extend(split_env("OPENAI_FALLBACK_MODELS"))
-    openai.extend(["gpt-5", "gpt-5-mini"])
-    def unique(items):
-        seen=set(); out=[]
-        for x in items:
-            if x and x not in seen:
-                seen.add(x); out.append(x)
-        return out
-    return unique(groq), unique(gemini), unique(openai)
 
-def _openai_call(prompt, system_prompt, max_output_tokens=8192, timeout=20):
-    """OpenAI Responses API fallback for KOJA AI."""
-    api_key=(os.getenv("OPENAI_API_KEY") or "").strip()
-    if not api_key:
-        return "", "missing_openai_api_key"
-    _,_,models=_ai_model_candidates()
-    for model in models:
-        payload={"model":model,"instructions":system_prompt,"input":prompt,"max_output_tokens":max_output_tokens}
-        try:
-            r=requests.post("https://api.openai.com/v1/responses",json=payload,timeout=(5,min(int(timeout),30)),headers={"Authorization":"Bearer "+api_key,"Content-Type":"application/json"})
-            if r.ok:
-                data=r.json(); answer=clean(data.get("output_text") or "")
-                if not answer:
-                    parts=[]
-                    for item in data.get("output") or []:
-                        for part in item.get("content") or []:
-                            if part.get("type")=="output_text" and part.get("text"): parts.append(part["text"])
-                    answer=clean("\n".join(parts))
-                if answer:return answer,""
-            else:
-                logger.warning("OpenAI request failed status=%s model=%s",r.status_code,model)
-                if r.status_code in (401,403,429): break
-        except requests.Timeout:
-            logger.warning("OpenAI request timed out model=%s",model)
-        except requests.RequestException as exc:
-            logger.warning("OpenAI network error model=%s: %s",model,exc)
-        except Exception as exc:
-            logger.warning("OpenAI response error model=%s: %s",model,exc)
-    return "", "openai_provider_error"
+def _ai_provider_available(provider):
+    return datetime.now(timezone.utc).timestamp() >= _AI_PROVIDER_COOLDOWN.get(provider.get("name"),0)
 
-def _ai_call(prompt, system_prompt, max_output_tokens=8192, timeout=12, preferred_model=None):
-    """Fast normal-chat path: prefer configured Groq, then fall back to Gemini."""
-    cfg=_ai_config_status()
-    groq_key=(os.getenv("GROQ_API_KEY") or "").strip()
-    gemini_key=(os.getenv("GEMINI_API_KEY") or "").strip()
-    candidate_groq,candidate_gemini,candidate_openai=_ai_model_candidates()
-    preferred_is_gemini=bool(preferred_model and preferred_model in candidate_gemini)
-    preferred_is_openai=bool(preferred_model and preferred_model in candidate_openai)
 
-    # Groq is preferred for normal KOJA AI chats when configured because it is
-    # optimized for low-latency text generation. Keep the existing Gemini path
-    # as a fallback so the application does not depend on one provider.
-    if groq_key and not preferred_is_gemini and not preferred_is_openai:
-        groq_models=list(candidate_groq)
-        if preferred_model and preferred_model in groq_models:
-            groq_models=[preferred_model]+[m for m in groq_models if m!=preferred_model]
-        for model in groq_models:
-            payload={
-                "model":model,
-                "messages":[{"role":"system","content":system_prompt},{"role":"user","content":prompt}],
-                "temperature":0.7,"max_completion_tokens":max_output_tokens,"stream":False,
-            }
-            try:
-                r=requests.post("https://api.groq.com/openai/v1/chat/completions",json=payload,timeout=(5,min(int(timeout),12)),headers={"Authorization":"Bearer "+groq_key,"Content-Type":"application/json"})
-                if r.ok:
-                    data=r.json(); choices=data.get("choices") or []
-                    answer=clean(((choices[0].get("message") or {}).get("content") or "")) if choices else ""
-                    if answer: return answer,""
-                    logger.warning("Groq returned an empty response model=%s",model)
-                else:
-                    logger.warning("Groq request failed status=%s model=%s",r.status_code,model)
-                    if r.status_code in (401,403,429): break
-            except requests.Timeout:
-                logger.warning("Groq request timed out model=%s",model)
-            except requests.RequestException as exc:
-                logger.warning("Groq network error model=%s: %s",model,exc)
-            except Exception as exc:
-                logger.warning("Groq response error model=%s: %s",model,exc)
+def _ai_mark_provider_failure(name,error):
+    if error in {"rate_limited","timeout","network_error","provider_server_error"}:
+        _AI_PROVIDER_COOLDOWN[name]=datetime.now(timezone.utc).timestamp()+AI_PROVIDER_COOLDOWN_SECONDS
+    _AI_PROVIDER_FAILURES[name]=_AI_PROVIDER_FAILURES.get(name,0)+1
 
-    openai_answer, openai_err = ("", "preferred_other_provider") if preferred_is_gemini else _openai_call(prompt, system_prompt, max_output_tokens=max_output_tokens, timeout=min(int(timeout),30))
-    if openai_answer:
-        return openai_answer, ""
 
-    if not gemini_key:
-        return "", "missing_api_key"
+def _ai_extract_usage(data):
+    u=data.get("usage") or {}; return int(u.get("input_tokens") or u.get("prompt_tokens") or 0),int(u.get("output_tokens") or u.get("completion_tokens") or 0)
 
-    base=(os.getenv("GEMINI_API_URL") or "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
-    primary=cfg["model"]; fallback=cfg["fallback_model"]
-    payload={
-        "systemInstruction":{"parts":[{"text":system_prompt}]},
-        "contents":[{"role":"user","parts":[{"text":prompt}]}],
-        "generationConfig":{"maxOutputTokens":max_output_tokens,"temperature":0.7},
-    }
-    headers={"x-goog-api-key":gemini_key,"Content-Type":"application/json"}
-    _groq_models, gemini_models, openai_models = _ai_model_candidates()
-    models=[]
-    for model in ([primary, fallback] + gemini_models):
-        if model and model not in models: models.append(model)
-    for model in models:
-        endpoint=f"{base}/models/{model}:generateContent"
-        try:
-            r=requests.post(endpoint,json=payload,timeout=(5,min(int(timeout),12)),headers=headers)
-            if r.ok:
-                data=r.json(); parts=[]
-                for candidate in data.get("candidates") or []:
-                    for part in (candidate.get("content") or {}).get("parts") or []:
-                        if part.get("text"): parts.append(part["text"])
-                answer=clean("\n".join(parts))
-                if answer: return answer,""
-            elif r.status_code in (401,403): return "","authentication_failed"
-            elif r.status_code==429: return "","rate_limited"
-        except requests.Timeout:
-            logger.warning("Gemini request timed out model=%s",model)
-            continue
-        except requests.RequestException:
-            continue
-        except Exception:
-            continue
-    return "","timeout_or_provider_error"
 
-def _ai_stream(prompt, system_prompt, max_output_tokens=32768, timeout=90, preferred_model=None):
-    """Stream KOJA AI with multiple live model fallbacks."""
-    groq_key=(os.getenv("GROQ_API_KEY") or "").strip()
-    if groq_key and not (preferred_model and preferred_model.startswith("gemini-")) and not (preferred_model and preferred_model.startswith("gpt-")):
-        groq_models,_gemini_models,_openai_models=_ai_model_candidates()
-        for model in groq_models:
-            payload={
-                "model":model,
-                "messages":[{"role":"system","content":system_prompt},{"role":"user","content":prompt}],
-                "temperature":0.7,
-                "max_completion_tokens":max_output_tokens,
-                "stream":True,
-            }
-            try:
-                with requests.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    json=payload, stream=True, timeout=(5,min(int(timeout),90)),
-                    headers={"Authorization":"Bearer "+groq_key,"Content-Type":"application/json","Accept":"text/event-stream"},
-                ) as r:
-                    if not r.ok:
-                        logger.warning("Groq streaming failed status=%s model=%s",r.status_code,model)
-                        if r.status_code in (401,403,429):
-                            break
-                        continue
-                    got=False
-                    for line in r.iter_lines(decode_unicode=True):
-                        if not line: continue
-                        if isinstance(line,bytes): line=line.decode("utf-8","ignore")
-                        if not line.startswith("data:"): continue
-                        raw=line[5:].strip()
-                        if raw=="[DONE]": break
-                        try: data=json.loads(raw)
-                        except Exception: continue
-                        choices=data.get("choices") or []
-                        delta=(choices[0].get("delta") or {}).get("content") if choices else None
-                        if delta:
-                            got=True; yield {"type":"token","text":delta}
-                    if got:
-                        yield {"type":"done"}; return
-                    logger.warning("Groq streaming returned no text model=%s",model)
-            except requests.Timeout:
-                logger.warning("Groq streaming timed out model=%s",model)
-            except requests.RequestException as exc:
-                logger.warning("Groq streaming network error model=%s: %s",model,exc)
-            except Exception as exc:
-                logger.warning("Groq streaming error model=%s: %s",model,exc)
-
-    # OpenAI streaming fallback.
-    openai_key=(os.getenv("OPENAI_API_KEY") or "").strip()
-    if openai_key and not (preferred_model and preferred_model.startswith("gemini-")):
-        _,_,openai_models=_ai_model_candidates()
-        if preferred_model and preferred_model in openai_models:
-            openai_models=[preferred_model]+[m for m in openai_models if m!=preferred_model]
-        for model in openai_models:
-            payload={"model":model,"instructions":system_prompt,"input":prompt,"max_output_tokens":max_output_tokens,"stream":True}
-            try:
-                with requests.post("https://api.openai.com/v1/responses",json=payload,stream=True,timeout=(5,min(int(timeout),90)),headers={"Authorization":"Bearer "+openai_key,"Content-Type":"application/json","Accept":"text/event-stream"}) as r:
-                    if not r.ok:
-                        logger.warning("OpenAI streaming failed status=%s model=%s",r.status_code,model)
-                        if r.status_code in (401,403,429): break
-                        continue
-                    got=False
-                    for line in r.iter_lines(decode_unicode=True):
-                        if not line: continue
-                        if isinstance(line,bytes): line=line.decode("utf-8","ignore")
-                        if not line.startswith("data:"): continue
-                        raw=line[5:].strip()
-                        if raw=="[DONE]": break
-                        try:data=json.loads(raw)
-                        except Exception:continue
-                        delta=data.get("delta") if data.get("type")=="response.output_text.delta" else None
-                        if delta:
-                            got=True; yield {"type":"token","text":delta}
-                    if got:
-                        yield {"type":"done"}; return
-            except requests.Timeout:
-                logger.warning("OpenAI streaming timed out model=%s",model)
-            except requests.RequestException as exc:
-                logger.warning("OpenAI streaming network error model=%s: %s",model,exc)
-            except Exception as exc:
-                logger.warning("OpenAI streaming error model=%s: %s",model,exc)
-
-    # Final fallback chain. This keeps the browser endpoint responsive even if
-    # Groq, OpenAI, or Gemini has a transient failure.
-    answer,err=_ai_call(prompt,system_prompt,max_output_tokens=max_output_tokens,timeout=min(int(timeout),12),preferred_model=preferred_model)
-    if answer:
-        yield {"type":"token","text":answer}; yield {"type":"done"}
+def _ai_call_provider(provider,prompt,system_prompt,max_output_tokens=900,timeout=None):
+    timeout=timeout or AI_DEFAULT_TIMEOUT; name=provider["name"]; key=provider["key"]; endpoint=provider["endpoint"]; model=provider["model"]
+    headers={"Authorization":"Bearer "+key,"Content-Type":"application/json"}
+    if name=="gemini":
+        endpoint=endpoint+"/models/"+quote(model,safe="")+":generateContent?key="+quote(key,safe="")
+        payload={"systemInstruction":{"parts":[{"text":system_prompt}]},"contents":[{"role":"user","parts":[{"text":prompt}]}],"generationConfig":{"maxOutputTokens":max_output_tokens}}; headers={"Content-Type":"application/json"}
+    elif name=="cohere": payload={"model":model,"messages":[{"role":"system","content":system_prompt},{"role":"user","content":prompt}],"max_tokens":max_output_tokens}
+    elif provider["kind"]=="responses": payload={"model":model,"input":[{"role":"system","content":[{"type":"input_text","text":system_prompt}]},{"role":"user","content":[{"type":"input_text","text":prompt}]}],"max_output_tokens":max_output_tokens,"store":False}
     else:
-        yield {"type":"error","error":err or "timeout_or_provider_error"}
+        payload={"model":model,"messages":[{"role":"system","content":system_prompt},{"role":"user","content":prompt}],"max_tokens":max_output_tokens}
+        if name=="openrouter": headers["HTTP-Referer"]=SITE_URL; headers["X-Title"]=APP_NAME
+    try:
+        r=requests.post(endpoint,json=payload,timeout=timeout,headers=headers)
+        if not r.ok:
+            if r.status_code in (401,403): return "","authentication_failed",0,0
+            if r.status_code==404: return "","endpoint_or_model_not_found",0,0
+            if r.status_code==429: return "","rate_limited",0,0
+            if 500<=r.status_code<=599: return "","provider_server_error",0,0
+            return "",f"provider_http_{r.status_code}",0,0
+        data=r.json(); in_tokens=out_tokens=0
+        if name=="gemini":
+            candidates=data.get("candidates") or []; parts=[]
+            if candidates:
+                for part in (candidates[0].get("content") or {}).get("parts") or []:
+                    if part.get("text"): parts.append(part["text"])
+            text=clean("\n".join(parts)); meta=data.get("usageMetadata") or {}; in_tokens=int(meta.get("promptTokenCount") or 0); out_tokens=int(meta.get("candidatesTokenCount") or 0)
+        elif name=="cohere":
+            msg=data.get("message") or {}; content=msg.get("content") or []; text=clean("\n".join(x.get("text","") for x in content if isinstance(x,dict))); meta=data.get("usage") or {}; tok=meta.get("tokens") or {}; in_tokens=int(tok.get("input_tokens") or 0); out_tokens=int(tok.get("output_tokens") or 0)
+        elif provider["kind"]=="responses":
+            text=clean(data.get("output_text") or "")
+            if not text:
+                parts=[]
+                for item in data.get("output") or []:
+                    for content in item.get("content") or []:
+                        if content.get("type") in ("output_text","text") and content.get("text"): parts.append(content["text"])
+                text=clean("\n".join(parts))
+            in_tokens,out_tokens=_ai_extract_usage(data)
+        else:
+            choices=data.get("choices") or []; text=clean(((choices[0].get("message") or {}).get("content")) if choices else ""); in_tokens,out_tokens=_ai_extract_usage(data)
+        return (text,"",in_tokens,out_tokens) if text else ("","empty_provider_response",in_tokens,out_tokens)
+    except requests.Timeout: return "","timeout",0,0
+    except requests.RequestException: return "","network_error",0,0
+    except Exception: return "","invalid_provider_response",0,0
+
+
+def _ai_usage_limit(user_id):
+    if not user_id: return int(os.getenv("AI_ANONYMOUS_DAILY_REQUESTS","10"))
+    sub=first_row("koja_ai_subscriptions",{"user_id":user_id}) or {}; plan=clean(sub.get("plan") or "free").lower(); status=clean(sub.get("status") or "active").lower(); expires=clean(sub.get("expires_at"))
+    if plan!="free" and status not in ("active","paid","trialing"): plan="free"
+    if plan!="free" and expires:
+        try:
+            if datetime.fromisoformat(expires.replace("Z","+00:00"))<datetime.now(timezone.utc): plan="free"
+        except Exception: pass
+    return AI_PLAN_LIMITS.get(plan,AI_PLAN_LIMITS["free"])
+
+
+def _ai_usage_today(user_id):
+    if not user_id: return 0
+    row=first_row("koja_ai_usage",{"user_id":user_id,"usage_date":datetime.now(timezone.utc).date().isoformat()})
+    try: return int(row.get("requests") or 0) if row else 0
+    except Exception: return 0
+
+
+def _ai_usage_allowed(user_id):
+    used=_ai_usage_today(user_id); limit=_ai_usage_limit(user_id); return used<limit,used,limit
+
+
+def _ai_record_usage(user_id,input_tokens=0,output_tokens=0):
+    if not user_id: return
+    today=datetime.now(timezone.utc).date().isoformat(); row=first_row("koja_ai_usage",{"user_id":user_id,"usage_date":today})
+    if row:
+        db_update("koja_ai_usage",{"id":row.get("id")},{"requests":int(row.get("requests") or 0)+1,"input_tokens":int(row.get("input_tokens") or 0)+int(input_tokens or 0),"output_tokens":int(row.get("output_tokens") or 0)+int(output_tokens or 0),"updated_at":utc_now()})
+    else:
+        db_insert("koja_ai_usage",{"user_id":user_id,"usage_date":today,"requests":1,"input_tokens":int(input_tokens or 0),"output_tokens":int(output_tokens or 0),"created_at":utc_now(),"updated_at":utc_now()})
+
+
+def _ai_record_provider_event(user_id,provider,ok,error="",input_tokens=0,output_tokens=0):
+    if not table_exists("koja_ai_provider_events"): return
+    db_insert("koja_ai_provider_events",{"user_id":user_id,"provider":provider,"success":bool(ok),"error_code":error or None,"input_tokens":int(input_tokens or 0),"output_tokens":int(output_tokens or 0),"created_at":utc_now()})
+
+
+def _ai_call(prompt,system_prompt,max_output_tokens=900,timeout=40,user_id=None):
+    allowed,used,limit=_ai_usage_allowed(user_id)
+    if not allowed: return "","plan_limit","none",0,0
+    specs=[p for p in _ai_provider_specs() if p.get("key") and p.get("endpoint") and p.get("model")]
+    if not specs: return "","missing_api_key","none",0,0
+    attempts=0; errors=[]
+    for provider in specs:
+        if attempts>=AI_MAX_PROVIDER_ATTEMPTS: break
+        if not _ai_provider_available(provider): continue
+        for retry in range(AI_RETRY_TRANSIENT+1):
+            attempts+=1; text,error,in_tokens,out_tokens=_ai_call_provider(provider,prompt,system_prompt,max_output_tokens,timeout); _ai_record_provider_event(user_id,provider["name"],bool(text),error,in_tokens,out_tokens)
+            if text:
+                _ai_record_usage(user_id,in_tokens or max(1,len(prompt)//4),out_tokens or max(1,len(text)//4)); return text,"",provider["name"],in_tokens,out_tokens
+            errors.append(provider["name"]+":"+error)
+            if error in {"rate_limited","timeout","network_error","provider_server_error"}:
+                _ai_mark_provider_failure(provider["name"],error)
+                if retry<AI_RETRY_TRANSIENT: continue
+            break
+    return "","all_providers_failed:"+",".join(errors[-8:]),"none",0,0
+
+
+def _openai_text(prompt,system_prompt,max_output_tokens=900,timeout=40):
+    text,_error,_provider,_in,_out=_ai_call(prompt,system_prompt,max_output_tokens,timeout,(current_user() or {}).get("id")); return text
 
 
 def _ai_error_message(code):
-    return {
-        "missing_api_key":"Gemini API key is missing from the running Render service.",
-        "authentication_failed":"Gemini rejected the API key. Check that the key is valid and belongs to the configured Google AI project.",
-        "endpoint_or_model_not_found":"The Gemini endpoint or model was not found. Check GEMINI_MODEL.",
-        "rate_limited":"Gemini rate-limited the request. Wait and try again.",
-        "provider_server_error":"Gemini returned a server error. Try again shortly.",
-        "timeout":"The Gemini request timed out.",
-        "network_error":"KOJA could not reach Gemini from Render.",
-        "empty_provider_response":"Gemini returned no usable text.",
-        "invalid_provider_response":"KOJA received an unexpected Gemini response format.",
-        "safety_blocked":"Gemini blocked the request under its safety policies.",
-    }.get(code, "Gemini returned an error. Check the Render logs.")
-
-def _gemini_grounded_research(query, results):
-    """Primary KOJA Research synthesis: Gemini + native Google Search grounding.
-    Returns (answer, grounded_sources, error_code)."""
-    cfg=_ai_config_status()
-    api_key=(os.getenv("GEMINI_API_KEY") or "").strip()
-    if not api_key:
-        return "", [], "missing_api_key"
-    base=(os.getenv("GEMINI_API_URL") or "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
-    models=[]
-    for model in (cfg.get("model"), cfg.get("fallback_model")):
-        if model and model not in models: models.append(model)
-    intent=_research_intent(query)
-    domain=_research_domain(query)
-    source_text='\n\n'.join(
-        f"LOCAL EVIDENCE [{i+1}] {r.get('title','')} | {r.get('source','')} | {r.get('year') or 'n.d.'}\n"
-        f"{clean(r.get('snippet',''))[:1200]}\nURL: {r.get('url','')}"
-        for i,r in enumerate(results[:8])
-    )
-    system=(
-        "You are KOJA Research, a rigorous research assistant. "
-        "Use Google Search grounding to independently find and verify the best sources for the user's exact question. "
-        "Answer the exact question, not merely related topics. For definition questions, define the exact concept requested first. "
-        "Prefer authoritative sources, universities, government agencies, professional bodies, peer-reviewed literature and primary sources. "
-        "Reject keyword-only matches and unrelated pages. Do not use an album, song, film, fictional work, or unrelated philosophical page as evidence for a scientific definition. "
-        "Do not invent facts or citations. Keep the answer concise but useful. "
-        "Use numbered source citations [1], [2] immediately after factual claims. "
-        "Only cite sources that actually support the claim."
-    )
-    prompt=(
-        f"Research question: {query}\n"
-        f"Detected intent: {intent}; domain: {domain}.\n\n"
-        "First perform Google Search grounding as needed. Then synthesize the strongest evidence. "
-        "The local evidence below is supplementary; do not trust it merely because it contains matching words. "
-        "Return a direct answer followed by a short Evidence/Scope note.\n\n"
-        f"LOCAL EVIDENCE:\n{source_text or '(none)'}"
-    )
-    payload={
-        "systemInstruction":{"parts":[{"text":system}]},
-        "contents":[{"role":"user","parts":[{"text":prompt}]}],
-        "tools":[{"google_search":{}}],
-        "generationConfig":{"maxOutputTokens":1000,"temperature":0.2},
-    }
-    headers={"x-goog-api-key":api_key,"Content-Type":"application/json"}
-    last_error="provider_server_error"
-    for mi,model in enumerate(models):
-        try:
-            endpoint=f"{base}/models/{model}:generateContent"
-            resp=requests.post(endpoint,json=payload,timeout=35,headers=headers)
-            if not resp.ok:
-                if resp.status_code in (401,403): return "", [], "authentication_failed"
-                if resp.status_code==404:
-                    last_error="endpoint_or_model_not_found"; continue
-                if resp.status_code==429:
-                    last_error="rate_limited"; continue
-                last_error=f"provider_http_{resp.status_code}"; continue
-            data=resp.json()
-            cand=(data.get("candidates") or [{}])[0]
-            content=cand.get("content") or {}
-            parts=content.get("parts") or []
-            answer=clean("\n".join(str(x.get("text")) for x in parts if x.get("text")))
-            gm=cand.get("groundingMetadata") or {}
-            chunks=gm.get("groundingChunks") or []
-            grounded=[]
-            for i,ch in enumerate(chunks):
-                web=ch.get("web") or {}
-                url=clean(web.get("uri"))
-                title=clean(web.get("title")) or url
-                if not url: continue
-                grounded.append({"title":title,"url":url,"source":"Google Search","snippet":"Google-grounded source supporting KOJA Research.","year":None,"citations":0,"_grounded_index":i})
-            if answer:
-                return answer, grounded, ""
-            last_error="empty_provider_response"
-        except requests.Timeout:
-            last_error="timeout"
-        except requests.RequestException:
-            last_error="network_error"
-        except Exception as exc:
-            logger.warning("Grounded research parsing failed: %s",exc)
-            last_error="invalid_provider_response"
-    return "", [], last_error
+    if code=="plan_limit": return "Your KOJA AI daily plan limit has been reached. Upgrade your AI plan or try again tomorrow."
+    if code.startswith("all_providers_failed:"): return "All configured KOJA AI providers failed or were unavailable. KOJA will automatically retry healthy providers on the next request."
+    return {"missing_api_key":"No KOJA AI provider is configured on the running Render service.","authentication_failed":"An AI provider rejected its API key. Check the provider key in Render Environment Variables.","endpoint_or_model_not_found":"An AI endpoint or model was not found. Check the provider model and endpoint settings.","rate_limited":"An AI provider rate-limited the request; KOJA is failing over to another provider.","provider_server_error":"An AI provider returned a server error; KOJA is failing over to another provider.","timeout":"An AI provider timed out; KOJA is failing over to another provider.","network_error":"KOJA could not reach an AI provider from Render; another provider will be tried.","empty_provider_response":"The AI provider returned no usable text.","invalid_provider_response":"KOJA received an unexpected AI response format."}.get(code,"KOJA AI could not obtain a response from the configured providers.")
 
 
-def _groq_grounded_research(query, results):
-    """Fallback KOJA Research synthesis using Groq Compound web search."""
-    api_key=(os.getenv("GROQ_API_KEY") or "").strip()
-    if not api_key: return "", "missing_groq_api_key"
-    model=(os.getenv("GROQ_MODEL") or "groq/compound").strip()
-    intent=_research_intent(query); domain=_research_domain(query)
-    local='\n\n'.join(f"LOCAL EVIDENCE [{i+1}] {r.get('title','')} | {r.get('source','')} | {r.get('year') or 'n.d.'}\n{clean(r.get('snippet',''))[:1000]}\nURL: {r.get('url','')}" for i,r in enumerate(results[:8]))
-    system=("You are KOJA Research, a rigorous research assistant. Answer the exact research question. For definition questions, define the exact concept first. Use your built-in web search to verify information when needed. Prefer universities, government agencies, professional bodies, peer-reviewed literature and primary sources. Reject keyword-only or unrelated matches. Do not invent facts or citations. Use numbered source citations [1], [2] only when the source actually supports the claim. Return a direct answer followed by a concise Evidence/Scope note.")
-    prompt=f"Research question: {query}\nDetected intent: {intent}; domain: {domain}.\n\nLOCAL EVIDENCE (supplementary):\n{local or '(none)'}"
-    payload={"model":model,"messages":[{"role":"system","content":system},{"role":"user","content":prompt}],"temperature":0.2,"max_completion_tokens":1000}
-    try:
-        resp=requests.post("https://api.groq.com/openai/v1/chat/completions",json=payload,timeout=35,headers={"Authorization":f"Bearer {api_key}","Content-Type":"application/json"})
-        if not resp.ok:
-            if resp.status_code in (401,403): return "", "groq_authentication_failed"
-            if resp.status_code==429: return "", "groq_rate_limited"
-            return "", f"groq_http_{resp.status_code}"
-        data=resp.json(); choices=data.get("choices") or []
-        answer=clean(((choices[0].get("message") or {}).get("content") or "")) if choices else ""
-        return (answer, "") if answer else ("", "groq_empty_response")
-    except requests.Timeout: return "", "groq_timeout"
-    except requests.RequestException: return "", "groq_network_error"
-    except Exception: return "", "groq_invalid_response"
 
 
 def research_ai_summary(query, results):
-    if not query: return '', []
-    answer, grounded, error=_gemini_grounded_research(query, results)
-    if answer:
-        return answer, grounded
-    groq_answer, groq_error=_groq_grounded_research(query, results)
-    if groq_answer:
-        return groq_answer, []
-    # Deterministic fallback: never call a loose snippet concatenation a synthesized AI answer.
-    # Do not turn a rate-limit event into a misleading list of loosely related
-    # search snippets. The relevance gate above is the last line of defence.
+    if not query:
+        return '', []
     if not results:
-        return ("AI research synthesis is temporarily unavailable. " + _ai_error_message(error) +
-                "\n\nNo sufficiently relevant evidence passed KOJA's research-quality filter."), []
+        return 'No sufficiently relevant evidence was retrieved for this research question.', []
+    source_text='\n\n'.join(
+        f"[{i+1}] {r.get('title','')} ({r.get('source','')})\n"
+        f"{clean(r.get('snippet',''))[:1600]}\nURL: {r.get('url','')}"
+        for i,r in enumerate(results[:12])
+    )
+    user_id=(current_user() or {}).get('id') if current_user() else None
+    prompt=(
+        f"Research question: {query}\n\n"
+        "Use ONLY the retrieved evidence below. Answer the exact question. "
+        "Do not invent facts, citations, authors, dates or conclusions. "
+        "Put source-number citations [1], [2], etc. immediately after factual claims. "
+        "If evidence is insufficient, state that clearly. Finish with a concise Evidence Scope note.\n\n"
+        f"RETRIEVED EVIDENCE:\n{source_text}"
+    )
+    system=(
+        "You are KOJA Research, a rigorous evidence-grounded research assistant. "
+        "Synthesize only the supplied retrieved evidence. Prefer precise, professional answers. "
+        "Every substantive factual claim must be supported by the numbered evidence sources. "
+        "Never fabricate citations or claim to have verified information that is not supplied."
+    )
+    text,error,provider,_in,_out=_ai_call(prompt,system,1200,45,user_id)
+    if text:
+        return text, []
     highlights=[]
-    for r in results[:2]:
+    for i,r in enumerate(results[:5],1):
         ss=clean(r.get('snippet','')).replace('\n',' ')
-        if ss: highlights.append(f"{r.get('title','Source')}: {ss[:500]}")
-    fallback=("AI research synthesis is temporarily unavailable. " + _ai_error_message(error) +
-              "\n\nVerified relevant evidence:\n\n" + '\n\n'.join(highlights))
-    return fallback, []
-
+        if ss:
+            highlights.append(f"[{i}] {r.get('title','Source')}: {ss[:450]}")
+    msg=_ai_error_message(error)
+    return f"Evidence synthesis is temporarily unavailable. {msg}\n\nRetrieved evidence remains available below:\n\n"+'\n\n'.join(highlights), []
 
 # KOJA V4 citation engine: source-type-aware bibliography fields
 CITATION_STYLES={"apa":"APA 7th edition","mla":"MLA 9th edition","chicago":"Chicago Author–Date","harvard":"Harvard","vancouver":"Vancouver","ieee":"IEEE","ama":"AMA","oscola":"OSCOLA"}
@@ -2174,7 +1957,7 @@ def research_notes():
     bibliography=make_bibliography(results,style) if results else []
     return render_page('Research Notes', r'''<style>
 .notes-shell{max-width:1000px;margin:auto}.notes-toolbar{display:grid;grid-template-columns:1fr auto auto;gap:10px}.notes-body{line-height:1.8;font-size:1rem}.notes-body pre{white-space:pre-wrap;font:inherit}.ref{margin:10px 0}.note-actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}@media(max-width:700px){.notes-toolbar{grid-template-columns:1fr}.notes-body{font-size:.97rem}}
-</style><div class="notes-shell"><div class="hero"><h2> KOJA Research Notes</h2><p>Convert verified research evidence into structured academic notes.</p><form method="get" action="{{ url_for('research_notes') }}" class="notes-toolbar"><input name="q" value="{{ q }}" placeholder="Enter your research topic…" required><select name="style">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select><button class="btn">Write Notes</button></form></div>{% if q %}<div class="note-actions"><button class="btn secondary" type="button" onclick="copyKOJANotes()">Copy Notes</button><button class="btn secondary" type="button" onclick="window.print()">Print</button><a class="btn secondary" href="{{ url_for('research',q=q,style=style) }}">View Research Evidence</a></div><div class="card"><strong>{{ results|length }} ranked evidence sources</strong></div><div id="koja-notes" class="card notes-body"><pre>{{ notes }}</pre></div>{% if bibliography %}<div class="card"><h3>References</h3>{% for n,ref in bibliography %}<div class="ref">{{ n }}. {{ ref|safe }}</div>{% endfor %}</div>{% endif %}<script>function copyKOJANotes(){const el=document.getElementById('koja-notes');navigator.clipboard.writeText(el.innerText).then(()=>alert('Research notes copied.')).catch(()=>alert('Select and copy the notes manually.'))}</script>{% else %}<div class="card"><h3>Research note methodology</h3><p>1. Searches multiple evidence sources.</p><p>2. Remove from Workspaces duplicates and ranks relevance.</p><p>3. Gives the AI only the strongest evidence.</p><p>4. Produces connected academic paragraphs with source citations.</p><p>5. Generates a bibliography in your selected citation style.</p></div>{% endif %}</div>''',q=q,style=style,citation_styles=CITATION_STYLES,results=results,notes=notes,bibliography=bibliography)
+</style><div class="notes-shell"><div class="hero"><h2> KOJA Research Notes</h2><p>Turn ranked research evidence into clear, connected academic notes.</p><form method="get" action="{{ url_for('research_notes') }}" class="notes-toolbar"><input name="q" value="{{ q }}" placeholder="Enter your research topic…" required><select name="style">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select><button class="btn">Write Notes</button></form></div>{% if q %}<div class="note-actions"><button class="btn secondary" type="button" onclick="copyKOJANotes()">Copy Notes</button><button class="btn secondary" type="button" onclick="window.print()">Print</button><a class="btn secondary" href="{{ url_for('research',q=q,style=style) }}">View Evidence</a></div><div class="card"><strong>{{ results|length }} ranked evidence sources</strong></div><div id="koja-notes" class="card notes-body"><pre>{{ notes }}</pre></div>{% if bibliography %}<div class="card"><h3>References</h3>{% for n,ref in bibliography %}<div class="ref">{{ n }}. {{ ref|safe }}</div>{% endfor %}</div>{% endif %}<script>function copyKOJANotes(){const el=document.getElementById('koja-notes');navigator.clipboard.writeText(el.innerText).then(()=>alert('Research notes copied.')).catch(()=>alert('Select and copy the notes manually.'))}</script>{% else %}<div class="card"><h3>How KOJA writes notes</h3><p>1. Searches multiple evidence sources.</p><p>2. Removes duplicates and ranks relevance.</p><p>3. Gives the AI only the strongest evidence.</p><p>4. Produces connected academic paragraphs with source citations.</p><p>5. Generates a bibliography in your selected citation style.</p></div>{% endif %}</div>''',q=q,style=style,citation_styles=CITATION_STYLES,results=results,notes=notes,bibliography=bibliography)
 
 @app.route('/research')
 def research():
@@ -2197,9 +1980,9 @@ def research():
 /* KOJA RESEARCH 2090 — visual layer only */
 .research-shell{max-width:1180px;margin:auto;position:relative}.research-shell:before{content:"";position:fixed;inset:0;pointer-events:none;background-image:radial-gradient(circle at 15% 20%,rgba(60,140,255,.12) 0 1px,transparent 1px),radial-gradient(circle at 80% 70%,rgba(255,60,90,.08) 0 1px,transparent 1px);background-size:28px 28px,42px 42px;z-index:-1}.research-welcome{padding:42px 16px 24px;text-align:center}.research-welcome h2{font-size:clamp(2rem,5vw,4rem);letter-spacing:-.045em;margin:0;background:linear-gradient(90deg,#fff,#78b7ff,#ff7184);-webkit-background-clip:text;background-clip:text;color:transparent}.research-welcome p{max-width:760px;margin:14px auto;color:rgba(255,255,255,.68);font-size:1rem}.research-shell .hero{background:linear-gradient(135deg,rgba(10,20,38,.92),rgba(18,28,52,.78));border:1px solid rgba(120,180,255,.22);box-shadow:0 20px 70px rgba(0,0,0,.28),inset 0 1px rgba(255,255,255,.06);backdrop-filter:blur(18px);border-radius:28px}.research-search{display:flex;flex-direction:column;gap:8px;background:rgba(127,127,127,.08);border:1px solid rgba(127,127,127,.18);padding:10px 12px;border-radius:24px}.research-search textarea{width:100%;min-width:0;resize:none;min-height:105px;max-height:280px;border:0!important;background:transparent!important;box-shadow:none!important;font-size:1.05rem;padding:14px 10px!important;outline:none}.research-composer-bottom{display:flex;align-items:center;gap:8px}.research-composer-actions{display:flex;align-items:center;gap:6px}.research-icon{width:42px!important;height:42px!important;margin:0!important;padding:0!important;border-radius:50%!important;display:inline-flex!important;align-items:center;justify-content:center;font-size:1.2rem;cursor:pointer}.research-send{margin-left:auto!important;width:44px!important;height:44px!important;border-radius:50%!important;padding:0!important;display:inline-flex!important;align-items:center;justify-content:center;font-size:1.15rem}.research-file-name{font-size:.78rem;opacity:.72;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:55%}.research-recording{font-size:.78rem;font-weight:700;display:none}.research-search .btn{border-radius:22px;padding:10px 18px}.research-filters{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px}.research-filters label{font-size:.78rem;font-weight:700;opacity:.9}.research-filters select,.research-filters input{width:100%;margin-top:5px}.research-tabs{display:flex;gap:8px;overflow:auto;margin:14px 0;padding-bottom:2px}.research-tabs a{white-space:nowrap;border-radius:20px}.source-badge{display:inline-block;padding:5px 10px;border-radius:999px;background:rgba(80,150,255,.14);font-size:.74rem;font-weight:800}.research-result{border-radius:18px!important;margin-bottom:12px}.research-result h3{line-height:1.35;margin:9px 0}.research-result h3 a{text-decoration:none}.research-meta{font-size:.82rem;opacity:.72}.research-summary{border:1px solid rgba(98,168,255,.28);border-radius:18px!important;background:rgba(98,168,255,.06)}.research-summary pre{white-space:pre-wrap;font:inherit;line-height:1.7;margin:0}.research-count{font-weight:700}.research-empty{padding:35px;text-align:center;border-radius:18px!important}.research-command{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}.research-command .btn{border-radius:999px}.research-result{position:relative;overflow:hidden}.research-result:before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:linear-gradient(#4da3ff,#ff536b);opacity:.85}.research-result h3 a{color:inherit}.research-answer-label{letter-spacing:.08em;text-transform:uppercase;font-size:.78rem}.research-tabs{scrollbar-width:thin}.research-answer-label{font-weight:800;margin-bottom:10px}.research-source-list{margin-top:6px}.research-source-list .card{border-radius:18px!important}@media(max-width:700px){.research-search{border-radius:18px}.research-filters{grid-template-columns:1fr 1fr}.research-result{padding:16px!important}}@media(max-width:480px){.research-filters{grid-template-columns:1fr}}
 </style>
-<div class="research-shell"><div class="research-2090-kicker">KOJA RESEARCH • PROFESSIONAL EVIDENCE WORKSPACE</div><div class="research-welcome"><div style="font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;opacity:.62;margin-bottom:8px">KOJA RESEARCH // 2090</div><h2>Research with precision. Understand with evidence.</h2><p>Enter a research question, topic, or evidence request. KOJA Research searches web, academic literature, Wikipedia and your KOJA documents, then brings the evidence together.</p></div><div class="hero"><form method="get" action="{{ url_for('research') }}" class="research-search" id="research-composer"><textarea name="q" rows="3" maxlength="2000" placeholder="Ask anything you want to research…" aria-label="Research question" autofocus>{{ q }}</textarea><div class="research-composer-bottom"><div class="research-composer-actions"><label class="btn secondary research-icon" title="Attach a document" aria-label="Attach a document"><input id="research-file" type="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp" hidden></label><button class="btn secondary research-icon" id="research-record" type="button" title="Record voice" aria-label="Record voice">️</button><span class="research-recording" id="research-recording">● Recording…</span><span class="research-file-name" id="research-file-name"></span></div><button class="btn research-send" type="submit" title="Send research question" aria-label="Send research question"></button></div></form>
+<div class="research-shell"><div class="research-welcome"><div style="font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;opacity:.62;margin-bottom:8px">KOJA RESEARCH // 2090</div><h2>Research anything. Understand everything.</h2><p>Ask a full question, attach a document, or use your voice. KOJA Research searches web, academic literature, Wikipedia and your KOJA documents, then brings the evidence together.</p></div><div class="hero"><form method="get" action="{{ url_for('research') }}" class="research-search" id="research-composer"><textarea name="q" rows="3" maxlength="2000" placeholder="Ask anything you want to research…" aria-label="Research question" autofocus>{{ q }}</textarea><div class="research-composer-bottom"><div class="research-composer-actions"><label class="btn secondary research-icon" title="Attach a document" aria-label="Attach a document"><input id="research-file" type="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp" hidden></label><button class="btn secondary research-icon" id="research-record" type="button" title="Record voice" aria-label="Record voice">️</button><span class="research-recording" id="research-recording">● Recording…</span><span class="research-file-name" id="research-file-name"></span></div><button class="btn research-send" type="submit" title="Send research question" aria-label="Send research question"></button></div></form>
 <script>(function(){const box=document.querySelector('#research-composer textarea[name="q"]');const file=document.getElementById('research-file');const name=document.getElementById('research-file-name');const rec=document.getElementById('research-record');const recLabel=document.getElementById('research-recording');let media=null,chunks=[];if(box){const grow=()=>{box.style.height='auto';box.style.height=Math.min(box.scrollHeight,280)+'px'};box.addEventListener('input',grow);grow()}if(file){file.addEventListener('change',()=>{name.textContent=file.files&&file.files[0]?file.files[0].name:''})}if(rec&&navigator.mediaDevices&&window.MediaRecorder){rec.addEventListener('click',async()=>{if(media){media.stop();return}try{const stream=await navigator.mediaDevices.getUserMedia({audio:true});media=new MediaRecorder(stream);chunks=[];media.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};media.onstop=()=>{const blob=new Blob(chunks,{type:'audio/webm'});const url=URL.createObjectURL(blob);name.textContent='Voice recording ready ('+Math.round(blob.size/1024)+' KB)';const a=document.createElement('a');a.href=url;a.download='koja-research-question.webm';a.style.display='none';document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(url);a.remove()},1000);stream.getTracks().forEach(t=>t.stop());media=null;rec.textContent='️';recLabel.style.display='none'};media.start();rec.textContent='⏹️';recLabel.style.display='inline';}catch(e){alert('Microphone permission is required to record.')}})}})();</script><div class="research-filters"><label>Source<select name="source" form="research-filter-form"><option value="all" {% if source_filter=='all' %}selected{% endif %}>All sources</option><option value="academic" {% if source_filter=='academic' %}selected{% endif %}>Academic</option><option value="web" {% if source_filter=='web' %}selected{% endif %}>Web</option><option value="wikipedia" {% if source_filter=='wikipedia' %}selected{% endif %}>Wikipedia</option><option value="koja" {% if source_filter=='koja' %}selected{% endif %}>KOJA Documents</option></select></label><label>Year<input name="year" form="research-filter-form" value="{{ year or '' }}" placeholder="e.g. 2025" inputmode="numeric"></label><label>Author<input name="author" form="research-filter-form" value="{{ author }}" placeholder="Academic author"></label><label>Citation style<select name="style" form="research-filter-form">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Source type<select name="source_type" form="research-filter-form"><option value="all">All source types</option>{% for k,v in source_types.items() %}<option value="{{k}}" {% if source_type==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Sort<select name="sort" form="research-filter-form"><option value="relevance" {% if sort=='relevance' %}selected{% endif %}>Relevance</option><option value="date" {% if sort=='date' %}selected{% endif %}>Newest first</option><option value="citations" {% if sort=='citations' %}selected{% endif %}>Most cited</option></select></label></div><form id="research-filter-form" method="get" action="{{ url_for('research') }}"><input type="hidden" name="q" value="{{ q }}"></form></div>
-{% if q %}<div class="note-actions"><a class="btn" href="{{ url_for('research_notes',q=q,style=style) }}"> Generate Research Notes</a><a class="btn secondary" href="{{ url_for('research') }}">New research</a></div><div class="research-tabs"><a class="btn" href="{{ url_for('research_unified',q=q) }}">Unified Research</a><a class="btn secondary" href="{{ url_for('research_workspace') }}">Workspace</a><a class="btn secondary" href="{{ url_for('research_history') }}">History</a><a class="btn secondary" href="{{ url_for('research_compare',q1=q) }}">Compare Sources</a><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}"> Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}"> Web</a><a class="btn secondary" href="{{ url_for('research_unified',q=q,kind='web') }}">Web Search</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}"> KOJA Documents</a></div><div class="card"><span class="research-count">{{ results|length }} ranked sources</span> found for <strong>“{{ q }}”</strong><p class="small" style="margin-top:8px">KOJA combines multiple research angles, academic literature, web sources and KOJA Documents; it removes duplicates, filters weak matches, ranks evidence and then uses KOJA AI to synthesize the strongest evidence.</p></div>{% if summary %}<div class="card research-summary"><div class="research-answer-label"> KOJA Evidence-Based Research Answer</div><pre>{{ summary }}</pre><p class="small">AI summaries use configured AI credentials when available; otherwise KOJA shows source-based highlights. Verify important claims against original sources.</p></div>{% endif %}{% for r in results %}<div class="card research-result"><span class="source-badge">{{ r.source }}</span><h3><a href="{{ r.url or '#' }}" {% if r.url %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a></h3>{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p><p><strong>In-text:</strong> {{ make_intext(r,style,loop.index) }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open Original Source Source</a>{% endif %}</div>{% else %}<div class="card research-empty"><h3>No relevant evidence identified</h3><p>Refine the query, adjust the filters, or select another research source.</p></div>{% endfor %}{% if bibliography %}<div class="card"><h2>References</h2><p class="small">Generated from available source metadata. Verify against the original source.</p>{% for n,ref in bibliography %}<p style="padding-left:28px;text-indent:-28px;line-height:1.6">{{ ref|safe }}</p>{% endfor %}</div>{% endif %}{% else %}<div class="grid"><div class="card"><h3> Research Discovery</h3><p>KOJA searches across multiple research sources and filters weak or unrelated matches.</p></div><div class="card"><h3> Academic Search</h3><p>OpenAlex and Crossref provide scholarly metadata, authors, years and citation information.</p></div><div class="card"><h3> KOJA Documents</h3><p>Search documents already connected to your KOJA Supabase database.</p></div><div class="card"><h3> AI Research Summary</h3><p>Configure an AI API key to synthesize retrieved evidence with source-number citations.</p></div></div>{% endif %}</div>
+{% if q %}<div class="note-actions"><a class="btn" href="{{ url_for('research_notes',q=q,style=style) }}"> Write Research Notes</a><a class="btn secondary" href="{{ url_for('research') }}">＋ New research</a></div><div class="research-tabs"><a class="btn" href="{{ url_for('research_unified',q=q) }}">Unified Research</a><a class="btn secondary" href="{{ url_for('research_workspace') }}">Workspace</a><a class="btn secondary" href="{{ url_for('research_history') }}">History</a><a class="btn secondary" href="{{ url_for('research_compare',q1=q) }}">Compare</a><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}"> Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}"> Web</a><a class="btn secondary" href="{{ url_for('research_unified',q=q,kind='web') }}">Web Search</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}"> KOJA Documents</a></div><div class="card"><span class="research-count">{{ results|length }} ranked sources</span> found for <strong>“{{ q }}”</strong><p class="small" style="margin-top:8px">KOJA combines multiple research angles, academic literature, web sources and KOJA Documents; it removes duplicates, filters weak matches, ranks evidence and then uses KOJA AI to synthesize the strongest evidence.</p></div>{% if summary %}<div class="card research-summary"><div class="research-answer-label"> KOJA Research Answer</div><pre>{{ summary }}</pre><p class="small">Evidence synthesis uses the KOJA multi-provider AI router. Source citations correspond to the retrieved evidence shown on this page.</p></div>{% endif %}{% for r in results %}<div class="card research-result"><span class="source-badge">{{ r.source }}</span><h3><a href="{{ r.url or '#' }}" {% if r.url %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a></h3>{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p><p><strong>In-text:</strong> {{ make_intext(r,style,loop.index) }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open original source ↗</a>{% endif %}</div>{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endfor %}{% if bibliography %}<div class="card"><h2>References</h2><p class="small">Generated from available source metadata. Verify against the original source.</p>{% for n,ref in bibliography %}<p style="padding-left:28px;text-indent:-28px;line-height:1.6">{{ ref|safe }}</p>{% endfor %}</div>{% endif %}{% else %}<div class="grid"><div class="card"><h3> Research Discovery</h3><p>KOJA searches across multiple research sources and filters weak or unrelated matches.</p></div><div class="card"><h3> Academic Search</h3><p>OpenAlex and Crossref provide scholarly metadata, authors, years and citation information.</p></div><div class="card"><h3> KOJA Documents</h3><p>Search documents already connected to your KOJA Supabase database.</p></div><div class="card"><h3>Evidence Synthesis</h3><p>KOJA AI uses the configured multi-provider research router to synthesize retrieved evidence with source-number citations.</p></div></div>{% endif %}</div>
 ''',q=q,results=results,summary=summary,source_filter=source_filter,sort=sort,year=year,author=author,style=style,source_type=source_type,citation_styles=CITATION_STYLES,source_types=SOURCE_TYPES,bibliography=bibliography,make_intext=make_intext,SITE_URL=SITE_URL)
 
 
@@ -2207,7 +1990,7 @@ def research():
 # ============================================================
 # KOJA RESEARCH UNIFIED ENGINE — ADDITIVE EXTENSION
 # Web + News + Images + YouTube + Books + Academic + KOJA Docs
-# Workspace + History + Compare Sources + Related + Export + API
+# Workspace + History + Compare + Related + Export + API
 # Existing Research routes/providers remain intact.
 # ============================================================
 
@@ -2405,17 +2188,17 @@ def research_unified():
         results=[r for r in results if str(r.get('source','')).lower() in mapping[kind]]
     return render_page('KOJA Unified Research',r'''
 <style>.ur{max-width:1240px;margin:auto;position:relative}.ur:before{content:"";position:fixed;inset:0;pointer-events:none;background-image:linear-gradient(rgba(80,150,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(80,150,255,.035) 1px,transparent 1px);background-size:36px 36px;z-index:-1}.ur .hero{background:linear-gradient(135deg,rgba(8,18,35,.94),rgba(24,28,55,.8));border:1px solid rgba(100,170,255,.2);box-shadow:0 24px 80px rgba(0,0,0,.3);backdrop-filter:blur(20px);border-radius:30px;padding:28px}.ur h1{font-size:clamp(2rem,5vw,4rem);letter-spacing:-.05em;background:linear-gradient(90deg,#fff,#70b4ff,#ff657b);-webkit-background-clip:text;background-clip:text;color:transparent}.ur-search{display:flex;gap:10px}.ur-search input{flex:1;border-radius:999px!important;padding:16px 20px!important}.ur-search button{border-radius:999px!important;padding:0 26px!important}.ur-tabs{display:flex;gap:8px;overflow:auto;margin:18px 0;padding-bottom:4px}.ur-tabs a{white-space:nowrap;border-radius:999px}.ur-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.ur-card{overflow:hidden;border-radius:22px!important;border:1px solid rgba(120,180,255,.13);background:rgba(12,20,35,.72);box-shadow:0 12px 40px rgba(0,0,0,.2)}.ur-card h3{line-height:1.35}.ur-img{width:100%;max-height:280px;object-fit:cover;border-radius:16px}.ur-video{width:100%;aspect-ratio:16/9;border:0;border-radius:16px}.ur-meta{font-size:.8rem;opacity:.7}.ur-actions{display:flex;gap:8px;flex-wrap:wrap}.ur-actions .btn{border-radius:999px}@media(max-width:700px){.ur-grid{grid-template-columns:1fr}.ur-search{flex-direction:column}.ur-search button{min-height:48px}} </style>
-<div class="ur"><div class="hero"><h1>KOJA Unified Research</h1><p>Search web, scholarly literature, books, video, news, images, and KOJA Documents from one professional workspace.</p><form class="ur-search" method="get"><input name="q" value="{{q}}" placeholder="Enter a research question or topic…" autofocus><button class="btn">Search</button></form></div>
+<div class="ur"><div class="hero"><h1>KOJA Unified Research</h1><p>Search web, academic literature, books, videos, news, images and KOJA Documents from one place.</p><form class="ur-search" method="get"><input name="q" value="{{q}}" placeholder="Research anything…" autofocus><button class="btn">Search</button></form></div>
 {% if q %}<div class="ur-tabs">{% for k,n in [('all','All'),('web','Web'),('academic','Academic'),('book','Books'),('video','Videos'),('news','News'),('image','Images'),('documents','Documents')] %}<a class="btn secondary" href="{{url_for('research_unified',q=q,kind=k)}}">{{n}}</a>{% endfor %}</div>
 <div class="card"><strong>{{results|length}} results</strong> for “{{q}}” <span class="small"> · source retrieval is cached briefly for speed.</span></div>
-<div class="ur-grid">{% for r in results %}<div class="card ur-card"><span class="source-badge">{{r.source}}</span><h3>{{r.title}}</h3>{% if r.image_url %}<img class="ur-img" src="{{r.image_url}}" loading="lazy">{% endif %}{% if r.embed_url %}<iframe class="ur-video" src="{{r.embed_url}}" title="{{r.title}}" allowfullscreen loading="lazy"></iframe>{% endif %}<p class="ur-meta">{% if r.year %}{{r.year}} · {% endif %}{{r.channel or r.publisher or ''}}</p><p>{{r.snippet}}</p><div class="ur-actions">{% if r.url %}<a class="btn secondary" href="{{url_for('research_read',url=r.url)}}">Read in KOJA</a><a class="btn secondary" href="{{r.url}}" target="_blank" rel="noopener noreferrer">Original Source</a>{% endif %}{% if r.download_url %}<a class="btn" href="{{r.download_url}}" target="_blank" rel="noopener noreferrer">Download {{r.download_format|upper}}</a>{% endif %}<a class="btn secondary" href="{{url_for('research_workspace_add')}}?title={{r.title|urlencode}}&url={{r.url|urlencode}}&source={{r.source|urlencode}}">Save to Workspace</a></div></div>{% else %}<div class="card"><h3>No relevant results</h3><p>Refine the query or select another source category.</p></div>{% endfor %}</div>{% else %}<div class="grid"><div class="card"><h3>Web</h3><p>General web discovery.</p></div><div class="card"><h3>Academic</h3><p>OpenAlex, Crossref and arXiv.</p></div><div class="card"><h3>Books</h3><p>Open Library, Internet Archive and Project Gutenberg.</p></div><div class="card"><h3>Media</h3><p>YouTube, news and Wikimedia images.</p></div></div>{% endif %}</div>
+<div class="ur-grid">{% for r in results %}<div class="card ur-card"><span class="source-badge">{{r.source}}</span><h3>{{r.title}}</h3>{% if r.image_url %}<img class="ur-img" src="{{r.image_url}}" loading="lazy">{% endif %}{% if r.embed_url %}<iframe class="ur-video" src="{{r.embed_url}}" title="{{r.title}}" allowfullscreen loading="lazy"></iframe>{% endif %}<p class="ur-meta">{% if r.year %}{{r.year}} · {% endif %}{{r.channel or r.publisher or ''}}</p><p>{{r.snippet}}</p><div class="ur-actions">{% if r.url %}<a class="btn secondary" href="{{url_for('research_read',url=r.url)}}">Read in KOJA</a><a class="btn secondary" href="{{r.url}}" target="_blank" rel="noopener noreferrer">Original</a>{% endif %}{% if r.download_url %}<a class="btn" href="{{r.download_url}}" target="_blank" rel="noopener noreferrer">Download {{r.download_format|upper}}</a>{% endif %}<a class="btn secondary" href="{{url_for('research_workspace_add')}}?title={{r.title|urlencode}}&url={{r.url|urlencode}}&source={{r.source|urlencode}}">Save</a></div></div>{% else %}<div class="card"><h3>No results</h3><p>Try another query or source category.</p></div>{% endfor %}</div>{% else %}<div class="grid"><div class="card"><h3>Web</h3><p>General web discovery.</p></div><div class="card"><h3>Academic</h3><p>OpenAlex, Crossref and arXiv.</p></div><div class="card"><h3>Books</h3><p>Open Library, Internet Archive and Project Gutenberg.</p></div><div class="card"><h3>Media</h3><p>YouTube, news and Wikimedia images.</p></div></div>{% endif %}</div>
 ''',q=q,kind=kind,results=results)
 
 
 @app.route('/research/workspace')
 @login_required
 def research_workspace():
-    return render_page('Research Workspace',r'''<div class="hero"><h1>Research Workspace</h1><p>Keep sources, notes and evidence together for your current research.</p></div><div class="card"><div class="actions"><a class="btn" href="{{url_for('research_unified')}}">Search</a><a class="btn secondary" href="{{url_for('research_notes')}}">Research Notes</a><a class="btn secondary" href="{{url_for('research_compare')}}">Compare Sources</a></div></div>{% for r in items %}<div class="card"><span class="source-badge">{{r.source}}</span><h3>{{r.title}}</h3><p>{{r.url}}</p><a class="btn secondary" href="{{r.url}}" target="_blank" rel="noopener noreferrer">Open</a><a class="btn secondary" href="{{url_for('research_workspace_remove',idx=loop.index0)}}">Remove from Workspace</a></div>{% else %}<div class="card"><p>Your workspace is currently empty. Save to Workspace relevant sources from Unified Research.</p></div>{% endfor %}''',items=_research_workspace())
+    return render_page('Research Workspace',r'''<div class="hero"><h1>Research Workspace</h1><p>Keep sources, notes and evidence together for your current research.</p></div><div class="card"><div class="actions"><a class="btn" href="{{url_for('research_unified')}}">Search</a><a class="btn secondary" href="{{url_for('research_notes')}}">Research Notes</a><a class="btn secondary" href="{{url_for('research_compare')}}">Compare</a></div></div>{% for r in items %}<div class="card"><span class="source-badge">{{r.source}}</span><h3>{{r.title}}</h3><p>{{r.url}}</p><a class="btn secondary" href="{{r.url}}" target="_blank" rel="noopener noreferrer">Open</a><a class="btn secondary" href="{{url_for('research_workspace_remove',idx=loop.index0)}}">Remove</a></div>{% else %}<div class="card"><p>Your workspace is empty. Save sources from Unified Research.</p></div>{% endfor %}''',items=_research_workspace())
 
 
 @app.route('/research/workspace/add')
@@ -2439,7 +2222,7 @@ def research_workspace_remove(idx):
 @login_required
 def research_history():
     history=session.get('koja_research_history') or []
-    return render_page('Research History',r'''<div class="hero"><h1>Research History</h1><p>Your recent KOJA Research queries and sessions.</p></div><div class="card">{% for q in history %}<p><a class="btn secondary" href="{{url_for('research_unified',q=q)}}">{{q}}</a></p>{% else %}<p>No research history is available yet.</p>{% endfor %}</div>''',history=history)
+    return render_page('Research History',r'''<div class="hero"><h1>Research History</h1><p>Your recent KOJA Research queries on this device/session.</p></div><div class="card">{% for q in history %}<p><a class="btn secondary" href="{{url_for('research_unified',q=q)}}">{{q}}</a></p>{% else %}<p>No research history yet.</p>{% endfor %}</div>''',history=history)
 
 
 @app.route('/research/related')
@@ -2458,7 +2241,7 @@ def research_related():
 def research_compare():
     q1=_research_normalize_query(request.args.get('q1','')); q2=_research_normalize_query(request.args.get('q2',''))
     a=_research_unified(q1)[:8] if q1 else []; b=_research_unified(q2)[:8] if q2 else []
-    return render_page('Research Comparison',r'''<div class="hero"><h1>Research Comparison</h1><form class="grid"><input name="q1" value="{{q1}}" placeholder="First research topic or source"><input name="q2" value="{{q2}}" placeholder="Second research topic or source"><button class="btn">Compare Sources</button></form></div>{% if q1 or q2 %}<div class="grid"><div class="card"><h2>{{q1 or 'First'}}</h2>{% for r in a %}<p><strong>{{r.title}}</strong><br>{{r.snippet}}</p>{% else %}<p>No relevant evidence identified.</p>{% endfor %}</div><div class="card"><h2>{{q2 or 'Second'}}</h2>{% for r in b %}<p><strong>{{r.title}}</strong><br>{{r.snippet}}</p>{% else %}<p>No relevant evidence identified.</p>{% endfor %}</div></div>{% endif %}''',q1=q1,q2=q2,a=a,b=b)
+    return render_page('Research Comparison',r'''<div class="hero"><h1>Compare Research</h1><form class="grid"><input name="q1" value="{{q1}}" placeholder="First topic/source"><input name="q2" value="{{q2}}" placeholder="Second topic/source"><button class="btn">Compare</button></form></div>{% if q1 or q2 %}<div class="grid"><div class="card"><h2>{{q1 or 'First'}}</h2>{% for r in a %}<p><strong>{{r.title}}</strong><br>{{r.snippet}}</p>{% else %}<p>No evidence.</p>{% endfor %}</div><div class="card"><h2>{{q2 or 'Second'}}</h2>{% for r in b %}<p><strong>{{r.title}}</strong><br>{{r.snippet}}</p>{% else %}<p>No evidence.</p>{% endfor %}</div></div>{% endif %}''',q1=q1,q2=q2,a=a,b=b)
 
 
 @app.route('/research/export/docx')
@@ -2468,7 +2251,7 @@ def research_export_docx():
     if DocxDocument is None: return jsonify(error='DOCX export is not available in this deployment.'),501
     doc=DocxDocument(); doc.add_heading('KOJA Research',0); doc.add_paragraph(q)
     summary=research_ai_summary(q,results) if q else ''
-    if summary: doc.add_heading('Evidence-Based Research Answer',1); doc.add_paragraph(summary)
+    if summary: doc.add_heading('Research Answer',1); doc.add_paragraph(summary)
     doc.add_heading('Sources',1)
     for i,r in enumerate(results,1): doc.add_paragraph(f'[{i}] {r.get("title","Untitled")} — {r.get("source","")}\n{r.get("url","")}\n{r.get("snippet","")}')
     stream=io.BytesIO(); doc.save(stream); stream.seek(0)
@@ -2487,7 +2270,7 @@ def research_export_pdf():
         return jsonify(error='PDF export requires reportlab in requirements.txt.'),501
     stream=io.BytesIO(); doc=SimpleDocTemplate(stream,pagesize=A4); styles=getSampleStyleSheet(); story=[Paragraph('KOJA Research',styles['Title']),Paragraph(q or 'Research',styles['Heading2']),Spacer(1,12)]
     summary=research_ai_summary(q,results) if q else ''
-    if summary: story += [Paragraph('Evidence-Based Research Answer',styles['Heading2']),Paragraph(clean(summary).replace('&','&amp;'),styles['BodyText']),Spacer(1,10)]
+    if summary: story += [Paragraph('Research Answer',styles['Heading2']),Paragraph(clean(summary).replace('&','&amp;'),styles['BodyText']),Spacer(1,10)]
     for i,r in enumerate(results,1): story += [Paragraph(f'[{i}] {clean(r.get("title","Untitled")).replace("&","&amp;")}',styles['Heading3']),Paragraph(clean(r.get('snippet','')).replace('&','&amp;'),styles['BodyText']),Spacer(1,8)]
     doc.build(story); stream.seek(0); return send_file(stream,as_attachment=True,download_name='koja-research.pdf',mimetype='application/pdf')
 
@@ -2629,7 +2412,7 @@ def ai_assistant():
       {% for item in messages %}<div class="koja-ai-msg {{ 'user' if item.role=='user' else 'assistant' }}"><div class="koja-ai-bubble">{% if item.role!='user' %}<strong>KOJA AI</strong><br>{% endif %}{{ item.content }}</div></div>{% endfor %}
     {% else %}<div class="koja-ai-empty"><h2>How can I help?</h2><p>Ask KOJA AI anything.</p></div>{% endif %}
     </div>
-    <div class="koja-ai-compose"><form method="post" enctype="multipart/form-data" id="kojaAiForm"><input type="hidden" name="conversation_id" value="{{ conversation_id }}"><div id="kojaAttachment" class="koja-ai-attachment"><span id="kojaAttachmentIcon"></span><span id="kojaAttachmentName"></span><button type="button" onclick="clearKOJAAttachment()" aria-label="Remove from Workspace attachment">×</button></div><div class="koja-ai-input-row"><div class="koja-ai-tools"><label class="koja-ai-tool" for="kojaAiFile" title="Upload document" aria-label="Upload document"></label><input class="koja-ai-file" id="kojaAiFile" type="file" name="attachment" accept=".pdf,.doc,.docx,.txt,.csv,.md,.jpg,.jpeg,.png,.webp"><button class="koja-ai-tool" type="button" id="kojaAiRecord" title="Record voice message" aria-label="Record voice message">️</button></div><textarea name="prompt" id="kojaAiPrompt" maxlength="12000" required placeholder="Message KOJA AI…" rows="1"></textarea><button class="koja-ai-send" type="submit" aria-label="Send" title="Send">↑</button></div></form><p class="small" style="text-align:center;margin:8px 0 0"> Add a document or ️ record a voice note. For academic research with source citations, use <a href="{{ url_for('research') }}">KOJA Research</a>.</p></div><script>(function(){const ta=document.getElementById('kojaAiPrompt'),file=document.getElementById('kojaAiFile'),chip=document.getElementById('kojaAttachment'),name=document.getElementById('kojaAttachmentName'),icon=document.getElementById('kojaAttachmentIcon'),recBtn=document.getElementById('kojaAiRecord');function resize(){ta.style.height='auto';ta.style.height=Math.min(ta.scrollHeight,180)+'px'}ta.addEventListener('input',resize);file.addEventListener('change',function(){const f=file.files[0];if(!f)return;name.textContent=f.name;icon.textContent=f.type.startsWith('image/')?'️':(f.type.startsWith('audio/')?'':'');chip.classList.add('show');});window.clearKOJAAttachment=function(){file.value='';chip.classList.remove('show');name.textContent=''};let recorder,parts=[],stream;recBtn.addEventListener('click',async function(){if(recorder&&recorder.state==='recording'){recorder.stop();return}try{stream=await navigator.mediaDevices.getUserMedia({audio:true});recorder=new MediaRecorder(stream);parts=[];recorder.ondataavailable=e=>{if(e.data.size)parts.push(e.data)};recorder.onstop=()=>{const blob=new Blob(parts,{type:'audio/webm'});const f=new File([blob],'KOJA-voice-note.webm',{type:'audio/webm'});try{const dt=new DataTransfer();dt.items.add(f);file.files=dt.files;name.textContent=f.name;icon.textContent='️';chip.classList.add('show');ta.value=(ta.value?ta.value+'\n':'')+'[Voice note attached — please process this attachment]';resize()}catch(e){ta.value=(ta.value?ta.value+'\n':'')+'[Voice note recorded]';resize()}stream.getTracks().forEach(t=>t.stop());recBtn.classList.remove('recording');recBtn.textContent='️';};recorder.start();recBtn.classList.add('recording');recBtn.textContent='⏹️';setTimeout(()=>{if(recorder&&recorder.state==='recording')recorder.stop()},60000)}catch(e){alert('Microphone permission is required to record a voice message.')}});resize()})();</script>
+    <div class="koja-ai-compose"><form method="post" enctype="multipart/form-data" id="kojaAiForm"><input type="hidden" name="conversation_id" value="{{ conversation_id }}"><div id="kojaAttachment" class="koja-ai-attachment"><span id="kojaAttachmentIcon"></span><span id="kojaAttachmentName"></span><button type="button" onclick="clearKOJAAttachment()" aria-label="Remove attachment">×</button></div><div class="koja-ai-input-row"><div class="koja-ai-tools"><label class="koja-ai-tool" for="kojaAiFile" title="Upload document" aria-label="Upload document"></label><input class="koja-ai-file" id="kojaAiFile" type="file" name="attachment" accept=".pdf,.doc,.docx,.txt,.csv,.md,.jpg,.jpeg,.png,.webp"><button class="koja-ai-tool" type="button" id="kojaAiRecord" title="Record voice message" aria-label="Record voice message">️</button></div><textarea name="prompt" id="kojaAiPrompt" maxlength="12000" required placeholder="Message KOJA AI…" rows="1"></textarea><button class="koja-ai-send" type="submit" aria-label="Send" title="Send">↑</button></div></form><p class="small" style="text-align:center;margin:8px 0 0"> Add a document or ️ record a voice note. For academic research with source citations, use <a href="{{ url_for('research') }}">KOJA Research</a>.</p></div><script>(function(){const ta=document.getElementById('kojaAiPrompt'),file=document.getElementById('kojaAiFile'),chip=document.getElementById('kojaAttachment'),name=document.getElementById('kojaAttachmentName'),icon=document.getElementById('kojaAttachmentIcon'),recBtn=document.getElementById('kojaAiRecord');function resize(){ta.style.height='auto';ta.style.height=Math.min(ta.scrollHeight,180)+'px'}ta.addEventListener('input',resize);file.addEventListener('change',function(){const f=file.files[0];if(!f)return;name.textContent=f.name;icon.textContent=f.type.startsWith('image/')?'️':(f.type.startsWith('audio/')?'':'');chip.classList.add('show');});window.clearKOJAAttachment=function(){file.value='';chip.classList.remove('show');name.textContent=''};let recorder,parts=[],stream;recBtn.addEventListener('click',async function(){if(recorder&&recorder.state==='recording'){recorder.stop();return}try{stream=await navigator.mediaDevices.getUserMedia({audio:true});recorder=new MediaRecorder(stream);parts=[];recorder.ondataavailable=e=>{if(e.data.size)parts.push(e.data)};recorder.onstop=()=>{const blob=new Blob(parts,{type:'audio/webm'});const f=new File([blob],'KOJA-voice-note.webm',{type:'audio/webm'});try{const dt=new DataTransfer();dt.items.add(f);file.files=dt.files;name.textContent=f.name;icon.textContent='️';chip.classList.add('show');ta.value=(ta.value?ta.value+'\n':'')+'[Voice note attached — please process this attachment]';resize()}catch(e){ta.value=(ta.value?ta.value+'\n':'')+'[Voice note recorded]';resize()}stream.getTracks().forEach(t=>t.stop());recBtn.classList.remove('recording');recBtn.textContent='️';};recorder.start();recBtn.classList.add('recording');recBtn.textContent='⏹️';setTimeout(()=>{if(recorder&&recorder.state==='recording')recorder.stop()},60000)}catch(e){alert('Microphone permission is required to record a voice message.')}});resize()})();</script>
   </div>
 </div>
 <div id="kojaRecentChats" class="koja-ai-drawer"><div class="koja-ai-backdrop" onclick="document.getElementById('kojaRecentChats').classList.remove('open')"></div><aside class="koja-ai-panel"><div class="koja-ai-panel-head"><strong>Recent chats</strong><button class="koja-ai-icon" type="button" onclick="document.getElementById('kojaRecentChats').classList.remove('open')" aria-label="Close">×</button></div>{% for c in conversations %}<a class="koja-ai-chatlink {{ 'active' if c.id|string==conversation_id else '' }}" href="{{ url_for('ai_assistant', conversation_id=c.id) }}">{{ c.title }}</a>{% else %}<p class="small">No saved conversations yet.</p>{% endfor %}</aside></div>
@@ -2846,7 +2629,7 @@ def services():
 <div class="service-grid">
 <div class="service-card"><h4>Delivery & Live GPS</h4><p>Orders, drivers, delivery requests, live tracking and delivery security.</p><div class="service-links"><a class="btn" href="{{ url_for('deliveries') }}">Delivery</a><a class="btn secondary" href="{{ url_for('tracking') }}">Live GPS</a></div></div>
 <div class="service-card trade"><h4>Freight & Forwarding</h4><p>International shipping, carrier tracking, ports, borders and handoff into customs clearance.</p><a class="btn secondary" href="{{ url_for('deliveries') }}">Logistics</a></div>
-<div class="service-card trade"><h4>Trade Flow</h4><p>Seller freight destination country customs clearance local delivery buyer.</p><div class="service-flow"><span>Seller</span><b>→</b><span>Freight</span><b>→</b><span>Customs</span><b>→</b><span>Delivery</span><b>→</b><span>Buyer</span></div></div>
+<div class="service-card trade"><h4>Trade Flow</h4><p>Seller → freight → destination country → customs → clearance → local delivery → buyer.</p><div class="service-flow"><span>Seller</span><b>→</b><span>Freight</span><b>→</b><span>Customs</span><b>→</b><span>Delivery</span><b>→</b><span>Buyer</span></div></div>
 </div>
 
 <div class="service-section"><h3>Communication</h3><p>One communication service for messaging, voice, video, groups, presence and business collaboration.</p></div>
@@ -3102,7 +2885,7 @@ def cv():
 {% if data.experience %}<h2>Work Experience</h2><p style="white-space:pre-wrap">{{ data.experience }}</p>{% endif %}
 {% if data.skills %}<h2>Skills</h2><p style="white-space:pre-wrap">{{ data.skills }}</p>{% endif %}
 {% if data.references %}<h2>References</h2><p style="white-space:pre-wrap">{{ data.references }}</p>{% endif %}
-<hr><button onclick="window.print()">Print / Save to Workspace as PDF</button>
+<hr><button onclick="window.print()">Print / Save as PDF</button>
 </div>
 """,data=data)
 
@@ -3120,7 +2903,7 @@ def cv():
 <label>References</label><textarea name="references"></textarea>
 <button type="submit">Generate CV</button>
 </form>
-<p class="small">Use Print / Save to Workspace as PDF in the Android browser. No ReportLab package is required.</p>
+<p class="small">Use Print / Save as PDF in the Android browser. No ReportLab package is required.</p>
 </div>
 """)
 
@@ -3740,7 +3523,7 @@ def _notify_available_drivers(tracking_code, pickup, destination, fee):
             if str(d.get('verification_status') or '').lower() not in {'approved','active','verified'}: continue
             uid=d.get('user_id') or d.get('provider_user_id')
             if uid:
-                notify_user(uid,'New KOJA delivery available',f'{tracking_code}: {pickup} {destination}. Fee ZMW {float(fee or 0):.2f}. First approved driver to accept claims it.','delivery',None,'/driver/available-deliveries')
+                notify_user(uid,'New KOJA delivery available',f'{tracking_code}: {pickup} → {destination}. Fee ZMW {float(fee or 0):.2f}. First approved driver to accept claims it.','delivery',None,'/driver/available-deliveries')
     except Exception: logger.exception('Available-driver notification failed')
 
 def _finalize_market_order(order, tx):
@@ -4303,7 +4086,7 @@ def market_cart():
   p=pm.get(str(c.get('product_id')))
   if not p: continue
   q=max(1,int(c.get('quantity') or 1)); line=float(p.get('price') or 0)*q; total+=line; items.append({'product':p,'quantity':q,'line':line})
- return render_page('KOJA Market Cart',"""<div class='hero'><h1>My Cart</h1><p>Review your items before checkout.</p><a class='btn secondary' href='{{ '/market' }}'>Continue Shopping</a></div><div class='card'>{% for x in items %}<div style='padding:14px 0;border-bottom:1px solid var(--border)'><strong>{{ x.product.title }}</strong><p>{{ money(x.product.price,x.product.currency) }} x {{ x.quantity }} = {{ money(x.line,x.product.currency) }}</p><form method='post' action='{{ url_for('market_cart_remove',product_id=x.product.id) }}'><button class='btn danger'>Remove from Workspace</button></form></div>{% else %}<p>Your cart is empty.</p>{% endfor %}{% if items %}<h2>Total: {{ money(total,'ZMW') }}</h2><a class='btn' href='{{ url_for('market_cart_checkout') }}'>Secure Checkout</a>{% endif %}</div>""",items=items,total=total,money=market_money)
+ return render_page('KOJA Market Cart',"""<div class='hero'><h1>My Cart</h1><p>Review your items before checkout.</p><a class='btn secondary' href='{{ '/market' }}'>Continue Shopping</a></div><div class='card'>{% for x in items %}<div style='padding:14px 0;border-bottom:1px solid var(--border)'><strong>{{ x.product.title }}</strong><p>{{ money(x.product.price,x.product.currency) }} x {{ x.quantity }} = {{ money(x.line,x.product.currency) }}</p><form method='post' action='{{ url_for('market_cart_remove',product_id=x.product.id) }}'><button class='btn danger'>Remove</button></form></div>{% else %}<p>Your cart is empty.</p>{% endfor %}{% if items %}<h2>Total: {{ money(total,'ZMW') }}</h2><a class='btn' href='{{ url_for('market_cart_checkout') }}'>Secure Checkout</a>{% endif %}</div>""",items=items,total=total,money=market_money)
 
 @app.route('/market/cart/add/<product_id>',methods=['POST'])
 @login_required
@@ -4950,7 +4733,7 @@ def driver_dashboard():
 <div class="card"><h3>Delivery Requests / Jobs</h3>
 {% for d in requests_rows %}<div class="card">
 <strong>{{ d.get('tracking_code') }}</strong>
-<p>{{ d.get('pickup_location') }} {{ d.get('destination') }}</p>
+<p>{{ d.get('pickup_location') }} → {{ d.get('destination') }}</p>
 <p>Status: <span class="badge">{{ d.get('status') or 'requested' }}</span></p>
 <div class="actions">
 {% if d.get('status') == 'requested' %}
@@ -5527,7 +5310,7 @@ function captureDeliveryGPS(){
 <div class="card"><h2>My Deliveries</h2>
 {% for d in rows %}
 <div class="card"><strong>{{ d.get("tracking_code") }}</strong>
-<p>{{ d.get("pickup_location") }} {{ d.get("destination") }}</p>
+<p>{{ d.get("pickup_location") }} → {{ d.get("destination") }}</p>
 <p>Status: <span class="badge">{{ d.get("status") or "requested" }}</span></p>
 <p>Driver: {{ d.get("driver_id") or "Not selected" }}</p>
 <a class="btn" href="{{ url_for('track_delivery',tracking_code=d.get('tracking_code')) }}">Track Delivery</a>
@@ -6175,7 +5958,7 @@ def admin_assignment_answer(assignment_id):
 <label>Written Answer / User Message</label><textarea name="answer" placeholder="Write the answer or explanation for the user...">{{ item.get("answer") or "" }}</textarea>
 <label>Answer PDF</label><input type="file" name="answer_pdf" accept="application/pdf">
 <p class="small">Upload the final PDF answer here. Maximum {{ max_upload_mb }} MB.</p>
-<button type="submit">Save to Workspace Answer & PDF</button>
+<button type="submit">Save Answer & PDF</button>
 </form></div>
 <div class="card"><h3>Send PDF to User</h3>
 {% if item.get("answer_file_path") and item.get("answer_approval_status") == "approved" %}
@@ -6401,7 +6184,7 @@ def admin_approvals():
             sections.append({"label": label, "table": table, "kind": kind, "rows": pending, "title_field": title_field})
     return render_page("Admin Approvals", r"""
 <div class="hero"><h2> Approval & Review Centre</h2><p>Review submissions before they become active, published, approved or sent to users.</p></div>
-<div class="card"><p><strong>Workflow:</strong> User submits KOJA AI checks safe high-confidence submissions can be approved automatically uncertain/high-risk submissions remain for admin review.</p><p class="small">AI auto-approval is conservative. Doctors, teachers, drivers and professional providers remain manual-review only. All AI decisions are logged.</p><form method="post" action="{{ url_for('admin_ai_auto_approve_pending') }}"><button class="btn" type="submit">Run AI Auto-Approval Now</button></form> <a class="btn secondary" href="{{ url_for('admin_ai_approval_log') }}">AI Approval Audit</a></div>
+<div class="card"><p><strong>Workflow:</strong> User submits → KOJA AI checks → safe high-confidence submissions can be approved automatically → uncertain/high-risk submissions remain for admin review.</p><p class="small">AI auto-approval is conservative. Doctors, teachers, drivers and professional providers remain manual-review only. All AI decisions are logged.</p><form method="post" action="{{ url_for('admin_ai_auto_approve_pending') }}"><button class="btn" type="submit">Run AI Auto-Approval Now</button></form> <a class="btn secondary" href="{{ url_for('admin_ai_approval_log') }}">AI Approval Audit</a></div>
 {% for sec in sections %}
 <div class="card"><h3>{{ sec.label }} <span class="badge">{{ sec.rows|length }} pending</span></h3>
 {% for item in sec.rows %}
@@ -6993,7 +6776,7 @@ def notifications_page():
 @login_required
 def notification_settings():
     uid=str(current_user()['id']); p=first_row('koja_notification_preferences',{'user_id':uid}) or {}
-    return render_page('Notification Settings',"""<div class='card'><h2>Notification Settings</h2><p>Choose what KOJA can notify you about.</p><form id='np'><label><input type='checkbox' name='push_enabled' {% if p.get('push_enabled',True) %}checked{% endif %}> Push notifications</label><label><input type='checkbox' name='sound_enabled' {% if p.get('sound_enabled',True) %}checked{% endif %}> Notification sound</label><label><input type='checkbox' name='market_enabled' {% if p.get('market_enabled',True) %}checked{% endif %}> Market and orders</label><label><input type='checkbox' name='delivery_enabled' {% if p.get('delivery_enabled',True) %}checked{% endif %}> Deliveries and drivers</label><label><input type='checkbox' name='ai_enabled' {% if p.get('ai_enabled',True) %}checked{% endif %}> KOJA AI</label><label><input type='checkbox' name='messages_enabled' {% if p.get('messages_enabled',True) %}checked{% endif %}> Messages and calls</label><label><input type='checkbox' name='system_enabled' {% if p.get('system_enabled',True) %}checked{% endif %}> System and account</label><button class='btn' type='submit'>Save to Workspace settings</button></form><hr><button class='btn secondary' type='button' onclick='enableKOJAPush()'>Enable phone/browser notifications</button><p id='push-status' class='small'></p></div><script>const form=document.getElementById('np');form.onsubmit=async e=>{e.preventDefault();let o={};new FormData(form).forEach((v,k)=>o[k]=true);let r=await fetch('/api/notifications/preferences',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)});document.getElementById('push-status').textContent=r.ok?'Save to Workspaced.':'Could not save settings.'};async function enableKOJAPush(){try{let st=await fetch('/api/notifications/push-status').then(r=>r.json());if(st.native_push_configured&&st.native_devices>0){document.getElementById('push-status').textContent='KOJA phone push is enabled on this device.';return}if(!('Notification'in window)){document.getElementById('push-status').textContent='Native phone push is not registered yet. Browser notifications are not supported here.';return}let perm=await Notification.requestPermission();if(perm!=='granted'){document.getElementById('push-status').textContent='Notification permission was not granted.';return}if(!('serviceWorker'in navigator)){document.getElementById('push-status').textContent='Native phone push is not registered yet.';return}let reg=await navigator.serviceWorker.register('/koja-sw.js');let key=await fetch('/api/notifications/vapid-public-key').then(r=>r.text());if(!key){document.getElementById('push-status').textContent='KOJA phone push is handled by the Android app; web push is not configured.';return}let sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:base64ToUint8(key)});await fetch('/api/notifications/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sub)});document.getElementById('push-status').textContent='Phone/browser notifications enabled.'}catch(e){document.getElementById('push-status').textContent='Could not enable notifications.'}}function base64ToUint8(b){let p='='.repeat((4-b.length%4)%4),s=atob((b+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from([...s].map(c=>c.charCodeAt(0)))}</script>""",p=p)
+    return render_page('Notification Settings',"""<div class='card'><h2>Notification Settings</h2><p>Choose what KOJA can notify you about.</p><form id='np'><label><input type='checkbox' name='push_enabled' {% if p.get('push_enabled',True) %}checked{% endif %}> Push notifications</label><label><input type='checkbox' name='sound_enabled' {% if p.get('sound_enabled',True) %}checked{% endif %}> Notification sound</label><label><input type='checkbox' name='market_enabled' {% if p.get('market_enabled',True) %}checked{% endif %}> Market and orders</label><label><input type='checkbox' name='delivery_enabled' {% if p.get('delivery_enabled',True) %}checked{% endif %}> Deliveries and drivers</label><label><input type='checkbox' name='ai_enabled' {% if p.get('ai_enabled',True) %}checked{% endif %}> KOJA AI</label><label><input type='checkbox' name='messages_enabled' {% if p.get('messages_enabled',True) %}checked{% endif %}> Messages and calls</label><label><input type='checkbox' name='system_enabled' {% if p.get('system_enabled',True) %}checked{% endif %}> System and account</label><button class='btn' type='submit'>Save settings</button></form><hr><button class='btn secondary' type='button' onclick='enableKOJAPush()'>Enable phone/browser notifications</button><p id='push-status' class='small'></p></div><script>const form=document.getElementById('np');form.onsubmit=async e=>{e.preventDefault();let o={};new FormData(form).forEach((v,k)=>o[k]=true);let r=await fetch('/api/notifications/preferences',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)});document.getElementById('push-status').textContent=r.ok?'Saved.':'Could not save settings.'};async function enableKOJAPush(){try{let st=await fetch('/api/notifications/push-status').then(r=>r.json());if(st.native_push_configured&&st.native_devices>0){document.getElementById('push-status').textContent='KOJA phone push is enabled on this device.';return}if(!('Notification'in window)){document.getElementById('push-status').textContent='Native phone push is not registered yet. Browser notifications are not supported here.';return}let perm=await Notification.requestPermission();if(perm!=='granted'){document.getElementById('push-status').textContent='Notification permission was not granted.';return}if(!('serviceWorker'in navigator)){document.getElementById('push-status').textContent='Native phone push is not registered yet.';return}let reg=await navigator.serviceWorker.register('/koja-sw.js');let key=await fetch('/api/notifications/vapid-public-key').then(r=>r.text());if(!key){document.getElementById('push-status').textContent='KOJA phone push is handled by the Android app; web push is not configured.';return}let sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:base64ToUint8(key)});await fetch('/api/notifications/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sub)});document.getElementById('push-status').textContent='Phone/browser notifications enabled.'}catch(e){document.getElementById('push-status').textContent='Could not enable notifications.'}}function base64ToUint8(b){let p='='.repeat((4-b.length%4)%4),s=atob((b+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from([...s].map(c=>c.charCodeAt(0)))}</script>""",p=p)
 
 @app.route('/api/notifications')
 @login_required
@@ -7805,7 +7588,7 @@ def _ai_researched_answer(prompt, system, max_output_tokens=2400, timeout=50):
 def ai_nextgen():
     return render_page('KOJA AI', r'''<meta charset="utf-8"><style>
 html,body{margin:0!important;padding:0!important}.ng-full{position:fixed;inset:0;width:100vw;height:100dvh;z-index:9999;background:var(--bg,#fff);color:var(--text,#111);display:flex;overflow:hidden}.ng-sidebar{width:280px;flex:0 0 280px;background:var(--surface,#f7f7f8);border-right:1px solid var(--border,#ddd);display:flex;flex-direction:column}.ng-side-close{display:none;width:38px;height:38px;border:0;background:transparent;color:inherit;border-radius:10px;font-size:22px;cursor:pointer}.ng-side-head{display:flex;align-items:center;gap:6px}.ng-side-top{padding:12px;border-bottom:1px solid var(--border,#ddd);position:sticky;top:0;z-index:5;background:var(--surface,#f7f7f8)}.ng-new{width:100%;height:44px;border:1px solid var(--border,#ccc);border-radius:12px;background:var(--surface,#fff);color:inherit;font-weight:600;cursor:pointer}.ng-new:hover,.ng-hitem:hover{background:rgba(127,127,127,.1)}.ng-history-title{padding:14px 14px 7px;font-size:12px;font-weight:700;opacity:.58;text-transform:uppercase;letter-spacing:.06em}.ng-history{flex:1;overflow-y:auto;padding:5px 8px 14px}.ng-hitem{display:block;width:100%;text-align:left;border:0;background:transparent;color:inherit;padding:11px 12px;border-radius:10px;cursor:pointer;margin:2px 0}.ng-hitem strong{display:block;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ng-empty{padding:18px 10px;text-align:center;opacity:.55;font-size:13px}.ng-main{flex:1;min-width:0;height:100%;display:flex;flex-direction:column;background:var(--bg,#fff)}.ng-topbar{height:58px;flex:0 0 58px;border-bottom:1px solid var(--border,#ddd);display:flex;align-items:center;padding:0 18px;gap:10px;background:var(--bg,#fff)}.ng-brand{display:flex;align-items:center;gap:9px;font-weight:700;font-size:16px}.ng-status{margin-left:auto;font-size:12px;opacity:.58}.ng-top-new{display:none;height:38px;border:1px solid var(--border,#ccc);background:var(--surface,#fff);color:inherit;border-radius:10px;padding:0 10px;font-weight:600;cursor:pointer}.ng-menu{display:none;width:38px;height:38px;border:0;background:transparent;border-radius:10px;font-size:22px;cursor:pointer;color:inherit}.ng-chat{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior-y:contain;scroll-behavior:smooth;padding:28px 18px 150px;scrollbar-gutter:stable;scrollbar-width:thin}.ng-chat::-webkit-scrollbar,.ng-history::-webkit-scrollbar{width:8px}.ng-chat::-webkit-scrollbar-thumb,.ng-history::-webkit-scrollbar-thumb{background:rgba(127,127,127,.35);border-radius:999px}.ng-latest{position:fixed;right:22px;bottom:118px;z-index:8;border:1px solid var(--border,#ccc);background:var(--surface,#fff);color:inherit;border-radius:999px;padding:8px 12px;box-shadow:0 4px 16px rgba(0,0,0,.12);cursor:pointer;font-size:12px;display:none}.ng-latest.show{display:block}.ng-inner{max-width:850px;margin:0 auto}.ng-welcome{text-align:center;padding:12vh 15px 25px}.ng-welcome h1{font-size:30px;margin:0 0 9px}.ng-welcome p{opacity:.6;margin:0}.ng-msg{display:flex;margin:0 auto;padding:22px 0;gap:13px;max-width:850px}.ng-msg.user{justify-content:flex-end}.ng-avatar{width:30px;height:30px;flex:0 0 30px;border-radius:9px;display:grid;place-items:center;font-size:13px;font-weight:700}.ng-msg.assistant .ng-avatar{background:linear-gradient(135deg,#176b87,#19a7b8);color:#fff}.ng-msg.user .ng-avatar{background:#ececec;color:#333;order:2}.ng-content{max-width:760px;line-height:1.65;font-size:15px;overflow-wrap:anywhere}.ng-content p{margin:0 0 14px}.ng-content p:last-child{margin-bottom:0}.ng-content strong{font-weight:700}.ng-msg.user .ng-content{background:#f1f1f1;padding:11px 15px;border-radius:18px;line-height:1.5}.ng-composer-wrap{position:absolute;left:280px;right:0;bottom:0;padding:12px 18px 18px;background:linear-gradient(transparent,var(--bg,#fff) 30%)}.ng-attachment{max-width:850px;margin:0 auto 7px;display:none;align-items:center;gap:8px;padding:7px 10px;border:1px solid var(--border,#ddd);border-radius:12px;background:var(--surface,#fff);font-size:12px}.ng-attachment.show{display:flex}.ng-attachment-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.ng-attachment-clear{border:0;background:transparent;color:inherit;cursor:pointer;font-size:16px}.ng-composer{max-width:850px;margin:0 auto;border:1px solid #cfcfcf;border-radius:20px;background:var(--surface,#fff);box-shadow:0 3px 18px rgba(0,0,0,.08);display:flex;align-items:flex-end;padding:8px 9px 8px 10px;gap:8px}.ng-composer textarea{flex:1;border:0!important;outline:0!important;box-shadow:none!important;background:transparent!important;color:inherit!important;margin:0!important;padding:8px 0!important;min-height:28px;max-height:180px;resize:none;font:inherit;line-height:1.45}.ng-attach{width:40px;height:40px;flex:0 0 40px;border:0;border-radius:12px;background:transparent;color:inherit;cursor:pointer;font-size:19px}.ng-send{width:40px;height:40px;flex:0 0 40px;border:0;border-radius:12px;background:#176b87;color:#fff;cursor:pointer;font-size:17px}.ng-send:disabled{opacity:.45;cursor:not-allowed}.ng-hint{text-align:center;font-size:11px;opacity:.45;margin-top:7px}.ng-private{font-size:11px;opacity:.62;text-align:center;margin:2px auto 8px;max-width:850px}.ng-private strong{opacity:.9}.ng-koja-logo{width:30px;height:30px;border-radius:9px;display:inline-grid;place-items:center;background:linear-gradient(135deg,#19a7b8,#f2b84b);box-shadow:0 4px 14px rgba(0,0,0,.18);flex:0 0 30px}.ng-koja-logo svg{width:21px;height:21px}.ng-side-note{font-size:11px;line-height:1.45;opacity:.6;padding:8px 10px;border:1px solid var(--border,#ddd);border-radius:10px;margin:8px 10px}@media(max-width:800px){.ng-sidebar{position:absolute;left:0;top:0;bottom:0;z-index:20;transform:translateX(-100%);transition:transform .2s ease;box-shadow:8px 0 30px rgba(0,0,0,.12)}.ng-sidebar.open{transform:translateX(0)}.ng-menu{display:block}.ng-top-new{display:inline-flex;align-items:center;justify-content:center}.ng-side-close{display:block}.ng-composer-wrap{left:0;padding:10px 10px 12px}.ng-chat{padding:18px 12px 125px}.ng-msg{padding:17px 3px}.ng-content{font-size:14px}.ng-welcome{padding-top:13vh}.ng-welcome h1{font-size:26px}}
-</style><div class="ng-full"><aside id="ngSidebar" class="ng-sidebar"><div class="ng-side-top"><div class="ng-side-head"><button id="newChat" class="ng-new">New chat</button><button id="closeMenu" class="ng-side-close" aria-label="Close chat history">×</button></div></div><div class="ng-history-title">History</div><div class="ng-side-note"> Private to your signed-in KOJA account. Chats are not public. Older chats remain saved unless deleted.</div><div id="historyList" class="ng-history"><div class="ng-empty">Loading history…</div></div></aside><main class="ng-main"><header class="ng-topbar"><button id="menuBtn" class="ng-menu" aria-label="Open chat history"></button><div class="ng-brand"><span class="ng-koja-logo" aria-label="KOJA logo"><svg viewBox="0 0 24 24" fill="none"><path d="M5 18V6h7.2a5.3 5.3 0 0 1 0 10.6H8.5" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 9.1h3.4a1.9 1.9 0 0 1 0 3.8H8.5" stroke="white" stroke-width="2.2" stroke-linecap="round"/></svg></span><span>KOJA AI</span></div><span id="aiState" class="ng-status">Ready</span><button id="topNewChat" class="ng-top-new" type="button">New</button></header><section id="aiChat" class="ng-chat"><div class="ng-inner"></div></section><button id="latestBtn" class="ng-latest" type="button">↓ Latest</button><div class="ng-composer-wrap"><div id="attachment" class="ng-attachment"><span></span><span id="attachmentName" class="ng-attachment-name"></span><button id="clearAttachment" class="ng-attachment-clear" type="button" aria-label="Remove from Workspace attachment">×</button></div><div class="ng-composer"><label class="ng-attach" title="Attach a file" aria-label="Attach a file"><input id="fileInput" type="file" accept=".pdf,.docx,.txt,.md,.csv,.json" hidden></label><textarea id="aiPrompt" placeholder="Message KOJA AI…" maxlength="12000" rows="1" aria-label="Message KOJA AI"></textarea><button id="aiSend" class="ng-send" type="button" aria-label="Send"></button></div><div class="ng-private"><strong> Private history</strong> — your KOJA AI chats are tied to your signed-in account and are not public.</div><div class="ng-hint">KOJA AI can make mistakes. Check important information.</div></div></main></div><script>
+</style><div class="ng-full"><aside id="ngSidebar" class="ng-sidebar"><div class="ng-side-top"><div class="ng-side-head"><button id="newChat" class="ng-new">＋ New chat</button><button id="closeMenu" class="ng-side-close" aria-label="Close chat history">×</button></div></div><div class="ng-history-title">History</div><div class="ng-side-note"> Private to your signed-in KOJA account. Chats are not public. Older chats remain saved unless deleted.</div><div id="historyList" class="ng-history"><div class="ng-empty">Loading history…</div></div></aside><main class="ng-main"><header class="ng-topbar"><button id="menuBtn" class="ng-menu" aria-label="Open chat history"></button><div class="ng-brand"><span class="ng-koja-logo" aria-label="KOJA logo"><svg viewBox="0 0 24 24" fill="none"><path d="M5 18V6h7.2a5.3 5.3 0 0 1 0 10.6H8.5" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 9.1h3.4a1.9 1.9 0 0 1 0 3.8H8.5" stroke="white" stroke-width="2.2" stroke-linecap="round"/></svg></span><span>KOJA AI</span></div><span id="aiState" class="ng-status">Ready</span><button id="topNewChat" class="ng-top-new" type="button">＋ New</button></header><section id="aiChat" class="ng-chat"><div class="ng-inner"></div></section><button id="latestBtn" class="ng-latest" type="button">↓ Latest</button><div class="ng-composer-wrap"><div id="attachment" class="ng-attachment"><span></span><span id="attachmentName" class="ng-attachment-name"></span><button id="clearAttachment" class="ng-attachment-clear" type="button" aria-label="Remove attachment">×</button></div><div class="ng-composer"><label class="ng-attach" title="Attach a file" aria-label="Attach a file"><input id="fileInput" type="file" accept=".pdf,.docx,.txt,.md,.csv,.json" hidden></label><textarea id="aiPrompt" placeholder="Message KOJA AI…" maxlength="12000" rows="1" aria-label="Message KOJA AI"></textarea><button id="aiSend" class="ng-send" type="button" aria-label="Send"></button></div><div class="ng-private"><strong> Private history</strong> — your KOJA AI chats are tied to your signed-in account and are not public.</div><div class="ng-hint">KOJA AI can make mistakes. Check important information.</div></div></main></div><script>
 const ac=document.getElementById('aiChat'),inner=ac.querySelector('.ng-inner'),ap=document.getElementById('aiPrompt'),as=document.getElementById('aiState'),send=document.getElementById('aiSend'),hl=document.getElementById('historyList'),sidebar=document.getElementById('ngSidebar'),fileInput=document.getElementById('fileInput'),attachment=document.getElementById('attachment'),attachmentName=document.getElementById('attachmentName');let hist=[],conversationId=null,attachedContext='',attachedName='';
 function esc(x){return String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function cleanUtf8(x){let s=String(x??'');if(!/[âÂÃð]/.test(s))return s;try{return decodeURIComponent(escape(s));}catch(_){return s;}}
@@ -7988,7 +7771,7 @@ def media_nextgen():
 <style>.media-feed{height:calc(100vh - 150px);min-height:540px;overflow-y:auto;scroll-snap-type:y mandatory;background:#05070a;border-radius:22px}.media-card{height:100%;min-height:540px;position:relative;scroll-snap-align:start;display:grid;place-items:center;background:#05070a}.media-card img,.media-card video{width:100%;height:100%;object-fit:contain;max-height:calc(100vh - 150px)}.media-overlay{position:absolute;left:18px;right:18px;bottom:18px;color:#fff;text-shadow:0 2px 8px #000;z-index:2}.media-actions{position:absolute;right:16px;bottom:110px;display:flex;flex-direction:column;gap:9px;z-index:3}.media-actions button{width:50px;height:50px;border-radius:50%;padding:0;margin:0;background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.2)}.media-empty{padding:70px;text-align:center;color:#fff}
 </style>
 <div class="hero"><h2>◉ KOJA Media</h2><p>Immersive media discovery with adaptive interaction, sharing and watch analytics.</p></div>
-<div class="media-feed" id="mediaFeed">{% for p in items %}<article class="media-card" data-id="{{ p.id }}" data-seen="0">{% if p.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=p.id) }}" playsinline muted loop preload="metadata"></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="KOJA media">{% endif %}<div class="media-actions"><button onclick="likeMedia('{{ p.id }}')"></button><button onclick="shareMedia('{{ p.id }}')"></button><button onclick="copyMedia('{{ p.id }}')">⧉</button></div><div class="media-overlay"><strong>{{ p.title or 'KOJA Media' }}</strong><div>{{ p.body[:220] }}</div><div class="small" style="color:#ddd">{{ p.post_type|title }} · {{ p.created_at }}</div></div></article>{% else %}<div class="media-empty"><h2>No media yet</h2><p>Publish a photo or video to start the KOJA media experience.</p></div>{% endfor %}</div>
+<div class="media-feed" id="mediaFeed">{% for p in items %}<article class="media-card" data-id="{{ p.id }}" data-seen="0">{% if p.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=p.id) }}" playsinline muted loop preload="metadata"></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="KOJA media">{% endif %}<div class="media-actions"><button onclick="likeMedia('{{ p.id }}')"></button><button onclick="shareMedia('{{ p.id }}')">↗</button><button onclick="copyMedia('{{ p.id }}')">⧉</button></div><div class="media-overlay"><strong>{{ p.title or 'KOJA Media' }}</strong><div>{{ p.body[:220] }}</div><div class="small" style="color:#ddd">{{ p.post_type|title }} · {{ p.created_at }}</div></div></article>{% else %}<div class="media-empty"><h2>No media yet</h2><p>Publish a photo or video to start the KOJA media experience.</p></div>{% endfor %}</div>
 <script>
 const feed=document.getElementById('mediaFeed');const io=new IntersectionObserver(es=>es.forEach(e=>{let v=e.target.querySelector('video');if(e.isIntersecting){if(v)v.play().catch(()=>{});if(e.target.dataset.seen==='0'){e.target.dataset.seen='1';track(e.target.dataset.id,'impression',0,0)}}else if(v)v.pause()}),{root:feed,threshold:.65});document.querySelectorAll('.media-card').forEach(x=>io.observe(x));
 function track(id,type,w,c){fetch('/api/nextgen/media-event',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({post_id:id,event_type:type,watch_seconds:w,completion_percent:c})}).catch(()=>{})}
@@ -8364,7 +8147,7 @@ def business_products(business_id):
         _,err=db_insert('koja_business_products',{'business_id':business_id,'name':name,'sku':sku,'selling_price':price,'cost_price':cost,'stock':stock,'product_type':product_type,'delivery_available':delivery_available,'delivery_fee':delivery_fee,'digital_file_url':digital_url,'digital_file_name':digital_name,'active':True,'created_at':utc_now(),'updated_at':utc_now()})
         flash('Product saved.' if not err else 'Inventory table is not installed.','success' if not err else 'danger'); return redirect(url_for('business_products',business_id=business_id))
     products=db_select('koja_business_products',{'business_id':business_id},order='created_at.desc',limit=300) or []
-    return render_page('Business Inventory',r'''<div class="hero"><h1>Inventory & POS</h1><p>{{ b.name }}</p></div><div class="card"><form method="post"><label>Product / service</label><input name="name" required><label>SKU</label><input name="sku"><div class="grid"><div><label>Selling price</label><input name="price" type="number" step="0.01" min="0"></div><div><label>Cost price</label><input name="cost" type="number" step="0.01" min="0"></div><div><label>Stock</label><input name="stock" type="number" min="0" value="0"></div><div><label>Product type</label><select name="product_type"><option value="physical">Physical</option><option value="digital">Digital download</option></select></div><div><label>Delivery fee (ZMW)</label><input name="delivery_fee" type="number" step="0.01" min="0" value="0"></div><div><label><input type="checkbox" name="delivery_available" style="width:auto"> KOJA Delivery available</label></div></div><label>Digital file (required for Digital download)</label><input type="file" name="digital_file"><button class="btn">Save to Workspace Product</button></form></div><div class="card"><table><tr><th>Product</th><th>SKU</th><th>Price</th><th>Cost</th><th>Stock</th></tr>{% for p in products %}<tr><td>{{ p.name }}</td><td>{{ p.sku }}</td><td>{{ money(p.selling_price,'ZMW') }}</td><td>{{ money(p.cost_price,'ZMW') }}</td><td>{{ p.stock }}</td></tr>{% else %}<tr><td colspan="5">No products.</td></tr>{% endfor %}</table></div>''',b=b,products=products,money=market_money)
+    return render_page('Business Inventory',r'''<div class="hero"><h1>Inventory & POS</h1><p>{{ b.name }}</p></div><div class="card"><form method="post"><label>Product / service</label><input name="name" required><label>SKU</label><input name="sku"><div class="grid"><div><label>Selling price</label><input name="price" type="number" step="0.01" min="0"></div><div><label>Cost price</label><input name="cost" type="number" step="0.01" min="0"></div><div><label>Stock</label><input name="stock" type="number" min="0" value="0"></div><div><label>Product type</label><select name="product_type"><option value="physical">Physical</option><option value="digital">Digital download</option></select></div><div><label>Delivery fee (ZMW)</label><input name="delivery_fee" type="number" step="0.01" min="0" value="0"></div><div><label><input type="checkbox" name="delivery_available" style="width:auto"> KOJA Delivery available</label></div></div><label>Digital file (required for Digital download)</label><input type="file" name="digital_file"><button class="btn">Save Product</button></form></div><div class="card"><table><tr><th>Product</th><th>SKU</th><th>Price</th><th>Cost</th><th>Stock</th></tr>{% for p in products %}<tr><td>{{ p.name }}</td><td>{{ p.sku }}</td><td>{{ money(p.selling_price,'ZMW') }}</td><td>{{ money(p.cost_price,'ZMW') }}</td><td>{{ p.stock }}</td></tr>{% else %}<tr><td colspan="5">No products.</td></tr>{% endfor %}</table></div>''',b=b,products=products,money=market_money)
 
 @app.route('/business/<business_id>/records',methods=['GET','POST'])
 @login_required
@@ -8376,7 +8159,7 @@ def business_records(business_id):
         table='koja_business_sales' if kind=='sale' else 'koja_business_expenses'; payload={'business_id':business_id,'description':desc,'total_amount':amount,'amount':amount,'created_at':utc_now()}
         _,err=db_insert(table,payload); flash('Record saved.' if not err else 'Accounting table is not installed.','success' if not err else 'danger'); return redirect(url_for('business_records',business_id=business_id))
     sales=db_select('koja_business_sales',{'business_id':business_id},order='created_at.desc',limit=300) or []; expenses=db_select('koja_business_expenses',{'business_id':business_id},order='created_at.desc',limit=300) or []
-    return render_page('Business Accounting',r'''<div class="hero"><h1>Accounting & Profit/Loss</h1><p>{{ b.name }}</p></div><div class="card"><form method="post"><select name="kind"><option value="sale">Sale / income</option><option value="expense">Expense</option></select><label>Description</label><input name="description" required><label>Amount (ZMW)</label><input name="amount" type="number" min="0" step="0.01" required><button class="btn">Save to Workspace Record</button></form></div><div class="grid"><div class="card"><h2>Sales</h2>{% for x in sales %}<p>{{ x.description }} — {{ money(x.total_amount,'ZMW') }}</p>{% else %}<p>No sales.</p>{% endfor %}</div><div class="card"><h2>Expenses</h2>{% for x in expenses %}<p>{{ x.description }} — {{ money(x.amount,'ZMW') }}</p>{% else %}<p>No expenses.</p>{% endfor %}</div></div>''',b=b,sales=sales,expenses=expenses,money=market_money)
+    return render_page('Business Accounting',r'''<div class="hero"><h1>Accounting & Profit/Loss</h1><p>{{ b.name }}</p></div><div class="card"><form method="post"><select name="kind"><option value="sale">Sale / income</option><option value="expense">Expense</option></select><label>Description</label><input name="description" required><label>Amount (ZMW)</label><input name="amount" type="number" min="0" step="0.01" required><button class="btn">Save Record</button></form></div><div class="grid"><div class="card"><h2>Sales</h2>{% for x in sales %}<p>{{ x.description }} — {{ money(x.total_amount,'ZMW') }}</p>{% else %}<p>No sales.</p>{% endfor %}</div><div class="card"><h2>Expenses</h2>{% for x in expenses %}<p>{{ x.description }} — {{ money(x.amount,'ZMW') }}</p>{% else %}<p>No expenses.</p>{% endfor %}</div></div>''',b=b,sales=sales,expenses=expenses,money=market_money)
 
 @app.route('/business/<business_id>/subscription',methods=['GET','POST'])
 @login_required
@@ -8535,7 +8318,7 @@ def business_payroll(business_id):
         _,err=db_insert('koja_business_payroll',{'business_id':business_id,'employee_id':eid,'period_start':clean(request.form.get('period_start')),'period_end':clean(request.form.get('period_end')),'gross_pay':gross,'deductions':deductions,'net_pay':net,'status':'pending','created_at':utc_now()})
         flash('Payroll record created.' if not err else 'Payroll table is not installed.','success' if not err else 'danger'); return redirect(url_for('business_payroll',business_id=business_id))
     rows=db_select('koja_business_payroll',{'business_id':business_id},order='created_at.desc',limit=300) or []
-    return render_page('Business Payroll',"""<div class='hero'><h1>Payroll</h1><p>{{ b.name }}</p></div><div class='card'><form method='post'><label>Employee</label><select name='employee_id' required>{% for e in employees %}<option value='{{ e.id }}'>{{ e.name }} — {{ money(e.salary,'ZMW') }}</option>{% endfor %}</select><label>Period start</label><input name='period_start' type='date' required><label>Period end</label><input name='period_end' type='date' required><label>Gross pay</label><input name='gross' type='number' min='0' step='0.01'><label>Deductions</label><input name='deductions' type='number' min='0' step='0.01' value='0'><button class='btn'>Create Payroll</button></form></div><div class='card'><table><tr><th>Employee</th><th>Period</th><th>Net</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{ x.employee_id }}</td><td>{{ x.period_start }} {{ x.period_end }}</td><td>{{ money(x.net_pay,'ZMW') }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan='4'>No payroll records.</td></tr>{% endfor %}</table></div>""",b=b,employees=employees,rows=rows,money=market_money)
+    return render_page('Business Payroll',"""<div class='hero'><h1>Payroll</h1><p>{{ b.name }}</p></div><div class='card'><form method='post'><label>Employee</label><select name='employee_id' required>{% for e in employees %}<option value='{{ e.id }}'>{{ e.name }} — {{ money(e.salary,'ZMW') }}</option>{% endfor %}</select><label>Period start</label><input name='period_start' type='date' required><label>Period end</label><input name='period_end' type='date' required><label>Gross pay</label><input name='gross' type='number' min='0' step='0.01'><label>Deductions</label><input name='deductions' type='number' min='0' step='0.01' value='0'><button class='btn'>Create Payroll</button></form></div><div class='card'><table><tr><th>Employee</th><th>Period</th><th>Net</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{ x.employee_id }}</td><td>{{ x.period_start }} → {{ x.period_end }}</td><td>{{ money(x.net_pay,'ZMW') }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan='4'>No payroll records.</td></tr>{% endfor %}</table></div>""",b=b,employees=employees,rows=rows,money=market_money)
 
 @app.route('/business/<business_id>/store',methods=['GET','POST'])
 @login_required
@@ -8549,7 +8332,7 @@ def business_store(business_id):
         if current:_,err=db_update('koja_business_stores',{'id':current.get('id')},payload)
         else:_,err=db_insert('koja_business_stores',payload)
         flash('Online store saved.' if not err else 'Store table is not installed.','success' if not err else 'danger'); return redirect(url_for('business_store',business_id=business_id))
-    return render_page('Business Online Store',"""<div class='hero'><h1>Online Store</h1><p>Publish your catalogue through KOJA Market.</p></div><div class='card'><form method='post'><label>Store name</label><input name='store_name' value='{{ current.store_name if current else b.name }}' required><label>Store slug</label><input name='slug' value='{{ current.slug if current else '' }}' placeholder='my-store' required><label>Description</label><textarea name='description'>{{ current.description if current else '' }}</textarea><label><input type='checkbox' name='published' {% if current and current.published %}checked{% endif %} style='width:auto'> Publish store</label><button class='btn'>Save to Workspace Store</button></form>{% if current and current.published %}<p><a class='btn secondary' href='{{ url_for('business_store_public',slug=current.slug) }}' target='_blank'>View Public Store</a></p>{% endif %}</div>""",b=b,current=current)
+    return render_page('Business Online Store',"""<div class='hero'><h1>Online Store</h1><p>Publish your catalogue through KOJA Market.</p></div><div class='card'><form method='post'><label>Store name</label><input name='store_name' value='{{ current.store_name if current else b.name }}' required><label>Store slug</label><input name='slug' value='{{ current.slug if current else '' }}' placeholder='my-store' required><label>Description</label><textarea name='description'>{{ current.description if current else '' }}</textarea><label><input type='checkbox' name='published' {% if current and current.published %}checked{% endif %} style='width:auto'> Publish store</label><button class='btn'>Save Store</button></form>{% if current and current.published %}<p><a class='btn secondary' href='{{ url_for('business_store_public',slug=current.slug) }}' target='_blank'>View Public Store</a></p>{% endif %}</div>""",b=b,current=current)
 
 @app.route('/store/<slug>/buy/<product_id>',methods=['GET','POST'])
 @login_required
@@ -9018,7 +8801,7 @@ def business_accounting_v2(business_id):
     txs=db_select('koja_business_transactions',{'business_id':business_id},order='transaction_date.desc',limit=200) or []
     accounts=db_select('koja_business_bi_account_balances',{'business_id':business_id},order='account_code.asc',limit=100) or []
     summary=first_row('koja_business_bi_accounting_summary',{'business_id':business_id}) or {}
-    return render_page('Business Accounting V2',r"""<div class="hero"><h1>Accounting</h1><p>{{ b.name }} — connected double-entry ledger.</p><div class="actions"><a class="btn secondary" href="{{ url_for('business_dashboard',business_id=b.id) }}">Business Dashboard</a><a class="btn secondary" href="{{ url_for('business_intelligence_v3',business_id=b.id) }}">AI Intelligence</a></div></div><div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(summary.accounting_revenue or 0,'ZMW') }}</h2></div><div class="card"><h3>Expenses</h3><h2>{{ money(summary.accounting_expenses or 0,'ZMW') }}</h2></div><div class="card"><h3>Net Result</h3><h2>{{ money(summary.accounting_net_result or 0,'ZMW') }}</h2></div><div class="card"><h3>Transactions</h3><h2>{{ summary.transaction_count or 0 }}</h2></div></div><div class="card"><h2>Record Transaction</h2><form method="post"><label>Type</label><select name="kind"><option value="sale">Sale / Income</option><option value="expense">Expense</option></select><label>Description</label><input name="description" required><label>Amount (ZMW)</label><input name="amount" type="number" min="0" step="0.01" required><label>Payment Method</label><select name="payment_method"><option value="cash">Cash</option><option value="bank">Bank</option><option value="mobile_money">Mobile Money</option></select><label>Expense Category</label><select name="category"><option value="other">Other</option><option value="rent">Rent</option><option value="salary">Salary</option><option value="transport">Transport</option><option value="marketing">Marketing</option><option value="utilities">Utilities</option><option value="tax">Tax</option></select><button class="btn">Save to Workspace & Post to Ledger</button></form></div><div class="card"><h2>Chart of Accounts</h2><table><tr><th>Code</th><th>Account</th><th>Type</th><th>Balance</th></tr>{% for a in accounts %}<tr><td>{{ a.account_code }}</td><td>{{ a.account_name }}</td><td>{{ a.account_type }}</td><td>{{ money(a.balance or 0,'ZMW') }}</td></tr>{% else %}<tr><td colspan="4">No accounts.</td></tr>{% endfor %}</table></div><div class="card"><h2>Recent Ledger Transactions</h2><table><tr><th>Date</th><th>Type</th><th>Description</th><th>Amount</th><th>Status</th></tr>{% for x in txs %}<tr><td>{{ x.transaction_date }}</td><td>{{ x.transaction_type }}</td><td>{{ x.description }}</td><td>{{ money(x.total_amount or 0,'ZMW') }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="5">No accounting transactions yet.</td></tr>{% endfor %}</table></div>""",b=b,summary=summary,accounts=accounts,txs=txs,money=market_money)
+    return render_page('Business Accounting V2',r"""<div class="hero"><h1>Accounting</h1><p>{{ b.name }} — connected double-entry ledger.</p><div class="actions"><a class="btn secondary" href="{{ url_for('business_dashboard',business_id=b.id) }}">Business Dashboard</a><a class="btn secondary" href="{{ url_for('business_intelligence_v3',business_id=b.id) }}">AI Intelligence</a></div></div><div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(summary.accounting_revenue or 0,'ZMW') }}</h2></div><div class="card"><h3>Expenses</h3><h2>{{ money(summary.accounting_expenses or 0,'ZMW') }}</h2></div><div class="card"><h3>Net Result</h3><h2>{{ money(summary.accounting_net_result or 0,'ZMW') }}</h2></div><div class="card"><h3>Transactions</h3><h2>{{ summary.transaction_count or 0 }}</h2></div></div><div class="card"><h2>Record Transaction</h2><form method="post"><label>Type</label><select name="kind"><option value="sale">Sale / Income</option><option value="expense">Expense</option></select><label>Description</label><input name="description" required><label>Amount (ZMW)</label><input name="amount" type="number" min="0" step="0.01" required><label>Payment Method</label><select name="payment_method"><option value="cash">Cash</option><option value="bank">Bank</option><option value="mobile_money">Mobile Money</option></select><label>Expense Category</label><select name="category"><option value="other">Other</option><option value="rent">Rent</option><option value="salary">Salary</option><option value="transport">Transport</option><option value="marketing">Marketing</option><option value="utilities">Utilities</option><option value="tax">Tax</option></select><button class="btn">Save & Post to Ledger</button></form></div><div class="card"><h2>Chart of Accounts</h2><table><tr><th>Code</th><th>Account</th><th>Type</th><th>Balance</th></tr>{% for a in accounts %}<tr><td>{{ a.account_code }}</td><td>{{ a.account_name }}</td><td>{{ a.account_type }}</td><td>{{ money(a.balance or 0,'ZMW') }}</td></tr>{% else %}<tr><td colspan="4">No accounts.</td></tr>{% endfor %}</table></div><div class="card"><h2>Recent Ledger Transactions</h2><table><tr><th>Date</th><th>Type</th><th>Description</th><th>Amount</th><th>Status</th></tr>{% for x in txs %}<tr><td>{{ x.transaction_date }}</td><td>{{ x.transaction_type }}</td><td>{{ x.description }}</td><td>{{ money(x.total_amount or 0,'ZMW') }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="5">No accounting transactions yet.</td></tr>{% endfor %}</table></div>""",b=b,summary=summary,accounts=accounts,txs=txs,money=market_money)
 
 if __name__=="__main__":
     port=int(os.getenv("PORT","5000"))
@@ -9135,7 +8918,7 @@ def business_intelligence_v3(business_id):
     source_note='Business/POS records are connected.' if sales else 'No Business/POS records yet.'
     if market_rows: source_note += f' {len(market_rows)} paid/completed KOJA Market order(s) were discovered directly from linked products.'
     elif linked: source_note += ' Linked Market products found, but no paid/completed Market orders were found.'
-    return render_page('Business Intelligence V3',r'''<div class="hero"><h1>Business Intelligence V3</h1><p>{{ b.name }} — predictive analytics, forecasting, pricing, inventory and AI strategy.</p><div class="actions"><a class="btn secondary" href="{{ url_for('business_products',business_id=b.id) }}">Open POS / Inventory</a><a class="btn secondary" href="{{ url_for('business_accounting_v2',business_id=b.id) }}">Open Accounting</a></div></div><div class="card"><strong>Data connection:</strong> {{ source_note }}</div><div class="grid"><div class="card"><h3>30-day Revenue</h3><h2>{{ money(rev30,'ZMW') }}</h2></div><div class="card"><h3>30-day Net Profit</h3><h2>{{ money(net30,'ZMW') }}</h2></div><div class="card"><h3>Growth</h3><h2>{{ ('%.1f'|format(growth)) ~ '%' if growth is not none else '—' }}</h2></div><div class="card"><h3>Forecast Confidence</h3><h2>{{ confidence }}</h2></div></div><div class="grid"><div class="card"><h3>Next 30-day Forecast</h3><h2>{{ money(forecast30,'ZMW') }}</h2></div><div class="card"><h3>Low-stock Risks</h3><h2>{{ low|length }}</h2></div><div class="card"><h3>Customer Concentration</h3><h2>{{ '%.1f'|format(concentration) }}%</h2></div><div class="card"><h3>7-day Revenue</h3><h2>{{ money(rev7,'ZMW') }}</h2></div></div><div class="grid"><div class="card"><h3>Business/POS Sales</h3><h2>{{ cnt30 }}</h2><p class="small">Paid/completed transactions in the last 30 days.</p></div><div class="card"><h3>KOJA Market Sales Found</h3><h2>{{ market_count }}</h2><p class="small">Paid/completed orders linked to this business.</p></div><div class="card"><h3>90-day Revenue</h3><h2>{{ money(rev90,'ZMW') }}</h2></div><div class="card"><h3>90-day Profit</h3><h2>{{ money(gross90-exp90,'ZMW') }}</h2></div></div><div class="card"><h2>7-Day Forecast</h2>{% for v in forecast7 %}<p>Day {{ loop.index }}: <strong>{{ money(v,'ZMW') }}</strong></p>{% endfor %}</div><div class="card"><h2>Recommended Actions</h2>{% for x in actions %}<p>{{ loop.index }}. {{ x }}</p>{% endfor %}</div><div class="card"><h2>Inventory Intelligence</h2><table><tr><th>Product</th><th>Stock</th><th>Units Sold</th><th>Days Cover</th><th>Margin</th></tr>{% for x in top %}<tr><td>{{ x.name }}</td><td>{{ x.stock|int }}</td><td>{{ x.qty|int }}</td><td>{{ '%.1f'|format(x.days) if x.days is not none else '—' }}</td><td>{{ '%.1f'|format(x.margin) }}%</td></tr>{% else %}<tr><td colspan="5">No products or product-linked sales yet.</td></tr>{% endfor %}</table></div><div class="card"><h2>Pricing Recommendations</h2>{% for x in pricing %}<p><strong>{{ x.name }}</strong>: {{ money(x.current,'ZMW') }} {{ money(x.recommended,'ZMW') }} — {{ x.action }}</p>{% else %}<p>Not enough product-linked sales data.</p>{% endfor %}</div><div class="card"><h2>Expense Anomalies</h2>{% for x in anomalies %}<p><strong>{{ x.description }}</strong> — {{ money(x.amount,'ZMW') }} on {{ x.date }}</p>{% else %}<p>No statistically unusual expenses detected.</p>{% endfor %}</div><div class="card"><h2>KOJA AI Strategy</h2><form method="post"><button class="btn">Generate V3 AI Strategy</button></form>{% if ai_report %}<hr><div style="white-space:pre-wrap;line-height:1.75">{{ ai_report }}</div>{% endif %}</div>''',b=b,rev30=rev30,exp30=exp30,rev7=rev7,exp7=exp7,rev90=rev90,exp90=exp90,cnt7=cnt7,growth=growth,forecast7=forecast7,forecast30=forecast30,confidence=confidence,low=low,top=top,pricing=pricing,anomalies=anomalies,concentration=concentration,actions=actions,ai_report=ai_report,money=market_money,net30=net30,gross90=gross90,market_count=len(market_rows),source_note=source_note)
+    return render_page('Business Intelligence V3',r'''<div class="hero"><h1>Business Intelligence V3</h1><p>{{ b.name }} — predictive analytics, forecasting, pricing, inventory and AI strategy.</p><div class="actions"><a class="btn secondary" href="{{ url_for('business_products',business_id=b.id) }}">Open POS / Inventory</a><a class="btn secondary" href="{{ url_for('business_accounting_v2',business_id=b.id) }}">Open Accounting</a></div></div><div class="card"><strong>Data connection:</strong> {{ source_note }}</div><div class="grid"><div class="card"><h3>30-day Revenue</h3><h2>{{ money(rev30,'ZMW') }}</h2></div><div class="card"><h3>30-day Net Profit</h3><h2>{{ money(net30,'ZMW') }}</h2></div><div class="card"><h3>Growth</h3><h2>{{ ('%.1f'|format(growth)) ~ '%' if growth is not none else '—' }}</h2></div><div class="card"><h3>Forecast Confidence</h3><h2>{{ confidence }}</h2></div></div><div class="grid"><div class="card"><h3>Next 30-day Forecast</h3><h2>{{ money(forecast30,'ZMW') }}</h2></div><div class="card"><h3>Low-stock Risks</h3><h2>{{ low|length }}</h2></div><div class="card"><h3>Customer Concentration</h3><h2>{{ '%.1f'|format(concentration) }}%</h2></div><div class="card"><h3>7-day Revenue</h3><h2>{{ money(rev7,'ZMW') }}</h2></div></div><div class="grid"><div class="card"><h3>Business/POS Sales</h3><h2>{{ cnt30 }}</h2><p class="small">Paid/completed transactions in the last 30 days.</p></div><div class="card"><h3>KOJA Market Sales Found</h3><h2>{{ market_count }}</h2><p class="small">Paid/completed orders linked to this business.</p></div><div class="card"><h3>90-day Revenue</h3><h2>{{ money(rev90,'ZMW') }}</h2></div><div class="card"><h3>90-day Profit</h3><h2>{{ money(gross90-exp90,'ZMW') }}</h2></div></div><div class="card"><h2>7-Day Forecast</h2>{% for v in forecast7 %}<p>Day {{ loop.index }}: <strong>{{ money(v,'ZMW') }}</strong></p>{% endfor %}</div><div class="card"><h2>Recommended Actions</h2>{% for x in actions %}<p>{{ loop.index }}. {{ x }}</p>{% endfor %}</div><div class="card"><h2>Inventory Intelligence</h2><table><tr><th>Product</th><th>Stock</th><th>Units Sold</th><th>Days Cover</th><th>Margin</th></tr>{% for x in top %}<tr><td>{{ x.name }}</td><td>{{ x.stock|int }}</td><td>{{ x.qty|int }}</td><td>{{ '%.1f'|format(x.days) if x.days is not none else '—' }}</td><td>{{ '%.1f'|format(x.margin) }}%</td></tr>{% else %}<tr><td colspan="5">No products or product-linked sales yet.</td></tr>{% endfor %}</table></div><div class="card"><h2>Pricing Recommendations</h2>{% for x in pricing %}<p><strong>{{ x.name }}</strong>: {{ money(x.current,'ZMW') }} → {{ money(x.recommended,'ZMW') }} — {{ x.action }}</p>{% else %}<p>Not enough product-linked sales data.</p>{% endfor %}</div><div class="card"><h2>Expense Anomalies</h2>{% for x in anomalies %}<p><strong>{{ x.description }}</strong> — {{ money(x.amount,'ZMW') }} on {{ x.date }}</p>{% else %}<p>No statistically unusual expenses detected.</p>{% endfor %}</div><div class="card"><h2>KOJA AI Strategy</h2><form method="post"><button class="btn">Generate V3 AI Strategy</button></form>{% if ai_report %}<hr><div style="white-space:pre-wrap;line-height:1.75">{{ ai_report }}</div>{% endif %}</div>''',b=b,rev30=rev30,exp30=exp30,rev7=rev7,exp7=exp7,rev90=rev90,exp90=exp90,cnt7=cnt7,growth=growth,forecast7=forecast7,forecast30=forecast30,confidence=confidence,low=low,top=top,pricing=pricing,anomalies=anomalies,concentration=concentration,actions=actions,ai_report=ai_report,money=market_money,net30=net30,gross90=gross90,market_count=len(market_rows),source_note=source_note)
 
 import base64 as _b64, hashlib as _hashlib, hmac as _hmac, json as _json, secrets as _secrets
 
@@ -9241,7 +9024,7 @@ def admin_business_verification_v2():
         else: db_insert('koja_business_verifications_v2',payload)
         _r_audit('business_verification_update','business',bid,{'status':status}); return redirect(url_for('admin_business_verification_v2'))
     rows=db_select('koja_business_verifications_v2',{},order='updated_at.desc',limit=300) or []
-    tpl="""<div class='hero'><h1>Business Verification V2</h1><p>Verification, licence and tax expiry control.</p></div><div class='card'><form method='post'><input name='business_id' placeholder='Business ID' required><select name='status'><option>pending</option><option>verified</option><option>rejected</option><option>expired</option></select><input name='licence_number' placeholder='Licence number'><input name='licence_expires_at' type='date'><input name='tax_number' placeholder='Tax number'><input name='tax_expires_at' type='date'><input name='reason' placeholder='Reason'><button class='btn'>Save to Workspace</button></form></div><div class='card'><table><tr><th>Business</th><th>Status</th><th>Licence</th><th>Tax</th></tr>{% for x in rows %}<tr><td>{{ x.business_id }}</td><td>{{ x.status }}</td><td>{{ x.licence_expires_at or '—' }}</td><td>{{ x.tax_expires_at or '—' }}</td></tr>{% else %}<tr><td colspan='4'>No records.</td></tr>{% endfor %}</table></div>"""
+    tpl="""<div class='hero'><h1>Business Verification V2</h1><p>Verification, licence and tax expiry control.</p></div><div class='card'><form method='post'><input name='business_id' placeholder='Business ID' required><select name='status'><option>pending</option><option>verified</option><option>rejected</option><option>expired</option></select><input name='licence_number' placeholder='Licence number'><input name='licence_expires_at' type='date'><input name='tax_number' placeholder='Tax number'><input name='tax_expires_at' type='date'><input name='reason' placeholder='Reason'><button class='btn'>Save</button></form></div><div class='card'><table><tr><th>Business</th><th>Status</th><th>Licence</th><th>Tax</th></tr>{% for x in rows %}<tr><td>{{ x.business_id }}</td><td>{{ x.status }}</td><td>{{ x.licence_expires_at or '—' }}</td><td>{{ x.tax_expires_at or '—' }}</td></tr>{% else %}<tr><td colspan='4'>No records.</td></tr>{% endfor %}</table></div>"""
     return render_page('Business Verification V2',tpl,rows=rows)
 
 @app.route('/business-directory')
@@ -9721,7 +9504,7 @@ def koja_v20_revenue():
 def admin_v12_v20():
     tables=['koja_v13_ad_campaigns','koja_v13_ad_events','koja_v14_payment_intents','koja_v16_intelligence_events','koja_v17_identity','koja_engine_events','koja_workspaces','koja_workspace_members','koja_workspace_files','koja_workspace_documents','koja_enterprise_contracts','koja_enterprise_seats','koja_service_registry','koja_user_service_events','koja_ecosystem_links','koja_unified_transactions','koja_ai_agents','koja_ai_agent_runs','koja_iot_devices','koja_iot_telemetry','koja_autonomy_jobs','koja_future_infrastructure','koja_engine_revenue']
     counts={t:_v12_count(t) for t in tables}
-    tpl="""<div class='hero'><h1>V12 V20 Administration</h1><p>Platform engine readiness and data counts.</p></div><div class='card'><table><tr><th>Engine table</th><th>Status</th><th>Rows</th></tr>{% for t,c in counts.items() %}<tr><td>{{t}}</td><td>READY</td><td>{{c}}</td></tr>{% endfor %}</table></div>"""
+    tpl="""<div class='hero'><h1>V12 → V20 Administration</h1><p>Platform engine readiness and data counts.</p></div><div class='card'><table><tr><th>Engine table</th><th>Status</th><th>Rows</th></tr>{% for t,c in counts.items() %}<tr><td>{{t}}</td><td>READY</td><td>{{c}}</td></tr>{% endfor %}</table></div>"""
     return render_page('V12 V20 Admin',tpl,counts=counts)
 
 
@@ -10605,9 +10388,9 @@ def global_import_export(business_id):
     pending=sum(1 for x in rows if str(x.get('status') or '') not in ('delivered','cancelled','closed'))
     return render_page('KOJA Global Import & Export',r'''
 <div class="hero"><h1>Global Import & Export</h1><p>Cross-border trade from order to customs clearance, landed cost and local delivery.</p><div class="actions"><a class="btn" href="{{ url_for('global_business_hub',business_id=business_id) }}">Global Business</a><a class="btn secondary" href="#new">Create Trade</a></div></div>
-<div class="grid"><div class="stat"><div class="small">Trade Orders</div><div class="big">{{ rows|length }}</div></div><div class="stat"><div class="small">Open</div><div class="big">{{ pending }}</div></div><div class="stat"><div class="small">Workflow</div><div>Order Documents Freight Customs Clearance Delivery</div></div></div>
+<div class="grid"><div class="stat"><div class="small">Trade Orders</div><div class="big">{{ rows|length }}</div></div><div class="stat"><div class="small">Open</div><div class="big">{{ pending }}</div></div><div class="stat"><div class="small">Workflow</div><div>Order → Documents → Freight → Customs → Clearance → Delivery</div></div></div>
 <div class="card" id="new"><h2>New Cross-Border Trade</h2><form method="post" action="{{ url_for('global_import_export_create',business_id=business_id) }}"><div class="grid"><div><label>Direction</label><select name="direction"><option value="import">Import</option><option value="export">Export</option></select></div><div><label>Trade title</label><input name="title" required maxlength="180"></div><div><label>Origin country</label><input name="origin_country" required></div><div><label>Destination country</label><input name="destination_country" required></div><div><label>Currency</label><input name="currency" value="ZMW" maxlength="3" required></div><div><label>HS / tariff code</label><input name="hs_code"></div><div><label>Goods value</label><input name="goods_value" type="number" min="0" step="0.01" value="0"></div><div><label>Freight</label><input name="freight_cost" type="number" min="0" step="0.01" value="0"></div><div><label>Insurance</label><input name="insurance_cost" type="number" min="0" step="0.01" value="0"></div><div><label>Duty rate %</label><input name="duty_rate" type="number" min="0" step="0.01" value="0"></div><div><label>Tax / VAT rate %</label><input name="tax_rate" type="number" min="0" step="0.01" value="0"></div><div><label>Broker fee</label><input name="broker_fee" type="number" min="0" step="0.01" value="0"></div></div><label>Notes</label><textarea name="notes"></textarea><button class="btn" type="submit">Create Trade Order</button></form></div>
-<div class="card"><h2>Trade Pipeline</h2>{% for x in rows %}<div class="card" style="margin:10px 0"><h3>{{ x.title }}</h3><p><b>{{ x.direction|upper }}</b> · {{ x.origin_country }} {{ x.destination_country }} · {{ x.status }}</p><p>HS: {{ x.hs_code or 'Not classified' }} · Customs: {{ x.customs_status or 'Not started' }} · Clearance: {{ x.clearance_status or 'Not started' }}</p><p>Landed cost: <b>{{ '%.2f'|format(x.landed_cost or 0) }} {{ x.currency }}</b></p><a class="btn" href="{{ url_for('global_import_export_order',business_id=business_id,trade_id=x.id) }}">Open Trade</a></div>{% else %}<p>No cross-border trades yet.</p>{% endfor %}</div>
+<div class="card"><h2>Trade Pipeline</h2>{% for x in rows %}<div class="card" style="margin:10px 0"><h3>{{ x.title }}</h3><p><b>{{ x.direction|upper }}</b> · {{ x.origin_country }} → {{ x.destination_country }} · {{ x.status }}</p><p>HS: {{ x.hs_code or 'Not classified' }} · Customs: {{ x.customs_status or 'Not started' }} · Clearance: {{ x.clearance_status or 'Not started' }}</p><p>Landed cost: <b>{{ '%.2f'|format(x.landed_cost or 0) }} {{ x.currency }}</b></p><a class="btn" href="{{ url_for('global_import_export_order',business_id=business_id,trade_id=x.id) }}">Open Trade</a></div>{% else %}<p>No cross-border trades yet.</p>{% endfor %}</div>
 ''',business_id=business_id,b=b,rows=rows,pending=pending)
 
 @app.route('/business/<business_id>/global/import-export/create',methods=['POST'])
@@ -10631,7 +10414,7 @@ def global_import_export_order(business_id,trade_id):
     brokers=db_select('koja_global_trade_brokers',{'trade_id':trade_id},order='created_at.desc',limit=50) or []
     calc=_gx_landed(trade); db_update('koja_global_trade_orders',{'id':trade_id},{**calc,'updated_at':utc_now()}); trade.update(calc)
     return render_page('Trade '+str(trade.get('trade_code')),r'''
-<div class="hero"><h1>{{ trade.trade_code }}</h1><p>{{ trade.title }} · {{ trade.direction|upper }}</p><p>{{ trade.origin_country }} {{ trade.destination_country }} · Status: <b>{{ trade.status }}</b></p></div>
+<div class="hero"><h1>{{ trade.trade_code }}</h1><p>{{ trade.title }} · {{ trade.direction|upper }}</p><p>{{ trade.origin_country }} → {{ trade.destination_country }} · Status: <b>{{ trade.status }}</b></p></div>
 <div class="grid"><div class="stat"><div class="small">Customs Value</div><div class="big">{{ '%.2f'|format(trade.customs_value or 0) }} {{ trade.currency }}</div></div><div class="stat"><div class="small">Duty</div><div class="big">{{ '%.2f'|format(trade.duty_amount or 0) }}</div></div><div class="stat"><div class="small">Tax</div><div class="big">{{ '%.2f'|format(trade.tax_amount or 0) }}</div></div><div class="stat"><div class="small">Landed Cost</div><div class="big">{{ '%.2f'|format(trade.landed_cost or 0) }} {{ trade.currency }}</div></div></div>
 <div class="card"><h2>Customs & Clearance</h2><form method="post" action="{{ url_for('global_import_export_update',business_id=business_id,trade_id=trade.id) }}"><div class="grid"><div><label>Status</label><select name="status">{% for v in ['draft','ordered','in_transit','customs','cleared','delivered','cancelled'] %}<option value="{{ v }}" {% if trade.status==v %}selected{% endif %}>{{ v.replace('_',' ').title() }}</option>{% endfor %}</select></div><div><label>Customs status</label><select name="customs_status">{% for v in ['not_started','documents_ready','declared','inspection','duty_assessed','released'] %}<option value="{{ v }}" {% if trade.customs_status==v %}selected{% endif %}>{{ v.replace('_',' ').title() }}</option>{% endfor %}</select></div><div><label>Clearance status</label><select name="clearance_status">{% for v in ['not_started','assigned','in_review','cleared','held'] %}<option value="{{ v }}" {% if trade.clearance_status==v %}selected{% endif %}>{{ v.replace('_',' ').title() }}</option>{% endfor %}</select></div><div><label>Tracking number</label><input name="tracking_number" value="{{ trade.tracking_number or '' }}"></div><div><label>Carrier</label><input name="carrier" value="{{ trade.carrier or '' }}"></div><div><label>Broker</label><input name="broker_name" value="{{ trade.broker_name or '' }}"></div><div><label>Port / border</label><input name="entry_port" value="{{ trade.entry_port or '' }}"></div><div><label>Customs reference</label><input name="customs_reference" value="{{ trade.customs_reference or '' }}"></div></div><button class="btn" type="submit">Update Trade</button></form></div>
 <div class="card"><h2>Trade Documents</h2>{% for d in docs %}<p><b>{{ d.document_type }}</b> · {{ d.status }} · {{ d.reference or 'No reference' }}</p>{% else %}<p>No documents recorded.</p>{% endfor %}<form method="post" action="{{ url_for('global_import_export_document',business_id=business_id,trade_id=trade.id) }}"><div class="grid"><input name="document_type" placeholder="Commercial Invoice / Packing List / Certificate of Origin / Permit" required><input name="reference"><select name="status"><option>required</option><option>submitted</option><option>approved</option><option>rejected</option></select></div><button class="btn secondary">Add Document</button></form></div>
