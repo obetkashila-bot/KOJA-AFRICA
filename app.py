@@ -924,51 +924,6 @@ footer{text-align:center;color:var(--muted);padding:30px}
 {{ body|safe }}
 </div>
 <footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services</footer>
-<!-- KOJA Connect incoming-call receiver: polls only while authenticated. -->
-{% if user and not request.path.startswith('/api/') and not request.path.startswith('/connect/call') and not request.path.startswith('/connect/answer') %}
-<div id="kojaIncomingCall" style="display:none;position:fixed;left:12px;right:12px;bottom:16px;z-index:99999;max-width:520px;margin:auto;background:var(--card,#fff);border:2px solid var(--accent,#1d4ed8);border-radius:18px;padding:16px;box-shadow:0 18px 50px rgba(0,0,0,.28)">
-  <div style="font-weight:800;font-size:18px" id="kojaIncomingTitle">Incoming Call</div>
-  <div class="small" id="kojaIncomingFrom" style="margin-top:4px"></div>
-  <div class="actions" style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
-    <a id="kojaIncomingAnswer" class="btn success" href="#">Answer</a>
-    <button id="kojaIncomingReject" class="btn danger" type="button">Decline</button>
-  </div>
-</div>
-<script>
-(function(){
-  const box=document.getElementById('kojaIncomingCall');
-  if(!box)return;
-  let activeId=null,lastSeen=null,timer=null;
-  const title=document.getElementById('kojaIncomingTitle'),from=document.getElementById('kojaIncomingFrom'),answer=document.getElementById('kojaIncomingAnswer'),reject=document.getElementById('kojaIncomingReject');
-  function show(c){
-    activeId=c.id; lastSeen=c.id;
-    title.textContent='Incoming '+(c.mode==='video'?'Video':'Voice')+' Call';
-    from.textContent='From '+(c.caller_name||'KOJA user');
-    answer.href='/connect/answer/'+encodeURIComponent(c.id);
-    box.style.display='block';
-    try{ if('navigator' in window && 'vibrate' in navigator) navigator.vibrate([300,150,300]); }catch(e){}
-  }
-  async function reject(){
-    if(!activeId)return;
-    const id=activeId; activeId=null; box.style.display='none';
-    try{await fetch('/api/connect/call/reject/'+encodeURIComponent(id),{method:'POST',headers:{'Content-Type':'application/json'}});}catch(e){}
-  }
-  reject.onclick=reject;
-  async function poll(){
-    try{
-      const r=await fetch('/api/connect/incoming-calls',{cache:'no-store'});
-      if(!r.ok)return;
-      const d=await r.json(); const calls=d.calls||[];
-      if(activeId && !calls.some(c=>String(c.id)===String(activeId))){activeId=null;box.style.display='none';}
-      if(!activeId && calls.length)show(calls[0]);
-    }catch(e){}
-  }
-  poll(); timer=setInterval(poll,2500);
-  window.addEventListener('beforeunload',()=>clearInterval(timer));
-})();
-</script>
-{% endif %}
-
 </body>
 </html>
 """
@@ -1313,6 +1268,25 @@ def _research_year(value):
         return y if 1000 <= y <= 2100 else None
     except Exception:
         return None
+
+def research_openlibrary_books(query, limit=10):
+    """Discover books through Open Library without bypassing access controls."""
+    q=clean(query)
+    if not q:return []
+    try:
+        r=requests.get('https://openlibrary.org/search.json',params={'q':q,'fields':'key,title,author_name,first_publish_year,ebook_access,ia','limit':min(max(limit,1),20)},timeout=6,headers={'User-Agent':'KOJA-AFRICA-Research/8.0'})
+        if not r.ok:return []
+        out=[]
+        for x in r.json().get('docs',[]):
+            title=clean(x.get('title') or '')
+            if not title:continue
+            key=clean(x.get('key') or ''); authors=[clean(a) for a in (x.get('author_name') or []) if clean(a)]
+            access=clean(x.get('ebook_access') or ''); ia=(x.get('ia') or [])
+            read_url=('https://openlibrary.org'+key) if key.startswith('/') else ('https://openlibrary.org/search?q='+quote(q))
+            download_url=('https://archive.org/download/'+quote(str(ia[0]),safe='')) if access=='public' and ia else ''
+            out.append({'source':'Open Library Books','title':title,'url':read_url,'snippet':('By '+', '.join(authors[:4]) if authors else 'Author not listed')+' • Access: '+(access or 'catalogued'),'year':x.get('first_publish_year'),'authors':authors,'source_type':'book','ebook_access':access,'download_url':download_url})
+        return out
+    except Exception as exc: logger.warning('Open Library books failed: %s',exc); return []
 
 def research_google(query, limit=8):
     """Google-backed research when a Programmable Search JSON API key/CSE is configured.
@@ -1661,6 +1635,7 @@ def _research_collect(query, year=None, author=None):
             ('openalex',lambda q=q: research_openalex(q,year,8)),
             ('crossref',lambda q=q: research_crossref(q,year,author,8)),
             ('koja',lambda q=q: research_local_documents(q,8)),
+            ('books',lambda q=q: research_openlibrary_books(q,8)),
         ])
     raw=[]
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -2158,6 +2133,11 @@ def research_notes():
 .notes-shell{max-width:1000px;margin:auto}.notes-toolbar{display:grid;grid-template-columns:1fr auto auto;gap:10px}.notes-body{line-height:1.8;font-size:1rem}.notes-body pre{white-space:pre-wrap;font:inherit}.ref{margin:10px 0}.note-actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}@media(max-width:700px){.notes-toolbar{grid-template-columns:1fr}.notes-body{font-size:.97rem}}
 </style><div class="notes-shell"><div class="hero"><h2> KOJA Research Notes</h2><p>Turn ranked research evidence into clear, connected academic notes.</p><form method="get" action="{{ url_for('research_notes') }}" class="notes-toolbar"><input name="q" value="{{ q }}" placeholder="Enter your research topic…" required><select name="style">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select><button class="btn">Write Notes</button></form></div>{% if q %}<div class="note-actions"><button class="btn secondary" type="button" onclick="copyKOJANotes()">Copy Notes</button><button class="btn secondary" type="button" onclick="window.print()">Print</button><a class="btn secondary" href="{{ url_for('research',q=q,style=style) }}">View Evidence</a></div><div class="card"><strong>{{ results|length }} ranked evidence sources</strong></div><div id="koja-notes" class="card notes-body"><pre>{{ notes }}</pre></div>{% if bibliography %}<div class="card"><h3>References</h3>{% for n,ref in bibliography %}<div class="ref">{{ n }}. {{ ref|safe }}</div>{% endfor %}</div>{% endif %}<script>function copyKOJANotes(){const el=document.getElementById('koja-notes');navigator.clipboard.writeText(el.innerText).then(()=>alert('Research notes copied.')).catch(()=>alert('Select and copy the notes manually.'))}</script>{% else %}<div class="card"><h3>How KOJA writes notes</h3><p>1. Searches multiple evidence sources.</p><p>2. Removes duplicates and ranks relevance.</p><p>3. Gives the AI only the strongest evidence.</p><p>4. Produces connected academic paragraphs with source citations.</p><p>5. Generates a bibliography in your selected citation style.</p></div>{% endif %}</div>''',q=q,style=style,citation_styles=CITATION_STYLES,results=results,notes=notes,bibliography=bibliography)
 
+@app.route('/research/books')
+def research_books():
+    q=_research_normalize_query(request.args.get('q','')); books=research_openlibrary_books(q,20) if q else []
+    return render_page('KOJA Book Research',r"""<div class='hero'><h2>KOJA Book Research</h2><p>Find books and legal reading or download options from connected open-library resources.</p><form method='get'><input name='q' value='{{ q }}' placeholder='Search for a book or topic' required><button class='btn'>Search Books</button></form></div>{% if q %}{% for b in books %}<div class='card'><span class='source-badge'>{{ b.source }}</span><h3>{{ b.title }}</h3><p>{{ b.snippet }}</p><p class='small'>{{ b.year or 'Year not listed' }}{% if b.ebook_access %} • Access: {{ b.ebook_access }}{% endif %}</p><div class='actions'><a class='btn secondary' target='_blank' rel='noopener' href='{{ b.url }}'>Open / Read</a>{% if b.download_url %}<a class='btn' target='_blank' rel='noopener' href='{{ b.download_url }}'>Open legal download</a>{% endif %}</div></div>{% else %}<div class='card'><p>No matching books found.</p></div>{% endfor %}{% else %}<div class='card'><h3>Connected book resources</h3><p>KOJA can discover books through Open Library and link to reading, borrowing, or publicly available downloads. It does not bypass publisher or library access controls.</p></div>{% endif %}""",q=q,books=books)
+
 @app.route('/research')
 def research():
     q=_research_normalize_query(request.args.get('q','')); source_filter=clean(request.args.get('source','all')).lower() or 'all'; sort=clean(request.args.get('sort','relevance')).lower() or 'relevance'; year=_research_year(request.args.get('year','')); author=clean(request.args.get('author','')); style=clean(request.args.get('style','apa')).lower() or 'apa'; source_type=clean(request.args.get('source_type','all')).lower() or 'all'
@@ -2180,7 +2160,7 @@ def research():
 </style>
 <div class="research-shell"><div class="research-welcome"><h2> What would you like to research?</h2><p>Ask a full question, attach a document, or use your voice. KOJA Research searches web, academic literature, Wikipedia and your KOJA documents, then brings the evidence together.</p></div><div class="hero"><form method="get" action="{{ url_for('research') }}" class="research-search" id="research-composer"><textarea name="q" rows="3" maxlength="2000" placeholder="Ask anything you want to research…" aria-label="Research question" autofocus>{{ q }}</textarea><div class="research-composer-bottom"><div class="research-composer-actions"><label class="btn secondary research-icon" title="Attach a document" aria-label="Attach a document"><input id="research-file" type="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp" hidden></label><button class="btn secondary research-icon" id="research-record" type="button" title="Record voice" aria-label="Record voice">️</button><span class="research-recording" id="research-recording">● Recording…</span><span class="research-file-name" id="research-file-name"></span></div><button class="btn research-send" type="submit" title="Send research question" aria-label="Send research question"></button></div></form>
 <script>(function(){const box=document.querySelector('#research-composer textarea[name="q"]');const file=document.getElementById('research-file');const name=document.getElementById('research-file-name');const rec=document.getElementById('research-record');const recLabel=document.getElementById('research-recording');let media=null,chunks=[];if(box){const grow=()=>{box.style.height='auto';box.style.height=Math.min(box.scrollHeight,280)+'px'};box.addEventListener('input',grow);grow()}if(file){file.addEventListener('change',()=>{name.textContent=file.files&&file.files[0]?file.files[0].name:''})}if(rec&&navigator.mediaDevices&&window.MediaRecorder){rec.addEventListener('click',async()=>{if(media){media.stop();return}try{const stream=await navigator.mediaDevices.getUserMedia({audio:true});media=new MediaRecorder(stream);chunks=[];media.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};media.onstop=()=>{const blob=new Blob(chunks,{type:'audio/webm'});const url=URL.createObjectURL(blob);name.textContent='Voice recording ready ('+Math.round(blob.size/1024)+' KB)';const a=document.createElement('a');a.href=url;a.download='koja-research-question.webm';a.style.display='none';document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(url);a.remove()},1000);stream.getTracks().forEach(t=>t.stop());media=null;rec.textContent='️';recLabel.style.display='none'};media.start();rec.textContent='⏹️';recLabel.style.display='inline';}catch(e){alert('Microphone permission is required to record.')}})}})();</script><div class="research-filters"><label>Source<select name="source" form="research-filter-form"><option value="all" {% if source_filter=='all' %}selected{% endif %}>All sources</option><option value="academic" {% if source_filter=='academic' %}selected{% endif %}>Academic</option><option value="web" {% if source_filter=='web' %}selected{% endif %}>Web</option><option value="wikipedia" {% if source_filter=='wikipedia' %}selected{% endif %}>Wikipedia</option><option value="koja" {% if source_filter=='koja' %}selected{% endif %}>KOJA Documents</option></select></label><label>Year<input name="year" form="research-filter-form" value="{{ year or '' }}" placeholder="e.g. 2025" inputmode="numeric"></label><label>Author<input name="author" form="research-filter-form" value="{{ author }}" placeholder="Academic author"></label><label>Citation style<select name="style" form="research-filter-form">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Source type<select name="source_type" form="research-filter-form"><option value="all">All source types</option>{% for k,v in source_types.items() %}<option value="{{k}}" {% if source_type==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Sort<select name="sort" form="research-filter-form"><option value="relevance" {% if sort=='relevance' %}selected{% endif %}>Relevance</option><option value="date" {% if sort=='date' %}selected{% endif %}>Newest first</option><option value="citations" {% if sort=='citations' %}selected{% endif %}>Most cited</option></select></label></div><form id="research-filter-form" method="get" action="{{ url_for('research') }}"><input type="hidden" name="q" value="{{ q }}"></form></div>
-{% if q %}<div class="note-actions"><a class="btn" href="{{ url_for('research_notes',q=q,style=style) }}"> Write Research Notes</a><a class="btn secondary" href="{{ url_for('research') }}">＋ New research</a></div><div class="research-tabs"><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}"> Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}"> Web</a><a class="btn secondary" href="https://www.google.com/search?q={{ q|urlencode }}" target="_blank" rel="noopener"> Google</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}"> KOJA Documents</a></div><div class="card"><span class="research-count">{{ results|length }} ranked sources</span> found for <strong>“{{ q }}”</strong><p class="small" style="margin-top:8px">KOJA combines multiple research angles, academic literature, web sources and KOJA Documents; it removes duplicates, filters weak matches, ranks evidence and then uses KOJA AI to synthesize the strongest evidence.</p></div>{% if summary %}<div class="card research-summary"><div class="research-answer-label"> KOJA Research Answer</div><pre>{{ summary }}</pre><p class="small">AI summaries use configured AI credentials when available; otherwise KOJA shows source-based highlights. Verify important claims against original sources.</p></div>{% endif %}{% for r in results %}<div class="card research-result"><span class="source-badge">{{ r.source }}</span><h3><a href="{{ r.url or '#' }}" {% if r.url %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a></h3>{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p><p><strong>In-text:</strong> {{ make_intext(r,style,loop.index) }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open original source ↗</a>{% endif %}</div>{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endfor %}{% if bibliography %}<div class="card"><h2>References</h2><p class="small">Generated from available source metadata. Verify against the original source.</p>{% for n,ref in bibliography %}<p style="padding-left:28px;text-indent:-28px;line-height:1.6">{{ ref|safe }}</p>{% endfor %}</div>{% endif %}{% else %}<div class="grid"><div class="card"><h3> Research Discovery</h3><p>KOJA searches across multiple research sources and filters weak or unrelated matches.</p></div><div class="card"><h3> Academic Search</h3><p>OpenAlex and Crossref provide scholarly metadata, authors, years and citation information.</p></div><div class="card"><h3> KOJA Documents</h3><p>Search documents already connected to your KOJA Supabase database.</p></div><div class="card"><h3> AI Research Summary</h3><p>Configure an AI API key to synthesize retrieved evidence with source-number citations.</p></div></div>{% endif %}</div>
+{% if q %}<div class="note-actions"><a class="btn" href="{{ url_for('research_notes',q=q,style=style) }}"> Write Research Notes</a><a class="btn secondary" href="{{ url_for('research') }}">＋ New research</a></div><div class="research-tabs"><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}"> Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}"> Web</a><a class="btn secondary" href="https://www.google.com/search?q={{ q|urlencode }}" target="_blank" rel="noopener"> Google</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}"> KOJA Documents</a><a class="btn secondary" href="{{ url_for('research_books',q=q) }}"> Books</a></div><div class="card"><span class="research-count">{{ results|length }} ranked sources</span> found for <strong>“{{ q }}”</strong><p class="small" style="margin-top:8px">KOJA combines multiple research angles, academic literature, web sources and KOJA Documents; it removes duplicates, filters weak matches, ranks evidence and then uses KOJA AI to synthesize the strongest evidence.</p></div>{% if summary %}<div class="card research-summary"><div class="research-answer-label"> KOJA Research Answer</div><pre>{{ summary }}</pre><p class="small">AI summaries use configured AI credentials when available; otherwise KOJA shows source-based highlights. Verify important claims against original sources.</p></div>{% endif %}{% for r in results %}<div class="card research-result"><span class="source-badge">{{ r.source }}</span><h3><a href="{{ r.url or '#' }}" {% if r.url %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a></h3>{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p><p><strong>In-text:</strong> {{ make_intext(r,style,loop.index) }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open original source ↗</a>{% endif %}</div>{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endfor %}{% if bibliography %}<div class="card"><h2>References</h2><p class="small">Generated from available source metadata. Verify against the original source.</p>{% for n,ref in bibliography %}<p style="padding-left:28px;text-indent:-28px;line-height:1.6">{{ ref|safe }}</p>{% endfor %}</div>{% endif %}{% else %}<div class="grid"><div class="card"><h3> Research Discovery</h3><p>KOJA searches across multiple research sources and filters weak or unrelated matches.</p></div><div class="card"><h3> Academic Search</h3><p>OpenAlex and Crossref provide scholarly metadata, authors, years and citation information.</p></div><div class="card"><h3> KOJA Documents</h3><p>Search documents already connected to your KOJA Supabase database.</p></div><div class="card"><h3> AI Research Summary</h3><p>Configure an AI API key to synthesize retrieved evidence with source-number citations.</p></div></div>{% endif %}</div>
 ''',q=q,results=results,summary=summary,source_filter=source_filter,sort=sort,year=year,author=author,style=style,source_type=source_type,citation_styles=CITATION_STYLES,source_types=SOURCE_TYPES,bibliography=bibliography,make_intext=make_intext,SITE_URL=SITE_URL)
 
 
@@ -6564,8 +6544,6 @@ create index if not exists koja_notifications_user_idx on public.koja_notificati
 create table if not exists public.koja_notification_preferences (user_id uuid primary key, push_enabled boolean default true, sound_enabled boolean default true, market_enabled boolean default true, delivery_enabled boolean default true, ai_enabled boolean default true, messages_enabled boolean default true, system_enabled boolean default true, updated_at timestamptz default now());
 create table if not exists public.koja_push_subscriptions (id uuid primary key default gen_random_uuid(), user_id uuid not null, endpoint text not null, subscription jsonb not null default '{}'::jsonb, user_agent text, created_at timestamptz default now(), updated_at timestamptz default now(), unique(user_id,endpoint));
 create index if not exists koja_push_subscriptions_user_idx on public.koja_push_subscriptions(user_id,created_at desc);
-create table if not exists public.koja_fcm_devices (id uuid primary key default gen_random_uuid(), user_id uuid not null, token text not null, device_id text default '', platform text default 'android', app_version text default '', created_at timestamptz default now(), updated_at timestamptz default now(), unique(user_id,token));
-create index if not exists koja_fcm_devices_user_idx on public.koja_fcm_devices(user_id,updated_at desc);
 create table if not exists public.koja_blocks (
  blocker_id uuid not null, blocked_id uuid not null, created_at timestamptz default now(), primary key(blocker_id,blocked_id)
 );
@@ -6581,24 +6559,7 @@ def _notification_allowed(uid, notification_type):
     if t in ('message','chat','call','group_call','friend_request'): return bool(p.get('messages_enabled',True))
     return bool(p.get('system_enabled',True))
 
-def _send_native_fcm(uid,title,body,url=None,notification_type='system',related_id=None):
-    if not uid or not _notification_allowed(uid,notification_type): return 0
-    relay=(os.getenv('FCM_RELAY_URL') or os.getenv('KOJA_FCM_RELAY_URL') or os.getenv('PUSH_RELAY_URL') or os.getenv('FCM_RELAY_ENDPOINT') or '').strip()
-    secret=os.getenv('FCM_RELAY_SECRET','').strip()
-    if not relay or not secret or not table_exists('koja_fcm_devices'): return 0
-    sent=0
-    for d in db_select('koja_fcm_devices',filters={'user_id':str(uid)},limit=20):
-        token=clean(d.get('token'))
-        if not token: continue
-        payload={'token':token,'title':title,'body':body,'data':{'type':notification_type,'call_id':str(related_id) if related_id else '','related_id':str(related_id) if related_id else '','url':url or '/notifications','mode':'video' if notification_type=='call' and 'video' in title.lower() else ('voice' if notification_type=='call' else '')}}
-        try:
-            rr=requests.post(relay,headers={'Content-Type':'application/json','X-FCM-RELAY-SECRET':secret,'Authorization':'Bearer '+secret},json=payload,timeout=15)
-            if rr.ok: sent+=1
-            elif rr.status_code in (400,404,410): db_delete('koja_fcm_devices',{'id':d.get('id')})
-        except Exception: logger.exception('KOJA native FCM relay failed')
-    return sent
-
-def _send_web_push(uid,title,body,url=None,notification_type='system',related_id=None):
+def _send_web_push(uid,title,body,url=None,notification_type='system'):
     if not _notification_allowed(uid,notification_type): return 0
     try: from pywebpush import webpush
     except Exception: return 0
@@ -6607,9 +6568,28 @@ def _send_web_push(uid,title,body,url=None,notification_type='system',related_id
     sent=0
     for sub in db_select('koja_push_subscriptions',filters={'user_id':str(uid)},limit=20):
         try:
-            webpush(subscription_info=sub.get('subscription') or {},data=json.dumps({'title':title,'body':body,'url':url or '/notifications','type':notification_type,'related_id':str(related_id) if related_id else None,'call_id':str(related_id) if notification_type in ('call','group_call') and related_id else None}),vapid_private_key=sk,vapid_claims={'sub':subject}); sent+=1
+            webpush(subscription_info=sub.get('subscription') or {},data=json.dumps({'title':title,'body':body,'url':url or '/notifications','type':notification_type}),vapid_private_key=sk,vapid_claims={'sub':subject}); sent+=1
         except Exception as exc:
             if '410' in str(exc) or '404' in str(exc): db_delete('koja_push_subscriptions',{'id':sub.get('id')})
+    return sent
+
+def _send_native_fcm(uid,title,body,url=None,notification_type='system',related_id=None):
+    """Send native Android FCM through the existing KOJA relay."""
+    if not uid or not _notification_allowed(uid,notification_type): return 0
+    relay=(os.getenv('FCM_RELAY_URL') or os.getenv('KOJA_FCM_RELAY_URL') or os.getenv('PUSH_RELAY_URL') or os.getenv('FCM_RELAY_ENDPOINT') or '').strip()
+    secret=(os.getenv('FCM_RELAY_SECRET') or '').strip()
+    if not relay or not secret or not table_exists('koja_fcm_devices'): return 0
+    devices=db_select('koja_fcm_devices',filters={'user_id':str(uid)},limit=20) or []
+    sent=0
+    for device in devices:
+        token=clean(device.get('token'))
+        if not token: continue
+        payload={'token':token,'title':title,'body':body,'data':{'type':notification_type,'call_id':str(related_id or ''),'related_id':str(related_id or ''),'url':url or '/notifications','mode':'video' if 'video' in str(title).lower() else 'voice'}}
+        try:
+            rr=requests.post(relay,headers={'Content-Type':'application/json','X-FCM-RELAY-SECRET':secret,'Authorization':'Bearer '+secret},json=payload,timeout=15)
+            if rr.ok: sent+=1
+            elif rr.status_code in (400,404): logger.warning('KOJA native FCM relay rejected device status=%s',rr.status_code)
+        except Exception: logger.exception('KOJA native FCM relay failed')
     return sent
 
 def _send_optional_sms(phone, message):
@@ -6627,16 +6607,10 @@ def notify_user(uid,title,body,notification_type='system',related_id=None,url=No
     if not uid or not _notification_allowed(uid,notification_type): return None
     row,err=db_insert('koja_notifications',{'user_id':str(uid),'notification_type':notification_type,'title':title,'body':body,'related_id':related_id,'is_read':False,'created_at':utc_now()})
     if not err and row:
-        # Send through the existing native FCM relay as well as optional web push.
-        # Native Android push must not depend on VAPID/web-push configuration.
-        try:
-            _send_native_fcm(uid,title,body,url,notification_type,related_id)
-        except Exception:
-            logger.exception('KOJA native FCM notification failed')
-        try:
-            _send_web_push(uid,title,body,url,notification_type,related_id)
-        except Exception:
-            logger.exception('KOJA web push notification failed')
+        try: _send_native_fcm(uid,title,body,url,notification_type,related_id)
+        except Exception: logger.exception('KOJA native FCM notification failed')
+        try: _send_web_push(uid,title,body,url,notification_type)
+        except Exception: logger.exception('KOJA web push notification failed')
         try:
             u=find_user_by_id(uid) or {}
             email=clean(u.get('email'))
@@ -6645,6 +6619,37 @@ def notify_user(uid,title,body,notification_type='system',related_id=None,url=No
         except Exception: logger.exception('KOJA multi-channel notification failed')
         return row
     return None
+
+@app.route('/api/notifications/fcm/register',methods=['POST'])
+@login_required
+def register_fcm_device():
+    uid=str(current_user()['id']); d=request.get_json(silent=True) or {}; token=clean(d.get('token'))
+    if not token:return jsonify(ok=False,error='FCM token is required'),400
+    if not table_exists('koja_fcm_devices'):return jsonify(ok=False,error='koja_fcm_devices table is not installed'),503
+    payload={'user_id':uid,'token':token,'device_id':clean(d.get('device_id')),'platform':clean(d.get('platform') or 'android'),'app_version':clean(d.get('app_version')),'updated_at':utc_now()}
+    existing=first_row('koja_fcm_devices',{'user_id':uid,'token':token})
+    row,err=db_update('koja_fcm_devices',{'id':existing.get('id')},payload) if existing else db_insert('koja_fcm_devices',payload)
+    if err:return jsonify(ok=False,error=str(err)[:500]),500
+    return jsonify(ok=True,device=row or payload)
+
+@app.route('/api/push/register',methods=['POST'])
+@login_required
+def register_fcm_device_alias(): return register_fcm_device()
+
+@app.route('/api/notifications/push-status')
+@login_required
+def push_status():
+    uid=str(current_user()['id']); relay=bool((os.getenv('FCM_RELAY_URL') or os.getenv('KOJA_FCM_RELAY_URL') or os.getenv('PUSH_RELAY_URL') or os.getenv('FCM_RELAY_ENDPOINT')) and os.getenv('FCM_RELAY_SECRET'))
+    devices=db_select('koja_fcm_devices',filters={'user_id':uid},limit=20) if table_exists('koja_fcm_devices') else []
+    return jsonify(native_push_configured=relay,native_devices=len(devices or []),web_push_configured=bool(os.getenv('VAPID_PUBLIC_KEY') and os.getenv('VAPID_PRIVATE_KEY')))
+
+@app.route('/api/notifications/test-native-push',methods=['POST'])
+@login_required
+def test_native_push():
+    uid=str(current_user()['id']); devices=db_select('koja_fcm_devices',filters={'user_id':uid},limit=20) if table_exists('koja_fcm_devices') else []
+    if not devices:return jsonify(ok=False,error='No Android FCM device is registered'),400
+    sent=_send_native_fcm(uid,'KOJA Push Test','KOJA phone push is working.','/notifications','system',None)
+    return jsonify(ok=sent>0,sent=sent,devices=len(devices))
 
 def _connect_user(uid): return find_user_by_id(uid) or {}
 def _conversation_member(cid, uid): return bool(first_row('koja_conversation_members', {'conversation_id':cid,'user_id':uid}))
@@ -6671,7 +6676,7 @@ def notifications_page():
 @login_required
 def notification_settings():
     uid=str(current_user()['id']); p=first_row('koja_notification_preferences',{'user_id':uid}) or {}
-    return render_page('Notification Settings',"""<div class='card'><h2>Notification Settings</h2><p>Choose what KOJA can notify you about.</p><form id='np'><label><input type='checkbox' name='push_enabled' {% if p.get('push_enabled',True) %}checked{% endif %}> Push notifications</label><label><input type='checkbox' name='sound_enabled' {% if p.get('sound_enabled',True) %}checked{% endif %}> Notification sound</label><label><input type='checkbox' name='market_enabled' {% if p.get('market_enabled',True) %}checked{% endif %}> Market and orders</label><label><input type='checkbox' name='delivery_enabled' {% if p.get('delivery_enabled',True) %}checked{% endif %}> Deliveries and drivers</label><label><input type='checkbox' name='ai_enabled' {% if p.get('ai_enabled',True) %}checked{% endif %}> KOJA AI</label><label><input type='checkbox' name='messages_enabled' {% if p.get('messages_enabled',True) %}checked{% endif %}> Messages and calls</label><label><input type='checkbox' name='system_enabled' {% if p.get('system_enabled',True) %}checked{% endif %}> System and account</label><button class='btn' type='submit'>Save settings</button></form><hr><button class='btn secondary' type='button' onclick='enableKOJAPush()'>Enable phone/browser notifications</button><p id='push-status' class='small'></p></div><script>const form=document.getElementById('np');form.onsubmit=async e=>{e.preventDefault();let o={};new FormData(form).forEach((v,k)=>o[k]=true);let r=await fetch('/api/notifications/preferences',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)});document.getElementById('push-status').textContent=r.ok?'Saved.':'Could not save settings.'};async function enableKOJAPush(){try{let st=await fetch('/api/notifications/push-status').then(r=>r.json());if(st.native_push_configured&&st.native_devices>0){document.getElementById('push-status').textContent='KOJA phone push is enabled on this device.';return}if(!('Notification'in window)){document.getElementById('push-status').textContent='Native phone push is not registered yet. Browser notifications are not supported here.';return}let perm=await Notification.requestPermission();if(perm!=='granted'){document.getElementById('push-status').textContent='Notification permission was not granted.';return}if(!('serviceWorker'in navigator)){document.getElementById('push-status').textContent='Native phone push is not registered yet.';return}let reg=await navigator.serviceWorker.register('/koja-sw.js');let key=await fetch('/api/notifications/vapid-public-key').then(r=>r.text());if(!key){document.getElementById('push-status').textContent='KOJA phone push is handled by the Android app; web push is not configured.';return}let sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:base64ToUint8(key)});await fetch('/api/notifications/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sub)});document.getElementById('push-status').textContent='Phone/browser notifications enabled.'}catch(e){document.getElementById('push-status').textContent='Could not enable notifications.'}}function base64ToUint8(b){let p='='.repeat((4-b.length%4)%4),s=atob((b+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from([...s].map(c=>c.charCodeAt(0)))}</script>""",p=p)
+    return render_page('Notification Settings',"""<div class='card'><h2>Notification Settings</h2><p>Choose what KOJA can notify you about.</p><form id='np'><label><input type='checkbox' name='push_enabled' {% if p.get('push_enabled',True) %}checked{% endif %}> Push notifications</label><label><input type='checkbox' name='sound_enabled' {% if p.get('sound_enabled',True) %}checked{% endif %}> Notification sound</label><label><input type='checkbox' name='market_enabled' {% if p.get('market_enabled',True) %}checked{% endif %}> Market and orders</label><label><input type='checkbox' name='delivery_enabled' {% if p.get('delivery_enabled',True) %}checked{% endif %}> Deliveries and drivers</label><label><input type='checkbox' name='ai_enabled' {% if p.get('ai_enabled',True) %}checked{% endif %}> KOJA AI</label><label><input type='checkbox' name='messages_enabled' {% if p.get('messages_enabled',True) %}checked{% endif %}> Messages and calls</label><label><input type='checkbox' name='system_enabled' {% if p.get('system_enabled',True) %}checked{% endif %}> System and account</label><button class='btn' type='submit'>Save settings</button></form><hr><button class='btn secondary' type='button' onclick='enableKOJAPush()'>Enable phone/browser notifications</button><p id='push-status' class='small'></p></div><script>const form=document.getElementById('np');form.onsubmit=async e=>{e.preventDefault();let o={};new FormData(form).forEach((v,k)=>o[k]=true);let r=await fetch('/api/notifications/preferences',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)});document.getElementById('push-status').textContent=r.ok?'Saved.':'Could not save settings.'};async function enableKOJAPush(){if(!('Notification'in window)){document.getElementById('push-status').textContent='This browser does not support notifications.';return}let perm=await Notification.requestPermission();if(perm!=='granted'){document.getElementById('push-status').textContent='Notification permission was not granted.';return}if(!('serviceWorker'in navigator)){document.getElementById('push-status').textContent='Service workers are not supported here.';return}let reg=await navigator.serviceWorker.register('/koja-sw.js');let key=await fetch('/api/notifications/vapid-public-key').then(r=>r.text());if(!key){document.getElementById('push-status').textContent='Push service is not configured yet.';return}let sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:base64ToUint8(key)});await fetch('/api/notifications/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sub)});document.getElementById('push-status').textContent='Phone/browser notifications enabled.'}function base64ToUint8(b){let p='='.repeat((4-b.length%4)%4),s=atob((b+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from([...s].map(c=>c.charCodeAt(0)))}</script>""",p=p)
 
 @app.route('/api/notifications')
 @login_required
@@ -6698,44 +6703,6 @@ def api_notification_preferences():
     if old: ok,err=db_update('koja_notification_preferences',{'user_id':uid},payload)
     else: row,err=db_insert('koja_notification_preferences',payload); ok=bool(row and not err)
     return jsonify(ok=bool(ok)),200 if ok else 400
-
-@app.route('/api/notifications/fcm/register',methods=['POST'])
-@login_required
-def api_fcm_register():
-    uid=str(current_user()['id']); d=request.get_json(silent=True) or {}; token=clean(d.get('token') or d.get('fcm_token') or d.get('device_token'))
-    if not token: return jsonify(error='FCM token required'),400
-    if not table_exists('koja_fcm_devices'): return jsonify(error='FCM device table is not available'),503
-    payload={'user_id':uid,'token':token,'device_id':clean(d.get('device_id')),'platform':clean(d.get('platform') or 'android'),'app_version':clean(d.get('app_version')),'updated_at':utc_now()}
-    old=first_row('koja_fcm_devices',{'user_id':uid,'token':token})
-    if old: ok,err=db_update('koja_fcm_devices',{'id':old.get('id')},payload)
-    else: row,err=db_insert('koja_fcm_devices',payload); ok=bool(row and not err)
-    return jsonify(ok=bool(ok))
-
-@app.route('/api/push/register',methods=['POST'])
-@login_required
-def api_push_register_alias(): return api_fcm_register()
-
-@app.route('/api/notifications/register-device',methods=['POST'])
-@login_required
-def api_notifications_register_device(): return api_fcm_register()
-
-@app.route('/api/notifications/push-status')
-@login_required
-def api_push_status():
-    uid=str(current_user()['id']); devices=db_select('koja_fcm_devices',filters={'user_id':uid},limit=20) if table_exists('koja_fcm_devices') else []
-    relay=bool((os.getenv('FCM_RELAY_URL') or os.getenv('KOJA_FCM_RELAY_URL') or os.getenv('PUSH_RELAY_URL') or os.getenv('FCM_RELAY_ENDPOINT') or '').strip() and os.getenv('FCM_RELAY_SECRET','').strip())
-    web=bool(os.getenv('VAPID_PUBLIC_KEY','').strip() and os.getenv('VAPID_PRIVATE_KEY','').strip())
-    return jsonify(native_push_configured=relay,native_devices=len(devices),web_push_configured=web)
-
-@app.route('/api/notifications/test-native-push',methods=['POST'])
-@login_required
-def api_test_native_push():
-    uid=str(current_user()['id'])
-    devices=db_select('koja_fcm_devices',filters={'user_id':uid},limit=20) if table_exists('koja_fcm_devices') else []
-    if not devices:
-        return jsonify(ok=False,error='No Android FCM device is registered for this account'),400
-    sent=_send_native_fcm(uid,'KOJA Push Test','KOJA phone push is working.','/notifications','system',None)
-    return jsonify(ok=sent>0,sent=sent,devices=len(devices))
 
 @app.route('/api/notifications/vapid-public-key')
 @login_required
@@ -7137,19 +7104,17 @@ def connect_calls():
     uid=current_user()['id']; rows=db_select('koja_calls',filters={'caller_id':uid},order='created_at.desc',limit=50)+db_select('koja_calls',filters={'callee_id':uid},order='created_at.desc',limit=50); rows=sorted(rows,key=lambda x:x.get('created_at',''),reverse=True)[:50]
     return render_page('KOJA Calls',r'''<div class="card"><h2> KOJA Call History</h2>{% for c in rows %}<div class="card"><strong>{{ c.mode|title }}</strong> — {{ c.status }}<div class="small">{{ c.created_at }}</div>{% if c.callee_id|string == user.id|string and c.status=='ringing' %}<a class="btn" href="{{ url_for('connect_answer',call_id=c.id) }}">Answer</a>{% endif %}</div>{% else %}<p>No calls yet.</p>{% endfor %}</div>''',rows=rows)
 
-# Chat call launcher: resolve the recipient from the current conversation.
-# This avoids losing the callee when a chat page cannot reliably expose other_id.
 @app.route('/connect/call',methods=['GET'])
 @app.route('/connect/call/',methods=['GET'])
 @login_required
 def connect_call_slash():
     uid=str(current_user()['id']); target=clean(request.args.get('callee_id') or request.args.get('user_id')); cid=clean(request.args.get('conversation_id')); mode=clean(request.args.get('mode','video')) or 'video'
     if not target and cid:
-        members=db_select('koja_conversation_members',filters={'conversation_id':cid},limit=20)
+        members=db_select('koja_conversation_members',filters={'conversation_id':cid},limit=100)
         other=next((m for m in members if str(m.get('user_id'))!=uid),None)
         target=clean(other.get('user_id')) if other else ''
     if not target or target==uid or not find_user_by_id(target) or mode not in ('voice','video'):
-        return render_page('KOJA Call', r'''<div class="card"><h2>KOJA Call</h2><p>Select a person from Connect to start a voice or video call.</p><a class="btn" href="{{ url_for('connect') }}">Open Connect</a><a class="btn secondary" href="{{ url_for('connect_calls') }}">Call History</a></div>''')
+        return render_page('KOJA Call',r"""<div class='card'><h2>KOJA Call</h2><p>Select a person from Connect to start a voice or video call.</p><a class='btn' href='{{ url_for('connect') }}'>Open Connect</a><a class='btn secondary' href='{{ url_for('connect_calls') }}'>Call History</a></div>""")
     return redirect(url_for('connect_call',user_id=target,mode=mode))
 
 @app.route('/connect/call/<user_id>')
@@ -7226,23 +7191,6 @@ def connect_call_create():
     c=_direct_conversation(uid,callee); row,err=db_insert('koja_calls',{'id':str(uuid.uuid4()),'conversation_id':c['id'],'caller_id':uid,'callee_id':callee,'mode':mode,'status':'ringing','created_at':utc_now()})
     if err:return jsonify(error=err),500
     notify_user(callee,f'Incoming {mode} call',f'{_profile_name(uid)} is calling you.','call',row['id'],'/connect/calls');return jsonify(call=row)
-
-@app.route('/api/connect/incoming-calls')
-@login_required
-def connect_incoming_calls():
-    uid=str(current_user()['id'])
-    rows=db_select('koja_calls',filters={'callee_id':uid,'status':'ringing'},order='created_at.desc',limit=10)
-    return jsonify(ok=True,calls=[{'id':c.get('id'),'conversation_id':c.get('conversation_id'),'caller_id':c.get('caller_id'),'caller_name':_profile_name(c.get('caller_id')),'mode':c.get('mode','voice'),'status':c.get('status','ringing'),'created_at':c.get('created_at')} for c in rows])
-
-@app.route('/api/connect/call/reject/<call_id>',methods=['POST'])
-@login_required
-def connect_call_reject(call_id):
-    uid=str(current_user()['id']); c=first_row('koja_calls',{'id':call_id})
-    if not c or str(c.get('callee_id'))!=uid:return jsonify(error='Forbidden'),403
-    if str(c.get('status','')).lower() not in ('ringing','answered'):return jsonify(ok=True,status=c.get('status'))
-    updated,err=db_update('koja_calls',{'id':call_id},{'status':'rejected','ended_at':utc_now()})
-    if err:return jsonify(error=str(err)[:500]),500
-    return jsonify(ok=True,status='rejected')
 
 @app.route('/api/connect/call/offer/<call_id>',methods=['POST'])
 @login_required
