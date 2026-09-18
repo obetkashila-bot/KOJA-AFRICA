@@ -1,9 +1,8 @@
-KOJA AFRICA BOOK RESEARCH V14
+KOJA AFRICA Research V8 - Research Notes Runtime Fix
 
-Adds /research/books and /research/books/download to the supplied production app.
-Sources: Open Library and Project Gutenberg (via Gutendex).
-PDF downloads are exposed only when the upstream source publishes a PDF.
-No SQL migration required. No DRM/paywall/access-control bypass.
-Android note: the supplied MainActivity needs a WebView DownloadListener using
-Android DownloadManager if direct KOJA PDF downloads should automatically land
-in the phone Downloads folder.
+Fixes the Render 500 on /research/notes caused by research_ai_notes calling a missing _gemini_text helper.
+
+The notes engine now uses KOJA's existing _ai_call provider/fallback chain and keeps the evidence-only fallback if AI is unavailable.
+
+No SQL migration.
+Existing Research V7 functionality is preserved.
