@@ -1,26 +1,19 @@
-KOJA SERVICES GLOBAL V1
+KOJA AFRICA CONNECT V2 — Calls + UI Upgrade
+Base: KOJA V12 Business Commerce Operations
 
-This upgrade replaces the /services screen in the current KOJA AFRICA app with a unified global service center.
+Includes:
+- Improved Connect call UI
+- Voice calls
+- Video calls
+- Mute/unmute
+- Camera on/off
+- Incoming-call polling and answer/decline controls
+- Call history UI
+- Connect theme toggle using KOJA existing theme preference
+- Improved WebRTC signaling polling and connection state handling
+- Existing Connect database tables preserved
+- No SQL migration
+- Connect only; Business and other modules preserved from V12
 
-Added service groups:
-- Learning and Research
-- AI and Workspace
-- Professional Services
-- Market, Business and Global Trade
-- KOJA Business / Global Business
-- Business Connect entry point
-- Import & Export
-- Customs & Clearance
-- International Trade
-- Finance, Payments and Payouts
-- Delivery, Freight and Logistics
-- Connect+
-- KOJA Platform Engines
-
-Important:
-- Existing backend routes and services are preserved.
-- No Supabase migration is required for this UI-only services-center upgrade.
-- Import/export/customs cards are connected to existing KOJA Business/Global Business entry points until the dedicated trade route is deployed.
-- Communications/Connect+ backend is not modified.
-
-Deploy by replacing the production app.py with this file and keeping the existing requirements.txt and environment variables.
+WebRTC still requires HTTPS and browser camera/microphone permission.
+For networks where direct WebRTC cannot establish a peer connection, configure a TURN server using a future TURN integration; the current upgrade keeps public STUN fallback and does not invent TURN credentials.

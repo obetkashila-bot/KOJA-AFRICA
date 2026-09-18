@@ -7023,73 +7023,25 @@ def connect_call_answer(call_id):
 @app.route('/connect/calls')
 @login_required
 def connect_calls():
-    uid=current_user()['id']; rows=db_select('koja_calls',filters={'caller_id':uid},order='created_at.desc',limit=50)+db_select('koja_calls',filters={'callee_id':uid},order='created_at.desc',limit=50); rows=sorted(rows,key=lambda x:x.get('created_at',''),reverse=True)[:50]
-    return render_page('KOJA Calls',r'''<div class="card"><h2> KOJA Call History</h2>{% for c in rows %}<div class="card"><strong>{{ c.mode|title }}</strong> — {{ c.status }}<div class="small">{{ c.created_at }}</div>{% if c.callee_id|string == user.id|string and c.status=='ringing' %}<a class="btn" href="{{ url_for('connect_answer',call_id=c.id) }}">Answer</a>{% endif %}</div>{% else %}<p>No calls yet.</p>{% endfor %}</div>''',rows=rows)
+    uid=current_user()['id']; rows=(db_select('koja_calls',filters={'caller_id':uid},order='created_at.desc',limit=50)+db_select('koja_calls',filters={'callee_id':uid},order='created_at.desc',limit=50)); rows=sorted(rows,key=lambda x:x.get('created_at',''),reverse=True)[:50]
+    return render_page('KOJA Calls',r'''<style>.connect-shell{max-width:1000px;margin:auto}.connect-hero{padding:22px;border-radius:22px;background:linear-gradient(135deg,rgba(20,40,80,.98),rgba(12,18,32,.98));color:#fff}.connect-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.call-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}.call-card{border:1px solid var(--border);border-radius:18px;padding:16px}.call-actions{display:flex;gap:8px;flex-wrap:wrap}.theme-chip{border:1px solid rgba(255,255,255,.25);background:transparent;color:#fff;border-radius:999px;padding:9px 13px}</style><div class="connect-shell"><div class="connect-hero"><h2>KOJA Connect+</h2><p>Messaging, voice calls, video calls, groups and presence.</p><div class="connect-toolbar"><a class="btn" href="{{ url_for('connect') }}">Connect Home</a><button class="theme-chip" type="button" onclick="toggleConnectTheme()">Theme</button></div></div><div id="incoming" class="call-card" style="display:none;margin:14px 0"></div><div class="card"><h3>Call History</h3><div class="call-grid">{% for c in rows %}<div class="call-card"><strong>{{ c.mode|title }} Call</strong><p class="small">{{ c.status|title }} · {{ c.created_at }}</p>{% if c.callee_id|string == user.id|string and c.status=='ringing' %}<a class="btn" href="{{ url_for('connect_answer',call_id=c.id) }}">Answer</a>{% endif %}</div>{% else %}<p>No calls yet.</p>{% endfor %}</div></div></div><script>function applyConnectTheme(){document.documentElement.dataset.kojaTheme=localStorage.getItem('koja_theme')||'system'}function toggleConnectTheme(){const c=localStorage.getItem('koja_theme')||'system';localStorage.setItem('koja_theme',c==='light'?'dark':c==='dark'?'system':'light');applyConnectTheme()}applyConnectTheme();function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}async function incoming(){try{const r=await fetch('/api/connect/calls/incoming',{cache:'no-store'});if(!r.ok)return;const d=await r.json(),c=(d.calls||[])[0],box=document.getElementById('incoming');if(!c){box.style.display='none';return}box.style.display='block';box.innerHTML='<strong>Incoming '+esc(c.mode||'video')+' call</strong><p>From '+esc(c.caller_name||'KOJA user')+'</p><div class="call-actions"><a class="btn" href="/connect/call/answer/'+encodeURIComponent(c.id)+'">Answer</a><button class="btn danger" onclick="rejectCall(\''+c.id+'\')">Decline</button></div>'}catch(e){}}async function rejectCall(id){await fetch('/api/connect/call/end/'+encodeURIComponent(id),{method:'POST'});incoming()}incoming();setInterval(incoming,2000)</script>''',rows=rows)
+
+@app.route('/api/connect/calls/incoming')
+@login_required
+def connect_incoming_calls():
+    uid=current_user()['id']; rows=db_select('koja_calls',filters={'callee_id':uid,'status':'ringing'},order='created_at.desc',limit=10) or []
+    for r in rows:r['caller_name']=_profile_name(r.get('caller_id'))
+    return jsonify(ok=True,calls=rows)
 
 @app.route('/connect/call/<user_id>')
 @login_required
 def connect_call(user_id):
-    uid=current_user()['id']; mode=clean(request.args.get('mode','video'))
+    uid=current_user()['id']; mode=clean(request.args.get('mode','video')).lower()
     if user_id==uid or not find_user_by_id(user_id) or mode not in ('voice','video'):abort(404)
     c=_direct_conversation(uid,user_id)
     if not c:return 'Run KOJA Connect SQL first.',500
-    return render_page('KOJA Call',r'''<div class="card"><h2> KOJA {{ mode|title }} Call</h2><p>Calling <strong>{{ name }}</strong></p><div id="state">Connecting…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px"></video></div><button id="hang" class="btn danger">End Call</button></div><script>
-const target={{ user_id|tojson }},mode={{ mode|tojson }};
-let callId=null,pc=null,timer=null,iceTimer=null,remoteIce=new Set(),started=Date.now();
-const state=document.getElementById('state');
-const unavailable='This contact is not available because the internet or network connection could not be reached.';
-function speak(){if('speechSynthesis'in window){speechSynthesis.cancel();speechSynthesis.speak(new SpeechSynthesisUtterance(unavailable));}}
-function fail(msg){state.textContent=msg||unavailable;speak();clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();}
-async function api(u,o){let r=await fetch(u,o);if(!r.ok)throw 0;return r.json();}
-async function sendIce(candidate){
-  try{await api('/api/connect/call/ice/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate})});}catch(e){}
-}
-async function pullIce(){
-  if(!callId||!pc||!pc.remoteDescription)return;
-  try{
-    let x=await api('/api/connect/call/ice/'+callId);
-    for(const candidate of (x.candidates||[])){
-      const key=JSON.stringify(candidate);
-      if(remoteIce.has(key))continue;
-      remoteIce.add(key);
-      try{await pc.addIceCandidate(candidate);}catch(e){}
-    }
-  }catch(e){}
-}
-async function start(){
-  try{
-    if(!navigator.onLine)throw 0;
-    let c=await api('/api/connect/call/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({callee_id:target,mode})});
-    callId=c.call.id;
-    pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
-    let st=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});
-    document.getElementById('local').srcObject=st;
-    st.getTracks().forEach(t=>pc.addTrack(t,st));
-    pc.ontrack=e=>{const st=e.streams[0],v=document.getElementById('remote');v.srcObject=st;v.volume=1;if(window.AudioContext||window.webkitAudioContext){try{const C=window.AudioContext||window.webkitAudioContext,ctx=new C(),src=ctx.createMediaStreamSource(st),gain=ctx.createGain(),dst=ctx.createMediaStreamDestination();gain.gain.value=1.8;src.connect(gain);const boosted=new MediaStream([...st.getVideoTracks(),...dst.stream.getAudioTracks()]);gain.connect(dst);v.srcObject=boosted;v.play().catch(()=>{});}catch(_){} }};
-    pc.onicecandidate=e=>{if(e.candidate)sendIce(e.candidate.toJSON?e.candidate.toJSON():e.candidate);};
-    pc.onconnectionstatechange=()=>{if(['failed','closed'].includes(pc.connectionState))fail();};
-    let offer=await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    await api('/api/connect/call/offer/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({offer:offer.sdp})});
-    state.textContent='Ringing…';
-    iceTimer=setInterval(pullIce,1000);
-    timer=setInterval(async()=>{
-      if(Date.now()-started>120000){fail();return;}
-      try{
-        let x=await api('/api/connect/call/check/'+callId);
-        if(x.call.status==='ended'||x.call.status==='rejected'){fail();return;}
-        if(x.call.answer&&!pc.currentRemoteDescription){
-          await pc.setRemoteDescription({type:'answer',sdp:x.call.answer});
-          state.textContent='Connected';
-          pullIce();
-        }
-      }catch(e){fail();}
-    },1500);
-  }catch(e){fail();}
-}
-document.getElementById('hang').onclick=()=>{if(callId)fetch('/api/connect/call/end/'+callId,{method:'POST'});clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();state.textContent='Call ended';};
-window.addEventListener('offline',()=>fail());
-start();
+    return render_page('KOJA Call',r'''<style>.call-shell{max-width:1000px;margin:auto}.call-stage{position:relative;background:#07101d;border-radius:24px;padding:10px;min-height:55vh;overflow:hidden}.call-remote{width:100%;height:55vh;object-fit:cover;background:#02060c;border-radius:18px}.call-local{position:absolute;right:24px;top:24px;width:180px;max-width:32%;aspect-ratio:16/10;object-fit:cover;background:#111;border-radius:14px;border:2px solid rgba(255,255,255,.5)}.call-top{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:12px}.call-controls{display:flex;justify-content:center;gap:10px;flex-wrap:wrap;margin-top:14px}.call-control{border:0;border-radius:999px;padding:13px 17px;cursor:pointer}.call-end{background:#b42318;color:#fff}.call-status{font-weight:600}.voice-placeholder{display:flex;align-items:center;justify-content:center;height:55vh;color:#fff;font-size:22px}.call-toggle{background:var(--card);color:var(--text);border:1px solid var(--border)}</style><div class="call-shell"><div class="call-top"><div><h2 style="margin:0">KOJA {{ mode|title }} Call</h2><div class="small">{{ name }}</div></div><div id="state" class="call-status">Preparing call…</div></div><div class="call-stage">{% if mode=='video' %}<video id="remote" class="call-remote" autoplay playsinline></video><video id="local" class="call-local" autoplay muted playsinline></video>{% else %}<div class="voice-placeholder">KOJA Voice Call<br><span class="small">{{ name }}</span></div><audio id="remoteAudio" autoplay></audio>{% endif %}</div><div class="call-controls"><button id="mute" class="call-control call-toggle">Mute</button>{% if mode=='video' %}<button id="camera" class="call-control call-toggle">Camera Off</button>{% endif %}<button id="hang" class="call-control call-end">End Call</button></div></div><script>
+const target={{ user_id|tojson }},mode={{ mode|tojson }};let callId=null,pc=null,timer=null,iceTimer=null,remoteIce=new Set(),localStream=null;const state=document.getElementById('state');const iceServers=[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'}];async function api(u,o){const r=await fetch(u,o);if(!r.ok){let d={};try{d=await r.json()}catch(e){}throw Error(d.error||'Network error')}return r.json()}function setState(x){state.textContent=x}async function sendIce(candidate){if(!callId)return;try{await api('/api/connect/call/ice/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate})})}catch(e){}}async function pullIce(){if(!callId||!pc||!pc.remoteDescription)return;try{const x=await api('/api/connect/call/ice/'+callId);for(const c of (x.candidates||[])){const k=JSON.stringify(c);if(remoteIce.has(k))continue;remoteIce.add(k);try{await pc.addIceCandidate(c)}catch(e){}}}catch(e){}}function cleanup(){clearInterval(timer);clearInterval(iceTimer);if(localStream)localStream.getTracks().forEach(t=>t.stop());if(pc)pc.close();pc=null}async function start(){try{if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)throw Error('Camera/microphone access is not supported');if(!navigator.onLine)throw Error('No internet connection');const created=await api('/api/connect/call/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({callee_id:target,mode})});callId=created.call.id;pc=new RTCPeerConnection({iceServers});localStream=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});if(mode==='video')document.getElementById('local').srcObject=localStream;localStream.getTracks().forEach(t=>pc.addTrack(t,localStream));pc.ontrack=e=>{const stream=e.streams[0];if(mode==='video'){document.getElementById('remote').srcObject=stream;document.getElementById('remote').play().catch(()=>{})}else{document.getElementById('remoteAudio').srcObject=stream;document.getElementById('remoteAudio').play().catch(()=>{})}};pc.onicecandidate=e=>{if(e.candidate)sendIce(e.candidate.toJSON?e.candidate.toJSON():e.candidate)};pc.onconnectionstatechange=()=>{if(pc.connectionState==='connected')setState('Connected');if(['failed','closed'].includes(pc.connectionState))setState('Connection lost')};const offer=await pc.createOffer({offerToReceiveAudio:true,offerToReceiveVideo:mode==='video'});await pc.setLocalDescription(offer);await api('/api/connect/call/offer/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({offer:offer.sdp})});setState('Ringing…');iceTimer=setInterval(pullIce,800);timer=setInterval(async()=>{try{const x=await api('/api/connect/call/check/'+callId);if(['ended','rejected'].includes(x.call.status)){setState('Call ended');cleanup();return}if(x.call.answer&&!pc.currentRemoteDescription){await pc.setRemoteDescription({type:'answer',sdp:x.call.answer});await pullIce();setState('Connected')}}catch(e){setState('Reconnecting…')}},1000)}catch(e){setState(e.message||'Could not start call');cleanup()}}document.getElementById('mute').onclick=()=>{if(!localStream)return;const t=localStream.getAudioTracks()[0];if(t){t.enabled=!t.enabled;document.getElementById('mute').textContent=t.enabled?'Mute':'Unmute'}};const cam=document.getElementById('camera');if(cam)cam.onclick=()=>{const t=localStream&&localStream.getVideoTracks()[0];if(t){t.enabled=!t.enabled;cam.textContent=t.enabled?'Camera Off':'Camera On'}};document.getElementById('hang').onclick=async()=>{if(callId)await fetch('/api/connect/call/end/'+callId,{method:'POST'}).catch(()=>{});cleanup();setState('Call ended')};window.addEventListener('offline',()=>setState('Network disconnected'));start();
 </script>''',user_id=user_id,mode=mode,name=_profile_name(user_id))
 
 @app.route('/api/connect/call/create',methods=['POST'])
