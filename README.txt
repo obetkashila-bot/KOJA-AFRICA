@@ -1,29 +1,18 @@
-KOJA AFRICA — RESEARCH ALL-IN-ONE ADDITIVE UPGRADE
+KOJA RESEARCH 2090 UI + ALL-IN-ONE ENGINE
 
-Base: app(20260918-140633).py (pre-free-sources rollback base)
+This package combines the current KOJA Research All-in-One engine with the new 2090 visual interface.
 
-Added:
-- Unified Research search
-- Web, Google, Wikipedia, KOJA Documents
-- OpenAlex, Crossref, arXiv
-- YouTube search when YOUTUBE_API_KEY is configured
-- News discovery
-- Wikimedia Commons image discovery
-- Open Library, Internet Archive, Project Gutenberg book discovery
-- Source filtering
-- In-KOJA research result workspace
-- Research history
-- Related research questions
-- Comparison workspace
-- DOCX export when python-docx is available
-- PDF export when reportlab is installed
-- Unified Research JSON API
-- Short-lived in-process research caching
+UI changes:
+- Futuristic 2090 research landing screen
+- Glass / grid / gradient visual system
+- Mobile-first research composer
+- Unified Research cards and tabs receive the same visual layer
+- Web Search stays inside KOJA through the Unified Research engine rather than a visible Google redirect
+- Existing Research routes, providers, Books, YouTube, News, Images, Academic, Workspace, History, Compare, Notes and API logic preserved
 
-Existing Research routes/providers remain in place. No SQL migration is included.
+No SQL migration.
+No destructive database changes.
+Other KOJA modules are not intentionally changed.
 
-Important:
-- External sources are used through their public/API interfaces.
-- KOJA does not bypass DRM, paywalls, authentication, robots/access controls, or private content.
-- YouTube search requires YOUTUBE_API_KEY for live YouTube results.
-- PDF export requires reportlab; it is optional and does not prevent KOJA from starting.
+Validate with:
+python -m py_compile app.py
