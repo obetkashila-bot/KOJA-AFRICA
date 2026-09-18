@@ -1,18 +1,7 @@
-KOJA RESEARCH 2090 UI + ALL-IN-ONE ENGINE
+KOJA AFRICA — Research 2090 Professional UI
 
-This package combines the current KOJA Research All-in-One engine with the new 2090 visual interface.
-
-UI changes:
-- Futuristic 2090 research landing screen
-- Glass / grid / gradient visual system
-- Mobile-first research composer
-- Unified Research cards and tabs receive the same visual layer
-- Web Search stays inside KOJA through the Unified Research engine rather than a visible Google redirect
-- Existing Research routes, providers, Books, YouTube, News, Images, Academic, Workspace, History, Compare, Notes and API logic preserved
-
-No SQL migration.
-No destructive database changes.
-Other KOJA modules are not intentionally changed.
-
-Validate with:
-python -m py_compile app.py
+UI-ONLY redesign of all Research pages.
+No Research backend, database, API, source engine, or other KOJA module logic was intentionally changed.
+Professional wording replaces informal/decorative Research labels.
+No SQL migration included.
+Python syntax check passed.
