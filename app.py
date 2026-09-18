@@ -19,8 +19,7 @@ from html.parser import HTMLParser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from functools import wraps
-from urllib.parse import quote, unquote, urlparse
-import xml.etree.ElementTree as ET
+from urllib.parse import quote, unquote
 
 import requests
 from dotenv import load_dotenv
@@ -928,6 +927,51 @@ footer{text-align:center;color:var(--muted);padding:30px}
 {{ body|safe }}
 </div>
 <footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services</footer>
+<!-- KOJA Connect incoming-call receiver: polls only while authenticated. -->
+{% if user and not request.path.startswith('/api/') and not request.path.startswith('/connect/call') and not request.path.startswith('/connect/answer') %}
+<div id="kojaIncomingCall" style="display:none;position:fixed;left:12px;right:12px;bottom:16px;z-index:99999;max-width:520px;margin:auto;background:var(--card,#fff);border:2px solid var(--accent,#1d4ed8);border-radius:18px;padding:16px;box-shadow:0 18px 50px rgba(0,0,0,.28)">
+  <div style="font-weight:800;font-size:18px" id="kojaIncomingTitle">Incoming Call</div>
+  <div class="small" id="kojaIncomingFrom" style="margin-top:4px"></div>
+  <div class="actions" style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+    <a id="kojaIncomingAnswer" class="btn success" href="#">Answer</a>
+    <button id="kojaIncomingReject" class="btn danger" type="button">Decline</button>
+  </div>
+</div>
+<script>
+(function(){
+  const box=document.getElementById('kojaIncomingCall');
+  if(!box)return;
+  let activeId=null,lastSeen=null,timer=null;
+  const title=document.getElementById('kojaIncomingTitle'),from=document.getElementById('kojaIncomingFrom'),answer=document.getElementById('kojaIncomingAnswer'),reject=document.getElementById('kojaIncomingReject');
+  function show(c){
+    activeId=c.id; lastSeen=c.id;
+    title.textContent='Incoming '+(c.mode==='video'?'Video':'Voice')+' Call';
+    from.textContent='From '+(c.caller_name||'KOJA user');
+    answer.href='/connect/answer/'+encodeURIComponent(c.id);
+    box.style.display='block';
+    try{ if('navigator' in window && 'vibrate' in navigator) navigator.vibrate([300,150,300]); }catch(e){}
+  }
+  async function reject(){
+    if(!activeId)return;
+    const id=activeId; activeId=null; box.style.display='none';
+    try{await fetch('/api/connect/call/reject/'+encodeURIComponent(id),{method:'POST',headers:{'Content-Type':'application/json'}});}catch(e){}
+  }
+  reject.onclick=reject;
+  async function poll(){
+    try{
+      const r=await fetch('/api/connect/incoming-calls',{cache:'no-store'});
+      if(!r.ok)return;
+      const d=await r.json(); const calls=d.calls||[];
+      if(activeId && !calls.some(c=>String(c.id)===String(activeId))){activeId=null;box.style.display='none';}
+      if(!activeId && calls.length)show(calls[0]);
+    }catch(e){}
+  }
+  poll(); timer=setInterval(poll,2500);
+  window.addEventListener('beforeunload',()=>clearInterval(timer));
+})();
+</script>
+{% endif %}
+
 </body>
 </html>
 """
@@ -1303,6 +1347,58 @@ def research_google(query, limit=8):
         logger.warning('Google research failed: %s',exc)
         return []
 
+def _youtube_duration_seconds(value):
+    m=re.fullmatch(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', clean(value or ''))
+    if not m: return 0
+    return int(m.group(1) or 0)*3600 + int(m.group(2) or 0)*60 + int(m.group(3) or 0)
+
+def research_youtube(query, limit=8):
+    """Search YouTube through the official YouTube Data API when configured.
+    KOJA never scrapes YouTube search pages or invents transcript access.
+    """
+    q=clean(query)
+    key=clean(os.getenv('YOUTUBE_API_KEY') or os.getenv('GOOGLE_YOUTUBE_API_KEY') or '')
+    if not q or not key: return []
+    try:
+        r=requests.get('https://www.googleapis.com/youtube/v3/search', params={
+            'part':'snippet','q':q,'type':'video','maxResults':min(max(limit,1),25),'key':key
+        }, timeout=6, headers={'User-Agent':'KOJA-AFRICA-Research/9.0'})
+        if not r.ok:
+            logger.warning('YouTube search failed status=%s',r.status_code)
+            return []
+        ids=[clean((x.get('id') or {}).get('videoId')) for x in r.json().get('items',[])]
+        ids=[x for x in ids if x]
+        details={}
+        if ids:
+            d=requests.get('https://www.googleapis.com/youtube/v3/videos',params={
+                'part':'contentDetails,snippet,statistics','id':','.join(ids),'key':key
+            },timeout=6,headers={'User-Agent':'KOJA-AFRICA-Research/9.0'})
+            if d.ok:
+                details={clean(x.get('id')):x for x in d.json().get('items',[])}
+        out=[]
+        for item in r.json().get('items',[]):
+            vid=clean((item.get('id') or {}).get('videoId')); sn=item.get('snippet') or {}
+            if not vid: continue
+            det=details.get(vid) or {}; cd=det.get('contentDetails') or {}; st=det.get('statistics') or {}
+            title=clean(sn.get('title') or '')
+            if not title: continue
+            published=clean(sn.get('publishedAt') or '')
+            year=int(published[:4]) if published[:4].isdigit() else None
+            duration=_youtube_duration_seconds(cd.get('duration'))
+            mins=f'{duration//60}:{duration%60:02d}' if duration else ''
+            channel=clean(sn.get('channelTitle') or '')
+            desc=clean(sn.get('description') or '')
+            thumb=((sn.get('thumbnails') or {}).get('high') or (sn.get('thumbnails') or {}).get('default') or {}).get('url') or ''
+            views=st.get('viewCount')
+            meta=' • '.join([x for x in [channel, mins, f'{views} views' if views else ''] if x])
+            out.append({'source':'YouTube','title':title,'url':f'https://www.youtube.com/watch?v={vid}',
+                        'embed_url':f'https://www.youtube.com/embed/{vid}','snippet':desc[:1200] or meta,
+                        'year':year,'channel':channel,'duration_seconds':duration,'views':views,
+                        'thumbnail':thumb,'source_type':'video','video_id':vid})
+        return out
+    except Exception as exc:
+        logger.warning('YouTube research failed: %s',exc); return []
+
 def research_web(query, limit=8):
     q=clean(query)
     if not q: return []
@@ -1616,6 +1712,7 @@ def _research_collect(query, year=None, author=None):
     for q in plan:
         jobs.extend([
             ('google',lambda q=q: research_google(q,6)),
+            ('youtube',lambda q=q: research_youtube(q,6)),
             ('wikipedia',lambda q=q: research_wikipedia(q,4)),
             ('openalex',lambda q=q: research_openalex(q,year,8)),
             ('crossref',lambda q=q: research_crossref(q,year,author,8)),
@@ -1632,10 +1729,11 @@ def _research_collect(query, year=None, author=None):
     return _research_relevance_gate(ranked,_research_normalize_query(query))
 
 def _research_filter(results, source='all', year=None, sort='relevance'):
-    source=(source or 'all').lower(); source=source if source in ('all','google','web','wikipedia','academic','koja') else 'all'
+    source=(source or 'all').lower(); source=source if source in ('all','google','youtube','web','wikipedia','academic','koja') else 'all'
     if source!='all':
         if source=='academic': results=[r for r in results if any(x in str(r.get('source','')).lower() for x in ('openalex','crossref'))]
         elif source=='google': results=[r for r in results if 'google search' in str(r.get('source','')).lower()]
+        elif source=='youtube': results=[r for r in results if 'youtube' in str(r.get('source','')).lower()]
         elif source=='koja': results=[r for r in results if 'koja documents' in str(r.get('source','')).lower()]
         else: results=[r for r in results if str(r.get('source','')).lower()==source]
     if year: results=[r for r in results if str(r.get('year') or '')==str(year)]
@@ -2094,7 +2192,7 @@ def research_ai_notes(query, results, style='apa'):
     for i,r in enumerate(results[:12],1):
         bundle.append(f"[{i}] {r.get('title','')} | {r.get('source','')} | {r.get('year') or 'n.d.'}\nAuthors: {', '.join(_names(r))}\nEvidence: {clean(r.get('snippet',''))[:1600]}\nURL: {r.get('url','')}")
     prompt=(f'Write high-quality research notes on: {query}\n\nUse ONLY the evidence supplied below. Do not invent facts, figures, quotations, authors, dates, references or conclusions. Every substantive factual claim must have one or more source-number citations such as [1] immediately after the claim. If evidence is insufficient, say so.\n\nStructure the notes with: Title; Introduction; Key concepts/background; Main findings/themes; Evidence and discussion; Implications; Conclusion; Research gaps/limitations only if supported. Write connected explanatory paragraphs, like strong academic study notes, not disconnected bullet fragments. Use the selected citation style for the reference list: {CITATION_STYLES.get(style,style)}.\n\nSOURCES:\n' + '\n\n'.join(bundle))
-    text,ai_err=_ai_call(prompt,'You are KOJA Research Notes. Be evidence-bound, clear, academic and concise. Never fabricate citations or source details.',max_output_tokens=2200,timeout=20)
+    text=_gemini_text(prompt,'You are KOJA Research Notes. Be evidence-bound, clear, academic and concise. Never fabricate citations or source details.',2200,20)
     if text: return text
     lines=[f"# Research Notes: {query}","","## Introduction",f"The search retrieved {len(results)} relevant records. The notes below are limited to the evidence contained in those records.",""]
     for i,r in enumerate(results[:8],1):
@@ -2115,408 +2213,56 @@ def research_notes():
     bibliography=make_bibliography(results,style) if results else []
     return render_page('Research Notes', r'''<style>
 .notes-shell{max-width:1000px;margin:auto}.notes-toolbar{display:grid;grid-template-columns:1fr auto auto;gap:10px}.notes-body{line-height:1.8;font-size:1rem}.notes-body pre{white-space:pre-wrap;font:inherit}.ref{margin:10px 0}.note-actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}@media(max-width:700px){.notes-toolbar{grid-template-columns:1fr}.notes-body{font-size:.97rem}}
-</style><div class="notes-shell"><div class="hero"><h2> KOJA Research Notes</h2><p>Turn ranked research evidence into clear, connected academic notes.</p><form method="get" action="{{ url_for('research_notes') }}" class="notes-toolbar"><input name="q" value="{{ q }}" placeholder="Enter your research topic…" required><select name="style">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select><button class="btn">Write Notes</button></form></div>{% if q %}<div class="card" style="border-radius:18px!important"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><strong>Research mode</strong><a class="btn secondary" href="{{ url_for('research',q=q,source='all') }}">Answer + Sources</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web') }}">Web Search</a><a class="btn secondary" href="{{ url_for('research_books',q=q) }}">Books &amp; PDFs</a><a class="btn secondary" href="{{ url_for('research_browser',q=q) }}">Browse</a></div></div><div class="note-actions"><button class="btn secondary" type="button" onclick="copyKOJANotes()">Copy Notes</button><button class="btn secondary" type="button" onclick="window.print()">Print</button><a class="btn secondary" href="{{ url_for('research',q=q,style=style) }}">View Evidence</a></div><div class="card"><strong>{{ results|length }} ranked evidence sources</strong></div><div id="koja-notes" class="card notes-body"><pre>{{ notes }}</pre></div>{% if bibliography %}<div class="card"><h3>References</h3>{% for n,ref in bibliography %}<div class="ref">{{ n }}. {{ ref|safe }}</div>{% endfor %}</div>{% endif %}<script>function copyKOJANotes(){const el=document.getElementById('koja-notes');navigator.clipboard.writeText(el.innerText).then(()=>alert('Research notes copied.')).catch(()=>alert('Select and copy the notes manually.'))}</script>{% else %}<div class="card"><h3>How KOJA writes notes</h3><p>1. Searches multiple evidence sources.</p><p>2. Removes duplicates and ranks relevance.</p><p>3. Gives the AI only the strongest evidence.</p><p>4. Produces connected academic paragraphs with source citations.</p><p>5. Generates a bibliography in your selected citation style.</p></div>{% endif %}</div>''',q=q,style=style,citation_styles=CITATION_STYLES,results=results,notes=notes,bibliography=bibliography)
+</style><div class="notes-shell"><div class="hero"><h2> KOJA Research Notes</h2><p>Turn ranked research evidence into clear, connected academic notes.</p><form method="get" action="{{ url_for('research_notes') }}" class="notes-toolbar"><input name="q" value="{{ q }}" placeholder="Enter your research topic…" required><select name="style">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select><button class="btn">Write Notes</button></form></div>{% if q %}<div class="note-actions"><button class="btn secondary" type="button" onclick="copyKOJANotes()">Copy Notes</button><button class="btn secondary" type="button" onclick="window.print()">Print</button><a class="btn secondary" href="{{ url_for('research',q=q,style=style) }}">View Evidence</a></div><div class="card"><strong>{{ results|length }} ranked evidence sources</strong></div><div id="koja-notes" class="card notes-body"><pre>{{ notes }}</pre></div>{% if bibliography %}<div class="card"><h3>References</h3>{% for n,ref in bibliography %}<div class="ref">{{ n }}. {{ ref|safe }}</div>{% endfor %}</div>{% endif %}<script>function copyKOJANotes(){const el=document.getElementById('koja-notes');navigator.clipboard.writeText(el.innerText).then(()=>alert('Research notes copied.')).catch(()=>alert('Select and copy the notes manually.'))}</script>{% else %}<div class="card"><h3>How KOJA writes notes</h3><p>1. Searches multiple evidence sources.</p><p>2. Removes duplicates and ranks relevance.</p><p>3. Gives the AI only the strongest evidence.</p><p>4. Produces connected academic paragraphs with source citations.</p><p>5. Generates a bibliography in your selected citation style.</p></div>{% endif %}</div>''',q=q,style=style,citation_styles=CITATION_STYLES,results=results,notes=notes,bibliography=bibliography)
 
-# ============================================================
-# KOJA RESEARCH BOOKS ENGINE V2
-# External book discovery + legal availability + personal library.
-# Sources: Open Library, Google Books, DOAB, Project Gutenberg.
-# ============================================================
-
-def _book_clean_url(value):
-    u=clean(value or '')
-    if not u or not u.startswith(('https://','http://')):
-        return ''
-    return u
-
-def _book_result(source, external_id, title, authors=None, year=None, publisher='', isbn='', description='', landing_url='', preview_url='', download_url='', download_format='', access='metadata', cover_url='', language='', source_type='book', extra=None):
-    return {'source':source,'external_id':clean(external_id),'title':clean(title) or 'Untitled','authors':authors or [],'year':year,'publisher':clean(publisher),'isbn':clean(isbn),'description':clean(description)[:1800],'landing_url':_book_clean_url(landing_url),'preview_url':_book_clean_url(preview_url),'download_url':_book_clean_url(download_url),'download_format':clean(download_format).lower(),'access':clean(access).lower() or 'metadata','cover_url':_book_clean_url(cover_url),'language':clean(language),'source_type':source_type or 'book','extra':extra or {}}
-
-def research_books_openlibrary(query, limit=10):
-    q=clean(query)
-    if not q: return []
-    try:
-        params={'q':q,'limit':max(1,min(int(limit or 10),20)),'fields':'key,title,author_name,first_publish_year,publisher,isbn,cover_i,language,ebook_access,has_fulltext,ia'}
-        r=requests.get('https://openlibrary.org/search.json',params=params,timeout=7,headers={'User-Agent':'KOJA-AFRICA Research Books/1.0'})
-        if not r.ok: return []
-        out=[]
-        for x in r.json().get('docs',[]):
-            title=clean(x.get('title') or '')
-            if not title: continue
-            key=clean(x.get('key') or ''); work_id=key.rsplit('/',1)[-1] if key else ''
-            authors=[clean(a) for a in (x.get('author_name') or []) if clean(a)]
-            publishers=[clean(a) for a in (x.get('publisher') or []) if clean(a)]
-            isbns=[clean(a) for a in (x.get('isbn') or []) if clean(a)]
-            langs=[clean(a) for a in (x.get('language') or []) if clean(a)]
-            access=clean(x.get('ebook_access') or '')
-            public=access in ('public','borrowable') or bool(x.get('has_fulltext'))
-            landing='https://openlibrary.org'+key if key.startswith('/') else 'https://openlibrary.org'
-            cover=f"https://covers.openlibrary.org/b/id/{x.get('cover_i')}-L.jpg" if x.get('cover_i') else ''
-            out.append(_book_result('Open Library',work_id,title,authors,x.get('first_publish_year'),publishers[0] if publishers else '',isbns[0] if isbns else '', 'Open Library bibliographic record. Availability is determined by the source.',landing,landing,'','read_or_borrow' if public else 'metadata',cover,langs[0] if langs else '',extra={'ebook_access':access,'has_fulltext':bool(x.get('has_fulltext')),'ia':x.get('ia') or []}))
-        return out
-    except Exception as exc:
-        logger.warning('Open Library book search failed: %s',exc); return []
-
-def research_books_google(query, limit=10):
-    q=clean(query)
-    if not q: return []
-    try:
-        params={'q':q,'maxResults':max(1,min(int(limit or 10),20)),'printType':'books','projection':'full'}
-        key=os.getenv('GOOGLE_BOOKS_API_KEY','').strip()
-        if key: params['key']=key
-        r=requests.get('https://www.googleapis.com/books/v1/volumes',params=params,timeout=7,headers={'User-Agent':'KOJA-AFRICA Research Books/1.0'})
-        if not r.ok: return []
-        out=[]
-        for x in r.json().get('items',[]):
-            vi=x.get('volumeInfo') or {}; ai=x.get('accessInfo') or {}; title=clean(vi.get('title') or '')
-            if not title: continue
-            authors=[clean(a) for a in (vi.get('authors') or []) if clean(a)]
-            isbn=''
-            for ident in vi.get('industryIdentifiers') or []:
-                if ident.get('type') in ('ISBN_13','ISBN_10'):
-                    isbn=clean(ident.get('identifier') or '')
-                    if isbn: break
-            view=clean(ai.get('viewability') or ''); epub=ai.get('epub') or {}; pdf=ai.get('pdf') or ''
-            landing=clean(vi.get('infoLink') or x.get('selfLink') or ''); preview=clean(vi.get('previewLink') or landing)
-            access='preview' if view in ('PARTIAL','ALL_PAGES') else 'metadata'
-            if epub.get('isAvailable') or (isinstance(pdf,dict) and pdf.get('isAvailable')): access='download_available'
-            cover=clean((vi.get('imageLinks') or {}).get('thumbnail') or '')
-            out.append(_book_result('Google Books',clean(x.get('id') or ''),title,authors,(clean(vi.get('publishedDate') or '')[:4] or None),clean(vi.get('publisher') or ''),isbn,clean(vi.get('description') or ''),landing,preview,'','',access,cover,clean(vi.get('language') or ''),extra={'viewability':view,'epub_available':bool(epub.get('isAvailable')),'pdf_available':bool(pdf.get('isAvailable')),'categories':vi.get('categories') or []}))
-        return out
-    except Exception as exc:
-        logger.warning('Google Books search failed: %s',exc); return []
-
-def _doab_values(node):
-    vals=[]
-    if isinstance(node,dict):
-        for k,v in node.items():
-            if isinstance(v,(str,int,float)): vals.append((str(k),str(v)))
-            elif isinstance(v,(dict,list)): vals.extend(_doab_values(v))
-    elif isinstance(node,list):
-        for v in node: vals.extend(_doab_values(v))
-    return vals
-
-def _doab_extract_bitstreams(data):
-    urls=[]
-    def walk(v):
-        if isinstance(v,dict):
-            for k,x in v.items():
-                lk=str(k).lower()
-                if lk in ('url','uri','retrieve','retrieveurl','bitstreamurl','downloadurl','content') and isinstance(x,str):
-                    u=_book_clean_url(x)
-                    if u and any(ext in u.lower() for ext in ('.pdf','.epub','.mobi','.html')): urls.append(u)
-                else: walk(x)
-        elif isinstance(v,list):
-            for x in v: walk(x)
-    walk(data)
-    return list(dict.fromkeys(urls))
-
-def research_books_doab(query, limit=10):
-    q=clean(query)
-    if not q: return []
-    try:
-        r=requests.get('https://directory.doabooks.org/rest/search',params={'query':q,'expand':'metadata,bitstreams'},headers={'Accept':'application/json','User-Agent':'KOJA-AFRICA Research Books/1.0'},timeout=9)
-        if not r.ok: return []
-        data=r.json(); results=data.get('results') or data.get('items') or data.get('searchResults') or []
-        if isinstance(results,dict): results=results.get('items') or results.get('docs') or []
-        out=[]
-        for item in results[:max(1,min(int(limit or 10),20))]:
-            vals=dict(_doab_values(item)); raw_title=vals.get('dc.title') or vals.get('title') or (item.get('title') if isinstance(item,dict) else '')
-            title=clean(raw_title)
-            if not title: continue
-            authors=[]
-            for k,v in _doab_values(item):
-                if 'creator' in k.lower() or 'author' in k.lower():
-                    if clean(v) and clean(v) not in authors: authors.append(clean(v))
-            landing=''
-            for k,v in _doab_values(item):
-                if k.lower() in ('handle','uri','identifier') and ('20.' in v or v.startswith('http')):
-                    landing=_book_clean_url(v if v.startswith('http') else 'https://directory.doabooks.org/handle/'+v); break
-            bits=_doab_extract_bitstreams(item); dl=bits[0] if bits else ''
-            fmt='pdf' if dl.lower().split('?')[0].endswith('.pdf') else ('epub' if '.epub' in dl.lower() else '')
-            out.append(_book_result('DOAB',clean(vals.get('dc.identifier') or vals.get('handle') or title),title,authors,clean(vals.get('dc.date.issued') or '')[:4] or None,clean(vals.get('dc.publisher') or ''),clean(vals.get('dc.identifier.isbn') or ''),clean(vals.get('dc.description.abstract') or vals.get('dc.description') or ''),landing,landing,dl,fmt,'download_available' if dl else 'open_access','',clean(vals.get('dc.language') or ''),extra={'bitstreams':bits}))
-        return out
-    except Exception as exc:
-        logger.warning('DOAB book search failed: %s',exc); return []
-
-def research_books_gutenberg(query, limit=10):
-    q=clean(query)
-    if not q: return []
-    try:
-        r=requests.get('https://www.gutenberg.org/ebooks/search.opds/',params={'query':q},timeout=8,headers={'User-Agent':'KOJA-AFRICA Research Books/1.0'})
-        if not r.ok: return []
-        root=ET.fromstring(r.content); out=[]; ns={'a':'http://www.w3.org/2005/Atom'}
-        for e in root.findall('a:entry',ns)[:max(1,min(int(limit or 10),20))]:
-            title=clean(e.findtext('a:title','',ns)); landing=''; authors=[]
-            for a in e.findall('a:author',ns):
-                nm=clean(a.findtext('a:name','',ns))
-                if nm: authors.append(nm)
-            for l in e.findall('a:link',ns):
-                href=_book_clean_url(l.attrib.get('href','')); rel=l.attrib.get('rel','')
-                if rel=='alternate' and href: landing=href
-                if not landing and href and '/ebooks/' in href and 'search.opds' not in href: landing=href
-            m=re.search(r'/ebooks/(\d+)',landing); eid=m.group(1) if m else ''
-            if not title or not landing: continue
-            out.append(_book_result('Project Gutenberg',eid,title,authors,None,'','','Free eBook record; check local copyright law.',landing,landing,'','','download_available',extra={'canonical_landing':landing}))
-        return out
-    except Exception as exc:
-        logger.warning('Project Gutenberg search failed: %s',exc); return []
-
-
-def _ia_resolve_file(identifier, formats=None, rights=''):
-    """Resolve an actual Internet Archive PDF/EPUB filename from metadata."""
-    ident=clean(identifier)
-    if not ident: return ('','','')
-    open_rights=bool(re.search(r'public.?domain|creativecommons|cc-by|cc0|open access',clean(rights),re.I))
-    if not open_rights: return ('','','')
-    try:
-        r=requests.get(f'https://archive.org/metadata/{ident}',timeout=8,headers={'User-Agent':'KOJA-AFRICA Research Books/1.0'})
-        if not r.ok: return ('','','')
-        files=(r.json().get('files') or [])
-        candidates=[]
-        for f in files:
-            if not isinstance(f,dict): continue
-            name=clean(f.get('name') or '')
-            fmt=clean(f.get('format') or '')
-            low=name.lower()
-            if not name: continue
-            if low.endswith('.pdf') or 'pdf' in fmt.lower(): candidates.append((name,'pdf'))
-            elif low.endswith('.epub') or 'epub' in fmt.lower(): candidates.append((name,'epub'))
-        for ext in ('pdf','epub'):
-            for name,kind in candidates:
-                if kind==ext and not any(x in name.lower() for x in ('_text.','_djvu.','_scandata.')):
-                    return (f'https://archive.org/download/{ident}/{name}',kind,name)
-        for name,kind in candidates:
-            if kind in ('pdf','epub'):
-                return (f'https://archive.org/download/{ident}/{name}',kind,name)
-    except Exception as exc:
-        logger.warning('Internet Archive metadata resolution failed for %s: %s',ident,exc)
-    return ('','','')
-
-def research_books_internet_archive(query, limit=10):
-    q=clean(query)
-    if not q: return []
-    try:
-        params={'q':f'(title:({q}) OR creator:({q}) OR subject:({q})) AND mediatype:texts','fl[]':['identifier,title,creator,date,description,publisher,language,subject,downloads,format,rights,publicdate'],'rows':max(1,min(int(limit or 10),20)),'page':1}
-        r=requests.get('https://archive.org/advancedsearch.php',params=params,timeout=10,headers={'User-Agent':'KOJA-AFRICA Research Books/1.0'})
-        if not r.ok: return []
-        docs=(r.json().get('response') or {}).get('docs') or []
-        out=[]
-        for x in docs:
-            title=clean(x.get('title') or '')
-            ident=clean(x.get('identifier') or '')
-            if not title or not ident: continue
-            creators=x.get('creator') or []
-            if isinstance(creators,str): creators=[creators]
-            authors=[clean(a) for a in creators if clean(a)]
-            fmts=x.get('format') or []
-            if isinstance(fmts,str): fmts=[fmts]
-            rights=x.get('rights') or ''
-            if isinstance(rights,list): rights='; '.join(map(str,rights))
-            rights=clean(rights)
-            landing=f'https://archive.org/details/{ident}'
-            download_url,download_format,download_name=_ia_resolve_file(ident,fmts,rights)
-            open_rights=bool(re.search(r'public.?domain|creativecommons|cc-by|cc0|open access',rights,re.I))
-            access='download_available' if download_url else ('open_access' if open_rights else 'read_or_borrow')
-            desc=x.get('description') or ''
-            if isinstance(desc,list): desc=' '.join(map(str,desc))
-            raw_year=clean(str(x.get('date') or '')[:4])
-            out.append(_book_result('Internet Archive',ident,title,authors,int(raw_year) if raw_year.isdigit() else None,clean(x.get('publisher') or ''),'',clean(desc),landing,landing,download_url,download_format,access,'',clean((x.get('language') or '') if isinstance(x.get('language'),str) else ''),extra={'rights':rights,'formats':fmts,'downloads':x.get('downloads') or 0,'download_name':download_name}))
-        return out
-    except Exception as exc:
-        logger.warning('Internet Archive book search failed: %s',exc); return []
-
-def research_books_collect(query, source='all', limit=12):
-    source=clean(source or 'all').lower(); funcs=[]
-    if source in ('all','openlibrary'): funcs.append(research_books_openlibrary)
-    if source in ('all','google'): funcs.append(research_books_google)
-    if source in ('all','doab'): funcs.append(research_books_doab)
-    if source in ('all','gutenberg'): funcs.append(research_books_gutenberg)
-    if source in ('all','internet_archive','archive'): funcs.append(research_books_internet_archive)
-    out=[]
-    for fn in funcs: out.extend(fn(query,max(3,min(12,int(limit or 12)))))
-    seen=set(); ded=[]
-    for x in out:
-        key=(clean(x.get('source')).lower(),clean(x.get('external_id')).lower(),re.sub(r'\W+',' ',clean(x.get('title')).lower()).strip())
-        if key in seen: continue
-        seen.add(key); ded.append(x)
-    return ded[:max(1,min(50,int(limit or 12)))]
-
-@app.route('/research/books')
-@login_required
-def research_books():
-    q=clean(request.args.get('q','')); source=clean(request.args.get('source','all')).lower() or 'all'; results=research_books_collect(q,source,30) if q else []
-    return render_page('Research Books', r'''
-<style>
-.books-shell{max-width:1100px;margin:auto}.books-search{display:grid;grid-template-columns:1fr 180px auto;gap:9px}.books-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:12px;margin-top:15px}.book-card{position:relative}.book-cover{width:88px;height:120px;object-fit:cover;border-radius:8px;background:rgba(127,127,127,.12);float:left;margin:0 14px 10px 0}.book-card:after{content:"";display:block;clear:both}.book-source{font-size:.76rem;font-weight:800;opacity:.75}.book-meta{font-size:.82rem;opacity:.72}.book-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:12px}.book-access{display:inline-block;padding:4px 8px;border-radius:999px;font-size:.72rem;font-weight:800;background:rgba(80,150,255,.12)}.books-note{font-size:.83rem;opacity:.75}.books-tabs{display:flex;gap:8px;overflow:auto;margin:12px 0}.books-tabs a{white-space:nowrap}@media(max-width:700px){.books-search{grid-template-columns:1fr}.book-card{padding:15px}}
-</style>
-<div class="books-shell"><div class="hero"><h2>KOJA Research Books</h2><p>Search books across library catalogs, open-access scholarly books and free eBook collections.</p><div class="books-tabs"><a class="btn secondary" href="{{ url_for('research') }}">Research</a><a class="btn secondary" href="{{ url_for('research_books_library') }}">My Book Library</a><a class="btn secondary" href="{{ url_for('research_browser') }}">Research Browser</a></div><form method="get" class="books-search"><input name="q" value="{{ q }}" placeholder="Book title, author, ISBN or topic" required><select name="source"><option value="all" {% if source=='all' %}selected{% endif %}>All book sources</option><option value="openlibrary" {% if source=='openlibrary' %}selected{% endif %}>Open Library</option><option value="google" {% if source=='google' %}selected{% endif %}>Google Books</option><option value="doab" {% if source=='doab' %}selected{% endif %}>DOAB</option><option value="gutenberg" {% if source=='gutenberg' %}selected{% endif %}>Project Gutenberg</option><option value="internet_archive" {% if source=='internet_archive' %}selected{% endif %}>Internet Archive</option></select><button class="btn" type="submit">Search Books</button></form></div>
-<p class="books-note">Availability labels come from the source. KOJA only exposes source-provided public/open routes; it does not bypass DRM, paywalls, authentication or access controls.</p>
-{% if q %}<div class="books-grid">{% for b in results %}<div class="card book-card">{% if b.cover_url %}<img class="book-cover" src="{{ b.cover_url }}" alt="Book cover" loading="lazy">{% endif %}<div class="book-source">{{ b.source }}</div><h3>{{ b.title }}</h3><div class="book-meta">{% if b.authors %}{{ b.authors|join(', ') }}{% endif %}{% if b.year %} · {{ b.year }}{% endif %}{% if b.publisher %} · {{ b.publisher }}{% endif %}</div><span class="book-access">{{ b.access|replace('_',' ')|title }}</span>{% if b.isbn %}<div class="book-meta">ISBN: {{ b.isbn }}</div>{% endif %}<p>{{ b.description[:500] }}</p><div class="book-actions">{% if b.landing_url %}<a class="btn secondary" href="{{ b.landing_url }}" target="_blank" rel="noopener">Open Source</a>{% endif %}{% if b.preview_url and b.preview_url != b.landing_url %}<a class="btn secondary" href="{{ b.preview_url }}" target="_blank" rel="noopener">Preview</a>{% endif %}{% if b.download_url %}<a class="btn" href="{{ b.download_url }}" target="_blank" rel="noopener" download>Download {{ b.download_format|upper or 'File' }}</a>{% elif b.access=='download_available' %}<a class="btn" href="{{ b.landing_url }}" target="_blank" rel="noopener">Open Download Page</a>{% endif %}<form method="post" action="{{ url_for('research_books_save') }}" style="display:inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="book" value='{{ b|tojson|forceescape }}'><button class="btn secondary" type="submit">Save</button></form></div></div>{% else %}<div class="card"><h3>No books found</h3><p>Try the title, author, ISBN or a broader topic.</p></div>{% endfor %}</div>{% else %}<div class="card"><h3>Search the book universe</h3><p>Examples: educational psychology, physics, adolescent development, ISBN, or an author's name.</p></div>{% endif %}</div>
-''',q=q,source=source,results=results)
-
-@app.route('/research/books/save',methods=['POST'])
-@login_required
-def research_books_save():
-    raw=request.form.get('book','')
-    try: book=json.loads(raw)
-    except Exception: return jsonify(ok=False,error='Invalid book record.'),400
-    uid=str((current_user() or {}).get('id') or '')
-    if not uid or not clean(book.get('title')): return jsonify(ok=False,error='Invalid book.'),400
-    existing=first_row('koja_research_books',{'user_id':uid,'source':clean(book.get('source')),'external_id':clean(book.get('external_id'))})
-    if not existing:
-        row,err=db_insert('koja_research_books',{'user_id':uid,'source':clean(book.get('source')),'external_id':clean(book.get('external_id')),'title':clean(book.get('title')),'authors':book.get('authors') or [],'year':book.get('year'),'publisher':clean(book.get('publisher')),'isbn':clean(book.get('isbn')),'landing_url':_book_clean_url(book.get('landing_url')),'preview_url':_book_clean_url(book.get('preview_url')),'download_url':_book_clean_url(book.get('download_url')),'download_format':clean(book.get('download_format')),'access':clean(book.get('access')),'cover_url':_book_clean_url(book.get('cover_url')),'language':clean(book.get('language')),'metadata':book.get('extra') or {},'created_at':utc_now(),'updated_at':utc_now()})
-        if err: flash('Book could not be saved. Run the Research Books migration first.','error')
-        else: flash('Book saved to My Book Library.','success')
-    else: flash('Book is already in My Book Library.','success')
-    return redirect(request.referrer or url_for('research_books_library'))
-
-@app.route('/research/books/download/<book_id>')
-@login_required
-def research_books_download(book_id):
-    uid=str((current_user() or {}).get('id') or '')
-    book=first_row('koja_research_books',{'id':book_id,'user_id':uid})
-    if not book or not clean(book.get('download_url')):
-        flash('No source-provided download is available for this book.','error')
-        return redirect(url_for('research_books_library'))
-    url=_book_clean_url(book.get('download_url'))
-    if not url:
-        flash('The saved download link is invalid.','error')
-        return redirect(url_for('research_books_library'))
-    try:
-        db_insert('koja_research_book_downloads',{'user_id':uid,'book_id':str(book_id),'source':clean(book.get('source')),'url':url,'format':clean(book.get('download_format')),'created_at':utc_now()})
-    except Exception as exc:
-        logger.warning('Book download history insert failed: %s',exc)
-    return redirect(url)
-
-@app.route('/research/books/remove/<book_id>',methods=['POST'])
-@login_required
-def research_books_remove(book_id):
-    uid=str((current_user() or {}).get('id') or '')
-    row=first_row('koja_research_books',{'id':book_id,'user_id':uid})
-    if not row:
-        flash('Book not found in your library.','error')
-        return redirect(url_for('research_books_library'))
-    try:
-        db_delete('koja_research_books',{'id':book_id,'user_id':uid})
-        flash('Book removed from My Book Library.','success')
-    except Exception:
-        flash('Book could not be removed.','error')
-    return redirect(url_for('research_books_library'))
-
-@app.route('/research/books/library')
-@login_required
-def research_books_library():
-    uid=str((current_user() or {}).get('id') or '')
-    q=clean(request.args.get('q',''))
-    books=db_select('koja_research_books',{'user_id':uid},order='created_at.desc',limit=200) or []
-    if q:
-        ql=q.lower()
-        books=[b for b in books if ql in clean(b.get('title')).lower() or ql in ' '.join(b.get('authors') or []).lower() or ql in clean(b.get('isbn')).lower()]
-    return render_page('My Book Library',r'''\n<style>.library-search{display:grid;grid-template-columns:1fr auto;gap:8px}.library-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}@media(max-width:650px){.library-search{grid-template-columns:1fr}}</style>\n<div class="hero"><h2>My Book Library</h2><p>Saved research books, previews and source-provided downloads.</p><form class="library-search" method="get"><input name="q" value="{{ q }}" placeholder="Search your saved books by title, author or ISBN"><button class="btn">Search Library</button></form><div class="actions" style="margin-top:10px"><a class="btn secondary" href="{{ url_for('research_books') }}">Search Books</a></div></div>\n<div class="grid">{% for b in books %}<div class="card"><h3>{{ b.title }}</h3><p>{{ (b.authors or [])|join(', ') }}{% if b.year %} · {{ b.year }}{% endif %}</p><p class="small">{{ b.source }} · {{ (b.access or 'metadata')|replace('_',' ')|title }}{% if b.download_format %} · {{ b.download_format|upper }}{% endif %}</p><div class="library-actions">{% if b.landing_url %}<a class="btn secondary" href="{{ b.landing_url }}" target="_blank" rel="noopener">Open Source</a>{% endif %}{% if b.preview_url and b.preview_url != b.landing_url %}<a class="btn secondary" href="{{ b.preview_url }}" target="_blank" rel="noopener">Preview</a>{% endif %}{% if b.download_url %}<a class="btn" href="{{ url_for('research_books_download',book_id=b.id) }}">Download {{ b.download_format|upper or 'File' }}</a>{% endif %}<form method="post" action="{{ url_for('research_books_remove',book_id=b.id) }}" style="display:inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="btn secondary" type="submit">Remove</button></form></div></div>{% else %}<div class="card"><h3>{% if q %}No matching saved books{% else %}No saved books{% endif %}</h3><p>{% if q %}Try another title, author or ISBN.{% else %}Search Research Books and save titles here.{% endif %}</p></div>{% endfor %}</div>\n''',books=books,q=q)
-
-@app.route('/research/browser')
-@login_required
-def research_browser():
-    raw=clean(request.args.get('url',''))
-    q=clean(request.args.get('q',''))
-    target=''
-    if raw:
-        if not raw.startswith(('http://','https://')):
-            if '.' in raw and ' ' not in raw:
-                raw='https://'+raw
-            else:
-                return redirect(url_for('research',q=raw))
-        if raw.lower().startswith(('javascript:','data:','file:')):
-            raw=''
-        target=raw
-    if not target and q:
-        return redirect(url_for('research',q=q))
-    return render_page('KOJA Research Browser',r'''\n<style>\n.rb-shell{max-width:1180px;margin:auto}.rb-top{position:sticky;top:0;z-index:20;background:var(--card,#fff);border:1px solid rgba(127,127,127,.18);border-radius:18px;padding:10px;box-shadow:0 8px 28px rgba(0,0,0,.08)}\n.rb-bar{display:grid;grid-template-columns:auto auto 1fr auto;gap:7px;align-items:center}.rb-icon{min-width:42px;height:42px;padding:0!important;border-radius:12px!important;display:inline-flex;align-items:center;justify-content:center}.rb-address{height:42px!important;border-radius:22px!important;padding:0 16px!important;margin:0!important}.rb-frame{margin-top:12px;height:calc(100vh - 190px);min-height:520px;border:1px solid rgba(127,127,127,.2);border-radius:18px;overflow:hidden;background:#fff}.rb-frame iframe{width:100%;height:100%;border:0}.rb-empty{padding:55px 20px;text-align:center}.rb-links{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.rb-note{font-size:.82rem;opacity:.7;margin-top:10px}@media(max-width:650px){.rb-frame{height:calc(100vh - 220px);min-height:420px}}\n</style>\n<div class="rb-shell"><div class="rb-top"><form class="rb-bar" method="get" action="{{ url_for('research_browser') }}"><a class="btn secondary rb-icon" href="{{ url_for('research') }}" title="Back">&larr;</a><button class="btn secondary rb-icon" type="button" onclick="history.forward()" title="Forward">&rarr;</button><input class="rb-address" name="url" value="{{ target }}" placeholder="Search or enter website address" autocomplete="off"><button class="btn rb-icon" type="submit">Go</button></form><div class="rb-links"><a class="btn secondary" href="{{ url_for('research') }}">KOJA Search</a><a class="btn secondary" href="{{ url_for('research_books') }}">Books</a><a class="btn secondary" href="{{ url_for('research_books_library') }}">Library</a>{% if target %}<a class="btn secondary" href="{{ target }}" target="_blank" rel="noopener noreferrer">Open externally</a>{% endif %}</div><div class="rb-note">Some websites block embedded viewing. Use Open externally when necessary.</div></div>{% if target %}<div class="rb-frame"><iframe src="{{ target }}" title="KOJA Research Browser" sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-presentation allow-same-origin allow-scripts"></iframe></div>{% else %}<div class="card rb-empty"><h2>KOJA Research Browser</h2><p>Enter a website address to read it inside KOJA, or return to KOJA Search.</p><div class="rb-links" style="justify-content:center"><a class="btn" href="{{ url_for('research') }}">Start Research</a><a class="btn secondary" href="{{ url_for('research_books') }}">Find Books</a></div></div>{% endif %}</div>\n''',target=target)
-
-class _KOJAHTMLTextParser(HTMLParser):
+class _KOJAHTMLText(HTMLParser):
     def __init__(self):
-        super().__init__(); self.parts=[]; self.skip=0
-    def handle_starttag(self, tag, attrs):
-        if tag.lower() in ('script','style','noscript','svg','canvas','nav','footer','form'):
-            self.skip += 1
-    def handle_endtag(self, tag):
-        if tag.lower() in ('script','style','noscript','svg','canvas','nav','footer','form') and self.skip:
-            self.skip -= 1
-    def handle_data(self, data):
-        if not self.skip and data and data.strip():
-            self.parts.append(re.sub(r'\s+', ' ', data.strip()))
+        super().__init__(convert_charrefs=True); self.parts=[]; self.skip=0; self.title=''
+    def handle_starttag(self,tag,attrs):
+        if tag.lower() in ('script','style','noscript','svg','canvas','template'): self.skip+=1
+    def handle_endtag(self,tag):
+        if tag.lower() in ('script','style','noscript','svg','canvas','template') and self.skip: self.skip-=1
+    def handle_data(self,data):
+        if self.skip: return
+        x=clean(data)
+        if x: self.parts.append(x)
 
-def _koja_safe_external_url(raw):
+def _koja_public_url(url):
     try:
-        u=urlparse(str(raw or '').strip())
-        if u.scheme not in ('http','https') or not u.hostname:
-            return None
-        host=u.hostname.lower().rstrip('.')
-        if host in ('localhost','127.0.0.1','::1') or host.endswith('.local'):
-            return None
+        from urllib.parse import urlparse
+        u=urlparse(clean(url)); host=(u.hostname or '').lower()
+        if u.scheme not in ('http','https') or not host: return None
+        if host in ('localhost','localhost.localdomain') or host.endswith('.local'): return None
         try:
-            for info in socket.getaddrinfo(host,None):
-                obj=ipaddress.ip_address(info[4][0])
-                if obj.is_private or obj.is_loopback or obj.is_link_local or obj.is_reserved or obj.is_multicast:
-                    return None
-        except Exception:
-            return None
+            infos=socket.getaddrinfo(host,None)
+            for info in infos:
+                ip=ipaddress.ip_address(info[4][0])
+                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved: return None
+        except Exception: return None
         return u.geturl()
-    except Exception:
-        return None
+    except Exception: return None
 
-def _koja_research_fetch(url):
-    safe=_koja_safe_external_url(url)
-    if not safe:
-        return None,'This source cannot be displayed inside KOJA.'
+@app.route('/research/source')
+def research_source():
+    target=_koja_public_url(request.args.get('url',''))
+    if not target: return render_page('Research Source','<div class="card"><h2>Source unavailable</h2><p>KOJA can only read public HTTP/HTTPS sources and blocks private-network addresses.</p><a class="btn" href="/research">Back to Research</a></div>'),400
     try:
-        r=requests.get(safe,timeout=10,allow_redirects=True,headers={'User-Agent':'KOJA-AFRICA Research Reader/1.0','Accept':'text/html,application/xhtml+xml,application/pdf,text/plain;q=0.9,*/*;q=0.5'})
-        final=_koja_safe_external_url(r.url)
-        if not final:
-            return None,'The source redirected to a blocked address.'
+        r=requests.get(target,timeout=10,allow_redirects=True,headers={'User-Agent':'KOJA-AFRICA-Research/9.0'})
+        final=_koja_public_url(r.url)
+        if not r.ok or not final: raise RuntimeError('source unavailable')
         ctype=(r.headers.get('Content-Type') or '').lower()
-        if 'application/pdf' in ctype or final.lower().split('?')[0].endswith('.pdf'):
-            return {'kind':'pdf','url':final,'content':r.content},None
-        parser=_KOJAHTMLTextParser(); parser.feed(r.text or '')
-        body='\n'.join(parser.parts)
-        body=re.sub(r'\n{3,}','\n\n',body).strip()
-        if not body:
-            body='KOJA could not extract readable text from this source.'
-        return {'kind':'html','url':final,'text':body[:120000]},None
-    except requests.RequestException as exc:
-        logger.warning('KOJA research reader fetch failed: %s',exc)
-        return None,'The source could not be fetched right now.'
+        if 'text/html' not in ctype and 'text/plain' not in ctype:
+            return render_page('Research Source', f'<div class="card"><h2>File source</h2><p>This source is {ctype or "a non-HTML file"}.</p><a class="btn" href="{final}" target="_blank" rel="noopener">Open source</a></div>')
+        parser=_KOJAHTMLText(); parser.feed(r.text[:2_000_000]); text='\n'.join(parser.parts)
+        text=re.sub(r'\n{3,}','\n\n',text)[:120_000]
+        return render_page('Research Source', r'''<style>.reader{max-width:950px;margin:auto}.reader-text{white-space:pre-wrap;line-height:1.8}.reader-tools{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}</style><div class="reader"><div class="hero"><h2>{{ title }}</h2><p>{{ final }}</p></div><div class="reader-tools"><a class="btn" href="{{ final }}" target="_blank" rel="noopener">Original source</a><a class="btn secondary" href="{{ url_for('research',q=q) }}">Back to Research</a></div><div class="card reader-text">{{ text }}</div></div>''',title=target,final=final,text=text,q=clean(request.args.get('q','')))
     except Exception as exc:
-        logger.warning('KOJA research reader error: %s',exc)
-        return None,'KOJA could not read this source.'
-
-@app.route('/research/view')
-def research_view():
-    raw=request.args.get('url','')
-    title=clean(request.args.get('title','')) or 'Research Source'
-    data,err=_koja_research_fetch(raw)
-    if err:
-        return render_page('Research Source', "<div class='card'><h2>"+title+"</h2><p>"+err+"</p><p><a class='btn' href='"+url_for('research')+"'>Return to KOJA Research</a></p></div>")
-    if data.get('kind')=='pdf':
-        return Response(data['content'],headers={'Content-Type':'application/pdf','Content-Disposition':'inline; filename="koja-research-source.pdf"','Cache-Control':'private, max-age=300'})
-    safe_title=title.replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
-    safe_text=data.get('text','').replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
-    safe_url=data.get('url','')
-    reader_html="<style>.koja-reader{max-width:980px;margin:auto}.koja-reader-body{white-space:pre-wrap;line-height:1.8;font-size:1rem}.koja-reader-bar{position:sticky;top:0;z-index:3;display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:10px;border:1px solid rgba(127,127,127,.18);border-radius:16px;background:var(--card,#fff)}.koja-reader-url{font-size:.78rem;opacity:.65;word-break:break-all}</style>"
-    reader_html += "<div class='koja-reader'><div class='koja-reader-bar'><a class='btn secondary' href='RESEARCH_URL'>Research</a><a class='btn secondary' href='SOURCE_URL' target='_blank' rel='noopener noreferrer'>Interactive source</a><span class='koja-reader-url'>SOURCE_URL</span></div><div class='card'><h1>SOURCE_TITLE</h1><p class='small'>KOJA Research Reader — source content displayed inside KOJA.</p><div class='koja-reader-body'>SOURCE_TEXT</div></div></div>"
-    reader_html=reader_html.replace('RESEARCH_URL',url_for('research')).replace('SOURCE_URL',safe_url).replace('SOURCE_TITLE',safe_title).replace('SOURCE_TEXT',safe_text)
-    return render_page('Research Source',reader_html)
+        logger.warning('KOJA source reader failed: %s',exc)
+        return render_page('Research Source','<div class="card"><h2>Source could not be read</h2><p>The source did not provide readable public content to KOJA.</p><a class="btn" href="/research">Back to Research</a></div>'),502
 
 @app.route('/research')
 def research():
-    q=_research_normalize_query(request.args.get('q',''))
-    source_filter=clean(request.args.get('source','all')).lower() or 'all'
-    sort=clean(request.args.get('sort','relevance')).lower() or 'relevance'
-    year=_research_year(request.args.get('year',''))
-    author=clean(request.args.get('author',''))
-    style=clean(request.args.get('style','apa')).lower() or 'apa'
-    source_type=clean(request.args.get('source_type','all')).lower() or 'all'
+    q=_research_normalize_query(request.args.get('q','')); source_filter=clean(request.args.get('source','all')).lower() or 'all'; sort=clean(request.args.get('sort','relevance')).lower() or 'relevance'; year=_research_year(request.args.get('year','')); author=clean(request.args.get('author','')); style=clean(request.args.get('style','apa')).lower() or 'apa'; source_type=clean(request.args.get('source_type','all')).lower() or 'all'
     if style not in CITATION_STYLES: style='apa'
     results=[]
     if q:
@@ -2525,137 +2271,20 @@ def research():
         if source_type!='all': results=[r for r in results if _source_type(r)==source_type]
     summary, grounded_sources=research_ai_summary(q,results) if q else ('', [])
     if grounded_sources:
+        # Grounded Google sources become the primary visible evidence; retain only a few
+        # highly relevant KOJA/academic records as supplementary context.
         existing=[r for r in results if str(r.get('source','')).lower() in ('openalex','crossref','koja documents')][:4]
         results=grounded_sources + existing
     bibliography=make_bibliography(results,style) if results else []
-    return render_page('KOJA Research', r'''
+    return render_page('Research', r'''
 <style>
-.kr{max-width:1080px;margin:0 auto;padding-bottom:30px}
-.kr-head{text-align:center;padding:18px 8px 12px}
-.kr-head h1{font-size:2rem;margin:4px 0 8px}
-.kr-head p{opacity:.72;margin:0}
-.kr-search{margin:12px auto 14px;max-width:900px;background:var(--card,#fff);border:1px solid rgba(60,100,150,.22);border-radius:22px;padding:10px;box-shadow:0 10px 30px rgba(0,0,0,.06)}
-.kr-search textarea{width:100%;min-height:72px;max-height:220px;resize:vertical;border:0!important;background:transparent!important;box-shadow:none!important;outline:0;font-size:1.08rem;padding:12px!important;margin:0!important}
-.kr-search-bottom{display:flex;gap:8px;align-items:center;border-top:1px solid rgba(127,127,127,.13);padding-top:8px;flex-wrap:wrap}
-.kr-search-bottom .send{margin-left:auto}
-.kr-modes{display:flex;gap:7px;overflow:auto;padding:4px 0 12px}
-.kr-modes a{white-space:nowrap;border-radius:18px}
-.kr-layout{display:grid;grid-template-columns:minmax(0,1fr) 285px;gap:14px}
-.kr-main{min-width:0}
-.kr-side{position:sticky;top:12px;height:max-content}
-.kr-card{border-radius:18px!important;margin-bottom:12px}
-.kr-answer{border:1px solid rgba(50,130,220,.28);background:rgba(50,130,220,.06)}
-.kr-answer pre{white-space:pre-wrap;font:inherit;line-height:1.72;margin:0}
-.kr-answer h2{margin-top:0}
-.kr-source{border-radius:17px!important;margin-bottom:10px}
-.kr-source-title{font-size:1.03rem;line-height:1.35;margin:8px 0}
-.kr-source-title a{text-decoration:none}
-.kr-meta{font-size:.8rem;opacity:.68}
-.kr-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:11px}
-.kr-badge{display:inline-block;border-radius:999px;padding:4px 9px;background:rgba(70,130,220,.12);font-size:.72rem;font-weight:800}
-.kr-count{font-weight:800}
-.kr-side .card{border-radius:17px!important}
-.kr-tool{display:block;text-decoration:none;padding:11px 12px;border:1px solid rgba(127,127,127,.14);border-radius:12px;margin-top:8px}
-.kr-tool strong{display:block}.kr-tool span{font-size:.78rem;opacity:.68}
-.kr-filters{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.kr-filters label{font-size:.76rem;font-weight:700}.kr-filters input,.kr-filters select{width:100%;margin-top:4px}
-.kr-empty{text-align:center;padding:40px 20px}
-.kr-ref{padding-left:28px;text-indent:-28px;line-height:1.55;margin:8px 0}
-@media(max-width:820px){.kr-layout{grid-template-columns:1fr}.kr-side{position:static}.kr-head h1{font-size:1.65rem}}
+.research-shell{max-width:920px;margin:auto}.research-search{display:flex;flex-direction:column;gap:8px;background:rgba(127,127,127,.08);border:1px solid rgba(127,127,127,.18);padding:10px 12px;border-radius:24px}.research-search textarea{width:100%;min-width:0;resize:none;min-height:105px;max-height:280px;border:0!important;background:transparent!important;box-shadow:none!important;font-size:1.05rem;padding:14px 10px!important;outline:none}.research-composer-bottom{display:flex;align-items:center;gap:8px}.research-composer-actions{display:flex;align-items:center;gap:6px}.research-icon{width:42px!important;height:42px!important;margin:0!important;padding:0!important;border-radius:50%!important;display:inline-flex!important;align-items:center;justify-content:center;font-size:1.2rem;cursor:pointer}.research-send{margin-left:auto!important;width:44px!important;height:44px!important;border-radius:50%!important;padding:0!important;display:inline-flex!important;align-items:center;justify-content:center;font-size:1.15rem}.research-file-name{font-size:.78rem;opacity:.72;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:55%}.research-recording{font-size:.78rem;font-weight:700;display:none}.research-search .btn{border-radius:22px;padding:10px 18px}.research-filters{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px}.research-filters label{font-size:.78rem;font-weight:700;opacity:.9}.research-filters select,.research-filters input{width:100%;margin-top:5px}.research-tabs{display:flex;gap:8px;overflow:auto;margin:14px 0;padding-bottom:2px}.research-tabs a{white-space:nowrap;border-radius:20px}.source-badge{display:inline-block;padding:5px 10px;border-radius:999px;background:rgba(80,150,255,.14);font-size:.74rem;font-weight:800}.research-result{border-radius:18px!important;margin-bottom:12px}.research-result h3{line-height:1.35;margin:9px 0}.research-result h3 a{text-decoration:none}.research-meta{font-size:.82rem;opacity:.72}.research-summary{border:1px solid rgba(98,168,255,.28);border-radius:18px!important;background:rgba(98,168,255,.06)}.research-summary pre{white-space:pre-wrap;font:inherit;line-height:1.7;margin:0}.research-count{font-weight:700}.research-empty{padding:35px;text-align:center;border-radius:18px!important}.research-welcome{text-align:center;padding:20px 10px 8px}.research-welcome h2{font-size:1.8rem;margin-bottom:8px}.research-welcome p{opacity:.75}.research-answer-label{font-weight:800;margin-bottom:10px}.research-source-list{margin-top:6px}.research-source-list .card{border-radius:18px!important}@media(max-width:700px){.research-search{border-radius:18px}.research-filters{grid-template-columns:1fr 1fr}.research-result{padding:16px!important}}@media(max-width:480px){.research-filters{grid-template-columns:1fr}}
 </style>
-<div class="kr">
-  <div class="kr-head">
-    <h1>KOJA Research</h1>
-    <p>Search, read, compare and understand information from multiple sources without leaving KOJA.</p>
-  </div>
-  <form class="kr-search" method="get" action="{{ url_for('research') }}">
-    <textarea name="q" maxlength="2000" autofocus placeholder="Ask a question, search a topic, find a paper or find a book">{{ q }}</textarea>
-    <div class="kr-search-bottom">
-      <button class="btn" type="submit">Search KOJA</button>
-      {% if q %}<a class="btn secondary" href="{{ url_for('research') }}">New research</a>{% endif %}
-      <span style="font-size:.76rem;opacity:.65">KOJA keeps the research experience in KOJA</span>
-    </div>
-  </form>
-
-  <div class="kr-modes">
-    <a class="btn {% if source_filter=='all' %}{% else %}secondary{% endif %}" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a>
-    <a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}">Web</a>
-    <a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}">Academic</a>
-    <a class="btn secondary" href="{{ url_for('research',q=q,source='wikipedia',sort=sort,year=year,author=author) }}">Wikipedia</a>
-    <a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}">KOJA Documents</a>
-    <a class="btn secondary" href="{{ url_for('research_books',q=q) }}">Books</a>
-    <a class="btn secondary" href="{{ url_for('research_browser',q=q) }}">Browse</a>
-  </div>
-
-  {% if q %}
-  <div class="kr-layout">
-    <main class="kr-main">
-      <div class="card kr-card"><span class="kr-count">{{ results|length }}</span> sources found for <strong>“{{ q }}”</strong><div class="small" style="margin-top:6px">KOJA searched the configured research providers and brought the evidence into this page.</div></div>
-
-      {% if summary %}
-      <div class="card kr-card kr-answer">
-        <h2>KOJA Answer</h2>
-        <pre>{{ summary }}</pre>
-        <div class="small" style="margin-top:12px">The answer is grounded in the retrieved sources. Open the evidence below to inspect the source inside KOJA.</div>
-      </div>
-      {% endif %}
-
-      {% for r in results %}
-      <article class="card kr-source">
-        <span class="kr-badge">{{ r.source }}</span>
-        <h3 class="kr-source-title"><a href="{{ url_for('research_view',url=r.url,title=r.title) if r.url else '#' }}">{{ r.title }}</a></h3>
-        {% if r.year or r.citations %}<div class="kr-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %}{% if r.year %} · {% endif %}{{ r.citations }} citations{% endif %}</div>{% endif %}
-        {% if r.snippet %}<p>{{ r.snippet }}</p>{% endif %}
-        <div class="small"><strong>In-text:</strong> {{ make_intext(r,style,loop.index) }}</div>
-        {% if r.url %}
-        <div class="kr-actions">
-          <a class="btn" href="{{ url_for('research_view',url=r.url,title=r.title) }}">Read inside KOJA</a>
-          <a class="btn secondary" href="{{ url_for('research_browser',url=r.url) }}">Open in KOJA Browser</a>
-        </div>
-        {% endif %}
-      </article>
-      {% else %}
-      <div class="card kr-empty"><h2>No matching evidence</h2><p>Try a broader question or another research mode.</p></div>
-      {% endfor %}
-
-      {% if bibliography %}
-      <div class="card kr-card"><h2>References</h2><p class="small">Generated from the available source metadata.</p>{% for n,ref in bibliography %}<div class="kr-ref">{{ ref|safe }}</div>{% endfor %}</div>
-      {% endif %}
-    </main>
-
-    <aside class="kr-side">
-      <div class="card">
-        <h3>KOJA Research Tools</h3>
-        <a class="kr-tool" href="{{ url_for('research_books',q=q) }}"><strong>Books and PDFs</strong><span>Search book catalogs and permitted files</span></a>
-        <a class="kr-tool" href="{{ url_for('research_books_library') }}"><strong>My Book Library</strong><span>Saved books and downloads</span></a>
-        <a class="kr-tool" href="{{ url_for('research_browser',q=q) }}"><strong>KOJA Browser</strong><span>Read public web pages inside KOJA</span></a>
-        <a class="kr-tool" href="{{ url_for('research_notes',q=q,style=style) }}"><strong>Research Notes</strong><span>Turn evidence into cited notes</span></a>
-      </div>
-      <div class="card">
-        <h3>Filter evidence</h3>
-        <form method="get" action="{{ url_for('research') }}" class="kr-filters">
-          <input type="hidden" name="q" value="{{ q }}">
-          <label>Year<input name="year" value="{{ year or '' }}" placeholder="2025"></label>
-          <label>Author<input name="author" value="{{ author }}" placeholder="Author"></label>
-          <label>Source<select name="source"><option value="all">All</option><option value="academic">Academic</option><option value="web">Web</option><option value="wikipedia">Wikipedia</option><option value="koja">KOJA Documents</option></select></label>
-          <label>Sort<select name="sort"><option value="relevance">Relevance</option><option value="date">Newest</option><option value="citations">Most cited</option></select></label>
-          <button class="btn" type="submit" style="grid-column:1/-1">Apply</button>
-        </form>
-      </div>
-    </aside>
-  </div>
-  {% else %}
-  <div class="grid">
-    <div class="card"><h3>Ask</h3><p>Ask KOJA a full research question and receive a source-grounded answer.</p></div>
-    <div class="card"><h3>Search</h3><p>KOJA collects configured web and Google-backed results and displays them here.</p></div>
-    <div class="card"><h3>Academic</h3><p>Search scholarly metadata through OpenAlex and Crossref without leaving KOJA.</p></div>
-    <div class="card"><h3>Books</h3><p>Find books, previews and legally available PDF or EPUB files through KOJA Research Books.</p></div>
-    <div class="card"><h3>Documents</h3><p>Bring evidence from documents connected to your KOJA account into the same research workspace.</p></div>
-    <div class="card"><h3>Read inside KOJA</h3><p>Use the KOJA Reader or KOJA Browser to inspect public source content without making another site your main interface.</p></div>
-  </div>
-  {% endif %}
-</div>
+<div class="research-shell"><div class="research-welcome"><h2> What would you like to research?</h2><p>Ask a full question, attach a document, or use your voice. KOJA Research searches web, academic literature, Wikipedia and your KOJA documents, then brings the evidence together.</p></div><div class="hero"><form method="get" action="{{ url_for('research') }}" class="research-search" id="research-composer"><textarea name="q" rows="3" maxlength="2000" placeholder="Ask anything you want to research…" aria-label="Research question" autofocus>{{ q }}</textarea><div class="research-composer-bottom"><div class="research-composer-actions"><label class="btn secondary research-icon" title="Attach a document" aria-label="Attach a document"><input id="research-file" type="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp" hidden></label><button class="btn secondary research-icon" id="research-record" type="button" title="Record voice" aria-label="Record voice">️</button><span class="research-recording" id="research-recording">● Recording…</span><span class="research-file-name" id="research-file-name"></span></div><button class="btn research-send" type="submit" title="Send research question" aria-label="Send research question"></button></div></form>
+<script>(function(){const box=document.querySelector('#research-composer textarea[name="q"]');const file=document.getElementById('research-file');const name=document.getElementById('research-file-name');const rec=document.getElementById('research-record');const recLabel=document.getElementById('research-recording');let media=null,chunks=[];if(box){const grow=()=>{box.style.height='auto';box.style.height=Math.min(box.scrollHeight,280)+'px'};box.addEventListener('input',grow);grow()}if(file){file.addEventListener('change',()=>{name.textContent=file.files&&file.files[0]?file.files[0].name:''})}if(rec&&navigator.mediaDevices&&window.MediaRecorder){rec.addEventListener('click',async()=>{if(media){media.stop();return}try{const stream=await navigator.mediaDevices.getUserMedia({audio:true});media=new MediaRecorder(stream);chunks=[];media.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};media.onstop=()=>{const blob=new Blob(chunks,{type:'audio/webm'});const url=URL.createObjectURL(blob);name.textContent='Voice recording ready ('+Math.round(blob.size/1024)+' KB)';const a=document.createElement('a');a.href=url;a.download='koja-research-question.webm';a.style.display='none';document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(url);a.remove()},1000);stream.getTracks().forEach(t=>t.stop());media=null;rec.textContent='️';recLabel.style.display='none'};media.start();rec.textContent='⏹️';recLabel.style.display='inline';}catch(e){alert('Microphone permission is required to record.')}})}})();</script><div class="research-filters"><label>Source<select name="source" form="research-filter-form"><option value="all" {% if source_filter=='all' %}selected{% endif %}>All sources</option><option value="academic" {% if source_filter=='academic' %}selected{% endif %}>Academic</option><option value="youtube" {% if source_filter=='youtube' %}selected{% endif %}>Videos</option><option value="web" {% if source_filter=='web' %}selected{% endif %}>Web</option><option value="wikipedia" {% if source_filter=='wikipedia' %}selected{% endif %}>Wikipedia</option><option value="koja" {% if source_filter=='koja' %}selected{% endif %}>KOJA Documents</option></select></label><label>Year<input name="year" form="research-filter-form" value="{{ year or '' }}" placeholder="e.g. 2025" inputmode="numeric"></label><label>Author<input name="author" form="research-filter-form" value="{{ author }}" placeholder="Academic author"></label><label>Citation style<select name="style" form="research-filter-form">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Source type<select name="source_type" form="research-filter-form"><option value="all">All source types</option>{% for k,v in source_types.items() %}<option value="{{k}}" {% if source_type==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Sort<select name="sort" form="research-filter-form"><option value="relevance" {% if sort=='relevance' %}selected{% endif %}>Relevance</option><option value="date" {% if sort=='date' %}selected{% endif %}>Newest first</option><option value="citations" {% if sort=='citations' %}selected{% endif %}>Most cited</option></select></label></div><form id="research-filter-form" method="get" action="{{ url_for('research') }}"><input type="hidden" name="q" value="{{ q }}"></form></div>
+{% if q %}<div class="note-actions"><a class="btn" href="{{ url_for('research_notes',q=q,style=style) }}"> Write Research Notes</a><a class="btn secondary" href="{{ url_for('research') }}">＋ New research</a></div><div class="research-tabs"><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}"> Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='youtube',sort=sort,year=year,author=author) }}"> Videos</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}"> Web</a><a class="btn secondary" href="https://www.google.com/search?q={{ q|urlencode }}" target="_blank" rel="noopener"> Google</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}"> KOJA Documents</a></div><div class="card"><span class="research-count">{{ results|length }} ranked sources</span> found for <strong>“{{ q }}”</strong><p class="small" style="margin-top:8px">KOJA combines multiple research angles, academic literature, web sources and KOJA Documents; it removes duplicates, filters weak matches, ranks evidence and then uses KOJA AI to synthesize the strongest evidence.</p></div>{% if summary %}<div class="card research-summary"><div class="research-answer-label"> KOJA Research Answer</div><pre>{{ summary }}</pre><p class="small">AI summaries use configured AI credentials when available; otherwise KOJA shows source-based highlights. Verify important claims against original sources.</p></div>{% endif %}{% for r in results %}<div class="card research-result"><span class="source-badge">{{ r.source }}</span><h3><a href="{{ url_for('research_source',url=r.url,q=q) if r.source != 'YouTube' else (r.embed_url or r.url) }}" {% if r.source == 'YouTube' %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a></h3>{% if r.source == 'YouTube' and r.embed_url %}<div style="margin:12px 0;aspect-ratio:16/9;background:#000;border-radius:14px;overflow:hidden"><iframe src="{{ r.embed_url }}" title="{{ r.title }}" style="width:100%;height:100%;border:0" loading="lazy" allow="accelerometer;autoplay;clipboard-write;encrypted-media;gyroscope;picture-in-picture;web-share" allowfullscreen></iframe></div>{% endif %}{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p><p><strong>In-text:</strong> {{ make_intext(r,style,loop.index) }}</p>{% if r.url %}{% if r.source == 'YouTube' %}<a class="btn secondary" href="{{ r.embed_url or r.url }}" target="_blank" rel="noopener noreferrer">Watch video</a>{% else %}<a class="btn secondary" href="{{ url_for('research_source',url=r.url,q=q) }}">Read in KOJA</a><a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Original source</a>{% endif %}{% endif %}</div>{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endfor %}{% if bibliography %}<div class="card"><h2>References</h2><p class="small">Generated from available source metadata. Verify against the original source.</p>{% for n,ref in bibliography %}<p style="padding-left:28px;text-indent:-28px;line-height:1.6">{{ ref|safe }}</p>{% endfor %}</div>{% endif %}{% else %}<div class="grid"><div class="card"><h3> Research Discovery</h3><p>KOJA searches across multiple research sources and filters weak or unrelated matches.</p></div><div class="card"><h3> Academic Search</h3><p>OpenAlex and Crossref provide scholarly metadata, authors, years and citation information.</p></div><div class="card"><h3> KOJA Documents</h3><p>Search documents already connected to your KOJA Supabase database.</p></div><div class="card"><h3> AI Research Summary</h3><p>Configure an AI API key to synthesize retrieved evidence with source-number citations.</p></div></div>{% endif %}</div>
 ''',q=q,results=results,summary=summary,source_filter=source_filter,sort=sort,year=year,author=author,style=style,source_type=source_type,citation_styles=CITATION_STYLES,source_types=SOURCE_TYPES,bibliography=bibliography,make_intext=make_intext,SITE_URL=SITE_URL)
+
 
 @app.route("/api/ai/status")
 @login_required
@@ -7037,6 +6666,8 @@ create index if not exists koja_notifications_user_idx on public.koja_notificati
 create table if not exists public.koja_notification_preferences (user_id uuid primary key, push_enabled boolean default true, sound_enabled boolean default true, market_enabled boolean default true, delivery_enabled boolean default true, ai_enabled boolean default true, messages_enabled boolean default true, system_enabled boolean default true, updated_at timestamptz default now());
 create table if not exists public.koja_push_subscriptions (id uuid primary key default gen_random_uuid(), user_id uuid not null, endpoint text not null, subscription jsonb not null default '{}'::jsonb, user_agent text, created_at timestamptz default now(), updated_at timestamptz default now(), unique(user_id,endpoint));
 create index if not exists koja_push_subscriptions_user_idx on public.koja_push_subscriptions(user_id,created_at desc);
+create table if not exists public.koja_fcm_devices (id uuid primary key default gen_random_uuid(), user_id uuid not null, token text not null, device_id text default '', platform text default 'android', app_version text default '', created_at timestamptz default now(), updated_at timestamptz default now(), unique(user_id,token));
+create index if not exists koja_fcm_devices_user_idx on public.koja_fcm_devices(user_id,updated_at desc);
 create table if not exists public.koja_blocks (
  blocker_id uuid not null, blocked_id uuid not null, created_at timestamptz default now(), primary key(blocker_id,blocked_id)
 );
@@ -7052,7 +6683,24 @@ def _notification_allowed(uid, notification_type):
     if t in ('message','chat','call','group_call','friend_request'): return bool(p.get('messages_enabled',True))
     return bool(p.get('system_enabled',True))
 
-def _send_web_push(uid,title,body,url=None,notification_type='system'):
+def _send_native_fcm(uid,title,body,url=None,notification_type='system',related_id=None):
+    if not uid or not _notification_allowed(uid,notification_type): return 0
+    relay=(os.getenv('FCM_RELAY_URL') or os.getenv('KOJA_FCM_RELAY_URL') or os.getenv('PUSH_RELAY_URL') or os.getenv('FCM_RELAY_ENDPOINT') or '').strip()
+    secret=os.getenv('FCM_RELAY_SECRET','').strip()
+    if not relay or not secret or not table_exists('koja_fcm_devices'): return 0
+    sent=0
+    for d in db_select('koja_fcm_devices',filters={'user_id':str(uid)},limit=20):
+        token=clean(d.get('token'))
+        if not token: continue
+        payload={'token':token,'title':title,'body':body,'data':{'type':notification_type,'call_id':str(related_id) if related_id else '','related_id':str(related_id) if related_id else '','url':url or '/notifications','mode':'video' if notification_type=='call' and 'video' in title.lower() else ('voice' if notification_type=='call' else '')}}
+        try:
+            rr=requests.post(relay,headers={'Content-Type':'application/json','X-FCM-RELAY-SECRET':secret,'Authorization':'Bearer '+secret},json=payload,timeout=15)
+            if rr.ok: sent+=1
+            elif rr.status_code in (400,404,410): db_delete('koja_fcm_devices',{'id':d.get('id')})
+        except Exception: logger.exception('KOJA native FCM relay failed')
+    return sent
+
+def _send_web_push(uid,title,body,url=None,notification_type='system',related_id=None):
     if not _notification_allowed(uid,notification_type): return 0
     try: from pywebpush import webpush
     except Exception: return 0
@@ -7061,7 +6709,7 @@ def _send_web_push(uid,title,body,url=None,notification_type='system'):
     sent=0
     for sub in db_select('koja_push_subscriptions',filters={'user_id':str(uid)},limit=20):
         try:
-            webpush(subscription_info=sub.get('subscription') or {},data=json.dumps({'title':title,'body':body,'url':url or '/notifications','type':notification_type}),vapid_private_key=sk,vapid_claims={'sub':subject}); sent+=1
+            webpush(subscription_info=sub.get('subscription') or {},data=json.dumps({'title':title,'body':body,'url':url or '/notifications','type':notification_type,'related_id':str(related_id) if related_id else None,'call_id':str(related_id) if notification_type in ('call','group_call') and related_id else None}),vapid_private_key=sk,vapid_claims={'sub':subject}); sent+=1
         except Exception as exc:
             if '410' in str(exc) or '404' in str(exc): db_delete('koja_push_subscriptions',{'id':sub.get('id')})
     return sent
@@ -7081,7 +6729,16 @@ def notify_user(uid,title,body,notification_type='system',related_id=None,url=No
     if not uid or not _notification_allowed(uid,notification_type): return None
     row,err=db_insert('koja_notifications',{'user_id':str(uid),'notification_type':notification_type,'title':title,'body':body,'related_id':related_id,'is_read':False,'created_at':utc_now()})
     if not err and row:
-        _send_web_push(uid,title,body,url,notification_type)
+        # Send through the existing native FCM relay as well as optional web push.
+        # Native Android push must not depend on VAPID/web-push configuration.
+        try:
+            _send_native_fcm(uid,title,body,url,notification_type,related_id)
+        except Exception:
+            logger.exception('KOJA native FCM notification failed')
+        try:
+            _send_web_push(uid,title,body,url,notification_type,related_id)
+        except Exception:
+            logger.exception('KOJA web push notification failed')
         try:
             u=find_user_by_id(uid) or {}
             email=clean(u.get('email'))
@@ -7116,7 +6773,7 @@ def notifications_page():
 @login_required
 def notification_settings():
     uid=str(current_user()['id']); p=first_row('koja_notification_preferences',{'user_id':uid}) or {}
-    return render_page('Notification Settings',"""<div class='card'><h2>Notification Settings</h2><p>Choose what KOJA can notify you about.</p><form id='np'><label><input type='checkbox' name='push_enabled' {% if p.get('push_enabled',True) %}checked{% endif %}> Push notifications</label><label><input type='checkbox' name='sound_enabled' {% if p.get('sound_enabled',True) %}checked{% endif %}> Notification sound</label><label><input type='checkbox' name='market_enabled' {% if p.get('market_enabled',True) %}checked{% endif %}> Market and orders</label><label><input type='checkbox' name='delivery_enabled' {% if p.get('delivery_enabled',True) %}checked{% endif %}> Deliveries and drivers</label><label><input type='checkbox' name='ai_enabled' {% if p.get('ai_enabled',True) %}checked{% endif %}> KOJA AI</label><label><input type='checkbox' name='messages_enabled' {% if p.get('messages_enabled',True) %}checked{% endif %}> Messages and calls</label><label><input type='checkbox' name='system_enabled' {% if p.get('system_enabled',True) %}checked{% endif %}> System and account</label><button class='btn' type='submit'>Save settings</button></form><hr><button class='btn secondary' type='button' onclick='enableKOJAPush()'>Enable phone/browser notifications</button><p id='push-status' class='small'></p></div><script>const form=document.getElementById('np');form.onsubmit=async e=>{e.preventDefault();let o={};new FormData(form).forEach((v,k)=>o[k]=true);let r=await fetch('/api/notifications/preferences',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)});document.getElementById('push-status').textContent=r.ok?'Saved.':'Could not save settings.'};async function enableKOJAPush(){if(!('Notification'in window)){document.getElementById('push-status').textContent='This browser does not support notifications.';return}let perm=await Notification.requestPermission();if(perm!=='granted'){document.getElementById('push-status').textContent='Notification permission was not granted.';return}if(!('serviceWorker'in navigator)){document.getElementById('push-status').textContent='Service workers are not supported here.';return}let reg=await navigator.serviceWorker.register('/koja-sw.js');let key=await fetch('/api/notifications/vapid-public-key').then(r=>r.text());if(!key){document.getElementById('push-status').textContent='Push service is not configured yet.';return}let sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:base64ToUint8(key)});await fetch('/api/notifications/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sub)});document.getElementById('push-status').textContent='Phone/browser notifications enabled.'}function base64ToUint8(b){let p='='.repeat((4-b.length%4)%4),s=atob((b+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from([...s].map(c=>c.charCodeAt(0)))}</script>""",p=p)
+    return render_page('Notification Settings',"""<div class='card'><h2>Notification Settings</h2><p>Choose what KOJA can notify you about.</p><form id='np'><label><input type='checkbox' name='push_enabled' {% if p.get('push_enabled',True) %}checked{% endif %}> Push notifications</label><label><input type='checkbox' name='sound_enabled' {% if p.get('sound_enabled',True) %}checked{% endif %}> Notification sound</label><label><input type='checkbox' name='market_enabled' {% if p.get('market_enabled',True) %}checked{% endif %}> Market and orders</label><label><input type='checkbox' name='delivery_enabled' {% if p.get('delivery_enabled',True) %}checked{% endif %}> Deliveries and drivers</label><label><input type='checkbox' name='ai_enabled' {% if p.get('ai_enabled',True) %}checked{% endif %}> KOJA AI</label><label><input type='checkbox' name='messages_enabled' {% if p.get('messages_enabled',True) %}checked{% endif %}> Messages and calls</label><label><input type='checkbox' name='system_enabled' {% if p.get('system_enabled',True) %}checked{% endif %}> System and account</label><button class='btn' type='submit'>Save settings</button></form><hr><button class='btn secondary' type='button' onclick='enableKOJAPush()'>Enable phone/browser notifications</button><p id='push-status' class='small'></p></div><script>const form=document.getElementById('np');form.onsubmit=async e=>{e.preventDefault();let o={};new FormData(form).forEach((v,k)=>o[k]=true);let r=await fetch('/api/notifications/preferences',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)});document.getElementById('push-status').textContent=r.ok?'Saved.':'Could not save settings.'};async function enableKOJAPush(){try{let st=await fetch('/api/notifications/push-status').then(r=>r.json());if(st.native_push_configured&&st.native_devices>0){document.getElementById('push-status').textContent='KOJA phone push is enabled on this device.';return}if(!('Notification'in window)){document.getElementById('push-status').textContent='Native phone push is not registered yet. Browser notifications are not supported here.';return}let perm=await Notification.requestPermission();if(perm!=='granted'){document.getElementById('push-status').textContent='Notification permission was not granted.';return}if(!('serviceWorker'in navigator)){document.getElementById('push-status').textContent='Native phone push is not registered yet.';return}let reg=await navigator.serviceWorker.register('/koja-sw.js');let key=await fetch('/api/notifications/vapid-public-key').then(r=>r.text());if(!key){document.getElementById('push-status').textContent='KOJA phone push is handled by the Android app; web push is not configured.';return}let sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:base64ToUint8(key)});await fetch('/api/notifications/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sub)});document.getElementById('push-status').textContent='Phone/browser notifications enabled.'}catch(e){document.getElementById('push-status').textContent='Could not enable notifications.'}}function base64ToUint8(b){let p='='.repeat((4-b.length%4)%4),s=atob((b+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from([...s].map(c=>c.charCodeAt(0)))}</script>""",p=p)
 
 @app.route('/api/notifications')
 @login_required
@@ -7143,6 +6800,44 @@ def api_notification_preferences():
     if old: ok,err=db_update('koja_notification_preferences',{'user_id':uid},payload)
     else: row,err=db_insert('koja_notification_preferences',payload); ok=bool(row and not err)
     return jsonify(ok=bool(ok)),200 if ok else 400
+
+@app.route('/api/notifications/fcm/register',methods=['POST'])
+@login_required
+def api_fcm_register():
+    uid=str(current_user()['id']); d=request.get_json(silent=True) or {}; token=clean(d.get('token') or d.get('fcm_token') or d.get('device_token'))
+    if not token: return jsonify(error='FCM token required'),400
+    if not table_exists('koja_fcm_devices'): return jsonify(error='FCM device table is not available'),503
+    payload={'user_id':uid,'token':token,'device_id':clean(d.get('device_id')),'platform':clean(d.get('platform') or 'android'),'app_version':clean(d.get('app_version')),'updated_at':utc_now()}
+    old=first_row('koja_fcm_devices',{'user_id':uid,'token':token})
+    if old: ok,err=db_update('koja_fcm_devices',{'id':old.get('id')},payload)
+    else: row,err=db_insert('koja_fcm_devices',payload); ok=bool(row and not err)
+    return jsonify(ok=bool(ok))
+
+@app.route('/api/push/register',methods=['POST'])
+@login_required
+def api_push_register_alias(): return api_fcm_register()
+
+@app.route('/api/notifications/register-device',methods=['POST'])
+@login_required
+def api_notifications_register_device(): return api_fcm_register()
+
+@app.route('/api/notifications/push-status')
+@login_required
+def api_push_status():
+    uid=str(current_user()['id']); devices=db_select('koja_fcm_devices',filters={'user_id':uid},limit=20) if table_exists('koja_fcm_devices') else []
+    relay=bool((os.getenv('FCM_RELAY_URL') or os.getenv('KOJA_FCM_RELAY_URL') or os.getenv('PUSH_RELAY_URL') or os.getenv('FCM_RELAY_ENDPOINT') or '').strip() and os.getenv('FCM_RELAY_SECRET','').strip())
+    web=bool(os.getenv('VAPID_PUBLIC_KEY','').strip() and os.getenv('VAPID_PRIVATE_KEY','').strip())
+    return jsonify(native_push_configured=relay,native_devices=len(devices),web_push_configured=web)
+
+@app.route('/api/notifications/test-native-push',methods=['POST'])
+@login_required
+def api_test_native_push():
+    uid=str(current_user()['id'])
+    devices=db_select('koja_fcm_devices',filters={'user_id':uid},limit=20) if table_exists('koja_fcm_devices') else []
+    if not devices:
+        return jsonify(ok=False,error='No Android FCM device is registered for this account'),400
+    sent=_send_native_fcm(uid,'KOJA Push Test','KOJA phone push is working.','/notifications','system',None)
+    return jsonify(ok=sent>0,sent=sent,devices=len(devices))
 
 @app.route('/api/notifications/vapid-public-key')
 @login_required
@@ -7214,7 +6909,7 @@ def connect_chat(conversation_id):
     uid=current_user()['id'];
     if not _conversation_member(conversation_id,uid): abort(403)
     members=db_select('koja_conversation_members',filters={'conversation_id':conversation_id},limit=100); other=next((m for m in members if str(m.get('user_id'))!=str(uid)),None); other_id=other.get('user_id') if other else None; c=first_row('koja_conversations',{'id':conversation_id}) or {}
-    return render_page('KOJA Chat',r'''<div class="card"><a href="{{ url_for('connect') }}">← Connect</a><h2> {{ name }}</h2><p class="small">Sent messages appear on the right. Received messages appear on the left.</p></div><div class="card" id="messages" style="min-height:300px;max-height:55vh;overflow:auto"></div><div class="card"><form id="sendForm"><input id="text" autocomplete="off" placeholder="Write a message…"><button>Send</button></form><form id="fileForm" enctype="multipart/form-data" style="margin-top:8px"><input id="file" type="file" accept="image/*,.pdf,.doc,.docx,.txt,.webp,.audio/*"><button type="submit"> Photo / File</button></form><div class="grid"><button type="button" id="voiceNote">️ Voice message</button><a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='voice') }}"> Voice Call</a><a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='video') }}"> Video Call</a>{% if c.get('conversation_type')=='group' %}<a class="btn" href="{{ url_for('connect_group_call',conversation_id=conversation_id,mode='video') }}"> Group Video</a><a class="btn secondary" href="{{ url_for('connect_group_call',conversation_id=conversation_id,mode='voice') }}"> Group Voice</a>{% endif %}</div></div><script>const cid={{ conversation_id|tojson }},me={{ user.id|tojson }};const box=document.getElementById('messages'),text=document.getElementById('text');function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}async function load(){let r=await fetch('/api/connect/messages/'+cid);if(!r.ok)return;let d=await r.json();box.innerHTML=d.messages.map(m=>{let mine=String(m.sender_id)===String(me);let body=m.message_type==='text'?'<div>'+esc(m.body)+'</div>':(m.file_url?'<div><a target="_blank" rel="noopener" href="'+esc(m.file_url)+'">'+esc(m.body||m.message_type)+'</a></div>':'<div>'+esc(m.body)+'</div>');return '<div style="display:flex;justify-content:'+(mine?'flex-end':'flex-start')+';margin:7px 0"><div style="max-width:78%;padding:10px 13px;border-radius:16px;background:var(--card);border:1px solid var(--border);text-align:left"><strong>'+esc(mine?'You':m.sender_name)+'</strong>'+body+'<div class="small">'+esc(m.created_at||'')+'</div></div></div>'}).join('');box.scrollTop=box.scrollHeight;}document.getElementById('sendForm').onsubmit=async e=>{e.preventDefault();let v=text.value.trim();if(!v)return;let r=await fetch('/api/connect/messages/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:v})});if(r.ok){text.value='';load();}};document.getElementById('fileForm').onsubmit=async e=>{e.preventDefault();let f=document.getElementById('file').files[0];if(!f)return;let fd=new FormData();fd.append('file',f);let r=await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});if(r.ok){document.getElementById('file').value='';load();}else alert('File could not be sent.');};load();setInterval(load,2000);let rec,parts=[];document.getElementById('voiceNote').onclick=async()=>{try{let st=await navigator.mediaDevices.getUserMedia({audio:true});rec=new MediaRecorder(st);parts=[];rec.ondataavailable=e=>parts.push(e.data);rec.onstop=async()=>{let b=new Blob(parts,{type:'audio/webm'}),fd=new FormData();fd.append('file',b,'voice.webm');await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});st.getTracks().forEach(t=>t.stop());load();};rec.start();setTimeout(()=>rec&&rec.state==='recording'&&rec.stop(),60000);}catch(e){alert('Microphone permission is required.');}};</script>''',conversation_id=conversation_id,name=_profile_name(other_id) if other_id else c.get('name','KOJA Chat'),c=c)
+    return render_page('KOJA Chat',r'''<div class="card"><a href="{{ url_for('connect') }}">← Connect</a><h2> {{ name }}</h2><p class="small">Sent messages appear on the right. Received messages appear on the left.</p></div><div class="card" id="messages" style="min-height:300px;max-height:55vh;overflow:auto"></div><div class="card"><form id="sendForm"><input id="text" autocomplete="off" placeholder="Write a message…"><button>Send</button></form><form id="fileForm" enctype="multipart/form-data" style="margin-top:8px"><input id="file" type="file" accept="image/*,.pdf,.doc,.docx,.txt,.webp,.audio/*"><button type="submit"> Photo / File</button></form><div class="grid"><button type="button" id="voiceNote">️ Voice message</button><a class="btn" href="{{ url_for('connect_call_slash',conversation_id=conversation_id,mode='voice') }}"> Voice Call</a><a class="btn" href="{{ url_for('connect_call_slash',conversation_id=conversation_id,mode='video') }}"> Video Call</a>{% if c.get('conversation_type')=='group' %}<a class="btn" href="{{ url_for('connect_group_call',conversation_id=conversation_id,mode='video') }}"> Group Video</a><a class="btn secondary" href="{{ url_for('connect_group_call',conversation_id=conversation_id,mode='voice') }}"> Group Voice</a>{% endif %}</div></div><script>const cid={{ conversation_id|tojson }},me={{ user.id|tojson }};const box=document.getElementById('messages'),text=document.getElementById('text');function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}async function load(){let r=await fetch('/api/connect/messages/'+cid);if(!r.ok)return;let d=await r.json();box.innerHTML=d.messages.map(m=>{let mine=String(m.sender_id)===String(me);let body=m.message_type==='text'?'<div>'+esc(m.body)+'</div>':(m.file_url?'<div><a target="_blank" rel="noopener" href="'+esc(m.file_url)+'">'+esc(m.body||m.message_type)+'</a></div>':'<div>'+esc(m.body)+'</div>');return '<div style="display:flex;justify-content:'+(mine?'flex-end':'flex-start')+';margin:7px 0"><div style="max-width:78%;padding:10px 13px;border-radius:16px;background:var(--card);border:1px solid var(--border);text-align:left"><strong>'+esc(mine?'You':m.sender_name)+'</strong>'+body+'<div class="small">'+esc(m.created_at||'')+'</div></div></div>'}).join('');box.scrollTop=box.scrollHeight;}document.getElementById('sendForm').onsubmit=async e=>{e.preventDefault();let v=text.value.trim();if(!v)return;let r=await fetch('/api/connect/messages/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:v})});if(r.ok){text.value='';load();}};document.getElementById('fileForm').onsubmit=async e=>{e.preventDefault();let f=document.getElementById('file').files[0];if(!f)return;let fd=new FormData();fd.append('file',f);let r=await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});if(r.ok){document.getElementById('file').value='';load();}else alert('File could not be sent.');};load();setInterval(load,2000);let rec,parts=[];document.getElementById('voiceNote').onclick=async()=>{try{let st=await navigator.mediaDevices.getUserMedia({audio:true});rec=new MediaRecorder(st);parts=[];rec.ondataavailable=e=>parts.push(e.data);rec.onstop=async()=>{let b=new Blob(parts,{type:'audio/webm'}),fd=new FormData();fd.append('file',b,'voice.webm');await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});st.getTracks().forEach(t=>t.stop());load();};rec.start();setTimeout(()=>rec&&rec.state==='recording'&&rec.stop(),60000);}catch(e){alert('Microphone permission is required.');}};</script>''',conversation_id=conversation_id,name=_profile_name(other_id) if other_id else c.get('name','KOJA Chat'),c=c)
 
 @app.route('/api/connect/messages/<conversation_id>',methods=['GET','POST'])
 @login_required
@@ -7544,6 +7239,21 @@ def connect_calls():
     uid=current_user()['id']; rows=db_select('koja_calls',filters={'caller_id':uid},order='created_at.desc',limit=50)+db_select('koja_calls',filters={'callee_id':uid},order='created_at.desc',limit=50); rows=sorted(rows,key=lambda x:x.get('created_at',''),reverse=True)[:50]
     return render_page('KOJA Calls',r'''<div class="card"><h2> KOJA Call History</h2>{% for c in rows %}<div class="card"><strong>{{ c.mode|title }}</strong> — {{ c.status }}<div class="small">{{ c.created_at }}</div>{% if c.callee_id|string == user.id|string and c.status=='ringing' %}<a class="btn" href="{{ url_for('connect_answer',call_id=c.id) }}">Answer</a>{% endif %}</div>{% else %}<p>No calls yet.</p>{% endfor %}</div>''',rows=rows)
 
+# Chat call launcher: resolve the recipient from the current conversation.
+# This avoids losing the callee when a chat page cannot reliably expose other_id.
+@app.route('/connect/call',methods=['GET'])
+@app.route('/connect/call/',methods=['GET'])
+@login_required
+def connect_call_slash():
+    uid=str(current_user()['id']); target=clean(request.args.get('callee_id') or request.args.get('user_id')); cid=clean(request.args.get('conversation_id')); mode=clean(request.args.get('mode','video')) or 'video'
+    if not target and cid:
+        members=db_select('koja_conversation_members',filters={'conversation_id':cid},limit=20)
+        other=next((m for m in members if str(m.get('user_id'))!=uid),None)
+        target=clean(other.get('user_id')) if other else ''
+    if not target or target==uid or not find_user_by_id(target) or mode not in ('voice','video'):
+        return render_page('KOJA Call', r'''<div class="card"><h2>KOJA Call</h2><p>Select a person from Connect to start a voice or video call.</p><a class="btn" href="{{ url_for('connect') }}">Open Connect</a><a class="btn secondary" href="{{ url_for('connect_calls') }}">Call History</a></div>''')
+    return redirect(url_for('connect_call',user_id=target,mode=mode))
+
 @app.route('/connect/call/<user_id>')
 @login_required
 def connect_call(user_id):
@@ -7618,6 +7328,23 @@ def connect_call_create():
     c=_direct_conversation(uid,callee); row,err=db_insert('koja_calls',{'id':str(uuid.uuid4()),'conversation_id':c['id'],'caller_id':uid,'callee_id':callee,'mode':mode,'status':'ringing','created_at':utc_now()})
     if err:return jsonify(error=err),500
     notify_user(callee,f'Incoming {mode} call',f'{_profile_name(uid)} is calling you.','call',row['id'],'/connect/calls');return jsonify(call=row)
+
+@app.route('/api/connect/incoming-calls')
+@login_required
+def connect_incoming_calls():
+    uid=str(current_user()['id'])
+    rows=db_select('koja_calls',filters={'callee_id':uid,'status':'ringing'},order='created_at.desc',limit=10)
+    return jsonify(ok=True,calls=[{'id':c.get('id'),'conversation_id':c.get('conversation_id'),'caller_id':c.get('caller_id'),'caller_name':_profile_name(c.get('caller_id')),'mode':c.get('mode','voice'),'status':c.get('status','ringing'),'created_at':c.get('created_at')} for c in rows])
+
+@app.route('/api/connect/call/reject/<call_id>',methods=['POST'])
+@login_required
+def connect_call_reject(call_id):
+    uid=str(current_user()['id']); c=first_row('koja_calls',{'id':call_id})
+    if not c or str(c.get('callee_id'))!=uid:return jsonify(error='Forbidden'),403
+    if str(c.get('status','')).lower() not in ('ringing','answered'):return jsonify(ok=True,status=c.get('status'))
+    updated,err=db_update('koja_calls',{'id':call_id},{'status':'rejected','ended_at':utc_now()})
+    if err:return jsonify(error=str(err)[:500]),500
+    return jsonify(ok=True,status='rejected')
 
 @app.route('/api/connect/call/offer/<call_id>',methods=['POST'])
 @login_required
