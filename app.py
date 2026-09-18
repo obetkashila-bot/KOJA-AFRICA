@@ -10812,3 +10812,221 @@ try:
         return result
     _post_simple_accounting_entry=_e2e_post_simple_accounting_entry_v3
 except Exception: logger.exception('E2E V3 Business bridge install failed')
+
+
+# ============================================================
+# KOJA E2E V4 — AUTOMATION, IDEMPOTENCY, LEDGER, RECONCILIATION
+# Additive only. Connect+ is untouched.
+# ============================================================
+KOJA_E2E_VERSION = '2026.09.18-V4'
+
+E2E_LEDGER_TABLE = 'koja_e2e_ledger_entries'
+E2E_IDEMPOTENCY_TABLE = 'koja_e2e_idempotency_keys'
+E2E_WEBHOOK_TABLE = 'koja_e2e_webhook_events'
+
+
+def _e2e_amount(v):
+    try: return round(float(v or 0), 2)
+    except Exception: return 0.0
+
+
+def _e2e_idempotency_key(source_type, source_id, action='sync'):
+    raw = f'{source_type}:{source_id}:{action}'
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _e2e_once(key, action='sync', metadata=None):
+    """Best-effort idempotency guard. SQL unique constraint is the final guard."""
+    key = clean(key)
+    if not key: return True
+    existing = first_row(E2E_IDEMPOTENCY_TABLE, {'idempotency_key': key})
+    if existing: return False
+    row, err = db_insert(E2E_IDEMPOTENCY_TABLE, {
+        'idempotency_key': key, 'action': action,
+        'status': 'started', 'metadata': metadata or {}, 'created_at': utc_now(), 'updated_at': utc_now()
+    })
+    if row: return True
+    # A concurrent insert normally means another worker won the race.
+    if err and 'duplicate' in str(err).lower(): return False
+    return True
+
+
+def _e2e_ledger(order, entry_type, amount, direction='credit', description='', reference=None, metadata=None):
+    if not order or not order.get('id') or _e2e_amount(amount) <= 0: return None
+    oid = str(order.get('id'))
+    idem = _e2e_idempotency_key('e2e_order', oid, f'ledger:{entry_type}:{direction}')
+    if not _e2e_once(idem, 'ledger', {'order_id': oid, 'entry_type': entry_type}):
+        old = first_row(E2E_LEDGER_TABLE, {'idempotency_key': idem})
+        return old.get('id') if old else None
+    row, err = db_insert(E2E_LEDGER_TABLE, {
+        'order_id': oid,
+        'source_type': order.get('source_type'),
+        'source_id': order.get('source_id'),
+        'entry_type': entry_type,
+        'direction': direction,
+        'amount': _e2e_amount(amount),
+        'currency': order.get('currency') or 'ZMW',
+        'description': description or entry_type,
+        'reference': str(reference) if reference else None,
+        'idempotency_key': idem,
+        'metadata': metadata or {},
+        'created_at': utc_now()
+    })
+    return row.get('id') if row else None
+
+
+def _e2e_record_payment_ledger(order, reference=None):
+    gross = _e2e_amount(order.get('gross_amount'))
+    fee = _e2e_amount(order.get('platform_fee'))
+    commission = _e2e_amount(order.get('commission_amount'))
+    if gross <= 0: gross = _e2e_amount(order.get('unit_price')) * max(1, int(order.get('quantity') or 1))
+    _e2e_ledger(order, 'customer_payment', gross, 'credit', 'Customer payment received', reference)
+    if fee > 0: _e2e_ledger(order, 'platform_fee', fee, 'credit', 'KOJA platform fee', reference)
+    if commission > 0: _e2e_ledger(order, 'provider_commission', commission, 'credit', 'Provider/seller commission', reference)
+    provider_net = max(0, gross - fee - commission)
+    if provider_net > 0: _e2e_ledger(order, 'provider_earnings', provider_net, 'credit', 'Provider earnings created', reference)
+
+
+def _e2e_v4_reconcile_order(order, reference=None):
+    if not order: return order
+    try:
+        st = clean(order.get('status')).lower()
+        if st in {'paid','processing','fulfilling','completed','settled'}:
+            _e2e_record_payment_ledger(order, reference)
+            if st == 'paid':
+                _e2e_notify(order.get('provider_id'), 'payment', 'Payment confirmed', 'Payment for a KOJA order has been confirmed.', '/e2e', 'order', order.get('id'))
+    except Exception: logger.exception('E2E V4 payment reconciliation failed')
+    return order
+
+
+def _e2e_refund(order, amount=None, reason='Refund requested'):
+    if not order: return None, 'Order not found.'
+    uid = _e2e_uid()
+    if str(order.get('customer_id')) != str(uid) and str(order.get('provider_id')) != str(uid) and not (current_user() or {}).get('is_admin'):
+        return None, 'Not authorized.'
+    value = _e2e_amount(amount if amount is not None else order.get('gross_amount') or order.get('unit_price'))
+    if value <= 0: return None, 'Invalid refund amount.'
+    key = _e2e_idempotency_key('e2e_order', order.get('id'), 'refund')
+    if not _e2e_once(key, 'refund', {'reason': reason, 'amount': value}):
+        return _e2e_order(order.get('id')), None
+    updated, err = _e2e_transition(order, 'refunded', actor_id=uid, note=reason)
+    if not updated:
+        return None, err or 'Refund transition failed.'
+    _e2e_ledger(updated, 'refund', value, 'debit', reason)
+    _e2e_notify(updated.get('customer_id'), 'refund', 'KOJA refund recorded', f'Your KOJA order refund has been recorded: {value:.2f} {updated.get("currency") or "ZMW"}.', '/e2e', 'order', updated.get('id'))
+    return updated, None
+
+
+@app.route('/api/e2e/orders/<order_id>/refund', methods=['POST'])
+@login_required
+def e2e_v4_refund(order_id):
+    order = _e2e_order(order_id)
+    if not order: return _e2e_json({'ok':False,'message':'Order not found.'},404)
+    body = request.get_json(silent=True) or request.form
+    amount = body.get('amount')
+    reason = clean(body.get('reason')) or 'Refund requested'
+    updated, err = _e2e_refund(order, amount, reason)
+    if err: return _e2e_json({'ok':False,'message':err},400)
+    return _e2e_json({'ok':True,'order':updated})
+
+
+@app.route('/api/e2e/orders/<order_id>/reconcile', methods=['POST'])
+@login_required
+def e2e_v4_reconcile(order_id):
+    order = _e2e_order(order_id)
+    if not order: return _e2e_json({'ok':False,'message':'Order not found.'},404)
+    if str(order.get('customer_id')) != str(_e2e_uid()) and str(order.get('provider_id')) != str(_e2e_uid()) and not (current_user() or {}).get('is_admin'):
+        return _e2e_json({'ok':False,'message':'Not authorized.'},403)
+    body=request.get_json(silent=True) or request.form
+    ref=clean(body.get('reference'))
+    return _e2e_json({'ok':True,'order':_e2e_v4_reconcile_order(order,ref)})
+
+
+@app.route('/api/e2e/reconcile', methods=['POST'])
+@login_required
+def e2e_v4_reconcile_all():
+    user=current_user() or {}
+    if not user.get('is_admin'): return _e2e_json({'ok':False,'message':'Administrator access required.'},403)
+    links=db_select('koja_e2e_source_links',{},limit=5000) or []
+    counts={'checked':0,'linked':0,'reconciled':0,'failed':0}
+    for link in links:
+        counts['checked'] += 1
+        try:
+            oid=link.get('order_id')
+            if not oid: continue
+            order=_e2e_order(oid)
+            if order:
+                counts['linked'] += 1
+                _e2e_v4_reconcile_order(order)
+                counts['reconciled'] += 1
+        except Exception: counts['failed'] += 1; logger.exception('E2E reconcile failure')
+    return _e2e_json({'ok':True,'counts':counts})
+
+
+# Automatically add an E2E ledger record after the existing Market payment finalizer succeeds.
+try:
+    _e2e_v4_old_finalize_market = _finalize_market_order
+    def _e2e_v4_finalize_market(order, tx):
+        result = _e2e_v4_old_finalize_market(order, tx)
+        try:
+            if result:
+                e2e = _e2e_auto_adapt_market_order(result or order)
+                if e2e:
+                    ref=(tx or {}).get('tx_ref') or (tx or {}).get('reference') or (tx or {}).get('id')
+                    paid=_e2e_mark_paid_for_order(e2e, ref)
+                    _e2e_v4_reconcile_order(_e2e_order(paid.get('id')) if paid else e2e, ref)
+        except Exception: logger.exception('E2E V4 Market reconciliation bridge failed')
+        return result
+    _finalize_market_order = _e2e_v4_finalize_market
+except Exception: logger.exception('E2E V4 Market bridge install failed')
+
+
+# Wrap the three existing appointment booking endpoints so every new booking is linked immediately.
+for _endpoint in ('book_doctor','book_teacher','book_professional'):
+    try:
+        _old = app.view_functions.get(_endpoint)
+        if _old and not getattr(_old, '_e2e_v4_wrapped', False):
+            def _make_booking_wrapper(fn):
+                @wraps(fn)
+                def _wrapped(*args, **kwargs):
+                    response = fn(*args, **kwargs)
+                    try:
+                        uid=(_e2e_uid() or '')
+                        provider_id=kwargs.get('provider_id') or (args[0] if args else None)
+                        rows=db_select('appointments',{'client_id':uid,'provider_id':provider_id},order='created_at.desc',limit=1) if uid and provider_id else []
+                        if rows: _e2e_auto_adapt_professional_appointment(rows[0])
+                    except Exception: logger.exception('E2E V4 appointment auto-link failed')
+                    return response
+                _wrapped._e2e_v4_wrapped=True
+                return _wrapped
+            app.view_functions[_endpoint] = _make_booking_wrapper(_old)
+    except Exception: logger.exception('E2E V4 booking wrapper failed for %s', _endpoint)
+
+
+@app.route('/api/e2e/admin/overview', methods=['GET'])
+@admin_required
+def e2e_v4_admin_overview():
+    orders=db_select('koja_e2e_orders',{},order='created_at.desc',limit=2000) or []
+    payments=db_select('koja_e2e_payments',{},order='created_at.desc',limit=2000) or []
+    disputes=db_select('koja_e2e_disputes',{},order='created_at.desc',limit=1000) or []
+    refunds=[x for x in orders if clean(x.get('status'))=='refunded']
+    failed=[x for x in orders if clean(x.get('status')) in {'failed','disputed'}]
+    gross=sum(_e2e_amount(x.get('gross_amount')) for x in orders if clean(x.get('status')) not in {'cancelled','failed'})
+    return _e2e_json({'ok':True,'summary':{'orders':len(orders),'payments':len(payments),'disputes':len(disputes),'refunds':len(refunds),'failed_or_disputed':len(failed),'gross':round(gross,2)},'recent_orders':orders[:100],'recent_disputes':disputes[:100]})
+
+
+@app.route('/admin/e2e-v4')
+@admin_required
+def e2e_v4_admin_page():
+    orders=db_select('koja_e2e_orders',{},order='created_at.desc',limit=500) or []
+    disputes=db_select('koja_e2e_disputes',{},order='created_at.desc',limit=200) or []
+    ledger=db_select(E2E_LEDGER_TABLE,{},order='created_at.desc',limit=500) or []
+    gross=sum(_e2e_amount(x.get('gross_amount')) for x in orders if clean(x.get('status')) not in {'cancelled','failed'})
+    fees=sum(_e2e_amount(x.get('amount')) for x in ledger if x.get('entry_type')=='platform_fee')
+    return render_page('KOJA E2E V4 Control',r'''
+<div class="hero"><h1>KOJA End-to-End V4 Control</h1><p>Automation, payment reconciliation, ledger, refunds and disputes.</p><div class="actions"><form method="post" action="{{ url_for('e2e_v4_reconcile_all') }}" style="display:inline"><button class="btn">Reconcile All</button></form><a class="btn secondary" href="/e2e">E2E Dashboard</a></div></div>
+<div class="grid"><div class="card"><h3>Orders</h3><h2>{{ orders|length }}</h2></div><div class="card"><h3>Gross processed</h3><h2>{{ money(gross,'ZMW') }}</h2></div><div class="card"><h3>KOJA ledger fees</h3><h2>{{ money(fees,'ZMW') }}</h2></div><div class="card"><h3>Disputes</h3><h2>{{ disputes|length }}</h2></div></div>
+<div class="card"><h2>Recent E2E Orders</h2><table><tr><th>Source</th><th>Amount</th><th>Status</th><th>Created</th></tr>{% for x in orders[:100] %}<tr><td>{{ x.source_type or x.service_id }}</td><td>{{ money(x.gross_amount or x.unit_price or 0,x.currency or 'ZMW') }}</td><td>{{ x.status }}</td><td>{{ x.created_at }}</td></tr>{% else %}<tr><td colspan="4">No E2E orders.</td></tr>{% endfor %}</table></div>
+<div class="card"><h2>Recent Disputes</h2><table><tr><th>Order</th><th>Reason</th><th>Status</th><th>Created</th></tr>{% for x in disputes[:100] %}<tr><td>{{ x.order_id }}</td><td>{{ x.reason }}</td><td>{{ x.status }}</td><td>{{ x.created_at }}</td></tr>{% else %}<tr><td colspan="4">No disputes.</td></tr>{% endfor %}</table></div>
+''',orders=orders,disputes=disputes,gross=gross,fees=fees,money=market_money)
+
