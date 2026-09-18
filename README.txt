@@ -1,20 +1,16 @@
-KOJA AFRICA CONNECT V11 — PUSH + CALL ROUTING FIX
+KOJA AFRICA CONNECT V12 — CHAT CALL RECIPIENT FIX
 
-Base: KOJA CONNECT V10.
+Base: KOJA Connect V11 Push + Call Fix.
 
-Fixes:
-1. notify_user() now actually sends native Android FCM through the existing relay.
-2. Incoming Connect calls therefore trigger the existing native push path.
-3. Web/VAPID push is optional and no longer prevents native push.
-4. The notification settings page no longer falsely reports “Push service is not configured yet” when native Android push is the intended path.
-5. Added /api/notifications/test-native-push for an authenticated test device.
-6. /connect/call/ with no target now shows a useful Connect Call page instead of redirecting silently.
-7. /connect/call/?conversation_id=...&mode=voice|video remains supported.
-8. Existing WebRTC, ICE, TURN/STUN and Connect routes are preserved.
-9. No destructive SQL changes.
+Fix:
+- Voice Call and Video Call buttons inside /connect/chat/<conversation_id>
+  now pass the current conversation_id to the call resolver.
+- The resolver obtains the other conversation member server-side and then
+  opens the existing one-to-one WebRTC call page.
+- This prevents /connect/call/?mode=video from being opened without a target.
+- Existing V11 native FCM push fix is preserved.
+- Existing call/WebRTC/ICE behavior is preserved.
+- No SQL migration.
+- No changes to Market, Business, AI, Research, Delivery, or other modules.
 
-Migration is unchanged from V10 and only creates the additive koja_fcm_devices table if needed.
-
-IMPORTANT:
-The Android app must register its FCM token at /api/notifications/fcm/register (or /api/push/register).
-Render must have the existing FCM relay URL/secret configured.
+Deploy app.py to the existing KOJA-AFRICA Render web service.
