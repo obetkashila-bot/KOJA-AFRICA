@@ -13,6 +13,9 @@ import base64
 import re
 import time
 import threading
+import socket
+import ipaddress
+from html.parser import HTMLParser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from functools import wraps
@@ -2430,6 +2433,80 @@ def research_browser():
     if not target and q:
         return redirect(url_for('research',q=q))
     return render_page('KOJA Research Browser',r'''\n<style>\n.rb-shell{max-width:1180px;margin:auto}.rb-top{position:sticky;top:0;z-index:20;background:var(--card,#fff);border:1px solid rgba(127,127,127,.18);border-radius:18px;padding:10px;box-shadow:0 8px 28px rgba(0,0,0,.08)}\n.rb-bar{display:grid;grid-template-columns:auto auto 1fr auto;gap:7px;align-items:center}.rb-icon{min-width:42px;height:42px;padding:0!important;border-radius:12px!important;display:inline-flex;align-items:center;justify-content:center}.rb-address{height:42px!important;border-radius:22px!important;padding:0 16px!important;margin:0!important}.rb-frame{margin-top:12px;height:calc(100vh - 190px);min-height:520px;border:1px solid rgba(127,127,127,.2);border-radius:18px;overflow:hidden;background:#fff}.rb-frame iframe{width:100%;height:100%;border:0}.rb-empty{padding:55px 20px;text-align:center}.rb-links{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.rb-note{font-size:.82rem;opacity:.7;margin-top:10px}@media(max-width:650px){.rb-frame{height:calc(100vh - 220px);min-height:420px}}\n</style>\n<div class="rb-shell"><div class="rb-top"><form class="rb-bar" method="get" action="{{ url_for('research_browser') }}"><a class="btn secondary rb-icon" href="{{ url_for('research') }}" title="Back">&larr;</a><button class="btn secondary rb-icon" type="button" onclick="history.forward()" title="Forward">&rarr;</button><input class="rb-address" name="url" value="{{ target }}" placeholder="Search or enter website address" autocomplete="off"><button class="btn rb-icon" type="submit">Go</button></form><div class="rb-links"><a class="btn secondary" href="{{ url_for('research') }}">KOJA Search</a><a class="btn secondary" href="{{ url_for('research_books') }}">Books</a><a class="btn secondary" href="{{ url_for('research_books_library') }}">Library</a>{% if target %}<a class="btn secondary" href="{{ target }}" target="_blank" rel="noopener noreferrer">Open externally</a>{% endif %}</div><div class="rb-note">Some websites block embedded viewing. Use Open externally when necessary.</div></div>{% if target %}<div class="rb-frame"><iframe src="{{ target }}" title="KOJA Research Browser" sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-presentation allow-same-origin allow-scripts"></iframe></div>{% else %}<div class="card rb-empty"><h2>KOJA Research Browser</h2><p>Enter a website address to read it inside KOJA, or return to KOJA Search.</p><div class="rb-links" style="justify-content:center"><a class="btn" href="{{ url_for('research') }}">Start Research</a><a class="btn secondary" href="{{ url_for('research_books') }}">Find Books</a></div></div>{% endif %}</div>\n''',target=target)
+
+class _KOJAHTMLTextParser(HTMLParser):
+    def __init__(self):
+        super().__init__(); self.parts=[]; self.skip=0
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() in ('script','style','noscript','svg','canvas','nav','footer','form'):
+            self.skip += 1
+    def handle_endtag(self, tag):
+        if tag.lower() in ('script','style','noscript','svg','canvas','nav','footer','form') and self.skip:
+            self.skip -= 1
+    def handle_data(self, data):
+        if not self.skip and data and data.strip():
+            self.parts.append(re.sub(r'\s+', ' ', data.strip()))
+
+def _koja_safe_external_url(raw):
+    try:
+        u=urlparse(str(raw or '').strip())
+        if u.scheme not in ('http','https') or not u.hostname:
+            return None
+        host=u.hostname.lower().rstrip('.')
+        if host in ('localhost','127.0.0.1','::1') or host.endswith('.local'):
+            return None
+        try:
+            for info in socket.getaddrinfo(host,None):
+                obj=ipaddress.ip_address(info[4][0])
+                if obj.is_private or obj.is_loopback or obj.is_link_local or obj.is_reserved or obj.is_multicast:
+                    return None
+        except Exception:
+            return None
+        return u.geturl()
+    except Exception:
+        return None
+
+def _koja_research_fetch(url):
+    safe=_koja_safe_external_url(url)
+    if not safe:
+        return None,'This source cannot be displayed inside KOJA.'
+    try:
+        r=requests.get(safe,timeout=10,allow_redirects=True,headers={'User-Agent':'KOJA-AFRICA Research Reader/1.0','Accept':'text/html,application/xhtml+xml,application/pdf,text/plain;q=0.9,*/*;q=0.5'})
+        final=_koja_safe_external_url(r.url)
+        if not final:
+            return None,'The source redirected to a blocked address.'
+        ctype=(r.headers.get('Content-Type') or '').lower()
+        if 'application/pdf' in ctype or final.lower().split('?')[0].endswith('.pdf'):
+            return {'kind':'pdf','url':final,'content':r.content},None
+        parser=_KOJAHTMLTextParser(); parser.feed(r.text or '')
+        body='\n'.join(parser.parts)
+        body=re.sub(r'\n{3,}','\n\n',body).strip()
+        if not body:
+            body='KOJA could not extract readable text from this source.'
+        return {'kind':'html','url':final,'text':body[:120000]},None
+    except requests.RequestException as exc:
+        logger.warning('KOJA research reader fetch failed: %s',exc)
+        return None,'The source could not be fetched right now.'
+    except Exception as exc:
+        logger.warning('KOJA research reader error: %s',exc)
+        return None,'KOJA could not read this source.'
+
+@app.route('/research/view')
+def research_view():
+    raw=request.args.get('url','')
+    title=clean(request.args.get('title','')) or 'Research Source'
+    data,err=_koja_research_fetch(raw)
+    if err:
+        return render_page('Research Source', "<div class='card'><h2>"+title+"</h2><p>"+err+"</p><p><a class='btn' href='"+url_for('research')+"'>Return to KOJA Research</a></p></div>")
+    if data.get('kind')=='pdf':
+        return Response(data['content'],headers={'Content-Type':'application/pdf','Content-Disposition':'inline; filename="koja-research-source.pdf"','Cache-Control':'private, max-age=300'})
+    safe_title=title.replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
+    safe_text=data.get('text','').replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
+    safe_url=data.get('url','')
+    reader_html="<style>.koja-reader{max-width:980px;margin:auto}.koja-reader-body{white-space:pre-wrap;line-height:1.8;font-size:1rem}.koja-reader-bar{position:sticky;top:0;z-index:3;display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:10px;border:1px solid rgba(127,127,127,.18);border-radius:16px;background:var(--card,#fff)}.koja-reader-url{font-size:.78rem;opacity:.65;word-break:break-all}</style>"
+    reader_html += "<div class='koja-reader'><div class='koja-reader-bar'><a class='btn secondary' href='RESEARCH_URL'>Research</a><a class='btn secondary' href='SOURCE_URL' target='_blank' rel='noopener noreferrer'>Interactive source</a><span class='koja-reader-url'>SOURCE_URL</span></div><div class='card'><h1>SOURCE_TITLE</h1><p class='small'>KOJA Research Reader — source content displayed inside KOJA.</p><div class='koja-reader-body'>SOURCE_TEXT</div></div></div>"
+    reader_html=reader_html.replace('RESEARCH_URL',url_for('research')).replace('SOURCE_URL',safe_url).replace('SOURCE_TITLE',safe_title).replace('SOURCE_TEXT',safe_text)
+    return render_page('Research Source',reader_html)
 
 @app.route('/research')
 def research():
