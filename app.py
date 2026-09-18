@@ -924,50 +924,6 @@ footer{text-align:center;color:var(--muted);padding:30px}
 {{ body|safe }}
 </div>
 <footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services</footer>
-<!-- KOJA Connect incoming-call receiver: polls only while authenticated. -->
-{% if user and not request.path.startswith('/api/') and not request.path.startswith('/connect/call') and not request.path.startswith('/connect/answer') %}
-<div id="kojaIncomingCall" style="display:none;position:fixed;left:12px;right:12px;bottom:16px;z-index:99999;max-width:520px;margin:auto;background:var(--card,#fff);border:2px solid var(--accent,#1d4ed8);border-radius:18px;padding:16px;box-shadow:0 18px 50px rgba(0,0,0,.28)">
-  <div style="font-weight:800;font-size:18px" id="kojaIncomingTitle">Incoming Call</div>
-  <div class="small" id="kojaIncomingFrom" style="margin-top:4px"></div>
-  <div class="actions" style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
-    <a id="kojaIncomingAnswer" class="btn success" href="#">Answer</a>
-    <button id="kojaIncomingReject" class="btn danger" type="button">Decline</button>
-  </div>
-</div>
-<script>
-(function(){
-  const box=document.getElementById('kojaIncomingCall');
-  if(!box)return;
-  let activeId=null,lastSeen=null,timer=null;
-  const title=document.getElementById('kojaIncomingTitle'),from=document.getElementById('kojaIncomingFrom'),answer=document.getElementById('kojaIncomingAnswer'),reject=document.getElementById('kojaIncomingReject');
-  function show(c){
-    activeId=c.id; lastSeen=c.id;
-    title.textContent='Incoming '+(c.mode==='video'?'Video':'Voice')+' Call';
-    from.textContent='From '+(c.caller_name||'KOJA user');
-    answer.href='/connect/answer/'+encodeURIComponent(c.id);
-    box.style.display='block';
-    try{ if('navigator' in window && 'vibrate' in navigator) navigator.vibrate([300,150,300]); }catch(e){}
-  }
-  async function reject(){
-    if(!activeId)return;
-    const id=activeId; activeId=null; box.style.display='none';
-    try{await fetch('/api/connect/call/reject/'+encodeURIComponent(id),{method:'POST',headers:{'Content-Type':'application/json'}});}catch(e){}
-  }
-  reject.onclick=reject;
-  async function poll(){
-    try{
-      const r=await fetch('/api/connect/incoming-calls',{cache:'no-store'});
-      if(!r.ok)return;
-      const d=await r.json(); const calls=d.calls||[];
-      if(activeId && !calls.some(c=>String(c.id)===String(activeId))){activeId=null;box.style.display='none';}
-      if(!activeId && calls.length)show(calls[0]);
-    }catch(e){}
-  }
-  poll(); timer=setInterval(poll,2500);
-  window.addEventListener('beforeunload',()=>clearInterval(timer));
-})();
-</script>
-{% endif %}
 </body>
 </html>
 """
@@ -6578,7 +6534,7 @@ def _notification_allowed(uid, notification_type):
     if t in ('message','chat','call','group_call','friend_request'): return bool(p.get('messages_enabled',True))
     return bool(p.get('system_enabled',True))
 
-def _send_web_push(uid,title,body,url=None,notification_type='system'):
+def _send_web_push(uid,title,body,url=None,notification_type='system',related_id=None):
     if not _notification_allowed(uid,notification_type): return 0
     try: from pywebpush import webpush
     except Exception: return 0
@@ -6587,7 +6543,7 @@ def _send_web_push(uid,title,body,url=None,notification_type='system'):
     sent=0
     for sub in db_select('koja_push_subscriptions',filters={'user_id':str(uid)},limit=20):
         try:
-            webpush(subscription_info=sub.get('subscription') or {},data=json.dumps({'title':title,'body':body,'url':url or '/notifications','type':notification_type}),vapid_private_key=sk,vapid_claims={'sub':subject}); sent+=1
+            webpush(subscription_info=sub.get('subscription') or {},data=json.dumps({'title':title,'body':body,'url':url or '/notifications','type':notification_type,'related_id':str(related_id) if related_id else None,'call_id':str(related_id) if notification_type in ('call','group_call') and related_id else None}),vapid_private_key=sk,vapid_claims={'sub':subject}); sent+=1
         except Exception as exc:
             if '410' in str(exc) or '404' in str(exc): db_delete('koja_push_subscriptions',{'id':sub.get('id')})
     return sent
@@ -6607,7 +6563,7 @@ def notify_user(uid,title,body,notification_type='system',related_id=None,url=No
     if not uid or not _notification_allowed(uid,notification_type): return None
     row,err=db_insert('koja_notifications',{'user_id':str(uid),'notification_type':notification_type,'title':title,'body':body,'related_id':related_id,'is_read':False,'created_at':utc_now()})
     if not err and row:
-        _send_web_push(uid,title,body,url,notification_type)
+        _send_web_push(uid,title,body,url,notification_type,related_id)
         try:
             u=find_user_by_id(uid) or {}
             email=clean(u.get('email'))
@@ -6686,7 +6642,7 @@ def api_notification_subscribe():
 
 @app.route('/koja-sw.js')
 def koja_service_worker():
-    js="self.addEventListener('push',e=>{let d=e.data?e.data.json():{};e.waitUntil(self.registration.showNotification(d.title||'KOJA',{body:d.body||'New KOJA update',icon:'/static/favicon.ico',badge:'/static/favicon.ico',data:{url:d.url||'/notifications'}}))});self.addEventListener('notificationclick',e=>{e.notification.close();e.waitUntil(clients.matchAll({type:'window',includeUncontrolled:true}).then(cs=>{for(const c of cs){if('focus'in c){c.navigate(e.notification.data.url||'/notifications');return c.focus()}}return clients.openWindow(e.notification.data.url||'/notifications')}))});"
+    js="self.addEventListener('push',e=>{let d=e.data?e.data.json():{},isCall=d.type==='call'||d.type==='group_call',url=d.url||'/notifications';let o={body:d.body||'New KOJA update',icon:'/static/favicon.ico',badge:'/static/favicon.ico',data:{url:url,type:d.type||'system',call_id:d.call_id||d.related_id||null},tag:isCall?('koja-call-'+(d.call_id||d.related_id||'incoming')):'koja-notification',renotify:true};if(isCall){o.requireInteraction=true;o.vibrate=[300,150,300,150,600];o.actions=[{action:'answer',title:'Answer'},{action:'decline',title:'Decline'}]}e.waitUntil(self.registration.showNotification(d.title||'KOJA',o))});self.addEventListener('notificationclick',e=>{let d=e.notification.data||{},isCall=d.type==='call'||d.type==='group_call';e.notification.close();if(isCall&&e.action==='decline'&&d.call_id){e.waitUntil(fetch('/api/connect/call/reject/'+encodeURIComponent(d.call_id),{method:'POST',credentials:'include'}).catch(()=>{}));return}let url=isCall&&d.call_id?('/connect/answer/'+encodeURIComponent(d.call_id)):d.url||'/notifications';e.waitUntil(clients.matchAll({type:'window',includeUncontrolled:true}).then(cs=>{for(const c of cs){if('focus'in c){try{c.navigate(url)}catch(_){ }return c.focus()}}return clients.openWindow(url)}))});"
     return js,200,{'Content-Type':'application/javascript','Cache-Control':'no-cache'}
 
 @app.route('/connect')
@@ -6924,7 +6880,7 @@ def connect_answer(call_id):
     uid=current_user()['id']; c=first_row('koja_calls',{'id':call_id})
     if not c or str(c.get('callee_id'))!=str(uid) or c.get('status') not in ('ringing','answered'):
         abort(404)
-    return render_page('Answer KOJA Call',r'''<div class="card"><h2> Incoming {{ c.mode|title }} Call</h2><p>From <strong>{{ name }}</strong></p><div id="state">Connecting…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px"></video></div><div class="actions" style="margin-top:12px"><button id="hang" class="btn danger">End Call</button><button id="reject" class="btn secondary">Decline</button></div></div><script>
+    return render_page('Answer KOJA Call',r'''<div class="card"><h2> Incoming {{ c.mode|title }} Call</h2><p>From <strong>{{ name }}</strong></p><div id="state">Connecting…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px"></video></div><button id="hang" class="btn danger">End Call</button></div><script>
 const cid={{ call_id|tojson }},mode={{ c.mode|tojson }};
 let pc=null,timer=null,iceTimer=null,remoteIce=new Set();
 const state=document.getElementById('state');
@@ -6970,7 +6926,7 @@ async function start(){
     },1500);
   }catch(e){state.textContent='Could not answer this call.';}
 }
-document.getElementById('hang').onclick=()=>{fetch('/api/connect/call/end/'+cid,{method:'POST'});clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();state.textContent='Call ended';};document.getElementById('reject').onclick=async()=>{try{await fetch('/api/connect/call/reject/'+cid,{method:'POST',headers:{'Content-Type':'application/json'}});}catch(e){}clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();state.textContent='Call declined';};
+document.getElementById('hang').onclick=()=>{fetch('/api/connect/call/end/'+cid,{method:'POST'});clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();state.textContent='Call ended';};
 start();
 </script>''',c=c,call_id=call_id,name=_profile_name(c.get('caller_id')))
 
@@ -7063,41 +7019,6 @@ def connect_call_answer(call_id):
     if err:
         return jsonify(error=str(err)[:500]),500
     return jsonify(ok=True,call=updated or {'id':call_id,'status':'answered'})
-
-@app.route('/api/connect/incoming-calls')
-@login_required
-def connect_incoming_calls():
-    """Return active one-to-one incoming calls for the signed-in user.
-    This is the receiver side of the Connect calling system.  It intentionally
-    returns only ringing calls where the authenticated user is the callee.
-    """
-    uid=str(current_user()['id'])
-    rows=db_select('koja_calls',filters={'callee_id':uid,'status':'ringing'},order='created_at.desc',limit=10)
-    calls=[]
-    for c in rows:
-        calls.append({
-            'id':c.get('id'),
-            'conversation_id':c.get('conversation_id'),
-            'caller_id':c.get('caller_id'),
-            'caller_name':_profile_name(c.get('caller_id')),
-            'mode':c.get('mode','voice'),
-            'status':c.get('status','ringing'),
-            'created_at':c.get('created_at')
-        })
-    return jsonify(ok=True,calls=calls)
-
-@app.route('/api/connect/call/reject/<call_id>',methods=['POST'])
-@login_required
-def connect_call_reject(call_id):
-    uid=str(current_user()['id'])
-    c=first_row('koja_calls',{'id':call_id})
-    if not c or str(c.get('callee_id'))!=uid:
-        return jsonify(error='Forbidden'),403
-    if str(c.get('status','')).lower() not in ('ringing','answered'):
-        return jsonify(ok=True,status=c.get('status'))
-    updated,err=db_update('koja_calls',{'id':call_id},{'status':'rejected','ended_at':utc_now()})
-    if err:return jsonify(error=str(err)[:500]),500
-    return jsonify(ok=True,status='rejected')
 
 @app.route('/connect/calls')
 @login_required

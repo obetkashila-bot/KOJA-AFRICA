@@ -1,17 +1,28 @@
-KOJA AFRICA CONNECT V8 — RECEIVER FIX
+KOJA AFRICA CONNECT V9 — CALL PUSH UPGRADE
 
 Base: current production app.py app(20260918-113649).py
 
-Fixes the actual issue shown in Render logs: calls are created and WebRTC signaling is running, but the callee has no Connect incoming-call receiver/polling endpoint.
+This version reuses the existing KOJA push notification system and upgrades
+Connect call notifications to carry call_id and incoming-call type data.
 
 Added:
-- GET /api/connect/incoming-calls — authenticated callee polling
-- POST /api/connect/call/reject/<call_id>
-- Global authenticated incoming-call banner on normal KOJA pages
-- Answer link opens /connect/answer/<call_id>
-- Decline control
-- Existing Connect chat, call creation, offer, ICE, answer, check and end routes preserved
-- Existing SQL schema preserved; no migration
-- Other KOJA modules preserved
+- incoming call push payload includes call_id/related_id
+- Connect voice/video and group-call notifications are marked as call pushes
+- service-worker call notification uses persistent notification behavior
+- Answer and Decline actions
+- Answer opens /connect/answer/<call_id>
+- Decline calls /api/connect/call/reject/<call_id>
+- existing web incoming-call receiver remains available
+- existing call creation, WebRTC signaling and database schema preserved
+- no SQL migration
+- no other KOJA module changes
 
-Deploy app.py only to the existing KOJA-AFRICA Render service.
+IMPORTANT:
+The existing native Android FCM incoming-call project can consume the same
+call_id/call type. This backend does not replace the existing push relay.
+For true Android locked-screen native full-screen calling, merge the existing
+KOJA-AFRICA Android files (KOJAFirebaseMessagingService.java and
+IncomingCallActivity.java) with this backend version. The backend payload now
+contains the call identifiers needed by that receiver.
+
+Deploy app.py to the existing KOJA-AFRICA Render service.
