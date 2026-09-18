@@ -1,12 +1,25 @@
-KOJA AFRICA — E2E V4
+KOJA AFRICA CONNECT+ V4 — RELIABLE CALLS + EXISTING TURN
 
-Apply SQL in this order in Supabase:
-1. KOJA_E2E_V1_MIGRATION.sql
-2. KOJA_E2E_V2_MIGRATION.sql
-3. KOJA_E2E_V4_MIGRATION.sql
+Base: Connect V3.
 
-V4 adds idempotency, a universal E2E ledger, webhook-event storage, payment reconciliation, refunds, admin control, and automatic appointment/Market-flow E2E linking.
+V4 keeps the existing KOJA TURN configuration and applies it to BOTH caller and callee:
+KOJA_TURN_URLS=turn:SERVER:3478,turns:SERVER:5349
+KOJA_TURN_USERNAME=USERNAME
+KOJA_TURN_CREDENTIAL=CREDENTIAL
 
-Connect+ / Communications is not modified.
+Improvements:
+- Existing STUN remains as fallback.
+- Existing TURN is now actually included in the Connect+ RTCPeerConnection on both sides.
+- Voice-call answer screen uses audio output instead of forcing a video-only layout.
+- Mute and camera controls are available during calls.
+- 60-second ringing timeout prevents stale calls.
+- Connection-state recovery attempts ICE restart after temporary disconnect.
+- Existing ICE signaling, incoming calls, answer/decline, call history and themes preserved.
+- No SQL migration.
+- Connect-only change; other KOJA modules are not modified.
 
-Deploy app.py with the existing Render start command: gunicorn app:app
+Validation:
+- Python syntax compiled successfully.
+
+Production requirement:
+The Render service must have the same KOJA_TURN_* environment variables used by the existing Professional Calls setup. Static syntax validation cannot prove real carrier/NAT call success.
