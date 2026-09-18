@@ -13,6 +13,9 @@ import base64
 import re
 import time
 import threading
+import socket
+import ipaddress
+from html.parser import HTMLParser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from functools import wraps
@@ -1323,9 +1326,10 @@ def research_google(query, limit=8):
     api_key=clean(os.getenv('GOOGLE_SEARCH_API_KEY',''))
     cse_id=clean(os.getenv('GOOGLE_CSE_ID',''))
     if not (api_key and cse_id):
-        return [{'source':'Google Search','title':f'Google results for: {q}',
-                 'url':'https://www.google.com/search?q='+quote(q),
-                 'snippet':'Open Google Search to review live web results for this research query.','year':None,'_google_link':True}]
+        fallback=research_web(q, limit) if 'research_web' in globals() else []
+        for item in fallback:
+            item['source']='Web'; item['search_provider']='KOJA Web'
+        return fallback
     try:
         r=requests.get('https://www.googleapis.com/customsearch/v1',
                        params={'key':api_key,'cx':cse_id,'q':q,'num':min(max(limit,1),10)},
@@ -1343,6 +1347,58 @@ def research_google(query, limit=8):
     except Exception as exc:
         logger.warning('Google research failed: %s',exc)
         return []
+
+def _youtube_duration_seconds(value):
+    m=re.fullmatch(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', clean(value or ''))
+    if not m: return 0
+    return int(m.group(1) or 0)*3600 + int(m.group(2) or 0)*60 + int(m.group(3) or 0)
+
+def research_youtube(query, limit=8):
+    """Search YouTube through the official YouTube Data API when configured.
+    KOJA never scrapes YouTube search pages or invents transcript access.
+    """
+    q=clean(query)
+    key=clean(os.getenv('YOUTUBE_API_KEY') or os.getenv('GOOGLE_YOUTUBE_API_KEY') or '')
+    if not q or not key: return []
+    try:
+        r=requests.get('https://www.googleapis.com/youtube/v3/search', params={
+            'part':'snippet','q':q,'type':'video','maxResults':min(max(limit,1),25),'key':key
+        }, timeout=6, headers={'User-Agent':'KOJA-AFRICA-Research/9.0'})
+        if not r.ok:
+            logger.warning('YouTube search failed status=%s',r.status_code)
+            return []
+        ids=[clean((x.get('id') or {}).get('videoId')) for x in r.json().get('items',[])]
+        ids=[x for x in ids if x]
+        details={}
+        if ids:
+            d=requests.get('https://www.googleapis.com/youtube/v3/videos',params={
+                'part':'contentDetails,snippet,statistics','id':','.join(ids),'key':key
+            },timeout=6,headers={'User-Agent':'KOJA-AFRICA-Research/9.0'})
+            if d.ok:
+                details={clean(x.get('id')):x for x in d.json().get('items',[])}
+        out=[]
+        for item in r.json().get('items',[]):
+            vid=clean((item.get('id') or {}).get('videoId')); sn=item.get('snippet') or {}
+            if not vid: continue
+            det=details.get(vid) or {}; cd=det.get('contentDetails') or {}; st=det.get('statistics') or {}
+            title=clean(sn.get('title') or '')
+            if not title: continue
+            published=clean(sn.get('publishedAt') or '')
+            year=int(published[:4]) if published[:4].isdigit() else None
+            duration=_youtube_duration_seconds(cd.get('duration'))
+            mins=f'{duration//60}:{duration%60:02d}' if duration else ''
+            channel=clean(sn.get('channelTitle') or '')
+            desc=clean(sn.get('description') or '')
+            thumb=((sn.get('thumbnails') or {}).get('high') or (sn.get('thumbnails') or {}).get('default') or {}).get('url') or ''
+            views=st.get('viewCount')
+            meta=' • '.join([x for x in [channel, mins, f'{views} views' if views else ''] if x])
+            out.append({'source':'YouTube','title':title,'url':f'https://www.youtube.com/watch?v={vid}',
+                        'embed_url':f'https://www.youtube.com/embed/{vid}','snippet':desc[:1200] or meta,
+                        'year':year,'channel':channel,'duration_seconds':duration,'views':views,
+                        'thumbnail':thumb,'source_type':'video','video_id':vid})
+        return out
+    except Exception as exc:
+        logger.warning('YouTube research failed: %s',exc); return []
 
 def research_web(query, limit=8):
     q=clean(query)
@@ -1650,6 +1706,24 @@ def _research_score_logic(results, query):
         r['_logic_score']=round(base + hits*0.12 + qscore + freshness*0.25 + cites*0.20,4)
     return sorted(results,key=lambda r:r.get('_logic_score',0),reverse=True)
 
+def research_news(query, limit=6):
+    """Current public news discovery via GDELT DOC API."""
+    q=clean(query)
+    if not q: return []
+    try:
+        r=requests.get('https://api.gdeltproject.org/api/v2/doc/doc',params={'query':q,'mode':'artlist','maxrecords':min(max(limit,1),25),'format':'json','sort':'HybridRel','timespan':'7d'},timeout=7,headers={'User-Agent':'KOJA-AFRICA-Research/10.0'})
+        if not r.ok: return []
+        out=[]
+        for x in (r.json().get('articles') or []):
+            title=clean(x.get('title') or ''); url=clean(x.get('url') or '')
+            if not title or not url: continue
+            date=clean(x.get('seendate') or '')
+            year=int(date[:4]) if date[:4].isdigit() else None
+            out.append({'source':'News','title':title,'url':url,'snippet':clean(x.get('snippet') or x.get('domain') or ''),'year':year,'source_type':'newspaper','publisher':clean(x.get('domain') or ''),'published_at':date,'news_image':clean(x.get('socialimage') or '')})
+        return out
+    except Exception as exc:
+        logger.warning('News research failed: %s',exc); return []
+
 def _research_collect(query, year=None, author=None):
     """Run independent evidence sources concurrently so one slow provider does not block all others."""
     plan=_research_query_plan(query)
@@ -1657,6 +1731,9 @@ def _research_collect(query, year=None, author=None):
     for q in plan:
         jobs.extend([
             ('google',lambda q=q: research_google(q,6)),
+            ('web',lambda q=q: research_web(q,8)),
+            ('news',lambda q=q: research_news(q,6)),
+            ('youtube',lambda q=q: research_youtube(q,6)),
             ('wikipedia',lambda q=q: research_wikipedia(q,4)),
             ('openalex',lambda q=q: research_openalex(q,year,8)),
             ('crossref',lambda q=q: research_crossref(q,year,author,8)),
@@ -1673,10 +1750,12 @@ def _research_collect(query, year=None, author=None):
     return _research_relevance_gate(ranked,_research_normalize_query(query))
 
 def _research_filter(results, source='all', year=None, sort='relevance'):
-    source=(source or 'all').lower(); source=source if source in ('all','google','web','wikipedia','academic','koja') else 'all'
+    source=(source or 'all').lower(); source=source if source in ('all','google','youtube','news','web','wikipedia','academic','koja') else 'all'
     if source!='all':
         if source=='academic': results=[r for r in results if any(x in str(r.get('source','')).lower() for x in ('openalex','crossref'))]
         elif source=='google': results=[r for r in results if 'google search' in str(r.get('source','')).lower()]
+        elif source=='youtube': results=[r for r in results if 'youtube' in str(r.get('source','')).lower()]
+        elif source=='news': results=[r for r in results if str(r.get('source','')).lower()=='news']
         elif source=='koja': results=[r for r in results if 'koja documents' in str(r.get('source','')).lower()]
         else: results=[r for r in results if str(r.get('source','')).lower()==source]
     if year: results=[r for r in results if str(r.get('year') or '')==str(year)]
@@ -2135,7 +2214,7 @@ def research_ai_notes(query, results, style='apa'):
     for i,r in enumerate(results[:12],1):
         bundle.append(f"[{i}] {r.get('title','')} | {r.get('source','')} | {r.get('year') or 'n.d.'}\nAuthors: {', '.join(_names(r))}\nEvidence: {clean(r.get('snippet',''))[:1600]}\nURL: {r.get('url','')}")
     prompt=(f'Write high-quality research notes on: {query}\n\nUse ONLY the evidence supplied below. Do not invent facts, figures, quotations, authors, dates, references or conclusions. Every substantive factual claim must have one or more source-number citations such as [1] immediately after the claim. If evidence is insufficient, say so.\n\nStructure the notes with: Title; Introduction; Key concepts/background; Main findings/themes; Evidence and discussion; Implications; Conclusion; Research gaps/limitations only if supported. Write connected explanatory paragraphs, like strong academic study notes, not disconnected bullet fragments. Use the selected citation style for the reference list: {CITATION_STYLES.get(style,style)}.\n\nSOURCES:\n' + '\n\n'.join(bundle))
-    text=_gemini_text(prompt,'You are KOJA Research Notes. Be evidence-bound, clear, academic and concise. Never fabricate citations or source details.',2200,20)
+    text,_err=_ai_call(prompt,'You are KOJA Research Notes. Be evidence-bound, clear, academic and concise. Never fabricate citations or source details.',max_output_tokens=2200,timeout=20)
     if text: return text
     lines=[f"# Research Notes: {query}","","## Introduction",f"The search retrieved {len(results)} relevant records. The notes below are limited to the evidence contained in those records.",""]
     for i,r in enumerate(results[:8],1):
@@ -2158,6 +2237,51 @@ def research_notes():
 .notes-shell{max-width:1000px;margin:auto}.notes-toolbar{display:grid;grid-template-columns:1fr auto auto;gap:10px}.notes-body{line-height:1.8;font-size:1rem}.notes-body pre{white-space:pre-wrap;font:inherit}.ref{margin:10px 0}.note-actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}@media(max-width:700px){.notes-toolbar{grid-template-columns:1fr}.notes-body{font-size:.97rem}}
 </style><div class="notes-shell"><div class="hero"><h2> KOJA Research Notes</h2><p>Turn ranked research evidence into clear, connected academic notes.</p><form method="get" action="{{ url_for('research_notes') }}" class="notes-toolbar"><input name="q" value="{{ q }}" placeholder="Enter your research topic…" required><select name="style">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select><button class="btn">Write Notes</button></form></div>{% if q %}<div class="note-actions"><button class="btn secondary" type="button" onclick="copyKOJANotes()">Copy Notes</button><button class="btn secondary" type="button" onclick="window.print()">Print</button><a class="btn secondary" href="{{ url_for('research',q=q,style=style) }}">View Evidence</a></div><div class="card"><strong>{{ results|length }} ranked evidence sources</strong></div><div id="koja-notes" class="card notes-body"><pre>{{ notes }}</pre></div>{% if bibliography %}<div class="card"><h3>References</h3>{% for n,ref in bibliography %}<div class="ref">{{ n }}. {{ ref|safe }}</div>{% endfor %}</div>{% endif %}<script>function copyKOJANotes(){const el=document.getElementById('koja-notes');navigator.clipboard.writeText(el.innerText).then(()=>alert('Research notes copied.')).catch(()=>alert('Select and copy the notes manually.'))}</script>{% else %}<div class="card"><h3>How KOJA writes notes</h3><p>1. Searches multiple evidence sources.</p><p>2. Removes duplicates and ranks relevance.</p><p>3. Gives the AI only the strongest evidence.</p><p>4. Produces connected academic paragraphs with source citations.</p><p>5. Generates a bibliography in your selected citation style.</p></div>{% endif %}</div>''',q=q,style=style,citation_styles=CITATION_STYLES,results=results,notes=notes,bibliography=bibliography)
 
+class _KOJAHTMLText(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True); self.parts=[]; self.skip=0; self.title=''
+    def handle_starttag(self,tag,attrs):
+        if tag.lower() in ('script','style','noscript','svg','canvas','template'): self.skip+=1
+    def handle_endtag(self,tag):
+        if tag.lower() in ('script','style','noscript','svg','canvas','template') and self.skip: self.skip-=1
+    def handle_data(self,data):
+        if self.skip: return
+        x=clean(data)
+        if x: self.parts.append(x)
+
+def _koja_public_url(url):
+    try:
+        from urllib.parse import urlparse
+        u=urlparse(clean(url)); host=(u.hostname or '').lower()
+        if u.scheme not in ('http','https') or not host: return None
+        if host in ('localhost','localhost.localdomain') or host.endswith('.local'): return None
+        try:
+            infos=socket.getaddrinfo(host,None)
+            for info in infos:
+                ip=ipaddress.ip_address(info[4][0])
+                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved: return None
+        except Exception: return None
+        return u.geturl()
+    except Exception: return None
+
+@app.route('/research/source')
+def research_source():
+    target=_koja_public_url(request.args.get('url',''))
+    if not target: return render_page('Research Source','<div class="card"><h2>Source unavailable</h2><p>KOJA can only read public HTTP/HTTPS sources and blocks private-network addresses.</p><a class="btn" href="/research">Back to Research</a></div>'),400
+    try:
+        r=requests.get(target,timeout=10,allow_redirects=True,headers={'User-Agent':'KOJA-AFRICA-Research/9.0'})
+        final=_koja_public_url(r.url)
+        if not r.ok or not final: raise RuntimeError('source unavailable')
+        ctype=(r.headers.get('Content-Type') or '').lower()
+        if 'text/html' not in ctype and 'text/plain' not in ctype:
+            return render_page('Research Source', f'<div class="card"><h2>File source</h2><p>This source is {ctype or "a non-HTML file"}.</p><a class="btn" href="{final}" target="_blank" rel="noopener">Open source</a></div>')
+        parser=_KOJAHTMLText(); parser.feed(r.text[:2_000_000]); text='\n'.join(parser.parts)
+        text=re.sub(r'\n{3,}','\n\n',text)[:120_000]
+        return render_page('Research Source', r'''<style>.reader{max-width:950px;margin:auto}.reader-text{white-space:pre-wrap;line-height:1.8}.reader-tools{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}</style><div class="reader"><div class="hero"><h2>{{ title }}</h2><p>{{ final }}</p></div><div class="reader-tools"><a class="btn" href="{{ final }}" target="_blank" rel="noopener">Original source</a><a class="btn secondary" href="{{ url_for('research',q=q) }}">Back to Research</a></div><div class="card reader-text">{{ text }}</div></div>''',title=target,final=final,text=text,q=clean(request.args.get('q','')))
+    except Exception as exc:
+        logger.warning('KOJA source reader failed: %s',exc)
+        return render_page('Research Source','<div class="card"><h2>Source could not be read</h2><p>The source did not provide readable public content to KOJA.</p><a class="btn" href="/research">Back to Research</a></div>'),502
+
 @app.route('/research')
 def research():
     q=_research_normalize_query(request.args.get('q','')); source_filter=clean(request.args.get('source','all')).lower() or 'all'; sort=clean(request.args.get('sort','relevance')).lower() or 'relevance'; year=_research_year(request.args.get('year','')); author=clean(request.args.get('author','')); style=clean(request.args.get('style','apa')).lower() or 'apa'; source_type=clean(request.args.get('source_type','all')).lower() or 'all'
@@ -2176,47 +2300,11 @@ def research():
     bibliography=make_bibliography(results,style) if results else []
     return render_page('Research', r'''
 <style>
-/* KOJA RESEARCH — 2030 VISUAL LAYER ONLY */
-.research-shell{max-width:1120px;margin:0 auto;padding:18px 0 42px;position:relative}
-.research-shell:before{content:"";position:absolute;inset:-30px -8% auto;height:360px;z-index:-1;background:radial-gradient(circle at 20% 10%,rgba(35,129,255,.20),transparent 38%),radial-gradient(circle at 85% 15%,rgba(225,55,75,.14),transparent 34%);pointer-events:none}
-.research-welcome{text-align:center;padding:34px 12px 18px}
-.research-welcome:before{content:"KOJA RESEARCH / INTELLIGENCE WORKSPACE";display:block;font-size:.68rem;font-weight:900;letter-spacing:.18em;color:#4d8dff;margin-bottom:12px}
-.research-welcome h2{font-size:clamp(2rem,5vw,3.7rem);line-height:1.03;letter-spacing:-.045em;margin:0 auto 12px;font-weight:900;max-width:820px;background:linear-gradient(110deg,var(--text),#4f91ff 55%,#d94d64);-webkit-background-clip:text;background-clip:text;color:transparent}
-.research-welcome p{max-width:700px;margin:auto;color:var(--muted);font-size:1rem}
-.hero{position:relative}
-.research-search{display:flex;flex-direction:column;gap:10px;background:color-mix(in srgb,var(--surface) 88%,transparent);border:1px solid color-mix(in srgb,var(--border) 75%,#4b8dff 25%);padding:12px;border-radius:28px;box-shadow:0 20px 55px rgba(8,24,48,.14),0 1px 0 rgba(255,255,255,.55) inset;backdrop-filter:blur(18px)}
-.research-search textarea{width:100%;min-width:0;resize:none;min-height:92px;max-height:280px;border:0!important;background:transparent!important;box-shadow:none!important;font-size:1.12rem;padding:16px 16px 8px!important;outline:none;color:var(--text)}
-.research-search textarea::placeholder{color:var(--muted);opacity:.78}
-.research-composer-bottom{display:flex;align-items:center;gap:8px;padding:3px 4px}
-.research-composer-actions{display:flex;align-items:center;gap:7px;min-width:0}
-.research-icon{width:43px!important;height:43px!important;margin:0!important;padding:0!important;border-radius:14px!important;display:inline-flex!important;align-items:center;justify-content:center;font-size:0;cursor:pointer;border:1px solid var(--border)!important;background:var(--bg)!important;color:var(--text)!important}
-.research-icon:after{font-size:17px;font-weight:900}.research-icon[title="Attach a document"]:after{content:"+"}.research-icon[title="Record voice"]:after{content:"◉"}
-.research-send{margin-left:auto!important;width:48px!important;height:48px!important;border-radius:16px!important;padding:0!important;display:inline-flex!important;align-items:center;justify-content:center;font-size:0!important;background:linear-gradient(135deg,#176b87,#357cff)!important;color:#fff!important;box-shadow:0 9px 22px rgba(53,124,255,.28)}
-.research-send:after{content:"→";font-size:22px;font-weight:900}
-.research-file-name{font-size:.78rem;opacity:.72;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:55%}.research-recording{font-size:.78rem;font-weight:800;display:none}
-.research-search .btn{border-radius:14px;padding:10px 18px}
-.research-filters{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-top:12px;padding:2px}
-.research-filters label{font-size:.68rem;font-weight:900;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
-.research-filters select,.research-filters input{width:100%;margin-top:5px;border-radius:12px!important;background:var(--bg)!important;border:1px solid var(--border)!important}
-.research-tabs{display:flex;gap:7px;overflow:auto;margin:18px 0 12px;padding:2px 1px 6px;scrollbar-width:none}.research-tabs::-webkit-scrollbar{display:none}
-.research-tabs a{white-space:nowrap;border-radius:999px!important;padding:9px 14px!important;border:1px solid var(--border)!important;background:var(--surface)!important;font-weight:800}.research-tabs a:first-child{background:#10233f!important;color:#fff!important;border-color:#10233f!important}
-.note-actions{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:16px 0}.note-actions .btn{border-radius:13px}
-.research-count{font-weight:900}.research-result{border-radius:20px!important;margin-bottom:12px;padding:20px!important;border:1px solid var(--border)!important;box-shadow:0 8px 28px rgba(10,25,45,.06);transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease}.research-result:hover{transform:translateY(-2px);box-shadow:0 14px 36px rgba(10,25,45,.10);border-color:rgba(53,124,255,.35)!important}
-.research-result h3{line-height:1.3;margin:9px 0}.research-result h3 a{text-decoration:none}.research-meta{font-size:.8rem;color:var(--muted)}
-.source-badge{display:inline-flex;align-items:center;padding:5px 10px;border-radius:999px;background:rgba(53,124,255,.10);color:#3976d9;font-size:.68rem;font-weight:900;text-transform:uppercase;letter-spacing:.06em}
-.research-summary{border:1px solid rgba(53,124,255,.28);border-radius:22px!important;background:linear-gradient(135deg,rgba(53,124,255,.10),rgba(225,55,75,.045));box-shadow:0 14px 38px rgba(53,124,255,.08)}
-.research-answer-label{font-weight:900;font-size:.78rem;letter-spacing:.12em;text-transform:uppercase;color:#3976d9;margin-bottom:10px}.research-summary pre{white-space:pre-wrap;font:inherit;line-height:1.75;margin:0}
-.research-source-list{margin-top:6px}.research-source-list .card{border-radius:18px!important}
-.research-empty{padding:42px!important;text-align:center;border-radius:22px!important}.research-empty h3{margin-bottom:6px}
-.research-shell>.card,.research-shell>.grid .card{border-radius:20px!important;border:1px solid var(--border)!important;box-shadow:0 8px 28px rgba(10,25,45,.05)}
-.research-shell>.grid{gap:12px}
-@media(max-width:700px){.research-shell{padding:8px 0 28px}.research-welcome{padding:24px 8px 16px}.research-welcome h2{font-size:2.15rem}.research-search{border-radius:22px;padding:9px}.research-filters{grid-template-columns:1fr 1fr}.research-result{padding:16px!important}.note-actions{flex-wrap:wrap}.note-actions .btn{flex:1;text-align:center}.research-tabs{margin-top:12px}}
-@media(max-width:480px){.research-filters{grid-template-columns:1fr}.research-composer-bottom{padding-top:2px}.research-icon{width:40px!important;height:40px!important}.research-send{width:44px!important;height:44px!important}.research-welcome p{font-size:.9rem}}
-@media(prefers-reduced-motion:reduce){.research-result{transition:none}}
+.research-shell{max-width:920px;margin:auto}.research-search{display:flex;flex-direction:column;gap:8px;background:rgba(127,127,127,.08);border:1px solid rgba(127,127,127,.18);padding:10px 12px;border-radius:24px}.research-search textarea{width:100%;min-width:0;resize:none;min-height:105px;max-height:280px;border:0!important;background:transparent!important;box-shadow:none!important;font-size:1.05rem;padding:14px 10px!important;outline:none}.research-composer-bottom{display:flex;align-items:center;gap:8px}.research-composer-actions{display:flex;align-items:center;gap:6px}.research-icon{width:42px!important;height:42px!important;margin:0!important;padding:0!important;border-radius:50%!important;display:inline-flex!important;align-items:center;justify-content:center;font-size:1.2rem;cursor:pointer}.research-send{margin-left:auto!important;width:44px!important;height:44px!important;border-radius:50%!important;padding:0!important;display:inline-flex!important;align-items:center;justify-content:center;font-size:1.15rem}.research-file-name{font-size:.78rem;opacity:.72;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:55%}.research-recording{font-size:.78rem;font-weight:700;display:none}.research-search .btn{border-radius:22px;padding:10px 18px}.research-filters{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px}.research-filters label{font-size:.78rem;font-weight:700;opacity:.9}.research-filters select,.research-filters input{width:100%;margin-top:5px}.research-tabs{display:flex;gap:8px;overflow:auto;margin:14px 0;padding-bottom:2px}.research-tabs a{white-space:nowrap;border-radius:20px}.source-badge{display:inline-block;padding:5px 10px;border-radius:999px;background:rgba(80,150,255,.14);font-size:.74rem;font-weight:800}.research-result{border-radius:18px!important;margin-bottom:12px}.research-result h3{line-height:1.35;margin:9px 0}.research-result h3 a{text-decoration:none}.research-meta{font-size:.82rem;opacity:.72}.research-summary{border:1px solid rgba(98,168,255,.28);border-radius:18px!important;background:rgba(98,168,255,.06)}.research-summary pre{white-space:pre-wrap;font:inherit;line-height:1.7;margin:0}.research-count{font-weight:700}.research-empty{padding:35px;text-align:center;border-radius:18px!important}.research-welcome{text-align:center;padding:20px 10px 8px}.research-welcome h2{font-size:1.8rem;margin-bottom:8px}.research-welcome p{opacity:.75}.research-answer-label{font-weight:800;margin-bottom:10px}.research-source-list{margin-top:6px}.research-source-list .card{border-radius:18px!important}@media(max-width:700px){.research-search{border-radius:18px}.research-filters{grid-template-columns:1fr 1fr}.research-result{padding:16px!important}}@media(max-width:480px){.research-filters{grid-template-columns:1fr}}
 </style>
-<div class="research-shell"><div class="research-welcome"><h2>Research anything. Understand everything.</h2><p>Ask a question, explore evidence, and build your research in one intelligent workspace.</p></div><div class="hero"><form method="get" action="{{ url_for('research') }}" class="research-search" id="research-composer"><textarea name="q" rows="3" maxlength="2000" placeholder="Ask anything you want to research…" aria-label="Research question" autofocus>{{ q }}</textarea><div class="research-composer-bottom"><div class="research-composer-actions"><label class="btn secondary research-icon" title="Attach a document" aria-label="Attach a document"><input id="research-file" type="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp" hidden></label><button class="btn secondary research-icon" id="research-record" type="button" title="Record voice" aria-label="Record voice">️</button><span class="research-recording" id="research-recording">● Recording…</span><span class="research-file-name" id="research-file-name"></span></div><button class="btn research-send" type="submit" title="Send research question" aria-label="Send research question"></button></div></form>
-<script>(function(){const box=document.querySelector('#research-composer textarea[name="q"]');const file=document.getElementById('research-file');const name=document.getElementById('research-file-name');const rec=document.getElementById('research-record');const recLabel=document.getElementById('research-recording');let media=null,chunks=[];if(box){const grow=()=>{box.style.height='auto';box.style.height=Math.min(box.scrollHeight,280)+'px'};box.addEventListener('input',grow);grow()}if(file){file.addEventListener('change',()=>{name.textContent=file.files&&file.files[0]?file.files[0].name:''})}if(rec&&navigator.mediaDevices&&window.MediaRecorder){rec.addEventListener('click',async()=>{if(media){media.stop();return}try{const stream=await navigator.mediaDevices.getUserMedia({audio:true});media=new MediaRecorder(stream);chunks=[];media.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};media.onstop=()=>{const blob=new Blob(chunks,{type:'audio/webm'});const url=URL.createObjectURL(blob);name.textContent='Voice recording ready ('+Math.round(blob.size/1024)+' KB)';const a=document.createElement('a');a.href=url;a.download='koja-research-question.webm';a.style.display='none';document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(url);a.remove()},1000);stream.getTracks().forEach(t=>t.stop());media=null;rec.textContent='️';recLabel.style.display='none'};media.start();rec.textContent='⏹️';recLabel.style.display='inline';}catch(e){alert('Microphone permission is required to record.')}})}})();</script><div class="research-filters"><label>Source<select name="source" form="research-filter-form"><option value="all" {% if source_filter=='all' %}selected{% endif %}>All sources</option><option value="academic" {% if source_filter=='academic' %}selected{% endif %}>Academic</option><option value="web" {% if source_filter=='web' %}selected{% endif %}>Web</option><option value="wikipedia" {% if source_filter=='wikipedia' %}selected{% endif %}>Wikipedia</option><option value="koja" {% if source_filter=='koja' %}selected{% endif %}>KOJA Documents</option></select></label><label>Year<input name="year" form="research-filter-form" value="{{ year or '' }}" placeholder="e.g. 2025" inputmode="numeric"></label><label>Author<input name="author" form="research-filter-form" value="{{ author }}" placeholder="Academic author"></label><label>Citation style<select name="style" form="research-filter-form">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Source type<select name="source_type" form="research-filter-form"><option value="all">All source types</option>{% for k,v in source_types.items() %}<option value="{{k}}" {% if source_type==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Sort<select name="sort" form="research-filter-form"><option value="relevance" {% if sort=='relevance' %}selected{% endif %}>Relevance</option><option value="date" {% if sort=='date' %}selected{% endif %}>Newest first</option><option value="citations" {% if sort=='citations' %}selected{% endif %}>Most cited</option></select></label></div><form id="research-filter-form" method="get" action="{{ url_for('research') }}"><input type="hidden" name="q" value="{{ q }}"></form></div>
-{% if q %}<div class="note-actions"><a class="btn" href="{{ url_for('research_notes',q=q,style=style) }}"> Write Research Notes</a><a class="btn secondary" href="{{ url_for('research') }}">＋ New research</a></div><div class="research-tabs"><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}"> Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}"> Web</a><a class="btn secondary" href="https://www.google.com/search?q={{ q|urlencode }}" target="_blank" rel="noopener"> Google</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}"> KOJA Documents</a></div><div class="card"><span class="research-count">{{ results|length }} ranked sources</span> found for <strong>“{{ q }}”</strong><p class="small" style="margin-top:8px">KOJA combines multiple research angles, academic literature, web sources and KOJA Documents; it removes duplicates, filters weak matches, ranks evidence and then uses KOJA AI to synthesize the strongest evidence.</p></div>{% if summary %}<div class="card research-summary"><div class="research-answer-label"> KOJA Research Answer</div><pre>{{ summary }}</pre><p class="small">AI summaries use configured AI credentials when available; otherwise KOJA shows source-based highlights. Verify important claims against original sources.</p></div>{% endif %}{% for r in results %}<div class="card research-result"><span class="source-badge">{{ r.source }}</span><h3><a href="{{ r.url or '#' }}" {% if r.url %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a></h3>{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p><p><strong>In-text:</strong> {{ make_intext(r,style,loop.index) }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open original source ↗</a>{% endif %}</div>{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endfor %}{% if bibliography %}<div class="card"><h2>References</h2><p class="small">Generated from available source metadata. Verify against the original source.</p>{% for n,ref in bibliography %}<p style="padding-left:28px;text-indent:-28px;line-height:1.6">{{ ref|safe }}</p>{% endfor %}</div>{% endif %}{% else %}<div class="grid"><div class="card"><h3> Research Discovery</h3><p>KOJA searches across multiple research sources and filters weak or unrelated matches.</p></div><div class="card"><h3> Academic Search</h3><p>OpenAlex and Crossref provide scholarly metadata, authors, years and citation information.</p></div><div class="card"><h3> KOJA Documents</h3><p>Search documents already connected to your KOJA Supabase database.</p></div><div class="card"><h3> AI Research Summary</h3><p>Configure an AI API key to synthesize retrieved evidence with source-number citations.</p></div></div>{% endif %}</div>
+<div class="research-shell"><div class="research-welcome"><h2> What would you like to research?</h2><p>Ask a full question, attach a document, or use your voice. KOJA Research searches web, academic literature, Wikipedia and your KOJA documents, then brings the evidence together.</p></div><div class="hero"><form method="get" action="{{ url_for('research') }}" class="research-search" id="research-composer"><textarea name="q" rows="3" maxlength="2000" placeholder="Ask anything you want to research…" aria-label="Research question" autofocus>{{ q }}</textarea><div class="research-composer-bottom"><div class="research-composer-actions"><label class="btn secondary research-icon" title="Attach a document" aria-label="Attach a document"><input id="research-file" type="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp" hidden></label><button class="btn secondary research-icon" id="research-record" type="button" title="Record voice" aria-label="Record voice">️</button><span class="research-recording" id="research-recording">● Recording…</span><span class="research-file-name" id="research-file-name"></span></div><button class="btn research-send" type="submit" title="Send research question" aria-label="Send research question"></button></div></form>
+<script>(function(){const box=document.querySelector('#research-composer textarea[name="q"]');const file=document.getElementById('research-file');const name=document.getElementById('research-file-name');const rec=document.getElementById('research-record');const recLabel=document.getElementById('research-recording');let media=null,chunks=[];if(box){const grow=()=>{box.style.height='auto';box.style.height=Math.min(box.scrollHeight,280)+'px'};box.addEventListener('input',grow);grow()}if(file){file.addEventListener('change',()=>{name.textContent=file.files&&file.files[0]?file.files[0].name:''})}if(rec&&navigator.mediaDevices&&window.MediaRecorder){rec.addEventListener('click',async()=>{if(media){media.stop();return}try{const stream=await navigator.mediaDevices.getUserMedia({audio:true});media=new MediaRecorder(stream);chunks=[];media.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};media.onstop=()=>{const blob=new Blob(chunks,{type:'audio/webm'});const url=URL.createObjectURL(blob);name.textContent='Voice recording ready ('+Math.round(blob.size/1024)+' KB)';const a=document.createElement('a');a.href=url;a.download='koja-research-question.webm';a.style.display='none';document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(url);a.remove()},1000);stream.getTracks().forEach(t=>t.stop());media=null;rec.textContent='️';recLabel.style.display='none'};media.start();rec.textContent='⏹️';recLabel.style.display='inline';}catch(e){alert('Microphone permission is required to record.')}})}})();</script><div class="research-filters"><label>Source<select name="source" form="research-filter-form"><option value="all" {% if source_filter=='all' %}selected{% endif %}>All sources</option><option value="academic" {% if source_filter=='academic' %}selected{% endif %}>Academic</option><option value="youtube" {% if source_filter=='youtube' %}selected{% endif %}>Videos</option><option value="news" {% if source_filter=='news' %}selected{% endif %}>News</option><option value="web" {% if source_filter=='web' %}selected{% endif %}>Web</option><option value="wikipedia" {% if source_filter=='wikipedia' %}selected{% endif %}>Wikipedia</option><option value="koja" {% if source_filter=='koja' %}selected{% endif %}>KOJA Documents</option></select></label><label>Year<input name="year" form="research-filter-form" value="{{ year or '' }}" placeholder="e.g. 2025" inputmode="numeric"></label><label>Author<input name="author" form="research-filter-form" value="{{ author }}" placeholder="Academic author"></label><label>Citation style<select name="style" form="research-filter-form">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Source type<select name="source_type" form="research-filter-form"><option value="all">All source types</option>{% for k,v in source_types.items() %}<option value="{{k}}" {% if source_type==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Sort<select name="sort" form="research-filter-form"><option value="relevance" {% if sort=='relevance' %}selected{% endif %}>Relevance</option><option value="date" {% if sort=='date' %}selected{% endif %}>Newest first</option><option value="citations" {% if sort=='citations' %}selected{% endif %}>Most cited</option></select></label></div><form id="research-filter-form" method="get" action="{{ url_for('research') }}"><input type="hidden" name="q" value="{{ q }}"></form></div>
+{% if q %}<div class="note-actions"><a class="btn" href="{{ url_for('research_notes',q=q,style=style) }}"> Write Research Notes</a><a class="btn secondary" href="{{ url_for('research') }}">＋ New research</a></div><div class="research-tabs"><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}"> Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='youtube',sort=sort,year=year,author=author) }}"> Videos</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}"> Web</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}"> Search</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}"> KOJA Documents</a></div><div class="card"><span class="research-count">{{ results|length }} ranked sources</span> found for <strong>“{{ q }}”</strong><p class="small" style="margin-top:8px">KOJA combines multiple research angles, academic literature, web sources and KOJA Documents; it removes duplicates, filters weak matches, ranks evidence and then uses KOJA AI to synthesize the strongest evidence.</p></div>{% if summary %}<div class="card research-summary"><div class="research-answer-label"> KOJA Research Answer</div><pre>{{ summary }}</pre><p class="small">KOJA builds answers from retrieved evidence. Important claims should still be checked against the original source.</p></div>{% endif %}{% for r in results %}<div class="card research-result"><span class="source-badge">{{ r.source }}</span><h3><a href="{{ url_for('research_source',url=r.url,q=q) if r.source != 'YouTube' else (r.embed_url or r.url) }}" {% if r.source == 'YouTube' %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a></h3>{% if r.source == 'YouTube' and r.embed_url %}<div style="margin:12px 0;aspect-ratio:16/9;background:#000;border-radius:14px;overflow:hidden"><iframe src="{{ r.embed_url }}" title="{{ r.title }}" style="width:100%;height:100%;border:0" loading="lazy" allow="accelerometer;autoplay;clipboard-write;encrypted-media;gyroscope;picture-in-picture;web-share" allowfullscreen></iframe></div>{% endif %}{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p><p><strong>In-text:</strong> {{ make_intext(r,style,loop.index) }}</p>{% if r.url %}{% if r.source == 'YouTube' %}<a class="btn secondary" href="{{ r.embed_url or r.url }}" target="_blank" rel="noopener noreferrer">Watch video</a>{% else %}<a class="btn secondary" href="{{ url_for('research_source',url=r.url,q=q) }}">Read in KOJA</a><a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Original source</a>{% endif %}{% endif %}</div>{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endfor %}{% if bibliography %}<div class="card"><h2>References</h2><p class="small">Generated from available source metadata. Verify against the original source.</p>{% for n,ref in bibliography %}<p style="padding-left:28px;text-indent:-28px;line-height:1.6">{{ ref|safe }}</p>{% endfor %}</div>{% endif %}{% else %}<div class="grid"><div class="card"><h3> Research Discovery</h3><p>KOJA searches across multiple research sources and filters weak or unrelated matches.</p></div><div class="card"><h3> Academic Search</h3><p>OpenAlex and Crossref provide scholarly metadata, authors, years and citation information.</p></div><div class="card"><h3> KOJA Documents</h3><p>Search documents already connected to your KOJA Supabase database.</p></div><div class="card"><h3> AI Research Summary</h3><p>Configure an AI API key to synthesize retrieved evidence with source-number citations.</p></div></div>{% endif %}</div>
 ''',q=q,results=results,summary=summary,source_filter=source_filter,sort=sort,year=year,author=author,style=style,source_type=source_type,citation_styles=CITATION_STYLES,source_types=SOURCE_TYPES,bibliography=bibliography,make_intext=make_intext,SITE_URL=SITE_URL)
 
 
