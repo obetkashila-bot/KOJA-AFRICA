@@ -924,6 +924,51 @@ footer{text-align:center;color:var(--muted);padding:30px}
 {{ body|safe }}
 </div>
 <footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services</footer>
+<!-- KOJA Connect incoming-call receiver: polls only while authenticated. -->
+{% if user and not request.path.startswith('/api/') and not request.path.startswith('/connect/call') and not request.path.startswith('/connect/answer') %}
+<div id="kojaIncomingCall" style="display:none;position:fixed;left:12px;right:12px;bottom:16px;z-index:99999;max-width:520px;margin:auto;background:var(--card,#fff);border:2px solid var(--accent,#1d4ed8);border-radius:18px;padding:16px;box-shadow:0 18px 50px rgba(0,0,0,.28)">
+  <div style="font-weight:800;font-size:18px" id="kojaIncomingTitle">Incoming Call</div>
+  <div class="small" id="kojaIncomingFrom" style="margin-top:4px"></div>
+  <div class="actions" style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+    <a id="kojaIncomingAnswer" class="btn success" href="#">Answer</a>
+    <button id="kojaIncomingReject" class="btn danger" type="button">Decline</button>
+  </div>
+</div>
+<script>
+(function(){
+  const box=document.getElementById('kojaIncomingCall');
+  if(!box)return;
+  let activeId=null,lastSeen=null,timer=null;
+  const title=document.getElementById('kojaIncomingTitle'),from=document.getElementById('kojaIncomingFrom'),answer=document.getElementById('kojaIncomingAnswer'),reject=document.getElementById('kojaIncomingReject');
+  function show(c){
+    activeId=c.id; lastSeen=c.id;
+    title.textContent='Incoming '+(c.mode==='video'?'Video':'Voice')+' Call';
+    from.textContent='From '+(c.caller_name||'KOJA user');
+    answer.href='/connect/answer/'+encodeURIComponent(c.id);
+    box.style.display='block';
+    try{ if('navigator' in window && 'vibrate' in navigator) navigator.vibrate([300,150,300]); }catch(e){}
+  }
+  async function reject(){
+    if(!activeId)return;
+    const id=activeId; activeId=null; box.style.display='none';
+    try{await fetch('/api/connect/call/reject/'+encodeURIComponent(id),{method:'POST',headers:{'Content-Type':'application/json'}});}catch(e){}
+  }
+  reject.onclick=reject;
+  async function poll(){
+    try{
+      const r=await fetch('/api/connect/incoming-calls',{cache:'no-store'});
+      if(!r.ok)return;
+      const d=await r.json(); const calls=d.calls||[];
+      if(activeId && !calls.some(c=>String(c.id)===String(activeId))){activeId=null;box.style.display='none';}
+      if(!activeId && calls.length)show(calls[0]);
+    }catch(e){}
+  }
+  poll(); timer=setInterval(poll,2500);
+  window.addEventListener('beforeunload',()=>clearInterval(timer));
+})();
+</script>
+{% endif %}
+
 </body>
 </html>
 """
@@ -6519,6 +6564,8 @@ create index if not exists koja_notifications_user_idx on public.koja_notificati
 create table if not exists public.koja_notification_preferences (user_id uuid primary key, push_enabled boolean default true, sound_enabled boolean default true, market_enabled boolean default true, delivery_enabled boolean default true, ai_enabled boolean default true, messages_enabled boolean default true, system_enabled boolean default true, updated_at timestamptz default now());
 create table if not exists public.koja_push_subscriptions (id uuid primary key default gen_random_uuid(), user_id uuid not null, endpoint text not null, subscription jsonb not null default '{}'::jsonb, user_agent text, created_at timestamptz default now(), updated_at timestamptz default now(), unique(user_id,endpoint));
 create index if not exists koja_push_subscriptions_user_idx on public.koja_push_subscriptions(user_id,created_at desc);
+create table if not exists public.koja_fcm_devices (id uuid primary key default gen_random_uuid(), user_id uuid not null, token text not null, device_id text default '', platform text default 'android', app_version text default '', created_at timestamptz default now(), updated_at timestamptz default now(), unique(user_id,token));
+create index if not exists koja_fcm_devices_user_idx on public.koja_fcm_devices(user_id,updated_at desc);
 create table if not exists public.koja_blocks (
  blocker_id uuid not null, blocked_id uuid not null, created_at timestamptz default now(), primary key(blocker_id,blocked_id)
 );
@@ -6533,6 +6580,23 @@ def _notification_allowed(uid, notification_type):
     if t in ('ai','ai_update'): return bool(p.get('ai_enabled',True))
     if t in ('message','chat','call','group_call','friend_request'): return bool(p.get('messages_enabled',True))
     return bool(p.get('system_enabled',True))
+
+def _send_native_fcm(uid,title,body,url=None,notification_type='system',related_id=None):
+    if not uid or not _notification_allowed(uid,notification_type): return 0
+    relay=(os.getenv('FCM_RELAY_URL') or os.getenv('KOJA_FCM_RELAY_URL') or os.getenv('PUSH_RELAY_URL') or os.getenv('FCM_RELAY_ENDPOINT') or '').strip()
+    secret=os.getenv('FCM_RELAY_SECRET','').strip()
+    if not relay or not secret or not table_exists('koja_fcm_devices'): return 0
+    sent=0
+    for d in db_select('koja_fcm_devices',filters={'user_id':str(uid)},limit=20):
+        token=clean(d.get('token'))
+        if not token: continue
+        payload={'token':token,'title':title,'body':body,'data':{'type':notification_type,'call_id':str(related_id) if related_id else '','related_id':str(related_id) if related_id else '','url':url or '/notifications','mode':'video' if notification_type=='call' and 'video' in title.lower() else ('voice' if notification_type=='call' else '')}}
+        try:
+            rr=requests.post(relay,headers={'Content-Type':'application/json','X-FCM-RELAY-SECRET':secret,'Authorization':'Bearer '+secret},json=payload,timeout=15)
+            if rr.ok: sent+=1
+            elif rr.status_code in (400,404,410): db_delete('koja_fcm_devices',{'id':d.get('id')})
+        except Exception: logger.exception('KOJA native FCM relay failed')
+    return sent
 
 def _send_web_push(uid,title,body,url=None,notification_type='system',related_id=None):
     if not _notification_allowed(uid,notification_type): return 0
@@ -6563,7 +6627,7 @@ def notify_user(uid,title,body,notification_type='system',related_id=None,url=No
     if not uid or not _notification_allowed(uid,notification_type): return None
     row,err=db_insert('koja_notifications',{'user_id':str(uid),'notification_type':notification_type,'title':title,'body':body,'related_id':related_id,'is_read':False,'created_at':utc_now()})
     if not err and row:
-        _send_web_push(uid,title,body,url,notification_type,related_id)
+        _send_web_push(uid,title,body,url,notification_type)
         try:
             u=find_user_by_id(uid) or {}
             email=clean(u.get('email'))
@@ -6626,6 +6690,34 @@ def api_notification_preferences():
     else: row,err=db_insert('koja_notification_preferences',payload); ok=bool(row and not err)
     return jsonify(ok=bool(ok)),200 if ok else 400
 
+@app.route('/api/notifications/fcm/register',methods=['POST'])
+@login_required
+def api_fcm_register():
+    uid=str(current_user()['id']); d=request.get_json(silent=True) or {}; token=clean(d.get('token') or d.get('fcm_token') or d.get('device_token'))
+    if not token: return jsonify(error='FCM token required'),400
+    if not table_exists('koja_fcm_devices'): return jsonify(error='FCM device table is not available'),503
+    payload={'user_id':uid,'token':token,'device_id':clean(d.get('device_id')),'platform':clean(d.get('platform') or 'android'),'app_version':clean(d.get('app_version')),'updated_at':utc_now()}
+    old=first_row('koja_fcm_devices',{'user_id':uid,'token':token})
+    if old: ok,err=db_update('koja_fcm_devices',{'id':old.get('id')},payload)
+    else: row,err=db_insert('koja_fcm_devices',payload); ok=bool(row and not err)
+    return jsonify(ok=bool(ok))
+
+@app.route('/api/push/register',methods=['POST'])
+@login_required
+def api_push_register_alias(): return api_fcm_register()
+
+@app.route('/api/notifications/register-device',methods=['POST'])
+@login_required
+def api_notifications_register_device(): return api_fcm_register()
+
+@app.route('/api/notifications/push-status')
+@login_required
+def api_push_status():
+    uid=str(current_user()['id']); devices=db_select('koja_fcm_devices',filters={'user_id':uid},limit=20) if table_exists('koja_fcm_devices') else []
+    relay=bool((os.getenv('FCM_RELAY_URL') or os.getenv('KOJA_FCM_RELAY_URL') or os.getenv('PUSH_RELAY_URL') or os.getenv('FCM_RELAY_ENDPOINT') or '').strip() and os.getenv('FCM_RELAY_SECRET','').strip())
+    web=bool(os.getenv('VAPID_PUBLIC_KEY','').strip() and os.getenv('VAPID_PRIVATE_KEY','').strip())
+    return jsonify(native_push_configured=relay,native_devices=len(devices),web_push_configured=web)
+
 @app.route('/api/notifications/vapid-public-key')
 @login_required
 def api_vapid_public_key(): return (os.getenv('VAPID_PUBLIC_KEY','').strip(),200,{'Content-Type':'text/plain'})
@@ -6642,7 +6734,7 @@ def api_notification_subscribe():
 
 @app.route('/koja-sw.js')
 def koja_service_worker():
-    js="self.addEventListener('push',e=>{let d=e.data?e.data.json():{},isCall=d.type==='call'||d.type==='group_call',url=d.url||'/notifications';let o={body:d.body||'New KOJA update',icon:'/static/favicon.ico',badge:'/static/favicon.ico',data:{url:url,type:d.type||'system',call_id:d.call_id||d.related_id||null},tag:isCall?('koja-call-'+(d.call_id||d.related_id||'incoming')):'koja-notification',renotify:true};if(isCall){o.requireInteraction=true;o.vibrate=[300,150,300,150,600];o.actions=[{action:'answer',title:'Answer'},{action:'decline',title:'Decline'}]}e.waitUntil(self.registration.showNotification(d.title||'KOJA',o))});self.addEventListener('notificationclick',e=>{let d=e.notification.data||{},isCall=d.type==='call'||d.type==='group_call';e.notification.close();if(isCall&&e.action==='decline'&&d.call_id){e.waitUntil(fetch('/api/connect/call/reject/'+encodeURIComponent(d.call_id),{method:'POST',credentials:'include'}).catch(()=>{}));return}let url=isCall&&d.call_id?('/connect/answer/'+encodeURIComponent(d.call_id)):d.url||'/notifications';e.waitUntil(clients.matchAll({type:'window',includeUncontrolled:true}).then(cs=>{for(const c of cs){if('focus'in c){try{c.navigate(url)}catch(_){ }return c.focus()}}return clients.openWindow(url)}))});"
+    js="self.addEventListener('push',e=>{let d=e.data?e.data.json():{};e.waitUntil(self.registration.showNotification(d.title||'KOJA',{body:d.body||'New KOJA update',icon:'/static/favicon.ico',badge:'/static/favicon.ico',data:{url:d.url||'/notifications'}}))});self.addEventListener('notificationclick',e=>{e.notification.close();e.waitUntil(clients.matchAll({type:'window',includeUncontrolled:true}).then(cs=>{for(const c of cs){if('focus'in c){c.navigate(e.notification.data.url||'/notifications');return c.focus()}}return clients.openWindow(e.notification.data.url||'/notifications')}))});"
     return js,200,{'Content-Type':'application/javascript','Cache-Control':'no-cache'}
 
 @app.route('/connect')
@@ -7026,6 +7118,18 @@ def connect_calls():
     uid=current_user()['id']; rows=db_select('koja_calls',filters={'caller_id':uid},order='created_at.desc',limit=50)+db_select('koja_calls',filters={'callee_id':uid},order='created_at.desc',limit=50); rows=sorted(rows,key=lambda x:x.get('created_at',''),reverse=True)[:50]
     return render_page('KOJA Calls',r'''<div class="card"><h2> KOJA Call History</h2>{% for c in rows %}<div class="card"><strong>{{ c.mode|title }}</strong> — {{ c.status }}<div class="small">{{ c.created_at }}</div>{% if c.callee_id|string == user.id|string and c.status=='ringing' %}<a class="btn" href="{{ url_for('connect_answer',call_id=c.id) }}">Answer</a>{% endif %}</div>{% else %}<p>No calls yet.</p>{% endfor %}</div>''',rows=rows)
 
+@app.route('/connect/call',methods=['GET'])
+@app.route('/connect/call/',methods=['GET'])
+@login_required
+def connect_call_slash():
+    uid=str(current_user()['id']); target=clean(request.args.get('callee_id') or request.args.get('user_id')); cid=clean(request.args.get('conversation_id')); mode=clean(request.args.get('mode','video')) or 'video'
+    if not target and cid:
+        members=db_select('koja_conversation_members',filters={'conversation_id':cid},limit=20)
+        other=next((m for m in members if str(m.get('user_id'))!=uid),None)
+        target=clean(other.get('user_id')) if other else ''
+    if not target or target==uid or not find_user_by_id(target) or mode not in ('voice','video'): return redirect(url_for('connect'))
+    return redirect(url_for('connect_call',user_id=target,mode=mode))
+
 @app.route('/connect/call/<user_id>')
 @login_required
 def connect_call(user_id):
@@ -7100,6 +7204,23 @@ def connect_call_create():
     c=_direct_conversation(uid,callee); row,err=db_insert('koja_calls',{'id':str(uuid.uuid4()),'conversation_id':c['id'],'caller_id':uid,'callee_id':callee,'mode':mode,'status':'ringing','created_at':utc_now()})
     if err:return jsonify(error=err),500
     notify_user(callee,f'Incoming {mode} call',f'{_profile_name(uid)} is calling you.','call',row['id'],'/connect/calls');return jsonify(call=row)
+
+@app.route('/api/connect/incoming-calls')
+@login_required
+def connect_incoming_calls():
+    uid=str(current_user()['id'])
+    rows=db_select('koja_calls',filters={'callee_id':uid,'status':'ringing'},order='created_at.desc',limit=10)
+    return jsonify(ok=True,calls=[{'id':c.get('id'),'conversation_id':c.get('conversation_id'),'caller_id':c.get('caller_id'),'caller_name':_profile_name(c.get('caller_id')),'mode':c.get('mode','voice'),'status':c.get('status','ringing'),'created_at':c.get('created_at')} for c in rows])
+
+@app.route('/api/connect/call/reject/<call_id>',methods=['POST'])
+@login_required
+def connect_call_reject(call_id):
+    uid=str(current_user()['id']); c=first_row('koja_calls',{'id':call_id})
+    if not c or str(c.get('callee_id'))!=uid:return jsonify(error='Forbidden'),403
+    if str(c.get('status','')).lower() not in ('ringing','answered'):return jsonify(ok=True,status=c.get('status'))
+    updated,err=db_update('koja_calls',{'id':call_id},{'status':'rejected','ended_at':utc_now()})
+    if err:return jsonify(error=str(err)[:500]),500
+    return jsonify(ok=True,status='rejected')
 
 @app.route('/api/connect/call/offer/<call_id>',methods=['POST'])
 @login_required
