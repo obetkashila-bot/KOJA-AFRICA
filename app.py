@@ -924,6 +924,50 @@ footer{text-align:center;color:var(--muted);padding:30px}
 {{ body|safe }}
 </div>
 <footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services</footer>
+<!-- KOJA Connect incoming-call receiver: polls only while authenticated. -->
+{% if user and not request.path.startswith('/api/') and not request.path.startswith('/connect/call') and not request.path.startswith('/connect/answer') %}
+<div id="kojaIncomingCall" style="display:none;position:fixed;left:12px;right:12px;bottom:16px;z-index:99999;max-width:520px;margin:auto;background:var(--card,#fff);border:2px solid var(--accent,#1d4ed8);border-radius:18px;padding:16px;box-shadow:0 18px 50px rgba(0,0,0,.28)">
+  <div style="font-weight:800;font-size:18px" id="kojaIncomingTitle">Incoming Call</div>
+  <div class="small" id="kojaIncomingFrom" style="margin-top:4px"></div>
+  <div class="actions" style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+    <a id="kojaIncomingAnswer" class="btn success" href="#">Answer</a>
+    <button id="kojaIncomingReject" class="btn danger" type="button">Decline</button>
+  </div>
+</div>
+<script>
+(function(){
+  const box=document.getElementById('kojaIncomingCall');
+  if(!box)return;
+  let activeId=null,lastSeen=null,timer=null;
+  const title=document.getElementById('kojaIncomingTitle'),from=document.getElementById('kojaIncomingFrom'),answer=document.getElementById('kojaIncomingAnswer'),reject=document.getElementById('kojaIncomingReject');
+  function show(c){
+    activeId=c.id; lastSeen=c.id;
+    title.textContent='Incoming '+(c.mode==='video'?'Video':'Voice')+' Call';
+    from.textContent='From '+(c.caller_name||'KOJA user');
+    answer.href='/connect/answer/'+encodeURIComponent(c.id);
+    box.style.display='block';
+    try{ if('navigator' in window && 'vibrate' in navigator) navigator.vibrate([300,150,300]); }catch(e){}
+  }
+  async function reject(){
+    if(!activeId)return;
+    const id=activeId; activeId=null; box.style.display='none';
+    try{await fetch('/api/connect/call/reject/'+encodeURIComponent(id),{method:'POST',headers:{'Content-Type':'application/json'}});}catch(e){}
+  }
+  reject.onclick=reject;
+  async function poll(){
+    try{
+      const r=await fetch('/api/connect/incoming-calls',{cache:'no-store'});
+      if(!r.ok)return;
+      const d=await r.json(); const calls=d.calls||[];
+      if(activeId && !calls.some(c=>String(c.id)===String(activeId))){activeId=null;box.style.display='none';}
+      if(!activeId && calls.length)show(calls[0]);
+    }catch(e){}
+  }
+  poll(); timer=setInterval(poll,2500);
+  window.addEventListener('beforeunload',()=>clearInterval(timer));
+})();
+</script>
+{% endif %}
 </body>
 </html>
 """
@@ -6696,7 +6740,7 @@ def connect_chat(conversation_id):
     uid=current_user()['id'];
     if not _conversation_member(conversation_id,uid): abort(403)
     members=db_select('koja_conversation_members',filters={'conversation_id':conversation_id},limit=100); other=next((m for m in members if str(m.get('user_id'))!=str(uid)),None); other_id=other.get('user_id') if other else None; c=first_row('koja_conversations',{'id':conversation_id}) or {}
-    return render_page('KOJA Chat',r'''<div class="card"><a href="{{ url_for('connect') }}">← Connect</a><h2> {{ name }}</h2><p class="small">Sent messages appear on the right. Received messages appear on the left.</p></div><div class="card" id="messages" style="min-height:300px;max-height:55vh;overflow:auto"></div><div class="card"><form id="sendForm"><input id="text" autocomplete="off" placeholder="Write a message…"><button>Send</button></form><form id="fileForm" enctype="multipart/form-data" style="margin-top:8px"><input id="file" type="file" accept="image/*,.pdf,.doc,.docx,.txt,.webp,.audio/*"><button type="submit"> Photo / File</button></form><div class="grid"><button type="button" id="voiceNote">️ Voice message</button>{% if other_id %}<a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='voice') }}"> Voice Call</a><a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='video') }}"> Video Call</a>{% else %}<a class="btn" href="{{ url_for('connect_call_from_chat',conversation_id=conversation_id,mode='voice') }}"> Voice Call</a><a class="btn" href="{{ url_for('connect_call_from_chat',conversation_id=conversation_id,mode='video') }}"> Video Call</a>{% endif %}{% if c.get('conversation_type')=='group' %}<a class="btn" href="{{ url_for('connect_group_call',conversation_id=conversation_id,mode='video') }}"> Group Video</a><a class="btn secondary" href="{{ url_for('connect_group_call',conversation_id=conversation_id,mode='voice') }}"> Group Voice</a>{% endif %}</div></div><script>const cid={{ conversation_id|tojson }},me={{ user.id|tojson }};const box=document.getElementById('messages'),text=document.getElementById('text');function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}async function load(){let r=await fetch('/api/connect/messages/'+cid);if(!r.ok)return;let d=await r.json();box.innerHTML=d.messages.map(m=>{let mine=String(m.sender_id)===String(me);let body=m.message_type==='text'?'<div>'+esc(m.body)+'</div>':(m.file_url?'<div><a target="_blank" rel="noopener" href="'+esc(m.file_url)+'">'+esc(m.body||m.message_type)+'</a></div>':'<div>'+esc(m.body)+'</div>');return '<div style="display:flex;justify-content:'+(mine?'flex-end':'flex-start')+';margin:7px 0"><div style="max-width:78%;padding:10px 13px;border-radius:16px;background:var(--card);border:1px solid var(--border);text-align:left"><strong>'+esc(mine?'You':m.sender_name)+'</strong>'+body+'<div class="small">'+esc(m.created_at||'')+'</div></div></div>'}).join('');box.scrollTop=box.scrollHeight;}document.getElementById('sendForm').onsubmit=async e=>{e.preventDefault();let v=text.value.trim();if(!v)return;let r=await fetch('/api/connect/messages/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:v})});if(r.ok){text.value='';load();}};document.getElementById('fileForm').onsubmit=async e=>{e.preventDefault();let f=document.getElementById('file').files[0];if(!f)return;let fd=new FormData();fd.append('file',f);let r=await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});if(r.ok){document.getElementById('file').value='';load();}else alert('File could not be sent.');};load();setInterval(load,2000);let rec,parts=[];document.getElementById('voiceNote').onclick=async()=>{try{let st=await navigator.mediaDevices.getUserMedia({audio:true});rec=new MediaRecorder(st);parts=[];rec.ondataavailable=e=>parts.push(e.data);rec.onstop=async()=>{let b=new Blob(parts,{type:'audio/webm'}),fd=new FormData();fd.append('file',b,'voice.webm');await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});st.getTracks().forEach(t=>t.stop());load();};rec.start();setTimeout(()=>rec&&rec.state==='recording'&&rec.stop(),60000);}catch(e){alert('Microphone permission is required.');}};</script>''',conversation_id=conversation_id,name=_profile_name(other_id) if other_id else c.get('name','KOJA Chat'),c=c)
+    return render_page('KOJA Chat',r'''<div class="card"><a href="{{ url_for('connect') }}">← Connect</a><h2> {{ name }}</h2><p class="small">Sent messages appear on the right. Received messages appear on the left.</p></div><div class="card" id="messages" style="min-height:300px;max-height:55vh;overflow:auto"></div><div class="card"><form id="sendForm"><input id="text" autocomplete="off" placeholder="Write a message…"><button>Send</button></form><form id="fileForm" enctype="multipart/form-data" style="margin-top:8px"><input id="file" type="file" accept="image/*,.pdf,.doc,.docx,.txt,.webp,.audio/*"><button type="submit"> Photo / File</button></form><div class="grid"><button type="button" id="voiceNote">️ Voice message</button><a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='voice') }}"> Voice Call</a><a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='video') }}"> Video Call</a>{% if c.get('conversation_type')=='group' %}<a class="btn" href="{{ url_for('connect_group_call',conversation_id=conversation_id,mode='video') }}"> Group Video</a><a class="btn secondary" href="{{ url_for('connect_group_call',conversation_id=conversation_id,mode='voice') }}"> Group Voice</a>{% endif %}</div></div><script>const cid={{ conversation_id|tojson }},me={{ user.id|tojson }};const box=document.getElementById('messages'),text=document.getElementById('text');function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}async function load(){let r=await fetch('/api/connect/messages/'+cid);if(!r.ok)return;let d=await r.json();box.innerHTML=d.messages.map(m=>{let mine=String(m.sender_id)===String(me);let body=m.message_type==='text'?'<div>'+esc(m.body)+'</div>':(m.file_url?'<div><a target="_blank" rel="noopener" href="'+esc(m.file_url)+'">'+esc(m.body||m.message_type)+'</a></div>':'<div>'+esc(m.body)+'</div>');return '<div style="display:flex;justify-content:'+(mine?'flex-end':'flex-start')+';margin:7px 0"><div style="max-width:78%;padding:10px 13px;border-radius:16px;background:var(--card);border:1px solid var(--border);text-align:left"><strong>'+esc(mine?'You':m.sender_name)+'</strong>'+body+'<div class="small">'+esc(m.created_at||'')+'</div></div></div>'}).join('');box.scrollTop=box.scrollHeight;}document.getElementById('sendForm').onsubmit=async e=>{e.preventDefault();let v=text.value.trim();if(!v)return;let r=await fetch('/api/connect/messages/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:v})});if(r.ok){text.value='';load();}};document.getElementById('fileForm').onsubmit=async e=>{e.preventDefault();let f=document.getElementById('file').files[0];if(!f)return;let fd=new FormData();fd.append('file',f);let r=await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});if(r.ok){document.getElementById('file').value='';load();}else alert('File could not be sent.');};load();setInterval(load,2000);let rec,parts=[];document.getElementById('voiceNote').onclick=async()=>{try{let st=await navigator.mediaDevices.getUserMedia({audio:true});rec=new MediaRecorder(st);parts=[];rec.ondataavailable=e=>parts.push(e.data);rec.onstop=async()=>{let b=new Blob(parts,{type:'audio/webm'}),fd=new FormData();fd.append('file',b,'voice.webm');await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});st.getTracks().forEach(t=>t.stop());load();};rec.start();setTimeout(()=>rec&&rec.state==='recording'&&rec.stop(),60000);}catch(e){alert('Microphone permission is required.');}};</script>''',conversation_id=conversation_id,name=_profile_name(other_id) if other_id else c.get('name','KOJA Chat'),c=c)
 
 @app.route('/api/connect/messages/<conversation_id>',methods=['GET','POST'])
 @login_required
@@ -6880,7 +6924,7 @@ def connect_answer(call_id):
     uid=current_user()['id']; c=first_row('koja_calls',{'id':call_id})
     if not c or str(c.get('callee_id'))!=str(uid) or c.get('status') not in ('ringing','answered'):
         abort(404)
-    return render_page('Answer KOJA Call',r'''<div class="card"><h2> Incoming {{ c.mode|title }} Call</h2><p>From <strong>{{ name }}</strong></p><div id="state">Connecting…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px"></video></div><button id="hang" class="btn danger">End Call</button></div><script>
+    return render_page('Answer KOJA Call',r'''<div class="card"><h2> Incoming {{ c.mode|title }} Call</h2><p>From <strong>{{ name }}</strong></p><div id="state">Connecting…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px"></video></div><div class="actions" style="margin-top:12px"><button id="hang" class="btn danger">End Call</button><button id="reject" class="btn secondary">Decline</button></div></div><script>
 const cid={{ call_id|tojson }},mode={{ c.mode|tojson }};
 let pc=null,timer=null,iceTimer=null,remoteIce=new Set();
 const state=document.getElementById('state');
@@ -6926,7 +6970,7 @@ async function start(){
     },1500);
   }catch(e){state.textContent='Could not answer this call.';}
 }
-document.getElementById('hang').onclick=()=>{fetch('/api/connect/call/end/'+cid,{method:'POST'});clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();state.textContent='Call ended';};
+document.getElementById('hang').onclick=()=>{fetch('/api/connect/call/end/'+cid,{method:'POST'});clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();state.textContent='Call ended';};document.getElementById('reject').onclick=async()=>{try{await fetch('/api/connect/call/reject/'+cid,{method:'POST',headers:{'Content-Type':'application/json'}});}catch(e){}clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();state.textContent='Call declined';};
 start();
 </script>''',c=c,call_id=call_id,name=_profile_name(c.get('caller_id')))
 
@@ -7020,25 +7064,46 @@ def connect_call_answer(call_id):
         return jsonify(error=str(err)[:500]),500
     return jsonify(ok=True,call=updated or {'id':call_id,'status':'answered'})
 
+@app.route('/api/connect/incoming-calls')
+@login_required
+def connect_incoming_calls():
+    """Return active one-to-one incoming calls for the signed-in user.
+    This is the receiver side of the Connect calling system.  It intentionally
+    returns only ringing calls where the authenticated user is the callee.
+    """
+    uid=str(current_user()['id'])
+    rows=db_select('koja_calls',filters={'callee_id':uid,'status':'ringing'},order='created_at.desc',limit=10)
+    calls=[]
+    for c in rows:
+        calls.append({
+            'id':c.get('id'),
+            'conversation_id':c.get('conversation_id'),
+            'caller_id':c.get('caller_id'),
+            'caller_name':_profile_name(c.get('caller_id')),
+            'mode':c.get('mode','voice'),
+            'status':c.get('status','ringing'),
+            'created_at':c.get('created_at')
+        })
+    return jsonify(ok=True,calls=calls)
+
+@app.route('/api/connect/call/reject/<call_id>',methods=['POST'])
+@login_required
+def connect_call_reject(call_id):
+    uid=str(current_user()['id'])
+    c=first_row('koja_calls',{'id':call_id})
+    if not c or str(c.get('callee_id'))!=uid:
+        return jsonify(error='Forbidden'),403
+    if str(c.get('status','')).lower() not in ('ringing','answered'):
+        return jsonify(ok=True,status=c.get('status'))
+    updated,err=db_update('koja_calls',{'id':call_id},{'status':'rejected','ended_at':utc_now()})
+    if err:return jsonify(error=str(err)[:500]),500
+    return jsonify(ok=True,status='rejected')
+
 @app.route('/connect/calls')
 @login_required
 def connect_calls():
     uid=current_user()['id']; rows=db_select('koja_calls',filters={'caller_id':uid},order='created_at.desc',limit=50)+db_select('koja_calls',filters={'callee_id':uid},order='created_at.desc',limit=50); rows=sorted(rows,key=lambda x:x.get('created_at',''),reverse=True)[:50]
     return render_page('KOJA Calls',r'''<div class="card"><h2> KOJA Call History</h2>{% for c in rows %}<div class="card"><strong>{{ c.mode|title }}</strong> — {{ c.status }}<div class="small">{{ c.created_at }}</div>{% if c.callee_id|string == user.id|string and c.status=='ringing' %}<a class="btn" href="{{ url_for('connect_answer',call_id=c.id) }}">Answer</a>{% endif %}</div>{% else %}<p>No calls yet.</p>{% endfor %}</div>''',rows=rows)
-
-@app.route('/connect/call/')
-@login_required
-def connect_call_from_chat():
-    conversation_id=clean(request.args.get('conversation_id'))
-    mode=clean(request.args.get('mode','video'))
-    uid=current_user()['id']
-    if not conversation_id or not _conversation_member(conversation_id,uid) or mode not in ('voice','video'):
-        abort(404)
-    members=db_select('koja_conversation_members',filters={'conversation_id':conversation_id},limit=100)
-    other=next((m for m in members if str(m.get('user_id'))!=str(uid)),None)
-    if not other or not other.get('user_id'):
-        abort(404)
-    return redirect(url_for('connect_call',user_id=other['user_id'],mode=mode))
 
 @app.route('/connect/call/<user_id>')
 @login_required

@@ -1,12 +1,17 @@
-KOJA AFRICA CONNECT V7 - ROUTE SAFE
+KOJA AFRICA CONNECT V8 — RECEIVER FIX
 
-This patch is based on the current production app.py.
-It fixes the observed production error:
-GET /connect/call/?mode=video -> 404
+Base: current production app.py app(20260918-113649).py
 
-The chat call buttons now preserve conversation_id when a direct member cannot be resolved at template render time. The new /connect/call/ compatibility route resolves the other participant from koja_conversation_members and redirects to the existing call route.
+Fixes the actual issue shown in Render logs: calls are created and WebRTC signaling is running, but the callee has no Connect incoming-call receiver/polling endpoint.
 
-No SQL migration.
-No other KOJA modules intentionally changed.
+Added:
+- GET /api/connect/incoming-calls — authenticated callee polling
+- POST /api/connect/call/reject/<call_id>
+- Global authenticated incoming-call banner on normal KOJA pages
+- Answer link opens /connect/answer/<call_id>
+- Decline control
+- Existing Connect chat, call creation, offer, ICE, answer, check and end routes preserved
+- Existing SQL schema preserved; no migration
+- Other KOJA modules preserved
 
-Deploy app.py to the existing KOJA-AFRICA Render service.
+Deploy app.py only to the existing KOJA-AFRICA Render service.
