@@ -4140,6 +4140,10 @@ def book_professional(provider_id):
         if error:
             flash("Request could not be submitted: " + str(error)[:700], "danger")
         else:
+            try:
+                _e2e_auto_adapt_professional_appointment(row)
+            except Exception:
+                logger.exception('E2E V3 professional auto-adapter failed for %s', row.get('id') if row else None)
             flash("Professional request submitted successfully.", "success")
         return redirect(url_for("dashboard"))
 
@@ -7653,6 +7657,11 @@ def market_cart_checkout():
             if err:
                 logger.error('KOJA checkout order creation failed: %s',err); flash('Checkout could not create all orders. Please try again.','danger'); return redirect(url_for('market_cart'))
             created.append(row)
+            # V3: automatically attach the real Market order to the universal E2E lifecycle.
+            try:
+                _e2e_auto_adapt_market_order(row)
+            except Exception:
+                logger.exception('E2E V3 Market auto-adapter failed for %s', row.get('id'))
         tx_ref='KOJA-CART-'+datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')+'-'+secrets.token_hex(4).upper()
         for row in created: db_update('koja_market_orders',{'id':row.get('id')},{'payment_reference':tx_ref,'updated_at':utc_now()})
         payload_fw={'tx_ref':tx_ref,'amount':int(round(grand)),'currency':'ZMW','email':clean((current_user() or {}).get('email')).lower(),'fullname':first_nonempty((current_user() or {}).get('name'),(current_user() or {}).get('full_name'),clean((current_user() or {}).get('email'))),'phone_number':payment_phone,'network':network,'order_id':str(created[0].get('id') or ''),'redirect_url':url_for('market_payment_callback',_external=True,tx_ref=tx_ref),'meta':{'koja_checkout':'cart','koja_order_ids':[str(x.get('id')) for x in created]}}
@@ -8537,7 +8546,13 @@ def business_accounting_v2(business_id):
         now=utc_now(); payload={'business_id':business_id,'description':desc,'created_at':now}
         if kind=='sale':
             payload.update({'total_amount':amount,'status':'paid','payment_method':method}); row,err=db_insert('koja_business_sales',payload)
-            if not err and row: _post_simple_accounting_entry(business_id,'sale',amount,desc,'business_sale',row.get('id'),method,'')
+            if not err and row:
+                _post_simple_accounting_entry(business_id,'sale',amount,desc,'business_sale',row.get('id'),method,'')
+                try:
+                    _e2e_auto_adapt_business_sale(row)
+                    _e2e_auto_mark_paid_from_source('business_sale', row.get('id'))
+                except Exception:
+                    logger.exception('E2E V3 business sale auto-adapter failed for %s', row.get('id'))
         else:
             payload.update({'amount':amount,'category':category}); row,err=db_insert('koja_business_expenses',payload)
             if not err and row: _post_simple_accounting_entry(business_id,'expense',amount,desc,'business_expense',row.get('id'),'cash',category)
@@ -10646,3 +10661,154 @@ def b2bv4_order_review(order_id):
     flash('Review submitted.' if row else 'Review could not be submitted: '+str(err)[:300],'success' if row else 'danger')
     return redirect(url_for('b2bv4_order',order_id=order_id))
 
+
+
+# ============================================================
+# KOJA E2E V3 — AUTOMATIC USER-FLOW WIRING
+# Existing Market / Business / Professional / Delivery flows remain the source of truth.
+# E2E is attached automatically; users do not need to call adapter APIs manually.
+# Communications / Connect+ is not modified.
+# ============================================================
+KOJA_E2E_VERSION = '2026.09.18-V3'
+
+def _e2e_auto_adapt_market_order(row):
+    if not row or not row.get('id'): return None
+    src_id=str(row.get('id'))
+    product=first_row('koja_market_products',{'id':row.get('product_id')}) or {}
+    service,link=_e2e_source_service(
+        'market_order',src_id,row.get('seller_id'),None,
+        product.get('title') or 'KOJA Market Order',
+        product.get('description') or 'KOJA Market purchase',
+        row.get('item_amount') or row.get('total_amount') or row.get('amount') or product.get('price') or 0,
+        row.get('currency') or product.get('currency') or 'ZMW',
+        'physical' if str(product.get('product_type') or 'physical').lower()=='physical' else 'digital')
+    if not service: return None
+    order,link=_e2e_source_order(service,row.get('buyer_id'),'market_order',src_id,
+        max(1,int(row.get('quantity') or 1)),
+        'Imported automatically from KOJA Market order '+str(row.get('order_number') or src_id),
+        service.get('fulfillment_mode'))
+    if order: _e2e_sync_source_status('market_order',src_id,order)
+    return order
+
+def _e2e_auto_adapt_business_sale(row):
+    if not row or not row.get('id'): return None
+    src_id=str(row.get('id')); business_id=row.get('business_id')
+    service,link=_e2e_source_service('business_sale',src_id,business_id,business_id,
+        row.get('description') or row.get('sale_number') or 'Business Sale',
+        'KOJA Business POS sale',row.get('total_amount') or row.get('amount') or 0,
+        row.get('currency') or 'ZMW','physical')
+    if not service: return None
+    order,link=_e2e_source_order(service,row.get('customer_id') or _e2e_uid(),'business_sale',src_id,
+        max(1,int(row.get('quantity') or 1)),row.get('description'),service.get('fulfillment_mode'))
+    if order: _e2e_sync_source_status('business_sale',src_id,order)
+    return order
+
+def _e2e_auto_adapt_professional_appointment(row):
+    if not row or not row.get('id'): return None
+    src_id=str(row.get('id')); provider=first_row('service_providers',{'id':row.get('provider_id')}) or {}
+    price=provider.get('hourly_rate') or 0
+    service,link=_e2e_source_service('professional_appointment',src_id,
+        provider.get('user_id') or row.get('provider_id'),None,
+        provider.get('profession') or 'Professional Service',
+        provider.get('service_description') or provider.get('bio') or 'Professional appointment',
+        price,provider.get('currency') or 'ZMW','booking')
+    if not service: return None
+    order,link=_e2e_source_order(service,row.get('client_id'),'professional_appointment',src_id,1,row.get('notes'),'booking')
+    if order: _e2e_sync_source_status('professional_appointment',src_id,order)
+    return order
+
+def _e2e_mark_paid_for_order(order, reference=None):
+    if not order: return None
+    status=clean(order.get('status'))
+    if status in ('paid','processing','fulfilling','completed','settled'): return order
+    updated,err=_e2e_transition(order,'paid',note='Payment confirmed by existing KOJA source flow'+((' · '+str(reference)) if reference else ''))
+    return updated or order
+
+def _e2e_mark_paid_from_source(source_type,source_id,reference=None):
+    link=_e2e_link(source_type,source_id)
+    if not link or not link.get('order_id'): return None
+    order=_e2e_order(link.get('order_id'))
+    if not order: return None
+    updated=_e2e_mark_paid_for_order(order,reference)
+    _e2e_sync_source_status(source_type,source_id,updated)
+    return updated
+
+def _e2e_auto_link_delivery(delivery):
+    if not delivery or not delivery.get('id'): return None
+    src_id=str(delivery.get('id')); existing=_e2e_link('delivery',src_id)
+    if existing and existing.get('order_id'): return existing
+    customer=delivery.get('customer_id') or delivery.get('sender_id') or _e2e_uid()
+    driver=delivery.get('driver_id')
+    amount=delivery.get('delivery_fee') or 0
+    service,link=_e2e_source_service('delivery',src_id,driver,None,
+        'KOJA Delivery '+str(delivery.get('tracking_code') or src_id),
+        'Universal KOJA delivery fulfilment',amount,'ZMW','physical')
+    if not service: return None
+    order,link=_e2e_source_order(service,customer,'delivery',src_id,1,
+        'Tracking '+str(delivery.get('tracking_code') or src_id),'physical')
+    if order and str(delivery.get('status') or '').lower() in ('completed','delivered'):
+        try:
+            if clean(order.get('status')) not in ('completed','settled'):
+                _e2e_transition(order,'processing',note='Imported from completed KOJA delivery')
+                order=_e2e_order(order.get('id')) or order
+                if clean(order.get('status'))=='processing':
+                    _e2e_transition(order,'fulfilling',note='Imported from completed KOJA delivery')
+                    order=_e2e_order(order.get('id')) or order
+                if clean(order.get('status'))=='fulfilling':
+                    _e2e_transition(order,'completed',note='Imported from completed KOJA delivery')
+        except Exception: logger.exception('E2E delivery completion sync failed')
+    return link
+
+# Automatically attach existing delivery records whenever their completion endpoint is used.
+try:
+    _e2e_original_complete_delivery=app.view_functions.get('complete_delivery')
+    if _e2e_original_complete_delivery:
+        def _e2e_complete_delivery_wrapper(*args,**kwargs):
+            result=_e2e_original_complete_delivery(*args,**kwargs)
+            try:
+                tracking=kwargs.get('tracking_code') or (args[0] if args else None)
+                d=first_row('deliveries',{'tracking_code':tracking}) if tracking else None
+                if d: _e2e_auto_link_delivery(d)
+            except Exception: logger.exception('E2E V3 delivery auto-link failed')
+            return result
+        app.view_functions['complete_delivery']=_e2e_complete_delivery_wrapper
+except Exception: logger.exception('E2E V3 delivery wrapper install failed')
+
+# V3 payment bridge: the existing Flutterwave Market finalizer remains authoritative.
+try:
+    _e2e_original_finalize_market_order=_finalize_market_order
+    def _e2e_finalize_market_order_v3(order, tx):
+        result=_e2e_original_finalize_market_order(order, tx)
+        try:
+            if result:
+                src_id=str((result or order).get('id') or order.get('id'))
+                e2e=_e2e_auto_adapt_market_order(result or order)
+                if e2e:
+                    ref=(tx or {}).get('tx_ref') or (tx or {}).get('reference') or (tx or {}).get('id')
+                    _e2e_mark_paid_for_order(e2e,ref)
+                    link=_e2e_link('market_order',src_id)
+                    updated=_e2e_order(link.get('order_id')) if link and link.get('order_id') else e2e
+                    _e2e_sync_source_status('market_order',src_id,updated)
+        except Exception: logger.exception('E2E V3 Market payment bridge failed')
+        return result
+    _finalize_market_order=_e2e_finalize_market_order_v3
+except Exception: logger.exception('E2E V3 Market finalizer bridge install failed')
+
+# V3 Business bridge: every existing accounting sale posted through the shared ledger helper is linked.
+try:
+    _e2e_original_post_simple_accounting_entry=_post_simple_accounting_entry
+    def _e2e_post_simple_accounting_entry_v3(*args,**kwargs):
+        result=_e2e_original_post_simple_accounting_entry(*args,**kwargs)
+        try:
+            source_type=args[4] if len(args)>4 else kwargs.get('source_type')
+            source_id=args[5] if len(args)>5 else kwargs.get('source_id')
+            if source_type=='business_sale' and source_id:
+                row=first_row('koja_business_sales',{'id':source_id})
+                if row:
+                    e2e=_e2e_auto_adapt_business_sale(row)
+                    if e2e:
+                        _e2e_mark_paid_from_source('business_sale',source_id,row.get('payment_reference') or row.get('reference'))
+        except Exception: logger.exception('E2E V3 Business payment bridge failed')
+        return result
+    _post_simple_accounting_entry=_e2e_post_simple_accounting_entry_v3
+except Exception: logger.exception('E2E V3 Business bridge install failed')

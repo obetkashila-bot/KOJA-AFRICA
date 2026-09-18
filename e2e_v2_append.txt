@@ -1,0 +1,179 @@
+
+# ============================================================
+# KOJA AFRICA END-TO-END V2 — EXISTING SERVICE ADAPTERS
+# Connects existing Market, Business and Professional records to
+# the universal E2E transaction backbone without replacing them.
+# Connect+ remains untouched.
+# ============================================================
+KOJA_E2E_VERSION = '2026.09.18-V2'
+
+def _e2e_link(source_type, source_id):
+    return first_row('koja_e2e_source_links', {'source_type': source_type, 'source_id': str(source_id)})
+
+def _e2e_link_create(source_type, source_id, service_id=None, order_id=None, metadata=None):
+    old=_e2e_link(source_type, source_id)
+    if old: return old, None
+    return db_insert('koja_e2e_source_links', {
+        'id': _e2e_id(), 'source_type': clean(source_type), 'source_id': str(source_id),
+        'service_id': service_id, 'order_id': order_id, 'metadata': metadata or {},
+        'created_at': utc_now(), 'updated_at': utc_now()
+    })
+
+def _e2e_source_service(source_type, source_id, provider_id, business_id, name, description, price, currency='ZMW', mode='digital'):
+    link=_e2e_link(source_type, source_id)
+    if link and link.get('service_id'):
+        return _e2e_service(link.get('service_id')), link
+    row,err=db_insert('koja_e2e_services', {
+        'id':_e2e_id(),'provider_id':provider_id,'business_id':business_id,
+        'name':clean(name)[:180] or 'KOJA Service','description':clean(description)[:5000],
+        'category':clean(source_type)[:100],'price':_e2e_money(price),
+        'currency':clean(currency).upper()[:3] or 'ZMW','fulfillment_mode':mode,
+        'status':'published','created_at':utc_now(),'updated_at':utc_now()
+    })
+    if not row: return None,None
+    link,_=_e2e_link_create(source_type,source_id,row.get('id'),None,{'source_type':source_type})
+    return row,link
+
+def _e2e_source_order(service, customer_id, source_type, source_id, quantity=1, notes=None, mode=None):
+    link=_e2e_link(source_type,source_id)
+    if link and link.get('order_id'):
+        return _e2e_order(link.get('order_id')), link
+    order,err=_e2e_create_order(service,customer_id,quantity,notes,mode)
+    if not order: return None,None
+    link,_=_e2e_link_create(source_type,source_id,service.get('id'),order.get('id'),{'source_type':source_type})
+    return order,link
+
+def _e2e_adapter_authorized(source_type, source_id):
+    uid=_e2e_uid(); u=current_user() or {}
+    if u.get('is_admin'): return True
+    if source_type=='market_order':
+        row=first_row('koja_market_orders',{'id':source_id})
+        return bool(row and (str(row.get('buyer_id'))==str(uid) or str(row.get('seller_id'))==str(uid)))
+    if source_type=='business_sale':
+        row=first_row('koja_business_sales',{'id':source_id})
+        if not row: return False
+        return bool(_biz_owner(row.get('business_id')))
+    if source_type=='professional_appointment':
+        row=first_row('appointments',{'id':source_id})
+        return bool(row and (str(row.get('client_id'))==str(uid) or str(row.get('provider_id'))==str(uid)))
+    return False
+
+def _e2e_sync_source_status(source_type, source_id, e2e_order):
+    if not e2e_order: return
+    status=clean(e2e_order.get('status')); now=utc_now()
+    try:
+        if source_type=='market_order':
+            mapping={'paid':'paid','processing':'processing','fulfilling':'shipped','completed':'delivered','cancelled':'cancelled','refunded':'refunded'}
+            if status in mapping: db_update('koja_market_orders',{'id':source_id},{'status':mapping[status],'updated_at':now})
+        elif source_type=='business_sale':
+            mapping={'paid':'paid','processing':'processing','completed':'completed','cancelled':'cancelled','refunded':'refunded'}
+            if status in mapping: db_update('koja_business_sales',{'id':source_id},{'status':mapping[status],'updated_at':now})
+        elif source_type=='professional_appointment':
+            mapping={'requested':'requested','confirmed':'confirmed','paid':'paid','processing':'in_progress','fulfilling':'in_progress','completed':'completed','cancelled':'cancelled'}
+            if status in mapping: db_update('appointments',{'id':source_id},{'status':mapping[status],'updated_at':now})
+    except Exception:
+        logger.exception('E2E source status sync failed: %s/%s',source_type,source_id)
+
+@app.route('/api/e2e/adapters/market/order/<order_id>', methods=['POST'])
+@login_required
+def e2e_adapt_market_order(order_id):
+    if not _e2e_adapter_authorized('market_order',order_id): return _e2e_json({'ok':False,'error':'forbidden'},403)
+    src=first_row('koja_market_orders',{'id':order_id})
+    if not src: return _e2e_json({'ok':False,'error':'market_order_not_found'},404)
+    product=first_row('koja_market_products',{'id':src.get('product_id')}) or {}
+    service,link=_e2e_source_service('market_order',order_id,src.get('seller_id'),None,
+        product.get('title') or 'KOJA Market Order',product.get('description') or 'KOJA Market purchase',
+        src.get('item_amount') or src.get('total_amount') or src.get('amount') or product.get('price') or 0,
+        src.get('currency') or product.get('currency') or 'ZMW','physical' if str(product.get('product_type') or 'physical')=='physical' else 'digital')
+    if not service: return _e2e_json({'ok':False,'error':'e2e_service_create_failed'},500)
+    order,link=_e2e_source_order(service,src.get('buyer_id'),'market_order',order_id,max(1,int(src.get('quantity') or 1)),
+        'Imported from KOJA Market order '+str(src.get('order_number') or order_id),service.get('fulfillment_mode'))
+    if not order: return _e2e_json({'ok':False,'error':'e2e_order_create_failed'},500)
+    _e2e_sync_source_status('market_order',order_id,order)
+    return _e2e_json({'ok':True,'source':src,'service':service,'order':order,'link':link})
+
+@app.route('/api/e2e/adapters/business/sale/<sale_id>', methods=['POST'])
+@login_required
+def e2e_adapt_business_sale(sale_id):
+    if not _e2e_adapter_authorized('business_sale',sale_id): return _e2e_json({'ok':False,'error':'forbidden'},403)
+    src=first_row('koja_business_sales',{'id':sale_id})
+    if not src: return _e2e_json({'ok':False,'error':'business_sale_not_found'},404)
+    service,link=_e2e_source_service('business_sale',sale_id,src.get('business_id'),src.get('business_id'),
+        src.get('description') or src.get('sale_number') or 'Business Sale','KOJA Business POS sale',
+        src.get('total_amount') or src.get('amount') or 0,src.get('currency') or 'ZMW','physical')
+    if not service: return _e2e_json({'ok':False,'error':'e2e_service_create_failed'},500)
+    customer=src.get('customer_id') or _e2e_uid()
+    order,link=_e2e_source_order(service,customer,'business_sale',sale_id,max(1,int(src.get('quantity') or 1)),src.get('description'),service.get('fulfillment_mode'))
+    if not order: return _e2e_json({'ok':False,'error':'e2e_order_create_failed'},500)
+    _e2e_sync_source_status('business_sale',sale_id,order)
+    return _e2e_json({'ok':True,'source':src,'service':service,'order':order,'link':link})
+
+@app.route('/api/e2e/adapters/professional/appointment/<appointment_id>', methods=['POST'])
+@login_required
+def e2e_adapt_professional_appointment(appointment_id):
+    if not _e2e_adapter_authorized('professional_appointment',appointment_id): return _e2e_json({'ok':False,'error':'forbidden'},403)
+    src=first_row('appointments',{'id':appointment_id})
+    if not src: return _e2e_json({'ok':False,'error':'appointment_not_found'},404)
+    provider=first_row('service_providers',{'id':src.get('provider_id')}) or {}
+    price=provider.get('hourly_rate') or 0
+    service,link=_e2e_source_service('professional_appointment',appointment_id,provider.get('user_id') or src.get('provider_id'),None,
+        provider.get('profession') or 'Professional Service',provider.get('service_description') or provider.get('bio') or 'Professional appointment',price,provider.get('currency') or 'ZMW','booking')
+    if not service: return _e2e_json({'ok':False,'error':'e2e_service_create_failed'},500)
+    order,link=_e2e_source_order(service,src.get('client_id'),'professional_appointment',appointment_id,1,src.get('notes'),'booking')
+    if not order: return _e2e_json({'ok':False,'error':'e2e_order_create_failed'},500)
+    _e2e_sync_source_status('professional_appointment',appointment_id,order)
+    return _e2e_json({'ok':True,'source':src,'service':service,'order':order,'link':link})
+
+@app.route('/api/e2e/orders/<order_id>/complete', methods=['POST'])
+@login_required
+def e2e_order_complete(order_id):
+    order=_e2e_order(order_id)
+    if not order or not _e2e_can_order(order): return _e2e_json({'ok':False,'error':'forbidden'},403)
+    uid=_e2e_uid()
+    if str(order.get('provider_id'))!=str(uid) and str(order.get('business_id'))!=str(uid) and not (current_user() or {}).get('is_admin'):
+        return _e2e_json({'ok':False,'error':'provider_only'},403)
+    if clean(order.get('status')) not in ('processing','fulfilling'): return _e2e_json({'ok':False,'error':'order_not_ready_to_complete'},409)
+    updated,err=_e2e_transition(order,'completed',note='Provider marked service complete')
+    link=first_row('koja_e2e_source_links',{'order_id':order_id})
+    if link: _e2e_sync_source_status(link.get('source_type'),link.get('source_id'),updated)
+    if updated: _e2e_notify(order.get('customer_id'),'service','Service completed','Your KOJA service has been marked completed.','/e2e/orders/'+order_id,'order',order_id)
+    return _e2e_json({'ok':bool(updated),'order':updated,'error':err},200 if updated else 400)
+
+@app.route('/api/e2e/orders/<order_id>/fulfillment/status', methods=['POST'])
+@login_required
+def e2e_fulfillment_status(order_id):
+    order=_e2e_order(order_id)
+    if not order or not _e2e_can_order(order): return _e2e_json({'ok':False,'error':'forbidden'},403)
+    fulfillment=first_row('koja_e2e_fulfillments',{'order_id':order_id})
+    if not fulfillment: return _e2e_json({'ok':False,'error':'fulfillment_not_found'},404)
+    data=request.get_json(silent=True) or request.form; new=clean(data.get('status'))
+    allowed={'requested':{'accepted','cancelled'},'accepted':{'pickup','cancelled'},'pickup':{'in_transit','cancelled'},'in_transit':{'delivered','cancelled'},'delivered':{'confirmed'},'confirmed':set()}
+    if new not in allowed.get(clean(fulfillment.get('status')),set()): return _e2e_json({'ok':False,'error':'invalid_fulfillment_transition'},409)
+    if new=='confirmed':
+        code=clean(data.get('confirmation_code'))
+        if not code or code.upper()!=clean(fulfillment.get('confirmation_code')).upper(): return _e2e_json({'ok':False,'error':'invalid_confirmation_code'},409)
+    updated,err=db_update('koja_e2e_fulfillments',{'id':fulfillment.get('id')},{'status':new,'updated_at':utc_now()})
+    if updated and new=='delivered':
+        current=_e2e_order(order_id)
+        if current and clean(current.get('status')) in ('paid','processing'): _e2e_transition(current,'fulfilling',note='Fulfillment delivered; customer confirmation pending')
+    if updated and new=='confirmed':
+        current=_e2e_order(order_id)
+        if current and clean(current.get('status'))=='fulfilling': _e2e_transition(current,'completed',note='Customer confirmed fulfillment')
+    return _e2e_json({'ok':bool(updated),'fulfillment':updated,'error':err},200 if updated else 400)
+
+@app.route('/e2e')
+@login_required
+def e2e_dashboard():
+    uid=_e2e_uid()
+    customer=db_select('koja_e2e_orders',{'customer_id':uid},order='created_at.desc',limit=100) or []
+    provider=db_select('koja_e2e_orders',{'provider_id':uid},order='created_at.desc',limit=100) or []
+    business=db_select('koja_e2e_orders',{'business_id':uid},order='created_at.desc',limit=100) or []
+    seen={str(x.get('id')):x for x in customer+provider+business if x.get('id')}
+    orders=list(seen.values()); orders.sort(key=lambda x:str(x.get('created_at') or ''),reverse=True)
+    return render_page('KOJA End-to-End Services',"""
+<div class="hero"><h1>KOJA End-to-End Services</h1><p>One transaction lifecycle across Market, Business and Professional Services.</p></div>
+<div class="grid"><div class="stat"><div class="small">My orders</div><div class="big">{{ orders|length }}</div></div><div class="stat"><div class="small">Active</div><div class="big">{{ orders|selectattr('status','in',['requested','confirmed','paid','processing','fulfilling','disputed'])|list|length }}</div></div><div class="stat"><div class="small">Completed</div><div class="big">{{ orders|selectattr('status','in',['completed','settled'])|list|length }}</div></div></div>
+<div class="card"><h2>Transaction Pipeline</h2><p>Request → Confirm → Pay → Process → Fulfill → Complete → Settle</p></div>
+<div class="card"><h2>Recent Transactions</h2><table><tr><th>Service</th><th>Amount</th><th>Status</th><th>Created</th><th></th></tr>{% for o in orders %}<tr><td>{{ o.service_id }}</td><td>{{ o.gross_amount }} {{ o.currency }}</td><td><b>{{ o.status }}</b></td><td>{{ o.created_at }}</td><td><a class="btn" href="/api/e2e/orders/{{ o.id }}">API</a></td></tr>{% else %}<tr><td colspan="5">No end-to-end transactions yet.</td></tr>{% endfor %}</table></div>
+<div class="card"><h2>Existing Service Adapters</h2><p>Market orders, Business POS sales and Professional appointments can now be attached to the universal transaction lifecycle.</p></div>
+""",orders=orders)
