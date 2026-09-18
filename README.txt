@@ -1,19 +1,12 @@
-KOJA AFRICA CONNECT V2 — Calls + UI Upgrade
-Base: KOJA V12 Business Commerce Operations
+KOJA AFRICA CONNECT V7 - ROUTE SAFE
 
-Includes:
-- Improved Connect call UI
-- Voice calls
-- Video calls
-- Mute/unmute
-- Camera on/off
-- Incoming-call polling and answer/decline controls
-- Call history UI
-- Connect theme toggle using KOJA existing theme preference
-- Improved WebRTC signaling polling and connection state handling
-- Existing Connect database tables preserved
-- No SQL migration
-- Connect only; Business and other modules preserved from V12
+This patch is based on the current production app.py.
+It fixes the observed production error:
+GET /connect/call/?mode=video -> 404
 
-WebRTC still requires HTTPS and browser camera/microphone permission.
-For networks where direct WebRTC cannot establish a peer connection, configure a TURN server using a future TURN integration; the current upgrade keeps public STUN fallback and does not invent TURN credentials.
+The chat call buttons now preserve conversation_id when a direct member cannot be resolved at template render time. The new /connect/call/ compatibility route resolves the other participant from koja_conversation_members and redirects to the existing call route.
+
+No SQL migration.
+No other KOJA modules intentionally changed.
+
+Deploy app.py to the existing KOJA-AFRICA Render service.

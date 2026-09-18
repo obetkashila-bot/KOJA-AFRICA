@@ -859,7 +859,7 @@ th,td{border-bottom:1px solid var(--border);padding:9px;text-align:left;vertical
 .online{color:#177245;font-weight:700}
 .offline{color:#a62d2d;font-weight:700}
 footer{text-align:center;color:var(--muted);padding:30px}
-.actions{display:flex;gap:8px;flex-wrap:wrap}.actions .btn{touch-action:manipulation;-webkit-tap-highlight-color:transparent;position:relative;z-index:2}.actions .btn,.actions button{width:auto}
+.actions{display:flex;gap:8px;flex-wrap:wrap}.actions .btn,.actions button{width:auto}
 @keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}@keyframes logoFloat{0%,100%{transform:translateY(0) rotate(0deg)}50%{transform:translateY(-2px) rotate(1deg)}}@keyframes pulseSoft{0%,100%{box-shadow:0 0 0 0 rgba(25,167,184,.18)}50%{box-shadow:0 0 0 7px rgba(25,167,184,0)}}:focus-visible{outline:3px solid var(--focus);outline-offset:2px}.hero{animation:fadeUp .55s ease both}.stat{animation:fadeUp .5s ease both}.online{animation:pulseSoft 2.4s ease-in-out infinite}@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition:none!important;transform:none!important}}
 @media(max-width:760px){nav{padding:9px 12px}.nav-inner{position:relative;flex-wrap:wrap}.menu-toggle{display:block}.nav-links{display:none;width:100%;flex-direction:column;align-items:stretch;gap:3px;padding-top:8px}.nav-links.open{display:flex;animation:fadeUp .2s ease both}.nav-links>a{font-size:14px;padding:11px 12px;background:rgba(255,255,255,.05)}.menu-group{width:100%}.menu-group>button{width:100%;text-align:left;padding:11px 12px}.dropdown{position:static;width:100%;box-shadow:none;margin-top:4px;background:var(--surface)}.dropdown a{font-size:14px}.container{width:min(100% - 14px,1250px)}table{display:block;overflow-x:auto}#map{height:350px}.actions .btn,.actions button{width:100%}}
 @media(min-width:761px){.nav-links{display:flex!important}}
@@ -4284,7 +4284,7 @@ async function media(){return navigator.mediaDevices.getUserMedia({audio:true,vi
 let callTimer=null;
 function tellUnavailable(){const msg='This contact is not available. The call could not reach the professional. Please check your internet connection and try again later.'; state(' '+msg); try{if('speechSynthesis' in window){speechSynthesis.cancel(); const u=new SpeechSynthesisUtterance(msg); u.lang='en-US'; speechSynthesis.speak(u)}}catch(e){}}
 function failCall(){if(poll)clearInterval(poll); if(callTimer)clearTimeout(callTimer); if(pc){pc.getSenders().forEach(s=>{try{s.track&&s.track.stop()}catch(e){}}); pc.close(); pc=null} if(callId){fetch('/api/professional/call/'+callId+'/hangup',{method:'POST'}).catch(()=>{}); callId=null} tellUnavailable()}
-async function startCall(){try{if(!navigator.onLine)throw Error('No internet connection'); const stream=await media(); document.getElementById('local').srcObject=stream; pc=new RTCPeerConnection({iceServers:(()=>{const a=[{urls:'stun:stun.l.google.com:19302'}];const u={{ turn_urls|safe }},un={{ turn_user|safe }},cr={{ turn_cred|safe }};if(Array.isArray(u)&&u.length&&un&&cr)a.push({urls:u,username:un,credential:cr});return a})()}); pc.onconnectionstatechange=()=>{if(pc && ['failed','disconnected'].includes(pc.connectionState)) failCall()}; stream.getTracks().forEach(t=>pc.addTrack(t,stream)); pc.ontrack=e=>{const st=e.streams[0];const v=document.getElementById('remote'),a=document.getElementById('remoteAudio');v.srcObject=st;a.srcObject=st;v.volume=1;a.volume=1;if(window.AudioContext||window.webkitAudioContext){try{const C=window.AudioContext||window.webkitAudioContext,ctx=new C(),src=ctx.createMediaStreamSource(st),gain=ctx.createGain(),dst=ctx.createMediaStreamDestination();gain.gain.value=1.8;src.connect(gain);gain.connect(dst);const boosted=new MediaStream([...st.getVideoTracks(),...dst.stream.getAudioTracks()]);v.srcObject=boosted;a.srcObject=boosted;v.play().catch(()=>{});a.play().catch(()=>{});}catch(_){} }}; pc.onicecandidate=e=>{if(e.candidate && callId)fetch('/api/professional/call/'+callId+'/ice',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate.toJSON(),side:'caller'})}).catch(()=>{})}; const offer=await pc.createOffer(); await pc.setLocalDescription(offer); const r=await fetch('/api/professional/call/'+providerId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode,offer:offer.sdp})}); const d=await r.json(); if(!r.ok)throw Error(d.error||'Call failed'); callId=d.call_id; state('Calling professional…'); callTimer=setTimeout(failCall,30000); poll=setInterval(checkCall,1000)}catch(e){if(e.message&&(/internet|network|failed|available/i.test(e.message))) tellUnavailable(); else state('Could not start call: '+e.message)}}
+async function startCall(){try{if(!navigator.onLine)throw Error('No internet connection'); const stream=await media(); document.getElementById('local').srcObject=stream; pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]}); pc.onconnectionstatechange=()=>{if(pc && ['failed','disconnected'].includes(pc.connectionState)) failCall()}; stream.getTracks().forEach(t=>pc.addTrack(t,stream)); pc.ontrack=e=>{const st=e.streams[0];const v=document.getElementById('remote'),a=document.getElementById('remoteAudio');v.srcObject=st;a.srcObject=st;v.volume=1;a.volume=1;if(window.AudioContext||window.webkitAudioContext){try{const C=window.AudioContext||window.webkitAudioContext,ctx=new C(),src=ctx.createMediaStreamSource(st),gain=ctx.createGain(),dst=ctx.createMediaStreamDestination();gain.gain.value=1.8;src.connect(gain);gain.connect(dst);const boosted=new MediaStream([...st.getVideoTracks(),...dst.stream.getAudioTracks()]);v.srcObject=boosted;a.srcObject=boosted;v.play().catch(()=>{});a.play().catch(()=>{});}catch(_){} }}; pc.onicecandidate=e=>{if(e.candidate && callId)fetch('/api/professional/call/'+callId+'/ice',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:e.candidate.toJSON(),side:'caller'})}).catch(()=>{})}; const offer=await pc.createOffer(); await pc.setLocalDescription(offer); const r=await fetch('/api/professional/call/'+providerId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode,offer:offer.sdp})}); const d=await r.json(); if(!r.ok)throw Error(d.error||'Call failed'); callId=d.call_id; state('Calling professional…'); callTimer=setTimeout(failCall,30000); poll=setInterval(checkCall,1000)}catch(e){if(e.message&&(/internet|network|failed|available/i.test(e.message))) tellUnavailable(); else state('Could not start call: '+e.message)}}
 async function checkCall(){if(!callId)return; try{const r=await fetch('/api/professional/call/'+callId,{cache:'no-store'}); if(!r.ok)throw Error('Network error'); const d=await r.json(); if(d.call && ['ended','declined','failed'].includes(d.call.status)){failCall();return} if(d.answer && pc && !pc.currentRemoteDescription){await pc.setRemoteDescription({type:'answer',sdp:d.answer}); if(callTimer)clearTimeout(callTimer); state(' Connected');} for(const c of (d.callee_ice||[])){try{await pc.addIceCandidate(c)}catch(e){}}}catch(e){if(!navigator.onLine)failCall()}}
 window.addEventListener('offline',()=>{if(callId)failCall()});
 async function hang(){if(poll)clearInterval(poll); if(callTimer)clearTimeout(callTimer); if(pc){pc.getSenders().forEach(s=>{try{s.track&&s.track.stop()}catch(e){}});pc.close();pc=null} if(callId){await fetch('/api/professional/call/'+callId+'/hangup',{method:'POST'}).catch(()=>{});callId=null} state('Call ended')}
@@ -6696,7 +6696,7 @@ def connect_chat(conversation_id):
     uid=current_user()['id'];
     if not _conversation_member(conversation_id,uid): abort(403)
     members=db_select('koja_conversation_members',filters={'conversation_id':conversation_id},limit=100); other=next((m for m in members if str(m.get('user_id'))!=str(uid)),None); other_id=other.get('user_id') if other else None; c=first_row('koja_conversations',{'id':conversation_id}) or {}
-    return render_page('KOJA Chat',r'''<div class="card"><a href="{{ url_for('connect') }}">← Connect</a><h2> {{ name }}</h2><p class="small">Sent messages appear on the right. Received messages appear on the left.</p></div><div class="card" id="messages" style="min-height:300px;max-height:55vh;overflow:auto"></div><div class="card"><form id="sendForm"><input id="text" autocomplete="off" placeholder="Write a message…"><button>Send</button></form><form id="fileForm" enctype="multipart/form-data" style="margin-top:8px"><input id="file" type="file" accept="image/*,.pdf,.doc,.docx,.txt,.webp,.audio/*"><button type="submit"> Photo / File</button></form><div class="grid"><button type="button" id="voiceNote">️ Voice message</button><a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='voice') }}"> Voice Call</a><a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='video') }}"> Video Call</a>{% if c.get('conversation_type')=='group' %}<a class="btn" href="{{ url_for('connect_group_call',conversation_id=conversation_id,mode='video') }}"> Group Video</a><a class="btn secondary" href="{{ url_for('connect_group_call',conversation_id=conversation_id,mode='voice') }}"> Group Voice</a>{% endif %}</div></div><script>const cid={{ conversation_id|tojson }},me={{ user.id|tojson }};const box=document.getElementById('messages'),text=document.getElementById('text');function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}async function load(){let r=await fetch('/api/connect/messages/'+cid);if(!r.ok)return;let d=await r.json();box.innerHTML=d.messages.map(m=>{let mine=String(m.sender_id)===String(me);let body=m.message_type==='text'?'<div>'+esc(m.body)+'</div>':(m.file_url?'<div><a target="_blank" rel="noopener" href="'+esc(m.file_url)+'">'+esc(m.body||m.message_type)+'</a></div>':'<div>'+esc(m.body)+'</div>');return '<div style="display:flex;justify-content:'+(mine?'flex-end':'flex-start')+';margin:7px 0"><div style="max-width:78%;padding:10px 13px;border-radius:16px;background:var(--card);border:1px solid var(--border);text-align:left"><strong>'+esc(mine?'You':m.sender_name)+'</strong>'+body+'<div class="small">'+esc(m.created_at||'')+'</div></div></div>'}).join('');box.scrollTop=box.scrollHeight;}document.getElementById('sendForm').onsubmit=async e=>{e.preventDefault();let v=text.value.trim();if(!v)return;let r=await fetch('/api/connect/messages/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:v})});if(r.ok){text.value='';load();}};document.getElementById('fileForm').onsubmit=async e=>{e.preventDefault();let f=document.getElementById('file').files[0];if(!f)return;let fd=new FormData();fd.append('file',f);let r=await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});if(r.ok){document.getElementById('file').value='';load();}else alert('File could not be sent.');};load();setInterval(load,2000);let rec,parts=[];document.getElementById('voiceNote').onclick=async()=>{try{let st=await navigator.mediaDevices.getUserMedia({audio:true});rec=new MediaRecorder(st);parts=[];rec.ondataavailable=e=>parts.push(e.data);rec.onstop=async()=>{let b=new Blob(parts,{type:'audio/webm'}),fd=new FormData();fd.append('file',b,'voice.webm');await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});st.getTracks().forEach(t=>t.stop());load();};rec.start();setTimeout(()=>rec&&rec.state==='recording'&&rec.stop(),60000);}catch(e){alert('Microphone permission is required.');}};</script>''',conversation_id=conversation_id,name=_profile_name(other_id) if other_id else c.get('name','KOJA Chat'),c=c)
+    return render_page('KOJA Chat',r'''<div class="card"><a href="{{ url_for('connect') }}">← Connect</a><h2> {{ name }}</h2><p class="small">Sent messages appear on the right. Received messages appear on the left.</p></div><div class="card" id="messages" style="min-height:300px;max-height:55vh;overflow:auto"></div><div class="card"><form id="sendForm"><input id="text" autocomplete="off" placeholder="Write a message…"><button>Send</button></form><form id="fileForm" enctype="multipart/form-data" style="margin-top:8px"><input id="file" type="file" accept="image/*,.pdf,.doc,.docx,.txt,.webp,.audio/*"><button type="submit"> Photo / File</button></form><div class="grid"><button type="button" id="voiceNote">️ Voice message</button>{% if other_id %}<a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='voice') }}"> Voice Call</a><a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='video') }}"> Video Call</a>{% else %}<a class="btn" href="{{ url_for('connect_call_from_chat',conversation_id=conversation_id,mode='voice') }}"> Voice Call</a><a class="btn" href="{{ url_for('connect_call_from_chat',conversation_id=conversation_id,mode='video') }}"> Video Call</a>{% endif %}{% if c.get('conversation_type')=='group' %}<a class="btn" href="{{ url_for('connect_group_call',conversation_id=conversation_id,mode='video') }}"> Group Video</a><a class="btn secondary" href="{{ url_for('connect_group_call',conversation_id=conversation_id,mode='voice') }}"> Group Voice</a>{% endif %}</div></div><script>const cid={{ conversation_id|tojson }},me={{ user.id|tojson }};const box=document.getElementById('messages'),text=document.getElementById('text');function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}async function load(){let r=await fetch('/api/connect/messages/'+cid);if(!r.ok)return;let d=await r.json();box.innerHTML=d.messages.map(m=>{let mine=String(m.sender_id)===String(me);let body=m.message_type==='text'?'<div>'+esc(m.body)+'</div>':(m.file_url?'<div><a target="_blank" rel="noopener" href="'+esc(m.file_url)+'">'+esc(m.body||m.message_type)+'</a></div>':'<div>'+esc(m.body)+'</div>');return '<div style="display:flex;justify-content:'+(mine?'flex-end':'flex-start')+';margin:7px 0"><div style="max-width:78%;padding:10px 13px;border-radius:16px;background:var(--card);border:1px solid var(--border);text-align:left"><strong>'+esc(mine?'You':m.sender_name)+'</strong>'+body+'<div class="small">'+esc(m.created_at||'')+'</div></div></div>'}).join('');box.scrollTop=box.scrollHeight;}document.getElementById('sendForm').onsubmit=async e=>{e.preventDefault();let v=text.value.trim();if(!v)return;let r=await fetch('/api/connect/messages/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:v})});if(r.ok){text.value='';load();}};document.getElementById('fileForm').onsubmit=async e=>{e.preventDefault();let f=document.getElementById('file').files[0];if(!f)return;let fd=new FormData();fd.append('file',f);let r=await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});if(r.ok){document.getElementById('file').value='';load();}else alert('File could not be sent.');};load();setInterval(load,2000);let rec,parts=[];document.getElementById('voiceNote').onclick=async()=>{try{let st=await navigator.mediaDevices.getUserMedia({audio:true});rec=new MediaRecorder(st);parts=[];rec.ondataavailable=e=>parts.push(e.data);rec.onstop=async()=>{let b=new Blob(parts,{type:'audio/webm'}),fd=new FormData();fd.append('file',b,'voice.webm');await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});st.getTracks().forEach(t=>t.stop());load();};rec.start();setTimeout(()=>rec&&rec.state==='recording'&&rec.stop(),60000);}catch(e){alert('Microphone permission is required.');}};</script>''',conversation_id=conversation_id,name=_profile_name(other_id) if other_id else c.get('name','KOJA Chat'),c=c)
 
 @app.route('/api/connect/messages/<conversation_id>',methods=['GET','POST'])
 @login_required
@@ -6874,31 +6874,16 @@ def connect_status_media():
             delete_storage_path(path)
     return redirect(url_for('connect_status'))
 
-@app.route('/connect/call/answer/<call_id>')
-@login_required
-def connect_call_answer_page_alias(call_id):
-    # Compatibility alias: older Connect UI used /connect/call/answer/<id>.
-    return redirect(url_for('connect_answer', call_id=call_id))
-
 @app.route('/connect/answer/<call_id>')
 @login_required
 def connect_answer(call_id):
     uid=current_user()['id']; c=first_row('koja_calls',{'id':call_id})
     if not c or str(c.get('callee_id'))!=str(uid) or c.get('status') not in ('ringing','answered'):
-        flash('This call is no longer available.', 'danger')
-        return redirect(url_for('connect_calls'))
-    turn_urls=json.dumps([x.strip() for x in os.environ.get('KOJA_TURN_URLS','').split(',') if x.strip()])
-    turn_user=json.dumps(os.environ.get('KOJA_TURN_USERNAME',''))
-    turn_cred=json.dumps(os.environ.get('KOJA_TURN_CREDENTIAL',''))
-    return render_page('Answer KOJA Call',r'''<div class="card"><h2> Incoming {{ c.mode|title }} Call</h2><p>From <strong>{{ name }}</strong></p><div id="state">Connecting…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px"></video></div><audio id="remoteAudio" autoplay playsinline controls style="width:100%;display:none;margin-top:10px"></audio><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button id="mute" class="btn">Mute</button>{% if c.mode=='video' %}<button id="camera" class="btn">Camera Off</button>{% endif %}<button id="hang" class="btn danger">End Call</button></div></div><script>
+        abort(404)
+    return render_page('Answer KOJA Call',r'''<div class="card"><h2> Incoming {{ c.mode|title }} Call</h2><p>From <strong>{{ name }}</strong></p><div id="state">Connecting…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px"></video></div><button id="hang" class="btn danger">End Call</button></div><script>
 const cid={{ call_id|tojson }},mode={{ c.mode|tojson }};
-const turnUrls={{ turn_urls|safe }},turnUser={{ turn_user|safe }},turnCred={{ turn_cred|safe }};
-let pc=null,timer=null,iceTimer=null,callTimeout=null,remoteIce=new Set(),localStream=null,reconnectTimer=null;
+let pc=null,timer=null,iceTimer=null,remoteIce=new Set();
 const state=document.getElementById('state');
-const iceServers=[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'}];
-if(Array.isArray(turnUrls)&&turnUrls.length&&turnUser&&turnCred)iceServers.push({urls:turnUrls,username:turnUser,credential:turnCred});
-function stopAll(){clearInterval(timer);clearInterval(iceTimer);clearTimeout(callTimeout);clearTimeout(reconnectTimer);if(localStream)localStream.getTracks().forEach(t=>t.stop());if(pc){try{pc.close()}catch(e){}}pc=null;}
-function setState(v){state.textContent=v;}
 async function api(u,o){let r=await fetch(u,o);if(!r.ok)throw 0;return r.json();}
 async function sendIce(candidate){
   try{await api('/api/connect/call/ice/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate})});}catch(e){}
@@ -6919,36 +6904,31 @@ async function start(){
   try{
     let x=await api('/api/connect/call/check/'+cid);
     if(!x.call.offer)throw 0;
-    pc=new RTCPeerConnection({iceServers});
-    localStream=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});
-    document.getElementById('local').srcObject=localStream;
-    if(mode==='voice'){document.getElementById('local').style.display='none';document.getElementById('remote').style.display='none';document.getElementById('remoteAudio').style.display='block';}
-    localStream.getTracks().forEach(t=>pc.addTrack(t,localStream));
-    pc.ontrack=e=>{const st=e.streams[0],v=document.getElementById('remote'),a=document.getElementById('remoteAudio');if(mode==='video'){v.srcObject=st;v.play().catch(()=>{});}a.srcObject=st;a.play().catch(()=>{});};
+    pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
+    let st=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});
+    document.getElementById('local').srcObject=st;
+    st.getTracks().forEach(t=>pc.addTrack(t,st));
+    pc.ontrack=e=>{const st=e.streams[0],v=document.getElementById('remote');v.srcObject=st;v.volume=1;if(window.AudioContext||window.webkitAudioContext){try{const C=window.AudioContext||window.webkitAudioContext,ctx=new C(),src=ctx.createMediaStreamSource(st),gain=ctx.createGain(),dst=ctx.createMediaStreamDestination();gain.gain.value=1.8;src.connect(gain);const boosted=new MediaStream([...st.getVideoTracks(),...dst.stream.getAudioTracks()]);gain.connect(dst);v.srcObject=boosted;v.play().catch(()=>{});}catch(_){} }};
     pc.onicecandidate=e=>{if(e.candidate)sendIce(e.candidate.toJSON?e.candidate.toJSON():e.candidate);};
-    pc.onconnectionstatechange=()=>{if(!pc)return;const cs=pc.connectionState;if(cs==='connected')setState('Connected');else if(cs==='connecting')setState('Connecting…');else if(cs==='disconnected'){setState('Reconnecting…');clearTimeout(reconnectTimer);reconnectTimer=setTimeout(()=>{if(pc&&pc.connectionState==='disconnected'){try{pc.restartIce()}catch(e){}}},1200);}else if(cs==='failed'){setState('Connection failed');}};
+    pc.onconnectionstatechange=()=>{if(['failed','closed'].includes(pc.connectionState)){state.textContent='Connection failed';}};
     await pc.setRemoteDescription({type:'offer',sdp:x.call.offer});
     await pullIce();
     let ans=await pc.createAnswer();
     await pc.setLocalDescription(ans);
     await api('/api/connect/call/answer/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({answer:ans.sdp})});
     state.textContent='Connected';
-    clearTimeout(callTimeout);
     iceTimer=setInterval(pullIce,1000);
     timer=setInterval(async()=>{
       try{
         let z=await api('/api/connect/call/check/'+cid);
-        if(['ended','rejected'].includes(z.call.status)){clearInterval(timer);clearInterval(iceTimer);try{pc.close()}catch(e){}state.textContent=z.call.status==='rejected'?'Call declined':'Call ended';}
+        if(z.call.status==='ended'){clearInterval(timer);clearInterval(iceTimer);pc.close();state.textContent='Call ended';}
       }catch(e){}
     },1500);
-  }catch(e){setState('Could not answer this call.');stopAll();}
+  }catch(e){state.textContent='Could not answer this call.';}
 }
-document.getElementById('hang').onclick=async()=>{try{await fetch('/api/connect/call/end/'+cid,{method:'POST'});}catch(e){}stopAll();setState('Call ended');};
-document.getElementById('mute').onclick=()=>{if(!localStream)return;const t=localStream.getAudioTracks()[0];if(t){t.enabled=!t.enabled;document.getElementById('mute').textContent=t.enabled?'Mute':'Unmute';}};
-const camera=document.getElementById('camera');if(camera)camera.onclick=()=>{const t=localStream&&localStream.getVideoTracks()[0];if(t){t.enabled=!t.enabled;camera.textContent=t.enabled?'Camera Off':'Camera On';}};
-callTimeout=setTimeout(async()=>{try{await fetch('/api/connect/call/end/'+cid,{method:'POST'});}catch(e){}stopAll();setState('Call timed out');},60000);
+document.getElementById('hang').onclick=()=>{fetch('/api/connect/call/end/'+cid,{method:'POST'});clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();state.textContent='Call ended';};
 start();
-</script>''',c=c,call_id=call_id,name=_profile_name(c.get('caller_id')),turn_urls=turn_urls,turn_user=turn_user,turn_cred=turn_cred)
+</script>''',c=c,call_id=call_id,name=_profile_name(c.get('caller_id')))
 
 @app.route('/api/connect/call/ice/<call_id>',methods=['POST','GET'])
 @login_required
@@ -7043,40 +7023,94 @@ def connect_call_answer(call_id):
 @app.route('/connect/calls')
 @login_required
 def connect_calls():
-    uid=current_user()['id']; rows=(db_select('koja_calls',filters={'caller_id':uid},order='created_at.desc',limit=50)+db_select('koja_calls',filters={'callee_id':uid},order='created_at.desc',limit=50)); rows=sorted(rows,key=lambda x:x.get('created_at',''),reverse=True)[:50]
-    return render_page('KOJA Calls',r'''<style>.connect-shell{max-width:1000px;margin:auto}.connect-hero{padding:22px;border-radius:22px;background:linear-gradient(135deg,rgba(20,40,80,.98),rgba(12,18,32,.98));color:#fff}.connect-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.call-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}.call-card{border:1px solid var(--border);border-radius:18px;padding:16px}.call-actions{display:flex;gap:8px;flex-wrap:wrap}.theme-chip{border:1px solid rgba(255,255,255,.25);background:transparent;color:#fff;border-radius:999px;padding:9px 13px}</style><div class="connect-shell"><div class="connect-hero"><h2>KOJA Connect+</h2><p>Messaging, voice calls, video calls, groups and presence.</p><div class="connect-toolbar"><a class="btn" href="{{ url_for('connect') }}">Connect Home</a><button class="theme-chip" type="button" onclick="toggleConnectTheme()">Theme</button></div></div><div id="incoming" class="call-card" style="display:none;margin:14px 0"></div><div class="card"><h3>Call History</h3><div class="call-grid">{% for c in rows %}<div class="call-card"><strong>{{ c.mode|title }} Call</strong><p class="small">{{ c.status|title }} · {{ c.created_at }}</p>{% if c.callee_id|string == user.id|string and c.status=='ringing' %}<a class="btn" href="{{ url_for('connect_answer',call_id=c.id) }}">Answer</a>{% endif %}</div>{% else %}<p>No calls yet.</p>{% endfor %}</div></div></div><script>function applyConnectTheme(){document.documentElement.dataset.kojaTheme=localStorage.getItem('koja_theme')||'system'}function toggleConnectTheme(){const c=localStorage.getItem('koja_theme')||'system';localStorage.setItem('koja_theme',c==='light'?'dark':c==='dark'?'system':'light');applyConnectTheme()}applyConnectTheme();function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}async function incoming(){try{const r=await fetch('/api/connect/calls/incoming',{cache:'no-store'});if(!r.ok)return;const d=await r.json(),c=(d.calls||[])[0],box=document.getElementById('incoming');if(!c){box.style.display='none';return}box.style.display='block';box.innerHTML='<strong>Incoming '+esc(c.mode||'video')+' call</strong><p>From '+esc(c.caller_name||'KOJA user')+'</p><div class="call-actions"><a class="btn" href="/connect/call/answer/'+encodeURIComponent(c.id)+'">Answer</a><button class="btn danger" onclick="rejectCall(\''+c.id+'\')">Decline</button></div>'}catch(e){}}async function rejectCall(id){await fetch('/api/connect/call/reject/'+encodeURIComponent(id),{method:'POST'});incoming()}incoming();setInterval(incoming,2000)</script>''',rows=rows)
+    uid=current_user()['id']; rows=db_select('koja_calls',filters={'caller_id':uid},order='created_at.desc',limit=50)+db_select('koja_calls',filters={'callee_id':uid},order='created_at.desc',limit=50); rows=sorted(rows,key=lambda x:x.get('created_at',''),reverse=True)[:50]
+    return render_page('KOJA Calls',r'''<div class="card"><h2> KOJA Call History</h2>{% for c in rows %}<div class="card"><strong>{{ c.mode|title }}</strong> — {{ c.status }}<div class="small">{{ c.created_at }}</div>{% if c.callee_id|string == user.id|string and c.status=='ringing' %}<a class="btn" href="{{ url_for('connect_answer',call_id=c.id) }}">Answer</a>{% endif %}</div>{% else %}<p>No calls yet.</p>{% endfor %}</div>''',rows=rows)
 
-@app.route('/api/connect/calls/incoming')
+@app.route('/connect/call/')
 @login_required
-def connect_incoming_calls():
-    uid=current_user()['id']; rows=db_select('koja_calls',filters={'callee_id':uid,'status':'ringing'},order='created_at.desc',limit=10) or []
-    for r in rows:r['caller_name']=_profile_name(r.get('caller_id'))
-    return jsonify(ok=True,calls=rows)
+def connect_call_from_chat():
+    conversation_id=clean(request.args.get('conversation_id'))
+    mode=clean(request.args.get('mode','video'))
+    uid=current_user()['id']
+    if not conversation_id or not _conversation_member(conversation_id,uid) or mode not in ('voice','video'):
+        abort(404)
+    members=db_select('koja_conversation_members',filters={'conversation_id':conversation_id},limit=100)
+    other=next((m for m in members if str(m.get('user_id'))!=str(uid)),None)
+    if not other or not other.get('user_id'):
+        abort(404)
+    return redirect(url_for('connect_call',user_id=other['user_id'],mode=mode))
 
 @app.route('/connect/call/<user_id>')
 @login_required
 def connect_call(user_id):
-    uid=current_user()['id']; mode=clean(request.args.get('mode','video')).lower()
-    if user_id==uid or not find_user_by_id(user_id) or mode not in ('voice','video'):
-        flash('The selected KOJA user or call mode is not available.', 'danger')
-        return redirect(url_for('connect'))
+    uid=current_user()['id']; mode=clean(request.args.get('mode','video'))
+    if user_id==uid or not find_user_by_id(user_id) or mode not in ('voice','video'):abort(404)
     c=_direct_conversation(uid,user_id)
     if not c:return 'Run KOJA Connect SQL first.',500
-    turn_urls=json.dumps([x.strip() for x in os.environ.get('KOJA_TURN_URLS','').split(',') if x.strip()])
-    turn_user=json.dumps(os.environ.get('KOJA_TURN_USERNAME',''))
-    turn_cred=json.dumps(os.environ.get('KOJA_TURN_CREDENTIAL',''))
-    return render_page('KOJA Call',r'''<style>.call-shell{max-width:1000px;margin:auto}.call-stage{position:relative;background:#07101d;border-radius:24px;padding:10px;min-height:55vh;overflow:hidden}.call-remote{width:100%;height:55vh;object-fit:cover;background:#02060c;border-radius:18px}.call-local{position:absolute;right:24px;top:24px;width:180px;max-width:32%;aspect-ratio:16/10;object-fit:cover;background:#111;border-radius:14px;border:2px solid rgba(255,255,255,.5)}.call-top{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:12px}.call-controls{display:flex;justify-content:center;gap:10px;flex-wrap:wrap;margin-top:14px}.call-control{border:0;border-radius:999px;padding:13px 17px;cursor:pointer}.call-end{background:#b42318;color:#fff}.call-status{font-weight:600}.voice-placeholder{display:flex;align-items:center;justify-content:center;height:55vh;color:#fff;font-size:22px}.call-toggle{background:var(--card);color:var(--text);border:1px solid var(--border)}</style><div class="call-shell"><div class="call-top"><div><h2 style="margin:0">KOJA {{ mode|title }} Call</h2><div class="small">{{ name }}</div></div><div id="state" class="call-status">Preparing call…</div></div><div class="call-stage">{% if mode=='video' %}<video id="remote" class="call-remote" autoplay playsinline></video><video id="local" class="call-local" autoplay muted playsinline></video>{% else %}<div class="voice-placeholder">KOJA Voice Call<br><span class="small">{{ name }}</span></div><audio id="remoteAudio" autoplay></audio>{% endif %}</div><div class="call-controls"><button id="mute" class="call-control call-toggle">Mute</button>{% if mode=='video' %}<button id="camera" class="call-control call-toggle">Camera Off</button>{% endif %}<button id="hang" class="call-control call-end">End Call</button></div></div><script>
-window.KOJA_TURN_URLS={{ turn_urls|safe }};window.KOJA_TURN_USERNAME={{ turn_user|safe }};window.KOJA_TURN_CREDENTIAL={{ turn_cred|safe }};
-const target={{ user_id|tojson }},mode={{ mode|tojson }};let callId=null,pc=null,timer=null,iceTimer=null,remoteIce=new Set(),localStream=null;const state=document.getElementById('state');const iceServers=[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'}];if(Array.isArray(window.KOJA_TURN_URLS)&&window.KOJA_TURN_URLS.length&&window.KOJA_TURN_USERNAME&&window.KOJA_TURN_CREDENTIAL)iceServers.push({urls:window.KOJA_TURN_URLS,username:window.KOJA_TURN_USERNAME,credential:window.KOJA_TURN_CREDENTIAL});async function api(u,o){const r=await fetch(u,o);if(!r.ok){let d={};try{d=await r.json()}catch(e){}throw Error(d.error||'Network error')}return r.json()}function setState(x){state.textContent=x}async function sendIce(candidate){if(!callId)return;try{await api('/api/connect/call/ice/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate})})}catch(e){}}async function pullIce(){if(!callId||!pc||!pc.remoteDescription)return;try{const x=await api('/api/connect/call/ice/'+callId);for(const c of (x.candidates||[])){const k=JSON.stringify(c);if(remoteIce.has(k))continue;remoteIce.add(k);try{await pc.addIceCandidate(c)}catch(e){}}}catch(e){}}function cleanup(){clearInterval(timer);clearInterval(iceTimer);clearTimeout(window.callTimeout);if(localStream)localStream.getTracks().forEach(t=>t.stop());if(pc){try{pc.close()}catch(e){}}pc=null}async function start(){try{if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)throw Error('Camera/microphone access is not supported');if(!navigator.onLine)throw Error('No internet connection');const created=await api('/api/connect/call/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({callee_id:target,mode})});callId=created.call.id;pc=new RTCPeerConnection({iceServers});localStream=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});if(mode==='video')document.getElementById('local').srcObject=localStream;localStream.getTracks().forEach(t=>pc.addTrack(t,localStream));pc.ontrack=e=>{const stream=e.streams[0];if(mode==='video'){document.getElementById('remote').srcObject=stream;document.getElementById('remote').play().catch(()=>{})}else{document.getElementById('remoteAudio').srcObject=stream;document.getElementById('remoteAudio').play().catch(()=>{})}};pc.onicecandidate=e=>{if(e.candidate)sendIce(e.candidate.toJSON?e.candidate.toJSON():e.candidate)};pc.onconnectionstatechange=()=>{if(!pc)return;const cs=pc.connectionState;if(cs==='connected')setState('Connected');else if(cs==='connecting')setState('Connecting…');else if(cs==='disconnected'){setState('Reconnecting…');setTimeout(()=>{if(pc&&pc.connectionState==='disconnected'){try{pc.restartIce()}catch(e){}}},1200);}else if(['failed','closed'].includes(cs))setState('Connection lost')};const offer=await pc.createOffer({offerToReceiveAudio:true,offerToReceiveVideo:mode==='video'});await pc.setLocalDescription(offer);await api('/api/connect/call/offer/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({offer:offer.sdp})});setState('Ringing…');window.callTimeout=setTimeout(async()=>{try{await fetch('/api/connect/call/end/'+callId,{method:'POST'})}catch(e){}cleanup();setState('Call timed out')},60000);iceTimer=setInterval(pullIce,800);timer=setInterval(async()=>{try{await api('/api/connect/call/heartbeat/'+callId,{method:'POST'});const x=await api('/api/connect/call/check/'+callId);if(['ended','rejected'].includes(x.call.status)){setState(x.call.status==='rejected'?'Call declined':'Call ended');cleanup();return}if(x.call.answer&&!pc.currentRemoteDescription){await pc.setRemoteDescription({type:'answer',sdp:x.call.answer});await pullIce();setState('Connected')}}catch(e){setState('Reconnecting…')}},1000)}catch(e){setState(e.message||'Could not start call');cleanup()}}document.getElementById('mute').onclick=()=>{if(!localStream)return;const t=localStream.getAudioTracks()[0];if(t){t.enabled=!t.enabled;document.getElementById('mute').textContent=t.enabled?'Mute':'Unmute'}};const cam=document.getElementById('camera');if(cam)cam.onclick=()=>{const t=localStream&&localStream.getVideoTracks()[0];if(t){t.enabled=!t.enabled;cam.textContent=t.enabled?'Camera Off':'Camera On'}};document.getElementById('hang').onclick=async()=>{if(callId)await fetch('/api/connect/call/end/'+callId,{method:'POST'}).catch(()=>{});cleanup();setState('Call ended')};window.addEventListener('offline',()=>setState('Network disconnected'));start();
-</script>''',user_id=user_id,mode=mode,name=_profile_name(user_id),turn_urls=turn_urls,turn_user=turn_user,turn_cred=turn_cred)
+    return render_page('KOJA Call',r'''<div class="card"><h2> KOJA {{ mode|title }} Call</h2><p>Calling <strong>{{ name }}</strong></p><div id="state">Connecting…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px"></video></div><button id="hang" class="btn danger">End Call</button></div><script>
+const target={{ user_id|tojson }},mode={{ mode|tojson }};
+let callId=null,pc=null,timer=null,iceTimer=null,remoteIce=new Set(),started=Date.now();
+const state=document.getElementById('state');
+const unavailable='This contact is not available because the internet or network connection could not be reached.';
+function speak(){if('speechSynthesis'in window){speechSynthesis.cancel();speechSynthesis.speak(new SpeechSynthesisUtterance(unavailable));}}
+function fail(msg){state.textContent=msg||unavailable;speak();clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();}
+async function api(u,o){let r=await fetch(u,o);if(!r.ok)throw 0;return r.json();}
+async function sendIce(candidate){
+  try{await api('/api/connect/call/ice/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate})});}catch(e){}
+}
+async function pullIce(){
+  if(!callId||!pc||!pc.remoteDescription)return;
+  try{
+    let x=await api('/api/connect/call/ice/'+callId);
+    for(const candidate of (x.candidates||[])){
+      const key=JSON.stringify(candidate);
+      if(remoteIce.has(key))continue;
+      remoteIce.add(key);
+      try{await pc.addIceCandidate(candidate);}catch(e){}
+    }
+  }catch(e){}
+}
+async function start(){
+  try{
+    if(!navigator.onLine)throw 0;
+    let c=await api('/api/connect/call/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({callee_id:target,mode})});
+    callId=c.call.id;
+    pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
+    let st=await navigator.mediaDevices.getUserMedia({audio:true,video:mode==='video'});
+    document.getElementById('local').srcObject=st;
+    st.getTracks().forEach(t=>pc.addTrack(t,st));
+    pc.ontrack=e=>{const st=e.streams[0],v=document.getElementById('remote');v.srcObject=st;v.volume=1;if(window.AudioContext||window.webkitAudioContext){try{const C=window.AudioContext||window.webkitAudioContext,ctx=new C(),src=ctx.createMediaStreamSource(st),gain=ctx.createGain(),dst=ctx.createMediaStreamDestination();gain.gain.value=1.8;src.connect(gain);const boosted=new MediaStream([...st.getVideoTracks(),...dst.stream.getAudioTracks()]);gain.connect(dst);v.srcObject=boosted;v.play().catch(()=>{});}catch(_){} }};
+    pc.onicecandidate=e=>{if(e.candidate)sendIce(e.candidate.toJSON?e.candidate.toJSON():e.candidate);};
+    pc.onconnectionstatechange=()=>{if(['failed','closed'].includes(pc.connectionState))fail();};
+    let offer=await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await api('/api/connect/call/offer/'+callId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({offer:offer.sdp})});
+    state.textContent='Ringing…';
+    iceTimer=setInterval(pullIce,1000);
+    timer=setInterval(async()=>{
+      if(Date.now()-started>120000){fail();return;}
+      try{
+        let x=await api('/api/connect/call/check/'+callId);
+        if(x.call.status==='ended'||x.call.status==='rejected'){fail();return;}
+        if(x.call.answer&&!pc.currentRemoteDescription){
+          await pc.setRemoteDescription({type:'answer',sdp:x.call.answer});
+          state.textContent='Connected';
+          pullIce();
+        }
+      }catch(e){fail();}
+    },1500);
+  }catch(e){fail();}
+}
+document.getElementById('hang').onclick=()=>{if(callId)fetch('/api/connect/call/end/'+callId,{method:'POST'});clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();state.textContent='Call ended';};
+window.addEventListener('offline',()=>fail());
+start();
+</script>''',user_id=user_id,mode=mode,name=_profile_name(user_id))
 
 @app.route('/api/connect/call/create',methods=['POST'])
 @login_required
 def connect_call_create():
     uid=current_user()['id']; d=request.get_json(silent=True) or {}; callee=clean(d.get('callee_id')); mode=d.get('mode','video')
     if callee==uid or not find_user_by_id(callee) or mode not in ('voice','video'):return jsonify(error='Invalid call'),400
-    active=db_select('koja_calls',filters={'callee_id':callee,'status':'ringing'},limit=1) or []
-    if active:return jsonify(error='This user is already receiving a call.'),409
     c=_direct_conversation(uid,callee); row,err=db_insert('koja_calls',{'id':str(uuid.uuid4()),'conversation_id':c['id'],'caller_id':uid,'callee_id':callee,'mode':mode,'status':'ringing','created_at':utc_now()})
     if err:return jsonify(error=err),500
     notify_user(callee,f'Incoming {mode} call',f'{_profile_name(uid)} is calling you.','call',row['id'],'/connect/calls');return jsonify(call=row)
@@ -7094,27 +7128,6 @@ def connect_call_check(call_id):
     uid=str(current_user()['id']);c=first_row('koja_calls',{'id':call_id})
     if not c or uid not in (str(c.get('caller_id')),str(c.get('callee_id'))):return jsonify(error='Forbidden'),403
     return jsonify(call=c)
-
-@app.route('/api/connect/call/reject/<call_id>',methods=['POST'])
-@login_required
-def connect_call_reject(call_id):
-    uid=str(current_user()['id']); c=first_row('koja_calls',{'id':call_id})
-    if not c or str(c.get('callee_id'))!=uid:
-        return jsonify(error='Forbidden'),403
-    if str(c.get('status') or '').lower() not in ('ringing','answered'):
-        return jsonify(ok=True,status=c.get('status'))
-    updated,err=db_update('koja_calls',{'id':call_id},{'status':'rejected','ended_at':utc_now()})
-    if err:return jsonify(error=str(err)[:500]),500
-    return jsonify(ok=True,status='rejected')
-
-@app.route('/api/connect/call/heartbeat/<call_id>',methods=['POST'])
-@login_required
-def connect_call_heartbeat(call_id):
-    uid=str(current_user()['id']); c=first_row('koja_calls',{'id':call_id})
-    if not c or uid not in (str(c.get('caller_id')),str(c.get('callee_id'))):
-        return jsonify(error='Forbidden'),403
-    # Lightweight liveness endpoint; no schema change required.
-    return jsonify(ok=True,status=c.get('status'),server_time=utc_now())
 
 @app.route('/api/connect/call/end/<call_id>',methods=['POST'])
 @login_required
@@ -7839,7 +7852,7 @@ def global_business_payouts(business_id):
 @login_required
 def koja_business():
     uid=(current_user() or {}).get('id'); businesses=db_select('koja_businesses',{'owner_id':uid},order='created_at.desc',limit=50) or []
-    return render_page('KOJA Business',r'''<div class="hero"><h1>KOJA Business</h1><p>Run your business from one platform: POS, inventory, accounting, invoices, customers, suppliers, payroll, online store, AI, payments and delivery.</p><div class="actions"><a class="btn" href="{{ url_for('business_new') }}">+ Create Business</a></div></div>{% if businesses %}<div class="grid">{% for b in businesses %}<div class="card"><h2>{{ b.name }}</h2><p>{{ b.category or 'Business workspace' }}{% if b.location %} · {{ b.location }}{% endif %}</p><div class="actions"><a class="btn" href="{{ url_for('business_dashboard',business_id=b.id) }}">Open Business</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='pos') }}">POS / Inventory</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='commerce') }}">Commerce Hub</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='store') }}">Online Store</a></div></div>{% endfor %}</div>{% else %}<div class="card"><h3>No businesses yet</h3><p>Create your first business to activate POS, inventory, commerce, accounting and the other modules.</p><a class="btn" href="{{ url_for('business_new') }}">Create Business</a></div>{% endif %}<div class="grid"><div class="card"><h3>POS & Inventory</h3><p>Record sales, products, stock and stock movements.</p></div><div class="card"><h3>Accounting</h3><p>Track income, expenses and profit/loss.</p></div><div class="card"><h3>CRM & Payroll</h3><p>Manage customers, suppliers, employees and payroll.</p></div><div class="card"><h3>Commerce</h3><p>Publish products, accept customer orders, manage fulfilment and connect payments and delivery.</p></div><div class="card"><h3>AI Assistant</h3><p>Use KOJA AI for business analysis and planning.</p></div><div class="card"><h3>Payments & Delivery</h3><p>Connect commerce to KOJA payment and delivery workflows.</p></div></div>''',businesses=businesses)
+    return render_page('KOJA Business',r'''<div class="hero"><h1> KOJA Business</h1><p>Run your business from one platform: POS, inventory, accounting, invoices, customers, suppliers, payroll, online store, AI, payments and delivery.</p><div class="actions"><a class="btn" href="{{ url_for('business_new') }}">+ Create Business</a>{% for b in businesses %}<a class="btn secondary" href="{{ url_for('business_dashboard',business_id=b.id) }}">{{ b.name }}</a>{% endfor %}</div></div><div class="grid"><div class="card"><h3>POS</h3><p>Record sales and issue receipts.</p></div><div class="card"><h3>Inventory</h3><p>Products, stock and stock movements.</p></div><div class="card"><h3>Accounting</h3><p>Income, expenses and profit/loss.</p></div><div class="card"><h3>CRM</h3><p>Customers and suppliers.</p></div><div class="card"><h3>Payroll</h3><p>Employees and payroll records.</p></div><div class="card"><h3>Online Store</h3><p>Connect your business catalogue to KOJA Market.</p></div><div class="card"><h3>AI Assistant</h3><p>Use KOJA AI for business analysis and planning.</p></div><div class="card"><h3>Payments & Delivery</h3><p>Connect commerce to KOJA payment and delivery workflows.</p></div></div>''',businesses=businesses)
 
 @app.route('/business/new',methods=['GET','POST'])
 @login_required
@@ -7864,47 +7877,6 @@ def business_new():
         return redirect(url_for('business_dashboard',business_id=row.get('id')))
     return render_page('Create Business',r'''<div class="hero"><h1>Create a Business</h1><p>Set up your KOJA Business workspace.</p></div><div class="card"><form method="post"><label>KOJA Business Number</label><input value="Generated automatically by KOJA on registration" readonly><label>Business name</label><input name="name" required><label>Category</label><input name="category"><label>Phone</label><input name="phone"><label>Location</label><input name="location"><label>TPIN</label><input name="tpin" placeholder="Official TPIN, if available"><label>Business Licence Number</label><input name="business_licence" placeholder="Official licence number"><button class="btn">Create Business</button></form></div>''')
 
-@app.route('/business/<business_id>/module/<module_key>')
-@login_required
-def business_module_dispatch(business_id, module_key):
-    """Stable Business module launcher. Keeps dashboard buttons working even when
-    individual module endpoint names evolve."""
-    b=_biz_owner(business_id)
-    if not b: abort(404)
-    targets={
-        'pos':'business_products','inventory':'business_products','products':'business_products',
-        'accounting':'business_accounting_v2','records':'business_records',
-        'subscription':'business_subscription','customers':'business_customers',
-        'suppliers':'business_suppliers','invoices':'business_invoices',
-        'employees':'business_employees','payroll':'business_payroll',
-        'store':'business_store','online-store':'business_store',
-        'commerce':'business_commerce','orders':'business_commerce_orders','commerce-orders':'business_commerce_orders',
-        'ai':'business_ai','intelligence':'business_intelligence_v3',
-        'payments':'business_payments','delivery':'business_delivery',
-        'engines':'business_core_status','core':'business_core_status',
-        'live':'business_live_v2','staff':'business_staff_v2',
-        'global':'global_business_hub',
-    }
-    key=(module_key or '').strip().lower()
-    # Commerce Hub must remain directly reachable even if an older deployment
-    # has the dispatcher but has not registered the commerce endpoint yet.
-    if key == 'commerce':
-        commerce_fn = globals().get('business_commerce_hub')
-        if callable(commerce_fn):
-            return commerce_fn(business_id)
-        return render_page('Business Commerce Hub', r'''<div class="hero"><h1>Commerce Hub</h1><p>Customer commerce control for this business.</p></div><div class="card"><p>The Commerce Hub code is not loaded in this deployment. Deploy the latest KOJA Business package.</p><a class="btn" href="{{ url_for('business_dashboard',business_id=b.id) }}">Business Dashboard</a></div>''', b=b)
-    endpoint=targets.get(key)
-    if not endpoint or endpoint not in app.view_functions:
-        flash('This Business module is not available in this deployment yet.', 'danger')
-        return redirect(url_for('business_dashboard',business_id=business_id))
-    try:
-        return redirect(url_for(endpoint,business_id=business_id))
-    except Exception:
-        logger.exception('Business module launcher failed: %s', module_key)
-        flash('Unable to open this Business module. Please try again.', 'danger')
-        return redirect(url_for('business_dashboard',business_id=business_id))
-
-
 @app.route('/business/<business_id>')
 @login_required
 def business_dashboard(business_id):
@@ -7912,7 +7884,7 @@ def business_dashboard(business_id):
     if not b: abort(404)
     products=db_select('koja_business_products',{'business_id':business_id},limit=200) or []; sales=db_select('koja_business_sales',{'business_id':business_id},limit=200) or []; expenses=db_select('koja_business_expenses',{'business_id':business_id},limit=200) or []
     revenue=sum(float(x.get('total_amount') or 0) for x in sales); costs=sum(float(x.get('amount') or 0) for x in expenses); profit=revenue-costs
-    return render_page('Business Dashboard',r'''<div class="hero"><h1>{{ b.name }}</h1><p>{{ b.category }} · {{ b.location or '' }}</p><div class="card"><p><strong>KOJA Business Number:</strong> {{ b.business_number or 'Pending identity migration' }}</p><p><strong>TPIN:</strong> {{ ('••••' + (b.tpin|string)[-4:]) if b.tpin else 'Not provided' }}</p><p><strong>Business Licence:</strong> {{ ('••••' + (b.business_licence|string)[-4:]) if b.business_licence else 'Not provided' }}</p></div><div class="actions"><a class="btn" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='pos') }}">Inventory / POS</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='accounting') }}">Accounting</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='subscription') }}">Subscription</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='customers') }}">Customers</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='suppliers') }}">Suppliers</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='invoices') }}">Invoices</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='employees') }}">Employees</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='store') }}">Online Store</a><a class="btn" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='commerce') }}">Commerce Hub</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='ai') }}">AI Assistant</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='intelligence') }}">Business Intelligence</a><a class="btn" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='engines') }}">Platform Engines</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='payments') }}">Payments</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='delivery') }}">Delivery</a></div></div><div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(revenue,'ZMW') }}</h2></div><div class="card"><h3>Expenses</h3><h2>{{ money(costs,'ZMW') }}</h2></div><div class="card"><h3>Profit</h3><h2>{{ money(profit,'ZMW') }}</h2></div><div class="card"><h3>Inventory items</h3><h2>{{ products|length }}</h2></div></div><div class="card"><h2>AI Intelligence</h2><p>Predictive analytics, revenue forecasting, pricing, inventory risk, customer concentration and AI strategy.</p><a class="btn" href="{{ url_for('business_intelligence_v3',business_id=b.id) }}">Open AI Intelligence</a></div><div class="card"><h2>Business modules</h2><p>POS · Inventory · Accounting · Invoices · Customers · Suppliers · Payroll · Online Store · AI Assistant · Payments · Delivery</p></div><div class="card"><h2>KOJA Platform Engines</h2><p>Discover · Ads · Pay · Intelligence · Identity · Workspace · Ecosystem</p><div class="actions"><a class="btn secondary" href="{{ url_for('business_core_status',business_id=b.id) }}">View Connected Engines</a></div></div>''',b=b,products=products,sales=sales,expenses=expenses,revenue=revenue,costs=costs,profit=profit,money=market_money)
+    return render_page('Business Dashboard',r'''<div class="hero"><h1>{{ b.name }}</h1><p>{{ b.category }} · {{ b.location or '' }}</p><div class="card"><p><strong>KOJA Business Number:</strong> {{ b.business_number or 'Pending identity migration' }}</p><p><strong>TPIN:</strong> {{ ('••••' + (b.tpin|string)[-4:]) if b.tpin else 'Not provided' }}</p><p><strong>Business Licence:</strong> {{ ('••••' + (b.business_licence|string)[-4:]) if b.business_licence else 'Not provided' }}</p></div><div class="actions"><a class="btn" href="{{ url_for('business_products',business_id=b.id) }}">Inventory / POS</a><a class="btn secondary" href="{{ url_for('business_accounting_v2',business_id=b.id) }}">Accounting</a><a class="btn secondary" href="{{ url_for('business_subscription',business_id=b.id) }}">Subscription</a><a class="btn secondary" href="{{ url_for('business_customers',business_id=b.id) }}">Customers</a><a class="btn secondary" href="{{ url_for('business_suppliers',business_id=b.id) }}">Suppliers</a><a class="btn secondary" href="{{ url_for('business_invoices',business_id=b.id) }}">Invoices</a><a class="btn secondary" href="{{ url_for('business_employees',business_id=b.id) }}">Employees</a><a class="btn secondary" href="{{ url_for('business_store',business_id=b.id) }}">Online Store</a><a class="btn secondary" href="{{ url_for('business_ai',business_id=b.id) }}">AI Assistant</a><a class="btn secondary" href="{{ url_for('business_intelligence',business_id=b.id) }}">Business Intelligence</a><a class="btn" href="{{ url_for('business_intelligence_v3',business_id=b.id) }}">AI Intelligence</a><a class="btn secondary" href="{{ url_for('business_payments',business_id=b.id) }}">Payments</a><a class="btn secondary" href="{{ url_for('business_delivery',business_id=b.id) }}">Delivery</a></div></div><div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(revenue,'ZMW') }}</h2></div><div class="card"><h3>Expenses</h3><h2>{{ money(costs,'ZMW') }}</h2></div><div class="card"><h3>Profit</h3><h2>{{ money(profit,'ZMW') }}</h2></div><div class="card"><h3>Inventory items</h3><h2>{{ products|length }}</h2></div></div><div class="card"><h2>AI Intelligence</h2><p>Predictive analytics, revenue forecasting, pricing, inventory risk, customer concentration and AI strategy.</p><a class="btn" href="{{ url_for('business_intelligence_v3',business_id=b.id) }}">Open AI Intelligence</a></div><div class="card"><h2>Business modules</h2><p>POS · Inventory · Accounting · Invoices · Customers · Suppliers · Payroll · Online Store · AI Assistant · Payments · Delivery</p></div><div class="card"><h2>KOJA Platform Engines</h2><p>Discover · Ads · Pay · Intelligence · Identity · Workspace · Ecosystem</p><div class="actions"><a class="btn secondary" href="{{ url_for('business_core_status',business_id=b.id) }}">View Connected Engines</a></div></div>''',b=b,products=products,sales=sales,expenses=expenses,revenue=revenue,costs=costs,profit=profit,money=market_money)
 
 @app.route('/business/<business_id>/core-status')
 @login_required
@@ -8193,7 +8165,7 @@ def business_store_public(slug):
     store=first_row('koja_business_stores',{'slug':slug,'published':True})
     if not store:abort(404)
     products=db_select('koja_business_products',{'business_id':store.get('business_id'),'active':True},limit=300) or []
-    return render_page(store.get('store_name') or 'KOJA Store',"""<div class='hero'><h1>{{ store.store_name }}</h1><p>{{ store.description }}</p></div><div class='grid'>{% for p in products %}<div class='card'><h3>{{ p.name }}</h3><p>SKU: {{ p.sku or '—' }}</p><h2>{{ money(p.selling_price,'ZMW') }}</h2><p>Stock: {{ p.stock }}</p><p>{% if (p.product_type or 'physical') == 'digital' %}<strong>Digital — no delivery</strong>{% elif p.delivery_available %}<strong>KOJA Delivery or Self Pickup</strong>{% else %}<strong>Self Pickup</strong>{% endif %}</p>{% if (p.stock or 0)|int > 0 or (p.product_type or 'physical') == 'digital' %}<a class='btn' href='{{ url_for('business_store_buy',slug=store.slug,product_id=p.id) }}'>Buy</a>{% else %}<span class='btn secondary'>Out of stock</span>{% endif %}</div>{% else %}<div class='card'><p>No products listed.</p></div>{% endfor %}</div>""",store=store,products=products,money=market_money)
+    return render_page(store.get('store_name') or 'KOJA Store',"""<div class='hero'><h1>{{ store.store_name }}</h1><p>{{ store.description }}</p></div><div class='grid'>{% for p in products %}<div class='card'><h3>{{ p.name }}</h3><p>SKU: {{ p.sku or '—' }}</p><h2>{{ money(p.selling_price,'ZMW') }}</h2><p>Stock: {{ p.stock }}</p><p>{% if (p.product_type or 'physical') == 'digital' %}<strong>Digital — no delivery</strong>{% elif p.delivery_available %}<strong>KOJA Delivery or Self Pickup</strong>{% else %}<strong>Self Pickup</strong>{% endif %}</p><a class='btn' href='{{ url_for('business_store_buy',slug=store.slug,product_id=p.id) }}'>Buy</a></div>{% else %}<div class='card'><p>No products listed.</p></div>{% endfor %}</div>""",store=store,products=products,money=market_money)
 
 @app.route('/business/<business_id>/ai',methods=['GET','POST'])
 @login_required
@@ -8525,99 +8497,6 @@ def admin_payment_reconcile():
             if market_order and _finalize_market_order(market_order,tx): finalized+=1
     flash(f'Payment reconciliation checked {checked} pending orders; finalized {finalized}.','success')
     return redirect(url_for('admin_monetization'))
-
-
-# ============================================================
-# KOJA BUSINESS V9 — COMMERCE HUB / CUSTOMER PURCHASING CONTROL
-# ============================================================
-KOJA_BUSINESS_V9='2026.09.18-V9-BUSINESS-COMMERCE-HUB'
-
-@app.route('/business/<business_id>/commerce', methods=['GET'])
-@login_required
-def business_commerce_hub(business_id):
-    b=_biz_owner(business_id)
-    if not b: abort(404)
-    products=db_select('koja_business_products',{'business_id':business_id},order='created_at.desc',limit=500) or []
-    orders=db_select('koja_business_orders',{'business_id':business_id},order='created_at.desc',limit=500) or []
-    paid=[x for x in orders if str(x.get('status') or '').lower() in {'paid','processing','completed'}]
-    revenue=sum(_money_num(x.get('total_amount')) for x in paid)
-    return render_page('Business Commerce Hub',r'''<div class="hero"><h1>{{ b.name }} — Commerce Hub</h1><p>Manage everything customers can discover, buy, receive and track from this business.</p><div class="actions"><a class="btn" href="{{ url_for('business_store',business_id=b.id) }}">Store Settings</a><a class="btn secondary" href="{{ url_for('business_store_public',slug=store.slug) if store else url_for('business_store',business_id=b.id) }}">Public Store</a><a class="btn secondary" href="{{ url_for('business_commerce_orders',business_id=b.id) }}">Orders</a></div></div>
-<div class="grid"><div class="card"><h3>Published products</h3><h2>{{ products|selectattr('active')|list|length }}</h2></div><div class="card"><h3>Orders</h3><h2>{{ orders|length }}</h2></div><div class="card"><h3>Paid commerce</h3><h2>{{ money(revenue,'ZMW') }}</h2></div><div class="card"><h3>Low stock</h3><h2>{{ products|selectattr('stock','le',5)|list|length }}</h2></div></div>
-<div class="card"><h2>Customer-purchasable catalogue</h2><table><tr><th>Product / service</th><th>Price</th><th>Stock</th><th>Type</th><th>Customer access</th><th>Action</th></tr>{% for p in products %}<tr><td>{{ p.name }}</td><td>{{ money(p.selling_price,'ZMW') }}</td><td>{{ p.stock }}</td><td>{{ p.product_type or 'physical' }}</td><td>{{ 'Published' if p.active else 'Hidden' }}</td><td><a class="btn secondary" href="{{ url_for('business_product_customer_link',business_id=b.id,product_id=p.id) }}">Customer Link</a></td></tr>{% else %}<tr><td colspan="6">No catalogue items yet.</td></tr>{% endfor %}</table></div>''',b=b,products=products,orders=orders,revenue=revenue,store=first_row('koja_business_stores',{'business_id':business_id}),money=market_money)
-
-@app.route('/business/<business_id>/commerce/orders', methods=['GET','POST'])
-@login_required
-def business_commerce_orders(business_id):
-    b=_biz_owner(business_id)
-    if not b: abort(404)
-    if request.method=='POST':
-        oid=clean(request.form.get('order_id')); status=clean(request.form.get('status')).lower()
-        allowed={'pending','paid','processing','completed','cancelled','refunded'}
-        order=first_row('koja_business_orders',{'id':oid,'business_id':business_id})
-        if not order or status not in allowed: abort(400)
-        old=str(order.get('status') or '').lower()
-        _,err=db_update('koja_business_orders',{'id':oid},{'status':status,'updated_at':utc_now()})
-        if not err:
-            notify_user(order.get('buyer_id'),'Business order update',f"Order {oid} status changed to {status}.",'business_order',oid,'/market/my')
-            if status=='completed':
-                try: _e2e_v5_sync_store({**order,'status':'completed'})
-                except Exception: logger.exception('Business V9 E2E completion sync failed')
-            flash(f'Order updated: {old} → {status}.','success')
-        else: flash('Could not update order.','danger')
-        return redirect(url_for('business_commerce_orders',business_id=business_id))
-    orders=db_select('koja_business_orders',{'business_id':business_id},order='created_at.desc',limit=500) or []
-    products={str(x.get('id')):x for x in (db_select('koja_business_products',{'business_id':business_id},limit=500) or [])}
-    return render_page('Business Commerce Orders',r'''<div class="hero"><h1>{{ b.name }} — Customer Orders</h1><p>One control panel for paid, processing, completed and cancelled business purchases.</p></div><div class="card"><table><tr><th>Order</th><th>Item</th><th>Amount</th><th>Fulfilment</th><th>Status</th><th>Update</th></tr>{% for o in orders %}<tr><td><a href='{{ url_for('business_commerce_order_detail',business_id=b.id,order_id=o.id) }}'>{{ o.id }}</a></td><td>{{ products.get(o.product_id|string,{}).get('name','Product') }}</td><td>{{ money(o.total_amount,'ZMW') }}</td><td>{{ o.fulfillment_method }}</td><td>{{ o.status }}</td><td><form method="post" style="display:flex;gap:6px"><input type="hidden" name="order_id" value="{{ o.id }}"><select name="status"><option>{{ o.status }}</option><option>processing</option><option>completed</option><option>cancelled</option><option>refunded</option></select><button class="btn">Update</button></form></td></tr>{% else %}<tr><td colspan="6">No customer orders yet.</td></tr>{% endfor %}</table></div>''',b=b,orders=orders,products=products,money=market_money)
-
-@app.route('/business/<business_id>/commerce/order/<order_id>')
-@login_required
-def business_commerce_order_detail(business_id, order_id):
-    b=_biz_owner(business_id)
-    if not b: abort(404)
-    order=first_row('koja_business_orders',{'id':order_id,'business_id':business_id})
-    if not order: abort(404)
-    product=first_row('koja_business_products',{'id':order.get('product_id'),'business_id':business_id}) or {}
-    buyer=first_row('profiles',{'id':order.get('buyer_id')}) or {}
-    return render_page('Business Order',r'''<div class="hero"><h1>{{ b.name }} — Order</h1><p>Customer commerce order and fulfilment control.</p><div class="actions"><a class="btn secondary" href="{{ url_for('business_commerce_orders',business_id=b.id) }}">All Orders</a><a class="btn secondary" href="{{ url_for('business_commerce_hub',business_id=b.id) }}">Commerce Hub</a></div></div><div class="grid"><div class="card"><h3>Order</h3><p><strong>ID:</strong> {{ order.id }}</p><p><strong>Status:</strong> {{ order.status }}</p><p><strong>Created:</strong> {{ order.created_at }}</p><p><strong>Payment:</strong> {{ order.payment_transaction_id or order.payment_reference or 'Pending' }}</p></div><div class="card"><h3>Customer</h3><p><strong>Name:</strong> {{ buyer.full_name or buyer.name or 'Customer' }}</p><p><strong>Email:</strong> {{ buyer.email or '—' }}</p><p><strong>Phone:</strong> {{ order.recipient_phone or '—' }}</p></div><div class="card"><h3>Item</h3><p><strong>{{ product.name or 'Product' }}</strong></p><p>Quantity: {{ order.quantity }}</p><p>Total: {{ money(order.total_amount,'ZMW') }}</p><p>Fulfilment: {{ order.fulfillment_method }}</p></div></div><div class="card"><h2>Update order</h2><form method="post" action="{{ url_for('business_commerce_orders',business_id=b.id) }}"><input type="hidden" name="order_id" value="{{ order.id }}"><select name="status"><option value="{{ order.status }}">{{ order.status }}</option><option>processing</option><option>completed</option><option>cancelled</option><option>refunded</option></select><button class="btn">Save status</button></form>{% if order.delivery_address %}<p><strong>Delivery address:</strong> {{ order.delivery_address }}</p>{% endif %}</div>''',b=b,order=order,product=product,buyer=buyer,money=market_money)
-
-@app.route('/business/<business_id>/commerce/product/<product_id>/stock', methods=['POST'])
-@login_required
-def business_commerce_stock(business_id, product_id):
-    b=_biz_owner(business_id)
-    if not b: abort(404)
-    product=first_row('koja_business_products',{'id':product_id,'business_id':business_id})
-    if not product: abort(404)
-    try: stock=max(0,int(request.form.get('stock') or 0))
-    except Exception: stock=int(product.get('stock') or 0)
-    _,err=db_update('koja_business_products',{'id':product_id},{'stock':stock,'updated_at':utc_now()})
-    flash('Stock updated.' if not err else 'Could not update stock.', 'success' if not err else 'danger')
-    return redirect(url_for('business_commerce_hub',business_id=business_id))
-
-@app.route('/business/<business_id>/commerce/product/<product_id>/link')
-@login_required
-def business_product_customer_link(business_id,product_id):
-    b=_biz_owner(business_id)
-    if not b: abort(404)
-    p=first_row('koja_business_products',{'id':product_id,'business_id':business_id})
-    if not p: abort(404)
-    store=first_row('koja_business_stores',{'business_id':business_id,'published':True})
-    if not store:
-        flash('Publish the Online Store first.','warning')
-        return redirect(url_for('business_store',business_id=business_id))
-    return render_page('Customer Purchase Link',r'''<div class="hero"><h1>Customer Purchase Link</h1><p>{{ b.name }} · {{ product.name }}</p></div><div class="card"><p>Customers can purchase this item through the business public store.</p><p><a class="btn" href="{{ url_for('business_store_buy',slug=store.slug,product_id=product.id) }}">Open Customer Checkout</a></p><p><a class="btn secondary" href="{{ url_for('business_store_public',slug=store.slug) }}">Open Public Store</a></p></div>''',b=b,product=p,store=store)
-
-@app.route('/business/<business_id>/commerce/activate/<product_id>', methods=['POST'])
-@login_required
-def business_commerce_activate_product(business_id,product_id):
-    b=_biz_owner(business_id)
-    if not b: abort(404)
-    p=first_row('koja_business_products',{'id':product_id,'business_id':business_id})
-    if not p: abort(404)
-    active=not as_bool(p.get('active'))
-    db_update('koja_business_products',{'id':product_id},{'active':active,'updated_at':utc_now()})
-    flash(('Product is now published for customers.' if active else 'Product hidden from customers.'),'success')
-    return redirect(url_for('business_commerce_hub',business_id=business_id))
-
 
 # ============================================================
 # LOCAL / RENDER START
