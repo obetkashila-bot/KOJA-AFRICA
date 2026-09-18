@@ -7838,7 +7838,7 @@ def global_business_payouts(business_id):
 @login_required
 def koja_business():
     uid=(current_user() or {}).get('id'); businesses=db_select('koja_businesses',{'owner_id':uid},order='created_at.desc',limit=50) or []
-    return render_page('KOJA Business',r'''<div class="hero"><h1> KOJA Business</h1><p>Run your business from one platform: POS, inventory, accounting, invoices, customers, suppliers, payroll, online store, AI, payments and delivery.</p><div class="actions"><a class="btn" href="{{ url_for('business_new') }}">+ Create Business</a>{% for b in businesses %}<a class="btn secondary" href="{{ url_for('business_dashboard',business_id=b.id) }}">{{ b.name }}</a>{% endfor %}</div></div><div class="grid"><div class="card"><h3>POS</h3><p>Record sales and issue receipts.</p></div><div class="card"><h3>Inventory</h3><p>Products, stock and stock movements.</p></div><div class="card"><h3>Accounting</h3><p>Income, expenses and profit/loss.</p></div><div class="card"><h3>CRM</h3><p>Customers and suppliers.</p></div><div class="card"><h3>Payroll</h3><p>Employees and payroll records.</p></div><div class="card"><h3>Online Store</h3><p>Connect your business catalogue to KOJA Market.</p></div><div class="card"><h3>AI Assistant</h3><p>Use KOJA AI for business analysis and planning.</p></div><div class="card"><h3>Payments & Delivery</h3><p>Connect commerce to KOJA payment and delivery workflows.</p></div></div>''',businesses=businesses)
+    return render_page('KOJA Business',r'''<div class="hero"><h1>KOJA Business</h1><p>Run your business from one platform: POS, inventory, accounting, invoices, customers, suppliers, payroll, online store, AI, payments and delivery.</p><div class="actions"><a class="btn" href="{{ url_for('business_new') }}">+ Create Business</a></div></div>{% if businesses %}<div class="grid">{% for b in businesses %}<div class="card"><h2>{{ b.name }}</h2><p>{{ b.category or 'Business workspace' }}{% if b.location %} · {{ b.location }}{% endif %}</p><div class="actions"><a class="btn" href="{{ url_for('business_dashboard',business_id=b.id) }}">Open Business</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='pos') }}">POS / Inventory</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='commerce') }}">Commerce Hub</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='store') }}">Online Store</a></div></div>{% endfor %}</div>{% else %}<div class="card"><h3>No businesses yet</h3><p>Create your first business to activate POS, inventory, commerce, accounting and the other modules.</p><a class="btn" href="{{ url_for('business_new') }}">Create Business</a></div>{% endif %}<div class="grid"><div class="card"><h3>POS & Inventory</h3><p>Record sales, products, stock and stock movements.</p></div><div class="card"><h3>Accounting</h3><p>Track income, expenses and profit/loss.</p></div><div class="card"><h3>CRM & Payroll</h3><p>Manage customers, suppliers, employees and payroll.</p></div><div class="card"><h3>Commerce</h3><p>Publish products, accept customer orders, manage fulfilment and connect payments and delivery.</p></div><div class="card"><h3>AI Assistant</h3><p>Use KOJA AI for business analysis and planning.</p></div><div class="card"><h3>Payments & Delivery</h3><p>Connect commerce to KOJA payment and delivery workflows.</p></div></div>''',businesses=businesses)
 
 @app.route('/business/new',methods=['GET','POST'])
 @login_required
@@ -7877,19 +7877,24 @@ def business_module_dispatch(business_id, module_key):
         'suppliers':'business_suppliers','invoices':'business_invoices',
         'employees':'business_employees','payroll':'business_payroll',
         'store':'business_store','online-store':'business_store',
+        'commerce':'business_commerce','orders':'business_commerce_orders',
         'ai':'business_ai','intelligence':'business_intelligence_v3',
         'payments':'business_payments','delivery':'business_delivery',
         'engines':'business_core_status','core':'business_core_status',
         'live':'business_live_v2','staff':'business_staff_v2',
-        'global':'global_business_hub','b2b':'b2bv4_business',
+        'global':'global_business_hub',
     }
-    endpoint=targets.get((module_key or '').strip().lower())
-    if not endpoint: abort(404)
+    key=(module_key or '').strip().lower()
+    endpoint=targets.get(key)
+    if not endpoint or endpoint not in app.view_functions:
+        flash('This Business module is not available in this deployment yet.', 'danger')
+        return redirect(url_for('business_dashboard',business_id=business_id))
     try:
         return redirect(url_for(endpoint,business_id=business_id))
     except Exception:
         logger.exception('Business module launcher failed: %s', module_key)
-        abort(404)
+        flash('Unable to open this Business module. Please try again.', 'danger')
+        return redirect(url_for('business_dashboard',business_id=business_id))
 
 
 @app.route('/business/<business_id>')
@@ -7899,7 +7904,7 @@ def business_dashboard(business_id):
     if not b: abort(404)
     products=db_select('koja_business_products',{'business_id':business_id},limit=200) or []; sales=db_select('koja_business_sales',{'business_id':business_id},limit=200) or []; expenses=db_select('koja_business_expenses',{'business_id':business_id},limit=200) or []
     revenue=sum(float(x.get('total_amount') or 0) for x in sales); costs=sum(float(x.get('amount') or 0) for x in expenses); profit=revenue-costs
-    return render_page('Business Dashboard',r'''<div class="hero"><h1>{{ b.name }}</h1><p>{{ b.category }} · {{ b.location or '' }}</p><div class="card"><p><strong>KOJA Business Number:</strong> {{ b.business_number or 'Pending identity migration' }}</p><p><strong>TPIN:</strong> {{ ('••••' + (b.tpin|string)[-4:]) if b.tpin else 'Not provided' }}</p><p><strong>Business Licence:</strong> {{ ('••••' + (b.business_licence|string)[-4:]) if b.business_licence else 'Not provided' }}</p></div><div class="actions"><a class="btn" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='pos') }}">Inventory / POS</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='accounting') }}">Accounting</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='subscription') }}">Subscription</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='customers') }}">Customers</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='suppliers') }}">Suppliers</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='invoices') }}">Invoices</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='employees') }}">Employees</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='store') }}">Online Store</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='ai') }}">AI Assistant</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='intelligence') }}">Business Intelligence</a><a class="btn" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='engines') }}">Platform Engines</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='payments') }}">Payments</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='delivery') }}">Delivery</a></div></div><div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(revenue,'ZMW') }}</h2></div><div class="card"><h3>Expenses</h3><h2>{{ money(costs,'ZMW') }}</h2></div><div class="card"><h3>Profit</h3><h2>{{ money(profit,'ZMW') }}</h2></div><div class="card"><h3>Inventory items</h3><h2>{{ products|length }}</h2></div></div><div class="card"><h2>AI Intelligence</h2><p>Predictive analytics, revenue forecasting, pricing, inventory risk, customer concentration and AI strategy.</p><a class="btn" href="{{ url_for('business_intelligence_v3',business_id=b.id) }}">Open AI Intelligence</a></div><div class="card"><h2>Business modules</h2><p>POS · Inventory · Accounting · Invoices · Customers · Suppliers · Payroll · Online Store · AI Assistant · Payments · Delivery</p></div><div class="card"><h2>KOJA Platform Engines</h2><p>Discover · Ads · Pay · Intelligence · Identity · Workspace · Ecosystem</p><div class="actions"><a class="btn secondary" href="{{ url_for('business_core_status',business_id=b.id) }}">View Connected Engines</a></div></div>''',b=b,products=products,sales=sales,expenses=expenses,revenue=revenue,costs=costs,profit=profit,money=market_money)
+    return render_page('Business Dashboard',r'''<div class="hero"><h1>{{ b.name }}</h1><p>{{ b.category }} · {{ b.location or '' }}</p><div class="card"><p><strong>KOJA Business Number:</strong> {{ b.business_number or 'Pending identity migration' }}</p><p><strong>TPIN:</strong> {{ ('••••' + (b.tpin|string)[-4:]) if b.tpin else 'Not provided' }}</p><p><strong>Business Licence:</strong> {{ ('••••' + (b.business_licence|string)[-4:]) if b.business_licence else 'Not provided' }}</p></div><div class="actions"><a class="btn" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='pos') }}">Inventory / POS</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='accounting') }}">Accounting</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='subscription') }}">Subscription</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='customers') }}">Customers</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='suppliers') }}">Suppliers</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='invoices') }}">Invoices</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='employees') }}">Employees</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='store') }}">Online Store</a><a class="btn" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='commerce') }}">Commerce Hub</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='ai') }}">AI Assistant</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='intelligence') }}">Business Intelligence</a><a class="btn" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='engines') }}">Platform Engines</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='payments') }}">Payments</a><a class="btn secondary" href="{{ url_for('business_module_dispatch',business_id=b.id,module_key='delivery') }}">Delivery</a></div></div><div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(revenue,'ZMW') }}</h2></div><div class="card"><h3>Expenses</h3><h2>{{ money(costs,'ZMW') }}</h2></div><div class="card"><h3>Profit</h3><h2>{{ money(profit,'ZMW') }}</h2></div><div class="card"><h3>Inventory items</h3><h2>{{ products|length }}</h2></div></div><div class="card"><h2>AI Intelligence</h2><p>Predictive analytics, revenue forecasting, pricing, inventory risk, customer concentration and AI strategy.</p><a class="btn" href="{{ url_for('business_intelligence_v3',business_id=b.id) }}">Open AI Intelligence</a></div><div class="card"><h2>Business modules</h2><p>POS · Inventory · Accounting · Invoices · Customers · Suppliers · Payroll · Online Store · AI Assistant · Payments · Delivery</p></div><div class="card"><h2>KOJA Platform Engines</h2><p>Discover · Ads · Pay · Intelligence · Identity · Workspace · Ecosystem</p><div class="actions"><a class="btn secondary" href="{{ url_for('business_core_status',business_id=b.id) }}">View Connected Engines</a></div></div>''',b=b,products=products,sales=sales,expenses=expenses,revenue=revenue,costs=costs,profit=profit,money=market_money)
 
 @app.route('/business/<business_id>/core-status')
 @login_required
@@ -8512,6 +8517,75 @@ def admin_payment_reconcile():
             if market_order and _finalize_market_order(market_order,tx): finalized+=1
     flash(f'Payment reconciliation checked {checked} pending orders; finalized {finalized}.','success')
     return redirect(url_for('admin_monetization'))
+
+
+# ============================================================
+# KOJA BUSINESS V9 — COMMERCE HUB / CUSTOMER PURCHASING CONTROL
+# ============================================================
+KOJA_BUSINESS_V9='2026.09.18-V9-BUSINESS-COMMERCE-HUB'
+
+@app.route('/business/<business_id>/commerce', methods=['GET'])
+@login_required
+def business_commerce_hub(business_id):
+    b=_biz_owner(business_id)
+    if not b: abort(404)
+    products=db_select('koja_business_products',{'business_id':business_id},order='created_at.desc',limit=500) or []
+    orders=db_select('koja_business_orders',{'business_id':business_id},order='created_at.desc',limit=500) or []
+    paid=[x for x in orders if str(x.get('status') or '').lower() in {'paid','processing','completed'}]
+    revenue=sum(_money_num(x.get('total_amount')) for x in paid)
+    return render_page('Business Commerce Hub',r'''<div class="hero"><h1>{{ b.name }} — Commerce Hub</h1><p>Manage everything customers can discover, buy, receive and track from this business.</p><div class="actions"><a class="btn" href="{{ url_for('business_store',business_id=b.id) }}">Store Settings</a><a class="btn secondary" href="{{ url_for('business_store_public',slug=store.slug) if store else url_for('business_store',business_id=b.id) }}">Public Store</a><a class="btn secondary" href="{{ url_for('business_commerce_orders',business_id=b.id) }}">Orders</a></div></div>
+<div class="grid"><div class="card"><h3>Published products</h3><h2>{{ products|selectattr('active')|list|length }}</h2></div><div class="card"><h3>Orders</h3><h2>{{ orders|length }}</h2></div><div class="card"><h3>Paid commerce</h3><h2>{{ money(revenue,'ZMW') }}</h2></div><div class="card"><h3>Low stock</h3><h2>{{ products|selectattr('stock','le',5)|list|length }}</h2></div></div>
+<div class="card"><h2>Customer-purchasable catalogue</h2><table><tr><th>Product / service</th><th>Price</th><th>Stock</th><th>Type</th><th>Customer access</th><th>Action</th></tr>{% for p in products %}<tr><td>{{ p.name }}</td><td>{{ money(p.selling_price,'ZMW') }}</td><td>{{ p.stock }}</td><td>{{ p.product_type or 'physical' }}</td><td>{{ 'Published' if p.active else 'Hidden' }}</td><td><a class="btn secondary" href="{{ url_for('business_product_customer_link',business_id=b.id,product_id=p.id) }}">Customer Link</a></td></tr>{% else %}<tr><td colspan="6">No catalogue items yet.</td></tr>{% endfor %}</table></div>''',b=b,products=products,orders=orders,revenue=revenue,store=first_row('koja_business_stores',{'business_id':business_id}),money=market_money)
+
+@app.route('/business/<business_id>/commerce/orders', methods=['GET','POST'])
+@login_required
+def business_commerce_orders(business_id):
+    b=_biz_owner(business_id)
+    if not b: abort(404)
+    if request.method=='POST':
+        oid=clean(request.form.get('order_id')); status=clean(request.form.get('status')).lower()
+        allowed={'pending','paid','processing','completed','cancelled','refunded'}
+        order=first_row('koja_business_orders',{'id':oid,'business_id':business_id})
+        if not order or status not in allowed: abort(400)
+        old=str(order.get('status') or '').lower()
+        _,err=db_update('koja_business_orders',{'id':oid},{'status':status,'updated_at':utc_now()})
+        if not err:
+            notify_user(order.get('buyer_id'),'Business order update',f"Order {oid} status changed to {status}.",'business_order',oid,'/market/my')
+            if status=='completed':
+                try: _e2e_v5_sync_store({**order,'status':'completed'})
+                except Exception: logger.exception('Business V9 E2E completion sync failed')
+            flash(f'Order updated: {old} → {status}.','success')
+        else: flash('Could not update order.','danger')
+        return redirect(url_for('business_commerce_orders',business_id=business_id))
+    orders=db_select('koja_business_orders',{'business_id':business_id},order='created_at.desc',limit=500) or []
+    products={str(x.get('id')):x for x in (db_select('koja_business_products',{'business_id':business_id},limit=500) or [])}
+    return render_page('Business Commerce Orders',r'''<div class="hero"><h1>{{ b.name }} — Customer Orders</h1><p>One control panel for paid, processing, completed and cancelled business purchases.</p></div><div class="card"><table><tr><th>Order</th><th>Item</th><th>Amount</th><th>Fulfilment</th><th>Status</th><th>Update</th></tr>{% for o in orders %}<tr><td>{{ o.id }}</td><td>{{ products.get(o.product_id|string,{}).get('name','Product') }}</td><td>{{ money(o.total_amount,'ZMW') }}</td><td>{{ o.fulfillment_method }}</td><td>{{ o.status }}</td><td><form method="post" style="display:flex;gap:6px"><input type="hidden" name="order_id" value="{{ o.id }}"><select name="status"><option>{{ o.status }}</option><option>processing</option><option>completed</option><option>cancelled</option><option>refunded</option></select><button class="btn">Update</button></form></td></tr>{% else %}<tr><td colspan="6">No customer orders yet.</td></tr>{% endfor %}</table></div>''',b=b,orders=orders,products=products,money=market_money)
+
+@app.route('/business/<business_id>/commerce/product/<product_id>/link')
+@login_required
+def business_product_customer_link(business_id,product_id):
+    b=_biz_owner(business_id)
+    if not b: abort(404)
+    p=first_row('koja_business_products',{'id':product_id,'business_id':business_id})
+    if not p: abort(404)
+    store=first_row('koja_business_stores',{'business_id':business_id,'published':True})
+    if not store:
+        flash('Publish the Online Store first.','warning')
+        return redirect(url_for('business_store',business_id=business_id))
+    return render_page('Customer Purchase Link',r'''<div class="hero"><h1>Customer Purchase Link</h1><p>{{ b.name }} · {{ product.name }}</p></div><div class="card"><p>Customers can purchase this item through the business public store.</p><p><a class="btn" href="{{ url_for('business_store_buy',slug=store.slug,product_id=product.id) }}">Open Customer Checkout</a></p><p><a class="btn secondary" href="{{ url_for('business_store_public',slug=store.slug) }}">Open Public Store</a></p></div>''',b=b,product=p,store=store)
+
+@app.route('/business/<business_id>/commerce/activate/<product_id>', methods=['POST'])
+@login_required
+def business_commerce_activate_product(business_id,product_id):
+    b=_biz_owner(business_id)
+    if not b: abort(404)
+    p=first_row('koja_business_products',{'id':product_id,'business_id':business_id})
+    if not p: abort(404)
+    active=not as_bool(p.get('active'))
+    db_update('koja_business_products',{'id':product_id},{'active':active,'updated_at':utc_now()})
+    flash(('Product is now published for customers.' if active else 'Product hidden from customers.'),'success')
+    return redirect(url_for('business_commerce_hub',business_id=business_id))
+
 
 # ============================================================
 # LOCAL / RENDER START
