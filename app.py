@@ -2903,54 +2903,22 @@ def public_feed():
 </article>{% else %}<div class="card"><h3>No public updates yet.</h3><p>Be the first KOJA user to share a public update or news.</p></div>{% endfor %}
 ''', posts=enriched)
 
-def _media_storage_path(value):
-    value = clean(value)
-    if not value:
-        return ''
-    public_prefix = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{quote(STORAGE_BUCKET, safe='')}/" if SUPABASE_URL else ''
-    if public_prefix and value.startswith(public_prefix):
-        return unquote(value[len(public_prefix):])
-    if value.startswith(f"{STORAGE_BUCKET}/"):
-        return value[len(STORAGE_BUCKET)+1:]
-    if value.startswith('http://') or value.startswith('https://'):
-        return ''
-    return value
-
-def _create_media_signed_url(path, expires=3600):
-    if not supabase_configured() or not path:
-        return None
-    try:
-        endpoint = f"{SUPABASE_URL}/storage/v1/object/sign/{quote(STORAGE_BUCKET, safe='')}/{quote(path, safe='/')}"
-        r = requests.post(endpoint, headers=sb_headers(), json={'expiresIn': int(expires)}, timeout=15)
-        if not r.ok:
-            logger.warning('Media signed URL failed: %s %s', r.status_code, r.text[:300])
-            return None
-        data = json_or_empty(r)
-        signed = data.get('signedURL') or data.get('signedUrl') or data.get('signed_url')
-        if not signed:
-            return None
-        if signed.startswith('http://') or signed.startswith('https://'):
-            return signed
-        return f"{SUPABASE_URL}/storage/v1{signed if signed.startswith('/') else '/' + signed}"
-    except Exception:
-        logger.exception('Media signed URL creation failed')
-        return None
-
 @app.route('/public/media/<post_id>')
 def public_feed_media(post_id):
     post = first_row('koja_public_posts', {'id': post_id})
     if not post or not as_bool(post.get('is_published')):
         return '', 404
-    path = _media_storage_path(post.get('media_url'))
-    if not path:
+    value = clean(post.get('media_url'))
+    if not value:
         return '', 404
-    # Stream media directly from Supabase Storage instead of downloading the
-    # entire video through Render. This preserves browser range requests and
-    # makes large videos start much faster.
-    signed = _create_media_signed_url(path, 3600)
-    if signed:
-        return redirect(signed, code=302)
-    # Legacy fallback for installations where signed URLs are unavailable.
+    # V40.5 stores a private Storage path. Accept the old public URL format
+    # only when it points to this exact Supabase project and bucket.
+    path = value
+    public_prefix = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{quote(STORAGE_BUCKET, safe='')}/" if SUPABASE_URL else ''
+    if public_prefix and value.startswith(public_prefix):
+        path = unquote(value[len(public_prefix):])
+    if path.startswith('http://') or path.startswith('https://'):
+        return '', 404
     try:
         r = requests.get(sb_storage_url(path), headers=sb_headers(), timeout=20)
         if not r.ok:
@@ -7493,95 +7461,77 @@ def public_videos():
         if mt=='video': items.append(p)
     return render_page('KOJA Videos',r'''<style>.videos-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px}.video-card{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:12px}.video-card video{display:block;width:100%;aspect-ratio:16/9;object-fit:contain;background:#000;border-radius:12px}.video-card h3{margin:10px 0 6px}.video-card p{white-space:pre-wrap}.empty{padding:60px 20px;text-align:center}</style><div class="hero"><h2> KOJA Videos</h2><p>Public videos are visible to everyone. Tap play to watch.</p></div><div class="videos-grid">{% for p in items %}<article class="video-card"><video controls playsinline preload="metadata"><source src="{{ url_for('public_feed_media',post_id=p.id) }}"></video>{% if p.title %}<h3>{{ p.title }}</h3>{% endif %}<p>{{ p.body }}</p><div class="small">{{ p.created_at }}</div></article>{% else %}<div class="card empty"><h2>No public videos yet</h2><p>Published KOJA videos will appear here.</p></div>{% endfor %}</div>''',items=items)
 
-@app.route('/media/watch/<post_id>')
-def media_watch(post_id):
-    rows=db_select('koja_public_posts',{'id':post_id,'is_published':'eq.true'},limit=1) or []
-    if not rows: abort(404)
-    p=rows[0]
-    if not p.get('media_url'): abort(404)
-    mt=(p.get('media_type') or '').lower()
-    if mt!='video' and str(p.get('media_url') or '').lower().endswith(('.mp4','.webm','.mov')): mt='video'
-    if mt!='video': abort(404)
-    related=db_select('koja_public_posts',{'is_published':'eq.true'},order='created_at.desc',limit=40) or []
-    related=[x for x in related if str(x.get('id'))!=str(post_id) and x.get('media_url')]
-    quality=[]
-    for label,key in [('Auto','media_url'),('1080p','media_url_1080'),('720p','media_url_720'),('480p','media_url_480'),('360p','media_url_360')]:
-        u=p.get(key)
-        if u and u not in [q['url'] for q in quality]: quality.append({'label':label,'url':u})
-    subtitle_url=p.get('subtitle_url') or p.get('subtitles_url') or p.get('caption_url')
-    next_item=related[0] if related else None
-    return render_page('KOJA Media Player',r'''<style>
-.kp-shell{background:#05070a;color:#fff;border-radius:22px;overflow:hidden;min-height:70vh;border:1px solid rgba(255,255,255,.09)}.kp-stage{position:relative;background:#000;width:100%;aspect-ratio:16/9;display:flex;align-items:center;justify-content:center}.kp-video{width:100%;height:100%;object-fit:contain;background:#000}.kp-top{position:absolute;left:0;right:0;top:0;z-index:8;padding:14px 16px;background:linear-gradient(#000d,transparent);display:flex;justify-content:space-between;align-items:center;pointer-events:none}.kp-top>*{pointer-events:auto}.kp-back,.kp-full,.kp-skip,.kp-quality,.kp-captions{color:#fff;text-decoration:none;background:#0009;border:1px solid #fff3;border-radius:10px;padding:8px 11px;cursor:pointer}.kp-controls{display:flex;gap:7px;align-items:center}.kp-bottom{position:absolute;left:12px;right:12px;bottom:12px;z-index:9;display:flex;gap:8px;align-items:center}.kp-skip{font-size:12px}.kp-bottom .kp-range{flex:1;accent-color:#e53935}.kp-progress{height:3px;background:#333;position:absolute;left:0;right:0;bottom:0;z-index:10}.kp-progress span{display:block;height:100%;width:0;background:#e53935}.kp-info{padding:18px 20px 22px}.kp-title{font-size:clamp(20px,3vw,30px);font-weight:750;margin:0 0 7px}.kp-meta{opacity:.68;font-size:13px}.kp-tools{display:flex;flex-wrap:wrap;gap:8px;margin-top:15px}.kp-tool{border:1px solid var(--border,#ddd);background:var(--surface,#fff);color:inherit;border-radius:10px;padding:9px 12px;cursor:pointer}.kp-related{margin-top:18px}.kp-related-row{display:flex;gap:12px;overflow-x:auto;padding:4px 2px 14px;scroll-snap-type:x mandatory}.kp-related-card{flex:0 0 210px;scroll-snap-align:start;text-decoration:none;color:inherit}.kp-related-thumb{width:100%;aspect-ratio:16/9;background:#111;border-radius:12px;overflow:hidden;position:relative}.kp-related-thumb img,.kp-related-thumb video{width:100%;height:100%;object-fit:cover}.kp-related-progress{position:absolute;left:7px;right:7px;bottom:7px;height:3px;background:#555;border-radius:4px}.kp-related-progress i{display:block;height:100%;width:0;background:#e53935}.kp-related-title{font-size:13px;font-weight:650;margin-top:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.kp-menu{position:absolute;right:12px;top:58px;z-index:12;background:#0d1015;border:1px solid #fff2;border-radius:12px;padding:7px;display:none;min-width:130px;box-shadow:0 10px 30px #0008}.kp-menu button{display:block;width:100%;text-align:left;background:transparent;color:#fff;border:0;padding:9px;border-radius:8px;cursor:pointer}.kp-menu button:hover{background:#fff1}.kp-next{position:absolute;right:18px;bottom:72px;z-index:11;background:#0d1015eF;color:#fff;border:1px solid #fff3;border-radius:12px;padding:10px 13px;display:none}.kp-next strong{display:block}.kp-gesture{position:absolute;top:0;bottom:0;width:33%;z-index:6}.kp-left{left:0}.kp-right{right:0}.kp-center{left:33%;width:34%;}.kp-shell:fullscreen{width:100vw;height:100vh;border-radius:0}.kp-shell:fullscreen .kp-stage{height:100vh;aspect-ratio:auto}.kp-shell:fullscreen .kp-info{display:none}@media(max-width:700px){.kp-stage{aspect-ratio:16/10}.kp-shell{border-radius:14px}.kp-top{padding:10px}.kp-back,.kp-full,.kp-skip,.kp-quality,.kp-captions{font-size:12px;padding:7px 9px}.kp-info{padding:14px}.kp-related-card{flex-basis:180px}}
-.media-home{background:#05070a;color:#fff;border-radius:22px;padding:20px;overflow:hidden}.media-hero{min-height:330px;border-radius:20px;padding:34px;display:flex;align-items:end;background:linear-gradient(90deg,#05070a 0%,#05070acc 42%,#05070a22),var(--hero-bg,#111);background-size:cover;background-position:center}.media-hero h1{font-size:clamp(30px,6vw,58px);margin:0 0 8px}.media-hero p{max-width:680px;opacity:.78}.media-row{margin-top:28px}.media-row h2{margin:0 0 12px}.media-scroller{display:flex;gap:13px;overflow-x:auto;scroll-snap-type:x proximity;padding:2px 2px 12px}.m-card{flex:0 0 220px;scroll-snap-align:start;color:#fff;text-decoration:none}.m-thumb{aspect-ratio:16/9;background:#111;border-radius:12px;overflow:hidden;position:relative;border:1px solid #fff1}.m-thumb img,.m-thumb video{width:100%;height:100%;object-fit:cover}.m-play{position:absolute;left:10px;bottom:10px;background:#05070add;border:1px solid #fff3;border-radius:50%;width:38px;height:38px;display:grid;place-items:center}.m-title{font-weight:700;margin-top:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.m-meta{font-size:11px;opacity:.58;margin-top:4px}.m-progress{height:3px;background:#444;position:absolute;left:0;right:0;bottom:0}.m-progress i{display:block;height:100%;background:#e53935;width:0}.media-empty{padding:70px;text-align:center;color:#fff}
-</style>
-<div class="kp-shell" id="kojaPlayer">
- <div class="kp-stage" id="kpStage">
-  <div class="kp-top"><a class="kp-back" href="{{ url_for('media_nextgen') }}">Back</a><div class="kp-controls"><button class="kp-quality" id="kpQualityBtn" type="button" style="display:none">Quality</button><button class="kp-captions" id="kpCaptionBtn" type="button" style="display:none">CC</button><button class="kp-full" id="kpFullscreen" type="button">Fullscreen</button></div></div>
-  <video id="kpVideo" class="kp-video" controls playsinline preload="metadata" src="{{ url_for('public_feed_media',post_id=p.id) }}" {% if subtitle_url %}<track kind="subtitles" srclang="en" label="Subtitles" src="{{ subtitle_url }}">{% endif %}></video>
-  <div class="kp-left kp-gesture"></div><div class="kp-center kp-gesture"></div><div class="kp-right kp-gesture"></div>
-  <div class="kp-bottom"><button class="kp-skip" id="kpBack10" type="button">−10s</button><input class="kp-range" id="kpRange" type="range" min="0" max="100" value="0" step="0.1" aria-label="Playback position"><button class="kp-skip" id="kpFwd10" type="button">+10s</button></div>
-  <div class="kp-progress"><span id="kpProgress"></span></div><div class="kp-next" id="kpNext"></div>
-  <div class="kp-menu" id="kpQualityMenu"></div>
- </div>
- <div class="kp-info"><h1 class="kp-title">{{ p.title or 'KOJA Media' }}</h1><div class="kp-meta">{{ p.post_type|title }} · {{ p.created_at }}</div>{% if p.body %}<p style="white-space:pre-wrap;line-height:1.6;opacity:.82">{{ p.body }}</p>{% endif %}<div class="kp-tools"><button class="kp-tool" id="kpResume" type="button">Resume</button><button class="kp-tool" id="kpRestart" type="button">Start over</button><button class="kp-tool" id="kpShare" type="button">Share</button><button class="kp-tool" id="kpList" type="button">+ My List</button><button class="kp-tool" id="kpSpeed" type="button">Speed 1x</button><button class="kp-tool" id="kpPip" type="button">Picture-in-picture</button>{% if next_item %}<a class="kp-tool" href="{{ url_for('media_watch',post_id=next_item.id) }}">Next video</a>{% endif %}</div></div>
-</div>
-<div class="kp-related"><h2>More from KOJA Media</h2><div class="kp-related-row">{% for x in related[:18] %}<a class="kp-related-card" href="{{ url_for('media_watch',post_id=x.id) }}"><div class="kp-related-thumb">{% if x.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=x.id) }}" muted preload="metadata"></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=x.id) }}" loading="lazy" alt="">{% endif %}<div class="kp-related-progress"><i data-progress-id="{{ x.id }}"></i></div></div><div class="kp-related-title">{{ x.title or 'KOJA Media' }}</div></a>{% endfor %}</div></div>
-<script>
-(()=>{const v=document.getElementById('kpVideo'),shell=document.getElementById('kojaPlayer'),full=document.getElementById('kpFullscreen'),range=document.getElementById('kpRange'),bar=document.getElementById('kpProgress'),key='koja-media-progress-{{ p.id }}',historyKey='koja-media-history',quality={{ quality|tojson }},subtitle={{ (subtitle_url or '')|tojson }},next={{ (next_item.id if next_item else '')|tojson }},nextTitle={{ (next_item.title if next_item else 'Next video')|tojson }};let saved=0;try{saved=parseFloat(localStorage.getItem(key)||'0')||0}catch(e){};
-function remember(){try{let a=JSON.parse(localStorage.getItem(historyKey)||'[]').filter(x=>x.id!=='{{ p.id }}');a.unshift({id:'{{ p.id }}',title:{{ (p.title or 'KOJA Media')|tojson }},time:Date.now()});localStorage.setItem(historyKey,JSON.stringify(a.slice(0,50)))}catch(e){}}
-function save(){try{if(v.currentTime>0&&v.duration)localStorage.setItem(key,String(v.currentTime));remember()}catch(e){}}
-function seek(n){v.currentTime=Math.max(0,Math.min(v.duration||Infinity,v.currentTime+n))}
-v.addEventListener('loadedmetadata',()=>{if(saved>0&&saved<v.duration-3)v.currentTime=saved;});let milestones={25:false,50:false,75:false};v.addEventListener('timeupdate',()=>{if(v.duration){const pct=v.currentTime/v.duration*100;bar.style.width=pct.toFixed(2)+'%';range.value=pct;save();[25,50,75].forEach(m=>{if(pct>=m&&!milestones[m]){milestones[m]=true;track(m+'_'+'percent')}})}});v.addEventListener('ended',()=>{try{localStorage.removeItem(key)}catch(e){}track('complete');if(next){const box=document.getElementById('kpNext');box.innerHTML='<strong>Next: '+nextTitle+'</strong><span>Opening in 5 seconds…</span>';box.style.display='block';let n=5;const t=setInterval(()=>{n--;box.querySelector('span').textContent=n>0?'Opening in '+n+' seconds…':'Opening…';if(n<=0){clearInterval(t);location.href='/media/watch/'+next}},1000)}});
-range.oninput=()=>{if(v.duration)v.currentTime=Number(range.value)/100*v.duration};document.getElementById('kpBack10').onclick=()=>seek(-10);document.getElementById('kpFwd10').onclick=()=>seek(10);document.getElementById('kpResume').onclick=()=>{if(saved&&saved<v.duration)v.currentTime=saved;v.play().catch(()=>{})};document.getElementById('kpRestart').onclick=()=>{try{localStorage.removeItem(key)}catch(e){}v.currentTime=0;v.play().catch(()=>{})};document.getElementById('kpShare').onclick=()=>{const u=location.href;if(navigator.share)navigator.share({title:{{ (p.title or 'KOJA Media')|tojson }},url:u});else navigator.clipboard?.writeText(u)};
-const qbtn=document.getElementById('kpQualityBtn'),qmenu=document.getElementById('kpQualityMenu');if(quality.length>1){qbtn.style.display='block';quality.forEach((q,i)=>{const b=document.createElement('button');b.textContent=q.label;b.onclick=()=>{const pos=v.currentTime;v.src=q.url;v.load();v.addEventListener('loadedmetadata',()=>{v.currentTime=pos;v.play().catch(()=>{})},{once:true});qmenu.style.display='none'};qmenu.appendChild(b)});qbtn.onclick=()=>qmenu.style.display=qmenu.style.display==='block'?'none':'block'}
-const cb=document.getElementById('kpCaptionBtn');if(subtitle){cb.style.display='block';cb.onclick=()=>{for(const t of v.textTracks)t.mode=t.mode==='showing'?'hidden':'showing'}}
-async function toggle(){try{if(!document.fullscreenElement){await shell.requestFullscreen();try{if(screen.orientation?.lock)await screen.orientation.lock('landscape')}catch(e){}}else{await document.exitFullscreen();try{screen.orientation?.unlock()}catch(e){}}}catch(e){try{v.webkitEnterFullscreen&&v.webkitEnterFullscreen()}catch(_){}}}full.onclick=toggle;document.addEventListener('fullscreenchange',()=>full.textContent=document.fullscreenElement?'Exit fullscreen':'Fullscreen');document.addEventListener('keydown',e=>{if(e.key==='ArrowLeft')seek(-10);if(e.key==='ArrowRight')seek(10)});window.addEventListener('pagehide',save);v.addEventListener('play',()=>track('play'));v.addEventListener('pause',()=>{save();track('pause')});
-let taps={left:0,right:0};function doubleTap(side){const now=Date.now();if(now-taps[side]<350){seek(side==='left'?-10:10);taps[side]=0}else taps[side]=now}document.querySelector('.kp-left').onclick=()=>doubleTap('left');document.querySelector('.kp-right').onclick=()=>doubleTap('right');document.querySelector('.kp-center').onclick=()=>v.paused?v.play().catch(()=>{}):v.pause();
-const listKey='koja-media-my-list';const listBtn=document.getElementById('kpList');function getList(){try{return JSON.parse(localStorage.getItem(listKey)||'[]')}catch(e){return []}}function setList(a){try{localStorage.setItem(listKey,JSON.stringify(a.slice(0,100)))}catch(e){}}function syncList(){const a=getList().map(String);if(listBtn)listBtn.textContent=a.includes('{{ p.id }}')?'✓ My List':'+ My List'}if(listBtn){syncList();listBtn.onclick=()=>{let a=getList().map(String);const id='{{ p.id }}';a=a.includes(id)?a.filter(x=>x!==id):[id,...a];setList(a);syncList()}}
-const speedBtn=document.getElementById('kpSpeed');const speeds=[0.75,1,1.25,1.5,1.75,2];let si=1;try{si=Math.max(0,speeds.indexOf(parseFloat(localStorage.getItem('koja-media-speed')||'1')))}catch(e){};function syncSpeed(){v.playbackRate=speeds[si];if(speedBtn)speedBtn.textContent='Speed '+speeds[si]+'x';try{localStorage.setItem('koja-media-speed',String(speeds[si]))}catch(e){}}syncSpeed();if(speedBtn)speedBtn.onclick=()=>{si=(si+1)%speeds.length;syncSpeed()};const pipBtn=document.getElementById('kpPip');if(pipBtn&&!document.pictureInPictureEnabled)pipBtn.style.display='none';if(pipBtn)pipBtn.onclick=async()=>{try{if(document.pictureInPictureElement)await document.exitPictureInPicture();else await v.requestPictureInPicture()}catch(e){}};
-document.querySelectorAll('[data-progress-id]').forEach(el=>{try{const t=parseFloat(localStorage.getItem('koja-media-progress-'+el.dataset.progressId)||'0');const meta=el.closest('.kp-related-thumb');const vid=meta?.querySelector('video');if(vid){vid.addEventListener('loadedmetadata',()=>{el.style.width=(t&&vid.duration?t/vid.duration*100:0)+'%'})}else el.style.width='0'}catch(e){}});function track(type){fetch('/api/nextgen/media-event',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({post_id:'{{ p.id }}',event_type:type,watch_seconds:v.currentTime,completion_percent:v.duration?v.currentTime/v.duration*100:0})}).catch(()=>{})}})();
-</script>''',p=p,related=related,quality=quality,subtitle_url=subtitle_url,next_item=next_item)
-
 @app.route('/media-next')
 def media_nextgen():
     rows=db_select('koja_public_posts',{'is_published':'eq.true'},order='created_at.desc',limit=100) or []
-    items=[p for p in rows if p.get('media_url')]
-    featured=items[0] if items else None
-    groups={}
-    for p in items:
-        typ=str(p.get('post_type') or '').lower()
-        mt=str(p.get('media_type') or '').lower()
-        if 'movie' in typ: key='Movies'
-        elif 'series' in typ or 'episode' in typ: key='Series'
-        elif 'music' in typ or mt=='audio': key='Music'
-        elif 'news' in typ: key='News'
-        elif 'event' in typ: key='Events'
-        elif 'education' in typ or 'course' in typ: key='Education'
-        else: key='Latest on KOJA'
-        groups.setdefault(key,[]).append(p)
+    items=[]
+    for p in rows:
+        if not p.get('media_url'): continue
+        items.append(p)
+    # V6: streaming-first Netflix-style discovery. Videos are not loaded until
+    # a card is opened/near viewport; HLS master URLs are preferred when present.
     return render_page('KOJA Media',r'''
-<div class="media-home"><section class="media-hero" {% if featured %}style="--hero-bg:url('{{ url_for('public_feed_media',post_id=featured.id) }}')"{% endif %}><div><div style="opacity:.65;font-weight:700;letter-spacing:.08em">KOJA MEDIA</div><h1>{{ featured.title if featured else 'Your media world on KOJA' }}</h1><p>{{ featured.body[:260] if featured and featured.body else 'Movies, series, music, news, events, education and creator content.' }}</p>{% if featured %}<a class="kp-tool" href="{{ url_for('media_watch',post_id=featured.id) }}">Watch now</a>{% endif %}</div></section>
-<section class="media-row" id="continueRow" style="display:none"><h2>Continue Watching</h2><div class="media-scroller" id="continueScroller"></div></section>
-<section class="media-row" id="myListRow" style="display:none"><h2>My List</h2><div class="media-scroller" id="myListScroller"></div></section>
-{% for name,arr in groups.items() %}<section class="media-row"><h2>{{ name }}</h2><div class="media-scroller">{% for p in arr[:24] %}<a class="m-card" data-media-id="{{ p.id }}" href="{{ url_for('media_watch',post_id=p.id) }}"><div class="m-thumb">{% if p.media_type=='video' %}<video data-src="{{ url_for('public_feed_media',post_id=p.id) }}" muted preload="none" playsinline></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="">{% endif %}<span class="m-play">Play</span><div class="m-progress"><i data-card-progress="{{ p.id }}"></i></div></div><div class="m-title">{{ p.title or 'KOJA Media' }}</div><div class="m-meta">{{ p.post_type|title }}</div></a>{% endfor %}</div></section>{% endfor %}
-{% if not items %}<div class="media-empty">Published KOJA Media will appear here.</div>{% endif %}</div>
+<style>
+.km{background:#05070a;color:#fff;border-radius:24px;padding:18px;min-height:70vh}.km-hero{min-height:300px;border-radius:22px;padding:28px;display:flex;align-items:end;background:linear-gradient(180deg,rgba(0,0,0,.05),rgba(0,0,0,.9)),#10151d;margin-bottom:24px}.km-hero h1{font-size:clamp(30px,6vw,58px);margin:0 0 8px}.km-row{margin:24px 0}.km-row h2{font-size:20px;margin:0 0 12px}.km-scroller{display:flex;gap:14px;overflow-x:auto;padding:2px 2px 12px;scroll-snap-type:x proximity}.km-card{flex:0 0 min(280px,72vw);scroll-snap-align:start;background:#0d1118;border:1px solid rgba(255,255,255,.09);border-radius:16px;overflow:hidden;text-decoration:none;color:#fff;position:relative}.km-thumb{aspect-ratio:16/9;background:#151a22;position:relative;overflow:hidden}.km-thumb img{width:100%;height:100%;object-fit:cover}.km-play{position:absolute;left:12px;bottom:12px;width:44px;height:44px;border-radius:50%;display:grid;place-items:center;background:rgba(20,100,150,.92);font-size:18px}.km-body{padding:12px}.km-title{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.km-meta{font-size:12px;color:#9aa5b5;margin-top:5px}.km-progress{height:4px;background:#303744}.km-progress span{display:block;height:100%;background:#2b83c6;width:0}.km-empty{padding:70px 20px;text-align:center}.km-continue{display:none}
+@media(max-width:700px){.km{padding:10px}.km-hero{min-height:230px;padding:20px}.km-card{flex-basis:76vw}}
+</style>
+<div class="km">
+  <section class="km-hero"><div><div class="small" style="color:#b9c3d0">KOJA MEDIA</div><h1>Watch. Discover. Continue.</h1><p style="max-width:650px;color:#c7ced8">Adaptive streaming with resume playback, mobile-first cards and HLS when a title has been processed.</p></div></section>
+  <section class="km-row km-continue" id="continueRow"><h2>Continue Watching</h2><div class="km-scroller" id="continueScroller"></div></section>
+  <section class="km-row"><h2>Latest on KOJA</h2><div class="km-scroller">{% for p in items %}<a class="km-card" href="{{ url_for('media_watch',post_id=p.id) }}" data-id="{{ p.id }}"><div class="km-thumb">{% if p.thumbnail_url %}<img src="{{ p.thumbnail_url }}" loading="lazy" alt="">{% else %}<div style="width:100%;height:100%;display:grid;place-items:center;color:#657084">KOJA MEDIA</div>{% endif %}<span class="km-play">▶</span></div><div class="km-body"><div class="km-title">{{ p.title or 'KOJA Media' }}</div><div class="km-meta">{{ p.post_type|title }}{% if p.created_at %} · {{ p.created_at[:10] }}{% endif %}</div></div><div class="km-progress"><span id="prog-{{ p.id }}"></span></div></a>{% else %}<div class="km-empty">No published media yet.</div>{% endfor %}</div></section>
+</div>
 <script>
-(()=>{const data={{ items|tojson }};const ids=new Map(data.map(x=>[String(x.id),x]));const row=document.getElementById('continueRow'),sc=document.getElementById('continueScroller'),myRow=document.getElementById('myListRow'),mySc=document.getElementById('myListScroller');let hist=[];try{hist=JSON.parse(localStorage.getItem('koja-media-history')||'[]')}catch(e){};const seen=hist.map(x=>String(x.id)).filter(id=>ids.has(id));function card(id,label){const x=ids.get(id);return `<a class="m-card" href="/media/watch/${id}"><div class="m-thumb"><video data-src="/public/media/${id}" muted preload="none" playsinline></video><span class="m-play">${label}</span><div class="m-progress"><i data-card-progress="${id}"></i></div></div><div class="m-title">${String(x.title||'KOJA Media').replace(/[<>&]/g,'')}</div><div class="m-meta">${label}</div></a>`}if(seen.length){row.style.display='block';sc.innerHTML=seen.slice(0,12).map(id=>card(id,'Resume')).join('')}let list=[];try{list=JSON.parse(localStorage.getItem('koja-media-my-list')||'[]')}catch(e){};const saved=list.map(String).filter(id=>ids.has(id));if(saved.length){myRow.style.display='block';mySc.innerHTML=saved.slice(0,24).map(id=>card(id,'My List')).join('')}function loadVideo(v){if(!v||v.dataset.loaded)return;const src=v.dataset.src;if(!src)return;v.dataset.loaded='1';v.src=src;try{v.load()}catch(e){}}
-const io=('IntersectionObserver' in window)?new IntersectionObserver(entries=>{entries.forEach(en=>{if(en.isIntersecting){loadVideo(en.target);io.unobserve(en.target)}})},{rootMargin:'240px 0px',threshold:0.01}):null;
-function wire(){document.querySelectorAll('.m-thumb video').forEach(v=>{if(io)io.observe(v);else loadVideo(v)});document.querySelectorAll('[data-card-progress]').forEach(el=>{const id=el.dataset.cardProgress;try{const t=parseFloat(localStorage.getItem('koja-media-progress-'+id)||'0');const vid=el.closest('.m-thumb')?.querySelector('video');if(vid){vid.addEventListener('loadedmetadata',()=>el.style.width=(t&&vid.duration?t/vid.duration*100:0));if(vid.readyState>=1&&vid.duration)el.style.width=(t/vid.duration*100)+'%'}}catch(e){}})}wire();
-window.addEventListener('pagehide',()=>{try{io&&io.disconnect()}catch(e){}})})();
-</script>''',items=items,groups=groups,featured=featured)
+(function(){
+ const key=id=>'koja-media-progress-'+id;
+ function pct(id){const x=parseFloat(localStorage.getItem(key(id))||'0');return Math.max(0,Math.min(100,x));}
+ document.querySelectorAll('.km-card[data-id]').forEach(c=>{const id=c.dataset.id,p=c.querySelector('.km-progress span');if(p)p.style.width=pct(id)+'%';});
+ const cards=[...document.querySelectorAll('.km-card[data-id]')].filter(c=>pct(c.dataset.id)>2&&pct(c.dataset.id)<98).sort((a,b)=>pct(b.dataset.id)-pct(a.dataset.id)).slice(0,12);
+ if(cards.length){const row=document.getElementById('continueRow'),sc=document.getElementById('continueScroller');cards.forEach(c=>sc.appendChild(c.cloneNode(true)));row.style.display='block';}
+})();
+</script>
+''',items=items)
+
+@app.route('/media/watch/<post_id>')
+def media_watch(post_id):
+    p=first_row('koja_public_posts',{'id':post_id,'is_published':'eq.true'})
+    if not p or not p.get('media_url'): return '',404
+    related=db_select('koja_public_posts',{'is_published':'eq.true'},order='created_at.desc',limit=30) or []
+    related=[x for x in related if x.get('media_url') and str(x.get('id'))!=str(post_id)][:12]
+    hls=p.get('media_hls_url') or p.get('hls_url') or p.get('media_master_url') or ''
+    subtitles=p.get('subtitle_url') or p.get('media_subtitle_url') or ''
+    return render_page('KOJA Media Player',r'''
+<style>
+.kw{background:#05070a;color:#fff;border-radius:22px;padding:12px}.kp-stage{position:relative;background:#000;border-radius:18px;overflow:hidden;max-width:1100px;margin:auto}.kp-stage video{display:block;width:100%;height:auto;max-height:78vh;background:#000}.kp-top{padding:16px 4px}.kp-title{font-size:clamp(22px,4vw,34px);font-weight:800}.kp-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.kp-actions button,.kp-actions a{border:1px solid #303744;background:#10151d;color:#fff;border-radius:10px;padding:9px 12px;text-decoration:none}.kp-range{width:100%;margin:10px 0}.kp-related{display:flex;gap:12px;overflow-x:auto;padding:6px 0 16px}.kp-rel{flex:0 0 220px;background:#0d1118;border-radius:13px;overflow:hidden;color:#fff;text-decoration:none}.kp-rel img{width:100%;aspect-ratio:16/9;object-fit:cover;background:#151a22}.kp-rel div{padding:9px;font-weight:700}.kp-note{color:#9aa5b5;font-size:13px}.kp-quality{display:none}
+</style>
+<div class="kw"><div class="kp-stage" id="playerShell"><video id="kpVideo" controls playsinline preload="metadata"{% if hls %} data-hls="{{ hls }}"{% else %} src="{{ url_for('public_feed_media',post_id=p.id) }}"{% endif %}>{% if subtitles %}<track kind="subtitles" src="{{ subtitles }}" srclang="en" label="English">{% endif %}</video></div>
+<div class="kp-top"><div class="kp-title">{{ p.title or 'KOJA Media' }}</div><div class="kp-note">{{ p.post_type|title }} · Adaptive playback when HLS is available.</div><input class="kp-range" id="kpRange" type="range" min="0" max="100" value="0" step="0.1"><div class="kp-actions"><button id="back10">−10s</button><button id="fwd10">+10s</button><button id="resume">Resume</button><button id="startOver">Start over</button><button id="full">Fullscreen</button><button id="share">Share</button><select id="quality" class="kp-quality"><option>Quality</option></select></div></div>
+{% if p.body %}<p style="white-space:pre-wrap;line-height:1.7">{{ p.body }}</p>{% endif %}
+<section><h2>More from KOJA Media</h2><div class="kp-related">{% for x in related %}<a class="kp-rel" href="{{ url_for('media_watch',post_id=x.id) }}"><img src="{{ x.thumbnail_url or '' }}" loading="lazy" alt=""><div>{{ x.title or 'KOJA Media' }}</div></a>{% endfor %}</div></section></div>
+<script>
+(function(){const v=document.getElementById('kpVideo'),range=document.getElementById('kpRange'),shell=document.getElementById('playerShell'),id={{ p.id|tojson }},hlsUrl={{ hls|tojson }},key='koja-media-progress-'+id;let lastEvent=0,hls=null;
+ function track(type){fetch('/api/nextgen/media-event',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({post_id:id,event_type:type,watch_seconds:v.currentTime||0,completion_percent:v.duration?(v.currentTime/v.duration*100):0})}).catch(()=>{});}
+ function save(){if(v.duration&&isFinite(v.duration))localStorage.setItem(key,String(v.currentTime));}
+ function restore(){let t=parseFloat(localStorage.getItem(key)||'0');if(t>2&&v.duration&&t<v.duration-2)v.currentTime=t;}
+ if(hlsUrl && !v.canPlayType('application/vnd.apple.mpegurl')){const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js';s.onload=()=>{if(window.Hls&&Hls.isSupported()){hls=new Hls({enableWorker:true,lowLatencyMode:false,maxBufferLength:30,maxMaxBufferLength:60,backBufferLength:30});hls.loadSource(hlsUrl);hls.attachMedia(v);hls.on(Hls.Events.MANIFEST_PARSED,()=>populateQuality());}};document.head.appendChild(s);} else if(hlsUrl){v.src=hlsUrl;}
+ function populateQuality(){const q=document.getElementById('quality');if(!hls||!hls.levels||hls.levels.length<2)return;q.style.display='inline-block';hls.levels.forEach((x,i)=>{const o=document.createElement('option');o.value=i;o.textContent=(x.height||'?')+'p';q.appendChild(o);});q.onchange=()=>{hls.currentLevel=parseInt(q.value,10);};}
+ v.addEventListener('loadedmetadata',()=>{restore();});v.addEventListener('timeupdate',()=>{if(v.duration){range.value=(v.currentTime/v.duration*100).toFixed(1);if(v.currentTime-lastEvent>20){lastEvent=v.currentTime;save();}}});v.addEventListener('play',()=>track('play'));v.addEventListener('pause',()=>{save();track('pause')});v.addEventListener('ended',()=>{save();track('complete')});range.oninput=()=>{if(v.duration)v.currentTime=v.duration*(parseFloat(range.value)/100)};
+ document.getElementById('back10').onclick=()=>v.currentTime=Math.max(0,v.currentTime-10);document.getElementById('fwd10').onclick=()=>v.currentTime=Math.min(v.duration||Infinity,v.currentTime+10);document.getElementById('resume').onclick=restore;document.getElementById('startOver').onclick=()=>{v.currentTime=0;localStorage.removeItem(key)};
+ document.getElementById('full').onclick=async()=>{try{if(!document.fullscreenElement){await shell.requestFullscreen();try{await screen.orientation.lock('landscape')}catch(e){}}else{await document.exitFullscreen()}}catch(e){}};
+ document.getElementById('share').onclick=()=>{const u=location.href;if(navigator.share)navigator.share({title:document.title,url:u});else navigator.clipboard?.writeText(u)};
+ v.addEventListener('dblclick',e=>{const r=v.getBoundingClientRect();if(e.clientX<r.left+r.width/2)v.currentTime=Math.max(0,v.currentTime-10);else v.currentTime=Math.min(v.duration||Infinity,v.currentTime+10)});window.addEventListener('pagehide',save);
+})();
+</script>
+''',p=p,related=related,hls=hls,subtitles=subtitles)
 
 @app.route('/api/nextgen/media-event',methods=['POST'])
 def nextgen_media_event():
-    d=request.get_json(silent=True) or {}
-    pid=clean(d.get('post_id')); et=clean(d.get('event_type'))
+    d=request.get_json(silent=True) or {}; pid=clean(d.get('post_id')); et=clean(d.get('event_type'))
     allowed={'impression','play','pause','25_percent','50_percent','75_percent','complete','share'}
     if not pid or et not in allowed:return jsonify(error='Invalid event'),400
     sid=request.cookies.get('koja_media_session') or uuid.uuid4().hex
     uid=(current_user() or {}).get('id')
     db_insert('koja_media_events',{'post_id':pid,'user_id':uid,'session_id':sid,'event_type':et,'watch_seconds':float(d.get('watch_seconds') or 0),'completion_percent':float(d.get('completion_percent') or 0),'created_at':utc_now()})
-    resp=jsonify(ok=True); resp.set_cookie('koja_media_session',sid,max_age=60*60*24*30,httponly=True,samesite='Lax'); return resp
+    resp=jsonify(ok=True);resp.set_cookie('koja_media_session',sid,max_age=60*60*24*30,httponly=True,samesite='Lax');return resp
 
 @app.route('/news-next')
 def news_nextgen():
