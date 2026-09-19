@@ -859,6 +859,17 @@ th,td{border-bottom:1px solid var(--border);padding:9px;text-align:left;vertical
 .online{color:#177245;font-weight:700}
 .offline{color:#a62d2d;font-weight:700}
 footer{text-align:center;color:var(--muted);padding:30px}
+/* KOJA GLOBAL LOADING ENGINE — progressive, non-blocking by default */
+#kojaLoadBar{position:fixed;left:0;top:0;width:0;height:3px;background:linear-gradient(90deg,#176b87,#2aa7b8,#f2b84b);z-index:2147483647;opacity:0;pointer-events:none;transition:width .22s ease,opacity .18s ease;box-shadow:0 1px 8px rgba(23,107,135,.35)}
+#kojaLoadBar.active{opacity:1;width:72%}
+#kojaLoadBar.done{width:100%;opacity:0;transition:width .18s ease,opacity .35s ease .08s}
+.koja-loading-inline{position:relative;opacity:.72;pointer-events:none}
+.koja-loading-inline::after{content:"";display:inline-block;width:13px;height:13px;margin-left:7px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;vertical-align:-2px;animation:kojaSpin .7s linear infinite}
+.koja-skeleton{position:relative;overflow:hidden;background:var(--border)!important;color:transparent!important;border-color:transparent!important;min-height:18px;border-radius:8px}
+.koja-skeleton::after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,rgba(255,255,255,.45),transparent);animation:kojaShimmer 1.15s infinite}
+html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90deg,transparent,rgba(255,255,255,.08),transparent)}
+@keyframes kojaSpin{to{transform:rotate(360deg)}}
+@keyframes kojaShimmer{100%{transform:translateX(100%)}}
 .actions{display:flex;gap:8px;flex-wrap:wrap}.actions .btn,.actions button{width:auto}
 @keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}@keyframes logoFloat{0%,100%{transform:translateY(0) rotate(0deg)}50%{transform:translateY(-2px) rotate(1deg)}}@keyframes pulseSoft{0%,100%{box-shadow:0 0 0 0 rgba(25,167,184,.18)}50%{box-shadow:0 0 0 7px rgba(25,167,184,0)}}:focus-visible{outline:3px solid var(--focus);outline-offset:2px}.hero{animation:fadeUp .55s ease both}.stat{animation:fadeUp .5s ease both}.online{animation:pulseSoft 2.4s ease-in-out infinite}@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition:none!important;transform:none!important}}
 @media(max-width:760px){nav{padding:9px 12px}.nav-inner{position:relative;flex-wrap:wrap}.menu-toggle{display:block}.nav-links{display:none;width:100%;flex-direction:column;align-items:stretch;gap:3px;padding-top:8px}.nav-links.open{display:flex;animation:fadeUp .2s ease both}.nav-links>a{font-size:14px;padding:11px 12px;background:rgba(255,255,255,.05)}.menu-group{width:100%}.menu-group>button{width:100%;text-align:left;padding:11px 12px}.dropdown{position:static;width:100%;box-shadow:none;margin-top:4px;background:var(--surface)}.dropdown a{font-size:14px}.container{width:min(100% - 14px,1250px)}table{display:block;overflow-x:auto}#map{height:350px}.actions .btn,.actions button{width:100%}}
@@ -866,6 +877,7 @@ footer{text-align:center;color:var(--muted);padding:30px}
 </style>
 </head>
 <body>
+<div id="kojaLoadBar" aria-hidden="true"></div>
 <nav aria-label="Primary navigation">
 <div class="nav-inner">
 <div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 18V6h7.2a5.3 5.3 0 0 1 0 10.6H8.5" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 9.1h3.4a1.9 1.9 0 0 1 0 3.8H8.5" stroke="white" stroke-width="2.2" stroke-linecap="round"/></svg></span><span class="brand-name">KOJA AFRICA</span></div>
@@ -914,6 +926,59 @@ footer{text-align:center;color:var(--muted);padding:30px}
  if(more&&drop){more.addEventListener('click',function(e){e.stopPropagation();const open=drop.classList.toggle('open');more.setAttribute('aria-expanded',open);});document.addEventListener('click',function(e){if(!e.target.closest('.menu-group')){drop.classList.remove('open');more.setAttribute('aria-expanded','false');}});}
  document.querySelectorAll('#navLinks a').forEach(function(a){a.addEventListener('click',function(){if(window.innerWidth<=760&&links.classList.contains('open')){links.classList.remove('open');toggle.setAttribute('aria-expanded','false');toggle.setAttribute('aria-label','Open menu');toggle.innerHTML=' Menu';}});});
  window.addEventListener('resize',function(){if(window.innerWidth>760){links.classList.remove('open');toggle&&toggle.setAttribute('aria-expanded','false');toggle&&(toggle.innerHTML=' Menu');}});
+})();
+</script>
+<script>
+/* KOJA Loading Engine: only signals real navigation/submission work.
+   It never blocks ordinary page rendering and does not add a loader to every fetch. */
+(function(){
+  var bar=document.getElementById('kojaLoadBar');
+  if(!bar)return;
+  var timer=null;
+  function start(){
+    clearTimeout(timer);
+    bar.classList.remove('done');
+    bar.classList.add('active');
+    timer=setTimeout(function(){bar.style.width='88%';},250);
+  }
+  function done(){
+    clearTimeout(timer);
+    bar.classList.remove('active');
+    bar.classList.add('done');
+    setTimeout(function(){bar.classList.remove('done');bar.style.width='0';},450);
+  }
+  window.kojaLoading={start:start,done:done,inline:function(el,label){
+    if(!el)return;
+    if(!el.dataset.kojaOriginal)el.dataset.kojaOriginal=el.textContent||'';
+    el.classList.add('koja-loading-inline');
+    if(label)el.textContent=label;
+  }};
+  window.addEventListener('pageshow',done);
+  document.addEventListener('click',function(e){
+    var a=e.target.closest&&e.target.closest('a[href]');
+    if(!a||e.defaultPrevented||a.target==='_blank'||a.hasAttribute('download'))return;
+    var href=a.getAttribute('href')||'';
+    if(!href||href[0]==='#'||href.indexOf('javascript:')===0||href.indexOf('mailto:')===0||href.indexOf('tel:')===0)return;
+    try{
+      var u=new URL(href,location.href);
+      if(u.origin!==location.origin)return;
+      if(u.pathname===location.pathname&&u.search===location.search&&u.hash===location.hash)return;
+      start();
+    }catch(x){}
+  },true);
+  document.addEventListener('submit',function(e){
+    var form=e.target;if(!form||form.dataset.kojaNoLoading==='true'||e.defaultPrevented)return;
+    var btn=form.querySelector('button[type="submit"],input[type="submit"]');
+    if(btn&&!btn.disabled){
+      if(!btn.dataset.kojaOriginal)btn.dataset.kojaOriginal=btn.textContent||btn.value||'';
+      btn.disabled=true;
+      btn.classList.add('koja-loading-inline');
+      if(btn.tagName==='INPUT')btn.value='Processing…';else btn.textContent='Processing…';
+    }
+    start();
+  },true);
+  window.addEventListener('beforeunload',start);
+  document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')done();});
 })();
 </script>
 {% if user %}<script>async function refreshKOJANotifications(){try{let r=await fetch('/api/notifications');if(!r.ok)return;let d=await r.json(),b=document.getElementById('kojaNotifBadge');if(!b)return;if(d.unread>0){b.hidden=false;b.textContent=d.unread>99?'99+':d.unread}else b.hidden=true}catch(e){}}refreshKOJANotifications();setInterval(refreshKOJANotifications,20000);</script>{% endif %}
