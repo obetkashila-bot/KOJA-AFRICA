@@ -7939,7 +7939,7 @@ def _global_business_modules(business_id):
         ('Organisation','Business Core','business_core_status'),
         ('Workforce / HR','Employees, payroll and staff permissions','business_employees'),
         ('CRM & Sales','Customers, invoices and sales records','business_customers'),
-        ('Procurement','Global B2B requests, suppliers and quotations','b2bv4_business'),
+        ('Procurement','Global B2B requests, suppliers and quotations','b2bv4_centre'),
         ('Supply Chain','Suppliers, inventory and fulfilment','business_suppliers'),
         ('Commerce','Online store and KOJA Market','business_store'),
         ('Professional Services','Professionals, appointments and projects','professionals'),
@@ -7990,12 +7990,12 @@ def global_business_hub(business_id):
     for name,desc,endpoint in _global_business_modules(business_id):
         try:
             if endpoint=='business_core_status': href=url_for(endpoint,business_id=business_id)
-            elif endpoint=='b2bv4_business': href=url_for(endpoint,business_id=business_id)
+            elif endpoint=='b2bv4_centre': href=url_for(endpoint,business_id=business_id)
             elif endpoint in ('business_employees','business_customers','business_suppliers','business_store','business_accounting_v2','business_intelligence_v3','business_payments','business_delivery','business_live_v2'): href=url_for(endpoint,business_id=business_id)
             else: href=url_for(endpoint)
         except Exception: href=url_for('business_dashboard',business_id=business_id)
         modules.append({'name':name,'desc':desc,'href':href})
-    tpl="""<div class="hero"><h1>{{ b.name }} — Global Business</h1><p>One operating workspace connecting commerce, B2B, services, finance, workforce, logistics, AI and KOJA platform engines.</p><div class="actions"><a class="btn" href="{{ url_for('business_dashboard',business_id=b.id) }}">Business Dashboard</a><a class="btn secondary" href="{{ url_for('b2bv4_business',business_id=b.id) }}">B2B Workspace</a><a class="btn secondary" href="{{ url_for('business_global_api',business_id=b.id) }}">Live Business Data</a></div></div>
+    tpl="""<div class="hero"><h1>{{ b.name }} — Global Business</h1><p>One operating workspace connecting commerce, B2B, services, finance, workforce, logistics, AI and KOJA platform engines.</p><div class="actions"><a class="btn" href="{{ url_for('business_dashboard',business_id=b.id) }}">Business Dashboard</a><a class="btn secondary" href="{{ url_for('b2bv4_centre',business_id=b.id) }}">B2B Workspace</a><a class="btn secondary" href="{{ url_for('business_global_api',business_id=b.id) }}">Live Business Data</a></div></div>
 <div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(revenue,'ZMW') }}</h2></div><div class="card"><h3>Costs</h3><h2>{{ money(costs,'ZMW') }}</h2></div><div class="card"><h3>Operating result</h3><h2>{{ money(revenue-costs,'ZMW') }}</h2></div><div class="card"><h3>B2B orders</h3><h2>{{ counts.b2b_orders_buyer + counts.b2b_orders_seller }}</h2></div></div>
 <div class="grid">{% for m in modules %}<div class="card"><h3>{{ m.name }}</h3><p>{{ m.desc }}</p><a class="btn secondary" href="{{ m.href }}">Open</a></div>{% endfor %}</div>
 <div class="card"><h2>Global operating metrics</h2><table><tr><th>Area</th><th>Records</th></tr>{% for k,v in counts.items() %}<tr><td>{{ k.replace('_',' ')|title }}</td><td>{{ v }}</td></tr>{% endfor %}</table></div>"""
