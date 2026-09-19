@@ -7769,24 +7769,36 @@ def media_watch(media_id):
 
 @app.route('/media-next')
 def media_nextgen():
-    rows=db_select('koja_public_posts',{'is_published':'eq.true'},order='created_at.desc',limit=100) or []
-    items=[]
-    for p in rows:
-        if not p.get('media_url'): continue
-        items.append(p)
-    return render_page('KOJA Media',r'''
-<style>.media-feed{height:calc(100vh - 150px);min-height:540px;overflow-y:auto;scroll-snap-type:y mandatory;background:#05070a;border-radius:22px}.media-card{height:100%;min-height:540px;position:relative;scroll-snap-align:start;display:grid;place-items:center;background:#05070a}.media-card img,.media-card video{width:100%;height:100%;object-fit:contain;max-height:calc(100vh - 150px)}.media-overlay{position:absolute;left:18px;right:18px;bottom:18px;color:#fff;text-shadow:0 2px 8px #000;z-index:2}.media-actions{position:absolute;right:16px;bottom:110px;display:flex;flex-direction:column;gap:9px;z-index:3}.media-actions button{width:50px;height:50px;border-radius:50%;padding:0;margin:0;background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.2)}.media-empty{padding:70px;text-align:center;color:#fff}
+    rows=db_select('koja_media_library',{'status':'eq.published'},order='created_at.desc',limit=200) or []
+    for x in rows:
+        x['media_type']=str(x.get('media_type') or 'video').lower()
+        x['access_type']=str(x.get('access_type') or x.get('access') or 'free').lower()
+        x['genre']=x.get('genre') or 'Entertainment'
+        x['poster_url']=x.get('poster_url') or x.get('thumbnail_url') or x.get('cover_url') or x.get('poster') or ''
+    uid=(current_user() or {}).get('id'); events=[]
+    if uid: events=db_select('koja_media_content_events',{'user_id':f'eq.{uid}'},order='created_at.desc',limit=300) or []
+    counts={}; by_id={x.get('id'):x for x in rows}; cont=[]; seen=set()
+    for e in events:
+        mid=e.get('media_id'); counts[mid]=counts.get(mid,0)+1
+        if mid in by_id and mid not in seen and e.get('event_type') in {'play','pause'}:
+            z=dict(by_id[mid]); z['_progress']=float(e.get('completion_percent') or 0); cont.append(z); seen.add(mid)
+        if len(cont)>=12: break
+    trending=sorted(rows,key=lambda x:counts.get(x.get('id'),0),reverse=True)[:12]
+    def take(kind=None): return [x for x in rows if not kind or x.get('media_type')==kind][:12]
+    featured=rows[:1]; movies=take('movie'); series=take('series'); music=take('music'); podcasts=take('podcast')
+    african=[x for x in rows if any(k in ((x.get('territory') or '')+' '+(x.get('description') or '')+' '+(x.get('genre') or '')).lower() for k in ('zambia','africa','african'))][:12]
+    originals=[x for x in rows if 'original' in ((x.get('title') or '')+' '+(x.get('description') or '')).lower()][:12]
+    return render_page('KOJA Media',r"""
+<style>
+.media-home{background:#05070a;color:#fff;border-radius:22px;padding:18px;overflow:hidden}.media-hero{position:relative;min-height:390px;border-radius:22px;overflow:hidden;background:linear-gradient(90deg,#05070a 0%,rgba(5,7,10,.82) 42%,rgba(5,7,10,.18) 100%),linear-gradient(0deg,#05070a 0%,transparent 55%);display:flex;align-items:end;padding:32px}.media-hero-bg{position:absolute;inset:0;background-size:cover;background-position:center;opacity:.58}.media-hero-content{position:relative;z-index:2;max-width:650px}.media-hero h1{font-size:clamp(30px,5vw,58px);margin:8px 0}.media-hero p{line-height:1.6;color:#ddd}.media-rows{margin-top:28px}.media-row{margin-bottom:30px}.media-row-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}.media-row-head h2{margin:0;font-size:21px}.media-scroller{display:flex;gap:13px;overflow-x:auto;padding:3px 2px 12px;scroll-snap-type:x proximity;-webkit-overflow-scrolling:touch}.media-card{flex:0 0 155px;scroll-snap-align:start;text-decoration:none;color:#fff}.media-poster{height:225px;border-radius:12px;overflow:hidden;background:#11151b;border:1px solid rgba(255,255,255,.1);position:relative;transition:transform .18s ease,box-shadow .18s ease}.media-card:hover .media-poster{transform:scale(1.035);box-shadow:0 12px 30px rgba(0,0,0,.45)}.media-poster img{width:100%;height:100%;object-fit:cover;display:block}.media-poster-fallback{height:100%;display:flex;align-items:end;padding:12px;background:linear-gradient(160deg,#17202c,#05070a)}.media-badge{position:absolute;top:8px;left:8px;background:rgba(0,0,0,.72);border:1px solid rgba(255,255,255,.16);border-radius:7px;padding:4px 7px;font-size:10px}.media-card-title{font-weight:700;font-size:14px;margin-top:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.media-card-meta{font-size:11px;color:#aeb5bf;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.media-progress{height:3px;background:#333;margin-top:6px;border-radius:4px;overflow:hidden}.media-progress i{display:block;height:100%;background:#e50914}.media-empty{padding:60px;text-align:center}.media-hero-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}.media-btn{display:inline-flex;align-items:center;justify-content:center;padding:11px 17px;border-radius:8px;text-decoration:none;font-weight:700;border:1px solid rgba(255,255,255,.2);background:#fff;color:#05070a}.media-btn.secondary{background:rgba(255,255,255,.1);color:#fff}@media(max-width:600px){.media-home{padding:10px;border-radius:16px}.media-hero{min-height:330px;padding:22px}.media-card{flex-basis:125px}.media-poster{height:180px}.media-row-head h2{font-size:18px}}
 </style>
-<div class="hero"><h2>◉ KOJA Media</h2><p>Immersive media discovery with adaptive interaction, sharing and watch analytics.</p></div>
-<div class="media-feed" id="mediaFeed">{% for p in items %}<article class="media-card" data-id="{{ p.id }}" data-seen="0">{% if p.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=p.id) }}" playsinline muted loop preload="metadata"></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="KOJA media">{% endif %}<div class="media-actions"><button onclick="likeMedia('{{ p.id }}')"></button><button onclick="shareMedia('{{ p.id }}')">↗</button><button onclick="copyMedia('{{ p.id }}')">⧉</button></div><div class="media-overlay"><strong>{{ p.title or 'KOJA Media' }}</strong><div>{{ p.body[:220] }}</div><div class="small" style="color:#ddd">{{ p.post_type|title }} · {{ p.created_at }}</div></div></article>{% else %}<div class="media-empty"><h2>No media yet</h2><p>Publish a photo or video to start the KOJA media experience.</p></div>{% endfor %}</div>
-<script>
-const feed=document.getElementById('mediaFeed');const io=new IntersectionObserver(es=>es.forEach(e=>{let v=e.target.querySelector('video');if(e.isIntersecting){if(v)v.play().catch(()=>{});if(e.target.dataset.seen==='0'){e.target.dataset.seen='1';track(e.target.dataset.id,'impression',0,0)}}else if(v)v.pause()}),{root:feed,threshold:.65});document.querySelectorAll('.media-card').forEach(x=>io.observe(x));
-function track(id,type,w,c){fetch('/api/nextgen/media-event',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({post_id:id,event_type:type,watch_seconds:w,completion_percent:c})}).catch(()=>{})}
-async function likeMedia(id){await fetch('/public/like/'+id,{method:'POST'});}
-function shareMedia(id){let u=location.origin+'/public#post-'+id;if(navigator.share)navigator.share({title:'KOJA Media',url:u});else navigator.clipboard?.writeText(u)}
-function copyMedia(id){let u=location.origin+'/public#post-'+id;navigator.clipboard?.writeText(u);}
-</script>
-''',items=items)
+<div class="media-home">
+{% if featured %}{% set f=featured[0] %}<section class="media-hero">{% if f.poster_url %}<div class="media-hero-bg" style="background-image:url('{{ f.poster_url }}')"></div>{% endif %}<div class="media-hero-content"><div class="small">KOJA MEDIA · {{ f.media_type|title }}</div><h1>{{ f.title or 'KOJA Media' }}</h1><p>{{ (f.description or '')[:320] }}</p><div class="media-hero-actions"><a class="media-btn" href="{{ url_for('media_watch',media_id=f.id) }}">Watch Now</a><a class="media-btn secondary" href="#my-list">+ My List</a></div></div></section>{% endif %}
+<div class="media-rows">
+{% macro row(title,items,progress=False) -%}{% if items %}<section class="media-row"><div class="media-row-head"><h2>{{ title }}</h2></div><div class="media-scroller">{% for x in items %}<a class="media-card" href="{{ url_for('media_watch',media_id=x.id) }}"><div class="media-poster">{% if x.poster_url %}<img src="{{ x.poster_url }}" loading="lazy" alt="{{ x.title or 'KOJA Media' }}">{% else %}<div class="media-poster-fallback"><strong>{{ x.title or 'KOJA Media' }}</strong></div>{% endif %}<div class="media-badge">{{ x.media_type|title }}{% if x.access_type not in ['free','public','preview'] %} · {{ x.access_type|title }}{% endif %}</div></div><div class="media-card-title">{{ x.title or 'Untitled' }}</div><div class="media-card-meta">{{ x.genre }}{% if x.year %} · {{ x.year }}{% endif %}</div>{% if progress and x._progress is defined %}<div class="media-progress"><i style="width:{{ [x._progress,100]|min }}%"></i></div>{% endif %}</a>{% endfor %}</div></section>{% endif %}{%- endmacro %}
+{{ row('Continue Watching',cont,True) }}{{ row('Trending Now',trending) }}{{ row('Movies',movies) }}{{ row('Series',series) }}{{ row('Music',music) }}{{ row('Podcasts',podcasts) }}{{ row('African Content',african) }}{{ row('KOJA Originals',originals) }}{{ row('Recommended for You',rows[:12]) }}
+{% if not rows %}<div class="media-empty"><h2>Your Media Library is empty</h2><p>Published entertainment content will appear here as Netflix-style cards.</p></div>{% endif %}</div></div>
+""",featured=featured,cont=cont,trending=trending,movies=movies,series=series,music=music,podcasts=podcasts,african=african,originals=originals,rows=rows,user=current_user())
 
 @app.route('/api/nextgen/media-event',methods=['POST'])
 def nextgen_media_event():
