@@ -2511,13 +2511,13 @@ def services():
 <div class="service-section"><h3>Market, Business & Global Trade</h3><p>From creating a business to connecting with companies and handling international trade.</p></div>
 <div class="service-grid">
 <div class="service-card global"><h4>KOJA Business</h4><p>Business identity, organisation, CRM, workforce, procurement, finance, accounting, store and AI.</p><div class="service-links"><a class="btn" href="{{ url_for('koja_business') }}">Business</a><a class="btn secondary" href="{{ url_for('business_new') }}">Create Business</a></div></div>
-<div class="service-card global"><h4>Global Business</h4><p>Global operating workspace connecting B2B, commerce, services, finance, workforce, logistics and AI.</p><a class="btn secondary" href="{{ url_for('business_workspace_select') }}">Open Business Workspace</a></div>
-<div class="service-card global"><h4>Business Connect</h4><p>Connect businesses by KOJA Business Code for B2B relationships, communication, sourcing and collaboration.</p><a class="btn secondary" href="{{ url_for('business_connect_workspace') }}">Open Business Connect</a></div>
+<div class="service-card global"><h4>Global Business</h4><p>Global operating workspace connecting B2B, commerce, services, finance, workforce, logistics and AI.</p><a class="btn secondary" href="{{ url_for('koja_business') }}">Open Business Workspace</a></div>
+<div class="service-card global"><h4>Business Connect</h4><p>Connect businesses by KOJA Business Code for B2B relationships, communication, sourcing and collaboration.</p><a class="btn secondary" href="{{ url_for('koja_business') }}">Open Business</a></div>
 <div class="service-card"><h4>KOJA Market</h4><p>Physical and digital commerce with seller tools, payments and delivery workflows.</p><div class="service-links"><a class="btn" href="{{ url_for('koja_market') }}">KOJA Market</a><a class="btn secondary" href="{{ url_for('marketplace') }}">Digital Market</a></div></div>
-<div class="service-card trade"><h4>Import & Export</h4><p>International orders, commercial documents, customs declarations, duties, taxes, brokers, freight and clearance.</p><a class="btn secondary" href="{{ url_for('business_trade_workspace') }}">Open Import & Export</a></div>
-<div class="service-card trade"><h4>Customs & Clearance</h4><p>Country and product-specific customs workflow with HS classification, permits, inspection, release and clearance tracking.</p><a class="btn secondary" href="{{ url_for('business_customs_workspace') }}">Open Customs & Clearance</a></div>
-<div class="service-card trade"><h4>International Trade</h4><p>Suppliers, procurement, quotations, contracts, trade documents and cross-border fulfilment.</p><a class="btn secondary" href="{{ url_for('business_procurement_workspace') }}">Open International Trade</a></div>
-<div class="service-card"><h4>Finance, Payments & Payouts</h4><p>Business accounting, transaction workflows, settlement and payout requests.</p><div class="service-links"><a class="btn secondary" href="{{ url_for('business_finance_workspace') }}">Business Finance</a></div></div>
+<div class="service-card trade"><h4>Import & Export</h4><p>International orders, commercial documents, customs declarations, duties, taxes, brokers, freight and clearance.</p><a class="btn secondary" href="{{ url_for('koja_business') }}">Open Global Business</a></div>
+<div class="service-card trade"><h4>Customs & Clearance</h4><p>Country and product-specific customs workflow with HS classification, permits, inspection, release and clearance tracking.</p><a class="btn secondary" href="{{ url_for('koja_business') }}">Open Trade Workspace</a></div>
+<div class="service-card trade"><h4>International Trade</h4><p>Suppliers, procurement, quotations, contracts, trade documents and cross-border fulfilment.</p><a class="btn secondary" href="{{ url_for('koja_business') }}">Open B2B Workspace</a></div>
+<div class="service-card"><h4>Finance, Payments & Payouts</h4><p>Business accounting, transaction workflows, settlement and payout requests.</p><div class="service-links"><a class="btn secondary" href="{{ url_for('koja_business') }}">Business Finance</a></div></div>
 </div>
 
 <div class="service-section"><h3>Delivery, Freight & Logistics</h3><p>Domestic and international fulfilment can continue through the same KOJA logistics foundation.</p></div>
@@ -7874,7 +7874,7 @@ def _global_business_modules(business_id):
         ('Organisation','Business Core','business_core_status'),
         ('Workforce / HR','Employees, payroll and staff permissions','business_employees'),
         ('CRM & Sales','Customers, invoices and sales records','business_customers'),
-        ('Procurement','Global B2B requests, suppliers and quotations','b2bv4_business'),
+        ('Procurement','Global B2B requests, suppliers and quotations','b2bv4_centre'),
         ('Supply Chain','Suppliers, inventory and fulfilment','business_suppliers'),
         ('Commerce','Online store and KOJA Market','business_store'),
         ('Professional Services','Professionals, appointments and projects','professionals'),
@@ -7925,12 +7925,12 @@ def global_business_hub(business_id):
     for name,desc,endpoint in _global_business_modules(business_id):
         try:
             if endpoint=='business_core_status': href=url_for(endpoint,business_id=business_id)
-            elif endpoint=='b2bv4_business': href=url_for(endpoint,business_id=business_id)
+            elif endpoint=='b2bv4_centre': href=url_for(endpoint,business_id=business_id)
             elif endpoint in ('business_employees','business_customers','business_suppliers','business_store','business_accounting_v2','business_intelligence_v3','business_payments','business_delivery','business_live_v2'): href=url_for(endpoint,business_id=business_id)
             else: href=url_for(endpoint)
         except Exception: href=url_for('business_dashboard',business_id=business_id)
         modules.append({'name':name,'desc':desc,'href':href})
-    tpl="""<div class="hero"><h1>{{ b.name }} — Global Business</h1><p>One operating workspace connecting commerce, B2B, services, finance, workforce, logistics, AI and KOJA platform engines.</p><div class="actions"><a class="btn" href="{{ url_for('business_dashboard',business_id=b.id) }}">Business Dashboard</a><a class="btn secondary" href="{{ url_for('b2bv4_business',business_id=b.id) }}">B2B Workspace</a><a class="btn secondary" href="{{ url_for('business_global_api',business_id=b.id) }}">Live Business Data</a></div></div>
+    tpl="""<div class="hero"><h1>{{ b.name }} — Global Business</h1><p>One operating workspace connecting commerce, B2B, services, finance, workforce, logistics, AI and KOJA platform engines.</p><div class="actions"><a class="btn" href="{{ url_for('business_dashboard',business_id=b.id) }}">Business Dashboard</a><a class="btn secondary" href="{{ url_for('b2bv4_centre',business_id=b.id) }}">B2B Workspace</a><a class="btn secondary" href="{{ url_for('business_global_api',business_id=b.id) }}">Live Business Data</a></div></div>
 <div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(revenue,'ZMW') }}</h2></div><div class="card"><h3>Costs</h3><h2>{{ money(costs,'ZMW') }}</h2></div><div class="card"><h3>Operating result</h3><h2>{{ money(revenue-costs,'ZMW') }}</h2></div><div class="card"><h3>B2B orders</h3><h2>{{ counts.b2b_orders_buyer + counts.b2b_orders_seller }}</h2></div></div>
 <div class="grid">{% for m in modules %}<div class="card"><h3>{{ m.name }}</h3><p>{{ m.desc }}</p><a class="btn secondary" href="{{ m.href }}">Open</a></div>{% endfor %}</div>
 <div class="card"><h2>Global operating metrics</h2><table><tr><th>Area</th><th>Records</th></tr>{% for k,v in counts.items() %}<tr><td>{{ k.replace('_',' ')|title }}</td><td>{{ v }}</td></tr>{% endfor %}</table></div>"""
@@ -8697,97 +8697,6 @@ def business_accounting_v2(business_id):
     accounts=db_select('koja_business_bi_account_balances',{'business_id':business_id},order='account_code.asc',limit=100) or []
     summary=first_row('koja_business_bi_accounting_summary',{'business_id':business_id}) or {}
     return render_page('Business Accounting V2',r"""<div class="hero"><h1>Accounting</h1><p>{{ b.name }} — connected double-entry ledger.</p><div class="actions"><a class="btn secondary" href="{{ url_for('business_dashboard',business_id=b.id) }}">Business Dashboard</a><a class="btn secondary" href="{{ url_for('business_intelligence_v3',business_id=b.id) }}">AI Intelligence</a></div></div><div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(summary.accounting_revenue or 0,'ZMW') }}</h2></div><div class="card"><h3>Expenses</h3><h2>{{ money(summary.accounting_expenses or 0,'ZMW') }}</h2></div><div class="card"><h3>Net Result</h3><h2>{{ money(summary.accounting_net_result or 0,'ZMW') }}</h2></div><div class="card"><h3>Transactions</h3><h2>{{ summary.transaction_count or 0 }}</h2></div></div><div class="card"><h2>Record Transaction</h2><form method="post"><label>Type</label><select name="kind"><option value="sale">Sale / Income</option><option value="expense">Expense</option></select><label>Description</label><input name="description" required><label>Amount (ZMW)</label><input name="amount" type="number" min="0" step="0.01" required><label>Payment Method</label><select name="payment_method"><option value="cash">Cash</option><option value="bank">Bank</option><option value="mobile_money">Mobile Money</option></select><label>Expense Category</label><select name="category"><option value="other">Other</option><option value="rent">Rent</option><option value="salary">Salary</option><option value="transport">Transport</option><option value="marketing">Marketing</option><option value="utilities">Utilities</option><option value="tax">Tax</option></select><button class="btn">Save & Post to Ledger</button></form></div><div class="card"><h2>Chart of Accounts</h2><table><tr><th>Code</th><th>Account</th><th>Type</th><th>Balance</th></tr>{% for a in accounts %}<tr><td>{{ a.account_code }}</td><td>{{ a.account_name }}</td><td>{{ a.account_type }}</td><td>{{ money(a.balance or 0,'ZMW') }}</td></tr>{% else %}<tr><td colspan="4">No accounts.</td></tr>{% endfor %}</table></div><div class="card"><h2>Recent Ledger Transactions</h2><table><tr><th>Date</th><th>Type</th><th>Description</th><th>Amount</th><th>Status</th></tr>{% for x in txs %}<tr><td>{{ x.transaction_date }}</td><td>{{ x.transaction_type }}</td><td>{{ x.description }}</td><td>{{ money(x.total_amount or 0,'ZMW') }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="5">No accounting transactions yet.</td></tr>{% endfor %}</table></div>""",b=b,summary=summary,accounts=accounts,txs=txs,money=market_money)
-
-# ---------------- KOJA BUSINESS WORKSPACES V2 ----------------
-# Distinct operational entry points into the same Business identity/data.
-
-def _workspace_businesses():
-    uid=(current_user() or {}).get('id')
-    return db_select('koja_businesses',{'owner_id':uid},order='created_at.desc',limit=100) or []
-
-def _workspace_pick(endpoint,title,description):
-    businesses=_workspace_businesses()
-    if len(businesses)==1:
-        return redirect(url_for(endpoint,business_id=businesses[0].get('id')))
-    return render_page(title,"""<div class="hero"><h1>{{ page_title }}</h1><p>{{ description }}</p></div><div class="grid">{% for b in businesses %}<div class="card"><h2>{{ b.name }}</h2><p>{{ b.category }} · {{ b.location or 'Location not set' }}</p><a class="btn" href="{{ url_for(endpoint,business_id=b.id) }}">Open Workspace</a></div>{% else %}<div class="card"><p>Create a business first.</p><a class="btn" href="{{ url_for('business_new') }}">Create Business</a></div>{% endfor %}</div>""",page_title=title,description=description,businesses=businesses,endpoint=endpoint)
-
-@app.route('/business/workspace')
-@login_required
-def business_workspace_select():
-    return _workspace_pick('business_global_workspace','Global Business','Company command centre: organisation, performance, operations and connected business services.')
-
-@app.route('/business/<business_id>/workspace')
-@login_required
-def business_global_workspace(business_id):
-    b=_biz_owner(business_id)
-    if not b: abort(404)
-    sales=db_select('koja_business_sales',{'business_id':business_id},limit=1000) or []
-    expenses=db_select('koja_business_expenses',{'business_id':business_id},limit=1000) or []
-    return render_page('Global Business Workspace',"""<div class="hero"><h1>{{ b.name }} · Global Business</h1><p>Central command centre for the business. Operational modules remain separate and share the same business records.</p></div><div class="grid"><div class="stat"><div class="small">Revenue</div><div class="big">{{ money(revenue,'ZMW') }}</div></div><div class="stat"><div class="small">Expenses</div><div class="big">{{ money(costs,'ZMW') }}</div></div><div class="stat"><div class="small">Operating result</div><div class="big">{{ money(revenue-costs,'ZMW') }}</div></div></div><div class="card"><h2>Business Operations</h2><div class="actions"><a class="btn" href="{{ url_for('business_customers',business_id=b.id) }}">CRM</a><a class="btn" href="{{ url_for('business_employees',business_id=b.id) }}">Workforce</a><a class="btn" href="{{ url_for('business_procurement_workspace',business_id=b.id) }}">Procurement</a><a class="btn" href="{{ url_for('business_finance_workspace',business_id=b.id) }}">Finance</a><a class="btn" href="{{ url_for('business_accounting_v2',business_id=b.id) }}">Accounting</a><a class="btn" href="{{ url_for('business_store',business_id=b.id) }}">Store</a><a class="btn" href="{{ url_for('business_ai',business_id=b.id) }}">AI</a></div></div><div class="card"><h2>Trade & Supply Chain</h2><div class="actions"><a class="btn secondary" href="{{ url_for('business_trade_workspace',business_id=b.id) }}">Import & Export</a><a class="btn secondary" href="{{ url_for('business_customs_workspace',business_id=b.id) }}">Customs</a><a class="btn secondary" href="{{ url_for('business_connect_workspace',business_id=b.id) }}">Business Connect</a><a class="btn secondary" href="{{ url_for('b2bv4_centre',business_id=b.id) }}">B2B / International Trade</a><a class="btn secondary" href="{{ url_for('business_delivery',business_id=b.id) }}">Delivery</a></div></div>""",b=b,revenue=sum(_money_num(x.get('total_amount')) for x in sales),costs=sum(_money_num(x.get('amount')) for x in expenses),money=market_money)
-
-@app.route('/business/connect')
-@login_required
-def business_connect_workspace():
-    return _workspace_pick('business_connect','Business Connect','Connect businesses by KOJA Business Code for B2B relationships, sourcing and collaboration.')
-
-@app.route('/business/<business_id>/connect')
-@login_required
-def business_connect(business_id):
-    b=_biz_owner(business_id)
-    if not b: abort(404)
-    return redirect(url_for('b2bv4_centre',business_id=business_id))
-
-@app.route('/business/procurement')
-@login_required
-def business_procurement_workspace():
-    return _workspace_pick('business_procurement','Procurement','Manage suppliers, sourcing requests, quotations, approvals and purchase transactions.')
-
-@app.route('/business/<business_id>/procurement')
-@login_required
-def business_procurement(business_id):
-    b=_biz_owner(business_id)
-    if not b: abort(404)
-    suppliers=db_select('koja_business_suppliers',{'business_id':business_id},limit=300) or []
-    return render_page('Business Procurement',"""<div class="hero"><h1>{{ b.name }} · Procurement</h1><p>Supplier and purchasing workspace.</p><div class="actions"><a class="btn" href="{{ url_for('business_suppliers',business_id=b.id) }}">Suppliers</a><a class="btn secondary" href="{{ url_for('b2bv4_centre',business_id=b.id) }}">RFQ / B2B Purchasing</a></div></div><div class="card"><h2>Suppliers</h2><p>{{ suppliers|length }} supplier records connected to this business.</p></div>""",b=b,suppliers=suppliers)
-
-@app.route('/business/finance')
-@login_required
-def business_finance_workspace():
-    return _workspace_pick('business_finance','Business Finance','Manage cash transactions, invoices, payments, settlements and payout workflows.')
-
-@app.route('/business/<business_id>/finance')
-@login_required
-def business_finance(business_id):
-    b=_biz_owner(business_id)
-    if not b: abort(404)
-    sales=db_select('koja_business_sales',{'business_id':business_id},limit=1000) or []
-    expenses=db_select('koja_business_expenses',{'business_id':business_id},limit=1000) or []
-    return render_page('Business Finance',"""<div class="hero"><h1>{{ b.name }} · Finance</h1><p>Money movement and settlement workspace.</p><div class="actions"><a class="btn" href="{{ url_for('business_invoices',business_id=b.id) }}">Invoices</a><a class="btn secondary" href="{{ url_for('business_payments',business_id=b.id) }}">Payments</a><a class="btn secondary" href="{{ url_for('business_accounting_v2',business_id=b.id) }}">Accounting</a></div></div><div class="grid"><div class="stat"><div class="small">Sales</div><div class="big">{{ money(revenue,'ZMW') }}</div></div><div class="stat"><div class="small">Expenses</div><div class="big">{{ money(costs,'ZMW') }}</div></div><div class="stat"><div class="small">Net operating result</div><div class="big">{{ money(revenue-costs,'ZMW') }}</div></div></div>""",b=b,revenue=sum(_money_num(x.get('total_amount')) for x in sales),costs=sum(_money_num(x.get('amount')) for x in expenses),money=market_money)
-
-@app.route('/business/trade')
-@login_required
-def business_trade_workspace():
-    return _workspace_pick('business_trade','International Trade','Cross-border procurement, commercial documents, contracts and fulfilment.')
-
-@app.route('/business/<business_id>/trade')
-@login_required
-def business_trade(business_id):
-    b=_biz_owner(business_id)
-    if not b: abort(404)
-    return redirect(url_for('global_import_export',business_id=business_id))
-
-@app.route('/business/customs')
-@login_required
-def business_customs_workspace():
-    return _workspace_pick('business_customs','Customs & Clearance','HS classification, declarations, duties, permits, inspection, release and clearance tracking.')
-
-@app.route('/business/<business_id>/customs')
-@login_required
-def business_customs(business_id):
-    b=_biz_owner(business_id)
-    if not b: abort(404)
-    return redirect(url_for('global_import_export',business_id=business_id))
-
 
 if __name__=="__main__":
     port=int(os.getenv("PORT","5000"))
