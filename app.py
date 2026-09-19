@@ -2511,19 +2511,19 @@ def services():
 <div class="service-section"><h3>Market, Business & Global Trade</h3><p>From creating a business to connecting with companies and handling international trade.</p></div>
 <div class="service-grid">
 <div class="service-card global"><h4>KOJA Business</h4><p>Business identity, organisation, CRM, workforce, procurement, finance, accounting, store and AI.</p><div class="service-links"><a class="btn" href="{{ url_for('koja_business') }}">Business</a><a class="btn secondary" href="{{ url_for('business_new') }}">Create Business</a></div></div>
-<div class="service-card global"><h4>Global Business</h4><p>Global operating workspace connecting B2B, commerce, services, finance, workforce, logistics and AI.</p><a class="btn secondary" href="{{ url_for('koja_business') }}">Open Business Workspace</a></div>
-<div class="service-card global"><h4>Business Connect</h4><p>Connect businesses by KOJA Business Code for B2B relationships, communication, sourcing and collaboration.</p><a class="btn secondary" href="{{ url_for('koja_business') }}">Open Business</a></div>
+<div class="service-card global"><h4>Global Business</h4><p>Executive workspace for company-wide operations, KPIs, finance, workforce, trade and connected modules.</p><a class="btn secondary" href="{{ url_for('business_module',module='global') }}">Open Global Workspace</a></div>
+<div class="service-card global"><h4>Business Connect</h4><p>Business-to-business network: find a company by KOJA Business Code, send connection requests and manage approved partners.</p><a class="btn secondary" href="{{ url_for('business_module',module='connect') }}">Open Business Connect</a></div>
 <div class="service-card"><h4>KOJA Market</h4><p>Physical and digital commerce with seller tools, payments and delivery workflows.</p><div class="service-links"><a class="btn" href="{{ url_for('koja_market') }}">KOJA Market</a><a class="btn secondary" href="{{ url_for('marketplace') }}">Digital Market</a></div></div>
-<div class="service-card trade"><h4>Import & Export</h4><p>International orders, commercial documents, customs declarations, duties, taxes, brokers, freight and clearance.</p><a class="btn secondary" href="{{ url_for('koja_business') }}">Open Global Business</a></div>
-<div class="service-card trade"><h4>Customs & Clearance</h4><p>Country and product-specific customs workflow with HS classification, permits, inspection, release and clearance tracking.</p><a class="btn secondary" href="{{ url_for('koja_business') }}">Open Trade Workspace</a></div>
-<div class="service-card trade"><h4>International Trade</h4><p>Suppliers, procurement, quotations, contracts, trade documents and cross-border fulfilment.</p><a class="btn secondary" href="{{ url_for('koja_business') }}">Open B2B Workspace</a></div>
-<div class="service-card"><h4>Finance, Payments & Payouts</h4><p>Business accounting, transaction workflows, settlement and payout requests.</p><div class="service-links"><a class="btn secondary" href="{{ url_for('koja_business') }}">Business Finance</a></div></div>
+<div class="service-card trade"><h4>Import & Export</h4><p>Create and manage cross-border trade orders, origin/destination, HS classification, landed cost and documents.</p><a class="btn secondary" href="{{ url_for('business_module',module='trade') }}">Open Import & Export</a></div>
+<div class="service-card trade"><h4>Customs & Clearance</h4><p>Work specifically on customs status, declarations, duty/tax assessment, inspection, brokers, ports and release.</p><a class="btn secondary" href="{{ url_for('business_module',module='customs') }}">Open Customs</a></div>
+<div class="service-card trade"><h4>International Trade</h4><p>Trade pipeline connecting supplier sourcing, B2B procurement, freight, customs, clearance and delivery.</p><a class="btn secondary" href="{{ url_for('business_module',module='trade') }}">Open Trade Workspace</a></div>
+<div class="service-card"><h4>Finance, Payments & Payouts</h4><p>Business ledger, revenue, expenses, accounts, payments and settlement requests.</p><div class="service-links"><a class="btn secondary" href="{{ url_for('business_module',module='finance') }}">Open Finance</a><a class="btn secondary" href="{{ url_for('business_module',module='accounting') }}">Accounting</a></div></div>
 </div>
 
 <div class="service-section"><h3>Delivery, Freight & Logistics</h3><p>Domestic and international fulfilment can continue through the same KOJA logistics foundation.</p></div>
 <div class="service-grid">
 <div class="service-card"><h4>Delivery & Live GPS</h4><p>Orders, drivers, delivery requests, live tracking and delivery security.</p><div class="service-links"><a class="btn" href="{{ url_for('deliveries') }}">Delivery</a><a class="btn secondary" href="{{ url_for('tracking') }}">Live GPS</a></div></div>
-<div class="service-card trade"><h4>Freight & Forwarding</h4><p>International shipping, carrier tracking, ports, borders and handoff into customs clearance.</p><a class="btn secondary" href="{{ url_for('deliveries') }}">Logistics</a></div>
+<div class="service-card trade"><h4>Freight & Forwarding</h4><p>Freight operations are separate from last-mile Delivery: shipments, carriers, route legs, freight status and handoff into customs.</p><a class="btn secondary" href="{{ url_for('business_module',module='freight') }}">Open Freight Workspace</a></div>
 <div class="service-card trade"><h4>Trade Flow</h4><p>Seller → freight → destination country → customs → clearance → local delivery → buyer.</p><div class="service-flow"><span>Seller</span><b>→</b><span>Freight</span><b>→</b><span>Customs</span><b>→</b><span>Delivery</span><b>→</b><span>Buyer</span></div></div>
 </div>
 
@@ -9938,6 +9938,72 @@ def driver_available_deliveries():
 
 
 # ============================================================
+
+# ============================================================
+# KOJA BUSINESS SPECIFIC WORKSPACES V1
+# ============================================================
+
+@app.route('/business/module/<module>')
+@login_required
+def business_module(module):
+    uid=(current_user() or {}).get('id')
+    businesses=db_select('koja_businesses',{'owner_id':uid},order='created_at.desc',limit=50) or []
+    module=str(module or '').lower().strip()
+    targets={'global':'global_business_hub','connect':'business_connect','procurement':'b2bv4_centre','finance':'business_accounting_v2','accounting':'business_accounting_v2','crm':'business_customers','workforce':'business_employees','store':'business_store','trade':'global_import_export','customs':'business_customs','freight':'business_freight','logistics':'business_delivery'}
+    endpoint=targets.get(module)
+    if not endpoint: abort(404)
+    if len(businesses)==1:
+        return redirect(url_for(endpoint,business_id=businesses[0].get('id')))
+    return render_page('Select Business Workspace',r'''<div class="hero"><h1>Select Business</h1><p>Choose the business that should own this {{ module_name }} workspace. Each workspace is scoped to that business.</p></div><div class="grid">{% for b in businesses %}<div class="card"><h2>{{ b.name }}</h2><p>{{ b.category }} · {{ b.location or 'Location not set' }}</p><a class="btn" href="{{ url_for(endpoint,business_id=b.id) }}">Open {{ module_name }}</a></div>{% else %}<div class="card"><p>Create a business first.</p><a class="btn" href="{{ url_for('business_new') }}">Create Business</a></div>{% endfor %}</div>''',businesses=businesses,endpoint=endpoint,module_name=module.replace('-',' ').title())
+
+@app.route('/business/<business_id>/connect',methods=['GET','POST'])
+@login_required
+def business_connect(business_id):
+    b=_b2bv4_business(business_id)
+    if not b: abort(404)
+    if request.method=='POST':
+        code=clean(request.form.get('business_code')).upper()
+        target=first_row('koja_businesses',{'business_number':code})
+        if not target: flash('Business Code not found. Check the code and try again.','danger')
+        elif str(target.get('id'))==str(business_id): flash('You cannot connect a business to itself.','warning')
+        elif str(target.get('owner_id'))==str(_b2bv4_uid()): flash('That business is already owned by this account.','warning')
+        else:
+            existing=first_row('koja_business_connections',{'requester_business_id':business_id,'target_business_id':target.get('id')}) or first_row('koja_business_connections',{'requester_business_id':target.get('id'),'target_business_id':business_id})
+            if existing: flash('A connection already exists or is pending.','warning')
+            else:
+                row,err=db_insert('koja_business_connections',{'requester_business_id':business_id,'target_business_id':target.get('id'),'requester_user_id':_b2bv4_uid(),'target_owner_id':target.get('owner_id'),'status':'pending','created_at':utc_now(),'updated_at':utc_now()})
+                if err: flash('Connection request could not be sent: '+str(err)[:400],'danger')
+                else:
+                    _b2bv4_notify(target.get('owner_id'),'Business connection request',f'{b.get("name")} wants to connect with your business.','/business/'+str(target.get('id'))+'/connect')
+                    flash('Business connection request sent.','success')
+        return redirect(url_for('business_connect',business_id=business_id))
+    outgoing=db_select('koja_business_connections',{'requester_business_id':business_id},order='created_at.desc',limit=100) or []
+    incoming=db_select('koja_business_connections',{'target_business_id':business_id},order='created_at.desc',limit=100) or []
+    def other(row):
+        oid=row.get('target_business_id') if str(row.get('requester_business_id'))==str(business_id) else row.get('requester_business_id')
+        return first_row('koja_businesses',{'id':oid}) or {}
+    for row in outgoing+incoming: row['_other']=other(row)
+    return render_page('Business Connect',r'''<div class="hero"><h1>{{ b.name }} · Business Connect</h1><p>Connect this business to another business using its KOJA Business Code. Approved relationships become reusable B2B partner relationships.</p><div class="actions"><a class="btn secondary" href="{{ url_for('b2bv4_centre',business_id=b.id) }}">B2B Procurement</a><a class="btn secondary" href="{{ url_for('business_dashboard',business_id=b.id) }}">Business Dashboard</a></div></div><div class="card"><h2>Connect another business</h2><p>Ask the other business for its KOJA Business Code, for example <strong>KJ-BIZ-2026-3EC8B534</strong>.</p><form method="post"><input name="business_code" placeholder="KJ-BIZ-2026-XXXXXXXX" required><button class="btn">Send Connection Request</button></form></div><div class="grid"><div class="card"><h2>Outgoing</h2>{% for x in outgoing %}<p><strong>{{ x._other.name or 'Business' }}</strong><br>{{ x.status }} · {{ x.created_at }}</p>{% else %}<p>No outgoing requests.</p>{% endfor %}</div><div class="card"><h2>Incoming</h2>{% for x in incoming %}<p><strong>{{ x._other.name or 'Business' }}</strong><br>{{ x.status }} · {{ x.created_at }}</p>{% else %}<p>No incoming requests.</p>{% endfor %}</div></div>''',b=b,outgoing=outgoing,incoming=incoming)
+
+@app.route('/business/<business_id>/customs')
+@login_required
+def business_customs(business_id):
+    b=_gx_business(business_id)
+    if not b: abort(403)
+    rows=db_select('koja_global_trade_orders',{'business_id':business_id},order='created_at.desc',limit=200) or []
+    active=[x for x in rows if str(x.get('customs_status') or 'not_started') not in ('released','cleared')]
+    return render_page('Customs & Clearance',r'''<div class="hero"><h1>{{ b.name }} · Customs & Clearance</h1><p>Dedicated customs operations: HS classification, declarations, duty assessment, inspection, broker assignment and release.</p><div class="actions"><a class="btn secondary" href="{{ url_for('global_import_export',business_id=b.id) }}">Trade Orders</a></div></div><div class="grid"><div class="stat"><div class="small">Trade cases</div><div class="big">{{ rows|length }}</div></div><div class="stat"><div class="small">Open customs cases</div><div class="big">{{ active|length }}</div></div></div><div class="card"><h2>Customs Cases</h2>{% for x in rows %}<div class="card"><h3>{{ x.trade_code }} · {{ x.title }}</h3><p>{{ x.origin_country }} → {{ x.destination_country }} · HS {{ x.hs_code or 'Unclassified' }}</p><p>Customs: <strong>{{ (x.customs_status or 'not_started').replace('_',' ').title() }}</strong> · Clearance: <strong>{{ (x.clearance_status or 'not_started').replace('_',' ').title() }}</strong></p><a class="btn" href="{{ url_for('global_import_export_order',business_id=b.id,trade_id=x.id) }}">Open Customs Case</a></div>{% else %}<p>No customs cases yet. Create a trade order first.</p>{% endfor %}</div>''',b=b,rows=rows,active=active)
+
+@app.route('/business/<business_id>/freight')
+@login_required
+def business_freight(business_id):
+    b=_gx_business(business_id)
+    if not b: abort(403)
+    trades=db_select('koja_global_trade_orders',{'business_id':business_id},order='created_at.desc',limit=200) or []
+    in_transit=[x for x in trades if str(x.get('status') or '') in ('ordered','in_transit','customs')]
+    return render_page('Freight & Forwarding',r'''<div class="hero"><h1>{{ b.name }} · Freight & Forwarding</h1><p>Freight is the international movement layer between trade origin, carrier, port/border, customs and destination handoff. It is separate from KOJA last-mile Delivery.</p><div class="actions"><a class="btn" href="{{ url_for('global_import_export',business_id=b.id) }}">Create / Manage Trade</a><a class="btn secondary" href="{{ url_for('business_customs',business_id=b.id) }}">Customs</a><a class="btn secondary" href="{{ url_for('business_delivery',business_id=b.id) }}">Last-mile Delivery</a></div></div><div class="grid"><div class="stat"><div class="small">Trade shipments</div><div class="big">{{ trades|length }}</div></div><div class="stat"><div class="small">Moving / active</div><div class="big">{{ in_transit|length }}</div></div></div><div class="card"><h2>Freight Pipeline</h2><div class="service-flow"><span>Booked</span><b>→</b><span>Origin Handling</span><b>→</b><span>In Transit</span><b>→</b><span>Port / Border</span><b>→</b><span>Customs</span><b>→</b><span>Released</span><b>→</b><span>Delivery Handoff</span></div></div><div class="card"><h2>Shipments</h2>{% for x in trades %}<div class="card"><h3>{{ x.trade_code }} · {{ x.title }}</h3><p>{{ x.origin_country }} → {{ x.destination_country }} · Carrier: {{ x.carrier or 'Not assigned' }}</p><p>Status: <strong>{{ (x.status or 'draft').replace('_',' ').title() }}</strong> · Tracking: {{ x.tracking_number or 'Not assigned' }}</p><a class="btn" href="{{ url_for('global_import_export_order',business_id=b.id,trade_id=x.id) }}">Open Freight Record</a></div>{% else %}<p>No freight-linked trade shipments yet.</p>{% endfor %}</div>''',b=b,trades=trades,in_transit=in_transit)
+
+
 # KOJA B2B V4 COMPLETE TRANSACTION ENGINE
 # Additive layer: RFQ -> Quote -> Approval -> Order -> Payment
 # -> Fulfilment -> Delivery -> Completion -> Review / Ledger.
