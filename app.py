@@ -70,7 +70,7 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 app.secret_key = os.getenv("SECRET_KEY") or os.getenv("FLASK_SECRET_KEY")
 if not app.secret_key:
     raise RuntimeError("SECRET_KEY or FLASK_SECRET_KEY must be configured in production.")
-app.config["MAX_CONTENT_LENGTH"] = 3 * 1024 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = 15 * 1024 * 1024
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_SECURE"] = os.getenv("SESSION_COOKIE_SECURE", "true").lower() not in ("0", "false", "no")
@@ -7720,114 +7720,83 @@ def public_videos():
         if mt=='video': items.append(p)
     return render_page('KOJA Videos',r'''<style>.videos-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px}.video-card{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:12px}.video-card video{display:block;width:100%;aspect-ratio:16/9;object-fit:contain;background:#000;border-radius:12px}.video-card h3{margin:10px 0 6px}.video-card p{white-space:pre-wrap}.empty{padding:60px 20px;text-align:center}</style><div class="hero"><h2> KOJA Videos</h2><p>Public videos are visible to everyone. Tap play to watch.</p></div><div class="videos-grid">{% for p in items %}<article class="video-card"><video controls playsinline preload="metadata"><source src="{{ url_for('public_feed_media',post_id=p.id) }}"></video>{% if p.title %}<h3>{{ p.title }}</h3>{% endif %}<p>{{ p.body }}</p><div class="small">{{ p.created_at }}</div></article>{% else %}<div class="card empty"><h2>No public videos yet</h2><p>Published KOJA videos will appear here.</p></div>{% endfor %}</div>''',items=items)
 
-@app.route('/media-next')
-def media_nextgen():
-    rows=db_select('koja_media_library',{'status':'eq.published'},order='created_at.desc',limit=200) or []
-    for x in rows:
-        x['media_type']=(x.get('media_type') or 'video').lower(); x['access_type']=(x.get('access_type') or 'free').lower(); x['genre']=x.get('genre') or 'Entertainment'
-    uid=(current_user() or {}).get('id'); events=[]
-    if uid: events=db_select('koja_media_content_events',{'user_id':f'eq.{uid}'},order='created_at.desc',limit=300) or []
-    counts={}; by_id={x.get('id'):x for x in rows}; cont=[]; seen=set()
-    for e in events:
-        mid=e.get('media_id'); counts[mid]=counts.get(mid,0)+1
-        if mid in by_id and mid not in seen and e.get('event_type') in {'play','pause'}:
-            z=dict(by_id[mid]); z['_progress']=e.get('completion_percent') or 0; cont.append(z); seen.add(mid)
-        if len(cont)>=12: break
-    trending=sorted(rows,key=lambda x:counts.get(x.get('id'),0),reverse=True)[:12]
-    def take(k=None): return [x for x in rows if not k or x.get('media_type')==k][:12]
-    featured=rows[:1]; movies=take('movie'); series=take('series'); music=take('music'); podcasts=take('podcast')
-    african=[x for x in rows if any(k in ((x.get('territory') or '')+' '+(x.get('description') or '')+' '+(x.get('genre') or '')).lower() for k in ('zambia','africa','african'))][:12]
-    originals=[x for x in rows if 'original' in ((x.get('title') or '')+' '+(x.get('description') or '')).lower()][:12]
-    return render_page('KOJA Media',r'''<style>.media-home{display:flex;flex-direction:column;gap:24px}.media-nav,.media-search,.media-actions{display:flex;gap:8px;flex-wrap:wrap}.media-nav{overflow-x:auto}.media-nav a{white-space:nowrap}.media-search input{margin:0;flex:1}.media-hero{min-height:380px;border:1px solid var(--border);border-radius:24px;padding:30px;display:flex;align-items:flex-end;background:linear-gradient(115deg,#070b12,#172033);color:#fff}.hero-copy{max-width:650px}.hero-copy h1{font-size:clamp(30px,6vw,58px);margin:8px 0}.hero-copy p{line-height:1.6;color:#e5e7eb}.media-section h2{margin:0 0 12px}.media-row{display:flex;gap:14px;overflow-x:auto;padding:2px 2px 10px}.media-card{flex:0 0 190px;border:1px solid var(--border);background:var(--surface);border-radius:16px;overflow:hidden;text-decoration:none;color:inherit}.media-poster{aspect-ratio:2/3;background:linear-gradient(145deg,#0b1220,#172033);display:grid;place-items:center;color:#fff;font-weight:800;text-align:center;padding:12px}.media-meta{padding:10px}.media-meta h3{font-size:15px;margin:0 0 5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.media-meta p{font-size:12px;color:var(--muted);margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.media-badge{display:inline-block;font-size:10px;border:1px solid var(--border);border-radius:999px;padding:3px 7px;margin-top:7px}.media-empty{padding:40px;text-align:center;border:1px dashed var(--border);border-radius:18px}@media(max-width:700px){.media-card{flex-basis:155px}.media-hero{min-height:320px;padding:20px}}</style><div class="media-home"><div class="media-nav"><a class="btn secondary" href="{{ url_for('media_nextgen') }}">Home</a><a class="btn secondary" href="#movies">Movies</a><a class="btn secondary" href="#series">Series</a><a class="btn secondary" href="#music">Music</a><a class="btn secondary" href="#podcasts">Podcasts</a><a class="btn secondary" href="#mylist">My List</a><a class="btn secondary" href="{{ url_for('media_studio') if user else url_for('login',next='/media/studio') }}">Creator Studio</a></div><div class="media-search"><input id="mediaSearch" placeholder="Search movies, series, music, podcasts and videos…"><button class="btn" onclick="searchMedia()">Search</button></div>{% if featured %}{% set f=featured[0] %}<section class="media-hero"><div class="hero-copy"><span class="media-badge">{{ f.media_type|title }} · {{ f.access_type|title }}</span><h1>{{ f.title }}</h1><p>{{ f.description or 'Watch entertainment on KOJA Media.' }}</p><div class="media-actions"><a class="btn" href="{{ url_for('media_watch',media_id=f.id) }}">Watch Now</a><a class="btn secondary" href="{{ url_for('media_watch',media_id=f.id) }}">Trailer</a><button class="btn secondary" onclick="saveList('{{ f.id }}')">Add to My List</button></div></div></section>{% endif %}{% macro row(title,items,id='') %}<section class="media-section" {% if id %}id="{{ id }}"{% endif %}><h2>{{ title }}</h2><div class="media-row">{% for x in items %}<a class="media-card" data-title="{{ (x.title or '')|lower }}" href="{{ url_for('media_watch',media_id=x.id) }}"><div class="media-poster">{{ x.title }}<br><span class="small">{{ x.media_type|title }}</span></div><div class="media-meta"><h3>{{ x.title }}</h3><p>{{ x.genre }} · {{ x.access_type|title }}</p>{% if x.access_type!='free' %}<span class="media-badge">{{ x.access_type|title }}{% if x.price %} · {{ x.currency }} {{ x.price }}{% endif %}</span>{% endif %}</div></a>{% else %}<div class="media-empty">No {{ title|lower }} available yet.</div>{% endfor %}</div></section>{% endmacro %}{% if cont %}{{ row('Continue Watching',cont) }}{% endif %}{{ row('Trending',trending) }}{{ row('New Releases',rows[:12]) }}{{ row('Movies',movies,'movies') }}{{ row('Series',series,'series') }}{{ row('Music',music,'music') }}{{ row('Podcasts',podcasts,'podcasts') }}{{ row('African Content',african) }}{{ row('KOJA Originals',originals) }}{{ row('Recommended for You',rows[:12]) }}{{ row('My List',[]) }}<section id="searchResults" class="media-section" style="display:none"><h2>Search Results</h2><div id="searchRow" class="media-row"></div></section></div><script>const mediaCards=[...document.querySelectorAll('.media-card')];function searchMedia(){const q=(document.getElementById('mediaSearch').value||'').toLowerCase().trim(),box=document.getElementById('searchResults'),row=document.getElementById('searchRow');if(!q){box.style.display='none';return}row.innerHTML='';mediaCards.filter(c=>(c.dataset.title||'').includes(q)).forEach(c=>row.appendChild(c.cloneNode(true)));if(!row.children.length)row.innerHTML='<div class="media-empty">No matching Media found.</div>';box.style.display='block'}document.getElementById('mediaSearch').addEventListener('keydown',e=>{if(e.key==='Enter')searchMedia()});function saveList(id){localStorage.setItem('koja-media-list-'+id,'1');alert('Added to My List')}</script>''',featured=featured,cont=cont,trending=trending,movies=movies,series=series,music=music,podcasts=podcasts,african=african,originals=originals,rows=rows,user=current_user())
 
-@app.route('/api/media/upload-token', methods=['POST'])
-@login_required
-def media_upload_token():
-    d=request.get_json(silent=True) or {}
-    name=secure_filename(str(d.get('filename') or ''))
-    mime=clean(d.get('content_type')) or 'application/octet-stream'
-    try: size=int(d.get('size') or 0)
-    except Exception: size=0
-    if not name:return jsonify(error='Filename is required.'),400
-    if size<=0 or size>3*1024*1024*1024:return jsonify(error='Media file must be 3 GB or smaller.'),413
-    ext=name.rsplit('.',1)[-1].lower() if '.' in name else ''
-    if ext not in {'mp4','webm','mov','m4v','mkv','avi','mp3','wav','m4a','aac','ogg','flac'}:return jsonify(error='Unsupported media type.'),400
-    path=f"media-library/{current_user()['id']}/{uuid.uuid4().hex}_{name}"
+
+def _koja_media_storage_path(value):
+    u=clean(value)
+    if not u: return ''
+    public_prefix=f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/" if SUPABASE_URL else ''
+    if public_prefix and u.startswith(public_prefix):
+        rem=u[len(public_prefix):]; bp=f"{STORAGE_BUCKET}/"
+        if rem.startswith(bp): return unquote(rem[len(bp):])
+    object_prefix=f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/" if SUPABASE_URL else ''
+    if object_prefix and u.startswith(object_prefix):
+        rem=u[len(object_prefix):]; bp=f"{STORAGE_BUCKET}/"
+        if rem.startswith(bp): return unquote(rem[len(bp):].split('?',1)[0])
+    u=u.lstrip('/')
+    if u.startswith(f"{STORAGE_BUCKET}/"): u=u[len(STORAGE_BUCKET)+1:]
+    return unquote(u.split('?',1)[0])
+
+def _koja_media_signed_url(path, expires=3600):
+    if not path or not supabase_configured(): return ''
+    endpoint=f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/sign/{quote(STORAGE_BUCKET,safe='')}/{quote(path,safe='/')}"
     try:
-        r=requests.post(sb_storage_url(f"object/upload/sign/{quote(STORAGE_BUCKET,safe='')}/{quote(path,safe='/')}"),headers=sb_headers({'x-upsert':'false'}),timeout=30)
-        if not r.ok:return jsonify(error=r.text[:800]),502
-        data=r.json() if r.content else {}; signed=data.get('url') or data.get('signedUrl') or ''
-        if not signed:return jsonify(error='Supabase did not return an upload token.'),502
-        from urllib.parse import urlparse,parse_qs
-        full=signed if str(signed).startswith('http') else f"{SUPABASE_URL.rstrip('/')}{signed}"
-        token=(parse_qs(urlparse(full).query).get('token') or [''])[0]
-        project_ref=SUPABASE_URL.split('://',1)[-1].split('.',1)[0]
-        if not token:return jsonify(error='Upload token missing.'),502
-        return jsonify(ok=True,path=path,token=token,tus_endpoint=f"https://{project_ref}.storage.supabase.co/storage/v1/upload/resumable")
-    except Exception as exc:
-        logger.exception('Media upload token error: %s',exc); return jsonify(error='Could not start direct upload.'),502
+        r=requests.post(endpoint,headers=sb_headers(),json={'expiresIn':int(expires)},timeout=20)
+        if not r.ok: return ''
+        data=json_or_empty(r); signed=clean(data.get('signedURL') or data.get('signedUrl') or data.get('url'))
+        return SUPABASE_URL.rstrip('/')+signed if signed.startswith('/') else signed
+    except Exception:
+        logger.exception('Media signed URL error'); return ''
 
-@app.route('/api/media/finalize', methods=['POST'])
-@login_required
-def media_finalize():
-    d=request.get_json(silent=True) or {}; uid=current_user()['id']; path=clean(d.get('path'))
-    try:size=int(d.get('size') or 0)
-    except Exception:size=0
-    if not path.startswith(f'media-library/{uid}/') or '..' in path:return jsonify(error='Invalid upload path.'),400
-    if size<=0 or size>3*1024*1024*1024:return jsonify(error='Invalid media size.'),400
-    title=clean(d.get('title')); media_type=clean(d.get('media_type')).lower() or 'video'; access_type=clean(d.get('access_type')).lower() or 'free'
-    if not title:return jsonify(error='Title is required.'),400
-    if media_type not in {'music','movie','series','podcast','video'}:media_type='video'
-    if access_type not in {'free','premium','rent','purchase','download'}:access_type='free'
-    try:price=max(0,float(d.get('price') or 0))
-    except Exception:price=0
-    payload={'creator_id':uid,'title':title,'description':clean(d.get('description')) or None,'media_type':media_type,'genre':clean(d.get('genre')) or None,'media_path':path,'access_type':access_type,'price':price,'currency':'ZMW','status':'draft','rights_owner':clean(d.get('rights_owner')) or None,'license_type':clean(d.get('license_type')) or None,'territory':clean(d.get('territory')) or None,'allow_download':bool(d.get('allow_download')),'created_at':utc_now(),'updated_at':utc_now()}
-    row,e=db_insert('koja_media_library',payload)
-    if e:return jsonify(error='Upload finished but could not be registered: '+str(e)[:400]),500
-    return jsonify(ok=True,id=(row or {}).get('id'))
-
-@app.route('/media/studio', methods=['GET','POST'])
-@login_required
-def media_studio():
-    uid=current_user()['id']
-    if request.method=='POST':return redirect(url_for('media_studio'))
-    rows=db_select('koja_media_library',{'creator_id':uid},order='created_at.desc',limit=100) or []; earnings=db_select('koja_media_earnings',{'creator_id':uid},order='created_at.desc',limit=100) or []
-    confirmed=sum(float(x.get('amount') or 0) for x in earnings if x.get('status') in {'confirmed','paid'}); pending=sum(float(x.get('amount') or 0) for x in earnings if x.get('status')=='pending')
-    return render_page('Media Creator Studio',r'''<style>.upload-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.upload-progress{height:10px;background:rgba(127,127,127,.15);border-radius:99px;overflow:hidden;margin:12px 0}.upload-progress>div{height:100%;width:0;background:linear-gradient(90deg,#176b87,#d62828)}@media(max-width:700px){.upload-grid{grid-template-columns:1fr}}</style><script src="https://cdn.jsdelivr.net/npm/tus-js-client@4.3.1/dist/tus.min.js"></script><div class="hero"><h2>KOJA Media Creator Studio</h2><p>Upload, manage rights, publish and track entertainment content.</p></div><div class="grid"><div class="card"><h3>Confirmed earnings</h3><h2>K{{ '%.2f'|format(confirmed) }}</h2></div><div class="card"><h3>Pending earnings</h3><h2>K{{ '%.2f'|format(pending) }}</h2></div></div><div class="card"><h2>Upload Media</h2><p class="small">Fast direct resumable upload up to <b>3 GB</b>. The media file does not pass through Render.</p><div class="upload-grid"><div><label>Title</label><input id=mTitle required><label>Description</label><textarea id=mDescription></textarea><label>Type</label><select id=mType><option value=video>Video</option><option value=movie>Movie</option><option value=series>Series</option><option value=music>Music</option><option value=podcast>Podcast</option></select><label>Genre</label><input id=mGenre></div><div><label>Monetization</label><select id=mAccess><option value=free>Free</option><option value=premium>Premium</option><option value=rent>Rent</option><option value=purchase>Purchase</option><option value=download>Paid Download</option></select><label>Price (ZMW)</label><input id=mPrice type=number step=.01 min=0 value=0><label>Rights owner</label><input id=mOwner required><label>Licence</label><input id=mLicense required><label>Territory</label><input id=mTerritory placeholder="Zambia / Africa / Worldwide"><label><input id=mDownload type=checkbox> Allow downloads where permitted</label></div></div><label>Media file (max 3 GB)</label><input id=mFile type=file required accept="audio/*,video/*,.mp4,.webm,.mov,.m4v,.mkv,.avi,.mp3,.wav,.m4a,.aac,.ogg,.flac"><div class=upload-progress><div id=mBar></div></div><div id=mStatus class=small>Ready.</div><button id=mUpload class=btn type=button>Start Upload</button></div><div class="card"><h2>My Content</h2><table><tr><th>Title</th><th>Type</th><th>Access</th><th>Status</th><th></th></tr>{% for x in rows %}<tr><td>{{ x.title }}</td><td>{{ x.media_type|title }}</td><td>{{ x.access_type|title }}</td><td>{{ x.status|title }}</td><td>{% if x.status!='published' %}<form method=post action="{{ url_for('media_publish',media_id=x.id) }}"><button class="btn secondary">Publish</button></form>{% else %}<a class="btn secondary" href="{{ url_for('media_watch',media_id=x.id) }}">View</a>{% endif %}</td></tr>{% else %}<tr><td colspan=5>No media yet.</td></tr>{% endfor %}</table></div><script>const $=id=>document.getElementById(id);function st(x){$('mStatus').textContent=x}function fb(n){if(n<1024)return n+' B';if(n<1048576)return(n/1024).toFixed(1)+' KB';if(n<1073741824)return(n/1048576).toFixed(1)+' MB';return(n/1073741824).toFixed(2)+' GB'}$('mUpload').onclick=async()=>{const f=$('mFile').files[0];if(!f)return st('Choose a file first.');if(f.size>3*1024*1024*1024)return st('File is larger than 3 GB.');if(!$('mTitle').value.trim()||!$('mOwner').value.trim()||!$('mLicense').value.trim())return st('Title, Rights owner and Licence are required.');$('mUpload').disabled=true;try{st('Starting direct upload…');let r=await fetch('/api/media/upload-token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({filename:f.name,content_type:f.type,size:f.size})}),d=await r.json();if(!r.ok)throw Error(d.error||'Could not start upload');let up=new tus.Upload(f,{endpoint:d.tus_endpoint,chunkSize:6*1024*1024,retryDelays:[0,3000,5000,10000,20000],uploadDataDuringCreation:true,removeFingerprintOnSuccess:true,headers:{'x-signature':d.token},metadata:{bucketName:'{{ storage_bucket }}',objectName:d.path,contentType:f.type||'application/octet-stream',cacheControl:'3600'},onProgress:(u,t)=>{$('mBar').style.width=((u/t)*100).toFixed(1)+'%';st('Uploading '+((u/t)*100).toFixed(1)+'% · '+fb(u)+' / '+fb(t))},onError:e=>{st('Upload failed: '+e.message);$('mUpload').disabled=false},onSuccess:async()=>{st('Upload complete. Saving…');let z={path:d.path,size:f.size,title:$('mTitle').value,description:$('mDescription').value,media_type:$('mType').value,genre:$('mGenre').value,access_type:$('mAccess').value,price:$('mPrice').value,rights_owner:$('mOwner').value,license_type:$('mLicense').value,territory:$('mTerritory').value,allow_download:$('mDownload').checked};let q=await fetch('/api/media/finalize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(z)}),j=await q.json();if(!q.ok)throw Error(j.error||'Could not save media');$('mBar').style.width='100%';st('Upload complete. Saved as draft.');setTimeout(()=>location.reload(),700)}});let old=await up.findPreviousUploads();if(old.length)up.resumeFromPreviousUpload(old[0]);up.start()}catch(e){st(e.message);$('mUpload').disabled=false}}</script>''',rows=rows,confirmed=confirmed,pending=pending,storage_bucket=STORAGE_BUCKET)
-
-@app.route('/media/studio/<media_id>/publish',methods=['POST'])
-@login_required
-def media_publish(media_id):
-    uid=current_user()['id']; row=first_row('koja_media_library',{'id':media_id,'creator_id':uid})
-    if not row:return 'Not found',404
-    if not row.get('rights_owner') or not row.get('license_type'): flash('Rights owner and licence are required.','danger'); return redirect(url_for('media_studio'))
-    _,e=db_update('koja_media_library',{'id':media_id},{'status':'published','updated_at':utc_now()}); flash('Media published.' if not e else 'Could not publish media.','success' if not e else 'danger'); return redirect(url_for('media_studio'))
+def _koja_media_row(media_id):
+    rows=db_select('koja_media_library',{'id':media_id},limit=1) or []
+    return rows[0] if rows else None
 
 @app.route('/media/watch/<media_id>')
 def media_watch(media_id):
-    row=first_row('koja_media_library',{'id':media_id,'status':'eq.published'})
-    if not row:return 'Media not found',404
-    return render_page(row.get('title') or 'KOJA Media',r'''<div class="hero"><h2>{{ row.title }}</h2><p>{{ row.media_type|title }} · {{ row.genre or 'KOJA Media' }}</p></div><div class="card">{% if row.media_type in ['music','podcast'] %}<audio id="player" controls style="width:100%" src="{{ url_for('media_content',media_id=row.id) }}"></audio>{% else %}<video id="player" controls playsinline style="width:100%;max-height:75vh;background:#000;border-radius:16px" src="{{ url_for('media_content',media_id=row.id) }}"></video>{% endif %}<h3>{{ row.title }}</h3><p>{{ row.description or '' }}</p>{% if row.allow_download and row.access_type in ['free','download'] %}<a class="btn" href="{{ url_for('media_content',media_id=row.id,download=1) }}">Download</a>{% endif %}</div><script>const p=document.getElementById('player');if(p){['play','pause','ended'].forEach(t=>p.addEventListener(t,()=>fetch('/api/media/content-event',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({media_id:'{{ row.id }}',event_type:t==='ended'?'complete':t,watch_seconds:p.currentTime||0,completion_percent:p.duration?100*p.currentTime/p.duration:0})}).catch(()=>{})))};</script>''',row=row)
+    item=_koja_media_row(media_id)
+    if not item or str(item.get('status') or '').lower() not in {'published','active'}: abort(404)
+    access=str(item.get('access_type') or item.get('access') or 'free').lower()
+    user=current_user()
+    if access not in {'free','public','preview'} and not user:
+        return render_page('KOJA Media',r"""<div class="card" style="max-width:760px;margin:30px auto;text-align:center"><h2>{{ item.title or 'This title' }}</h2><p>This content requires a KOJA account or purchase.</p><div class="actions" style="justify-content:center"><a class="btn" href="{{ url_for('login',next=request.path) }}">Sign in to continue</a><a class="btn secondary" href="{{ url_for('media_nextgen') }}">Back to Media</a></div></div>""",item=item),403
+    path=_koja_media_storage_path(item.get('file_path') or item.get('storage_path') or item.get('media_url') or item.get('file_url') or item.get('url'))
+    if not path: abort(404)
+    signed=_koja_media_signed_url(path,3600)
+    if not signed: abort(404)
+    mt=str(item.get('media_type') or 'video').lower(); mime='audio' if mt in {'music','audio','podcast'} else 'video'
+    return render_page('Watch · KOJA Media',r"""<style>.watch-wrap{max-width:1180px;margin:auto}.watch-player{background:#000;border-radius:18px;overflow:hidden;border:1px solid var(--border);box-shadow:0 18px 50px rgba(0,0,0,.28)}.watch-player video,.watch-player audio{display:block;width:100%;max-height:72vh;background:#000}.watch-info{padding:20px 2px}.watch-meta{color:var(--muted);font-size:14px}.watch-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}</style><div class="watch-wrap"><div class="watch-player">{% if mime=='audio' %}<audio id="kojaPlayer" controls preload="metadata" src="{{ signed }}"></audio>{% else %}<video id="kojaPlayer" controls playsinline preload="metadata" src="{{ signed }}"></video>{% endif %}</div><section class="watch-info"><div class="watch-meta">KOJA Media · {{ item.media_type|default('Video')|title }}{% if item.genre %} · {{ item.genre }}{% endif %}</div><h1>{{ item.title or 'KOJA Media' }}</h1>{% if item.description %}<p style="white-space:pre-wrap;line-height:1.7">{{ item.description }}</p>{% endif %}<div class="watch-actions"><a class="btn secondary" href="{{ url_for('media_nextgen') }}">Back to Media</a><button class="btn secondary" type="button" onclick="addMyList()">+ My List</button></div></section></div><script>const player=document.getElementById('kojaPlayer'),mediaId={{ item.id|tojson }},key='koja-media-progress-'+mediaId;try{const saved=parseFloat(localStorage.getItem(key)||'0');if(saved>5)player.addEventListener('loadedmetadata',()=>{if(saved<player.duration-5)player.currentTime=saved},{once:true})}catch(e){}let lastSave=0;player.addEventListener('timeupdate',()=>{const now=Date.now();if(now-lastSave<5000)return;lastSave=now;try{localStorage.setItem(key,String(player.currentTime||0))}catch(e){}});function addMyList(){try{let a=JSON.parse(localStorage.getItem('koja-my-list')||'[]');if(!a.includes(mediaId))a.push(mediaId);localStorage.setItem('koja-my-list',JSON.stringify(a));alert('Added to My List')}catch(e){}}</script>""",item=item,signed=signed,mime=mime)
 
-@app.route('/media/content/<media_id>')
-def media_content(media_id):
-    row=first_row('koja_media_library',{'id':media_id,'status':'eq.published'})
-    if not row:return '',404
-    try:
-        r=requests.get(sb_storage_url(row.get('media_path')),headers=sb_headers(),timeout=60)
-        if not r.ok:return '',404
-        resp=send_file(io.BytesIO(r.content),mimetype=r.headers.get('Content-Type') or 'application/octet-stream',download_name='KOJA-Media')
-        if request.args.get('download')=='1' and as_bool(row.get('allow_download')) and row.get('access_type') in {'free','download'}: resp.headers['Content-Disposition']='attachment; filename="KOJA-Media"'
-        return resp
-    except Exception:return '',404
+@app.route('/media-next')
+def media_nextgen():
+    rows=db_select('koja_public_posts',{'is_published':'eq.true'},order='created_at.desc',limit=100) or []
+    items=[]
+    for p in rows:
+        if not p.get('media_url'): continue
+        items.append(p)
+    return render_page('KOJA Media',r'''
+<style>.media-feed{height:calc(100vh - 150px);min-height:540px;overflow-y:auto;scroll-snap-type:y mandatory;background:#05070a;border-radius:22px}.media-card{height:100%;min-height:540px;position:relative;scroll-snap-align:start;display:grid;place-items:center;background:#05070a}.media-card img,.media-card video{width:100%;height:100%;object-fit:contain;max-height:calc(100vh - 150px)}.media-overlay{position:absolute;left:18px;right:18px;bottom:18px;color:#fff;text-shadow:0 2px 8px #000;z-index:2}.media-actions{position:absolute;right:16px;bottom:110px;display:flex;flex-direction:column;gap:9px;z-index:3}.media-actions button{width:50px;height:50px;border-radius:50%;padding:0;margin:0;background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.2)}.media-empty{padding:70px;text-align:center;color:#fff}
+</style>
+<div class="hero"><h2>◉ KOJA Media</h2><p>Immersive media discovery with adaptive interaction, sharing and watch analytics.</p></div>
+<div class="media-feed" id="mediaFeed">{% for p in items %}<article class="media-card" data-id="{{ p.id }}" data-seen="0">{% if p.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=p.id) }}" playsinline muted loop preload="metadata"></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="KOJA media">{% endif %}<div class="media-actions"><button onclick="likeMedia('{{ p.id }}')"></button><button onclick="shareMedia('{{ p.id }}')">↗</button><button onclick="copyMedia('{{ p.id }}')">⧉</button></div><div class="media-overlay"><strong>{{ p.title or 'KOJA Media' }}</strong><div>{{ p.body[:220] }}</div><div class="small" style="color:#ddd">{{ p.post_type|title }} · {{ p.created_at }}</div></div></article>{% else %}<div class="media-empty"><h2>No media yet</h2><p>Publish a photo or video to start the KOJA media experience.</p></div>{% endfor %}</div>
+<script>
+const feed=document.getElementById('mediaFeed');const io=new IntersectionObserver(es=>es.forEach(e=>{let v=e.target.querySelector('video');if(e.isIntersecting){if(v)v.play().catch(()=>{});if(e.target.dataset.seen==='0'){e.target.dataset.seen='1';track(e.target.dataset.id,'impression',0,0)}}else if(v)v.pause()}),{root:feed,threshold:.65});document.querySelectorAll('.media-card').forEach(x=>io.observe(x));
+function track(id,type,w,c){fetch('/api/nextgen/media-event',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({post_id:id,event_type:type,watch_seconds:w,completion_percent:c})}).catch(()=>{})}
+async function likeMedia(id){await fetch('/public/like/'+id,{method:'POST'});}
+function shareMedia(id){let u=location.origin+'/public#post-'+id;if(navigator.share)navigator.share({title:'KOJA Media',url:u});else navigator.clipboard?.writeText(u)}
+function copyMedia(id){let u=location.origin+'/public#post-'+id;navigator.clipboard?.writeText(u);}
+</script>
+''',items=items)
 
-@app.route('/api/media/content-event',methods=['POST'])
-def media_content_event():
-    d=request.get_json(silent=True) or {}; mid=clean(d.get('media_id')); et=clean(d.get('event_type'))
-    if not mid or et not in {'play','pause','complete','share','impression'}:return jsonify(error='Invalid event'),400
-    sid=request.cookies.get('koja_media_session') or uuid.uuid4().hex; uid=(current_user() or {}).get('id')
-    db_insert('koja_media_content_events',{'media_id':mid,'user_id':uid,'session_id':sid,'event_type':et,'watch_seconds':float(d.get('watch_seconds') or 0),'completion_percent':float(d.get('completion_percent') or 0),'created_at':utc_now()})
-    resp=jsonify(ok=True);resp.set_cookie('koja_media_session',sid,max_age=2592000,httponly=True,samesite='Lax');return resp
+@app.route('/api/nextgen/media-event',methods=['POST'])
+def nextgen_media_event():
+    d=request.get_json(silent=True) or {}; pid=clean(d.get('post_id')); et=clean(d.get('event_type'))
+    allowed={'impression','play','pause','25_percent','50_percent','75_percent','complete','share'}
+    if not pid or et not in allowed:return jsonify(error='Invalid event'),400
+    sid=request.cookies.get('koja_media_session') or uuid.uuid4().hex
+    uid=(current_user() or {}).get('id')
+    db_insert('koja_media_events',{'post_id':pid,'user_id':uid,'session_id':sid,'event_type':et,'watch_seconds':float(d.get('watch_seconds') or 0),'completion_percent':float(d.get('completion_percent') or 0),'created_at':utc_now()})
+    resp=jsonify(ok=True);resp.set_cookie('koja_media_session',sid,max_age=60*60*24*30,httponly=True,samesite='Lax');return resp
 
 @app.route('/news-next')
 def news_nextgen():
