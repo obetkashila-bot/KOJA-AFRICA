@@ -7769,7 +7769,27 @@ def media_watch(media_id):
 
 @app.route('/media-next')
 def media_nextgen():
-    rows=db_select('koja_media_library',{'status':'eq.published'},order='created_at.desc',limit=200) or []
+    # Read the existing Media Library without assuming that every deployment
+    # uses exactly the status value "published". Older Creator Studio
+    # records may use approved/active/live/ready/completed.
+    all_rows=db_select('koja_media_library',order='created_at.desc',limit=500) or []
+    allowed_status={'published','approved','active','live','ready','completed'}
+    rows=[]
+    for x in all_rows:
+        status=str(x.get('status') or '').strip().lower()
+        storage_value=x.get('file_path') or x.get('storage_path') or x.get('media_url') or x.get('file_url') or x.get('url')
+        # A real stored media object is required for a card to be watchable.
+        if storage_value and status in allowed_status:
+            rows.append(x)
+    # Compatibility fallback: if an older Creator Studio used an unknown
+    # status but the record already contains a media file, show those records
+    # too rather than falsely reporting an empty library.
+    if not rows:
+        for x in all_rows:
+            storage_value=x.get('file_path') or x.get('storage_path') or x.get('media_url') or x.get('file_url') or x.get('url')
+            status=str(x.get('status') or '').strip().lower()
+            if storage_value and status not in {'rejected','deleted','removed','cancelled'}:
+                rows.append(x)
     for x in rows:
         x['media_type']=str(x.get('media_type') or 'video').lower()
         x['access_type']=str(x.get('access_type') or x.get('access') or 'free').lower()
