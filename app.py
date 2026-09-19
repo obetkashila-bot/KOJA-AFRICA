@@ -1323,15 +1323,9 @@ def research_google(query, limit=8):
     api_key=clean(os.getenv('GOOGLE_SEARCH_API_KEY',''))
     cse_id=clean(os.getenv('GOOGLE_CSE_ID',''))
     if not (api_key and cse_id):
-        # Google is a backend discovery provider only. Never expose the Google
-        # homepage/search UI inside KOJA Research. If the Programmable Search
-        # credentials are absent, use KOJA's native web discovery as the safe
-        # fallback and render those results in the KOJA interface.
-        fallback = research_web(q, limit) if 'research_web' in globals() else []
-        for item in fallback:
-            item['source'] = 'Web'
-            item['source_type'] = 'website'
-        return fallback
+        return [{'source':'Google Search','title':f'Google results for: {q}',
+                 'url':'https://www.google.com/search?q='+quote(q),
+                 'snippet':'Open Google Search to review live web results for this research query.','year':None,'_google_link':True}]
     try:
         r=requests.get('https://www.googleapis.com/customsearch/v1',
                        params={'key':api_key,'cx':cse_id,'q':q,'num':min(max(limit,1),10)},
@@ -1493,24 +1487,7 @@ def _research_deduplicate(results, query):
             if not old.get(fld) and r.get(fld): old[fld]=r.get(fld)
         sources=set(str(old.get('source','')).split(' + ')); sources.add(str(r.get('source',''))); old['source']=' + '.join(sorted(x for x in sources if x))
         old['_relevance']=max(old.get('_relevance',0),r.get('_relevance',0))
-    def _research_num(value, default=0):
-        if value is None or value == '':
-            return default
-        try:
-            if isinstance(value, bool):
-                return int(value)
-            return float(str(value).replace(',', '').strip())
-        except (TypeError, ValueError):
-            return default
-    return sorted(
-        merged.values(),
-        key=lambda r: (
-            _research_num(r.get('_relevance')),
-            _research_num(r.get('citations')),
-            _research_num(r.get('year')),
-        ),
-        reverse=True,
-    )
+    return sorted(merged.values(),key=lambda r:(r.get('_relevance',0),r.get('citations') or 0,r.get('year') or 0),reverse=True)
 
 def _research_normalize_query(query):
     q=clean(query)
@@ -1581,6 +1558,7 @@ def _research_obviously_irrelevant(r, query):
     topic_terms=_research_topic_terms(query)
     text=title+' '+snippet
     if not title and not snippet: return True
+    if r.get('_google_link') or (source=='google search' and 'google.com/search' in clean(r.get('url','')).lower()): return True
     if domain=='science':
         negative_title=('album','song','band','film','movie','novel','war','battle','military','telepathy','mind over','materialism','philosophy','philosophical','plab','licensing','football','sport','game','video game','fiction','character','literature','poem','poetry')
         if any(x in title for x in negative_title): return True
@@ -2202,312 +2180,9 @@ def research():
 </style>
 <div class="research-shell"><div class="research-welcome"><h2> What would you like to research?</h2><p>Ask a full question, attach a document, or use your voice. KOJA Research searches web, academic literature, Wikipedia and your KOJA documents, then brings the evidence together.</p></div><div class="hero"><form method="get" action="{{ url_for('research') }}" class="research-search" id="research-composer"><textarea name="q" rows="3" maxlength="2000" placeholder="Ask anything you want to research…" aria-label="Research question" autofocus>{{ q }}</textarea><div class="research-composer-bottom"><div class="research-composer-actions"><label class="btn secondary research-icon" title="Attach a document" aria-label="Attach a document"><input id="research-file" type="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp" hidden></label><button class="btn secondary research-icon" id="research-record" type="button" title="Record voice" aria-label="Record voice">️</button><span class="research-recording" id="research-recording">● Recording…</span><span class="research-file-name" id="research-file-name"></span></div><button class="btn research-send" type="submit" title="Send research question" aria-label="Send research question"></button></div></form>
 <script>(function(){const box=document.querySelector('#research-composer textarea[name="q"]');const file=document.getElementById('research-file');const name=document.getElementById('research-file-name');const rec=document.getElementById('research-record');const recLabel=document.getElementById('research-recording');let media=null,chunks=[];if(box){const grow=()=>{box.style.height='auto';box.style.height=Math.min(box.scrollHeight,280)+'px'};box.addEventListener('input',grow);grow()}if(file){file.addEventListener('change',()=>{name.textContent=file.files&&file.files[0]?file.files[0].name:''})}if(rec&&navigator.mediaDevices&&window.MediaRecorder){rec.addEventListener('click',async()=>{if(media){media.stop();return}try{const stream=await navigator.mediaDevices.getUserMedia({audio:true});media=new MediaRecorder(stream);chunks=[];media.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};media.onstop=()=>{const blob=new Blob(chunks,{type:'audio/webm'});const url=URL.createObjectURL(blob);name.textContent='Voice recording ready ('+Math.round(blob.size/1024)+' KB)';const a=document.createElement('a');a.href=url;a.download='koja-research-question.webm';a.style.display='none';document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(url);a.remove()},1000);stream.getTracks().forEach(t=>t.stop());media=null;rec.textContent='️';recLabel.style.display='none'};media.start();rec.textContent='⏹️';recLabel.style.display='inline';}catch(e){alert('Microphone permission is required to record.')}})}})();</script><div class="research-filters"><label>Source<select name="source" form="research-filter-form"><option value="all" {% if source_filter=='all' %}selected{% endif %}>All sources</option><option value="academic" {% if source_filter=='academic' %}selected{% endif %}>Academic</option><option value="web" {% if source_filter=='web' %}selected{% endif %}>Web</option><option value="wikipedia" {% if source_filter=='wikipedia' %}selected{% endif %}>Wikipedia</option><option value="koja" {% if source_filter=='koja' %}selected{% endif %}>KOJA Documents</option></select></label><label>Year<input name="year" form="research-filter-form" value="{{ year or '' }}" placeholder="e.g. 2025" inputmode="numeric"></label><label>Author<input name="author" form="research-filter-form" value="{{ author }}" placeholder="Academic author"></label><label>Citation style<select name="style" form="research-filter-form">{% for k,v in citation_styles.items() %}<option value="{{k}}" {% if style==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Source type<select name="source_type" form="research-filter-form"><option value="all">All source types</option>{% for k,v in source_types.items() %}<option value="{{k}}" {% if source_type==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></label><label>Sort<select name="sort" form="research-filter-form"><option value="relevance" {% if sort=='relevance' %}selected{% endif %}>Relevance</option><option value="date" {% if sort=='date' %}selected{% endif %}>Newest first</option><option value="citations" {% if sort=='citations' %}selected{% endif %}>Most cited</option></select></label></div><form id="research-filter-form" method="get" action="{{ url_for('research') }}"><input type="hidden" name="q" value="{{ q }}"></form></div>
-{% if q %}<div class="note-actions"><a class="btn" href="{{ url_for('research_notes',q=q,style=style) }}"> Write Research Notes</a><a class="btn secondary" href="{{ url_for('research') }}">＋ New research</a></div><div class="research-tabs"><a class="btn" href="{{ url_for('research_unified',q=q) }}">Unified Research</a><a class="btn secondary" href="{{ url_for('research_workspace') }}">Workspace</a><a class="btn secondary" href="{{ url_for('research_history') }}">History</a><a class="btn secondary" href="{{ url_for('research_compare',q1=q) }}">Compare</a><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}"> Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}"> Web</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}"> KOJA Documents</a></div><div class="card"><span class="research-count">{{ results|length }} ranked sources</span> found for <strong>“{{ q }}”</strong><p class="small" style="margin-top:8px">KOJA combines multiple research angles, academic literature, web sources and KOJA Documents; it removes duplicates, filters weak matches, ranks evidence and then uses KOJA AI to synthesize the strongest evidence.</p></div>{% if summary %}<div class="card research-summary"><div class="research-answer-label"> KOJA Research Answer</div><pre>{{ summary }}</pre><p class="small">AI summaries use configured AI credentials when available; otherwise KOJA shows source-based highlights. Verify important claims against original sources.</p></div>{% endif %}{% for r in results %}<div class="card research-result"><span class="source-badge">{{ r.source }}</span><h3><a href="{{ r.url or '#' }}" {% if r.url %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a></h3>{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p><p><strong>In-text:</strong> {{ make_intext(r,style,loop.index) }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open original source ↗</a>{% endif %}</div>{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endfor %}{% if bibliography %}<div class="card"><h2>References</h2><p class="small">Generated from available source metadata. Verify against the original source.</p>{% for n,ref in bibliography %}<p style="padding-left:28px;text-indent:-28px;line-height:1.6">{{ ref|safe }}</p>{% endfor %}</div>{% endif %}{% else %}{% endif %}</div>
+{% if q %}<div class="note-actions"><a class="btn" href="{{ url_for('research_notes',q=q,style=style) }}"> Write Research Notes</a><a class="btn secondary" href="{{ url_for('research') }}">＋ New research</a></div><div class="research-tabs"><a class="btn secondary" href="{{ url_for('research',q=q,source='all',sort=sort,year=year,author=author) }}">All</a><a class="btn secondary" href="{{ url_for('research',q=q,source='academic',sort=sort,year=year,author=author) }}"> Academic</a><a class="btn secondary" href="{{ url_for('research',q=q,source='web',sort=sort,year=year,author=author) }}"> Web</a><a class="btn secondary" href="https://www.google.com/search?q={{ q|urlencode }}" target="_blank" rel="noopener"> Google</a><a class="btn secondary" href="{{ url_for('research',q=q,source='koja',sort=sort,year=year,author=author) }}"> KOJA Documents</a></div><div class="card"><span class="research-count">{{ results|length }} ranked sources</span> found for <strong>“{{ q }}”</strong><p class="small" style="margin-top:8px">KOJA combines multiple research angles, academic literature, web sources and KOJA Documents; it removes duplicates, filters weak matches, ranks evidence and then uses KOJA AI to synthesize the strongest evidence.</p></div>{% if summary %}<div class="card research-summary"><div class="research-answer-label"> KOJA Research Answer</div><pre>{{ summary }}</pre><p class="small">AI summaries use configured AI credentials when available; otherwise KOJA shows source-based highlights. Verify important claims against original sources.</p></div>{% endif %}{% for r in results %}<div class="card research-result"><span class="source-badge">{{ r.source }}</span><h3><a href="{{ r.url or '#' }}" {% if r.url %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ r.title }}</a></h3>{% if r.year or r.citations %}<p class="research-meta">{% if r.year %}{{ r.year }}{% endif %}{% if r.citations %} • {{ r.citations }} citations{% endif %}</p>{% endif %}<p>{{ r.snippet }}</p><p><strong>In-text:</strong> {{ make_intext(r,style,loop.index) }}</p>{% if r.url %}<a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open original source ↗</a>{% endif %}</div>{% else %}<div class="card research-empty"><h3>No matching results</h3><p>Try a broader question, remove the year/author filter, or search another source.</p></div>{% endfor %}{% if bibliography %}<div class="card"><h2>References</h2><p class="small">Generated from available source metadata. Verify against the original source.</p>{% for n,ref in bibliography %}<p style="padding-left:28px;text-indent:-28px;line-height:1.6">{{ ref|safe }}</p>{% endfor %}</div>{% endif %}{% else %}<div class="grid"><div class="card"><h3> Research Discovery</h3><p>KOJA searches across multiple research sources and filters weak or unrelated matches.</p></div><div class="card"><h3> Academic Search</h3><p>OpenAlex and Crossref provide scholarly metadata, authors, years and citation information.</p></div><div class="card"><h3> KOJA Documents</h3><p>Search documents already connected to your KOJA Supabase database.</p></div><div class="card"><h3> AI Research Summary</h3><p>Configure an AI API key to synthesize retrieved evidence with source-number citations.</p></div></div>{% endif %}</div>
 ''',q=q,results=results,summary=summary,source_filter=source_filter,sort=sort,year=year,author=author,style=style,source_type=source_type,citation_styles=CITATION_STYLES,source_types=SOURCE_TYPES,bibliography=bibliography,make_intext=make_intext,SITE_URL=SITE_URL)
 
-
-
-# ============================================================
-# KOJA RESEARCH UNIFIED ENGINE — ADDITIVE EXTENSION
-# Web + News + Images + YouTube + Books + Academic + KOJA Docs
-# Workspace + History + Compare + Related + Export + API
-# Existing Research routes/providers remain intact.
-# ============================================================
-
-_RESEARCH_UNIFIED_CACHE = {}
-_RESEARCH_UNIFIED_CACHE_TTL = 180
-_RESEARCH_HISTORY_LIMIT = 30
-
-
-def _research_cache_get(key):
-    item = _RESEARCH_UNIFIED_CACHE.get(key)
-    if not item: return None
-    if time.time() - item.get('time', 0) > _RESEARCH_UNIFIED_CACHE_TTL:
-        _RESEARCH_UNIFIED_CACHE.pop(key, None)
-        return None
-    return item.get('value')
-
-
-def _research_cache_put(key, value):
-    _RESEARCH_UNIFIED_CACHE[key] = {'time': time.time(), 'value': value}
-    if len(_RESEARCH_UNIFIED_CACHE) > 250:
-        oldest = sorted(_RESEARCH_UNIFIED_CACHE.items(), key=lambda x: x[1].get('time', 0))[:50]
-        for k, _ in oldest: _RESEARCH_UNIFIED_CACHE.pop(k, None)
-    return value
-
-
-def research_arxiv(query, limit=8):
-    q=clean(query)
-    if not q: return []
-    try:
-        r=requests.get('https://export.arxiv.org/api/query', params={'search_query':'all:'+q,'start':0,'max_results':min(limit,20),'sortBy':'relevance'}, timeout=7, headers={'User-Agent':'KOJA-AFRICA-Research/2030'})
-        if not r.ok: return []
-        text=r.text
-        entries=re.findall(r'<entry>(.*?)</entry>',text,re.S|re.I)
-        out=[]
-        for e in entries:
-            title=re.sub(r'\s+',' ',re.sub(r'<[^>]+>',' ',re.search(r'<title>(.*?)</title>',e,re.S|re.I).group(1) if re.search(r'<title>(.*?)</title>',e,re.S|re.I) else '')).strip()
-            summary=re.sub(r'\s+',' ',re.sub(r'<[^>]+>',' ',re.search(r'<summary>(.*?)</summary>',e,re.S|re.I).group(1) if re.search(r'<summary>(.*?)</summary>',e,re.S|re.I) else '')).strip()
-            link=re.search(r'<id>(.*?)</id>',e,re.S|re.I)
-            published=re.search(r'<published>(.*?)</published>',e,re.S|re.I)
-            authors=re.findall(r'<name>(.*?)</name>',e,re.S|re.I)
-            if title and link:
-                yr=None
-                if published:
-                    m=re.search(r'(\d{4})',published.group(1)); yr=int(m.group(1)) if m else None
-                out.append({'source':'arXiv','title':title,'url':clean(link.group(1)),'snippet':summary[:1400],'year':yr,'authors':[clean(re.sub(r'<[^>]+>','',a)) for a in authors],'source_type':'journal_article'})
-        return out
-    except Exception as exc:
-        logger.warning('arXiv research failed: %s',exc); return []
-
-
-def research_youtube(query, limit=8):
-    q=clean(query); key=clean(os.getenv('YOUTUBE_API_KEY',''))
-    if not q or not key: return []
-    try:
-        r=requests.get('https://www.googleapis.com/youtube/v3/search',params={'part':'snippet','q':q,'type':'video','maxResults':min(limit,25),'key':key},timeout=7,headers={'User-Agent':'KOJA-AFRICA-Research/2030'})
-        if not r.ok: return []
-        out=[]
-        for x in r.json().get('items',[]):
-            vid=(x.get('id') or {}).get('videoId'); sn=x.get('snippet') or {}
-            if not vid: continue
-            out.append({'source':'YouTube','title':clean(sn.get('title','')),'url':f'https://www.youtube.com/watch?v={vid}','embed_url':f'https://www.youtube.com/embed/{vid}','snippet':clean(sn.get('description','')),'year':(clean(sn.get('publishedAt',''))[:4] or None),'channel':clean(sn.get('channelTitle','')),'video_id':vid,'source_type':'video'})
-        return out
-    except Exception as exc:
-        logger.warning('YouTube research failed: %s',exc); return []
-
-
-def research_news(query, limit=8):
-    q=clean(query)
-    if not q: return []
-    try:
-        r=requests.get('https://news.google.com/rss/search',params={'q':q,'hl':'en','gl':'US','ceid':'US:en'},timeout=7,headers={'User-Agent':'KOJA-AFRICA-Research/2030'})
-        if not r.ok: return []
-        items=re.findall(r'<item>(.*?)</item>',r.text,re.S|re.I); out=[]
-        for item in items[:limit]:
-            def tag(name):
-                m=re.search(rf'<{name}[^>]*>(.*?)</{name}>',item,re.S|re.I); return re.sub(r'<!\[CDATA\[|\]\]>','',m.group(1)).strip() if m else ''
-            title=clean(re.sub(r'<[^>]+>',' ',tag('title'))); link=tag('link'); desc=clean(re.sub(r'<[^>]+>',' ',tag('description'))); pub=tag('pubDate'); source_name=clean(re.sub(r'<[^>]+>',' ',tag('source')))
-            if title and link: out.append({'source':'News','title':title,'url':link,'snippet':desc[:1200],'year':(pub[-4:] if len(pub)>=4 and pub[-4:].isdigit() else None),'publisher':source_name,'source_type':'newspaper'})
-        return out
-    except Exception as exc:
-        logger.warning('News research failed: %s',exc); return []
-
-
-def research_images(query, limit=12):
-    q=clean(query)
-    if not q: return []
-    try:
-        r=requests.get('https://commons.wikimedia.org/w/api.php',params={'action':'query','generator':'search','gsrsearch':q,'gsrnamespace':6,'gsrlimit':min(limit,50),'prop':'imageinfo','iiprop':'url|extmetadata','iiurlwidth':900,'format':'json'},timeout=7,headers={'User-Agent':'KOJA-AFRICA-Research/2030'})
-        if not r.ok: return []
-        out=[]
-        for x in (r.json().get('query',{}).get('pages',{}) or {}).values():
-            info=(x.get('imageinfo') or [{}])[0]; url=info.get('thumburl') or info.get('url'); title=clean(x.get('title','')).replace('File:','',1)
-            if url: out.append({'source':'Wikimedia Commons','title':title,'url':url,'image_url':url,'snippet':'Wikimedia Commons image','source_page':info.get('descriptionurl') or url,'source_type':'image'})
-        return out
-    except Exception as exc:
-        logger.warning('Image research failed: %s',exc); return []
-
-
-def research_openlibrary(query, limit=8):
-    q=clean(query)
-    if not q: return []
-    try:
-        r=requests.get('https://openlibrary.org/search.json',params={'q':q,'limit':min(limit,20)},timeout=7,headers={'User-Agent':'KOJA-AFRICA-Research/2030'})
-        if not r.ok: return []
-        out=[]
-        for x in r.json().get('docs',[]):
-            key=x.get('key',''); title=clean(x.get('title',''));
-            if not title: continue
-            authors=[clean(a) for a in (x.get('author_name') or []) if clean(a)]
-            year=x.get('first_publish_year'); cover=x.get('cover_i')
-            out.append({'source':'Open Library','title':title,'url':('https://openlibrary.org'+key if key.startswith('/') else key),'snippet':clean(x.get('first_sentence') or '')[:1000],'year':year,'authors':authors,'isbn':clean((x.get('isbn') or [''])[0]),'cover_url':f'https://covers.openlibrary.org/b/id/{cover}-M.jpg' if cover else '','source_type':'book'})
-        return out
-    except Exception as exc:
-        logger.warning('Open Library research failed: %s',exc); return []
-
-
-def research_internet_archive(query, limit=8):
-    q=clean(query)
-    if not q: return []
-    try:
-        r=requests.get('https://archive.org/advancedsearch.php',params={'q':f'(title:({q}) OR creator:({q}) OR subject:({q}))','fl[]':['identifier','title','creator','date','description','publisher','language'],'rows':min(limit,50),'page':1,'output':'json'},timeout=8,headers={'User-Agent':'KOJA-AFRICA-Research/2030'})
-        if not r.ok: return []
-        out=[]
-        for x in r.json().get('response',{}).get('docs',[]):
-            ident=clean(x.get('identifier','')); title=clean(x.get('title',''))
-            if not ident or not title: continue
-            out.append({'source':'Internet Archive','title':title,'url':f'https://archive.org/details/{ident}','snippet':clean(x.get('description',''))[:1200],'year':str(x.get('date',''))[:4] or None,'authors':[clean(a) for a in (x.get('creator') or [])] if isinstance(x.get('creator'),list) else [clean(x.get('creator',''))] if x.get('creator') else [],'publisher':clean(x.get('publisher','')),'source_type':'book','archive_id':ident})
-        return out
-    except Exception as exc:
-        logger.warning('Internet Archive research failed: %s',exc); return []
-
-
-def research_gutenberg(query, limit=8):
-    q=clean(query)
-    if not q: return []
-    try:
-        r=requests.get('https://gutendex.com/books/',params={'search':q},timeout=7,headers={'User-Agent':'KOJA-AFRICA-Research/2030'})
-        if not r.ok: return []
-        out=[]
-        for x in r.json().get('results',[])[:limit]:
-            formats=x.get('formats') or {}; html=formats.get('text/html') or formats.get('text/html; charset=utf-8'); epub=formats.get('application/epub+zip'); pdf=formats.get('application/pdf')
-            out.append({'source':'Project Gutenberg','title':clean(x.get('title','')),'url':html or f'https://www.gutenberg.org/ebooks/{x.get("id")}','snippet':'Public-domain book availability from Project Gutenberg.','year':None,'authors':[clean(a.get('name','')) for a in (x.get('authors') or [])],'download_url':epub or pdf or html or '','download_format':'epub' if epub else ('pdf' if pdf else 'html'),'source_type':'book'})
-        return out
-    except Exception as exc:
-        logger.warning('Gutenberg research failed: %s',exc); return []
-
-
-def _research_unified(query, limit_each=6):
-    q=_research_normalize_query(query)
-    if not q: return []
-    cache_key='unified:'+q.lower()
-    cached=_research_cache_get(cache_key)
-    if cached is not None: return cached
-    jobs=[research_web,research_google,research_wikipedia,research_openalex,research_crossref,research_local_documents,research_arxiv,research_youtube,research_news,research_images,research_openlibrary,research_internet_archive,research_gutenberg]
-    raw=[]
-    with ThreadPoolExecutor(max_workers=10) as pool:
-        futs=[pool.submit(fn,q,limit_each) for fn in jobs]
-        for f in as_completed(futs):
-            try: raw.extend(f.result() or [])
-            except Exception as exc: logger.warning('Unified research provider failed: %s',exc)
-    # Existing ranking logic is reused where possible; media/images/books are retained even if the strict academic gate would discard them.
-    normal=[x for x in raw if x.get('source_type') not in ('video','image','book','newspaper')]
-    special=[x for x in raw if x.get('source_type') in ('video','image','book','newspaper')]
-    ranked=_research_score_logic(_research_deduplicate(normal,q),q)
-    ranked=_research_relevance_gate(ranked,q) or ranked[:10]
-    special=_research_deduplicate(special,q)
-    result=(ranked+special)[:max(40,limit_each*6)]
-    return _research_cache_put(cache_key,result)
-
-
-def _research_workspace():
-    ws=session.get('koja_research_workspace') or []
-    return ws if isinstance(ws,list) else []
-
-
-def _research_save_history(query):
-    q=clean(query)
-    if not q: return
-    history=session.get('koja_research_history') or []
-    history=[h for h in history if h != q]
-    history.insert(0,q); session['koja_research_history']=history[:_RESEARCH_HISTORY_LIMIT]
-    session.modified=True
-
-
-@app.route('/research/unified')
-def research_unified():
-    q=_research_normalize_query(request.args.get('q',''))
-    kind=clean(request.args.get('kind','all')).lower() or 'all'
-    results=_research_unified(q) if q else []
-    if q: _research_save_history(q)
-    allowed={'all','web','academic','video','news','image','book','documents'}
-    if kind not in allowed: kind='all'
-    if kind!='all':
-        mapping={'academic':('openalex','crossref','arxiv'),'documents':('koja documents',),'web':('web','google search','wikipedia'),'video':('youtube',),'news':('news',),'image':('wikimedia commons',),'book':('open library','internet archive','project gutenberg')}
-        results=[r for r in results if str(r.get('source','')).lower() in mapping[kind]]
-    return render_page('KOJA Unified Research',r'''
-<style>.ur{max-width:1150px;margin:auto}.ur-search{display:flex;gap:10px}.ur-search input{flex:1}.ur-tabs{display:flex;gap:7px;overflow:auto;margin:14px 0}.ur-tabs a{white-space:nowrap}.ur-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.ur-card{overflow:hidden}.ur-img{width:100%;max-height:250px;object-fit:cover;border-radius:14px}.ur-video{width:100%;aspect-ratio:16/9;border:0;border-radius:14px}.ur-meta{font-size:.8rem;opacity:.7}.ur-actions{display:flex;gap:8px;flex-wrap:wrap}@media(max-width:700px){.ur-grid{grid-template-columns:1fr}.ur-search{flex-direction:column}}</style>
-<div class="ur"><div class="hero"><h1>KOJA Unified Research</h1><p>Search web, academic literature, books, videos, news, images and KOJA Documents from one place.</p><form class="ur-search" method="get"><input name="q" value="{{q}}" placeholder="Research anything…" autofocus><button class="btn">Search</button></form></div>
-{% if q %}<div class="ur-tabs">{% for k,n in [('all','All'),('web','Web'),('academic','Academic'),('book','Books'),('video','Videos'),('news','News'),('image','Images'),('documents','Documents')] %}<a class="btn secondary" href="{{url_for('research_unified',q=q,kind=k)}}">{{n}}</a>{% endfor %}</div>
-<div class="card"><strong>{{results|length}} results</strong> for “{{q}}” <span class="small"> · source retrieval is cached briefly for speed.</span></div>
-<div class="ur-grid">{% for r in results %}<div class="card ur-card"><span class="source-badge">{{r.source}}</span><h3>{{r.title}}</h3>{% if r.image_url %}<img class="ur-img" src="{{r.image_url}}" loading="lazy">{% endif %}{% if r.embed_url %}<iframe class="ur-video" src="{{r.embed_url}}" title="{{r.title}}" allowfullscreen loading="lazy"></iframe>{% endif %}<p class="ur-meta">{% if r.year %}{{r.year}} · {% endif %}{{r.channel or r.publisher or ''}}</p><p>{{r.snippet}}</p><div class="ur-actions">{% if r.url %}<a class="btn secondary" href="{{url_for('research_read',url=r.url)}}">Read in KOJA</a><a class="btn secondary" href="{{r.url}}" target="_blank" rel="noopener noreferrer">Original</a>{% endif %}{% if r.download_url %}<a class="btn" href="{{r.download_url}}" target="_blank" rel="noopener noreferrer">Download {{r.download_format|upper}}</a>{% endif %}<a class="btn secondary" href="{{url_for('research_workspace_add')}}?title={{r.title|urlencode}}&url={{r.url|urlencode}}&source={{r.source|urlencode}}">Save</a></div></div>{% else %}<div class="card"><h3>No results</h3><p>Try another query or source category.</p></div>{% endfor %}</div>{% else %}<div class="grid"><div class="card"><h3>Web</h3><p>General web discovery.</p></div><div class="card"><h3>Academic</h3><p>OpenAlex, Crossref and arXiv.</p></div><div class="card"><h3>Books</h3><p>Open Library, Internet Archive and Project Gutenberg.</p></div><div class="card"><h3>Media</h3><p>YouTube, news and Wikimedia images.</p></div></div>{% endif %}</div>
-''',q=q,kind=kind,results=results)
-
-
-@app.route('/research/workspace')
-@login_required
-def research_workspace():
-    return render_page('Research Workspace',r'''<div class="hero"><h1>Research Workspace</h1><p>Keep sources, notes and evidence together for your current research.</p></div><div class="card"><div class="actions"><a class="btn" href="{{url_for('research_unified')}}">Search</a><a class="btn secondary" href="{{url_for('research_notes')}}">Research Notes</a><a class="btn secondary" href="{{url_for('research_compare')}}">Compare</a></div></div>{% for r in items %}<div class="card"><span class="source-badge">{{r.source}}</span><h3>{{r.title}}</h3><p>{{r.url}}</p><a class="btn secondary" href="{{r.url}}" target="_blank" rel="noopener noreferrer">Open</a><a class="btn secondary" href="{{url_for('research_workspace_remove',idx=loop.index0)}}">Remove</a></div>{% else %}<div class="card"><p>Your workspace is empty. Save sources from Unified Research.</p></div>{% endfor %}''',items=_research_workspace())
-
-
-@app.route('/research/workspace/add')
-@login_required
-def research_workspace_add():
-    item={'title':clean(request.args.get('title'))[:300],'url':clean(request.args.get('url'))[:1200],'source':clean(request.args.get('source'))[:100]}
-    if item['title'] or item['url']:
-        ws=_research_workspace(); key=(item['url'] or item['title']).lower(); ws=[x for x in ws if (x.get('url') or x.get('title','')).lower()!=key]; ws.insert(0,item); session['koja_research_workspace']=ws[:100]; session.modified=True
-    return redirect(request.referrer or url_for('research_workspace'))
-
-
-@app.route('/research/workspace/remove/<int:idx>')
-@login_required
-def research_workspace_remove(idx):
-    ws=_research_workspace()
-    if 0<=idx<len(ws): ws.pop(idx); session['koja_research_workspace']=ws; session.modified=True
-    return redirect(url_for('research_workspace'))
-
-
-@app.route('/research/history')
-@login_required
-def research_history():
-    history=session.get('koja_research_history') or []
-    return render_page('Research History',r'''<div class="hero"><h1>Research History</h1><p>Your recent KOJA Research queries on this device/session.</p></div><div class="card">{% for q in history %}<p><a class="btn secondary" href="{{url_for('research_unified',q=q)}}">{{q}}</a></p>{% else %}<p>No research history yet.</p>{% endfor %}</div>''',history=history)
-
-
-@app.route('/research/related')
-def research_related():
-    q=_research_normalize_query(request.args.get('q',''))
-    terms=_research_topic_terms(q)
-    related=[]
-    if q:
-        related=[f'{q} definition',f'{q} examples',f'{q} causes and effects',f'{q} applications',f'{q} latest research']
-        if len(terms)>1: related += [f'{terms[0]} vs {terms[1]}',f'{q} evidence']
-    return jsonify({'query':q,'related':list(dict.fromkeys(related))[:8]})
-
-
-@app.route('/research/compare')
-@login_required
-def research_compare():
-    q1=_research_normalize_query(request.args.get('q1','')); q2=_research_normalize_query(request.args.get('q2',''))
-    a=_research_unified(q1)[:8] if q1 else []; b=_research_unified(q2)[:8] if q2 else []
-    return render_page('Research Comparison',r'''<div class="hero"><h1>Compare Research</h1><form class="grid"><input name="q1" value="{{q1}}" placeholder="First topic/source"><input name="q2" value="{{q2}}" placeholder="Second topic/source"><button class="btn">Compare</button></form></div>{% if q1 or q2 %}<div class="grid"><div class="card"><h2>{{q1 or 'First'}}</h2>{% for r in a %}<p><strong>{{r.title}}</strong><br>{{r.snippet}}</p>{% else %}<p>No evidence.</p>{% endfor %}</div><div class="card"><h2>{{q2 or 'Second'}}</h2>{% for r in b %}<p><strong>{{r.title}}</strong><br>{{r.snippet}}</p>{% else %}<p>No evidence.</p>{% endfor %}</div></div>{% endif %}''',q1=q1,q2=q2,a=a,b=b)
-
-
-@app.route('/research/export/docx')
-@login_required
-def research_export_docx():
-    q=_research_normalize_query(request.args.get('q','')); style=clean(request.args.get('style','apa')).lower() or 'apa'; results=_research_unified(q)[:20] if q else []
-    if DocxDocument is None: return jsonify(error='DOCX export is not available in this deployment.'),501
-    doc=DocxDocument(); doc.add_heading('KOJA Research',0); doc.add_paragraph(q)
-    summary=research_ai_summary(q,results) if q else ''
-    if summary: doc.add_heading('Research Answer',1); doc.add_paragraph(summary)
-    doc.add_heading('Sources',1)
-    for i,r in enumerate(results,1): doc.add_paragraph(f'[{i}] {r.get("title","Untitled")} — {r.get("source","")}\n{r.get("url","")}\n{r.get("snippet","")}')
-    stream=io.BytesIO(); doc.save(stream); stream.seek(0)
-    return send_file(stream,as_attachment=True,download_name='koja-research.docx',mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
-
-
-@app.route('/research/export/pdf')
-@login_required
-def research_export_pdf():
-    q=_research_normalize_query(request.args.get('q','')); results=_research_unified(q)[:20] if q else []
-    try:
-        from reportlab.lib.pagesizes import A4
-        from reportlab.platypus import SimpleDocTemplate,Paragraph,Spacer
-        from reportlab.lib.styles import getSampleStyleSheet
-    except Exception:
-        return jsonify(error='PDF export requires reportlab in requirements.txt.'),501
-    stream=io.BytesIO(); doc=SimpleDocTemplate(stream,pagesize=A4); styles=getSampleStyleSheet(); story=[Paragraph('KOJA Research',styles['Title']),Paragraph(q or 'Research',styles['Heading2']),Spacer(1,12)]
-    summary=research_ai_summary(q,results) if q else ''
-    if summary: story += [Paragraph('Research Answer',styles['Heading2']),Paragraph(clean(summary).replace('&','&amp;'),styles['BodyText']),Spacer(1,10)]
-    for i,r in enumerate(results,1): story += [Paragraph(f'[{i}] {clean(r.get("title","Untitled")).replace("&","&amp;")}',styles['Heading3']),Paragraph(clean(r.get('snippet','')).replace('&','&amp;'),styles['BodyText']),Spacer(1,8)]
-    doc.build(story); stream.seek(0); return send_file(stream,as_attachment=True,download_name='koja-research.pdf',mimetype='application/pdf')
-
-
-@app.route('/api/research/unified')
-def api_research_unified():
-    q=_research_normalize_query(request.args.get('q',''))
-    if not q: return jsonify(error='Enter a research query.'),400
-    results=_research_unified(q)
-    return jsonify({'ok':True,'query':q,'count':len(results),'results':results[:60]})
-
-
-@app.route('/api/research/related')
-def api_research_related():
-    q=_research_normalize_query(request.args.get('q',''))
-    if not q: return jsonify({'query':'','related':[]})
-    return jsonify({'query':q,'related':[f'{q} definition',f'{q} examples',f'{q} applications',f'{q} causes and effects',f'{q} latest research']})
 
 @app.route("/api/ai/status")
 @login_required
@@ -2836,13 +2511,13 @@ def services():
 <div class="service-section"><h3>Market, Business & Global Trade</h3><p>From creating a business to connecting with companies and handling international trade.</p></div>
 <div class="service-grid">
 <div class="service-card global"><h4>KOJA Business</h4><p>Business identity, organisation, CRM, workforce, procurement, finance, accounting, store and AI.</p><div class="service-links"><a class="btn" href="{{ url_for('koja_business') }}">Business</a><a class="btn secondary" href="{{ url_for('business_new') }}">Create Business</a></div></div>
-<div class="service-card global"><h4>Global Business</h4><p>Global operating workspace connecting B2B, commerce, services, finance, workforce, logistics and AI.</p><a class="btn secondary" href="{{ url_for('koja_business') }}">Open Business Workspace</a></div>
-<div class="service-card global"><h4>Business Connect</h4><p>Connect businesses by KOJA Business Code for B2B relationships, communication, sourcing and collaboration.</p><a class="btn secondary" href="{{ url_for('koja_business') }}">Open Business</a></div>
+<div class="service-card global"><h4>Global Business</h4><p>Global operating workspace connecting B2B, commerce, services, finance, workforce, logistics and AI.</p><a class="btn secondary" href="{{ url_for('business_workspace_select') }}">Open Business Workspace</a></div>
+<div class="service-card global"><h4>Business Connect</h4><p>Connect businesses by KOJA Business Code for B2B relationships, communication, sourcing and collaboration.</p><a class="btn secondary" href="{{ url_for('business_connect_workspace') }}">Open Business Connect</a></div>
 <div class="service-card"><h4>KOJA Market</h4><p>Physical and digital commerce with seller tools, payments and delivery workflows.</p><div class="service-links"><a class="btn" href="{{ url_for('koja_market') }}">KOJA Market</a><a class="btn secondary" href="{{ url_for('marketplace') }}">Digital Market</a></div></div>
-<div class="service-card trade"><h4>Import & Export</h4><p>International orders, commercial documents, customs declarations, duties, taxes, brokers, freight and clearance.</p><a class="btn secondary" href="{{ url_for('koja_business') }}">Open Global Business</a></div>
-<div class="service-card trade"><h4>Customs & Clearance</h4><p>Country and product-specific customs workflow with HS classification, permits, inspection, release and clearance tracking.</p><a class="btn secondary" href="{{ url_for('koja_business') }}">Open Trade Workspace</a></div>
-<div class="service-card trade"><h4>International Trade</h4><p>Suppliers, procurement, quotations, contracts, trade documents and cross-border fulfilment.</p><a class="btn secondary" href="{{ url_for('koja_business') }}">Open B2B Workspace</a></div>
-<div class="service-card"><h4>Finance, Payments & Payouts</h4><p>Business accounting, transaction workflows, settlement and payout requests.</p><div class="service-links"><a class="btn secondary" href="{{ url_for('koja_business') }}">Business Finance</a></div></div>
+<div class="service-card trade"><h4>Import & Export</h4><p>International orders, commercial documents, customs declarations, duties, taxes, brokers, freight and clearance.</p><a class="btn secondary" href="{{ url_for('business_trade_workspace') }}">Open Import & Export</a></div>
+<div class="service-card trade"><h4>Customs & Clearance</h4><p>Country and product-specific customs workflow with HS classification, permits, inspection, release and clearance tracking.</p><a class="btn secondary" href="{{ url_for('business_customs_workspace') }}">Open Customs & Clearance</a></div>
+<div class="service-card trade"><h4>International Trade</h4><p>Suppliers, procurement, quotations, contracts, trade documents and cross-border fulfilment.</p><a class="btn secondary" href="{{ url_for('business_procurement_workspace') }}">Open International Trade</a></div>
+<div class="service-card"><h4>Finance, Payments & Payouts</h4><p>Business accounting, transaction workflows, settlement and payout requests.</p><div class="service-links"><a class="btn secondary" href="{{ url_for('business_finance_workspace') }}">Business Finance</a></div></div>
 </div>
 
 <div class="service-section"><h3>Delivery, Freight & Logistics</h3><p>Domestic and international fulfilment can continue through the same KOJA logistics foundation.</p></div>
@@ -9022,6 +8697,97 @@ def business_accounting_v2(business_id):
     accounts=db_select('koja_business_bi_account_balances',{'business_id':business_id},order='account_code.asc',limit=100) or []
     summary=first_row('koja_business_bi_accounting_summary',{'business_id':business_id}) or {}
     return render_page('Business Accounting V2',r"""<div class="hero"><h1>Accounting</h1><p>{{ b.name }} — connected double-entry ledger.</p><div class="actions"><a class="btn secondary" href="{{ url_for('business_dashboard',business_id=b.id) }}">Business Dashboard</a><a class="btn secondary" href="{{ url_for('business_intelligence_v3',business_id=b.id) }}">AI Intelligence</a></div></div><div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(summary.accounting_revenue or 0,'ZMW') }}</h2></div><div class="card"><h3>Expenses</h3><h2>{{ money(summary.accounting_expenses or 0,'ZMW') }}</h2></div><div class="card"><h3>Net Result</h3><h2>{{ money(summary.accounting_net_result or 0,'ZMW') }}</h2></div><div class="card"><h3>Transactions</h3><h2>{{ summary.transaction_count or 0 }}</h2></div></div><div class="card"><h2>Record Transaction</h2><form method="post"><label>Type</label><select name="kind"><option value="sale">Sale / Income</option><option value="expense">Expense</option></select><label>Description</label><input name="description" required><label>Amount (ZMW)</label><input name="amount" type="number" min="0" step="0.01" required><label>Payment Method</label><select name="payment_method"><option value="cash">Cash</option><option value="bank">Bank</option><option value="mobile_money">Mobile Money</option></select><label>Expense Category</label><select name="category"><option value="other">Other</option><option value="rent">Rent</option><option value="salary">Salary</option><option value="transport">Transport</option><option value="marketing">Marketing</option><option value="utilities">Utilities</option><option value="tax">Tax</option></select><button class="btn">Save & Post to Ledger</button></form></div><div class="card"><h2>Chart of Accounts</h2><table><tr><th>Code</th><th>Account</th><th>Type</th><th>Balance</th></tr>{% for a in accounts %}<tr><td>{{ a.account_code }}</td><td>{{ a.account_name }}</td><td>{{ a.account_type }}</td><td>{{ money(a.balance or 0,'ZMW') }}</td></tr>{% else %}<tr><td colspan="4">No accounts.</td></tr>{% endfor %}</table></div><div class="card"><h2>Recent Ledger Transactions</h2><table><tr><th>Date</th><th>Type</th><th>Description</th><th>Amount</th><th>Status</th></tr>{% for x in txs %}<tr><td>{{ x.transaction_date }}</td><td>{{ x.transaction_type }}</td><td>{{ x.description }}</td><td>{{ money(x.total_amount or 0,'ZMW') }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="5">No accounting transactions yet.</td></tr>{% endfor %}</table></div>""",b=b,summary=summary,accounts=accounts,txs=txs,money=market_money)
+
+# ---------------- KOJA BUSINESS WORKSPACES V2 ----------------
+# Distinct operational entry points into the same Business identity/data.
+
+def _workspace_businesses():
+    uid=(current_user() or {}).get('id')
+    return db_select('koja_businesses',{'owner_id':uid},order='created_at.desc',limit=100) or []
+
+def _workspace_pick(endpoint,title,description):
+    businesses=_workspace_businesses()
+    if len(businesses)==1:
+        return redirect(url_for(endpoint,business_id=businesses[0].get('id')))
+    return render_page(title,"""<div class="hero"><h1>{{ title }}</h1><p>{{ description }}</p></div><div class="grid">{% for b in businesses %}<div class="card"><h2>{{ b.name }}</h2><p>{{ b.category }} · {{ b.location or 'Location not set' }}</p><a class="btn" href="{{ url_for(endpoint,business_id=b.id) }}">Open Workspace</a></div>{% else %}<div class="card"><p>Create a business first.</p><a class="btn" href="{{ url_for('business_new') }}">Create Business</a></div>{% endfor %}</div>""",title=title,description=description,businesses=businesses,endpoint=endpoint)
+
+@app.route('/business/workspace')
+@login_required
+def business_workspace_select():
+    return _workspace_pick('business_global_workspace','Global Business','Company command centre: organisation, performance, operations and connected business services.')
+
+@app.route('/business/<business_id>/workspace')
+@login_required
+def business_global_workspace(business_id):
+    b=_biz_owner(business_id)
+    if not b: abort(404)
+    sales=db_select('koja_business_sales',{'business_id':business_id},limit=1000) or []
+    expenses=db_select('koja_business_expenses',{'business_id':business_id},limit=1000) or []
+    return render_page('Global Business Workspace',"""<div class="hero"><h1>{{ b.name }} · Global Business</h1><p>Central command centre for the business. Operational modules remain separate and share the same business records.</p></div><div class="grid"><div class="stat"><div class="small">Revenue</div><div class="big">{{ money(revenue,'ZMW') }}</div></div><div class="stat"><div class="small">Expenses</div><div class="big">{{ money(costs,'ZMW') }}</div></div><div class="stat"><div class="small">Operating result</div><div class="big">{{ money(revenue-costs,'ZMW') }}</div></div></div><div class="card"><h2>Business Operations</h2><div class="actions"><a class="btn" href="{{ url_for('business_customers',business_id=b.id) }}">CRM</a><a class="btn" href="{{ url_for('business_employees',business_id=b.id) }}">Workforce</a><a class="btn" href="{{ url_for('business_procurement_workspace',business_id=b.id) }}">Procurement</a><a class="btn" href="{{ url_for('business_finance_workspace',business_id=b.id) }}">Finance</a><a class="btn" href="{{ url_for('business_accounting_v2',business_id=b.id) }}">Accounting</a><a class="btn" href="{{ url_for('business_store',business_id=b.id) }}">Store</a><a class="btn" href="{{ url_for('business_ai',business_id=b.id) }}">AI</a></div></div><div class="card"><h2>Trade & Supply Chain</h2><div class="actions"><a class="btn secondary" href="{{ url_for('business_trade_workspace',business_id=b.id) }}">Import & Export</a><a class="btn secondary" href="{{ url_for('business_customs_workspace',business_id=b.id) }}">Customs</a><a class="btn secondary" href="{{ url_for('business_connect_workspace',business_id=b.id) }}">Business Connect</a><a class="btn secondary" href="{{ url_for('b2bv4_centre',business_id=b.id) }}">B2B / International Trade</a><a class="btn secondary" href="{{ url_for('business_delivery',business_id=b.id) }}">Delivery</a></div></div>""",b=b,revenue=sum(_money_num(x.get('total_amount')) for x in sales),costs=sum(_money_num(x.get('amount')) for x in expenses),money=market_money)
+
+@app.route('/business/connect')
+@login_required
+def business_connect_workspace():
+    return _workspace_pick('business_connect','Business Connect','Connect businesses by KOJA Business Code for B2B relationships, sourcing and collaboration.')
+
+@app.route('/business/<business_id>/connect')
+@login_required
+def business_connect(business_id):
+    b=_biz_owner(business_id)
+    if not b: abort(404)
+    return redirect(url_for('b2bv4_centre',business_id=business_id))
+
+@app.route('/business/procurement')
+@login_required
+def business_procurement_workspace():
+    return _workspace_pick('business_procurement','Procurement','Manage suppliers, sourcing requests, quotations, approvals and purchase transactions.')
+
+@app.route('/business/<business_id>/procurement')
+@login_required
+def business_procurement(business_id):
+    b=_biz_owner(business_id)
+    if not b: abort(404)
+    suppliers=db_select('koja_business_suppliers',{'business_id':business_id},limit=300) or []
+    return render_page('Business Procurement',"""<div class="hero"><h1>{{ b.name }} · Procurement</h1><p>Supplier and purchasing workspace.</p><div class="actions"><a class="btn" href="{{ url_for('business_suppliers',business_id=b.id) }}">Suppliers</a><a class="btn secondary" href="{{ url_for('b2bv4_centre',business_id=b.id) }}">RFQ / B2B Purchasing</a></div></div><div class="card"><h2>Suppliers</h2><p>{{ suppliers|length }} supplier records connected to this business.</p></div>""",b=b,suppliers=suppliers)
+
+@app.route('/business/finance')
+@login_required
+def business_finance_workspace():
+    return _workspace_pick('business_finance','Business Finance','Manage cash transactions, invoices, payments, settlements and payout workflows.')
+
+@app.route('/business/<business_id>/finance')
+@login_required
+def business_finance(business_id):
+    b=_biz_owner(business_id)
+    if not b: abort(404)
+    sales=db_select('koja_business_sales',{'business_id':business_id},limit=1000) or []
+    expenses=db_select('koja_business_expenses',{'business_id':business_id},limit=1000) or []
+    return render_page('Business Finance',"""<div class="hero"><h1>{{ b.name }} · Finance</h1><p>Money movement and settlement workspace.</p><div class="actions"><a class="btn" href="{{ url_for('business_invoices',business_id=b.id) }}">Invoices</a><a class="btn secondary" href="{{ url_for('business_payments',business_id=b.id) }}">Payments</a><a class="btn secondary" href="{{ url_for('business_accounting_v2',business_id=b.id) }}">Accounting</a></div></div><div class="grid"><div class="stat"><div class="small">Sales</div><div class="big">{{ money(revenue,'ZMW') }}</div></div><div class="stat"><div class="small">Expenses</div><div class="big">{{ money(costs,'ZMW') }}</div></div><div class="stat"><div class="small">Net operating result</div><div class="big">{{ money(revenue-costs,'ZMW') }}</div></div></div>""",b=b,revenue=sum(_money_num(x.get('total_amount')) for x in sales),costs=sum(_money_num(x.get('amount')) for x in expenses),money=market_money)
+
+@app.route('/business/trade')
+@login_required
+def business_trade_workspace():
+    return _workspace_pick('business_trade','International Trade','Cross-border procurement, commercial documents, contracts and fulfilment.')
+
+@app.route('/business/<business_id>/trade')
+@login_required
+def business_trade(business_id):
+    b=_biz_owner(business_id)
+    if not b: abort(404)
+    return redirect(url_for('global_import_export',business_id=business_id))
+
+@app.route('/business/customs')
+@login_required
+def business_customs_workspace():
+    return _workspace_pick('business_customs','Customs & Clearance','HS classification, declarations, duties, permits, inspection, release and clearance tracking.')
+
+@app.route('/business/<business_id>/customs')
+@login_required
+def business_customs(business_id):
+    b=_biz_owner(business_id)
+    if not b: abort(404)
+    return redirect(url_for('global_import_export',business_id=business_id))
+
 
 if __name__=="__main__":
     port=int(os.getenv("PORT","5000"))
