@@ -900,6 +900,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90
 <a role="menuitem" href="{{ url_for('public_feed') }}">Public</a>
 <a role="menuitem" href="{{ url_for('news_nextgen') }}">News</a>
 <a role="menuitem" href="{{ url_for('media_nextgen') }}">Media</a>
+<a role="menuitem" href="{{ url_for('media_creator_studio') }}">Media Creator Studio</a>
 <a role="menuitem" href="{{ url_for('public_videos') }}">Videos</a>
 <a role="menuitem" href="{{ url_for('marketplace') }}">Digital Marketplace</a>
 <a role="menuitem" href="{{ url_for('connect') }}">Communication</a>
@@ -7763,6 +7764,50 @@ def news_nextgen():
 ''',posts=rows)
 
 
+
+
+# ---------------- KOJA MEDIA CREATOR + EARNINGS ----------------
+# Additive media monetization layer. Existing Public/Media/Market systems remain intact.
+
+def _media_creator_id():
+    return (current_user() or {}).get('id')
+
+@app.route('/media/creator')
+@login_required
+def media_creator_studio():
+    uid=_media_creator_id()
+    posts=db_select('koja_public_posts',{'author_id':uid},order='created_at.desc',limit=200) or []
+    posts=[p for p in posts if p.get('media_url')]
+    events=db_select('koja_media_events',{'user_id':uid},order='created_at.desc',limit=1000) or []
+    owned={str(p.get('id')) for p in posts}
+    own_events=[e for e in events if str(e.get('post_id')) in owned]
+    plays=sum(1 for e in own_events if e.get('event_type') in {'play','impression'})
+    completions=sum(1 for e in own_events if e.get('event_type')=='complete')
+    shares=sum(1 for e in own_events if e.get('event_type')=='share')
+    earnings=db_select('koja_media_earnings',{'creator_id':uid},order='created_at.desc',limit=500) or []
+    gross=sum(float(x.get('gross_amount') or 0) for x in earnings)
+    net=sum(float(x.get('creator_amount') or x.get('net_amount') or 0) for x in earnings)
+    pending=sum(float(x.get('creator_amount') or x.get('net_amount') or 0) for x in earnings if (x.get('status') or '').lower() in {'pending','approved'})
+    paid=sum(float(x.get('creator_amount') or x.get('net_amount') or 0) for x in earnings if (x.get('status') or '').lower()=='paid')
+    return render_page('KOJA Media Creator Studio',r'''<style>.media-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}.media-stat{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:18px}.media-stat strong{display:block;font-size:28px;margin-top:5px}.media-studio-grid{display:grid;grid-template-columns:1.2fr .8fr;gap:16px}.media-list{width:100%;border-collapse:collapse}.media-list th,.media-list td{padding:10px;border-bottom:1px solid var(--border);text-align:left}@media(max-width:800px){.media-stats{grid-template-columns:repeat(2,1fr)}.media-studio-grid{grid-template-columns:1fr}}</style>
+<div class="hero"><h1>KOJA Media Creator Studio</h1><p>Manage media content, audience activity and monetization from one creator workspace.</p><div class="actions"><a class="btn" href="{{ url_for('media_nextgen') }}">Open Media</a><a class="btn secondary" href="{{ url_for('media_earnings') }}">Earnings</a><a class="btn secondary" href="{{ url_for('public_feed') }}">Public</a></div></div>
+<div class="media-stats"><div class="media-stat"><span>Media posts</span><strong>{{ posts|length }}</strong></div><div class="media-stat"><span>Plays / impressions</span><strong>{{ plays }}</strong></div><div class="media-stat"><span>Completions</span><strong>{{ completions }}</strong></div><div class="media-stat"><span>Shares</span><strong>{{ shares }}</strong></div></div>
+<div class="media-studio-grid" style="margin-top:16px"><div class="card"><h2>My Media</h2><table class="media-list"><tr><th>Title</th><th>Type</th><th>Status</th></tr>{% for p in posts %}<tr><td>{{ p.title or 'Untitled media' }}</td><td>{{ p.media_type or 'media' }}</td><td>{{ 'Published' if p.is_published else 'Draft' }}</td></tr>{% else %}<tr><td colspan="3">No media content yet.</td></tr>{% endfor %}</table></div><div class="card"><h2>Earnings overview</h2><p><strong>Gross:</strong> {{ money(gross,'ZMW') }}</p><p><strong>Creator earnings:</strong> {{ money(net,'ZMW') }}</p><p><strong>Pending:</strong> {{ money(pending,'ZMW') }}</p><p><strong>Paid:</strong> {{ money(paid,'ZMW') }}</p><p class="small">Actual earnings are created by KOJA's settlement/payment layer; views alone do not automatically create money.</p><a class="btn" href="{{ url_for('media_earnings') }}">Open Earnings Ledger</a></div></div>''',posts=posts,plays=plays,completions=completions,shares=shares,gross=gross,net=net,pending=pending,paid=paid,money=market_money)
+
+@app.route('/media/earnings')
+@login_required
+def media_earnings():
+    uid=_media_creator_id()
+    rows=db_select('koja_media_earnings',{'creator_id':uid},order='created_at.desc',limit=500) or []
+    gross=sum(float(x.get('gross_amount') or 0) for x in rows)
+    fees=sum(float(x.get('platform_fee') or 0) for x in rows)
+    creator=sum(float(x.get('creator_amount') or x.get('net_amount') or 0) for x in rows)
+    pending=sum(float(x.get('creator_amount') or x.get('net_amount') or 0) for x in rows if (x.get('status') or '').lower() in {'pending','approved'})
+    paid=sum(float(x.get('creator_amount') or x.get('net_amount') or 0) for x in rows if (x.get('status') or '').lower()=='paid')
+    return render_page('KOJA Media Earnings',r'''<div class="hero"><h1>KOJA Media Earnings</h1><p>One creator ledger for eligible streaming, advertising, premium content, rentals, purchases and other licensed media revenue.</p><div class="actions"><a class="btn" href="{{ url_for('media_creator_studio') }}">Creator Studio</a><a class="btn secondary" href="{{ url_for('media_nextgen') }}">Media</a></div></div>
+<div class="grid"><div class="card"><h3>Gross revenue</h3><h2>{{ money(gross,'ZMW') }}</h2></div><div class="card"><h3>KOJA fees</h3><h2>{{ money(fees,'ZMW') }}</h2></div><div class="card"><h3>Creator earnings</h3><h2>{{ money(creator,'ZMW') }}</h2></div><div class="card"><h3>Paid</h3><h2>{{ money(paid,'ZMW') }}</h2></div></div>
+<div class="card" style="margin-top:16px"><h2>Revenue ledger</h2><table><tr><th>Date</th><th>Content</th><th>Source</th><th>Gross</th><th>Creator</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{ x.created_at }}</td><td>{{ x.content_title or x.post_id or 'Media content' }}</td><td>{{ x.revenue_source or 'Media' }}</td><td>{{ money(x.gross_amount,'ZMW') }}</td><td>{{ money(x.creator_amount or x.net_amount,'ZMW') }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="6">No media earnings yet. Eligible revenue will appear here after a KOJA settlement is recorded.</td></tr>{% endfor %}</table></div>
+<div class="card"><h3>Monetization channels</h3><p>Advertising · Premium subscriptions · Rentals · Purchases · Licensed downloads · Live events · Tips · Sponsorships.</p><p class="small">KOJA only settles content for which the creator/rights holder has the required distribution and monetization rights.</p></div>''',rows=rows,gross=gross,fees=fees,creator=creator,pending=pending,paid=paid,money=market_money)
 
 # ERROR HANDLERS
 # ============================================================
