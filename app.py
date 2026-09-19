@@ -7722,34 +7722,77 @@ def public_videos():
 
 @app.route('/media-next')
 def media_nextgen():
-    rows=db_select('koja_public_posts',{'is_published':'eq.true'},order='created_at.desc',limit=100) or []
-    items=[]
-    for p in rows:
-        if not p.get('media_url'): continue
-        items.append(p)
+    rows=[]
+    for table in ('koja_media_library','koja_media'):
+        try:
+            rows=db_select(table,{},order='created_at.desc',limit=200) or []
+            if rows: break
+        except Exception: rows=[]
+    published=[p for p in rows if str(p.get('status') or p.get('publication_status') or '').lower() not in ('draft','rejected','archived','deleted') and p.get('is_published') is not False]
+    cats={}
+    for p in published:
+        typ=str(p.get('media_type') or p.get('type') or '').lower()
+        cats.setdefault(typ,[]).append(p)
     return render_page('KOJA Media',r'''
-<style>.media-feed{height:calc(100vh - 150px);min-height:540px;overflow-y:auto;scroll-snap-type:y mandatory;background:#05070a;border-radius:22px}.media-card{height:100%;min-height:540px;position:relative;scroll-snap-align:start;display:grid;place-items:center;background:#05070a}.media-card img,.media-card video{width:100%;height:100%;object-fit:contain;max-height:calc(100vh - 150px)}.media-overlay{position:absolute;left:18px;right:18px;bottom:18px;color:#fff;text-shadow:0 2px 8px #000;z-index:2}.media-actions{position:absolute;right:16px;bottom:110px;display:flex;flex-direction:column;gap:9px;z-index:3}.media-actions button{width:50px;height:50px;border-radius:50%;padding:0;margin:0;background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.2)}.media-empty{padding:70px;text-align:center;color:#fff}
+<style>
+.media-nav{display:flex;gap:8px;overflow:auto;padding:10px 0}.media-nav a{white-space:nowrap}
+.media-hero{padding:30px;border-radius:22px;background:linear-gradient(120deg,#080b12,#17263d);color:#fff;margin-bottom:18px}
+.media-row{margin:24px 0}.media-grid{display:flex;gap:14px;overflow-x:auto;padding-bottom:8px}.media-card{min-width:170px;max-width:190px;background:var(--surface);border:1px solid var(--border);border-radius:14px;overflow:hidden}.media-card img{width:100%;aspect-ratio:2/3;object-fit:cover;background:#05070a}.media-card .mc{padding:10px}.media-card h4{margin:0 0 5px}.empty{padding:55px 20px;text-align:center}
 </style>
-<div class="hero"><h2>◉ KOJA Media</h2><p>Immersive media discovery with adaptive interaction, sharing and watch analytics.</p></div>
-<div class="media-feed" id="mediaFeed">{% for p in items %}<article class="media-card" data-id="{{ p.id }}" data-seen="0">{% if p.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=p.id) }}" playsinline muted loop preload="metadata"></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="KOJA media">{% endif %}<div class="media-actions"><button onclick="likeMedia('{{ p.id }}')"></button><button onclick="shareMedia('{{ p.id }}')">↗</button><button onclick="copyMedia('{{ p.id }}')">⧉</button></div><div class="media-overlay"><strong>{{ p.title or 'KOJA Media' }}</strong><div>{{ p.body[:220] }}</div><div class="small" style="color:#ddd">{{ p.post_type|title }} · {{ p.created_at }}</div></div></article>{% else %}<div class="media-empty"><h2>No media yet</h2><p>Publish a photo or video to start the KOJA media experience.</p></div>{% endfor %}</div>
-<script>
-const feed=document.getElementById('mediaFeed');const io=new IntersectionObserver(es=>es.forEach(e=>{let v=e.target.querySelector('video');if(e.isIntersecting){if(v)v.play().catch(()=>{});if(e.target.dataset.seen==='0'){e.target.dataset.seen='1';track(e.target.dataset.id,'impression',0,0)}}else if(v)v.pause()}),{root:feed,threshold:.65});document.querySelectorAll('.media-card').forEach(x=>io.observe(x));
-function track(id,type,w,c){fetch('/api/nextgen/media-event',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({post_id:id,event_type:type,watch_seconds:w,completion_percent:c})}).catch(()=>{})}
-async function likeMedia(id){await fetch('/public/like/'+id,{method:'POST'});}
-function shareMedia(id){let u=location.origin+'/public#post-'+id;if(navigator.share)navigator.share({title:'KOJA Media',url:u});else navigator.clipboard?.writeText(u)}
-function copyMedia(id){let u=location.origin+'/public#post-'+id;navigator.clipboard?.writeText(u);}
-</script>
-''',items=items)
+<div class="media-hero"><h2>KOJA Media</h2><p>Movies, series, music, podcasts, African content and KOJA Originals.</p><div class="actions"><a class="btn" href="{{ url_for('media_studio') }}">Media Studio</a><a class="btn secondary" href="#my-list">My List</a></div></div>
+<div class="media-nav"><a class="btn secondary" href="#featured">Featured</a><a class="btn secondary" href="#movies">Movies</a><a class="btn secondary" href="#series">Series</a><a class="btn secondary" href="#music">Music</a><a class="btn secondary" href="#podcasts">Podcasts</a><a class="btn secondary" href="#african">African Content</a><a class="btn secondary" href="#originals">KOJA Originals</a></div>
+{% macro row(title,key) %}<section class="media-row" id="{{ key }}"><h3>{{ title }}</h3><div class="media-grid">{% for p in cats.get(key,[]) %}<a class="media-card" href="{{ url_for('media_watch',media_id=p.get('id')) }}">{% if p.get('thumbnail_url') %}<img src="{{ p.get('thumbnail_url') }}" loading="lazy" alt="">{% elif p.get('poster_url') %}<img src="{{ p.get('poster_url') }}" loading="lazy" alt="">{% else %}<div style="aspect-ratio:2/3;display:grid;place-items:center;background:#111;color:#aaa">KOJA MEDIA</div>{% endif %}<div class="mc"><h4>{{ p.get('title') or p.get('name') or 'Untitled' }}</h4><p class="small">{{ p.get('genre') or p.get('access_type') or 'KOJA Media' }}</p></div></a>{% else %}<div class="card empty">No {{ title|lower }} yet.</div>{% endfor %}</div></section>{% endmacro %}
+{{ row('Featured','featured') }}{{ row('Trending','trending') }}{{ row('Movies','movies') }}{{ row('Series','series') }}{{ row('Music','music') }}{{ row('Podcasts','podcasts') }}{{ row('African Content','african') }}{{ row('KOJA Originals','originals') }}{{ row('Recommended for You','recommended') }}
+<div id="my-list"></div>
+{% if not published %}<div class="card empty"><h2>Your Media Library is empty</h2><p>Published entertainment content will appear here as Netflix-style cards.</p><a class="btn" href="{{ url_for('media_studio') }}">Open Media Studio</a></div>{% endif %}
+''',cats=cats,user=current_user())
 
-@app.route('/api/nextgen/media-event',methods=['POST'])
-def nextgen_media_event():
-    d=request.get_json(silent=True) or {}; pid=clean(d.get('post_id')); et=clean(d.get('event_type'))
-    allowed={'impression','play','pause','25_percent','50_percent','75_percent','complete','share'}
-    if not pid or et not in allowed:return jsonify(error='Invalid event'),400
-    sid=request.cookies.get('koja_media_session') or uuid.uuid4().hex
-    uid=(current_user() or {}).get('id')
-    db_insert('koja_media_events',{'post_id':pid,'user_id':uid,'session_id':sid,'event_type':et,'watch_seconds':float(d.get('watch_seconds') or 0),'completion_percent':float(d.get('completion_percent') or 0),'created_at':utc_now()})
-    resp=jsonify(ok=True);resp.set_cookie('koja_media_session',sid,max_age=60*60*24*30,httponly=True,samesite='Lax');return resp
+@app.route('/media/studio')
+@login_required
+def media_studio():
+    rows=[]
+    for table in ('koja_media_library','koja_media'):
+        try:
+            rows=db_select(table,{'owner_id':current_user().get('id')},order='created_at.desc',limit=200) or []
+            if rows or table=='koja_media': break
+        except Exception: rows=[]
+    return render_page('KOJA Media Creator Studio',r'''
+<div class="hero"><h2>KOJA Media Creator Studio</h2><p>Upload, manage rights, publish and track entertainment content.</p><div class="actions"><a class="btn" href="{{ url_for('media_nextgen') }}">Open KOJA Media</a></div></div>
+<div class="grid"><div class="stat"><div class="big">K0.00</div>Confirmed earnings</div><div class="stat"><div class="big">K0.00</div>Pending earnings</div></div>
+<div class="card"><h3>Upload Media</h3><form method="post" action="{{ url_for('media_studio_upload') }}" enctype="multipart/form-data"><label>Title</label><input name="title" required><label>Description</label><textarea name="description"></textarea><label>Type</label><select name="media_type"><option value="movies">Movie</option><option value="series">Series</option><option value="music">Music</option><option value="podcasts">Podcast</option><option value="originals">KOJA Original</option></select><label>Genre</label><input name="genre"><label>Monetization</label><select name="access_type"><option value="free">Free</option><option value="premium">Premium</option><option value="rent">Rent</option><option value="purchase">Purchase</option></select><label>Price (ZMW)</label><input type="number" step="0.01" name="price_zmw" value="0"><label>Rights owner</label><input name="rights_owner"><label>Licence</label><input name="licence"><label>Territory</label><input name="territory" value="Zambia"><label><input type="checkbox" name="allow_downloads"> Allow downloads where permitted</label><label>Media file</label><input type="file" name="media" required><button type="submit">Upload Media</button></form></div>
+<div class="card"><h3>My Content</h3><table><tr><th>Title</th><th>Type</th><th>Access</th><th>Status</th></tr>{% for p in rows %}<tr><td>{{ p.get('title') or p.get('name') }}</td><td>{{ p.get('media_type') or p.get('type') }}</td><td>{{ p.get('access_type') or 'free' }}</td><td>{{ p.get('status') or ('Published' if p.get('is_published') else 'Draft') }}</td></tr>{% else %}<tr><td colspan="4">No media yet.</td></tr>{% endfor %}</table></div>
+''',rows=rows)
+
+@app.route('/media/studio/upload',methods=['POST'])
+@login_required
+def media_studio_upload():
+    f=request.files.get('media')
+    if not f or not f.filename: flash('Select a media file.','danger'); return redirect(url_for('media_studio'))
+    uploaded,err=upload_storage(f,'media-studio',public=False)
+    if err: flash('Media upload failed: '+str(err)[:300],'danger'); return redirect(url_for('media_studio'))
+    payload={'id':str(uuid.uuid4()),'owner_id':current_user().get('id'),'title':clean(request.form.get('title')),'description':clean(request.form.get('description')),'media_type':clean(request.form.get('media_type')).lower() or 'movies','genre':clean(request.form.get('genre')),'access_type':clean(request.form.get('access_type')).lower() or 'free','price_zmw':request.form.get('price_zmw') or 0,'rights_owner':clean(request.form.get('rights_owner')),'licence':clean(request.form.get('licence')),'territory':clean(request.form.get('territory')) or 'Zambia','allow_downloads':bool(request.form.get('allow_downloads')),'storage_path':(uploaded or {}).get('path'),'status':'published','is_published':True,'created_at':utc_now()}
+    err2=None
+    try: _,err2=db_insert('koja_media_library',payload)
+    except Exception as exc: err2=str(exc)
+    if err2:
+        try: _,err2=db_insert('koja_media',payload)
+        except Exception as exc: err2=str(exc)
+    if err2: delete_storage_path((uploaded or {}).get('path')); flash('Could not save Media record: '+str(err2)[:300],'danger')
+    else: flash('Media published to KOJA Media.','success')
+    return redirect(url_for('media_studio'))
+
+@app.route('/media/watch/<media_id>')
+def media_watch(media_id):
+    p=None
+    for table in ('koja_media_library','koja_media'):
+        try:
+            p=first_row(table,{'id':media_id})
+            if p: break
+        except Exception: pass
+    if not p or p.get('is_published') is False: abort(404)
+    path=_storage_path_from_value(p.get('storage_path') or p.get('file_path') or p.get('media_url') or p.get('file_url'))
+    if not path: abort(404)
+    return redirect(sb_storage_url(path),code=302)
 
 @app.route('/news-next')
 def news_nextgen():
