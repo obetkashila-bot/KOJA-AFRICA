@@ -1,12 +1,3 @@
-KOJA Media URL Resolution Fix — 2026-09-19
-
-Purpose:
-- Fixes /media/watch/public-feed/... 404s caused by treating Supabase Storage paths as Flask watch-route IDs.
-- Resolves both /media/watch/<post_id> and legacy /media/watch/<storage-path> references.
-- Playback source is always /public/media/<post_id> for published media.
-- Preserves the existing KOJA Media/Studio application and modules.
-
-Deploy:
-1. Replace the production app.py with this app.py.
-2. Keep the existing requirements.txt and Render start command: gunicorn app:app.
-3. No SQL migration is required for this URL-resolution fix.
+KOJA MEDIA CARDS FIX - 2026-09-19
+Netflix/MovieBox-style horizontal media rows, featured hero, Continue Watching, Trending, Movies, Series, News, Events and Latest Media. Cards open the dedicated KOJA player at /media/watch/<post_id> and use /public/media/<post_id> for playback. Existing KOJA modules are preserved. No SQL migration required.
+Gunicorn: gunicorn app:app
