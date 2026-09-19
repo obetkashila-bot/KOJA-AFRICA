@@ -7720,15 +7720,33 @@ def public_videos():
         if mt=='video': items.append(p)
     return render_page('KOJA Videos',r'''<style>.videos-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px}.video-card{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:12px}.video-card video{display:block;width:100%;aspect-ratio:16/9;object-fit:contain;background:#000;border-radius:12px}.video-card h3{margin:10px 0 6px}.video-card p{white-space:pre-wrap}.empty{padding:60px 20px;text-align:center}</style><div class="hero"><h2> KOJA Videos</h2><p>Public videos are visible to everyone. Tap play to watch.</p></div><div class="videos-grid">{% for p in items %}<article class="video-card"><video controls playsinline preload="metadata"><source src="{{ url_for('public_feed_media',post_id=p.id) }}"></video>{% if p.title %}<h3>{{ p.title }}</h3>{% endif %}<p>{{ p.body }}</p><div class="small">{{ p.created_at }}</div></article>{% else %}<div class="card empty"><h2>No public videos yet</h2><p>Published KOJA videos will appear here.</p></div>{% endfor %}</div>''',items=items)
 
+@app.route('/media/watch/<post_id>')
+def media_watch(post_id):
+    p=first_row('koja_public_posts',{'id':post_id})
+    if not p or str(p.get('is_published')).lower()!='true' or not p.get('media_url'):
+        return render_page('KOJA Media','<div class="card"><h2>Media unavailable</h2><a class="btn" href="/media-next">Back to KOJA Media</a></div>'),404
+    return render_page(p.get('title') or 'KOJA Media', r"""
+<style>.watch-page{max-width:1100px;margin:auto}.watch-box{background:#05070a;border:1px solid #202630;border-radius:20px;overflow:hidden}.watch-box video,.watch-box img{display:block;width:100%;max-height:75vh;object-fit:contain;background:#000}.watch-info{padding:18px}.watch-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}.watch-actions button,.watch-actions a{margin:0}.progress{height:4px;background:#30343b}.progress i{display:block;height:100%;background:#e21d2f;width:0}</style>
+<div class="watch-page"><div class="watch-box">{% if p.media_type=='video' %}<video id="watchVideo" controls playsinline preload="metadata" src="{{ p.media_url }}"></video>{% else %}<img src="{{ p.media_url }}" alt="{{ p.title or 'KOJA Media' }}">{% endif %}{% if p.media_type=='video' %}<div class="progress"><i id="watchProgress"></i></div>{% endif %}<div class="watch-info"><h1>{{ p.title or 'KOJA Media' }}</h1><p>{{ p.body or '' }}</p><div class="watch-actions"><a class="btn secondary" href="/media-next">Back to Media</a>{% if p.media_type=='video' %}<button class="btn secondary" onclick="skip(-10)">−10s</button><button class="btn secondary" onclick="skip(10)">+10s</button><button class="btn" onclick="goFull()">Fullscreen</button>{% endif %}</div></div></div></div>
+<script>const pid={{ p.id|tojson }};const v=document.getElementById('watchVideo');const key='koja_resume_'+pid;function skip(s){if(v)v.currentTime=Math.max(0,Math.min(v.duration||1,v.currentTime+s))}function goFull(){if(!v)return;(v.requestFullscreen||v.webkitRequestFullscreen||v.msRequestFullscreen)?.call(v);try{screen.orientation?.lock?.('landscape')}catch(e){}}if(v){const saved=Number(localStorage.getItem(key)||0);v.addEventListener('loadedmetadata',()=>{if(saved>5&&saved<v.duration-10)v.currentTime=saved});v.addEventListener('timeupdate',()=>{localStorage.setItem(key,String(v.currentTime));document.getElementById('watchProgress').style.width=((v.currentTime/(v.duration||1))*100)+'%';if(v.duration&&v.currentTime/v.duration>.98)localStorage.removeItem(key)});}</script>
+""",p=p)
+
 @app.route('/media-next')
 def media_nextgen():
     rows=db_select('koja_public_posts',{'is_published':'eq.true'},order='created_at.desc',limit=100) or []
     items=[p for p in rows if p.get('media_url')]
+    featured=items[0] if items else None
+    groups={}
+    for p in items:
+        label=(p.get('post_type') or 'Media').replace('_',' ').title()
+        groups.setdefault(label,[]).append(p)
     return render_page('KOJA Media',r"""
-<style>.media-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:16px}.media-tile{background:#080b10;border:1px solid rgba(255,255,255,.1);border-radius:16px;overflow:hidden;text-decoration:none;color:#fff}.media-tile img{width:100%;aspect-ratio:16/9;object-fit:cover;background:#000;display:block}.media-tile .mcopy{padding:12px}.media-hero{background:#05070a;border-radius:20px;padding:30px;color:#fff;margin-bottom:18px}</style>
-<div class="media-hero"><h1>KOJA Media</h1><p>Stream videos, discover public media and continue watching from where you stopped.</p></div>
-<div class="media-grid">{% for p in items %}<a class="media-tile" href="{{ url_for('media_watch',post_id=p.id) }}"><img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="{{ p.title or 'KOJA Media' }}"><div class="mcopy"><strong>{{ p.title or 'KOJA Media' }}</strong><div class="small" style="color:#bbb">{{ p.post_type|title }} · Open to watch</div></div></a>{% else %}<div class="card"><h2>No media yet</h2><p>Publish a photo or video to start the KOJA media experience.</p></div>{% endfor %}</div>
-""",items=items)
+<style>
+.media-shell{background:#05070a;color:#fff;border-radius:24px;padding:0 0 34px;overflow:hidden}.media-hero{min-height:390px;padding:42px 28px 30px;display:flex;align-items:flex-end;position:relative;background:linear-gradient(180deg,rgba(5,7,10,.05),#05070a 92%),radial-gradient(circle at 75% 20%,rgba(30,110,160,.28),transparent 42%)}.media-hero .copy{max-width:700px}.media-kicker{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:#9eb9c9}.media-hero h1{font-size:clamp(34px,6vw,62px);margin:8px 0}.media-hero p{color:#c6ccd3;max-width:620px}.media-hero .hero-actions{display:flex;gap:10px;flex-wrap:wrap}.media-row{padding:0 20px;margin:20px 0 30px}.media-row h2{font-size:20px;margin:0 0 12px}.media-cards{display:flex;gap:14px;overflow-x:auto;scroll-snap-type:x proximity;padding:2px 2px 10px;scrollbar-width:none}.media-cards::-webkit-scrollbar{display:none}.media-card{flex:0 0 clamp(180px,24vw,250px);scroll-snap-align:start;text-decoration:none;color:#fff;background:#101318;border:1px solid #202630;border-radius:14px;overflow:hidden;transition:transform .18s,border-color .18s}.media-card:hover{transform:translateY(-3px);border-color:#3b78a0}.poster{position:relative;aspect-ratio:16/9;background:#090b10;overflow:hidden}.poster img{width:100%;height:100%;object-fit:cover;display:block}.poster .play{position:absolute;left:12px;bottom:10px;width:38px;height:38px;border-radius:50%;display:grid;place-items:center;background:rgba(0,0,0,.72);border:1px solid rgba(255,255,255,.2)}.card-progress{height:4px;background:#343941}.card-progress i{display:block;height:100%;background:#e21d2f}.card-copy{padding:10px 11px 13px}.card-copy strong{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.card-copy span{display:block;color:#9ca5ae;font-size:12px;margin-top:4px}.continue-row{display:none}.empty{padding:70px 25px;text-align:center}.media-shell .btn{color:#fff}@media(max-width:700px){.media-shell{border-radius:16px}.media-hero{min-height:340px;padding:25px 18px}.media-row{padding:0 14px}.media-card{flex-basis:205px}}
+</style>
+<div class="media-shell">{% if featured %}<section class="media-hero"><div class="copy"><div class="media-kicker">KOJA Media</div><h1>{{ featured.title or 'Featured on KOJA' }}</h1><p>{{ (featured.body or 'Discover videos, stories and entertainment on KOJA.')[:240] }}</p><div class="hero-actions"><a class="btn" href="/media/watch/{{ featured.id }}">Play</a><a class="btn secondary" href="#mediaRows">Browse</a></div></div></section>{% endif %}<section class="media-row continue-row" id="continueRow"><h2>Continue Watching</h2><div class="media-cards" id="continueCards"></div></section><div id="mediaRows">{% for label,group in groups.items() %}<section class="media-row"><h2>{{ label }}</h2><div class="media-cards">{% for p in group %}<a class="media-card" href="/media/watch/{{ p.id }}" data-id="{{ p.id }}"><div class="poster"><img src="{{ p.thumbnail_url or p.media_url }}" loading="lazy" alt="{{ p.title or 'KOJA Media' }}"><span class="play">▶</span></div><div class="card-progress"><i data-progress="{{ p.id }}"></i></div><div class="card-copy"><strong>{{ p.title or 'KOJA Media' }}</strong><span>{{ (p.body or '')[:80] }}</span></div></a>{% endfor %}</div></section>{% endfor %}</div>{% if not items %}<div class="empty"><h2>Your Media Library is empty</h2><p>Published entertainment content will appear here as Netflix-style cards.</p></div>{% endif %}</div>
+<script>const all=[...document.querySelectorAll('.media-card[data-id]')],cont=document.getElementById('continueRow'),cc=document.getElementById('continueCards');let n=0;for(const c of all){const id=c.dataset.id,t=Number(localStorage.getItem('koja_resume_'+id)||0),bar=c.querySelector('[data-progress]');if(t>5){if(bar)bar.style.width='35%';const clone=c.cloneNode(true);clone.querySelector('.card-copy span').textContent='Resume watching';cc.appendChild(clone);n++}}if(n)cont.style.display='block';</script>
+""",groups=groups,items=items,featured=featured)
 
 @app.route('/api/nextgen/media-event',methods=['POST'])
 def nextgen_media_event():
@@ -7751,105 +7769,6 @@ def news_nextgen():
 <div class="hero"><h2> KOJA News</h2><p>Fast, structured and mobile-first news discovery from KOJA.</p></div><div class="news-grid"><main>{% for p in posts %}<article class="news-card"><div class="news-meta">{{ p.author_name }} · {{ p.created_at }}</div><h2>{{ p.title or 'KOJA News Update' }}</h2><p style="white-space:pre-wrap;line-height:1.75">{{ p.body }}</p>{% if p.media_url %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" alt="{{ p.title or 'KOJA news' }}" loading="lazy">{% endif %}<div class="actions" style="margin-top:14px"><a class="btn secondary" href="{{ url_for('public_feed') }}#post-{{ p.id }}"> Discuss</a><button class="btn secondary" onclick="navigator.clipboard&&navigator.clipboard.writeText(location.origin+'/public#post-{{ p.id }}')">Copy Link</button></div></article>{% else %}<div class="news-card"><h3>No news published yet.</h3><p>KOJA news will appear here as publishers post verified updates.</p></div>{% endfor %}</main><aside class="news-side"><div class="news-card"><h3>KOJA Newsroom</h3><p class="small">News, announcements and important public updates in one place.</p><a class="btn" href="{{ url_for('public_feed') }}">Open Public Feed</a></div><div class="news-card"><h3>Explore</h3><a class="topic" href="{{ url_for('research') }}">Research</a><a class="topic" href="{{ url_for('media_nextgen') }}">Media</a><a class="topic" href="{{ url_for('ai_nextgen') }}">AI</a></div></aside></div>
 ''',posts=rows)
 
-
-
-
-# ============================================================
-# KOJA MEDIA V6 — HLS ADAPTIVE STREAMING
-# Original files remain in Supabase Storage. A separate FFmpeg worker
-# creates HLS renditions under media-hls/<post_id>/.
-# ============================================================
-
-def _media_hls_path(post_id, suffix='master.m3u8'):
-    return f"media-hls/{post_id}/{suffix.lstrip('/')}"
-
-def _media_source_path(value):
-    value=clean(value)
-    if not value: return ''
-    public_prefix=f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{quote(STORAGE_BUCKET, safe='')}/" if SUPABASE_URL else ''
-    if public_prefix and value.startswith(public_prefix):
-        return unquote(value[len(public_prefix):])
-    if value.startswith(f"{STORAGE_BUCKET}/"):
-        return value[len(STORAGE_BUCKET)+1:]
-    if value.startswith('http://') or value.startswith('https://'):
-        return ''
-    return value.lstrip('/')
-
-def _hls_public_url(post_id, suffix='master.m3u8'):
-    # Served through KOJA so private Supabase Storage remains private.
-    return url_for('media_hls_asset', post_id=post_id, asset=suffix)
-
-@app.route('/media/watch/<post_id>')
-def media_watch(post_id):
-    p=first_row('koja_public_posts', {'id':post_id})
-    if not p or not as_bool(p.get('is_published')) or (p.get('media_type') or '').lower()!='video':
-        abort(404)
-    hls=as_bool(p.get('media_hls_ready'))
-    master=_hls_public_url(post_id) if hls else url_for('public_feed_media', post_id=post_id)
-    rows=db_select('koja_public_posts', {'is_published':'eq.true'}, order='created_at.desc', limit=30) or []
-    related=[x for x in rows if x.get('id')!=post_id and (x.get('media_type') or '').lower()=='video'][:8]
-    return render_page('KOJA Media', r"""
-<style>
-.watch-shell{max-width:1180px;margin:auto}.watch-player{background:#05070a;border-radius:20px;overflow:hidden;position:relative}.watch-player video{display:block;width:100%;height:auto;max-height:78vh;background:#000;object-fit:contain}.watch-meta{padding:18px 0}.watch-actions{display:flex;gap:8px;flex-wrap:wrap}.watch-related{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px}.watch-card{display:block;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:8px;text-decoration:none;color:inherit}.watch-card img{width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:9px;background:#000}.watch-status{font-size:13px;color:var(--muted);margin-top:7px}.seek-row{display:flex;align-items:center;gap:8px;padding:8px 12px;background:#080b10}.seek-row button{min-width:54px}.seek-row input{flex:1}
-@media(max-width:700px){.watch-player{border-radius:12px}.watch-player video{max-height:75vh}.watch-related{grid-template-columns:repeat(2,1fr)}}
-</style>
-<div class="watch-shell">
-<div class="watch-player">
-<video id="kojaPlayer" controls playsinline preload="auto" poster="{{ url_for('public_feed_media',post_id=post.id) }}" data-post-id="{{ post.id }}" data-hls="{{ hls|lower }}" data-source="{{ source }}"></video>
-<div class="seek-row"><button class="btn secondary" id="back10">−10s</button><input id="seek" type="range" min="0" max="100" value="0" step="0.1"><button class="btn secondary" id="fwd10">+10s</button><button class="btn secondary" id="fs">Fullscreen</button></div>
-</div>
-<div class="watch-meta"><h1 style="margin-bottom:6px">{{ post.title or 'KOJA Media' }}</h1><p style="white-space:pre-wrap">{{ post.body }}</p><div class="watch-status" id="qualityStatus">Preparing KOJA playback…</div></div>
-{% if related %}<h2>Related</h2><div class="watch-related">{% for r in related %}<a class="watch-card" href="{{ url_for('media_watch',post_id=r.id) }}"><img src="{{ url_for('public_feed_media',post_id=r.id) }}" loading="lazy"><strong>{{ r.title or 'KOJA Media' }}</strong></a>{% endfor %}</div>{% endif %}
-</div>
-<script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.15/dist/hls.min.js"></script>
-<script>
-(()=>{
- const v=document.getElementById('kojaPlayer'), seek=document.getElementById('seek'), status=document.getElementById('qualityStatus');
- const id=v.dataset.postId, hlsReady=v.dataset.hls==='true', src=v.dataset.source;
- const key='koja-resume-'+id; let lastSent=-1, hls=null;
- function setStatus(t){status.textContent=t}
- function restore(){try{const n=parseFloat(localStorage.getItem(key)||'0');if(n>5 && (!v.duration || n<v.duration-5))v.currentTime=n}catch(e){}}
- function track(type){fetch('/api/nextgen/media-event',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({post_id:id,event_type:type,watch_seconds:v.currentTime||0,completion_percent:v.duration?((v.currentTime/v.duration)*100):0})}).catch(()=>{})}
- function start(){track('play');restore()}
- if(hlsReady && window.Hls && Hls.isSupported()){
-   hls=new Hls({enableWorker:true,lowLatencyMode:false,startLevel:0,capLevelToPlayerSize:true,maxBufferLength:25,maxMaxBufferLength:60,backBufferLength:30,abrEwmaDefaultEstimate:600000});
-   hls.loadSource(src); hls.attachMedia(v);
-   hls.on(Hls.Events.MANIFEST_PARSED,()=>{setStatus('Adaptive streaming ready');restore();});
-   hls.on(Hls.Events.LEVEL_SWITCHED,(_,d)=>{const l=hls.levels[d.level];if(l)setStatus('Streaming '+(l.height?l.height+'p':'adaptive'))});
-   hls.on(Hls.Events.ERROR,(_,d)=>{if(d.fatal){setStatus('Adaptive stream unavailable; using original video.');v.src='{{ url_for('public_feed_media',post_id=post.id) }}';v.load();}});
- } else if(hlsReady && v.canPlayType('application/vnd.apple.mpegurl')){v.src=src;setStatus('Adaptive streaming ready')} else {v.src=src;setStatus('Original video playback')}
- v.addEventListener('loadedmetadata',()=>{seek.max=v.duration||100;restore()});
- v.addEventListener('timeupdate',()=>{if(v.duration)seek.value=(v.currentTime/v.duration)*100;try{localStorage.setItem(key,String(v.currentTime))}catch(e){}
-   const pct=v.duration?(v.currentTime/v.duration)*100:0; const marks=[25,50,75]; for(const m of marks){if(pct>=m && lastSent<m){lastSent=m;track(m+'_percent')}}});
- v.addEventListener('play',start); v.addEventListener('pause',()=>track('pause')); v.addEventListener('ended',()=>{try{localStorage.removeItem(key)}catch(e){} track('complete')});
- seek.oninput=()=>{if(v.duration)v.currentTime=(Number(seek.value)/100)*v.duration};
- document.getElementById('back10').onclick=()=>v.currentTime=Math.max(0,(v.currentTime||0)-10);
- document.getElementById('fwd10').onclick=()=>v.currentTime=Math.min(v.duration||1,(v.currentTime||0)+10);
- document.getElementById('fs').onclick=async()=>{try{if(!document.fullscreenElement){await v.requestFullscreen();try{await screen.orientation.lock('landscape')}catch(e){}}else{await document.exitFullscreen();try{await screen.orientation.unlock()}catch(e){}}}catch(e){}}
- document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;if(e.code==='ArrowLeft')v.currentTime=Math.max(0,v.currentTime-10);if(e.code==='ArrowRight')v.currentTime=Math.min(v.duration||1,v.currentTime+10);if(e.code==='Space'){e.preventDefault();v.paused?v.play():v.pause()}});
-})();
-</script>
-""", post=p, hls=hls, source=master, related=related)
-
-@app.route('/media/hls/<post_id>/<path:asset>')
-def media_hls_asset(post_id, asset):
-    # Only serve the HLS tree for published video posts.
-    p=first_row('koja_public_posts', {'id':post_id})
-    if not p or not as_bool(p.get('is_published')) or not as_bool(p.get('media_hls_ready')): abort(404)
-    asset=asset.lstrip('/').replace('..','')
-    if not asset or len(asset)>300 or not re.match(r'^[A-Za-z0-9_./-]+$',asset): abort(404)
-    path=_media_hls_path(post_id, asset)
-    try:
-        r=requests.get(sb_storage_url(path),headers=sb_headers(),timeout=30)
-        if not r.ok:return '',404
-        mime='application/vnd.apple.mpegurl' if asset.endswith('.m3u8') else ('video/mp2t' if asset.endswith('.ts') else 'application/octet-stream')
-        resp=Response(r.content,status=200,mimetype=mime)
-        resp.headers['Cache-Control']='public, max-age=31536000, immutable' if not asset.endswith('.m3u8') else 'public, max-age=60'
-        resp.headers['Access-Control-Allow-Origin']='*'
-        return resp
-    except Exception:
-        logger.exception('HLS asset read failed')
-        return '',404
 
 
 # ERROR HANDLERS
