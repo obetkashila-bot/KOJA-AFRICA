@@ -8709,7 +8709,7 @@ def _workspace_pick(endpoint,title,description):
     businesses=_workspace_businesses()
     if len(businesses)==1:
         return redirect(url_for(endpoint,business_id=businesses[0].get('id')))
-    return render_page(title,"""<div class="hero"><h1>{{ title }}</h1><p>{{ description }}</p></div><div class="grid">{% for b in businesses %}<div class="card"><h2>{{ b.name }}</h2><p>{{ b.category }} · {{ b.location or 'Location not set' }}</p><a class="btn" href="{{ url_for(endpoint,business_id=b.id) }}">Open Workspace</a></div>{% else %}<div class="card"><p>Create a business first.</p><a class="btn" href="{{ url_for('business_new') }}">Create Business</a></div>{% endfor %}</div>""",title=title,description=description,businesses=businesses,endpoint=endpoint)
+    return render_page(title,"""<div class="hero"><h1>{{ page_title }}</h1><p>{{ description }}</p></div><div class="grid">{% for b in businesses %}<div class="card"><h2>{{ b.name }}</h2><p>{{ b.category }} · {{ b.location or 'Location not set' }}</p><a class="btn" href="{{ url_for(endpoint,business_id=b.id) }}">Open Workspace</a></div>{% else %}<div class="card"><p>Create a business first.</p><a class="btn" href="{{ url_for('business_new') }}">Create Business</a></div>{% endfor %}</div>""",page_title=title,description=description,businesses=businesses,endpoint=endpoint)
 
 @app.route('/business/workspace')
 @login_required
