@@ -2903,22 +2903,54 @@ def public_feed():
 </article>{% else %}<div class="card"><h3>No public updates yet.</h3><p>Be the first KOJA user to share a public update or news.</p></div>{% endfor %}
 ''', posts=enriched)
 
+def _media_storage_path(value):
+    value = clean(value)
+    if not value:
+        return ''
+    public_prefix = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{quote(STORAGE_BUCKET, safe='')}/" if SUPABASE_URL else ''
+    if public_prefix and value.startswith(public_prefix):
+        return unquote(value[len(public_prefix):])
+    if value.startswith(f"{STORAGE_BUCKET}/"):
+        return value[len(STORAGE_BUCKET)+1:]
+    if value.startswith('http://') or value.startswith('https://'):
+        return ''
+    return value
+
+def _create_media_signed_url(path, expires=3600):
+    if not supabase_configured() or not path:
+        return None
+    try:
+        endpoint = f"{SUPABASE_URL}/storage/v1/object/sign/{quote(STORAGE_BUCKET, safe='')}/{quote(path, safe='/')}"
+        r = requests.post(endpoint, headers=sb_headers(), json={'expiresIn': int(expires)}, timeout=15)
+        if not r.ok:
+            logger.warning('Media signed URL failed: %s %s', r.status_code, r.text[:300])
+            return None
+        data = json_or_empty(r)
+        signed = data.get('signedURL') or data.get('signedUrl') or data.get('signed_url')
+        if not signed:
+            return None
+        if signed.startswith('http://') or signed.startswith('https://'):
+            return signed
+        return f"{SUPABASE_URL}/storage/v1{signed if signed.startswith('/') else '/' + signed}"
+    except Exception:
+        logger.exception('Media signed URL creation failed')
+        return None
+
 @app.route('/public/media/<post_id>')
 def public_feed_media(post_id):
     post = first_row('koja_public_posts', {'id': post_id})
     if not post or not as_bool(post.get('is_published')):
         return '', 404
-    value = clean(post.get('media_url'))
-    if not value:
+    path = _media_storage_path(post.get('media_url'))
+    if not path:
         return '', 404
-    # V40.5 stores a private Storage path. Accept the old public URL format
-    # only when it points to this exact Supabase project and bucket.
-    path = value
-    public_prefix = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{quote(STORAGE_BUCKET, safe='')}/" if SUPABASE_URL else ''
-    if public_prefix and value.startswith(public_prefix):
-        path = unquote(value[len(public_prefix):])
-    if path.startswith('http://') or path.startswith('https://'):
-        return '', 404
+    # Stream media directly from Supabase Storage instead of downloading the
+    # entire video through Render. This preserves browser range requests and
+    # makes large videos start much faster.
+    signed = _create_media_signed_url(path, 3600)
+    if signed:
+        return redirect(signed, code=302)
+    # Legacy fallback for installations where signed URLs are unavailable.
     try:
         r = requests.get(sb_storage_url(path), headers=sb_headers(), timeout=20)
         if not r.ok:
