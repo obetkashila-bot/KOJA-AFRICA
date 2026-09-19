@@ -1,6 +1,12 @@
-KOJA Research Error Fix
+KOJA Media URL Resolution Fix — 2026-09-19
 
-Fixes /research/unified TypeError caused by mixed string/integer values in research result sorting.
-No SQL migration.
-The DuckDuckGo timeout is a source warning and does not itself cause the 500.
-Replace app.py and redeploy KOJA-AFRICA.
+Purpose:
+- Fixes /media/watch/public-feed/... 404s caused by treating Supabase Storage paths as Flask watch-route IDs.
+- Resolves both /media/watch/<post_id> and legacy /media/watch/<storage-path> references.
+- Playback source is always /public/media/<post_id> for published media.
+- Preserves the existing KOJA Media/Studio application and modules.
+
+Deploy:
+1. Replace the production app.py with this app.py.
+2. Keep the existing requirements.txt and Render start command: gunicorn app:app.
+3. No SQL migration is required for this URL-resolution fix.
