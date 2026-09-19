@@ -900,7 +900,6 @@ html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90
 <a role="menuitem" href="{{ url_for('public_feed') }}">Public</a>
 <a role="menuitem" href="{{ url_for('news_nextgen') }}">News</a>
 <a role="menuitem" href="{{ url_for('media_nextgen') }}">Media</a>
-<a role="menuitem" href="{{ url_for('media_creator_studio') }}">Media Creator Studio</a>
 <a role="menuitem" href="{{ url_for('public_videos') }}">Videos</a>
 <a role="menuitem" href="{{ url_for('marketplace') }}">Digital Marketplace</a>
 <a role="menuitem" href="{{ url_for('connect') }}">Communication</a>
@@ -7454,6 +7453,29 @@ create table if not exists public.koja_media_events (
 create index if not exists koja_media_events_post_idx on public.koja_media_events(post_id,created_at desc);
 create index if not exists koja_media_events_session_idx on public.koja_media_events(session_id,created_at desc);
 
+create table if not exists public.koja_media_library (
+ id uuid primary key default gen_random_uuid(), creator_id uuid not null, title text not null, description text,
+ media_type text not null default 'video', genre text, cover_path text, media_path text not null,
+ access_type text not null default 'free', price numeric(14,2) not null default 0, currency text not null default 'ZMW',
+ status text not null default 'draft', rights_owner text, license_type text, territory text,
+ license_expires_at timestamptz, allow_download boolean not null default false,
+ created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+);
+create index if not exists koja_media_library_creator_idx on public.koja_media_library(creator_id,created_at desc);
+create index if not exists koja_media_library_discovery_idx on public.koja_media_library(status,media_type,created_at desc);
+create table if not exists public.koja_media_content_events (
+ id uuid primary key default gen_random_uuid(), media_id uuid not null references public.koja_media_library(id) on delete cascade,
+ user_id uuid, session_id text not null, event_type text not null, watch_seconds numeric default 0,
+ completion_percent numeric default 0, created_at timestamptz not null default now()
+);
+create index if not exists koja_media_content_events_media_idx on public.koja_media_content_events(media_id,created_at desc);
+create table if not exists public.koja_media_earnings (
+ id uuid primary key default gen_random_uuid(), creator_id uuid not null, media_id uuid references public.koja_media_library(id) on delete set null,
+ source_type text not null, amount numeric(14,2) not null default 0, currency text not null default 'ZMW',
+ status text not null default 'pending', reference text, created_at timestamptz not null default now()
+);
+create index if not exists koja_media_earnings_creator_idx on public.koja_media_earnings(creator_id,created_at desc);
+
 create table if not exists public.koja_ai_feedback (
     id uuid primary key default gen_random_uuid(), user_id uuid,
     rating text, prompt_hash text, created_at timestamptz default now()
@@ -7723,34 +7745,72 @@ def public_videos():
 
 @app.route('/media-next')
 def media_nextgen():
-    rows=db_select('koja_public_posts',{'is_published':'eq.true'},order='created_at.desc',limit=100) or []
+    rows=db_select('koja_media_library',{'status':'eq.published'},order='created_at.desc',limit=100) or []
+    public_rows=db_select('koja_public_posts',{'is_published':'eq.true'},order='created_at.desc',limit=100) or []
     items=[]
-    for p in rows:
-        if not p.get('media_url'): continue
-        items.append(p)
-    return render_page('KOJA Media',r'''
-<style>.media-feed{height:calc(100vh - 150px);min-height:540px;overflow-y:auto;scroll-snap-type:y mandatory;background:#05070a;border-radius:22px}.media-card{height:100%;min-height:540px;position:relative;scroll-snap-align:start;display:grid;place-items:center;background:#05070a}.media-card img,.media-card video{width:100%;height:100%;object-fit:contain;max-height:calc(100vh - 150px)}.media-overlay{position:absolute;left:18px;right:18px;bottom:18px;color:#fff;text-shadow:0 2px 8px #000;z-index:2}.media-actions{position:absolute;right:16px;bottom:110px;display:flex;flex-direction:column;gap:9px;z-index:3}.media-actions button{width:50px;height:50px;border-radius:50%;padding:0;margin:0;background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.2)}.media-empty{padding:70px;text-align:center;color:#fff}
-</style>
-<div class="hero"><h2>◉ KOJA Media</h2><p>Immersive media discovery with adaptive interaction, sharing and watch analytics.</p></div>
-<div class="media-feed" id="mediaFeed">{% for p in items %}<article class="media-card" data-id="{{ p.id }}" data-seen="0">{% if p.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=p.id) }}" playsinline muted loop preload="metadata"></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="KOJA media">{% endif %}<div class="media-actions"><button onclick="likeMedia('{{ p.id }}')"></button><button onclick="shareMedia('{{ p.id }}')">↗</button><button onclick="copyMedia('{{ p.id }}')">⧉</button></div><div class="media-overlay"><strong>{{ p.title or 'KOJA Media' }}</strong><div>{{ p.body[:220] }}</div><div class="small" style="color:#ddd">{{ p.post_type|title }} · {{ p.created_at }}</div></div></article>{% else %}<div class="media-empty"><h2>No media yet</h2><p>Publish a photo or video to start the KOJA media experience.</p></div>{% endfor %}</div>
-<script>
-const feed=document.getElementById('mediaFeed');const io=new IntersectionObserver(es=>es.forEach(e=>{let v=e.target.querySelector('video');if(e.isIntersecting){if(v)v.play().catch(()=>{});if(e.target.dataset.seen==='0'){e.target.dataset.seen='1';track(e.target.dataset.id,'impression',0,0)}}else if(v)v.pause()}),{root:feed,threshold:.65});document.querySelectorAll('.media-card').forEach(x=>io.observe(x));
-function track(id,type,w,c){fetch('/api/nextgen/media-event',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({post_id:id,event_type:type,watch_seconds:w,completion_percent:c})}).catch(()=>{})}
-async function likeMedia(id){await fetch('/public/like/'+id,{method:'POST'});}
-function shareMedia(id){let u=location.origin+'/public#post-'+id;if(navigator.share)navigator.share({title:'KOJA Media',url:u});else navigator.clipboard?.writeText(u)}
-function copyMedia(id){let u=location.origin+'/public#post-'+id;navigator.clipboard?.writeText(u);}
-</script>
-''',items=items)
+    for p in rows: p['_source']='library'; items.append(p)
+    for p in public_rows:
+        if p.get('media_url'): p['_source']='public'; p['media_path']=p.get('media_url'); p['title']=p.get('title') or 'KOJA Public Media'; items.append(p)
+    items=sorted(items,key=lambda x:str(x.get('created_at') or ''),reverse=True)[:100]
+    return render_page('KOJA Media',r"""<div class="hero"><h2>KOJA Media</h2><p>Music, movies, series, podcasts, videos and creator content in one entertainment platform.</p><div class="actions"><a class="btn" href="{{ url_for('media_studio') }}">Creator Studio</a><a class="btn secondary" href="{{ url_for('media_nextgen') }}">All Media</a></div></div><div class="grid">{% for p in items %}<article class="card"><div style="aspect-ratio:16/9;background:#05070a;border-radius:14px;display:grid;place-items:center;color:#fff">{% if p._source=='library' %}{{ p.media_type|title }}{% else %}Public Media{% endif %}</div><span class="small">{{ (p.media_type or 'media')|title }}{% if p.access_type and p.access_type!='free' %} · {{ p.access_type|title }}{% endif %}</span><h3>{{ p.title or 'KOJA Media' }}</h3><p class="small">{{ p.description or p.body or '' }}</p>{% if p._source=='library' %}<a class="btn" href="{{ url_for('media_watch',media_id=p.id) }}">Open</a>{% else %}<a class="btn secondary" href="{{ url_for('public_feed') }}#post-{{ p.id }}">View Public</a>{% endif %}</article>{% else %}<div class="card"><h3>No media published yet.</h3><p>Creators can publish from Creator Studio.</p></div>{% endfor %}</div>""",items=items)
 
-@app.route('/api/nextgen/media-event',methods=['POST'])
-def nextgen_media_event():
-    d=request.get_json(silent=True) or {}; pid=clean(d.get('post_id')); et=clean(d.get('event_type'))
-    allowed={'impression','play','pause','25_percent','50_percent','75_percent','complete','share'}
-    if not pid or et not in allowed:return jsonify(error='Invalid event'),400
-    sid=request.cookies.get('koja_media_session') or uuid.uuid4().hex
-    uid=(current_user() or {}).get('id')
-    db_insert('koja_media_events',{'post_id':pid,'user_id':uid,'session_id':sid,'event_type':et,'watch_seconds':float(d.get('watch_seconds') or 0),'completion_percent':float(d.get('completion_percent') or 0),'created_at':utc_now()})
-    resp=jsonify(ok=True);resp.set_cookie('koja_media_session',sid,max_age=60*60*24*30,httponly=True,samesite='Lax');return resp
+@app.route('/media/studio', methods=['GET','POST'])
+@login_required
+def media_studio():
+    uid=current_user()['id']
+    if request.method=='POST':
+        title=clean(request.form.get('title')); description=clean(request.form.get('description')); media_type=clean(request.form.get('media_type')).lower() or 'video'; access_type=clean(request.form.get('access_type')).lower() or 'free'
+        if media_type not in {'music','movie','series','podcast','video'}: media_type='video'
+        if access_type not in {'free','premium','rent','purchase','download'}: access_type='free'
+        media=request.files.get('media')
+        if not title or not media or not media.filename: flash('Title and media file are required.','danger'); return redirect(url_for('media_studio'))
+        uploaded,err=upload_storage(media,'media-library',public=False)
+        if err: flash(f'Media upload failed: {err}','danger'); return redirect(url_for('media_studio'))
+        try: price=max(0,float(request.form.get('price') or 0))
+        except: price=0
+        payload={'creator_id':uid,'title':title,'description':description or None,'media_type':media_type,'genre':clean(request.form.get('genre')) or None,'media_path':uploaded['path'],'access_type':access_type,'price':price,'currency':'ZMW','status':'draft','rights_owner':clean(request.form.get('rights_owner')) or None,'license_type':clean(request.form.get('license_type')) or None,'territory':clean(request.form.get('territory')) or None,'allow_download':as_bool(request.form.get('allow_download')),'created_at':utc_now(),'updated_at':utc_now()}
+        _,e=db_insert('koja_media_library',payload)
+        if e: delete_storage_path(uploaded['path']); flash('Media could not be saved. Run the additive media SQL migration first.','danger')
+        else: flash('Media saved as draft. Add rights information before publishing.','success')
+        return redirect(url_for('media_studio'))
+    rows=db_select('koja_media_library',{'creator_id':uid},order='created_at.desc',limit=100) or []
+    earnings=db_select('koja_media_earnings',{'creator_id':uid},order='created_at.desc',limit=100) or []
+    confirmed=sum(float(x.get('amount') or 0) for x in earnings if x.get('status') in {'confirmed','paid'}); pending=sum(float(x.get('amount') or 0) for x in earnings if x.get('status')=='pending')
+    return render_page('Media Creator Studio',r"""<div class="hero"><h2>KOJA Media Creator Studio</h2><p>Upload, manage rights, publish and track entertainment content.</p></div><div class="grid"><div class="card"><h3>Confirmed earnings</h3><h2>K{{ '%.2f'|format(confirmed) }}</h2></div><div class="card"><h3>Pending earnings</h3><h2>K{{ '%.2f'|format(pending) }}</h2></div></div><div class="card"><h2>Upload Media</h2><form method="post" enctype="multipart/form-data"><label>Title</label><input name="title" required><label>Description</label><textarea name="description"></textarea><label>Type</label><select name="media_type"><option>video</option><option>music</option><option>movie</option><option>series</option><option>podcast</option></select><label>Genre</label><input name="genre"><label>Monetization</label><select name="access_type"><option value="free">Free</option><option value="premium">Premium</option><option value="rent">Rent</option><option value="purchase">Purchase</option><option value="download">Paid Download</option></select><label>Price (ZMW)</label><input name="price" type="number" step="0.01" min="0" value="0"><label>Rights owner</label><input name="rights_owner" required><label>Licence</label><input name="license_type" required><label>Territory</label><input name="territory" placeholder="Zambia / Africa / Worldwide"><label><input type="checkbox" name="allow_download" value="1"> Allow downloads where permitted</label><label>Media file</label><input type="file" name="media" required accept="audio/*,video/*,.mp4,.webm,.mov,.mp3,.wav"><button class="btn" type="submit">Save Draft</button></form></div><div class="card"><h2>My Content</h2><table><tr><th>Title</th><th>Type</th><th>Access</th><th>Status</th><th></th></tr>{% for x in rows %}<tr><td>{{ x.title }}</td><td>{{ x.media_type|title }}</td><td>{{ x.access_type|title }}</td><td>{{ x.status|title }}</td><td>{% if x.status!='published' %}<form method="post" action="{{ url_for('media_publish',media_id=x.id) }}"><button class="btn secondary">Publish</button></form>{% else %}<a class="btn secondary" href="{{ url_for('media_watch',media_id=x.id) }}">View</a>{% endif %}</td></tr>{% else %}<tr><td colspan="5">No media yet.</td></tr>{% endfor %}</table></div>""",rows=rows,confirmed=confirmed,pending=pending)
+
+@app.route('/media/studio/<media_id>/publish',methods=['POST'])
+@login_required
+def media_publish(media_id):
+    uid=current_user()['id']; row=first_row('koja_media_library',{'id':media_id,'creator_id':uid})
+    if not row:return 'Not found',404
+    if not row.get('rights_owner') or not row.get('license_type'): flash('Rights owner and licence are required.','danger'); return redirect(url_for('media_studio'))
+    _,e=db_update('koja_media_library',{'id':media_id},{'status':'published','updated_at':utc_now()}); flash('Media published.' if not e else 'Could not publish media.','success' if not e else 'danger'); return redirect(url_for('media_studio'))
+
+@app.route('/media/watch/<media_id>')
+def media_watch(media_id):
+    row=first_row('koja_media_library',{'id':media_id,'status':'eq.published'})
+    if not row:return 'Media not found',404
+    return render_page(row.get('title') or 'KOJA Media',r"""<div class="hero"><h2>{{ row.title }}</h2><p>{{ row.media_type|title }} · {{ row.genre or 'KOJA Media' }}</p></div><div class="card">{% if row.media_type=='music' %}<audio controls style="width:100%" src="{{ url_for('media_content',media_id=row.id) }}"></audio>{% else %}<video id="player" controls playsinline style="width:100%;max-height:75vh;background:#000;border-radius:16px" src="{{ url_for('media_content',media_id=row.id) }}"></video>{% endif %}<h3>{{ row.title }}</h3><p>{{ row.description or '' }}</p>{% if row.allow_download and row.access_type in ['free','download'] %}<a class="btn" href="{{ url_for('media_content',media_id=row.id,download=1) }}">Download</a>{% endif %}</div><script>const p=document.getElementById('player');if(p){let s={};function e(t){if(s[t])return;s[t]=1;fetch('/api/media/content-event',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({media_id:'{{ row.id }}',event_type:t,watch_seconds:p.currentTime||0,completion_percent:p.duration?100*p.currentTime/p.duration:0})}).catch(()=>{})}p.addEventListener('play',()=>e('play'));p.addEventListener('pause',()=>e('pause'));p.addEventListener('ended',()=>e('complete'))}</script>""",row=row)
+
+@app.route('/media/content/<media_id>')
+def media_content(media_id):
+    row=first_row('koja_media_library',{'id':media_id,'status':'eq.published'})
+    if not row:return '',404
+    try:
+        r=requests.get(sb_storage_url(row.get('media_path')),headers=sb_headers(),timeout=60)
+        if not r.ok:return '',404
+        resp=send_file(io.BytesIO(r.content),mimetype=r.headers.get('Content-Type') or 'application/octet-stream',download_name='KOJA-Media')
+        if request.args.get('download')=='1' and as_bool(row.get('allow_download')) and row.get('access_type') in {'free','download'}: resp.headers['Content-Disposition']='attachment; filename="KOJA-Media"'
+        return resp
+    except Exception:return '',404
+
+@app.route('/api/media/content-event',methods=['POST'])
+def media_content_event():
+    d=request.get_json(silent=True) or {}; mid=clean(d.get('media_id')); et=clean(d.get('event_type'))
+    if not mid or et not in {'play','pause','complete','share','impression'}:return jsonify(error='Invalid event'),400
+    sid=request.cookies.get('koja_media_session') or uuid.uuid4().hex; uid=(current_user() or {}).get('id')
+    db_insert('koja_media_content_events',{'media_id':mid,'user_id':uid,'session_id':sid,'event_type':et,'watch_seconds':float(d.get('watch_seconds') or 0),'completion_percent':float(d.get('completion_percent') or 0),'created_at':utc_now()})
+    resp=jsonify(ok=True);resp.set_cookie('koja_media_session',sid,max_age=2592000,httponly=True,samesite='Lax');return resp
 
 @app.route('/news-next')
 def news_nextgen():
@@ -7764,50 +7824,6 @@ def news_nextgen():
 ''',posts=rows)
 
 
-
-
-# ---------------- KOJA MEDIA CREATOR + EARNINGS ----------------
-# Additive media monetization layer. Existing Public/Media/Market systems remain intact.
-
-def _media_creator_id():
-    return (current_user() or {}).get('id')
-
-@app.route('/media/creator')
-@login_required
-def media_creator_studio():
-    uid=_media_creator_id()
-    posts=db_select('koja_public_posts',{'author_id':uid},order='created_at.desc',limit=200) or []
-    posts=[p for p in posts if p.get('media_url')]
-    events=db_select('koja_media_events',{'user_id':uid},order='created_at.desc',limit=1000) or []
-    owned={str(p.get('id')) for p in posts}
-    own_events=[e for e in events if str(e.get('post_id')) in owned]
-    plays=sum(1 for e in own_events if e.get('event_type') in {'play','impression'})
-    completions=sum(1 for e in own_events if e.get('event_type')=='complete')
-    shares=sum(1 for e in own_events if e.get('event_type')=='share')
-    earnings=db_select('koja_media_earnings',{'creator_id':uid},order='created_at.desc',limit=500) or []
-    gross=sum(float(x.get('gross_amount') or 0) for x in earnings)
-    net=sum(float(x.get('creator_amount') or x.get('net_amount') or 0) for x in earnings)
-    pending=sum(float(x.get('creator_amount') or x.get('net_amount') or 0) for x in earnings if (x.get('status') or '').lower() in {'pending','approved'})
-    paid=sum(float(x.get('creator_amount') or x.get('net_amount') or 0) for x in earnings if (x.get('status') or '').lower()=='paid')
-    return render_page('KOJA Media Creator Studio',r'''<style>.media-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}.media-stat{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:18px}.media-stat strong{display:block;font-size:28px;margin-top:5px}.media-studio-grid{display:grid;grid-template-columns:1.2fr .8fr;gap:16px}.media-list{width:100%;border-collapse:collapse}.media-list th,.media-list td{padding:10px;border-bottom:1px solid var(--border);text-align:left}@media(max-width:800px){.media-stats{grid-template-columns:repeat(2,1fr)}.media-studio-grid{grid-template-columns:1fr}}</style>
-<div class="hero"><h1>KOJA Media Creator Studio</h1><p>Manage media content, audience activity and monetization from one creator workspace.</p><div class="actions"><a class="btn" href="{{ url_for('media_nextgen') }}">Open Media</a><a class="btn secondary" href="{{ url_for('media_earnings') }}">Earnings</a><a class="btn secondary" href="{{ url_for('public_feed') }}">Public</a></div></div>
-<div class="media-stats"><div class="media-stat"><span>Media posts</span><strong>{{ posts|length }}</strong></div><div class="media-stat"><span>Plays / impressions</span><strong>{{ plays }}</strong></div><div class="media-stat"><span>Completions</span><strong>{{ completions }}</strong></div><div class="media-stat"><span>Shares</span><strong>{{ shares }}</strong></div></div>
-<div class="media-studio-grid" style="margin-top:16px"><div class="card"><h2>My Media</h2><table class="media-list"><tr><th>Title</th><th>Type</th><th>Status</th></tr>{% for p in posts %}<tr><td>{{ p.title or 'Untitled media' }}</td><td>{{ p.media_type or 'media' }}</td><td>{{ 'Published' if p.is_published else 'Draft' }}</td></tr>{% else %}<tr><td colspan="3">No media content yet.</td></tr>{% endfor %}</table></div><div class="card"><h2>Earnings overview</h2><p><strong>Gross:</strong> {{ money(gross,'ZMW') }}</p><p><strong>Creator earnings:</strong> {{ money(net,'ZMW') }}</p><p><strong>Pending:</strong> {{ money(pending,'ZMW') }}</p><p><strong>Paid:</strong> {{ money(paid,'ZMW') }}</p><p class="small">Actual earnings are created by KOJA's settlement/payment layer; views alone do not automatically create money.</p><a class="btn" href="{{ url_for('media_earnings') }}">Open Earnings Ledger</a></div></div>''',posts=posts,plays=plays,completions=completions,shares=shares,gross=gross,net=net,pending=pending,paid=paid,money=market_money)
-
-@app.route('/media/earnings')
-@login_required
-def media_earnings():
-    uid=_media_creator_id()
-    rows=db_select('koja_media_earnings',{'creator_id':uid},order='created_at.desc',limit=500) or []
-    gross=sum(float(x.get('gross_amount') or 0) for x in rows)
-    fees=sum(float(x.get('platform_fee') or 0) for x in rows)
-    creator=sum(float(x.get('creator_amount') or x.get('net_amount') or 0) for x in rows)
-    pending=sum(float(x.get('creator_amount') or x.get('net_amount') or 0) for x in rows if (x.get('status') or '').lower() in {'pending','approved'})
-    paid=sum(float(x.get('creator_amount') or x.get('net_amount') or 0) for x in rows if (x.get('status') or '').lower()=='paid')
-    return render_page('KOJA Media Earnings',r'''<div class="hero"><h1>KOJA Media Earnings</h1><p>One creator ledger for eligible streaming, advertising, premium content, rentals, purchases and other licensed media revenue.</p><div class="actions"><a class="btn" href="{{ url_for('media_creator_studio') }}">Creator Studio</a><a class="btn secondary" href="{{ url_for('media_nextgen') }}">Media</a></div></div>
-<div class="grid"><div class="card"><h3>Gross revenue</h3><h2>{{ money(gross,'ZMW') }}</h2></div><div class="card"><h3>KOJA fees</h3><h2>{{ money(fees,'ZMW') }}</h2></div><div class="card"><h3>Creator earnings</h3><h2>{{ money(creator,'ZMW') }}</h2></div><div class="card"><h3>Paid</h3><h2>{{ money(paid,'ZMW') }}</h2></div></div>
-<div class="card" style="margin-top:16px"><h2>Revenue ledger</h2><table><tr><th>Date</th><th>Content</th><th>Source</th><th>Gross</th><th>Creator</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{ x.created_at }}</td><td>{{ x.content_title or x.post_id or 'Media content' }}</td><td>{{ x.revenue_source or 'Media' }}</td><td>{{ money(x.gross_amount,'ZMW') }}</td><td>{{ money(x.creator_amount or x.net_amount,'ZMW') }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="6">No media earnings yet. Eligible revenue will appear here after a KOJA settlement is recorded.</td></tr>{% endfor %}</table></div>
-<div class="card"><h3>Monetization channels</h3><p>Advertising · Premium subscriptions · Rentals · Purchases · Licensed downloads · Live events · Tips · Sponsorships.</p><p class="small">KOJA only settles content for which the creator/rights holder has the required distribution and monetization rights.</p></div>''',rows=rows,gross=gross,fees=fees,creator=creator,pending=pending,paid=paid,money=market_money)
 
 # ERROR HANDLERS
 # ============================================================
@@ -7984,7 +8000,7 @@ def _global_business_modules(business_id):
         ('Organisation','Business Core','business_core_status'),
         ('Workforce / HR','Employees, payroll and staff permissions','business_employees'),
         ('CRM & Sales','Customers, invoices and sales records','business_customers'),
-        ('Procurement','Global B2B requests, suppliers and quotations','b2bv4_centre'),
+        ('Procurement','Global B2B requests, suppliers and quotations','b2bv4_business'),
         ('Supply Chain','Suppliers, inventory and fulfilment','business_suppliers'),
         ('Commerce','Online store and KOJA Market','business_store'),
         ('Professional Services','Professionals, appointments and projects','professionals'),
@@ -8035,12 +8051,12 @@ def global_business_hub(business_id):
     for name,desc,endpoint in _global_business_modules(business_id):
         try:
             if endpoint=='business_core_status': href=url_for(endpoint,business_id=business_id)
-            elif endpoint=='b2bv4_centre': href=url_for(endpoint,business_id=business_id)
+            elif endpoint=='b2bv4_business': href=url_for(endpoint,business_id=business_id)
             elif endpoint in ('business_employees','business_customers','business_suppliers','business_store','business_accounting_v2','business_intelligence_v3','business_payments','business_delivery','business_live_v2'): href=url_for(endpoint,business_id=business_id)
             else: href=url_for(endpoint)
         except Exception: href=url_for('business_dashboard',business_id=business_id)
         modules.append({'name':name,'desc':desc,'href':href})
-    tpl="""<div class="hero"><h1>{{ b.name }} — Global Business</h1><p>One operating workspace connecting commerce, B2B, services, finance, workforce, logistics, AI and KOJA platform engines.</p><div class="actions"><a class="btn" href="{{ url_for('business_dashboard',business_id=b.id) }}">Business Dashboard</a><a class="btn secondary" href="{{ url_for('b2bv4_centre',business_id=b.id) }}">B2B Workspace</a><a class="btn secondary" href="{{ url_for('business_global_api',business_id=b.id) }}">Live Business Data</a></div></div>
+    tpl="""<div class="hero"><h1>{{ b.name }} — Global Business</h1><p>One operating workspace connecting commerce, B2B, services, finance, workforce, logistics, AI and KOJA platform engines.</p><div class="actions"><a class="btn" href="{{ url_for('business_dashboard',business_id=b.id) }}">Business Dashboard</a><a class="btn secondary" href="{{ url_for('b2bv4_business',business_id=b.id) }}">B2B Workspace</a><a class="btn secondary" href="{{ url_for('business_global_api',business_id=b.id) }}">Live Business Data</a></div></div>
 <div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(revenue,'ZMW') }}</h2></div><div class="card"><h3>Costs</h3><h2>{{ money(costs,'ZMW') }}</h2></div><div class="card"><h3>Operating result</h3><h2>{{ money(revenue-costs,'ZMW') }}</h2></div><div class="card"><h3>B2B orders</h3><h2>{{ counts.b2b_orders_buyer + counts.b2b_orders_seller }}</h2></div></div>
 <div class="grid">{% for m in modules %}<div class="card"><h3>{{ m.name }}</h3><p>{{ m.desc }}</p><a class="btn secondary" href="{{ m.href }}">Open</a></div>{% endfor %}</div>
 <div class="card"><h2>Global operating metrics</h2><table><tr><th>Area</th><th>Records</th></tr>{% for k,v in counts.items() %}<tr><td>{{ k.replace('_',' ')|title }}</td><td>{{ v }}</td></tr>{% endfor %}</table></div>"""
