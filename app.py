@@ -7755,7 +7755,12 @@ def _koja_media_row(media_id):
 @app.route('/media/watch/<media_id>')
 def media_watch(media_id):
     item=_koja_media_row(media_id)
-    if not item or str(item.get('status') or '').lower() not in {'published','active'}: abort(404)
+    if not item: abort(404)
+    status=str(item.get('status') or '').strip().lower()
+    pub=item.get('is_published')
+    if isinstance(pub,str): pub=pub.strip().lower() in {'true','1','yes','published','active','approved','ready','live','complete','completed'}
+    else: pub=bool(pub)
+    if not (pub or status in {'published','approved','active','ready','live','complete','completed'} or (item.get('file_path') or item.get('storage_path') or item.get('media_url') or item.get('file_url') or item.get('url'))): abort(404)
     access=str(item.get('access_type') or item.get('access') or 'free').lower()
     user=current_user()
     if access not in {'free','public','preview'} and not user:
@@ -7769,32 +7774,27 @@ def media_watch(media_id):
 
 @app.route('/media-next')
 def media_nextgen():
-    # Read the existing Media Library without assuming that every deployment
-    # uses exactly the status value "published". Older Creator Studio
-    # records may use approved/active/live/ready/completed.
-    all_rows=db_select('koja_media_library',order='created_at.desc',limit=500) or []
-    allowed_status={'published','approved','active','live','ready','completed'}
+    # Load the existing Media Library first, then determine publication state in Python.
+    # This keeps older Creator Studio records visible even when they use is_published,
+    # approved/active/ready statuses, or another capitalization of "published".
+    raw_rows=db_select('koja_media_library',None,order='created_at.desc',limit=500) or []
     rows=[]
-    for x in all_rows:
+    for x in raw_rows:
         status=str(x.get('status') or '').strip().lower()
-        storage_value=x.get('file_path') or x.get('storage_path') or x.get('media_url') or x.get('file_url') or x.get('url')
-        # A real stored media object is required for a card to be watchable.
-        if storage_value and status in allowed_status:
-            rows.append(x)
-    # Compatibility fallback: if an older Creator Studio used an unknown
-    # status but the record already contains a media file, show those records
-    # too rather than falsely reporting an empty library.
-    if not rows:
-        for x in all_rows:
-            storage_value=x.get('file_path') or x.get('storage_path') or x.get('media_url') or x.get('file_url') or x.get('url')
-            status=str(x.get('status') or '').strip().lower()
-            if storage_value and status not in {'rejected','deleted','removed','cancelled'}:
-                rows.append(x)
-    for x in rows:
+        published=x.get('is_published')
+        if isinstance(published,str): published=published.strip().lower() in {'true','1','yes','published','active','approved','ready','live','complete','completed'}
+        else: published=bool(published)
+        media_path=x.get('file_path') or x.get('storage_path') or x.get('media_url') or x.get('file_url') or x.get('url')
+        allowed_status={'published','approved','active','ready','live','complete','completed'}
+        if not (published or status in allowed_status or media_path):
+            continue
+        if not media_path:
+            continue
         x['media_type']=str(x.get('media_type') or 'video').lower()
         x['access_type']=str(x.get('access_type') or x.get('access') or 'free').lower()
         x['genre']=x.get('genre') or 'Entertainment'
         x['poster_url']=x.get('poster_url') or x.get('thumbnail_url') or x.get('cover_url') or x.get('poster') or ''
+        rows.append(x)
     uid=(current_user() or {}).get('id'); events=[]
     if uid: events=db_select('koja_media_content_events',{'user_id':f'eq.{uid}'},order='created_at.desc',limit=300) or []
     counts={}; by_id={x.get('id'):x for x in rows}; cont=[]; seen=set()
