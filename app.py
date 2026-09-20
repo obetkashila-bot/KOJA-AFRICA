@@ -10586,6 +10586,7 @@ def media_studio():
 <script>function showStudio(mode){document.querySelectorAll('#studioAll .studio-card').forEach(c=>{let s=c.dataset.status;c.style.display=(mode==='all'||(mode==='published'&&s==='published')||(mode==='draft'&&s==='draft'))?'':'none'})}</script>
 ''',items=rows,max_mb=MAX_UPLOAD_MB,published_count=published_count,draft_count=draft_count,total_views=total_views,total_completions=total_completions)
 
+@app.route('/media/watch/<post_id>')
 def media_watch(post_id):
     post=first_row('koja_public_posts',{'id':post_id})
     if not post or not as_bool(post.get('is_published')) or not post.get('media_url'): abort(404)
