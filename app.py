@@ -10186,6 +10186,7 @@ def b2bv4_home():
 ''',businesses=businesses)
 
 @app.route('/b2b/v4/<business_id>')
+@app.route('/business/<business_id>/b2b', endpoint='b2bv4_business')
 @login_required
 def b2bv4_centre(business_id):
     b=_b2bv4_business(business_id)
@@ -10661,6 +10662,9 @@ def live_player_config(stream):
     if provider=='video': return {'kind':'video','src':url,'label':'Direct Live Video'}
     return {'kind':'other','src':url,'label':'External Live URL'}
 
+@app.route('/media-live')
+@app.route('/media/live')
+@login_required
 def media_live():
     rows=db_select('koja_media_live_streams',{'is_public':'eq.true'},order='created_at.desc',limit=100) or []
     for r in rows: r['_provider']=clean(r.get('provider')) or detect_live_provider(r.get('stream_url'))
@@ -10668,6 +10672,9 @@ def media_live():
 .live-home{background:#05070b;color:#f7f9fc;min-height:calc(100vh - 110px);padding-bottom:35px}.live-head{padding:28px 20px;background:linear-gradient(135deg,#07101b,#101722);border-bottom:1px solid rgba(255,255,255,.08)}.live-head h1{margin:0 0 7px;font-size:clamp(28px,5vw,48px)}.live-head p{color:#aeb9c8}.live-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px}.live-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:15px;padding:20px}.live-card{background:#0b1119;border:1px solid rgba(255,255,255,.08);border-radius:14px;overflow:hidden;text-decoration:none;color:#fff}.live-card img{width:100%;aspect-ratio:16/9;object-fit:cover;display:block;background:#111923}.live-placeholder{width:100%;aspect-ratio:16/9;background:linear-gradient(135deg,#0c1622,#111923);display:grid;place-items:center;font-weight:800;letter-spacing:.12em}.live-card-info{padding:12px}.live-badge{display:inline-block;background:#e50914;border-radius:999px;padding:4px 7px;font-size:10px;font-weight:800}.live-provider{font-size:11px;color:#8f9caf;margin-top:7px}
 </style><div class="live-home"><div class="live-head"><div style="color:#63b4ff;font-weight:800;letter-spacing:.15em">KOJA MEDIA</div><h1>KOJA LIVE</h1><p>Watch permitted live streams from KOJA creators, businesses and external providers.</p><div class="live-actions"><a class="btn secondary" href="{{ url_for('media_nextgen') }}">Back to Media</a>{% if user %}<a class="btn" href="{{ url_for('media_live_add') }}">Add Live Stream</a>{% endif %}</div></div><div class="live-grid">{% for s in streams %}<a class="live-card" href="{{ url_for('media_live_watch',stream_id=s.id) }}">{% if s.thumbnail_url %}<img src="{{ s.thumbnail_url }}" loading="lazy" alt="{{ s.title }}">{% else %}<div class="live-placeholder">KOJA LIVE</div>{% endif %}<div class="live-card-info"><span class="live-badge">LIVE</span><h3>{{ s.title }}</h3><div class="live-provider">{{ s._provider|title }} · {{ s.category or 'Live Stream' }}</div></div></a>{% else %}<div class="card"><h3>No live streams yet.</h3><p>Sign in and add an external live stream URL.</p></div>{% endfor %}</div></div>''',streams=rows)
 
+@app.route('/media-live/add',methods=['GET','POST'])
+@app.route('/media/live/add',methods=['GET','POST'])
+@login_required
 def media_live_add():
     if request.method=='POST':
         title=clean(request.form.get('title')); stream_url=clean(request.form.get('stream_url')); thumbnail=clean(request.form.get('thumbnail_url')); category=clean(request.form.get('category')) or 'Live Stream'; provider=clean(request.form.get('provider')).lower() or detect_live_provider(stream_url)
@@ -10681,6 +10688,9 @@ def media_live_add():
         else: flash('Live stream connected to KOJA Media.','success'); return redirect(url_for('media_live'))
     return render_page('Add KOJA Live Stream',r'''<div class="hero"><h1>Add KOJA Live Stream</h1><p>Connect a permitted external live URL without downloading or re-hosting the stream.</p></div><div class="card" style="max-width:760px;margin:auto"><form method="post"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><label>Title</label><input name="title" maxlength="180" required placeholder="Live event title"><label>Live URL</label><input name="stream_url" type="url" required placeholder="https://...m3u8 or provider live URL"><label>Provider</label><select name="provider"><option value="">Auto detect</option><option value="youtube">YouTube Live</option><option value="facebook">Facebook Live</option><option value="twitch">Twitch</option><option value="hls">HLS (.m3u8)</option><option value="dash">DASH (.mpd)</option><option value="video">Direct video</option><option value="microsoft">Microsoft / Stream</option><option value="other">Other</option></select><label>Thumbnail URL (optional)</label><input name="thumbnail_url" type="url" placeholder="https://..."><label>Category</label><input name="category" maxlength="80" placeholder="News, Sports, Education, Business..."><p class="small">KOJA can play direct HLS/DASH/video URLs and supported provider embeds. A normal webpage URL is not automatically a video stream.</p><button class="btn" type="submit">Connect Live Stream</button></form></div>''')
 
+@app.route('/media-live/<stream_id>')
+@app.route('/media/live/<stream_id>')
+@login_required
 def media_live_watch(stream_id):
     stream=first_row('koja_media_live_streams',{'id':stream_id})
     if not stream or not as_bool(stream.get('is_public')): abort(404)
