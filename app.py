@@ -7223,7 +7223,7 @@ def connect_call(user_id):
     c=_direct_conversation(uid,user_id)
     if not c:return 'Run KOJA Connect SQL first.',500
     return render_page('KOJA Call',r'''<div class="card"><h2> KOJA {{ mode|title }} Call</h2><p>Calling <strong>{{ name }}</strong></p><div id="state">Connecting…</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><video id="local" autoplay muted playsinline style="width:100%;background:#111;border-radius:10px"></video><video id="remote" autoplay playsinline style="width:100%;background:#111;border-radius:10px"></video></div><button id="hang" class="btn danger">End Call</button><div id="endedActions" style="display:none;margin-top:12px;gap:10px;flex-wrap:wrap"><a id="backChat" class="btn secondary" href="#">Back to Chat</a><a id="callAgain" class="btn" href="#">Call Again</a></div></div><script>
-const target={{ user_id|tojson }},mode={{ mode|tojson }},conversationId={{ c.id|tojson }};
+const target={{ user_id|tojson }},mode={{ mode|tojson }},conversationId={{ conversation_id|tojson }};
 let callId=null,pc=null,timer=null,iceTimer=null,remoteIce=new Set(),started=Date.now();
 const state=document.getElementById('state');
 const unavailable='This contact is not available because the internet or network connection could not be reached.';
@@ -7280,7 +7280,7 @@ async function start(){
 document.getElementById('hang').onclick=()=>{if(callId)fetch('/api/connect/call/end/'+callId,{method:'POST'});clearInterval(timer);clearInterval(iceTimer);if(pc)pc.close();state.textContent='Call ended';showEnded();};
 window.addEventListener('offline',()=>fail());
 start();
-</script>''',user_id=user_id,mode=mode,name=_profile_name(user_id))
+</script>''',user_id=user_id,mode=mode,conversation_id=c.get('id'),name=_profile_name(user_id))
 
 @app.route('/api/connect/call/create',methods=['POST'])
 @login_required
