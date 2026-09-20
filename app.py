@@ -10186,7 +10186,6 @@ def b2bv4_home():
 ''',businesses=businesses)
 
 @app.route('/b2b/v4/<business_id>')
-@app.route('/business/<business_id>/b2b', endpoint='b2bv4_business')
 @login_required
 def b2bv4_centre(business_id):
     b=_b2bv4_business(business_id)
@@ -10201,6 +10200,13 @@ def b2bv4_centre(business_id):
 <div class="card"><h2>Orders</h2>{% for o in orders %}<div class="card"><strong>Order {{ o.get('id') }}</strong><p>{{ o.get('order_status') }} · Payment: {{ o.get('payment_status') }} · {{ o.get('amount') }} {{ o.get('currency') }}</p><a class="btn" href="{{ url_for('b2bv4_order',order_id=o.get('id')) }}">Open Order</a></div>{% else %}<p>No orders yet.</p>{% endfor %}</div>
 <div class="card"><h2>Seller Quotes</h2>{% for q in quotes %}<div class="card"><strong>{{ q.get('amount') }} {{ q.get('currency') }}</strong><p>Status: {{ q.get('status') }}</p><a class="btn" href="{{ url_for('b2bv4_request',request_id=q.get('request_id')) }}">Open Request</a></div>{% else %}<p>No quotes requiring your attention.</p>{% endfor %}</div>
 ''',b=b,requests_rows=requests_rows,orders=orders,quotes=quotes)
+
+
+# Compatibility endpoint used by Global Business.
+try:
+    app.add_url_rule('/business/<business_id>/b2b', endpoint='b2bv4_business', view_func=b2bv4_centre)
+except AssertionError:
+    pass
 
 @app.route('/b2b/v4/<business_id>/request/new',methods=['GET','POST'])
 @login_required
@@ -10507,6 +10513,8 @@ def media_hls_url(post):
         base=f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{quote(HLS_BUCKET,safe='')}"
     return f"{base}/{value.lstrip('/')}" if base else ""
 
+@app.route('/studio', methods=['GET','POST'])
+@login_required
 def media_studio():
     '''KOJA Media Studio: card-based creator workspace for drafts and published media.'''
     uid=(current_user() or {}).get('id')
@@ -10672,8 +10680,8 @@ def media_live():
 .live-home{background:#05070b;color:#f7f9fc;min-height:calc(100vh - 110px);padding-bottom:35px}.live-head{padding:28px 20px;background:linear-gradient(135deg,#07101b,#101722);border-bottom:1px solid rgba(255,255,255,.08)}.live-head h1{margin:0 0 7px;font-size:clamp(28px,5vw,48px)}.live-head p{color:#aeb9c8}.live-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px}.live-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:15px;padding:20px}.live-card{background:#0b1119;border:1px solid rgba(255,255,255,.08);border-radius:14px;overflow:hidden;text-decoration:none;color:#fff}.live-card img{width:100%;aspect-ratio:16/9;object-fit:cover;display:block;background:#111923}.live-placeholder{width:100%;aspect-ratio:16/9;background:linear-gradient(135deg,#0c1622,#111923);display:grid;place-items:center;font-weight:800;letter-spacing:.12em}.live-card-info{padding:12px}.live-badge{display:inline-block;background:#e50914;border-radius:999px;padding:4px 7px;font-size:10px;font-weight:800}.live-provider{font-size:11px;color:#8f9caf;margin-top:7px}
 </style><div class="live-home"><div class="live-head"><div style="color:#63b4ff;font-weight:800;letter-spacing:.15em">KOJA MEDIA</div><h1>KOJA LIVE</h1><p>Watch permitted live streams from KOJA creators, businesses and external providers.</p><div class="live-actions"><a class="btn secondary" href="{{ url_for('media_nextgen') }}">Back to Media</a>{% if user %}<a class="btn" href="{{ url_for('media_live_add') }}">Add Live Stream</a>{% endif %}</div></div><div class="live-grid">{% for s in streams %}<a class="live-card" href="{{ url_for('media_live_watch',stream_id=s.id) }}">{% if s.thumbnail_url %}<img src="{{ s.thumbnail_url }}" loading="lazy" alt="{{ s.title }}">{% else %}<div class="live-placeholder">KOJA LIVE</div>{% endif %}<div class="live-card-info"><span class="live-badge">LIVE</span><h3>{{ s.title }}</h3><div class="live-provider">{{ s._provider|title }} · {{ s.category or 'Live Stream' }}</div></div></a>{% else %}<div class="card"><h3>No live streams yet.</h3><p>Sign in and add an external live stream URL.</p></div>{% endfor %}</div></div>''',streams=rows)
 
-@app.route('/media-live/add',methods=['GET','POST'])
-@app.route('/media/live/add',methods=['GET','POST'])
+@app.route('/media-live/add', methods=['GET','POST'])
+@app.route('/media/live/add', methods=['GET','POST'])
 @login_required
 def media_live_add():
     if request.method=='POST':
