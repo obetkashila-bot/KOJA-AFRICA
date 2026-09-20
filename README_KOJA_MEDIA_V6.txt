@@ -53,3 +53,12 @@ The existing KOJA Flask upload limit remains 15 MB. It was NOT silently increase
 
 7) CDN
 Supabase public storage is the origin in V6. It is not the same as a dedicated global video CDN. Set KOJA_HLS_CDN_BASE later when a CDN is placed in front of the HLS bucket.
+
+
+KOJA LIVE EXTERNAL URL FIX
+- Media now includes /media/live and /media/live/add.
+- Direct HLS (.m3u8), DASH (.mpd) and direct video URLs use a browser player.
+- YouTube, Facebook and Twitch URLs use provider embeds where the provider permits embedding.
+- A normal webpage URL is not treated as a video stream.
+- Run the included SQL migration before using Add Live Stream.
+- Existing KOJA Communications/Connect, Marketplace, AI and other modules are not intentionally changed.

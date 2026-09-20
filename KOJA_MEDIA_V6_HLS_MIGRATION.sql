@@ -28,3 +28,20 @@ on public.koja_media_watch_progress(post_id, updated_at desc);
 
 -- Optional subtitles are stored as a WebVTT public URL in media_subtitles_url.
 -- The HLS worker creates media_master_url after successful processing.
+
+
+-- KOJA Media external live URL registry
+create table if not exists public.koja_media_live_streams (
+ id uuid primary key default gen_random_uuid(),
+ owner_id uuid references auth.users(id) on delete set null,
+ title text not null,
+ stream_url text not null,
+ provider text not null default 'other',
+ thumbnail_url text,
+ category text,
+ is_public boolean not null default true,
+ created_at timestamptz not null default now(),
+ updated_at timestamptz not null default now()
+);
+create index if not exists koja_media_live_streams_created_idx on public.koja_media_live_streams(created_at desc);
+create index if not exists koja_media_live_streams_public_idx on public.koja_media_live_streams(is_public,created_at desc);

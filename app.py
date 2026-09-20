@@ -7532,7 +7532,7 @@ def media_studio():
 @media(max-width:850px){.studio-create{grid-template-columns:1fr}.studio-metrics{grid-template-columns:repeat(2,1fr)}.studio-shell{padding:15px}.studio-card{flex-basis:210px}}
 </style>
 <div class="studio-shell">
-  <div class="studio-top"><div><div class="small" style="color:#5da9ff">KOJA MEDIA</div><h1>Media Studio</h1><p>Create once. Publish everywhere across KOJA Media.</p></div><div class="studio-actions"><a class="btn secondary" href="{{ url_for('media_nextgen') }}">Watch Media</a></div></div>
+  <div class="studio-top"><div><div class="small" style="color:#5da9ff">KOJA MEDIA</div><h1>Media Studio</h1><p>Create once. Publish everywhere across KOJA Media.</p></div><div class="studio-actions"><a class="btn secondary" href="{{ url_for('media_nextgen') }}">Watch Media</a><a class="btn secondary" href="{{ url_for('media_live') }}">KOJA LIVE</a></div></div>
   <div class="studio-metrics"><div class="metric"><strong>{{ published_count }}</strong><span>Published</span></div><div class="metric"><strong>{{ draft_count }}</strong><span>Drafts</span></div><div class="metric"><strong>{{ total_views }}</strong><span>Views</span></div><div class="metric"><strong>{{ total_completions }}</strong><span>Completions</span></div></div>
   <div class="studio-create">
     <section class="create-card"><h2>Create media</h2><p class="small">Upload a photo or video, save it privately, or publish it to the Netflix-style KOJA Media feed.</p>
@@ -7602,7 +7602,95 @@ def media_nextgen():
         if arr: groups.append((label,arr))
     return render_page('KOJA Media',r'''<style>
 .media-home{background:#05070b;color:#f7f9fc;padding-bottom:38px;min-height:calc(100vh - 110px);overflow:hidden}.media-nav{display:flex;gap:8px;overflow:auto;padding:12px 20px;background:#070b11;border-bottom:1px solid rgba(255,255,255,.08)}.media-nav a{color:#dce4ee;text-decoration:none;border:1px solid rgba(255,255,255,.1);border-radius:999px;padding:8px 13px;font-size:12px;white-space:nowrap}.media-hero{min-height:440px;position:relative;display:flex;align-items:flex-end;padding:30px;overflow:hidden;background:#0b1119}.hero-media{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:.62}.media-hero:after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,rgba(3,6,10,.98),rgba(3,6,10,.55) 48%,rgba(3,6,10,.12)),linear-gradient(0deg,rgba(3,6,10,.98),transparent 65%)}.hero-copy{position:relative;z-index:2;max-width:650px}.hero-copy h1{font-size:clamp(30px,5vw,56px);margin:7px 0;line-height:1.04}.hero-kicker{font-size:12px;letter-spacing:.15em;color:#63b4ff;font-weight:800}.hero-copy p{color:#d0d9e5;max-width:580px}.hero-buttons{display:flex;gap:8px;flex-wrap:wrap}.media-content{padding:0 20px}.media-row-title{display:flex;align-items:center;justify-content:space-between;margin:25px 0 9px}.media-row-title h2{margin:0;font-size:21px}.media-row-title span{font-size:12px;color:#7f8da0}.media-row{display:flex;gap:14px;overflow-x:auto;padding:3px 2px 15px;scroll-snap-type:x proximity}.media-row::-webkit-scrollbar{height:6px}.media-row::-webkit-scrollbar-thumb{background:#293544;border-radius:9px}.media-card{position:relative;flex:0 0 235px;scroll-snap-align:start;background:#0c121b;border:1px solid rgba(255,255,255,.08);border-radius:10px;overflow:hidden;color:#fff;text-decoration:none;box-shadow:0 8px 25px rgba(0,0,0,.25);transition:.18s}.media-card:hover{transform:translateY(-5px);border-color:rgba(93,169,255,.55)}.media-thumb{position:relative;aspect-ratio:16/9;background:#111923;overflow:hidden}.media-thumb img,.media-thumb video{width:100%;height:100%;object-fit:cover;display:block}.media-gradient{position:absolute;inset:auto 0 0;height:55%;background:linear-gradient(transparent,rgba(0,0,0,.65))}.media-play{position:absolute;left:10px;bottom:9px;width:36px;height:36px;border-radius:50%;background:rgba(0,0,0,.78);display:grid;place-items:center;font-size:13px}.media-badge{position:absolute;top:8px;right:8px;background:rgba(0,0,0,.75);padding:4px 7px;border-radius:999px;font-size:10px}.media-info{padding:10px}.media-info h3{margin:0 0 5px;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.media-info p{margin:0;color:#9eabbc;font-size:11px;line-height:1.4;height:31px;overflow:hidden}.media-progress{height:3px;background:#303946}.media-progress i{display:block;height:100%;background:#e50914;width:0}@media(max-width:700px){.media-hero{min-height:360px;padding:20px}.media-content{padding:0 13px}.media-card{flex-basis:190px}}
-</style><div class="media-home"><div class="media-nav"><a href="#continue">Continue Watching</a><a href="#trending">Trending</a><a href="#movies">Movies</a><a href="#series">Series</a><a href="#news">News</a>{% if user %}<a href="{{ url_for('media_studio') }}">Media Studio</a>{% endif %}</div>{% if hero %}<section class="media-hero">{% if hero.media_type=='video' %}<video class="hero-media" src="{{ url_for('public_feed_media',post_id=hero.id) }}" muted autoplay loop playsinline preload="metadata"></video>{% else %}<img class="hero-media" src="{{ url_for('public_feed_media',post_id=hero.id) }}" alt="{{ hero.title or 'KOJA Media' }}">{% endif %}<div class="hero-copy"><div class="hero-kicker">KOJA MEDIA</div><h1>{{ hero.title or 'Discover on KOJA' }}</h1><p>{{ hero.body[:280] }}</p><div class="hero-buttons"><a class="btn" href="{{ url_for('media_watch',post_id=hero.id) }}">Play</a>{% if user %}<a class="btn secondary" href="{{ url_for('media_studio') }}">Create</a>{% endif %}</div></div></section>{% endif %}<div class="media-content">{% for label,group in groups %}<section id="{{ label|lower|replace(' ','-') }}"><div class="media-row-title"><h2>{{ label }}</h2><span>{{ group|length }} titles</span></div><div class="media-row">{% for p in group %}<a class="media-card" href="{{ url_for('media_watch',post_id=p.id) }}" data-id="{{ p.id }}"><div class="media-thumb">{% if p.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=p.id) }}" muted preload="none"></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="{{ p.title or 'KOJA Media' }}">{% endif %}<div class="media-gradient"></div><span class="media-play">▶</span><span class="media-badge">{{ p.post_type|title }}</span></div><div class="media-progress"><i id="progress-{{ p.id }}"></i></div>{% if label=='Continue Watching' %}<div class="media-progress"><i style="width:{{ (100*(p._progress/(p._duration or 1)))|round(1) }}%"></i></div>{% endif %}<div class="media-info"><h3>{{ p.title or 'KOJA Media' }}</h3><p>{{ p.body }}</p></div></a>{% endfor %}</div></section>{% endfor %}</div></div><script>document.querySelectorAll('.media-card').forEach(function(c){let id=c.dataset.id,b=document.getElementById('progress-'+id);try{let t=parseFloat(localStorage.getItem('koja_resume_'+id)||'0');if(t>3)b.style.width=Math.min(95,Math.max(4,t/6))+'%'}catch(e){}});</script>''',groups=groups,hero=hero)
+</style><div class="media-home"><div class="media-nav"><a href="#continue">Continue Watching</a><a href="#trending">Trending</a><a href="#movies">Movies</a><a href="#series">Series</a><a href="#news">News</a><a href="{{ url_for('media_live') }}">LIVE</a>{% if user %}<a href="{{ url_for('media_studio') }}">Media Studio</a>{% endif %}</div>{% if hero %}<section class="media-hero">{% if hero.media_type=='video' %}<video class="hero-media" src="{{ url_for('public_feed_media',post_id=hero.id) }}" muted autoplay loop playsinline preload="metadata"></video>{% else %}<img class="hero-media" src="{{ url_for('public_feed_media',post_id=hero.id) }}" alt="{{ hero.title or 'KOJA Media' }}">{% endif %}<div class="hero-copy"><div class="hero-kicker">KOJA MEDIA</div><h1>{{ hero.title or 'Discover on KOJA' }}</h1><p>{{ hero.body[:280] }}</p><div class="hero-buttons"><a class="btn" href="{{ url_for('media_watch',post_id=hero.id) }}">Play</a>{% if user %}<a class="btn secondary" href="{{ url_for('media_studio') }}">Create</a>{% endif %}</div></div></section>{% endif %}<div class="media-content">{% for label,group in groups %}<section id="{{ label|lower|replace(' ','-') }}"><div class="media-row-title"><h2>{{ label }}</h2><span>{{ group|length }} titles</span></div><div class="media-row">{% for p in group %}<a class="media-card" href="{{ url_for('media_watch',post_id=p.id) }}" data-id="{{ p.id }}"><div class="media-thumb">{% if p.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=p.id) }}" muted preload="none"></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="{{ p.title or 'KOJA Media' }}">{% endif %}<div class="media-gradient"></div><span class="media-play">▶</span><span class="media-badge">{{ p.post_type|title }}</span></div><div class="media-progress"><i id="progress-{{ p.id }}"></i></div>{% if label=='Continue Watching' %}<div class="media-progress"><i style="width:{{ (100*(p._progress/(p._duration or 1)))|round(1) }}%"></i></div>{% endif %}<div class="media-info"><h3>{{ p.title or 'KOJA Media' }}</h3><p>{{ p.body }}</p></div></a>{% endfor %}</div></section>{% endfor %}</div></div><script>document.querySelectorAll('.media-card').forEach(function(c){let id=c.dataset.id,b=document.getElementById('progress-'+id);try{let t=parseFloat(localStorage.getItem('koja_resume_'+id)||'0');if(t>3)b.style.width=Math.min(95,Math.max(4,t/6))+'%'}catch(e){}});</script>''',groups=groups,hero=hero)
+
+# ============================================================
+# KOJA MEDIA — EXTERNAL LIVE URLS
+# ============================================================
+
+def detect_live_provider(value):
+    u=clean(value).lower()
+    if 'youtube.com' in u or 'youtu.be/' in u: return 'youtube'
+    if 'facebook.com' in u or 'fb.watch' in u: return 'facebook'
+    if 'twitch.tv' in u: return 'twitch'
+    if '.m3u8' in u: return 'hls'
+    if '.mpd' in u: return 'dash'
+    if any(x in u.split('?')[0] for x in ('.mp4','.webm','.mov','.m4v')): return 'video'
+    if 'microsoftstream.com' in u or 'stream.microsoft.com' in u: return 'microsoft'
+    return 'other'
+
+def youtube_embed_url(value):
+    from urllib.parse import urlparse, parse_qs
+    u=clean(value)
+    try:
+        q=parse_qs(urlparse(u).query)
+        vid=(q.get('v') or [''])[0]
+        if not vid and 'youtu.be/' in u: vid=urlparse(u).path.strip('/').split('/')[0]
+        if not vid and '/live/' in u: vid=u.split('/live/',1)[1].split('?',1)[0].split('/',1)[0]
+        if vid: return f'https://www.youtube.com/embed/{quote(vid,safe="")}?autoplay=1&rel=0'
+    except Exception: pass
+    return ''
+
+def twitch_embed_url(value):
+    from urllib.parse import urlparse
+    u=clean(value)
+    try:
+        host=urlparse(u).hostname or ''
+        parts=[x for x in (urlparse(u).path or '').split('/') if x]
+        channel=parts[0] if host.endswith('twitch.tv') and parts else ''
+        if channel:
+            parent=(request.host or 'koja-africa.onrender.com').split(':',1)[0]
+            return f'https://player.twitch.tv/?channel={quote(channel,safe="")}&parent={quote(parent,safe="")}&autoplay=true'
+    except Exception: pass
+    return ''
+
+def facebook_embed_url(value):
+    u=clean(value)
+    return 'https://www.facebook.com/plugins/video.php?href='+quote(u,safe='')+'&show_text=false&autoplay=true' if u else ''
+
+def live_player_config(stream):
+    url=clean(stream.get('stream_url'))
+    provider=clean(stream.get('provider')).lower() or detect_live_provider(url)
+    if provider=='youtube': return {'kind':'iframe','src':youtube_embed_url(url),'label':'YouTube Live'}
+    if provider=='facebook': return {'kind':'iframe','src':facebook_embed_url(url),'label':'Facebook Live'}
+    if provider=='twitch': return {'kind':'iframe','src':twitch_embed_url(url),'label':'Twitch Live'}
+    if provider=='hls' or '.m3u8' in url.lower(): return {'kind':'hls','src':url,'label':'HLS Live'}
+    if provider=='dash' or '.mpd' in url.lower(): return {'kind':'dash','src':url,'label':'DASH Live'}
+    if provider=='video': return {'kind':'video','src':url,'label':'Direct Live Video'}
+    return {'kind':'other','src':url,'label':'External Live URL'}
+
+@app.route('/media/live')
+def media_live():
+    rows=db_select('koja_media_live_streams',{'is_public':'eq.true'},order='created_at.desc',limit=100) or []
+    for r in rows: r['_provider']=clean(r.get('provider')) or detect_live_provider(r.get('stream_url'))
+    return render_page('KOJA Live',r'''<style>
+.live-home{background:#05070b;color:#f7f9fc;min-height:calc(100vh - 110px);padding-bottom:35px}.live-head{padding:28px 20px;background:linear-gradient(135deg,#07101b,#101722);border-bottom:1px solid rgba(255,255,255,.08)}.live-head h1{margin:0 0 7px;font-size:clamp(28px,5vw,48px)}.live-head p{color:#aeb9c8}.live-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px}.live-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:15px;padding:20px}.live-card{background:#0b1119;border:1px solid rgba(255,255,255,.08);border-radius:14px;overflow:hidden;text-decoration:none;color:#fff}.live-card img{width:100%;aspect-ratio:16/9;object-fit:cover;display:block;background:#111923}.live-placeholder{width:100%;aspect-ratio:16/9;background:linear-gradient(135deg,#0c1622,#111923);display:grid;place-items:center;font-weight:800;letter-spacing:.12em}.live-card-info{padding:12px}.live-badge{display:inline-block;background:#e50914;border-radius:999px;padding:4px 7px;font-size:10px;font-weight:800}.live-provider{font-size:11px;color:#8f9caf;margin-top:7px}
+</style><div class="live-home"><div class="live-head"><div style="color:#63b4ff;font-weight:800;letter-spacing:.15em">KOJA MEDIA</div><h1>KOJA LIVE</h1><p>Watch permitted live streams from KOJA creators, businesses and external providers.</p><div class="live-actions"><a class="btn secondary" href="{{ url_for('media_nextgen') }}">Back to Media</a>{% if user %}<a class="btn" href="{{ url_for('media_live_add') }}">Add Live Stream</a>{% endif %}</div></div><div class="live-grid">{% for s in streams %}<a class="live-card" href="{{ url_for('media_live_watch',stream_id=s.id) }}">{% if s.thumbnail_url %}<img src="{{ s.thumbnail_url }}" loading="lazy" alt="{{ s.title }}">{% else %}<div class="live-placeholder">KOJA LIVE</div>{% endif %}<div class="live-card-info"><span class="live-badge">LIVE</span><h3>{{ s.title }}</h3><div class="live-provider">{{ s._provider|title }} · {{ s.category or 'Live Stream' }}</div></div></a>{% else %}<div class="card"><h3>No live streams yet.</h3><p>Sign in and add an external live stream URL.</p></div>{% endfor %}</div></div>''',streams=rows)
+
+@app.route('/media/live/add',methods=['GET','POST'])
+@login_required
+def media_live_add():
+    if request.method=='POST':
+        title=clean(request.form.get('title')); stream_url=clean(request.form.get('stream_url')); thumbnail=clean(request.form.get('thumbnail_url')); category=clean(request.form.get('category')) or 'Live Stream'; provider=clean(request.form.get('provider')).lower() or detect_live_provider(stream_url)
+        if not title or not stream_url:
+            flash('Title and live stream URL are required.','danger'); return redirect(url_for('media_live_add'))
+        if not re.match(r'^https://',stream_url,re.I):
+            flash('For external live streams, use a secure HTTPS URL.','danger'); return redirect(url_for('media_live_add'))
+        if provider not in {'youtube','facebook','twitch','hls','dash','video','microsoft','other'}: provider=detect_live_provider(stream_url)
+        row,err=db_insert('koja_media_live_streams',{'owner_id':(current_user() or {}).get('id'),'title':title,'stream_url':stream_url,'provider':provider,'thumbnail_url':thumbnail or None,'category':category,'is_public':True,'created_at':utc_now(),'updated_at':utc_now()})
+        if err: flash('Could not save the live stream. Run the KOJA Live migration in Supabase first.','danger')
+        else: flash('Live stream connected to KOJA Media.','success'); return redirect(url_for('media_live'))
+    return render_page('Add KOJA Live Stream',r'''<div class="hero"><h1>Add KOJA Live Stream</h1><p>Connect a permitted external live URL without downloading or re-hosting the stream.</p></div><div class="card" style="max-width:760px;margin:auto"><form method="post"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><label>Title</label><input name="title" maxlength="180" required placeholder="Live event title"><label>Live URL</label><input name="stream_url" type="url" required placeholder="https://...m3u8 or provider live URL"><label>Provider</label><select name="provider"><option value="">Auto detect</option><option value="youtube">YouTube Live</option><option value="facebook">Facebook Live</option><option value="twitch">Twitch</option><option value="hls">HLS (.m3u8)</option><option value="dash">DASH (.mpd)</option><option value="video">Direct video</option><option value="microsoft">Microsoft / Stream</option><option value="other">Other</option></select><label>Thumbnail URL (optional)</label><input name="thumbnail_url" type="url" placeholder="https://..."><label>Category</label><input name="category" maxlength="80" placeholder="News, Sports, Education, Business..."><p class="small">KOJA can play direct HLS/DASH/video URLs and supported provider embeds. A normal webpage URL is not automatically a video stream.</p><button class="btn" type="submit">Connect Live Stream</button></form></div>''')
+
+@app.route('/media/live/watch/<stream_id>')
+def media_live_watch(stream_id):
+    stream=first_row('koja_media_live_streams',{'id':stream_id})
+    if not stream or not as_bool(stream.get('is_public')): abort(404)
+    cfg=live_player_config(stream)
+    return render_page('KOJA Live Player',r'''<style>
+.koja-live-watch{background:#05070b;color:#fff;min-height:calc(100vh - 110px);padding:14px}.koja-live-watch-inner{max-width:1200px;margin:auto}.live-player{background:#000;border-radius:14px;overflow:hidden;position:relative;min-height:52vh;display:grid;place-items:center}.live-player video,.live-player iframe{width:100%;height:68vh;min-height:360px;border:0;background:#000}.live-status{position:absolute;left:12px;top:12px;z-index:4;background:#e50914;padding:5px 8px;border-radius:999px;font-size:10px;font-weight:800}.live-info{padding:16px 0}.live-info h1{font-size:clamp(24px,4vw,40px);margin:0 0 7px}.live-note{color:#9eabbc;font-size:13px}.live-back{margin-bottom:12px}
+</style><div class="koja-live-watch"><div class="koja-live-watch-inner"><div class="live-back"><a class="btn secondary" href="{{ url_for('media_live') }}">Back to KOJA Live</a></div><div class="live-player" id="livePlayer"><span class="live-status">LIVE</span>{% if cfg.kind in ['hls','dash','video'] %}<video id="externalLiveVideo" controls autoplay playsinline></video>{% elif cfg.kind=='iframe' %}<iframe src="{{ cfg.src }}" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>{% else %}<div style="padding:30px;text-align:center"><h2>Provider requires a supported player</h2><p class="live-note">This URL cannot be converted into a video player automatically.</p><a class="btn" href="{{ cfg.src }}" target="_blank" rel="noopener">Open Source</a></div>{% endif %}</div><div class="live-info"><h1>{{ stream.title }}</h1><div class="live-note">{{ stream.provider|title }} · {{ stream.category or 'Live Stream' }}</div><p>{{ stream.description or 'External live stream connected through KOJA Media.' }}</p></div></div></div>
+{% if cfg.kind=='hls' %}<script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.2/dist/hls.min.js"></script><script>(function(){const v=document.getElementById('externalLiveVideo'),src={{ cfg.src|tojson }};if(window.Hls&&Hls.isSupported()){const h=new Hls({liveDurationInfinity:true,startLevel:0,maxBufferLength:20,maxMaxBufferLength:45});h.loadSource(src);h.attachMedia(v);h.on(Hls.Events.MANIFEST_PARSED,()=>v.play().catch(()=>{}));}else{v.src=src;v.play().catch(()=>{});}})();</script>{% elif cfg.kind=='dash' %}<script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script><script>(function(){const v=document.getElementById('externalLiveVideo');if(window.dashjs){const p=dashjs.MediaPlayer().create();p.initialize(v,{{ cfg.src|tojson }},true);}})();</script>{% elif cfg.kind=='video' %}<script>document.getElementById('externalLiveVideo').src={{ cfg.src|tojson }};document.getElementById('externalLiveVideo').play().catch(()=>{});</script>{% endif %}''',stream=stream,cfg=cfg)
 
 @app.route('/api/nextgen/media-event',methods=['POST'])
 def nextgen_media_event():
