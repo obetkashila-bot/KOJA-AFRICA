@@ -10794,29 +10794,23 @@ def koja_cloud_status_test():
             'api_version': 'v1',
         }), 503
 
-    # Current Cloud API: /api/v1/auth/key is the authenticated account/key
-    # identity endpoint. If a future/compatible Cloud deployment exposes
-    # the requested short /account alias, use it first.
-    account = _koja_cloud_test_get('/account')
-    if account.get('status') == 404:
-        account = _koja_cloud_test_get('/api/v1/auth/key')
-
-    if not account.get('ok'):
-        return jsonify({
-            'connected': False,
-            'cloud': 'KOJA CLOUD',
-            'configured': True,
-            'project_id': None,
-            'project': None,
-            'api_version': 'v1',
-            'error': 'KOJA Cloud authentication failed or the account endpoint is unavailable.',
-        }), 502
-
-    projects = _koja_cloud_test_get('/projects')
+    # The current KOJA CLOUD V16.1 API does not expose /api/v1/account.
+    # Authentication is performed by the X-KOJA-API-KEY middleware on
+    # /api/v1/projects, so a successful project read is the authoritative
+    # production connection test.
+    projects = _koja_cloud_test_get('/api/v1/projects')
     if projects.get('status') == 404:
-        projects = _koja_cloud_test_get('/api/v1/projects')
+        projects = _koja_cloud_test_get('/projects')
 
     if not projects.get('ok'):
+        status = projects.get('status')
+        error = 'KOJA Cloud API authentication or project access failed.'
+        if status == 401:
+            error = 'KOJA Cloud API key was rejected.'
+        elif status == 403:
+            error = 'KOJA Cloud API key lacks the required read scope or project access.'
+        elif status == 404:
+            error = 'KOJA Cloud projects endpoint is unavailable.'
         return jsonify({
             'connected': False,
             'cloud': 'KOJA CLOUD',
@@ -10824,7 +10818,7 @@ def koja_cloud_status_test():
             'project_id': None,
             'project': None,
             'api_version': 'v1',
-            'error': 'KOJA Cloud account authenticated, but projects could not be read.',
+            'error': error,
         }), 502
 
     project_id = (os.getenv('KOJA_CLOUD_PROJECT_ID') or '').strip()
@@ -10835,17 +10829,26 @@ def koja_cloud_status_test():
     selected = None
     if project_id:
         selected = next((x for x in project_rows if str(x.get('id')) == project_id), None)
-    if not selected and project_rows:
+        if not selected:
+            return jsonify({
+                'connected': False,
+                'cloud': 'KOJA CLOUD',
+                'configured': True,
+                'project_id': project_id,
+                'project': None,
+                'api_version': 'v1',
+                'error': 'KOJA Cloud API is reachable, but the configured project was not found for this API key.',
+            }), 502
+    elif project_rows:
         selected = project_rows[0]
 
-    account_data = account.get('data') if isinstance(account.get('data'), dict) else {}
-    resolved_project_id = project_id or str(account_data.get('project_id') or (selected or {}).get('id') or '')
-    resolved_name = (selected or {}).get('name') or account_data.get('project_name')
+    resolved_project_id = project_id or str((selected or {}).get('id') or '')
+    resolved_name = (selected or {}).get('name')
 
     return jsonify({
-        'connected': bool(selected or resolved_project_id),
+        'connected': bool(selected),
         'cloud': 'KOJA CLOUD',
         'project_id': resolved_project_id or None,
         'project': resolved_name or None,
-        'api_version': account_data.get('api_version') or 'v1',
+        'api_version': 'v1',
     }), 200
