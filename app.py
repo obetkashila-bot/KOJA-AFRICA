@@ -10727,3 +10727,125 @@ def connect_ice_config():
         urls=[x.strip() for x in turn_url.split(',') if x.strip()]
         servers.append({'urls': urls or [turn_url], 'username':turn_username, 'credential':turn_credential})
     return jsonify({'iceServers':servers,'turnConfigured':len(servers)>1})
+
+
+# ============================================================
+# KOJA AFRICA -> KOJA CLOUD CONNECTION TEST
+# Production-safe diagnostics only. No API secret is returned.
+# Uses Render environment variables:
+#   KOJA_CLOUD_API_URL
+#   KOJA_CLOUD_API_KEY
+#   KOJA_CLOUD_PROJECT_ID
+# The current KOJA CLOUD V1 API exposes the canonical paths under
+# /api/v1. For compatibility, /account and /projects are tried first
+# and the canonical V1 paths are used when the short aliases are absent.
+# ============================================================
+
+def _koja_cloud_test_configured():
+    return bool(
+        (os.getenv('KOJA_CLOUD_API_URL') or '').strip()
+        and (os.getenv('KOJA_CLOUD_API_KEY') or '').strip()
+    )
+
+
+def _koja_cloud_test_get(path):
+    base = (os.getenv('KOJA_CLOUD_API_URL') or '').strip().rstrip('/')
+    key = (os.getenv('KOJA_CLOUD_API_KEY') or '').strip()
+    if not base or not key:
+        return {'ok': False, 'status': 503, 'error': 'KOJA Cloud integration is not configured.'}
+    try:
+        response = requests.get(
+            base + path,
+            headers={
+                'Accept': 'application/json',
+                'X-KOJA-API-KEY': key,
+                'User-Agent': 'KOJA-AFRICA-CLOUD-STATUS/1.0',
+            },
+            timeout=min(int(os.getenv('KOJA_CLOUD_TIMEOUT', '15') or 15), 20),
+        )
+        try:
+            data = response.json()
+        except Exception:
+            data = {}
+        return {
+            'ok': response.ok,
+            'status': response.status_code,
+            'data': data if isinstance(data, (dict, list)) else {},
+        }
+    except requests.RequestException:
+        return {'ok': False, 'status': 502, 'error': 'KOJA Cloud could not be reached.'}
+    except Exception:
+        return {'ok': False, 'status': 502, 'error': 'KOJA Cloud connection test failed.'}
+
+
+@app.route('/api/cloud/status', methods=['GET'])
+def koja_cloud_status_test():
+    """Return Cloud connection state without exposing credentials."""
+    if _rate_limited('cloud-status:' + str(request.remote_addr or 'unknown'), 30, 300):
+        return jsonify({'connected': False, 'error': 'Too many connection checks. Please wait.'}), 429
+
+    if not _koja_cloud_test_configured():
+        return jsonify({
+            'connected': False,
+            'cloud': 'KOJA CLOUD',
+            'configured': False,
+            'project_id': None,
+            'project': None,
+            'api_version': 'v1',
+        }), 503
+
+    # Current Cloud API: /api/v1/auth/key is the authenticated account/key
+    # identity endpoint. If a future/compatible Cloud deployment exposes
+    # the requested short /account alias, use it first.
+    account = _koja_cloud_test_get('/account')
+    if account.get('status') == 404:
+        account = _koja_cloud_test_get('/api/v1/auth/key')
+
+    if not account.get('ok'):
+        return jsonify({
+            'connected': False,
+            'cloud': 'KOJA CLOUD',
+            'configured': True,
+            'project_id': None,
+            'project': None,
+            'api_version': 'v1',
+            'error': 'KOJA Cloud authentication failed or the account endpoint is unavailable.',
+        }), 502
+
+    projects = _koja_cloud_test_get('/projects')
+    if projects.get('status') == 404:
+        projects = _koja_cloud_test_get('/api/v1/projects')
+
+    if not projects.get('ok'):
+        return jsonify({
+            'connected': False,
+            'cloud': 'KOJA CLOUD',
+            'configured': True,
+            'project_id': None,
+            'project': None,
+            'api_version': 'v1',
+            'error': 'KOJA Cloud account authenticated, but projects could not be read.',
+        }), 502
+
+    project_id = (os.getenv('KOJA_CLOUD_PROJECT_ID') or '').strip()
+    project_rows = projects.get('data') if isinstance(projects.get('data'), list) else []
+    if isinstance(projects.get('data'), dict):
+        project_rows = [projects['data']]
+
+    selected = None
+    if project_id:
+        selected = next((x for x in project_rows if str(x.get('id')) == project_id), None)
+    if not selected and project_rows:
+        selected = project_rows[0]
+
+    account_data = account.get('data') if isinstance(account.get('data'), dict) else {}
+    resolved_project_id = project_id or str(account_data.get('project_id') or (selected or {}).get('id') or '')
+    resolved_name = (selected or {}).get('name') or account_data.get('project_name')
+
+    return jsonify({
+        'connected': bool(selected or resolved_project_id),
+        'cloud': 'KOJA CLOUD',
+        'project_id': resolved_project_id or None,
+        'project': resolved_name or None,
+        'api_version': account_data.get('api_version') or 'v1',
+    }), 200
