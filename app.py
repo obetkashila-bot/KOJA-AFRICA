@@ -1191,6 +1191,90 @@ self.addEventListener('fetch', function(event) {
 """
     return Response(script, mimetype='application/javascript', headers={'Cache-Control':'no-store'})
 
+# ============================================================
+# KOJA CLOUD production connection test
+# Uses the canonical Cloud API endpoint: GET /api/v1/projects
+# Authentication: X-KOJA-API-KEY
+# Secrets are never returned to the browser.
+# ============================================================
+@app.route("/api/cloud/status", methods=["GET"])
+def api_cloud_status():
+    cloud_url = os.getenv("KOJA_CLOUD_API_URL", "").strip().rstrip("/")
+    cloud_key = os.getenv("KOJA_CLOUD_API_KEY", "").strip()
+    configured_project_id = os.getenv("KOJA_CLOUD_PROJECT_ID", "").strip()
+
+    result = {
+        "api_version": "v1",
+        "cloud": "KOJA CLOUD",
+        "configured": bool(cloud_url and cloud_key and configured_project_id),
+        "connected": False,
+        "error": None,
+        "project": None,
+        "project_id": configured_project_id or None,
+    }
+
+    if not cloud_url or not cloud_key:
+        result["error"] = "KOJA Cloud API URL or API key is not configured."
+        return jsonify(result), 503
+
+    # The Render environment variable may already include /api/v1.
+    # Normalize it so we never accidentally request /api/v1/api/v1/....
+    if cloud_url.endswith("/api/v1"):
+        projects_url = cloud_url + "/projects"
+    else:
+        projects_url = cloud_url + "/api/v1/projects"
+
+    headers = {
+        "Accept": "application/json",
+        "X-KOJA-API-KEY": cloud_key,
+    }
+
+    try:
+        response = requests.get(projects_url, headers=headers, timeout=15)
+    except requests.RequestException as exc:
+        logger.warning("KOJA Cloud connection test failed: %s", exc.__class__.__name__)
+        result["error"] = "KOJA Cloud could not be reached."
+        return jsonify(result), 502
+
+    if response.status_code in (401, 403):
+        result["error"] = "KOJA Cloud rejected the API key or its permissions."
+        return jsonify(result), 502
+
+    if response.status_code >= 500:
+        result["error"] = "KOJA Cloud returned a server error."
+        return jsonify(result), 502
+
+    if response.status_code != 200:
+        result["error"] = "KOJA Cloud projects endpoint returned HTTP %s." % response.status_code
+        return jsonify(result), 502
+
+    try:
+        payload = response.json()
+    except ValueError:
+        result["error"] = "KOJA Cloud returned an invalid JSON response."
+        return jsonify(result), 502
+
+    # Cloud may return either a bare list or a JSON object containing projects.
+    projects = payload if isinstance(payload, list) else payload.get("projects", []) if isinstance(payload, dict) else []
+    if not isinstance(projects, list):
+        projects = []
+
+    selected = None
+    if configured_project_id:
+        for project in projects:
+            if isinstance(project, dict) and str(project.get("id", "")) == configured_project_id:
+                selected = project
+                break
+
+    result["connected"] = True
+    result["project"] = selected
+    if selected is None and configured_project_id:
+        result["error"] = "KOJA Cloud is reachable, but the configured project was not returned for this API key."
+    else:
+        result["error"] = None
+
+    return jsonify(result), 200
+
 @app.route("/health")
 def health():
     return jsonify({
@@ -10727,128 +10811,3 @@ def connect_ice_config():
         urls=[x.strip() for x in turn_url.split(',') if x.strip()]
         servers.append({'urls': urls or [turn_url], 'username':turn_username, 'credential':turn_credential})
     return jsonify({'iceServers':servers,'turnConfigured':len(servers)>1})
-
-
-# ============================================================
-# KOJA AFRICA -> KOJA CLOUD CONNECTION TEST
-# Production-safe diagnostics only. No API secret is returned.
-# Uses Render environment variables:
-#   KOJA_CLOUD_API_URL
-#   KOJA_CLOUD_API_KEY
-#   KOJA_CLOUD_PROJECT_ID
-# The current KOJA CLOUD V1 API exposes the canonical paths under
-# /api/v1. For compatibility, /account and /projects are tried first
-# and the canonical V1 paths are used when the short aliases are absent.
-# ============================================================
-
-def _koja_cloud_test_configured():
-    return bool(
-        (os.getenv('KOJA_CLOUD_API_URL') or '').strip()
-        and (os.getenv('KOJA_CLOUD_API_KEY') or '').strip()
-    )
-
-
-def _koja_cloud_test_get(path):
-    base = (os.getenv('KOJA_CLOUD_API_URL') or '').strip().rstrip('/')
-    key = (os.getenv('KOJA_CLOUD_API_KEY') or '').strip()
-    if not base or not key:
-        return {'ok': False, 'status': 503, 'error': 'KOJA Cloud integration is not configured.'}
-    try:
-        response = requests.get(
-            base + path,
-            headers={
-                'Accept': 'application/json',
-                'X-KOJA-API-KEY': key,
-                'User-Agent': 'KOJA-AFRICA-CLOUD-STATUS/1.0',
-            },
-            timeout=min(int(os.getenv('KOJA_CLOUD_TIMEOUT', '15') or 15), 20),
-        )
-        try:
-            data = response.json()
-        except Exception:
-            data = {}
-        return {
-            'ok': response.ok,
-            'status': response.status_code,
-            'data': data if isinstance(data, (dict, list)) else {},
-        }
-    except requests.RequestException:
-        return {'ok': False, 'status': 502, 'error': 'KOJA Cloud could not be reached.'}
-    except Exception:
-        return {'ok': False, 'status': 502, 'error': 'KOJA Cloud connection test failed.'}
-
-
-@app.route('/api/cloud/status', methods=['GET'])
-def koja_cloud_status_test():
-    """Return Cloud connection state without exposing credentials."""
-    if _rate_limited('cloud-status:' + str(request.remote_addr or 'unknown'), 30, 300):
-        return jsonify({'connected': False, 'error': 'Too many connection checks. Please wait.'}), 429
-
-    if not _koja_cloud_test_configured():
-        return jsonify({
-            'connected': False,
-            'cloud': 'KOJA CLOUD',
-            'configured': False,
-            'project_id': None,
-            'project': None,
-            'api_version': 'v1',
-        }), 503
-
-    # The current KOJA CLOUD V16.1 API does not expose /api/v1/account.
-    # Authentication is performed by the X-KOJA-API-KEY middleware on
-    # /api/v1/projects, so a successful project read is the authoritative
-    # production connection test.
-    projects = _koja_cloud_test_get('/api/v1/projects')
-    if projects.get('status') == 404:
-        projects = _koja_cloud_test_get('/projects')
-
-    if not projects.get('ok'):
-        status = projects.get('status')
-        error = 'KOJA Cloud API authentication or project access failed.'
-        if status == 401:
-            error = 'KOJA Cloud API key was rejected.'
-        elif status == 403:
-            error = 'KOJA Cloud API key lacks the required read scope or project access.'
-        elif status == 404:
-            error = 'KOJA Cloud projects endpoint is unavailable.'
-        return jsonify({
-            'connected': False,
-            'cloud': 'KOJA CLOUD',
-            'configured': True,
-            'project_id': None,
-            'project': None,
-            'api_version': 'v1',
-            'error': error,
-        }), 502
-
-    project_id = (os.getenv('KOJA_CLOUD_PROJECT_ID') or '').strip()
-    project_rows = projects.get('data') if isinstance(projects.get('data'), list) else []
-    if isinstance(projects.get('data'), dict):
-        project_rows = [projects['data']]
-
-    selected = None
-    if project_id:
-        selected = next((x for x in project_rows if str(x.get('id')) == project_id), None)
-        if not selected:
-            return jsonify({
-                'connected': False,
-                'cloud': 'KOJA CLOUD',
-                'configured': True,
-                'project_id': project_id,
-                'project': None,
-                'api_version': 'v1',
-                'error': 'KOJA Cloud API is reachable, but the configured project was not found for this API key.',
-            }), 502
-    elif project_rows:
-        selected = project_rows[0]
-
-    resolved_project_id = project_id or str((selected or {}).get('id') or '')
-    resolved_name = (selected or {}).get('name')
-
-    return jsonify({
-        'connected': bool(selected),
-        'cloud': 'KOJA CLOUD',
-        'project_id': resolved_project_id or None,
-        'project': resolved_name or None,
-        'api_version': 'v1',
-    }), 200
