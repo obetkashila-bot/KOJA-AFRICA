@@ -1191,90 +1191,6 @@ self.addEventListener('fetch', function(event) {
 """
     return Response(script, mimetype='application/javascript', headers={'Cache-Control':'no-store'})
 
-# ============================================================
-# KOJA CLOUD production connection test
-# Uses the canonical Cloud API endpoint: GET /api/v1/projects
-# Authentication: X-KOJA-API-KEY
-# Secrets are never returned to the browser.
-# ============================================================
-@app.route("/api/cloud/status", methods=["GET"])
-def api_cloud_status():
-    cloud_url = os.getenv("KOJA_CLOUD_API_URL", "").strip().rstrip("/")
-    cloud_key = os.getenv("KOJA_CLOUD_API_KEY", "").strip()
-    configured_project_id = os.getenv("KOJA_CLOUD_PROJECT_ID", "").strip()
-
-    result = {
-        "api_version": "v1",
-        "cloud": "KOJA CLOUD",
-        "configured": bool(cloud_url and cloud_key and configured_project_id),
-        "connected": False,
-        "error": None,
-        "project": None,
-        "project_id": configured_project_id or None,
-    }
-
-    if not cloud_url or not cloud_key:
-        result["error"] = "KOJA Cloud API URL or API key is not configured."
-        return jsonify(result), 503
-
-    # The Render environment variable may already include /api/v1.
-    # Normalize it so we never accidentally request /api/v1/api/v1/....
-    if cloud_url.endswith("/api/v1"):
-        projects_url = cloud_url + "/projects"
-    else:
-        projects_url = cloud_url + "/api/v1/projects"
-
-    headers = {
-        "Accept": "application/json",
-        "X-KOJA-API-KEY": cloud_key,
-    }
-
-    try:
-        response = requests.get(projects_url, headers=headers, timeout=15)
-    except requests.RequestException as exc:
-        logger.warning("KOJA Cloud connection test failed: %s", exc.__class__.__name__)
-        result["error"] = "KOJA Cloud could not be reached."
-        return jsonify(result), 502
-
-    if response.status_code in (401, 403):
-        result["error"] = "KOJA Cloud rejected the API key or its permissions."
-        return jsonify(result), 502
-
-    if response.status_code >= 500:
-        result["error"] = "KOJA Cloud returned a server error."
-        return jsonify(result), 502
-
-    if response.status_code != 200:
-        result["error"] = "KOJA Cloud projects endpoint returned HTTP %s." % response.status_code
-        return jsonify(result), 502
-
-    try:
-        payload = response.json()
-    except ValueError:
-        result["error"] = "KOJA Cloud returned an invalid JSON response."
-        return jsonify(result), 502
-
-    # Cloud may return either a bare list or a JSON object containing projects.
-    projects = payload if isinstance(payload, list) else payload.get("projects", []) if isinstance(payload, dict) else []
-    if not isinstance(projects, list):
-        projects = []
-
-    selected = None
-    if configured_project_id:
-        for project in projects:
-            if isinstance(project, dict) and str(project.get("id", "")) == configured_project_id:
-                selected = project
-                break
-
-    result["connected"] = True
-    result["project"] = selected
-    if selected is None and configured_project_id:
-        result["error"] = "KOJA Cloud is reachable, but the configured project was not returned for this API key."
-    else:
-        result["error"] = None
-
-    return jsonify(result), 200
-
 @app.route("/health")
 def health():
     return jsonify({
@@ -10811,3 +10727,217 @@ def connect_ice_config():
         urls=[x.strip() for x in turn_url.split(',') if x.strip()]
         servers.append({'urls': urls or [turn_url], 'username':turn_username, 'credential':turn_credential})
     return jsonify({'iceServers':servers,'turnConfigured':len(servers)>1})
+
+# ============================================================
+# KOJA AFRICA -> KOJA CLOUD CUSTOMER CONNECTOR V1.1
+# Incremental integration only. KOJA CLOUD remains independently hosted.
+# The Cloud API key is server-side only and is never returned to browsers.
+# Supports either:
+#   KOJA_CLOUD_API_URL=https://host
+# or:
+#   KOJA_CLOUD_API_URL=https://host/api/v1
+# ============================================================
+KOJA_CLOUD_CONNECTOR_VERSION = '1.1.0'
+KOJA_CLOUD_TIMEOUT = max(5, min(int(os.getenv('KOJA_CLOUD_TIMEOUT', '20') or 20), 60))
+KOJA_CLOUD_RETRIES = max(0, min(int(os.getenv('KOJA_CLOUD_RETRIES', '2') or 2), 3))
+
+
+def _koja_cloud_cfg():
+    base = (os.getenv('KOJA_CLOUD_API_URL') or '').strip().rstrip('/')
+    key = (os.getenv('KOJA_CLOUD_API_KEY') or '').strip()
+    project_id = (os.getenv('KOJA_CLOUD_PROJECT_ID') or '').strip()
+    project_code = (os.getenv('KOJA_CLOUD_PROJECT_CODE') or '').strip()
+    if base.endswith('/api/v1'):
+        api_root = base
+    elif base.endswith('/api'):
+        api_root = base + '/v1'
+    else:
+        api_root = base + '/api/v1' if base else ''
+    return base, api_root, key, project_id, project_code
+
+
+def _koja_cloud_request(path, method='GET', params=None, json_body=None):
+    base, api_root, key, _, _ = _koja_cloud_cfg()
+    if not api_root or not key:
+        return {'ok': False, 'configured': False, 'status': 503, 'error': 'KOJA CLOUD connector is not configured.'}
+    clean_path = '/' + str(path or '').lstrip('/')
+    url = api_root + clean_path
+    headers = {
+        'Accept': 'application/json',
+        'X-KOJA-API-KEY': key,
+        'User-Agent': 'KOJA-AFRICA-KOJA-CLOUD/1.1',
+    }
+    last_error = None
+    for attempt in range(KOJA_CLOUD_RETRIES + 1):
+        try:
+            response = requests.request(
+                method.upper(), url, headers=headers, params=params,
+                json=json_body, timeout=KOJA_CLOUD_TIMEOUT,
+            )
+            status = response.status_code
+            try:
+                data = response.json()
+            except Exception:
+                data = None
+            if status == 429 and attempt < KOJA_CLOUD_RETRIES:
+                retry_after = response.headers.get('Retry-After', '1')
+                try:
+                    delay = max(0.25, min(float(retry_after), 5.0))
+                except Exception:
+                    delay = 1.0
+                time.sleep(delay)
+                continue
+            if 200 <= status < 300:
+                return {'ok': True, 'configured': True, 'status': status, 'data': data}
+            detail = None
+            if isinstance(data, dict):
+                detail = data.get('error') or data.get('message') or data.get('detail')
+            if status == 401:
+                detail = detail or 'Cloud API key was rejected (401).'
+            elif status == 403:
+                detail = detail or 'Cloud API key lacks permission (403).'
+            elif status == 429:
+                detail = detail or 'Cloud API rate limit reached (429).'
+            elif status >= 500:
+                detail = detail or 'KOJA CLOUD returned a server error.'
+            else:
+                detail = detail or ('KOJA CLOUD request returned HTTP %s.' % status)
+            return {'ok': False, 'configured': True, 'status': status, 'error': detail, 'data': data}
+        except requests.exceptions.Timeout:
+            last_error = 'KOJA CLOUD request timed out.'
+        except requests.exceptions.ConnectionError:
+            last_error = 'KOJA CLOUD could not be reached.'
+        except requests.exceptions.RequestException:
+            last_error = 'KOJA CLOUD request failed.'
+        except Exception:
+            last_error = 'KOJA CLOUD connector error.'
+        if attempt < KOJA_CLOUD_RETRIES:
+            time.sleep(0.5 * (attempt + 1))
+    return {'ok': False, 'configured': True, 'status': 502, 'error': last_error or 'KOJA CLOUD request failed.'}
+
+
+def _koja_cloud_select_project(payload):
+    _, _, _, wanted_id, wanted_code = _koja_cloud_cfg()
+    if isinstance(payload, dict):
+        candidates = payload.get('projects')
+        if candidates is None:
+            candidates = payload.get('data')
+        if candidates is None and payload.get('id'):
+            candidates = [payload]
+    elif isinstance(payload, list):
+        candidates = payload
+    else:
+        candidates = []
+    if not isinstance(candidates, list):
+        candidates = []
+    for p in candidates:
+        if not isinstance(p, dict):
+            continue
+        if wanted_id and str(p.get('id') or p.get('project_id') or '') == wanted_id:
+            return p
+        if wanted_code and str(p.get('project_code') or '') == wanted_code:
+            return p
+    # If exactly one project is returned and no selector is configured, use it.
+    if not wanted_id and not wanted_code and len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
+def _koja_cloud_public_result(result):
+    out = {
+        'ok': bool(result.get('ok')),
+        'configured': bool(result.get('configured')),
+        'status': result.get('status'),
+        'error': result.get('error'),
+    }
+    if isinstance(result.get('data'), dict):
+        d = result['data']
+        out['cloud_version'] = d.get('cloud_version')
+        out['api_version'] = d.get('api_version')
+    return out
+
+
+@app.get('/api/cloud/status')
+@login_required
+def koja_cloud_status_v11():
+    base, api_root, key, project_id, project_code = _koja_cloud_cfg()
+    if not base or not api_root or not key:
+        return jsonify({
+            'api_version': 'v1', 'cloud': 'KOJA CLOUD',
+            'configured': False, 'connected': False,
+            'integration_version': KOJA_CLOUD_CONNECTOR_VERSION,
+            'error': 'Set KOJA_CLOUD_API_URL and KOJA_CLOUD_API_KEY in KOJA AFRICA Render environment variables.',
+            'project_id': project_id or None,
+        }), 503
+
+    health = _koja_cloud_request('/health')
+    projects = _koja_cloud_request('/projects') if health.get('ok') else {'ok': False, 'status': health.get('status'), 'error': health.get('error'), 'configured': True}
+    project = _koja_cloud_select_project(projects.get('data')) if projects.get('ok') else None
+    connected = bool(health.get('ok') and projects.get('ok') and project)
+    health_data = health.get('data') if isinstance(health.get('data'), dict) else {}
+    if not health.get('ok'):
+        error = 'Cloud health check failed: ' + str(health.get('error') or 'unknown error')
+        http_status = int(health.get('status') or 502)
+    elif not projects.get('ok'):
+        error = 'Cloud projects check failed: ' + str(projects.get('error') or 'unknown error')
+        http_status = int(projects.get('status') or 502)
+    elif not project:
+        selector = project_id or project_code or 'no project selector'
+        error = 'KOJA CLOUD is reachable, but the configured project was not returned for this API key (%s).' % selector
+        http_status = 409
+    else:
+        error = None
+        http_status = 200
+
+    return jsonify({
+        'api_version': 'v1',
+        'cloud': 'KOJA CLOUD',
+        'configured': True,
+        'connected': connected,
+        'integration_version': KOJA_CLOUD_CONNECTOR_VERSION,
+        'cloud_version': health_data.get('cloud_version'),
+        'health_status': health_data.get('status'),
+        'project': project,
+        'project_id': project_id or None,
+        'project_code': project_code or None,
+        'error': error,
+        'checks': {
+            'health': bool(health.get('ok')),
+            'projects': bool(projects.get('ok')),
+            'project_match': bool(project),
+        },
+    }), http_status
+
+
+@app.get('/api/cloud/project')
+@login_required
+def koja_cloud_project_v11():
+    result = _koja_cloud_request('/projects')
+    if not result.get('ok'):
+        return jsonify({'ok': False, 'error': result.get('error'), 'status': result.get('status')}), int(result.get('status') or 502)
+    project = _koja_cloud_select_project(result.get('data'))
+    if not project:
+        return jsonify({'ok': False, 'error': 'cloud_project_not_selected', 'message': 'The configured project was not returned for this API key.'}), 409
+    return jsonify({'ok': True, 'project': project})
+
+
+@app.get('/api/cloud/diagnostics')
+@login_required
+def koja_cloud_diagnostics_v11():
+    base, api_root, key, project_id, project_code = _koja_cloud_cfg()
+    health = _koja_cloud_request('/health') if key and api_root else {'ok': False, 'error': 'not_configured', 'status': 503}
+    projects = _koja_cloud_request('/projects') if health.get('ok') else {'ok': False, 'error': health.get('error'), 'status': health.get('status')}
+    project = _koja_cloud_select_project(projects.get('data')) if projects.get('ok') else None
+    return jsonify({
+        'integration_version': KOJA_CLOUD_CONNECTOR_VERSION,
+        'configured': bool(base and api_root and key),
+        'api_url_configured': bool(base),
+        'api_key_configured': bool(key),
+        'project_id_configured': bool(project_id),
+        'project_code_configured': bool(project_code),
+        'api_root': api_root or None,
+        'health': _koja_cloud_public_result(health),
+        'projects': _koja_cloud_public_result(projects),
+        'project_match': bool(project),
+        'project': project,
+    })
