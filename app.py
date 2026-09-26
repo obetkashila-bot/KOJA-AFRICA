@@ -3292,8 +3292,11 @@ def _media_direct_tus_endpoint(path=None, signed=False):
             base = f"https://{project_ref}.storage.supabase.co/storage/v1/upload/resumable"
         else:
             base = f"{SUPABASE_URL.rstrip('/')}/storage/v1/upload/resumable"
-    if signed and path:
-        return base.rstrip("/") + "/sign/" + quote(STORAGE_BUCKET, safe="") + "/" + quote(path.lstrip("/"), safe="/")
+    # Supabase TUS uses the normal resumable endpoint for both authenticated
+    # and signed uploads. For a signed upload, the short-lived token is sent
+    # separately in the x-signature header. Do NOT append /sign/<bucket>/<path>
+    # to the TUS endpoint; that produces an invalid upload endpoint for large
+    # resumable uploads.
     return base
 
 

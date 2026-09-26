@@ -26,3 +26,9 @@ Use the same production Supabase/Flask environment variables already used by KOJ
 
 IMPORTANT
 Supabase recommends TUS resumable uploads for files larger than about 6 MB and supports pause/resume and progress reporting. The application-side 50 GB value is not a guarantee of storage-plan capacity.
+
+LARGE-UPLOAD V6 FIX
+- Corrected the Supabase signed TUS endpoint used by Media Studio.
+- Signed TUS uploads now use the standard /storage/v1/upload/resumable endpoint with the short-lived token in x-signature.
+- The previous build incorrectly appended /sign/<bucket>/<path> to the TUS endpoint, which can cause large/resumable uploads to fail while smaller fallback uploads still work.
+- 6 MB chunks and resumable retries remain enabled.
