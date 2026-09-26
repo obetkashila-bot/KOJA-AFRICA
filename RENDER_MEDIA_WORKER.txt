@@ -1,0 +1,24 @@
+KOJA MEDIA PROCESSING V5
+
+WEB SERVICE
+Start: gunicorn app:app
+
+BACKGROUND WORKER
+Command: python media_worker.py
+
+The worker requires:
+SUPABASE_URL
+SUPABASE_SERVICE_KEY (or SUPABASE_SECRET_KEY / SUPABASE_KEY)
+SUPABASE_STORAGE_BUCKET=koja-files
+KOJA_HLS_BUCKET=koja-media-hls
+KOJA_MEDIA_PROCESSING_ENABLED=true
+
+FFmpeg and ffprobe must be installed in the worker runtime.
+If the Render environment does not already contain them, install ffmpeg in the worker runtime/image before starting the worker.
+
+Run KOJA_MEDIA_PROCESSING_V5.sql in Supabase first.
+
+Pipeline:
+Browser -> Supabase Storage -> processing queue -> FFmpeg worker -> HLS variants -> HLS bucket -> KOJA Media player
+
+The Flask web service never receives the movie bytes during direct upload.

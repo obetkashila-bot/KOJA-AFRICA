@@ -1,130 +1,118 @@
-"""KOJA Media V6 HLS worker.
+"""KOJA AFRICA Media Processing Worker V5.
 
-Run as a separate Render Background Worker or equivalent process.
-Requires ffmpeg + ffprobe on PATH and Supabase environment variables.
-It scans published video posts that do not yet have a master playlist, downloads
-one source video, creates adaptive HLS renditions, uploads them to a public HLS
-bucket, then records the master playlist URL in koja_public_posts.
+Run as a separate Render Background Worker:
+    python media_worker.py
+
+It converts uploaded videos into adaptive HLS and writes the master URL back
+onto public.koja_public_posts. The web service never receives movie bytes.
 """
-import os, re, json, time, shutil, tempfile, subprocess
+import os, time, json, uuid, shutil, subprocess, tempfile, logging
 from pathlib import Path
-from urllib.parse import quote, unquote
+from urllib.parse import quote
 import requests
+from dotenv import load_dotenv
+load_dotenv()
 
-SUPABASE_URL=os.getenv('SUPABASE_URL','').rstrip('/')
-SUPABASE_SERVICE_KEY=os.getenv('SUPABASE_SERVICE_KEY','') or os.getenv('SUPABASE_KEY','')
-STORAGE_BUCKET=os.getenv('SUPABASE_STORAGE_BUCKET','koja-files')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+log=logging.getLogger('koja-media-worker')
+SB=os.getenv('SUPABASE_URL','').rstrip('/')
+KEY=os.getenv('SUPABASE_SERVICE_KEY','') or os.getenv('SUPABASE_SECRET_KEY','') or os.getenv('SUPABASE_KEY','')
+SOURCE_BUCKET=os.getenv('SUPABASE_STORAGE_BUCKET','koja-files')
 HLS_BUCKET=os.getenv('KOJA_HLS_BUCKET','koja-media-hls')
-HLS_PUBLIC_BASE=os.getenv('KOJA_HLS_PUBLIC_BASE','').rstrip('/')
-POLL_SECONDS=int(os.getenv('KOJA_MEDIA_WORKER_POLL_SECONDS','20'))
-SEGMENT_SECONDS=int(os.getenv('KOJA_HLS_SEGMENT_SECONDS','4'))
-MAX_JOBS=int(os.getenv('KOJA_MEDIA_WORKER_MAX_JOBS','1'))
-
+QUEUE=os.getenv('KOJA_MEDIA_PROCESSING_QUEUE','koja_media_processing_jobs')
+POLL=float(os.getenv('KOJA_MEDIA_WORKER_POLL_SECONDS','5') or 5)
+MAX_ATTEMPTS=int(os.getenv('KOJA_MEDIA_MAX_ATTEMPTS','3') or 3)
 
 def headers(extra=None):
-    h={'apikey':SUPABASE_SERVICE_KEY,'Content-Type':'application/json'}
-    if SUPABASE_SERVICE_KEY and not SUPABASE_SERVICE_KEY.startswith('sb_secret_'):
-        h['Authorization']='Bearer '+SUPABASE_SERVICE_KEY
-    if extra:h.update(extra)
+    h={'apikey':KEY,'Content-Type':'application/json'}
+    if KEY and not KEY.startswith('sb_secret_'): h['Authorization']='Bearer '+KEY
+    if extra: h.update(extra)
     return h
 
-def rest(table):return f'{SUPABASE_URL}/rest/v1/{quote(table,safe="")}'
-def storage(path,bucket=None):return f'{SUPABASE_URL}/storage/v1/object/{quote(bucket or STORAGE_BUCKET,safe="")}/{quote(path,safe="/")}'
-def public_storage(path,bucket=None):return f'{SUPABASE_URL}/storage/v1/object/public/{quote(bucket or HLS_BUCKET,safe="")}/{quote(path,safe="/")}'
+def rest(table): return f'{SB}/rest/v1/{quote(table,safe="")}'
+def storage(bucket,path): return f'{SB}/storage/v1/object/{quote(bucket,safe="")}/{quote(path,safe="/")}'
 
-def select(params):
-    r=requests.get(rest('koja_public_posts'),headers=headers(),params=params,timeout=30);r.raise_for_status();return r.json()
-def patch(pid,data):
-    r=requests.patch(rest('koja_public_posts'),headers=headers({'Prefer':'return=minimal'}),params={'id':f'eq.{pid}'},json=data,timeout=30);r.raise_for_status()
+def select(table, params):
+    r=requests.get(rest(table),headers=headers(),params=params,timeout=30); r.raise_for_status(); d=r.json(); return d if isinstance(d,list) else []
 
-def ensure_bucket():
-    r=requests.post(f'{SUPABASE_URL}/storage/v1/bucket',headers=headers(),json={'id':HLS_BUCKET,'name':HLS_BUCKET,'public':True,'file_size_limit':0},timeout=30)
-    if r.status_code not in (200,201,409): print('bucket:',r.status_code,r.text[:300])
+def update(table, filters, payload):
+    params={k:'eq.'+str(v) for k,v in filters.items()}
+    r=requests.patch(rest(table),headers=headers({'Prefer':'return=representation'}),params=params,json=payload,timeout=30)
+    r.raise_for_status(); return r.json() if r.text else []
 
-def source_path(value):
-    value=str(value or '')
-    prefix=f'{SUPABASE_URL}/storage/v1/object/public/{quote(STORAGE_BUCKET,safe="")}/'
-    if value.startswith(prefix):return unquote(value[len(prefix):])
-    if value.startswith(('http://','https://')):
-        m=re.search(r'/storage/v1/object/(?:public/)?'+re.escape(STORAGE_BUCKET)+r'/(.+)$',value)
-        if m:return unquote(m.group(1))
-        raise ValueError('Media URL is not a KOJA storage object')
-    return value.lstrip('/')
+def upload(bucket,path,data,mime):
+    r=requests.put(storage(bucket,path),headers=headers({'Content-Type':mime,'x-upsert':'true'}),data=data,timeout=120)
+    r.raise_for_status()
 
-def download_source(path,out):
-    with requests.get(storage(path),headers=headers(),stream=True,timeout=60) as r:
+def download(bucket,path,target):
+    with requests.get(storage(bucket,path),headers=headers(),stream=True,timeout=120) as r:
         r.raise_for_status()
-        with open(out,'wb') as f:
+        with open(target,'wb') as f:
             for chunk in r.iter_content(1024*1024):
-                if chunk:f.write(chunk)
+                if chunk: f.write(chunk)
 
-def ffprobe(src):
-    cmd=['ffprobe','-v','error','-show_entries','stream=width,height,duration','-of','json','-select_streams','v:0',src]
-    p=subprocess.run(cmd,capture_output=True,text=True,check=True)
-    st=(json.loads(p.stdout).get('streams') or [{}])[0]
-    return int(st.get('width') or 0),int(st.get('height') or 0),float(st.get('duration') or 0)
-
-def renditions(height):
-    return [(360,700000,80000),(480,1200000,96000),(720,2500000,128000),(1080,5000000,160000) if height>=1080 else None]
-
-def build_hls(src,out,height):
-    rs=[x for x in renditions(height) if x and height>=x[0]]
-    # At least one rendition; 360p is used for sources below 360p.
-    if not rs: rs=[(height,500000,64000)]
-    filters=[];maps=[]
-    for i,(h,vb,ab) in enumerate(rs):
-        filters.append(f'[0:v]scale=w=-2:h={h}:force_original_aspect_ratio=decrease[v{i}]')
-        maps += ['-map',f'[v{i}]','-map','0:a:0?']
-    cmd=['ffmpeg','-y','-i',src,'-filter_complex',';'.join(filters)]
-    cmd += maps
-    # Encode each mapped video/audio pair with per-stream settings.
-    for i,(h,vb,ab) in enumerate(rs):
-        cmd += [f'-c:v:{i}','libx264',f'-b:v:{i}',str(vb),f'-maxrate:v:{i}',str(int(vb*1.12)),f'-bufsize:v:{i}',str(vb*2),f'-preset:v:{i}','veryfast',f'-g:v:{i}','48',f'-keyint_min:v:{i}','48']
-        cmd += [f'-c:a:{i}','aac',f'-b:a:{i}',str(ab)]
-    varmap=' '.join(f'v:{i},a:{i}' for i in range(len(rs)))
-    cmd += ['-f','hls','-hls_time',str(SEGMENT_SECONDS),'-hls_playlist_type','vod','-hls_flags','independent_segments','-master_pl_name','master.m3u8','-var_stream_map',varmap,'-hls_segment_filename',str(out/'v%v'/'seg_%05d.ts'),str(out/'v%v'/'index.m3u8')]
-    for i in range(len(rs)):(out/f'v{i}').mkdir(parents=True,exist_ok=True)
-    subprocess.run(cmd,check=True)
-    # Rewrite master labels to stable quality names and preserve relative playlists.
-    master=(out/'master.m3u8').read_text()
-    for i,(h,_,_) in enumerate(rs): master=master.replace(f'NAME="v{i}"',f'NAME="{h}p"')
-    (out/'master.m3u8').write_text(master)
-    return rs
-
-def upload_tree(root,base):
-    for f in root.rglob('*'):
-        if not f.is_file():continue
-        rel=f.relative_to(root).as_posix(); path=f'{base}/{rel}'
-        mime='application/vnd.apple.mpegurl' if f.suffix=='.m3u8' else 'video/mp2t'
-        if f.suffix=='.vtt':mime='text/vtt'
-        with open(f,'rb') as fh:
-            r=requests.post(storage(path,HLS_BUCKET),headers=headers({'Content-Type':mime,'x-upsert':'true','Cache-Control':'public,max-age=31536000,immutable'}),data=fh,timeout=60)
-        r.raise_for_status()
-
-def process(post):
-    pid=str(post['id']); work=Path(tempfile.mkdtemp(prefix='koja-hls-'))
+def ffprobe_height(src):
     try:
-        patch(pid,{'media_processing_status':'processing','media_processing_error':None})
-        src=work/'source'; download_source(source_path(post['media_url']),src)
-        w,h,d=ffprobe(str(src)); out=work/'hls';out.mkdir()
-        rs=build_hls(str(src),out,h)
-        base=f'posts/{pid}'; upload_tree(out,base)
-        master=(HLS_PUBLIC_BASE.rstrip('/')+'/'+base+'/master.m3u8') if HLS_PUBLIC_BASE else public_storage(f'{base}/master.m3u8')
-        patch(pid,{'media_processing_status':'ready','media_master_url':master,'media_duration_seconds':d,'media_source_width':w,'media_source_height':h,'media_processed_at':time.strftime('%Y-%m-%dT%H:%M:%SZ'),'media_processing_error':None})
-        print('READY',pid,w,h,d,rs)
-    except Exception as e:
-        print('ERROR',pid,e); 
-        try:patch(pid,{'media_processing_status':'error','media_processing_error':str(e)[:1000]})
-        except Exception:pass
-    finally:shutil.rmtree(work,ignore_errors=True)
+        r=subprocess.run(['ffprobe','-v','error','-select_streams','v:0','-show_entries','stream=height','-of','default=nw=1:nk=1',src],capture_output=True,text=True,timeout=60)
+        return int((r.stdout or '0').strip() or 0)
+    except Exception: return 0
 
-def main():
-    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY: raise SystemExit('SUPABASE_URL and SUPABASE_SERVICE_KEY are required')
-    subprocess.run(['ffmpeg','-version'],stdout=subprocess.DEVNULL,check=True);subprocess.run(['ffprobe','-version'],stdout=subprocess.DEVNULL,check=True);ensure_bucket()
+def run_ffmpeg(src,outdir,height):
+    outdir.mkdir(parents=True,exist_ok=True)
+    playlist=outdir/'index.m3u8'
+    seg=str(outdir/'seg_%05d.ts')
+    cmd=['ffmpeg','-y','-hide_banner','-loglevel','error','-i',src,'-map','0:v:0','-map','0:a:0?','-vf',f'scale=w=-2:h={height}:force_original_aspect_ratio=decrease','-c:v','libx264','-preset',os.getenv('KOJA_FFMPEG_PRESET','veryfast'),'-crf',os.getenv('KOJA_FFMPEG_CRF','22'),'-c:a','aac','-b:a','128k','-ar','48000','-ac','2','-f','hls','-hls_time','6','-hls_playlist_type','vod','-hls_segment_filename',seg,str(playlist)]
+    p=subprocess.run(cmd,capture_output=True,text=True,timeout=int(os.getenv('KOJA_FFMPEG_TIMEOUT','21600')))
+    if p.returncode!=0: raise RuntimeError((p.stderr or 'ffmpeg failed')[-3000:])
+    return playlist
+
+def process(job):
+    post_id=str(job['post_id']); source=job['source_path']; attempt=int(job.get('attempts') or 0)+1
+    update(QUEUE,{'id':job['id']},{'status':'processing','attempts':attempt,'progress':2,'started_at':time.strftime('%Y-%m-%dT%H:%M:%SZ'),'updated_at':time.strftime('%Y-%m-%dT%H:%M:%SZ'),'error':None})
+    update('koja_public_posts',{'id':post_id},{'processing_status':'processing','processing_progress':2,'processing_error':None,'updated_at':time.strftime('%Y-%m-%dT%H:%M:%SZ')})
+    with tempfile.TemporaryDirectory(prefix='koja-media-') as td:
+        root=Path(td); src=root/'source'; download(SOURCE_BUCKET,source,src)
+        update(QUEUE,{'id':job['id']},{'progress':10,'updated_at':time.strftime('%Y-%m-%dT%H:%M:%SZ')}); update('koja_public_posts',{'id':post_id},{'processing_progress':10,'updated_at':time.strftime('%Y-%m-%dT%H:%M:%SZ')})
+        source_h=ffprobe_height(str(src)); targets=[360,480,720,1080]; targets=[h for h in targets if not source_h or h<=source_h]
+        if not targets: targets=[360]
+        # Never upscale beyond the source when ffprobe succeeds.
+        variant_dirs=[]
+        for i,h in enumerate(targets):
+            d=root/f'{h}p'; run_ffmpeg(str(src),d,h); variant_dirs.append((h,d)); pct=15+int(55*(i+1)/len(targets)); update(QUEUE,{'id':job['id']},{'progress':pct,'updated_at':time.strftime('%Y-%m-%dT%H:%M:%SZ')}); update('koja_public_posts',{'id':post_id},{'processing_progress':pct,'updated_at':time.strftime('%Y-%m-%dT%H:%M:%SZ')})
+        # Upload variant playlists/segments.
+        for h,d in variant_dirs:
+            for f in d.iterdir():
+                mime='application/vnd.apple.mpegurl' if f.suffix=='.m3u8' else 'video/mp2t'
+                upload(HLS_BUCKET,f'posts/{post_id}/{h}p/{f.name}',open(f,'rb'),mime)
+        master_lines=['#EXTM3U','#EXT-X-VERSION:3']
+        bandwidths={360:800000,480:1400000,720:2800000,1080:5000000}
+        resolutions={360:'640x360',480:'854x480',720:'1280x720',1080:'1920x1080'}
+        for h,_ in variant_dirs:
+            master_lines += [f'#EXT-X-STREAM-INF:BANDWIDTH={bandwidths[h]},RESOLUTION={resolutions[h]},NAME="{h}p"',f'{h}p/index.m3u8']
+        master=root/'master.m3u8'; master.write_text('\n'.join(master_lines)+'\n')
+        upload(HLS_BUCKET,f'posts/{post_id}/master.m3u8',open(master,'rb'),'application/vnd.apple.mpegurl')
+        master_path=f'posts/{post_id}/master.m3u8'
+        now=time.strftime('%Y-%m-%dT%H:%M:%SZ')
+        update('koja_public_posts',{'id':post_id},{'media_master_url':master_path,'processing_status':'ready','processing_progress':100,'processing_error':None,'processed_at':now,'updated_at':now})
+        update(QUEUE,{'id':job['id']},{'status':'completed','progress':100,'output_path':master_path,'completed_at':now,'updated_at':now})
+
+def loop():
+    if not SB or not KEY: raise RuntimeError('SUPABASE_URL and SUPABASE_SERVICE_KEY/SUPABASE_SECRET_KEY are required.')
+    if not shutil.which('ffmpeg') or not shutil.which('ffprobe'): raise RuntimeError('ffmpeg and ffprobe are required. Add ffmpeg to the worker image/runtime.')
+    log.info('KOJA Media Worker started. queue=%s',QUEUE)
     while True:
         try:
-            rows=select({'select':'id,media_url,media_type,media_master_url,is_published','is_published':'eq.true','media_type':'eq.video','media_master_url':'is.null','order':'created_at.asc','limit':MAX_JOBS})
-            for post in rows:process(post)
-        except Exception as e: print('worker loop:',e)
-        time.sleep(POLL_SECONDS)
-if __name__=='__main__':main()
+            jobs=select(QUEUE,{'status':'eq.queued','order':'created_at.asc','limit':'1'})
+            if not jobs: time.sleep(POLL); continue
+            job=jobs[0]
+            try: process(job)
+            except Exception as exc:
+                log.exception('Job %s failed',job.get('id'))
+                attempts=int(job.get('attempts') or 0)+1; status='queued' if attempts<MAX_ATTEMPTS else 'failed'; err=str(exc)[-3000:]; now=time.strftime('%Y-%m-%dT%H:%M:%SZ')
+                update(QUEUE,{'id':job['id']},{'status':status,'attempts':attempts,'error':err,'updated_at':now})
+                update('koja_public_posts',{'id':job.get('post_id')},{'processing_status':status,'processing_progress':0 if status=='queued' else int(job.get('progress') or 0),'processing_error':err,'updated_at':now})
+                time.sleep(min(30,2**attempts))
+        except Exception:
+            log.exception('Worker loop error'); time.sleep(10)
+
+if __name__=='__main__': loop()

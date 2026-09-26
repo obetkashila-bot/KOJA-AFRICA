@@ -13,6 +13,9 @@ import base64
 import re
 import time
 import threading
+import subprocess
+import tempfile
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from functools import wraps
@@ -116,6 +119,8 @@ STORAGE_BUCKET = os.getenv(
 HLS_BUCKET = os.getenv("KOJA_HLS_BUCKET", "koja-media-hls").strip()
 HLS_PUBLIC_BASE = os.getenv("KOJA_HLS_PUBLIC_BASE", "").strip().rstrip("/")
 HLS_CDN_BASE = os.getenv("KOJA_HLS_CDN_BASE", "").strip().rstrip("/")
+MEDIA_PROCESSING_ENABLED = os.getenv("KOJA_MEDIA_PROCESSING_ENABLED", "true").strip().lower() not in ("0", "false", "no")
+MEDIA_PROCESSING_QUEUE = os.getenv("KOJA_MEDIA_PROCESSING_QUEUE", "koja_media_processing_jobs")
 
 APP_NAME = "KOJA AFRICA"
 APP_VERSION = "2026.09.27-V2-DIRECT-MEDIA-STORAGE"
@@ -3421,12 +3426,21 @@ def media_studio_complete():
         'media_type': media_type,
         'is_published': published,
         'updated_at': utc_now(),
+        'processing_status': 'queued' if media_type == 'video' else 'ready',
+        'processing_error': None,
+        'processing_progress': 0,
     }
     row, err = db_insert('koja_public_posts', payload)
     if err:
         delete_storage_path(path)
         return jsonify(ok=False, error='Media uploaded but the KOJA Media record could not be saved. ' + str(err)[:300]), 500
-    return jsonify(ok=True, post_id=(row or {}).get('id'), media_type=media_type, size=size, mime_type=detected_mime, filename=original_name or path.rsplit('/', 1)[-1])
+    if media_type == 'video' and row and row.get('id') and MEDIA_PROCESSING_ENABLED:
+        job_payload = {'post_id':row.get('id'),'source_path':path,'status':'queued','attempts':0,'progress':0,'created_at':utc_now(),'updated_at':utc_now()}
+        job, job_err = db_insert(MEDIA_PROCESSING_QUEUE, job_payload)
+        if job_err:
+            logger.error('Media processing enqueue failed: %s', str(job_err)[:1000])
+            db_update('koja_public_posts', {'id':row.get('id')}, {'processing_error':'Processing queue unavailable; run KOJA_MEDIA_PROCESSING_V5.sql and start the media worker.','updated_at':utc_now()})
+    return jsonify(ok=True, post_id=(row or {}).get('id'), media_type=media_type, size=size, mime_type=detected_mime, filename=original_name or path.rsplit('/', 1)[-1], processing='queued' if media_type == 'video' else 'ready')
 
 
 @app.route('/marketplace/post-media/<post_id>')
@@ -10685,6 +10699,16 @@ def b2bv4_order_review(order_id):
     return redirect(url_for('b2bv4_order',order_id=order_id))
 
 
+
+@app.route('/api/media/processing/<post_id>')
+def media_processing_status(post_id):
+    post=first_row('koja_public_posts',{'id':post_id})
+    if not post or not post.get('media_url'): return jsonify(ok=False,error='Media not found.'),404
+    uid=str((current_user() or {}).get('id') or '')
+    if not as_bool(post.get('is_published')) and uid != str(post.get('author_id') or ''): abort(403)
+    job=first_row(MEDIA_PROCESSING_QUEUE,{'post_id':post_id}) or {}
+    status=post.get('processing_status') or ('ready' if post.get('media_type')!='video' else 'unknown')
+    return jsonify(ok=True,post_id=post_id,status=status,progress=int(post.get('processing_progress') or job.get('progress') or 0),error=post.get('processing_error') or job.get('error') or '',hls_url=media_hls_url(post) if post.get('media_master_url') else '')
 
 # ============================================================
 # KOJA MEDIA REGRESSION RESTORE — 2026-09-20
