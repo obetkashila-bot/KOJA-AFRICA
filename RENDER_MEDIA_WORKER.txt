@@ -1,24 +1,26 @@
-KOJA MEDIA PROCESSING V5
+KOJA MEDIA PROCESSING — PRODUCTION SETUP
 
 WEB SERVICE
-Start: gunicorn app:app
+Start: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 120
 
 BACKGROUND WORKER
-Command: python media_worker.py
+Preferred: Render Background Worker using Docker runtime and Dockerfile.worker.
+The Dockerfile installs ffmpeg + ffprobe and runs: python media_worker.py
 
-The worker requires:
+Required worker environment:
 SUPABASE_URL
 SUPABASE_SERVICE_KEY (or SUPABASE_SECRET_KEY / SUPABASE_KEY)
 SUPABASE_STORAGE_BUCKET=koja-files
 KOJA_HLS_BUCKET=koja-media-hls
 KOJA_MEDIA_PROCESSING_ENABLED=true
 
-FFmpeg and ffprobe must be installed in the worker runtime.
-If the Render environment does not already contain them, install ffmpeg in the worker runtime/image before starting the worker.
-
 Run KOJA_MEDIA_PROCESSING_V5.sql in Supabase first.
 
-Pipeline:
-Browser -> Supabase Storage -> processing queue -> FFmpeg worker -> HLS variants -> HLS bucket -> KOJA Media player
+MEDIA PIPELINE
+Browser -> Supabase Storage (direct TUS) -> processing queue -> FFmpeg worker -> HLS -> HLS bucket -> KOJA player
 
-The Flask web service never receives the movie bytes during direct upload.
+IMPORTANT
+• Maximum direct media file size is 5,000 MB (5 GB).
+• Render does not receive large movie bytes during direct upload.
+• The player starts with the original Storage video and automatically falls back to it if HLS is unavailable.
+• HLS processing is an enhancement; playback does not wait for the worker.

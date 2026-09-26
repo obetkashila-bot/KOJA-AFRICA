@@ -1,34 +1,46 @@
-KOJA AFRICA — MEDIA STUDIO RELIABILITY V4
+KOJA AFRICA — MEDIA MARKET READY V7 PLAYBACK + 5GB FIX
 
-BASELINE
-This package is based on KOJA AFRICA MEDIA DIRECT STORAGE V2 FIXED. The existing Netflix-style KOJA Media structure is preserved.
+This package preserves the existing KOJA AFRICA application and KOJA Media Netflix-style structure.
 
-KEY FIXES
-- Fixes the previous Studio Jinja syntax error.
-- Direct browser-to-Supabase Storage upload; movie bytes do not pass through Render.
-- Uses Supabase's signed resumable TUS route for browser uploads so the Flask service key is not exposed.
-- Uses the current 6 MB TUS chunk size recommended by Supabase documentation.
-- Direct Storage hostname is used automatically for Supabase projects.
-- Upload preparation retries three times and reports the real server/network error.
-- Upload status is explicit: preparing, uploading, verifying, saving.
-- TUS resume/fingerprint support is preserved.
-- Large-file TUS failure does not silently fall back to sending the movie through Render.
-- Completion verification retries once and confirms the object before creating the media record.
-- Signed PUT fallback remains available for files up to 100 MB.
-- Existing 50 GB application-side limit is preserved; the actual Supabase plan/storage configuration still governs what can be uploaded.
-- KOJA intro WAV is included in static/.
+FIXES IN THIS BUILD
+1. Supabase per-file media limit is enforced at 5,000 MB (5 GB).
+2. Studio displays the real 5,000 MB limit instead of 50 GB.
+3. Server rejects anything above 5,000 MB before a Storage upload token is issued.
+4. Large movies use direct resumable TUS upload to Supabase Storage; movie bytes do not pass through Render.
+5. Media player receives a direct signed Storage URL for the original movie.
+6. HLS is optional enhancement: if HLS fails, the player destroys HLS and explicitly loads the original video.
+7. Playback fallback calls load()/play() so a fatal HLS error cannot leave a blank player.
+8. Video element uses preload=auto and crossorigin=anonymous for reliable browser playback.
+9. A Render Background Worker Dockerfile is included with ffmpeg + ffprobe installed.
+10. Existing intro audio and Media Studio are preserved.
 
-DEPLOY
-Upload/deploy ALL files in this ZIP, not only app.py. The static/ directory is required for /static/koja-intro.wav.
+WEB SERVICE
+Start command:
+gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 120
 
-REQUIRED ENVIRONMENT
-Use the same production Supabase/Flask environment variables already used by KOJA AFRICA, especially SUPABASE_URL, SUPABASE_SERVICE_KEY, FLASK_SECRET_KEY, and any existing storage bucket settings.
+ENVIRONMENT
+SUPABASE_URL=...
+SUPABASE_SERVICE_KEY=...   (or SUPABASE_SECRET_KEY / SUPABASE_KEY)
+SUPABASE_STORAGE_BUCKET=koja-files
+KOJA_HLS_BUCKET=koja-media-hls
+KOJA_MEDIA_PROCESSING_ENABLED=true
 
-IMPORTANT
-Supabase recommends TUS resumable uploads for files larger than about 6 MB and supports pause/resume and progress reporting. The application-side 50 GB value is not a guarantee of storage-plan capacity.
+Optional:
+KOJA_MEDIA_DIRECT_MAX_MB=5000
 
-LARGE-UPLOAD V6 FIX
-- Corrected the Supabase signed TUS endpoint used by Media Studio.
-- Signed TUS uploads now use the standard /storage/v1/upload/resumable endpoint with the short-lived token in x-signature.
-- The previous build incorrectly appended /sign/<bucket>/<path> to the TUS endpoint, which can cause large/resumable uploads to fail while smaller fallback uploads still work.
-- 6 MB chunks and resumable retries remain enabled.
+SUPABASE SQL
+Run KOJA_MEDIA_PROCESSING_V5.sql in Supabase SQL Editor before enabling HLS processing.
+
+BACKGROUND WORKER
+Use a separate Render Background Worker. Preferred runtime: Docker.
+Dockerfile: Dockerfile.worker
+It installs ffmpeg/ffprobe and runs:
+python media_worker.py
+
+The worker is not the web service. Do not replace gunicorn with the worker command on the web service.
+
+PLAYBACK PIPELINE
+Browser -> Supabase Storage direct upload -> database record -> original signed playback immediately
+                                      -> processing queue -> FFmpeg -> HLS -> HLS bucket -> adaptive playback
+
+The player does not require HLS processing to begin standard playback.
