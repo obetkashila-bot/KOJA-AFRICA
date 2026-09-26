@@ -13,9 +13,6 @@ import base64
 import re
 import time
 import threading
-import subprocess
-import tempfile
-from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from functools import wraps
@@ -119,19 +116,11 @@ STORAGE_BUCKET = os.getenv(
 HLS_BUCKET = os.getenv("KOJA_HLS_BUCKET", "koja-media-hls").strip()
 HLS_PUBLIC_BASE = os.getenv("KOJA_HLS_PUBLIC_BASE", "").strip().rstrip("/")
 HLS_CDN_BASE = os.getenv("KOJA_HLS_CDN_BASE", "").strip().rstrip("/")
-MEDIA_PROCESSING_ENABLED = os.getenv("KOJA_MEDIA_PROCESSING_ENABLED", "true").strip().lower() not in ("0", "false", "no")
-MEDIA_PROCESSING_QUEUE = os.getenv("KOJA_MEDIA_PROCESSING_QUEUE", "koja_media_processing_jobs")
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.27-V2-DIRECT-MEDIA-STORAGE"
+APP_VERSION = "2026.09.09-V7-K100M-MONETIZATION-V53-SELLER-CENTER"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
-# Large KOJA Media uploads bypass Flask/Render and go directly to Supabase Storage.
-# TUS/resumable uploads are used for large files; this value is only a browser-side guard.
-# Supabase per-file ceiling: 5,000 MB. Never advertise or accept more.
-KOJA_MEDIA_DIRECT_MAX_MB = min(5000, max(1, int(float(os.getenv("KOJA_MEDIA_DIRECT_MAX_MB", "5000") or 5000))))
-KOJA_MEDIA_DIRECT_MAX_BYTES = KOJA_MEDIA_DIRECT_MAX_MB * 1024 * 1024
-KOJA_MEDIA_DIRECT_MAX_GB = round(KOJA_MEDIA_DIRECT_MAX_MB / 1000, 3)
 
 # Email delivery (server-side only; never expose SMTP passwords to the browser)
 EMAIL_PROVIDER = os.getenv("EMAIL_PROVIDER", "smtp").strip().lower()
@@ -3074,39 +3063,30 @@ def public_feed():
 
 @app.route('/public/media/<post_id>')
 def public_feed_media(post_id):
-    """Redirect media playback/download to Supabase Storage.
-
-    This keeps large movies out of the Render/Flask request path and lets the
-    browser use Storage/CDN range requests directly.
-    """
     post = first_row('koja_public_posts', {'id': post_id})
     if not post or not as_bool(post.get('is_published')):
         return '', 404
-    path = clean(post.get('media_url'))
-    if not path or path.startswith(('http://', 'https://')):
+    value = clean(post.get('media_url'))
+    if not value:
         return '', 404
-    # Old public URL format remains readable only when it belongs to this bucket.
+    # V40.5 stores a private Storage path. Accept the old public URL format
+    # only when it points to this exact Supabase project and bucket.
+    path = value
     public_prefix = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{quote(STORAGE_BUCKET, safe='')}/" if SUPABASE_URL else ''
-    if public_prefix and path.startswith(public_prefix):
-        path = unquote(path[len(public_prefix):])
+    if public_prefix and value.startswith(public_prefix):
+        path = unquote(value[len(public_prefix):])
+    if path.startswith('http://') or path.startswith('https://'):
+        return '', 404
     try:
-        encoded = quote(path.lstrip('/'), safe='/')
-        endpoint = f"{SUPABASE_URL}/storage/v1/object/sign/{quote(STORAGE_BUCKET, safe='')}/{encoded}"
-        r = requests.post(endpoint, headers=sb_headers(), json={'expiresIn': 86400}, timeout=20)
+        r = requests.get(sb_storage_url(path), headers=sb_headers(), timeout=20)
         if not r.ok:
-            logger.warning('Signed media URL failed: %s %s', r.status_code, r.text[:500])
             return '', 404
-        data = json_or_empty(r)
-        signed = data.get('signedURL') or data.get('signedUrl')
-        if not signed:
-            return '', 404
-        if signed.startswith('/'):
-            signed = SUPABASE_URL + signed
-        response = redirect(signed, code=302)
-        response.headers['Cache-Control'] = 'private, max-age=60'
+        mime = r.headers.get('Content-Type') or 'application/octet-stream'
+        response = send_file(io.BytesIO(r.content), mimetype=mime, download_name='koja-public-media')
+        response.headers['Cache-Control'] = 'public, max-age=300'
         return response
     except Exception:
-        logger.exception('Public feed media signing failed')
+        logger.exception('Public feed media read failed')
         return '', 404
 
 @app.route('/public/create', methods=['POST'])
@@ -3263,218 +3243,6 @@ def delete_storage_path(storage_path):
     except Exception:
         logger.exception('Storage cleanup failed for %s', storage_path)
         return False
-
-# ============================================================
-# KOJA MEDIA DIRECT / RESUMABLE STORAGE UPLOADS
-# Large movie/video files never pass through Render/Flask.
-# The browser uploads directly to Supabase Storage using a short-lived
-# signed upload token. TUS is used for resumability; a signed PUT fallback
-# remains available if the TUS client cannot initialize.
-# ============================================================
-
-KOJA_MEDIA_DIRECT_EXTENSIONS = {"mp4", "webm", "mov", "m4v", "jpg", "jpeg", "png", "webp"}
-
-
-def _media_direct_tus_endpoint(path=None, signed=False):
-    """Return the direct Supabase Storage TUS endpoint.
-
-    For browser uploads KOJA uses Supabase's signed TUS route so the Flask
-    service key never reaches the browser. The direct storage hostname is
-    preferred for large uploads.
-    """
-    custom = clean(os.getenv("SUPABASE_STORAGE_TUS_ENDPOINT", ""))
-    if custom:
-        base = custom.rstrip("/")
-    elif not SUPABASE_URL:
-        return ""
-    else:
-        host = SUPABASE_URL.split("://", 1)[-1].split("/", 1)[0]
-        if host.endswith(".supabase.co"):
-            project_ref = host[:-len(".supabase.co")]
-            base = f"https://{project_ref}.storage.supabase.co/storage/v1/upload/resumable"
-        else:
-            base = f"{SUPABASE_URL.rstrip('/')}/storage/v1/upload/resumable"
-    # Supabase TUS uses the normal resumable endpoint for both authenticated
-    # and signed uploads. For a signed upload, the short-lived token is sent
-    # separately in the x-signature header. Do NOT append /sign/<bucket>/<path>
-    # to the TUS endpoint; that produces an invalid upload endpoint for large
-    # resumable uploads.
-    return base
-
-
-def _media_direct_signed_upload(path):
-    if not supabase_configured():
-        return None, "Supabase is not configured."
-    encoded = quote(path.lstrip('/'), safe='/')
-    endpoint = f"{SUPABASE_URL}/storage/v1/object/upload/sign/{quote(STORAGE_BUCKET, safe='')}/{encoded}"
-    try:
-        r = requests.post(endpoint, headers=sb_headers(), json={}, timeout=30)
-        if not r.ok:
-            return None, r.text[:1000]
-        data = json_or_empty(r)
-        relative = data.get("url") or data.get("signedURL") or data.get("signedUrl")
-        token = data.get("token")
-        if relative and relative.startswith('/'):
-            signed_url = SUPABASE_URL + relative
-        else:
-            signed_url = relative or ""
-        if not token and signed_url:
-            try:
-                from urllib.parse import urlparse, parse_qs
-                token = (parse_qs(urlparse(signed_url).query).get("token") or [""])[0]
-            except Exception:
-                token = ""
-        if not signed_url or not token:
-            return None, "Supabase did not return a signed upload token."
-        return {"signed_url": signed_url, "token": token}, None
-    except Exception as exc:
-        logger.exception("Signed media upload URL creation failed")
-        return None, str(exc)
-
-
-def _media_direct_storage_exists(path):
-    try:
-        r = requests.head(sb_storage_url(path), headers=sb_headers(), timeout=30)
-        if r.ok:
-            return True, int(r.headers.get("Content-Length") or 0), r.headers.get("Content-Type") or "application/octet-stream"
-        # Some Storage/proxy configurations do not implement HEAD reliably.
-        r = requests.get(sb_storage_url(path), headers=sb_headers({"Range": "bytes=0-0"}), timeout=30, stream=True)
-        if r.ok or r.status_code == 206:
-            length = int(r.headers.get("Content-Length") or 0)
-            return True, length, r.headers.get("Content-Type") or "application/octet-stream"
-        return False, 0, ""
-    except Exception:
-        logger.exception("Direct media storage verification failed")
-        return False, 0, ""
-
-
-@app.route('/api/media/studio/upload-url', methods=['POST'])
-@login_required
-def media_studio_upload_url():
-    d = request.get_json(silent=True) or {}
-    filename = secure_filename(clean(d.get('filename')) or '')
-    mime = clean(d.get('mime_type') or 'application/octet-stream')
-    try:
-        size = int(d.get('size') or 0)
-    except Exception:
-        size = 0
-    if not filename:
-        return jsonify(ok=False, error='Choose a movie or media file first.'), 400
-    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
-    if ext not in KOJA_MEDIA_DIRECT_EXTENSIONS:
-        return jsonify(ok=False, error='KOJA Media supports MP4, WebM, MOV, M4V, JPG, PNG and WebP.'), 400
-    if size <= 0:
-        return jsonify(ok=False, error='The selected file is empty.'), 400
-    if size > KOJA_MEDIA_DIRECT_MAX_BYTES:
-        return jsonify(ok=False, error=f'This file is above the KOJA Media direct-upload limit of {KOJA_MEDIA_DIRECT_MAX_MB} MB.'), 413
-    uid = str((current_user() or {}).get('id') or '')
-    path = f"media-studio/{uid}/{uuid.uuid4().hex}_{filename}"
-    signed, err = _media_direct_signed_upload(path)
-    if err:
-        return jsonify(ok=False, error='Could not prepare direct Storage upload: ' + str(err)[:500]), 502
-    return jsonify(
-        ok=True,
-        path=path,
-        token=signed['token'],
-        signed_url=signed['signed_url'],
-        tus_endpoint=_media_direct_tus_endpoint(path, signed=True),
-        bucket=STORAGE_BUCKET,
-        max_bytes=KOJA_MEDIA_DIRECT_MAX_BYTES,
-        max_gb=KOJA_MEDIA_DIRECT_MAX_GB,
-        max_mb=KOJA_MEDIA_DIRECT_MAX_MB,
-        mime_type=mime,
-        resumable=True,
-        note='Large video uploads use resumable TUS directly to Supabase Storage; Render does not receive the movie bytes.',
-    )
-
-
-@app.route('/api/media/studio/complete', methods=['POST'])
-@login_required
-def media_studio_complete():
-    d = request.get_json(silent=True) or {}
-    uid = str((current_user() or {}).get('id') or '')
-    path = clean(d.get('path')).lstrip('/')
-    title = clean(d.get('title'))
-    body = clean(d.get('body'))
-    post_type = clean(d.get('post_type')).lower() or 'update'
-    action = clean(d.get('action')).lower() or 'publish'
-    original_name = clean(d.get('filename'))
-    if post_type not in {'update', 'news', 'announcement', 'event'}:
-        post_type = 'update'
-    if action not in {'draft', 'publish'}:
-        action = 'publish'
-    if not title or not body:
-        return jsonify(ok=False, error='Title and description are required.'), 400
-    prefix = f"media-studio/{uid}/"
-    if not path.startswith(prefix):
-        return jsonify(ok=False, error='Invalid media upload path.'), 403
-    ext = path.rsplit('.', 1)[-1].lower() if '.' in path else ''
-    if ext not in KOJA_MEDIA_DIRECT_EXTENSIONS:
-        return jsonify(ok=False, error='Unsupported media type.'), 400
-    try:
-        expected_size = int(d.get('size') or 0)
-    except Exception:
-        expected_size = 0
-    exists, size, detected_mime = _media_direct_storage_exists(path)
-    if not exists:
-        return jsonify(ok=False, error='Storage did not confirm the completed upload. Please retry.'), 409
-    if expected_size and size and abs(size - expected_size) > max(1024 * 1024, int(expected_size * 0.01)):
-        delete_storage_path(path)
-        return jsonify(ok=False, error='Uploaded file size could not be verified. The upload may have been incomplete; please retry.'), 409
-    media_type = 'video' if ext in {'mp4', 'webm', 'mov', 'm4v'} else 'image'
-    published = action == 'publish'
-    payload = {
-        'author_id': uid,
-        'post_type': post_type,
-        'title': title,
-        'body': body,
-        'media_url': path,
-        'media_type': media_type,
-        'is_published': published,
-        'updated_at': utc_now(),
-        'processing_status': 'queued' if media_type == 'video' else 'ready',
-        'processing_error': None,
-        'processing_progress': 0,
-    }
-    row, err = db_insert('koja_public_posts', payload)
-    if err:
-        delete_storage_path(path)
-        return jsonify(ok=False, error='Media uploaded but the KOJA Media record could not be saved. ' + str(err)[:300]), 500
-    if media_type == 'video' and row and row.get('id') and MEDIA_PROCESSING_ENABLED:
-        job_payload = {'post_id':row.get('id'),'source_path':path,'status':'queued','attempts':0,'progress':0,'created_at':utc_now(),'updated_at':utc_now()}
-        job, job_err = db_insert(MEDIA_PROCESSING_QUEUE, job_payload)
-        if job_err:
-            logger.error('Media processing enqueue failed: %s', str(job_err)[:1000])
-            db_update('koja_public_posts', {'id':row.get('id')}, {'processing_error':'Processing queue unavailable; run KOJA_MEDIA_PROCESSING_V5.sql and start the media worker.','updated_at':utc_now()})
-    return jsonify(ok=True, post_id=(row or {}).get('id'), media_type=media_type, size=size, mime_type=detected_mime, filename=original_name or path.rsplit('/', 1)[-1], processing='queued' if media_type == 'video' else 'ready')
-
-
-def _media_signed_playback_url(post):
-    """Return a direct Supabase Storage signed URL for original media."""
-    path = clean((post or {}).get('media_url'))
-    if not path or not supabase_configured():
-        return ''
-    if path.startswith(('http://', 'https://')):
-        return path
-    public_prefix = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{quote(STORAGE_BUCKET, safe='')}/" if SUPABASE_URL else ''
-    if public_prefix and path.startswith(public_prefix):
-        path = unquote(path[len(public_prefix):])
-    try:
-        encoded = quote(path.lstrip('/'), safe='/')
-        endpoint = f"{SUPABASE_URL}/storage/v1/object/sign/{quote(STORAGE_BUCKET, safe='')}/{encoded}"
-        r = requests.post(endpoint, headers=sb_headers(), json={'expiresIn': 86400}, timeout=20)
-        if not r.ok:
-            logger.warning('Signed playback URL failed: %s %s', r.status_code, r.text[:500])
-            return ''
-        data = json_or_empty(r)
-        signed = data.get('signedURL') or data.get('signedUrl')
-        if not signed:
-            return ''
-        return SUPABASE_URL + signed if signed.startswith('/') else signed
-    except Exception:
-        logger.exception('Signed playback URL creation failed')
-        return ''
-
 
 @app.route('/marketplace/post-media/<post_id>')
 def marketplace_post_media(post_id):
@@ -10733,16 +10501,6 @@ def b2bv4_order_review(order_id):
 
 
 
-@app.route('/api/media/processing/<post_id>')
-def media_processing_status(post_id):
-    post=first_row('koja_public_posts',{'id':post_id})
-    if not post or not post.get('media_url'): return jsonify(ok=False,error='Media not found.'),404
-    uid=str((current_user() or {}).get('id') or '')
-    if not as_bool(post.get('is_published')) and uid != str(post.get('author_id') or ''): abort(403)
-    job=first_row(MEDIA_PROCESSING_QUEUE,{'post_id':post_id}) or {}
-    status=post.get('processing_status') or ('ready' if post.get('media_type')!='video' else 'unknown')
-    return jsonify(ok=True,post_id=post_id,status=status,progress=int(post.get('processing_progress') or job.get('progress') or 0),error=post.get('processing_error') or job.get('error') or '',hls_url=media_hls_url(post) if post.get('media_master_url') else '')
-
 # ============================================================
 # KOJA MEDIA REGRESSION RESTORE — 2026-09-20
 # Restores Media V6/live/player functionality on top of the complete production app.
@@ -10771,20 +10529,18 @@ def media_studio():
         if not title or not body:
             flash('Title and description are required.', 'danger')
             return redirect(url_for('media_studio'))
-        # Normal Studio submissions are handled by the browser's direct-to-Storage
-        # uploader below. Keep a small server fallback for legacy clients/forms.
         media=request.files.get('media')
         uploaded=None; media_type=None
         if media and media.filename:
             ext=media.filename.lower().rsplit('.',1)[-1] if '.' in media.filename else ''
-            if ext not in {'jpg','jpeg','png','webp','mp4','webm','mov','m4v'}:
-                flash('Studio media must be JPG, PNG, WebP, MP4, WebM, MOV or M4V.', 'danger')
+            if ext not in {'jpg','jpeg','png','webp','mp4','webm','mov'}:
+                flash('Studio media must be JPG, PNG, WebP, MP4, WebM or MOV.', 'danger')
                 return redirect(url_for('media_studio'))
             uploaded,err=upload_storage(media,'media-studio',public=False)
             if err:
-                flash('This browser submitted the file through KOJA/Render. Use the direct Media uploader on this page for large movies.', 'danger')
+                flash(f'Media upload failed: {err}', 'danger')
                 return redirect(url_for('media_studio'))
-            media_type='video' if ext in {'mp4','webm','mov','m4v'} else 'image'
+            media_type='video' if ext in {'mp4','webm','mov'} else 'image'
         published=(action == 'publish')
         payload={'author_id':uid,'post_type':post_type,'title':title,'body':body,
                  'media_url':(uploaded or {}).get('path'),'media_type':media_type,
@@ -10822,7 +10578,7 @@ def media_studio():
   <div class="studio-metrics"><div class="metric"><strong>{{ published_count }}</strong><span>Published</span></div><div class="metric"><strong>{{ draft_count }}</strong><span>Drafts</span></div><div class="metric"><strong>{{ total_views }}</strong><span>Views</span></div><div class="metric"><strong>{{ total_completions }}</strong><span>Completions</span></div></div>
   <div class="studio-create">
     <section class="create-card"><h2>Create media</h2><p class="small">Upload a photo or video, save it privately, or publish it to the Netflix-style KOJA Media feed.</p>
-      <form id="kojaStudioDirectForm" method="post" enctype="multipart/form-data"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><label>Content type</label><select name="post_type"><option value="update">Media</option><option value="news">News</option><option value="announcement">Announcement</option><option value="event">Event</option></select><label>Title</label><input id="kojaStudioTitle" name="title" maxlength="180" required placeholder="Media title"><label>Description</label><textarea id="kojaStudioBody" name="body" maxlength="10000" required placeholder="Describe your photo or video..."></textarea><label>Photo or video</label><div class="drop-zone"><input id="kojaStudioFile" type="file" name="media" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime,video/x-m4v"><div class="small">Direct-to-Storage + resumable upload · movies do not pass through Render · MP4, WebM, MOV, M4V, JPG, PNG or WebP · up to {{ direct_max_mb }} MB (5 GB) · large movies require resumable upload</div><div id="kojaUploadStatus" class="small" style="margin-top:9px"></div><div id="kojaUploadBar" style="display:none;margin-top:9px;height:7px;background:#202936;border-radius:99px;overflow:hidden"><i id="kojaUploadFill" style="display:block;width:0;height:100%;background:#19a7b8"></i></div></div><div style="display:flex;gap:9px;flex-wrap:wrap;margin-top:14px"><button class="btn secondary" name="action" value="draft" type="submit">Save Draft</button><button class="btn" name="action" value="publish" type="submit">Publish to KOJA Media</button></div></form><script src="https://cdn.jsdelivr.net/npm/tus-js-client@4/dist/tus.min.js"></script><script>(function(){const form=document.getElementById('kojaStudioDirectForm');if(!form)return;const fileInput=document.getElementById('kojaStudioFile'),status=document.getElementById('kojaUploadStatus'),bar=document.getElementById('kojaUploadBar'),fill=document.getElementById('kojaUploadFill');const csrf=form.querySelector('input[name=_csrf_token]').value;const maxBytes={{ direct_max_bytes }};const maxMb={{ direct_max_mb }};function msg(t){status.textContent=t||''}function fmt(bytes){if(bytes>=1073741824)return (bytes/1073741824).toFixed(2)+' GB';if(bytes>=1048576)return (bytes/1048576).toFixed(1)+' MB';return Math.round(bytes/1024)+' KB'}async function prepare(file){let last='';for(let attempt=1;attempt<=3;attempt++){try{const r=await fetch('{{ url_for("media_studio_upload_url") }}',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json','Accept':'application/json','X-CSRF-Token':csrf},body:JSON.stringify({filename:file.name,mime_type:file.type,size:file.size})});const text=await r.text();let d={};try{d=text?JSON.parse(text):{}}catch(e){d={}}if(!r.ok||!d.ok)throw new Error(d.error||('Storage preparation failed (HTTP '+r.status+').'));return d}catch(e){last=e&&e.message?e.message:'Network error while preparing the Storage upload.';if(attempt<3){msg('Storage connection interrupted. Retrying preparation ('+attempt+'/2)…');await new Promise(r=>setTimeout(r,1200*attempt));continue}if(last==='Failed to fetch')last='KOJA could not reach the upload service. Check your connection and retry.';throw new Error(last)}}}function tusUpload(file,d){return new Promise((resolve,reject)=>{if(!window.tus||!d.tus_endpoint)return reject(new Error('Resumable uploader is unavailable.'));const u=new tus.Upload(file,{endpoint:d.tus_endpoint,chunkSize:6*1024*1024,retryDelays:[0,3000,5000,10000,20000,40000],headers:{'x-signature':d.token,'x-upsert':'false'},uploadDataDuringCreation:true,removeFingerprintOnSuccess:true,metadata:{bucketName:d.bucket,objectName:d.path,contentType:file.type||d.mime_type||'application/octet-stream',cacheControl:'3600'},onError:e=>reject(e),onProgress:(a,b)=>{const pct=b?Math.round(a/b*100):0;bar.style.display='block';fill.style.width=pct+'%';msg('Uploading '+pct+'% · '+Math.round(a/1048576)+' MB of '+Math.round(b/1048576)+' MB')},onSuccess:()=>resolve()});u.findPreviousUploads().then(prev=>{if(prev.length)u.resumeFromPreviousUpload(prev[0]);u.start()}).catch(reject)})}async function fallbackPut(file,d){if(file.size>100*1024*1024)throw new Error('Resumable upload is required for movies larger than 100 MB. Please retry the upload.');msg('Starting direct Storage upload…');const r=await fetch(d.signed_url,{method:'PUT',headers:{'x-upsert':'false','content-type':file.type||d.mime_type||'application/octet-stream'},body:file});if(!r.ok)throw new Error('Direct Storage upload failed ('+r.status+').');fill.style.width='100%';bar.style.display='block';}form.addEventListener('submit',async function(e){e.preventDefault();const file=fileInput.files&&fileInput.files[0];if(!file){msg('Choose a movie or media file first.');fileInput.focus();return}if(file.size>maxBytes){msg('This file is '+fmt(file.size)+', above the KOJA Media '+maxMb+' MB limit.');return}const submitter=e.submitter,action=submitter&&submitter.value||'publish';submitter&& (submitter.disabled=true);try{msg('Preparing secure Storage upload for '+fmt(file.size)+'…');const d=await prepare(file);msg('Uploading to KOJA Storage…');try{await tusUpload(file,d)}catch(tusErr){console.warn('KOJA TUS upload failed',tusErr);if(file.size>100*1024*1024)throw new Error('Resumable upload could not start. Please retry; the movie was not sent through Render.');await fallbackPut(file,d)}msg('Upload complete. Verifying the file…');const payload={title:document.getElementById('kojaStudioTitle').value,body:document.getElementById('kojaStudioBody').value,post_type:form.querySelector('[name=post_type]').value,action:action,path:d.path,filename:file.name,size:file.size};let out=null;let saveError='';for(let attempt=1;attempt<=2;attempt++){try{const r=await fetch('{{ url_for("media_studio_complete") }}',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json','Accept':'application/json','X-CSRF-Token':csrf},body:JSON.stringify(payload)});const raw=await r.text();out=raw?JSON.parse(raw):{};if(r.ok&&out.ok)break;saveError=out.error||('Media record could not be saved (HTTP '+r.status+').');}catch(e){saveError=e&&e.message?e.message:'Could not reach KOJA Media.'}if(attempt<2){msg('File uploaded. Retrying Media record verification…');await new Promise(r=>setTimeout(r,1200))}}if(!out||!out.ok)throw new Error(saveError||'Media record could not be saved.');msg(action==='publish'?'Published to KOJA Media.':'Saved as a private draft.');setTimeout(()=>location.reload(),500)}catch(err){msg(err&&err.message?err.message:'Upload failed. Please try again.');if(submitter)submitter.disabled=false}})})();</script>
+      <form method="post" enctype="multipart/form-data"><label>Content type</label><select name="post_type"><option value="update">Media</option><option value="news">News</option><option value="announcement">Announcement</option><option value="event">Event</option></select><label>Title</label><input name="title" maxlength="180" required placeholder="Media title"><label>Description</label><textarea name="body" maxlength="10000" required placeholder="Describe your photo or video..."></textarea><label>Photo or video</label><div class="drop-zone"><input type="file" name="media" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"><div class="small">JPG, PNG, WebP, MP4, WebM or MOV · max {{ max_mb }} MB</div></div><div style="display:flex;gap:9px;flex-wrap:wrap;margin-top:14px"><button class="btn secondary" name="action" value="draft" type="submit">Save Draft</button><button class="btn" name="action" value="publish" type="submit">Publish to KOJA Media</button></div></form>
     </section>
     <aside class="tips-card"><h3>Studio workflow</h3><p class="small">1. Add your title and description.</p><p class="small">2. Upload the main image or video.</p><p class="small">3. Save as Draft while preparing it.</p><p class="small">4. Publish when ready.</p><hr><p class="small">Published media automatically appears in the KOJA Media discovery rows.</p></aside>
   </div>
@@ -10830,7 +10586,7 @@ def media_studio():
   <div id="studioAll"><div class="studio-row">{% for p in items %}<article class="studio-card" data-status="{{ 'published' if p.is_published else 'draft' }}"><div class="studio-thumb">{% if p.media_url and p.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=p.id) }}" muted preload="metadata"></video>{% elif p.media_url %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="{{ p.title }}">{% else %}<div class="studio-placeholder">No media preview</div>{% endif %}<span class="studio-badge">{{ p.status }}</span></div><div class="studio-info"><h3>{{ p.title }}</h3><p>{{ p.body }}</p><div class="studio-meta"><span>{{ p.views }} views</span><span>{{ p.completions }} complete</span></div></div><div class="card-actions">{% if p.is_published %}<a class="btn secondary" href="{{ url_for('media_nextgen') }}#media-{{ p.id }}">View</a>{% else %}<span class="small" style="padding:8px">Private draft</span>{% endif %}</div></article>{% else %}<p class="small">No media yet. Create your first title above.</p>{% endfor %}</div></div>
 </div>
 <script>function showStudio(mode){document.querySelectorAll('#studioAll .studio-card').forEach(c=>{let s=c.dataset.status;c.style.display=(mode==='all'||(mode==='published'&&s==='published')||(mode==='draft'&&s==='draft'))?'':'none'})}</script>
-''',items=rows,max_mb=MAX_UPLOAD_MB,direct_max_mb=KOJA_MEDIA_DIRECT_MAX_MB,direct_max_gb=KOJA_MEDIA_DIRECT_MAX_GB,direct_max_bytes=KOJA_MEDIA_DIRECT_MAX_BYTES,published_count=published_count,draft_count=draft_count,total_views=total_views,total_completions=total_completions)
+''',items=rows,max_mb=MAX_UPLOAD_MB,published_count=published_count,draft_count=draft_count,total_views=total_views,total_completions=total_completions)
 
 @app.route('/media/watch/<post_id>')
 def media_watch(post_id):
@@ -10839,20 +10595,18 @@ def media_watch(post_id):
     related=db_select('koja_public_posts',{'is_published':'eq.true'},order='created_at.desc',limit=60) or []
     related=[x for x in related if x.get('media_url') and str(x.get('id'))!=str(post_id)][:16]
     hls_url=media_hls_url(post) if post.get('media_type')=='video' else ''
-    original_url=_media_signed_playback_url(post) if post.get('media_type')=='video' else ''
-    fallback_url=url_for('public_feed_media',post_id=post_id)
     return render_page('KOJA Media Player',r'''<style>
 .watch-shell{background:#05070b;color:#fff;min-height:calc(100vh - 120px);padding:14px}.watch-top{max-width:1150px;margin:0 auto}.watch-player{background:#000;border-radius:14px;overflow:hidden;position:relative}.watch-player video,.watch-player img{display:block;width:100%;max-height:76vh;object-fit:contain;background:#000}.watch-info{padding:17px 0}.watch-info h1{font-size:clamp(22px,4vw,38px);margin:0 0 7px}.watch-meta{color:#9ba8b8;font-size:13px}.watch-actions{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}.watch-actions button,.watch-actions select{width:auto}.watch-status{font-size:12px;color:#8fa0b4;margin:7px 0}.watch-row{display:flex;gap:13px;overflow-x:auto;padding:4px 2px 15px}.watch-card{flex:0 0 220px;background:#0c121b;border:1px solid rgba(255,255,255,.08);border-radius:10px;overflow:hidden;text-decoration:none;color:#fff}.watch-card img,.watch-card video{width:100%;aspect-ratio:16/9;object-fit:cover;display:block;background:#101721}.watch-card-info{padding:9px}.watch-card-info strong{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.watch-card-info span{font-size:11px;color:#8e9bad}.gesture-hint{font-size:11px;color:#7e8da1;margin-top:7px}</style>
-<div class="watch-shell"><div class="watch-top"><a class="btn secondary" href="{{ url_for('media_nextgen') }}">Back to KOJA Media</a><div class="watch-player" style="margin-top:12px">{% if post.media_type=='video' %}<video id="kojaPlayer" controls playsinline preload="auto" crossorigin="anonymous" data-original="{{ original_url or fallback_url }}"{% if hls_url %} data-hls="{{ hls_url }}"{% endif %}></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=post.id) }}" alt="{{ post.title or 'KOJA Media' }}">{% endif %}</div>{% if post.media_type=='video' %}<div class="watch-status" id="streamStatus">{% if hls_url %}Adaptive streaming ready{% else %}Standard streaming · HLS processing pending{% endif %}</div>{% endif %}<div class="watch-info"><h1>{{ post.title or 'KOJA Media' }}</h1><div class="watch-meta">{{ post.post_type|title }} · {{ post.created_at }}</div><p>{{ post.body }}</p><div class="watch-actions">{% if post.media_type=='video' %}<button class="btn secondary" onclick="skip(-10)">−10 sec</button><button class="btn secondary" onclick="skip(10)">+10 sec</button><button class="btn secondary" onclick="startOver()">Start over</button><select id="quality" class="btn secondary"><option value="-1">Auto</option></select><button class="btn" onclick="goFull()">Fullscreen</button>{% endif %}<button class="btn secondary" onclick="shareWatch()">Share</button></div><div class="gesture-hint">Mobile: double-tap left/right to seek 10 seconds. Swipe horizontally on the player to seek.</div></div><h2>More like this</h2><div class="watch-row">{% for p in related %}<a class="watch-card" href="{{ url_for('media_watch',post_id=p.id) }}">{% if p.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=p.id) }}" muted preload="none"></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="{{ p.title or 'KOJA Media' }}">{% endif %}<div class="watch-card-info"><strong>{{ p.title or 'KOJA Media' }}</strong><span>{{ p.post_type|title }}</span></div></a>{% endfor %}</div></div></div>
+<div class="watch-shell"><div class="watch-top"><a class="btn secondary" href="{{ url_for('media_nextgen') }}">Back to KOJA Media</a><div class="watch-player" style="margin-top:12px">{% if post.media_type=='video' %}<video id="kojaPlayer" controls playsinline preload="metadata"{% if hls_url %} data-hls="{{ hls_url }}"{% else %} src="{{ url_for('public_feed_media',post_id=post.id) }}"{% endif %}></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=post.id) }}" alt="{{ post.title or 'KOJA Media' }}">{% endif %}</div>{% if post.media_type=='video' %}<div class="watch-status" id="streamStatus">{% if hls_url %}Adaptive streaming ready{% else %}Standard streaming · HLS processing pending{% endif %}</div>{% endif %}<div class="watch-info"><h1>{{ post.title or 'KOJA Media' }}</h1><div class="watch-meta">{{ post.post_type|title }} · {{ post.created_at }}</div><p>{{ post.body }}</p><div class="watch-actions">{% if post.media_type=='video' %}<button class="btn secondary" onclick="skip(-10)">−10 sec</button><button class="btn secondary" onclick="skip(10)">+10 sec</button><button class="btn secondary" onclick="startOver()">Start over</button><select id="quality" class="btn secondary"><option value="-1">Auto</option></select><button class="btn" onclick="goFull()">Fullscreen</button>{% endif %}<button class="btn secondary" onclick="shareWatch()">Share</button></div><div class="gesture-hint">Mobile: double-tap left/right to seek 10 seconds. Swipe horizontally on the player to seek.</div></div><h2>More like this</h2><div class="watch-row">{% for p in related %}<a class="watch-card" href="{{ url_for('media_watch',post_id=p.id) }}">{% if p.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=p.id) }}" muted preload="none"></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="{{ p.title or 'KOJA Media' }}">{% endif %}<div class="watch-card-info"><strong>{{ p.title or 'KOJA Media' }}</strong><span>{{ p.post_type|title }}</span></div></a>{% endfor %}</div></div></div>
 {% if post.media_type=='video' %}<script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.2/dist/hls.min.js"></script>{% endif %}<script>
 const v=document.getElementById('kojaPlayer'),key='koja_resume_{{ post.id }}',quality=document.getElementById('quality'),statusEl=document.getElementById('streamStatus');let hls=null,lastSaved=0,touchX=0,lastTap=0;
 function sendProgress(force=false){if(!v||(!force&&Math.abs(v.currentTime-lastSaved)<5))return;lastSaved=v.currentTime;fetch('/api/nextgen/media-progress',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({post_id:'{{ post.id }}',position:v.currentTime,duration:v.duration||0})}).catch(()=>{});try{localStorage.setItem(key,String(v.currentTime))}catch(e){}}
 function skip(n){if(v)v.currentTime=Math.max(0,Math.min(v.duration||1,v.currentTime+n));sendProgress(true)}function startOver(){if(v){v.currentTime=0;v.play().catch(()=>{});sendProgress(true)}}
 function goFull(){if(v){let f=v.requestFullscreen||v.webkitRequestFullscreen;if(f)f.call(v);try{if(screen.orientation&&screen.orientation.lock)screen.orientation.lock('landscape')}catch(e){}}}
 function shareWatch(){let u=location.href;if(navigator.share)navigator.share({title:{{ (post.title or 'KOJA Media')|tojson }},url:u});else navigator.clipboard&&navigator.clipboard.writeText(u)}
-function fallbackOriginal(){if(!v)return false;if(hls){try{hls.destroy()}catch(e){}hls=null}const src=v.dataset.original;if(!src)return false;v.removeAttribute('data-hls');v.src=src;v.load();if(statusEl)statusEl.textContent='Standard playback';const p=v.play();if(p&&p.catch)p.catch(()=>{});return true}function setupHls(){if(!v)return;const src=v.dataset.hls;if(!src){v.src=v.dataset.original;v.load();return}if(window.Hls&&Hls.isSupported()){hls=new Hls({startLevel:0,autoStartLoad:true,maxBufferLength:25,maxMaxBufferLength:60,backBufferLength:30,capLevelToPlayerSize:true});hls.loadSource(src);hls.attachMedia(v);hls.on(Hls.Events.MANIFEST_PARSED,()=>{quality.innerHTML='<option value="-1">Auto</option>';hls.levels.forEach((l,i)=>{let o=document.createElement('option');o.value=i;o.textContent=(l.height?l.height+'p':'Quality '+(i+1));quality.appendChild(o)});statusEl.textContent='Adaptive streaming ready'});hls.on(Hls.Events.ERROR,(e,d)=>{if(d.fatal){statusEl.textContent='Adaptive stream unavailable — using original video';fallbackOriginal()}});quality.onchange=()=>{if(hls)hls.currentLevel=parseInt(quality.value,10)}}else if(v.canPlayType('application/vnd.apple.mpegurl')){v.src=src;v.load();statusEl.textContent='Native HLS playback'}else{fallbackOriginal()}}
-if(v){setupHls();v.addEventListener('error',()=>{if(v.dataset.hls)fallbackOriginal()});fetch('/api/nextgen/media-progress?post_id={{ post.id }}').then(r=>r.json()).then(d=>{let r=parseFloat(d.position||0);try{r=Math.max(r,parseFloat(localStorage.getItem(key)||0))}catch(e){};v.addEventListener('loadedmetadata',()=>{if(r>5&&r<v.duration-5)v.currentTime=r},{once:true})}).catch(()=>{});v.addEventListener('timeupdate',()=>sendProgress(false));v.addEventListener('pause',()=>sendProgress(true));v.addEventListener('ended',()=>{sendProgress(true);const n=document.querySelector('.watch-card');if(n)setTimeout(()=>location.href=n.href,900)});v.addEventListener('touchstart',e=>{touchX=e.touches[0].clientX},{passive:true});v.addEventListener('touchend',e=>{let dx=e.changedTouches[0].clientX-touchX;if(Math.abs(dx)>45)skip(dx>0?-10:10)});v.addEventListener('dblclick',e=>{let r=v.getBoundingClientRect();skip(e.clientX-r.left<r.width/2?-10:10)})}
-</script>''',post=post,related=related,hls_url=hls_url,original_url=original_url,fallback_url=fallback_url)
+function setupHls(){if(!v)return;const src=v.dataset.hls;if(!src)return;if(window.Hls&&Hls.isSupported()){hls=new Hls({startLevel:0,autoStartLoad:true,maxBufferLength:25,maxMaxBufferLength:60,backBufferLength:30,capLevelToPlayerSize:true});hls.loadSource(src);hls.attachMedia(v);hls.on(Hls.Events.MANIFEST_PARSED,()=>{quality.innerHTML='<option value="-1">Auto</option>';hls.levels.forEach((l,i)=>{let o=document.createElement('option');o.value=i;o.textContent=(l.height?l.height+'p':'Quality '+(i+1));quality.appendChild(o)});statusEl.textContent='Adaptive streaming ready'});hls.on(Hls.Events.ERROR,(e,d)=>{if(d.fatal){statusEl.textContent='Adaptive stream unavailable — using standard playback';v.src='{{ url_for('public_feed_media',post_id=post.id) }}'}});quality.onchange=()=>{hls.currentLevel=parseInt(quality.value,10)}}else{v.src=src;statusEl.textContent='Native HLS playback'}}
+if(v){setupHls();fetch('/api/nextgen/media-progress?post_id={{ post.id }}').then(r=>r.json()).then(d=>{let r=parseFloat(d.position||0);try{r=Math.max(r,parseFloat(localStorage.getItem(key)||0))}catch(e){};v.addEventListener('loadedmetadata',()=>{if(r>5&&r<v.duration-5)v.currentTime=r},{once:true})}).catch(()=>{});v.addEventListener('timeupdate',()=>sendProgress(false));v.addEventListener('pause',()=>sendProgress(true));v.addEventListener('ended',()=>{sendProgress(true);const n=document.querySelector('.watch-card');if(n)setTimeout(()=>location.href=n.href,900)});v.addEventListener('touchstart',e=>{touchX=e.touches[0].clientX},{passive:true});v.addEventListener('touchend',e=>{let dx=e.changedTouches[0].clientX-touchX;if(Math.abs(dx)>45)skip(dx>0?-10:10)});v.addEventListener('dblclick',e=>{let r=v.getBoundingClientRect();skip(e.clientX-r.left<r.width/2?-10:10)})}
+</script>''',post=post,related=related,hls_url=hls_url)
 
 def nextgen_media_progress():
     uid=(current_user() or {}).get('id')
@@ -10953,48 +10707,9 @@ def media_live_watch(stream_id):
     if not stream or not as_bool(stream.get('is_public')): abort(404)
     cfg=live_player_config(stream)
     return render_page('KOJA Live Player',r'''<style>
-.koja-live-watch{background:#05070b;color:#fff;min-height:calc(100vh - 110px);padding:14px}.koja-live-watch-inner{max-width:1200px;margin:auto}.live-player{background:#000;border-radius:14px;overflow:hidden;position:relative;min-height:52vh;display:grid;place-items:center}.live-player video,.live-player iframe{width:100%;height:68vh;min-height:360px;border:0;background:#000}.live-status{position:absolute;left:12px;top:12px;z-index:12;background:#e50914;padding:5px 8px;border-radius:999px;font-size:10px;font-weight:800}.live-info{padding:16px 0}.live-info h1{font-size:clamp(24px,4vw,40px);margin:0 0 7px}.live-note{color:#9eabbc;font-size:13px}.live-back{margin-bottom:12px}.koja-load{position:absolute;inset:0;z-index:10;display:grid;place-items:center;pointer-events:none;opacity:1;transition:opacity .25s ease;background:rgba(0,0,0,.26)}.koja-load.hide{opacity:0}.koja-load-mark{width:58px;height:58px;border-radius:16px;display:grid;place-items:center;background:linear-gradient(135deg,#176b87,#19a7b8,#f2b84b);box-shadow:0 8px 28px rgba(0,0,0,.45);animation:kojaPulse 1.25s ease-in-out infinite}.koja-load-mark svg{width:38px;height:38px}.koja-load span{position:absolute;margin-top:88px;font-size:12px;color:#fff;opacity:.86}.koja-watermark{position:absolute;right:14px;bottom:58px;z-index:11;width:42px;height:42px;opacity:.82;pointer-events:none;transition:opacity .25s ease,transform .25s ease}.koja-watermark.hide{opacity:0;transform:scale(.9)}.koja-watermark span{width:100%;height:100%;border-radius:12px;display:grid;place-items:center;background:rgba(9,18,28,.62);backdrop-filter:blur(5px)}.koja-watermark svg{width:27px;height:27px}.koja-fullscreen{position:absolute;right:12px;top:12px;z-index:13;border:0;background:rgba(0,0,0,.58);color:#fff;border-radius:8px;padding:8px 10px;cursor:pointer}.koja-retry{position:absolute;left:50%;bottom:22px;transform:translateX(-50%);z-index:14;display:none}.koja-retry.show{display:block}.koja-error{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:13;width:min(92%,520px);display:none;text-align:center;padding:20px;border-radius:14px;background:rgba(8,12,18,.94);border:1px solid rgba(255,255,255,.12);box-shadow:0 14px 50px rgba(0,0,0,.45)}.koja-error.show{display:block}.koja-error h3{margin:0 0 7px}.koja-error p{margin:0 0 14px;color:#b7c1ce;font-size:13px}@keyframes kojaPulse{0%,100%{transform:scale(.94);opacity:.72}50%{transform:scale(1);opacity:1}}@media(max-width:600px){.koja-live-watch{padding:8px}.live-player video,.live-player iframe{height:58vh;min-height:280px}.koja-watermark{right:10px;bottom:50px;width:34px;height:34px}.koja-watermark svg{width:22px;height:22px}}
-</style><div class="koja-live-watch"><div class="koja-live-watch-inner"><div class="live-back"><a class="btn secondary" href="{{ url_for('media_live') }}">Back to KOJA Live</a></div><div class="live-player" id="livePlayer"><span class="live-status">LIVE</span>{% if cfg.kind in ['hls','dash','video'] %}<video id="externalLiveVideo" controls autoplay playsinline preload="auto"></video><button id="kojaFullscreen" class="koja-fullscreen" type="button">Fullscreen</button><div id="kojaLoading" class="koja-load"><div class="koja-load-mark"><svg viewBox="0 0 24 24" fill="none"><path d="M5 18V6h7.2a5.3 5.3 0 0 1 0 10.6H8.5" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 9.1h3.4a1.9 1.9 0 0 1 0 3.8H8.5" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div><span>Connecting to live stream…</span></div><div id="kojaWatermark" class="koja-watermark hide" aria-hidden="true"><span><svg viewBox="0 0 24 24" fill="none"><path d="M5 18V6h7.2a5.3 5.3 0 0 1 0 10.6H8.5" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 9.1h3.4a1.9 1.9 0 0 1 0 3.8H8.5" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div id="kojaError" class="koja-error"><h3>Live stream temporarily unavailable</h3><p>KOJA is trying to reconnect. If the source is offline, please try again later.</p><button id="kojaErrorRetry" class="btn" type="button">Retry now</button></div><div id="kojaRetry" class="koja-retry"><button class="btn" type="button">Retry</button></div>{% elif cfg.kind=='iframe' %}<iframe src="{{ cfg.src }}" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>{% else %}<div style="padding:30px;text-align:center"><h2>Provider requires a supported player</h2><p class="live-note">This URL cannot be converted into a video player automatically.</p><a class="btn" href="{{ cfg.src }}" target="_blank" rel="noopener">Open Source</a></div>{% endif %}</div><div class="live-info"><h1>{{ stream.title }}</h1><div class="live-note">{{ stream.provider|title }} · {{ stream.category or 'Live Stream' }}</div><p>{{ stream.description or 'External live stream connected through KOJA Media.' }}</p></div></div></div>
-{% if cfg.kind=='hls' %}<script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.2/dist/hls.min.js"></script><script>(function(){
-const v=document.getElementById('externalLiveVideo'),src={{ cfg.src|tojson }},load=document.getElementById('kojaLoading'),wm=document.getElementById('kojaWatermark'),retry=document.getElementById('kojaRetry'),err=document.getElementById('kojaError'),errRetry=document.getElementById('kojaErrorRetry'),player=document.getElementById('livePlayer'),fs=document.getElementById('kojaFullscreen');
-let h=null,timer=null,watchdog=null,softTimer=null,stopped=false,starting=false,attempt=0,lastProgress=0,lastPlaying=0,hasPlayed=false,initialGraceUntil=0,initialRetryTimer=null;
-const MAX_DELAY=30000;
-const INITIAL_LOAD_GRACE=60000; // give slow/live URLs up to 60s to establish
-
-function state(b,msg){load.classList.toggle('hide',!b);wm.classList.toggle('hide',!b);const t=load.querySelector('span');if(t&&msg)t.textContent=msg}
-function clearTimers(){if(timer){clearTimeout(timer);timer=null}if(softTimer){clearTimeout(softTimer);softTimer=null}if(initialRetryTimer){clearTimeout(initialRetryTimer);initialRetryTimer=null}}
-function showError(){state(false);wm.classList.remove('hide');err.classList.add('show');retry.classList.add('show')}
-function hideError(){err.classList.remove('show');retry.classList.remove('show')}
-function destroy(){clearTimers();if(h){try{h.stopLoad()}catch(e){}try{h.destroy()}catch(e){}h=null}try{v.pause()}catch(e){}}
-function delay(){return Math.min(MAX_DELAY,Math.max(1000,1000*Math.pow(2,Math.min(attempt,5))))}
-function schedule(reason,immediate){if(stopped||timer||starting)return;attempt++;state(true,reason==='buffer'?'Buffering live stream…':'Reconnecting live stream…');const d=immediate?250:delay();timer=setTimeout(()=>{timer=null;start(reason)},d)}
-function softRecover(){if(stopped||!h||starting)return;try{h.startLoad()}catch(e){}try{v.play().catch(()=>{})}catch(e){}if(softTimer)clearTimeout(softTimer);softTimer=setTimeout(()=>{if(!stopped&&Date.now()-Math.max(lastProgress,lastPlaying)>7000)schedule('buffer',true)},7000)}
-function start(reason){if(stopped||starting)return;starting=true;clearTimers();hideError();state(true,reason==='manual'?'Reconnecting live stream…':'Connecting to live stream…');destroy();lastProgress=Date.now();lastPlaying=0;if(reason==='initial'&&!hasPlayed)initialGraceUntil=Date.now()+INITIAL_LOAD_GRACE;
-if(window.Hls&&Hls.isSupported()){
- h=new Hls({liveDurationInfinity:true,startLevel:-1,autoStartLoad:true,maxBufferLength:30,maxMaxBufferLength:75,backBufferLength:30,capLevelToPlayerSize:true,enableWorker:true,lowLatencyMode:false,initialLiveManifestSize:2,manifestLoadingMaxRetry:6,manifestLoadingRetryDelay:1000,manifestLoadingMaxRetryTimeout:30000,levelLoadingMaxRetry:8,levelLoadingRetryDelay:1000,levelLoadingMaxRetryTimeout:30000,fragLoadingMaxRetry:8,fragLoadingRetryDelay:1000,fragLoadingMaxRetryTimeout:30000,appendErrorMaxRetry:4});
- h.loadSource(src);h.attachMedia(v);
- h.on(Hls.Events.MANIFEST_PARSED,()=>{starting=false;attempt=0;v.muted=false;v.volume=1;v.play().catch(()=>{});});
- h.on(Hls.Events.LEVEL_LOADED,()=>{lastProgress=Date.now()});
- h.on(Hls.Events.FRAG_LOADED,()=>{lastProgress=Date.now()});
- h.on(Hls.Events.ERROR,function(_,d){if(!d)return;if(!d.fatal){if(d.type===Hls.ErrorTypes.NETWORK_ERROR||d.details==='bufferStalledError'){if(hasPlayed)softRecover();}return}starting=false;if(d.type===Hls.ErrorTypes.NETWORK_ERROR){try{h.startLoad();v.play().catch(()=>{});if(!hasPlayed&&Date.now()<initialGraceUntil){initialRetryTimer=setTimeout(()=>{if(!stopped&&h&&!hasPlayed){try{h.startLoad()}catch(e){}}},10000);return}setTimeout(()=>{if(!stopped&&Date.now()-lastProgress>6000)schedule('network',true)},6500);return}catch(e){}}if(d.type===Hls.ErrorTypes.MEDIA_ERROR){try{h.recoverMediaError();if(!hasPlayed&&Date.now()<initialGraceUntil)return;setTimeout(()=>{if(!stopped&&Date.now()-lastPlaying>7000)schedule('media',true)},3500);return}catch(e){}}if(!hasPlayed&&Date.now()<initialGraceUntil){initialRetryTimer=setTimeout(()=>{if(!stopped&&!hasPlayed)start('initial-retry')},10000);return}schedule('fatal',true);});
-}else{starting=false;v.src=src;v.load();v.muted=false;v.volume=1;v.play().catch(()=>{});}
-}
-v.addEventListener('loadstart',()=>state(true,'Loading live stream…'));
-v.addEventListener('waiting',()=>{state(true,'Buffering live stream…');if(hasPlayed)softRecover()});
-v.addEventListener('stalled',()=>{state(true,'Reconnecting live stream…');if(hasPlayed)schedule('network',true)});
-v.addEventListener('canplay',()=>{if(!lastPlaying)state(false,'')});
-v.addEventListener('playing',()=>{hasPlayed=true;initialGraceUntil=0;lastPlaying=Date.now();lastProgress=Date.now();attempt=0;hideError();state(false,'')});
-v.addEventListener('timeupdate',()=>{lastPlaying=Date.now();lastProgress=Date.now()});
-v.addEventListener('pause',()=>{if(!document.hidden&&!stopped&&v.readyState>0)setTimeout(()=>{if(v.paused&&!stopped)v.play().catch(()=>{})},700)});
-v.addEventListener('error',()=>{if(hasPlayed)schedule('video',true);});
-window.addEventListener('online',()=>{if(!stopped){attempt=0;start('online')}});
-window.addEventListener('offline',()=>state(true,'Waiting for network…'));
-document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!stopped){if(v.paused||Date.now()-lastPlaying>12000)start('resume')}});
-watchdog=setInterval(()=>{if(stopped||document.hidden||!navigator.onLine||!hasPlayed)return;const stale=Date.now()-Math.max(lastProgress,lastPlaying)>18000;if(v.paused||v.readyState<2||stale){softRecover();setTimeout(()=>{if(!stopped&&Date.now()-Math.max(lastProgress,lastPlaying)>9000)start('watchdog')},9000)}},12000);
-function manual(){attempt=0;start('manual')}
-retry.querySelector('button').addEventListener('click',manual);errRetry.addEventListener('click',manual);fs.addEventListener('click',()=>{const f=player.requestFullscreen||player.webkitRequestFullscreen||player.msRequestFullscreen;if(f)f.call(player)});player.addEventListener('dblclick',()=>{const f=player.requestFullscreen||player.webkitRequestFullscreen||player.msRequestFullscreen;if(f)f.call(player)});
-window.addEventListener('beforeunload',()=>{stopped=true;if(watchdog)clearInterval(watchdog);destroy()});start('initial');
-})();</script>{% elif cfg.kind=='dash' %}<script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script><script>(function(){const v=document.getElementById('externalLiveVideo'),src={{ cfg.src|tojson }},load=document.getElementById('kojaLoading'),wm=document.getElementById('kojaWatermark'),retry=document.getElementById('kojaRetry'),player=document.getElementById('livePlayer'),fs=document.getElementById('kojaFullscreen');let p=null,timer=null,tries=0,last=0,stopped=false,hasPlayed=false,graceUntil=Date.now()+60000;function busy(x,m){load.classList.toggle('hide',!x);wm.classList.toggle('hide',!x);const t=load.querySelector('span');if(t&&m)t.textContent=m}function restart(immediate){if(stopped||timer)return;tries++;busy(true,hasPlayed?'Reconnecting live stream…':'Loading live stream…');timer=setTimeout(()=>{timer=null;if(p){try{p.reset()}catch(e){}}p=dashjs.MediaPlayer().create();p.updateSettings({streaming:{retryIntervals:{MPD:1000,HTTPLoad:1000,LowLatencyTimeout:10000},retryAttempts:{MPD:8,HTTPLoad:8}}});p.initialize(v,src,true);},immediate?250:Math.min(30000,Math.pow(2,Math.min(tries-1,5))*1000))}function init(){busy(true,'Connecting to live stream…');p=dashjs.MediaPlayer().create();p.initialize(v,src,true);p.on(dashjs.MediaPlayer.events.STREAM_INITIALIZED,()=>{hasPlayed=true;graceUntil=0;tries=0;last=Date.now();v.muted=false;v.volume=1;busy(false,'')});p.on(dashjs.MediaPlayer.events.ERROR,()=>restart(true));}v.addEventListener('playing',()=>{hasPlayed=true;graceUntil=0;last=Date.now();tries=0;busy(false,'');retry.classList.remove('show')});v.addEventListener('timeupdate',()=>last=Date.now());v.addEventListener('waiting',()=>{if(hasPlayed)restart(true)});v.addEventListener('stalled',()=>{if(hasPlayed)restart(true)});v.addEventListener('error',()=>{if(hasPlayed||Date.now()>graceUntil)restart(true)});retry.querySelector('button').addEventListener('click',()=>{tries=0;restart(true)});fs.addEventListener('click',()=>{const f=player.requestFullscreen||player.webkitRequestFullscreen;if(f)f.call(player)});setInterval(()=>{if(!stopped&&!document.hidden&&navigator.onLine&&(v.paused||!last||Date.now()-last>18000))restart(true)},12000);window.addEventListener('online',()=>restart(true));window.addEventListener('beforeunload',()=>stopped=true);init()})();</script>{% elif cfg.kind=='video' %}<script>(function(){const v=document.getElementById('externalLiveVideo'),src={{ cfg.src|tojson }},load=document.getElementById('kojaLoading'),wm=document.getElementById('kojaWatermark'),retry=document.getElementById('kojaRetry'),player=document.getElementById('livePlayer'),fs=document.getElementById('kojaFullscreen');let timer=null,tries=0,last=0,stopped=false,hasPlayed=false,graceUntil=Date.now()+60000;function busy(x,m){load.classList.toggle('hide',!x);wm.classList.toggle('hide',!x);const t=load.querySelector('span');if(t&&m)t.textContent=m}function restart(immediate){if(stopped||timer)return;tries++;busy(true,'Reconnecting live stream…');timer=setTimeout(()=>{timer=null;v.src=src;v.load();v.muted=false;v.volume=1;v.play().catch(()=>{})},immediate?250:Math.min(30000,Math.pow(2,Math.min(tries-1,5))*1000))}v.addEventListener('playing',()=>{hasPlayed=true;graceUntil=0;last=Date.now();tries=0;busy(false,'');retry.classList.remove('show')});v.addEventListener('timeupdate',()=>last=Date.now());v.addEventListener('waiting',()=>{if(hasPlayed)restart(true)});v.addEventListener('stalled',()=>{if(hasPlayed)restart(true)});v.addEventListener('error',()=>{if(hasPlayed||Date.now()>graceUntil)restart(true)});retry.querySelector('button').addEventListener('click',()=>{tries=0;restart(true)});fs.addEventListener('click',()=>{const f=player.requestFullscreen||player.webkitRequestFullscreen;if(f)f.call(player)});setInterval(()=>{if(!stopped&&!document.hidden&&navigator.onLine&&(v.paused||!last||Date.now()-last>18000))restart(true)},12000);window.addEventListener('online',()=>restart(true));window.addEventListener('beforeunload',()=>stopped=true);v.src=src;v.muted=false;v.volume=1;v.play().catch(()=>{});})();</script>{% endif %}''',stream=stream,cfg=cfg)
+.koja-live-watch{background:#05070b;color:#fff;min-height:calc(100vh - 110px);padding:14px}.koja-live-watch-inner{max-width:1200px;margin:auto}.live-player{background:#000;border-radius:14px;overflow:hidden;position:relative;min-height:52vh;display:grid;place-items:center}.live-player video,.live-player iframe{width:100%;height:68vh;min-height:360px;border:0;background:#000}.live-status{position:absolute;left:12px;top:12px;z-index:4;background:#e50914;padding:5px 8px;border-radius:999px;font-size:10px;font-weight:800}.live-info{padding:16px 0}.live-info h1{font-size:clamp(24px,4vw,40px);margin:0 0 7px}.live-note{color:#9eabbc;font-size:13px}.live-back{margin-bottom:12px}
+.koja-load{position:absolute;inset:0;z-index:7;display:grid;place-items:center;pointer-events:none;opacity:1;transition:opacity .35s ease;background:rgba(0,0,0,.28)}.koja-load.hide{opacity:0}.koja-load-mark{width:58px;height:58px;border-radius:16px;display:grid;place-items:center;background:linear-gradient(135deg,#176b87,#19a7b8,#f2b84b);box-shadow:0 8px 28px rgba(0,0,0,.45);animation:kojaPulse 1.25s ease-in-out infinite}.koja-load-mark svg{width:38px;height:38px}.koja-load span{position:absolute;margin-top:88px;font-size:12px;color:#fff;opacity:.8}.koja-watermark{position:absolute;right:14px;bottom:58px;z-index:6;width:42px;height:42px;opacity:.78;pointer-events:none;transition:opacity .35s ease,transform .35s ease}.koja-watermark.hide{opacity:0;transform:scale(.9)}.koja-watermark span{width:100%;height:100%;border-radius:12px;display:grid;place-items:center;background:rgba(9,18,28,.62);backdrop-filter:blur(5px)}.koja-watermark svg{width:27px;height:27px}.koja-fullscreen{position:absolute;right:12px;top:12px;z-index:9;border:0;background:rgba(0,0,0,.58);color:#fff;border-radius:8px;padding:8px 10px;cursor:pointer}.koja-retry{position:absolute;left:50%;bottom:22px;transform:translateX(-50%);z-index:9;display:none}.koja-retry.show{display:block}@keyframes kojaPulse{0%,100%{transform:scale(.94);opacity:.72}50%{transform:scale(1);opacity:1}}@media(max-width:600px){.koja-watermark{right:10px;bottom:50px;width:34px;height:34px}.koja-watermark svg{width:22px;height:22px}}</style><div class="koja-live-watch"><div class="koja-live-watch-inner"><div class="live-back"><a class="btn secondary" href="{{ url_for('media_live') }}">Back to KOJA Live</a></div><div class="live-player" id="livePlayer"><span class="live-status">LIVE</span>{% if cfg.kind in ['hls','dash','video'] %}<video id="externalLiveVideo" controls autoplay playsinline preload="auto"></video><button id="kojaFullscreen" class="koja-fullscreen" type="button">Fullscreen</button><div id="kojaLoading" class="koja-load"><div class="koja-load-mark"><svg viewBox="0 0 24 24" fill="none"><path d="M5 18V6h7.2a5.3 5.3 0 0 1 0 10.6H8.5" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 9.1h3.4a1.9 1.9 0 0 1 0 3.8H8.5" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div><span>Loading live stream…</span></div><div id="kojaWatermark" class="koja-watermark hide" aria-hidden="true"><span><svg viewBox="0 0 24 24" fill="none"><path d="M5 18V6h7.2a5.3 5.3 0 0 1 0 10.6H8.5" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 9.1h3.4a1.9 1.9 0 0 1 0 3.8H8.5" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div id="kojaRetry" class="koja-retry"><button class="btn" type="button">Retry</button></div>{% elif cfg.kind=='iframe' %}<iframe src="{{ cfg.src }}" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>{% else %}<div style="padding:30px;text-align:center"><h2>Provider requires a supported player</h2><p class="live-note">This URL cannot be converted into a video player automatically.</p><a class="btn" href="{{ cfg.src }}" target="_blank" rel="noopener">Open Source</a></div>{% endif %}</div><div class="live-info"><h1>{{ stream.title }}</h1><div class="live-note">{{ stream.provider|title }} · {{ stream.category or 'Live Stream' }}</div><p>{{ stream.description or 'External live stream connected through KOJA Media.' }}</p></div></div></div>
+{% if cfg.kind=='hls' %}<script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.2/dist/hls.min.js"></script><script>(function(){const v=document.getElementById('externalLiveVideo'),src={{ cfg.src|tojson }},load=document.getElementById('kojaLoading'),wm=document.getElementById('kojaWatermark'),retry=document.getElementById('kojaRetry'),player=document.getElementById('livePlayer'),fs=document.getElementById('kojaFullscreen');let h=null,errors=0;function busy(x){load.classList.toggle('hide',!x);wm.classList.toggle('hide',x)}function fail(){busy(false);wm.classList.remove('hide');retry.classList.add('show')}function start(){errors=0;retry.classList.remove('show');busy(true);if(h){try{h.destroy()}catch(e){}}if(window.Hls&&Hls.isSupported()){h=new Hls({liveDurationInfinity:true,startLevel:0,maxBufferLength:25,maxMaxBufferLength:60,backBufferLength:30,capLevelToPlayerSize:true});h.loadSource(src);h.attachMedia(v);h.on(Hls.Events.MANIFEST_PARSED,()=>v.play().catch(()=>{}));h.on(Hls.Events.ERROR,function(_,d){if(!d.fatal)return;errors++;if(d.type===Hls.ErrorTypes.NETWORK_ERROR&&errors<3){setTimeout(()=>h&&h.startLoad(),800);return}if(d.type===Hls.ErrorTypes.MEDIA_ERROR&&errors<3){try{h.recoverMediaError();return}catch(e){}}fail()})}else{v.src=src;v.load();v.play().catch(()=>{});setTimeout(()=>{if(v.readyState<2)fail()},12000)}}v.addEventListener('waiting',()=>busy(true));v.addEventListener('stalled',()=>busy(true));v.addEventListener('playing',()=>{busy(false);retry.classList.remove('show')});v.addEventListener('error',fail);retry.querySelector('button').addEventListener('click',start);fs.addEventListener('click',()=>{const f=player.requestFullscreen||player.webkitRequestFullscreen;if(f)f.call(player)});start()})();</script>{% elif cfg.kind=='dash' %}<script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script><script>(function(){const v=document.getElementById('externalLiveVideo');if(window.dashjs){const p=dashjs.MediaPlayer().create();p.initialize(v,{{ cfg.src|tojson }},true);}})();</script>{% elif cfg.kind=='video' %}<script>document.getElementById('externalLiveVideo').src={{ cfg.src|tojson }};document.getElementById('externalLiveVideo').play().catch(()=>{});</script>{% endif %}''',stream=stream,cfg=cfg)
 
 
 # ============================================================
