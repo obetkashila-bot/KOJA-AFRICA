@@ -139,12 +139,12 @@ HLS_PUBLIC_BASE = os.getenv("KOJA_HLS_PUBLIC_BASE", "").strip().rstrip("/")
 HLS_CDN_BASE = os.getenv("KOJA_HLS_CDN_BASE", "").strip().rstrip("/")
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.27-V3-MEDIA-STABLE"
+APP_VERSION = "2026.09.27-V2-DIRECT-MEDIA-STORAGE"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 # Large KOJA Media uploads bypass Flask/Render and go directly to Supabase Storage.
 # TUS/resumable uploads are used for large files; this value is only a browser-side guard.
-KOJA_MEDIA_DIRECT_MAX_GB = min(5.0, float(os.getenv("KOJA_MEDIA_DIRECT_MAX_GB", "5") or 5))
+KOJA_MEDIA_DIRECT_MAX_GB = float(os.getenv("KOJA_MEDIA_DIRECT_MAX_GB", "50") or 50)
 KOJA_MEDIA_DIRECT_MAX_BYTES = int(max(1, KOJA_MEDIA_DIRECT_MAX_GB) * 1024 * 1024 * 1024)
 
 # Email delivery (server-side only; never expose SMTP passwords to the browser)
@@ -10828,28 +10828,6 @@ def media_studio():
 <script>function showStudio(mode){document.querySelectorAll('#studioAll .studio-card').forEach(c=>{let s=c.dataset.status;c.style.display=(mode==='all'||(mode==='published'&&s==='published')||(mode==='draft'&&s==='draft'))?'':'none'})}</script>
 ''',items=rows,max_mb=MAX_UPLOAD_MB,direct_max_gb=KOJA_MEDIA_DIRECT_MAX_GB,direct_max_bytes=KOJA_MEDIA_DIRECT_MAX_BYTES,published_count=published_count,draft_count=draft_count,total_views=total_views,total_completions=total_completions)
 
-@app.get('/api/media/playback/<post_id>')
-def media_playback(post_id):
-    post=first_row('koja_public_posts', {'id':post_id})
-    if not post or not as_bool(post.get('is_published')) or not post.get('media_url'):
-        return jsonify(error='Media not found'),404
-    original=''
-    path=clean(post.get('media_url'))
-    if path.startswith(('http://','https://')):
-        original=path
-    elif SUPABASE_URL and path:
-        public_prefix=f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{quote(STORAGE_BUCKET, safe='')}/"
-        if path.startswith(public_prefix): path=unquote(path[len(public_prefix):])
-        try:
-            endpoint=f"{SUPABASE_URL}/storage/v1/object/sign/{quote(STORAGE_BUCKET, safe='')}/{quote(path.lstrip('/'), safe='/')}"
-            r=requests.post(endpoint,headers=sb_headers(),json={'expiresIn':86400},timeout=20)
-            data=json_or_empty(r) if r.ok else {}
-            signed=data.get('signedURL') or data.get('signedUrl') or ''
-            original=(SUPABASE_URL+signed) if signed.startswith('/') else signed
-        except Exception:
-            logger.exception('Playback signing failed')
-    return jsonify(ok=True,post_id=post_id,media_type=post.get('media_type') or '',original_url=original,hls_url=media_hls_url(post) if post.get('media_type')=='video' else '')
-
 @app.route('/media/watch/<post_id>')
 def media_watch(post_id):
     post=first_row('koja_public_posts',{'id':post_id})
@@ -10862,13 +10840,11 @@ def media_watch(post_id):
 <div class="watch-shell"><div class="watch-top"><a class="btn secondary" href="{{ url_for('media_nextgen') }}">Back to KOJA Media</a><div class="watch-player" style="margin-top:12px">{% if post.media_type=='video' %}<video id="kojaPlayer" controls playsinline preload="metadata"{% if hls_url %} data-hls="{{ hls_url }}"{% else %} src="{{ url_for('public_feed_media',post_id=post.id) }}"{% endif %}></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=post.id) }}" alt="{{ post.title or 'KOJA Media' }}">{% endif %}</div>{% if post.media_type=='video' %}<div class="watch-status" id="streamStatus">{% if hls_url %}Adaptive streaming ready{% else %}Standard streaming · HLS processing pending{% endif %}</div>{% endif %}<div class="watch-info"><h1>{{ post.title or 'KOJA Media' }}</h1><div class="watch-meta">{{ post.post_type|title }} · {{ post.created_at }}</div><p>{{ post.body }}</p><div class="watch-actions">{% if post.media_type=='video' %}<button class="btn secondary" onclick="skip(-10)">−10 sec</button><button class="btn secondary" onclick="skip(10)">+10 sec</button><button class="btn secondary" onclick="startOver()">Start over</button><select id="quality" class="btn secondary"><option value="-1">Auto</option></select><button class="btn" onclick="goFull()">Fullscreen</button>{% endif %}<button class="btn secondary" onclick="shareWatch()">Share</button></div><div class="gesture-hint">Mobile: double-tap left/right to seek 10 seconds. Swipe horizontally on the player to seek.</div></div><h2>More like this</h2><div class="watch-row">{% for p in related %}<a class="watch-card" href="{{ url_for('media_watch',post_id=p.id) }}">{% if p.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=p.id) }}" muted preload="none"></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="{{ p.title or 'KOJA Media' }}">{% endif %}<div class="watch-card-info"><strong>{{ p.title or 'KOJA Media' }}</strong><span>{{ p.post_type|title }}</span></div></a>{% endfor %}</div></div></div>
 {% if post.media_type=='video' %}<script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.2/dist/hls.min.js"></script>{% endif %}<script>
 const v=document.getElementById('kojaPlayer'),key='koja_resume_{{ post.id }}',quality=document.getElementById('quality'),statusEl=document.getElementById('streamStatus');let hls=null,lastSaved=0,touchX=0,lastTap=0;
-function loadOriginalFromApi(){if(!v)return;fetch('/api/media/playback/{{ post.id }}').then(r=>r.ok?r.json():Promise.reject()).then(d=>{if(d.original_url){v.src=d.original_url;v.load();statusEl.textContent='Standard video playback';}}).catch(()=>{});}
 function sendProgress(force=false){if(!v||(!force&&Math.abs(v.currentTime-lastSaved)<5))return;lastSaved=v.currentTime;fetch('/api/nextgen/media-progress',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({post_id:'{{ post.id }}',position:v.currentTime,duration:v.duration||0})}).catch(()=>{});try{localStorage.setItem(key,String(v.currentTime))}catch(e){}}
 function skip(n){if(v)v.currentTime=Math.max(0,Math.min(v.duration||1,v.currentTime+n));sendProgress(true)}function startOver(){if(v){v.currentTime=0;v.play().catch(()=>{});sendProgress(true)}}
 function goFull(){if(v){let f=v.requestFullscreen||v.webkitRequestFullscreen;if(f)f.call(v);try{if(screen.orientation&&screen.orientation.lock)screen.orientation.lock('landscape')}catch(e){}}}
 function shareWatch(){let u=location.href;if(navigator.share)navigator.share({title:{{ (post.title or 'KOJA Media')|tojson }},url:u});else navigator.clipboard&&navigator.clipboard.writeText(u)}
-function fallbackOriginal(){if(!v)return;if(hls){try{hls.destroy()}catch(e){}hls=null}v.removeAttribute('data-hls');statusEl.textContent='Loading original video…';loadOriginalFromApi();}
-function setupHls(){if(!v)return;const src=v.dataset.hls;if(!src){v.load();return}if(window.Hls&&Hls.isSupported()){hls=new Hls({startLevel:-1,autoStartLoad:true,maxBufferLength:25,maxMaxBufferLength:60,backBufferLength:30,capLevelToPlayerSize:true,manifestLoadingMaxRetry:4,manifestLoadingRetryDelay:1000,levelLoadingMaxRetry:4,levelLoadingRetryDelay:1000,fragLoadingMaxRetry:4,fragLoadingRetryDelay:1000});hls.loadSource(src);hls.attachMedia(v);hls.on(Hls.Events.MANIFEST_PARSED,()=>{quality.innerHTML='<option value="-1">Auto</option>';hls.levels.forEach((l,i)=>{let o=document.createElement('option');o.value=i;o.textContent=(l.height?l.height+'p':'Quality '+(i+1));quality.appendChild(o)});statusEl.textContent='Adaptive streaming ready';v.play().catch(()=>{})});hls.on(Hls.Events.ERROR,(e,d)=>{if(d.fatal){fallbackOriginal()}});quality.onchange=()=>{if(hls)hls.currentLevel=parseInt(quality.value,10)}}else if(v.canPlayType('application/vnd.apple.mpegurl')){v.src=src;v.load();statusEl.textContent='Native HLS playback'}else{fallbackOriginal()}}
+function setupHls(){if(!v)return;const src=v.dataset.hls;if(!src)return;if(window.Hls&&Hls.isSupported()){hls=new Hls({startLevel:0,autoStartLoad:true,maxBufferLength:25,maxMaxBufferLength:60,backBufferLength:30,capLevelToPlayerSize:true});hls.loadSource(src);hls.attachMedia(v);hls.on(Hls.Events.MANIFEST_PARSED,()=>{quality.innerHTML='<option value="-1">Auto</option>';hls.levels.forEach((l,i)=>{let o=document.createElement('option');o.value=i;o.textContent=(l.height?l.height+'p':'Quality '+(i+1));quality.appendChild(o)});statusEl.textContent='Adaptive streaming ready'});hls.on(Hls.Events.ERROR,(e,d)=>{if(d.fatal){statusEl.textContent='Adaptive stream unavailable — using standard playback';v.src='{{ url_for('public_feed_media',post_id=post.id) }}'}});quality.onchange=()=>{hls.currentLevel=parseInt(quality.value,10)}}else{v.src=src;statusEl.textContent='Native HLS playback'}}
 if(v){setupHls();fetch('/api/nextgen/media-progress?post_id={{ post.id }}').then(r=>r.json()).then(d=>{let r=parseFloat(d.position||0);try{r=Math.max(r,parseFloat(localStorage.getItem(key)||0))}catch(e){};v.addEventListener('loadedmetadata',()=>{if(r>5&&r<v.duration-5)v.currentTime=r},{once:true})}).catch(()=>{});v.addEventListener('timeupdate',()=>sendProgress(false));v.addEventListener('pause',()=>sendProgress(true));v.addEventListener('ended',()=>{sendProgress(true);const n=document.querySelector('.watch-card');if(n)setTimeout(()=>location.href=n.href,900)});v.addEventListener('touchstart',e=>{touchX=e.touches[0].clientX},{passive:true});v.addEventListener('touchend',e=>{let dx=e.changedTouches[0].clientX-touchX;if(Math.abs(dx)>45)skip(dx>0?-10:10)});v.addEventListener('dblclick',e=>{let r=v.getBoundingClientRect();skip(e.clientX-r.left<r.width/2?-10:10)})}
 </script>''',post=post,related=related,hls_url=hls_url)
 
