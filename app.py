@@ -19,8 +19,6 @@ from functools import wraps
 from urllib.parse import quote, unquote
 
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from dotenv import load_dotenv
 from flask import (
     Flask, request, redirect, url_for, session,
@@ -65,25 +63,6 @@ load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("koja-africa")
-
-# Production HTTP client: safe retries for idempotent Supabase GET requests only.
-# Mutation requests are intentionally not retried here to avoid duplicate inserts/payments.
-KOJA_HTTP_TIMEOUT = float(os.getenv("KOJA_HTTP_TIMEOUT", "20") or 20)
-KOJA_HTTP_CONNECT_TIMEOUT = float(os.getenv("KOJA_HTTP_CONNECT_TIMEOUT", "5") or 5)
-_koja_http = requests.Session()
-_koja_retry = Retry(
-    total=3,
-    connect=3,
-    read=2,
-    status=3,
-    backoff_factor=0.6,
-    status_forcelist=(429, 500, 502, 503, 504),
-    allowed_methods=frozenset(["GET", "HEAD", "OPTIONS"]),
-    respect_retry_after_header=True,
-    raise_on_status=False,
-)
-_koja_http.mount("https://", HTTPAdapter(max_retries=_koja_retry, pool_connections=20, pool_maxsize=50))
-_koja_http.mount("http://", HTTPAdapter(max_retries=_koja_retry, pool_connections=10, pool_maxsize=20))
 
 app = Flask(__name__)
 # Render terminates HTTPS at the proxy; trust forwarded host/proto headers.
@@ -139,13 +118,9 @@ HLS_PUBLIC_BASE = os.getenv("KOJA_HLS_PUBLIC_BASE", "").strip().rstrip("/")
 HLS_CDN_BASE = os.getenv("KOJA_HLS_CDN_BASE", "").strip().rstrip("/")
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.27-V3-MEDIA-STABLE"
+APP_VERSION = "2026.09.09-V7-K100M-MONETIZATION-V53-SELLER-CENTER"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
-# Large KOJA Media uploads bypass Flask/Render and go directly to Supabase Storage.
-# TUS/resumable uploads are used for large files; this value is only a browser-side guard.
-KOJA_MEDIA_DIRECT_MAX_GB = min(5.0, float(os.getenv("KOJA_MEDIA_DIRECT_MAX_GB", "5") or 5))
-KOJA_MEDIA_DIRECT_MAX_BYTES = int(max(1, KOJA_MEDIA_DIRECT_MAX_GB) * 1024 * 1024 * 1024)
 
 # Email delivery (server-side only; never expose SMTP passwords to the browser)
 EMAIL_PROVIDER = os.getenv("EMAIL_PROVIDER", "smtp").strip().lower()
@@ -251,11 +226,11 @@ def db_select(table, filters=None, select="*", order=None, limit=None):
         params["limit"] = str(limit)
 
     try:
-        r = _koja_http.get(
+        r = requests.get(
             sb_rest_url(table),
             headers=sb_headers(),
             params=params,
-            timeout=(KOJA_HTTP_CONNECT_TIMEOUT, KOJA_HTTP_TIMEOUT),
+            timeout=20,
         )
         if not r.ok:
             logger.error(
@@ -374,11 +349,11 @@ def table_exists(table):
     if not supabase_configured():
         return False
     try:
-        r = _koja_http.get(
+        r = requests.get(
             sb_rest_url(table),
             headers=sb_headers(),
             params={"select": "*", "limit": "1"},
-            timeout=(min(KOJA_HTTP_CONNECT_TIMEOUT, 3), min(KOJA_HTTP_TIMEOUT, 8)),
+            timeout=10,
         )
         return r.status_code < 400
     except Exception:
@@ -1218,30 +1193,14 @@ self.addEventListener('fetch', function(event) {
 
 @app.route("/health")
 def health():
-    # Liveness endpoint: never fails merely because an optional DB table is absent.
     return jsonify({
         "status": "ok",
         "application": APP_NAME,
-        "version": APP_VERSION,
         "supabase_configured": supabase_configured(),
         "gps_table_available": table_exists("driver_locations"),
-        "storage_bucket": STORAGE_BUCKET,
-        "direct_media_upload": True,
         "timestamp": utc_now(),
         "python": os.sys.version.split()[0],
-        "request_id": getattr(request, "_koja_request_id", ""),
     })
-
-@app.route("/ready")
-def readiness():
-    # Readiness performs only a lightweight configuration/database probe.
-    checks = {"supabase_configured": supabase_configured()}
-    if checks["supabase_configured"]:
-        checks["profiles_table"] = table_exists("profiles")
-    else:
-        checks["profiles_table"] = False
-    ready = all(checks.values())
-    return jsonify({"status": "ready" if ready else "not_ready", "checks": checks, "timestamp": utc_now(), "request_id": getattr(request, "_koja_request_id", "")}), (200 if ready else 503)
 
 # ============================================================
 # REGISTER / LOGIN
@@ -3104,39 +3063,30 @@ def public_feed():
 
 @app.route('/public/media/<post_id>')
 def public_feed_media(post_id):
-    """Redirect media playback/download to Supabase Storage.
-
-    This keeps large movies out of the Render/Flask request path and lets the
-    browser use Storage/CDN range requests directly.
-    """
     post = first_row('koja_public_posts', {'id': post_id})
     if not post or not as_bool(post.get('is_published')):
         return '', 404
-    path = clean(post.get('media_url'))
-    if not path or path.startswith(('http://', 'https://')):
+    value = clean(post.get('media_url'))
+    if not value:
         return '', 404
-    # Old public URL format remains readable only when it belongs to this bucket.
+    # V40.5 stores a private Storage path. Accept the old public URL format
+    # only when it points to this exact Supabase project and bucket.
+    path = value
     public_prefix = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{quote(STORAGE_BUCKET, safe='')}/" if SUPABASE_URL else ''
-    if public_prefix and path.startswith(public_prefix):
-        path = unquote(path[len(public_prefix):])
+    if public_prefix and value.startswith(public_prefix):
+        path = unquote(value[len(public_prefix):])
+    if path.startswith('http://') or path.startswith('https://'):
+        return '', 404
     try:
-        encoded = quote(path.lstrip('/'), safe='/')
-        endpoint = f"{SUPABASE_URL}/storage/v1/object/sign/{quote(STORAGE_BUCKET, safe='')}/{encoded}"
-        r = requests.post(endpoint, headers=sb_headers(), json={'expiresIn': 86400}, timeout=20)
+        r = requests.get(sb_storage_url(path), headers=sb_headers(), timeout=20)
         if not r.ok:
-            logger.warning('Signed media URL failed: %s %s', r.status_code, r.text[:500])
             return '', 404
-        data = json_or_empty(r)
-        signed = data.get('signedURL') or data.get('signedUrl')
-        if not signed:
-            return '', 404
-        if signed.startswith('/'):
-            signed = SUPABASE_URL + signed
-        response = redirect(signed, code=302)
-        response.headers['Cache-Control'] = 'private, max-age=60'
+        mime = r.headers.get('Content-Type') or 'application/octet-stream'
+        response = send_file(io.BytesIO(r.content), mimetype=mime, download_name='koja-public-media')
+        response.headers['Cache-Control'] = 'public, max-age=300'
         return response
     except Exception:
-        logger.exception('Public feed media signing failed')
+        logger.exception('Public feed media read failed')
         return '', 404
 
 @app.route('/public/create', methods=['POST'])
@@ -3293,168 +3243,6 @@ def delete_storage_path(storage_path):
     except Exception:
         logger.exception('Storage cleanup failed for %s', storage_path)
         return False
-
-# ============================================================
-# KOJA MEDIA DIRECT / RESUMABLE STORAGE UPLOADS
-# Large movie/video files never pass through Render/Flask.
-# The browser uploads directly to Supabase Storage using a short-lived
-# signed upload token. TUS is used for resumability; a signed PUT fallback
-# remains available if the TUS client cannot initialize.
-# ============================================================
-
-KOJA_MEDIA_DIRECT_EXTENSIONS = {"mp4", "webm", "mov", "m4v", "jpg", "jpeg", "png", "webp"}
-
-
-def _media_direct_tus_endpoint():
-    """Return Supabase's direct Storage TUS endpoint when possible."""
-    custom = clean(os.getenv("SUPABASE_STORAGE_TUS_ENDPOINT", ""))
-    if custom:
-        return custom.rstrip("/")
-    if not SUPABASE_URL:
-        return ""
-    host = SUPABASE_URL.split("://", 1)[-1].split("/", 1)[0]
-    if host.endswith(".supabase.co"):
-        project_ref = host[:-len(".supabase.co")]
-        return f"https://{project_ref}.storage.supabase.co/storage/v1/upload/resumable"
-    return f"{SUPABASE_URL.rstrip('/')}/storage/v1/upload/resumable"
-
-
-def _media_direct_signed_upload(path):
-    if not supabase_configured():
-        return None, "Supabase is not configured."
-    encoded = quote(path.lstrip('/'), safe='/')
-    endpoint = f"{SUPABASE_URL}/storage/v1/object/upload/sign/{quote(STORAGE_BUCKET, safe='')}/{encoded}"
-    try:
-        r = requests.post(endpoint, headers=sb_headers(), json={}, timeout=30)
-        if not r.ok:
-            return None, r.text[:1000]
-        data = json_or_empty(r)
-        relative = data.get("url") or data.get("signedURL") or data.get("signedUrl")
-        token = data.get("token")
-        if relative and relative.startswith('/'):
-            signed_url = SUPABASE_URL + relative
-        else:
-            signed_url = relative or ""
-        if not token and signed_url:
-            try:
-                from urllib.parse import urlparse, parse_qs
-                token = (parse_qs(urlparse(signed_url).query).get("token") or [""])[0]
-            except Exception:
-                token = ""
-        if not signed_url or not token:
-            return None, "Supabase did not return a signed upload token."
-        return {"signed_url": signed_url, "token": token}, None
-    except Exception as exc:
-        logger.exception("Signed media upload URL creation failed")
-        return None, str(exc)
-
-
-def _media_direct_storage_exists(path):
-    try:
-        r = requests.head(sb_storage_url(path), headers=sb_headers(), timeout=30)
-        if r.ok:
-            return True, int(r.headers.get("Content-Length") or 0), r.headers.get("Content-Type") or "application/octet-stream"
-        # Some Storage/proxy configurations do not implement HEAD reliably.
-        r = requests.get(sb_storage_url(path), headers=sb_headers({"Range": "bytes=0-0"}), timeout=30, stream=True)
-        if r.ok or r.status_code == 206:
-            length = int(r.headers.get("Content-Length") or 0)
-            return True, length, r.headers.get("Content-Type") or "application/octet-stream"
-        return False, 0, ""
-    except Exception:
-        logger.exception("Direct media storage verification failed")
-        return False, 0, ""
-
-
-@app.route('/api/media/studio/upload-url', methods=['POST'])
-@login_required
-def media_studio_upload_url():
-    d = request.get_json(silent=True) or {}
-    filename = secure_filename(clean(d.get('filename')) or '')
-    mime = clean(d.get('mime_type') or 'application/octet-stream')
-    try:
-        size = int(d.get('size') or 0)
-    except Exception:
-        size = 0
-    if not filename:
-        return jsonify(ok=False, error='Choose a movie or media file first.'), 400
-    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
-    if ext not in KOJA_MEDIA_DIRECT_EXTENSIONS:
-        return jsonify(ok=False, error='KOJA Media supports MP4, WebM, MOV, M4V, JPG, PNG and WebP.'), 400
-    if size <= 0:
-        return jsonify(ok=False, error='The selected file is empty.'), 400
-    if size > KOJA_MEDIA_DIRECT_MAX_BYTES:
-        return jsonify(ok=False, error=f'This file is above the KOJA Media direct-upload limit of {KOJA_MEDIA_DIRECT_MAX_GB:g} GB.'), 413
-    uid = str((current_user() or {}).get('id') or '')
-    path = f"media-studio/{uid}/{uuid.uuid4().hex}_{filename}"
-    signed, err = _media_direct_signed_upload(path)
-    if err:
-        return jsonify(ok=False, error='Could not prepare direct Storage upload: ' + str(err)[:500]), 502
-    return jsonify(
-        ok=True,
-        path=path,
-        token=signed['token'],
-        signed_url=signed['signed_url'],
-        tus_endpoint=_media_direct_tus_endpoint(),
-        bucket=STORAGE_BUCKET,
-        max_bytes=KOJA_MEDIA_DIRECT_MAX_BYTES,
-        max_gb=KOJA_MEDIA_DIRECT_MAX_GB,
-        mime_type=mime,
-        resumable=True,
-        note='Large video uploads use resumable TUS directly to Supabase Storage; Render does not receive the movie bytes.',
-    )
-
-
-@app.route('/api/media/studio/complete', methods=['POST'])
-@login_required
-def media_studio_complete():
-    d = request.get_json(silent=True) or {}
-    uid = str((current_user() or {}).get('id') or '')
-    path = clean(d.get('path')).lstrip('/')
-    title = clean(d.get('title'))
-    body = clean(d.get('body'))
-    post_type = clean(d.get('post_type')).lower() or 'update'
-    action = clean(d.get('action')).lower() or 'publish'
-    original_name = clean(d.get('filename'))
-    if post_type not in {'update', 'news', 'announcement', 'event'}:
-        post_type = 'update'
-    if action not in {'draft', 'publish'}:
-        action = 'publish'
-    if not title or not body:
-        return jsonify(ok=False, error='Title and description are required.'), 400
-    prefix = f"media-studio/{uid}/"
-    if not path.startswith(prefix):
-        return jsonify(ok=False, error='Invalid media upload path.'), 403
-    ext = path.rsplit('.', 1)[-1].lower() if '.' in path else ''
-    if ext not in KOJA_MEDIA_DIRECT_EXTENSIONS:
-        return jsonify(ok=False, error='Unsupported media type.'), 400
-    try:
-        expected_size = int(d.get('size') or 0)
-    except Exception:
-        expected_size = 0
-    exists, size, detected_mime = _media_direct_storage_exists(path)
-    if not exists:
-        return jsonify(ok=False, error='Storage did not confirm the completed upload. Please retry.'), 409
-    if expected_size and size and abs(size - expected_size) > max(1024 * 1024, int(expected_size * 0.01)):
-        delete_storage_path(path)
-        return jsonify(ok=False, error='Uploaded file size could not be verified. The upload may have been incomplete; please retry.'), 409
-    media_type = 'video' if ext in {'mp4', 'webm', 'mov', 'm4v'} else 'image'
-    published = action == 'publish'
-    payload = {
-        'author_id': uid,
-        'post_type': post_type,
-        'title': title,
-        'body': body,
-        'media_url': path,
-        'media_type': media_type,
-        'is_published': published,
-        'updated_at': utc_now(),
-    }
-    row, err = db_insert('koja_public_posts', payload)
-    if err:
-        delete_storage_path(path)
-        return jsonify(ok=False, error='Media uploaded but the KOJA Media record could not be saved. ' + str(err)[:300]), 500
-    return jsonify(ok=True, post_id=(row or {}).get('id'), media_type=media_type, size=size, mime_type=detected_mime, filename=original_name or path.rsplit('/', 1)[-1])
-
 
 @app.route('/marketplace/post-media/<post_id>')
 def marketplace_post_media(post_id):
@@ -7983,34 +7771,11 @@ def news_nextgen():
 
 
 
-# REQUEST OBSERVABILITY / RELIABILITY
-# ============================================================
-
-@app.before_request
-def _koja_request_context():
-    request._koja_request_id = clean(request.headers.get("X-Request-ID"))[:80] or uuid.uuid4().hex
-    request._koja_started_at = time.monotonic()
-
-@app.after_request
-def _koja_request_observability(response):
-    rid = getattr(request, "_koja_request_id", "")
-    started = getattr(request, "_koja_started_at", None)
-    if rid:
-        response.headers["X-Request-ID"] = rid
-    if started is not None:
-        elapsed_ms = (time.monotonic() - started) * 1000.0
-        response.headers["X-KOJA-Response-Time-ms"] = f"{elapsed_ms:.1f}"
-        if elapsed_ms >= 3000:
-            logger.warning("Slow request %s %s -> %s in %.1fms request_id=%s", request.method, request.path, response.status_code, elapsed_ms, rid)
-    return response
-
 # ERROR HANDLERS
 # ============================================================
 
 @app.errorhandler(404)
 def not_found(error):
-    if request.path.startswith("/api/"):
-        return jsonify({"ok": False, "error": "not_found", "message": "The requested KOJA API endpoint was not found.", "request_id": getattr(request, "_koja_request_id", "")}), 404
     return render_page("Not Found",r"""
 <div class="card"><h2>Page Not Found</h2><p>The requested page does not exist.</p><a class="btn" href="{{ url_for('home') }}">Return Home</a></div>
 """),404
@@ -8023,13 +7788,10 @@ def too_large(error):
 
 @app.errorhandler(500)
 def internal_error(error):
-    rid = getattr(request, "_koja_request_id", "")
-    logger.exception("Unhandled application error request_id=%s path=%s", rid, request.path)
-    if request.path.startswith("/api/"):
-        return jsonify({"ok": False, "error": "internal_error", "message": "KOJA encountered an unexpected server error. Please retry shortly.", "request_id": rid}), 500
+    logger.exception("Unhandled application error")
     return render_page("Server Error",r"""
-<div class="card"><h2>KOJA AFRICA Server Error</h2><p>The server encountered an unexpected error. Please retry shortly.</p><p class="small">Reference: {{ request_id }}</p><a class="btn" href="{{ url_for('home') }}">Return Home</a></div>
-""", request_id=rid),500
+<div class="card"><h2>KOJA AFRICA Server Error</h2><p>The server encountered an unexpected error. Check Render logs for details.</p><a class="btn" href="{{ url_for('home') }}">Return Home</a></div>
+"""),500
 
 @app.after_request
 def security_headers(response):
@@ -10767,20 +10529,18 @@ def media_studio():
         if not title or not body:
             flash('Title and description are required.', 'danger')
             return redirect(url_for('media_studio'))
-        # Normal Studio submissions are handled by the browser's direct-to-Storage
-        # uploader below. Keep a small server fallback for legacy clients/forms.
         media=request.files.get('media')
         uploaded=None; media_type=None
         if media and media.filename:
             ext=media.filename.lower().rsplit('.',1)[-1] if '.' in media.filename else ''
-            if ext not in {'jpg','jpeg','png','webp','mp4','webm','mov','m4v'}:
-                flash('Studio media must be JPG, PNG, WebP, MP4, WebM, MOV or M4V.', 'danger')
+            if ext not in {'jpg','jpeg','png','webp','mp4','webm','mov'}:
+                flash('Studio media must be JPG, PNG, WebP, MP4, WebM or MOV.', 'danger')
                 return redirect(url_for('media_studio'))
             uploaded,err=upload_storage(media,'media-studio',public=False)
             if err:
-                flash('This browser submitted the file through KOJA/Render. Use the direct Media uploader on this page for large movies.', 'danger')
+                flash(f'Media upload failed: {err}', 'danger')
                 return redirect(url_for('media_studio'))
-            media_type='video' if ext in {'mp4','webm','mov','m4v'} else 'image'
+            media_type='video' if ext in {'mp4','webm','mov'} else 'image'
         published=(action == 'publish')
         payload={'author_id':uid,'post_type':post_type,'title':title,'body':body,
                  'media_url':(uploaded or {}).get('path'),'media_type':media_type,
@@ -10818,7 +10578,7 @@ def media_studio():
   <div class="studio-metrics"><div class="metric"><strong>{{ published_count }}</strong><span>Published</span></div><div class="metric"><strong>{{ draft_count }}</strong><span>Drafts</span></div><div class="metric"><strong>{{ total_views }}</strong><span>Views</span></div><div class="metric"><strong>{{ total_completions }}</strong><span>Completions</span></div></div>
   <div class="studio-create">
     <section class="create-card"><h2>Create media</h2><p class="small">Upload a photo or video, save it privately, or publish it to the Netflix-style KOJA Media feed.</p>
-      <form id="kojaStudioDirectForm" method="post" enctype="multipart/form-data"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><label>Content type</label><select name="post_type"><option value="update">Media</option><option value="news">News</option><option value="announcement">Announcement</option><option value="event">Event</option></select><label>Title</label><input id="kojaStudioTitle" name="title" maxlength="180" required placeholder="Media title"><label>Description</label><textarea id="kojaStudioBody" name="body" maxlength="10000" required placeholder="Describe your photo or video..."></textarea><label>Photo or video</label><div class="drop-zone"><input id="kojaStudioFile" type="file" name="media" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime,video/x-m4v"><div class="small">Direct-to-Storage + resumable upload · movies do not pass through Render · MP4, WebM, MOV, M4V, JPG, PNG or WebP · up to {{ direct_max_gb }} GB · large movies require resumable upload</div><div id="kojaUploadStatus" class="small" style="margin-top:9px"></div><div id="kojaUploadBar" style="display:none;margin-top:9px;height:7px;background:#202936;border-radius:99px;overflow:hidden"><i id="kojaUploadFill" style="display:block;width:0;height:100%;background:#19a7b8"></i></div></div><div style="display:flex;gap:9px;flex-wrap:wrap;margin-top:14px"><button class="btn secondary" name="action" value="draft" type="submit">Save Draft</button><button class="btn" name="action" value="publish" type="submit">Publish to KOJA Media</button></div></form><script src="https://cdn.jsdelivr.net/npm/tus-js-client@4/dist/tus.min.js"></script><script>(function(){const form=document.getElementById('kojaStudioDirectForm');if(!form)return;const fileInput=document.getElementById('kojaStudioFile'),status=document.getElementById('kojaUploadStatus'),bar=document.getElementById('kojaUploadBar'),fill=document.getElementById('kojaUploadFill');const csrf=form.querySelector('input[name=_csrf_token]').value;const maxBytes={{ direct_max_bytes }};const maxGb={{ direct_max_gb }};function msg(t){status.textContent=t||''}function fmt(bytes){if(bytes>=1073741824)return (bytes/1073741824).toFixed(2)+' GB';if(bytes>=1048576)return (bytes/1048576).toFixed(1)+' MB';return Math.round(bytes/1024)+' KB'}async function prepare(file){const r=await fetch('{{ url_for("media_studio_upload_url") }}',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify({filename:file.name,mime_type:file.type,size:file.size})});const d=await r.json().catch(()=>({}));if(!r.ok||!d.ok)throw new Error(d.error||'Could not prepare the Storage upload.');return d}function tusUpload(file,d){return new Promise((resolve,reject)=>{if(!window.tus||!d.tus_endpoint)return reject(new Error('Resumable uploader is unavailable.'));const u=new tus.Upload(file,{endpoint:d.tus_endpoint,chunkSize:6*1024*1024,retryDelays:[0,3000,7000,15000,30000,60000],headers:{'x-signature':d.token,'x-upsert':'false'},uploadDataDuringCreation:true,removeFingerprintOnSuccess:true,metadata:{bucketName:d.bucket,objectName:d.path,contentType:file.type||d.mime_type||'application/octet-stream',cacheControl:'3600'},onError:e=>{const msg=(e&&e.message)?e.message:'TUS upload failed';reject(new Error(msg))},onProgress:(a,b)=>{const pct=b?Math.round(a/b*100):0;bar.style.display='block';fill.style.width=pct+'%';msg('Uploading '+pct+'% · '+Math.round(a/1048576)+' MB of '+Math.round(b/1048576)+' MB')},onSuccess:()=>resolve()});u.findPreviousUploads().then(prev=>{if(prev.length)u.resumeFromPreviousUpload(prev[0]);u.start()}).catch(reject)})}async function fallbackPut(file,d){if(file.size>100*1024*1024)throw new Error('Resumable upload is required for movies larger than 100 MB. Please retry the upload.');msg('Starting direct Storage upload…');const r=await fetch(d.signed_url,{method:'PUT',headers:{'x-upsert':'false','content-type':file.type||d.mime_type||'application/octet-stream'},body:file});if(!r.ok){let detail='';try{detail=(await r.text()).slice(0,240)}catch(e){}throw new Error('Direct Storage upload failed ('+r.status+')'+(detail?': '+detail:''));}fill.style.width='100%';bar.style.display='block';}form.addEventListener('submit',async function(e){e.preventDefault();const file=fileInput.files&&fileInput.files[0];if(!file){msg('Choose a movie or media file first.');fileInput.focus();return}if(file.size>maxBytes){msg('This file is '+fmt(file.size)+', above the KOJA Media '+maxGb+' GB limit.');return}const submitter=e.submitter,action=submitter&&submitter.value||'publish';submitter&& (submitter.disabled=true);try{msg('Preparing resumable Storage upload for '+fmt(file.size)+'…');const d=await prepare(file);try{await tusUpload(file,d)}catch(tusErr){console.warn('KOJA TUS upload fallback',tusErr);await fallbackPut(file,d)}msg('Upload complete. Saving KOJA Media…');const payload={title:document.getElementById('kojaStudioTitle').value,body:document.getElementById('kojaStudioBody').value,post_type:form.querySelector('[name=post_type]').value,action:action,path:d.path,filename:file.name,size:file.size};const r=await fetch('{{ url_for("media_studio_complete") }}',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify(payload)});const out=await r.json().catch(()=>({}));if(!r.ok||!out.ok)throw new Error(out.error||'Media record could not be saved.');msg(action==='publish'?'Published to KOJA Media.':'Saved as a private draft.');location.reload()}catch(err){msg(err&&err.message?err.message:'Upload failed. Please try again.');if(submitter)submitter.disabled=false}})})();</script>
+      <form method="post" enctype="multipart/form-data"><label>Content type</label><select name="post_type"><option value="update">Media</option><option value="news">News</option><option value="announcement">Announcement</option><option value="event">Event</option></select><label>Title</label><input name="title" maxlength="180" required placeholder="Media title"><label>Description</label><textarea name="body" maxlength="10000" required placeholder="Describe your photo or video..."></textarea><label>Photo or video</label><div class="drop-zone"><input type="file" name="media" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"><div class="small">JPG, PNG, WebP, MP4, WebM or MOV · max {{ max_mb }} MB</div></div><div style="display:flex;gap:9px;flex-wrap:wrap;margin-top:14px"><button class="btn secondary" name="action" value="draft" type="submit">Save Draft</button><button class="btn" name="action" value="publish" type="submit">Publish to KOJA Media</button></div></form>
     </section>
     <aside class="tips-card"><h3>Studio workflow</h3><p class="small">1. Add your title and description.</p><p class="small">2. Upload the main image or video.</p><p class="small">3. Save as Draft while preparing it.</p><p class="small">4. Publish when ready.</p><hr><p class="small">Published media automatically appears in the KOJA Media discovery rows.</p></aside>
   </div>
@@ -10826,29 +10586,7 @@ def media_studio():
   <div id="studioAll"><div class="studio-row">{% for p in items %}<article class="studio-card" data-status="{{ 'published' if p.is_published else 'draft' }}"><div class="studio-thumb">{% if p.media_url and p.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=p.id) }}" muted preload="metadata"></video>{% elif p.media_url %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="{{ p.title }}">{% else %}<div class="studio-placeholder">No media preview</div>{% endif %}<span class="studio-badge">{{ p.status }}</span></div><div class="studio-info"><h3>{{ p.title }}</h3><p>{{ p.body }}</p><div class="studio-meta"><span>{{ p.views }} views</span><span>{{ p.completions }} complete</span></div></div><div class="card-actions">{% if p.is_published %}<a class="btn secondary" href="{{ url_for('media_nextgen') }}#media-{{ p.id }}">View</a>{% else %}<span class="small" style="padding:8px">Private draft</span>{% endif %}</div></article>{% else %}<p class="small">No media yet. Create your first title above.</p>{% endfor %}</div></div>
 </div>
 <script>function showStudio(mode){document.querySelectorAll('#studioAll .studio-card').forEach(c=>{let s=c.dataset.status;c.style.display=(mode==='all'||(mode==='published'&&s==='published')||(mode==='draft'&&s==='draft'))?'':'none'})}</script>
-''',items=rows,max_mb=MAX_UPLOAD_MB,direct_max_gb=KOJA_MEDIA_DIRECT_MAX_GB,direct_max_bytes=KOJA_MEDIA_DIRECT_MAX_BYTES,published_count=published_count,draft_count=draft_count,total_views=total_views,total_completions=total_completions)
-
-@app.get('/api/media/playback/<post_id>')
-def media_playback(post_id):
-    post=first_row('koja_public_posts', {'id':post_id})
-    if not post or not as_bool(post.get('is_published')) or not post.get('media_url'):
-        return jsonify(error='Media not found'),404
-    original=''
-    path=clean(post.get('media_url'))
-    if path.startswith(('http://','https://')):
-        original=path
-    elif SUPABASE_URL and path:
-        public_prefix=f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{quote(STORAGE_BUCKET, safe='')}/"
-        if path.startswith(public_prefix): path=unquote(path[len(public_prefix):])
-        try:
-            endpoint=f"{SUPABASE_URL}/storage/v1/object/sign/{quote(STORAGE_BUCKET, safe='')}/{quote(path.lstrip('/'), safe='/')}"
-            r=requests.post(endpoint,headers=sb_headers(),json={'expiresIn':86400},timeout=20)
-            data=json_or_empty(r) if r.ok else {}
-            signed=data.get('signedURL') or data.get('signedUrl') or ''
-            original=(SUPABASE_URL+signed) if signed.startswith('/') else signed
-        except Exception:
-            logger.exception('Playback signing failed')
-    return jsonify(ok=True,post_id=post_id,media_type=post.get('media_type') or '',original_url=original,hls_url=media_hls_url(post) if post.get('media_type')=='video' else '')
+''',items=rows,max_mb=MAX_UPLOAD_MB,published_count=published_count,draft_count=draft_count,total_views=total_views,total_completions=total_completions)
 
 @app.route('/media/watch/<post_id>')
 def media_watch(post_id):
@@ -10862,13 +10600,11 @@ def media_watch(post_id):
 <div class="watch-shell"><div class="watch-top"><a class="btn secondary" href="{{ url_for('media_nextgen') }}">Back to KOJA Media</a><div class="watch-player" style="margin-top:12px">{% if post.media_type=='video' %}<video id="kojaPlayer" controls playsinline preload="metadata"{% if hls_url %} data-hls="{{ hls_url }}"{% else %} src="{{ url_for('public_feed_media',post_id=post.id) }}"{% endif %}></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=post.id) }}" alt="{{ post.title or 'KOJA Media' }}">{% endif %}</div>{% if post.media_type=='video' %}<div class="watch-status" id="streamStatus">{% if hls_url %}Adaptive streaming ready{% else %}Standard streaming · HLS processing pending{% endif %}</div>{% endif %}<div class="watch-info"><h1>{{ post.title or 'KOJA Media' }}</h1><div class="watch-meta">{{ post.post_type|title }} · {{ post.created_at }}</div><p>{{ post.body }}</p><div class="watch-actions">{% if post.media_type=='video' %}<button class="btn secondary" onclick="skip(-10)">−10 sec</button><button class="btn secondary" onclick="skip(10)">+10 sec</button><button class="btn secondary" onclick="startOver()">Start over</button><select id="quality" class="btn secondary"><option value="-1">Auto</option></select><button class="btn" onclick="goFull()">Fullscreen</button>{% endif %}<button class="btn secondary" onclick="shareWatch()">Share</button></div><div class="gesture-hint">Mobile: double-tap left/right to seek 10 seconds. Swipe horizontally on the player to seek.</div></div><h2>More like this</h2><div class="watch-row">{% for p in related %}<a class="watch-card" href="{{ url_for('media_watch',post_id=p.id) }}">{% if p.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=p.id) }}" muted preload="none"></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="{{ p.title or 'KOJA Media' }}">{% endif %}<div class="watch-card-info"><strong>{{ p.title or 'KOJA Media' }}</strong><span>{{ p.post_type|title }}</span></div></a>{% endfor %}</div></div></div>
 {% if post.media_type=='video' %}<script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.2/dist/hls.min.js"></script>{% endif %}<script>
 const v=document.getElementById('kojaPlayer'),key='koja_resume_{{ post.id }}',quality=document.getElementById('quality'),statusEl=document.getElementById('streamStatus');let hls=null,lastSaved=0,touchX=0,lastTap=0;
-function loadOriginalFromApi(){if(!v)return;fetch('/api/media/playback/{{ post.id }}').then(r=>r.ok?r.json():Promise.reject()).then(d=>{if(d.original_url){v.src=d.original_url;v.load();statusEl.textContent='Standard video playback';}}).catch(()=>{});}
 function sendProgress(force=false){if(!v||(!force&&Math.abs(v.currentTime-lastSaved)<5))return;lastSaved=v.currentTime;fetch('/api/nextgen/media-progress',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({post_id:'{{ post.id }}',position:v.currentTime,duration:v.duration||0})}).catch(()=>{});try{localStorage.setItem(key,String(v.currentTime))}catch(e){}}
 function skip(n){if(v)v.currentTime=Math.max(0,Math.min(v.duration||1,v.currentTime+n));sendProgress(true)}function startOver(){if(v){v.currentTime=0;v.play().catch(()=>{});sendProgress(true)}}
 function goFull(){if(v){let f=v.requestFullscreen||v.webkitRequestFullscreen;if(f)f.call(v);try{if(screen.orientation&&screen.orientation.lock)screen.orientation.lock('landscape')}catch(e){}}}
 function shareWatch(){let u=location.href;if(navigator.share)navigator.share({title:{{ (post.title or 'KOJA Media')|tojson }},url:u});else navigator.clipboard&&navigator.clipboard.writeText(u)}
-function fallbackOriginal(){if(!v)return;if(hls){try{hls.destroy()}catch(e){}hls=null}v.removeAttribute('data-hls');statusEl.textContent='Loading original video…';loadOriginalFromApi();}
-function setupHls(){if(!v)return;const src=v.dataset.hls;if(!src){v.load();return}if(window.Hls&&Hls.isSupported()){hls=new Hls({startLevel:-1,autoStartLoad:true,maxBufferLength:25,maxMaxBufferLength:60,backBufferLength:30,capLevelToPlayerSize:true,manifestLoadingMaxRetry:4,manifestLoadingRetryDelay:1000,levelLoadingMaxRetry:4,levelLoadingRetryDelay:1000,fragLoadingMaxRetry:4,fragLoadingRetryDelay:1000});hls.loadSource(src);hls.attachMedia(v);hls.on(Hls.Events.MANIFEST_PARSED,()=>{quality.innerHTML='<option value="-1">Auto</option>';hls.levels.forEach((l,i)=>{let o=document.createElement('option');o.value=i;o.textContent=(l.height?l.height+'p':'Quality '+(i+1));quality.appendChild(o)});statusEl.textContent='Adaptive streaming ready';v.play().catch(()=>{})});hls.on(Hls.Events.ERROR,(e,d)=>{if(d.fatal){fallbackOriginal()}});quality.onchange=()=>{if(hls)hls.currentLevel=parseInt(quality.value,10)}}else if(v.canPlayType('application/vnd.apple.mpegurl')){v.src=src;v.load();statusEl.textContent='Native HLS playback'}else{fallbackOriginal()}}
+function setupHls(){if(!v)return;const src=v.dataset.hls;if(!src)return;if(window.Hls&&Hls.isSupported()){hls=new Hls({startLevel:0,autoStartLoad:true,maxBufferLength:25,maxMaxBufferLength:60,backBufferLength:30,capLevelToPlayerSize:true});hls.loadSource(src);hls.attachMedia(v);hls.on(Hls.Events.MANIFEST_PARSED,()=>{quality.innerHTML='<option value="-1">Auto</option>';hls.levels.forEach((l,i)=>{let o=document.createElement('option');o.value=i;o.textContent=(l.height?l.height+'p':'Quality '+(i+1));quality.appendChild(o)});statusEl.textContent='Adaptive streaming ready'});hls.on(Hls.Events.ERROR,(e,d)=>{if(d.fatal){statusEl.textContent='Adaptive stream unavailable — using standard playback';v.src='{{ url_for('public_feed_media',post_id=post.id) }}'}});quality.onchange=()=>{hls.currentLevel=parseInt(quality.value,10)}}else{v.src=src;statusEl.textContent='Native HLS playback'}}
 if(v){setupHls();fetch('/api/nextgen/media-progress?post_id={{ post.id }}').then(r=>r.json()).then(d=>{let r=parseFloat(d.position||0);try{r=Math.max(r,parseFloat(localStorage.getItem(key)||0))}catch(e){};v.addEventListener('loadedmetadata',()=>{if(r>5&&r<v.duration-5)v.currentTime=r},{once:true})}).catch(()=>{});v.addEventListener('timeupdate',()=>sendProgress(false));v.addEventListener('pause',()=>sendProgress(true));v.addEventListener('ended',()=>{sendProgress(true);const n=document.querySelector('.watch-card');if(n)setTimeout(()=>location.href=n.href,900)});v.addEventListener('touchstart',e=>{touchX=e.touches[0].clientX},{passive:true});v.addEventListener('touchend',e=>{let dx=e.changedTouches[0].clientX-touchX;if(Math.abs(dx)>45)skip(dx>0?-10:10)});v.addEventListener('dblclick',e=>{let r=v.getBoundingClientRect();skip(e.clientX-r.left<r.width/2?-10:10)})}
 </script>''',post=post,related=related,hls_url=hls_url)
 
