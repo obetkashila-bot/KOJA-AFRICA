@@ -1,0 +1,18 @@
+KOJA NEWS GLOBAL — COMPLETE BUILD
+
+1. Replace the deployed app.py with the included app.py.
+2. Run KOJA_NEWS_GLOBAL_COMPLETE_MIGRATION.sql in Supabase SQL Editor.
+3. Deploy to Render with the existing gunicorn command.
+
+Main public routes:
+/news-next       Global KOJA News
+/news/live       KOJA News Live
+
+Admin:
+/admin           Admin dashboard (NEWS LIVE buttons included)
+/admin/news/live Global News Live Studio
+
+No KOJA NODE is required by this build.
+The browser camera is only a local preview. Public live video requires a compatible HLS .m3u8 source.
+
+Existing News discussions, Copy Link, Public Feed, Media, Research, AI and other KOJA services remain in app.py.
