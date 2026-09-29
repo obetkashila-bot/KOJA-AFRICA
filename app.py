@@ -880,15 +880,13 @@ footer{text-align:center;color:var(--muted);padding:30px}
 <a class="notification-bell" href="{{ url_for('notifications_page') }}" aria-label="Notifications">Notifications <span id="kojaNotifBadge" class="notif-badge" hidden></span></a>
 <a href="{{ '/market' }}">KOJA Market</a> <a href="{{ url_for('market_live') }}">Live Shop</a>
 <a href="{{ url_for('communication_nextgen') }}">Connect+</a>
-<a href="{{ url_for('news_nextgen') }}">KOJA News</a>
-<a href="{{ url_for('koja_news_live') }}">News Live</a>
 <div class="menu-group">
 <button type="button" id="moreMenuButton" aria-expanded="false" aria-haspopup="true">More ▾</button>
 <div class="dropdown" id="moreMenu" role="menu">
 <a role="menuitem" href="{{ url_for('questions') }}">Questions</a>
 <a role="menuitem" href="{{ url_for('assignments') }}">Assignments</a>
 <a role="menuitem" href="{{ url_for('public_feed') }}">Public</a>
-<a role="menuitem" href="{{ url_for('news_nextgen') }}">News</a>
+<a role="menuitem" href="{{ url_for('news_nextgen') }}">KOJA Global News</a>
 <a role="menuitem" href="{{ url_for('media_nextgen') }}">Media</a>
 <a role="menuitem" href="{{ url_for('public_videos') }}">Videos</a>
 <a role="menuitem" href="{{ url_for('marketplace') }}">Digital Marketplace</a>
@@ -5660,9 +5658,9 @@ def admin():
 <a class="btn success" href="{{ url_for('admin_live_tracking') }}"> Live GPS Tracking</a>
 <a class="btn" href="{{ url_for('admin_appointments') }}">Appointments</a>
 <a class="btn success" href="{{ url_for('admin_search_distribution') }}"> Google Search & Distribution</a>
-<a class="btn" href="{{ url_for('news_nextgen') }}">KOJA News</a>
-<a class="btn success" href="{{ url_for('koja_news_live') }}">KOJA News Live Studio</a>
+<a class="btn" href="{{ url_for('admin_news_live') }}">KOJA Global News Live Studio</a>
 <a class="btn" href="{{ url_for('admin_news_studio_assets') }}">KOJA NEWS Studio Assets</a>
+<a class="btn" href="{{ url_for('news_nextgen') }}">KOJA Global News</a>
 </div></div>
 """,counts=counts)
 
@@ -8484,16 +8482,17 @@ def business_accounting_v2(business_id):
 # ============================================================
 
 # ============================================================
-# KOJA NEWS LIVE + VIRTUAL NEWS TV STUDIO
+# KOJA GLOBAL NEWS + LIVE VIRTUAL TV STUDIO
 # Additive extension: preserves existing KOJA News articles/categories.
+# Browser camera is local preview only. Public broadcast uses an existing HLS source.
 # ============================================================
 KOJA_NEWS_LIVE_SQL = r'''
 create extension if not exists pgcrypto;
 create table if not exists public.koja_news_live (
  id uuid primary key default gen_random_uuid(),
- title text not null default 'KOJA AFRICA NEWS LIVE',
+ title text not null default 'KOJA GLOBAL NEWS LIVE',
  headline text not null default '',
- location text not null default 'LUSAKA, ZAMBIA',
+ location text not null default 'Global',
  reporter text not null default '',
  category text not null default 'General',
  ticker text not null default '',
@@ -8507,7 +8506,6 @@ create table if not exists public.koja_news_live (
  created_at timestamptz not null default now(),
  updated_at timestamptz not null default now()
 );
-
 alter table public.koja_news_live add column if not exists scene_slug text not null default 'main_desk';
 alter table public.koja_news_live add column if not exists presenter_name text not null default '';
 alter table public.koja_news_live add column if not exists guest_name text not null default '';
@@ -8516,19 +8514,39 @@ alter table public.koja_news_live add column if not exists wall_headline text no
 alter table public.koja_news_live add column if not exists wall_subtitle text not null default '';
 alter table public.koja_news_live add column if not exists breaking boolean not null default false;
 alter table public.koja_news_live add column if not exists studio_updated_at timestamptz;
-create index if not exists koja_news_live_status_idx on public.koja_news_live(status,updated_at desc);
-create index if not exists koja_news_live_scene_idx on public.koja_news_live(scene_slug,updated_at desc);
-'''
-
-KOJA_NEWS_STUDIO_ASSETS_SQL = r'''
-create table if not exists public.koja_news_studio_assets (id uuid primary key default gen_random_uuid(), name text not null, asset_type text not null check (asset_type in ('background','desk')), scene_slug text not null default 'main_desk', storage_path text not null, public_url text not null, mime_type text not null default 'image/png', created_by uuid, created_at timestamptz not null default now());
-alter table public.koja_news_live add column if not exists background_asset_url text not null default '';
-alter table public.koja_news_live add column if not exists desk_asset_url text not null default '';
+alter table public.koja_news_live add column if not exists country text not null default '';
+alter table public.koja_news_live add column if not exists region text not null default '';
+alter table public.koja_news_live add column if not exists city text not null default '';
+alter table public.koja_news_live add column if not exists language text not null default '';
+alter table public.koja_news_live add column if not exists timezone text not null default '';
 alter table public.koja_news_live add column if not exists background_asset_id uuid;
 alter table public.koja_news_live add column if not exists desk_asset_id uuid;
+alter table public.koja_news_live add column if not exists background_asset_url text not null default '';
+alter table public.koja_news_live add column if not exists desk_asset_url text not null default '';
+create index if not exists koja_news_live_status_idx on public.koja_news_live(status,updated_at desc);
+create index if not exists koja_news_live_scene_idx on public.koja_news_live(scene_slug,updated_at desc);
+
+create table if not exists public.koja_news_studio_assets (
+ id uuid primary key default gen_random_uuid(),
+ name text not null,
+ asset_type text not null check (asset_type in ('background','desk')),
+ scene_slug text not null default 'main_desk',
+ storage_bucket text not null default 'koja-files',
+ storage_path text not null,
+ public_url text not null default '',
+ mime_type text not null default 'image/png',
+ is_active boolean not null default true,
+ created_by uuid,
+ created_at timestamptz not null default now(),
+ updated_at timestamptz not null default now()
+);
+alter table public.koja_news_studio_assets add column if not exists storage_bucket text not null default 'koja-files';
+alter table public.koja_news_studio_assets add column if not exists is_active boolean not null default true;
+alter table public.koja_news_studio_assets add column if not exists updated_at timestamptz not null default now();
 create index if not exists koja_news_studio_assets_scene_idx on public.koja_news_studio_assets(scene_slug,asset_type,created_at desc);
 '''
 
+KOJA_NEWS_STUDIO_BUCKET = os.getenv('KOJA_NEWS_STUDIO_BUCKET', STORAGE_BUCKET).strip() or STORAGE_BUCKET
 KOJA_NEWS_STUDIO_SCENES = {
     'main_desk': {'name':'Main News Desk','tag':'NEWSROOM','kind':'desk','desc':'Primary presenter desk with headline wall.'},
     'interview_desk': {'name':'Interview Desk','tag':'INTERVIEW','kind':'interview','desc':'Two-person interview layout with presenter and guest.'},
@@ -8542,161 +8560,187 @@ KOJA_NEWS_STUDIO_SCENES = {
     'sports': {'name':'Sports','tag':'SPORTS','kind':'sports','desc':'Sports bulletin scene.'},
     'weather': {'name':'Weather','tag':'WEATHER','kind':'weather','desc':'Weather bulletin scene.'},
 }
+KOJA_NEWS_CATEGORIES = ['General','Africa','World','Business','Technology','Education','Sports','Entertainment','Science','Health','Weather','Parliament','Politics','Jobs & Opportunities','Culture']
+
 
 def _news_studio_live():
     return first_row('koja_news_live', {'status':'live'})
 
+
 def _news_studio_scene(row):
-    slug=clean((row or {}).get('scene_slug')) or 'main_desk'
+    slug=(row or {}).get('scene_slug') or 'main_desk'
     return KOJA_NEWS_STUDIO_SCENES.get(slug, KOJA_NEWS_STUDIO_SCENES['main_desk'])
 
-def _news_studio_assets(asset_type=None):
-    if not table_exists('koja_news_studio_assets'): return []
-    filters={'asset_type':asset_type} if asset_type else None
-    return db_select('koja_news_studio_assets',filters=filters,order='created_at.desc',limit=300) or []
 
-def _news_asset(asset_id):
-    return first_row('koja_news_studio_assets',{'id':asset_id}) if asset_id and table_exists('koja_news_studio_assets') else None
+def _news_asset_url(asset):
+    return clean((asset or {}).get('public_url'))
+
+
+def _news_assets(scene_slug=None, asset_type=None, active_only=True, limit=300):
+    filters={}
+    if scene_slug: filters['scene_slug']=scene_slug
+    if asset_type: filters['asset_type']=asset_type
+    rows=db_select('koja_news_studio_assets', filters, order='created_at.desc', limit=limit) or []
+    if active_only: rows=[r for r in rows if as_bool(r.get('is_active', True))]
+    return rows
+
+
+def _news_storage_url(bucket, path):
+    return f"{SUPABASE_URL}/storage/v1/object/{quote(bucket, safe='')}/{quote(path, safe='/')}"
+
+
+def _news_storage_public_url(bucket, path):
+    return f"{SUPABASE_URL}/storage/v1/object/public/{quote(bucket, safe='')}/{quote(path, safe='/')}"
+
+
+def _news_upload_asset(file_storage, asset_type, scene_slug):
+    if not file_storage or not file_storage.filename:
+        return None, 'Select an image first.'
+    if not supabase_configured():
+        return None, 'Supabase is not configured.'
+    filename=secure_filename(file_storage.filename)
+    if not filename: return None, 'Invalid filename.'
+    ext=filename.rsplit('.',1)[-1].lower() if '.' in filename else ''
+    allowed={'png','jpg','jpeg','webp','gif'}
+    if ext not in allowed: return None, 'Studio assets must be PNG, JPG, JPEG, WebP or GIF.'
+    data=file_storage.read()
+    if len(data)>MAX_UPLOAD_MB*1024*1024: return None, f'Maximum file size is {MAX_UPLOAD_MB} MB.'
+    path=f"news-studio/{scene_slug}/{asset_type}/{uuid.uuid4().hex}_{filename}"
+    mime=file_storage.mimetype or ('image/png' if ext=='png' else 'image/jpeg')
+    try:
+        r=requests.post(_news_storage_url(KOJA_NEWS_STUDIO_BUCKET,path),headers=sb_headers({'Content-Type':mime,'x-upsert':'true'}),data=data,timeout=60)
+        if not r.ok:
+            return None, r.text[:1200]
+        return {'name':filename,'asset_type':asset_type,'scene_slug':scene_slug,'storage_bucket':KOJA_NEWS_STUDIO_BUCKET,'storage_path':path,'public_url':_news_storage_public_url(KOJA_NEWS_STUDIO_BUCKET,path),'mime_type':mime},None
+    except Exception as exc:
+        logger.exception('KOJA News studio asset upload error: %s',exc)
+        return None,str(exc)
+
 
 @app.route('/admin/news/studio-assets', methods=['GET','POST'])
 @admin_required
 def admin_news_studio_assets():
     if request.method=='POST':
-        action=clean(request.form.get('action') or 'upload')
+        action=clean(request.form.get('action'))
         if action=='delete':
-            aid=clean(request.form.get('asset_id')); asset=_news_asset(aid)
+            aid=clean(request.form.get('asset_id'))
+            asset=first_row('koja_news_studio_assets',{'id':aid})
             if asset:
-                delete_storage(asset.get('storage_path')); db_delete('koja_news_studio_assets',{'id':aid}); flash('Studio asset deleted.','success')
+                try:
+                    requests.delete(_news_storage_url(asset.get('storage_bucket') or KOJA_NEWS_STUDIO_BUCKET,asset.get('storage_path') or ''),headers=sb_headers(),timeout=20)
+                except Exception: pass
+                db_update('koja_news_studio_assets',{'id':aid},{'is_active':False,'updated_at':utc_now()})
+                flash('Studio asset removed.','success')
             return redirect(url_for('admin_news_studio_assets'))
         asset_type=clean(request.form.get('asset_type')) or 'background'
-        if asset_type not in ('background','desk'): asset_type='background'
         scene_slug=clean(request.form.get('scene_slug')) or 'main_desk'
+        if asset_type not in ('background','desk'): asset_type='background'
         if scene_slug not in KOJA_NEWS_STUDIO_SCENES: scene_slug='main_desk'
-        f=request.files.get('asset')
-        if not f or not f.filename: flash('Choose an image.','danger'); return redirect(url_for('admin_news_studio_assets'))
-        result,error=upload_storage(f,folder='koja-news-studio/'+asset_type,public=True)
-        if error: flash('Upload failed: '+str(error)[:300],'danger'); return redirect(url_for('admin_news_studio_assets'))
-        row,_=db_insert('koja_news_studio_assets',{'name':clean(request.form.get('name')) or result['file_name'],'asset_type':asset_type,'scene_slug':scene_slug,'storage_path':result['path'],'public_url':result['url'],'mime_type':result['mime_type'],'created_by':(current_user() or {}).get('id'),'created_at':utc_now()})
-        if not row: delete_storage(result['path']); flash('Run the Studio Assets SQL first.','danger')
-        else: flash('Studio asset uploaded.','success')
+        f=request.files.get('asset_file')
+        uploaded,err=_news_upload_asset(f,asset_type,scene_slug)
+        if err:
+            flash(err,'danger'); return redirect(url_for('admin_news_studio_assets'))
+        uploaded['created_by']=(current_user() or {}).get('id'); uploaded['created_at']=utc_now(); uploaded['updated_at']=utc_now(); uploaded['is_active']=True
+        row,db_err=db_insert('koja_news_studio_assets',uploaded)
+        if db_err:
+            try: requests.delete(_news_storage_url(uploaded['storage_bucket'],uploaded['storage_path']),headers=sb_headers(),timeout=20)
+            except Exception: pass
+            flash('Asset uploaded but could not be registered: '+str(db_err),'danger')
+        else: flash('Studio asset uploaded and assigned to '+KOJA_NEWS_STUDIO_SCENES[scene_slug]['name']+'.','success')
         return redirect(url_for('admin_news_studio_assets'))
-    return render_page('KOJA NEWS Studio Assets',r'''<div class="hero"><h1>KOJA NEWS Studio Assets</h1><p>Upload backgrounds and transparent news desks.</p></div><div class="grid"><div class="card"><h2>Upload</h2><form method="post" enctype="multipart/form-data"><input type="hidden" name="action" value="upload"><label>Name</label><input name="name" placeholder="Main News Background"><label>Type</label><select name="asset_type"><option value="background">Background</option><option value="desk">News Desk</option></select><label>Scene</label><select name="scene_slug">{% for key,val in scenes.items() %}<option value="{{ key }}">{{ val.name }}</option>{% endfor %}</select><label>Image</label><input type="file" name="asset" accept="image/png,image/jpeg,image/webp" required><p class="small">Backgrounds: 16:9. Desks: transparent PNG recommended.</p><button class="btn success">Upload to Supabase Storage</button></form></div><div class="card"><h2>Uploaded</h2>{% for a in assets %}<div style="display:flex;gap:10px;align-items:center;border:1px solid var(--border);border-radius:10px;padding:8px;margin-bottom:8px"><img src="{{ a.public_url }}" style="width:90px;height:55px;object-fit:cover;border-radius:7px"><div style="flex:1"><b>{{ a.name }}</b><div class="small">{{ a.asset_type }} · {{ a.scene_slug }}</div></div><form method="post"><input type="hidden" name="action" value="delete"><input type="hidden" name="asset_id" value="{{ a.id }}"><button class="btn danger">Delete</button></form></div>{% else %}<p class="small">No assets.</p>{% endfor %}</div></div>''',assets=_news_studio_assets(),scenes=KOJA_NEWS_STUDIO_SCENES)
-
-@app.route('/news/live')
-def koja_news_live():
-    live = _news_studio_live()
-    scene = _news_studio_scene(live)
-    return render_page('KOJA News Live', r'''
+    assets=_news_assets(active_only=True)
+    return render_page('KOJA NEWS Studio Assets',r'''
 <style>
-:root{--kn-navy:#061a33;--kn-blue:#0b4ea2;--kn-red:#e21d2b;--kn-cyan:#36b7ff;--kn-white:#fff}
-.kn-wrap{max-width:1380px;margin:auto}.kn-hero{background:linear-gradient(135deg,#061a33,#0b4ea2 65%,#0a79c7);color:#fff;border-radius:22px;padding:22px;margin-bottom:16px;box-shadow:0 16px 40px rgba(0,0,0,.18)}
-.kn-hero h1{margin:0 0 5px}.kn-hero p{margin:0;opacity:.9}.kn-grid{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px}.nl-video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#02070d;z-index:3}.kn-screen{position:relative;min-height:650px;border-radius:20px;overflow:hidden;background:#030b15;color:#fff;isolation:isolate;box-shadow:0 18px 55px rgba(0,0,0,.3)}
-.kn-wall{position:absolute;inset:0;z-index:-3;background:radial-gradient(circle at 50% 35%,rgba(54,183,255,.32),transparent 36%),linear-gradient(135deg,#061a33,#07111f 55%,#0b4ea2);overflow:hidden}
-.kn-wall:before{content:"";position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.05) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.05) 1px,transparent 1px);background-size:32px 32px;opacity:.35}
-.kn-wall:after{content:"KOJA AFRICA NEWS";position:absolute;left:8%;right:8%;top:16%;padding:28px;text-align:center;border:1px solid rgba(255,255,255,.16);font-size:clamp(26px,5vw,70px);font-weight:900;letter-spacing:.08em;color:rgba(255,255,255,.10)}
-.kn-screen.scene-interview .kn-wall{background:radial-gradient(circle at 30% 25%,rgba(54,183,255,.3),transparent 35%),radial-gradient(circle at 70% 25%,rgba(255,255,255,.12),transparent 28%),linear-gradient(120deg,#061a33,#123b67,#07111f)}
-.kn-screen.scene-field .kn-wall{background:linear-gradient(135deg,#07111f,#07557e 50%,#07111f)}
-.kn-screen.scene-newsroom .kn-wall{background:radial-gradient(circle at 50% 20%,rgba(54,183,255,.35),transparent 30%),linear-gradient(135deg,#031426,#0b4ea2,#061a33)}
-.kn-screen.scene-breaking .kn-wall{background:radial-gradient(circle at 50% 25%,rgba(226,29,43,.48),transparent 32%),linear-gradient(135deg,#27080c,#061a33 55%,#0b1d37)}
-.kn-screen.scene-parliament .kn-wall{background:linear-gradient(135deg,#07111f,#19314a 48%,#07111f)}
-.kn-screen.scene-africa .kn-wall{background:radial-gradient(circle at 48% 42%,rgba(255,190,70,.28),transparent 25%),linear-gradient(135deg,#062f35,#0b4ea2,#061a33)}
-.kn-screen.scene-world .kn-wall{background:radial-gradient(circle at 50% 45%,rgba(54,183,255,.4),transparent 24%),linear-gradient(135deg,#061a33,#07111f,#123e72)}
-.kn-screen.scene-business .kn-wall{background:radial-gradient(circle at 50% 30%,rgba(76,160,255,.3),transparent 30%),linear-gradient(135deg,#07111f,#0b315a,#061a33)}
-.kn-screen.scene-sports .kn-wall{background:radial-gradient(circle at 50% 35%,rgba(0,210,150,.22),transparent 30%),linear-gradient(135deg,#061a33,#0b3f52,#07111f)}
-.kn-screen.scene-weather .kn-wall{background:radial-gradient(circle at 50% 30%,rgba(255,220,110,.35),transparent 26%),linear-gradient(135deg,#064c78,#0b87b6,#061a33)}
-.kn-custom-bg{position:absolute;inset:0;background-size:cover;background-position:center;opacity:.24;z-index:-2}
-.kn-top{position:absolute;top:16px;left:16px;right:16px;display:flex;justify-content:space-between;align-items:center;gap:10px;z-index:8}.kn-logo{font-weight:950;letter-spacing:.08em;background:rgba(0,0,0,.5);padding:9px 13px;border-radius:9px;backdrop-filter:blur(8px)}.kn-live-dot{background:#e21d2b;padding:9px 12px;border-radius:9px;font-weight:950;animation:knpulse 1.25s infinite}@keyframes knpulse{50%{opacity:.45}}
-.kn-wall-copy{position:absolute;top:22%;left:7%;right:7%;text-align:center;z-index:2}.kn-tag{display:inline-block;background:rgba(8,25,48,.82);border:1px solid rgba(255,255,255,.22);padding:6px 10px;border-radius:999px;font-size:12px;font-weight:900;letter-spacing:.12em}.kn-wall-title{font-size:clamp(25px,4.4vw,62px);font-weight:950;line-height:1.02;margin:13px auto 7px;text-shadow:0 5px 22px #000}.kn-wall-sub{font-size:clamp(13px,1.7vw,20px);opacity:.88}
-.kn-desk{position:absolute;left:4%;right:4%;bottom:13%;height:27%;z-index:4;border-radius:52% 52% 10px 10px/35% 35% 10px 10px;background:linear-gradient(180deg,rgba(14,76,133,.96),rgba(3,18,36,.99));border:1px solid rgba(96,184,255,.55);box-shadow:0 -20px 60px rgba(0,0,0,.35) inset,0 -6px 35px rgba(54,183,255,.15);display:flex;align-items:flex-end;justify-content:center;padding-bottom:24px}.kn-desk-image{width:100%;height:100%;object-fit:contain;object-position:center bottom;display:block}.kn-desk-screen{background:#061a33;border:1px solid rgba(255,255,255,.18);padding:9px 16px;border-radius:7px;font-weight:950;letter-spacing:.1em}.kn-interview .kn-desk{left:2%;right:2%;height:24%}.kn-field .kn-desk{left:auto;right:5%;width:42%;height:18%;border-radius:14px}.kn-newsroom .kn-desk{height:17%}.kn-parliament .kn-desk,.kn-africa .kn-desk,.kn-world .kn-desk,.kn-business .kn-desk,.kn-sports .kn-desk,.kn-weather .kn-desk{height:20%}
-.kn-lower{position:absolute;left:0;right:0;bottom:13%;z-index:9;background:linear-gradient(90deg,rgba(226,29,43,.97),rgba(164,17,28,.95));padding:12px 18px;border-top:2px solid #fff;box-shadow:0 -8px 28px rgba(0,0,0,.25)}.kn-lower-main{font-weight:950;font-size:clamp(15px,2vw,25px)}.kn-lower-sub{font-size:12px;margin-top:3px;opacity:.9}.kn-breaking{position:absolute;left:0;top:16%;z-index:10;background:#e21d2b;padding:8px 15px;font-weight:950;letter-spacing:.08em;animation:knflash .9s steps(2,end) infinite}@keyframes knflash{50%{filter:brightness(1.7)}}
-.kn-guest{position:absolute;left:5%;bottom:29%;z-index:8;background:rgba(0,0,0,.68);padding:9px 13px;border-left:4px solid #36b7ff;border-radius:4px;display:none}.scene-interview .kn-guest{display:block}.kn-field-card{position:absolute;right:6%;bottom:31%;z-index:8;text-align:right}.scene-field .kn-field-card{display:block}.kn-field-card strong{display:block;font-size:20px}.kn-field-card span{opacity:.85}.kn-ticker{position:absolute;z-index:12;bottom:0;left:0;right:0;background:#04101e;color:#fff;padding:9px 13px;white-space:nowrap;overflow:hidden;border-top:1px solid rgba(255,255,255,.12)}.kn-ticker span{display:inline-block;padding-left:100%;animation:knscroll 24s linear infinite}@keyframes knscroll{to{transform:translateX(-100%)}}
-.kn-meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.kn-chip{background:var(--surface);border:1px solid var(--border);border-radius:999px;padding:7px 10px}.kn-card{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:17px}.kn-card h3{margin-top:0}.kn-side-list{display:grid;gap:8px}.kn-side-list div{padding:9px 10px;border:1px solid var(--border);border-radius:10px}.kn-muted{opacity:.75;font-size:13px}@media(max-width:900px){.kn-grid{grid-template-columns:1fr}.kn-screen{min-height:500px}.kn-desk{bottom:14%}.kn-lower{bottom:14%}}@media(max-width:560px){.kn-screen{min-height:430px;border-radius:14px}.kn-top{top:10px;left:10px;right:10px}.kn-wall-copy{top:23%}.kn-wall-title{font-size:25px}.kn-desk{bottom:16%;height:23%}.kn-lower{bottom:16%;padding:9px 11px}.kn-lower-main{font-size:14px}.kn-ticker{font-size:11px}.kn-field-card{right:4%;bottom:34%}}
+.na{max-width:1250px;margin:auto}.na-grid{display:grid;grid-template-columns:360px 1fr;gap:16px}.na-card{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:18px}.na-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}.na-item{border:1px solid var(--border);border-radius:14px;overflow:hidden;background:var(--surface)}.na-thumb{height:145px;background:#07111f;display:grid;place-items:center;overflow:hidden}.na-thumb img{width:100%;height:100%;object-fit:cover}.na-meta{padding:11px}.na-meta strong{display:block}.na-actions{padding:0 11px 11px}.na-note{font-size:12px;color:var(--muted);line-height:1.5}@media(max-width:850px){.na-grid{grid-template-columns:1fr}}
 </style>
-<div class="kn-wrap">
-  <div class="kn-hero"><h1>KOJA AFRICA NEWS LIVE</h1><p>Virtual television studio · live newsroom · field reports · breaking news</p></div>
-  <div class="kn-grid">
-    <main>
-      <div id="knScreen" class="kn-screen scene-{{ scene.kind }}" data-scene="{{ live.scene_slug if live and live.scene_slug else 'main_desk' }}">
-        <div class="kn-wall"></div><div id="knCustomBg" class="kn-custom-bg" style="background-image:url({{ (live.background_asset_url or live.background_url if live else "")|tojson }})"></div>
-        <div class="kn-top"><div class="kn-logo">KOJA AFRICA NEWS</div><div class="kn-live-dot">● LIVE</div></div>
-        <div class="kn-wall-copy"><span id="knTag" class="kn-tag">{{ scene.tag }}</span><div id="knWallTitle" class="kn-wall-title">{{ live.wall_headline if live and live.wall_headline else (live.headline if live else 'KOJA AFRICA NEWS') }}</div><div id="knWallSub" class="kn-wall-sub">{{ live.wall_subtitle if live and live.wall_subtitle else (scene.name ~ ' · ' ~ (live.location if live else 'ZAMBIA')) }}</div></div>
-        {% if live and live.source_url %}<video id="kojaNewsPlayer" class="nl-video" controls autoplay playsinline></video><script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>{% endif %}
-        <div class="kn-desk">{% if live and live.desk_asset_url %}<img id="knDeskImage" class="kn-desk-image" src={{ live.desk_asset_url|tojson }} alt="KOJA News Desk">{% else %}<img id="knDeskImage" class="kn-desk-image" style="display:none" src="" alt="KOJA News Desk"><div id="knBuiltInDesk" class="kn-desk-screen">KOJA AFRICA NEWS</div>{% endif %}</div>
-        <div id="knGuest" class="kn-guest"><strong>{{ live.guest_name if live else '' }}</strong><br><span>{{ live.guest_title if live else '' }}</span></div>
-        <div class="kn-field-card"><strong id="knReporter">{{ live.reporter if live and live.reporter else 'KOJA Newsroom' }}</strong><span id="knLocation">{{ live.location if live else 'ZAMBIA' }}</span></div>
-        <div id="knBreaking" class="kn-breaking" style="display:{{ 'block' if live and live.breaking else 'none' }}">BREAKING NEWS</div>
-        <div class="kn-lower"><div id="knLowerMain" class="kn-lower-main">{{ live.headline if live and live.headline else 'KOJA AFRICA NEWS — LIVE' }}</div><div id="knLowerSub" class="kn-lower-sub">{{ live.presenter_name if live and live.presenter_name else (live.reporter if live else 'KOJA Newsroom') }} · {{ live.location if live else 'ZAMBIA' }}</div></div>
-        <div class="kn-ticker"><span id="knTicker">{{ live.ticker if live and live.ticker else 'KOJA AFRICA NEWS · Latest updates · Breaking news · ' }}</span></div>
-        <div id="knOffline" class="kn-fallback" style="display:{{ 'none' if live else 'block' }}"><h2>KOJA NEWS LIVE</h2><p>No live broadcast is active right now.</p></div>
-      </div>
-      <div id="knMeta" class="kn-meta">{% if live %}<span class="kn-chip" id="knCategory">{{ live.category or 'General' }}</span><span class="kn-chip" id="knMetaLocation">{{ live.location or 'ZAMBIA' }}</span><span class="kn-chip">Reporter: <span id="knMetaReporter">{{ live.reporter or 'KOJA Newsroom' }}</span></span>{% endif %}</div>
-    </main>
-    <aside>
-      <div class="kn-card"><h3>KOJA News</h3><p>Existing KOJA News articles and categories remain available.</p><a class="btn" href="{{ url_for('news_nextgen') }}">Open News</a></div>
-      <div class="kn-card"><h3>Studio scenes</h3><div class="kn-side-list">{% for key,val in scenes.items() %}<div><strong>{{ val.name }}</strong><br><span class="kn-muted">{{ val.desc }}</span></div>{% endfor %}</div></div>
-    </aside>
-  </div>
-</div>
-<script>
-(function(){
-  const initialUrl={{ (live.source_url if live else '')|tojson }}; let hls=null;
-  function loadHls(u){const v=document.getElementById('kojaNewsPlayer');if(!v||!u)return;if(hls){try{hls.destroy()}catch(e){}hls=null}if(window.Hls&&Hls.isSupported()){hls=new Hls({enableWorker:true});hls.loadSource(u);hls.attachMedia(v);hls.on(Hls.Events.MANIFEST_PARSED,()=>v.play().catch(()=>{}));}else{v.src=u;v.play().catch(()=>{})}}
-  if(initialUrl){if(window.Hls){loadHls(initialUrl)}else{setTimeout(()=>loadHls(initialUrl),800)}}
-  let last=initialUrl||'';
-  function setText(id,v){const e=document.getElementById(id);if(e)e.textContent=v||''}
-  function apply(b){if(!b)return;const screen=document.getElementById('knScreen');if(!screen)return;const scene=b.scene_slug||'main_desk';const kind=(b.scene_kind||'desk');screen.className='kn-screen scene-'+kind;screen.dataset.scene=scene;setText('knTag',b.scene_tag||scene.toUpperCase());setText('knWallTitle',b.wall_headline||b.headline||'KOJA AFRICA NEWS');setText('knWallSub',b.wall_subtitle||((b.category||'NEWS')+' · '+(b.location||'ZAMBIA')));setText('knLowerMain',b.headline||'KOJA AFRICA NEWS — LIVE');setText('knLowerSub',(b.presenter_name||b.reporter||'KOJA Newsroom')+' · '+(b.location||'ZAMBIA'));setText('knTicker',b.ticker||'KOJA AFRICA NEWS · Latest updates · Breaking news · ');setText('knReporter',b.reporter||'KOJA Newsroom');setText('knLocation',b.location||'ZAMBIA');setText('knMetaReporter',b.reporter||'KOJA Newsroom');setText('knMetaLocation',b.location||'ZAMBIA');const g=document.getElementById('knGuest');if(g)g.innerHTML='<strong>'+((b.guest_name||'').replace(/[&<>]/g,''))+'</strong><br><span>'+((b.guest_title||'').replace(/[&<>]/g,''))+'</span>';const c=document.getElementById('knCategory');if(c)c.textContent=b.category||'General';const br=document.getElementById('knBreaking');if(br)br.style.display=b.breaking?'block':'none';const off=document.getElementById('knOffline');if(off)off.style.display='none';const bg=document.getElementById('knCustomBg');if(bg)bg.style.backgroundImage=b.background_asset_url||b.background_url?'url('+JSON.stringify(b.background_asset_url||b.background_url)+')':'none';const di=document.getElementById('knDeskImage'),bd=document.getElementById('knBuiltInDesk');if(di){if(b.desk_asset_url){di.src=b.desk_asset_url;di.style.display='block';if(bd)bd.style.display='none'}else{di.style.display='none';if(bd)bd.style.display='block'}}if(b.source_url&&b.source_url!==last){last=b.source_url;loadHls(b.source_url)}}
-  setInterval(async()=>{try{const r=await fetch('{{ url_for("api_news_live_status") }}',{cache:'no-store'});const j=await r.json();if(j.live&&j.broadcast)apply(j.broadcast);else{const off=document.getElementById('knOffline');if(off)off.style.display='block'}}catch(e){}},5000);
-})();
-</script>
-''', live=live, scene=scene, scenes=KOJA_NEWS_STUDIO_SCENES)
+<div class="na"><div class="hero"><h1>KOJA GLOBAL NEWS — STUDIO ASSETS</h1><p>Upload reusable virtual backgrounds and transparent desk overlays for every Global News scene.</p></div>
+<div class="na-grid"><section class="na-card"><h2>Upload Asset</h2><form method="post" enctype="multipart/form-data"><label>Asset type</label><select name="asset_type"><option value="background">Virtual Background</option><option value="desk">Desk Overlay (transparent PNG recommended)</option></select><label>Scene</label><select name="scene_slug">{% for key,val in scenes.items() %}<option value="{{ key }}">{{ val.name }}</option>{% endfor %}</select><label>Image</label><input type="file" name="asset_file" accept="image/png,image/jpeg,image/webp,image/gif" required><button class="btn success" type="submit">UPLOAD STUDIO ASSET</button></form><p class="na-note">Assets are stored in Supabase Storage and registered to their scene. They become selectable in the Live Studio.</p><p><a class="btn secondary" href="{{ url_for('admin_news_live') }}">OPEN GLOBAL NEWS LIVE STUDIO</a></p></section>
+<section class="na-card"><h2>Uploaded Assets</h2><div class="na-list">{% for a in assets %}<article class="na-item"><div class="na-thumb">{% if a.public_url %}<img src="{{ a.public_url }}" alt="{{ a.name }}">{% else %}<span>No preview</span>{% endif %}</div><div class="na-meta"><strong>{{ a.name }}</strong><div class="small">{{ 'Background' if a.asset_type=='background' else 'Desk Overlay' }} · {{ scenes.get(a.scene_slug,{}).get('name',a.scene_slug) }}</div></div><div class="na-actions"><form method="post"><input type="hidden" name="action" value="delete"><input type="hidden" name="asset_id" value="{{ a.id }}"><button class="btn danger" type="submit">REMOVE</button></form></div></article>{% else %}<p>No studio assets uploaded yet.</p>{% endfor %}</div></section></div></div>
+''',assets=assets,scenes=KOJA_NEWS_STUDIO_SCENES)
+
 
 @app.route('/admin/news/live', methods=['GET','POST'])
 @admin_required
 def admin_news_live():
-    if request.method == 'POST':
+    if request.method=='POST':
         action=clean(request.form.get('action') or 'start')
-        if action == 'stop':
+        if action=='stop':
             row=_news_studio_live()
-            if row: db_update('koja_news_live', {'id':row.get('id')}, {'status':'offline','ended_at':utc_now(),'updated_at':utc_now(),'studio_updated_at':utc_now()})
-            flash('KOJA News Live stopped.','success'); return redirect(url_for('admin_news_live'))
-        if action == 'scene':
-            row=_news_studio_live()
-            slug=clean(request.form.get('scene_slug')) or 'main_desk'
+            if row: db_update('koja_news_live',{'id':row.get('id')},{'status':'offline','ended_at':utc_now(),'updated_at':utc_now(),'studio_updated_at':utc_now()})
+            flash('KOJA Global News Live stopped.','success'); return redirect(url_for('admin_news_live'))
+        if action=='scene':
+            row=_news_studio_live(); slug=clean(request.form.get('scene_slug')) or 'main_desk'
             if slug not in KOJA_NEWS_STUDIO_SCENES: slug='main_desk'
-            if row: db_update('koja_news_live', {'id':row.get('id')}, {'scene_slug':slug,'studio_updated_at':utc_now(),'updated_at':utc_now()})
+            if row: db_update('koja_news_live',{'id':row.get('id')},{'scene_slug':slug,'studio_updated_at':utc_now(),'updated_at':utc_now()})
             flash('Studio scene changed to '+KOJA_NEWS_STUDIO_SCENES[slug]['name']+'.','success'); return redirect(url_for('admin_news_live'))
-        payload={'title':clean(request.form.get('title')) or 'KOJA AFRICA NEWS LIVE','headline':clean(request.form.get('headline')),'location':clean(request.form.get('location')) or 'LUSAKA, ZAMBIA','reporter':clean(request.form.get('reporter')),'category':clean(request.form.get('category')) or 'General','ticker':clean(request.form.get('ticker')),'source_url':clean(request.form.get('source_url')),'source_type':clean(request.form.get('source_type')) or 'hls','background_url':clean(request.form.get('background_url')),'background_asset_id':clean(request.form.get('background_asset_id')),'desk_asset_id':clean(request.form.get('desk_asset_id')),'scene_slug':clean(request.form.get('scene_slug')) or 'main_desk','presenter_name':clean(request.form.get('presenter_name')),'guest_name':clean(request.form.get('guest_name')),'guest_title':clean(request.form.get('guest_title')),'wall_headline':clean(request.form.get('wall_headline')),'wall_subtitle':clean(request.form.get('wall_subtitle')),'breaking':str(request.form.get('breaking') or '') in {'1','true','on','yes'},'status':'live','started_at':utc_now(),'updated_at':utc_now(),'studio_updated_at':utc_now(),'created_by':(current_user() or {}).get('id')}
-        bg=_news_asset(payload.get('background_asset_id')); desk=_news_asset(payload.get('desk_asset_id'))
-        payload['background_asset_url']=(bg.get('public_url') if bg and bg.get('asset_type')=='background' else payload.get('background_url',''))
-        payload['desk_asset_url']=(desk.get('public_url') if desk and desk.get('asset_type')=='desk' else '')
+        slug=clean(request.form.get('scene_slug')) or 'main_desk'
+        if slug not in KOJA_NEWS_STUDIO_SCENES: slug='main_desk'
+        bg_id=clean(request.form.get('background_asset_id'))
+        desk_id=clean(request.form.get('desk_asset_id'))
+        bg=first_row('koja_news_studio_assets',{'id':bg_id}) if bg_id else None
+        desk=first_row('koja_news_studio_assets',{'id':desk_id}) if desk_id else None
+        payload={
+            'title':clean(request.form.get('title')) or 'KOJA GLOBAL NEWS LIVE',
+            'headline':clean(request.form.get('headline')),
+            'location':clean(request.form.get('location')) or 'Global',
+            'reporter':clean(request.form.get('reporter')),
+            'category':clean(request.form.get('category')) or 'General',
+            'ticker':clean(request.form.get('ticker')),
+            'source_url':clean(request.form.get('source_url')),
+            'source_type':'hls',
+            'background_url':clean(request.form.get('background_url')),
+            'scene_slug':slug,
+            'presenter_name':clean(request.form.get('presenter_name')),
+            'guest_name':clean(request.form.get('guest_name')),
+            'guest_title':clean(request.form.get('guest_title')),
+            'wall_headline':clean(request.form.get('wall_headline')),
+            'wall_subtitle':clean(request.form.get('wall_subtitle')),
+            'breaking':str(request.form.get('breaking') or '') in {'1','true','on','yes'},
+            'country':clean(request.form.get('country')),
+            'region':clean(request.form.get('region')),
+            'city':clean(request.form.get('city')),
+            'language':clean(request.form.get('language')),
+            'timezone':clean(request.form.get('timezone')),
+            'background_asset_id':bg.get('id') if bg else None,
+            'desk_asset_id':desk.get('id') if desk else None,
+            'background_asset_url':_news_asset_url(bg),
+            'desk_asset_url':_news_asset_url(desk),
+            'status':'live','started_at':utc_now(),'updated_at':utc_now(),'studio_updated_at':utc_now(),'created_by':(current_user() or {}).get('id')
+        }
         old=_news_studio_live()
-        if old: db_update('koja_news_live', {'id':old.get('id')}, payload)
-        else: db_insert('koja_news_live', payload)
-        flash('KOJA News Live is now published.','success'); return redirect(url_for('admin_news_live'))
-    live=_news_studio_live()
-    scene=_news_studio_scene(live)
-    studio_backgrounds=_news_studio_assets('background')
-    studio_desks=_news_studio_assets('desk')
-    return render_page('KOJA News Live Studio', r'''
+        if old: db_update('koja_news_live',{'id':old.get('id')},payload)
+        else: db_insert('koja_news_live',payload)
+        flash('KOJA Global News Live is now published.','success'); return redirect(url_for('admin_news_live'))
+    live=_news_studio_live(); scene=_news_studio_scene(live); current_scene=scene
+    assets=_news_assets(scene_slug=(live or {}).get('scene_slug') or 'main_desk')
+    backgrounds=[a for a in assets if a.get('asset_type')=='background']; desks=[a for a in assets if a.get('asset_type')=='desk']
+    return render_page('KOJA GLOBAL NEWS Live Studio',r'''
 <style>
-.ks{max-width:1250px;margin:auto}.ks-grid{display:grid;grid-template-columns:1.15fr .85fr;gap:16px}.ks-card{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:17px}.ks-preview{position:relative;min-height:390px;border-radius:16px;overflow:hidden;background:radial-gradient(circle at 50% 25%,rgba(54,183,255,.3),transparent 30%),linear-gradient(135deg,#061a33,#07111f);color:#fff;background-size:cover;background-position:center}.ks-preview:before{content:'KOJA AFRICA NEWS';position:absolute;inset:30px;display:flex;align-items:flex-start;justify-content:center;padding-top:42px;font-size:clamp(24px,5vw,54px);font-weight:950;color:rgba(255,255,255,.12);letter-spacing:.08em}.ks-top{position:absolute;top:12px;left:12px;right:12px;display:flex;justify-content:space-between}.ks-live{background:#e21d2b;padding:7px 10px;border-radius:7px;font-weight:900}.ks-desk{position:absolute;left:7%;right:7%;bottom:0;height:28%;background:linear-gradient(180deg,rgba(14,76,133,.94),rgba(3,18,36,.99));border-top:2px solid #36b7ff;display:flex;align-items:flex-end;justify-content:center;padding-bottom:18px}.ks-lower{position:absolute;left:0;right:0;bottom:28%;background:rgba(226,29,43,.96);padding:10px 13px;font-weight:900}.ks-wall{position:absolute;top:27%;left:7%;right:7%;text-align:center}.ks-wall h2{font-size:clamp(22px,4vw,44px);margin:0 0 5px}.ks-field{opacity:.85}.ks-controls{display:grid;gap:9px}.ks-controls input,.ks-controls select,.ks-controls textarea{width:100%;box-sizing:border-box;padding:10px;border:1px solid var(--border);border-radius:10px;background:var(--surface);color:inherit}.ks-controls textarea{min-height:70px;resize:vertical}.ks-scenes{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}.ks-scenes button{padding:9px 6px;border:1px solid var(--border);border-radius:9px;background:var(--surface);color:inherit;font-weight:800}.ks-scenes button.active{background:#0b4ea2;color:#fff;border-color:#36b7ff}.ks-row{display:grid;grid-template-columns:1fr 1fr;gap:9px}.ks-note{font-size:12px;opacity:.72}.ks-camera{width:100%;max-height:300px;border-radius:12px;background:#000;object-fit:cover;display:none}@media(max-width:850px){.ks-grid{grid-template-columns:1fr}.ks-scenes{grid-template-columns:repeat(2,1fr)}}
+.ks{max-width:1250px;margin:auto}.ks-grid{display:grid;grid-template-columns:1.15fr .85fr;gap:16px}.ks-card{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:17px}.ks-preview{position:relative;min-height:390px;border-radius:16px;overflow:hidden;background:radial-gradient(circle at 50% 25%,rgba(54,183,255,.3),transparent 30%),linear-gradient(135deg,#061a33,#07111f);color:#fff;background-size:cover;background-position:center}.ks-deskimg{position:absolute;left:0;right:0;bottom:0;width:100%;max-height:48%;object-fit:contain;object-position:center bottom;pointer-events:none}.ks-top{position:absolute;z-index:5;top:12px;left:12px;right:12px;display:flex;justify-content:space-between}.ks-live{background:#e21d2b;padding:7px 10px;border-radius:7px;font-weight:900}.ks-wall{position:absolute;z-index:3;top:27%;left:7%;right:7%;text-align:center;text-shadow:0 2px 8px #000}.ks-wall h2{font-size:clamp(22px,4vw,44px);margin:0 0 5px}.ks-lower{position:absolute;z-index:6;left:0;right:0;bottom:28%;background:rgba(226,29,43,.96);padding:10px 13px;font-weight:900}.ks-camera{position:absolute;z-index:4;left:7%;right:7%;bottom:26%;width:86%;height:40%;object-fit:cover;border-radius:10px;background:#000;display:none}.ks-controls{display:grid;gap:9px}.ks-controls input,.ks-controls select,.ks-controls textarea{width:100%;box-sizing:border-box;padding:10px;border:1px solid var(--border);border-radius:10px;background:var(--surface);color:inherit}.ks-controls textarea{min-height:70px;resize:vertical}.ks-scenes{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}.ks-scenes button{padding:9px 6px;border:1px solid var(--border);border-radius:9px;background:var(--surface);color:inherit;font-weight:800}.ks-scenes button.active{background:#0b4ea2;color:#fff;border-color:#36b7ff}.ks-row{display:grid;grid-template-columns:1fr 1fr;gap:9px}.ks-assets{display:grid;grid-template-columns:1fr 1fr;gap:8px}.ks-note{font-size:12px;opacity:.72;line-height:1.5}@media(max-width:850px){.ks-grid{grid-template-columns:1fr}.ks-scenes{grid-template-columns:repeat(2,1fr)}.ks-row,.ks-assets{grid-template-columns:1fr}}
 </style>
-<div class="ks"><div class="hero"><h1>KOJA NEWS LIVE STUDIO</h1><p>Control the virtual TV studio and the existing live HLS channel from one mobile-friendly panel.</p></div>
-<div class="ks-grid"><div class="ks-card"><h2>Studio Preview</h2><div id="ksPreview" class="ks-preview" style="{% if live and live.background_asset_url %}background-image:url({{ live.background_asset_url|tojson }});{% endif %}"><div class="ks-top"><strong>KOJA AFRICA NEWS</strong><span class="ks-live">● LIVE</span></div><div class="ks-wall"><div id="ksTag">{{ scene.tag }}</div><h2 id="ksHeadline">{{ live.wall_headline if live and live.wall_headline else (live.headline if live else 'KOJA AFRICA NEWS') }}</h2><div id="ksSub" class="ks-field">{{ live.wall_subtitle if live and live.wall_subtitle else scene.name }}</div></div><video id="ksCamera" class="ks-camera" autoplay muted playsinline></video><div id="ksLower" class="ks-lower">{{ live.headline if live and live.headline else 'BREAKING NEWS' }}</div><div id="ksDesk" class="ks-desk" style="{% if live and live.desk_asset_url %}background:transparent;border:0;box-shadow:none;{% endif %}">{% if live and live.desk_asset_url %}<img id="ksDeskImage" src={{ live.desk_asset_url|tojson }} alt="KOJA News Desk" style="width:100%;height:100%;object-fit:contain;object-position:center bottom;display:block;">{% else %}<span id="ksBuiltInDesk">KOJA AFRICA NEWS</span>{% endif %}</div></div><p><button class="btn" type="button" onclick="ksCameraStart()">Start Camera Preview</button> <button class="btn secondary" type="button" onclick="ksCameraStop()">Stop Camera</button></p><p class="ks-note">Camera preview is local to this device. It does not itself publish an HLS stream; connect an encoder/ingest URL in Broadcast Source.</p></div>
-<div class="ks-card"><h2>Scene Control</h2><div class="ks-scenes">{% for key,val in scenes.items() %}<form method="post"><input type="hidden" name="action" value="scene"><input type="hidden" name="scene_slug" value="{{ key }}"><button class="{% if live and live.scene_slug==key %}active{% endif %}" type="submit">{{ val.name }}</button></form>{% endfor %}</div><hr><h2>Broadcast</h2><form method="post" class="ks-controls"><input name="title" value="{{ live.title if live else 'KOJA AFRICA NEWS LIVE' }}" placeholder="Broadcast title"><div class="ks-row"><input id="ksHeadlineInput" name="headline" value="{{ live.headline if live else '' }}" placeholder="Main headline"><input name="presenter_name" value="{{ live.presenter_name if live else '' }}" placeholder="Presenter name"></div><div class="ks-row"><input name="location" value="{{ live.location if live else 'LUSAKA, ZAMBIA' }}" placeholder="Location"><input name="reporter" value="{{ live.reporter if live else '' }}" placeholder="Reporter name"></div><div class="ks-row"><input name="guest_name" value="{{ live.guest_name if live else '' }}" placeholder="Guest name"><input name="guest_title" value="{{ live.guest_title if live else '' }}" placeholder="Guest title"></div><div class="ks-row"><select name="category"><option value="General">General</option><option value="Zambia">Zambia</option><option value="Africa">Africa</option><option value="Business">Business</option><option value="Technology">Technology</option><option value="Education">Education</option><option value="Sports">Sports</option><option value="Jobs & Opportunities">Jobs & Opportunities</option><option value="Entertainment">Entertainment</option></select><select name="scene_slug">{% for key,val in scenes.items() %}<option value="{{ key }}" {% if live and live.scene_slug==key %}selected{% endif %}>{{ val.name }}</option>{% endfor %}</select></div><textarea name="wall_headline" placeholder="Headline shown on studio wall">{{ live.wall_headline if live else '' }}</textarea><textarea name="wall_subtitle" placeholder="Studio wall subtitle">{{ live.wall_subtitle if live else '' }}</textarea><input name="ticker" value="{{ live.ticker if live else '' }}" placeholder="Scrolling ticker"><input name="source_url" value="{{ live.source_url if live else '' }}" placeholder="HLS .m3u8 broadcast URL"><div class="ks-row"><select id="ksBackgroundAsset" name="background_asset_id"><option value="" data-url="">Use default background</option>{% for a in studio_backgrounds %}<option value="{{ a.id }}" data-url={{ a.public_url|tojson }} data-scene="{{ a.scene_slug }}" {% if live and live.background_asset_id==a.id %}selected{% endif %}>{{ a.name }} · {{ a.scene_slug }}</option>{% endfor %}</select><select id="ksDeskAsset" name="desk_asset_id"><option value="" data-url="">Use built-in desk</option>{% for a in studio_desks %}<option value="{{ a.id }}" data-url={{ a.public_url|tojson }} data-scene="{{ a.scene_slug }}" {% if live and live.desk_asset_id==a.id %}selected{% endif %}>{{ a.name }} · {{ a.scene_slug }}</option>{% endfor %}</select></div><p class="ks-note">Select assets to change the preview immediately. <button class="btn secondary" type="button" id="ksApplyAssets">APPLY STUDIO ASSETS</button> · <a href="{{ url_for('admin_news_studio_assets') }}">Manage Studio Assets</a></p><input name="background_url" value="{{ live.background_url if live else '' }}" placeholder="Optional custom studio background URL"><label><input type="checkbox" name="breaking" value="1" {% if live and live.breaking %}checked{% endif %}> BREAKING NEWS mode</label><button class="btn success" name="action" value="start" type="submit">GO LIVE / UPDATE STUDIO</button>{% if live %}<button class="btn danger" name="action" value="stop" type="submit">STOP LIVE</button>{% endif %}</form></div></div></div>
+<div class="ks"><div class="hero"><h1>KOJA GLOBAL NEWS LIVE STUDIO</h1><p>Global virtual TV studio and HLS newsroom for countries, regions and cities worldwide.</p><p><a class="btn secondary" href="{{ url_for('admin_news_studio_assets') }}">STUDIO ASSETS</a></p></div>
+<div class="ks-grid"><div class="ks-card"><h2>Studio Preview</h2><div id="ksPreview" class="ks-preview" {% if live and live.background_asset_url %}style="background-image:url('{{ live.background_asset_url }}')"{% elif live and live.background_url %}style="background-image:url('{{ live.background_url }}')"{% endif %}><div class="ks-top"><strong>KOJA GLOBAL NEWS</strong><span class="ks-live">● LIVE</span></div><div class="ks-wall"><div>{{ scene.tag }}</div><h2 id="ksHeadline">{{ live.wall_headline if live and live.wall_headline else (live.headline if live else 'KOJA GLOBAL NEWS') }}</h2><div class="ks-field">{{ live.wall_subtitle if live and live.wall_subtitle else scene.name }}</div></div><video id="ksCamera" class="ks-camera" autoplay muted playsinline></video><div id="ksLower" class="ks-lower">{{ live.headline if live and live.headline else 'GLOBAL NEWS' }}</div>{% if live and live.desk_asset_url %}<img class="ks-deskimg" src="{{ live.desk_asset_url }}" alt="News desk overlay">{% endif %}</div><p><button class="btn" type="button" onclick="ksCameraStart()">Start Camera Preview</button> <button class="btn secondary" type="button" onclick="ksCameraStop()">Stop Camera</button></p><p class="ks-note">Camera preview is local to this device. It does not itself publish HLS. Use an existing compatible encoder/source and paste its HLS .m3u8 URL below.</p></div>
+<div class="ks-card"><h2>Scene Control</h2><div class="ks-scenes">{% for key,val in scenes.items() %}<form method="post"><input type="hidden" name="action" value="scene"><input type="hidden" name="scene_slug" value="{{ key }}"><button class="{% if live and live.scene_slug==key %}active{% endif %}" type="submit">{{ val.name }}</button></form>{% endfor %}</div><hr><h2>Broadcast</h2><form method="post" class="ks-controls"><input name="title" value="{{ live.title if live else 'KOJA GLOBAL NEWS LIVE' }}" placeholder="Broadcast title"><div class="ks-row"><input id="ksHeadlineInput" name="headline" value="{{ live.headline if live else '' }}" placeholder="Main headline"><input name="presenter_name" value="{{ live.presenter_name if live else '' }}" placeholder="Presenter name"></div><div class="ks-row"><input name="country" value="{{ live.country if live else '' }}" placeholder="Country"><input name="region" value="{{ live.region if live else '' }}" placeholder="Region / continent"></div><div class="ks-row"><input name="city" value="{{ live.city if live else '' }}" placeholder="City"><input name="location" value="{{ live.location if live else 'Global' }}" placeholder="Location / venue"></div><div class="ks-row"><input name="reporter" value="{{ live.reporter if live else '' }}" placeholder="Reporter name"><input name="language" value="{{ live.language if live else '' }}" placeholder="Language"></div><div class="ks-row"><select name="category">{% for c in categories %}<option value="{{ c }}" {% if live and live.category==c %}selected{% endif %}>{{ c }}</option>{% endfor %}</select><input name="timezone" value="{{ live.timezone if live else '' }}" placeholder="Time zone (e.g. UTC)"></div><div class="ks-assets"><div><label>Virtual background</label><select name="background_asset_id"><option value="">Use default / custom URL</option>{% for a in backgrounds %}<option value="{{ a.id }}" {% if live and live.background_asset_id==a.id %}selected{% endif %}>{{ a.name }}</option>{% endfor %}</select></div><div><label>Desk overlay</label><select name="desk_asset_id"><option value="">No desk overlay</option>{% for a in desks %}<option value="{{ a.id }}" {% if live and live.desk_asset_id==a.id %}selected{% endif %}>{{ a.name }}</option>{% endfor %}</select></div></div><select name="scene_slug">{% for key,val in scenes.items() %}<option value="{{ key }}" {% if live and live.scene_slug==key %}selected{% endif %}>{{ val.name }}</option>{% endfor %}</select><textarea name="wall_headline" placeholder="Headline shown on studio wall">{{ live.wall_headline if live else '' }}</textarea><textarea name="wall_subtitle" placeholder="Studio wall subtitle">{{ live.wall_subtitle if live else '' }}</textarea><input name="ticker" value="{{ live.ticker if live else '' }}" placeholder="Scrolling ticker"><input name="source_url" value="{{ live.source_url if live else '' }}" placeholder="Existing HLS .m3u8 broadcast URL"><input name="background_url" value="{{ live.background_url if live else '' }}" placeholder="Optional custom background URL"><label><input type="checkbox" name="breaking" value="1" {% if live and live.breaking %}checked{% endif %}> BREAKING NEWS mode</label><button class="btn success" name="action" value="start" type="submit">GO LIVE / UPDATE STUDIO</button>{% if live %}<button class="btn danger" name="action" value="stop" type="submit">STOP LIVE</button>{% endif %}</form></div></div></div>
 <script>
-let ksStream=null;function ksCameraStart(){navigator.mediaDevices.getUserMedia({video:true,audio:true}).then(s=>{ksStream=s;const v=document.getElementById('ksCamera');v.srcObject=s;v.style.display='block'}).catch(e=>alert('Camera permission failed: '+e.message))}function ksCameraStop(){if(ksStream){ksStream.getTracks().forEach(t=>t.stop());ksStream=null}document.getElementById('ksCamera').style.display='none'}
-function ksAssetPreview(){const p=document.getElementById('ksPreview'),bg=document.getElementById('ksBackgroundAsset'),desk=document.getElementById('ksDeskAsset'),d=document.getElementById('ksDesk');if(!p||!bg||!desk||!d)return;const bo=bg.options[bg.selectedIndex],do_=desk.options[desk.selectedIndex],bu=bo?.dataset.url||'',du=do_?.dataset.url||'';p.style.backgroundImage=bu?'url("'+bu.replace(/\"/g,'\\"')+'")':'';if(du){d.style.background='transparent';d.style.border='0';d.style.boxShadow='none';d.innerHTML='<img id=\"ksDeskImage\" src=\"'+du.replace(/\"/g,'&quot;')+'\" alt=\"KOJA News Desk\" style=\"width:100%;height:100%;object-fit:contain;object-position:center bottom;display:block;\">'}else{d.style.background='linear-gradient(180deg,rgba(14,76,133,.94),rgba(3,18,36,.99))';d.style.borderTop='2px solid #36b7ff';d.style.boxShadow='';d.innerHTML='<span id=\"ksBuiltInDesk\">KOJA AFRICA NEWS</span>'}}
-document.getElementById('ksBackgroundAsset')?.addEventListener('change',ksAssetPreview);document.getElementById('ksDeskAsset')?.addEventListener('change',ksAssetPreview);document.getElementById('ksApplyAssets')?.addEventListener('click',()=>{ksAssetPreview();const f=document.getElementById('ksApplyAssets');f.textContent='STUDIO ASSETS APPLIED';setTimeout(()=>f.textContent='APPLY STUDIO ASSETS',1400)});document.getElementById('ksHeadlineInput')?.addEventListener('input',e=>{document.getElementById('ksHeadline').textContent=e.target.value||'KOJA AFRICA NEWS';document.getElementById('ksLower').textContent=e.target.value||'BREAKING NEWS'});ksAssetPreview();
+let ksStream=null;function ksCameraStart(){if(!navigator.mediaDevices?.getUserMedia){alert('Camera is not supported by this browser.');return}navigator.mediaDevices.getUserMedia({video:true,audio:true}).then(s=>{ksStream=s;const v=document.getElementById('ksCamera');v.srcObject=s;v.style.display='block'}).catch(e=>alert('Camera permission failed: '+e.message))}function ksCameraStop(){if(ksStream){ksStream.getTracks().forEach(t=>t.stop());ksStream=null}document.getElementById('ksCamera').style.display='none'}document.getElementById('ksHeadlineInput')?.addEventListener('input',e=>{document.getElementById('ksHeadline').textContent=e.target.value||'KOJA GLOBAL NEWS';document.getElementById('ksLower').textContent=e.target.value||'GLOBAL NEWS'});
 </script>
-''', live=live, scene=scene, scenes=KOJA_NEWS_STUDIO_SCENES, studio_backgrounds=studio_backgrounds, studio_desks=studio_desks)
+''',live=live,scene=scene,scenes=KOJA_NEWS_STUDIO_SCENES,categories=KOJA_NEWS_CATEGORIES,backgrounds=backgrounds,desks=desks)
+
+
+@app.route('/news/live')
+def koja_news_live():
+    live=_news_studio_live(); scene=_news_studio_scene(live)
+    return render_page('KOJA GLOBAL NEWS LIVE',r'''
+<style>.kn{max-width:1250px;margin:auto}.kn-stage{position:relative;min-height:min(70vh,720px);border-radius:18px;overflow:hidden;background:#06111f;color:#fff;background-size:cover;background-position:center}.kn-desk{position:absolute;left:0;right:0;bottom:0;width:100%;max-height:42%;object-fit:contain;object-position:center bottom;z-index:4}.kn-top{position:absolute;z-index:8;top:14px;left:14px;right:14px;display:flex;justify-content:space-between;font-weight:900}.kn-live{background:#e21d2b;padding:8px 11px;border-radius:7px}.kn-wall{position:absolute;z-index:3;top:28%;left:8%;right:8%;text-align:center;text-shadow:0 2px 9px #000}.kn-wall h1{font-size:clamp(28px,5vw,64px);margin:4px 0}.kn-lower{position:absolute;z-index:7;left:0;right:0;bottom:25%;background:rgba(226,29,43,.96);padding:12px 16px;font-weight:900}.kn-ticker{position:absolute;z-index:9;left:0;right:0;bottom:0;background:#020b16;padding:10px 14px;white-space:nowrap;overflow:hidden}.kn-meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.kn-pill{padding:7px 10px;border-radius:20px;background:var(--surface);border:1px solid var(--border)}@media(max-width:650px){.kn-stage{min-height:58vh}.kn-wall{top:24%}}
+</style>
+<div class="kn"><div class="hero"><h1>KOJA GLOBAL NEWS</h1><p>Worldwide news, live broadcasts and virtual TV newsroom.</p></div>{% if live %}<div class="kn-stage" {% if live.background_asset_url %}style="background-image:url('{{ live.background_asset_url }}')"{% elif live.background_url %}style="background-image:url('{{ live.background_url }}')"{% endif %}><div class="kn-top"><strong>KOJA GLOBAL NEWS</strong><span class="kn-live">● LIVE</span></div><div class="kn-wall"><div>{{ scene.tag }}</div><h1>{{ live.wall_headline or live.headline or 'KOJA GLOBAL NEWS' }}</h1><div>{{ live.wall_subtitle or scene.name }}</div></div>{% if live.desk_asset_url %}<img class="kn-desk" src="{{ live.desk_asset_url }}" alt="News desk">{% endif %}<div class="kn-lower">{{ live.headline or 'GLOBAL NEWS' }}{% if live.presenter_name %} · {{ live.presenter_name }}{% endif %}</div><div class="kn-ticker">{{ live.ticker or 'KOJA GLOBAL NEWS · LIVE UPDATES FROM AROUND THE WORLD' }}</div></div><div class="kn-meta">{% if live.country %}<span class="kn-pill">{{ live.country }}</span>{% endif %}{% if live.region %}<span class="kn-pill">{{ live.region }}</span>{% endif %}{% if live.city %}<span class="kn-pill">{{ live.city }}</span>{% endif %}{% if live.category %}<span class="kn-pill">{{ live.category }}</span>{% endif %}{% if live.language %}<span class="kn-pill">{{ live.language }}</span>{% endif %}</div>{% if live.source_url %}<div class="card" style="margin-top:14px"><video id="kojaNewsPlayer" controls playsinline style="width:100%;max-height:70vh;background:#000;border-radius:12px"></video><script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script><script>(function(){const u={{ live.source_url|tojson }};const v=document.getElementById('kojaNewsPlayer');if(v.canPlayType('application/vnd.apple.mpegurl'))v.src=u;else if(window.Hls&&Hls.isSupported()){const h=new Hls();h.loadSource(u);h.attachMedia(v);}})();</script></div>{% endif %}{% else %}<div class="card"><h2>KOJA GLOBAL NEWS</h2><p>No live broadcast is currently on air.</p></div>{% endif %}</div>
+''',live=live,scene=scene)
+
 
 @app.route('/api/news/live/status')
 def api_news_live_status():
-    live=_news_studio_live()
-    scene=_news_studio_scene(live)
-    if not live:
-        return jsonify({'ok':True,'live':False,'broadcast':None})
+    live=_news_studio_live(); scene=_news_studio_scene(live)
+    if not live: return jsonify({'ok':True,'live':False,'broadcast':None})
     out=dict(live); out['scene_name']=scene['name']; out['scene_kind']=scene['kind']; out['scene_tag']=scene['tag']
     return jsonify({'ok':True,'live':True,'broadcast':out})
 
