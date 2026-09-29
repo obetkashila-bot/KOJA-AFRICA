@@ -13,8 +13,6 @@ import base64
 import re
 import time
 import threading
-import subprocess
-import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from functools import wraps
@@ -114,6 +112,10 @@ STORAGE_BUCKET = os.getenv(
     "SUPABASE_STORAGE_BUCKET",
     "koja-files"
 )
+
+HLS_BUCKET = os.getenv("KOJA_HLS_BUCKET", "koja-media-hls").strip()
+HLS_PUBLIC_BASE = os.getenv("KOJA_HLS_PUBLIC_BASE", "").strip().rstrip("/")
+HLS_CDN_BASE = os.getenv("KOJA_HLS_CDN_BASE", "").strip().rstrip("/")
 
 APP_NAME = "KOJA AFRICA"
 APP_VERSION = "2026.09.09-V7-K100M-MONETIZATION-V53-SELLER-CENTER"
@@ -861,6 +863,17 @@ th,td{border-bottom:1px solid var(--border);padding:9px;text-align:left;vertical
 .online{color:#177245;font-weight:700}
 .offline{color:#a62d2d;font-weight:700}
 footer{text-align:center;color:var(--muted);padding:30px}
+/* KOJA GLOBAL LOADING ENGINE — progressive, non-blocking by default */
+#kojaLoadBar{position:fixed;left:0;top:0;width:0;height:3px;background:linear-gradient(90deg,#176b87,#2aa7b8,#f2b84b);z-index:2147483647;opacity:0;pointer-events:none;transition:width .22s ease,opacity .18s ease;box-shadow:0 1px 8px rgba(23,107,135,.35)}
+#kojaLoadBar.active{opacity:1;width:72%}
+#kojaLoadBar.done{width:100%;opacity:0;transition:width .18s ease,opacity .35s ease .08s}
+.koja-loading-inline{position:relative;opacity:.72;pointer-events:none}
+.koja-loading-inline::after{content:"";display:inline-block;width:13px;height:13px;margin-left:7px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;vertical-align:-2px;animation:kojaSpin .7s linear infinite}
+.koja-skeleton{position:relative;overflow:hidden;background:var(--border)!important;color:transparent!important;border-color:transparent!important;min-height:18px;border-radius:8px}
+.koja-skeleton::after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,rgba(255,255,255,.45),transparent);animation:kojaShimmer 1.15s infinite}
+html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90deg,transparent,rgba(255,255,255,.08),transparent)}
+@keyframes kojaSpin{to{transform:rotate(360deg)}}
+@keyframes kojaShimmer{100%{transform:translateX(100%)}}
 .actions{display:flex;gap:8px;flex-wrap:wrap}.actions .btn,.actions button{width:auto}
 @keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}@keyframes logoFloat{0%,100%{transform:translateY(0) rotate(0deg)}50%{transform:translateY(-2px) rotate(1deg)}}@keyframes pulseSoft{0%,100%{box-shadow:0 0 0 0 rgba(25,167,184,.18)}50%{box-shadow:0 0 0 7px rgba(25,167,184,0)}}:focus-visible{outline:3px solid var(--focus);outline-offset:2px}.hero{animation:fadeUp .55s ease both}.stat{animation:fadeUp .5s ease both}.online{animation:pulseSoft 2.4s ease-in-out infinite}@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition:none!important;transform:none!important}}
 @media(max-width:760px){nav{padding:9px 12px}.nav-inner{position:relative;flex-wrap:wrap}.menu-toggle{display:block}.nav-links{display:none;width:100%;flex-direction:column;align-items:stretch;gap:3px;padding-top:8px}.nav-links.open{display:flex;animation:fadeUp .2s ease both}.nav-links>a{font-size:14px;padding:11px 12px;background:rgba(255,255,255,.05)}.menu-group{width:100%}.menu-group>button{width:100%;text-align:left;padding:11px 12px}.dropdown{position:static;width:100%;box-shadow:none;margin-top:4px;background:var(--surface)}.dropdown a{font-size:14px}.container{width:min(100% - 14px,1250px)}table{display:block;overflow-x:auto}#map{height:350px}.actions .btn,.actions button{width:100%}}
@@ -868,6 +881,7 @@ footer{text-align:center;color:var(--muted);padding:30px}
 </style>
 </head>
 <body>
+<div id="kojaLoadBar" aria-hidden="true"></div>
 <nav aria-label="Primary navigation">
 <div class="nav-inner">
 <div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 18V6h7.2a5.3 5.3 0 0 1 0 10.6H8.5" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 9.1h3.4a1.9 1.9 0 0 1 0 3.8H8.5" stroke="white" stroke-width="2.2" stroke-linecap="round"/></svg></span><span class="brand-name">KOJA AFRICA</span></div>
@@ -876,7 +890,6 @@ footer{text-align:center;color:var(--muted);padding:30px}
 <a href="{{ url_for('home') }}">Home</a>
 {% if user %}
 <a href="{{ url_for('dashboard') }}">Dashboard</a>
-<a href="{{ url_for('koja_control_center') }}">KOJA Hub</a>
 <a href="{{ url_for('services') }}">Services</a>
 <a href="{{ url_for('research') }}">Research</a>
 <a href="{{ url_for('ai_nextgen') }}">KOJA AI</a>
@@ -889,7 +902,7 @@ footer{text-align:center;color:var(--muted);padding:30px}
 <a role="menuitem" href="{{ url_for('questions') }}">Questions</a>
 <a role="menuitem" href="{{ url_for('assignments') }}">Assignments</a>
 <a role="menuitem" href="{{ url_for('public_feed') }}">Public</a>
-<a role="menuitem" href="{{ url_for('news_nextgen') }}">KOJA Global News</a>
+<a role="menuitem" href="{{ url_for('news_nextgen') }}">News</a>
 <a role="menuitem" href="{{ url_for('media_nextgen') }}">Media</a>
 <a role="menuitem" href="{{ url_for('public_videos') }}">Videos</a>
 <a role="menuitem" href="{{ url_for('marketplace') }}">Digital Marketplace</a>
@@ -900,7 +913,7 @@ footer{text-align:center;color:var(--muted);padding:30px}
 <a role="menuitem" href="{{ url_for('koja_cloud_page') }}">KOJA Cloud</a>
 <a role="menuitem" href="{{ url_for('settings') }}">Settings</a>
 {% if user.role in ['driver','admin'] or user.is_admin %}<a role="menuitem" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}
-{% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('admin') }}">Admin</a><a role="menuitem" href="{{ url_for('admin_koja_support') }}">KOJA Support</a><a role="menuitem" href="{{ url_for('admin_market') }}">KOJA Market Admin</a><a role="menuitem" href="{{ url_for('admin_marketplace') }}">Digital Marketplace Admin</a>{% endif %}
+{% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('admin') }}">Admin</a><a role="menuitem" href="{{ url_for('admin_market') }}">KOJA Market Admin</a><a role="menuitem" href="{{ url_for('admin_marketplace') }}">Digital Marketplace Admin</a>{% endif %}
 <a role="menuitem" href="{{ url_for('logout') }}">Logout</a>
 </div></div>
 {% else %}
@@ -919,6 +932,59 @@ footer{text-align:center;color:var(--muted);padding:30px}
  window.addEventListener('resize',function(){if(window.innerWidth>760){links.classList.remove('open');toggle&&toggle.setAttribute('aria-expanded','false');toggle&&(toggle.innerHTML=' Menu');}});
 })();
 </script>
+<script>
+/* KOJA Loading Engine: only signals real navigation/submission work.
+   It never blocks ordinary page rendering and does not add a loader to every fetch. */
+(function(){
+  var bar=document.getElementById('kojaLoadBar');
+  if(!bar)return;
+  var timer=null;
+  function start(){
+    clearTimeout(timer);
+    bar.classList.remove('done');
+    bar.classList.add('active');
+    timer=setTimeout(function(){bar.style.width='88%';},250);
+  }
+  function done(){
+    clearTimeout(timer);
+    bar.classList.remove('active');
+    bar.classList.add('done');
+    setTimeout(function(){bar.classList.remove('done');bar.style.width='0';},450);
+  }
+  window.kojaLoading={start:start,done:done,inline:function(el,label){
+    if(!el)return;
+    if(!el.dataset.kojaOriginal)el.dataset.kojaOriginal=el.textContent||'';
+    el.classList.add('koja-loading-inline');
+    if(label)el.textContent=label;
+  }};
+  window.addEventListener('pageshow',done);
+  document.addEventListener('click',function(e){
+    var a=e.target.closest&&e.target.closest('a[href]');
+    if(!a||e.defaultPrevented||a.target==='_blank'||a.hasAttribute('download'))return;
+    var href=a.getAttribute('href')||'';
+    if(!href||href[0]==='#'||href.indexOf('javascript:')===0||href.indexOf('mailto:')===0||href.indexOf('tel:')===0)return;
+    try{
+      var u=new URL(href,location.href);
+      if(u.origin!==location.origin)return;
+      if(u.pathname===location.pathname&&u.search===location.search&&u.hash===location.hash)return;
+      start();
+    }catch(x){}
+  },true);
+  document.addEventListener('submit',function(e){
+    var form=e.target;if(!form||form.dataset.kojaNoLoading==='true'||e.defaultPrevented)return;
+    var btn=form.querySelector('button[type="submit"],input[type="submit"]');
+    if(btn&&!btn.disabled){
+      if(!btn.dataset.kojaOriginal)btn.dataset.kojaOriginal=btn.textContent||btn.value||'';
+      btn.disabled=true;
+      btn.classList.add('koja-loading-inline');
+      if(btn.tagName==='INPUT')btn.value='Processing…';else btn.textContent='Processing…';
+    }
+    start();
+  },true);
+  window.addEventListener('beforeunload',start);
+  document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')done();});
+})();
+</script>
 {% if user %}<script>async function refreshKOJANotifications(){try{let r=await fetch('/api/notifications');if(!r.ok)return;let d=await r.json(),b=document.getElementById('kojaNotifBadge');if(!b)return;if(d.unread>0){b.hidden=false;b.textContent=d.unread>99?'99+':d.unread}else b.hidden=true}catch(e){}}refreshKOJANotifications();setInterval(refreshKOJANotifications,20000);</script>{% endif %}
 <div class="container">
 {% with messages=get_flashed_messages(with_categories=true) %}
@@ -927,6 +993,51 @@ footer{text-align:center;color:var(--muted);padding:30px}
 {{ body|safe }}
 </div>
 <footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services</footer>
+<!-- KOJA Connect incoming-call receiver: polls only while authenticated. -->
+{% if user and not request.path.startswith('/api/') and not request.path.startswith('/connect/call') and not request.path.startswith('/connect/answer') %}
+<div id="kojaIncomingCall" style="display:none;position:fixed;left:12px;right:12px;bottom:16px;z-index:99999;max-width:520px;margin:auto;background:var(--card,#fff);border:2px solid var(--accent,#1d4ed8);border-radius:18px;padding:16px;box-shadow:0 18px 50px rgba(0,0,0,.28)">
+  <div style="font-weight:800;font-size:18px" id="kojaIncomingTitle">Incoming Call</div>
+  <div class="small" id="kojaIncomingFrom" style="margin-top:4px"></div>
+  <div class="actions" style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+    <a id="kojaIncomingAnswer" class="btn success" href="#">Answer</a>
+    <button id="kojaIncomingReject" class="btn danger" type="button">Decline</button>
+  </div>
+</div>
+<script>
+(function(){
+  const box=document.getElementById('kojaIncomingCall');
+  if(!box)return;
+  let activeId=null,lastSeen=null,timer=null;
+  const title=document.getElementById('kojaIncomingTitle'),from=document.getElementById('kojaIncomingFrom'),answer=document.getElementById('kojaIncomingAnswer'),reject=document.getElementById('kojaIncomingReject');
+  function show(c){
+    activeId=c.id; lastSeen=c.id;
+    title.textContent='Incoming '+(c.mode==='video'?'Video':'Voice')+' Call';
+    from.textContent='From '+(c.caller_name||'KOJA user');
+    answer.href='/connect/answer/'+encodeURIComponent(c.id);
+    box.style.display='block';
+    try{ if('navigator' in window && 'vibrate' in navigator) navigator.vibrate([300,150,300]); }catch(e){}
+  }
+  async function reject(){
+    if(!activeId)return;
+    const id=activeId; activeId=null; box.style.display='none';
+    try{await fetch('/api/connect/call/reject/'+encodeURIComponent(id),{method:'POST',headers:{'Content-Type':'application/json'}});}catch(e){}
+  }
+  reject.onclick=reject;
+  async function poll(){
+    try{
+      const r=await fetch('/api/connect/incoming-calls',{cache:'no-store'});
+      if(!r.ok)return;
+      const d=await r.json(); const calls=d.calls||[];
+      if(activeId && !calls.some(c=>String(c.id)===String(activeId))){activeId=null;box.style.display='none';}
+      if(!activeId && calls.length)show(calls[0]);
+    }catch(e){}
+  }
+  poll(); timer=setInterval(poll,2500);
+  window.addEventListener('beforeunload',()=>clearInterval(timer));
+})();
+</script>
+{% endif %}
+
 </body>
 </html>
 """
@@ -2438,15 +2549,59 @@ def document_download(document_id):
 @login_required
 def services():
     return render_page("Services", r"""
-<div class="hero"><h2>KOJA Services</h2><p>Related capabilities are grouped into unified modules. Existing routes remain available behind each module.</p></div>
-<div class="grid">
-<div class="card"><h3>Learning and Research</h3><p>One connected workspace for academic questions, assignments, documents, research and document-based AI.</p><div class="actions"><a class="btn" href="{{ url_for('questions') }}">Questions</a><a class="btn" href="{{ url_for('assignments') }}">Assignments</a><a class="btn" href="{{ url_for('documents') }}">Documents and AI</a><a class="btn secondary" href="{{ url_for('research') }}">Research</a></div></div>
-<div class="card"><h3>AI and Workspace</h3><p>General AI, document intelligence, connected knowledge and productivity tools use the same KOJA AI foundation.</p><div class="actions"><a class="btn" href="{{ url_for('ai_assistant') }}">KOJA AI</a><a class="btn secondary" href="{{ url_for('documents') }}">Document AI</a><a class="btn secondary" href="{{ url_for('cv') }}">CV and Documents</a></div></div>
-<div class="card"><h3>Professional Services</h3><p>Doctors, teachers, tutors and other professionals are grouped under one discovery and identity workflow.</p><div class="actions"><a class="btn" href="{{ url_for('professionals') }}">Professionals</a><a class="btn secondary" href="{{ url_for('doctors') }}">Doctors</a><a class="btn secondary" href="{{ url_for('teachers') }}">Teachers and Tutors</a><a class="btn secondary" href="{{ url_for('professional_register') }}">Register Profession</a></div></div>
-<div class="card"><h3>Market and Business</h3><p>Buying, selling, business operations, payments, accounting and seller tools share the same commerce foundation.</p><div class="actions"><a class="btn" href="{{ url_for('market') }}">KOJA Market</a><a class="btn secondary" href="{{ url_for('marketplace') }}">Digital Marketplace</a></div></div>
-<div class="card"><h3>Delivery and Logistics</h3><p>Orders, drivers, live GPS, delivery requests, tracking and delivery security operate as one logistics workflow.</p><div class="actions"><a class="btn" href="{{ url_for('deliveries') }}">Delivery</a><a class="btn secondary" href="{{ url_for('tracking') }}">Live GPS</a></div></div>
-<div class="card"><h3>Communication</h3><p>Messaging, voice, video, groups, presence and status remain one connected communication service.</p><a class="btn" href="{{ url_for('connect') }}">Open Communication</a></div>
+<style>
+.koja-services-intro{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}.koja-services-intro .service-badge{display:inline-flex;align-items:center;border:1px solid rgba(255,255,255,.25);border-radius:999px;padding:7px 11px;font-size:12px;background:rgba(255,255,255,.08)}
+.service-section{margin:22px 0 10px}.service-section h3{margin:0 0 5px}.service-section p{margin:0;color:var(--muted)}
+.service-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(245px,1fr));gap:13px}.service-card{position:relative;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px;box-shadow:0 3px 14px rgba(0,0,0,.05);transition:.2s}.service-card:hover{transform:translateY(-2px);box-shadow:0 9px 24px rgba(0,0,0,.09)}
+.service-card h4{margin:0 0 6px}.service-card p{color:var(--muted);font-size:13px;margin:0 0 13px}.service-links{display:flex;gap:7px;flex-wrap:wrap}.service-links .btn{font-size:13px;padding:8px 10px}
+.service-card.global{border-left:4px solid #176b87}.service-card.trade{border-left:4px solid #c23b3b}.service-card.engine{border-left:4px solid #8a6d1d}.service-flow{display:flex;gap:7px;flex-wrap:wrap;align-items:center}.service-flow span{border:1px solid var(--border);border-radius:999px;padding:7px 10px;background:var(--surface);font-size:12px}.service-flow b{color:var(--muted)}
+@media(max-width:760px){.service-grid{grid-template-columns:1fr}.service-card{padding:14px}.service-links .btn{width:auto}.service-flow{align-items:stretch}.service-flow span{flex:1;min-width:130px;text-align:center}}
+</style>
+<div class="hero koja-services-intro"><div><h2>KOJA Services</h2><p>One connected service center for learning, AI, professional work, commerce, global business, trade, logistics and communication.</p></div><span class="service-badge">KOJA GLOBAL ECOSYSTEM</span></div>
+
+<div class="service-section"><h3>Learning and Research</h3><p>Academic questions, assignments, documents, research and document intelligence.</p></div>
+<div class="service-grid">
+<div class="service-card"><h4>Questions & Assignments</h4><p>Academic questions, assignments and learning workflows.</p><div class="service-links"><a class="btn" href="{{ url_for('questions') }}">Questions</a><a class="btn secondary" href="{{ url_for('assignments') }}">Assignments</a></div></div>
+<div class="service-card"><h4>Documents & Research</h4><p>Document intelligence, research and connected knowledge.</p><div class="service-links"><a class="btn" href="{{ url_for('documents') }}">Documents</a><a class="btn secondary" href="{{ url_for('research') }}">Research</a></div></div>
 </div>
+
+<div class="service-section"><h3>AI and Workspace</h3><p>KOJA AI, document intelligence and productivity tools.</p></div>
+<div class="service-grid">
+<div class="service-card"><h4>KOJA AI</h4><p>General AI and connected knowledge for work, learning and business.</p><div class="service-links"><a class="btn" href="{{ url_for('ai_assistant') }}">KOJA AI</a><a class="btn secondary" href="{{ url_for('cv') }}">CV & Documents</a></div></div>
+<div class="service-card engine"><h4>KOJA Platform Engines</h4><p>Discover, Ads, Pay, Intelligence, Identity, Workspace, Ecosystem and Autonomous AI.</p><a class="btn secondary" href="{{ url_for('koja_named_engines') }}">Open Engines</a></div>
+</div>
+
+<div class="service-section"><h3>Professional Services</h3><p>Discover professionals, teaching, health and other service workflows.</p></div>
+<div class="service-grid">
+<div class="service-card"><h4>Professionals</h4><p>Professional identity, discovery and service workflows.</p><div class="service-links"><a class="btn" href="{{ url_for('professionals') }}">Professionals</a><a class="btn secondary" href="{{ url_for('professional_register') }}">Register</a></div></div>
+<div class="service-card"><h4>Teaching & Health</h4><p>Teacher, tutor and doctor discovery remains connected to the professional service layer.</p><div class="service-links"><a class="btn secondary" href="{{ url_for('teachers') }}">Teachers</a><a class="btn secondary" href="{{ url_for('doctors') }}">Doctors</a></div></div>
+</div>
+
+<div class="service-section"><h3>Market, Business & Global Trade</h3><p>From creating a business to connecting with companies and handling international trade.</p></div>
+<div class="service-grid">
+<div class="service-card global"><h4>KOJA Business</h4><p>Business identity, organisation, CRM, workforce, procurement, finance, accounting, store and AI.</p><div class="service-links"><a class="btn" href="{{ url_for('koja_business') }}">Business</a><a class="btn secondary" href="{{ url_for('business_new') }}">Create Business</a></div></div>
+<div class="service-card global"><h4>Global Business</h4><p>Executive workspace for company-wide operations, KPIs, finance, workforce, trade and connected modules.</p><a class="btn secondary" href="{{ url_for('business_module',module='global') }}">Open Global Workspace</a></div>
+<div class="service-card global"><h4>Business Connect</h4><p>Business-to-business network: find a company by KOJA Business Code, send connection requests and manage approved partners.</p><a class="btn secondary" href="{{ url_for('business_module',module='connect') }}">Open Business Connect</a></div>
+<div class="service-card"><h4>KOJA Market</h4><p>Physical and digital commerce with seller tools, payments and delivery workflows.</p><div class="service-links"><a class="btn" href="{{ url_for('koja_market') }}">KOJA Market</a><a class="btn secondary" href="{{ url_for('marketplace') }}">Digital Market</a></div></div>
+<div class="service-card trade"><h4>Import & Export</h4><p>Create and manage cross-border trade orders, origin/destination, HS classification, landed cost and documents.</p><a class="btn secondary" href="{{ url_for('business_module',module='trade') }}">Open Import & Export</a></div>
+<div class="service-card trade"><h4>Customs & Clearance</h4><p>Work specifically on customs status, declarations, duty/tax assessment, inspection, brokers, ports and release.</p><a class="btn secondary" href="{{ url_for('business_module',module='customs') }}">Open Customs</a></div>
+<div class="service-card trade"><h4>International Trade</h4><p>Trade pipeline connecting supplier sourcing, B2B procurement, freight, customs, clearance and delivery.</p><a class="btn secondary" href="{{ url_for('business_module',module='trade') }}">Open Trade Workspace</a></div>
+<div class="service-card"><h4>Finance, Payments & Payouts</h4><p>Business ledger, revenue, expenses, accounts, payments and settlement requests.</p><div class="service-links"><a class="btn secondary" href="{{ url_for('business_module',module='finance') }}">Open Finance</a><a class="btn secondary" href="{{ url_for('business_module',module='accounting') }}">Accounting</a></div></div>
+</div>
+
+<div class="service-section"><h3>Delivery, Freight & Logistics</h3><p>Domestic and international fulfilment can continue through the same KOJA logistics foundation.</p></div>
+<div class="service-grid">
+<div class="service-card"><h4>Delivery & Live GPS</h4><p>Orders, drivers, delivery requests, live tracking and delivery security.</p><div class="service-links"><a class="btn" href="{{ url_for('deliveries') }}">Delivery</a><a class="btn secondary" href="{{ url_for('tracking') }}">Live GPS</a></div></div>
+<div class="service-card trade"><h4>Freight & Forwarding</h4><p>Freight operations are separate from last-mile Delivery: shipments, carriers, route legs, freight status and handoff into customs.</p><a class="btn secondary" href="{{ url_for('business_module',module='freight') }}">Open Freight Workspace</a></div>
+<div class="service-card trade"><h4>Trade Flow</h4><p>Seller → freight → destination country → customs → clearance → local delivery → buyer.</p><div class="service-flow"><span>Seller</span><b>→</b><span>Freight</span><b>→</b><span>Customs</span><b>→</b><span>Delivery</span><b>→</b><span>Buyer</span></div></div>
+</div>
+
+<div class="service-section"><h3>Communication</h3><p>One communication service for messaging, voice, video, groups, presence and business collaboration.</p></div>
+<div class="service-grid">
+<div class="service-card"><h4>Connect+</h4><p>Existing KOJA communication remains the shared communication layer for users and connected businesses.</p><div class="service-links"><a class="btn" href="{{ url_for('communication_nextgen') }}">Open Connect+</a><a class="btn secondary" href="{{ url_for('connect') }}">Communication</a></div></div>
+</div>
+
+<div class="card"><h3>KOJA service architecture</h3><p>These are unified entry points into existing KOJA routes and engines. The Services page does not create a second marketplace, communication system or logistics platform.</p><div class="service-flow"><span>Learning</span><b>+</b><span>AI</span><b>+</b><span>Professional</span><b>+</b><span>Business</span><b>+</b><span>Trade</span><b>+</b><span>Logistics</span><b>+</b><span>Connect+</span></div></div>
 """)
 
 # ============================================================
@@ -3789,7 +3944,8 @@ def flutterwave_webhook():
     market_orders=db_select('koja_market_orders',{'payment_reference':tx_ref},order='created_at.asc',limit=100) or []
     marketplace_order=first_row('koja_marketplace_orders',{'payment_reference':tx_ref})
     monetization_order=_mono_order_for_ref(tx_ref)
-    if not market_orders and not marketplace_order and not monetization_order:
+    b2b_orders=db_select('koja_b2b_v4_orders',{'payment_reference':tx_ref},order='created_at.asc',limit=100) or []
+    if not market_orders and not marketplace_order and not monetization_order and not b2b_orders:
         logger.warning('Flutterwave webhook unknown reference tx_ref=%s',tx_ref)
         return jsonify({'status':'ignored','reason':'unknown_reference'}),200
     results=[]
@@ -3807,7 +3963,13 @@ def flutterwave_webhook():
         ok=_finalize_monetization(monetization_order,tx)
         logger.info('KOJA monetization finalization tx_ref=%s order=%s result=%s',tx_ref,monetization_order.get('id'),ok)
         results.append('monetization:'+('finalized_or_paid' if ok else 'failed'))
-        results.append('digital:'+('finalized_or_paid' if ok else 'failed'))
+    if b2b_orders:
+        ok_count=0
+        for b2b_order in b2b_orders:
+            ok=_b2bv4_finalize_payment(b2b_order,tx,as_webhook=True)
+            if ok: ok_count+=1
+            logger.info('KOJA B2B V4 finalization tx_ref=%s order=%s result=%s',tx_ref,b2b_order.get('id'),ok)
+        results.append('b2b_v4:'+str(ok_count)+'_finalized')
     return jsonify({'status':'ok','processed':results}),200
 
 @app.route('/market/sell',methods=['GET','POST'])
@@ -5661,9 +5823,6 @@ def admin():
 <a class="btn success" href="{{ url_for('admin_live_tracking') }}"> Live GPS Tracking</a>
 <a class="btn" href="{{ url_for('admin_appointments') }}">Appointments</a>
 <a class="btn success" href="{{ url_for('admin_search_distribution') }}"> Google Search & Distribution</a>
-<a class="btn" href="{{ url_for('admin_news_live') }}">KOJA Global News Live Studio</a>
-<a class="btn" href="{{ url_for('admin_news_studio_assets') }}">KOJA NEWS Studio Assets</a>
-<a class="btn" href="{{ url_for('news_nextgen') }}">KOJA Global News</a>
 </div></div>
 """,counts=counts)
 
@@ -6474,6 +6633,8 @@ create index if not exists koja_notifications_user_idx on public.koja_notificati
 create table if not exists public.koja_notification_preferences (user_id uuid primary key, push_enabled boolean default true, sound_enabled boolean default true, market_enabled boolean default true, delivery_enabled boolean default true, ai_enabled boolean default true, messages_enabled boolean default true, system_enabled boolean default true, updated_at timestamptz default now());
 create table if not exists public.koja_push_subscriptions (id uuid primary key default gen_random_uuid(), user_id uuid not null, endpoint text not null, subscription jsonb not null default '{}'::jsonb, user_agent text, created_at timestamptz default now(), updated_at timestamptz default now(), unique(user_id,endpoint));
 create index if not exists koja_push_subscriptions_user_idx on public.koja_push_subscriptions(user_id,created_at desc);
+create table if not exists public.koja_fcm_devices (id uuid primary key default gen_random_uuid(), user_id uuid not null, token text not null, device_id text default '', platform text default 'android', app_version text default '', created_at timestamptz default now(), updated_at timestamptz default now(), unique(user_id,token));
+create index if not exists koja_fcm_devices_user_idx on public.koja_fcm_devices(user_id,updated_at desc);
 create table if not exists public.koja_blocks (
  blocker_id uuid not null, blocked_id uuid not null, created_at timestamptz default now(), primary key(blocker_id,blocked_id)
 );
@@ -6489,7 +6650,24 @@ def _notification_allowed(uid, notification_type):
     if t in ('message','chat','call','group_call','friend_request'): return bool(p.get('messages_enabled',True))
     return bool(p.get('system_enabled',True))
 
-def _send_web_push(uid,title,body,url=None,notification_type='system'):
+def _send_native_fcm(uid,title,body,url=None,notification_type='system',related_id=None):
+    if not uid or not _notification_allowed(uid,notification_type): return 0
+    relay=(os.getenv('FCM_RELAY_URL') or os.getenv('KOJA_FCM_RELAY_URL') or os.getenv('PUSH_RELAY_URL') or os.getenv('FCM_RELAY_ENDPOINT') or '').strip()
+    secret=os.getenv('FCM_RELAY_SECRET','').strip()
+    if not relay or not secret or not table_exists('koja_fcm_devices'): return 0
+    sent=0
+    for d in db_select('koja_fcm_devices',filters={'user_id':str(uid)},limit=20):
+        token=clean(d.get('token'))
+        if not token: continue
+        payload={'token':token,'title':title,'body':body,'data':{'type':notification_type,'call_id':str(related_id) if related_id else '','related_id':str(related_id) if related_id else '','url':url or '/notifications','mode':'video' if notification_type=='call' and 'video' in title.lower() else ('voice' if notification_type=='call' else '')}}
+        try:
+            rr=requests.post(relay,headers={'Content-Type':'application/json','X-FCM-RELAY-SECRET':secret,'Authorization':'Bearer '+secret},json=payload,timeout=15)
+            if rr.ok: sent+=1
+            elif rr.status_code in (400,404,410): db_delete('koja_fcm_devices',{'id':d.get('id')})
+        except Exception: logger.exception('KOJA native FCM relay failed')
+    return sent
+
+def _send_web_push(uid,title,body,url=None,notification_type='system',related_id=None):
     if not _notification_allowed(uid,notification_type): return 0
     try: from pywebpush import webpush
     except Exception: return 0
@@ -6498,7 +6676,7 @@ def _send_web_push(uid,title,body,url=None,notification_type='system'):
     sent=0
     for sub in db_select('koja_push_subscriptions',filters={'user_id':str(uid)},limit=20):
         try:
-            webpush(subscription_info=sub.get('subscription') or {},data=json.dumps({'title':title,'body':body,'url':url or '/notifications','type':notification_type}),vapid_private_key=sk,vapid_claims={'sub':subject}); sent+=1
+            webpush(subscription_info=sub.get('subscription') or {},data=json.dumps({'title':title,'body':body,'url':url or '/notifications','type':notification_type,'related_id':str(related_id) if related_id else None,'call_id':str(related_id) if notification_type in ('call','group_call') and related_id else None}),vapid_private_key=sk,vapid_claims={'sub':subject}); sent+=1
         except Exception as exc:
             if '410' in str(exc) or '404' in str(exc): db_delete('koja_push_subscriptions',{'id':sub.get('id')})
     return sent
@@ -6518,7 +6696,16 @@ def notify_user(uid,title,body,notification_type='system',related_id=None,url=No
     if not uid or not _notification_allowed(uid,notification_type): return None
     row,err=db_insert('koja_notifications',{'user_id':str(uid),'notification_type':notification_type,'title':title,'body':body,'related_id':related_id,'is_read':False,'created_at':utc_now()})
     if not err and row:
-        _send_web_push(uid,title,body,url,notification_type)
+        # Send through the existing native FCM relay as well as optional web push.
+        # Native Android push must not depend on VAPID/web-push configuration.
+        try:
+            _send_native_fcm(uid,title,body,url,notification_type,related_id)
+        except Exception:
+            logger.exception('KOJA native FCM notification failed')
+        try:
+            _send_web_push(uid,title,body,url,notification_type,related_id)
+        except Exception:
+            logger.exception('KOJA web push notification failed')
         try:
             u=find_user_by_id(uid) or {}
             email=clean(u.get('email'))
@@ -6553,7 +6740,7 @@ def notifications_page():
 @login_required
 def notification_settings():
     uid=str(current_user()['id']); p=first_row('koja_notification_preferences',{'user_id':uid}) or {}
-    return render_page('Notification Settings',"""<div class='card'><h2>Notification Settings</h2><p>Choose what KOJA can notify you about.</p><form id='np'><label><input type='checkbox' name='push_enabled' {% if p.get('push_enabled',True) %}checked{% endif %}> Push notifications</label><label><input type='checkbox' name='sound_enabled' {% if p.get('sound_enabled',True) %}checked{% endif %}> Notification sound</label><label><input type='checkbox' name='market_enabled' {% if p.get('market_enabled',True) %}checked{% endif %}> Market and orders</label><label><input type='checkbox' name='delivery_enabled' {% if p.get('delivery_enabled',True) %}checked{% endif %}> Deliveries and drivers</label><label><input type='checkbox' name='ai_enabled' {% if p.get('ai_enabled',True) %}checked{% endif %}> KOJA AI</label><label><input type='checkbox' name='messages_enabled' {% if p.get('messages_enabled',True) %}checked{% endif %}> Messages and calls</label><label><input type='checkbox' name='system_enabled' {% if p.get('system_enabled',True) %}checked{% endif %}> System and account</label><button class='btn' type='submit'>Save settings</button></form><hr><button class='btn secondary' type='button' onclick='enableKOJAPush()'>Enable phone/browser notifications</button><p id='push-status' class='small'></p></div><script>const form=document.getElementById('np');form.onsubmit=async e=>{e.preventDefault();let o={};new FormData(form).forEach((v,k)=>o[k]=true);let r=await fetch('/api/notifications/preferences',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)});document.getElementById('push-status').textContent=r.ok?'Saved.':'Could not save settings.'};async function enableKOJAPush(){if(!('Notification'in window)){document.getElementById('push-status').textContent='This browser does not support notifications.';return}let perm=await Notification.requestPermission();if(perm!=='granted'){document.getElementById('push-status').textContent='Notification permission was not granted.';return}if(!('serviceWorker'in navigator)){document.getElementById('push-status').textContent='Service workers are not supported here.';return}let reg=await navigator.serviceWorker.register('/koja-sw.js');let key=await fetch('/api/notifications/vapid-public-key').then(r=>r.text());if(!key){document.getElementById('push-status').textContent='Push service is not configured yet.';return}let sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:base64ToUint8(key)});await fetch('/api/notifications/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sub)});document.getElementById('push-status').textContent='Phone/browser notifications enabled.'}function base64ToUint8(b){let p='='.repeat((4-b.length%4)%4),s=atob((b+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from([...s].map(c=>c.charCodeAt(0)))}</script>""",p=p)
+    return render_page('Notification Settings',"""<div class='card'><h2>Notification Settings</h2><p>Choose what KOJA can notify you about.</p><form id='np'><label><input type='checkbox' name='push_enabled' {% if p.get('push_enabled',True) %}checked{% endif %}> Push notifications</label><label><input type='checkbox' name='sound_enabled' {% if p.get('sound_enabled',True) %}checked{% endif %}> Notification sound</label><label><input type='checkbox' name='market_enabled' {% if p.get('market_enabled',True) %}checked{% endif %}> Market and orders</label><label><input type='checkbox' name='delivery_enabled' {% if p.get('delivery_enabled',True) %}checked{% endif %}> Deliveries and drivers</label><label><input type='checkbox' name='ai_enabled' {% if p.get('ai_enabled',True) %}checked{% endif %}> KOJA AI</label><label><input type='checkbox' name='messages_enabled' {% if p.get('messages_enabled',True) %}checked{% endif %}> Messages and calls</label><label><input type='checkbox' name='system_enabled' {% if p.get('system_enabled',True) %}checked{% endif %}> System and account</label><button class='btn' type='submit'>Save settings</button></form><hr><button class='btn secondary' type='button' onclick='enableKOJAPush()'>Enable phone/browser notifications</button><p id='push-status' class='small'></p></div><script>const form=document.getElementById('np');form.onsubmit=async e=>{e.preventDefault();let o={};new FormData(form).forEach((v,k)=>o[k]=true);let r=await fetch('/api/notifications/preferences',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)});document.getElementById('push-status').textContent=r.ok?'Saved.':'Could not save settings.'};async function enableKOJAPush(){try{let st=await fetch('/api/notifications/push-status').then(r=>r.json());if(st.native_push_configured&&st.native_devices>0){document.getElementById('push-status').textContent='KOJA phone push is enabled on this device.';return}if(!('Notification'in window)){document.getElementById('push-status').textContent='Native phone push is not registered yet. Browser notifications are not supported here.';return}let perm=await Notification.requestPermission();if(perm!=='granted'){document.getElementById('push-status').textContent='Notification permission was not granted.';return}if(!('serviceWorker'in navigator)){document.getElementById('push-status').textContent='Native phone push is not registered yet.';return}let reg=await navigator.serviceWorker.register('/koja-sw.js');let key=await fetch('/api/notifications/vapid-public-key').then(r=>r.text());if(!key){document.getElementById('push-status').textContent='KOJA phone push is handled by the Android app; web push is not configured.';return}let sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:base64ToUint8(key)});await fetch('/api/notifications/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sub)});document.getElementById('push-status').textContent='Phone/browser notifications enabled.'}catch(e){document.getElementById('push-status').textContent='Could not enable notifications.'}}function base64ToUint8(b){let p='='.repeat((4-b.length%4)%4),s=atob((b+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from([...s].map(c=>c.charCodeAt(0)))}</script>""",p=p)
 
 @app.route('/api/notifications')
 @login_required
@@ -6580,6 +6767,44 @@ def api_notification_preferences():
     if old: ok,err=db_update('koja_notification_preferences',{'user_id':uid},payload)
     else: row,err=db_insert('koja_notification_preferences',payload); ok=bool(row and not err)
     return jsonify(ok=bool(ok)),200 if ok else 400
+
+@app.route('/api/notifications/fcm/register',methods=['POST'])
+@login_required
+def api_fcm_register():
+    uid=str(current_user()['id']); d=request.get_json(silent=True) or {}; token=clean(d.get('token') or d.get('fcm_token') or d.get('device_token'))
+    if not token: return jsonify(error='FCM token required'),400
+    if not table_exists('koja_fcm_devices'): return jsonify(error='FCM device table is not available'),503
+    payload={'user_id':uid,'token':token,'device_id':clean(d.get('device_id')),'platform':clean(d.get('platform') or 'android'),'app_version':clean(d.get('app_version')),'updated_at':utc_now()}
+    old=first_row('koja_fcm_devices',{'user_id':uid,'token':token})
+    if old: ok,err=db_update('koja_fcm_devices',{'id':old.get('id')},payload)
+    else: row,err=db_insert('koja_fcm_devices',payload); ok=bool(row and not err)
+    return jsonify(ok=bool(ok))
+
+@app.route('/api/push/register',methods=['POST'])
+@login_required
+def api_push_register_alias(): return api_fcm_register()
+
+@app.route('/api/notifications/register-device',methods=['POST'])
+@login_required
+def api_notifications_register_device(): return api_fcm_register()
+
+@app.route('/api/notifications/push-status')
+@login_required
+def api_push_status():
+    uid=str(current_user()['id']); devices=db_select('koja_fcm_devices',filters={'user_id':uid},limit=20) if table_exists('koja_fcm_devices') else []
+    relay=bool((os.getenv('FCM_RELAY_URL') or os.getenv('KOJA_FCM_RELAY_URL') or os.getenv('PUSH_RELAY_URL') or os.getenv('FCM_RELAY_ENDPOINT') or '').strip() and os.getenv('FCM_RELAY_SECRET','').strip())
+    web=bool(os.getenv('VAPID_PUBLIC_KEY','').strip() and os.getenv('VAPID_PRIVATE_KEY','').strip())
+    return jsonify(native_push_configured=relay,native_devices=len(devices),web_push_configured=web)
+
+@app.route('/api/notifications/test-native-push',methods=['POST'])
+@login_required
+def api_test_native_push():
+    uid=str(current_user()['id'])
+    devices=db_select('koja_fcm_devices',filters={'user_id':uid},limit=20) if table_exists('koja_fcm_devices') else []
+    if not devices:
+        return jsonify(ok=False,error='No Android FCM device is registered for this account'),400
+    sent=_send_native_fcm(uid,'KOJA Push Test','KOJA phone push is working.','/notifications','system',None)
+    return jsonify(ok=sent>0,sent=sent,devices=len(devices))
 
 @app.route('/api/notifications/vapid-public-key')
 @login_required
@@ -6651,7 +6876,7 @@ def connect_chat(conversation_id):
     uid=current_user()['id'];
     if not _conversation_member(conversation_id,uid): abort(403)
     members=db_select('koja_conversation_members',filters={'conversation_id':conversation_id},limit=100); other=next((m for m in members if str(m.get('user_id'))!=str(uid)),None); other_id=other.get('user_id') if other else None; c=first_row('koja_conversations',{'id':conversation_id}) or {}
-    return render_page('KOJA Chat',r'''<div class="card"><a href="{{ url_for('connect') }}">← Connect</a><h2> {{ name }}</h2><p class="small">Sent messages appear on the right. Received messages appear on the left.</p></div><div class="card" id="messages" style="min-height:300px;max-height:55vh;overflow:auto"></div><div class="card"><form id="sendForm"><input id="text" autocomplete="off" placeholder="Write a message…"><button>Send</button></form><form id="fileForm" enctype="multipart/form-data" style="margin-top:8px"><input id="file" type="file" accept="image/*,.pdf,.doc,.docx,.txt,.webp,.audio/*"><button type="submit"> Photo / File</button></form><div class="grid"><button type="button" id="voiceNote">️ Voice message</button><a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='voice') }}"> Voice Call</a><a class="btn" href="{{ url_for('connect_call',user_id=other_id,mode='video') }}"> Video Call</a>{% if c.get('conversation_type')=='group' %}<a class="btn" href="{{ url_for('connect_group_call',conversation_id=conversation_id,mode='video') }}"> Group Video</a><a class="btn secondary" href="{{ url_for('connect_group_call',conversation_id=conversation_id,mode='voice') }}"> Group Voice</a>{% endif %}</div></div><script>const cid={{ conversation_id|tojson }},me={{ user.id|tojson }};const box=document.getElementById('messages'),text=document.getElementById('text');function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}async function load(){let r=await fetch('/api/connect/messages/'+cid);if(!r.ok)return;let d=await r.json();box.innerHTML=d.messages.map(m=>{let mine=String(m.sender_id)===String(me);let body=m.message_type==='text'?'<div>'+esc(m.body)+'</div>':(m.file_url?'<div><a target="_blank" rel="noopener" href="'+esc(m.file_url)+'">'+esc(m.body||m.message_type)+'</a></div>':'<div>'+esc(m.body)+'</div>');return '<div style="display:flex;justify-content:'+(mine?'flex-end':'flex-start')+';margin:7px 0"><div style="max-width:78%;padding:10px 13px;border-radius:16px;background:var(--card);border:1px solid var(--border);text-align:left"><strong>'+esc(mine?'You':m.sender_name)+'</strong>'+body+'<div class="small">'+esc(m.created_at||'')+'</div></div></div>'}).join('');box.scrollTop=box.scrollHeight;}document.getElementById('sendForm').onsubmit=async e=>{e.preventDefault();let v=text.value.trim();if(!v)return;let r=await fetch('/api/connect/messages/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:v})});if(r.ok){text.value='';load();}};document.getElementById('fileForm').onsubmit=async e=>{e.preventDefault();let f=document.getElementById('file').files[0];if(!f)return;let fd=new FormData();fd.append('file',f);let r=await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});if(r.ok){document.getElementById('file').value='';load();}else alert('File could not be sent.');};load();setInterval(load,2000);let rec,parts=[];document.getElementById('voiceNote').onclick=async()=>{try{let st=await navigator.mediaDevices.getUserMedia({audio:true});rec=new MediaRecorder(st);parts=[];rec.ondataavailable=e=>parts.push(e.data);rec.onstop=async()=>{let b=new Blob(parts,{type:'audio/webm'}),fd=new FormData();fd.append('file',b,'voice.webm');await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});st.getTracks().forEach(t=>t.stop());load();};rec.start();setTimeout(()=>rec&&rec.state==='recording'&&rec.stop(),60000);}catch(e){alert('Microphone permission is required.');}};</script>''',conversation_id=conversation_id,name=_profile_name(other_id) if other_id else c.get('name','KOJA Chat'),c=c)
+    return render_page('KOJA Chat',r'''<div class="card"><a href="{{ url_for('connect') }}">← Connect</a><h2> {{ name }}</h2><p class="small">Sent messages appear on the right. Received messages appear on the left.</p></div><div class="card" id="messages" style="min-height:300px;max-height:55vh;overflow:auto"></div><div class="card"><form id="sendForm"><input id="text" autocomplete="off" placeholder="Write a message…"><button>Send</button></form><form id="fileForm" enctype="multipart/form-data" style="margin-top:8px"><input id="file" type="file" accept="image/*,.pdf,.doc,.docx,.txt,.webp,.audio/*"><button type="submit"> Photo / File</button></form><div class="grid"><button type="button" id="voiceNote">️ Voice message</button><a class="btn" href="{{ url_for('connect_call_slash',conversation_id=conversation_id,mode='voice') }}"> Voice Call</a><a class="btn" href="{{ url_for('connect_call_slash',conversation_id=conversation_id,mode='video') }}"> Video Call</a>{% if c.get('conversation_type')=='group' %}<a class="btn" href="{{ url_for('connect_group_call',conversation_id=conversation_id,mode='video') }}"> Group Video</a><a class="btn secondary" href="{{ url_for('connect_group_call',conversation_id=conversation_id,mode='voice') }}"> Group Voice</a>{% endif %}</div></div><script>const cid={{ conversation_id|tojson }},me={{ user.id|tojson }};const box=document.getElementById('messages'),text=document.getElementById('text');function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}async function load(){let r=await fetch('/api/connect/messages/'+cid);if(!r.ok)return;let d=await r.json();box.innerHTML=d.messages.map(m=>{let mine=String(m.sender_id)===String(me);let body=m.message_type==='text'?'<div>'+esc(m.body)+'</div>':(m.file_url?'<div><a target="_blank" rel="noopener" href="'+esc(m.file_url)+'">'+esc(m.body||m.message_type)+'</a></div>':'<div>'+esc(m.body)+'</div>');return '<div style="display:flex;justify-content:'+(mine?'flex-end':'flex-start')+';margin:7px 0"><div style="max-width:78%;padding:10px 13px;border-radius:16px;background:var(--card);border:1px solid var(--border);text-align:left"><strong>'+esc(mine?'You':m.sender_name)+'</strong>'+body+'<div class="small">'+esc(m.created_at||'')+'</div></div></div>'}).join('');box.scrollTop=box.scrollHeight;}document.getElementById('sendForm').onsubmit=async e=>{e.preventDefault();let v=text.value.trim();if(!v)return;let r=await fetch('/api/connect/messages/'+cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:v})});if(r.ok){text.value='';load();}};document.getElementById('fileForm').onsubmit=async e=>{e.preventDefault();let f=document.getElementById('file').files[0];if(!f)return;let fd=new FormData();fd.append('file',f);let r=await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});if(r.ok){document.getElementById('file').value='';load();}else alert('File could not be sent.');};load();setInterval(load,2000);let rec,parts=[];document.getElementById('voiceNote').onclick=async()=>{try{let st=await navigator.mediaDevices.getUserMedia({audio:true});rec=new MediaRecorder(st);parts=[];rec.ondataavailable=e=>parts.push(e.data);rec.onstop=async()=>{let b=new Blob(parts,{type:'audio/webm'}),fd=new FormData();fd.append('file',b,'voice.webm');await fetch('/api/connect/messages/'+cid+'/upload',{method:'POST',body:fd});st.getTracks().forEach(t=>t.stop());load();};rec.start();setTimeout(()=>rec&&rec.state==='recording'&&rec.stop(),60000);}catch(e){alert('Microphone permission is required.');}};</script>''',conversation_id=conversation_id,name=_profile_name(other_id) if other_id else c.get('name','KOJA Chat'),c=c)
 
 @app.route('/api/connect/messages/<conversation_id>',methods=['GET','POST'])
 @login_required
@@ -6981,6 +7206,21 @@ def connect_calls():
     uid=current_user()['id']; rows=db_select('koja_calls',filters={'caller_id':uid},order='created_at.desc',limit=50)+db_select('koja_calls',filters={'callee_id':uid},order='created_at.desc',limit=50); rows=sorted(rows,key=lambda x:x.get('created_at',''),reverse=True)[:50]
     return render_page('KOJA Calls',r'''<div class="card"><h2> KOJA Call History</h2>{% for c in rows %}<div class="card"><strong>{{ c.mode|title }}</strong> — {{ c.status }}<div class="small">{{ c.created_at }}</div>{% if c.callee_id|string == user.id|string and c.status=='ringing' %}<a class="btn" href="{{ url_for('connect_answer',call_id=c.id) }}">Answer</a>{% endif %}</div>{% else %}<p>No calls yet.</p>{% endfor %}</div>''',rows=rows)
 
+# Chat call launcher: resolve the recipient from the current conversation.
+# This avoids losing the callee when a chat page cannot reliably expose other_id.
+@app.route('/connect/call',methods=['GET'])
+@app.route('/connect/call/',methods=['GET'])
+@login_required
+def connect_call_slash():
+    uid=str(current_user()['id']); target=clean(request.args.get('callee_id') or request.args.get('user_id')); cid=clean(request.args.get('conversation_id')); mode=clean(request.args.get('mode','video')) or 'video'
+    if not target and cid:
+        members=db_select('koja_conversation_members',filters={'conversation_id':cid},limit=20)
+        other=next((m for m in members if str(m.get('user_id'))!=uid),None)
+        target=clean(other.get('user_id')) if other else ''
+    if not target or target==uid or not find_user_by_id(target) or mode not in ('voice','video'):
+        return render_page('KOJA Call', r'''<div class="card"><h2>KOJA Call</h2><p>Select a person from Connect to start a voice or video call.</p><a class="btn" href="{{ url_for('connect') }}">Open Connect</a><a class="btn secondary" href="{{ url_for('connect_calls') }}">Call History</a></div>''')
+    return redirect(url_for('connect_call',user_id=target,mode=mode))
+
 @app.route('/connect/call/<user_id>')
 @login_required
 def connect_call(user_id):
@@ -7055,6 +7295,23 @@ def connect_call_create():
     c=_direct_conversation(uid,callee); row,err=db_insert('koja_calls',{'id':str(uuid.uuid4()),'conversation_id':c['id'],'caller_id':uid,'callee_id':callee,'mode':mode,'status':'ringing','created_at':utc_now()})
     if err:return jsonify(error=err),500
     notify_user(callee,f'Incoming {mode} call',f'{_profile_name(uid)} is calling you.','call',row['id'],'/connect/calls');return jsonify(call=row)
+
+@app.route('/api/connect/incoming-calls')
+@login_required
+def connect_incoming_calls():
+    uid=str(current_user()['id'])
+    rows=db_select('koja_calls',filters={'callee_id':uid,'status':'ringing'},order='created_at.desc',limit=10)
+    return jsonify(ok=True,calls=[{'id':c.get('id'),'conversation_id':c.get('conversation_id'),'caller_id':c.get('caller_id'),'caller_name':_profile_name(c.get('caller_id')),'mode':c.get('mode','voice'),'status':c.get('status','ringing'),'created_at':c.get('created_at')} for c in rows])
+
+@app.route('/api/connect/call/reject/<call_id>',methods=['POST'])
+@login_required
+def connect_call_reject(call_id):
+    uid=str(current_user()['id']); c=first_row('koja_calls',{'id':call_id})
+    if not c or str(c.get('callee_id'))!=uid:return jsonify(error='Forbidden'),403
+    if str(c.get('status','')).lower() not in ('ringing','answered'):return jsonify(ok=True,status=c.get('status'))
+    updated,err=db_update('koja_calls',{'id':call_id},{'status':'rejected','ended_at':utc_now()})
+    if err:return jsonify(error=str(err)[:500]),500
+    return jsonify(ok=True,status='rejected')
 
 @app.route('/api/connect/call/offer/<call_id>',methods=['POST'])
 @login_required
@@ -7467,110 +7724,29 @@ def public_videos():
         if mt=='video': items.append(p)
     return render_page('KOJA Videos',r'''<style>.videos-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px}.video-card{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:12px}.video-card video{display:block;width:100%;aspect-ratio:16/9;object-fit:contain;background:#000;border-radius:12px}.video-card h3{margin:10px 0 6px}.video-card p{white-space:pre-wrap}.empty{padding:60px 20px;text-align:center}</style><div class="hero"><h2> KOJA Videos</h2><p>Public videos are visible to everyone. Tap play to watch.</p></div><div class="videos-grid">{% for p in items %}<article class="video-card"><video controls playsinline preload="metadata"><source src="{{ url_for('public_feed_media',post_id=p.id) }}"></video>{% if p.title %}<h3>{{ p.title }}</h3>{% endif %}<p>{{ p.body }}</p><div class="small">{{ p.created_at }}</div></article>{% else %}<div class="card empty"><h2>No public videos yet</h2><p>Published KOJA videos will appear here.</p></div>{% endfor %}</div>''',items=items)
 
-@app.route('/studio', methods=['GET','POST'])
-@login_required
-def media_studio():
-    '''KOJA Media Studio: card-based creator workspace for drafts and published media.'''
-    uid=(current_user() or {}).get('id')
-    if request.method == 'POST':
-        action=clean(request.form.get('action')).lower() or 'publish'
-        title=clean(request.form.get('title'))
-        body=clean(request.form.get('body'))
-        post_type=clean(request.form.get('post_type')).lower() or 'update'
-        if post_type not in {'update','news','announcement','event'}: post_type='update'
-        if not title or not body:
-            flash('Title and description are required.', 'danger')
-            return redirect(url_for('media_studio'))
-        media=request.files.get('media')
-        uploaded=None; media_type=None
-        if media and media.filename:
-            ext=media.filename.lower().rsplit('.',1)[-1] if '.' in media.filename else ''
-            if ext not in {'jpg','jpeg','png','webp','mp4','webm','mov'}:
-                flash('Studio media must be JPG, PNG, WebP, MP4, WebM or MOV.', 'danger')
-                return redirect(url_for('media_studio'))
-            uploaded,err=upload_storage(media,'media-studio',public=False)
-            if err:
-                flash(f'Media upload failed: {err}', 'danger')
-                return redirect(url_for('media_studio'))
-            media_type='video' if ext in {'mp4','webm','mov'} else 'image'
-        published=(action == 'publish')
-        payload={'author_id':uid,'post_type':post_type,'title':title,'body':body,
-                 'media_url':(uploaded or {}).get('path'),'media_type':media_type,
-                 'is_published':published,'updated_at':utc_now()}
-        _,err=db_insert('koja_public_posts',payload)
-        if err:
-            if uploaded: delete_storage_path(uploaded.get('path'))
-            flash('Studio could not save this media. Run KOJA_MEDIA_STUDIO.sql first.', 'danger')
-        else:
-            flash('Media published to KOJA Media.' if published else 'Media saved as a private draft.', 'success')
-        return redirect(url_for('media_studio'))
-
-    rows=db_select('koja_public_posts',{'author_id':f'eq.{uid}'},order='created_at.desc',limit=100) or []
-    total_views=0; total_completions=0
-    for item in rows:
-        item['status']='Published' if as_bool(item.get('is_published')) else 'Draft'
-        events=db_select('koja_media_events',{'post_id':item.get('id')},select='event_type,watch_seconds,completion_percent',limit=1000) or []
-        item['views']=sum(1 for e in events if e.get('event_type')=='impression')
-        item['completions']=sum(1 for e in events if e.get('event_type')=='complete')
-        total_views += item['views']; total_completions += item['completions']
-    published_count=sum(1 for x in rows if as_bool(x.get('is_published')))
-    draft_count=len(rows)-published_count
-    return render_page('KOJA Media Studio',r'''<style>
-.studio-shell{background:#06090e;color:#f7f9fc;border:1px solid rgba(255,255,255,.08);border-radius:24px;padding:22px;overflow:hidden}
-.studio-top{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap;margin-bottom:20px}
-.studio-top h1{margin:0;font-size:clamp(25px,4vw,40px)}.studio-top p{margin:7px 0 0;color:#aeb8c7}
-.studio-actions{display:flex;gap:9px;flex-wrap:wrap}.studio-actions a{white-space:nowrap}
-.studio-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:0 0 24px}.metric{background:#0c121b;border:1px solid rgba(255,255,255,.08);border-radius:15px;padding:14px}.metric strong{display:block;font-size:24px}.metric span{font-size:12px;color:#9da9b9}
-.studio-create{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px;margin-bottom:26px}.create-card,.tips-card{background:#0c121b;border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:18px}.create-card h2,.tips-card h3{margin-top:0}.create-card input,.create-card textarea,.create-card select{background:#080d14;color:#fff;border-color:#263242}.create-card textarea{min-height:130px}.drop-zone{border:1px dashed #3b4b61;border-radius:15px;padding:18px;background:#080d14}.studio-tabs{display:flex;gap:8px;overflow:auto;margin-bottom:12px}.studio-tabs button{border:1px solid rgba(255,255,255,.1);background:#0c121b;color:#dce3ed;border-radius:999px;padding:8px 13px;white-space:nowrap}
-.studio-row{display:flex;gap:14px;overflow-x:auto;padding:4px 2px 14px;scroll-snap-type:x proximity}.studio-row::-webkit-scrollbar{height:6px}.studio-card{flex:0 0 235px;scroll-snap-align:start;background:#0c121b;border:1px solid rgba(255,255,255,.08);border-radius:15px;overflow:hidden}.studio-thumb{aspect-ratio:16/9;background:#111923;position:relative;overflow:hidden}.studio-thumb img,.studio-thumb video{width:100%;height:100%;object-fit:cover;display:block}.studio-placeholder{height:100%;display:grid;place-items:center;color:#8390a2;font-size:13px}.studio-badge{position:absolute;left:8px;top:8px;background:rgba(0,0,0,.75);border:1px solid rgba(255,255,255,.15);border-radius:999px;padding:4px 8px;font-size:11px}.studio-info{padding:11px}.studio-info h3{font-size:15px;margin:0 0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.studio-info p{font-size:12px;color:#aab5c5;line-height:1.45;height:35px;overflow:hidden;margin:0 0 9px}.studio-meta{display:flex;justify-content:space-between;gap:8px;color:#8f9bac;font-size:11px}.studio-card .card-actions{display:flex;gap:7px;padding:0 11px 11px}.studio-card .card-actions a{flex:1;text-align:center;font-size:12px;padding:8px}
-@media(max-width:850px){.studio-create{grid-template-columns:1fr}.studio-metrics{grid-template-columns:repeat(2,1fr)}.studio-shell{padding:15px}.studio-card{flex-basis:210px}}
-</style>
-<div class="studio-shell">
-  <div class="studio-top"><div><div class="small" style="color:#5da9ff">KOJA MEDIA</div><h1>Media Studio</h1><p>Create once. Publish everywhere across KOJA Media.</p></div><div class="studio-actions"><a class="btn secondary" href="{{ url_for('media_nextgen') }}">Watch Media</a></div></div>
-  <div class="studio-metrics"><div class="metric"><strong>{{ published_count }}</strong><span>Published</span></div><div class="metric"><strong>{{ draft_count }}</strong><span>Drafts</span></div><div class="metric"><strong>{{ total_views }}</strong><span>Views</span></div><div class="metric"><strong>{{ total_completions }}</strong><span>Completions</span></div></div>
-  <div class="studio-create">
-    <section class="create-card"><h2>Create media</h2><p class="small">Upload a photo or video, save it privately, or publish it to the Netflix-style KOJA Media feed.</p>
-      <form method="post" enctype="multipart/form-data"><label>Content type</label><select name="post_type"><option value="update">Media</option><option value="news">News</option><option value="announcement">Announcement</option><option value="event">Event</option></select><label>Title</label><input name="title" maxlength="180" required placeholder="Media title"><label>Description</label><textarea name="body" maxlength="10000" required placeholder="Describe your photo or video..."></textarea><label>Photo or video</label><div class="drop-zone"><input type="file" name="media" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"><div class="small">JPG, PNG, WebP, MP4, WebM or MOV · max {{ max_mb }} MB</div></div><div style="display:flex;gap:9px;flex-wrap:wrap;margin-top:14px"><button class="btn secondary" name="action" value="draft" type="submit">Save Draft</button><button class="btn" name="action" value="publish" type="submit">Publish to KOJA Media</button></div></form>
-    </section>
-    <aside class="tips-card"><h3>Studio workflow</h3><p class="small">1. Add your title and description.</p><p class="small">2. Upload the main image or video.</p><p class="small">3. Save as Draft while preparing it.</p><p class="small">4. Publish when ready.</p><hr><p class="small">Published media automatically appears in the KOJA Media discovery rows.</p></aside>
-  </div>
-  <div class="studio-tabs"><button type="button" onclick="showStudio('all')">All</button><button type="button" onclick="showStudio('published')">Published</button><button type="button" onclick="showStudio('draft')">Drafts</button></div>
-  <div id="studioAll"><div class="studio-row">{% for p in items %}<article class="studio-card" data-status="{{ 'published' if p.is_published else 'draft' }}"><div class="studio-thumb">{% if p.media_url and p.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=p.id) }}" muted preload="metadata"></video>{% elif p.media_url %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="{{ p.title }}">{% else %}<div class="studio-placeholder">No media preview</div>{% endif %}<span class="studio-badge">{{ p.status }}</span></div><div class="studio-info"><h3>{{ p.title }}</h3><p>{{ p.body }}</p><div class="studio-meta"><span>{{ p.views }} views</span><span>{{ p.completions }} complete</span></div></div><div class="card-actions">{% if p.is_published %}<a class="btn secondary" href="{{ url_for('media_nextgen') }}#media-{{ p.id }}">View</a>{% else %}<span class="small" style="padding:8px">Private draft</span>{% endif %}</div></article>{% else %}<p class="small">No media yet. Create your first title above.</p>{% endfor %}</div></div>
-</div>
-<script>function showStudio(mode){document.querySelectorAll('#studioAll .studio-card').forEach(c=>{let s=c.dataset.status;c.style.display=(mode==='all'||(mode==='published'&&s==='published')||(mode==='draft'&&s==='draft'))?'':'none'})}</script>
-''',items=rows,max_mb=MAX_UPLOAD_MB,published_count=published_count,draft_count=draft_count,total_views=total_views,total_completions=total_completions)
-
 @app.route('/media-next')
 def media_nextgen():
     rows=db_select('koja_public_posts',{'is_published':'eq.true'},order='created_at.desc',limit=200) or []
-    items=[]
-    for p in rows:
-        if not p.get('media_url'): continue
-        items.append(p)
+    items=[p for p in rows if p.get('media_url')]
     hero=items[0] if items else None
     groups=[]
-    labels=[('Trending on KOJA',lambda p: True),('News',lambda p: (p.get('post_type') or '').lower()=='news'),('Events',lambda p: (p.get('post_type') or '').lower()=='event'),('Announcements',lambda p: (p.get('post_type') or '').lower()=='announcement'),('Latest Media',lambda p: True)]
-    for label,fn in labels:
-        seen=[]
+    continue_items=[]
+    uid=(current_user() or {}).get('id')
+    if uid:
+        prog=db_select('koja_media_watch_progress',{'user_id':uid},order='updated_at.desc',limit=30) or []
+        by_id={str(x.get('post_id')):x for x in prog if float(x.get('position_seconds') or 0)>5}
         for p in items:
-            if fn(p) and p not in seen: seen.append(p)
-        if label=='Trending on KOJA': seen=items[:12]
-        elif label=='Latest Media': seen=items[:18]
-        if seen: groups.append((label,seen[:18]))
+            x=by_id.get(str(p.get('id')))
+            if x:
+                p=dict(p);p['_progress']=float(x.get('position_seconds') or 0);p['_duration']=float(x.get('duration_seconds') or 0);continue_items.append(p)
+    labels=[('Continue Watching',continue_items[:18]),('Trending on KOJA',items[:18]),('Movies',[p for p in items if str(p.get('post_type') or '').lower()=='movie'][:18]),('Series',[p for p in items if str(p.get('post_type') or '').lower()=='series'][:18]),('News',[p for p in items if str(p.get('post_type') or '').lower()=='news'][:18]),('Events',[p for p in items if str(p.get('post_type') or '').lower()=='event'][:18]),('Latest Media',items[:18])]
+    for label,arr in labels:
+        if arr: groups.append((label,arr))
     return render_page('KOJA Media',r'''<style>
-.media-home{background:#05070b;color:#f7f9fc;overflow:hidden;padding-bottom:34px}.media-hero{min-height:470px;position:relative;display:flex;align-items:flex-end;padding:30px;background:#0b1119;overflow:hidden}.media-hero:before{content:"";position:absolute;inset:0;background:linear-gradient(90deg,rgba(3,6,10,.98) 0%,rgba(3,6,10,.76) 43%,rgba(3,6,10,.2) 100%),linear-gradient(0deg,rgba(3,6,10,.98) 0%,transparent 65%);z-index:1}.hero-media{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:.7}.hero-copy{position:relative;z-index:2;max-width:650px}.hero-kicker{font-size:12px;letter-spacing:.14em;color:#69adff;font-weight:700}.hero-copy h1{font-size:clamp(32px,5vw,58px);line-height:1.02;margin:8px 0}.hero-copy p{color:#d2d9e4;line-height:1.6;max-width:600px}.hero-buttons{display:flex;gap:9px;flex-wrap:wrap}.media-content{padding:0 22px}.media-row-title{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:26px 0 9px}.media-row-title h2{font-size:21px;margin:0}.media-row-title span{font-size:12px;color:#8e9bad}.media-row{display:flex;gap:14px;overflow-x:auto;padding:4px 2px 14px;scroll-snap-type:x proximity}.media-row::-webkit-scrollbar{height:6px}.media-row::-webkit-scrollbar-thumb{background:#263242;border-radius:10px}.media-card{flex:0 0 260px;scroll-snap-align:start;background:#0b1119;border:1px solid rgba(255,255,255,.07);border-radius:10px;overflow:hidden;transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.22)}.media-card:hover{transform:translateY(-6px) scale(1.015);border-color:rgba(93,169,255,.5);box-shadow:0 14px 34px rgba(0,0,0,.38)}.media-thumb{aspect-ratio:16/9;background:#101721;position:relative;overflow:hidden}.media-thumb img,.media-thumb video{width:100%;height:100%;display:block;object-fit:cover}.media-play{position:absolute;left:10px;bottom:10px;width:38px;height:38px;border-radius:50%;display:grid;place-items:center;background:rgba(0,0,0,.78);border:1px solid rgba(255,255,255,.18);font-size:0}.media-play:after{content:'\25B6';font-size:13px;margin-left:2px}.media-type{position:absolute;right:8px;top:8px;background:rgba(0,0,0,.75);border-radius:999px;padding:4px 7px;font-size:10px}.media-info{padding:11px}.media-info h3{font-size:15px;margin:0 0 5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.media-info p{font-size:12px;color:#aab4c3;margin:0;height:34px;line-height:1.4;overflow:hidden}.media-card:focus-visible{outline:2px solid #5da9ff;outline-offset:3px}.media-meta{font-size:10px;color:#7f8c9e;margin-top:8px}.media-empty{padding:70px 20px;text-align:center;color:#aeb8c6}.media-nav{display:flex;gap:8px;overflow:auto;padding:15px 22px;border-bottom:1px solid rgba(255,255,255,.07);background:#070b11}.media-nav a{color:#d8e0ea;text-decoration:none;border:1px solid rgba(255,255,255,.1);border-radius:999px;padding:8px 13px;font-size:12px;white-space:nowrap}.media-nav a:hover{border-color:#5da9ff}@media(max-width:700px){.media-hero{min-height:390px;padding:20px}.media-content{padding:0 14px}.media-card{flex-basis:205px}.media-hero:before{background:linear-gradient(0deg,rgba(3,6,10,.98) 0%,rgba(3,6,10,.5) 75%,rgba(3,6,10,.1) 100%)}}
-</style>
-<div class="media-home">
-  <div class="media-nav"><a href="#trending">Trending</a><a href="#latest">Latest</a><a href="#news">News</a><a href="#events">Events</a><a href="#announcements">Announcements</a>{% if user %}<a href="{{ url_for('media_studio') }}">Media Studio</a>{% endif %}</div>
-  {% if hero %}<section class="media-hero">{% if hero.media_type=='video' %}<video class="hero-media" src="{{ url_for('public_feed_media',post_id=hero.id) }}" muted autoplay loop playsinline></video>{% else %}<img class="hero-media" src="{{ url_for('public_feed_media',post_id=hero.id) }}" alt="{{ hero.title or 'KOJA Media' }}">{% endif %}<div class="hero-copy"><div class="hero-kicker">KOJA MEDIA</div><h1>{{ hero.title or 'Discover on KOJA' }}</h1><p>{{ hero.body[:300] }}</p><div class="hero-buttons"><a class="btn" href="#media-{{ hero.id }}">Watch</a>{% if user %}<a class="btn secondary" href="{{ url_for('media_studio') }}">Create</a>{% endif %}</div></div></section>{% else %}<div class="media-empty"><h2>KOJA Media</h2><p>Published photos and videos will appear here.</p>{% if user %}<a class="btn" href="{{ url_for('media_studio') }}">Open Media Studio</a>{% endif %}</div>{% endif %}
-  <div class="media-content">
-  {% for label,group in groups %}<section id="{% if label=='Trending on KOJA' %}trending{% elif label=='Latest Media' %}latest{% elif label=='News' %}news{% elif label=='Events' %}events{% elif label=='Announcements' %}announcements{% endif %}"><div class="media-row-title"><h2>{{ label }}</h2><span>{{ group|length }} titles</span></div><div class="media-row">{% for p in group %}<article class="media-card" id="media-{{ p.id }}" tabindex="0" onclick="openMedia('{{ p.id }}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openMedia('{{ p.id }}')}"><div class="media-thumb">{% if p.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=p.id) }}" muted preload="metadata"></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="{{ p.title or 'KOJA media' }}">{% endif %}<span class="media-play">Play</span><span class="media-type">{{ p.post_type|title }}</span></div><div class="media-info"><h3>{{ p.title or 'KOJA Media' }}</h3><p>{{ p.body }}</p><div class="media-meta">{{ p.created_at }}</div></div></article>{% endfor %}</div></section>{% endfor %}
-  </div>
-</div>
-<script>
-function openMedia(id){const el=document.getElementById('media-'+id);if(!el)return;const v=el.querySelector('video');if(v){v.controls=true;v.muted=false;v.play().catch(()=>{});}fetch('/api/nextgen/media-event',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({post_id:id,event_type:'play',watch_seconds:0,completion_percent:0})}).catch(()=>{});}
-</script>
-''',items=items,groups=groups,hero=hero)
+.koja-intro{position:fixed;inset:0;z-index:99999;background:#020305;display:grid;place-items:center;opacity:1;visibility:visible;transition:opacity .55s ease,visibility .55s ease}.koja-intro.hide{opacity:0;visibility:hidden;pointer-events:none}.koja-intro-logo{width:min(210px,48vw);height:auto;filter:drop-shadow(0 0 24px rgba(25,167,184,.28));animation:kojaIntroLogo 2.35s cubic-bezier(.2,.75,.25,1) both}.koja-intro-glow{position:absolute;width:min(430px,80vw);height:min(430px,80vw);border-radius:50%;background:radial-gradient(circle,rgba(25,167,184,.16),transparent 68%);animation:kojaIntroGlow 2.4s ease-out both;pointer-events:none}.koja-intro-skip{position:absolute;right:18px;bottom:18px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.06);color:#fff;border-radius:999px;padding:8px 14px;font-size:12px}.koja-intro-enter{position:absolute;bottom:70px;border:1px solid rgba(255,255,255,.22);background:rgba(255,255,255,.08);color:#fff;border-radius:999px;padding:10px 18px;font-weight:700;display:none}.koja-intro-enter.show{display:block}@keyframes kojaIntroLogo{0%{opacity:0;transform:scale(.62);filter:drop-shadow(0 0 0 rgba(25,167,184,0))}55%{opacity:1;transform:scale(1.04)}100%{opacity:1;transform:scale(1)}}@keyframes kojaIntroGlow{0%{opacity:0;transform:scale(.55)}45%{opacity:1;transform:scale(1)}100%{opacity:.72;transform:scale(1.08)}
+}
+.media-home{background:#05070b;color:#f7f9fc;padding-bottom:38px;min-height:calc(100vh - 110px);overflow:hidden}.media-nav{display:flex;gap:8px;overflow:auto;padding:12px 20px;background:#070b11;border-bottom:1px solid rgba(255,255,255,.08)}.media-nav a{color:#dce4ee;text-decoration:none;border:1px solid rgba(255,255,255,.1);border-radius:999px;padding:8px 13px;font-size:12px;white-space:nowrap}.media-hero{min-height:440px;position:relative;display:flex;align-items:flex-end;padding:30px;overflow:hidden;background:#0b1119}.hero-media{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:.62}.media-hero:after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,rgba(3,6,10,.98),rgba(3,6,10,.55) 48%,rgba(3,6,10,.12)),linear-gradient(0deg,rgba(3,6,10,.98),transparent 65%)}.hero-copy{position:relative;z-index:2;max-width:650px}.hero-copy h1{font-size:clamp(30px,5vw,56px);margin:7px 0;line-height:1.04}.hero-kicker{font-size:12px;letter-spacing:.15em;color:#63b4ff;font-weight:800}.hero-copy p{color:#d0d9e5;max-width:580px}.hero-buttons{display:flex;gap:8px;flex-wrap:wrap}.media-content{padding:0 20px}.media-row-title{display:flex;align-items:center;justify-content:space-between;margin:25px 0 9px}.media-row-title h2{margin:0;font-size:21px}.media-row-title span{font-size:12px;color:#7f8da0}.media-row{display:flex;gap:14px;overflow-x:auto;padding:3px 2px 15px;scroll-snap-type:x proximity}.media-row::-webkit-scrollbar{height:6px}.media-row::-webkit-scrollbar-thumb{background:#293544;border-radius:9px}.media-card{position:relative;flex:0 0 235px;scroll-snap-align:start;background:#0c121b;border:1px solid rgba(255,255,255,.08);border-radius:10px;overflow:hidden;color:#fff;text-decoration:none;box-shadow:0 8px 25px rgba(0,0,0,.25);transition:.18s}.media-card:hover{transform:translateY(-5px);border-color:rgba(93,169,255,.55)}.media-thumb{position:relative;aspect-ratio:16/9;background:#111923;overflow:hidden}.media-thumb img,.media-thumb video{width:100%;height:100%;object-fit:cover;display:block}.media-gradient{position:absolute;inset:auto 0 0;height:55%;background:linear-gradient(transparent,rgba(0,0,0,.65))}.media-play{position:absolute;left:10px;bottom:9px;width:36px;height:36px;border-radius:50%;background:rgba(0,0,0,.78);display:grid;place-items:center;font-size:13px}.media-badge{position:absolute;top:8px;right:8px;background:rgba(0,0,0,.75);padding:4px 7px;border-radius:999px;font-size:10px}.media-info{padding:10px}.media-info h3{margin:0 0 5px;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.media-info p{margin:0;color:#9eabbc;font-size:11px;line-height:1.4;height:31px;overflow:hidden}.media-progress{height:3px;background:#303946}.media-progress i{display:block;height:100%;background:#e50914;width:0}@media(max-width:700px){.media-hero{min-height:360px;padding:20px}.media-content{padding:0 13px}.media-card{flex-basis:190px}}
+</style><div id="kojaIntro" class="koja-intro" aria-label="KOJA opening"><div class="koja-intro-glow"></div><svg class="koja-intro-logo" viewBox="0 0 240 90" fill="none" aria-hidden="true"><path d="M35 69V21h38c16 0 27 10 27 24s-11 24-27 24H49" stroke="#fff" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/><path d="M49 34h19c6 0 11 4 11 11s-5 11-11 11H49" stroke="#19a7b8" stroke-width="7" stroke-linecap="round"/><text x="112" y="57" fill="#fff" font-size="30" font-family="Arial,sans-serif" font-weight="800" letter-spacing="3">KOJA</text></svg><button id="kojaIntroEnter" class="koja-intro-enter" type="button">ENTER KOJA</button><button id="kojaIntroSkip" class="koja-intro-skip" type="button">Skip</button></div><div class="media-home"><div class="media-nav"><a href="#continue">Continue Watching</a><a href="#trending">Trending</a><a href="#movies">Movies</a><a href="#series">Series</a><a href="#news">News</a><a href="{{ url_for('media_live') }}">LIVE</a>{% if user %}<a href="{{ url_for('media_studio') }}">Media Studio</a>{% endif %}</div>{% if hero %}<section class="media-hero">{% if hero.media_type=='video' %}<video class="hero-media" src="{{ url_for('public_feed_media',post_id=hero.id) }}" muted autoplay loop playsinline preload="metadata"></video>{% else %}<img class="hero-media" src="{{ url_for('public_feed_media',post_id=hero.id) }}" alt="{{ hero.title or 'KOJA Media' }}">{% endif %}<div class="hero-copy"><div class="hero-kicker">KOJA MEDIA</div><h1>{{ hero.title or 'Discover on KOJA' }}</h1><p>{{ hero.body[:280] }}</p><div class="hero-buttons"><a class="btn" href="{{ url_for('media_watch',post_id=hero.id) }}">Play</a>{% if user %}<a class="btn secondary" href="{{ url_for('media_studio') }}">Create</a>{% endif %}</div></div></section>{% endif %}<div class="media-content">{% for label,group in groups %}<section id="{{ label|lower|replace(' ','-') }}"><div class="media-row-title"><h2>{{ label }}</h2><span>{{ group|length }} titles</span></div><div class="media-row">{% for p in group %}<a class="media-card" href="{{ url_for('media_watch',post_id=p.id) }}" data-id="{{ p.id }}"><div class="media-thumb">{% if p.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=p.id) }}" muted preload="none"></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="{{ p.title or 'KOJA Media' }}">{% endif %}<div class="media-gradient"></div><span class="media-play">▶</span><span class="media-badge">{{ p.post_type|title }}</span></div><div class="media-progress"><i id="progress-{{ p.id }}"></i></div>{% if label=='Continue Watching' %}<div class="media-progress"><i style="width:{{ (100*(p._progress/(p._duration or 1)))|round(1) }}%"></i></div>{% endif %}<div class="media-info"><h3>{{ p.title or 'KOJA Media' }}</h3><p>{{ p.body }}</p></div></a>{% endfor %}</div></section>{% endfor %}</div></div><audio id="kojaIntroAudio" preload="auto"><source src="{{ url_for('static', filename='koja-intro.wav') }}" type="audio/wav"></audio><script>(function(){const intro=document.getElementById('kojaIntro'),audio=document.getElementById('kojaIntroAudio'),enter=document.getElementById('kojaIntroEnter'),skip=document.getElementById('kojaIntroSkip');if(!intro)return;let done=false;function closeIntro(){if(done)return;done=true;try{audio.pause();audio.currentTime=0}catch(e){}intro.classList.add('hide');try{sessionStorage.setItem('koja_intro_seen','1')}catch(e){}}function begin(){enter.classList.remove('show');try{audio.currentTime=0;const pr=audio.play();if(pr&&pr.catch)pr.catch(function(){enter.classList.add('show')})}catch(e){enter.classList.add('show')}setTimeout(closeIntro,3000)}skip.addEventListener('click',closeIntro);enter.addEventListener('click',begin);let seen=false;try{seen=sessionStorage.getItem('koja_intro_seen')==='1'}catch(e){}if(seen){closeIntro();return}begin()})();document.querySelectorAll('.media-card').forEach(function(c){let id=c.dataset.id,b=document.getElementById('progress-'+id);try{let t=parseFloat(localStorage.getItem('koja_resume_'+id)||'0');if(t>3)b.style.width=Math.min(95,Math.max(4,t/6))+'%'}catch(e){}});</script>''',groups=groups,hero=hero)
 
 @app.route('/api/nextgen/media-event',methods=['POST'])
 def nextgen_media_event():
@@ -7759,6 +7935,118 @@ def market_earnings():
     uid=(current_user() or {}).get('id'); rows=db_select('koja_market_ledger',{'seller_id':uid},order='created_at.desc',limit=300) or []
     gross=sum(float(x.get('gross_amount') or 0) for x in rows); fees=sum(float(x.get('platform_fee') or 0) for x in rows); commission=sum(float(x.get('commission_amount') or 0) for x in rows); net=sum(float(x.get('net_amount') or 0) for x in rows)
     return render_page('Seller Earnings',r'''<div class="hero"><h1>Seller Earnings</h1><p>Transparent transaction ledger for your KOJA Market sales.</p></div><div class="grid"><div class="card"><h3>Gross</h3><h2>{{ money(gross,'ZMW') }}</h2></div><div class="card"><h3>KOJA fees</h3><h2>{{ money(fees+commission,'ZMW') }}</h2></div><div class="card"><h3>Net</h3><h2>{{ money(net,'ZMW') }}</h2></div></div><div class="card"><table><tr><th>Date</th><th>Order</th><th>Gross</th><th>Fees</th><th>Net</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{ x.created_at }}</td><td>{{ x.order_id }}</td><td>{{ money(x.gross_amount,'ZMW') }}</td><td>{{ money((x.platform_fee or 0)+(x.commission_amount or 0),'ZMW') }}</td><td>{{ money(x.net_amount,'ZMW') }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="6">No earnings yet.</td></tr>{% endfor %}</table></div>''',rows=rows,gross=gross,fees=fees,commission=commission,net=net,money=market_money)
+
+
+# ---------------- KOJA GLOBAL BUSINESS V5 ----------------
+# Unified operating layer: connects existing Business, B2B, Professional, Market,
+# Finance, CRM, Workforce, Delivery, Connect+, AI and platform engines without replacing them.
+
+def _global_business_modules(business_id):
+    return [
+        ('Organisation','Business Core','business_core_status'),
+        ('Workforce / HR','Employees, payroll and staff permissions','business_employees'),
+        ('CRM & Sales','Customers, invoices and sales records','business_customers'),
+        ('Procurement','Global B2B requests, suppliers and quotations','b2bv4_business'),
+        ('Supply Chain','Suppliers, inventory and fulfilment','business_suppliers'),
+        ('Commerce','Online store and KOJA Market','business_store'),
+        ('Professional Services','Professionals, appointments and projects','professionals'),
+        ('Finance','Accounting, invoices, payments and cash flow','business_accounting_v2'),
+        ('AI Business Intelligence','Forecasting and business intelligence','business_intelligence_v3'),
+        ('Payments','KOJA Pay transaction workflows','business_payments'),
+        ('Delivery & Logistics','KOJA Delivery and live tracking','business_delivery'),
+        ('Global Import & Export','Cross-border orders, customs, landed cost, trade documents, brokers and clearance','global_import_export'),
+        ('Live / Training','Live sessions and events','business_live_v2'),
+        ('Connect+','Business communication','communication_next'),
+        ('Platform Engines','Discover, Ads, Pay, Identity, Workspace, Intelligence','koja_named_engines'),
+    ]
+
+def _global_business_counts(business_id):
+    def n(table, filters):
+        try: return len(db_select(table, filters, limit=1000) or [])
+        except Exception: return 0
+    sales=db_select('koja_business_sales',{'business_id':business_id},limit=1000) or []
+    expenses=db_select('koja_business_expenses',{'business_id':business_id},limit=1000) or []
+    return {
+        'products':n('koja_business_products',{'business_id':business_id}),
+        'customers':n('koja_business_customers',{'business_id':business_id}),
+        'suppliers':n('koja_business_suppliers',{'business_id':business_id}),
+        'employees':n('koja_business_employees',{'business_id':business_id}),
+        'invoices':n('koja_business_invoices',{'business_id':business_id}),
+        'sales':len(sales),'expenses':len(expenses),
+        'b2b_requests':n('koja_b2b_unified_requests',{'buyer_business_id':business_id}),
+        'b2b_quotes':n('koja_b2b_v4_quotes',{'seller_business_id':business_id}),
+        'b2b_orders_buyer':n('koja_b2b_v4_orders',{'buyer_business_id':business_id}),
+        'b2b_orders_seller':n('koja_b2b_v4_orders',{'seller_business_id':business_id}),
+        'disputes':n('koja_global_business_disputes',{'business_id':business_id}),
+        'payouts':n('koja_global_business_payouts',{'business_id':business_id}),
+    }
+
+def _global_business_access(business_id):
+    return _r_business(business_id) if '_r_business' in globals() else first_row('koja_businesses',{'id':business_id,'owner_id':_r_uid()})
+
+@app.route('/business/<business_id>/global',methods=['GET'])
+@login_required
+def global_business_hub(business_id):
+    b=_global_business_access(business_id)
+    if not b: abort(404)
+    counts=_global_business_counts(business_id)
+    sales=db_select('koja_business_sales',{'business_id':business_id},limit=1000) or []
+    expenses=db_select('koja_business_expenses',{'business_id':business_id},limit=1000) or []
+    revenue=sum(float(x.get('total_amount') or 0) for x in sales); costs=sum(float(x.get('amount') or 0) for x in expenses)
+    modules=[]
+    for name,desc,endpoint in _global_business_modules(business_id):
+        try:
+            if endpoint=='business_core_status': href=url_for(endpoint,business_id=business_id)
+            elif endpoint=='b2bv4_business': href=url_for(endpoint,business_id=business_id)
+            elif endpoint in ('business_employees','business_customers','business_suppliers','business_store','business_accounting_v2','business_intelligence_v3','business_payments','business_delivery','business_live_v2'): href=url_for(endpoint,business_id=business_id)
+            else: href=url_for(endpoint)
+        except Exception: href=url_for('business_dashboard',business_id=business_id)
+        modules.append({'name':name,'desc':desc,'href':href})
+    tpl="""<div class="hero"><h1>{{ b.name }} — Global Business</h1><p>One operating workspace connecting commerce, B2B, services, finance, workforce, logistics, AI and KOJA platform engines.</p><div class="actions"><a class="btn" href="{{ url_for('business_dashboard',business_id=b.id) }}">Business Dashboard</a><a class="btn secondary" href="{{ url_for('b2bv4_business',business_id=b.id) }}">B2B Workspace</a><a class="btn secondary" href="{{ url_for('business_global_api',business_id=b.id) }}">Live Business Data</a></div></div>
+<div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(revenue,'ZMW') }}</h2></div><div class="card"><h3>Costs</h3><h2>{{ money(costs,'ZMW') }}</h2></div><div class="card"><h3>Operating result</h3><h2>{{ money(revenue-costs,'ZMW') }}</h2></div><div class="card"><h3>B2B orders</h3><h2>{{ counts.b2b_orders_buyer + counts.b2b_orders_seller }}</h2></div></div>
+<div class="grid">{% for m in modules %}<div class="card"><h3>{{ m.name }}</h3><p>{{ m.desc }}</p><a class="btn secondary" href="{{ m.href }}">Open</a></div>{% endfor %}</div>
+<div class="card"><h2>Global operating metrics</h2><table><tr><th>Area</th><th>Records</th></tr>{% for k,v in counts.items() %}<tr><td>{{ k.replace('_',' ')|title }}</td><td>{{ v }}</td></tr>{% endfor %}</table></div>"""
+    return render_page('Global Business',tpl,b=b,counts=counts,revenue=revenue,costs=costs,modules=modules,money=market_money)
+
+@app.route('/api/business/<business_id>/global')
+@login_required
+def business_global_api(business_id):
+    b=_global_business_access(business_id)
+    if not b: return jsonify({'error':'not_found'}),404
+    counts=_global_business_counts(business_id)
+    sales=db_select('koja_business_sales',{'business_id':business_id},limit=1000) or []; expenses=db_select('koja_business_expenses',{'business_id':business_id},limit=1000) or []
+    revenue=sum(float(x.get('total_amount') or 0) for x in sales); costs=sum(float(x.get('amount') or 0) for x in expenses)
+    return jsonify({'business':{'id':b.get('id'),'name':b.get('name'),'category':b.get('category'),'location':b.get('location'),'business_number':b.get('business_number')},'currency':b.get('currency') or 'ZMW','metrics':counts,'financials':{'revenue':revenue,'costs':costs,'operating_result':revenue-costs},'modules':[{'name':x[0],'description':x[1]} for x in _global_business_modules(business_id)]})
+
+@app.route('/business/<business_id>/global/dispute',methods=['GET','POST'])
+@login_required
+def global_business_dispute(business_id):
+    b=_global_business_access(business_id)
+    if not b: abort(404)
+    if request.method=='POST':
+        _,err=db_insert('koja_global_business_disputes',{'business_id':business_id,'opened_by':_r_uid(),'order_id':clean(request.form.get('order_id')) or None,'reason':clean(request.form.get('reason')),'description':clean(request.form.get('description')),'status':'open','created_at':utc_now(),'updated_at':utc_now()})
+        flash('Dispute opened.' if not err else 'Dispute table is not installed. Apply the Global Business V5 SQL migration.','success' if not err else 'danger')
+        return redirect(url_for('global_business_dispute',business_id=business_id))
+    rows=db_select('koja_global_business_disputes',{'business_id':business_id},order='created_at.desc',limit=200) or []
+    tpl="""<div class="hero"><h1>Business Disputes</h1><p>Open and track transaction, service and fulfilment disputes.</p></div><div class="card"><form method="post"><input name="order_id" placeholder="Order ID (optional)"><input name="reason" required placeholder="Reason"><textarea name="description" required placeholder="Describe the issue"></textarea><button class="btn">Open Dispute</button></form></div><div class="card"><table><tr><th>Date</th><th>Order</th><th>Reason</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{ x.created_at }}</td><td>{{ x.order_id or '—' }}</td><td>{{ x.reason }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="4">No disputes.</td></tr>{% endfor %}</table></div>"""
+    return render_page('Business Disputes',tpl,b=b,rows=rows)
+
+@app.route('/business/<business_id>/global/payouts',methods=['GET','POST'])
+@login_required
+def global_business_payouts(business_id):
+    b=_global_business_access(business_id)
+    if not b: abort(404)
+    if request.method=='POST':
+        amount=max(0,float(request.form.get('amount') or 0)); currency=clean(request.form.get('currency')) or 'ZMW'; method=clean(request.form.get('method')) or 'bank'
+        if amount<=0: flash('Enter a valid payout amount.','danger')
+        else:
+            _,err=db_insert('koja_global_business_payouts',{'business_id':business_id,'requested_by':_r_uid(),'amount':amount,'currency':currency,'method':method,'status':'requested','created_at':utc_now(),'updated_at':utc_now()})
+            flash('Payout request submitted.' if not err else 'Payout table is not installed. Apply the Global Business V5 SQL migration.','success' if not err else 'danger')
+        return redirect(url_for('global_business_payouts',business_id=business_id))
+    rows=db_select('koja_global_business_payouts',{'business_id':business_id},order='created_at.desc',limit=200) or []
+    tpl="""<div class="hero"><h1>Business Payouts</h1><p>Request and track settlement. External payout execution remains subject to configured payment-provider capabilities.</p></div><div class="card"><form method="post"><input name="amount" type="number" step="0.01" min="0.01" required placeholder="Amount"><input name="currency" value="ZMW" placeholder="Currency"><select name="method"><option>bank</option><option>mobile_money</option><option>card_balance</option></select><button class="btn">Request Payout</button></form></div><div class="card"><table><tr><th>Date</th><th>Amount</th><th>Method</th><th>Status</th></tr>{% for x in rows %}<tr><td>{{ x.created_at }}</td><td>{{ x.amount }} {{ x.currency }}</td><td>{{ x.method }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="4">No payout requests.</td></tr>{% endfor %}</table></div>"""
+    return render_page('Business Payouts',tpl,b=b,rows=rows)
+
 
 # ---------------- KOJA BUSINESS SaaS ----------------
 @app.route('/business')
@@ -8482,436 +8770,9 @@ def business_accounting_v2(business_id):
     summary=first_row('koja_business_bi_accounting_summary',{'business_id':business_id}) or {}
     return render_page('Business Accounting V2',r"""<div class="hero"><h1>Accounting</h1><p>{{ b.name }} — connected double-entry ledger.</p><div class="actions"><a class="btn secondary" href="{{ url_for('business_dashboard',business_id=b.id) }}">Business Dashboard</a><a class="btn secondary" href="{{ url_for('business_intelligence_v3',business_id=b.id) }}">AI Intelligence</a></div></div><div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(summary.accounting_revenue or 0,'ZMW') }}</h2></div><div class="card"><h3>Expenses</h3><h2>{{ money(summary.accounting_expenses or 0,'ZMW') }}</h2></div><div class="card"><h3>Net Result</h3><h2>{{ money(summary.accounting_net_result or 0,'ZMW') }}</h2></div><div class="card"><h3>Transactions</h3><h2>{{ summary.transaction_count or 0 }}</h2></div></div><div class="card"><h2>Record Transaction</h2><form method="post"><label>Type</label><select name="kind"><option value="sale">Sale / Income</option><option value="expense">Expense</option></select><label>Description</label><input name="description" required><label>Amount (ZMW)</label><input name="amount" type="number" min="0" step="0.01" required><label>Payment Method</label><select name="payment_method"><option value="cash">Cash</option><option value="bank">Bank</option><option value="mobile_money">Mobile Money</option></select><label>Expense Category</label><select name="category"><option value="other">Other</option><option value="rent">Rent</option><option value="salary">Salary</option><option value="transport">Transport</option><option value="marketing">Marketing</option><option value="utilities">Utilities</option><option value="tax">Tax</option></select><button class="btn">Save & Post to Ledger</button></form></div><div class="card"><h2>Chart of Accounts</h2><table><tr><th>Code</th><th>Account</th><th>Type</th><th>Balance</th></tr>{% for a in accounts %}<tr><td>{{ a.account_code }}</td><td>{{ a.account_name }}</td><td>{{ a.account_type }}</td><td>{{ money(a.balance or 0,'ZMW') }}</td></tr>{% else %}<tr><td colspan="4">No accounts.</td></tr>{% endfor %}</table></div><div class="card"><h2>Recent Ledger Transactions</h2><table><tr><th>Date</th><th>Type</th><th>Description</th><th>Amount</th><th>Status</th></tr>{% for x in txs %}<tr><td>{{ x.transaction_date }}</td><td>{{ x.transaction_type }}</td><td>{{ x.description }}</td><td>{{ money(x.total_amount or 0,'ZMW') }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="5">No accounting transactions yet.</td></tr>{% endfor %}</table></div>""",b=b,summary=summary,accounts=accounts,txs=txs,money=market_money)
 
-# ============================================================
-
-# ============================================================
-# KOJA GLOBAL NEWS + LIVE VIRTUAL TV STUDIO
-# Additive extension: preserves existing KOJA News articles/categories.
-# Browser camera is local preview only. Public broadcast uses an existing HLS source.
-# ============================================================
-# ============================================================
-# KOJA GLOBAL NEWS PUBLIC CAMERA INGEST
-# Browser MediaRecorder -> ffmpeg -> HLS -> public KOJA News player.
-# This is a same-service encoder path. It is intended for a single active
-# camera broadcast per Render instance; external HLS sources remain supported.
-# ============================================================
-_KOJA_NEWS_CAMERA_LOCK = threading.RLock()
-_KOJA_NEWS_CAMERA_STREAMS = {}
-_KOJA_NEWS_CAMERA_DIR = os.path.join(tempfile.gettempdir(), 'koja_global_news_live')
-os.makedirs(_KOJA_NEWS_CAMERA_DIR, exist_ok=True)
-
-def _koja_ffmpeg_binary():
-    """Return an ffmpeg executable if the deployment provides one."""
-    configured=(os.getenv('FFMPEG_PATH') or '').strip()
-    if configured and os.path.exists(configured):
-        return configured
-    for candidate in ('ffmpeg','/usr/bin/ffmpeg','/usr/local/bin/ffmpeg'):
-        if os.path.exists(candidate) or candidate == 'ffmpeg':
-            try:
-                import shutil
-                found=shutil.which(candidate)
-                if found: return found
-            except Exception: pass
-    try:
-        import imageio_ffmpeg
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception:
-        return None
-
-def _koja_news_camera_cleanup(stream_id):
-    with _KOJA_NEWS_CAMERA_LOCK:
-        info=_KOJA_NEWS_CAMERA_STREAMS.pop(stream_id, None)
-    if not info: return
-    proc=info.get('process')
-    try:
-        if proc and proc.poll() is None:
-            proc.stdin.close()
-    except Exception: pass
-    try:
-        if proc and proc.poll() is None:
-            proc.terminate(); proc.wait(timeout=3)
-    except Exception:
-        try:
-            if proc and proc.poll() is None: proc.kill()
-        except Exception: pass
-
-def _koja_news_camera_start(stream_id):
-    ff=_koja_ffmpeg_binary()
-    if not ff: return None, 'FFmpeg is not available. Install ffmpeg or add imageio-ffmpeg to requirements.'
-    outdir=os.path.join(_KOJA_NEWS_CAMERA_DIR, stream_id)
-    os.makedirs(outdir, exist_ok=True)
-    playlist=os.path.join(outdir, 'index.m3u8')
-    # MediaRecorder commonly supplies fragmented WebM. ffmpeg remuxes/transcodes
-    # it to H.264/AAC HLS for broad browser/TV compatibility.
-    cmd=[ff,'-hide_banner','-loglevel','warning','-fflags','+genpts','-i','pipe:0',
-         '-c:v','libx264','-preset','veryfast','-tune','zerolatency','-pix_fmt','yuv420p',
-         '-c:a','aac','-b:a','128k','-ar','44100','-f','hls','-hls_time','2',
-         '-hls_list_size','6','-hls_flags','delete_segments+append_list+independent_segments',
-         '-hls_segment_filename',os.path.join(outdir,'segment%05d.ts'),playlist]
-    try:
-        proc=subprocess.Popen(cmd,stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,bufsize=0)
-    except Exception as e:
-        return None, str(e)
-    with _KOJA_NEWS_CAMERA_LOCK:
-        _KOJA_NEWS_CAMERA_STREAMS[stream_id]={'process':proc,'outdir':outdir,'playlist':playlist,'started_at':utc_now()}
-    return outdir, None
-
-@app.route('/api/news/live/camera/start', methods=['POST'])
-@admin_required
-def api_news_live_camera_start():
-    # Stop any previous camera encoder on this instance before starting another.
-    with _KOJA_NEWS_CAMERA_LOCK:
-        old_ids=list(_KOJA_NEWS_CAMERA_STREAMS.keys())
-    for sid in old_ids: _koja_news_camera_cleanup(sid)
-    stream_id=secrets.token_urlsafe(18).replace('-','_').replace('=','')
-    ingest_token=secrets.token_urlsafe(32)
-    _,err=_koja_news_camera_start(stream_id)
-    if err: return jsonify({'ok':False,'error':err}), 503
-    slug=clean((request.get_json(silent=True) or {}).get('scene_slug') if request.is_json else request.form.get('scene_slug'))
-    if not slug or slug not in KOJA_NEWS_STUDIO_SCENES: slug='main_desk'
-    with _KOJA_NEWS_CAMERA_LOCK:
-        _KOJA_NEWS_CAMERA_STREAMS[stream_id]['token']=ingest_token
-        _KOJA_NEWS_CAMERA_STREAMS[stream_id]['scene_slug']=slug
-    return jsonify({'ok':True,'stream_id':stream_id,'ingest_token':ingest_token,
-                    'stream_url':url_for('news_camera_hls',stream_id=stream_id,_external=True),
-                    'ingest_url':url_for('api_news_live_camera_chunk',stream_id=stream_id,_external=True)})
-
-@app.route('/api/news/live/camera/<stream_id>/chunk', methods=['POST'])
-def api_news_live_camera_chunk(stream_id):
-    token=request.headers.get('X-KOJA-INGEST-TOKEN') or request.form.get('token')
-    with _KOJA_NEWS_CAMERA_LOCK:
-        info=_KOJA_NEWS_CAMERA_STREAMS.get(stream_id)
-    if not info or not token or not hmac.compare_digest(str(token),str(info.get('token',''))):
-        return jsonify({'ok':False,'error':'Invalid or expired ingest session.'}), 401
-    proc=info.get('process')
-    if not proc or proc.poll() is not None:
-        return jsonify({'ok':False,'error':'Encoder is no longer running.'}), 410
-    data=request.get_data(cache=False)
-    if not data: return jsonify({'ok':True})
-    try:
-        proc.stdin.write(data); proc.stdin.flush()
-    except Exception as e:
-        _koja_news_camera_cleanup(stream_id)
-        return jsonify({'ok':False,'error':'Encoder input failed: '+str(e)}), 500
-    return jsonify({'ok':True})
-
-@app.route('/api/news/live/camera/<stream_id>/stop', methods=['POST'])
-def api_news_live_camera_stop(stream_id):
-    token=request.headers.get('X-KOJA-INGEST-TOKEN')
-    with _KOJA_NEWS_CAMERA_LOCK:
-        info=_KOJA_NEWS_CAMERA_STREAMS.get(stream_id)
-    if not info or not token or not hmac.compare_digest(str(token),str(info.get('token',''))):
-        return jsonify({'ok':False,'error':'Invalid ingest session.'}), 401
-    _koja_news_camera_cleanup(stream_id)
-    live=_news_studio_live()
-    if live:
-        db_update('koja_news_live',{'id':live.get('id')},{'status':'offline','ended_at':utc_now(),'updated_at':utc_now(),'studio_updated_at':utc_now()})
-    return jsonify({'ok':True})
-
-@app.route('/news/live/hls/<stream_id>/index.m3u8')
-def news_camera_hls(stream_id):
-    with _KOJA_NEWS_CAMERA_LOCK: info=_KOJA_NEWS_CAMERA_STREAMS.get(stream_id)
-    if not info: abort(404)
-    path=info['playlist']
-    if not os.path.exists(path): return Response('#EXTM3U\n#EXT-X-VERSION:3\n',mimetype='application/vnd.apple.mpegurl')
-    return send_file(path,mimetype='application/vnd.apple.mpegurl',max_age=0)
-
-@app.route('/news/live/hls/<stream_id>/<path:filename>')
-def news_camera_hls_segment(stream_id,filename):
-    with _KOJA_NEWS_CAMERA_LOCK: info=_KOJA_NEWS_CAMERA_STREAMS.get(stream_id)
-    if not info or '/' in filename or not filename.startswith('segment') or not filename.endswith('.ts'): abort(404)
-    path=os.path.join(info['outdir'],filename)
-    if not os.path.exists(path): abort(404)
-    return send_file(path,mimetype='video/mp2t',max_age=0)
-
-KOJA_NEWS_LIVE_SQL = r'''
-create extension if not exists pgcrypto;
-create table if not exists public.koja_news_live (
- id uuid primary key default gen_random_uuid(),
- title text not null default 'KOJA GLOBAL NEWS LIVE',
- headline text not null default '',
- location text not null default 'Global',
- reporter text not null default '',
- category text not null default 'General',
- ticker text not null default '',
- source_url text not null default '',
- source_type text not null default 'hls',
- background_url text not null default '',
- status text not null default 'offline',
- started_at timestamptz,
- ended_at timestamptz,
- created_by uuid,
- created_at timestamptz not null default now(),
- updated_at timestamptz not null default now()
-);
-alter table public.koja_news_live add column if not exists scene_slug text not null default 'main_desk';
-alter table public.koja_news_live add column if not exists presenter_name text not null default '';
-alter table public.koja_news_live add column if not exists guest_name text not null default '';
-alter table public.koja_news_live add column if not exists guest_title text not null default '';
-alter table public.koja_news_live add column if not exists wall_headline text not null default '';
-alter table public.koja_news_live add column if not exists wall_subtitle text not null default '';
-alter table public.koja_news_live add column if not exists breaking boolean not null default false;
-alter table public.koja_news_live add column if not exists studio_updated_at timestamptz;
-alter table public.koja_news_live add column if not exists public_stream_url text not null default '';
-alter table public.koja_news_live add column if not exists broadcast_mode text not null default 'external_hls';
-alter table public.koja_news_live add column if not exists country text not null default '';
-alter table public.koja_news_live add column if not exists region text not null default '';
-alter table public.koja_news_live add column if not exists city text not null default '';
-alter table public.koja_news_live add column if not exists language text not null default '';
-alter table public.koja_news_live add column if not exists timezone text not null default '';
-alter table public.koja_news_live add column if not exists background_asset_id uuid;
-alter table public.koja_news_live add column if not exists desk_asset_id uuid;
-alter table public.koja_news_live add column if not exists background_asset_url text not null default '';
-alter table public.koja_news_live add column if not exists desk_asset_url text not null default '';
-create index if not exists koja_news_live_status_idx on public.koja_news_live(status,updated_at desc);
-create index if not exists koja_news_live_scene_idx on public.koja_news_live(scene_slug,updated_at desc);
-
-create table if not exists public.koja_news_studio_assets (
- id uuid primary key default gen_random_uuid(),
- name text not null,
- asset_type text not null check (asset_type in ('background','desk')),
- scene_slug text not null default 'main_desk',
- storage_bucket text not null default 'koja-files',
- storage_path text not null,
- public_url text not null default '',
- mime_type text not null default 'image/png',
- is_active boolean not null default true,
- created_by uuid,
- created_at timestamptz not null default now(),
- updated_at timestamptz not null default now()
-);
-alter table public.koja_news_studio_assets add column if not exists storage_bucket text not null default 'koja-files';
-alter table public.koja_news_studio_assets add column if not exists is_active boolean not null default true;
-alter table public.koja_news_studio_assets add column if not exists updated_at timestamptz not null default now();
-create index if not exists koja_news_studio_assets_scene_idx on public.koja_news_studio_assets(scene_slug,asset_type,created_at desc);
-'''
-
-KOJA_NEWS_STUDIO_BUCKET = os.getenv('KOJA_NEWS_STUDIO_BUCKET', STORAGE_BUCKET).strip() or STORAGE_BUCKET
-KOJA_NEWS_STUDIO_SCENES = {
-    'main_desk': {'name':'Main News Desk','tag':'NEWSROOM','kind':'desk','desc':'Primary presenter desk with headline wall.'},
-    'interview_desk': {'name':'Interview Desk','tag':'INTERVIEW','kind':'interview','desc':'Two-person interview layout with presenter and guest.'},
-    'reporter': {'name':'Reporter / Field Desk','tag':'FIELD REPORT','kind':'field','desc':'Field reporter layout with location and lower-third.'},
-    'newsroom': {'name':'Newsroom','tag':'NEWSROOM','kind':'newsroom','desc':'Multi-screen newsroom video wall.'},
-    'breaking': {'name':'Breaking News','tag':'BREAKING','kind':'breaking','desc':'High-priority breaking-news presentation.'},
-    'parliament': {'name':'Parliament','tag':'PARLIAMENT','kind':'parliament','desc':'Parliament-focused news wall.'},
-    'africa': {'name':'Africa','tag':'AFRICA','kind':'africa','desc':'Africa regional news scene.'},
-    'world': {'name':'World','tag':'WORLD','kind':'world','desc':'International news scene.'},
-    'business': {'name':'Business','tag':'BUSINESS','kind':'business','desc':'Markets, companies and economic news.'},
-    'sports': {'name':'Sports','tag':'SPORTS','kind':'sports','desc':'Sports bulletin scene.'},
-    'weather': {'name':'Weather','tag':'WEATHER','kind':'weather','desc':'Weather bulletin scene.'},
-}
-KOJA_NEWS_CATEGORIES = ['General','Africa','World','Business','Technology','Education','Sports','Entertainment','Science','Health','Weather','Parliament','Politics','Jobs & Opportunities','Culture']
-
-
-def _news_studio_live():
-    return first_row('koja_news_live', {'status':'live'})
-
-
-def _news_studio_scene(row):
-    slug=(row or {}).get('scene_slug') or 'main_desk'
-    return KOJA_NEWS_STUDIO_SCENES.get(slug, KOJA_NEWS_STUDIO_SCENES['main_desk'])
-
-
-def _news_asset_url(asset):
-    return clean((asset or {}).get('public_url'))
-
-
-def _news_assets(scene_slug=None, asset_type=None, active_only=True, limit=300):
-    filters={}
-    if scene_slug: filters['scene_slug']=scene_slug
-    if asset_type: filters['asset_type']=asset_type
-    rows=db_select('koja_news_studio_assets', filters, order='created_at.desc', limit=limit) or []
-    if active_only: rows=[r for r in rows if as_bool(r.get('is_active', True))]
-    return rows
-
-
-def _news_storage_url(bucket, path):
-    return f"{SUPABASE_URL}/storage/v1/object/{quote(bucket, safe='')}/{quote(path, safe='/')}"
-
-
-def _news_storage_public_url(bucket, path):
-    return f"{SUPABASE_URL}/storage/v1/object/public/{quote(bucket, safe='')}/{quote(path, safe='/')}"
-
-
-def _news_upload_asset(file_storage, asset_type, scene_slug):
-    if not file_storage or not file_storage.filename:
-        return None, 'Select an image first.'
-    if not supabase_configured():
-        return None, 'Supabase is not configured.'
-    filename=secure_filename(file_storage.filename)
-    if not filename: return None, 'Invalid filename.'
-    ext=filename.rsplit('.',1)[-1].lower() if '.' in filename else ''
-    allowed={'png','jpg','jpeg','webp','gif'}
-    if ext not in allowed: return None, 'Studio assets must be PNG, JPG, JPEG, WebP or GIF.'
-    data=file_storage.read()
-    if len(data)>MAX_UPLOAD_MB*1024*1024: return None, f'Maximum file size is {MAX_UPLOAD_MB} MB.'
-    path=f"news-studio/{scene_slug}/{asset_type}/{uuid.uuid4().hex}_{filename}"
-    mime=file_storage.mimetype or ('image/png' if ext=='png' else 'image/jpeg')
-    try:
-        r=requests.post(_news_storage_url(KOJA_NEWS_STUDIO_BUCKET,path),headers=sb_headers({'Content-Type':mime,'x-upsert':'true'}),data=data,timeout=60)
-        if not r.ok:
-            return None, r.text[:1200]
-        return {'name':filename,'asset_type':asset_type,'scene_slug':scene_slug,'storage_bucket':KOJA_NEWS_STUDIO_BUCKET,'storage_path':path,'public_url':_news_storage_public_url(KOJA_NEWS_STUDIO_BUCKET,path),'mime_type':mime},None
-    except Exception as exc:
-        logger.exception('KOJA News studio asset upload error: %s',exc)
-        return None,str(exc)
-
-
-@app.route('/admin/news/studio-assets', methods=['GET','POST'])
-@admin_required
-def admin_news_studio_assets():
-    if request.method=='POST':
-        action=clean(request.form.get('action'))
-        if action=='delete':
-            aid=clean(request.form.get('asset_id'))
-            asset=first_row('koja_news_studio_assets',{'id':aid})
-            if asset:
-                try:
-                    requests.delete(_news_storage_url(asset.get('storage_bucket') or KOJA_NEWS_STUDIO_BUCKET,asset.get('storage_path') or ''),headers=sb_headers(),timeout=20)
-                except Exception: pass
-                db_update('koja_news_studio_assets',{'id':aid},{'is_active':False,'updated_at':utc_now()})
-                flash('Studio asset removed.','success')
-            return redirect(url_for('admin_news_studio_assets'))
-        asset_type=clean(request.form.get('asset_type')) or 'background'
-        scene_slug=clean(request.form.get('scene_slug')) or 'main_desk'
-        if asset_type not in ('background','desk'): asset_type='background'
-        if scene_slug not in KOJA_NEWS_STUDIO_SCENES: scene_slug='main_desk'
-        f=request.files.get('asset_file')
-        uploaded,err=_news_upload_asset(f,asset_type,scene_slug)
-        if err:
-            flash(err,'danger'); return redirect(url_for('admin_news_studio_assets'))
-        uploaded['created_by']=(current_user() or {}).get('id'); uploaded['created_at']=utc_now(); uploaded['updated_at']=utc_now(); uploaded['is_active']=True
-        row,db_err=db_insert('koja_news_studio_assets',uploaded)
-        if db_err:
-            try: requests.delete(_news_storage_url(uploaded['storage_bucket'],uploaded['storage_path']),headers=sb_headers(),timeout=20)
-            except Exception: pass
-            flash('Asset uploaded but could not be registered: '+str(db_err),'danger')
-        else: flash('Studio asset uploaded and assigned to '+KOJA_NEWS_STUDIO_SCENES[scene_slug]['name']+'.','success')
-        return redirect(url_for('admin_news_studio_assets'))
-    assets=_news_assets(active_only=True)
-    return render_page('KOJA NEWS Studio Assets',r'''
-<style>
-.na{max-width:1250px;margin:auto}.na-grid{display:grid;grid-template-columns:360px 1fr;gap:16px}.na-card{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:18px}.na-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}.na-item{border:1px solid var(--border);border-radius:14px;overflow:hidden;background:var(--surface)}.na-thumb{height:145px;background:#07111f;display:grid;place-items:center;overflow:hidden}.na-thumb img{width:100%;height:100%;object-fit:cover}.na-meta{padding:11px}.na-meta strong{display:block}.na-actions{padding:0 11px 11px}.na-note{font-size:12px;color:var(--muted);line-height:1.5}@media(max-width:850px){.na-grid{grid-template-columns:1fr}}
-</style>
-<div class="na"><div class="hero"><h1>KOJA GLOBAL NEWS — STUDIO ASSETS</h1><p>Upload reusable virtual backgrounds and transparent desk overlays for every Global News scene.</p></div>
-<div class="na-grid"><section class="na-card"><h2>Upload Asset</h2><form method="post" enctype="multipart/form-data"><label>Asset type</label><select name="asset_type"><option value="background">Virtual Background</option><option value="desk">Desk Overlay (transparent PNG recommended)</option></select><label>Scene</label><select name="scene_slug">{% for key,val in scenes.items() %}<option value="{{ key }}">{{ val.name }}</option>{% endfor %}</select><label>Image</label><input type="file" name="asset_file" accept="image/png,image/jpeg,image/webp,image/gif" required><button class="btn success" type="submit">UPLOAD STUDIO ASSET</button></form><p class="na-note">Assets are stored in Supabase Storage and registered to their scene. They become selectable in the Live Studio.</p><p><a class="btn secondary" href="{{ url_for('admin_news_live') }}">OPEN GLOBAL NEWS LIVE STUDIO</a></p></section>
-<section class="na-card"><h2>Uploaded Assets</h2><div class="na-list">{% for a in assets %}<article class="na-item"><div class="na-thumb">{% if a.public_url %}<img src="{{ a.public_url }}" alt="{{ a.name }}">{% else %}<span>No preview</span>{% endif %}</div><div class="na-meta"><strong>{{ a.name }}</strong><div class="small">{{ 'Background' if a.asset_type=='background' else 'Desk Overlay' }} · {{ scenes.get(a.scene_slug,{}).get('name',a.scene_slug) }}</div></div><div class="na-actions"><form method="post"><input type="hidden" name="action" value="delete"><input type="hidden" name="asset_id" value="{{ a.id }}"><button class="btn danger" type="submit">REMOVE</button></form></div></article>{% else %}<p>No studio assets uploaded yet.</p>{% endfor %}</div></section></div></div>
-''',assets=assets,scenes=KOJA_NEWS_STUDIO_SCENES)
-
-
-@app.route('/admin/news/live', methods=['GET','POST'])
-@admin_required
-def admin_news_live():
-    if request.method=='POST':
-        action=clean(request.form.get('action') or 'start')
-        if action=='stop':
-            row=_news_studio_live()
-            if row: db_update('koja_news_live',{'id':row.get('id')},{'status':'offline','ended_at':utc_now(),'updated_at':utc_now(),'studio_updated_at':utc_now()})
-            flash('KOJA Global News Live stopped.','success'); return redirect(url_for('admin_news_live'))
-        if action=='scene':
-            row=_news_studio_live(); slug=clean(request.form.get('scene_slug')) or 'main_desk'
-            if slug not in KOJA_NEWS_STUDIO_SCENES: slug='main_desk'
-            if row: db_update('koja_news_live',{'id':row.get('id')},{'scene_slug':slug,'studio_updated_at':utc_now(),'updated_at':utc_now()})
-            flash('Studio scene changed to '+KOJA_NEWS_STUDIO_SCENES[slug]['name']+'.','success'); return redirect(url_for('admin_news_live'))
-        slug=clean(request.form.get('scene_slug')) or 'main_desk'
-        if slug not in KOJA_NEWS_STUDIO_SCENES: slug='main_desk'
-        bg_id=clean(request.form.get('background_asset_id'))
-        desk_id=clean(request.form.get('desk_asset_id'))
-        bg=first_row('koja_news_studio_assets',{'id':bg_id}) if bg_id else None
-        desk=first_row('koja_news_studio_assets',{'id':desk_id}) if desk_id else None
-        payload={
-            'title':clean(request.form.get('title')) or 'KOJA GLOBAL NEWS LIVE',
-            'headline':clean(request.form.get('headline')),
-            'location':clean(request.form.get('location')) or 'Global',
-            'reporter':clean(request.form.get('reporter')),
-            'category':clean(request.form.get('category')) or 'General',
-            'ticker':clean(request.form.get('ticker')),
-            'source_url':clean(request.form.get('source_url')),
-            'source_type':'hls',
-            'public_stream_url':clean(request.form.get('public_stream_url')) or clean(request.form.get('source_url')),
-            'broadcast_mode':clean(request.form.get('broadcast_mode')) or 'external_hls',
-            'background_url':clean(request.form.get('background_url')),
-            'scene_slug':slug,
-            'presenter_name':clean(request.form.get('presenter_name')),
-            'guest_name':clean(request.form.get('guest_name')),
-            'guest_title':clean(request.form.get('guest_title')),
-            'wall_headline':clean(request.form.get('wall_headline')),
-            'wall_subtitle':clean(request.form.get('wall_subtitle')),
-            'breaking':str(request.form.get('breaking') or '') in {'1','true','on','yes'},
-            'country':clean(request.form.get('country')),
-            'region':clean(request.form.get('region')),
-            'city':clean(request.form.get('city')),
-            'language':clean(request.form.get('language')),
-            'timezone':clean(request.form.get('timezone')),
-            'background_asset_id':bg.get('id') if bg else None,
-            'desk_asset_id':desk.get('id') if desk else None,
-            'background_asset_url':_news_asset_url(bg),
-            'desk_asset_url':_news_asset_url(desk),
-            'status':'live','started_at':utc_now(),'updated_at':utc_now(),'studio_updated_at':utc_now(),'created_by':(current_user() or {}).get('id')
-        }
-        old=_news_studio_live()
-        if old: db_update('koja_news_live',{'id':old.get('id')},payload)
-        else: db_insert('koja_news_live',payload)
-        flash('KOJA Global News Live is now published.','success'); return redirect(url_for('admin_news_live'))
-    live=_news_studio_live(); scene=_news_studio_scene(live); current_scene=scene
-    assets=_news_assets(scene_slug=(live or {}).get('scene_slug') or 'main_desk')
-    backgrounds=[a for a in assets if a.get('asset_type')=='background']; desks=[a for a in assets if a.get('asset_type')=='desk']
-    return render_page('KOJA GLOBAL NEWS Live Studio',r'''
-<style>
-.ks{max-width:1250px;margin:auto}.ks-grid{display:grid;grid-template-columns:1.15fr .85fr;gap:16px}.ks-card{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:17px}.ks-preview{position:relative;min-height:390px;border-radius:16px;overflow:hidden;background:radial-gradient(circle at 50% 25%,rgba(54,183,255,.3),transparent 30%),linear-gradient(135deg,#061a33,#07111f);color:#fff;background-size:cover;background-position:center}.ks-deskimg{position:absolute;left:0;right:0;bottom:0;width:100%;max-height:48%;object-fit:contain;object-position:center bottom;pointer-events:none}.ks-top{position:absolute;z-index:5;top:12px;left:12px;right:12px;display:flex;justify-content:space-between}.ks-live{background:#e21d2b;padding:7px 10px;border-radius:7px;font-weight:900}.ks-wall{position:absolute;z-index:3;top:27%;left:7%;right:7%;text-align:center;text-shadow:0 2px 8px #000}.ks-wall h2{font-size:clamp(22px,4vw,44px);margin:0 0 5px}.ks-lower{position:absolute;z-index:6;left:0;right:0;bottom:28%;background:rgba(226,29,43,.96);padding:10px 13px;font-weight:900}.ks-camera{position:absolute;z-index:4;left:7%;right:7%;bottom:26%;width:86%;height:40%;object-fit:cover;border-radius:10px;background:#000;display:none}.ks-controls{display:grid;gap:9px}.ks-controls input,.ks-controls select,.ks-controls textarea{width:100%;box-sizing:border-box;padding:10px;border:1px solid var(--border);border-radius:10px;background:var(--surface);color:inherit}.ks-controls textarea{min-height:70px;resize:vertical}.ks-scenes{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}.ks-scenes button{padding:9px 6px;border:1px solid var(--border);border-radius:9px;background:var(--surface);color:inherit;font-weight:800}.ks-scenes button.active{background:#0b4ea2;color:#fff;border-color:#36b7ff}.ks-row{display:grid;grid-template-columns:1fr 1fr;gap:9px}.ks-assets{display:grid;grid-template-columns:1fr 1fr;gap:8px}.ks-note{font-size:12px;opacity:.72;line-height:1.5}@media(max-width:850px){.ks-grid{grid-template-columns:1fr}.ks-scenes{grid-template-columns:repeat(2,1fr)}.ks-row,.ks-assets{grid-template-columns:1fr}}
-</style>
-<div class="ks"><div class="hero"><h1>KOJA GLOBAL NEWS LIVE STUDIO</h1><p>Global virtual TV studio and HLS newsroom for countries, regions and cities worldwide.</p><p><a class="btn secondary" href="{{ url_for('admin_news_studio_assets') }}">STUDIO ASSETS</a></p></div>
-<div class="ks-grid"><div class="ks-card"><h2>Studio Preview</h2><div id="ksPreview" class="ks-preview" {% if live and live.background_asset_url %}style="background-image:url('{{ live.background_asset_url }}')"{% elif live and live.background_url %}style="background-image:url('{{ live.background_url }}')"{% endif %}><div class="ks-top"><strong>KOJA GLOBAL NEWS</strong><span class="ks-live">● LIVE</span></div><div class="ks-wall"><div>{{ scene.tag }}</div><h2 id="ksHeadline">{{ live.wall_headline if live and live.wall_headline else (live.headline if live else 'KOJA GLOBAL NEWS') }}</h2><div class="ks-field">{{ live.wall_subtitle if live and live.wall_subtitle else scene.name }}</div></div><video id="ksCamera" class="ks-camera" autoplay muted playsinline></video><div id="ksLower" class="ks-lower">{{ live.headline if live and live.headline else 'GLOBAL NEWS' }}</div>{% if live and live.desk_asset_url %}<img class="ks-deskimg" src="{{ live.desk_asset_url }}" alt="News desk overlay">{% endif %}</div><p><button class="btn" type="button" onclick="ksCameraStart()">Start Camera Preview</button> <button class="btn secondary" type="button" onclick="ksCameraStop()">Stop Camera</button></p><p class="ks-note">Camera preview can now be published through KOJA's built-in camera encoder when FFmpeg is available. External HLS sources remain supported.</p><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn success" type="button" onclick="ksPublicLive()">GO PUBLIC WITH CAMERA</button><button class="btn danger" type="button" onclick="ksPublicStop()">STOP PUBLIC CAMERA</button></div><div id="ksPublicStatus" class="ks-note" style="margin-top:8px"></div></div>
-<div class="ks-card"><h2>Scene Control</h2><div class="ks-scenes">{% for key,val in scenes.items() %}<form method="post"><input type="hidden" name="action" value="scene"><input type="hidden" name="scene_slug" value="{{ key }}"><button class="{% if live and live.scene_slug==key %}active{% endif %}" type="submit">{{ val.name }}</button></form>{% endfor %}</div><hr><h2>Broadcast</h2><form method="post" class="ks-controls"><input name="title" value="{{ live.title if live else 'KOJA GLOBAL NEWS LIVE' }}" placeholder="Broadcast title"><div class="ks-row"><input id="ksHeadlineInput" name="headline" value="{{ live.headline if live else '' }}" placeholder="Main headline"><input name="presenter_name" value="{{ live.presenter_name if live else '' }}" placeholder="Presenter name"></div><div class="ks-row"><input name="country" value="{{ live.country if live else '' }}" placeholder="Country"><input name="region" value="{{ live.region if live else '' }}" placeholder="Region / continent"></div><div class="ks-row"><input name="city" value="{{ live.city if live else '' }}" placeholder="City"><input name="location" value="{{ live.location if live else 'Global' }}" placeholder="Location / venue"></div><div class="ks-row"><input name="reporter" value="{{ live.reporter if live else '' }}" placeholder="Reporter name"><input name="language" value="{{ live.language if live else '' }}" placeholder="Language"></div><div class="ks-row"><select name="category">{% for c in categories %}<option value="{{ c }}" {% if live and live.category==c %}selected{% endif %}>{{ c }}</option>{% endfor %}</select><input name="timezone" value="{{ live.timezone if live else '' }}" placeholder="Time zone (e.g. UTC)"></div><div class="ks-assets"><div><label>Virtual background</label><select name="background_asset_id"><option value="">Use default / custom URL</option>{% for a in backgrounds %}<option value="{{ a.id }}" {% if live and live.background_asset_id==a.id %}selected{% endif %}>{{ a.name }}</option>{% endfor %}</select></div><div><label>Desk overlay</label><select name="desk_asset_id"><option value="">No desk overlay</option>{% for a in desks %}<option value="{{ a.id }}" {% if live and live.desk_asset_id==a.id %}selected{% endif %}>{{ a.name }}</option>{% endfor %}</select></div></div><select name="scene_slug">{% for key,val in scenes.items() %}<option value="{{ key }}" {% if live and live.scene_slug==key %}selected{% endif %}>{{ val.name }}</option>{% endfor %}</select><textarea name="wall_headline" placeholder="Headline shown on studio wall">{{ live.wall_headline if live else '' }}</textarea><textarea name="wall_subtitle" placeholder="Studio wall subtitle">{{ live.wall_subtitle if live else '' }}</textarea><input name="ticker" value="{{ live.ticker if live else '' }}" placeholder="Scrolling ticker"><input name="source_url" value="{{ live.source_url if live else '' }}" placeholder="Existing HLS .m3u8 broadcast URL"><input name="background_url" value="{{ live.background_url if live else '' }}" placeholder="Optional custom background URL"><label><input type="checkbox" name="breaking" value="1" {% if live and live.breaking %}checked{% endif %}> BREAKING NEWS mode</label><button class="btn success" name="action" value="start" type="submit">GO LIVE / UPDATE STUDIO</button>{% if live %}<button class="btn danger" name="action" value="stop" type="submit">STOP LIVE</button>{% endif %}</form></div></div></div>
-<script>
-let ksStream=null;function ksCameraStart(){if(!navigator.mediaDevices?.getUserMedia){alert('Camera is not supported by this browser.');return}navigator.mediaDevices.getUserMedia({video:true,audio:true}).then(s=>{ksStream=s;const v=document.getElementById('ksCamera');v.srcObject=s;v.style.display='block'}).catch(e=>alert('Camera permission failed: '+e.message))}function ksCameraStop(){if(ksStream){ksStream.getTracks().forEach(t=>t.stop());ksStream=null}document.getElementById('ksCamera').style.display='none'}document.getElementById('ksHeadlineInput')?.addEventListener('input',e=>{document.getElementById('ksHeadline').textContent=e.target.value||'KOJA GLOBAL NEWS';document.getElementById('ksLower').textContent=e.target.value||'GLOBAL NEWS'});
-let ksPublic={id:null,token:null,rec:null,timer:null};
-async function ksPublicLive(){
-  if(!ksStream){await ksCameraStart();}
-  if(!ksStream)return;
-  const status=document.getElementById('ksPublicStatus'); status.textContent='Starting public camera encoder…';
-  const fd=new FormData(); fd.append('scene_slug',document.querySelector('[name="scene_slug"]')?.value||'main_desk');
-  const r=await fetch('{{ url_for("api_news_live_camera_start") }}',{method:'POST',body:fd,credentials:'same-origin'}); const j=await r.json();
-  if(!j.ok){status.textContent=j.error||'Could not start encoder.';return;}
-  ksPublic.id=j.stream_id;ksPublic.token=j.ingest_token;
-  const meta=document.querySelector('.ks-controls');
-  if(meta){
-    let su=meta.querySelector('[name="source_url"]'); if(su)su.value=j.stream_url;
-    let f=meta.querySelector('[name="broadcast_mode"]'); if(!f){f=document.createElement('input');f.type='hidden';f.name='broadcast_mode';meta.appendChild(f)} f.value='camera_hls';
-    let pu=meta.querySelector('[name="public_stream_url"]'); if(!pu){pu=document.createElement('input');pu.type='hidden';pu.name='public_stream_url';meta.appendChild(pu)} pu.value=j.stream_url;
-  }
-  const mime=['video/webm;codecs=vp8,opus','video/webm'].find(x=>MediaRecorder.isTypeSupported(x))||'';
-  try{ksPublic.rec=new MediaRecorder(ksStream,mime?{mimeType:mime}:undefined)}catch(e){status.textContent='MediaRecorder is not supported: '+e.message;return}
-  ksPublic.rec.ondataavailable=async ev=>{if(!ev.data||!ev.data.size||!ksPublic.id)return;try{await fetch('{{ url_for("api_news_live_camera_chunk",stream_id="__STREAM__") }}'.replace('__STREAM__',ksPublic.id),{method:'POST',headers:{'X-KOJA-INGEST-TOKEN':ksPublic.token,'Content-Type':ev.data.type||'video/webm'},body:ev.data,credentials:'same-origin'})}catch(e){status.textContent='Upload connection lost.'}};
-  ksPublic.rec.onerror=e=>{status.textContent='Camera encoder error.'}; ksPublic.rec.start(1000); status.textContent='PUBLIC CAMERA LIVE — publishing HLS';
-  // Automatically submit the existing Studio form so the public page uses the generated HLS URL and studio graphics.
-  const form=document.querySelector('.ks-controls'); if(form){let act=form.querySelector('[name="action"]'); if(act)act.value='start'; form.requestSubmit();}
-}
-async function ksPublicStop(){
-  if(ksPublic.rec&&ksPublic.rec.state!=='inactive')ksPublic.rec.stop();
-  if(ksPublic.id&&ksPublic.token){await fetch('{{ url_for("api_news_live_camera_stop",stream_id="__STREAM__") }}'.replace('__STREAM__',ksPublic.id),{method:'POST',headers:{'X-KOJA-INGEST-TOKEN':ksPublic.token},credentials:'same-origin'}).catch(()=>{});}
-  ksPublic={id:null,token:null,rec:null,timer:null}; document.getElementById('ksPublicStatus').textContent='Public camera stopped.';
-}
-</script>
-''',live=live,scene=scene,scenes=KOJA_NEWS_STUDIO_SCENES,categories=KOJA_NEWS_CATEGORIES,backgrounds=backgrounds,desks=desks)
-
-
-@app.route('/news/live')
-def koja_news_live():
-    live=_news_studio_live(); scene=_news_studio_scene(live)
-    return render_page('KOJA GLOBAL NEWS LIVE',r'''
-<style>.kn{max-width:1250px;margin:auto}.kn-stage{position:relative;min-height:min(70vh,720px);border-radius:18px;overflow:hidden;background:#06111f;color:#fff;background-size:cover;background-position:center}.kn-desk{position:absolute;left:0;right:0;bottom:0;width:100%;max-height:42%;object-fit:contain;object-position:center bottom;z-index:4}.kn-top{position:absolute;z-index:8;top:14px;left:14px;right:14px;display:flex;justify-content:space-between;font-weight:900}.kn-live{background:#e21d2b;padding:8px 11px;border-radius:7px}.kn-wall{position:absolute;z-index:3;top:28%;left:8%;right:8%;text-align:center;text-shadow:0 2px 9px #000}.kn-wall h1{font-size:clamp(28px,5vw,64px);margin:4px 0}.kn-lower{position:absolute;z-index:7;left:0;right:0;bottom:25%;background:rgba(226,29,43,.96);padding:12px 16px;font-weight:900}.kn-ticker{position:absolute;z-index:9;left:0;right:0;bottom:0;background:#020b16;padding:10px 14px;white-space:nowrap;overflow:hidden}.kn-meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.kn-pill{padding:7px 10px;border-radius:20px;background:var(--surface);border:1px solid var(--border)}@media(max-width:650px){.kn-stage{min-height:58vh}.kn-wall{top:24%}}
-</style>
-<div class="kn"><div class="hero"><h1>KOJA GLOBAL NEWS</h1><p>Worldwide news, live broadcasts and virtual TV newsroom.</p></div>{% if live %}<div class="kn-stage" {% if live.background_asset_url %}style="background-image:url('{{ live.background_asset_url }}')"{% elif live.background_url %}style="background-image:url('{{ live.background_url }}')"{% endif %}><div class="kn-top"><strong>KOJA GLOBAL NEWS</strong><span class="kn-live">● LIVE</span></div><div class="kn-wall"><div>{{ scene.tag }}</div><h1>{{ live.wall_headline or live.headline or 'KOJA GLOBAL NEWS' }}</h1><div>{{ live.wall_subtitle or scene.name }}</div></div>{% if live.desk_asset_url %}<img class="kn-desk" src="{{ live.desk_asset_url }}" alt="News desk">{% endif %}<div class="kn-lower">{{ live.headline or 'GLOBAL NEWS' }}{% if live.presenter_name %} · {{ live.presenter_name }}{% endif %}</div><div class="kn-ticker">{{ live.ticker or 'KOJA GLOBAL NEWS · LIVE UPDATES FROM AROUND THE WORLD' }}</div></div><div class="kn-meta">{% if live.country %}<span class="kn-pill">{{ live.country }}</span>{% endif %}{% if live.region %}<span class="kn-pill">{{ live.region }}</span>{% endif %}{% if live.city %}<span class="kn-pill">{{ live.city }}</span>{% endif %}{% if live.category %}<span class="kn-pill">{{ live.category }}</span>{% endif %}{% if live.language %}<span class="kn-pill">{{ live.language }}</span>{% endif %}</div>{% if live.source_url or live.public_stream_url %}<div class="card" style="margin-top:14px"><video id="kojaNewsPlayer" controls playsinline style="width:100%;max-height:70vh;background:#000;border-radius:12px"></video><script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script><script>(function(){const u={{ (live.public_stream_url or live.source_url)|tojson }};const v=document.getElementById('kojaNewsPlayer');if(v.canPlayType('application/vnd.apple.mpegurl'))v.src=u;else if(window.Hls&&Hls.isSupported()){const h=new Hls();h.loadSource(u);h.attachMedia(v);}})();</script></div>{% endif %}{% else %}<div class="card"><h2>KOJA GLOBAL NEWS</h2><p>No live broadcast is currently on air.</p></div>{% endif %}</div>
-''',live=live,scene=scene)
-
-
-@app.route('/api/news/live/status')
-def api_news_live_status():
-    live=_news_studio_live(); scene=_news_studio_scene(live)
-    if not live: return jsonify({'ok':True,'live':False,'broadcast':None})
-    out=dict(live); out['scene_name']=scene['name']; out['scene_kind']=scene['kind']; out['scene_tag']=scene['tag']
-    return jsonify({'ok':True,'live':True,'broadcast':out})
+if __name__=="__main__":
+    port=int(os.getenv("PORT","5000"))
+    app.run(host="0.0.0.0",port=port,debug=False)
 
 @app.route('/business/<business_id>/intelligence-v3', methods=['GET','POST'])
 @login_required
@@ -10145,141 +10006,765 @@ def driver_available_deliveries():
 <div class="hero"><h1>Available KOJA Deliveries</h1><p>Only unclaimed delivery jobs appear here. The first driver to accept a job claims it; it immediately disappears from this list for every other driver.</p></div>
 <div class="grid">{% for d in rows %}<div class="card"><h3>{{ d.tracking_code }}</h3><p><strong>Pickup:</strong> {{ d.pickup_location }}</p><p><strong>Destination:</strong> {{ d.destination }}</p><p><strong>Fee:</strong> {{ money(d.delivery_fee,'ZMW') }}</p><form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.id,action='accept') }}"><button class="btn success">Accept Delivery</button></form></div>{% else %}<div class="card"><p>No available deliveries right now.</p></div>{% endfor %}</div>
 ''',rows=rows,money=market_money)
-# KOJA END-TO-END CORE ADDON
-# Paste/merge this block into the current KOJA app before deployment.
 
-@app.route('/koja')
+
+
+# ============================================================
+
+# ============================================================
+# KOJA BUSINESS SPECIFIC WORKSPACES V1
+# ============================================================
+
+@app.route('/business/module/<module>')
 @login_required
-def koja_control_center():
-    u=current_user() or {}
-    uid=u.get('id')
-    tickets=db_select('koja_support_tickets',{'user_id':uid},order='created_at.desc',limit=5) or []
-    saved=db_select('koja_saved_items',{'user_id':uid},order='created_at.desc',limit=8) or []
-    return render_page('KOJA Control Center',r'''
-<div class="hero"><h1>KOJA Control Center</h1><p>One place to access your learning, AI, communication, market, business, media, news, delivery and cloud services.</p></div>
-<div class="grid">
-<a class="card" href="{{ url_for('dashboard') }}"><h3>Dashboard</h3><p>Your KOJA activity and services.</p></a>
-<a class="card" href="{{ url_for('ai_nextgen') }}"><h3>KOJA AI</h3><p>AI assistant, files and conversations.</p></a>
-<a class="card" href="{{ url_for('news_nextgen') }}"><h3>Global News</h3><p>Global news discovery and live news.</p></a>
-<a class="card" href="{{ url_for('media_nextgen') }}"><h3>Media</h3><p>Watch, publish and discover media.</p></a>
-<a class="card" href="{{ url_for('market') }}"><h3>KOJA Market</h3><p>Buy, sell and discover products.</p></a>
-<a class="card" href="{{ url_for('business') }}"><h3>KOJA Business</h3><p>Business operations, sales and intelligence.</p></a>
-<a class="card" href="{{ url_for('communication_nextgen') }}"><h3>Connect+</h3><p>Communication and calling.</p></a>
-<a class="card" href="{{ url_for('deliveries') }}"><h3>Delivery</h3><p>Request and track fulfilment.</p></a>
-<a class="card" href="{{ url_for('koja_cloud_page') }}"><h3>KOJA Cloud</h3><p>Cloud services and developer infrastructure.</p></a>
-<a class="card" href="{{ url_for('koja_search') }}"><h3>Universal Search</h3><p>Search across KOJA services.</p></a>
-<a class="card" href="{{ url_for('koja_saved') }}"><h3>Saved</h3><p>Your saved KOJA items.</p></a>
-<a class="card" href="{{ url_for('koja_support') }}"><h3>Help & Support</h3><p>Create and track support requests.</p></a>
+def business_module(module):
+    uid=(current_user() or {}).get('id')
+    businesses=db_select('koja_businesses',{'owner_id':uid},order='created_at.desc',limit=50) or []
+    module=str(module or '').lower().strip()
+    targets={'global':'global_business_hub','connect':'business_connect','procurement':'b2bv4_centre','finance':'business_accounting_v2','accounting':'business_accounting_v2','crm':'business_customers','workforce':'business_employees','store':'business_store','trade':'global_import_export','customs':'business_customs','freight':'business_freight','logistics':'business_delivery'}
+    endpoint=targets.get(module)
+    if not endpoint: abort(404)
+    if len(businesses)==1:
+        return redirect(url_for(endpoint,business_id=businesses[0].get('id')))
+    return render_page('Select Business Workspace',r'''<div class="hero"><h1>Select Business</h1><p>Choose the business that should own this {{ module_name }} workspace. Each workspace is scoped to that business.</p></div><div class="grid">{% for b in businesses %}<div class="card"><h2>{{ b.name }}</h2><p>{{ b.category }} · {{ b.location or 'Location not set' }}</p><a class="btn" href="{{ url_for(endpoint,business_id=b.id) }}">Open {{ module_name }}</a></div>{% else %}<div class="card"><p>Create a business first.</p><a class="btn" href="{{ url_for('business_new') }}">Create Business</a></div>{% endfor %}</div>''',businesses=businesses,endpoint=endpoint,module_name=module.replace('-',' ').title())
+
+@app.route('/business/<business_id>/connect',methods=['GET','POST'])
+@login_required
+def business_connect(business_id):
+    b=_b2bv4_business(business_id)
+    if not b: abort(404)
+    if request.method=='POST':
+        code=clean(request.form.get('business_code')).upper()
+        target=first_row('koja_businesses',{'business_number':code})
+        if not target: flash('Business Code not found. Check the code and try again.','danger')
+        elif str(target.get('id'))==str(business_id): flash('You cannot connect a business to itself.','warning')
+        elif str(target.get('owner_id'))==str(_b2bv4_uid()): flash('That business is already owned by this account.','warning')
+        else:
+            existing=first_row('koja_business_connections',{'requester_business_id':business_id,'target_business_id':target.get('id')}) or first_row('koja_business_connections',{'requester_business_id':target.get('id'),'target_business_id':business_id})
+            if existing: flash('A connection already exists or is pending.','warning')
+            else:
+                row,err=db_insert('koja_business_connections',{'requester_business_id':business_id,'target_business_id':target.get('id'),'requester_user_id':_b2bv4_uid(),'target_owner_id':target.get('owner_id'),'status':'pending','created_at':utc_now(),'updated_at':utc_now()})
+                if err: flash('Connection request could not be sent: '+str(err)[:400],'danger')
+                else:
+                    _b2bv4_notify(target.get('owner_id'),'Business connection request',f'{b.get("name")} wants to connect with your business.','/business/'+str(target.get('id'))+'/connect')
+                    flash('Business connection request sent.','success')
+        return redirect(url_for('business_connect',business_id=business_id))
+    outgoing=db_select('koja_business_connections',{'requester_business_id':business_id},order='created_at.desc',limit=100) or []
+    incoming=db_select('koja_business_connections',{'target_business_id':business_id},order='created_at.desc',limit=100) or []
+    def other(row):
+        oid=row.get('target_business_id') if str(row.get('requester_business_id'))==str(business_id) else row.get('requester_business_id')
+        return first_row('koja_businesses',{'id':oid}) or {}
+    for row in outgoing+incoming: row['_other']=other(row)
+    return render_page('Business Connect',r'''<div class="hero"><h1>{{ b.name }} · Business Connect</h1><p>Connect this business to another business using its KOJA Business Code. Approved relationships become reusable B2B partner relationships.</p><div class="actions"><a class="btn secondary" href="{{ url_for('b2bv4_centre',business_id=b.id) }}">B2B Procurement</a><a class="btn secondary" href="{{ url_for('business_dashboard',business_id=b.id) }}">Business Dashboard</a></div></div><div class="card"><h2>Connect another business</h2><p>Ask the other business for its KOJA Business Code, for example <strong>KJ-BIZ-2026-3EC8B534</strong>.</p><form method="post"><input name="business_code" placeholder="KJ-BIZ-2026-XXXXXXXX" required><button class="btn">Send Connection Request</button></form></div><div class="grid"><div class="card"><h2>Outgoing</h2>{% for x in outgoing %}<p><strong>{{ x._other.name or 'Business' }}</strong><br>{{ x.status }} · {{ x.created_at }}</p>{% else %}<p>No outgoing requests.</p>{% endfor %}</div><div class="card"><h2>Incoming</h2>{% for x in incoming %}<p><strong>{{ x._other.name or 'Business' }}</strong><br>{{ x.status }} · {{ x.created_at }}</p>{% else %}<p>No incoming requests.</p>{% endfor %}</div></div>''',b=b,outgoing=outgoing,incoming=incoming)
+
+@app.route('/business/<business_id>/customs')
+@login_required
+def business_customs(business_id):
+    b=_gx_business(business_id)
+    if not b: abort(403)
+    rows=db_select('koja_global_trade_orders',{'business_id':business_id},order='created_at.desc',limit=200) or []
+    active=[x for x in rows if str(x.get('customs_status') or 'not_started') not in ('released','cleared')]
+    return render_page('Customs & Clearance',r'''<div class="hero"><h1>{{ b.name }} · Customs & Clearance</h1><p>Dedicated customs operations: HS classification, declarations, duty assessment, inspection, broker assignment and release.</p><div class="actions"><a class="btn secondary" href="{{ url_for('global_import_export',business_id=b.id) }}">Trade Orders</a></div></div><div class="grid"><div class="stat"><div class="small">Trade cases</div><div class="big">{{ rows|length }}</div></div><div class="stat"><div class="small">Open customs cases</div><div class="big">{{ active|length }}</div></div></div><div class="card"><h2>Customs Cases</h2>{% for x in rows %}<div class="card"><h3>{{ x.trade_code }} · {{ x.title }}</h3><p>{{ x.origin_country }} → {{ x.destination_country }} · HS {{ x.hs_code or 'Unclassified' }}</p><p>Customs: <strong>{{ (x.customs_status or 'not_started').replace('_',' ').title() }}</strong> · Clearance: <strong>{{ (x.clearance_status or 'not_started').replace('_',' ').title() }}</strong></p><a class="btn" href="{{ url_for('global_import_export_order',business_id=b.id,trade_id=x.id) }}">Open Customs Case</a></div>{% else %}<p>No customs cases yet. Create a trade order first.</p>{% endfor %}</div>''',b=b,rows=rows,active=active)
+
+@app.route('/business/<business_id>/freight')
+@login_required
+def business_freight(business_id):
+    b=_gx_business(business_id)
+    if not b: abort(403)
+    trades=db_select('koja_global_trade_orders',{'business_id':business_id},order='created_at.desc',limit=200) or []
+    in_transit=[x for x in trades if str(x.get('status') or '') in ('ordered','in_transit','customs')]
+    return render_page('Freight & Forwarding',r'''<div class="hero"><h1>{{ b.name }} · Freight & Forwarding</h1><p>Freight is the international movement layer between trade origin, carrier, port/border, customs and destination handoff. It is separate from KOJA last-mile Delivery.</p><div class="actions"><a class="btn" href="{{ url_for('global_import_export',business_id=b.id) }}">Create / Manage Trade</a><a class="btn secondary" href="{{ url_for('business_customs',business_id=b.id) }}">Customs</a><a class="btn secondary" href="{{ url_for('business_delivery',business_id=b.id) }}">Last-mile Delivery</a></div></div><div class="grid"><div class="stat"><div class="small">Trade shipments</div><div class="big">{{ trades|length }}</div></div><div class="stat"><div class="small">Moving / active</div><div class="big">{{ in_transit|length }}</div></div></div><div class="card"><h2>Freight Pipeline</h2><div class="service-flow"><span>Booked</span><b>→</b><span>Origin Handling</span><b>→</b><span>In Transit</span><b>→</b><span>Port / Border</span><b>→</b><span>Customs</span><b>→</b><span>Released</span><b>→</b><span>Delivery Handoff</span></div></div><div class="card"><h2>Shipments</h2>{% for x in trades %}<div class="card"><h3>{{ x.trade_code }} · {{ x.title }}</h3><p>{{ x.origin_country }} → {{ x.destination_country }} · Carrier: {{ x.carrier or 'Not assigned' }}</p><p>Status: <strong>{{ (x.status or 'draft').replace('_',' ').title() }}</strong> · Tracking: {{ x.tracking_number or 'Not assigned' }}</p><a class="btn" href="{{ url_for('global_import_export_order',business_id=b.id,trade_id=x.id) }}">Open Freight Record</a></div>{% else %}<p>No freight-linked trade shipments yet.</p>{% endfor %}</div>''',b=b,trades=trades,in_transit=in_transit)
+
+
+# KOJA B2B V4 COMPLETE TRANSACTION ENGINE
+# Additive layer: RFQ -> Quote -> Approval -> Order -> Payment
+# -> Fulfilment -> Delivery -> Completion -> Review / Ledger.
+# Existing Procurement, Professional Services, Connect+, Market,
+# Payments and Delivery systems remain source-of-truth and are reused.
+# ============================================================
+
+def _b2bv4_uid():
+    return str((current_user() or {}).get('id') or '')
+
+def _b2bv4_business(business_id):
+    uid=_b2bv4_uid()
+    if not uid or not business_id:
+        return None
+    return first_row('koja_businesses', {'id':business_id,'owner_id':uid})
+
+def _b2bv4_money(v):
+    try: return round(float(v or 0),2)
+    except Exception: return 0.0
+
+def _b2bv4_event(order_id=None, request_id=None, event_type='', old_status=None, new_status=None, metadata=None):
+    try:
+        u=current_user() or {}
+        db_insert('koja_b2b_v4_events',{
+            'order_id':order_id,'request_id':request_id,'actor_user_id':u.get('id'),
+            'event_type':event_type,'old_status':old_status,'new_status':new_status,
+            'metadata':metadata or {},'created_at':utc_now()
+        })
+    except Exception:
+        logger.exception('B2B V4 event write failed')
+
+def _b2bv4_notify(uid,title,body,link='/b2b'):
+    try:
+        if uid: notify_user(uid,title,body,'b2b',None,link)
+    except Exception: logger.exception('B2B V4 notification failed')
+
+def _b2bv4_quote(quote_id):
+    return first_row('koja_b2b_v4_quotes', {'id':quote_id})
+
+def _b2bv4_order(order_id):
+    return first_row('koja_b2b_v4_orders', {'id':order_id})
+
+def _b2bv4_create_delivery(order):
+    if not order or not order.get('delivery_address'):
+        return None
+    existing=first_row('deliveries', {'id':order.get('delivery_id')}) if order.get('delivery_id') else None
+    if existing: return existing
+    req=first_row('koja_b2b_unified_requests', {'id':order.get('request_id')})
+    pickup='B2B Supplier'
+    seller=first_row('koja_businesses', {'id':order.get('seller_business_id')}) or {}
+    pickup=clean(seller.get('location')) or clean(seller.get('name')) or pickup
+    tracking='KBD-'+secrets.token_hex(5).upper()
+    pickup_code='KDP-'+secrets.token_hex(4).upper()
+    row,err=db_insert('deliveries',{
+        'id':str(uuid.uuid4()),'customer_id':order.get('buyer_user_id'),'user_id':order.get('buyer_user_id'),
+        'sender_id':order.get('seller_business_id'),'pickup_location':pickup,'pickup_address':pickup,
+        'destination':(req or {}).get('location') or (req or {}).get('delivery_address') or 'B2B Buyer',
+        'delivery_address':(req or {}).get('delivery_address') or (req or {}).get('location'),
+        'recipient_name':clean((current_user() or {}).get('name')),'package_description':(req or {}).get('title') or 'KOJA B2B order',
+        'delivery_fee':0,'currency':order.get('currency') or 'ZMW','status':'requested','tracking_code':tracking,
+        'pickup_code':pickup_code,'notes':'KOJA B2B V4 order '+str(order.get('id')),
+        'created_at':utc_now(),'updated_at':utc_now()
+    })
+    if not row: return None
+    db_update('koja_b2b_v4_orders',{'id':order.get('id')},{'delivery_id':row.get('id'),'fulfillment_status':'delivery_requested','updated_at':utc_now()})
+    _notify_available_drivers(tracking,pickup,row.get('destination'),0)
+    _b2bv4_event(order.get('id'),order.get('request_id'),'delivery_requested',order.get('fulfillment_status'),'delivery_requested',{'delivery_id':row.get('id'),'tracking_code':tracking})
+    return row
+
+def _b2bv4_payment_start(order):
+    if not FLW_SECRET_KEY:
+        return None,'Flutterwave payment is not configured. Add FLW_SECRET_KEY in Render environment variables.'
+    user=current_user() or {}
+    email=clean(user.get('email'))
+    if not email: return None,'Your account needs an email address before payment can start.'
+    amount=_b2bv4_money(order.get('amount'))
+    if amount<=0: return None,'Order amount must be greater than zero.'
+    tx_ref='KOJA-B2B-'+secrets.token_hex(10).upper()
+    db_update('koja_b2b_v4_orders',{'id':order.get('id')},{'payment_reference':tx_ref,'updated_at':utc_now()})
+    network=clean(request.form.get('network')) or 'MTN'
+    phone=clean(request.form.get('phone')) or clean(user.get('phone'))
+    payload={
+      'tx_ref':tx_ref,'amount':amount,'currency':(order.get('currency') or 'ZMW').upper(),
+      'email':email,'fullname':first_nonempty(user.get('name'),user.get('full_name'),email),
+      'phone_number':phone,'network':network,
+      'order_id':str(order.get('id')),
+      'redirect_url':url_for('b2bv4_payment_callback',_external=True),
+      'meta':{'koja_b2b_order_id':str(order.get('id')),'request_id':str(order.get('request_id'))}
+    }
+    try:
+        r=requests.post(FLW_BASE_URL+'/charges?type=mobile_money_zambia',headers={'Authorization':'Bearer '+FLW_SECRET_KEY,'Content-Type':'application/json'},json=payload,timeout=40)
+        body=json_or_empty(r)
+        if r.ok and isinstance(body,dict):
+            return body,None
+        return None,'Flutterwave could not start the payment: '+(r.text or '')[:500]
+    except Exception as exc:
+        logger.exception('B2B V4 payment start failed')
+        return None,str(exc)
+
+@app.route('/b2b/v4')
+@login_required
+def b2bv4_home():
+    uid=_b2bv4_uid()
+    businesses=db_select('koja_businesses',{'owner_id':uid},order='created_at.desc',limit=50) or []
+    if len(businesses)==1:
+        return redirect(url_for('b2bv4_centre',business_id=businesses[0].get('id')))
+    return render_page('KOJA B2B Transaction Centre',r'''
+<div class="hero"><h1>KOJA B2B Transaction Centre</h1><p>Run the complete business transaction cycle: request, quote, approval, order, payment, fulfilment, delivery and completion.</p></div>
+<div class="card"><h2>Select Business</h2>{% for b in businesses %}<div class="card"><h3>{{ b.get('name') }}</h3><a class="btn" href="{{ url_for('b2bv4_centre',business_id=b.get('id')) }}">Open B2B Centre</a></div>{% else %}<p>Create a business account first.</p><a class="btn" href="{{ url_for('business_new') }}">Create Business</a>{% endfor %}</div>
+''',businesses=businesses)
+
+@app.route('/b2b/v4/<business_id>')
+@login_required
+def b2bv4_centre(business_id):
+    b=_b2bv4_business(business_id)
+    if not b: abort(404)
+    uid=_b2bv4_uid()
+    requests_rows=db_select('koja_b2b_unified_requests',{'buyer_business_id':business_id},order='created_at.desc',limit=100) or []
+    quotes=db_select('koja_b2b_v4_quotes',{'seller_user_id':uid},order='created_at.desc',limit=100) or []
+    orders=db_select('koja_b2b_v4_orders',{'buyer_business_id':business_id},order='created_at.desc',limit=100) or []
+    return render_page('B2B Transaction Centre',r'''
+<div class="hero"><h1>{{ b.get('name') }} · B2B</h1><p>One transaction engine for procurement, professional services, products and fulfilment.</p><div class="actions"><a class="btn" href="{{ url_for('b2bv4_request_new',business_id=b.get('id')) }}">New Request</a><a class="btn secondary" href="{{ url_for('b2bv4_home') }}">B2B Home</a></div></div>
+<div class="card"><h2>My Requests</h2>{% for r in requests_rows %}<div class="card"><strong>{{ r.get('title') }}</strong><p>{{ r.get('request_type') }} · {{ r.get('status') }}</p><a class="btn" href="{{ url_for('b2bv4_request',request_id=r.get('id')) }}">Open Request</a></div>{% else %}<p>No requests yet.</p>{% endfor %}</div>
+<div class="card"><h2>Orders</h2>{% for o in orders %}<div class="card"><strong>Order {{ o.get('id') }}</strong><p>{{ o.get('order_status') }} · Payment: {{ o.get('payment_status') }} · {{ o.get('amount') }} {{ o.get('currency') }}</p><a class="btn" href="{{ url_for('b2bv4_order',order_id=o.get('id')) }}">Open Order</a></div>{% else %}<p>No orders yet.</p>{% endfor %}</div>
+<div class="card"><h2>Seller Quotes</h2>{% for q in quotes %}<div class="card"><strong>{{ q.get('amount') }} {{ q.get('currency') }}</strong><p>Status: {{ q.get('status') }}</p><a class="btn" href="{{ url_for('b2bv4_request',request_id=q.get('request_id')) }}">Open Request</a></div>{% else %}<p>No quotes requiring your attention.</p>{% endfor %}</div>
+''',b=b,requests_rows=requests_rows,orders=orders,quotes=quotes)
+
+
+# Compatibility endpoint used by Global Business.
+try:
+    app.add_url_rule('/business/<business_id>/b2b', endpoint='b2bv4_business', view_func=b2bv4_centre)
+except AssertionError:
+    pass
+
+@app.route('/b2b/v4/<business_id>/request/new',methods=['GET','POST'])
+@login_required
+def b2bv4_request_new(business_id):
+    b=_b2bv4_business(business_id)
+    if not b: abort(404)
+    if request.method=='POST':
+        uid=_b2bv4_uid()
+        payload={'buyer_business_id':business_id,'requester_user_id':uid,'request_type':clean(request.form.get('request_type')) or 'procurement','title':clean(request.form.get('title')),'description':clean(request.form.get('description')),'category':clean(request.form.get('category')),'profession':clean(request.form.get('profession')),'location':clean(request.form.get('location')),'online_allowed':bool(request.form.get('online_allowed')),'budget':_b2bv4_money(request.form.get('budget')),'currency':clean(request.form.get('currency')) or 'ZMW','deadline':clean(request.form.get('deadline')) or None,'status':'open','created_at':utc_now(),'updated_at':utc_now()}
+        if not payload['title'] or not payload['description']:
+            flash('Title and description are required.','warning')
+        else:
+            row,err=db_insert('koja_b2b_unified_requests',payload)
+            if err: flash('Could not create request: '+str(err)[:500],'danger')
+            else:
+                _b2bv4_event(request_id=(row or {}).get('id'),event_type='request_created',metadata={'business_id':business_id})
+                flash('B2B request created. Suppliers and professionals can now quote.','success')
+                return redirect(url_for('b2bv4_request',request_id=(row or {}).get('id')))
+    return render_page('New B2B Request',r'''
+<div class="hero"><h1>New B2B Request</h1><p>Describe exactly what the business needs. KOJA can match product suppliers and professional providers.</p></div>
+<div class="card"><form method="post"><label>Request type<select name="request_type"><option value="procurement">Procurement</option><option value="professional_service">Professional Service</option><option value="product">Product</option><option value="project">Project</option></select></label><label>Title<input name="title" required></label><label>Description<textarea name="description" required rows="6"></textarea></label><label>Category<input name="category"></label><label>Profession (if applicable)<input name="profession"></label><label>Location<input name="location"></label><label>Budget<input name="budget" type="number" step="0.01" min="0"></label><label>Currency<select name="currency"><option>ZMW</option><option>USD</option></select></label><label>Deadline<input name="deadline" type="date"></label><label><input type="checkbox" name="online_allowed"> Online delivery/service allowed</label><button class="btn success" type="submit">Publish Request</button></form></div>
+''')
+
+@app.route('/b2b/v4/request/<request_id>')
+@login_required
+def b2bv4_request(request_id):
+    req=first_row('koja_b2b_unified_requests',{'id':request_id})
+    if not req: abort(404)
+    uid=_b2bv4_uid(); businesses=db_select('koja_businesses',{'owner_id':uid},limit=100) or []
+    owned={str(x.get('id')) for x in businesses}
+    if str(req.get('buyer_business_id')) not in owned:
+        # Sellers can see an open request, but only buyer can accept a quote.
+        if str(req.get('status') or '').lower() not in {'open','quoted'}: abort(403)
+    quotes=db_select('koja_b2b_v4_quotes',{'request_id':request_id},order='created_at.desc',limit=100) or []
+    return render_page('B2B Request',r'''
+<div class="hero"><h1>{{ req.get('title') }}</h1><p>{{ req.get('description') }}</p><p>Status: <strong>{{ req.get('status') }}</strong> · Budget: {{ req.get('budget') or 'Open' }} {{ req.get('currency') or 'ZMW' }}</p></div>
+<div class="card"><h2>Submit Quote</h2><form method="post" action="{{ url_for('b2bv4_quote_submit',request_id=req.get('id')) }}"><label>Seller Business<select name="seller_business_id" required>{% for b in businesses %}<option value="{{ b.get('id') }}">{{ b.get('name') }}</option>{% endfor %}</select></label><label>Amount<input name="amount" type="number" step="0.01" min="0" required></label><label>Delivery days<input name="delivery_days" type="number" min="1" value="1"></label><label>Proposal<textarea name="proposal" rows="5"></textarea></label><button class="btn" type="submit">Submit Quote</button></form></div>
+<div class="card"><h2>Quotes</h2>{% for q in quotes %}<div class="card"><h3>{{ q.get('amount') }} {{ q.get('currency') }}</h3><p>{{ q.get('proposal') }}</p><p>Status: <strong>{{ q.get('status') }}</strong> · {{ q.get('delivery_days') }} day(s)</p>{% if str(req.get('buyer_business_id')) in owned and q.get('status') == 'submitted' %}<form method="post" action="{{ url_for('b2bv4_quote_accept',quote_id=q.get('id')) }}"><button class="btn success">Accept Quote</button></form>{% endif %}</div>{% else %}<p>No quotes yet.</p>{% endfor %}</div>
+''',req=req,quotes=quotes,businesses=businesses,owned=owned,str=str)
+
+@app.route('/b2b/v4/request/<request_id>/quote',methods=['POST'])
+@login_required
+def b2bv4_quote_submit(request_id):
+    req=first_row('koja_b2b_unified_requests',{'id':request_id})
+    if not req: abort(404)
+    uid=_b2bv4_uid(); business_id=clean(request.form.get('seller_business_id')); b=_b2bv4_business(business_id)
+    if not b: abort(403)
+    if str(req.get('buyer_business_id'))==str(business_id):
+        flash('A buyer business cannot quote its own request.','warning'); return redirect(url_for('b2bv4_request',request_id=request_id))
+    amount=_b2bv4_money(request.form.get('amount'))
+    if amount<=0: flash('Quote amount must be greater than zero.','warning'); return redirect(url_for('b2bv4_request',request_id=request_id))
+    row,err=db_insert('koja_b2b_v4_quotes',{'request_id':request_id,'seller_business_id':business_id,'seller_user_id':uid,'amount':amount,'currency':req.get('currency') or 'ZMW','delivery_days':max(1,int(request.form.get('delivery_days') or 1)),'proposal':clean(request.form.get('proposal')),'status':'submitted','created_at':utc_now(),'updated_at':utc_now()})
+    if err: flash('Could not submit quote: '+str(err)[:500],'danger')
+    else:
+        db_update('koja_b2b_unified_requests',{'id':request_id},{'status':'quoted','updated_at':utc_now()})
+        _b2bv4_event(request_id=request_id,event_type='quote_submitted',metadata={'quote_id':(row or {}).get('id'),'seller_business_id':business_id})
+        buyer=first_row('koja_businesses',{'id':req.get('buyer_business_id')}) or {}
+        _b2bv4_notify(buyer.get('owner_id'),'New B2B quote',f'A supplier submitted a quote for {req.get("title")}.','/b2b/v4/request/'+str(request_id))
+        flash('Quote submitted.','success')
+    return redirect(url_for('b2bv4_request',request_id=request_id))
+
+@app.route('/b2b/v4/quote/<quote_id>/accept',methods=['POST'])
+@login_required
+def b2bv4_quote_accept(quote_id):
+    q=_b2bv4_quote(quote_id)
+    if not q: abort(404)
+    req=first_row('koja_b2b_unified_requests',{'id':q.get('request_id')})
+    b=_b2bv4_business(req.get('buyer_business_id')) if req else None
+    if not b: abort(403)
+    if str(q.get('status'))!='submitted': flash('This quote is no longer available.','warning'); return redirect(url_for('b2bv4_request',request_id=req.get('id')))
+    # Accept exactly one quote. Competing quotes are rejected as part of the state transition.
+    db_update('koja_b2b_v4_quotes',{'id':quote_id},{'status':'accepted','accepted_at':utc_now(),'updated_at':utc_now()})
+    db_update('koja_b2b_unified_requests',{'id':req.get('id')},{'status':'accepted','selected_quote_id':quote_id,'updated_at':utc_now()})
+    others=db_select('koja_b2b_v4_quotes',{'request_id':req.get('id')},limit=200) or []
+    for other in others:
+        if str(other.get('id'))!=str(quote_id) and str(other.get('status'))=='submitted':
+            db_update('koja_b2b_v4_quotes',{'id':other.get('id')},{'status':'rejected','rejected_at':utc_now(),'updated_at':utc_now()})
+    amount=_b2bv4_money(q.get('amount')); commission_rate=max(0.0,min(0.50,float(os.getenv('KOJA_B2B_COMMISSION_RATE','0.10') or 0.10))); platform_fee=round(amount*commission_rate,2); seller_net=round(amount-platform_fee,2)
+    order,err=db_insert('koja_b2b_v4_orders',{'request_id':req.get('id'),'quote_id':quote_id,'buyer_business_id':req.get('buyer_business_id'),'buyer_user_id':req.get('requester_user_id'),'seller_business_id':q.get('seller_business_id'),'seller_user_id':q.get('seller_user_id'),'professional_provider_id':q.get('professional_provider_id'),'order_type':req.get('request_type') or 'b2b_service','amount':amount,'platform_fee':platform_fee,'professional_fee':0,'seller_net':seller_net,'currency':q.get('currency') or 'ZMW','payment_status':'unpaid','order_status':'awaiting_payment','fulfillment_status':'not_started','delivery_address':req.get('location'),'created_at':utc_now(),'updated_at':utc_now()})
+    if err or not order:
+        flash('Quote accepted, but order creation failed: '+str(err)[:500],'danger')
+        return redirect(url_for('b2bv4_request',request_id=req.get('id')))
+    db_insert('koja_b2b_v4_order_items',{'order_id':order.get('id'),'description':req.get('title') or 'B2B order','quantity':1,'unit_price':amount,'total':amount,'created_at':utc_now()})
+    _b2bv4_event(order.get('id'),req.get('id'),'quote_accepted','quoted','accepted',{'quote_id':quote_id})
+    _b2bv4_notify(q.get('seller_user_id'),'B2B quote accepted',f'Your quote for {req.get("title")} was accepted. Awaiting buyer payment.','/b2b/v4')
+    flash('Quote accepted. The order is ready for payment.','success')
+    return redirect(url_for('b2bv4_order',order_id=order.get('id')))
+
+@app.route('/b2b/v4/order/<order_id>')
+@login_required
+def b2bv4_order(order_id):
+    order=_b2bv4_order(order_id)
+    if not order: abort(404)
+    uid=_b2bv4_uid()
+    if str(uid) not in {str(order.get('buyer_user_id')),str(order.get('seller_user_id'))}: abort(403)
+    req=first_row('koja_b2b_unified_requests',{'id':order.get('request_id')}) or {}
+    delivery=first_row('deliveries',{'id':order.get('delivery_id')}) if order.get('delivery_id') else None
+    return render_page('B2B Order',r'''
+<div class="hero"><h1>B2B Order</h1><p>{{ req.get('title') }}</p><p>Order status: <strong>{{ order.get('order_status') }}</strong> · Payment: <strong>{{ order.get('payment_status') }}</strong> · Fulfilment: <strong>{{ order.get('fulfillment_status') }}</strong></p></div>
+<div class="card"><h2>Financials</h2><p>Amount: <strong>{{ order.get('amount') }} {{ order.get('currency') }}</strong></p><p>KOJA platform fee: {{ order.get('platform_fee') }} {{ order.get('currency') }}</p><p>Seller net: {{ order.get('seller_net') }} {{ order.get('currency') }}</p>{% if order.get('payment_status') != 'paid' and str(order.get('buyer_user_id')) == str(uid) %}<form method="post" action="{{ url_for('b2bv4_order_pay',order_id=order.get('id')) }}"><label>Mobile-money network<select name="network"><option>MTN</option><option>AIRTEL</option><option>ZAMTEL</option></select></label><label>Phone<input name="phone" value="{{ user.get('phone') or '' }}"></label><button class="btn success" type="submit">Pay {{ order.get('amount') }} {{ order.get('currency') }}</button></form>{% endif %}</div>
+<div class="card"><h2>Fulfilment</h2>{% if order.get('payment_status') == 'paid' %}<p>Payment verified. The supplier can now fulfil the order.</p>{% if str(order.get('seller_user_id')) == str(uid) and order.get('order_status') not in ['completed','cancelled'] %}<form method="post" action="{{ url_for('b2bv4_order_fulfil',order_id=order.get('id')) }}"><button class="btn" type="submit">Mark Ready for Fulfilment</button></form>{% endif %}{% else %}<p>Fulfilment unlocks after verified payment.</p>{% endif %}</div>
+{% if delivery %}<div class="card"><h2>Delivery</h2><p>Tracking: <strong>{{ delivery.get('tracking_code') }}</strong></p><p>Status: {{ delivery.get('status') }}</p><a class="btn" href="{{ url_for('track_delivery',tracking_code=delivery.get('tracking_code')) }}">Track Delivery</a></div>{% endif %}
+{% if order.get('payment_status') == 'paid' and str(order.get('buyer_user_id')) == str(uid) and order.get('order_status') not in ['completed','cancelled'] %}<div class="card"><h2>Completion</h2><form method="post" action="{{ url_for('b2bv4_order_complete',order_id=order.get('id')) }}"><label>Completion note<textarea name="completion_note"></textarea></label><button class="btn success" type="submit">Confirm Completion</button></form></div>{% endif %}
+<div class="card"><h2>Review</h2>{% if order.get('order_status') == 'completed' %}<form method="post" action="{{ url_for('b2bv4_order_review',order_id=order.get('id')) }}"><label>Rating<select name="rating"><option>5</option><option>4</option><option>3</option><option>2</option><option>1</option></select></label><label>Review<textarea name="review"></textarea></label><button class="btn" type="submit">Submit Review</button></form>{% else %}<p>Review becomes available after completion.</p>{% endif %}</div>
+''',order=order,req=req,delivery=delivery,uid=uid,user=current_user() or {},str=str)
+
+@app.route('/b2b/v4/order/<order_id>/pay',methods=['POST'])
+@login_required
+def b2bv4_order_pay(order_id):
+    order=_b2bv4_order(order_id)
+    if not order or str(order.get('buyer_user_id'))!=_b2bv4_uid(): abort(403)
+    if str(order.get('payment_status'))=='paid': return redirect(url_for('b2bv4_order',order_id=order_id))
+    result,err=_b2bv4_payment_start(order)
+    if err:
+        flash(err,'danger'); return redirect(url_for('b2bv4_order',order_id=order_id))
+    data=result.get('data') if isinstance(result,dict) else None
+    link=(data or {}).get('link') or (data or {}).get('meta',{}).get('authorization')
+    if link:
+        return redirect(link)
+    flash('Payment request sent. Complete the mobile-money prompt, then return to the order.','success')
+    return redirect(url_for('b2bv4_order',order_id=order_id))
+
+@app.route('/b2b/v4/payment/callback')
+def b2bv4_payment_callback():
+    tx_id=clean(request.args.get('transaction_id')); tx_ref=clean(request.args.get('tx_ref') or request.args.get('reference'))
+    tx=_flutterwave_verify(tx_id,tx_ref)
+    order=None
+    if tx:
+        ref=str(tx.get('tx_ref') or tx.get('txRef') or tx.get('reference') or tx_ref or '')
+        order=first_row('koja_b2b_v4_orders',{'payment_reference':ref})
+    if not order:
+        flash('Payment is still being verified. Please open your B2B order again.','warning')
+        return redirect(url_for('b2bv4_home'))
+    if not _flutterwave_payment_valid(tx,order.get('payment_reference'),order.get('amount'),order.get('currency')):
+        flash('Payment verification failed. The order has not been marked paid.','danger')
+        return redirect(url_for('b2bv4_order',order_id=order.get('id')))
+    return _b2bv4_finalize_payment(order,tx)
+
+def _b2bv4_finalize_payment(order,tx,as_webhook=False):
+    if not order or not tx: return False if as_webhook else redirect(url_for('b2bv4_home'))
+    if str(order.get('payment_status'))=='paid': return True if as_webhook else redirect(url_for('b2bv4_order',order_id=order.get('id')))
+    if not _flutterwave_payment_valid(tx,order.get('payment_reference'),order.get('amount'),order.get('currency')):
+        flash('Verified transaction does not match this order.','danger'); return False if as_webhook else redirect(url_for('b2bv4_order',order_id=order.get('id')))
+    updated,err=db_update('koja_b2b_v4_orders',{'id':order.get('id'),'payment_status':'unpaid'},{'payment_status':'paid','payment_transaction_id':str(tx.get('id') or ''),'order_status':'paid','fulfillment_status':'ready','updated_at':utc_now()})
+    current=_b2bv4_order(order.get('id')) or order
+    if str(current.get('payment_status'))!='paid':
+        flash('Payment verification succeeded but the order update failed.','danger'); return False if as_webhook else redirect(url_for('b2bv4_order',order_id=order.get('id')))
+    db_insert('koja_b2b_v4_ledger',{'order_id':order.get('id'),'buyer_business_id':order.get('buyer_business_id'),'seller_business_id':order.get('seller_business_id'),'professional_provider_id':order.get('professional_provider_id'),'gross_amount':order.get('amount'),'platform_fee':order.get('platform_fee'),'seller_amount':order.get('seller_net'),'professional_amount':order.get('professional_fee'),'currency':order.get('currency') or 'ZMW','status':'pending','created_at':utc_now(),'updated_at':utc_now()})
+    _b2bv4_event(order.get('id'),order.get('request_id'),'payment_verified','awaiting_payment','paid',{'transaction_id':str(tx.get('id') or '')})
+    _b2bv4_notify(order.get('seller_user_id'),'B2B payment received',f'Payment for B2B order {order.get("id")} has been verified. Fulfilment is now unlocked.','/b2b/v4/order/'+str(order.get('id')))
+    flash('Payment verified. The order is now active.','success')
+    return True if as_webhook else redirect(url_for('b2bv4_order',order_id=order.get('id')))
+
+@app.route('/b2b/v4/order/<order_id>/fulfil',methods=['POST'])
+@login_required
+def b2bv4_order_fulfil(order_id):
+    order=_b2bv4_order(order_id)
+    if not order or str(order.get('seller_user_id'))!=_b2bv4_uid(): abort(403)
+    if str(order.get('payment_status'))!='paid':
+        flash('Payment must be verified before fulfilment.','warning'); return redirect(url_for('b2bv4_order',order_id=order_id))
+    req=first_row('koja_b2b_unified_requests',{'id':order.get('request_id')}) or {}
+    # Physical/delivery orders use the existing KOJA delivery engine; online services remain in the B2B workspace.
+    if str(req.get('request_type') or '').lower() in {'product','procurement'} and (req.get('location') or req.get('delivery_address')):
+        delivery=_b2bv4_create_delivery(order)
+        new_status='delivery_requested' if delivery else 'in_progress'
+    else:
+        new_status='in_progress'
+    db_update('koja_b2b_v4_orders',{'id':order_id},{'order_status':'in_progress','fulfillment_status':new_status,'updated_at':utc_now()})
+    _b2bv4_event(order_id,order.get('request_id'),'fulfilment_started','ready','in_progress',{'fulfillment_status':new_status})
+    _b2bv4_notify(order.get('buyer_user_id'),'B2B order in progress',f'Order {order_id} is now being fulfilled.','/b2b/v4/order/'+str(order_id))
+    flash('Fulfilment started.','success')
+    return redirect(url_for('b2bv4_order',order_id=order_id))
+
+@app.route('/b2b/v4/order/<order_id>/complete',methods=['POST'])
+@login_required
+def b2bv4_order_complete(order_id):
+    order=_b2bv4_order(order_id)
+    if not order or str(order.get('buyer_user_id'))!=_b2bv4_uid(): abort(403)
+    if str(order.get('payment_status'))!='paid': flash('Order cannot be completed before payment.','warning'); return redirect(url_for('b2bv4_order',order_id=order_id))
+    delivery=first_row('deliveries',{'id':order.get('delivery_id')}) if order.get('delivery_id') else None
+    if delivery and str(delivery.get('status') or '').lower() not in {'delivered','completed'}:
+        flash('This order has a delivery in progress. Completion unlocks after delivery is marked delivered.','warning'); return redirect(url_for('b2bv4_order',order_id=order_id))
+    note=clean(request.form.get('completion_note'))
+    db_update('koja_b2b_v4_orders',{'id':order_id},{'order_status':'completed','fulfillment_status':'completed','completion_note':note,'completed_at':utc_now(),'updated_at':utc_now()})
+    db_update('koja_b2b_v4_ledger',{'order_id':order_id},{'status':'released','updated_at':utc_now()})
+    _b2bv4_event(order_id,order.get('request_id'),'order_completed','in_progress','completed',{'note':note})
+    _b2bv4_notify(order.get('seller_user_id'),'B2B order completed',f'Order {order_id} was confirmed completed by the buyer.','/b2b/v4')
+    flash('Order completed and seller earnings released in the B2B ledger.','success')
+    return redirect(url_for('b2bv4_order',order_id=order_id))
+
+
+# ============================================================
+# KOJA GLOBAL IMPORT & EXPORT / CUSTOMS ENGINE V1
+# ============================================================
+def _gx_uid(): return str((current_user() or {}).get('id') or '')
+def _gx_business(business_id): return _r_business(business_id) if '_r_business' in globals() else first_row('koja_businesses', {'id':business_id,'owner_id':_gx_uid()})
+def _gx_money(v):
+    try: return round(float(v or 0),2)
+    except Exception: return 0.0
+def _gx_access(business_id): return bool(_gx_business(business_id))
+def _gx_code(): return 'KX-' + secrets.token_hex(5).upper()
+def _gx_audit(business_id,action,object_id=None,meta=None):
+    if table_exists('koja_global_trade_audit'): db_insert('koja_global_trade_audit',{'business_id':business_id,'user_id':_gx_uid(),'action':action,'object_id':str(object_id) if object_id else None,'metadata':meta or {},'created_at':utc_now()})
+def _gx_landed(t):
+    cv=sum(_gx_money(t.get(k)) for k in ('goods_value','freight_cost','insurance_cost','origin_charges'))
+    duty=round(cv*max(0,_gx_money(t.get('duty_rate')))/100,2)
+    tax=round((cv+duty)*max(0,_gx_money(t.get('tax_rate')))/100,2)
+    fees=sum(_gx_money(t.get(k)) for k in ('customs_fee','broker_fee','port_fee','local_delivery_cost','other_destination_cost'))
+    return {'customs_value':round(cv,2),'duty_amount':duty,'tax_amount':tax,'destination_fees':round(fees,2),'landed_cost':round(cv+duty+tax+fees,2)}
+
+@app.route('/business/<business_id>/global/import-export')
+@login_required
+def global_import_export(business_id):
+    b=_gx_business(business_id)
+    if not b: abort(403)
+    rows=db_select('koja_global_trade_orders',{'business_id':business_id},order='created_at.desc',limit=200) or []
+    pending=sum(1 for x in rows if str(x.get('status') or '') not in ('delivered','cancelled','closed'))
+    return render_page('KOJA Global Import & Export',r'''
+<div class="hero"><h1>Global Import & Export</h1><p>Cross-border trade from order to customs clearance, landed cost and local delivery.</p><div class="actions"><a class="btn" href="{{ url_for('global_business_hub',business_id=business_id) }}">Global Business</a><a class="btn secondary" href="#new">Create Trade</a></div></div>
+<div class="grid"><div class="stat"><div class="small">Trade Orders</div><div class="big">{{ rows|length }}</div></div><div class="stat"><div class="small">Open</div><div class="big">{{ pending }}</div></div><div class="stat"><div class="small">Workflow</div><div>Order → Documents → Freight → Customs → Clearance → Delivery</div></div></div>
+<div class="card" id="new"><h2>New Cross-Border Trade</h2><form method="post" action="{{ url_for('global_import_export_create',business_id=business_id) }}"><div class="grid"><div><label>Direction</label><select name="direction"><option value="import">Import</option><option value="export">Export</option></select></div><div><label>Trade title</label><input name="title" required maxlength="180"></div><div><label>Origin country</label><input name="origin_country" required></div><div><label>Destination country</label><input name="destination_country" required></div><div><label>Currency</label><input name="currency" value="ZMW" maxlength="3" required></div><div><label>HS / tariff code</label><input name="hs_code"></div><div><label>Goods value</label><input name="goods_value" type="number" min="0" step="0.01" value="0"></div><div><label>Freight</label><input name="freight_cost" type="number" min="0" step="0.01" value="0"></div><div><label>Insurance</label><input name="insurance_cost" type="number" min="0" step="0.01" value="0"></div><div><label>Duty rate %</label><input name="duty_rate" type="number" min="0" step="0.01" value="0"></div><div><label>Tax / VAT rate %</label><input name="tax_rate" type="number" min="0" step="0.01" value="0"></div><div><label>Broker fee</label><input name="broker_fee" type="number" min="0" step="0.01" value="0"></div></div><label>Notes</label><textarea name="notes"></textarea><button class="btn" type="submit">Create Trade Order</button></form></div>
+<div class="card"><h2>Trade Pipeline</h2>{% for x in rows %}<div class="card" style="margin:10px 0"><h3>{{ x.title }}</h3><p><b>{{ x.direction|upper }}</b> · {{ x.origin_country }} → {{ x.destination_country }} · {{ x.status }}</p><p>HS: {{ x.hs_code or 'Not classified' }} · Customs: {{ x.customs_status or 'Not started' }} · Clearance: {{ x.clearance_status or 'Not started' }}</p><p>Landed cost: <b>{{ '%.2f'|format(x.landed_cost or 0) }} {{ x.currency }}</b></p><a class="btn" href="{{ url_for('global_import_export_order',business_id=business_id,trade_id=x.id) }}">Open Trade</a></div>{% else %}<p>No cross-border trades yet.</p>{% endfor %}</div>
+''',business_id=business_id,b=b,rows=rows,pending=pending)
+
+@app.route('/business/<business_id>/global/import-export/create',methods=['POST'])
+@login_required
+def global_import_export_create(business_id):
+    if not _gx_access(business_id): abort(403)
+    p={'business_id':business_id,'created_by':_gx_uid(),'trade_code':_gx_code(),'direction':clean(request.form.get('direction')) or 'import','title':clean(request.form.get('title')),'origin_country':clean(request.form.get('origin_country')).upper(),'destination_country':clean(request.form.get('destination_country')).upper(),'currency':clean(request.form.get('currency')).upper()[:3] or 'ZMW','hs_code':clean(request.form.get('hs_code')) or None,'goods_value':_gx_money(request.form.get('goods_value')),'freight_cost':_gx_money(request.form.get('freight_cost')),'insurance_cost':_gx_money(request.form.get('insurance_cost')),'duty_rate':_gx_money(request.form.get('duty_rate')),'tax_rate':_gx_money(request.form.get('tax_rate')),'broker_fee':_gx_money(request.form.get('broker_fee')),'notes':clean(request.form.get('notes')),'status':'draft','customs_status':'not_started','clearance_status':'not_started','created_at':utc_now(),'updated_at':utc_now()}
+    p.update(_gx_landed(p)); row,err=db_insert('koja_global_trade_orders',p)
+    if row:
+        _gx_audit(business_id,'trade_created',row.get('id'),{'trade_code':row.get('trade_code')}); flash('Cross-border trade created.','success'); return redirect(url_for('global_import_export_order',business_id=business_id,trade_id=row.get('id')))
+    flash('Trade order could not be created: '+str(err)[:400],'danger'); return redirect(url_for('global_import_export',business_id=business_id))
+
+@app.route('/business/<business_id>/global/import-export/<trade_id>')
+@login_required
+def global_import_export_order(business_id,trade_id):
+    if not _gx_access(business_id): abort(403)
+    trade=first_row('koja_global_trade_orders',{'id':trade_id,'business_id':business_id})
+    if not trade: abort(404)
+    docs=db_select('koja_global_trade_documents',{'trade_id':trade_id},order='created_at.desc',limit=100) or []
+    events=db_select('koja_global_trade_events',{'trade_id':trade_id},order='created_at.desc',limit=100) or []
+    brokers=db_select('koja_global_trade_brokers',{'trade_id':trade_id},order='created_at.desc',limit=50) or []
+    calc=_gx_landed(trade); db_update('koja_global_trade_orders',{'id':trade_id},{**calc,'updated_at':utc_now()}); trade.update(calc)
+    return render_page('Trade '+str(trade.get('trade_code')),r'''
+<div class="hero"><h1>{{ trade.trade_code }}</h1><p>{{ trade.title }} · {{ trade.direction|upper }}</p><p>{{ trade.origin_country }} → {{ trade.destination_country }} · Status: <b>{{ trade.status }}</b></p></div>
+<div class="grid"><div class="stat"><div class="small">Customs Value</div><div class="big">{{ '%.2f'|format(trade.customs_value or 0) }} {{ trade.currency }}</div></div><div class="stat"><div class="small">Duty</div><div class="big">{{ '%.2f'|format(trade.duty_amount or 0) }}</div></div><div class="stat"><div class="small">Tax</div><div class="big">{{ '%.2f'|format(trade.tax_amount or 0) }}</div></div><div class="stat"><div class="small">Landed Cost</div><div class="big">{{ '%.2f'|format(trade.landed_cost or 0) }} {{ trade.currency }}</div></div></div>
+<div class="card"><h2>Customs & Clearance</h2><form method="post" action="{{ url_for('global_import_export_update',business_id=business_id,trade_id=trade.id) }}"><div class="grid"><div><label>Status</label><select name="status">{% for v in ['draft','ordered','in_transit','customs','cleared','delivered','cancelled'] %}<option value="{{ v }}" {% if trade.status==v %}selected{% endif %}>{{ v.replace('_',' ').title() }}</option>{% endfor %}</select></div><div><label>Customs status</label><select name="customs_status">{% for v in ['not_started','documents_ready','declared','inspection','duty_assessed','released'] %}<option value="{{ v }}" {% if trade.customs_status==v %}selected{% endif %}>{{ v.replace('_',' ').title() }}</option>{% endfor %}</select></div><div><label>Clearance status</label><select name="clearance_status">{% for v in ['not_started','assigned','in_review','cleared','held'] %}<option value="{{ v }}" {% if trade.clearance_status==v %}selected{% endif %}>{{ v.replace('_',' ').title() }}</option>{% endfor %}</select></div><div><label>Tracking number</label><input name="tracking_number" value="{{ trade.tracking_number or '' }}"></div><div><label>Carrier</label><input name="carrier" value="{{ trade.carrier or '' }}"></div><div><label>Broker</label><input name="broker_name" value="{{ trade.broker_name or '' }}"></div><div><label>Port / border</label><input name="entry_port" value="{{ trade.entry_port or '' }}"></div><div><label>Customs reference</label><input name="customs_reference" value="{{ trade.customs_reference or '' }}"></div></div><button class="btn" type="submit">Update Trade</button></form></div>
+<div class="card"><h2>Trade Documents</h2>{% for d in docs %}<p><b>{{ d.document_type }}</b> · {{ d.status }} · {{ d.reference or 'No reference' }}</p>{% else %}<p>No documents recorded.</p>{% endfor %}<form method="post" action="{{ url_for('global_import_export_document',business_id=business_id,trade_id=trade.id) }}"><div class="grid"><input name="document_type" placeholder="Commercial Invoice / Packing List / Certificate of Origin / Permit" required><input name="reference"><select name="status"><option>required</option><option>submitted</option><option>approved</option><option>rejected</option></select></div><button class="btn secondary">Add Document</button></form></div>
+<div class="card"><h2>Customs Broker / Clearing Agent</h2>{% for x in brokers %}<p><b>{{ x.name }}</b> · {{ x.country }} · {{ x.status }}</p>{% else %}<p>No broker assigned.</p>{% endfor %}<form method="post" action="{{ url_for('global_import_export_broker',business_id=business_id,trade_id=trade.id) }}"><div class="grid"><input name="name" placeholder="Broker / clearing agent name" required><input name="country" placeholder="Country"><input name="contact" placeholder="Contact"><input name="license_number" placeholder="Licence / registration"></div><button class="btn secondary">Assign Broker</button></form></div>
+<div class="card"><h2>Workflow Audit</h2>{% for e in events %}<p>{{ e.created_at }} · <b>{{ e.event_type }}</b> · {{ e.description or '' }}</p>{% else %}<p>No workflow events yet.</p>{% endfor %}</div>
+''',business_id=business_id,trade=trade,docs=docs,events=events,brokers=brokers)
+
+@app.route('/business/<business_id>/global/import-export/<trade_id>/update',methods=['POST'])
+@login_required
+def global_import_export_update(business_id,trade_id):
+    if not _gx_access(business_id): abort(403)
+    trade=first_row('koja_global_trade_orders',{'id':trade_id,'business_id':business_id})
+    if not trade: abort(404)
+    payload={k:clean(request.form.get(k)) or None for k in ('status','customs_status','clearance_status','tracking_number','carrier','broker_name','entry_port','customs_reference')}; payload['updated_at']=utc_now()
+    db_update('koja_global_trade_orders',{'id':trade_id},payload)
+    db_insert('koja_global_trade_events',{'trade_id':trade_id,'business_id':business_id,'event_type':'trade_updated','description':'Trade workflow updated','created_by':_gx_uid(),'created_at':utc_now()})
+    _gx_audit(business_id,'trade_updated',trade_id,payload); flash('Trade workflow updated.','success'); return redirect(url_for('global_import_export_order',business_id=business_id,trade_id=trade_id))
+
+@app.route('/business/<business_id>/global/import-export/<trade_id>/document',methods=['POST'])
+@login_required
+def global_import_export_document(business_id,trade_id):
+    if not _gx_access(business_id): abort(403)
+    if not first_row('koja_global_trade_orders',{'id':trade_id,'business_id':business_id}): abort(404)
+    db_insert('koja_global_trade_documents',{'trade_id':trade_id,'business_id':business_id,'document_type':clean(request.form.get('document_type')),'reference':clean(request.form.get('reference')) or None,'status':clean(request.form.get('status')) or 'required','created_by':_gx_uid(),'created_at':utc_now(),'updated_at':utc_now()})
+    _gx_audit(business_id,'trade_document_added',trade_id,{'document_type':clean(request.form.get('document_type'))}); flash('Trade document recorded.','success'); return redirect(url_for('global_import_export_order',business_id=business_id,trade_id=trade_id))
+
+@app.route('/business/<business_id>/global/import-export/<trade_id>/broker',methods=['POST'])
+@login_required
+def global_import_export_broker(business_id,trade_id):
+    if not _gx_access(business_id): abort(403)
+    if not first_row('koja_global_trade_orders',{'id':trade_id,'business_id':business_id}): abort(404)
+    db_insert('koja_global_trade_brokers',{'trade_id':trade_id,'business_id':business_id,'name':clean(request.form.get('name')),'country':clean(request.form.get('country')).upper() or None,'contact':clean(request.form.get('contact')) or None,'license_number':clean(request.form.get('license_number')) or None,'status':'assigned','created_by':_gx_uid(),'created_at':utc_now(),'updated_at':utc_now()})
+    _gx_audit(business_id,'customs_broker_assigned',trade_id,{'broker':clean(request.form.get('name'))}); flash('Broker / clearing agent assigned.','success'); return redirect(url_for('global_import_export_order',business_id=business_id,trade_id=trade_id))
+
+@app.route('/b2b/v4/order/<order_id>/review',methods=['POST'])
+@login_required
+def b2bv4_order_review(order_id):
+    order=_b2bv4_order(order_id)
+    if not order or str(order.get('buyer_user_id'))!=_b2bv4_uid() or str(order.get('order_status'))!='completed': abort(403)
+    rating=max(1,min(5,int(request.form.get('rating') or 5)))
+    row,err=db_insert('koja_b2b_v4_reviews',{'order_id':order_id,'reviewer_user_id':_b2bv4_uid(),'seller_business_id':order.get('seller_business_id'),'professional_provider_id':order.get('professional_provider_id'),'rating':rating,'review':clean(request.form.get('review')),'created_at':utc_now()})
+    flash('Review submitted.' if row else 'Review could not be submitted: '+str(err)[:300],'success' if row else 'danger')
+    return redirect(url_for('b2bv4_order',order_id=order_id))
+
+
+
+# ============================================================
+# KOJA MEDIA REGRESSION RESTORE — 2026-09-20
+# Restores Media V6/live/player functionality on top of the complete production app.
+# ============================================================
+
+def media_hls_url(post):
+    value=clean((post or {}).get("media_master_url"))
+    if not value:return ""
+    if value.startswith(("http://","https://")):return value
+    base=HLS_CDN_BASE or HLS_PUBLIC_BASE
+    if not base and SUPABASE_URL:
+        base=f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{quote(HLS_BUCKET,safe='')}"
+    return f"{base}/{value.lstrip('/')}" if base else ""
+
+@app.route('/studio', methods=['GET','POST'])
+@login_required
+def media_studio():
+    '''KOJA Media Studio: card-based creator workspace for drafts and published media.'''
+    uid=(current_user() or {}).get('id')
+    if request.method == 'POST':
+        action=clean(request.form.get('action')).lower() or 'publish'
+        title=clean(request.form.get('title'))
+        body=clean(request.form.get('body'))
+        post_type=clean(request.form.get('post_type')).lower() or 'update'
+        if post_type not in {'update','news','announcement','event'}: post_type='update'
+        if not title or not body:
+            flash('Title and description are required.', 'danger')
+            return redirect(url_for('media_studio'))
+        media=request.files.get('media')
+        uploaded=None; media_type=None
+        if media and media.filename:
+            ext=media.filename.lower().rsplit('.',1)[-1] if '.' in media.filename else ''
+            if ext not in {'jpg','jpeg','png','webp','mp4','webm','mov'}:
+                flash('Studio media must be JPG, PNG, WebP, MP4, WebM or MOV.', 'danger')
+                return redirect(url_for('media_studio'))
+            uploaded,err=upload_storage(media,'media-studio',public=False)
+            if err:
+                flash(f'Media upload failed: {err}', 'danger')
+                return redirect(url_for('media_studio'))
+            media_type='video' if ext in {'mp4','webm','mov'} else 'image'
+        published=(action == 'publish')
+        payload={'author_id':uid,'post_type':post_type,'title':title,'body':body,
+                 'media_url':(uploaded or {}).get('path'),'media_type':media_type,
+                 'is_published':published,'updated_at':utc_now()}
+        _,err=db_insert('koja_public_posts',payload)
+        if err:
+            if uploaded: delete_storage_path(uploaded.get('path'))
+            flash('Studio could not save this media. Run KOJA_MEDIA_STUDIO.sql first.', 'danger')
+        else:
+            flash('Media published to KOJA Media.' if published else 'Media saved as a private draft.', 'success')
+        return redirect(url_for('media_studio'))
+
+    rows=db_select('koja_public_posts',{'author_id':f'eq.{uid}'},order='created_at.desc',limit=100) or []
+    total_views=0; total_completions=0
+    for item in rows:
+        item['status']='Published' if as_bool(item.get('is_published')) else 'Draft'
+        events=db_select('koja_media_events',{'post_id':item.get('id')},select='event_type,watch_seconds,completion_percent',limit=1000) or []
+        item['views']=sum(1 for e in events if e.get('event_type')=='impression')
+        item['completions']=sum(1 for e in events if e.get('event_type')=='complete')
+        total_views += item['views']; total_completions += item['completions']
+    published_count=sum(1 for x in rows if as_bool(x.get('is_published')))
+    draft_count=len(rows)-published_count
+    return render_page('KOJA Media Studio',r'''<style>
+.studio-shell{background:#06090e;color:#f7f9fc;border:1px solid rgba(255,255,255,.08);border-radius:24px;padding:22px;overflow:hidden}
+.studio-top{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap;margin-bottom:20px}
+.studio-top h1{margin:0;font-size:clamp(25px,4vw,40px)}.studio-top p{margin:7px 0 0;color:#aeb8c7}
+.studio-actions{display:flex;gap:9px;flex-wrap:wrap}.studio-actions a{white-space:nowrap}
+.studio-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:0 0 24px}.metric{background:#0c121b;border:1px solid rgba(255,255,255,.08);border-radius:15px;padding:14px}.metric strong{display:block;font-size:24px}.metric span{font-size:12px;color:#9da9b9}
+.studio-create{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px;margin-bottom:26px}.create-card,.tips-card{background:#0c121b;border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:18px}.create-card h2,.tips-card h3{margin-top:0}.create-card input,.create-card textarea,.create-card select{background:#080d14;color:#fff;border-color:#263242}.create-card textarea{min-height:130px}.drop-zone{border:1px dashed #3b4b61;border-radius:15px;padding:18px;background:#080d14}.studio-tabs{display:flex;gap:8px;overflow:auto;margin-bottom:12px}.studio-tabs button{border:1px solid rgba(255,255,255,.1);background:#0c121b;color:#dce3ed;border-radius:999px;padding:8px 13px;white-space:nowrap}
+.studio-row{display:flex;gap:14px;overflow-x:auto;padding:4px 2px 14px;scroll-snap-type:x proximity}.studio-row::-webkit-scrollbar{height:6px}.studio-card{flex:0 0 235px;scroll-snap-align:start;background:#0c121b;border:1px solid rgba(255,255,255,.08);border-radius:15px;overflow:hidden}.studio-thumb{aspect-ratio:16/9;background:#111923;position:relative;overflow:hidden}.studio-thumb img,.studio-thumb video{width:100%;height:100%;object-fit:cover;display:block}.studio-placeholder{height:100%;display:grid;place-items:center;color:#8390a2;font-size:13px}.studio-badge{position:absolute;left:8px;top:8px;background:rgba(0,0,0,.75);border:1px solid rgba(255,255,255,.15);border-radius:999px;padding:4px 8px;font-size:11px}.studio-info{padding:11px}.studio-info h3{font-size:15px;margin:0 0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.studio-info p{font-size:12px;color:#aab5c5;line-height:1.45;height:35px;overflow:hidden;margin:0 0 9px}.studio-meta{display:flex;justify-content:space-between;gap:8px;color:#8f9bac;font-size:11px}.studio-card .card-actions{display:flex;gap:7px;padding:0 11px 11px}.studio-card .card-actions a{flex:1;text-align:center;font-size:12px;padding:8px}
+@media(max-width:850px){.studio-create{grid-template-columns:1fr}.studio-metrics{grid-template-columns:repeat(2,1fr)}.studio-shell{padding:15px}.studio-card{flex-basis:210px}}
+</style>
+<div class="studio-shell">
+  <div class="studio-top"><div><div class="small" style="color:#5da9ff">KOJA MEDIA</div><h1>Media Studio</h1><p>Create once. Publish everywhere across KOJA Media.</p></div><div class="studio-actions"><a class="btn secondary" href="{{ url_for('media_nextgen') }}">Watch Media</a><a class="btn secondary" href="{{ url_for('media_live') }}">KOJA LIVE</a></div></div>
+  <div class="studio-metrics"><div class="metric"><strong>{{ published_count }}</strong><span>Published</span></div><div class="metric"><strong>{{ draft_count }}</strong><span>Drafts</span></div><div class="metric"><strong>{{ total_views }}</strong><span>Views</span></div><div class="metric"><strong>{{ total_completions }}</strong><span>Completions</span></div></div>
+  <div class="studio-create">
+    <section class="create-card"><h2>Create media</h2><p class="small">Upload a photo or video, save it privately, or publish it to the Netflix-style KOJA Media feed.</p>
+      <form method="post" enctype="multipart/form-data"><label>Content type</label><select name="post_type"><option value="update">Media</option><option value="news">News</option><option value="announcement">Announcement</option><option value="event">Event</option></select><label>Title</label><input name="title" maxlength="180" required placeholder="Media title"><label>Description</label><textarea name="body" maxlength="10000" required placeholder="Describe your photo or video..."></textarea><label>Photo or video</label><div class="drop-zone"><input type="file" name="media" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"><div class="small">JPG, PNG, WebP, MP4, WebM or MOV · max {{ max_mb }} MB</div></div><div style="display:flex;gap:9px;flex-wrap:wrap;margin-top:14px"><button class="btn secondary" name="action" value="draft" type="submit">Save Draft</button><button class="btn" name="action" value="publish" type="submit">Publish to KOJA Media</button></div></form>
+    </section>
+    <aside class="tips-card"><h3>Studio workflow</h3><p class="small">1. Add your title and description.</p><p class="small">2. Upload the main image or video.</p><p class="small">3. Save as Draft while preparing it.</p><p class="small">4. Publish when ready.</p><hr><p class="small">Published media automatically appears in the KOJA Media discovery rows.</p></aside>
+  </div>
+  <div class="studio-tabs"><button type="button" onclick="showStudio('all')">All</button><button type="button" onclick="showStudio('published')">Published</button><button type="button" onclick="showStudio('draft')">Drafts</button></div>
+  <div id="studioAll"><div class="studio-row">{% for p in items %}<article class="studio-card" data-status="{{ 'published' if p.is_published else 'draft' }}"><div class="studio-thumb">{% if p.media_url and p.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=p.id) }}" muted preload="metadata"></video>{% elif p.media_url %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="{{ p.title }}">{% else %}<div class="studio-placeholder">No media preview</div>{% endif %}<span class="studio-badge">{{ p.status }}</span></div><div class="studio-info"><h3>{{ p.title }}</h3><p>{{ p.body }}</p><div class="studio-meta"><span>{{ p.views }} views</span><span>{{ p.completions }} complete</span></div></div><div class="card-actions">{% if p.is_published %}<a class="btn secondary" href="{{ url_for('media_nextgen') }}#media-{{ p.id }}">View</a>{% else %}<span class="small" style="padding:8px">Private draft</span>{% endif %}</div></article>{% else %}<p class="small">No media yet. Create your first title above.</p>{% endfor %}</div></div>
 </div>
-<div class="card"><h2>Recent support</h2>{% for t in tickets %}<p><strong>{{ t.subject }}</strong> — {{ t.status }}</p>{% else %}<p>No support tickets.</p>{% endfor %}</div>
-''',tickets=tickets,saved=saved)
+<script>function showStudio(mode){document.querySelectorAll('#studioAll .studio-card').forEach(c=>{let s=c.dataset.status;c.style.display=(mode==='all'||(mode==='published'&&s==='published')||(mode==='draft'&&s==='draft'))?'':'none'})}</script>
+''',items=rows,max_mb=MAX_UPLOAD_MB,published_count=published_count,draft_count=draft_count,total_views=total_views,total_completions=total_completions)
 
-@app.route('/koja/search')
-@login_required
-def koja_search():
-    q=clean(request.args.get('q'))
-    results=[]
-    if q:
-        terms=q.lower()
-        sources=[
-            ('Questions','questions','title','/questions'),
-            ('Assignments','assignments','title','/assignments'),
-            ('Public','public_posts','title','/public'),
-            ('Market','koja_market_products','title','/market'),
-            ('Digital Marketplace','koja_marketplace_products','title','/marketplace'),
-            ('Businesses','koja_businesses','business_name','/business'),
-            ('Global News','koja_news_live','headline','/news-next'),
-        ]
-        for label,table,col,url in sources:
-            try:
-                rows=db_select(table,order='created_at.desc',limit=100) or []
-            except Exception:
-                rows=[]
-            for r in rows:
-                val=str(r.get(col) or r.get('name') or r.get('title') or r.get('headline') or '')
-                if terms in val.lower():
-                    results.append({'type':label,'title':val[:180],'url':url,'id':r.get('id')})
-                    if len(results)>=50: break
-            if len(results)>=50: break
-    return render_page('KOJA Search',r'''
-<div class="hero"><h1>KOJA Universal Search</h1><p>Search across the services available to you.</p></div>
-<form class="card" method="get"><input name="q" value="{{ q }}" placeholder="Search KOJA" autofocus><button class="btn" type="submit">Search</button></form>
-<div class="grid">{% for r in results %}<a class="card" href="{{ r.url }}"><small>{{ r.type }}</small><h3>{{ r.title }}</h3></a>{% else %}<div class="card"><p>{% if q %}No matching results found.{% else %}Enter a search term.{% endif %}</p></div>{% endfor %}</div>
-''',q=q,results=results)
+@app.route('/media/watch/<post_id>')
+def media_watch(post_id):
+    post=first_row('koja_public_posts',{'id':post_id})
+    if not post or not as_bool(post.get('is_published')) or not post.get('media_url'): abort(404)
+    related=db_select('koja_public_posts',{'is_published':'eq.true'},order='created_at.desc',limit=60) or []
+    related=[x for x in related if x.get('media_url') and str(x.get('id'))!=str(post_id)][:16]
+    hls_url=media_hls_url(post) if post.get('media_type')=='video' else ''
+    return render_page('KOJA Media Player',r'''<style>
+.watch-shell{background:#05070b;color:#fff;min-height:calc(100vh - 120px);padding:14px}.watch-top{max-width:1150px;margin:0 auto}.watch-player{background:#000;border-radius:14px;overflow:hidden;position:relative}.watch-player video,.watch-player img{display:block;width:100%;max-height:76vh;object-fit:contain;background:#000}.watch-info{padding:17px 0}.watch-info h1{font-size:clamp(22px,4vw,38px);margin:0 0 7px}.watch-meta{color:#9ba8b8;font-size:13px}.watch-actions{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}.watch-actions button,.watch-actions select{width:auto}.watch-status{font-size:12px;color:#8fa0b4;margin:7px 0}.watch-row{display:flex;gap:13px;overflow-x:auto;padding:4px 2px 15px}.watch-card{flex:0 0 220px;background:#0c121b;border:1px solid rgba(255,255,255,.08);border-radius:10px;overflow:hidden;text-decoration:none;color:#fff}.watch-card img,.watch-card video{width:100%;aspect-ratio:16/9;object-fit:cover;display:block;background:#101721}.watch-card-info{padding:9px}.watch-card-info strong{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.watch-card-info span{font-size:11px;color:#8e9bad}.gesture-hint{font-size:11px;color:#7e8da1;margin-top:7px}</style>
+<div class="watch-shell"><div class="watch-top"><a class="btn secondary" href="{{ url_for('media_nextgen') }}">Back to KOJA Media</a><div class="watch-player" style="margin-top:12px">{% if post.media_type=='video' %}<video id="kojaPlayer" controls playsinline preload="metadata"{% if hls_url %} data-hls="{{ hls_url }}"{% else %} src="{{ url_for('public_feed_media',post_id=post.id) }}"{% endif %}></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=post.id) }}" alt="{{ post.title or 'KOJA Media' }}">{% endif %}</div>{% if post.media_type=='video' %}<div class="watch-status" id="streamStatus">{% if hls_url %}Adaptive streaming ready{% else %}Standard streaming · HLS processing pending{% endif %}</div>{% endif %}<div class="watch-info"><h1>{{ post.title or 'KOJA Media' }}</h1><div class="watch-meta">{{ post.post_type|title }} · {{ post.created_at }}</div><p>{{ post.body }}</p><div class="watch-actions">{% if post.media_type=='video' %}<button class="btn secondary" onclick="skip(-10)">−10 sec</button><button class="btn secondary" onclick="skip(10)">+10 sec</button><button class="btn secondary" onclick="startOver()">Start over</button><select id="quality" class="btn secondary"><option value="-1">Auto</option></select><button class="btn" onclick="goFull()">Fullscreen</button>{% endif %}<button class="btn secondary" onclick="shareWatch()">Share</button></div><div class="gesture-hint">Mobile: double-tap left/right to seek 10 seconds. Swipe horizontally on the player to seek.</div></div><h2>More like this</h2><div class="watch-row">{% for p in related %}<a class="watch-card" href="{{ url_for('media_watch',post_id=p.id) }}">{% if p.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=p.id) }}" muted preload="none"></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="{{ p.title or 'KOJA Media' }}">{% endif %}<div class="watch-card-info"><strong>{{ p.title or 'KOJA Media' }}</strong><span>{{ p.post_type|title }}</span></div></a>{% endfor %}</div></div></div>
+{% if post.media_type=='video' %}<script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.2/dist/hls.min.js"></script>{% endif %}<script>
+const v=document.getElementById('kojaPlayer'),key='koja_resume_{{ post.id }}',quality=document.getElementById('quality'),statusEl=document.getElementById('streamStatus');let hls=null,lastSaved=0,touchX=0,lastTap=0;
+function sendProgress(force=false){if(!v||(!force&&Math.abs(v.currentTime-lastSaved)<5))return;lastSaved=v.currentTime;fetch('/api/nextgen/media-progress',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({post_id:'{{ post.id }}',position:v.currentTime,duration:v.duration||0})}).catch(()=>{});try{localStorage.setItem(key,String(v.currentTime))}catch(e){}}
+function skip(n){if(v)v.currentTime=Math.max(0,Math.min(v.duration||1,v.currentTime+n));sendProgress(true)}function startOver(){if(v){v.currentTime=0;v.play().catch(()=>{});sendProgress(true)}}
+function goFull(){if(v){let f=v.requestFullscreen||v.webkitRequestFullscreen;if(f)f.call(v);try{if(screen.orientation&&screen.orientation.lock)screen.orientation.lock('landscape')}catch(e){}}}
+function shareWatch(){let u=location.href;if(navigator.share)navigator.share({title:{{ (post.title or 'KOJA Media')|tojson }},url:u});else navigator.clipboard&&navigator.clipboard.writeText(u)}
+function setupHls(){if(!v)return;const src=v.dataset.hls;if(!src)return;if(window.Hls&&Hls.isSupported()){hls=new Hls({startLevel:0,autoStartLoad:true,maxBufferLength:25,maxMaxBufferLength:60,backBufferLength:30,capLevelToPlayerSize:true});hls.loadSource(src);hls.attachMedia(v);hls.on(Hls.Events.MANIFEST_PARSED,()=>{quality.innerHTML='<option value="-1">Auto</option>';hls.levels.forEach((l,i)=>{let o=document.createElement('option');o.value=i;o.textContent=(l.height?l.height+'p':'Quality '+(i+1));quality.appendChild(o)});statusEl.textContent='Adaptive streaming ready'});hls.on(Hls.Events.ERROR,(e,d)=>{if(d.fatal){statusEl.textContent='Adaptive stream unavailable — using standard playback';v.src='{{ url_for('public_feed_media',post_id=post.id) }}'}});quality.onchange=()=>{hls.currentLevel=parseInt(quality.value,10)}}else{v.src=src;statusEl.textContent='Native HLS playback'}}
+if(v){setupHls();fetch('/api/nextgen/media-progress?post_id={{ post.id }}').then(r=>r.json()).then(d=>{let r=parseFloat(d.position||0);try{r=Math.max(r,parseFloat(localStorage.getItem(key)||0))}catch(e){};v.addEventListener('loadedmetadata',()=>{if(r>5&&r<v.duration-5)v.currentTime=r},{once:true})}).catch(()=>{});v.addEventListener('timeupdate',()=>sendProgress(false));v.addEventListener('pause',()=>sendProgress(true));v.addEventListener('ended',()=>{sendProgress(true);const n=document.querySelector('.watch-card');if(n)setTimeout(()=>location.href=n.href,900)});v.addEventListener('touchstart',e=>{touchX=e.touches[0].clientX},{passive:true});v.addEventListener('touchend',e=>{let dx=e.changedTouches[0].clientX-touchX;if(Math.abs(dx)>45)skip(dx>0?-10:10)});v.addEventListener('dblclick',e=>{let r=v.getBoundingClientRect();skip(e.clientX-r.left<r.width/2?-10:10)})}
+</script>''',post=post,related=related,hls_url=hls_url)
 
-@app.route('/koja/saved')
-@login_required
-def koja_saved():
-    rows=db_select('koja_saved_items',{'user_id':(current_user() or {}).get('id')},order='created_at.desc',limit=200) or []
-    return render_page('Saved',r'''<div class="hero"><h1>Saved</h1><p>Your saved KOJA items.</p></div><div class="grid">{% for x in rows %}<div class="card"><small>{{ x.item_type }}</small><h3>{{ x.title or x.item_id }}</h3><a class="btn" href="{{ x.url or '#' }}">Open</a><form method="post" action="{{ url_for('koja_saved_delete',item_id=x.id) }}" style="display:inline"><button class="btn danger">Remove</button></form></div>{% else %}<div class="card"><p>Nothing saved yet.</p></div>{% endfor %}</div>''',rows=rows)
-
-@app.route('/api/koja/saved',methods=['POST'])
-@login_required
-def koja_saved_add():
-    d=request.get_json(silent=True) or {}
+def nextgen_media_progress():
     uid=(current_user() or {}).get('id')
-    item_type=clean(d.get('item_type') or 'general')[:80]; item_id=clean(d.get('item_id'))[:180]
-    if not item_id: return jsonify({'ok':False,'error':'item_id_required'}),400
-    existing=first_row('koja_saved_items',{'user_id':uid,'item_type':item_type,'item_id':item_id})
-    if not existing:
-        db_insert('koja_saved_items',{'user_id':uid,'item_type':item_type,'item_id':item_id,'title':clean(d.get('title'))[:300],'url':clean(d.get('url'))[:1000]})
-    return jsonify({'ok':True})
+    if request.method=='GET':
+        pid=clean(request.args.get('post_id'));row=first_row('koja_media_watch_progress',{'post_id':pid,'user_id':uid}) if uid and pid else {}
+        return jsonify(position=float((row or {}).get('position_seconds') or 0),duration=float((row or {}).get('duration_seconds') or 0))
+    d=request.get_json(silent=True) or {};pid=clean(d.get('post_id'));position=max(0,float(d.get('position') or 0));duration=max(0,float(d.get('duration') or 0))
+    if not pid:return jsonify(error='post_id required'),400
+    sid=request.cookies.get('koja_media_session') or uuid.uuid4().hex
+    if uid:
+        existing=first_row('koja_media_watch_progress',{'post_id':pid,'user_id':uid});payload={'post_id':pid,'user_id':uid,'session_id':sid,'position_seconds':position,'duration_seconds':duration,'updated_at':utc_now()}
+        if existing:db_update('koja_media_watch_progress',{'id':existing.get('id')},payload)
+        else:db_insert('koja_media_watch_progress',payload)
+    resp=jsonify(ok=True);resp.set_cookie('koja_media_session',sid,max_age=60*60*24*30,httponly=True,samesite='Lax');return resp
 
-@app.route('/koja/saved/delete/<item_id>',methods=['POST'])
-@login_required
-def koja_saved_delete(item_id):
-    db_delete('koja_saved_items',{'id':item_id,'user_id':(current_user() or {}).get('id')})
-    return redirect(url_for('koja_saved'))
+def detect_live_provider(value):
+    u=clean(value).lower()
+    if 'youtube.com' in u or 'youtu.be/' in u: return 'youtube'
+    if 'facebook.com' in u or 'fb.watch' in u: return 'facebook'
+    if 'twitch.tv' in u: return 'twitch'
+    if '.m3u8' in u: return 'hls'
+    if '.mpd' in u: return 'dash'
+    if any(x in u.split('?')[0] for x in ('.mp4','.webm','.mov','.m4v')): return 'video'
+    if 'microsoftstream.com' in u or 'stream.microsoft.com' in u: return 'microsoft'
+    return 'other'
 
-@app.route('/koja/support',methods=['GET','POST'])
+def youtube_embed_url(value):
+    from urllib.parse import urlparse, parse_qs
+    u=clean(value)
+    try:
+        q=parse_qs(urlparse(u).query)
+        vid=(q.get('v') or [''])[0]
+        if not vid and 'youtu.be/' in u: vid=urlparse(u).path.strip('/').split('/')[0]
+        if not vid and '/live/' in u: vid=u.split('/live/',1)[1].split('?',1)[0].split('/',1)[0]
+        if vid: return f'https://www.youtube.com/embed/{quote(vid,safe="")}?autoplay=1&rel=0'
+    except Exception: pass
+    return ''
+
+def twitch_embed_url(value):
+    from urllib.parse import urlparse
+    u=clean(value)
+    try:
+        host=urlparse(u).hostname or ''
+        parts=[x for x in (urlparse(u).path or '').split('/') if x]
+        channel=parts[0] if host.endswith('twitch.tv') and parts else ''
+        if channel:
+            parent=(request.host or 'koja-africa.onrender.com').split(':',1)[0]
+            return f'https://player.twitch.tv/?channel={quote(channel,safe="")}&parent={quote(parent,safe="")}&autoplay=true'
+    except Exception: pass
+    return ''
+
+def facebook_embed_url(value):
+    u=clean(value)
+    return 'https://www.facebook.com/plugins/video.php?href='+quote(u,safe='')+'&show_text=false&autoplay=true' if u else ''
+
+def live_player_config(stream):
+    url=clean(stream.get('stream_url'))
+    provider=clean(stream.get('provider')).lower() or detect_live_provider(url)
+    if provider=='youtube': return {'kind':'iframe','src':youtube_embed_url(url),'label':'YouTube Live'}
+    if provider=='facebook': return {'kind':'iframe','src':facebook_embed_url(url),'label':'Facebook Live'}
+    if provider=='twitch': return {'kind':'iframe','src':twitch_embed_url(url),'label':'Twitch Live'}
+    if provider=='hls' or '.m3u8' in url.lower(): return {'kind':'hls','src':url,'label':'HLS Live'}
+    if provider=='dash' or '.mpd' in url.lower(): return {'kind':'dash','src':url,'label':'DASH Live'}
+    if provider=='video': return {'kind':'video','src':url,'label':'Direct Live Video'}
+    return {'kind':'other','src':url,'label':'External Live URL'}
+
+@app.route('/media-live')
+@app.route('/media/live')
 @login_required
-def koja_support():
-    uid=(current_user() or {}).get('id')
+def media_live():
+    rows=db_select('koja_media_live_streams',{'is_public':'eq.true'},order='created_at.desc',limit=100) or []
+    for r in rows: r['_provider']=clean(r.get('provider')) or detect_live_provider(r.get('stream_url'))
+    return render_page('KOJA Live',r'''<style>
+.live-home{background:#05070b;color:#f7f9fc;min-height:calc(100vh - 110px);padding-bottom:35px}.live-head{padding:28px 20px;background:linear-gradient(135deg,#07101b,#101722);border-bottom:1px solid rgba(255,255,255,.08)}.live-head h1{margin:0 0 7px;font-size:clamp(28px,5vw,48px)}.live-head p{color:#aeb9c8}.live-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px}.live-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:15px;padding:20px}.live-card{background:#0b1119;border:1px solid rgba(255,255,255,.08);border-radius:14px;overflow:hidden;text-decoration:none;color:#fff}.live-card img{width:100%;aspect-ratio:16/9;object-fit:cover;display:block;background:#111923}.live-placeholder{width:100%;aspect-ratio:16/9;background:linear-gradient(135deg,#0c1622,#111923);display:grid;place-items:center;font-weight:800;letter-spacing:.12em}.live-card-info{padding:12px}.live-badge{display:inline-block;background:#e50914;border-radius:999px;padding:4px 7px;font-size:10px;font-weight:800}.live-provider{font-size:11px;color:#8f9caf;margin-top:7px}
+</style><div class="live-home"><div class="live-head"><div style="color:#63b4ff;font-weight:800;letter-spacing:.15em">KOJA MEDIA</div><h1>KOJA LIVE</h1><p>Watch permitted live streams from KOJA creators, businesses and external providers.</p><div class="live-actions"><a class="btn secondary" href="{{ url_for('media_nextgen') }}">Back to Media</a>{% if user %}<a class="btn" href="{{ url_for('media_live_add') }}">Add Live Stream</a>{% endif %}</div></div><div class="live-grid">{% for s in streams %}<a class="live-card" href="{{ url_for('media_live_watch',stream_id=s.id) }}">{% if s.thumbnail_url %}<img src="{{ s.thumbnail_url }}" loading="lazy" alt="{{ s.title }}">{% else %}<div class="live-placeholder">KOJA LIVE</div>{% endif %}<div class="live-card-info"><span class="live-badge">LIVE</span><h3>{{ s.title }}</h3><div class="live-provider">{{ s._provider|title }} · {{ s.category or 'Live Stream' }}</div></div></a>{% else %}<div class="card"><h3>No live streams yet.</h3><p>Sign in and add an external live stream URL.</p></div>{% endfor %}</div></div>''',streams=rows)
+
+@app.route('/media-live/add', methods=['GET','POST'])
+@app.route('/media/live/add', methods=['GET','POST'])
+@login_required
+def media_live_add():
     if request.method=='POST':
-        subject=clean(request.form.get('subject'))[:180]; message=clean(request.form.get('message'))[:10000]
-        if subject and message:
-            db_insert('koja_support_tickets',{'user_id':uid,'subject':subject,'category':clean(request.form.get('category') or 'General')[:80],'priority':clean(request.form.get('priority') or 'normal')[:20],'message':message})
-            flash('Support request submitted.','success')
-        return redirect(url_for('koja_support'))
-    rows=db_select('koja_support_tickets',{'user_id':uid},order='created_at.desc',limit=100) or []
-    return render_page('KOJA Help & Support',r'''
-<div class="hero"><h1>KOJA Help & Support</h1><p>Report problems, ask for help and track responses.</p></div>
-<div class="card"><form method="post"><input name="subject" required placeholder="Subject"><select name="category"><option>General</option><option>Account</option><option>Payments</option><option>Market</option><option>Business</option><option>News</option><option>Media</option><option>AI</option><option>Delivery</option><option>Technical</option><option>Safety</option></select><select name="priority"><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select><textarea name="message" required placeholder="Describe the issue or request"></textarea><button class="btn success">Submit Request</button></form></div>
-<div class="grid">{% for t in rows %}<div class="card"><small>{{ t.category }} · {{ t.priority }}</small><h3>{{ t.subject }}</h3><p>{{ t.message }}</p><p><strong>Status:</strong> {{ t.status }}</p>{% if t.admin_reply %}<div class="card"><strong>KOJA Support:</strong><p>{{ t.admin_reply }}</p></div>{% endif %}</div>{% else %}<div class="card"><p>No support requests yet.</p></div>{% endfor %}</div>
-''',rows=rows)
+        title=clean(request.form.get('title')); stream_url=clean(request.form.get('stream_url')); thumbnail=clean(request.form.get('thumbnail_url')); category=clean(request.form.get('category')) or 'Live Stream'; provider=clean(request.form.get('provider')).lower() or detect_live_provider(stream_url)
+        if not title or not stream_url:
+            flash('Title and live stream URL are required.','danger'); return redirect(url_for('media_live_add'))
+        if not re.match(r'^https://',stream_url,re.I):
+            flash('For external live streams, use a secure HTTPS URL.','danger'); return redirect(url_for('media_live_add'))
+        if provider not in {'youtube','facebook','twitch','hls','dash','video','microsoft','other'}: provider=detect_live_provider(stream_url)
+        row,err=db_insert('koja_media_live_streams',{'owner_id':(current_user() or {}).get('id'),'title':title,'stream_url':stream_url,'provider':provider,'thumbnail_url':thumbnail or None,'category':category,'is_public':True,'created_at':utc_now(),'updated_at':utc_now()})
+        if err: flash('Could not save the live stream. Run the KOJA Live migration in Supabase first.','danger')
+        else: flash('Live stream connected to KOJA Media.','success'); return redirect(url_for('media_live'))
+    return render_page('Add KOJA Live Stream',r'''<div class="hero"><h1>Add KOJA Live Stream</h1><p>Connect a permitted external live URL without downloading or re-hosting the stream.</p></div><div class="card" style="max-width:760px;margin:auto"><form method="post"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><label>Title</label><input name="title" maxlength="180" required placeholder="Live event title"><label>Live URL</label><input name="stream_url" type="url" required placeholder="https://...m3u8 or provider live URL"><label>Provider</label><select name="provider"><option value="">Auto detect</option><option value="youtube">YouTube Live</option><option value="facebook">Facebook Live</option><option value="twitch">Twitch</option><option value="hls">HLS (.m3u8)</option><option value="dash">DASH (.mpd)</option><option value="video">Direct video</option><option value="microsoft">Microsoft / Stream</option><option value="other">Other</option></select><label>Thumbnail URL (optional)</label><input name="thumbnail_url" type="url" placeholder="https://..."><label>Category</label><input name="category" maxlength="80" placeholder="News, Sports, Education, Business..."><p class="small">KOJA can play direct HLS/DASH/video URLs and supported provider embeds. A normal webpage URL is not automatically a video stream.</p><button class="btn" type="submit">Connect Live Stream</button></form></div>''')
 
-@app.route('/api/koja/report',methods=['POST'])
+@app.route('/media-live/<stream_id>')
+@app.route('/media/live/<stream_id>')
 @login_required
-def koja_report():
-    d=request.get_json(silent=True) or request.form
-    target_type=clean(d.get('target_type'))[:80]; target_id=clean(d.get('target_id'))[:180]; reason=clean(d.get('reason'))[:180]
-    if not target_type or not target_id or not reason: return jsonify({'ok':False,'error':'target_type_target_id_reason_required'}),400
-    db_insert('koja_reports',{'reporter_id':(current_user() or {}).get('id'),'target_type':target_type,'target_id':target_id,'reason':reason,'details':clean(d.get('details'))[:5000]})
-    return jsonify({'ok':True,'message':'Report submitted'})
+def media_live_watch(stream_id):
+    stream=first_row('koja_media_live_streams',{'id':stream_id})
+    if not stream or not as_bool(stream.get('is_public')): abort(404)
+    cfg=live_player_config(stream)
+    return render_page('KOJA Live Player',r'''<style>
+.koja-live-watch{background:#05070b;color:#fff;min-height:calc(100vh - 110px);padding:14px}.koja-live-watch-inner{max-width:1200px;margin:auto}.live-player{background:#000;border-radius:14px;overflow:hidden;position:relative;min-height:52vh;display:grid;place-items:center}.live-player video,.live-player iframe{width:100%;height:68vh;min-height:360px;border:0;background:#000}.live-status{position:absolute;left:12px;top:12px;z-index:12;background:#e50914;padding:5px 8px;border-radius:999px;font-size:10px;font-weight:800}.live-info{padding:16px 0}.live-info h1{font-size:clamp(24px,4vw,40px);margin:0 0 7px}.live-note{color:#9eabbc;font-size:13px}.live-back{margin-bottom:12px}.koja-load{position:absolute;inset:0;z-index:10;display:grid;place-items:center;pointer-events:none;opacity:1;transition:opacity .25s ease;background:rgba(0,0,0,.26)}.koja-load.hide{opacity:0}.koja-load-mark{width:58px;height:58px;border-radius:16px;display:grid;place-items:center;background:linear-gradient(135deg,#176b87,#19a7b8,#f2b84b);box-shadow:0 8px 28px rgba(0,0,0,.45);animation:kojaPulse 1.25s ease-in-out infinite}.koja-load-mark svg{width:38px;height:38px}.koja-load span{position:absolute;margin-top:88px;font-size:12px;color:#fff;opacity:.86}.koja-watermark{position:absolute;right:14px;bottom:58px;z-index:11;width:42px;height:42px;opacity:.82;pointer-events:none;transition:opacity .25s ease,transform .25s ease}.koja-watermark.hide{opacity:0;transform:scale(.9)}.koja-watermark span{width:100%;height:100%;border-radius:12px;display:grid;place-items:center;background:rgba(9,18,28,.62);backdrop-filter:blur(5px)}.koja-watermark svg{width:27px;height:27px}.koja-fullscreen{position:absolute;right:12px;top:12px;z-index:13;border:0;background:rgba(0,0,0,.58);color:#fff;border-radius:8px;padding:8px 10px;cursor:pointer}.koja-retry{position:absolute;left:50%;bottom:22px;transform:translateX(-50%);z-index:14;display:none}.koja-retry.show{display:block}.koja-error{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:13;width:min(92%,520px);display:none;text-align:center;padding:20px;border-radius:14px;background:rgba(8,12,18,.94);border:1px solid rgba(255,255,255,.12);box-shadow:0 14px 50px rgba(0,0,0,.45)}.koja-error.show{display:block}.koja-error h3{margin:0 0 7px}.koja-error p{margin:0 0 14px;color:#b7c1ce;font-size:13px}@keyframes kojaPulse{0%,100%{transform:scale(.94);opacity:.72}50%{transform:scale(1);opacity:1}}@media(max-width:600px){.koja-live-watch{padding:8px}.live-player video,.live-player iframe{height:58vh;min-height:280px}.koja-watermark{right:10px;bottom:50px;width:34px;height:34px}.koja-watermark svg{width:22px;height:22px}}
+</style><div class="koja-live-watch"><div class="koja-live-watch-inner"><div class="live-back"><a class="btn secondary" href="{{ url_for('media_live') }}">Back to KOJA Live</a></div><div class="live-player" id="livePlayer"><span class="live-status">LIVE</span>{% if cfg.kind in ['hls','dash','video'] %}<video id="externalLiveVideo" controls autoplay playsinline preload="auto"></video><button id="kojaFullscreen" class="koja-fullscreen" type="button">Fullscreen</button><div id="kojaLoading" class="koja-load"><div class="koja-load-mark"><svg viewBox="0 0 24 24" fill="none"><path d="M5 18V6h7.2a5.3 5.3 0 0 1 0 10.6H8.5" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 9.1h3.4a1.9 1.9 0 0 1 0 3.8H8.5" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div><span>Connecting to live stream…</span></div><div id="kojaWatermark" class="koja-watermark hide" aria-hidden="true"><span><svg viewBox="0 0 24 24" fill="none"><path d="M5 18V6h7.2a5.3 5.3 0 0 1 0 10.6H8.5" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 9.1h3.4a1.9 1.9 0 0 1 0 3.8H8.5" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div id="kojaError" class="koja-error"><h3>Live stream temporarily unavailable</h3><p>KOJA is trying to reconnect. If the source is offline, please try again later.</p><button id="kojaErrorRetry" class="btn" type="button">Retry now</button></div><div id="kojaRetry" class="koja-retry"><button class="btn" type="button">Retry</button></div>{% elif cfg.kind=='iframe' %}<iframe src="{{ cfg.src }}" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>{% else %}<div style="padding:30px;text-align:center"><h2>Provider requires a supported player</h2><p class="live-note">This URL cannot be converted into a video player automatically.</p><a class="btn" href="{{ cfg.src }}" target="_blank" rel="noopener">Open Source</a></div>{% endif %}</div><div class="live-info"><h1>{{ stream.title }}</h1><div class="live-note">{{ stream.provider|title }} · {{ stream.category or 'Live Stream' }}</div><p>{{ stream.description or 'External live stream connected through KOJA Media.' }}</p></div></div></div>
+{% if cfg.kind=='hls' %}<script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.2/dist/hls.min.js"></script><script>(function(){
+const v=document.getElementById('externalLiveVideo'),src={{ cfg.src|tojson }},load=document.getElementById('kojaLoading'),wm=document.getElementById('kojaWatermark'),retry=document.getElementById('kojaRetry'),err=document.getElementById('kojaError'),errRetry=document.getElementById('kojaErrorRetry'),player=document.getElementById('livePlayer'),fs=document.getElementById('kojaFullscreen');
+let h=null,timer=null,watchdog=null,softTimer=null,stopped=false,starting=false,attempt=0,lastProgress=0,lastPlaying=0,hasPlayed=false,initialGraceUntil=0,initialRetryTimer=null;
+const MAX_DELAY=30000;
+const INITIAL_LOAD_GRACE=60000; // give slow/live URLs up to 60s to establish
 
-@app.route('/api/koja/preferences',methods=['GET','POST'])
+function state(b,msg){load.classList.toggle('hide',!b);wm.classList.toggle('hide',!b);const t=load.querySelector('span');if(t&&msg)t.textContent=msg}
+function clearTimers(){if(timer){clearTimeout(timer);timer=null}if(softTimer){clearTimeout(softTimer);softTimer=null}if(initialRetryTimer){clearTimeout(initialRetryTimer);initialRetryTimer=null}}
+function showError(){state(false);wm.classList.remove('hide');err.classList.add('show');retry.classList.add('show')}
+function hideError(){err.classList.remove('show');retry.classList.remove('show')}
+function destroy(){clearTimers();if(h){try{h.stopLoad()}catch(e){}try{h.destroy()}catch(e){}h=null}try{v.pause()}catch(e){}}
+function delay(){return Math.min(MAX_DELAY,Math.max(1000,1000*Math.pow(2,Math.min(attempt,5))))}
+function schedule(reason,immediate){if(stopped||timer||starting)return;attempt++;state(true,reason==='buffer'?'Buffering live stream…':'Reconnecting live stream…');const d=immediate?250:delay();timer=setTimeout(()=>{timer=null;start(reason)},d)}
+function softRecover(){if(stopped||!h||starting)return;try{h.startLoad()}catch(e){}try{v.play().catch(()=>{})}catch(e){}if(softTimer)clearTimeout(softTimer);softTimer=setTimeout(()=>{if(!stopped&&Date.now()-Math.max(lastProgress,lastPlaying)>7000)schedule('buffer',true)},7000)}
+function start(reason){if(stopped||starting)return;starting=true;clearTimers();hideError();state(true,reason==='manual'?'Reconnecting live stream…':'Connecting to live stream…');destroy();lastProgress=Date.now();lastPlaying=0;if(reason==='initial'&&!hasPlayed)initialGraceUntil=Date.now()+INITIAL_LOAD_GRACE;
+if(window.Hls&&Hls.isSupported()){
+ h=new Hls({liveDurationInfinity:true,startLevel:-1,autoStartLoad:true,maxBufferLength:30,maxMaxBufferLength:75,backBufferLength:30,capLevelToPlayerSize:true,enableWorker:true,lowLatencyMode:false,initialLiveManifestSize:2,manifestLoadingMaxRetry:6,manifestLoadingRetryDelay:1000,manifestLoadingMaxRetryTimeout:30000,levelLoadingMaxRetry:8,levelLoadingRetryDelay:1000,levelLoadingMaxRetryTimeout:30000,fragLoadingMaxRetry:8,fragLoadingRetryDelay:1000,fragLoadingMaxRetryTimeout:30000,appendErrorMaxRetry:4});
+ h.loadSource(src);h.attachMedia(v);
+ h.on(Hls.Events.MANIFEST_PARSED,()=>{starting=false;attempt=0;v.muted=false;v.volume=1;v.play().catch(()=>{});});
+ h.on(Hls.Events.LEVEL_LOADED,()=>{lastProgress=Date.now()});
+ h.on(Hls.Events.FRAG_LOADED,()=>{lastProgress=Date.now()});
+ h.on(Hls.Events.ERROR,function(_,d){if(!d)return;if(!d.fatal){if(d.type===Hls.ErrorTypes.NETWORK_ERROR||d.details==='bufferStalledError'){if(hasPlayed)softRecover();}return}starting=false;if(d.type===Hls.ErrorTypes.NETWORK_ERROR){try{h.startLoad();v.play().catch(()=>{});if(!hasPlayed&&Date.now()<initialGraceUntil){initialRetryTimer=setTimeout(()=>{if(!stopped&&h&&!hasPlayed){try{h.startLoad()}catch(e){}}},10000);return}setTimeout(()=>{if(!stopped&&Date.now()-lastProgress>6000)schedule('network',true)},6500);return}catch(e){}}if(d.type===Hls.ErrorTypes.MEDIA_ERROR){try{h.recoverMediaError();if(!hasPlayed&&Date.now()<initialGraceUntil)return;setTimeout(()=>{if(!stopped&&Date.now()-lastPlaying>7000)schedule('media',true)},3500);return}catch(e){}}if(!hasPlayed&&Date.now()<initialGraceUntil){initialRetryTimer=setTimeout(()=>{if(!stopped&&!hasPlayed)start('initial-retry')},10000);return}schedule('fatal',true);});
+}else{starting=false;v.src=src;v.load();v.muted=false;v.volume=1;v.play().catch(()=>{});}
+}
+v.addEventListener('loadstart',()=>state(true,'Loading live stream…'));
+v.addEventListener('waiting',()=>{state(true,'Buffering live stream…');if(hasPlayed)softRecover()});
+v.addEventListener('stalled',()=>{state(true,'Reconnecting live stream…');if(hasPlayed)schedule('network',true)});
+v.addEventListener('canplay',()=>{if(!lastPlaying)state(false,'')});
+v.addEventListener('playing',()=>{hasPlayed=true;initialGraceUntil=0;lastPlaying=Date.now();lastProgress=Date.now();attempt=0;hideError();state(false,'')});
+v.addEventListener('timeupdate',()=>{lastPlaying=Date.now();lastProgress=Date.now()});
+v.addEventListener('pause',()=>{if(!document.hidden&&!stopped&&v.readyState>0)setTimeout(()=>{if(v.paused&&!stopped)v.play().catch(()=>{})},700)});
+v.addEventListener('error',()=>{if(hasPlayed)schedule('video',true);});
+window.addEventListener('online',()=>{if(!stopped){attempt=0;start('online')}});
+window.addEventListener('offline',()=>state(true,'Waiting for network…'));
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!stopped){if(v.paused||Date.now()-lastPlaying>12000)start('resume')}});
+watchdog=setInterval(()=>{if(stopped||document.hidden||!navigator.onLine||!hasPlayed)return;const stale=Date.now()-Math.max(lastProgress,lastPlaying)>18000;if(v.paused||v.readyState<2||stale){softRecover();setTimeout(()=>{if(!stopped&&Date.now()-Math.max(lastProgress,lastPlaying)>9000)start('watchdog')},9000)}},12000);
+function manual(){attempt=0;start('manual')}
+retry.querySelector('button').addEventListener('click',manual);errRetry.addEventListener('click',manual);fs.addEventListener('click',()=>{const f=player.requestFullscreen||player.webkitRequestFullscreen||player.msRequestFullscreen;if(f)f.call(player)});player.addEventListener('dblclick',()=>{const f=player.requestFullscreen||player.webkitRequestFullscreen||player.msRequestFullscreen;if(f)f.call(player)});
+window.addEventListener('beforeunload',()=>{stopped=true;if(watchdog)clearInterval(watchdog);destroy()});start('initial');
+})();</script>{% elif cfg.kind=='dash' %}<script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script><script>(function(){const v=document.getElementById('externalLiveVideo'),src={{ cfg.src|tojson }},load=document.getElementById('kojaLoading'),wm=document.getElementById('kojaWatermark'),retry=document.getElementById('kojaRetry'),player=document.getElementById('livePlayer'),fs=document.getElementById('kojaFullscreen');let p=null,timer=null,tries=0,last=0,stopped=false,hasPlayed=false,graceUntil=Date.now()+60000;function busy(x,m){load.classList.toggle('hide',!x);wm.classList.toggle('hide',!x);const t=load.querySelector('span');if(t&&m)t.textContent=m}function restart(immediate){if(stopped||timer)return;tries++;busy(true,hasPlayed?'Reconnecting live stream…':'Loading live stream…');timer=setTimeout(()=>{timer=null;if(p){try{p.reset()}catch(e){}}p=dashjs.MediaPlayer().create();p.updateSettings({streaming:{retryIntervals:{MPD:1000,HTTPLoad:1000,LowLatencyTimeout:10000},retryAttempts:{MPD:8,HTTPLoad:8}}});p.initialize(v,src,true);},immediate?250:Math.min(30000,Math.pow(2,Math.min(tries-1,5))*1000))}function init(){busy(true,'Connecting to live stream…');p=dashjs.MediaPlayer().create();p.initialize(v,src,true);p.on(dashjs.MediaPlayer.events.STREAM_INITIALIZED,()=>{hasPlayed=true;graceUntil=0;tries=0;last=Date.now();v.muted=false;v.volume=1;busy(false,'')});p.on(dashjs.MediaPlayer.events.ERROR,()=>restart(true));}v.addEventListener('playing',()=>{hasPlayed=true;graceUntil=0;last=Date.now();tries=0;busy(false,'');retry.classList.remove('show')});v.addEventListener('timeupdate',()=>last=Date.now());v.addEventListener('waiting',()=>{if(hasPlayed)restart(true)});v.addEventListener('stalled',()=>{if(hasPlayed)restart(true)});v.addEventListener('error',()=>{if(hasPlayed||Date.now()>graceUntil)restart(true)});retry.querySelector('button').addEventListener('click',()=>{tries=0;restart(true)});fs.addEventListener('click',()=>{const f=player.requestFullscreen||player.webkitRequestFullscreen;if(f)f.call(player)});setInterval(()=>{if(!stopped&&!document.hidden&&navigator.onLine&&(v.paused||!last||Date.now()-last>18000))restart(true)},12000);window.addEventListener('online',()=>restart(true));window.addEventListener('beforeunload',()=>stopped=true);init()})();</script>{% elif cfg.kind=='video' %}<script>(function(){const v=document.getElementById('externalLiveVideo'),src={{ cfg.src|tojson }},load=document.getElementById('kojaLoading'),wm=document.getElementById('kojaWatermark'),retry=document.getElementById('kojaRetry'),player=document.getElementById('livePlayer'),fs=document.getElementById('kojaFullscreen');let timer=null,tries=0,last=0,stopped=false,hasPlayed=false,graceUntil=Date.now()+60000;function busy(x,m){load.classList.toggle('hide',!x);wm.classList.toggle('hide',!x);const t=load.querySelector('span');if(t&&m)t.textContent=m}function restart(immediate){if(stopped||timer)return;tries++;busy(true,'Reconnecting live stream…');timer=setTimeout(()=>{timer=null;v.src=src;v.load();v.muted=false;v.volume=1;v.play().catch(()=>{})},immediate?250:Math.min(30000,Math.pow(2,Math.min(tries-1,5))*1000))}v.addEventListener('playing',()=>{hasPlayed=true;graceUntil=0;last=Date.now();tries=0;busy(false,'');retry.classList.remove('show')});v.addEventListener('timeupdate',()=>last=Date.now());v.addEventListener('waiting',()=>{if(hasPlayed)restart(true)});v.addEventListener('stalled',()=>{if(hasPlayed)restart(true)});v.addEventListener('error',()=>{if(hasPlayed||Date.now()>graceUntil)restart(true)});retry.querySelector('button').addEventListener('click',()=>{tries=0;restart(true)});fs.addEventListener('click',()=>{const f=player.requestFullscreen||player.webkitRequestFullscreen;if(f)f.call(player)});setInterval(()=>{if(!stopped&&!document.hidden&&navigator.onLine&&(v.paused||!last||Date.now()-last>18000))restart(true)},12000);window.addEventListener('online',()=>restart(true));window.addEventListener('beforeunload',()=>stopped=true);v.src=src;v.muted=false;v.volume=1;v.play().catch(()=>{});})();</script>{% endif %}''',stream=stream,cfg=cfg)
+
+
+# ============================================================
+# KOJA CONNECT CALL NETWORK CONFIG — optional TURN support
+# Existing signaling/call routes are preserved. Set TURN_URL, TURN_USERNAME,
+# TURN_CREDENTIAL (or KOJA_TURN_URL/KOJA_TURN_USERNAME/KOJA_TURN_CREDENTIAL)
+# in Render to add TURN without changing the database.
+# ============================================================
+@app.route('/api/connect/ice-config')
 @login_required
-def koja_preferences():
-    uid=(current_user() or {}).get('id')
-    if request.method=='POST':
-        d=request.get_json(silent=True) or request.form
-        payload={'user_id':uid,'language':clean(d.get('language') or 'English')[:80],'country':clean(d.get('country'))[:120],'timezone':clean(d.get('timezone') or 'UTC')[:100],'notifications_enabled':str(d.get('notifications_enabled','true')).lower() not in {'false','0','no'},'marketing_enabled':str(d.get('marketing_enabled','false')).lower() in {'true','1','yes'}}
-        old=first_row('koja_user_preferences',{'user_id':uid})
-        if old: db_update('koja_user_preferences',{'user_id':uid},payload)
-        else: db_insert('koja_user_preferences',payload)
-        return jsonify({'ok':True})
-    row=first_row('koja_user_preferences',{'user_id':uid}) or {'language':'English','country':'','timezone':'UTC','notifications_enabled':True,'marketing_enabled':False}
-    return jsonify({'ok':True,'preferences':row})
-
-@app.route('/admin/koja/support',methods=['GET','POST'])
-@admin_required
-def admin_koja_support():
-    if request.method=='POST':
-        tid=clean(request.form.get('id')); status=clean(request.form.get('status') or 'open'); reply=clean(request.form.get('admin_reply'))[:10000]
-        if tid: db_update('koja_support_tickets',{'id':tid},{'status':status,'admin_reply':reply,'updated_at':utc_now()})
-        return redirect(url_for('admin_koja_support'))
-    rows=db_select('koja_support_tickets',order='created_at.desc',limit=200) or []
-    return render_page('KOJA Support Admin',r'''
-<div class="hero"><h1>KOJA Support</h1><p>Manage platform support requests.</p></div>
-{% for t in rows %}<div class="card"><h3>{{ t.subject }}</h3><p>{{ t.message }}</p><small>{{ t.category }} · {{ t.priority }} · {{ t.status }}</small><form method="post"><input type="hidden" name="id" value="{{ t.id }}"><select name="status"><option {% if t.status=='open' %}selected{% endif %}>open</option><option {% if t.status=='in_progress' %}selected{% endif %}>in_progress</option><option {% if t.status=='resolved' %}selected{% endif %}>resolved</option><option {% if t.status=='closed' %}selected{% endif %}>closed</option></select><textarea name="admin_reply" placeholder="Reply to user">{{ t.admin_reply }}</textarea><button class="btn success">Update</button></form></div>{% else %}<div class="card"><p>No support tickets.</p></div>{% endfor %}
-''',rows=rows)
+def connect_ice_config():
+    turn_url = clean(os.getenv('KOJA_TURN_URL') or os.getenv('TURN_URL'))
+    turn_username = clean(os.getenv('KOJA_TURN_USERNAME') or os.getenv('TURN_USERNAME'))
+    turn_credential = clean(os.getenv('KOJA_TURN_CREDENTIAL') or os.getenv('TURN_CREDENTIAL'))
+    servers=[{'urls':'stun:stun.l.google.com:19302'}]
+    if turn_url and turn_username and turn_credential:
+        urls=[x.strip() for x in turn_url.split(',') if x.strip()]
+        servers.append({'urls': urls or [turn_url], 'username':turn_username, 'credential':turn_credential})
+    return jsonify({'iceServers':servers,'turnConfigured':len(servers)>1})
