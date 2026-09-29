@@ -1,9 +1,8 @@
-Flask>=3.0,<4
-Werkzeug>=3.0,<4
-requests>=2.31,<3
-python-dotenv>=1.0,<2
-livekit-api>=1.0,<2
-pypdf>=5,<7
-python-docx>=1.1,<2
-google-auth>=2.30,<3
-gunicorn>=23,<24
+Flask
+requests
+python-dotenv
+Werkzeug
+livekit-api
+pypdf
+python-docx
+gunicorn
