@@ -874,6 +874,7 @@ footer{text-align:center;color:var(--muted);padding:30px}
 <a href="{{ url_for('home') }}">Home</a>
 {% if user %}
 <a href="{{ url_for('dashboard') }}">Dashboard</a>
+<a href="{{ url_for('koja_control_center') }}">KOJA Hub</a>
 <a href="{{ url_for('services') }}">Services</a>
 <a href="{{ url_for('research') }}">Research</a>
 <a href="{{ url_for('ai_nextgen') }}">KOJA AI</a>
@@ -897,7 +898,7 @@ footer{text-align:center;color:var(--muted);padding:30px}
 <a role="menuitem" href="{{ url_for('koja_cloud_page') }}">KOJA Cloud</a>
 <a role="menuitem" href="{{ url_for('settings') }}">Settings</a>
 {% if user.role in ['driver','admin'] or user.is_admin %}<a role="menuitem" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}
-{% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('admin') }}">Admin</a><a role="menuitem" href="{{ url_for('admin_market') }}">KOJA Market Admin</a><a role="menuitem" href="{{ url_for('admin_marketplace') }}">Digital Marketplace Admin</a>{% endif %}
+{% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('admin') }}">Admin</a><a role="menuitem" href="{{ url_for('admin_koja_support') }}">KOJA Support</a><a role="menuitem" href="{{ url_for('admin_market') }}">KOJA Market Admin</a><a role="menuitem" href="{{ url_for('admin_marketplace') }}">Digital Marketplace Admin</a>{% endif %}
 <a role="menuitem" href="{{ url_for('logout') }}">Logout</a>
 </div></div>
 {% else %}
@@ -9976,3 +9977,141 @@ def driver_available_deliveries():
 <div class="hero"><h1>Available KOJA Deliveries</h1><p>Only unclaimed delivery jobs appear here. The first driver to accept a job claims it; it immediately disappears from this list for every other driver.</p></div>
 <div class="grid">{% for d in rows %}<div class="card"><h3>{{ d.tracking_code }}</h3><p><strong>Pickup:</strong> {{ d.pickup_location }}</p><p><strong>Destination:</strong> {{ d.destination }}</p><p><strong>Fee:</strong> {{ money(d.delivery_fee,'ZMW') }}</p><form method="post" action="{{ url_for('driver_delivery_action',delivery_id=d.id,action='accept') }}"><button class="btn success">Accept Delivery</button></form></div>{% else %}<div class="card"><p>No available deliveries right now.</p></div>{% endfor %}</div>
 ''',rows=rows,money=market_money)
+# KOJA END-TO-END CORE ADDON
+# Paste/merge this block into the current KOJA app before deployment.
+
+@app.route('/koja')
+@login_required
+def koja_control_center():
+    u=current_user() or {}
+    uid=u.get('id')
+    tickets=db_select('koja_support_tickets',{'user_id':uid},order='created_at.desc',limit=5) or []
+    saved=db_select('koja_saved_items',{'user_id':uid},order='created_at.desc',limit=8) or []
+    return render_page('KOJA Control Center',r'''
+<div class="hero"><h1>KOJA Control Center</h1><p>One place to access your learning, AI, communication, market, business, media, news, delivery and cloud services.</p></div>
+<div class="grid">
+<a class="card" href="{{ url_for('dashboard') }}"><h3>Dashboard</h3><p>Your KOJA activity and services.</p></a>
+<a class="card" href="{{ url_for('ai_nextgen') }}"><h3>KOJA AI</h3><p>AI assistant, files and conversations.</p></a>
+<a class="card" href="{{ url_for('news_nextgen') }}"><h3>Global News</h3><p>Global news discovery and live news.</p></a>
+<a class="card" href="{{ url_for('media_nextgen') }}"><h3>Media</h3><p>Watch, publish and discover media.</p></a>
+<a class="card" href="{{ url_for('market') }}"><h3>KOJA Market</h3><p>Buy, sell and discover products.</p></a>
+<a class="card" href="{{ url_for('business') }}"><h3>KOJA Business</h3><p>Business operations, sales and intelligence.</p></a>
+<a class="card" href="{{ url_for('communication_nextgen') }}"><h3>Connect+</h3><p>Communication and calling.</p></a>
+<a class="card" href="{{ url_for('deliveries') }}"><h3>Delivery</h3><p>Request and track fulfilment.</p></a>
+<a class="card" href="{{ url_for('koja_cloud_page') }}"><h3>KOJA Cloud</h3><p>Cloud services and developer infrastructure.</p></a>
+<a class="card" href="{{ url_for('koja_search') }}"><h3>Universal Search</h3><p>Search across KOJA services.</p></a>
+<a class="card" href="{{ url_for('koja_saved') }}"><h3>Saved</h3><p>Your saved KOJA items.</p></a>
+<a class="card" href="{{ url_for('koja_support') }}"><h3>Help & Support</h3><p>Create and track support requests.</p></a>
+</div>
+<div class="card"><h2>Recent support</h2>{% for t in tickets %}<p><strong>{{ t.subject }}</strong> — {{ t.status }}</p>{% else %}<p>No support tickets.</p>{% endfor %}</div>
+''',tickets=tickets,saved=saved)
+
+@app.route('/koja/search')
+@login_required
+def koja_search():
+    q=clean(request.args.get('q'))
+    results=[]
+    if q:
+        terms=q.lower()
+        sources=[
+            ('Questions','questions','title','/questions'),
+            ('Assignments','assignments','title','/assignments'),
+            ('Public','public_posts','title','/public'),
+            ('Market','koja_market_products','title','/market'),
+            ('Digital Marketplace','koja_marketplace_products','title','/marketplace'),
+            ('Businesses','koja_businesses','business_name','/business'),
+            ('Global News','koja_news_live','headline','/news-next'),
+        ]
+        for label,table,col,url in sources:
+            try:
+                rows=db_select(table,order='created_at.desc',limit=100) or []
+            except Exception:
+                rows=[]
+            for r in rows:
+                val=str(r.get(col) or r.get('name') or r.get('title') or r.get('headline') or '')
+                if terms in val.lower():
+                    results.append({'type':label,'title':val[:180],'url':url,'id':r.get('id')})
+                    if len(results)>=50: break
+            if len(results)>=50: break
+    return render_page('KOJA Search',r'''
+<div class="hero"><h1>KOJA Universal Search</h1><p>Search across the services available to you.</p></div>
+<form class="card" method="get"><input name="q" value="{{ q }}" placeholder="Search KOJA" autofocus><button class="btn" type="submit">Search</button></form>
+<div class="grid">{% for r in results %}<a class="card" href="{{ r.url }}"><small>{{ r.type }}</small><h3>{{ r.title }}</h3></a>{% else %}<div class="card"><p>{% if q %}No matching results found.{% else %}Enter a search term.{% endif %}</p></div>{% endfor %}</div>
+''',q=q,results=results)
+
+@app.route('/koja/saved')
+@login_required
+def koja_saved():
+    rows=db_select('koja_saved_items',{'user_id':(current_user() or {}).get('id')},order='created_at.desc',limit=200) or []
+    return render_page('Saved',r'''<div class="hero"><h1>Saved</h1><p>Your saved KOJA items.</p></div><div class="grid">{% for x in rows %}<div class="card"><small>{{ x.item_type }}</small><h3>{{ x.title or x.item_id }}</h3><a class="btn" href="{{ x.url or '#' }}">Open</a><form method="post" action="{{ url_for('koja_saved_delete',item_id=x.id) }}" style="display:inline"><button class="btn danger">Remove</button></form></div>{% else %}<div class="card"><p>Nothing saved yet.</p></div>{% endfor %}</div>''',rows=rows)
+
+@app.route('/api/koja/saved',methods=['POST'])
+@login_required
+def koja_saved_add():
+    d=request.get_json(silent=True) or {}
+    uid=(current_user() or {}).get('id')
+    item_type=clean(d.get('item_type') or 'general')[:80]; item_id=clean(d.get('item_id'))[:180]
+    if not item_id: return jsonify({'ok':False,'error':'item_id_required'}),400
+    existing=first_row('koja_saved_items',{'user_id':uid,'item_type':item_type,'item_id':item_id})
+    if not existing:
+        db_insert('koja_saved_items',{'user_id':uid,'item_type':item_type,'item_id':item_id,'title':clean(d.get('title'))[:300],'url':clean(d.get('url'))[:1000]})
+    return jsonify({'ok':True})
+
+@app.route('/koja/saved/delete/<item_id>',methods=['POST'])
+@login_required
+def koja_saved_delete(item_id):
+    db_delete('koja_saved_items',{'id':item_id,'user_id':(current_user() or {}).get('id')})
+    return redirect(url_for('koja_saved'))
+
+@app.route('/koja/support',methods=['GET','POST'])
+@login_required
+def koja_support():
+    uid=(current_user() or {}).get('id')
+    if request.method=='POST':
+        subject=clean(request.form.get('subject'))[:180]; message=clean(request.form.get('message'))[:10000]
+        if subject and message:
+            db_insert('koja_support_tickets',{'user_id':uid,'subject':subject,'category':clean(request.form.get('category') or 'General')[:80],'priority':clean(request.form.get('priority') or 'normal')[:20],'message':message})
+            flash('Support request submitted.','success')
+        return redirect(url_for('koja_support'))
+    rows=db_select('koja_support_tickets',{'user_id':uid},order='created_at.desc',limit=100) or []
+    return render_page('KOJA Help & Support',r'''
+<div class="hero"><h1>KOJA Help & Support</h1><p>Report problems, ask for help and track responses.</p></div>
+<div class="card"><form method="post"><input name="subject" required placeholder="Subject"><select name="category"><option>General</option><option>Account</option><option>Payments</option><option>Market</option><option>Business</option><option>News</option><option>Media</option><option>AI</option><option>Delivery</option><option>Technical</option><option>Safety</option></select><select name="priority"><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select><textarea name="message" required placeholder="Describe the issue or request"></textarea><button class="btn success">Submit Request</button></form></div>
+<div class="grid">{% for t in rows %}<div class="card"><small>{{ t.category }} · {{ t.priority }}</small><h3>{{ t.subject }}</h3><p>{{ t.message }}</p><p><strong>Status:</strong> {{ t.status }}</p>{% if t.admin_reply %}<div class="card"><strong>KOJA Support:</strong><p>{{ t.admin_reply }}</p></div>{% endif %}</div>{% else %}<div class="card"><p>No support requests yet.</p></div>{% endfor %}</div>
+''',rows=rows)
+
+@app.route('/api/koja/report',methods=['POST'])
+@login_required
+def koja_report():
+    d=request.get_json(silent=True) or request.form
+    target_type=clean(d.get('target_type'))[:80]; target_id=clean(d.get('target_id'))[:180]; reason=clean(d.get('reason'))[:180]
+    if not target_type or not target_id or not reason: return jsonify({'ok':False,'error':'target_type_target_id_reason_required'}),400
+    db_insert('koja_reports',{'reporter_id':(current_user() or {}).get('id'),'target_type':target_type,'target_id':target_id,'reason':reason,'details':clean(d.get('details'))[:5000]})
+    return jsonify({'ok':True,'message':'Report submitted'})
+
+@app.route('/api/koja/preferences',methods=['GET','POST'])
+@login_required
+def koja_preferences():
+    uid=(current_user() or {}).get('id')
+    if request.method=='POST':
+        d=request.get_json(silent=True) or request.form
+        payload={'user_id':uid,'language':clean(d.get('language') or 'English')[:80],'country':clean(d.get('country'))[:120],'timezone':clean(d.get('timezone') or 'UTC')[:100],'notifications_enabled':str(d.get('notifications_enabled','true')).lower() not in {'false','0','no'},'marketing_enabled':str(d.get('marketing_enabled','false')).lower() in {'true','1','yes'}}
+        old=first_row('koja_user_preferences',{'user_id':uid})
+        if old: db_update('koja_user_preferences',{'user_id':uid},payload)
+        else: db_insert('koja_user_preferences',payload)
+        return jsonify({'ok':True})
+    row=first_row('koja_user_preferences',{'user_id':uid}) or {'language':'English','country':'','timezone':'UTC','notifications_enabled':True,'marketing_enabled':False}
+    return jsonify({'ok':True,'preferences':row})
+
+@app.route('/admin/koja/support',methods=['GET','POST'])
+@admin_required
+def admin_koja_support():
+    if request.method=='POST':
+        tid=clean(request.form.get('id')); status=clean(request.form.get('status') or 'open'); reply=clean(request.form.get('admin_reply'))[:10000]
+        if tid: db_update('koja_support_tickets',{'id':tid},{'status':status,'admin_reply':reply,'updated_at':utc_now()})
+        return redirect(url_for('admin_koja_support'))
+    rows=db_select('koja_support_tickets',order='created_at.desc',limit=200) or []
+    return render_page('KOJA Support Admin',r'''
+<div class="hero"><h1>KOJA Support</h1><p>Manage platform support requests.</p></div>
+{% for t in rows %}<div class="card"><h3>{{ t.subject }}</h3><p>{{ t.message }}</p><small>{{ t.category }} · {{ t.priority }} · {{ t.status }}</small><form method="post"><input type="hidden" name="id" value="{{ t.id }}"><select name="status"><option {% if t.status=='open' %}selected{% endif %}>open</option><option {% if t.status=='in_progress' %}selected{% endif %}>in_progress</option><option {% if t.status=='resolved' %}selected{% endif %}>resolved</option><option {% if t.status=='closed' %}selected{% endif %}>closed</option></select><textarea name="admin_reply" placeholder="Reply to user">{{ t.admin_reply }}</textarea><button class="btn success">Update</button></form></div>{% else %}<div class="card"><p>No support tickets.</p></div>{% endfor %}
+''',rows=rows)
