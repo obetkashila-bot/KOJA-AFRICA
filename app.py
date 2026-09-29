@@ -13,6 +13,8 @@ import base64
 import re
 import time
 import threading
+import subprocess
+import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from functools import wraps
@@ -8487,6 +8489,141 @@ def business_accounting_v2(business_id):
 # Additive extension: preserves existing KOJA News articles/categories.
 # Browser camera is local preview only. Public broadcast uses an existing HLS source.
 # ============================================================
+# ============================================================
+# KOJA GLOBAL NEWS PUBLIC CAMERA INGEST
+# Browser MediaRecorder -> ffmpeg -> HLS -> public KOJA News player.
+# This is a same-service encoder path. It is intended for a single active
+# camera broadcast per Render instance; external HLS sources remain supported.
+# ============================================================
+_KOJA_NEWS_CAMERA_LOCK = threading.RLock()
+_KOJA_NEWS_CAMERA_STREAMS = {}
+_KOJA_NEWS_CAMERA_DIR = os.path.join(tempfile.gettempdir(), 'koja_global_news_live')
+os.makedirs(_KOJA_NEWS_CAMERA_DIR, exist_ok=True)
+
+def _koja_ffmpeg_binary():
+    """Return an ffmpeg executable if the deployment provides one."""
+    configured=(os.getenv('FFMPEG_PATH') or '').strip()
+    if configured and os.path.exists(configured):
+        return configured
+    for candidate in ('ffmpeg','/usr/bin/ffmpeg','/usr/local/bin/ffmpeg'):
+        if os.path.exists(candidate) or candidate == 'ffmpeg':
+            try:
+                import shutil
+                found=shutil.which(candidate)
+                if found: return found
+            except Exception: pass
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
+
+def _koja_news_camera_cleanup(stream_id):
+    with _KOJA_NEWS_CAMERA_LOCK:
+        info=_KOJA_NEWS_CAMERA_STREAMS.pop(stream_id, None)
+    if not info: return
+    proc=info.get('process')
+    try:
+        if proc and proc.poll() is None:
+            proc.stdin.close()
+    except Exception: pass
+    try:
+        if proc and proc.poll() is None:
+            proc.terminate(); proc.wait(timeout=3)
+    except Exception:
+        try:
+            if proc and proc.poll() is None: proc.kill()
+        except Exception: pass
+
+def _koja_news_camera_start(stream_id):
+    ff=_koja_ffmpeg_binary()
+    if not ff: return None, 'FFmpeg is not available. Install ffmpeg or add imageio-ffmpeg to requirements.'
+    outdir=os.path.join(_KOJA_NEWS_CAMERA_DIR, stream_id)
+    os.makedirs(outdir, exist_ok=True)
+    playlist=os.path.join(outdir, 'index.m3u8')
+    # MediaRecorder commonly supplies fragmented WebM. ffmpeg remuxes/transcodes
+    # it to H.264/AAC HLS for broad browser/TV compatibility.
+    cmd=[ff,'-hide_banner','-loglevel','warning','-fflags','+genpts','-i','pipe:0',
+         '-c:v','libx264','-preset','veryfast','-tune','zerolatency','-pix_fmt','yuv420p',
+         '-c:a','aac','-b:a','128k','-ar','44100','-f','hls','-hls_time','2',
+         '-hls_list_size','6','-hls_flags','delete_segments+append_list+independent_segments',
+         '-hls_segment_filename',os.path.join(outdir,'segment%05d.ts'),playlist]
+    try:
+        proc=subprocess.Popen(cmd,stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,bufsize=0)
+    except Exception as e:
+        return None, str(e)
+    with _KOJA_NEWS_CAMERA_LOCK:
+        _KOJA_NEWS_CAMERA_STREAMS[stream_id]={'process':proc,'outdir':outdir,'playlist':playlist,'started_at':utc_now()}
+    return outdir, None
+
+@app.route('/api/news/live/camera/start', methods=['POST'])
+@admin_required
+def api_news_live_camera_start():
+    # Stop any previous camera encoder on this instance before starting another.
+    with _KOJA_NEWS_CAMERA_LOCK:
+        old_ids=list(_KOJA_NEWS_CAMERA_STREAMS.keys())
+    for sid in old_ids: _koja_news_camera_cleanup(sid)
+    stream_id=secrets.token_urlsafe(18).replace('-','_').replace('=','')
+    ingest_token=secrets.token_urlsafe(32)
+    _,err=_koja_news_camera_start(stream_id)
+    if err: return jsonify({'ok':False,'error':err}), 503
+    slug=clean((request.get_json(silent=True) or {}).get('scene_slug') if request.is_json else request.form.get('scene_slug'))
+    if not slug or slug not in KOJA_NEWS_STUDIO_SCENES: slug='main_desk'
+    with _KOJA_NEWS_CAMERA_LOCK:
+        _KOJA_NEWS_CAMERA_STREAMS[stream_id]['token']=ingest_token
+        _KOJA_NEWS_CAMERA_STREAMS[stream_id]['scene_slug']=slug
+    return jsonify({'ok':True,'stream_id':stream_id,'ingest_token':ingest_token,
+                    'stream_url':url_for('news_camera_hls',stream_id=stream_id,_external=True),
+                    'ingest_url':url_for('api_news_live_camera_chunk',stream_id=stream_id,_external=True)})
+
+@app.route('/api/news/live/camera/<stream_id>/chunk', methods=['POST'])
+def api_news_live_camera_chunk(stream_id):
+    token=request.headers.get('X-KOJA-INGEST-TOKEN') or request.form.get('token')
+    with _KOJA_NEWS_CAMERA_LOCK:
+        info=_KOJA_NEWS_CAMERA_STREAMS.get(stream_id)
+    if not info or not token or not hmac.compare_digest(str(token),str(info.get('token',''))):
+        return jsonify({'ok':False,'error':'Invalid or expired ingest session.'}), 401
+    proc=info.get('process')
+    if not proc or proc.poll() is not None:
+        return jsonify({'ok':False,'error':'Encoder is no longer running.'}), 410
+    data=request.get_data(cache=False)
+    if not data: return jsonify({'ok':True})
+    try:
+        proc.stdin.write(data); proc.stdin.flush()
+    except Exception as e:
+        _koja_news_camera_cleanup(stream_id)
+        return jsonify({'ok':False,'error':'Encoder input failed: '+str(e)}), 500
+    return jsonify({'ok':True})
+
+@app.route('/api/news/live/camera/<stream_id>/stop', methods=['POST'])
+def api_news_live_camera_stop(stream_id):
+    token=request.headers.get('X-KOJA-INGEST-TOKEN')
+    with _KOJA_NEWS_CAMERA_LOCK:
+        info=_KOJA_NEWS_CAMERA_STREAMS.get(stream_id)
+    if not info or not token or not hmac.compare_digest(str(token),str(info.get('token',''))):
+        return jsonify({'ok':False,'error':'Invalid ingest session.'}), 401
+    _koja_news_camera_cleanup(stream_id)
+    live=_news_studio_live()
+    if live:
+        db_update('koja_news_live',{'id':live.get('id')},{'status':'offline','ended_at':utc_now(),'updated_at':utc_now(),'studio_updated_at':utc_now()})
+    return jsonify({'ok':True})
+
+@app.route('/news/live/hls/<stream_id>/index.m3u8')
+def news_camera_hls(stream_id):
+    with _KOJA_NEWS_CAMERA_LOCK: info=_KOJA_NEWS_CAMERA_STREAMS.get(stream_id)
+    if not info: abort(404)
+    path=info['playlist']
+    if not os.path.exists(path): return Response('#EXTM3U\n#EXT-X-VERSION:3\n',mimetype='application/vnd.apple.mpegurl')
+    return send_file(path,mimetype='application/vnd.apple.mpegurl',max_age=0)
+
+@app.route('/news/live/hls/<stream_id>/<path:filename>')
+def news_camera_hls_segment(stream_id,filename):
+    with _KOJA_NEWS_CAMERA_LOCK: info=_KOJA_NEWS_CAMERA_STREAMS.get(stream_id)
+    if not info or '/' in filename or not filename.startswith('segment') or not filename.endswith('.ts'): abort(404)
+    path=os.path.join(info['outdir'],filename)
+    if not os.path.exists(path): abort(404)
+    return send_file(path,mimetype='video/mp2t',max_age=0)
+
 KOJA_NEWS_LIVE_SQL = r'''
 create extension if not exists pgcrypto;
 create table if not exists public.koja_news_live (
@@ -8515,6 +8652,8 @@ alter table public.koja_news_live add column if not exists wall_headline text no
 alter table public.koja_news_live add column if not exists wall_subtitle text not null default '';
 alter table public.koja_news_live add column if not exists breaking boolean not null default false;
 alter table public.koja_news_live add column if not exists studio_updated_at timestamptz;
+alter table public.koja_news_live add column if not exists public_stream_url text not null default '';
+alter table public.koja_news_live add column if not exists broadcast_mode text not null default 'external_hls';
 alter table public.koja_news_live add column if not exists country text not null default '';
 alter table public.koja_news_live add column if not exists region text not null default '';
 alter table public.koja_news_live add column if not exists city text not null default '';
@@ -8689,6 +8828,8 @@ def admin_news_live():
             'ticker':clean(request.form.get('ticker')),
             'source_url':clean(request.form.get('source_url')),
             'source_type':'hls',
+            'public_stream_url':clean(request.form.get('public_stream_url')) or clean(request.form.get('source_url')),
+            'broadcast_mode':clean(request.form.get('broadcast_mode')) or 'external_hls',
             'background_url':clean(request.form.get('background_url')),
             'scene_slug':slug,
             'presenter_name':clean(request.form.get('presenter_name')),
@@ -8720,10 +8861,37 @@ def admin_news_live():
 .ks{max-width:1250px;margin:auto}.ks-grid{display:grid;grid-template-columns:1.15fr .85fr;gap:16px}.ks-card{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:17px}.ks-preview{position:relative;min-height:390px;border-radius:16px;overflow:hidden;background:radial-gradient(circle at 50% 25%,rgba(54,183,255,.3),transparent 30%),linear-gradient(135deg,#061a33,#07111f);color:#fff;background-size:cover;background-position:center}.ks-deskimg{position:absolute;left:0;right:0;bottom:0;width:100%;max-height:48%;object-fit:contain;object-position:center bottom;pointer-events:none}.ks-top{position:absolute;z-index:5;top:12px;left:12px;right:12px;display:flex;justify-content:space-between}.ks-live{background:#e21d2b;padding:7px 10px;border-radius:7px;font-weight:900}.ks-wall{position:absolute;z-index:3;top:27%;left:7%;right:7%;text-align:center;text-shadow:0 2px 8px #000}.ks-wall h2{font-size:clamp(22px,4vw,44px);margin:0 0 5px}.ks-lower{position:absolute;z-index:6;left:0;right:0;bottom:28%;background:rgba(226,29,43,.96);padding:10px 13px;font-weight:900}.ks-camera{position:absolute;z-index:4;left:7%;right:7%;bottom:26%;width:86%;height:40%;object-fit:cover;border-radius:10px;background:#000;display:none}.ks-controls{display:grid;gap:9px}.ks-controls input,.ks-controls select,.ks-controls textarea{width:100%;box-sizing:border-box;padding:10px;border:1px solid var(--border);border-radius:10px;background:var(--surface);color:inherit}.ks-controls textarea{min-height:70px;resize:vertical}.ks-scenes{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}.ks-scenes button{padding:9px 6px;border:1px solid var(--border);border-radius:9px;background:var(--surface);color:inherit;font-weight:800}.ks-scenes button.active{background:#0b4ea2;color:#fff;border-color:#36b7ff}.ks-row{display:grid;grid-template-columns:1fr 1fr;gap:9px}.ks-assets{display:grid;grid-template-columns:1fr 1fr;gap:8px}.ks-note{font-size:12px;opacity:.72;line-height:1.5}@media(max-width:850px){.ks-grid{grid-template-columns:1fr}.ks-scenes{grid-template-columns:repeat(2,1fr)}.ks-row,.ks-assets{grid-template-columns:1fr}}
 </style>
 <div class="ks"><div class="hero"><h1>KOJA GLOBAL NEWS LIVE STUDIO</h1><p>Global virtual TV studio and HLS newsroom for countries, regions and cities worldwide.</p><p><a class="btn secondary" href="{{ url_for('admin_news_studio_assets') }}">STUDIO ASSETS</a></p></div>
-<div class="ks-grid"><div class="ks-card"><h2>Studio Preview</h2><div id="ksPreview" class="ks-preview" {% if live and live.background_asset_url %}style="background-image:url('{{ live.background_asset_url }}')"{% elif live and live.background_url %}style="background-image:url('{{ live.background_url }}')"{% endif %}><div class="ks-top"><strong>KOJA GLOBAL NEWS</strong><span class="ks-live">● LIVE</span></div><div class="ks-wall"><div>{{ scene.tag }}</div><h2 id="ksHeadline">{{ live.wall_headline if live and live.wall_headline else (live.headline if live else 'KOJA GLOBAL NEWS') }}</h2><div class="ks-field">{{ live.wall_subtitle if live and live.wall_subtitle else scene.name }}</div></div><video id="ksCamera" class="ks-camera" autoplay muted playsinline></video><div id="ksLower" class="ks-lower">{{ live.headline if live and live.headline else 'GLOBAL NEWS' }}</div>{% if live and live.desk_asset_url %}<img class="ks-deskimg" src="{{ live.desk_asset_url }}" alt="News desk overlay">{% endif %}</div><p><button class="btn" type="button" onclick="ksCameraStart()">Start Camera Preview</button> <button class="btn secondary" type="button" onclick="ksCameraStop()">Stop Camera</button></p><p class="ks-note">Camera preview is local to this device. It does not itself publish HLS. Use an existing compatible encoder/source and paste its HLS .m3u8 URL below.</p></div>
+<div class="ks-grid"><div class="ks-card"><h2>Studio Preview</h2><div id="ksPreview" class="ks-preview" {% if live and live.background_asset_url %}style="background-image:url('{{ live.background_asset_url }}')"{% elif live and live.background_url %}style="background-image:url('{{ live.background_url }}')"{% endif %}><div class="ks-top"><strong>KOJA GLOBAL NEWS</strong><span class="ks-live">● LIVE</span></div><div class="ks-wall"><div>{{ scene.tag }}</div><h2 id="ksHeadline">{{ live.wall_headline if live and live.wall_headline else (live.headline if live else 'KOJA GLOBAL NEWS') }}</h2><div class="ks-field">{{ live.wall_subtitle if live and live.wall_subtitle else scene.name }}</div></div><video id="ksCamera" class="ks-camera" autoplay muted playsinline></video><div id="ksLower" class="ks-lower">{{ live.headline if live and live.headline else 'GLOBAL NEWS' }}</div>{% if live and live.desk_asset_url %}<img class="ks-deskimg" src="{{ live.desk_asset_url }}" alt="News desk overlay">{% endif %}</div><p><button class="btn" type="button" onclick="ksCameraStart()">Start Camera Preview</button> <button class="btn secondary" type="button" onclick="ksCameraStop()">Stop Camera</button></p><p class="ks-note">Camera preview can now be published through KOJA's built-in camera encoder when FFmpeg is available. External HLS sources remain supported.</p><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn success" type="button" onclick="ksPublicLive()">GO PUBLIC WITH CAMERA</button><button class="btn danger" type="button" onclick="ksPublicStop()">STOP PUBLIC CAMERA</button></div><div id="ksPublicStatus" class="ks-note" style="margin-top:8px"></div></div>
 <div class="ks-card"><h2>Scene Control</h2><div class="ks-scenes">{% for key,val in scenes.items() %}<form method="post"><input type="hidden" name="action" value="scene"><input type="hidden" name="scene_slug" value="{{ key }}"><button class="{% if live and live.scene_slug==key %}active{% endif %}" type="submit">{{ val.name }}</button></form>{% endfor %}</div><hr><h2>Broadcast</h2><form method="post" class="ks-controls"><input name="title" value="{{ live.title if live else 'KOJA GLOBAL NEWS LIVE' }}" placeholder="Broadcast title"><div class="ks-row"><input id="ksHeadlineInput" name="headline" value="{{ live.headline if live else '' }}" placeholder="Main headline"><input name="presenter_name" value="{{ live.presenter_name if live else '' }}" placeholder="Presenter name"></div><div class="ks-row"><input name="country" value="{{ live.country if live else '' }}" placeholder="Country"><input name="region" value="{{ live.region if live else '' }}" placeholder="Region / continent"></div><div class="ks-row"><input name="city" value="{{ live.city if live else '' }}" placeholder="City"><input name="location" value="{{ live.location if live else 'Global' }}" placeholder="Location / venue"></div><div class="ks-row"><input name="reporter" value="{{ live.reporter if live else '' }}" placeholder="Reporter name"><input name="language" value="{{ live.language if live else '' }}" placeholder="Language"></div><div class="ks-row"><select name="category">{% for c in categories %}<option value="{{ c }}" {% if live and live.category==c %}selected{% endif %}>{{ c }}</option>{% endfor %}</select><input name="timezone" value="{{ live.timezone if live else '' }}" placeholder="Time zone (e.g. UTC)"></div><div class="ks-assets"><div><label>Virtual background</label><select name="background_asset_id"><option value="">Use default / custom URL</option>{% for a in backgrounds %}<option value="{{ a.id }}" {% if live and live.background_asset_id==a.id %}selected{% endif %}>{{ a.name }}</option>{% endfor %}</select></div><div><label>Desk overlay</label><select name="desk_asset_id"><option value="">No desk overlay</option>{% for a in desks %}<option value="{{ a.id }}" {% if live and live.desk_asset_id==a.id %}selected{% endif %}>{{ a.name }}</option>{% endfor %}</select></div></div><select name="scene_slug">{% for key,val in scenes.items() %}<option value="{{ key }}" {% if live and live.scene_slug==key %}selected{% endif %}>{{ val.name }}</option>{% endfor %}</select><textarea name="wall_headline" placeholder="Headline shown on studio wall">{{ live.wall_headline if live else '' }}</textarea><textarea name="wall_subtitle" placeholder="Studio wall subtitle">{{ live.wall_subtitle if live else '' }}</textarea><input name="ticker" value="{{ live.ticker if live else '' }}" placeholder="Scrolling ticker"><input name="source_url" value="{{ live.source_url if live else '' }}" placeholder="Existing HLS .m3u8 broadcast URL"><input name="background_url" value="{{ live.background_url if live else '' }}" placeholder="Optional custom background URL"><label><input type="checkbox" name="breaking" value="1" {% if live and live.breaking %}checked{% endif %}> BREAKING NEWS mode</label><button class="btn success" name="action" value="start" type="submit">GO LIVE / UPDATE STUDIO</button>{% if live %}<button class="btn danger" name="action" value="stop" type="submit">STOP LIVE</button>{% endif %}</form></div></div></div>
 <script>
 let ksStream=null;function ksCameraStart(){if(!navigator.mediaDevices?.getUserMedia){alert('Camera is not supported by this browser.');return}navigator.mediaDevices.getUserMedia({video:true,audio:true}).then(s=>{ksStream=s;const v=document.getElementById('ksCamera');v.srcObject=s;v.style.display='block'}).catch(e=>alert('Camera permission failed: '+e.message))}function ksCameraStop(){if(ksStream){ksStream.getTracks().forEach(t=>t.stop());ksStream=null}document.getElementById('ksCamera').style.display='none'}document.getElementById('ksHeadlineInput')?.addEventListener('input',e=>{document.getElementById('ksHeadline').textContent=e.target.value||'KOJA GLOBAL NEWS';document.getElementById('ksLower').textContent=e.target.value||'GLOBAL NEWS'});
+let ksPublic={id:null,token:null,rec:null,timer:null};
+async function ksPublicLive(){
+  if(!ksStream){await ksCameraStart();}
+  if(!ksStream)return;
+  const status=document.getElementById('ksPublicStatus'); status.textContent='Starting public camera encoder…';
+  const fd=new FormData(); fd.append('scene_slug',document.querySelector('[name="scene_slug"]')?.value||'main_desk');
+  const r=await fetch('{{ url_for("api_news_live_camera_start") }}',{method:'POST',body:fd,credentials:'same-origin'}); const j=await r.json();
+  if(!j.ok){status.textContent=j.error||'Could not start encoder.';return;}
+  ksPublic.id=j.stream_id;ksPublic.token=j.ingest_token;
+  const meta=document.querySelector('.ks-controls');
+  if(meta){
+    let su=meta.querySelector('[name="source_url"]'); if(su)su.value=j.stream_url;
+    let f=meta.querySelector('[name="broadcast_mode"]'); if(!f){f=document.createElement('input');f.type='hidden';f.name='broadcast_mode';meta.appendChild(f)} f.value='camera_hls';
+    let pu=meta.querySelector('[name="public_stream_url"]'); if(!pu){pu=document.createElement('input');pu.type='hidden';pu.name='public_stream_url';meta.appendChild(pu)} pu.value=j.stream_url;
+  }
+  const mime=['video/webm;codecs=vp8,opus','video/webm'].find(x=>MediaRecorder.isTypeSupported(x))||'';
+  try{ksPublic.rec=new MediaRecorder(ksStream,mime?{mimeType:mime}:undefined)}catch(e){status.textContent='MediaRecorder is not supported: '+e.message;return}
+  ksPublic.rec.ondataavailable=async ev=>{if(!ev.data||!ev.data.size||!ksPublic.id)return;try{await fetch('{{ url_for("api_news_live_camera_chunk",stream_id="__STREAM__") }}'.replace('__STREAM__',ksPublic.id),{method:'POST',headers:{'X-KOJA-INGEST-TOKEN':ksPublic.token,'Content-Type':ev.data.type||'video/webm'},body:ev.data,credentials:'same-origin'})}catch(e){status.textContent='Upload connection lost.'}};
+  ksPublic.rec.onerror=e=>{status.textContent='Camera encoder error.'}; ksPublic.rec.start(1000); status.textContent='PUBLIC CAMERA LIVE — publishing HLS';
+  // Automatically submit the existing Studio form so the public page uses the generated HLS URL and studio graphics.
+  const form=document.querySelector('.ks-controls'); if(form){let act=form.querySelector('[name="action"]'); if(act)act.value='start'; form.requestSubmit();}
+}
+async function ksPublicStop(){
+  if(ksPublic.rec&&ksPublic.rec.state!=='inactive')ksPublic.rec.stop();
+  if(ksPublic.id&&ksPublic.token){await fetch('{{ url_for("api_news_live_camera_stop",stream_id="__STREAM__") }}'.replace('__STREAM__',ksPublic.id),{method:'POST',headers:{'X-KOJA-INGEST-TOKEN':ksPublic.token},credentials:'same-origin'}).catch(()=>{});}
+  ksPublic={id:null,token:null,rec:null,timer:null}; document.getElementById('ksPublicStatus').textContent='Public camera stopped.';
+}
 </script>
 ''',live=live,scene=scene,scenes=KOJA_NEWS_STUDIO_SCENES,categories=KOJA_NEWS_CATEGORIES,backgrounds=backgrounds,desks=desks)
 
@@ -8734,7 +8902,7 @@ def koja_news_live():
     return render_page('KOJA GLOBAL NEWS LIVE',r'''
 <style>.kn{max-width:1250px;margin:auto}.kn-stage{position:relative;min-height:min(70vh,720px);border-radius:18px;overflow:hidden;background:#06111f;color:#fff;background-size:cover;background-position:center}.kn-desk{position:absolute;left:0;right:0;bottom:0;width:100%;max-height:42%;object-fit:contain;object-position:center bottom;z-index:4}.kn-top{position:absolute;z-index:8;top:14px;left:14px;right:14px;display:flex;justify-content:space-between;font-weight:900}.kn-live{background:#e21d2b;padding:8px 11px;border-radius:7px}.kn-wall{position:absolute;z-index:3;top:28%;left:8%;right:8%;text-align:center;text-shadow:0 2px 9px #000}.kn-wall h1{font-size:clamp(28px,5vw,64px);margin:4px 0}.kn-lower{position:absolute;z-index:7;left:0;right:0;bottom:25%;background:rgba(226,29,43,.96);padding:12px 16px;font-weight:900}.kn-ticker{position:absolute;z-index:9;left:0;right:0;bottom:0;background:#020b16;padding:10px 14px;white-space:nowrap;overflow:hidden}.kn-meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.kn-pill{padding:7px 10px;border-radius:20px;background:var(--surface);border:1px solid var(--border)}@media(max-width:650px){.kn-stage{min-height:58vh}.kn-wall{top:24%}}
 </style>
-<div class="kn"><div class="hero"><h1>KOJA GLOBAL NEWS</h1><p>Worldwide news, live broadcasts and virtual TV newsroom.</p></div>{% if live %}<div class="kn-stage" {% if live.background_asset_url %}style="background-image:url('{{ live.background_asset_url }}')"{% elif live.background_url %}style="background-image:url('{{ live.background_url }}')"{% endif %}><div class="kn-top"><strong>KOJA GLOBAL NEWS</strong><span class="kn-live">● LIVE</span></div><div class="kn-wall"><div>{{ scene.tag }}</div><h1>{{ live.wall_headline or live.headline or 'KOJA GLOBAL NEWS' }}</h1><div>{{ live.wall_subtitle or scene.name }}</div></div>{% if live.desk_asset_url %}<img class="kn-desk" src="{{ live.desk_asset_url }}" alt="News desk">{% endif %}<div class="kn-lower">{{ live.headline or 'GLOBAL NEWS' }}{% if live.presenter_name %} · {{ live.presenter_name }}{% endif %}</div><div class="kn-ticker">{{ live.ticker or 'KOJA GLOBAL NEWS · LIVE UPDATES FROM AROUND THE WORLD' }}</div></div><div class="kn-meta">{% if live.country %}<span class="kn-pill">{{ live.country }}</span>{% endif %}{% if live.region %}<span class="kn-pill">{{ live.region }}</span>{% endif %}{% if live.city %}<span class="kn-pill">{{ live.city }}</span>{% endif %}{% if live.category %}<span class="kn-pill">{{ live.category }}</span>{% endif %}{% if live.language %}<span class="kn-pill">{{ live.language }}</span>{% endif %}</div>{% if live.source_url %}<div class="card" style="margin-top:14px"><video id="kojaNewsPlayer" controls playsinline style="width:100%;max-height:70vh;background:#000;border-radius:12px"></video><script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script><script>(function(){const u={{ live.source_url|tojson }};const v=document.getElementById('kojaNewsPlayer');if(v.canPlayType('application/vnd.apple.mpegurl'))v.src=u;else if(window.Hls&&Hls.isSupported()){const h=new Hls();h.loadSource(u);h.attachMedia(v);}})();</script></div>{% endif %}{% else %}<div class="card"><h2>KOJA GLOBAL NEWS</h2><p>No live broadcast is currently on air.</p></div>{% endif %}</div>
+<div class="kn"><div class="hero"><h1>KOJA GLOBAL NEWS</h1><p>Worldwide news, live broadcasts and virtual TV newsroom.</p></div>{% if live %}<div class="kn-stage" {% if live.background_asset_url %}style="background-image:url('{{ live.background_asset_url }}')"{% elif live.background_url %}style="background-image:url('{{ live.background_url }}')"{% endif %}><div class="kn-top"><strong>KOJA GLOBAL NEWS</strong><span class="kn-live">● LIVE</span></div><div class="kn-wall"><div>{{ scene.tag }}</div><h1>{{ live.wall_headline or live.headline or 'KOJA GLOBAL NEWS' }}</h1><div>{{ live.wall_subtitle or scene.name }}</div></div>{% if live.desk_asset_url %}<img class="kn-desk" src="{{ live.desk_asset_url }}" alt="News desk">{% endif %}<div class="kn-lower">{{ live.headline or 'GLOBAL NEWS' }}{% if live.presenter_name %} · {{ live.presenter_name }}{% endif %}</div><div class="kn-ticker">{{ live.ticker or 'KOJA GLOBAL NEWS · LIVE UPDATES FROM AROUND THE WORLD' }}</div></div><div class="kn-meta">{% if live.country %}<span class="kn-pill">{{ live.country }}</span>{% endif %}{% if live.region %}<span class="kn-pill">{{ live.region }}</span>{% endif %}{% if live.city %}<span class="kn-pill">{{ live.city }}</span>{% endif %}{% if live.category %}<span class="kn-pill">{{ live.category }}</span>{% endif %}{% if live.language %}<span class="kn-pill">{{ live.language }}</span>{% endif %}</div>{% if live.source_url or live.public_stream_url %}<div class="card" style="margin-top:14px"><video id="kojaNewsPlayer" controls playsinline style="width:100%;max-height:70vh;background:#000;border-radius:12px"></video><script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script><script>(function(){const u={{ (live.public_stream_url or live.source_url)|tojson }};const v=document.getElementById('kojaNewsPlayer');if(v.canPlayType('application/vnd.apple.mpegurl'))v.src=u;else if(window.Hls&&Hls.isSupported()){const h=new Hls();h.loadSource(u);h.attachMedia(v);}})();</script></div>{% endif %}{% else %}<div class="card"><h2>KOJA GLOBAL NEWS</h2><p>No live broadcast is currently on air.</p></div>{% endif %}</div>
 ''',live=live,scene=scene)
 
 
