@@ -118,7 +118,7 @@ HLS_PUBLIC_BASE = os.getenv("KOJA_HLS_PUBLIC_BASE", "").strip().rstrip("/")
 HLS_CDN_BASE = os.getenv("KOJA_HLS_CDN_BASE", "").strip().rstrip("/")
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.09-V7-K100M-MONETIZATION-V53-SELLER-CENTER"
+APP_VERSION = "2026.09.22-V8-KOJA-CLOUD-CUSTOMER-INTEGRATION-V1"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -7743,10 +7743,8 @@ def media_nextgen():
     for label,arr in labels:
         if arr: groups.append((label,arr))
     return render_page('KOJA Media',r'''<style>
-.koja-intro{position:fixed;inset:0;z-index:99999;background:#020305;display:grid;place-items:center;opacity:1;visibility:visible;transition:opacity .55s ease,visibility .55s ease}.koja-intro.hide{opacity:0;visibility:hidden;pointer-events:none}.koja-intro-logo{width:min(210px,48vw);height:auto;filter:drop-shadow(0 0 24px rgba(25,167,184,.28));animation:kojaIntroLogo 2.35s cubic-bezier(.2,.75,.25,1) both}.koja-intro-glow{position:absolute;width:min(430px,80vw);height:min(430px,80vw);border-radius:50%;background:radial-gradient(circle,rgba(25,167,184,.16),transparent 68%);animation:kojaIntroGlow 2.4s ease-out both;pointer-events:none}.koja-intro-skip{position:absolute;right:18px;bottom:18px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.06);color:#fff;border-radius:999px;padding:8px 14px;font-size:12px}.koja-intro-enter{position:absolute;bottom:70px;border:1px solid rgba(255,255,255,.22);background:rgba(255,255,255,.08);color:#fff;border-radius:999px;padding:10px 18px;font-weight:700;display:none}.koja-intro-enter.show{display:block}@keyframes kojaIntroLogo{0%{opacity:0;transform:scale(.62);filter:drop-shadow(0 0 0 rgba(25,167,184,0))}55%{opacity:1;transform:scale(1.04)}100%{opacity:1;transform:scale(1)}}@keyframes kojaIntroGlow{0%{opacity:0;transform:scale(.55)}45%{opacity:1;transform:scale(1)}100%{opacity:.72;transform:scale(1.08)}
-}
 .media-home{background:#05070b;color:#f7f9fc;padding-bottom:38px;min-height:calc(100vh - 110px);overflow:hidden}.media-nav{display:flex;gap:8px;overflow:auto;padding:12px 20px;background:#070b11;border-bottom:1px solid rgba(255,255,255,.08)}.media-nav a{color:#dce4ee;text-decoration:none;border:1px solid rgba(255,255,255,.1);border-radius:999px;padding:8px 13px;font-size:12px;white-space:nowrap}.media-hero{min-height:440px;position:relative;display:flex;align-items:flex-end;padding:30px;overflow:hidden;background:#0b1119}.hero-media{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:.62}.media-hero:after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,rgba(3,6,10,.98),rgba(3,6,10,.55) 48%,rgba(3,6,10,.12)),linear-gradient(0deg,rgba(3,6,10,.98),transparent 65%)}.hero-copy{position:relative;z-index:2;max-width:650px}.hero-copy h1{font-size:clamp(30px,5vw,56px);margin:7px 0;line-height:1.04}.hero-kicker{font-size:12px;letter-spacing:.15em;color:#63b4ff;font-weight:800}.hero-copy p{color:#d0d9e5;max-width:580px}.hero-buttons{display:flex;gap:8px;flex-wrap:wrap}.media-content{padding:0 20px}.media-row-title{display:flex;align-items:center;justify-content:space-between;margin:25px 0 9px}.media-row-title h2{margin:0;font-size:21px}.media-row-title span{font-size:12px;color:#7f8da0}.media-row{display:flex;gap:14px;overflow-x:auto;padding:3px 2px 15px;scroll-snap-type:x proximity}.media-row::-webkit-scrollbar{height:6px}.media-row::-webkit-scrollbar-thumb{background:#293544;border-radius:9px}.media-card{position:relative;flex:0 0 235px;scroll-snap-align:start;background:#0c121b;border:1px solid rgba(255,255,255,.08);border-radius:10px;overflow:hidden;color:#fff;text-decoration:none;box-shadow:0 8px 25px rgba(0,0,0,.25);transition:.18s}.media-card:hover{transform:translateY(-5px);border-color:rgba(93,169,255,.55)}.media-thumb{position:relative;aspect-ratio:16/9;background:#111923;overflow:hidden}.media-thumb img,.media-thumb video{width:100%;height:100%;object-fit:cover;display:block}.media-gradient{position:absolute;inset:auto 0 0;height:55%;background:linear-gradient(transparent,rgba(0,0,0,.65))}.media-play{position:absolute;left:10px;bottom:9px;width:36px;height:36px;border-radius:50%;background:rgba(0,0,0,.78);display:grid;place-items:center;font-size:13px}.media-badge{position:absolute;top:8px;right:8px;background:rgba(0,0,0,.75);padding:4px 7px;border-radius:999px;font-size:10px}.media-info{padding:10px}.media-info h3{margin:0 0 5px;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.media-info p{margin:0;color:#9eabbc;font-size:11px;line-height:1.4;height:31px;overflow:hidden}.media-progress{height:3px;background:#303946}.media-progress i{display:block;height:100%;background:#e50914;width:0}@media(max-width:700px){.media-hero{min-height:360px;padding:20px}.media-content{padding:0 13px}.media-card{flex-basis:190px}}
-</style><div id="kojaIntro" class="koja-intro" aria-label="KOJA opening"><div class="koja-intro-glow"></div><svg class="koja-intro-logo" viewBox="0 0 240 90" fill="none" aria-hidden="true"><path d="M35 69V21h38c16 0 27 10 27 24s-11 24-27 24H49" stroke="#fff" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/><path d="M49 34h19c6 0 11 4 11 11s-5 11-11 11H49" stroke="#19a7b8" stroke-width="7" stroke-linecap="round"/><text x="112" y="57" fill="#fff" font-size="30" font-family="Arial,sans-serif" font-weight="800" letter-spacing="3">KOJA</text></svg><button id="kojaIntroEnter" class="koja-intro-enter" type="button">ENTER KOJA</button><button id="kojaIntroSkip" class="koja-intro-skip" type="button">Skip</button></div><div class="media-home"><div class="media-nav"><a href="#continue">Continue Watching</a><a href="#trending">Trending</a><a href="#movies">Movies</a><a href="#series">Series</a><a href="#news">News</a><a href="{{ url_for('media_live') }}">LIVE</a>{% if user %}<a href="{{ url_for('media_studio') }}">Media Studio</a>{% endif %}</div>{% if hero %}<section class="media-hero">{% if hero.media_type=='video' %}<video class="hero-media" src="{{ url_for('public_feed_media',post_id=hero.id) }}" muted autoplay loop playsinline preload="metadata"></video>{% else %}<img class="hero-media" src="{{ url_for('public_feed_media',post_id=hero.id) }}" alt="{{ hero.title or 'KOJA Media' }}">{% endif %}<div class="hero-copy"><div class="hero-kicker">KOJA MEDIA</div><h1>{{ hero.title or 'Discover on KOJA' }}</h1><p>{{ hero.body[:280] }}</p><div class="hero-buttons"><a class="btn" href="{{ url_for('media_watch',post_id=hero.id) }}">Play</a>{% if user %}<a class="btn secondary" href="{{ url_for('media_studio') }}">Create</a>{% endif %}</div></div></section>{% endif %}<div class="media-content">{% for label,group in groups %}<section id="{{ label|lower|replace(' ','-') }}"><div class="media-row-title"><h2>{{ label }}</h2><span>{{ group|length }} titles</span></div><div class="media-row">{% for p in group %}<a class="media-card" href="{{ url_for('media_watch',post_id=p.id) }}" data-id="{{ p.id }}"><div class="media-thumb">{% if p.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=p.id) }}" muted preload="none"></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="{{ p.title or 'KOJA Media' }}">{% endif %}<div class="media-gradient"></div><span class="media-play">▶</span><span class="media-badge">{{ p.post_type|title }}</span></div><div class="media-progress"><i id="progress-{{ p.id }}"></i></div>{% if label=='Continue Watching' %}<div class="media-progress"><i style="width:{{ (100*(p._progress/(p._duration or 1)))|round(1) }}%"></i></div>{% endif %}<div class="media-info"><h3>{{ p.title or 'KOJA Media' }}</h3><p>{{ p.body }}</p></div></a>{% endfor %}</div></section>{% endfor %}</div></div><audio id="kojaIntroAudio" preload="auto"><source src="{{ url_for('static', filename='koja-intro.wav') }}" type="audio/wav"></audio><script>(function(){const intro=document.getElementById('kojaIntro'),audio=document.getElementById('kojaIntroAudio'),enter=document.getElementById('kojaIntroEnter'),skip=document.getElementById('kojaIntroSkip');if(!intro)return;let done=false;function closeIntro(){if(done)return;done=true;try{audio.pause();audio.currentTime=0}catch(e){}intro.classList.add('hide');try{sessionStorage.setItem('koja_intro_seen','1')}catch(e){}}function begin(){enter.classList.remove('show');try{audio.currentTime=0;const pr=audio.play();if(pr&&pr.catch)pr.catch(function(){enter.classList.add('show')})}catch(e){enter.classList.add('show')}setTimeout(closeIntro,3000)}skip.addEventListener('click',closeIntro);enter.addEventListener('click',begin);let seen=false;try{seen=sessionStorage.getItem('koja_intro_seen')==='1'}catch(e){}if(seen){closeIntro();return}begin()})();document.querySelectorAll('.media-card').forEach(function(c){let id=c.dataset.id,b=document.getElementById('progress-'+id);try{let t=parseFloat(localStorage.getItem('koja_resume_'+id)||'0');if(t>3)b.style.width=Math.min(95,Math.max(4,t/6))+'%'}catch(e){}});</script>''',groups=groups,hero=hero)
+</style><div class="media-home"><div class="media-nav"><a href="#continue">Continue Watching</a><a href="#trending">Trending</a><a href="#movies">Movies</a><a href="#series">Series</a><a href="#news">News</a><a href="{{ url_for('media_live') }}">LIVE</a>{% if user %}<a href="{{ url_for('media_studio') }}">Media Studio</a>{% endif %}</div>{% if hero %}<section class="media-hero">{% if hero.media_type=='video' %}<video class="hero-media" src="{{ url_for('public_feed_media',post_id=hero.id) }}" muted autoplay loop playsinline preload="metadata"></video>{% else %}<img class="hero-media" src="{{ url_for('public_feed_media',post_id=hero.id) }}" alt="{{ hero.title or 'KOJA Media' }}">{% endif %}<div class="hero-copy"><div class="hero-kicker">KOJA MEDIA</div><h1>{{ hero.title or 'Discover on KOJA' }}</h1><p>{{ hero.body[:280] }}</p><div class="hero-buttons"><a class="btn" href="{{ url_for('media_watch',post_id=hero.id) }}">Play</a>{% if user %}<a class="btn secondary" href="{{ url_for('media_studio') }}">Create</a>{% endif %}</div></div></section>{% endif %}<div class="media-content">{% for label,group in groups %}<section id="{{ label|lower|replace(' ','-') }}"><div class="media-row-title"><h2>{{ label }}</h2><span>{{ group|length }} titles</span></div><div class="media-row">{% for p in group %}<a class="media-card" href="{{ url_for('media_watch',post_id=p.id) }}" data-id="{{ p.id }}"><div class="media-thumb">{% if p.media_type=='video' %}<video src="{{ url_for('public_feed_media',post_id=p.id) }}" muted preload="none"></video>{% else %}<img src="{{ url_for('public_feed_media',post_id=p.id) }}" loading="lazy" alt="{{ p.title or 'KOJA Media' }}">{% endif %}<div class="media-gradient"></div><span class="media-play">▶</span><span class="media-badge">{{ p.post_type|title }}</span></div><div class="media-progress"><i id="progress-{{ p.id }}"></i></div>{% if label=='Continue Watching' %}<div class="media-progress"><i style="width:{{ (100*(p._progress/(p._duration or 1)))|round(1) }}%"></i></div>{% endif %}<div class="media-info"><h3>{{ p.title or 'KOJA Media' }}</h3><p>{{ p.body }}</p></div></a>{% endfor %}</div></section>{% endfor %}</div></div><script>document.querySelectorAll('.media-card').forEach(function(c){let id=c.dataset.id,b=document.getElementById('progress-'+id);try{let t=parseFloat(localStorage.getItem('koja_resume_'+id)||'0');if(t>3)b.style.width=Math.min(95,Math.max(4,t/6))+'%'}catch(e){}});</script>''',groups=groups,hero=hero)
 
 @app.route('/api/nextgen/media-event',methods=['POST'])
 def nextgen_media_event():
@@ -8770,9 +8768,185 @@ def business_accounting_v2(business_id):
     summary=first_row('koja_business_bi_accounting_summary',{'business_id':business_id}) or {}
     return render_page('Business Accounting V2',r"""<div class="hero"><h1>Accounting</h1><p>{{ b.name }} — connected double-entry ledger.</p><div class="actions"><a class="btn secondary" href="{{ url_for('business_dashboard',business_id=b.id) }}">Business Dashboard</a><a class="btn secondary" href="{{ url_for('business_intelligence_v3',business_id=b.id) }}">AI Intelligence</a></div></div><div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(summary.accounting_revenue or 0,'ZMW') }}</h2></div><div class="card"><h3>Expenses</h3><h2>{{ money(summary.accounting_expenses or 0,'ZMW') }}</h2></div><div class="card"><h3>Net Result</h3><h2>{{ money(summary.accounting_net_result or 0,'ZMW') }}</h2></div><div class="card"><h3>Transactions</h3><h2>{{ summary.transaction_count or 0 }}</h2></div></div><div class="card"><h2>Record Transaction</h2><form method="post"><label>Type</label><select name="kind"><option value="sale">Sale / Income</option><option value="expense">Expense</option></select><label>Description</label><input name="description" required><label>Amount (ZMW)</label><input name="amount" type="number" min="0" step="0.01" required><label>Payment Method</label><select name="payment_method"><option value="cash">Cash</option><option value="bank">Bank</option><option value="mobile_money">Mobile Money</option></select><label>Expense Category</label><select name="category"><option value="other">Other</option><option value="rent">Rent</option><option value="salary">Salary</option><option value="transport">Transport</option><option value="marketing">Marketing</option><option value="utilities">Utilities</option><option value="tax">Tax</option></select><button class="btn">Save & Post to Ledger</button></form></div><div class="card"><h2>Chart of Accounts</h2><table><tr><th>Code</th><th>Account</th><th>Type</th><th>Balance</th></tr>{% for a in accounts %}<tr><td>{{ a.account_code }}</td><td>{{ a.account_name }}</td><td>{{ a.account_type }}</td><td>{{ money(a.balance or 0,'ZMW') }}</td></tr>{% else %}<tr><td colspan="4">No accounts.</td></tr>{% endfor %}</table></div><div class="card"><h2>Recent Ledger Transactions</h2><table><tr><th>Date</th><th>Type</th><th>Description</th><th>Amount</th><th>Status</th></tr>{% for x in txs %}<tr><td>{{ x.transaction_date }}</td><td>{{ x.transaction_type }}</td><td>{{ x.description }}</td><td>{{ money(x.total_amount or 0,'ZMW') }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="5">No accounting transactions yet.</td></tr>{% endfor %}</table></div>""",b=b,summary=summary,accounts=accounts,txs=txs,money=market_money)
 
-if __name__=="__main__":
-    port=int(os.getenv("PORT","5000"))
-    app.run(host="0.0.0.0",port=port,debug=False)
+# ============================================================
+# KOJA NEWS LIVE + VIRTUAL NEWS TV STUDIO
+# Additive extension: preserves existing KOJA News articles/categories.
+# ============================================================
+KOJA_NEWS_LIVE_SQL = r'''
+create extension if not exists pgcrypto;
+create table if not exists public.koja_news_live (
+ id uuid primary key default gen_random_uuid(),
+ title text not null default 'KOJA AFRICA NEWS LIVE',
+ headline text not null default '',
+ location text not null default 'Global',
+ reporter text not null default '',
+ category text not null default 'General',
+ ticker text not null default '',
+ source_url text not null default '',
+ source_type text not null default 'hls',
+ background_url text not null default '',
+ status text not null default 'offline',
+ started_at timestamptz,
+ ended_at timestamptz,
+ created_by uuid,
+ created_at timestamptz not null default now(),
+ updated_at timestamptz not null default now()
+);
+
+alter table public.koja_news_live add column if not exists scene_slug text not null default 'main_desk';
+alter table public.koja_news_live add column if not exists presenter_name text not null default '';
+alter table public.koja_news_live add column if not exists guest_name text not null default '';
+alter table public.koja_news_live add column if not exists guest_title text not null default '';
+alter table public.koja_news_live add column if not exists wall_headline text not null default '';
+alter table public.koja_news_live add column if not exists wall_subtitle text not null default '';
+alter table public.koja_news_live add column if not exists breaking boolean not null default false;
+alter table public.koja_news_live add column if not exists studio_updated_at timestamptz;
+alter table public.koja_news_live add column if not exists country text not null default '';
+alter table public.koja_news_live add column if not exists region text not null default '';
+alter table public.koja_news_live add column if not exists language text not null default 'English';
+alter table public.koja_news_live add column if not exists timezone text not null default 'UTC';
+alter table public.koja_news_live add column if not exists network_name text not null default 'KOJA NEWS';
+create index if not exists koja_news_live_country_idx on public.koja_news_live(country,updated_at desc);
+create index if not exists koja_news_live_status_idx on public.koja_news_live(status,updated_at desc);
+create index if not exists koja_news_live_scene_idx on public.koja_news_live(scene_slug,updated_at desc);
+'''
+
+KOJA_NEWS_STUDIO_SCENES = {
+    'main_desk': {'name':'Main News Desk','tag':'NEWSROOM','kind':'desk','desc':'Primary presenter desk with headline wall.'},
+    'interview_desk': {'name':'Interview Desk','tag':'INTERVIEW','kind':'interview','desc':'Two-person interview layout with presenter and guest.'},
+    'reporter': {'name':'Reporter / Field Desk','tag':'FIELD REPORT','kind':'field','desc':'Field reporter layout with location and lower-third.'},
+    'newsroom': {'name':'Newsroom','tag':'NEWSROOM','kind':'newsroom','desc':'Multi-screen newsroom video wall.'},
+    'breaking': {'name':'Breaking News','tag':'BREAKING','kind':'breaking','desc':'High-priority breaking-news presentation.'},
+    'parliament': {'name':'Parliament','tag':'PARLIAMENT','kind':'parliament','desc':'Parliament-focused news wall.'},
+    'africa': {'name':'Africa','tag':'AFRICA','kind':'africa','desc':'Africa regional news scene.'},
+    'world': {'name':'World','tag':'WORLD','kind':'world','desc':'International news scene.'},
+    'business': {'name':'Business','tag':'BUSINESS','kind':'business','desc':'Markets, companies and economic news.'},
+    'sports': {'name':'Sports','tag':'SPORTS','kind':'sports','desc':'Sports bulletin scene.'},
+    'weather': {'name':'Weather','tag':'WEATHER','kind':'weather','desc':'Weather bulletin scene.'},
+}
+
+def _news_studio_live():
+    return first_row('koja_news_live', {'status':'live'})
+
+def _news_studio_scene(row):
+    slug=clean((row or {}).get('scene_slug')) or 'main_desk'
+    return KOJA_NEWS_STUDIO_SCENES.get(slug, KOJA_NEWS_STUDIO_SCENES['main_desk'])
+
+@app.route('/news/live')
+def koja_news_live():
+    live = _news_studio_live()
+    scene = _news_studio_scene(live)
+    return render_page('KOJA News Live', r'''
+<style>
+:root{--kn-navy:#061a33;--kn-blue:#0b4ea2;--kn-red:#e21d2b;--kn-cyan:#36b7ff;--kn-white:#fff}
+.kn-wrap{max-width:1380px;margin:auto}.kn-hero{background:linear-gradient(135deg,#061a33,#0b4ea2 65%,#0a79c7);color:#fff;border-radius:22px;padding:22px;margin-bottom:16px;box-shadow:0 16px 40px rgba(0,0,0,.18)}
+.kn-hero h1{margin:0 0 5px}.kn-hero p{margin:0;opacity:.9}.kn-grid{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px}.nl-video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#02070d;z-index:3}.kn-screen{position:relative;min-height:650px;border-radius:20px;overflow:hidden;background:#030b15;color:#fff;isolation:isolate;box-shadow:0 18px 55px rgba(0,0,0,.3)}
+.kn-wall{position:absolute;inset:0;z-index:-3;background:radial-gradient(circle at 50% 35%,rgba(54,183,255,.32),transparent 36%),linear-gradient(135deg,#061a33,#07111f 55%,#0b4ea2);overflow:hidden}
+.kn-wall:before{content:"";position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.05) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.05) 1px,transparent 1px);background-size:32px 32px;opacity:.35}
+.kn-wall:after{content:"KOJA AFRICA NEWS";position:absolute;left:8%;right:8%;top:16%;padding:28px;text-align:center;border:1px solid rgba(255,255,255,.16);font-size:clamp(26px,5vw,70px);font-weight:900;letter-spacing:.08em;color:rgba(255,255,255,.10)}
+.kn-screen.scene-interview .kn-wall{background:radial-gradient(circle at 30% 25%,rgba(54,183,255,.3),transparent 35%),radial-gradient(circle at 70% 25%,rgba(255,255,255,.12),transparent 28%),linear-gradient(120deg,#061a33,#123b67,#07111f)}
+.kn-screen.scene-field .kn-wall{background:linear-gradient(135deg,#07111f,#07557e 50%,#07111f)}
+.kn-screen.scene-newsroom .kn-wall{background:radial-gradient(circle at 50% 20%,rgba(54,183,255,.35),transparent 30%),linear-gradient(135deg,#031426,#0b4ea2,#061a33)}
+.kn-screen.scene-breaking .kn-wall{background:radial-gradient(circle at 50% 25%,rgba(226,29,43,.48),transparent 32%),linear-gradient(135deg,#27080c,#061a33 55%,#0b1d37)}
+.kn-screen.scene-parliament .kn-wall{background:linear-gradient(135deg,#07111f,#19314a 48%,#07111f)}
+.kn-screen.scene-africa .kn-wall{background:radial-gradient(circle at 48% 42%,rgba(255,190,70,.28),transparent 25%),linear-gradient(135deg,#062f35,#0b4ea2,#061a33)}
+.kn-screen.scene-world .kn-wall{background:radial-gradient(circle at 50% 45%,rgba(54,183,255,.4),transparent 24%),linear-gradient(135deg,#061a33,#07111f,#123e72)}
+.kn-screen.scene-business .kn-wall{background:radial-gradient(circle at 50% 30%,rgba(76,160,255,.3),transparent 30%),linear-gradient(135deg,#07111f,#0b315a,#061a33)}
+.kn-screen.scene-sports .kn-wall{background:radial-gradient(circle at 50% 35%,rgba(0,210,150,.22),transparent 30%),linear-gradient(135deg,#061a33,#0b3f52,#07111f)}
+.kn-screen.scene-weather .kn-wall{background:radial-gradient(circle at 50% 30%,rgba(255,220,110,.35),transparent 26%),linear-gradient(135deg,#064c78,#0b87b6,#061a33)}
+.kn-custom-bg{position:absolute;inset:0;background-size:cover;background-position:center;opacity:.24;z-index:-2}
+.kn-top{position:absolute;top:16px;left:16px;right:16px;display:flex;justify-content:space-between;align-items:center;gap:10px;z-index:8}.kn-logo{font-weight:950;letter-spacing:.08em;background:rgba(0,0,0,.5);padding:9px 13px;border-radius:9px;backdrop-filter:blur(8px)}.kn-live-dot{background:#e21d2b;padding:9px 12px;border-radius:9px;font-weight:950;animation:knpulse 1.25s infinite}@keyframes knpulse{50%{opacity:.45}}
+.kn-wall-copy{position:absolute;top:22%;left:7%;right:7%;text-align:center;z-index:2}.kn-tag{display:inline-block;background:rgba(8,25,48,.82);border:1px solid rgba(255,255,255,.22);padding:6px 10px;border-radius:999px;font-size:12px;font-weight:900;letter-spacing:.12em}.kn-wall-title{font-size:clamp(25px,4.4vw,62px);font-weight:950;line-height:1.02;margin:13px auto 7px;text-shadow:0 5px 22px #000}.kn-wall-sub{font-size:clamp(13px,1.7vw,20px);opacity:.88}
+.kn-desk{position:absolute;left:4%;right:4%;bottom:13%;height:27%;z-index:4;border-radius:52% 52% 10px 10px/35% 35% 10px 10px;background:linear-gradient(180deg,rgba(14,76,133,.96),rgba(3,18,36,.99));border:1px solid rgba(96,184,255,.55);box-shadow:0 -20px 60px rgba(0,0,0,.35) inset,0 -6px 35px rgba(54,183,255,.15);display:flex;align-items:flex-end;justify-content:center;padding-bottom:24px}.kn-desk-screen{background:#061a33;border:1px solid rgba(255,255,255,.18);padding:9px 16px;border-radius:7px;font-weight:950;letter-spacing:.1em}.kn-interview .kn-desk{left:2%;right:2%;height:24%}.kn-field .kn-desk{left:auto;right:5%;width:42%;height:18%;border-radius:14px}.kn-newsroom .kn-desk{height:17%}.kn-parliament .kn-desk,.kn-africa .kn-desk,.kn-world .kn-desk,.kn-business .kn-desk,.kn-sports .kn-desk,.kn-weather .kn-desk{height:20%}
+.kn-lower{position:absolute;left:0;right:0;bottom:13%;z-index:9;background:linear-gradient(90deg,rgba(226,29,43,.97),rgba(164,17,28,.95));padding:12px 18px;border-top:2px solid #fff;box-shadow:0 -8px 28px rgba(0,0,0,.25)}.kn-lower-main{font-weight:950;font-size:clamp(15px,2vw,25px)}.kn-lower-sub{font-size:12px;margin-top:3px;opacity:.9}.kn-breaking{position:absolute;left:0;top:16%;z-index:10;background:#e21d2b;padding:8px 15px;font-weight:950;letter-spacing:.08em;animation:knflash .9s steps(2,end) infinite}@keyframes knflash{50%{filter:brightness(1.7)}}
+.kn-guest{position:absolute;left:5%;bottom:29%;z-index:8;background:rgba(0,0,0,.68);padding:9px 13px;border-left:4px solid #36b7ff;border-radius:4px;display:none}.scene-interview .kn-guest{display:block}.kn-field-card{position:absolute;right:6%;bottom:31%;z-index:8;text-align:right}.scene-field .kn-field-card{display:block}.kn-field-card strong{display:block;font-size:20px}.kn-field-card span{opacity:.85}.kn-ticker{position:absolute;z-index:12;bottom:0;left:0;right:0;background:#04101e;color:#fff;padding:9px 13px;white-space:nowrap;overflow:hidden;border-top:1px solid rgba(255,255,255,.12)}.kn-ticker span{display:inline-block;padding-left:100%;animation:knscroll 24s linear infinite}@keyframes knscroll{to{transform:translateX(-100%)}}
+.kn-meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.kn-chip{background:var(--surface);border:1px solid var(--border);border-radius:999px;padding:7px 10px}.kn-card{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:17px}.kn-card h3{margin-top:0}.kn-side-list{display:grid;gap:8px}.kn-side-list div{padding:9px 10px;border:1px solid var(--border);border-radius:10px}.kn-muted{opacity:.75;font-size:13px}@media(min-width:1600px){.kn-wrap{max-width:1700px}.kn-screen{min-height:760px}.kn-wall-title{font-size:clamp(42px,3.6vw,78px)}.kn-lower-main{font-size:clamp(22px,1.6vw,32px)}.kn-ticker{font-size:16px;padding:12px 18px}}
+@media(min-width:901px) and (max-width:1400px){.kn-screen{min-height:clamp(560px,55vw,720px)}}
+@media(orientation:landscape) and (max-height:700px){.kn-screen{min-height:calc(100vh - 120px);height:auto}.kn-hero{padding:16px}.kn-grid{grid-template-columns:minmax(0,1fr) 300px}}
+@media(max-width:900px){.kn-grid{grid-template-columns:1fr}.kn-screen{min-height:500px}.kn-desk{bottom:14%}.kn-lower{bottom:14%}}
+@media(max-width:560px){.kn-screen{min-height:430px;border-radius:14px}.kn-top{top:10px;left:10px;right:10px}.kn-wall-copy{top:23%}.kn-wall-title{font-size:25px}.kn-desk{bottom:16%;height:23%}.kn-lower{bottom:16%;padding:9px 11px}.kn-lower-main{font-size:14px}.kn-ticker{font-size:11px}.kn-field-card{right:4%;bottom:34%}}
+</style>
+<div class="kn-wrap">
+  <div class="kn-hero"><div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap"><div><h1>KOJA NEWS LIVE</h1><p>Global virtual television studio · live newsroom · field reports · breaking news</p></div><button class="btn secondary" type="button" onclick="document.documentElement.requestFullscreen?.()">TV / FULLSCREEN</button></div></div>
+  <div class="kn-grid">
+    <main>
+      <div id="knScreen" class="kn-screen scene-{{ scene.kind }}" data-scene="{{ live.scene_slug if live and live.scene_slug else 'main_desk' }}">
+        <div class="kn-wall"></div>{% if live and live.background_url %}<div id="knCustomBg" class="kn-custom-bg" style="background-image:url({{ live.background_url|tojson }})"></div>{% endif %}
+        <div class="kn-top"><div class="kn-logo">{{ live.network_name if live and live.network_name else 'KOJA NEWS' }}</div><div class="kn-live-dot">● LIVE</div></div>
+        <div class="kn-wall-copy"><span id="knTag" class="kn-tag">{{ scene.tag }}</span><div id="knWallTitle" class="kn-wall-title">{{ live.wall_headline if live and live.wall_headline else (live.headline if live else 'KOJA NEWS') }}</div><div id="knWallSub" class="kn-wall-sub">{{ live.wall_subtitle if live and live.wall_subtitle else (scene.name ~ ' · ' ~ (live.location if live else 'Global')) }}</div></div>
+        {% if live and live.source_url %}<video id="kojaNewsPlayer" class="nl-video" controls autoplay playsinline></video><script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>{% endif %}
+        <div class="kn-desk"><div class="kn-desk-screen">{{ live.network_name if live and live.network_name else 'KOJA NEWS' }}</div></div>
+        <div id="knGuest" class="kn-guest"><strong>{{ live.guest_name if live else '' }}</strong><br><span>{{ live.guest_title if live else '' }}</span></div>
+        <div class="kn-field-card"><strong id="knReporter">{{ live.reporter if live and live.reporter else 'KOJA Newsroom' }}</strong><span id="knLocation">{{ live.location if live else 'Global' }}</span></div>
+        <div id="knBreaking" class="kn-breaking" style="display:{{ 'block' if live and live.breaking else 'none' }}">BREAKING NEWS</div>
+        <div class="kn-lower"><div id="knLowerMain" class="kn-lower-main">{{ live.headline if live and live.headline else 'KOJA NEWS — LIVE' }}</div><div id="knLowerSub" class="kn-lower-sub">{{ live.presenter_name if live and live.presenter_name else (live.reporter if live else 'KOJA Newsroom') }} · {{ live.location if live else 'Global' }}</div></div>
+        <div class="kn-ticker"><span id="knTicker">{{ live.ticker if live and live.ticker else 'KOJA NEWS · Latest updates · Breaking news · ' }}</span></div>
+        <div id="knOffline" class="kn-fallback" style="display:{{ 'none' if live else 'block' }}"><h2>KOJA NEWS LIVE</h2><p>No live broadcast is active right now.</p></div>
+      </div>
+      <div id="knMeta" class="kn-meta">{% if live %}<span class="kn-chip" id="knCategory">{{ live.category or 'General' }}</span><span class="kn-chip" id="knMetaLocation">{{ live.location or 'Global' }}</span><span class="kn-chip">Reporter: <span id="knMetaReporter">{{ live.reporter or 'KOJA Newsroom' }}</span></span>{% endif %}</div>
+    </main>
+    <aside>
+      <div class="kn-card"><h3>KOJA News</h3><p>Existing KOJA News articles and categories remain available.</p><a class="btn" href="{{ url_for('news_nextgen') }}">Open News</a></div>
+      <div class="kn-card"><h3>Studio scenes</h3><div class="kn-side-list">{% for key,val in scenes.items() %}<div><strong>{{ val.name }}</strong><br><span class="kn-muted">{{ val.desc }}</span></div>{% endfor %}</div></div>
+    </aside>
+  </div>
+</div>
+<script>
+(function(){
+  const initialUrl={{ (live.source_url if live else '')|tojson }}; let hls=null;
+  function loadHls(u){const v=document.getElementById('kojaNewsPlayer');if(!v||!u)return;if(hls){try{hls.destroy()}catch(e){}hls=null}if(window.Hls&&Hls.isSupported()){hls=new Hls({enableWorker:true});hls.loadSource(u);hls.attachMedia(v);hls.on(Hls.Events.MANIFEST_PARSED,()=>v.play().catch(()=>{}));}else{v.src=u;v.play().catch(()=>{})}}
+  if(initialUrl){if(window.Hls){loadHls(initialUrl)}else{setTimeout(()=>loadHls(initialUrl),800)}}
+  let last=initialUrl||'';
+  function setText(id,v){const e=document.getElementById(id);if(e)e.textContent=v||''}
+  function apply(b){if(!b)return;const screen=document.getElementById('knScreen');if(!screen)return;const scene=b.scene_slug||'main_desk';const kind=(b.scene_kind||'desk');screen.className='kn-screen scene-'+kind;screen.dataset.scene=scene;setText('knTag',b.scene_tag||scene.toUpperCase());setText('knWallTitle',b.wall_headline||b.headline||'KOJA NEWS');setText('knWallSub',b.wall_subtitle||((b.category||'NEWS')+' · '+(b.location||'Global')));setText('knLowerMain',b.headline||'KOJA NEWS — LIVE');setText('knLowerSub',(b.presenter_name||b.reporter||'KOJA Newsroom')+' · '+(b.location||'Global'));setText('knTicker',b.ticker||'KOJA NEWS · Latest updates · Breaking news · ');setText('knReporter',b.reporter||'KOJA Newsroom');setText('knLocation',b.location||'Global');setText('knMetaReporter',b.reporter||'KOJA Newsroom');setText('knMetaLocation',b.location||'Global');const g=document.getElementById('knGuest');if(g)g.innerHTML='<strong>'+((b.guest_name||'').replace(/[&<>]/g,''))+'</strong><br><span>'+((b.guest_title||'').replace(/[&<>]/g,''))+'</span>';const c=document.getElementById('knCategory');if(c)c.textContent=b.category||'General';const br=document.getElementById('knBreaking');if(br)br.style.display=b.breaking?'block':'none';const off=document.getElementById('knOffline');if(off)off.style.display='none';const bg=document.getElementById('knCustomBg');if(bg&&b.background_url)bg.style.backgroundImage='url('+JSON.stringify(b.background_url)+')';if(b.source_url&&b.source_url!==last){last=b.source_url;loadHls(b.source_url)}}
+  setInterval(async()=>{try{const r=await fetch('{{ url_for("api_news_live_status") }}',{cache:'no-store'});const j=await r.json();if(j.live&&j.broadcast)apply(j.broadcast);else{const off=document.getElementById('knOffline');if(off)off.style.display='block'}}catch(e){}},5000);
+})();
+</script>
+''', live=live, scene=scene, scenes=KOJA_NEWS_STUDIO_SCENES)
+
+@app.route('/admin/news/live', methods=['GET','POST'])
+@admin_required
+def admin_news_live():
+    if request.method == 'POST':
+        action=clean(request.form.get('action') or 'start')
+        if action == 'stop':
+            row=_news_studio_live()
+            if row: db_update('koja_news_live', {'id':row.get('id')}, {'status':'offline','ended_at':utc_now(),'updated_at':utc_now(),'studio_updated_at':utc_now()})
+            flash('KOJA News Live stopped.','success'); return redirect(url_for('admin_news_live'))
+        if action == 'scene':
+            row=_news_studio_live()
+            slug=clean(request.form.get('scene_slug')) or 'main_desk'
+            if slug not in KOJA_NEWS_STUDIO_SCENES: slug='main_desk'
+            if row: db_update('koja_news_live', {'id':row.get('id')}, {'scene_slug':slug,'studio_updated_at':utc_now(),'updated_at':utc_now()})
+            flash('Studio scene changed to '+KOJA_NEWS_STUDIO_SCENES[slug]['name']+'.','success'); return redirect(url_for('admin_news_live'))
+        payload={'title':clean(request.form.get('title')) or 'KOJA NEWS LIVE','headline':clean(request.form.get('headline')),'location':clean(request.form.get('location')) or 'Global','reporter':clean(request.form.get('reporter')),'category':clean(request.form.get('category')) or 'General','ticker':clean(request.form.get('ticker')),'source_url':clean(request.form.get('source_url')),'source_type':clean(request.form.get('source_type')) or 'hls','background_url':clean(request.form.get('background_url')),'scene_slug':clean(request.form.get('scene_slug')) or 'main_desk','presenter_name':clean(request.form.get('presenter_name')),'guest_name':clean(request.form.get('guest_name')),'guest_title':clean(request.form.get('guest_title')),'wall_headline':clean(request.form.get('wall_headline')),'wall_subtitle':clean(request.form.get('wall_subtitle')),'breaking':str(request.form.get('breaking') or '') in {'1','true','on','yes'},'status':'live','started_at':utc_now(),'updated_at':utc_now(),'studio_updated_at':utc_now(),'country':clean(request.form.get('country')),'region':clean(request.form.get('region')),'language':clean(request.form.get('language')) or 'English','timezone':clean(request.form.get('timezone')) or 'UTC','network_name':clean(request.form.get('network_name')) or 'KOJA NEWS','created_by':(current_user() or {}).get('id')}
+        old=_news_studio_live()
+        if old: db_update('koja_news_live', {'id':old.get('id')}, payload)
+        else: db_insert('koja_news_live', payload)
+        flash('KOJA News Live is now published.','success'); return redirect(url_for('admin_news_live'))
+    live=_news_studio_live()
+    scene=_news_studio_scene(live)
+    return render_page('KOJA News Live Studio', r'''
+<style>
+.ks{max-width:1250px;margin:auto}.ks-grid{display:grid;grid-template-columns:1.15fr .85fr;gap:16px}.ks-card{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:17px}.ks-preview{position:relative;min-height:390px;border-radius:16px;overflow:hidden;background:radial-gradient(circle at 50% 25%,rgba(54,183,255,.3),transparent 30%),linear-gradient(135deg,#061a33,#07111f);color:#fff;background-size:cover;background-position:center}.ks-preview:before{content:'KOJA NEWS';position:absolute;inset:30px;display:flex;align-items:flex-start;justify-content:center;padding-top:42px;font-size:clamp(24px,5vw,54px);font-weight:950;color:rgba(255,255,255,.12);letter-spacing:.08em}.ks-top{position:absolute;top:12px;left:12px;right:12px;display:flex;justify-content:space-between}.ks-live{background:#e21d2b;padding:7px 10px;border-radius:7px;font-weight:900}.ks-desk{position:absolute;left:7%;right:7%;bottom:0;height:28%;background:linear-gradient(180deg,rgba(14,76,133,.94),rgba(3,18,36,.99));border-top:2px solid #36b7ff;display:flex;align-items:flex-end;justify-content:center;padding-bottom:18px}.ks-lower{position:absolute;left:0;right:0;bottom:28%;background:rgba(226,29,43,.96);padding:10px 13px;font-weight:900}.ks-wall{position:absolute;top:27%;left:7%;right:7%;text-align:center}.ks-wall h2{font-size:clamp(22px,4vw,44px);margin:0 0 5px}.ks-field{opacity:.85}.ks-controls{display:grid;gap:9px}.ks-controls input,.ks-controls select,.ks-controls textarea{width:100%;box-sizing:border-box;padding:10px;border:1px solid var(--border);border-radius:10px;background:var(--surface);color:inherit}.ks-controls textarea{min-height:70px;resize:vertical}.ks-scenes{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}.ks-scenes button{padding:9px 6px;border:1px solid var(--border);border-radius:9px;background:var(--surface);color:inherit;font-weight:800}.ks-scenes button.active{background:#0b4ea2;color:#fff;border-color:#36b7ff}.ks-row{display:grid;grid-template-columns:1fr 1fr;gap:9px}.ks-note{font-size:12px;opacity:.72}.ks-camera{width:100%;max-height:300px;border-radius:12px;background:#000;object-fit:cover;display:none}@media(min-width:1500px){.ks{max-width:1700px}.ks-preview{min-height:620px}.ks-scenes{grid-template-columns:repeat(4,1fr)}}@media(max-width:850px){.ks-grid{grid-template-columns:1fr}.ks-scenes{grid-template-columns:repeat(2,1fr)}}@media(max-width:560px){.ks-row{grid-template-columns:1fr}.ks-preview{min-height:300px}}
+</style>
+<div class="ks"><div class="hero"><h1>KOJA NEWS LIVE STUDIO</h1><p>Control the global virtual TV studio and live HLS channel from phones, tablets, computers and TV browsers.</p></div>
+<div class="ks-grid"><div class="ks-card"><h2>Studio Preview</h2><div id="ksPreview" class="ks-preview"><div class="ks-top"><strong>KOJA AFRICA NEWS</strong><span class="ks-live">● LIVE</span></div><div class="ks-wall"><div id="ksTag">{{ scene.tag }}</div><h2 id="ksHeadline">{{ live.wall_headline if live and live.wall_headline else (live.headline if live else 'KOJA NEWS') }}</h2><div id="ksSub" class="ks-field">{{ live.wall_subtitle if live and live.wall_subtitle else scene.name }}</div></div><video id="ksCamera" class="ks-camera" autoplay muted playsinline></video><div id="ksLower" class="ks-lower">{{ live.headline if live and live.headline else 'BREAKING NEWS' }}</div><div class="ks-desk">KOJA AFRICA NEWS</div></div><p><button class="btn" type="button" onclick="ksCameraStart()">Start Camera Preview</button> <button class="btn secondary" type="button" onclick="ksCameraStop()">Stop Camera</button></p><p class="ks-note">Camera preview is local to this device. It does not itself publish an HLS stream; connect an encoder/ingest URL in Broadcast Source.</p></div>
+<div class="ks-card"><h2>Scene Control</h2><div class="ks-scenes">{% for key,val in scenes.items() %}<form method="post"><input type="hidden" name="action" value="scene"><input type="hidden" name="scene_slug" value="{{ key }}"><button class="{% if live and live.scene_slug==key %}active{% endif %}" type="submit">{{ val.name }}</button></form>{% endfor %}</div><hr><h2>Broadcast</h2><form method="post" class="ks-controls"><input name="title" value="{{ live.title if live else 'KOJA NEWS LIVE' }}" placeholder="Broadcast title"><div class="ks-row"><input name="network_name" value="{{ live.network_name if live and live.network_name else 'KOJA NEWS' }}" placeholder="Network / channel name"><input name="country" value="{{ live.country if live else '' }}" placeholder="Country (any country)"></div><div class="ks-row"><input name="region" value="{{ live.region if live else '' }}" placeholder="Region / city"><input name="language" value="{{ live.language if live and live.language else 'English' }}" placeholder="Language"></div><input name="timezone" value="{{ live.timezone if live and live.timezone else 'UTC' }}" placeholder="Time zone, e.g. Africa/Lusaka"><div class="ks-row"><input id="ksHeadlineInput" name="headline" value="{{ live.headline if live else '' }}" placeholder="Main headline"><input name="presenter_name" value="{{ live.presenter_name if live else '' }}" placeholder="Presenter name"></div><div class="ks-row"><input name="location" value="{{ live.location if live else 'Global' }}" placeholder="Location"><input name="reporter" value="{{ live.reporter if live else '' }}" placeholder="Reporter name"></div><div class="ks-row"><input name="guest_name" value="{{ live.guest_name if live else '' }}" placeholder="Guest name"><input name="guest_title" value="{{ live.guest_title if live else '' }}" placeholder="Guest title"></div><div class="ks-row"><select name="category"><option value="General">General</option><option value="Zambia">Zambia</option><option value="Africa">Africa</option><option value="Business">Business</option><option value="Technology">Technology</option><option value="Education">Education</option><option value="Sports">Sports</option><option value="Jobs & Opportunities">Jobs & Opportunities</option><option value="Entertainment">Entertainment</option></select><select name="scene_slug">{% for key,val in scenes.items() %}<option value="{{ key }}" {% if live and live.scene_slug==key %}selected{% endif %}>{{ val.name }}</option>{% endfor %}</select></div><textarea name="wall_headline" placeholder="Headline shown on studio wall">{{ live.wall_headline if live else '' }}</textarea><textarea name="wall_subtitle" placeholder="Studio wall subtitle">{{ live.wall_subtitle if live else '' }}</textarea><input name="ticker" value="{{ live.ticker if live else '' }}" placeholder="Scrolling ticker"><input name="source_url" value="{{ live.source_url if live else '' }}" placeholder="HLS .m3u8 broadcast URL"><input name="background_url" value="{{ live.background_url if live else '' }}" placeholder="Optional custom studio background URL"><label><input type="checkbox" name="breaking" value="1" {% if live and live.breaking %}checked{% endif %}> BREAKING NEWS mode</label><button class="btn success" name="action" value="start" type="submit">GO LIVE / UPDATE STUDIO</button>{% if live %}<button class="btn danger" name="action" value="stop" type="submit">STOP LIVE</button>{% endif %}</form></div></div></div>
+<script>
+let ksStream=null;function ksCameraStart(){navigator.mediaDevices.getUserMedia({video:true,audio:true}).then(s=>{ksStream=s;const v=document.getElementById('ksCamera');v.srcObject=s;v.style.display='block'}).catch(e=>alert('Camera permission failed: '+e.message))}function ksCameraStop(){if(ksStream){ksStream.getTracks().forEach(t=>t.stop());ksStream=null}document.getElementById('ksCamera').style.display='none'}document.getElementById('ksHeadlineInput')?.addEventListener('input',e=>{document.getElementById('ksHeadline').textContent=e.target.value||'KOJA AFRICA NEWS';document.getElementById('ksLower').textContent=e.target.value||'BREAKING NEWS'});
+</script>
+''', live=live, scene=scene, scenes=KOJA_NEWS_STUDIO_SCENES)
+
+@app.route('/api/news/live/status')
+def api_news_live_status():
+    live=_news_studio_live()
+    scene=_news_studio_scene(live)
+    if not live:
+        return jsonify({'ok':True,'live':False,'broadcast':None})
+    out=dict(live); out['scene_name']=scene['name']; out['scene_kind']=scene['kind']; out['scene_tag']=scene['tag']
+    return jsonify({'ok':True,'live':True,'broadcast':out})
+
 
 @app.route('/business/<business_id>/intelligence-v3', methods=['GET','POST'])
 @login_required
@@ -10707,48 +10881,9 @@ def media_live_watch(stream_id):
     if not stream or not as_bool(stream.get('is_public')): abort(404)
     cfg=live_player_config(stream)
     return render_page('KOJA Live Player',r'''<style>
-.koja-live-watch{background:#05070b;color:#fff;min-height:calc(100vh - 110px);padding:14px}.koja-live-watch-inner{max-width:1200px;margin:auto}.live-player{background:#000;border-radius:14px;overflow:hidden;position:relative;min-height:52vh;display:grid;place-items:center}.live-player video,.live-player iframe{width:100%;height:68vh;min-height:360px;border:0;background:#000}.live-status{position:absolute;left:12px;top:12px;z-index:12;background:#e50914;padding:5px 8px;border-radius:999px;font-size:10px;font-weight:800}.live-info{padding:16px 0}.live-info h1{font-size:clamp(24px,4vw,40px);margin:0 0 7px}.live-note{color:#9eabbc;font-size:13px}.live-back{margin-bottom:12px}.koja-load{position:absolute;inset:0;z-index:10;display:grid;place-items:center;pointer-events:none;opacity:1;transition:opacity .25s ease;background:rgba(0,0,0,.26)}.koja-load.hide{opacity:0}.koja-load-mark{width:58px;height:58px;border-radius:16px;display:grid;place-items:center;background:linear-gradient(135deg,#176b87,#19a7b8,#f2b84b);box-shadow:0 8px 28px rgba(0,0,0,.45);animation:kojaPulse 1.25s ease-in-out infinite}.koja-load-mark svg{width:38px;height:38px}.koja-load span{position:absolute;margin-top:88px;font-size:12px;color:#fff;opacity:.86}.koja-watermark{position:absolute;right:14px;bottom:58px;z-index:11;width:42px;height:42px;opacity:.82;pointer-events:none;transition:opacity .25s ease,transform .25s ease}.koja-watermark.hide{opacity:0;transform:scale(.9)}.koja-watermark span{width:100%;height:100%;border-radius:12px;display:grid;place-items:center;background:rgba(9,18,28,.62);backdrop-filter:blur(5px)}.koja-watermark svg{width:27px;height:27px}.koja-fullscreen{position:absolute;right:12px;top:12px;z-index:13;border:0;background:rgba(0,0,0,.58);color:#fff;border-radius:8px;padding:8px 10px;cursor:pointer}.koja-retry{position:absolute;left:50%;bottom:22px;transform:translateX(-50%);z-index:14;display:none}.koja-retry.show{display:block}.koja-error{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:13;width:min(92%,520px);display:none;text-align:center;padding:20px;border-radius:14px;background:rgba(8,12,18,.94);border:1px solid rgba(255,255,255,.12);box-shadow:0 14px 50px rgba(0,0,0,.45)}.koja-error.show{display:block}.koja-error h3{margin:0 0 7px}.koja-error p{margin:0 0 14px;color:#b7c1ce;font-size:13px}@keyframes kojaPulse{0%,100%{transform:scale(.94);opacity:.72}50%{transform:scale(1);opacity:1}}@media(max-width:600px){.koja-live-watch{padding:8px}.live-player video,.live-player iframe{height:58vh;min-height:280px}.koja-watermark{right:10px;bottom:50px;width:34px;height:34px}.koja-watermark svg{width:22px;height:22px}}
-</style><div class="koja-live-watch"><div class="koja-live-watch-inner"><div class="live-back"><a class="btn secondary" href="{{ url_for('media_live') }}">Back to KOJA Live</a></div><div class="live-player" id="livePlayer"><span class="live-status">LIVE</span>{% if cfg.kind in ['hls','dash','video'] %}<video id="externalLiveVideo" controls autoplay playsinline preload="auto"></video><button id="kojaFullscreen" class="koja-fullscreen" type="button">Fullscreen</button><div id="kojaLoading" class="koja-load"><div class="koja-load-mark"><svg viewBox="0 0 24 24" fill="none"><path d="M5 18V6h7.2a5.3 5.3 0 0 1 0 10.6H8.5" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 9.1h3.4a1.9 1.9 0 0 1 0 3.8H8.5" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div><span>Connecting to live stream…</span></div><div id="kojaWatermark" class="koja-watermark hide" aria-hidden="true"><span><svg viewBox="0 0 24 24" fill="none"><path d="M5 18V6h7.2a5.3 5.3 0 0 1 0 10.6H8.5" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 9.1h3.4a1.9 1.9 0 0 1 0 3.8H8.5" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div id="kojaError" class="koja-error"><h3>Live stream temporarily unavailable</h3><p>KOJA is trying to reconnect. If the source is offline, please try again later.</p><button id="kojaErrorRetry" class="btn" type="button">Retry now</button></div><div id="kojaRetry" class="koja-retry"><button class="btn" type="button">Retry</button></div>{% elif cfg.kind=='iframe' %}<iframe src="{{ cfg.src }}" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>{% else %}<div style="padding:30px;text-align:center"><h2>Provider requires a supported player</h2><p class="live-note">This URL cannot be converted into a video player automatically.</p><a class="btn" href="{{ cfg.src }}" target="_blank" rel="noopener">Open Source</a></div>{% endif %}</div><div class="live-info"><h1>{{ stream.title }}</h1><div class="live-note">{{ stream.provider|title }} · {{ stream.category or 'Live Stream' }}</div><p>{{ stream.description or 'External live stream connected through KOJA Media.' }}</p></div></div></div>
-{% if cfg.kind=='hls' %}<script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.2/dist/hls.min.js"></script><script>(function(){
-const v=document.getElementById('externalLiveVideo'),src={{ cfg.src|tojson }},load=document.getElementById('kojaLoading'),wm=document.getElementById('kojaWatermark'),retry=document.getElementById('kojaRetry'),err=document.getElementById('kojaError'),errRetry=document.getElementById('kojaErrorRetry'),player=document.getElementById('livePlayer'),fs=document.getElementById('kojaFullscreen');
-let h=null,timer=null,watchdog=null,softTimer=null,stopped=false,starting=false,attempt=0,lastProgress=0,lastPlaying=0,hasPlayed=false,initialGraceUntil=0,initialRetryTimer=null;
-const MAX_DELAY=30000;
-const INITIAL_LOAD_GRACE=60000; // give slow/live URLs up to 60s to establish
-
-function state(b,msg){load.classList.toggle('hide',!b);wm.classList.toggle('hide',!b);const t=load.querySelector('span');if(t&&msg)t.textContent=msg}
-function clearTimers(){if(timer){clearTimeout(timer);timer=null}if(softTimer){clearTimeout(softTimer);softTimer=null}if(initialRetryTimer){clearTimeout(initialRetryTimer);initialRetryTimer=null}}
-function showError(){state(false);wm.classList.remove('hide');err.classList.add('show');retry.classList.add('show')}
-function hideError(){err.classList.remove('show');retry.classList.remove('show')}
-function destroy(){clearTimers();if(h){try{h.stopLoad()}catch(e){}try{h.destroy()}catch(e){}h=null}try{v.pause()}catch(e){}}
-function delay(){return Math.min(MAX_DELAY,Math.max(1000,1000*Math.pow(2,Math.min(attempt,5))))}
-function schedule(reason,immediate){if(stopped||timer||starting)return;attempt++;state(true,reason==='buffer'?'Buffering live stream…':'Reconnecting live stream…');const d=immediate?250:delay();timer=setTimeout(()=>{timer=null;start(reason)},d)}
-function softRecover(){if(stopped||!h||starting)return;try{h.startLoad()}catch(e){}try{v.play().catch(()=>{})}catch(e){}if(softTimer)clearTimeout(softTimer);softTimer=setTimeout(()=>{if(!stopped&&Date.now()-Math.max(lastProgress,lastPlaying)>7000)schedule('buffer',true)},7000)}
-function start(reason){if(stopped||starting)return;starting=true;clearTimers();hideError();state(true,reason==='manual'?'Reconnecting live stream…':'Connecting to live stream…');destroy();lastProgress=Date.now();lastPlaying=0;if(reason==='initial'&&!hasPlayed)initialGraceUntil=Date.now()+INITIAL_LOAD_GRACE;
-if(window.Hls&&Hls.isSupported()){
- h=new Hls({liveDurationInfinity:true,startLevel:-1,autoStartLoad:true,maxBufferLength:30,maxMaxBufferLength:75,backBufferLength:30,capLevelToPlayerSize:true,enableWorker:true,lowLatencyMode:false,initialLiveManifestSize:2,manifestLoadingMaxRetry:6,manifestLoadingRetryDelay:1000,manifestLoadingMaxRetryTimeout:30000,levelLoadingMaxRetry:8,levelLoadingRetryDelay:1000,levelLoadingMaxRetryTimeout:30000,fragLoadingMaxRetry:8,fragLoadingRetryDelay:1000,fragLoadingMaxRetryTimeout:30000,appendErrorMaxRetry:4});
- h.loadSource(src);h.attachMedia(v);
- h.on(Hls.Events.MANIFEST_PARSED,()=>{starting=false;attempt=0;v.muted=false;v.volume=1;v.play().catch(()=>{});});
- h.on(Hls.Events.LEVEL_LOADED,()=>{lastProgress=Date.now()});
- h.on(Hls.Events.FRAG_LOADED,()=>{lastProgress=Date.now()});
- h.on(Hls.Events.ERROR,function(_,d){if(!d)return;if(!d.fatal){if(d.type===Hls.ErrorTypes.NETWORK_ERROR||d.details==='bufferStalledError'){if(hasPlayed)softRecover();}return}starting=false;if(d.type===Hls.ErrorTypes.NETWORK_ERROR){try{h.startLoad();v.play().catch(()=>{});if(!hasPlayed&&Date.now()<initialGraceUntil){initialRetryTimer=setTimeout(()=>{if(!stopped&&h&&!hasPlayed){try{h.startLoad()}catch(e){}}},10000);return}setTimeout(()=>{if(!stopped&&Date.now()-lastProgress>6000)schedule('network',true)},6500);return}catch(e){}}if(d.type===Hls.ErrorTypes.MEDIA_ERROR){try{h.recoverMediaError();if(!hasPlayed&&Date.now()<initialGraceUntil)return;setTimeout(()=>{if(!stopped&&Date.now()-lastPlaying>7000)schedule('media',true)},3500);return}catch(e){}}if(!hasPlayed&&Date.now()<initialGraceUntil){initialRetryTimer=setTimeout(()=>{if(!stopped&&!hasPlayed)start('initial-retry')},10000);return}schedule('fatal',true);});
-}else{starting=false;v.src=src;v.load();v.muted=false;v.volume=1;v.play().catch(()=>{});}
-}
-v.addEventListener('loadstart',()=>state(true,'Loading live stream…'));
-v.addEventListener('waiting',()=>{state(true,'Buffering live stream…');if(hasPlayed)softRecover()});
-v.addEventListener('stalled',()=>{state(true,'Reconnecting live stream…');if(hasPlayed)schedule('network',true)});
-v.addEventListener('canplay',()=>{if(!lastPlaying)state(false,'')});
-v.addEventListener('playing',()=>{hasPlayed=true;initialGraceUntil=0;lastPlaying=Date.now();lastProgress=Date.now();attempt=0;hideError();state(false,'')});
-v.addEventListener('timeupdate',()=>{lastPlaying=Date.now();lastProgress=Date.now()});
-v.addEventListener('pause',()=>{if(!document.hidden&&!stopped&&v.readyState>0)setTimeout(()=>{if(v.paused&&!stopped)v.play().catch(()=>{})},700)});
-v.addEventListener('error',()=>{if(hasPlayed)schedule('video',true);});
-window.addEventListener('online',()=>{if(!stopped){attempt=0;start('online')}});
-window.addEventListener('offline',()=>state(true,'Waiting for network…'));
-document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!stopped){if(v.paused||Date.now()-lastPlaying>12000)start('resume')}});
-watchdog=setInterval(()=>{if(stopped||document.hidden||!navigator.onLine||!hasPlayed)return;const stale=Date.now()-Math.max(lastProgress,lastPlaying)>18000;if(v.paused||v.readyState<2||stale){softRecover();setTimeout(()=>{if(!stopped&&Date.now()-Math.max(lastProgress,lastPlaying)>9000)start('watchdog')},9000)}},12000);
-function manual(){attempt=0;start('manual')}
-retry.querySelector('button').addEventListener('click',manual);errRetry.addEventListener('click',manual);fs.addEventListener('click',()=>{const f=player.requestFullscreen||player.webkitRequestFullscreen||player.msRequestFullscreen;if(f)f.call(player)});player.addEventListener('dblclick',()=>{const f=player.requestFullscreen||player.webkitRequestFullscreen||player.msRequestFullscreen;if(f)f.call(player)});
-window.addEventListener('beforeunload',()=>{stopped=true;if(watchdog)clearInterval(watchdog);destroy()});start('initial');
-})();</script>{% elif cfg.kind=='dash' %}<script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script><script>(function(){const v=document.getElementById('externalLiveVideo'),src={{ cfg.src|tojson }},load=document.getElementById('kojaLoading'),wm=document.getElementById('kojaWatermark'),retry=document.getElementById('kojaRetry'),player=document.getElementById('livePlayer'),fs=document.getElementById('kojaFullscreen');let p=null,timer=null,tries=0,last=0,stopped=false,hasPlayed=false,graceUntil=Date.now()+60000;function busy(x,m){load.classList.toggle('hide',!x);wm.classList.toggle('hide',!x);const t=load.querySelector('span');if(t&&m)t.textContent=m}function restart(immediate){if(stopped||timer)return;tries++;busy(true,hasPlayed?'Reconnecting live stream…':'Loading live stream…');timer=setTimeout(()=>{timer=null;if(p){try{p.reset()}catch(e){}}p=dashjs.MediaPlayer().create();p.updateSettings({streaming:{retryIntervals:{MPD:1000,HTTPLoad:1000,LowLatencyTimeout:10000},retryAttempts:{MPD:8,HTTPLoad:8}}});p.initialize(v,src,true);},immediate?250:Math.min(30000,Math.pow(2,Math.min(tries-1,5))*1000))}function init(){busy(true,'Connecting to live stream…');p=dashjs.MediaPlayer().create();p.initialize(v,src,true);p.on(dashjs.MediaPlayer.events.STREAM_INITIALIZED,()=>{hasPlayed=true;graceUntil=0;tries=0;last=Date.now();v.muted=false;v.volume=1;busy(false,'')});p.on(dashjs.MediaPlayer.events.ERROR,()=>restart(true));}v.addEventListener('playing',()=>{hasPlayed=true;graceUntil=0;last=Date.now();tries=0;busy(false,'');retry.classList.remove('show')});v.addEventListener('timeupdate',()=>last=Date.now());v.addEventListener('waiting',()=>{if(hasPlayed)restart(true)});v.addEventListener('stalled',()=>{if(hasPlayed)restart(true)});v.addEventListener('error',()=>{if(hasPlayed||Date.now()>graceUntil)restart(true)});retry.querySelector('button').addEventListener('click',()=>{tries=0;restart(true)});fs.addEventListener('click',()=>{const f=player.requestFullscreen||player.webkitRequestFullscreen;if(f)f.call(player)});setInterval(()=>{if(!stopped&&!document.hidden&&navigator.onLine&&(v.paused||!last||Date.now()-last>18000))restart(true)},12000);window.addEventListener('online',()=>restart(true));window.addEventListener('beforeunload',()=>stopped=true);init()})();</script>{% elif cfg.kind=='video' %}<script>(function(){const v=document.getElementById('externalLiveVideo'),src={{ cfg.src|tojson }},load=document.getElementById('kojaLoading'),wm=document.getElementById('kojaWatermark'),retry=document.getElementById('kojaRetry'),player=document.getElementById('livePlayer'),fs=document.getElementById('kojaFullscreen');let timer=null,tries=0,last=0,stopped=false,hasPlayed=false,graceUntil=Date.now()+60000;function busy(x,m){load.classList.toggle('hide',!x);wm.classList.toggle('hide',!x);const t=load.querySelector('span');if(t&&m)t.textContent=m}function restart(immediate){if(stopped||timer)return;tries++;busy(true,'Reconnecting live stream…');timer=setTimeout(()=>{timer=null;v.src=src;v.load();v.muted=false;v.volume=1;v.play().catch(()=>{})},immediate?250:Math.min(30000,Math.pow(2,Math.min(tries-1,5))*1000))}v.addEventListener('playing',()=>{hasPlayed=true;graceUntil=0;last=Date.now();tries=0;busy(false,'');retry.classList.remove('show')});v.addEventListener('timeupdate',()=>last=Date.now());v.addEventListener('waiting',()=>{if(hasPlayed)restart(true)});v.addEventListener('stalled',()=>{if(hasPlayed)restart(true)});v.addEventListener('error',()=>{if(hasPlayed||Date.now()>graceUntil)restart(true)});retry.querySelector('button').addEventListener('click',()=>{tries=0;restart(true)});fs.addEventListener('click',()=>{const f=player.requestFullscreen||player.webkitRequestFullscreen;if(f)f.call(player)});setInterval(()=>{if(!stopped&&!document.hidden&&navigator.onLine&&(v.paused||!last||Date.now()-last>18000))restart(true)},12000);window.addEventListener('online',()=>restart(true));window.addEventListener('beforeunload',()=>stopped=true);v.src=src;v.muted=false;v.volume=1;v.play().catch(()=>{});})();</script>{% endif %}''',stream=stream,cfg=cfg)
+.koja-live-watch{background:#05070b;color:#fff;min-height:calc(100vh - 110px);padding:14px}.koja-live-watch-inner{max-width:1200px;margin:auto}.live-player{background:#000;border-radius:14px;overflow:hidden;position:relative;min-height:52vh;display:grid;place-items:center}.live-player video,.live-player iframe{width:100%;height:68vh;min-height:360px;border:0;background:#000}.live-status{position:absolute;left:12px;top:12px;z-index:4;background:#e50914;padding:5px 8px;border-radius:999px;font-size:10px;font-weight:800}.live-info{padding:16px 0}.live-info h1{font-size:clamp(24px,4vw,40px);margin:0 0 7px}.live-note{color:#9eabbc;font-size:13px}.live-back{margin-bottom:12px}
+</style><div class="koja-live-watch"><div class="koja-live-watch-inner"><div class="live-back"><a class="btn secondary" href="{{ url_for('media_live') }}">Back to KOJA Live</a></div><div class="live-player" id="livePlayer"><span class="live-status">LIVE</span>{% if cfg.kind in ['hls','dash','video'] %}<video id="externalLiveVideo" controls autoplay playsinline></video>{% elif cfg.kind=='iframe' %}<iframe src="{{ cfg.src }}" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>{% else %}<div style="padding:30px;text-align:center"><h2>Provider requires a supported player</h2><p class="live-note">This URL cannot be converted into a video player automatically.</p><a class="btn" href="{{ cfg.src }}" target="_blank" rel="noopener">Open Source</a></div>{% endif %}</div><div class="live-info"><h1>{{ stream.title }}</h1><div class="live-note">{{ stream.provider|title }} · {{ stream.category or 'Live Stream' }}</div><p>{{ stream.description or 'External live stream connected through KOJA Media.' }}</p></div></div></div>
+{% if cfg.kind=='hls' %}<script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.2/dist/hls.min.js"></script><script>(function(){const v=document.getElementById('externalLiveVideo'),src={{ cfg.src|tojson }};if(window.Hls&&Hls.isSupported()){const h=new Hls({liveDurationInfinity:true,startLevel:0,maxBufferLength:20,maxMaxBufferLength:45});h.loadSource(src);h.attachMedia(v);h.on(Hls.Events.MANIFEST_PARSED,()=>v.play().catch(()=>{}));}else{v.src=src;v.play().catch(()=>{});}})();</script>{% elif cfg.kind=='dash' %}<script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script><script>(function(){const v=document.getElementById('externalLiveVideo');if(window.dashjs){const p=dashjs.MediaPlayer().create();p.initialize(v,{{ cfg.src|tojson }},true);}})();</script>{% elif cfg.kind=='video' %}<script>document.getElementById('externalLiveVideo').src={{ cfg.src|tojson }};document.getElementById('externalLiveVideo').play().catch(()=>{});</script>{% endif %}''',stream=stream,cfg=cfg)
 
 
 # ============================================================
@@ -10768,3 +10903,294 @@ def connect_ice_config():
         urls=[x.strip() for x in turn_url.split(',') if x.strip()]
         servers.append({'urls': urls or [turn_url], 'username':turn_username, 'credential':turn_credential})
     return jsonify({'iceServers':servers,'turnConfigured':len(servers)>1})
+
+# ============================================================
+# KOJA AFRICA -> KOJA CLOUD FULL CUSTOMER INTEGRATION V1
+# Server-side API integration. Existing KOJA services remain intact.
+# Configure on the KOJA AFRICA Render service:
+#   KOJA_CLOUD_API_URL   = https://higher-education-at-easy.onrender.com
+#   KOJA_CLOUD_API_KEY   = <dedicated KOJA AFRICA cloud API key>
+#   KOJA_CLOUD_PROJECT_ID= <KOJA AFRICA cloud project UUID> (optional)
+#   KOJA_CLOUD_PROJECT_CODE = <project code> (optional)
+# The API key never reaches browser JavaScript.
+# ============================================================
+
+KOJA_CLOUD_INTEGRATION_VERSION = '1.0.0'
+KOJA_CLOUD_INTEGRATION_TIMEOUT = int(os.getenv('KOJA_CLOUD_TIMEOUT', '25') or 25)
+
+
+def _koja_cloud_base_url():
+    return (os.getenv('KOJA_CLOUD_API_URL') or '').strip().rstrip('/')
+
+
+def _koja_cloud_api_key():
+    return (os.getenv('KOJA_CLOUD_API_KEY') or '').strip()
+
+
+def _koja_cloud_project_id():
+    return (os.getenv('KOJA_CLOUD_PROJECT_ID') or '').strip()
+
+
+def _koja_cloud_project_code():
+    return (os.getenv('KOJA_CLOUD_PROJECT_CODE') or '').strip()
+
+
+def _koja_cloud_headers(extra=None):
+    key = _koja_cloud_api_key()
+    headers = {'Accept': 'application/json', 'User-Agent': 'KOJA-AFRICA-KOJA-CLOUD/1.0'}
+    if key:
+        headers['X-KOJA-API-KEY'] = key
+    if extra:
+        headers.update(extra)
+    return headers
+
+
+def _koja_cloud_request(method, path, *, params=None, json_body=None, data=None, headers=None, timeout=None):
+    """Single server-side gateway for KOJA AFRICA -> KOJA CLOUD calls."""
+    base = _koja_cloud_base_url()
+    key = _koja_cloud_api_key()
+    if not base or not key:
+        return {'ok': False, 'configured': False, 'status': 503,
+                'error': 'KOJA Cloud integration is not configured.'}
+    if not path.startswith('/'):
+        path = '/' + path
+    url = base + path
+    try:
+        r = requests.request(
+            method.upper(), url,
+            headers=_koja_cloud_headers(headers),
+            params=params,
+            json=json_body,
+            data=data,
+            timeout=timeout or KOJA_CLOUD_INTEGRATION_TIMEOUT,
+        )
+        body = json_or_empty(r)
+        if not isinstance(body, (dict, list)):
+            body = {'raw': (r.text or '')[:10000]}
+        return {'ok': 200 <= r.status_code < 300, 'configured': True,
+                'status': r.status_code, 'data': body,
+                'request_id': r.headers.get('x-request-id') or r.headers.get('rndr-id')}
+    except requests.Timeout:
+        return {'ok': False, 'configured': True, 'status': 504, 'error': 'KOJA Cloud request timed out.'}
+    except requests.RequestException as exc:
+        return {'ok': False, 'configured': True, 'status': 502,
+                'error': 'KOJA Cloud connection failed.', 'detail': str(exc)[:300]}
+    except Exception as exc:
+        logger.exception('KOJA Cloud integration request failed')
+        return {'ok': False, 'configured': True, 'status': 500,
+                'error': 'KOJA Cloud integration error.', 'detail': str(exc)[:300]}
+
+
+def _koja_cloud_project_from_response(data):
+    if isinstance(data, list):
+        rows = data
+    elif isinstance(data, dict):
+        rows = data.get('projects') if isinstance(data.get('projects'), list) else []
+        if not rows and data.get('id'):
+            rows = [data]
+    else:
+        rows = []
+    pid = _koja_cloud_project_id()
+    pcode = _koja_cloud_project_code()
+    if pid:
+        for p in rows:
+            if str(p.get('id') or '') == pid:
+                return p
+    if pcode:
+        for p in rows:
+            if str(p.get('project_code') or '') == pcode:
+                return p
+    return rows[0] if len(rows) == 1 else None
+
+
+def _koja_cloud_audit(action, payload=None):
+    try:
+        uid = (current_user() or {}).get('id') if current_user() else None
+        if uid and table_exists('koja_engine_events'):
+            db_insert('koja_engine_events', {
+                'user_id': uid,
+                'engine': 'KOJA Cloud',
+                'action': action[:120],
+                'metadata': payload or {},
+                'created_at': utc_now(),
+            })
+    except Exception:
+        logger.exception('KOJA Cloud integration audit failed')
+
+
+@app.route('/cloud')
+@app.route('/koja-cloud')
+@login_required
+def koja_africa_cloud_center():
+    """Full KOJA AFRICA Cloud customer control center."""
+    health = _koja_cloud_request('GET', '/api/v1/health')
+    projects = _koja_cloud_request('GET', '/api/v1/projects') if health.get('ok') else {'ok': False, 'data': []}
+    project = _koja_cloud_project_from_response(projects.get('data'))
+    if project:
+        _koja_cloud_audit('cloud_control_center_view', {'project_id': project.get('id')})
+    return render_page('KOJA Cloud', r'''
+<style>
+.cloud-wrap{max-width:1180px;margin:auto;padding:10px 0 40px}
+.cloud-hero{background:linear-gradient(135deg,#07111f,#0c1828 55%,#101a2c);border:1px solid #22324a;border-radius:20px;padding:24px;margin-bottom:16px}
+.cloud-badge{display:inline-block;border:1px solid #2f6ea8;border-radius:999px;padding:5px 9px;color:#76c1ff;font-size:11px;font-weight:800;letter-spacing:.08em}
+.cloud-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}
+.cloud-card{background:#0b121c;border:1px solid #1d2b3e;border-radius:16px;padding:18px}
+.cloud-value{font-size:27px;font-weight:800;color:#72b9ff;margin:5px 0}
+.cloud-ok{color:#55d98a}.cloud-bad{color:#ff7070}.cloud-muted{color:#8d9bad}
+.cloud-table{width:100%;border-collapse:collapse}.cloud-table th,.cloud-table td{padding:9px;border-bottom:1px solid #1c2939;text-align:left;font-size:13px}
+.cloud-actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:14px}.cloud-btn{display:inline-block;padding:10px 14px;border-radius:10px;background:#1769d1;color:#fff;text-decoration:none;border:0;cursor:pointer}.cloud-btn.secondary{background:#172333}
+</style>
+<div class="cloud-wrap">
+<div class="cloud-hero">
+<span class="cloud-badge">KOJA AFRICA CUSTOMER</span>
+<h1>KOJA Cloud</h1>
+<p>KOJA AFRICA is connected to KOJA CLOUD through its server-side developer API.</p>
+<div class="cloud-actions"><button class="cloud-btn" onclick="refreshCloud()">Refresh Cloud Status</button><a class="cloud-btn secondary" href="{{ url_for('dashboard') }}">Back to Dashboard</a></div>
+</div>
+<div class="cloud-grid">
+<div class="cloud-card"><div class="cloud-muted">Connection</div><div class="cloud-value" id="c-status">{{ 'Connected' if health.ok else 'Unavailable' }}</div><div id="c-status-detail" class="small">{{ health.data.get('cloud_version','') if health.ok and health.data is mapping else health.error }}</div></div>
+<div class="cloud-card"><div class="cloud-muted">Cloud Project</div><div class="cloud-value" id="c-project">{{ project.name if project else 'Not selected' }}</div><div class="small">{{ project.project_code if project else (cloud_project_code or 'Set KOJA_CLOUD_PROJECT_CODE') }}</div></div>
+<div class="cloud-card"><div class="cloud-muted">API Integration</div><div class="cloud-value">Server-side</div><div class="small">The Cloud API key is never sent to the browser.</div></div>
+<div class="cloud-card"><div class="cloud-muted">Integration Version</div><div class="cloud-value">{{ integration_version }}</div><div class="small">KOJA AFRICA connector</div></div>
+</div>
+<div class="cloud-grid" style="margin-top:14px">
+<div class="cloud-card"><h3>Cloud Services</h3><p>Projects · Storage · Database · Compute · Media · Live · Cloud API</p><p class="small">The connector uses the KOJA CLOUD control-plane API and keeps KOJA AFRICA's existing services intact.</p></div>
+<div class="cloud-card"><h3>Security</h3><p>Dedicated project-scoped credential recommended.</p><p class="small">Store <code>KOJA_CLOUD_API_KEY</code> only in Render environment variables.</p></div>
+</div>
+<div class="cloud-card" style="margin-top:14px"><h3>Connected Project</h3>
+{% if project %}<table class="cloud-table"><tr><th>Name</th><td>{{ project.name }}</td></tr><tr><th>Project Code</th><td>{{ project.project_code }}</td></tr><tr><th>Status</th><td>{{ project.status }}</td></tr><tr><th>Project ID</th><td>{{ project.id }}</td></tr><tr><th>Organization</th><td>{{ project.organization_id }}</td></tr></table>
+{% else %}<p>No unambiguous Cloud project is selected. Set <code>KOJA_CLOUD_PROJECT_ID</code> or <code>KOJA_CLOUD_PROJECT_CODE</code> in Render.</p>{% endif %}</div>
+</div>
+<script>
+async function refreshCloud(){
+ const s=document.getElementById('c-status'),d=document.getElementById('c-status-detail');
+ s.textContent='Checking…';
+ try{const r=await fetch('{{ url_for("koja_africa_cloud_status") }}',{cache:'no-store'});const x=await r.json();s.textContent=x.connected?'Connected':'Unavailable';d.textContent=x.cloud_version?('Cloud '+x.cloud_version):x.error||'No response';}
+ catch(e){s.textContent='Unavailable';d.textContent='Connection check failed.';}
+}
+</script>
+''', health=health, project=project, integration_version=KOJA_CLOUD_INTEGRATION_VERSION,
+                      cloud_project_code=_koja_cloud_project_code())
+
+
+@app.route('/api/cloud/status')
+@login_required
+def koja_africa_cloud_status():
+    health = _koja_cloud_request('GET', '/api/v1/health')
+    projects = _koja_cloud_request('GET', '/api/v1/projects') if health.get('ok') else {'ok': False, 'data': []}
+    project = _koja_cloud_project_from_response(projects.get('data'))
+    return jsonify({
+        'connected': bool(health.get('ok')),
+        'configured': bool(health.get('configured')),
+        'integration_version': KOJA_CLOUD_INTEGRATION_VERSION,
+        'cloud_version': (health.get('data') or {}).get('cloud_version') if isinstance(health.get('data'), dict) else None,
+        'project': project,
+        'health_status': health.get('status'),
+        'error': health.get('error') if not health.get('ok') else None,
+    }), 200 if health.get('ok') else int(health.get('status') or 503)
+
+
+@app.route('/api/cloud/project')
+@login_required
+def koja_africa_cloud_project():
+    result = _koja_cloud_request('GET', '/api/v1/projects')
+    if not result.get('ok'):
+        return jsonify({'error': result.get('error'), 'status': result.get('status')}), int(result.get('status') or 502)
+    project = _koja_cloud_project_from_response(result.get('data'))
+    if not project:
+        return jsonify({'error':'cloud_project_not_selected','message':'Set KOJA_CLOUD_PROJECT_ID or KOJA_CLOUD_PROJECT_CODE.'}), 409
+    return jsonify({'ok':True,'project':project,'cloud_version':None})
+
+
+@app.route('/api/cloud/resources')
+@login_required
+def koja_africa_cloud_resources():
+    """Read-only unified inventory from the Cloud API endpoints already exposed by KOJA CLOUD."""
+    endpoints = {
+        'media': '/api/media/assets',
+        'compute': '/api/services',
+        'database': '/api/databases',
+        'storage': '/api/storage/buckets',
+    }
+    out = {'ok': True, 'services': {}, 'errors': {}}
+    for name, path in endpoints.items():
+        r = _koja_cloud_request('GET', path)
+        if r.get('ok'):
+            out['services'][name] = r.get('data')
+        else:
+            out['services'][name] = []
+            out['errors'][name] = {'status':r.get('status'),'error':r.get('error') or r.get('data')}
+    _koja_cloud_audit('cloud_resource_inventory', {'services':list(endpoints)})
+    return jsonify(out)
+
+
+@app.route('/api/cloud/media/assets')
+@login_required
+def koja_africa_cloud_media_assets():
+    r = _koja_cloud_request('GET', '/api/media/assets')
+    if not r.get('ok'):
+        return jsonify({'error':r.get('error'),'status':r.get('status'),'details':r.get('data')}), int(r.get('status') or 502)
+    return jsonify(r.get('data') or [])
+
+
+@app.route('/api/cloud/compute/services')
+@login_required
+def koja_africa_cloud_compute_services():
+    r = _koja_cloud_request('GET', '/api/services')
+    if not r.get('ok'):
+        return jsonify({'error':r.get('error'),'status':r.get('status'),'details':r.get('data')}), int(r.get('status') or 502)
+    return jsonify(r.get('data') or [])
+
+
+@app.route('/api/cloud/database')
+@login_required
+def koja_africa_cloud_database():
+    r = _koja_cloud_request('GET', '/api/databases')
+    if not r.get('ok'):
+        return jsonify({'error':r.get('error'),'status':r.get('status'),'details':r.get('data')}), int(r.get('status') or 502)
+    return jsonify(r.get('data') or [])
+
+
+@app.route('/api/cloud/storage/buckets')
+@login_required
+def koja_africa_cloud_storage_buckets():
+    r = _koja_cloud_request('GET', '/api/storage/buckets')
+    if not r.get('ok'):
+        return jsonify({'error':r.get('error'),'status':r.get('status'),'details':r.get('data')}), int(r.get('status') or 502)
+    return jsonify(r.get('data') or [])
+
+
+@app.route('/api/cloud/identity')
+@login_required
+def koja_africa_cloud_identity():
+    """Validate the Cloud credential and expose only non-secret identity metadata."""
+    r = _koja_cloud_request('GET', '/api/v1/auth/key')
+    if not r.get('ok'):
+        return jsonify({'ok':False,'error':r.get('error'),'status':r.get('status'),'details':r.get('data')}), int(r.get('status') or 502)
+    return jsonify({'ok':True,'identity':r.get('data')})
+
+
+@app.route('/api/cloud/sync', methods=['POST'])
+@login_required
+def koja_africa_cloud_sync():
+    """Run a safe, read-only integration synchronization check."""
+    health = _koja_cloud_request('GET', '/api/v1/health')
+    if not health.get('ok'):
+        return jsonify({'ok':False,'stage':'health','error':health.get('error'),'status':health.get('status')}), int(health.get('status') or 502)
+    projects = _koja_cloud_request('GET', '/api/v1/projects')
+    if not projects.get('ok'):
+        return jsonify({'ok':False,'stage':'projects','error':projects.get('error'),'status':projects.get('status')}), int(projects.get('status') or 502)
+    project = _koja_cloud_project_from_response(projects.get('data'))
+    if not project:
+        return jsonify({'ok':False,'stage':'project_selection','error':'cloud_project_not_selected'}), 409
+    inventory = {}
+    for name,path in [('storage','/api/storage/buckets'),('database','/api/databases'),('media','/api/media/assets'),('compute','/api/services')]:
+        rr=_koja_cloud_request('GET',path)
+        inventory[name]={'ok':rr.get('ok'),'status':rr.get('status'),'count':len(rr.get('data') or []) if isinstance(rr.get('data'),list) else None}
+    _koja_cloud_audit('cloud_sync_check', {'project_id':project.get('id'),'inventory':inventory})
+    return jsonify({'ok':True,'cloud_version':(health.get('data') or {}).get('cloud_version'),'project':project,'inventory':inventory})
+
+if __name__=="__main__":
+    port=int(os.getenv("PORT","5000"))
+    app.run(host="0.0.0.0",port=port,debug=False)
+
