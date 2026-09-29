@@ -1,0 +1,60 @@
+KOJA NEWS — NO NODE ARCHITECTURE
+
+This build keeps KOJA AFRICA as the central News system.
+
+Core flow:
+
+Camera / TV source / prerecorded media
+        |
+        v
+Compatible encoder or streaming service
+        |
+        v
+HLS .m3u8 URL
+        |
+        v
+KOJA AFRICA /news/live
+        |
+        v
+KOJA NEWS Virtual TV Studio
+
+KOJA AFRICA itself manages:
+- News articles and categories
+- Public /news/live player
+- Admin /admin/news/live studio
+- Studio scenes
+- Main Desk
+- Interview Desk
+- Reporter / Field Desk
+- Newsroom
+- Breaking News
+- Parliament
+- Africa
+- World
+- Business
+- Sports
+- Weather
+- Headline wall
+- Presenter / guest lower thirds
+- Ticker
+- LIVE indicator
+- Global country / region / language / timezone fields
+- Responsive phone, tablet, desktop and TV-browser layout
+
+There is NO:
+- KOJA NODE registration
+- node token
+- node heartbeat
+- node table
+- node HLS upload API
+- node broadcast API
+
+To publish a real camera feed, the camera must first be encoded by a compatible
+streaming/encoding service that outputs HLS. Paste that .m3u8 URL into the
+Broadcast Source field in KOJA NEWS Live Studio.
+
+The browser camera preview in the Studio is only a local preview. It is not an
+HLS encoder.
+
+Render environment variables required for the normal KOJA AFRICA application
+remain unchanged. No KOJA_NODE_ENROLL_KEY is required.
