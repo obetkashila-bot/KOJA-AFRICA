@@ -2422,74 +2422,6 @@ def _document_ai_text(doc):
         logger.warning("Document AI load failed: %s",exc)
         return "",clean(doc.get("file_name") or "document")
 
-def _document_auto_note_prompt(title, text):
-    return f"""DOCUMENT TITLE: {title}
-
-Create a SHORT automatic study note from this document.
-
-Rules:
-- Use ONLY information supported by the supplied document.
-- Keep it concise: normally 80-180 words.
-- Start with a 1-2 sentence overview.
-- Then give 3-7 key points as short bullets.
-- Include important terms only when they are actually present or clearly supported.
-- Do not invent facts, examples, page numbers, citations, findings or conclusions.
-- Do not say that you are an AI.
-- This is an automatically maintained note for the document, not a replacement for the document.
-
-DOCUMENT CONTENT:
-{text[:90000]}"""
-
-def _document_auto_note_generate(document_id, force=False):
-    """Create/update the short AI note when the source document is new or changed."""
-    try:
-        if not document_id or not table_exists("koja_document_auto_notes"):
-            return None, "auto-note table unavailable"
-        doc=first_row("documents", {"id": document_id})
-        if not doc:
-            return None, "document not found"
-        source_stamp=clean(doc.get("updated_at") or doc.get("created_at"))
-        existing=first_row("koja_document_auto_notes", {"document_id": document_id})
-        if existing and not force and clean(existing.get("source_updated_at")) == source_stamp and clean(existing.get("note")):
-            return existing, None
-        text,name=_document_ai_text(doc)
-        if not text:
-            return None, "document content could not be extracted"
-        title=clean(doc.get("title") or name or "KOJA Document")
-        answer,error=_ai_call(
-            _document_auto_note_prompt(title, text),
-            "You are KOJA Document Auto-Notes. Generate a concise, factual study note strictly from the supplied document.",
-            max_output_tokens=900,
-            timeout=45,
-        )
-        if not answer:
-            return None, _ai_error_message(error)
-        now=utc_now()
-        payload={"document_id":document_id,"note":answer[:8000],"source_updated_at":source_stamp,"generated_at":now,"updated_at":now,"status":"ready"}
-        if existing:
-            row,err=db_update("koja_document_auto_notes", {"document_id":document_id}, payload)
-        else:
-            payload["created_at"]=now
-            row,err=db_insert("koja_document_auto_notes", payload)
-        if err:
-            logger.warning("Automatic document note save failed: %s", err)
-            return None, err
-        return ((row[0] if isinstance(row,list) and row else row) or payload), None
-    except Exception as exc:
-        logger.exception("Automatic document note generation failed: %s", exc)
-        return None, str(exc)
-
-def _schedule_document_auto_note(document_id, force=False):
-    """Generate a document note asynchronously so uploads/library remain responsive."""
-    if not document_id or not supabase_configured() or not table_exists("koja_document_auto_notes"):
-        return
-    def worker():
-        _document_auto_note_generate(document_id, force=force)
-    try:
-        threading.Thread(target=worker, daemon=True, name="koja-document-auto-note").start()
-    except Exception:
-        worker()
-
 def _document_ai_prompt(action, title, text, question=""):
     action=clean(action).lower()
     task={
@@ -2527,6 +2459,226 @@ def document_ai(document_id):
     if table_exists("koja_document_learning_progress"):
         db_insert("koja_document_learning_progress",{"document_id":document_id,"user_id":uid,"action":action,"notes":answer[:4000],"created_at":utc_now(),"updated_at":utc_now()})
     return jsonify(ok=True,action=action,document_id=document_id,title=title,answer=answer)
+
+
+# ============================================================
+# KOJA DOCUMENT AUTOMATIC NOTES
+# Additive layer: preserves the existing KOJA Document AI.
+# Notes are generated only from the document's extracted content.
+# ============================================================
+KOJA_DOCUMENT_AUTO_NOTES_MAX_CHARS = int(os.getenv("KOJA_DOCUMENT_AUTO_NOTES_MAX_CHARS", "90000"))
+
+def _document_auto_notes_version(doc, content):
+    """Stable content/version fingerprint. Changes when the actual document content changes."""
+    raw = (content or "").encode("utf-8", errors="ignore")
+    if not raw:
+        # Include storage metadata as a fallback so a changed file can invalidate
+        # an old note even when extraction is temporarily unavailable.
+        raw = json.dumps({
+            "file_path": doc.get("file_path"),
+            "file_url": doc.get("file_url"),
+            "file_name": doc.get("file_name"),
+            "updated_at": doc.get("updated_at"),
+        }, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+def _document_auto_notes_generate(document_id, force=False):
+    """Generate/update the automatic note in a background worker.
+
+    This deliberately calls the existing document AI extraction and AI provider
+    functions; it does not replace or alter the existing Ask KOJA AI system.
+    """
+    if not table_exists("koja_document_auto_notes"):
+        logger.warning("Automatic document notes table is missing; run KOJA_DOCUMENT_AUTO_NOTES.sql")
+        return False
+
+    doc = first_row("documents", {"id": document_id})
+    if not doc:
+        return False
+
+    try:
+        content, filename = _document_ai_text(doc)
+        content = (content or "").strip()[:KOJA_DOCUMENT_AUTO_NOTES_MAX_CHARS]
+        if not content:
+            payload = {
+                "document_id": str(document_id),
+                "status": "failed",
+                "error_message": "No readable text could be extracted from the document.",
+                "updated_at": utc_now(),
+            }
+            existing = first_row("koja_document_auto_notes", {"document_id": str(document_id)})
+            if existing:
+                db_update("koja_document_auto_notes", {"id": existing.get("id")}, payload)
+            else:
+                db_insert("koja_document_auto_notes", {
+                    **payload, "version_hash": "", "note": "",
+                    "generated_at": None, "created_at": utc_now()
+                })
+            return False
+
+        version_hash = _document_auto_notes_version(doc, content)
+        existing = first_row("koja_document_auto_notes", {"document_id": str(document_id)})
+
+        if (not force and existing and
+            str(existing.get("version_hash") or "") == version_hash and
+            str(existing.get("status") or "").lower() == "ready" and
+            str(existing.get("note") or "").strip()):
+            return True
+
+        now = utc_now()
+        base = {
+            "document_id": str(document_id),
+            "user_id": doc.get("user_id"),
+            "version_hash": version_hash,
+            "status": "generating",
+            "error_message": None,
+            "source_characters": len(content),
+            "source_file_name": filename or doc.get("file_name"),
+            "updated_at": now,
+        }
+        if existing:
+            db_update("koja_document_auto_notes", {"id": existing.get("id")}, base)
+        else:
+            db_insert("koja_document_auto_notes", {
+                **base, "note": "", "generated_at": None, "created_at": now
+            })
+
+        title = clean(doc.get("title") or filename or "KOJA Document")
+        prompt = f"""DOCUMENT TITLE: {title}
+
+Create an automatic study/research note from the ACTUAL DOCUMENT CONTENT below.
+
+Requirements:
+- Use only information supported by the document.
+- Do not invent facts, references, quotations, findings, dates, or conclusions.
+- Produce a useful standalone note for someone who needs to understand and study the document.
+- Include the document's main subject/purpose, major ideas, important facts or arguments, key terms/definitions where present, findings/conclusions where present, and important implications or limitations where present.
+- Keep the structure readable with headings and concise points.
+- If a requested element is not present in the document, do not manufacture it.
+- This is a document note, not a generic explanation of the topic.
+
+ACTUAL DOCUMENT CONTENT:
+{content}
+"""
+        answer, err = _ai_call(
+            prompt,
+            "You are KOJA Document Notes AI. Generate notes strictly from the supplied document content. Never claim information that is not in the source.",
+            max_output_tokens=3200,
+            timeout=60
+        )
+        answer = (answer or "").strip()
+
+        if not answer:
+            msg = str(err or "AI did not return a note.")[:1000]
+            if existing:
+                db_update("koja_document_auto_notes", {"id": existing.get("id")}, {
+                    "status": "failed", "error_message": msg, "updated_at": utc_now()
+                })
+            else:
+                db_insert("koja_document_auto_notes", {
+                    **base, "status": "failed", "error_message": msg,
+                    "note": "", "generated_at": None, "created_at": utc_now()
+                })
+            return False
+
+        final = {
+            "version_hash": version_hash,
+            "note": answer[:20000],
+            "status": "ready",
+            "error_message": None,
+            "source_characters": len(content),
+            "source_file_name": filename or doc.get("file_name"),
+            "generated_at": utc_now(),
+            "updated_at": utc_now(),
+        }
+        if existing:
+            db_update("koja_document_auto_notes", {"id": existing.get("id")}, final)
+        else:
+            db_insert("koja_document_auto_notes", {
+                **final, "document_id": str(document_id),
+                "user_id": doc.get("user_id"), "created_at": utc_now()
+            })
+        return True
+
+    except Exception as exc:
+        logger.exception("KOJA automatic document note generation failed")
+        existing = first_row("koja_document_auto_notes", {"document_id": str(document_id)})
+        if existing:
+            db_update("koja_document_auto_notes", {"id": existing.get("id")}, {
+                "status": "failed",
+                "error_message": str(exc)[:1000],
+                "updated_at": utc_now()
+            })
+        return False
+
+def _schedule_document_auto_notes(document_id, force=False):
+    """Queue note generation without blocking the document upload request."""
+    def worker():
+        try:
+            _document_auto_notes_generate(document_id, force=force)
+        except Exception:
+            logger.exception("KOJA document auto-notes worker crashed: %s", document_id)
+    threading.Thread(
+        target=worker,
+        daemon=True,
+        name="koja-document-auto-notes"
+    ).start()
+
+@app.route("/api/documents/<document_id>/automatic-note", methods=["GET"])
+@login_required
+def document_automatic_note(document_id):
+    """Return the automatic note and transparently queue regeneration if the source changed."""
+    user = current_user() or {}
+    doc = first_row("documents", {"id": document_id})
+    if not doc:
+        abort(404)
+    if not _document_ai_allowed(doc, user):
+        abort(403)
+
+    if not table_exists("koja_document_auto_notes"):
+        return jsonify(ok=False, error="Automatic notes are not installed. Run KOJA_DOCUMENT_AUTO_NOTES.sql."), 503
+
+    row = first_row("koja_document_auto_notes", {"document_id": str(document_id)})
+    if not row:
+        _schedule_document_auto_notes(document_id)
+        return jsonify(ok=True, status="queued", note="", generated_at=None, updated_at=None)
+
+    # Verify the current source content before deciding that the note is current.
+    content, _ = _document_ai_text(doc)
+    current_hash = _document_auto_notes_version(doc, (content or "").strip()[:KOJA_DOCUMENT_AUTO_NOTES_MAX_CHARS])
+    stored_hash = str(row.get("version_hash") or "")
+
+    if current_hash != stored_hash and str(row.get("status") or "").lower() != "generating":
+        _schedule_document_auto_notes(document_id, force=True)
+        return jsonify(
+            ok=True, status="regenerating",
+            note=row.get("note") or "",
+            generated_at=row.get("generated_at"),
+            updated_at=row.get("updated_at")
+        )
+
+    return jsonify(
+        ok=True,
+        status=row.get("status") or "pending",
+        note=row.get("note") or "",
+        generated_at=row.get("generated_at"),
+        updated_at=row.get("updated_at"),
+        version_hash=row.get("version_hash")
+    )
+
+@app.route("/api/documents/<document_id>/automatic-note/regenerate", methods=["POST"])
+@login_required
+def regenerate_document_automatic_note(document_id):
+    user = current_user() or {}
+    doc = first_row("documents", {"id": document_id})
+    if not doc:
+        abort(404)
+    if not _document_ai_allowed(doc, user):
+        abort(403)
+    if not table_exists("koja_document_auto_notes"):
+        return jsonify(ok=False, error="Automatic notes are not installed. Run KOJA_DOCUMENT_AUTO_NOTES.sql."), 503
+    _schedule_document_auto_notes(document_id, force=True)
+    return jsonify(ok=True, status="queued", message="Automatic document note regeneration queued.")
 
 @app.route("/documents", methods=["GET", "POST"])
 @login_required
@@ -2569,9 +2721,10 @@ def documents():
             delete_storage_path(uploaded.get("path"))
             flash("Document could not be saved, so the uploaded file was cleaned up. Check the documents table schema.", "danger")
         else:
-            flash("Document uploaded and sent for approval. KOJA will automatically prepare a short AI note from the document.", "success")
+            flash("Document uploaded and sent for approval.", "success")
             log_activity("document_uploaded", "User uploaded a KOJA document.")
-            _schedule_document_auto_note(base_payload.get("id"))
+            # Automatic notes run in the background; upload response does not wait for AI.
+            _schedule_document_auto_notes((row or {}).get("id"))
         return redirect(url_for("documents"))
 
     q = clean(request.args.get("q"))
@@ -2619,20 +2772,6 @@ def documents():
     for label, _, _ in categories:
         counts[label.lower()] = sum(1 for d in all_rows if str(d.get("category") or "Other").lower() == label.lower())
 
-    auto_notes = {}
-    auto_notes_enabled = table_exists("koja_document_auto_notes")
-    if auto_notes_enabled:
-        for d in visible[:30]:
-            did=d.get("id")
-            if not did:
-                continue
-            note=first_row("koja_document_auto_notes", {"document_id":did})
-            source_stamp=clean(d.get("updated_at") or d.get("created_at"))
-            if note and clean(note.get("source_updated_at")) == source_stamp and clean(note.get("note")):
-                auto_notes[str(did)]=note
-            else:
-                _schedule_document_auto_note(did)
-
     return render_page("Documents", r"""
 <style>
 .koja-docs{--doc-navy:#10233f;--doc-blue:#176b87;--doc-gold:#b18a32;max-width:1240px;margin:0 auto;padding-bottom:34px}
@@ -2641,7 +2780,7 @@ def documents():
 .docs-head p{max-width:720px;color:var(--muted);font-size:16px}.docs-search{display:flex;gap:10px;align-items:center;background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:8px;box-shadow:0 8px 28px rgba(0,0,0,.07)}.docs-search input{border:0!important;box-shadow:none!important;background:transparent!important;margin:0!important;flex:1;min-width:0;font-size:16px}.docs-search button{white-space:nowrap}.docs-actions{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0 26px}.docs-section{margin-top:28px}.docs-section-head{display:flex;justify-content:space-between;align-items:end;gap:12px;margin-bottom:13px}.docs-section-head h2{margin:0;font-size:20px}.docs-section-head a{font-size:13px;color:var(--doc-blue);text-decoration:none}
 .doc-cats{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:11px}.doc-cat{display:block;text-decoration:none;color:inherit;background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:16px;min-height:112px;transition:.18s}.doc-cat:hover{transform:translateY(-2px);border-color:var(--doc-blue);box-shadow:0 8px 24px rgba(0,0,0,.07)}.doc-cat-mark{width:34px;height:34px;border-radius:10px;background:rgba(23,107,135,.11);display:flex;align-items:center;justify-content:center;color:var(--doc-blue);font-weight:800;margin-bottom:11px}.doc-cat strong{display:block;font-size:14px}.doc-cat span{display:block;color:var(--muted);font-size:12px;margin-top:4px;line-height:1.35}.doc-cat b{display:block;margin-top:8px;font-size:12px;color:var(--doc-blue)}
 .doc-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.doc-mini{display:flex;gap:12px;align-items:center;border:1px solid var(--border);border-radius:15px;background:var(--surface);padding:13px;text-decoration:none;color:inherit;min-width:0}.doc-mini-cover,.doc-cover{flex:0 0 auto;border-radius:10px;background:linear-gradient(135deg,var(--doc-navy),var(--doc-blue));color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800}.doc-mini-cover{width:45px;height:56px;font-size:10px}.doc-mini-info{min-width:0}.doc-mini-info strong{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.doc-mini-info span{display:block;color:var(--muted);font-size:12px;margin-top:4px}
-.doc-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.doc-card{position:relative;background:var(--surface);border:1px solid var(--border);border-radius:17px;overflow:hidden;transition:.18s}.doc-card:hover{transform:translateY(-2px);box-shadow:0 10px 28px rgba(0,0,0,.08)}.doc-card-top{display:flex;gap:13px;padding:15px}.doc-cover{width:62px;height:78px;font-size:11px;box-shadow:0 5px 14px rgba(0,0,0,.12)}.doc-main{min-width:0;flex:1}.doc-main h3{margin:2px 0 6px;font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.doc-meta{font-size:12px;color:var(--muted);line-height:1.5}.doc-desc{font-size:13px;color:var(--muted);padding:0 15px;min-height:38px}.doc-auto-note{margin:12px 15px 0;padding:11px 12px;border:1px solid rgba(23,107,135,.18);border-left:3px solid var(--doc-blue);border-radius:12px;background:rgba(23,107,135,.045)}.doc-auto-note-head{display:flex;gap:8px;justify-content:space-between;align-items:center;font-size:12px}.doc-auto-note-head span{font-size:10px;color:var(--muted);text-align:right}.doc-auto-note-text{white-space:pre-wrap;font-size:12px;line-height:1.5;margin-top:7px}.doc-auto-note-text.muted{color:var(--muted)}.doc-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:13px 15px;border-top:1px solid var(--border);margin-top:12px}.doc-status{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.05em}.doc-status.approved{color:#18794e}.doc-status.pending,.doc-status.processing{color:#9a6a12}.doc-status.rejected{color:#b42318}.doc-status.archived{color:var(--muted)}.doc-menu{position:absolute;right:12px;top:12px}.doc-menu summary{list-style:none;width:32px;height:32px;border:1px solid var(--border);border-radius:9px;display:flex;align-items:center;justify-content:center;cursor:pointer}.doc-menu summary::-webkit-details-marker{display:none}.doc-menu-items{position:absolute;right:0;top:38px;z-index:30;width:150px;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 14px 34px rgba(0,0,0,.16);padding:5px}.doc-menu-items button,.doc-menu-items a{display:block;width:100%;text-align:left;padding:9px 10px;border:0;background:transparent;color:inherit;text-decoration:none;border-radius:8px;cursor:pointer;font-size:13px}.doc-menu-items button:hover,.doc-menu-items a:hover{background:rgba(127,127,127,.1)}.doc-buttons{display:flex;gap:7px}.doc-buttons .btn{padding:8px 11px;font-size:12px}
+.doc-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.doc-card{position:relative;background:var(--surface);border:1px solid var(--border);border-radius:17px;overflow:hidden;transition:.18s}.doc-card:hover{transform:translateY(-2px);box-shadow:0 10px 28px rgba(0,0,0,.08)}.doc-card-top{display:flex;gap:13px;padding:15px}.doc-cover{width:62px;height:78px;font-size:11px;box-shadow:0 5px 14px rgba(0,0,0,.12)}.doc-main{min-width:0;flex:1}.doc-main h3{margin:2px 0 6px;font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.doc-meta{font-size:12px;color:var(--muted);line-height:1.5}.doc-desc{font-size:13px;color:var(--muted);padding:0 15px;min-height:38px}.doc-auto-note{margin:12px 15px 0;padding:11px 12px;border:1px solid var(--border);border-radius:13px;background:rgba(23,107,135,.045)}.doc-auto-note-head{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:7px;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:var(--doc-blue)}.doc-auto-note-status{font-weight:600;text-transform:none;letter-spacing:0;color:var(--muted);white-space:nowrap}.doc-auto-note-text{font-size:13px;line-height:1.55;color:var(--text,#172235);white-space:pre-wrap;overflow-wrap:anywhere}.doc-auto-note-text.is-collapsed{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:4;overflow:hidden;max-height:6.2em}.doc-note-toggle{margin-top:7px;padding:0;border:0;background:transparent;color:var(--doc-blue);font-size:12px;font-weight:800;cursor:pointer}.doc-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:13px 15px;border-top:1px solid var(--border);margin-top:12px}.doc-status{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.05em}.doc-status.approved{color:#18794e}.doc-status.pending,.doc-status.processing{color:#9a6a12}.doc-status.rejected{color:#b42318}.doc-status.archived{color:var(--muted)}.doc-menu{position:absolute;right:12px;top:12px}.doc-menu summary{list-style:none;width:32px;height:32px;border:1px solid var(--border);border-radius:9px;display:flex;align-items:center;justify-content:center;cursor:pointer}.doc-menu summary::-webkit-details-marker{display:none}.doc-menu-items{position:absolute;right:0;top:38px;z-index:30;width:150px;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 14px 34px rgba(0,0,0,.16);padding:5px}.doc-menu-items button,.doc-menu-items a{display:block;width:100%;text-align:left;padding:9px 10px;border:0;background:transparent;color:inherit;text-decoration:none;border-radius:8px;cursor:pointer;font-size:13px}.doc-menu-items button:hover,.doc-menu-items a:hover{background:rgba(127,127,127,.1)}.doc-buttons{display:flex;gap:7px}.doc-buttons .btn{padding:8px 11px;font-size:12px}
 .docs-modal{position:fixed;inset:0;z-index:300;display:none;background:rgba(8,18,32,.58);padding:18px;overflow:auto}.docs-modal.open{display:flex;align-items:center;justify-content:center}.docs-modal-panel{width:min(720px,100%);max-height:calc(100vh - 36px);overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:20px;box-shadow:0 25px 80px rgba(0,0,0,.25);padding:20px}.docs-modal-head{display:flex;align-items:center;gap:12px;margin-bottom:16px}.docs-modal-head strong{font-size:20px;margin-right:auto}.upload-drop{border:1.5px dashed var(--doc-blue);border-radius:16px;padding:25px;text-align:center;background:rgba(23,107,135,.045);cursor:pointer}.upload-drop strong{display:block}.upload-drop span{font-size:13px;color:var(--muted)}.upload-file{display:none}.upload-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.upload-grid .full{grid-column:1/-1}
 .docs-viewer{position:fixed;inset:0;z-index:400;background:#0b1422;display:none;flex-direction:column;color:#fff}.docs-viewer.open{display:flex}.viewer-head{height:58px;display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid rgba(255,255,255,.13);flex:0 0 auto}.viewer-head strong{margin-right:auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.viewer-btn{border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:#fff;border-radius:10px;padding:8px 10px;cursor:pointer}.viewer-body{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(330px,.8fr);min-height:0;flex:1}.viewer-doc{min-width:0;background:#202b39}.viewer-doc iframe{width:100%;height:100%;border:0;background:#fff}.viewer-ai{min-width:0;background:#f7f8fa;color:#172235;display:flex;flex-direction:column}.viewer-ai-head{padding:16px;border-bottom:1px solid #dfe4ea}.viewer-ai-head h3{margin:0 0 4px}.viewer-ai-head p{margin:0;color:#657080;font-size:13px}.viewer-ai-body{padding:15px;overflow:auto;flex:1}.ai-prompts{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:12px}.ai-prompts button{border:1px solid #d9dee5;background:#fff;border-radius:999px;padding:8px 10px;cursor:pointer;font-size:12px}.viewer-ai textarea{width:100%;box-sizing:border-box;min-height:90px;border:1px solid #d9dee5;border-radius:12px;padding:11px;resize:vertical}.viewer-answer{white-space:pre-wrap;line-height:1.55;margin-top:12px;background:#fff;border:1px solid #e0e4e9;border-radius:13px;padding:12px;font-size:13px}.viewer-tabs{display:none}
 @media(max-width:1000px){.doc-cats{grid-template-columns:repeat(3,1fr)}.doc-grid{grid-template-columns:repeat(2,1fr)}.doc-strip{grid-template-columns:1fr 1fr}.viewer-body{grid-template-columns:1fr}.viewer-doc,.viewer-ai{display:none}.viewer-body.show-doc .viewer-doc{display:block}.viewer-body.show-ai .viewer-ai{display:flex}.viewer-tabs{display:flex;gap:0;padding:6px;background:#101c2b}.viewer-tabs button{flex:1;border:0;border-radius:9px;padding:9px;background:transparent;color:#fff}.viewer-tabs button.active{background:rgba(255,255,255,.12)}}
@@ -2670,10 +2809,10 @@ def documents():
       <details class="doc-menu"><summary aria-label="More options">⋯</summary><div class="doc-menu-items"><a href="{{ url_for('document_download',document_id=did) }}">Download</a><button type="button" onclick="shareKOJADoc('{{ did }}','{{ d.get('_title','')|e }}')">Share</button><button type="button" onclick="saveKOJADoc('{{ did }}','{{ d.get('_title','')|e }}')">Save</button><button type="button" onclick="viewDocDetails('{{ did }}')">View details</button></div></details>
       <div class="doc-card-top"><div class="doc-cover">{{ (d.get('file_name') or 'PDF').split('.')[-1]|upper|truncate(5,True,'') }}</div><div class="doc-main"><h3 title="{{ d.get('_title','') }}">{{ d.get('_title','KOJA Document') }}</h3><div class="doc-meta">{{ cat }}{% if d.get('subject') %} · {{ d.get('subject') }}{% endif %}{% if d.get('author') %}<br>{{ d.get('author') }}{% endif %}</div></div></div>
       <div class="doc-desc">{{ d.get('description') or 'KOJA knowledge document available for learning and reference.'|truncate(110) }}</div>
-      {% set auto_note=auto_notes.get(did|string) %}
-      <div class="doc-auto-note">
-        <div class="doc-auto-note-head"><strong>AI Quick Note</strong>{% if auto_note %}<span>Updated {{ auto_note.get('updated_at') or auto_note.get('generated_at') }}</span>{% endif %}</div>
-        {% if auto_note %}<div class="doc-auto-note-text">{{ auto_note.get('note') }}</div>{% else %}<div class="doc-auto-note-text muted">KOJA AI is preparing a short note from this document. Refresh shortly.</div>{% endif %}
+      <div class="doc-auto-note" data-auto-note="{{ did }}">
+        <div class="doc-auto-note-head"><span>KOJA Automatic Note</span><span class="doc-auto-note-status">Loading…</span></div>
+        <div class="doc-auto-note-text is-collapsed">Generating a note from this document…</div>
+        <button class="doc-note-toggle" type="button" style="display:none" onclick="toggleDocumentNote(this)">Show more</button>
       </div>
       <div class="doc-foot"><span class="doc-status {{ status }}">{{ 'Pending Approval' if status in ['pending','submitted','under_review'] else status|replace('_',' ')|title }}</span><div class="doc-buttons"><button class="btn secondary" type="button" onclick="openKOJADocument('{{ did }}','{{ d.get('_title','KOJA Document')|e }}')">Open</button><button class="btn" type="button" onclick="openKOJADocumentAI('{{ did }}','{{ d.get('_title','KOJA Document')|e }}')">Ask AI</button></div></div>
     </article>
@@ -2696,23 +2835,13 @@ function showViewerTab(tab){const body=document.getElementById('viewerBody'),d=d
 async function runViewerAI(action){const id=KOJA_DOCS.current;if(!id)return;const answer=document.getElementById('viewerAnswer'),q=document.getElementById('viewerQuestion').value;answer.style.display='block';answer.textContent='KOJA AI is analyzing the document...';const fd=new FormData();fd.append('action',action);fd.append('question',q);try{const r=await fetch('/documents/'+encodeURIComponent(id)+'/ai',{method:'POST',body:fd,headers:{'X-Requested-With':'XMLHttpRequest'}});const d=await r.json();if(!r.ok||!d.ok){answer.textContent=d.error||'Document AI failed.';return}answer.textContent=d.answer||'No answer returned.';}catch(e){answer.textContent='Network error. Please try again.';}}
 function saveKOJADoc(id,title){let a=[];try{a=JSON.parse(localStorage.getItem('koja_doc_saved')||'[]')}catch(e){};if(!a.some(x=>x.id===id)){a.unshift({id,title,at:Date.now()});localStorage.setItem('koja_doc_saved',JSON.stringify(a.slice(0,100)));}document.getElementById('savedCount').textContent=a.length+' saved document'+(a.length===1?'':'s');}
 async function shareKOJADoc(id,title){const url=location.origin+'/documents/view/'+encodeURIComponent(id);if(navigator.share){try{await navigator.share({title:title||'KOJA Document',url})}catch(e){}}else{try{await navigator.clipboard.writeText(url);alert('Document link copied.')}catch(e){alert(url)}}}
+function toggleDocumentNote(button){const box=button.closest('.doc-auto-note');const text=box?box.querySelector('.doc-auto-note-text'):null;if(!text)return;const collapsed=text.classList.toggle('is-collapsed');button.textContent=collapsed?'Show more':'Show less';}
+function setDocumentNote(card,note,status){const text=card.querySelector('.doc-auto-note-text'),badge=card.querySelector('.doc-auto-note-status'),toggle=card.querySelector('.doc-note-toggle');if(!text)return;text.textContent=note||'';badge.textContent=status==='ready'?'Ready':(status==='generating'||status==='queued'||status==='regenerating'?'Updating…':status==='failed'?'Unavailable':'Pending');if(note&&note.trim()){text.classList.add('is-collapsed');toggle.style.display='inline-block';toggle.textContent='Show more';requestAnimationFrame(function(){if(text.scrollHeight<=text.clientHeight+2){toggle.style.display='none';}});}else{toggle.style.display='none';}}
+async function loadDocumentAutomaticNote(card){const id=card.getAttribute('data-document-id');if(!id)return;try{const r=await fetch('/api/documents/'+encodeURIComponent(id)+'/automatic-note',{headers:{'X-Requested-With':'XMLHttpRequest'}});const d=await r.json();if(!r.ok||!d.ok){setDocumentNote(card,d.error||'Automatic note is not available.','failed');return;}setDocumentNote(card,d.note||'The automatic note is being generated from this document. Please refresh shortly.',d.status||'pending');if(['queued','generating','regenerating','pending'].includes(d.status)){setTimeout(function(){loadDocumentAutomaticNote(card);},3500);}}catch(e){setDocumentNote(card,'Automatic note could not be loaded. Please try again.','failed');}}
 function viewDocDetails(id){const card=document.querySelector('[data-document-id="'+CSS.escape(id)+'"]');if(card)alert(card.dataset.title+'\n\nOpen the document to read it with KOJA AI.');}
-(function(){const f=document.getElementById('docUploadFile');if(f)f.addEventListener('change',function(){document.getElementById('docUploadName').textContent=this.files[0]?this.files[0].name:'PDF, Word, TXT, images · maximum 15 MB'});const saved=document.getElementById('savedCount');try{const a=JSON.parse(localStorage.getItem('koja_doc_saved')||'[]');saved.textContent=a.length+' saved document'+(a.length===1?'':'s')}catch(e){};const last=JSON.parse(localStorage.getItem('koja_doc_last')||'null');const strip=document.getElementById('continueStrip');if(last&&strip){strip.innerHTML='<a class="doc-mini" href="javascript:openKOJADocument('+JSON.stringify(last.id)+','+JSON.stringify(last.title)+')"><div class="doc-mini-cover">↻</div><div class="doc-mini-info"><strong>'+String(last.title).replace(/</g,'&lt;')+'</strong><span>Continue where you left off</span></div></a>'}})();
+(function(){const f=document.getElementById('docUploadFile');if(f)f.addEventListener('change',function(){document.getElementById('docUploadName').textContent=this.files[0]?this.files[0].name:'PDF, Word, TXT, images · maximum 15 MB'});const saved=document.getElementById('savedCount');try{const a=JSON.parse(localStorage.getItem('koja_doc_saved')||'[]');saved.textContent=a.length+' saved document'+(a.length===1?'':'s')}catch(e){};const last=JSON.parse(localStorage.getItem('koja_doc_last')||'null');const strip=document.getElementById('continueStrip');if(last&&strip){strip.innerHTML='<a class="doc-mini" href="javascript:openKOJADocument('+JSON.stringify(last.id)+','+JSON.stringify(last.title)+')"><div class="doc-mini-cover">↻</div><div class="doc-mini-info"><strong>'+String(last.title).replace(/</g,'&lt;')+'</strong><span>Continue where you left off</span></div></a>'}document.querySelectorAll('[data-auto-note]').forEach(loadDocumentAutomaticNote);})();
 </script>
-""", categories=categories, counts=counts, visible=visible, q=q, auto_notes=auto_notes, auto_notes_enabled=auto_notes_enabled)
-
-@app.route("/documents/<document_id>/auto-note", methods=["POST"])
-@login_required
-def document_auto_note(document_id):
-    user=current_user() or {}
-    doc=first_row("documents", {"id":document_id})
-    if not doc or not _document_ai_allowed(doc,user): abort(403)
-    if not table_exists("koja_document_auto_notes"):
-        return jsonify(ok=False,error="Automatic notes are not configured. Run KOJA_DOCUMENT_AUTO_NOTES.sql first."),503
-    note,error=_document_auto_note_generate(document_id, force=True)
-    if not note:
-        return jsonify(ok=False,error=error or "Could not generate the automatic note."),503
-    return jsonify(ok=True,document_id=document_id,note=note.get("note"),updated_at=note.get("updated_at") or note.get("generated_at"))
+""", categories=categories, counts=counts, visible=visible, q=q)
 
 @app.route("/documents/view/<document_id>")
 @login_required
