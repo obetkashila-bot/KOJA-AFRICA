@@ -65,6 +65,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("koja-africa")
 
 app = Flask(__name__)
+
+# Google Search Console HTML file verification
+@app.get("/google4d3d8178b7b4659e.html")
+def google_search_console_verification():
+    return "google-site-verification: google4d3d8178b7b4659e.html", 200, {"Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=300"}
 # Render terminates HTTPS at the proxy; trust forwarded host/proto headers.
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 app.secret_key = os.getenv("SECRET_KEY") or os.getenv("FLASK_SECRET_KEY")
