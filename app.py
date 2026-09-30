@@ -2422,6 +2422,74 @@ def _document_ai_text(doc):
         logger.warning("Document AI load failed: %s",exc)
         return "",clean(doc.get("file_name") or "document")
 
+def _document_auto_note_prompt(title, text):
+    return f"""DOCUMENT TITLE: {title}
+
+Create a SHORT automatic study note from this document.
+
+Rules:
+- Use ONLY information supported by the supplied document.
+- Keep it concise: normally 80-180 words.
+- Start with a 1-2 sentence overview.
+- Then give 3-7 key points as short bullets.
+- Include important terms only when they are actually present or clearly supported.
+- Do not invent facts, examples, page numbers, citations, findings or conclusions.
+- Do not say that you are an AI.
+- This is an automatically maintained note for the document, not a replacement for the document.
+
+DOCUMENT CONTENT:
+{text[:90000]}"""
+
+def _document_auto_note_generate(document_id, force=False):
+    """Create/update the short AI note when the source document is new or changed."""
+    try:
+        if not document_id or not table_exists("koja_document_auto_notes"):
+            return None, "auto-note table unavailable"
+        doc=first_row("documents", {"id": document_id})
+        if not doc:
+            return None, "document not found"
+        source_stamp=clean(doc.get("updated_at") or doc.get("created_at"))
+        existing=first_row("koja_document_auto_notes", {"document_id": document_id})
+        if existing and not force and clean(existing.get("source_updated_at")) == source_stamp and clean(existing.get("note")):
+            return existing, None
+        text,name=_document_ai_text(doc)
+        if not text:
+            return None, "document content could not be extracted"
+        title=clean(doc.get("title") or name or "KOJA Document")
+        answer,error=_ai_call(
+            _document_auto_note_prompt(title, text),
+            "You are KOJA Document Auto-Notes. Generate a concise, factual study note strictly from the supplied document.",
+            max_output_tokens=900,
+            timeout=45,
+        )
+        if not answer:
+            return None, _ai_error_message(error)
+        now=utc_now()
+        payload={"document_id":document_id,"note":answer[:8000],"source_updated_at":source_stamp,"generated_at":now,"updated_at":now,"status":"ready"}
+        if existing:
+            row,err=db_update("koja_document_auto_notes", {"document_id":document_id}, payload)
+        else:
+            payload["created_at"]=now
+            row,err=db_insert("koja_document_auto_notes", payload)
+        if err:
+            logger.warning("Automatic document note save failed: %s", err)
+            return None, err
+        return ((row[0] if isinstance(row,list) and row else row) or payload), None
+    except Exception as exc:
+        logger.exception("Automatic document note generation failed: %s", exc)
+        return None, str(exc)
+
+def _schedule_document_auto_note(document_id, force=False):
+    """Generate a document note asynchronously so uploads/library remain responsive."""
+    if not document_id or not supabase_configured() or not table_exists("koja_document_auto_notes"):
+        return
+    def worker():
+        _document_auto_note_generate(document_id, force=force)
+    try:
+        threading.Thread(target=worker, daemon=True, name="koja-document-auto-note").start()
+    except Exception:
+        worker()
+
 def _document_ai_prompt(action, title, text, question=""):
     action=clean(action).lower()
     task={
@@ -2463,12 +2531,15 @@ def document_ai(document_id):
 @app.route("/documents", methods=["GET", "POST"])
 @login_required
 def documents():
-    """KOJA document library. Uses existing documents table when available and degrades gracefully on older schemas."""
-    user = current_user()
+    """KOJA Documents — intelligent knowledge workspace."""
+    user = current_user() or {}
     if request.method == "POST":
         title = clean(request.form.get("title"))
         description = clean(request.form.get("description"))
         category = clean(request.form.get("category")) or "Research"
+        subject = clean(request.form.get("subject"))
+        author = clean(request.form.get("author"))
+        tags = clean(request.form.get("tags"))
         file = request.files.get("file")
         if not title:
             flash("Enter a document title.", "danger")
@@ -2480,9 +2551,7 @@ def documents():
         if error:
             flash("Document upload failed: " + str(error)[:500], "danger")
             return redirect(url_for("documents"))
-        # Use the known KOJA documents schema instead of sending speculative
-        # columns that caused repeated Supabase schema-cache failures.
-        payload = {
+        base_payload = {
             "id": str(uuid.uuid4()), "title": title, "description": description,
             "category": category, "user_id": user.get("id"),
             "file_name": uploaded["file_name"], "file_path": uploaded["path"],
@@ -2490,55 +2559,219 @@ def documents():
             "is_public": False, "is_active": True, "created_at": utc_now(),
             "updated_at": utc_now()
         }
-        row, error = db_insert("documents", payload)
+        optional = {"subject": subject or None, "author": author or None, "tags": tags or None}
+        row, error = db_insert("documents", {**base_payload, **optional})
+        if error:
+            # Older production schemas may not yet contain the optional metadata fields.
+            # Retry using the known schema so the new UI never makes uploads unusable.
+            row, error = db_insert("documents", base_payload)
         if error:
             delete_storage_path(uploaded.get("path"))
             flash("Document could not be saved, so the uploaded file was cleaned up. Check the documents table schema.", "danger")
         else:
-            flash("Document uploaded and sent for approval.", "success")
+            flash("Document uploaded and sent for approval. KOJA will automatically prepare a short AI note from the document.", "success")
             log_activity("document_uploaded", "User uploaded a KOJA document.")
+            _schedule_document_auto_note(base_payload.get("id"))
         return redirect(url_for("documents"))
-    rows = db_select("documents", order="created_at.desc", limit=200)
+
+    q = clean(request.args.get("q"))
+    category_filter = clean(request.args.get("category"))
+    status_filter = clean(request.args.get("status"))
+    rows = db_select("documents", order="created_at.desc", limit=300) or []
     visible = []
     for row in rows:
         owner = row.get("owner_id") or row.get("user_id") or row.get("uploaded_by")
-        approved = str(row.get("approval_status") or row.get("status") or "").lower() in ("approved", "published", "active", "public")
-        if user.get("is_admin") or str(owner or "") == str(user.get("id") or "") or approved:
-            visible.append(row)
-    return render_page("Documents", r"""
-<div class="hero"><h2>KOJA Documents</h2><p>Upload, find and use research and learning documents with built-in document intelligence.</p></div>
-<div class="card"><h3>Upload Document</h3><form method="post" enctype="multipart/form-data"><label>Title</label><input name="title" maxlength="220" required><label>Description</label><textarea name="description" maxlength="4000" placeholder="What is this document about?"></textarea><label>Category</label><select name="category"><option>Research</option><option>Academic</option><option>Notes</option><option>Reports</option><option>Books</option><option>Other</option></select><label>File</label><input name="file" type="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp" required><button class="btn" type="submit">Upload for Approval</button></form></div>
-<div class="grid">{% for d in documents %}<div class="card"><h3>{{ d.get('title') or d.get('name') or d.get('filename') or 'KOJA Document' }}</h3><p>{{ d.get('description') or d.get('content') or '' }}</p><p class="small">Category: {{ d.get('category') or 'Research' }} · Status: {{ d.get('approval_status') or d.get('status') or '—' }}</p>{% set did=d.get('id') %}{% if did %}<div class="actions"><a class="btn secondary" href="{{ url_for('document_download', document_id=did) }}">Open / Download</a><button class="btn" type="button" onclick="openDocumentAI('{{ did }}')">Ask KOJA AI</button></div><div id="docai-{{ did }}" style="display:none;margin-top:14px"><label>Ask about this document</label><textarea id="docq-{{ did }}" rows="3" placeholder="Ask a question, or choose an action below."></textarea><div class="actions"><button class="btn" type="button" onclick="runDocumentAI('{{ did }}','ask')">Ask</button><button class="btn secondary" type="button" onclick="runDocumentAI('{{ did }}','summarize')">Summarize</button><button class="btn secondary" type="button" onclick="runDocumentAI('{{ did }}','key_points')">Key Points</button><button class="btn secondary" type="button" onclick="runDocumentAI('{{ did }}','study_questions')">Study Questions</button><button class="btn secondary" type="button" onclick="runDocumentAI('{{ did }}','explain')">Explain</button><button class="btn secondary" type="button" onclick="runDocumentAI('{{ did }}','research')">Research Analysis</button></div><div id="docai-result-{{ did }}" class="card" style="display:none;margin-top:12px;white-space:pre-wrap"></div></div>{% endif %}</div>{% else %}<div class="card"><h3>No documents yet</h3><p>Upload the first KOJA research or learning document.</p></div>{% endfor %}</div>
-<script>
-function openDocumentAI(id){document.getElementById('docai-'+id).style.display='block';document.getElementById('docq-'+id).focus();}
-async function runDocumentAI(id,action){const result=document.getElementById('docai-result-'+id);const q=document.getElementById('docq-'+id).value;result.style.display='block';result.textContent='KOJA AI is analyzing the document...';const fd=new FormData();fd.append('action',action);fd.append('question',q);try{const r=await fetch('/documents/'+encodeURIComponent(id)+'/ai',{method:'POST',body:fd});const d=await r.json();if(!r.ok||!d.ok){result.textContent=d.error||'Document AI failed.';return;}result.textContent=d.answer||'No answer returned.';}catch(e){result.textContent='Network error. Please try again.';}}
-</script>
-""", documents=visible)
+        status = str(row.get("approval_status") or row.get("status") or "pending").lower()
+        approved = status in ("approved", "published", "active", "public")
+        if not (user.get("is_admin") or str(owner or "") == str(user.get("id") or "") or approved):
+            continue
+        title = str(row.get("title") or row.get("name") or row.get("filename") or "KOJA Document")
+        hay = " ".join(str(row.get(k) or "") for k in ("title", "description", "category", "subject", "author", "tags", "file_name")).lower()
+        if q and q.lower() not in hay:
+            continue
+        if category_filter and str(row.get("category") or "Other").lower() != category_filter.lower():
+            continue
+        if status_filter and status != status_filter.lower():
+            continue
+        row["_status"] = status
+        row["_title"] = title
+        visible.append(row)
 
-@app.route("/documents/download/<document_id>")
+    all_rows = []
+    for row in rows:
+        owner = row.get("owner_id") or row.get("user_id") or row.get("uploaded_by")
+        status = str(row.get("approval_status") or row.get("status") or "pending").lower()
+        approved = status in ("approved", "published", "active", "public")
+        if user.get("is_admin") or str(owner or "") == str(user.get("id") or "") or approved:
+            row["_status"] = status
+            row["_title"] = str(row.get("title") or row.get("name") or row.get("filename") or "KOJA Document")
+            all_rows.append(row)
+
+    categories = [
+        ("Academic", "Courses, assignments and lecture materials", "academic"),
+        ("Research", "Papers, reports and research materials", "research"),
+        ("Notes", "Study and revision notes", "notes"),
+        ("Books", "Textbooks and reference materials", "books"),
+        ("Professional", "Business and workplace documents", "professional"),
+        ("Other", "Other useful knowledge", "other"),
+    ]
+    counts = {}
+    for label, _, _ in categories:
+        counts[label.lower()] = sum(1 for d in all_rows if str(d.get("category") or "Other").lower() == label.lower())
+
+    auto_notes = {}
+    auto_notes_enabled = table_exists("koja_document_auto_notes")
+    if auto_notes_enabled:
+        for d in visible[:30]:
+            did=d.get("id")
+            if not did:
+                continue
+            note=first_row("koja_document_auto_notes", {"document_id":did})
+            source_stamp=clean(d.get("updated_at") or d.get("created_at"))
+            if note and clean(note.get("source_updated_at")) == source_stamp and clean(note.get("note")):
+                auto_notes[str(did)]=note
+            else:
+                _schedule_document_auto_note(did)
+
+    return render_page("Documents", r"""
+<style>
+.koja-docs{--doc-navy:#10233f;--doc-blue:#176b87;--doc-gold:#b18a32;max-width:1240px;margin:0 auto;padding-bottom:34px}
+.docs-head{padding:22px 0 18px}.docs-kicker{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--doc-blue);font-weight:800}.docs-head h1{font-size:clamp(30px,5vw,48px);line-height:1.05;margin:8px 0 10px;color:var(--doc-navy)}
+@media(prefers-color-scheme:dark){.docs-head h1{color:#fff}}
+.docs-head p{max-width:720px;color:var(--muted);font-size:16px}.docs-search{display:flex;gap:10px;align-items:center;background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:8px;box-shadow:0 8px 28px rgba(0,0,0,.07)}.docs-search input{border:0!important;box-shadow:none!important;background:transparent!important;margin:0!important;flex:1;min-width:0;font-size:16px}.docs-search button{white-space:nowrap}.docs-actions{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0 26px}.docs-section{margin-top:28px}.docs-section-head{display:flex;justify-content:space-between;align-items:end;gap:12px;margin-bottom:13px}.docs-section-head h2{margin:0;font-size:20px}.docs-section-head a{font-size:13px;color:var(--doc-blue);text-decoration:none}
+.doc-cats{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:11px}.doc-cat{display:block;text-decoration:none;color:inherit;background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:16px;min-height:112px;transition:.18s}.doc-cat:hover{transform:translateY(-2px);border-color:var(--doc-blue);box-shadow:0 8px 24px rgba(0,0,0,.07)}.doc-cat-mark{width:34px;height:34px;border-radius:10px;background:rgba(23,107,135,.11);display:flex;align-items:center;justify-content:center;color:var(--doc-blue);font-weight:800;margin-bottom:11px}.doc-cat strong{display:block;font-size:14px}.doc-cat span{display:block;color:var(--muted);font-size:12px;margin-top:4px;line-height:1.35}.doc-cat b{display:block;margin-top:8px;font-size:12px;color:var(--doc-blue)}
+.doc-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.doc-mini{display:flex;gap:12px;align-items:center;border:1px solid var(--border);border-radius:15px;background:var(--surface);padding:13px;text-decoration:none;color:inherit;min-width:0}.doc-mini-cover,.doc-cover{flex:0 0 auto;border-radius:10px;background:linear-gradient(135deg,var(--doc-navy),var(--doc-blue));color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800}.doc-mini-cover{width:45px;height:56px;font-size:10px}.doc-mini-info{min-width:0}.doc-mini-info strong{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.doc-mini-info span{display:block;color:var(--muted);font-size:12px;margin-top:4px}
+.doc-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.doc-card{position:relative;background:var(--surface);border:1px solid var(--border);border-radius:17px;overflow:hidden;transition:.18s}.doc-card:hover{transform:translateY(-2px);box-shadow:0 10px 28px rgba(0,0,0,.08)}.doc-card-top{display:flex;gap:13px;padding:15px}.doc-cover{width:62px;height:78px;font-size:11px;box-shadow:0 5px 14px rgba(0,0,0,.12)}.doc-main{min-width:0;flex:1}.doc-main h3{margin:2px 0 6px;font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.doc-meta{font-size:12px;color:var(--muted);line-height:1.5}.doc-desc{font-size:13px;color:var(--muted);padding:0 15px;min-height:38px}.doc-auto-note{margin:12px 15px 0;padding:11px 12px;border:1px solid rgba(23,107,135,.18);border-left:3px solid var(--doc-blue);border-radius:12px;background:rgba(23,107,135,.045)}.doc-auto-note-head{display:flex;gap:8px;justify-content:space-between;align-items:center;font-size:12px}.doc-auto-note-head span{font-size:10px;color:var(--muted);text-align:right}.doc-auto-note-text{white-space:pre-wrap;font-size:12px;line-height:1.5;margin-top:7px}.doc-auto-note-text.muted{color:var(--muted)}.doc-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:13px 15px;border-top:1px solid var(--border);margin-top:12px}.doc-status{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.05em}.doc-status.approved{color:#18794e}.doc-status.pending,.doc-status.processing{color:#9a6a12}.doc-status.rejected{color:#b42318}.doc-status.archived{color:var(--muted)}.doc-menu{position:absolute;right:12px;top:12px}.doc-menu summary{list-style:none;width:32px;height:32px;border:1px solid var(--border);border-radius:9px;display:flex;align-items:center;justify-content:center;cursor:pointer}.doc-menu summary::-webkit-details-marker{display:none}.doc-menu-items{position:absolute;right:0;top:38px;z-index:30;width:150px;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 14px 34px rgba(0,0,0,.16);padding:5px}.doc-menu-items button,.doc-menu-items a{display:block;width:100%;text-align:left;padding:9px 10px;border:0;background:transparent;color:inherit;text-decoration:none;border-radius:8px;cursor:pointer;font-size:13px}.doc-menu-items button:hover,.doc-menu-items a:hover{background:rgba(127,127,127,.1)}.doc-buttons{display:flex;gap:7px}.doc-buttons .btn{padding:8px 11px;font-size:12px}
+.docs-modal{position:fixed;inset:0;z-index:300;display:none;background:rgba(8,18,32,.58);padding:18px;overflow:auto}.docs-modal.open{display:flex;align-items:center;justify-content:center}.docs-modal-panel{width:min(720px,100%);max-height:calc(100vh - 36px);overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:20px;box-shadow:0 25px 80px rgba(0,0,0,.25);padding:20px}.docs-modal-head{display:flex;align-items:center;gap:12px;margin-bottom:16px}.docs-modal-head strong{font-size:20px;margin-right:auto}.upload-drop{border:1.5px dashed var(--doc-blue);border-radius:16px;padding:25px;text-align:center;background:rgba(23,107,135,.045);cursor:pointer}.upload-drop strong{display:block}.upload-drop span{font-size:13px;color:var(--muted)}.upload-file{display:none}.upload-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.upload-grid .full{grid-column:1/-1}
+.docs-viewer{position:fixed;inset:0;z-index:400;background:#0b1422;display:none;flex-direction:column;color:#fff}.docs-viewer.open{display:flex}.viewer-head{height:58px;display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid rgba(255,255,255,.13);flex:0 0 auto}.viewer-head strong{margin-right:auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.viewer-btn{border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:#fff;border-radius:10px;padding:8px 10px;cursor:pointer}.viewer-body{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(330px,.8fr);min-height:0;flex:1}.viewer-doc{min-width:0;background:#202b39}.viewer-doc iframe{width:100%;height:100%;border:0;background:#fff}.viewer-ai{min-width:0;background:#f7f8fa;color:#172235;display:flex;flex-direction:column}.viewer-ai-head{padding:16px;border-bottom:1px solid #dfe4ea}.viewer-ai-head h3{margin:0 0 4px}.viewer-ai-head p{margin:0;color:#657080;font-size:13px}.viewer-ai-body{padding:15px;overflow:auto;flex:1}.ai-prompts{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:12px}.ai-prompts button{border:1px solid #d9dee5;background:#fff;border-radius:999px;padding:8px 10px;cursor:pointer;font-size:12px}.viewer-ai textarea{width:100%;box-sizing:border-box;min-height:90px;border:1px solid #d9dee5;border-radius:12px;padding:11px;resize:vertical}.viewer-answer{white-space:pre-wrap;line-height:1.55;margin-top:12px;background:#fff;border:1px solid #e0e4e9;border-radius:13px;padding:12px;font-size:13px}.viewer-tabs{display:none}
+@media(max-width:1000px){.doc-cats{grid-template-columns:repeat(3,1fr)}.doc-grid{grid-template-columns:repeat(2,1fr)}.doc-strip{grid-template-columns:1fr 1fr}.viewer-body{grid-template-columns:1fr}.viewer-doc,.viewer-ai{display:none}.viewer-body.show-doc .viewer-doc{display:block}.viewer-body.show-ai .viewer-ai{display:flex}.viewer-tabs{display:flex;gap:0;padding:6px;background:#101c2b}.viewer-tabs button{flex:1;border:0;border-radius:9px;padding:9px;background:transparent;color:#fff}.viewer-tabs button.active{background:rgba(255,255,255,.12)}}
+@media(max-width:680px){.docs-head{padding-top:12px}.docs-search{border-radius:14px}.docs-search button{display:none}.doc-cats{grid-template-columns:repeat(2,1fr)}.doc-grid,.doc-strip{grid-template-columns:1fr}.upload-grid{grid-template-columns:1fr}.upload-grid .full{grid-column:auto}.docs-modal{padding:8px}.docs-modal-panel{border-radius:16px}.viewer-head{height:54px}.viewer-head .viewer-download{display:none}}
+</style>
+<div class="koja-docs">
+  <div class="docs-head">
+    <div class="docs-kicker">KOJA AFRICA · Documents</div>
+    <h1>Your knowledge, organised intelligently.</h1>
+    <p>Search, study, save and understand your documents with a workspace built around knowledge—not just files.</p>
+    <form class="docs-search" method="get" action="{{ url_for('documents') }}">
+      <span aria-hidden="true">⌕</span><input name="q" value="{{ q }}" placeholder="Search documents, subjects, authors, topics..." autocomplete="off"><button class="btn" type="submit">Search</button>
+    </form>
+    <div class="docs-actions"><button class="btn" type="button" onclick="document.getElementById('uploadModal').classList.add('open')">Upload Document</button><a class="btn secondary" href="{{ url_for('ai_assistant') }}">Ask KOJA AI</a></div>
+  </div>
+
+  <section class="docs-section"><div class="docs-section-head"><h2>Browse Categories</h2></div><div class="doc-cats">
+    {% for label,desc,key in categories %}<a class="doc-cat" href="{{ url_for('documents',category=label) }}"><div class="doc-cat-mark">{{ label[0] }}</div><strong>{{ label }}</strong><span>{{ desc }}</span><b>{{ counts.get(key,0) }} documents</b></a>{% endfor %}
+  </div></section>
+
+  <section class="docs-section"><div class="docs-section-head"><h2>Continue Learning</h2><a href="#recent">View library</a></div><div class="doc-strip" id="continueStrip"><div class="doc-mini"><div class="doc-mini-info"><strong>Open a document to start learning</strong><span>Your recent documents will appear here.</span></div></div></div></section>
+
+  <section class="docs-section"><div class="docs-section-head"><h2>Recently Added</h2><a href="#library">All documents</a></div><div class="doc-grid">
+  {% for d in visible[:6] %}{% set did=d.get('id') %}{% set cat=(d.get('category') or 'Other') %}{% set status=d.get('_status','pending') %}
+    <article class="doc-card" data-document-id="{{ did }}" data-title="{{ d.get('_title','')|e }}" data-category="{{ cat|e }}">
+      <details class="doc-menu"><summary aria-label="More options">⋯</summary><div class="doc-menu-items"><a href="{{ url_for('document_download',document_id=did) }}">Download</a><button type="button" onclick="shareKOJADoc('{{ did }}','{{ d.get('_title','')|e }}')">Share</button><button type="button" onclick="saveKOJADoc('{{ did }}','{{ d.get('_title','')|e }}')">Save</button><button type="button" onclick="viewDocDetails('{{ did }}')">View details</button></div></details>
+      <div class="doc-card-top"><div class="doc-cover">{{ (d.get('file_name') or 'PDF').split('.')[-1]|upper|truncate(5,True,'') }}</div><div class="doc-main"><h3 title="{{ d.get('_title','') }}">{{ d.get('_title','KOJA Document') }}</h3><div class="doc-meta">{{ cat }}{% if d.get('subject') %} · {{ d.get('subject') }}{% endif %}{% if d.get('author') %}<br>{{ d.get('author') }}{% endif %}</div></div></div>
+      <div class="doc-desc">{{ d.get('description') or 'KOJA knowledge document available for learning and reference.'|truncate(110) }}</div>
+      {% set auto_note=auto_notes.get(did|string) %}
+      <div class="doc-auto-note">
+        <div class="doc-auto-note-head"><strong>AI Quick Note</strong>{% if auto_note %}<span>Updated {{ auto_note.get('updated_at') or auto_note.get('generated_at') }}</span>{% endif %}</div>
+        {% if auto_note %}<div class="doc-auto-note-text">{{ auto_note.get('note') }}</div>{% else %}<div class="doc-auto-note-text muted">KOJA AI is preparing a short note from this document. Refresh shortly.</div>{% endif %}
+      </div>
+      <div class="doc-foot"><span class="doc-status {{ status }}">{{ 'Pending Approval' if status in ['pending','submitted','under_review'] else status|replace('_',' ')|title }}</span><div class="doc-buttons"><button class="btn secondary" type="button" onclick="openKOJADocument('{{ did }}','{{ d.get('_title','KOJA Document')|e }}')">Open</button><button class="btn" type="button" onclick="openKOJADocumentAI('{{ did }}','{{ d.get('_title','KOJA Document')|e }}')">Ask AI</button></div></div>
+    </article>
+  {% else %}<div class="card"><h3>No documents found</h3><p>Try another search or upload the first KOJA document.</p></div>{% endfor %}
+  </div></section>
+
+  <section class="docs-section" id="library"><div class="docs-section-head"><h2>Your Library</h2></div><div class="doc-strip"><div class="doc-mini"><div class="doc-mini-cover">S</div><div class="doc-mini-info"><strong>Saved Documents</strong><span id="savedCount">Bookmarked for later</span></div></div><div class="doc-mini"><div class="doc-mini-cover">R</div><div class="doc-mini-info"><strong>Recently Opened</strong><span>Documents you viewed recently</span></div></div><div class="doc-mini"><div class="doc-mini-cover">U</div><div class="doc-mini-info"><strong>My Uploads</strong><span>Your submitted documents</span></div></div></div></section>
+</div>
+
+<div class="docs-modal" id="uploadModal" onclick="if(event.target===this)this.classList.remove('open')"><div class="docs-modal-panel"><div class="docs-modal-head"><strong>Upload your document</strong><button class="viewer-btn" type="button" onclick="document.getElementById('uploadModal').classList.remove('open')">×</button></div><form method="post" enctype="multipart/form-data"><div class="upload-drop" onclick="document.getElementById('docUploadFile').click()"><strong>Drag & Drop / Choose File</strong><span id="docUploadName">PDF, Word, TXT, images · maximum 15 MB</span><input class="upload-file" id="docUploadFile" name="file" type="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp" required></div><div class="upload-grid" style="margin-top:14px"><div><label>Title</label><input name="title" maxlength="220" required></div><div><label>Category</label><select name="category"><option>Academic</option><option>Research</option><option>Notes</option><option>Books</option><option>Professional</option><option>Other</option></select></div><div><label>Subject</label><input name="subject" maxlength="180" placeholder="e.g. Psychology"></div><div><label>Author</label><input name="author" maxlength="180"></div><div class="full"><label>Tags</label><input name="tags" maxlength="500" placeholder="e.g. adolescence, Piaget, revision"></div><div class="full"><label>Description</label><textarea name="description" maxlength="4000" rows="4" placeholder="What is this document about?"></textarea></div></div><div class="docs-actions" style="margin-bottom:0"><button class="btn" type="submit">Submit for Approval</button><button class="btn secondary" type="button" onclick="document.getElementById('uploadModal').classList.remove('open')">Cancel</button></div><p class="small">Processing → AI indexing → Awaiting approval → Approved</p></form></div></div>
+
+<div class="docs-viewer" id="docViewer"><div class="viewer-head"><button class="viewer-btn" type="button" onclick="closeKOJADocument()">Close</button><strong id="viewerTitle">KOJA Document</strong><a id="viewerDownload" class="viewer-btn viewer-download" href="#">Download</a></div><div class="viewer-tabs"><button id="viewerTabDoc" class="active" type="button" onclick="showViewerTab('doc')">Document</button><button id="viewerTabAI" type="button" onclick="showViewerTab('ai')">AI</button></div><div class="viewer-body show-doc" id="viewerBody"><div class="viewer-doc"><iframe id="viewerFrame" title="KOJA document viewer"></iframe></div><aside class="viewer-ai"><div class="viewer-ai-head"><h3>Ask about this document</h3><p id="viewerSubtitle">KOJA AI answers from the selected document.</p></div><div class="viewer-ai-body"><div class="ai-prompts"><button onclick="runViewerAI('summarize')">Summarise</button><button onclick="runViewerAI('study_questions')">Exam questions</button><button onclick="runViewerAI('explain')">Explain topic</button><button onclick="runViewerAI('key_points')">Important definitions</button><button onclick="runViewerAI('research')">Research analysis</button></div><textarea id="viewerQuestion" placeholder="Ask anything about this document..."></textarea><div style="margin-top:8px"><button class="btn" type="button" onclick="runViewerAI('ask')">Ask KOJA AI</button></div><div class="viewer-answer" id="viewerAnswer" style="display:none"></div></div></aside></div></div>
+
+<script>
+const KOJA_DOCS={};
+function openKOJADocument(id,title){KOJA_DOCS.current=id;document.getElementById('viewerTitle').textContent=title||'KOJA Document';document.getElementById('viewerSubtitle').textContent=title||'Selected document';document.getElementById('viewerFrame').src='/documents/file/'+encodeURIComponent(id)+'?inline=1';document.getElementById('viewerDownload').href='/documents/download/'+encodeURIComponent(id);document.getElementById('viewerAnswer').style.display='none';document.getElementById('docViewer').classList.add('open');document.body.style.overflow='hidden';localStorage.setItem('koja_doc_last',JSON.stringify({id:id,title:title||'KOJA Document',at:Date.now()}));}
+function openKOJADocumentAI(id,title){openKOJADocument(id,title);showViewerTab('ai');}
+function closeKOJADocument(){document.getElementById('docViewer').classList.remove('open');document.body.style.overflow='';document.getElementById('viewerFrame').src='about:blank';}
+function showViewerTab(tab){const body=document.getElementById('viewerBody'),d=document.getElementById('viewerTabDoc'),a=document.getElementById('viewerTabAI');body.className='viewer-body show-'+tab;d.classList.toggle('active',tab==='doc');a.classList.toggle('active',tab==='ai');}
+async function runViewerAI(action){const id=KOJA_DOCS.current;if(!id)return;const answer=document.getElementById('viewerAnswer'),q=document.getElementById('viewerQuestion').value;answer.style.display='block';answer.textContent='KOJA AI is analyzing the document...';const fd=new FormData();fd.append('action',action);fd.append('question',q);try{const r=await fetch('/documents/'+encodeURIComponent(id)+'/ai',{method:'POST',body:fd,headers:{'X-Requested-With':'XMLHttpRequest'}});const d=await r.json();if(!r.ok||!d.ok){answer.textContent=d.error||'Document AI failed.';return}answer.textContent=d.answer||'No answer returned.';}catch(e){answer.textContent='Network error. Please try again.';}}
+function saveKOJADoc(id,title){let a=[];try{a=JSON.parse(localStorage.getItem('koja_doc_saved')||'[]')}catch(e){};if(!a.some(x=>x.id===id)){a.unshift({id,title,at:Date.now()});localStorage.setItem('koja_doc_saved',JSON.stringify(a.slice(0,100)));}document.getElementById('savedCount').textContent=a.length+' saved document'+(a.length===1?'':'s');}
+async function shareKOJADoc(id,title){const url=location.origin+'/documents/view/'+encodeURIComponent(id);if(navigator.share){try{await navigator.share({title:title||'KOJA Document',url})}catch(e){}}else{try{await navigator.clipboard.writeText(url);alert('Document link copied.')}catch(e){alert(url)}}}
+function viewDocDetails(id){const card=document.querySelector('[data-document-id="'+CSS.escape(id)+'"]');if(card)alert(card.dataset.title+'\n\nOpen the document to read it with KOJA AI.');}
+(function(){const f=document.getElementById('docUploadFile');if(f)f.addEventListener('change',function(){document.getElementById('docUploadName').textContent=this.files[0]?this.files[0].name:'PDF, Word, TXT, images · maximum 15 MB'});const saved=document.getElementById('savedCount');try{const a=JSON.parse(localStorage.getItem('koja_doc_saved')||'[]');saved.textContent=a.length+' saved document'+(a.length===1?'':'s')}catch(e){};const last=JSON.parse(localStorage.getItem('koja_doc_last')||'null');const strip=document.getElementById('continueStrip');if(last&&strip){strip.innerHTML='<a class="doc-mini" href="javascript:openKOJADocument('+JSON.stringify(last.id)+','+JSON.stringify(last.title)+')"><div class="doc-mini-cover">↻</div><div class="doc-mini-info"><strong>'+String(last.title).replace(/</g,'&lt;')+'</strong><span>Continue where you left off</span></div></a>'}})();
+</script>
+""", categories=categories, counts=counts, visible=visible, q=q, auto_notes=auto_notes, auto_notes_enabled=auto_notes_enabled)
+
+@app.route("/documents/<document_id>/auto-note", methods=["POST"])
 @login_required
-def document_download(document_id):
+def document_auto_note(document_id):
     user=current_user() or {}
-    doc=first_row("documents", {"id": document_id})
-    if not doc:
-        abort(404)
-    owner=str(doc.get("user_id") or doc.get("owner_id") or "")
-    approved=str(doc.get("approval_status") or "").lower() in ("approved","published","public","active")
-    if not user.get("is_admin") and owner != str(user.get("id") or "") and not approved:
-        abort(403)
-    storage_path=clean(doc.get("file_path") or doc.get("file_url"))
+    doc=first_row("documents", {"id":document_id})
+    if not doc or not _document_ai_allowed(doc,user): abort(403)
+    if not table_exists("koja_document_auto_notes"):
+        return jsonify(ok=False,error="Automatic notes are not configured. Run KOJA_DOCUMENT_AUTO_NOTES.sql first."),503
+    note,error=_document_auto_note_generate(document_id, force=True)
+    if not note:
+        return jsonify(ok=False,error=error or "Could not generate the automatic note."),503
+    return jsonify(ok=True,document_id=document_id,note=note.get("note"),updated_at=note.get("updated_at") or note.get("generated_at"))
+
+@app.route("/documents/view/<document_id>")
+@login_required
+def document_view(document_id):
+    doc=first_row("documents", {"id":document_id})
+    user=current_user() or {}
+    if not doc or not _document_ai_allowed(doc,user): abort(404)
+    title=clean(doc.get("title") or doc.get("file_name") or "KOJA Document")
+    return render_page("Document Viewer", r"""
+<style>.kv-wrap{height:calc(100vh - 120px);min-height:620px}.kv-frame{width:100%;height:100%;border:0;border-radius:16px;background:#fff}</style>
+<div class="hero"><h2>{{ title }}</h2><p>KOJA Document Workspace</p><div class="actions"><a class="btn" href="{{ url_for('documents') }}">Back to Documents</a><a class="btn secondary" href="{{ url_for('document_download',document_id=doc.id) }}">Download</a></div></div>
+<div class="kv-wrap"><iframe class="kv-frame" src="{{ url_for('document_file',document_id=doc.id) }}?inline=1" title="{{ title }}"></iframe></div>
+""", title=title, doc=doc)
+
+def _document_storage_path(doc):
+    storage_path=clean(doc.get("file_path") or doc.get("file_url")) if doc else ""
     public_prefix=f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/" if SUPABASE_URL else ""
     if public_prefix and storage_path.startswith(public_prefix):
         rem=storage_path[len(public_prefix):]; bp=f"{STORAGE_BUCKET}/"
         if rem.startswith(bp): storage_path=unquote(rem[len(bp):])
     if storage_path.startswith(f"{STORAGE_BUCKET}/"):
         storage_path=storage_path[len(STORAGE_BUCKET)+1:]
+    return storage_path
+
+@app.route("/documents/file/<document_id>")
+@login_required
+def document_file(document_id):
+    user=current_user() or {}
+    doc=first_row("documents", {"id": document_id})
+    if not doc: abort(404)
+    if not _document_ai_allowed(doc,user): abort(403)
+    storage_path=_document_storage_path(doc)
     if not storage_path or not supabase_configured(): abort(404)
     try:
         r=requests.get(sb_storage_url(storage_path),headers=sb_headers(),timeout=30)
         if not r.ok: abort(404)
         filename=secure_filename(doc.get("file_name") or "koja-document") or "koja-document"
-        response=send_file(io.BytesIO(r.content),download_name=filename,mimetype=r.headers.get("Content-Type") or "application/octet-stream",max_age=0)
+        response=send_file(io.BytesIO(r.content),download_name=filename,mimetype=r.headers.get("Content-Type") or "application/octet-stream",as_attachment=False,max_age=0)
+        response.headers["Content-Disposition"]="inline; filename="+quote(filename)
+        response.headers["Cache-Control"]="private, no-store"
+        return response
+    except Exception:
+        logger.exception("Document viewer load failed")
+        abort(404)
+
+@app.route("/documents/download/<document_id>")
+@login_required
+def document_download(document_id):
+    user=current_user() or {}
+    doc=first_row("documents", {"id": document_id})
+    if not doc: abort(404)
+    if not _document_ai_allowed(doc,user): abort(403)
+    storage_path=_document_storage_path(doc)
+    if not storage_path or not supabase_configured(): abort(404)
+    try:
+        r=requests.get(sb_storage_url(storage_path),headers=sb_headers(),timeout=30)
+        if not r.ok: abort(404)
+        filename=secure_filename(doc.get("file_name") or "koja-document") or "koja-document"
+        response=send_file(io.BytesIO(r.content),download_name=filename,mimetype=r.headers.get("Content-Type") or "application/octet-stream",as_attachment=True,max_age=0)
         response.headers["Cache-Control"]="private, no-store"
         return response
     except Exception:
