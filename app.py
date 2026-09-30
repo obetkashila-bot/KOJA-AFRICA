@@ -95,6 +95,57 @@ def _rate_limited(key, limit, window=60):
             _rate_hits.pop(k, None)
     return False
 
+# ============================================================
+# SECURITY HARDENING V3
+# ============================================================
+MIN_PASSWORD_LENGTH = 10
+SECURITY_MAX_INPUT = 12000
+
+def _security_event(action, metadata=None, user_id=None):
+    """Best-effort security audit event. Never blocks the user request."""
+    try:
+        uid = user_id or (current_user() or {}).get("id")
+        payload = {
+            "user_id": uid,
+            "action": str(action)[:120],
+            "resource_type": "security",
+            "resource_id": None,
+            "ip_address": request.remote_addr,
+            "user_agent": request.headers.get("User-Agent", "")[:500],
+            "metadata": metadata or {},
+            "created_at": utc_now(),
+        }
+        if table_exists("koja_audit_log_v2"):
+            db_insert("koja_audit_log_v2", payload)
+    except Exception:
+        logger.exception("Security event logging failed")
+
+def _password_policy_ok(password):
+    password = password or ""
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return False, f"Password must contain at least {MIN_PASSWORD_LENGTH} characters."
+    if len(password) > 256:
+        return False, "Password is too long."
+    return True, None
+
+def _validate_file_signature(filename, data):
+    """Lightweight magic-byte checks for common uploaded file types."""
+    name = secure_filename(filename or "")
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    if not data:
+        return False
+    if ext == "pdf": return data.startswith(b"%PDF-")
+    if ext in {"jpg", "jpeg"}: return data.startswith(b"\xff\xd8\xff")
+    if ext == "png": return data.startswith(b"\x89PNG\r\n\x1a\n")
+    if ext == "webp": return data.startswith(b"RIFF") and data[8:12] == b"WEBP"
+    if ext in {"docx"}: return data.startswith(b"PK\x03\x04")
+    if ext in {"doc"}: return data.startswith(b"\xd0\xcf\x11\xe0")
+    if ext == "mp4": return len(data) >= 12 and data[4:8] == b"ftyp"
+    if ext in {"webm"}: return data.startswith(b"\x1a\x45\xdf\xa3")
+    if ext in {"txt", "csv"}:
+        return b"\x00" not in data[:8192]
+    return True
+
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_SERVICE_KEY = (
     os.getenv("SUPABASE_SECRET_KEY", "")
@@ -118,8 +169,8 @@ HLS_PUBLIC_BASE = os.getenv("KOJA_HLS_PUBLIC_BASE", "").strip().rstrip("/")
 HLS_CDN_BASE = os.getenv("KOJA_HLS_CDN_BASE", "").strip().rstrip("/")
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.09-V7-K100M-MONETIZATION-V53-SELLER-CENTER"
-APP_TAGLINE = ""
+APP_VERSION = "2026.09.30-SECURITY-HARDENING-V3"
+APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
 # Email delivery (server-side only; never expose SMTP passwords to the browser)
@@ -505,6 +556,9 @@ def upload_storage(file_storage, folder="uploads", public=False):
     data = file_storage.read()
     if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
         return None, f"Maximum file size is {MAX_UPLOAD_MB} MB."
+    if not _validate_file_signature(filename, data):
+        _security_event("upload_signature_rejected", {"extension": ext, "filename": filename[:160]})
+        return None, "The uploaded file does not match its declared file type."
 
     path = f"{folder.strip('/')}/{uuid.uuid4().hex}_{filename}"
     mime = file_storage.mimetype or "application/octet-stream"
@@ -646,6 +700,7 @@ def admin_required(fn):
             flash("Administrator login required.", "warning")
             return redirect(url_for("login"))
         if not user.get("is_admin"):
+            _security_event("admin_access_denied", {"path": request.path}, user_id=user.get("id"))
             flash("Administrator access required.", "danger")
             return redirect(url_for("dashboard"))
         return fn(*args, **kwargs)
@@ -754,6 +809,7 @@ def enforce_csrf():
     # The token is injected into forms and fetch requests by BASE_HTML.
     if not csrf_valid():
         logger.warning("CSRF validation failed for %s %s", request.method, request.path)
+        _security_event("csrf_validation_failed", {"method": request.method, "path": request.path})
         if request.is_json or request.path.startswith("/api/"):
             return jsonify({"ok": False, "message": "CSRF validation failed. Refresh the page and try again."}), 403
         flash("Security check failed. Please refresh the page and try again.", "danger")
@@ -895,7 +951,6 @@ html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90
 <a href="{{ url_for('ai_nextgen') }}">KOJA AI</a>
 <a class="notification-bell" href="{{ url_for('notifications_page') }}" aria-label="Notifications">Notifications <span id="kojaNotifBadge" class="notif-badge" hidden></span></a>
 <a href="{{ '/market' }}">KOJA Market</a> <a href="{{ url_for('market_live') }}">Live Shop</a>
-<a href="{{ url_for('koja_business') }}">KOJA Business</a>
 <a href="{{ url_for('communication_nextgen') }}">Connect+</a>
 <div class="menu-group">
 <button type="button" id="moreMenuButton" aria-expanded="false" aria-haspopup="true">More ▾</button>
@@ -915,7 +970,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90
 <a role="menuitem" href="{{ url_for('settings') }}">Settings</a>
 {% if user.role in ['driver','admin'] or user.is_admin %}<a role="menuitem" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}
 {% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('admin') }}">Admin</a><a role="menuitem" href="{{ url_for('admin_market') }}">KOJA Market Admin</a><a role="menuitem" href="{{ url_for('admin_marketplace') }}">Digital Marketplace Admin</a>{% endif %}
-<a role="menuitem" href="{{ url_for('logout') }}">Logout</a>
+<form method="post" action="{{ url_for('logout') }}" style="margin:0"><button type="submit" style="background:none;border:0;padding:10px 14px;width:100%;text-align:left;cursor:pointer">Logout</button></form>
 </div></div>
 {% else %}
 <a href="{{ url_for('login') }}">Login</a>
@@ -993,7 +1048,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90
 {% endwith %}
 {{ body|safe }}
 </div>
-<footer>KOJA AFRICA</footer>
+<footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services</footer>
 <!-- KOJA Connect incoming-call receiver: polls only while authenticated. -->
 {% if user and not request.path.startswith('/api/') and not request.path.startswith('/connect/call') and not request.path.startswith('/connect/answer') %}
 <div id="kojaIncomingCall" style="display:none;position:fixed;left:12px;right:12px;bottom:16px;z-index:99999;max-width:520px;margin:auto;background:var(--card,#fff);border:2px solid var(--accent,#1d4ed8);border-radius:18px;padding:16px;box-shadow:0 18px 50px rgba(0,0,0,.28)">
@@ -1139,7 +1194,7 @@ def settings():
 <div class="card"><h3>KOJA Autonomous AI</h3><p>Controls the future AI-agent layer across Intelligence, Identity, Cloud and Ecosystem.</p><button class="btn" type="button" onclick="activateEngine('autonomous_ai',this)">Connect Autonomous AI</button></div>
 <div class="card"><h3>KOJA Cloud</h3><p>Developer/API access, API keys and connected cloud security controls.</p><a class="btn" href="{{ url_for('koja_cloud_page') }}">Open KOJA Cloud</a></div>
 <div class="card"><h3>Research</h3><p>Search scholarly literature, web sources, Wikipedia and KOJA documents, then create structured research notes and references.</p><a class="btn" href="{{ url_for('research') }}">Open Research Engine</a></div>
-<div class="card"><h3>Security</h3><p>End the current session or manage connected identity and cloud controls.</p><a class="btn secondary" href="{{ url_for('logout') }}">Log Out</a></div>
+<div class="card"><h3>Security</h3><p>End the current session or manage connected identity and cloud controls.</p><form method="post" action="{{ url_for('logout') }}" style="display:inline"><button class="btn secondary" type="submit">Log Out</button></form></div>
 </div>
 <div id="engineStatus" class="card" style="display:none;margin-top:14px"></div>
 <script>
@@ -1156,7 +1211,8 @@ def home():
     return render_page("KOJA AFRICA", r"""
 <div class="hero">
 <h1>KOJA AFRICA</h1>
-<p>One connected platform for AI, people, business, learning, research, services, media and commerce.</p>
+<p>Knowledge • Questions • Answers</p>
+<p>Research, academic questions, assignments, professional services, documents and delivery services.</p>
 {% if not user %}
 <div class="actions">
 <a class="btn" href="{{ url_for('register') }}">Create Account</a>
@@ -1223,8 +1279,9 @@ def register():
         if not full_name or not email or not password:
             flash("Full name, email and password are required.","danger")
             return redirect(url_for("register"))
-        if len(password) < 6:
-            flash("Password must contain at least 6 characters.","danger")
+        password_ok, password_error = _password_policy_ok(password)
+        if not password_ok:
+            flash(password_error, "danger")
             return redirect(url_for("register"))
         if find_user_by_email(email):
             flash("An account with this email already exists. Please log in.","warning")
@@ -1272,7 +1329,7 @@ def register():
 <option value="teacher">Teacher / Tutor</option>
 <option value="doctor">Doctor</option>
 </select>
-<label>Password</label><input name="password" type="password" minlength="6" required>
+<label>Password</label><input name="password" type="password" minlength="10" maxlength="256" autocomplete="new-password" required>
 <button type="submit">Create Account</button>
 </form>
 <p>Already registered? <a href="{{ url_for('login') }}">Login</a></p>
@@ -1282,7 +1339,10 @@ def register():
 @app.route("/login", methods=["GET","POST"])
 def login():
     if request.method == "POST":
-        if _rate_limited("login:" + (request.remote_addr or "unknown"), 12, 300):
+        login_ip = request.remote_addr or "unknown"
+        login_rate_key = "login:" + login_ip + ":" + clean(request.form.get("identifier") or request.form.get("email")).lower()[:160]
+        if _rate_limited(login_rate_key, 12, 300) or _rate_limited("login-ip:" + login_ip, 40, 300):
+            _security_event("login_rate_limited", {"ip": login_ip})
             return "Too many login attempts. Please wait a few minutes and try again.", 429
         identifier = clean(request.form.get("identifier") or request.form.get("email")).strip()
         email = identifier.lower()
@@ -1318,31 +1378,27 @@ def login():
             log_activity("login","User logged in through Supabase Auth.")
             return redirect(safe_next_url(request.args.get("next")) if request.args.get("next") else url_for("dashboard"))
 
+        _security_event("login_failed", {"identifier": identifier[:160]})
         flash("Invalid login credentials. Use the same email and password used to create the KOJA account.","danger")
         return redirect(url_for("login"))
 
     return render_page("Login", r"""
 <div class="card" style="max-width:500px;margin:auto">
 <h2>KOJA Login</h2>
-<p class="small">Sign in with your existing KOJA email and password, or continue securely with a connected account.</p>
-<div style="display:grid;gap:10px;margin:16px 0">
-<a class="btn secondary" href="{{ url_for('oauth_start', provider='google') }}">Continue with Google</a>
-<a class="btn secondary" href="{{ url_for('oauth_start', provider='facebook') }}">Continue with Facebook</a>
-<a class="btn secondary" href="{{ url_for('oauth_start', provider='github') }}">Continue with GitHub</a>
-</div>
-<div style="display:flex;align-items:center;gap:10px;margin:14px 0;color:#8895a7;font-size:12px"><span style="height:1px;background:#d9e0e8;flex:1"></span><span>OR</span><span style="height:1px;background:#d9e0e8;flex:1"></span></div>
+<p class="small">KOJA supports its local profile password and, when configured, Supabase Auth accounts.</p>
 <form method="post">
 <label>Email or username</label><input name="identifier" autocomplete="username" required>
 <label>Password</label><input name="password" type="password" autocomplete="current-password" required>
-<button type="submit">Login with Email</button>
+<button type="submit">Login</button>
 </form>
 <p>No account? <a href="{{ url_for('register') }}">Create one</a></p>
-<p class="small"><a href="{{ url_for('public_privacy') }}">Privacy Policy</a> · <a href="{{ url_for('public_terms') }}">Terms of Service</a> · <a href="{{ url_for('public_data_deletion') }}">Data Deletion</a></p>
 </div>
 """)
 
-@app.route("/logout")
+@app.route("/logout", methods=["GET", "POST"])
 def logout():
+    if request.method == "GET":
+        return render_page("Confirm Logout", r"""<div class="card" style="max-width:520px;margin:auto"><h2>Log out of KOJA AFRICA?</h2><p>Your current session will be ended.</p><form method="post"><button type="submit">Log Out</button> <a class="btn secondary" href="{{ url_for('dashboard') }}">Cancel</a></form></div>""")
     if current_user():
         log_activity("logout","User logged out.")
     session.clear()
@@ -1357,47 +1413,26 @@ def logout():
 @login_required
 def dashboard():
     user = current_user()
-    uid = user["id"]
-    questions_count = len(db_select("questions",filters={"user_id":uid},limit=1000))
-    deliveries_count = len(db_select("deliveries",filters={"customer_id":uid},limit=1000))
-    appointments_count = len(db_select("appointments",filters={"client_id":uid},limit=1000))
-    connections_count = len(db_select("koja_contacts",filters={"requester_id":uid,"status":"accepted"},limit=1000)) + len(db_select("koja_contacts",filters={"addressee_id":uid,"status":"accepted"},limit=1000))
-    pending_requests = len(db_select("koja_contacts",filters={"addressee_id":uid,"status":"pending"},limit=1000))
-    documents_count = len(db_select("documents",filters={"user_id":uid},limit=1000)) + len(db_select("document_records",filters={"owner_id":uid},limit=1000))
-    notifications_count = len(db_select("notifications",filters={"user_id":uid},limit=1000))
-    market_count = len(db_select("koja_market_products",filters={"seller_id":uid},limit=1000))
-    business_count = len(db_select("koja_businesses",filters={"owner_id":uid},limit=1000))
+    questions_count = len(db_select("questions",filters={"user_id":user["id"]},limit=1000))
+    deliveries_count = len(db_select("deliveries",filters={"customer_id":user["id"]},limit=1000))
+    appointments_count = len(db_select("appointments",filters={"client_id":user["id"]},limit=1000))
     return render_page("Dashboard", r"""
-<style>
-.koja-dashboard{display:grid;gap:18px}.koja-welcome{background:linear-gradient(135deg,#0b1f3a,#176b87);color:#fff;border-radius:20px;padding:24px;box-shadow:0 12px 30px rgba(11,31,58,.18)}
-.koja-welcome h1{margin:0 0 6px;font-size:clamp(1.65rem,5vw,2.4rem)}.koja-welcome p{margin:0;opacity:.9}.koja-section-title{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:4px 0}.koja-section-title h3{margin:0}
-.koja-app-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.koja-app{display:block;text-decoration:none;color:inherit;background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:17px;min-height:128px;transition:.18s ease}.koja-app:hover{transform:translateY(-2px);box-shadow:0 10px 24px rgba(0,0,0,.08);border-color:#176b87}.koja-app strong{display:block;font-size:1.05rem;margin-bottom:7px}.koja-app span{color:var(--muted);font-size:.88rem;line-height:1.4}.koja-app .go{display:block;margin-top:12px;color:#176b87;font-weight:700;font-size:.82rem}
-.koja-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.koja-stat{background:var(--surface);border:1px solid var(--border);border-radius:15px;padding:15px}.koja-stat .big{font-size:1.7rem}.koja-activity{display:grid;grid-template-columns:1.4fr 1fr;gap:12px}.koja-list{display:grid;gap:8px}.koja-list a{display:flex;justify-content:space-between;gap:12px;padding:12px;border:1px solid var(--border);border-radius:12px;text-decoration:none;color:inherit;background:var(--surface)}
-@media(max-width:900px){.koja-app-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.koja-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.koja-activity{grid-template-columns:1fr}}@media(max-width:520px){.koja-app-grid{grid-template-columns:1fr}.koja-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.koja-welcome{padding:20px}.koja-app{min-height:110px}}
-</style>
-<div class="koja-dashboard">
-<div class="koja-welcome"><h1>Welcome, {{ user.name }}</h1><p>{{ user.email }}</p><div class="actions" style="margin-top:16px"><a class="btn" href="{{ url_for('ai_nextgen') }}">Open KOJA AI</a><a class="btn secondary" href="{{ url_for('connect_people') }}">Find KOJA People</a></div></div>
-<div class="koja-section-title"><h3>KOJA</h3><span class="small">Everything connected in one dashboard</span></div>
-<div class="koja-app-grid">
-<a class="koja-app" href="{{ url_for('ai_nextgen') }}"><strong>KOJA AI</strong><span>Ask, explain, plan and work with AI.</span><b class="go">Open →</b></a>
-<a class="koja-app" href="{{ url_for('connect_people') }}"><strong>KOJA People</strong><span>Find people, manage requests and build connections.</span><b class="go">People →</b></a>
-<a class="koja-app" href="{{ url_for('koja_market') }}"><strong>KOJA Market</strong><span>Buy, sell and manage marketplace activity.</span><b class="go">Market →</b></a>
-<a class="koja-app" href="{{ url_for('koja_business') }}"><strong>KOJA Business</strong><span>Business, POS, inventory and operations.</span><b class="go">Business →</b></a>
-<a class="koja-app" href="{{ url_for('documents') }}"><strong>Documents</strong><span>Store, read and work with learning and research documents.</span><b class="go">Documents →</b></a>
-<a class="koja-app" href="{{ url_for('research') }}"><strong>Research</strong><span>Research topics and build structured study material.</span><b class="go">Research →</b></a>
-<a class="koja-app" href="{{ url_for('services') }}"><strong>Services</strong><span>Access professional, health and transport services.</span><b class="go">Services →</b></a>
-<a class="koja-app" href="{{ url_for('media_nextgen') }}"><strong>KOJA Media</strong><span>Watch and explore KOJA media experiences.</span><b class="go">Media →</b></a>
+<div class="hero"><h2>Welcome, {{ user.name }}</h2><p>{{ user.email }}</p></div>
+<div class="grid">
+<div class="stat"><div class="big">{{ questions_count }}</div>Academic Questions</div>
+<div class="stat"><div class="big">{{ deliveries_count }}</div>Deliveries</div>
+<div class="stat"><div class="big">{{ appointments_count }}</div>Appointments</div>
+<div class="stat"><div class="big">{{ "ADMIN" if user.is_admin else user.role|upper }}</div>Account</div>
 </div>
-<div class="koja-stats">
-<div class="koja-stat"><div class="big">{{ connections_count }}</div><span>Connections</span></div><div class="koja-stat"><div class="big">{{ pending_requests }}</div><span>Requests</span></div><div class="koja-stat"><div class="big">{{ documents_count }}</div><span>Documents</span></div><div class="koja-stat"><div class="big">{{ notifications_count }}</div><span>Notifications</span></div>
-</div>
-<div class="koja-activity">
-<div class="card"><div class="koja-section-title"><h3>Your activity</h3><a href="{{ url_for('notifications_page') }}">View notifications</a></div><div class="koja-list"><a href="{{ url_for('questions') }}"><span>Academic questions</span><strong>{{ questions_count }}</strong></a><a href="{{ url_for('deliveries') }}"><span>Deliveries</span><strong>{{ deliveries_count }}</strong></a><a href="{{ url_for('doctors') }}"><span>Appointments</span><strong>{{ appointments_count }}</strong></a><a href="{{ url_for('koja_market') }}"><span>My market items</span><strong>{{ market_count }}</strong></a></div></div>
-<div class="card"><div class="koja-section-title"><h3>Quick access</h3></div><div class="actions"><a class="btn" href="{{ url_for('cv') }}">Create CV</a><a class="btn" href="{{ url_for('questions') }}">Ask Question</a><a class="btn" href="{{ url_for('documents') }}">Open Documents</a><a class="btn" href="{{ url_for('connect_people') }}">Find People</a>{% if business_count %}<a class="btn" href="{{ url_for('koja_business') }}">Business Dashboard</a>{% endif %}{% if user.role in ['driver','admin'] or user.is_admin %}<a class="btn" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}</div></div>
-</div>
-<div class="card"><strong>KOJA AFRICA</strong><p class="small" style="margin:6px 0 0">Your existing KOJA services remain connected to this dashboard. This screen is a unified entry point, not a separate system.</p></div>
-</div>
-""",questions_count=questions_count,deliveries_count=deliveries_count,appointments_count=appointments_count,connections_count=connections_count,pending_requests=pending_requests,documents_count=documents_count,notifications_count=notifications_count,market_count=market_count,business_count=business_count)
+<div class="card"><h3>KOJA Services</h3>
+<div class="grid">
+<a class="btn" href="{{ url_for('cv') }}">Create CV</a>
+<a class="btn" href="{{ url_for('doctors') }}">Doctor Booking</a>
+<a class="btn" href="{{ url_for('teachers') }}">Teacher Booking</a>
+<a class="btn" href="{{ url_for('deliveries') }}">Find Driver / Delivery</a>
+{% if user.role in ['driver','admin'] or user.is_admin %}<a class="btn" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}
+</div></div>
+""",questions_count=questions_count,deliveries_count=deliveries_count,appointments_count=appointments_count)
 
 # ============================================================
 # KOJA RESEARCH ENGINE V2
@@ -6999,106 +7034,20 @@ def connect():
 @app.route('/connect/people',methods=['GET','POST'])
 @login_required
 def connect_people():
-    uid=str(current_user()['id'])
+    uid=current_user()['id']
     if request.method=='POST':
-        target=clean(request.form.get('user_id'))
-        existing=first_row('koja_contacts',{'requester_id':uid,'addressee_id':target}) or first_row('koja_contacts',{'requester_id':target,'addressee_id':uid})
+        target=clean(request.form.get('user_id')); existing=first_row('koja_contacts',{'requester_id':uid,'addressee_id':target}) or first_row('koja_contacts',{'requester_id':target,'addressee_id':uid})
         if target and target!=uid and find_user_by_id(target) and not existing:
-            db_insert('koja_contacts',{'id':str(uuid.uuid4()),'requester_id':uid,'addressee_id':target,'status':'pending','created_at':utc_now(),'updated_at':utc_now()})
-            notify_user(target,'New KOJA connection request',f'{_profile_name(uid)} wants to connect on KOJA.','friend_request',uid,'/connect/people')
-            flash('Connection request sent.','success')
-        else:
-            flash('User not found or request already exists.','warning')
+            db_insert('koja_contacts',{'id':str(uuid.uuid4()),'requester_id':uid,'addressee_id':target,'status':'pending','created_at':utc_now(),'updated_at':utc_now()}); notify_user(target,'New KOJA connection request',f'{_profile_name(uid)} wants to connect on KOJA.','friend_request',uid,'/connect/people'); flash('Connection request sent.','success')
+        else: flash('User not found or request already exists.','warning')
         return redirect(url_for('connect_people'))
-
     q=clean(request.args.get('q')); people=[]
     if q:
-        for col in ('email','full_name','name','username'):
+        for col in ('email','full_name','name'):
             for x in db_select('profiles',filters={col:f'ilike.*{q}*'},limit=30):
-                if str(x.get('id'))!=uid and not any(str(p.get('id'))==str(x.get('id')) for p in people):
-                    people.append(x)
-
+                if str(x.get('id'))!=str(uid) and not any(str(p.get('id'))==str(x.get('id')) for p in people): people.append(x)
     incoming=db_select('koja_contacts',filters={'addressee_id':uid,'status':'pending'},limit=50)
-    accepted=[]
-    for r in db_select('koja_contacts',filters={'requester_id':uid,'status':'accepted'},limit=100)+db_select('koja_contacts',filters={'addressee_id':uid,'status':'accepted'},limit=100):
-        other=r.get('addressee_id') if str(r.get('requester_id'))==uid else r.get('requester_id')
-        if other and not any(str(x.get('id'))==str(other) for x in accepted):
-            u=find_user_by_id(other)
-            if u: accepted.append(u)
-
-    suggestions=[]
-    # Lightweight suggestions: active profiles with a visible name, excluding self and existing connections.
-    connected_ids={str(x.get('id')) for x in accepted}
-    for x in db_select('profiles',limit=40):
-        xid=str(x.get('id') or '')
-        if xid and xid!=uid and xid not in connected_ids and not any(str(p.get('id'))==xid for p in suggestions):
-            if first_nonempty(x.get('full_name'),x.get('name'),x.get('username'),x.get('email')):
-                suggestions.append(x)
-        if len(suggestions)>=8: break
-
-    return render_page('KOJA People',r'''<style>
-.people-hero{padding:26px;border-radius:24px;background:linear-gradient(135deg,rgba(20,70,140,.18),rgba(255,255,255,.03));border:1px solid var(--border);margin-bottom:16px}
-.people-tools{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.people-tool{min-height:150px;padding:20px;border:1px solid var(--border);border-radius:20px;background:var(--card);display:flex;flex-direction:column;justify-content:space-between}.people-tool h3{margin:0 0 7px}.people-tool p{font-size:.9rem;color:var(--muted)}
-.people-search{display:flex;gap:8px;align-items:center}.people-search input{flex:1}.people-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}.person-card{border:1px solid var(--border);border-radius:20px;padding:17px;background:var(--card)}.avatar{width:52px;height:52px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,#0b4ea2,#1769d1);color:#fff;font-weight:800;font-size:20px;margin-bottom:10px}.person-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:12px}.person-actions .btn{margin:0}.section-head{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:12px}.request-row{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:13px 0;border-bottom:1px solid var(--border)}
-@media(max-width:760px){.people-tools{grid-template-columns:1fr}.people-search{flex-direction:column;align-items:stretch}.request-row{align-items:flex-start;flex-direction:column}}
-</style>
-<div class="people-hero">
-  <div class="small">KOJA CONNECT</div><h2 style="margin:.25rem 0">Find KOJA People</h2>
-  <p>Discover people, connect with your network and start communication from their personal KOJA profile.</p>
-  <form class="people-search" method="get"><input name="q" value="{{ q }}" placeholder="Search name, username or email"><button class="btn" type="submit">Search KOJA</button></form>
-</div>
-<div class="people-tools">
-  <div class="people-tool"><div><h3>Add from Contacts</h3><p>Find KOJA users whose phone number matches contacts you choose to share from your device.</p></div><button class="btn" type="button" onclick="findFromContacts()">Find from Contacts</button></div>
-  <div class="people-tool"><div><h3>Add from Facebook</h3><p>Invite people through Facebook without importing or copying your private Facebook friend list.</p></div><button class="btn" type="button" onclick="inviteFacebook()">Invite on Facebook</button></div>
-  <div class="people-tool"><div><h3>Invite Friends</h3><p>Share KOJA through WhatsApp, SMS or your device share menu.</p></div><button class="btn" type="button" onclick="inviteKOJA()">Invite Friends</button></div>
-</div>
-<div class="card" id="contactResults" style="display:none;margin-top:16px"><div class="section-head"><h3 style="margin:0">Contacts on KOJA</h3><button class="btn secondary" type="button" onclick="document.getElementById('contactResults').style.display='none'">Close</button></div><div id="contactMatchGrid" class="people-grid"></div></div>
-{% if q %}<div class="card" style="margin-top:16px"><div class="section-head"><h3 style="margin:0">Search results</h3><span class="small">{{ people|length }} found</span></div><div class="people-grid">{% for p in people %}<div class="person-card"><div class="avatar">{{ (p.get('full_name') or p.get('name') or p.get('username') or p.get('email') or 'K')[:1]|upper }}</div><strong>{{ p.get('full_name') or p.get('name') or p.get('username') or p.get('email') }}</strong><div class="small">{% if p.get('username') %}@{{ p.get('username') }} · {% endif %}{{ p.get('role') or 'KOJA member' }}</div><p>{{ p.get('bio') or p.get('about') or 'KOJA community member.' }}</p><div class="person-actions"><a class="btn secondary" href="{{ url_for('connect_profile',user_id=p.id) }}">View Profile</a><form method="post"><input type="hidden" name="user_id" value="{{ p.id }}"><button class="btn" type="submit">Connect</button></form><a class="btn secondary" href="{{ url_for('connect_new',user_id=p.id) }}">Message</a></div></div>{% endfor %}{% if not people %}<p>No KOJA matches found.</p>{% endif %}</div></div>{% endif %}
-{% if suggestions %}<div class="card" style="margin-top:16px"><div class="section-head"><h3 style="margin:0">People You May Know</h3><span class="small">Suggested KOJA members</span></div><div class="people-grid">{% for p in suggestions %}<div class="person-card"><div class="avatar">{{ (p.get('full_name') or p.get('name') or p.get('username') or p.get('email') or 'K')[:1]|upper }}</div><strong>{{ p.get('full_name') or p.get('name') or p.get('username') or p.get('email') }}</strong><div class="small">{{ p.get('role') or 'KOJA member' }}</div><div class="person-actions"><a class="btn secondary" href="{{ url_for('connect_profile',user_id=p.id) }}">View Profile</a><form method="post"><input type="hidden" name="user_id" value="{{ p.id }}"><button class="btn" type="submit">Connect</button></form></div></div>{% endfor %}</div></div>{% endif %}
-{% if accepted %}<div class="card" style="margin-top:16px"><div class="section-head"><h3 style="margin:0">My Connections</h3><a class="btn secondary" href="{{ url_for('connect') }}">Open Connect+</a></div><div class="people-grid">{% for p in accepted %}<div class="person-card"><div class="avatar">{{ (p.get('full_name') or p.get('name') or p.get('email') or 'K')[:1]|upper }}</div><strong>{{ p.get('full_name') or p.get('name') or p.get('email') }}</strong><div class="small">{{ p.get('role') or 'KOJA member' }}</div><div class="person-actions"><a class="btn" href="{{ url_for('connect_new',user_id=p.id) }}">Message</a><a class="btn secondary" href="{{ url_for('connect_profile',user_id=p.id) }}">Profile</a></div></div>{% endfor %}</div></div>{% endif %}
-<div class="card" style="margin-top:16px"><div class="section-head"><h3 style="margin:0">Incoming Requests</h3><span class="small">{{ incoming|length }} pending</span></div>{% for r in incoming %}<div class="request-row"><div><strong>{{ _profile_name(r.requester_id) }}</strong><div class="small">wants to connect with you on KOJA</div></div><div class="person-actions"><a class="btn secondary" href="{{ url_for('connect_profile',user_id=r.requester_id) }}">View Profile</a><form method="post" action="{{ url_for('connect_accept',contact_id=r.id) }}"><button class="btn" type="submit">Accept</button></form></div></div>{% else %}<p>No pending requests.</p>{% endfor %}</div>
-<script>
-function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
-function initials(n){return esc((n||'K').trim().charAt(0).toUpperCase());}
-function card(p){let n=p.full_name||p.name||p.username||p.email||'KOJA User';return '<div class="person-card"><div class="avatar">'+initials(n)+'</div><strong>'+esc(n)+'</strong><div class="small">'+esc(p.role||'KOJA member')+'</div><div class="person-actions"><a class="btn secondary" href="/connect/profile/'+encodeURIComponent(p.id)+'">View Profile</a><form method="post" action="/connect/people"><input type="hidden" name="user_id" value="'+esc(p.id)+'"><button class="btn">Connect</button></form></div></div>';}
-async function findFromContacts(){let box=document.getElementById('contactResults'),grid=document.getElementById('contactMatchGrid');box.style.display='block';grid.innerHTML='<p>Opening your device contacts…</p>';try{if(!('contacts'in navigator&&'ContactsManager'in window)){grid.innerHTML='<p>Your browser or WebView does not provide the Contacts Picker. Use Search KOJA or Invite Friends instead.</p>';return;}let props=['name','tel'];let opts={multiple:true};let contacts=await navigator.contacts.select(props,opts);let phones=[];for(let c of contacts){for(let t of (c.tel||[])){let v=String(t||'').replace(/[^0-9+]/g,'');if(v)phones.push(v);}}phones=[...new Set(phones)];if(!phones.length){grid.innerHTML='<p>No phone numbers were selected.</p>';return;}let r=await fetch('/api/connect/contact-matches',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phones})});let d=await r.json();if(!r.ok){grid.innerHTML='<p>Could not check contacts right now.</p>';return;}grid.innerHTML=d.matches?.length?d.matches.map(card).join(''):'<p>No selected contacts are currently registered on KOJA.</p>';}catch(e){grid.innerHTML='<p>Contact access was cancelled or is not available on this device.</p>';}}
-async function inviteKOJA(){let url=location.origin+'/register';let text='Join me on KOJA AFRICA — Knowledge, Questions & Answers.';if(navigator.share){try{await navigator.share({title:'KOJA AFRICA',text,url});return;}catch(e){}}let wa='https://wa.me/?text='+encodeURIComponent(text+' '+url);window.open(wa,'_blank','noopener');}
-function inviteFacebook(){let url=location.origin+'/register';window.open('https://www.facebook.com/sharer/sharer.php?u='+encodeURIComponent(url),'_blank','noopener');}
-</script>''',people=people,q=q,incoming=incoming,accepted=accepted,suggestions=suggestions,_profile_name=_profile_name)
-
-@app.route('/api/connect/contact-matches',methods=['POST'])
-@login_required
-def connect_contact_matches():
-    data=request.get_json(silent=True) or {}; phones=data.get('phones') or []
-    if not isinstance(phones,list): return jsonify(error='phones must be a list'),400
-    def norm(v): return ''.join(ch for ch in str(v or '') if ch.isdigit())
-    wanted={norm(x) for x in phones if norm(x)}
-    if not wanted: return jsonify(matches=[])
-    uid=str(current_user()['id']); matches=[]
-    for p in db_select('profiles',limit=500):
-        if str(p.get('id'))==uid: continue
-        values=[p.get('phone'),p.get('mobile'),p.get('mobile_phone'),p.get('mobile_money_phone')]
-        nums={norm(x) for x in values if norm(x)}
-        if wanted & nums:
-            matches.append(p)
-    return jsonify(matches=matches[:100])
-
-@app.route('/connect/profile/<user_id>')
-@login_required
-def connect_profile(user_id):
-    me=str(current_user()['id']); profile=find_user_by_id(user_id)
-    if not profile: abort(404)
-    is_me=str(user_id)==me
-    connection=first_row('koja_contacts',{'requester_id':me,'addressee_id':user_id}) or first_row('koja_contacts',{'requester_id':user_id,'addressee_id':me})
-    status=(connection or {}).get('status')
-    name=first_nonempty(profile.get('full_name'),profile.get('name'),profile.get('username'),profile.get('email'),'KOJA User')
-    return render_page('KOJA Personal Profile',r'''<style>
-.profile-hero{padding:28px;border:1px solid var(--border);border-radius:26px;background:linear-gradient(135deg,rgba(16,77,150,.22),rgba(255,255,255,.02));display:flex;gap:22px;align-items:center}.profile-avatar{width:96px;height:96px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,#0b4ea2,#1769d1);color:#fff;font-size:38px;font-weight:800;flex:0 0 auto}.profile-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.profile-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.profile-item{padding:18px;border:1px solid var(--border);border-radius:18px;background:var(--card)}.profile-item .small{margin-bottom:5px}@media(max-width:700px){.profile-hero{align-items:flex-start;flex-direction:column}.profile-grid{grid-template-columns:1fr}}
-</style>
-<div class="profile-hero"><div class="profile-avatar">{{ name[:1]|upper }}</div><div><div class="small">KOJA PERSONAL PROFILE</div><h2 style="margin:.2rem 0">{{ name }}</h2>{% if profile.username %}<div class="small">@{{ profile.username }}</div>{% endif %}<p>{{ profile.bio or profile.about or 'KOJA community member.' }}</p><div class="profile-actions">{% if is_me %}<a class="btn" href="{{ url_for('settings') }}">Account Settings</a>{% else %}{% if status == 'accepted' %}<a class="btn" href="{{ url_for('connect_new',user_id=user_id) }}">Message</a><a class="btn secondary" href="{{ url_for('connect_call',user_id=user_id,mode='voice') }}">Voice Call</a><a class="btn secondary" href="{{ url_for('connect_call',user_id=user_id,mode='video') }}">Video Call</a>{% elif status == 'pending' %}<span class="btn secondary">Connection Pending</span>{% else %}<form method="post" action="{{ url_for('connect_people') }}"><input type="hidden" name="user_id" value="{{ user_id }}"><button class="btn">Connect</button></form>{% endif %}<button class="btn secondary" type="button" onclick="shareProfile()">Share Profile</button>{% endif %}</div></div></div>
-<div class="profile-grid" style="margin-top:16px"><div class="profile-item"><div class="small">Role</div><strong>{{ profile.role or 'KOJA member' }}</strong></div><div class="profile-item"><div class="small">Location</div><strong>{{ profile.location or profile.city or profile.country or 'Not provided' }}</strong></div><div class="profile-item"><div class="small">Education</div><strong>{{ profile.education or profile.university or 'Not provided' }}</strong></div><div class="profile-item"><div class="small">Profession</div><strong>{{ profile.profession or profile.occupation or profile.job_title or 'Not provided' }}</strong></div></div>
-<div class="card" style="margin-top:16px"><h3>Communication</h3><p>Use this profile as the starting point for KOJA communication. Connections can message, share files, send voice messages, and use voice or video calls through Connect+.</p><a class="btn" href="{{ url_for('connect') }}">Open Connect+</a></div>
-<script>async function shareProfile(){let url=location.href,text='Connect with {{ name|e }} on KOJA AFRICA.';if(navigator.share){try{await navigator.share({title:'KOJA AFRICA profile',text,url});return;}catch(e){}}try{await navigator.clipboard.writeText(url);alert('Profile link copied.');}catch(e){prompt('Copy this profile link:',url);}}</script>''',profile=profile,name=name,is_me=is_me,status=status,user_id=user_id)
+    return render_page('KOJA People',r'''<div class="card"><h2>Find KOJA People</h2><form><input name="q" value="{{ q }}" placeholder="Search name or email"><button>Search</button></form></div><div class="grid">{% for p in people %}<div class="card"><h3>{{ p.get('full_name') or p.get('name') or p.get('email') }}</h3><p>{{ p.get('email') or '' }}</p><form method="post"><input type="hidden" name="user_id" value="{{ p.id }}"><button> Connect</button></form><a class="btn secondary" href="{{ url_for('connect_new',user_id=p.id) }}">Message</a></div>{% endfor %}</div><div class="card"><h3>Incoming Requests</h3>{% for r in incoming %}<div class="card"><strong>{{ _profile_name(r.requester_id) }}</strong><form method="post" action="{{ url_for('connect_accept',contact_id=r.id) }}"><button>Accept</button></form></div>{% else %}<p>No pending requests.</p>{% endfor %}</div>''',people=people,q=q,incoming=incoming,_profile_name=_profile_name)
 
 @app.route('/connect/accept/<contact_id>',methods=['POST'])
 @login_required
@@ -7999,10 +7948,23 @@ def nextgen_media_event():
     d=request.get_json(silent=True) or {}; pid=clean(d.get('post_id')); et=clean(d.get('event_type'))
     allowed={'impression','play','pause','25_percent','50_percent','75_percent','complete','share'}
     if not pid or et not in allowed:return jsonify(error='Invalid event'),400
+    ip = request.remote_addr or 'unknown'
+    if _rate_limited('media-event-ip:'+ip, 120, 60):
+        return jsonify(error='Too many media events. Please slow down.'),429
+    try:
+        watch_seconds = float(d.get('watch_seconds') or 0)
+        completion_percent = float(d.get('completion_percent') or 0)
+    except (TypeError, ValueError):
+        return jsonify(error='Invalid media metrics.'),400
+    if not (0 <= watch_seconds <= 86400) or not (0 <= completion_percent <= 100):
+        return jsonify(error='Invalid media metrics.'),400
+    post = first_row('koja_public_posts', {'id': pid})
+    if not post or not as_bool(post.get('is_published')):
+        return jsonify(error='Media item not available.'),404
     sid=request.cookies.get('koja_media_session') or uuid.uuid4().hex
     uid=(current_user() or {}).get('id')
-    db_insert('koja_media_events',{'post_id':pid,'user_id':uid,'session_id':sid,'event_type':et,'watch_seconds':float(d.get('watch_seconds') or 0),'completion_percent':float(d.get('completion_percent') or 0),'created_at':utc_now()})
-    resp=jsonify(ok=True);resp.set_cookie('koja_media_session',sid,max_age=60*60*24*30,httponly=True,samesite='Lax');return resp
+    db_insert('koja_media_events',{'post_id':pid,'user_id':uid,'session_id':sid,'event_type':et,'watch_seconds':round(watch_seconds,2),'completion_percent':round(completion_percent,2),'created_at':utc_now()})
+    resp=jsonify(ok=True);resp.set_cookie('koja_media_session',sid,max_age=60*60*24*30,httponly=True,samesite='Lax',secure=app.config.get('SESSION_COOKIE_SECURE',True));return resp
 
 @app.route('/news-next')
 def news_nextgen():
@@ -8042,6 +8004,9 @@ def internal_error(error):
 @app.after_request
 def security_headers(response):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    # Start CSP in report-only mode because KOJA currently contains legacy inline scripts.
+    # This lets production observe violations without breaking existing pages.
+    response.headers.setdefault("Content-Security-Policy-Report-Only", "default-src 'self'; img-src 'self' data: https:; media-src 'self' blob: https:; connect-src 'self' https: wss:; frame-src 'self' https:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; style-src 'self' 'unsafe-inline' https:; font-src 'self' data: https:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'")
     response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("Permissions-Policy", "camera=(self), microphone=(self), geolocation=(self)")
@@ -9016,240 +8981,6 @@ def business_accounting_v2(business_id):
     summary=first_row('koja_business_bi_accounting_summary',{'business_id':business_id}) or {}
     return render_page('Business Accounting V2',r"""<div class="hero"><h1>Accounting</h1><p>{{ b.name }} — connected double-entry ledger.</p><div class="actions"><a class="btn secondary" href="{{ url_for('business_dashboard',business_id=b.id) }}">Business Dashboard</a><a class="btn secondary" href="{{ url_for('business_intelligence_v3',business_id=b.id) }}">AI Intelligence</a></div></div><div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(summary.accounting_revenue or 0,'ZMW') }}</h2></div><div class="card"><h3>Expenses</h3><h2>{{ money(summary.accounting_expenses or 0,'ZMW') }}</h2></div><div class="card"><h3>Net Result</h3><h2>{{ money(summary.accounting_net_result or 0,'ZMW') }}</h2></div><div class="card"><h3>Transactions</h3><h2>{{ summary.transaction_count or 0 }}</h2></div></div><div class="card"><h2>Record Transaction</h2><form method="post"><label>Type</label><select name="kind"><option value="sale">Sale / Income</option><option value="expense">Expense</option></select><label>Description</label><input name="description" required><label>Amount (ZMW)</label><input name="amount" type="number" min="0" step="0.01" required><label>Payment Method</label><select name="payment_method"><option value="cash">Cash</option><option value="bank">Bank</option><option value="mobile_money">Mobile Money</option></select><label>Expense Category</label><select name="category"><option value="other">Other</option><option value="rent">Rent</option><option value="salary">Salary</option><option value="transport">Transport</option><option value="marketing">Marketing</option><option value="utilities">Utilities</option><option value="tax">Tax</option></select><button class="btn">Save & Post to Ledger</button></form></div><div class="card"><h2>Chart of Accounts</h2><table><tr><th>Code</th><th>Account</th><th>Type</th><th>Balance</th></tr>{% for a in accounts %}<tr><td>{{ a.account_code }}</td><td>{{ a.account_name }}</td><td>{{ a.account_type }}</td><td>{{ money(a.balance or 0,'ZMW') }}</td></tr>{% else %}<tr><td colspan="4">No accounts.</td></tr>{% endfor %}</table></div><div class="card"><h2>Recent Ledger Transactions</h2><table><tr><th>Date</th><th>Type</th><th>Description</th><th>Amount</th><th>Status</th></tr>{% for x in txs %}<tr><td>{{ x.transaction_date }}</td><td>{{ x.transaction_type }}</td><td>{{ x.description }}</td><td>{{ money(x.total_amount or 0,'ZMW') }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="5">No accounting transactions yet.</td></tr>{% endfor %}</table></div>""",b=b,summary=summary,accounts=accounts,txs=txs,money=market_money)
 
-
-# ============================================================
-# PUBLIC LEGAL PAGES + SOCIAL/OAUTH LOGIN
-# ============================================================
-# Social sign-in is handled by Supabase Auth. The provider credentials are
-# configured in Supabase; they are never exposed in this Flask application.
-# Email/password login above remains unchanged.
-
-@app.get('/privacy')
-def public_privacy():
-    return render_page('KOJA AFRICA Privacy Policy', r'''
-<div class="card legal-page" style="max-width:900px;margin:auto">
-<h1>KOJA AFRICA Privacy Policy</h1>
-<p class="small">Last updated: 30 September 2026</p>
-<p>KOJA AFRICA (“KOJA”, “we”, “us” or “our”) provides a knowledge, learning, research, communication, business and digital services platform. This Privacy Policy explains how information may be collected, used, stored and protected when you use KOJA AFRICA.</p>
-<h2>1. Information we collect</h2>
-<p>Depending on the features you use, KOJA may process account information such as your name, email address, phone number, account role and profile information; content you upload or create; messages and communication information; service and transaction information; technical information such as device, browser, IP address and log information; and information you choose to provide through connected sign-in providers.</p>
-<h2>2. Social sign-in</h2>
-<p>KOJA may allow sign-in through Google, Facebook and GitHub. These providers authenticate your account and may provide information permitted by the provider and your authorization. KOJA does not receive or store your provider password. Provider-specific processing is also governed by the provider’s own privacy policy and terms.</p>
-<h2>3. How we use information</h2>
-<p>We use information to create and maintain accounts, authenticate users, provide documents and learning features, operate communication and business services, provide AI-assisted features, respond to requests, improve security and reliability, prevent abuse, maintain records, and comply with applicable legal requirements.</p>
-<h2>4. Documents and AI</h2>
-<p>Documents and other content you submit may be processed to provide document search, document intelligence, automatic notes and AI-assisted answers. AI-generated content is assistance and should be reviewed by the user before being relied upon for important decisions.</p>
-<h2>5. Location and device information</h2>
-<p>Some KOJA services may use location information when you choose to enable a location-based feature, such as delivery or live driver tracking. Location access should be requested only for the feature that needs it.</p>
-<h2>6. Sharing and service providers</h2>
-<p>Information may be processed by infrastructure and service providers that help KOJA operate the platform, such as hosting, database/storage, email, authentication, AI and communication providers. We do not sell your personal information as a core business practice.</p>
-<h2>7. Security</h2>
-<p>KOJA uses reasonable technical and organizational safeguards intended to protect information. No internet service can guarantee absolute security.</p>
-<h2>8. Retention and deletion</h2>
-<p>We retain information for as long as reasonably necessary to provide the service, maintain security and records, resolve disputes, or comply with legal obligations. You may request deletion of your KOJA account and applicable personal information.</p>
-<p>For Facebook-related data deletion requests, see <a href="{{ url_for('public_data_deletion') }}">KOJA data deletion instructions</a>.</p>
-<h2>9. Children</h2>
-<p>KOJA is not intended to knowingly collect personal information from children in violation of applicable law. Where a service has age requirements, users must comply with them.</p>
-<h2>10. Changes</h2>
-<p>We may update this Privacy Policy as the platform changes. The updated version will be published on this page with a revised date.</p>
-<h2>11. Contact</h2>
-<p>For privacy or data questions, use the contact and support mechanisms available inside KOJA AFRICA. You may also use the account deletion process described on the data deletion page.</p>
-</div>
-''')
-
-@app.get('/data-deletion')
-def public_data_deletion():
-    return render_page('KOJA AFRICA Data Deletion', r'''
-<div class="card legal-page" style="max-width:900px;margin:auto">
-<h1>KOJA AFRICA User Data Deletion</h1>
-<p class="small">Last updated: 30 September 2026</p>
-<p>KOJA AFRICA provides a way for users to request deletion of their account and applicable personal information.</p>
-<h2>Request deletion</h2>
-<p>Sign in to KOJA AFRICA and use the available account/settings support or deletion controls. If a deletion control is not available for your account, contact KOJA through the support/contact mechanism inside the platform and include the email address associated with your account.</p>
-<h2>Facebook data</h2>
-<p>If you used Facebook to sign in, you may request deletion of KOJA-held information associated with that connection. KOJA will process a valid request subject to information that must be retained for security, fraud prevention, legal compliance or other legitimate operational requirements.</p>
-<h2>What happens after a request</h2>
-<p>We may verify the request before acting. Information eligible for deletion will be removed or de-identified where reasonably practicable. Some records may remain where retention is required by law or necessary for security, accounting, dispute resolution or enforcement.</p>
-<p><a href="{{ url_for('public_privacy') }}">Read the KOJA AFRICA Privacy Policy</a></p>
-</div>
-''')
-
-@app.get('/terms')
-def public_terms():
-    return render_page('KOJA AFRICA Terms of Service', r'''
-<div class="card legal-page" style="max-width:900px;margin:auto">
-<h1>KOJA AFRICA Terms of Service</h1>
-<p class="small">Last updated: 30 September 2026</p>
-<p>These Terms of Service (“Terms”) govern your use of KOJA AFRICA (“KOJA”, “we”, “us” or “our”). By creating an account or using KOJA, you agree to comply with these Terms and applicable law.</p>
-<h2>1. The KOJA service</h2>
-<p>KOJA provides digital services that may include learning and research tools, documents, AI-assisted features, communication, media, business tools, delivery-related services and other platform features. Features may change as the platform develops.</p>
-<h2>2. Accounts</h2>
-<p>You are responsible for information supplied for your account and for protecting your login credentials. You must not impersonate another person or create an account for an unlawful purpose. Social sign-in through Google, Facebook or GitHub is subject to the relevant provider's rules.</p>
-<h2>3. Acceptable use</h2>
-<p>You must not use KOJA to violate applicable law, infringe intellectual-property or privacy rights, distribute malware, attempt unauthorized access, abuse other users, interfere with the platform, or upload content that you are not authorized to use.</p>
-<h2>4. User content</h2>
-<p>You retain rights you already have in content you upload or create. You grant KOJA the permissions reasonably necessary to host, process, display and provide that content as part of the services you request. You are responsible for ensuring that you have the necessary rights to submit content.</p>
-<h2>5. AI-assisted features</h2>
-<p>KOJA AI and automatic document features provide computer-generated assistance. AI output may be incomplete or inaccurate and should be reviewed before being used for academic, professional, financial, medical, legal or other consequential purposes. KOJA does not represent AI output as a substitute for qualified professional advice.</p>
-<h2>6. Communication and media</h2>
-<p>Users are responsible for their communications and media they publish or share. You must respect applicable law and the rights of other users and content owners. KOJA may restrict or remove content or access where reasonably necessary to enforce these Terms or protect the platform.</p>
-<h2>7. Business, payments and third-party services</h2>
-<p>Where KOJA provides business, payment, delivery or third-party integrations, additional terms may apply. Payment and third-party services may be subject to the terms and policies of the relevant provider.</p>
-<h2>8. Intellectual property</h2>
-<p>KOJA's software, branding, interface and platform materials are protected by applicable intellectual-property laws. You may not copy, reverse engineer, redistribute or commercially exploit KOJA materials except as permitted by law or written authorization.</p>
-<h2>9. Availability and changes</h2>
-<p>KOJA is provided on an evolving basis. We may modify, suspend or discontinue features, including for maintenance, security or technical reasons. We do not guarantee uninterrupted availability.</p>
-<h2>10. Suspension and termination</h2>
-<p>KOJA may suspend or terminate access where reasonably necessary because of serious or repeated violations of these Terms, security risks, unlawful activity, fraud, or other circumstances permitted by law.</p>
-<h2>11. Disclaimers</h2>
-<p>To the extent permitted by law, KOJA is provided without guarantees that every feature will be uninterrupted, error-free or suitable for every purpose. Nothing in these Terms removes rights that cannot lawfully be excluded.</p>
-<h2>12. Changes to these Terms</h2>
-<p>We may update these Terms when the platform or applicable requirements change. The latest version will be published on this page with its updated date. Continued use after an effective update means you accept the updated Terms to the extent permitted by law.</p>
-<h2>13. Contact</h2>
-<p>For questions about these Terms, use the support/contact mechanisms available inside KOJA AFRICA.</p>
-<p><a href="{{ url_for('public_privacy') }}">Privacy Policy</a> · <a href="{{ url_for('public_data_deletion') }}">Data Deletion</a></p>
-</div>
-''')
-
-@app.get('/auth/oauth/<provider>')
-def oauth_start(provider):
-    provider = clean(provider).lower()
-    if provider not in {'google', 'facebook', 'github'}:
-        abort(404)
-    public_key = SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY
-    if not (SUPABASE_URL and public_key):
-        flash('Social sign-in is not configured yet. Please configure the Supabase public/anon key.', 'warning')
-        return redirect(url_for('login'))
-    scopes = {
-        'google': 'openid email profile',
-        'facebook': 'email public_profile',
-        'github': 'read:user user:email',
-    }[provider]
-    return render_page('Continue with ' + provider.title(), r'''<div class="card" style="max-width:520px;margin:50px auto;text-align:center">
-<h2>Continue with {{ provider|title }}</h2>
-<p id="oauthStatus" class="small">Connecting securely…</p>
-<p id="oauthHelp" class="small" style="display:none"></p>
-</div>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script>
-(async function(){
-  const status=document.getElementById('oauthStatus');
-  const help=document.getElementById('oauthHelp');
-  try{
-    if(!window.supabase || !window.supabase.createClient){
-      throw new Error('The secure sign-in library could not be loaded.');
-    }
-    const client=window.supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }},{auth:{flowType:'pkce',persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}});
-    const {error}=await client.auth.signInWithOAuth({
-      provider:{{ provider|tojson }},
-      options:{
-        redirectTo:{{ callback_url|tojson }},
-        scopes:{{ scopes|tojson }},
-        ...( {{ provider|tojson }} === 'google' ? {queryParams:{prompt:'select_account'}} : {} )
-      }
-    });
-    if(error) throw error;
-    status.textContent='Redirecting to {{ provider|title }}…';
-  }catch(e){
-    status.textContent='Sign-in could not start.';
-    help.style.display='block';
-    help.textContent=e && e.message ? e.message : String(e);
-  }
-})();
-</script>
-''', provider=provider, scopes=scopes, supabase_url=SUPABASE_URL, supabase_key=public_key, callback_url=url_for('oauth_callback', _external=True))
-
-@app.get('/auth/callback')
-def oauth_callback():
-    # Supabase PKCE stores the verifier in browser storage. The callback therefore
-    # completes the code exchange in the browser, then bridges the access token to
-    # the normal KOJA Flask session. Provider secrets remain server-side in Supabase.
-    return render_page('Completing sign-in', r'''<div class="card" style="max-width:520px;margin:50px auto;text-align:center">
-<h2>Completing KOJA sign-in</h2><p id="oauthStatus" class="small">Please wait…</p>
-<p id="oauthHelp" class="small" style="display:none"></p>
-</div>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script>
-(async function(){
-  const status=document.getElementById('oauthStatus');
-  const help=document.getElementById('oauthHelp');
-  const fail=(msg)=>{
-    status.textContent='Sign-in failed.';
-    help.style.display='block';
-    help.textContent=msg || 'The social sign-in session could not be completed.';
-    setTimeout(()=>location.replace({{ login_url|tojson }}),5000);
-  };
-  try{
-    if(!window.supabase || !window.supabase.createClient){
-      throw new Error('The secure sign-in library could not be loaded. Please try again.');
-    }
-    const client=window.supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }},{auth:{flowType:'pkce',persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}});
-    const params=new URLSearchParams(location.search);
-    const oauthError=params.get('error_description') || params.get('error');
-    if(oauthError) throw new Error(oauthError);
-    const code=params.get('code');
-    if(!code) throw new Error('No authorization code was returned.');
-    status.textContent='Verifying your account…';
-    const {data,error}=await client.auth.exchangeCodeForSession(code);
-    if(error) throw error;
-    const token=data?.session?.access_token;
-    if(!token) throw new Error('No authenticated session was returned.');
-    status.textContent='Creating your KOJA session…';
-    const r=await fetch({{ session_url|tojson }},{
-      method:'POST',
-      credentials:'same-origin',
-      cache:'no-store',
-      headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},
-      body:JSON.stringify({access_token:token})
-    });
-    const out=await r.json().catch(()=>({}));
-    if(!r.ok || !out.ok) throw new Error(out.error || ('KOJA session creation failed ('+r.status+').'));
-    status.textContent='Signed in. Opening KOJA…';
-    location.replace({{ dashboard_url|tojson }});
-  }catch(e){
-    console.error('KOJA OAuth callback error',e);
-    fail(e && e.message ? e.message : String(e));
-  }
-})();
-</script>
-''', supabase_url=SUPABASE_URL, supabase_key=SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY, session_url=url_for('oauth_session'), dashboard_url=url_for('dashboard'), login_url=url_for('login'))
-
-@app.post('/auth/oauth/session')
-def oauth_session():
-    body=request.get_json(silent=True) or {}
-    token=clean(body.get('access_token'))
-    if not token or not SUPABASE_URL:
-        return jsonify({'ok':False,'error':'Missing authentication token.'}),400
-    key=SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY or SUPABASE_SERVICE_KEY
-    try:
-        r=requests.get(f'{SUPABASE_URL}/auth/v1/user',headers={'apikey':key,'Authorization':f'Bearer {token}'},timeout=20)
-        if not r.ok:
-            return jsonify({'ok':False,'error':'Supabase authentication was rejected.'}),401
-        au=r.json() or {}
-        uid=au.get('id'); email=clean(au.get('email')).lower()
-        if not uid or not email:
-            return jsonify({'ok':False,'error':'The provider did not return a usable account.'}),400
-        meta=au.get('user_metadata') or {}
-        full_name=clean(meta.get('full_name') or meta.get('name') or meta.get('user_name') or meta.get('preferred_username') or email)
-        profile=find_user_by_id(uid)
-        if not profile:
-            profile,err=create_local_profile(uid,email,full_name)
-            if err:
-                # A profile may already exist by email when the provider account
-                # is linked to an older KOJA account.
-                profile=find_user_by_email(email)
-                if not profile:
-                    logger.error('OAuth profile creation failed: %s',err)
-                    return jsonify({'ok':False,'error':'Could not create your KOJA profile.'}),500
-        if profile.get('is_active') is False:
-            return jsonify({'ok':False,'error':'This KOJA account is inactive.'}),403
-        login_user(profile, {'user':au,'access_token':token})
-        log_activity('login','User logged in through social authentication.')
-        return jsonify({'ok':True})
-    except Exception:
-        logger.exception('OAuth session bridge failed')
-        return jsonify({'ok':False,'error':'Social sign-in could not be completed.'}),500
-
 if __name__=="__main__":
     port=int(os.getenv("PORT","5000"))
     app.run(host="0.0.0.0",port=port,debug=False)
@@ -9810,7 +9541,9 @@ def production_health_api_v2():
     checks['flutterwave'] = bool(os.getenv('FLW_SECRET_KEY'))
     checks['site_url'] = bool(os.getenv('SITE_URL'))
     ok = all(checks.values())
-    return jsonify({'ok': ok, 'status': 'ready' if ok else 'attention_required', 'checks': checks, 'version': 'PRODUCTION-HARDENING-V2'})
+    # Do not expose infrastructure/table/provider configuration to anonymous clients.
+    # Detailed diagnostics remain available to administrators below.
+    return jsonify({'ok': ok, 'status': 'ready' if ok else 'attention_required', 'version': 'PRODUCTION-HARDENING-V3'})
 
 
 @app.route('/admin/production-hardening-v2')
