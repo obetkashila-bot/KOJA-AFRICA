@@ -65,11 +65,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("koja-africa")
 
 app = Flask(__name__)
-
-# Google Search Console HTML file verification
-@app.get("/google4d3d8178b7b4659e.html")
-def google_search_console_verification():
-    return "google-site-verification: google4d3d8178b7b4659e.html", 200, {"Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=300"}
 # Render terminates HTTPS at the proxy; trust forwarded host/proto headers.
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 app.secret_key = os.getenv("SECRET_KEY") or os.getenv("FLASK_SECRET_KEY")
@@ -100,57 +95,6 @@ def _rate_limited(key, limit, window=60):
             _rate_hits.pop(k, None)
     return False
 
-# ============================================================
-# SECURITY HARDENING V3
-# ============================================================
-MIN_PASSWORD_LENGTH = 10
-SECURITY_MAX_INPUT = 12000
-
-def _security_event(action, metadata=None, user_id=None):
-    """Best-effort security audit event. Never blocks the user request."""
-    try:
-        uid = user_id or (current_user() or {}).get("id")
-        payload = {
-            "user_id": uid,
-            "action": str(action)[:120],
-            "resource_type": "security",
-            "resource_id": None,
-            "ip_address": request.remote_addr,
-            "user_agent": request.headers.get("User-Agent", "")[:500],
-            "metadata": metadata or {},
-            "created_at": utc_now(),
-        }
-        if table_exists("koja_audit_log_v2"):
-            db_insert("koja_audit_log_v2", payload)
-    except Exception:
-        logger.exception("Security event logging failed")
-
-def _password_policy_ok(password):
-    password = password or ""
-    if len(password) < MIN_PASSWORD_LENGTH:
-        return False, f"Password must contain at least {MIN_PASSWORD_LENGTH} characters."
-    if len(password) > 256:
-        return False, "Password is too long."
-    return True, None
-
-def _validate_file_signature(filename, data):
-    """Lightweight magic-byte checks for common uploaded file types."""
-    name = secure_filename(filename or "")
-    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-    if not data:
-        return False
-    if ext == "pdf": return data.startswith(b"%PDF-")
-    if ext in {"jpg", "jpeg"}: return data.startswith(b"\xff\xd8\xff")
-    if ext == "png": return data.startswith(b"\x89PNG\r\n\x1a\n")
-    if ext == "webp": return data.startswith(b"RIFF") and data[8:12] == b"WEBP"
-    if ext in {"docx"}: return data.startswith(b"PK\x03\x04")
-    if ext in {"doc"}: return data.startswith(b"\xd0\xcf\x11\xe0")
-    if ext == "mp4": return len(data) >= 12 and data[4:8] == b"ftyp"
-    if ext in {"webm"}: return data.startswith(b"\x1a\x45\xdf\xa3")
-    if ext in {"txt", "csv"}:
-        return b"\x00" not in data[:8192]
-    return True
-
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_SERVICE_KEY = (
     os.getenv("SUPABASE_SECRET_KEY", "")
@@ -174,7 +118,8 @@ HLS_PUBLIC_BASE = os.getenv("KOJA_HLS_PUBLIC_BASE", "").strip().rstrip("/")
 HLS_CDN_BASE = os.getenv("KOJA_HLS_CDN_BASE", "").strip().rstrip("/")
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.30-SECURITY-HARDENING-V3-OAUTH"
+APP_VERSION = "2026.10.01-TERMS-CONSENT-V1"
+TERMS_VERSION = "2026-10-01-v1"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -561,9 +506,6 @@ def upload_storage(file_storage, folder="uploads", public=False):
     data = file_storage.read()
     if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
         return None, f"Maximum file size is {MAX_UPLOAD_MB} MB."
-    if not _validate_file_signature(filename, data):
-        _security_event("upload_signature_rejected", {"extension": ext, "filename": filename[:160]})
-        return None, "The uploaded file does not match its declared file type."
 
     path = f"{folder.strip('/')}/{uuid.uuid4().hex}_{filename}"
     mime = file_storage.mimetype or "application/octet-stream"
@@ -688,12 +630,57 @@ def delete_storage(path):
 # DECORATORS / LOGGING
 # ============================================================
 
+def _terms_acceptance_status(user_id):
+    """Return True/False when the consent table is available; None if unavailable."""
+    if not user_id or not supabase_configured():
+        return None
+    try:
+        r = requests.get(
+            sb_rest_url("koja_terms_acceptances"),
+            headers=sb_headers(),
+            params={"select":"id,accepted,terms_version,accepted_at,created_at","user_id":f"eq.{user_id}","terms_version":f"eq.{TERMS_VERSION}","accepted":"eq.true","order":"created_at.desc","limit":"1"},
+            timeout=10,
+        )
+        if r.status_code in (404, 406, 427):
+            logger.warning("Terms acceptance table is not available yet; consent enforcement is temporarily inactive.")
+            return None
+        if not r.ok:
+            logger.error("Terms acceptance lookup failed: %s %s", r.status_code, r.text[:500])
+            return None
+        data = json_or_empty(r)
+        return bool(isinstance(data, list) and data)
+    except Exception:
+        logger.exception("Terms acceptance lookup error")
+        return None
+
+
+def _record_terms_acceptance(user_id, accepted):
+    if not user_id:
+        return False, "Missing user account."
+    payload = {"user_id":str(user_id),"terms_version":TERMS_VERSION,"accepted":bool(accepted),"accepted_at":utc_now() if accepted else None,"created_at":utc_now()}
+    row, error = db_insert("koja_terms_acceptances", payload)
+    if error:
+        logger.error("Terms acceptance record failed: %s", error)
+        return False, error
+    return True, row
+
+
+def _terms_required_for_user(user):
+    if not user:
+        return False
+    status = _terms_acceptance_status(user.get("id"))
+    return status is False
+
+
 def login_required(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        if not current_user():
+        user = current_user()
+        if not user:
             flash("Please log in first.", "warning")
             return redirect(url_for("login", next=request.path))
+        if request.path not in ("/terms", "/terms/decision") and _terms_required_for_user(user):
+            return redirect(url_for("public_terms", required=1, next=request.path))
         return fn(*args, **kwargs)
     return wrapper
 
@@ -705,7 +692,6 @@ def admin_required(fn):
             flash("Administrator login required.", "warning")
             return redirect(url_for("login"))
         if not user.get("is_admin"):
-            _security_event("admin_access_denied", {"path": request.path}, user_id=user.get("id"))
             flash("Administrator access required.", "danger")
             return redirect(url_for("dashboard"))
         return fn(*args, **kwargs)
@@ -804,12 +790,6 @@ def enforce_csrf():
     # Flutterwave server-to-server webhook is authenticated by its signature, not browser CSRF.
     if request.path == "/webhook/flutterwave":
         return None
-    # OAuth callback exchanges a short-lived Supabase access token for the
-    # local KOJA session. The bearer token itself is the authorization proof;
-    # requiring the browser CSRF token here can break the provider callback
-    # handoff on some browsers/webviews after a cross-site redirect.
-    if request.path == "/auth/oauth/session":
-        return None
 
     # KOJA Connect WebRTC signaling: keep login + call-participant authorization
     # below, but do not block browser ICE trickling on the page-level CSRF token.
@@ -820,7 +800,6 @@ def enforce_csrf():
     # The token is injected into forms and fetch requests by BASE_HTML.
     if not csrf_valid():
         logger.warning("CSRF validation failed for %s %s", request.method, request.path)
-        _security_event("csrf_validation_failed", {"method": request.method, "path": request.path})
         if request.is_json or request.path.startswith("/api/"):
             return jsonify({"ok": False, "message": "CSRF validation failed. Refresh the page and try again."}), 403
         flash("Security check failed. Please refresh the page and try again.", "danger")
@@ -981,7 +960,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90
 <a role="menuitem" href="{{ url_for('settings') }}">Settings</a>
 {% if user.role in ['driver','admin'] or user.is_admin %}<a role="menuitem" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}
 {% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('admin') }}">Admin</a><a role="menuitem" href="{{ url_for('admin_market') }}">KOJA Market Admin</a><a role="menuitem" href="{{ url_for('admin_marketplace') }}">Digital Marketplace Admin</a>{% endif %}
-<form method="post" action="{{ url_for('logout') }}" style="margin:0"><button type="submit" style="background:none;border:0;padding:10px 14px;width:100%;text-align:left;cursor:pointer">Logout</button></form>
+<a role="menuitem" href="{{ url_for('logout') }}">Logout</a>
 </div></div>
 {% else %}
 <a href="{{ url_for('login') }}">Login</a>
@@ -1059,7 +1038,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90
 {% endwith %}
 {{ body|safe }}
 </div>
-<footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services</footer>
+<footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services<br><div style="margin-top:10px"><a href="{{ url_for('public_terms') }}">Terms &amp; Conditions</a> · <a href="{{ url_for('public_privacy') }}">Privacy Policy</a> · <a href="{{ url_for('public_data_deletion') }}">Data Deletion</a></div></footer>
 <!-- KOJA Connect incoming-call receiver: polls only while authenticated. -->
 {% if user and not request.path.startswith('/api/') and not request.path.startswith('/connect/call') and not request.path.startswith('/connect/answer') %}
 <div id="kojaIncomingCall" style="display:none;position:fixed;left:12px;right:12px;bottom:16px;z-index:99999;max-width:520px;margin:auto;background:var(--card,#fff);border:2px solid var(--accent,#1d4ed8);border-radius:18px;padding:16px;box-shadow:0 18px 50px rgba(0,0,0,.28)">
@@ -1205,7 +1184,7 @@ def settings():
 <div class="card"><h3>KOJA Autonomous AI</h3><p>Controls the future AI-agent layer across Intelligence, Identity, Cloud and Ecosystem.</p><button class="btn" type="button" onclick="activateEngine('autonomous_ai',this)">Connect Autonomous AI</button></div>
 <div class="card"><h3>KOJA Cloud</h3><p>Developer/API access, API keys and connected cloud security controls.</p><a class="btn" href="{{ url_for('koja_cloud_page') }}">Open KOJA Cloud</a></div>
 <div class="card"><h3>Research</h3><p>Search scholarly literature, web sources, Wikipedia and KOJA documents, then create structured research notes and references.</p><a class="btn" href="{{ url_for('research') }}">Open Research Engine</a></div>
-<div class="card"><h3>Security</h3><p>End the current session or manage connected identity and cloud controls.</p><form method="post" action="{{ url_for('logout') }}" style="display:inline"><button class="btn secondary" type="submit">Log Out</button></form></div>
+<div class="card"><h3>Security</h3><p>End the current session or manage connected identity and cloud controls.</p><a class="btn secondary" href="{{ url_for('logout') }}">Log Out</a></div>
 </div>
 <div id="engineStatus" class="card" style="display:none;margin-top:14px"></div>
 <script>
@@ -1283,6 +1262,7 @@ def register():
         phone = clean(request.form.get("phone"))
         password = request.form.get("password","")
         role = clean(request.form.get("role")) or "student"
+        terms_agreed = request.form.get("terms_agreed") == "1"
 
         if role not in ("student","driver","teacher","doctor"):
             role = "student"
@@ -1290,9 +1270,11 @@ def register():
         if not full_name or not email or not password:
             flash("Full name, email and password are required.","danger")
             return redirect(url_for("register"))
-        password_ok, password_error = _password_policy_ok(password)
-        if not password_ok:
-            flash(password_error, "danger")
+        if not terms_agreed:
+            flash("You must select I Agree to the KOJA AFRICA Terms & Conditions and applicable laws and regulations before creating an account.","warning")
+            return redirect(url_for("register"))
+        if len(password) < 6:
+            flash("Password must contain at least 6 characters.","danger")
             return redirect(url_for("register"))
         if find_user_by_email(email):
             flash("An account with this email already exists. Please log in.","warning")
@@ -1321,8 +1303,14 @@ def register():
             flash(f"Registration failed: {str(error)[:500]}","danger")
             return redirect(url_for("register"))
 
-        login_user(row or payload)
-        log_activity("registration","New KOJA account registered.")
+        created_user = row or payload
+        ok_terms, terms_error = _record_terms_acceptance(created_user.get("id"), True)
+        if not ok_terms:
+            logger.error("Account created but terms acceptance could not be recorded: %s", terms_error)
+            flash("Account was created, but your Terms acceptance could not be recorded. Please contact support before continuing.", "danger")
+            return redirect(url_for("login"))
+        login_user(created_user)
+        log_activity("registration","New KOJA account registered and Terms accepted.")
         flash("Account created successfully.","success")
         return redirect(url_for("dashboard"))
 
@@ -1340,7 +1328,8 @@ def register():
 <option value="teacher">Teacher / Tutor</option>
 <option value="doctor">Doctor</option>
 </select>
-<label>Password</label><input name="password" type="password" minlength="10" maxlength="256" autocomplete="new-password" required>
+<label>Password</label><input name="password" type="password" minlength="6" required>
+<label style="display:flex;align-items:flex-start;gap:10px;margin:14px 0;line-height:1.45"><input type="checkbox" name="terms_agreed" value="1" required style="width:auto;margin:3px 0 0"> <span>I agree to the <a href="{{ url_for('public_terms') }}" target="_blank" rel="noopener">KOJA AFRICA Terms &amp; Conditions</a> and applicable laws and regulations.</span></label>
 <button type="submit">Create Account</button>
 </form>
 <p>Already registered? <a href="{{ url_for('login') }}">Login</a></p>
@@ -1350,10 +1339,7 @@ def register():
 @app.route("/login", methods=["GET","POST"])
 def login():
     if request.method == "POST":
-        login_ip = request.remote_addr or "unknown"
-        login_rate_key = "login:" + login_ip + ":" + clean(request.form.get("identifier") or request.form.get("email")).lower()[:160]
-        if _rate_limited(login_rate_key, 12, 300) or _rate_limited("login-ip:" + login_ip, 40, 300):
-            _security_event("login_rate_limited", {"ip": login_ip})
+        if _rate_limited("login:" + (request.remote_addr or "unknown"), 12, 300):
             return "Too many login attempts. Please wait a few minutes and try again.", 429
         identifier = clean(request.form.get("identifier") or request.form.get("email")).strip()
         email = identifier.lower()
@@ -1373,6 +1359,8 @@ def login():
                 return redirect(url_for("login"))
             login_user(user)
             log_activity("login","User logged into KOJA.")
+            if _terms_required_for_user(user):
+                return redirect(url_for("public_terms", required=1, next=request.args.get("next") or url_for("dashboard")))
             return redirect(safe_next_url(request.args.get("next")) if request.args.get("next") else url_for("dashboard"))
 
         # Second: Supabase Auth compatibility.
@@ -1387,16 +1375,17 @@ def login():
                 )
             login_user(profile, auth)
             log_activity("login","User logged in through Supabase Auth.")
+            if _terms_required_for_user(profile):
+                return redirect(url_for("public_terms", required=1, next=request.args.get("next") or url_for("dashboard")))
             return redirect(safe_next_url(request.args.get("next")) if request.args.get("next") else url_for("dashboard"))
 
-        _security_event("login_failed", {"identifier": identifier[:160]})
         flash("Invalid login credentials. Use the same email and password used to create the KOJA account.","danger")
         return redirect(url_for("login"))
 
     return render_page("Login", r"""
 <div class="card" style="max-width:500px;margin:auto">
 <h2>KOJA Login</h2>
-<p class="small">Sign in with your KOJA account or continue securely with a connected account.</p>
+<p class="small">Sign in with your existing KOJA email and password, or continue securely with a connected account.</p>
 <div style="display:grid;gap:10px;margin:16px 0">
 <a class="btn secondary" href="{{ url_for('oauth_start', provider='google') }}">Continue with Google</a>
 <a class="btn secondary" href="{{ url_for('oauth_start', provider='facebook') }}">Continue with Facebook</a>
@@ -1406,125 +1395,20 @@ def login():
 <form method="post">
 <label>Email or username</label><input name="identifier" autocomplete="username" required>
 <label>Password</label><input name="password" type="password" autocomplete="current-password" required>
-<button type="submit">Login</button>
+<button type="submit">Login with Email</button>
 </form>
 <p>No account? <a href="{{ url_for('register') }}">Create one</a></p>
+<p class="small"><a href="{{ url_for('public_privacy') }}">Privacy Policy</a> · <a href="{{ url_for('public_terms') }}">Terms of Service</a> · <a href="{{ url_for('public_data_deletion') }}">Data Deletion</a></p>
 </div>
 """)
 
-@app.route("/logout", methods=["GET", "POST"])
+@app.route("/logout")
 def logout():
-    if request.method == "GET":
-        return render_page("Confirm Logout", r"""<div class="card" style="max-width:520px;margin:auto"><h2>Log out of KOJA AFRICA?</h2><p>Your current session will be ended.</p><form method="post"><button type="submit">Log Out</button> <a class="btn secondary" href="{{ url_for('dashboard') }}">Cancel</a></form></div>""")
     if current_user():
         log_activity("logout","User logged out.")
     session.clear()
     flash("You have been logged out.","success")
     return redirect(url_for("home"))
-
-@app.get('/auth/oauth/<provider>')
-def oauth_start(provider):
-    provider = clean(provider).lower()
-    if provider not in {'google','facebook','github'}:
-        abort(404)
-    if not (SUPABASE_URL and (SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY)):
-        flash('Social sign-in is not configured yet. Please use email login or configure Supabase Auth.', 'warning')
-        return redirect(url_for('login'))
-    return render_page('Continue with ' + provider.title(), r'''
-<div class="card" style="max-width:520px;margin:50px auto;text-align:center">
-<h2>Continue with {{ provider|title }}</h2>
-<p id="oauthStatus" class="small">Connecting securely…</p>
-</div>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script>
-(async function(){
-  const status=document.getElementById('oauthStatus');
-  try{
-    const client=supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }},{auth:{flowType:'pkce',persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}});
-    const {error}=await client.auth.signInWithOAuth({
-      provider:{{ provider|tojson }},
-      options:{redirectTo:{{ callback_url|tojson }},queryParams:{prompt:'select_account'}}
-    });
-    if(error) throw error;
-    status.textContent='Redirecting…';
-  }catch(e){
-    status.textContent='Sign-in could not start: '+(e.message||e);
-  }
-})();
-</script>
-''', provider=provider, supabase_url=SUPABASE_URL, supabase_key=SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY, callback_url=url_for('oauth_callback', _external=True))
-
-@app.get('/auth/callback')
-def oauth_callback():
-    return render_page('Completing sign-in', r'''
-<div class="card" style="max-width:520px;margin:50px auto;text-align:center">
-<h2>Completing KOJA sign-in</h2><p id="oauthStatus" class="small">Please wait…</p>
-</div>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script>
-(async function(){
-  const status=document.getElementById('oauthStatus');
-  try{
-    const client=supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }},{auth:{flowType:'pkce',persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}});
-    const code=new URLSearchParams(location.search).get('code');
-    if(!code) throw new Error('No authorization code was returned.');
-    const {data,error}=await client.auth.exchangeCodeForSession(code);
-    if(error) throw error;
-    const token=data?.session?.access_token;
-    if(!token) throw new Error('No authenticated session was returned.');
-    const r=await fetch({{ session_url|tojson }},{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':document.querySelector('meta[name=\"csrf-token\"]')?.content||''},body:JSON.stringify({access_token:token})});
-    const out=await r.json().catch(()=>({}));
-    if(!r.ok||!out.ok) throw new Error(out.error||'KOJA could not create the local session.');
-    location.replace({{ dashboard_url|tojson }});
-  }catch(e){
-    status.textContent='Sign-in failed: '+(e.message||e);
-    setTimeout(()=>location.replace({{ login_url|tojson }}),3500);
-  }
-})();
-</script>
-''', supabase_url=SUPABASE_URL, supabase_key=SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY, session_url=url_for('oauth_session'), dashboard_url=url_for('dashboard'), login_url=url_for('login'))
-
-@app.post('/auth/oauth/session')
-def oauth_session():
-    body=request.get_json(silent=True) or {}
-    token=clean(body.get('access_token'))
-    if not token or len(token) > 12000 or not SUPABASE_URL:
-        _security_event('oauth_session_rejected', {'reason':'missing_or_invalid_token'})
-        return jsonify({'ok':False,'error':'Missing authentication token.'}),400
-    key=SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY or SUPABASE_SERVICE_KEY
-    try:
-        r=requests.get(f'{SUPABASE_URL}/auth/v1/user',headers={'apikey':key,'Authorization':f'Bearer {token}'},timeout=20)
-        if not r.ok:
-            _security_event('oauth_session_rejected', {'reason':'supabase_user_rejected','status':r.status_code})
-            return jsonify({'ok':False,'error':'Supabase authentication was rejected.'}),401
-        au=r.json() or {}
-        uid=au.get('id'); email=clean(au.get('email')).lower()
-        if not uid or not email:
-            _security_event('oauth_session_rejected', {'reason':'provider_account_incomplete'})
-            return jsonify({'ok':False,'error':'The provider did not return a usable account.'}),400
-        meta=au.get('user_metadata') or {}
-        full_name=clean(meta.get('full_name') or meta.get('name') or meta.get('user_name') or meta.get('preferred_username') or email)
-        profile=find_user_by_id(uid)
-        if not profile:
-            profile,err=create_local_profile(uid,email,full_name)
-            if err:
-                # A profile may already exist by email when the provider account
-                # is linked to an older KOJA account.
-                profile=find_user_by_email(email)
-                if not profile:
-                    logger.error('OAuth profile creation failed: %s',err)
-                    return jsonify({'ok':False,'error':'Could not create your KOJA profile.'}),500
-        if profile.get('is_active') is False:
-            _security_event('oauth_session_rejected', {'reason':'inactive_account','user_id':str(profile.get('id') or uid)[:120]})
-            return jsonify({'ok':False,'error':'This KOJA account is inactive.'}),403
-        login_user(profile, {'user':au,'access_token':token})
-        log_activity('login','User logged in through social authentication.')
-        _security_event('oauth_login_success', {'provider':clean(meta.get('provider') or au.get('app_metadata',{}).get('provider') or 'oauth')[:40]})
-        return jsonify({'ok':True})
-    except Exception:
-        logger.exception('OAuth session bridge failed')
-        _security_event('oauth_session_error', {'reason':'unexpected_server_error'})
-        return jsonify({'ok':False,'error':'Social sign-in could not be completed.'}),500
 
 # ============================================================
 # DASHBOARD / SERVICES
@@ -8069,23 +7953,10 @@ def nextgen_media_event():
     d=request.get_json(silent=True) or {}; pid=clean(d.get('post_id')); et=clean(d.get('event_type'))
     allowed={'impression','play','pause','25_percent','50_percent','75_percent','complete','share'}
     if not pid or et not in allowed:return jsonify(error='Invalid event'),400
-    ip = request.remote_addr or 'unknown'
-    if _rate_limited('media-event-ip:'+ip, 120, 60):
-        return jsonify(error='Too many media events. Please slow down.'),429
-    try:
-        watch_seconds = float(d.get('watch_seconds') or 0)
-        completion_percent = float(d.get('completion_percent') or 0)
-    except (TypeError, ValueError):
-        return jsonify(error='Invalid media metrics.'),400
-    if not (0 <= watch_seconds <= 86400) or not (0 <= completion_percent <= 100):
-        return jsonify(error='Invalid media metrics.'),400
-    post = first_row('koja_public_posts', {'id': pid})
-    if not post or not as_bool(post.get('is_published')):
-        return jsonify(error='Media item not available.'),404
     sid=request.cookies.get('koja_media_session') or uuid.uuid4().hex
     uid=(current_user() or {}).get('id')
-    db_insert('koja_media_events',{'post_id':pid,'user_id':uid,'session_id':sid,'event_type':et,'watch_seconds':round(watch_seconds,2),'completion_percent':round(completion_percent,2),'created_at':utc_now()})
-    resp=jsonify(ok=True);resp.set_cookie('koja_media_session',sid,max_age=60*60*24*30,httponly=True,samesite='Lax',secure=app.config.get('SESSION_COOKIE_SECURE',True));return resp
+    db_insert('koja_media_events',{'post_id':pid,'user_id':uid,'session_id':sid,'event_type':et,'watch_seconds':float(d.get('watch_seconds') or 0),'completion_percent':float(d.get('completion_percent') or 0),'created_at':utc_now()})
+    resp=jsonify(ok=True);resp.set_cookie('koja_media_session',sid,max_age=60*60*24*30,httponly=True,samesite='Lax');return resp
 
 @app.route('/news-next')
 def news_nextgen():
@@ -8125,9 +7996,6 @@ def internal_error(error):
 @app.after_request
 def security_headers(response):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    # Start CSP in report-only mode because KOJA currently contains legacy inline scripts.
-    # This lets production observe violations without breaking existing pages.
-    response.headers.setdefault("Content-Security-Policy-Report-Only", "default-src 'self'; img-src 'self' data: https:; media-src 'self' blob: https:; connect-src 'self' https: wss:; frame-src 'self' https:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; style-src 'self' 'unsafe-inline' https:; font-src 'self' data: https:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'")
     response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("Permissions-Policy", "camera=(self), microphone=(self), geolocation=(self)")
@@ -9102,6 +8970,191 @@ def business_accounting_v2(business_id):
     summary=first_row('koja_business_bi_accounting_summary',{'business_id':business_id}) or {}
     return render_page('Business Accounting V2',r"""<div class="hero"><h1>Accounting</h1><p>{{ b.name }} — connected double-entry ledger.</p><div class="actions"><a class="btn secondary" href="{{ url_for('business_dashboard',business_id=b.id) }}">Business Dashboard</a><a class="btn secondary" href="{{ url_for('business_intelligence_v3',business_id=b.id) }}">AI Intelligence</a></div></div><div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(summary.accounting_revenue or 0,'ZMW') }}</h2></div><div class="card"><h3>Expenses</h3><h2>{{ money(summary.accounting_expenses or 0,'ZMW') }}</h2></div><div class="card"><h3>Net Result</h3><h2>{{ money(summary.accounting_net_result or 0,'ZMW') }}</h2></div><div class="card"><h3>Transactions</h3><h2>{{ summary.transaction_count or 0 }}</h2></div></div><div class="card"><h2>Record Transaction</h2><form method="post"><label>Type</label><select name="kind"><option value="sale">Sale / Income</option><option value="expense">Expense</option></select><label>Description</label><input name="description" required><label>Amount (ZMW)</label><input name="amount" type="number" min="0" step="0.01" required><label>Payment Method</label><select name="payment_method"><option value="cash">Cash</option><option value="bank">Bank</option><option value="mobile_money">Mobile Money</option></select><label>Expense Category</label><select name="category"><option value="other">Other</option><option value="rent">Rent</option><option value="salary">Salary</option><option value="transport">Transport</option><option value="marketing">Marketing</option><option value="utilities">Utilities</option><option value="tax">Tax</option></select><button class="btn">Save & Post to Ledger</button></form></div><div class="card"><h2>Chart of Accounts</h2><table><tr><th>Code</th><th>Account</th><th>Type</th><th>Balance</th></tr>{% for a in accounts %}<tr><td>{{ a.account_code }}</td><td>{{ a.account_name }}</td><td>{{ a.account_type }}</td><td>{{ money(a.balance or 0,'ZMW') }}</td></tr>{% else %}<tr><td colspan="4">No accounts.</td></tr>{% endfor %}</table></div><div class="card"><h2>Recent Ledger Transactions</h2><table><tr><th>Date</th><th>Type</th><th>Description</th><th>Amount</th><th>Status</th></tr>{% for x in txs %}<tr><td>{{ x.transaction_date }}</td><td>{{ x.transaction_type }}</td><td>{{ x.description }}</td><td>{{ money(x.total_amount or 0,'ZMW') }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="5">No accounting transactions yet.</td></tr>{% endfor %}</table></div>""",b=b,summary=summary,accounts=accounts,txs=txs,money=market_money)
 
+
+# ============================================================
+# PUBLIC LEGAL PAGES + SOCIAL/OAUTH LOGIN
+# ============================================================
+# Social sign-in is handled by Supabase Auth. The provider credentials are
+# configured in Supabase; they are never exposed in this Flask application.
+# Email/password login above remains unchanged.
+
+@app.get('/privacy')
+def public_privacy():
+    return render_page('KOJA AFRICA Privacy Policy', r'''
+<div class="card legal-page" style="max-width:900px;margin:auto">
+<h1>KOJA AFRICA Privacy Policy</h1>
+<p class="small">Last updated: 30 September 2026</p>
+<p>KOJA AFRICA (“KOJA”, “we”, “us” or “our”) provides a knowledge, learning, research, communication, business and digital services platform. This Privacy Policy explains how information may be collected, used, stored and protected when you use KOJA AFRICA.</p>
+<h2>1. Information we collect</h2>
+<p>Depending on the features you use, KOJA may process account information such as your name, email address, phone number, account role and profile information; content you upload or create; messages and communication information; service and transaction information; technical information such as device, browser, IP address and log information; and information you choose to provide through connected sign-in providers.</p>
+<h2>2. Social sign-in</h2>
+<p>KOJA may allow sign-in through Google, Facebook and GitHub. These providers authenticate your account and may provide information permitted by the provider and your authorization. KOJA does not receive or store your provider password. Provider-specific processing is also governed by the provider’s own privacy policy and terms.</p>
+<h2>3. How we use information</h2>
+<p>We use information to create and maintain accounts, authenticate users, provide documents and learning features, operate communication and business services, provide AI-assisted features, respond to requests, improve security and reliability, prevent abuse, maintain records, and comply with applicable legal requirements.</p>
+<h2>4. Documents and AI</h2>
+<p>Documents and other content you submit may be processed to provide document search, document intelligence, automatic notes and AI-assisted answers. AI-generated content is assistance and should be reviewed by the user before being relied upon for important decisions.</p>
+<h2>5. Location and device information</h2>
+<p>Some KOJA services may use location information when you choose to enable a location-based feature, such as delivery or live driver tracking. Location access should be requested only for the feature that needs it.</p>
+<h2>6. Sharing and service providers</h2>
+<p>Information may be processed by infrastructure and service providers that help KOJA operate the platform, such as hosting, database/storage, email, authentication, AI and communication providers. We do not sell your personal information as a core business practice.</p>
+<h2>7. Security</h2>
+<p>KOJA uses reasonable technical and organizational safeguards intended to protect information. No internet service can guarantee absolute security.</p>
+<h2>8. Retention and deletion</h2>
+<p>We retain information for as long as reasonably necessary to provide the service, maintain security and records, resolve disputes, or comply with legal obligations. You may request deletion of your KOJA account and applicable personal information.</p>
+<p>For Facebook-related data deletion requests, see <a href="{{ url_for('public_data_deletion') }}">KOJA data deletion instructions</a>.</p>
+<h2>9. Children</h2>
+<p>KOJA is not intended to knowingly collect personal information from children in violation of applicable law. Where a service has age requirements, users must comply with them.</p>
+<h2>10. Changes</h2>
+<p>We may update this Privacy Policy as the platform changes. The updated version will be published on this page with a revised date.</p>
+<h2>11. Contact</h2>
+<p>For privacy or data questions, use the contact and support mechanisms available inside KOJA AFRICA. You may also use the account deletion process described on the data deletion page.</p>
+</div>
+''')
+
+@app.get('/data-deletion')
+def public_data_deletion():
+    return render_page('KOJA AFRICA Data Deletion', r'''
+<div class="card legal-page" style="max-width:900px;margin:auto">
+<h1>KOJA AFRICA User Data Deletion</h1>
+<p class="small">Last updated: 30 September 2026</p>
+<p>KOJA AFRICA provides a way for users to request deletion of their account and applicable personal information.</p>
+<h2>Request deletion</h2>
+<p>Sign in to KOJA AFRICA and use the available account/settings support or deletion controls. If a deletion control is not available for your account, contact KOJA through the support/contact mechanism inside the platform and include the email address associated with your account.</p>
+<h2>Facebook data</h2>
+<p>If you used Facebook to sign in, you may request deletion of KOJA-held information associated with that connection. KOJA will process a valid request subject to information that must be retained for security, fraud prevention, legal compliance or other legitimate operational requirements.</p>
+<h2>What happens after a request</h2>
+<p>We may verify the request before acting. Information eligible for deletion will be removed or de-identified where reasonably practicable. Some records may remain where retention is required by law or necessary for security, accounting, dispute resolution or enforcement.</p>
+<p><a href="{{ url_for('public_privacy') }}">Read the KOJA AFRICA Privacy Policy</a></p>
+</div>
+''')
+
+@app.get('/terms')
+def public_terms():
+    user = current_user()
+    status = _terms_acceptance_status(user.get('id')) if user else None
+    required = request.args.get('required') == '1'
+    next_url = safe_next_url(request.args.get('next'))
+    return render_page('KOJA AFRICA Terms of Service', r'''<div class="card legal-page" style="max-width:900px;margin:auto"><h1>KOJA AFRICA Terms &amp; Conditions</h1><p class="small">Version {{ terms_version }} · Last updated: 1 October 2026</p>{% if required %}<div class="alert"><strong>Terms acceptance required.</strong><br>Please review the Terms &amp; Conditions below and select <strong>I Agree</strong> before continuing to use your KOJA account.</div>{% endif %}<p>These Terms of Service (“Terms”) govern your use of KOJA AFRICA (“KOJA”, “we”, “us” or “our”). By creating an account or using KOJA, you agree to comply with these Terms and applicable laws and regulations.</p><h2>1. The KOJA service</h2><p>KOJA provides digital services that may include learning and research tools, documents, AI-assisted features, communication, media, business tools, delivery-related services and other platform features. Features may change as the platform develops.</p><h2>2. Accounts</h2><p>You are responsible for information supplied for your account and for protecting your login credentials. You must not impersonate another person or create an account for an unlawful purpose. Social sign-in through Google, Facebook or GitHub is subject to the relevant provider's rules.</p><h2>3. Acceptable use</h2><p>You must not use KOJA to violate applicable law, infringe intellectual-property or privacy rights, distribute malware, attempt unauthorized access, abuse other users, interfere with the platform, or upload content that you are not authorized to use.</p><h2>4. User content</h2><p>You retain rights you already have in content you upload or create. You grant KOJA the permissions reasonably necessary to host, process, display and provide that content as part of the services you request. You are responsible for ensuring that you have the necessary rights to submit content.</p><h2>5. AI-assisted features</h2><p>KOJA AI and automatic document features provide computer-generated assistance. AI output may be incomplete or inaccurate and should be reviewed before being used for academic, professional, financial, medical, legal or other consequential purposes. KOJA does not represent AI output as a substitute for qualified professional advice.</p><h2>6. Communication and media</h2><p>Users are responsible for their communications and media they publish or share. You must respect applicable law and the rights of other users and content owners. KOJA may restrict or remove content or access where reasonably necessary to enforce these Terms or protect the platform.</p><h2>7. Business, payments and third-party services</h2><p>Where KOJA provides business, payment, delivery or third-party integrations, additional terms may apply. Payment and third-party services may be subject to the terms and policies of the relevant provider.</p><h2>8. Intellectual property</h2><p>KOJA's software, branding, interface and platform materials are protected by applicable intellectual-property laws. You may not copy, reverse engineer, redistribute or commercially exploit KOJA materials except as permitted by law or written authorization.</p><h2>9. Availability and changes</h2><p>KOJA is provided on an evolving basis. We may modify, suspend or discontinue features, including for maintenance, security or technical reasons. We do not guarantee uninterrupted availability.</p><h2>10. Suspension and termination</h2><p>KOJA may suspend or terminate access where reasonably necessary because of serious or repeated violations of these Terms, security risks, unlawful activity, fraud, or other circumstances permitted by law.</p><h2>11. Disclaimers</h2><p>To the extent permitted by law, KOJA is provided without guarantees that every feature will be uninterrupted, error-free or suitable for every purpose. Nothing in these Terms removes rights that cannot lawfully be excluded.</p><h2>12. Changes to these Terms</h2><p>We may update these Terms when the platform or applicable requirements change. The latest version will be published on this page with its updated version and date. Where a new version requires renewed acceptance, KOJA will ask you to review and accept it before continuing to use protected account features.</p><h2>13. Contact</h2><p>For questions about these Terms, use the support/contact mechanisms available inside KOJA AFRICA.</p>{% if user %}<div class="card" style="border:2px solid var(--border);margin-top:24px"><h2>Agreement</h2>{% if status %}<p><strong>Accepted.</strong> You accepted Terms version {{ terms_version }}.</p>{% else %}<p>By selecting <strong>I Agree</strong>, you confirm that you have read and agree to the KOJA AFRICA Terms &amp; Conditions and applicable laws and regulations.</p><form method="post" action="{{ url_for('terms_decision') }}" style="display:flex;gap:10px;flex-wrap:wrap"><input type="hidden" name="next" value="{{ next_url }}"><button class="btn success" type="submit" name="decision" value="agree" style="width:auto">I Agree</button><button class="btn danger" type="submit" name="decision" value="disagree" style="width:auto">Disagree</button></form><p class="small">If you select Disagree, KOJA will not record your acceptance and you will be signed out of the account.</p>{% endif %}</div>{% else %}<div class="card" style="border:2px solid var(--border);margin-top:24px"><h2>Ready to create an account?</h2><p>Review the Terms &amp; Conditions before registering. Agreement is required to create a KOJA account.</p><a class="btn" href="{{ url_for('register') }}">Create Account</a> <a class="btn secondary" href="{{ url_for('login') }}">Login</a></div>{% endif %}<p><a href="{{ url_for('public_privacy') }}">Privacy Policy</a> · <a href="{{ url_for('public_data_deletion') }}">Data Deletion</a></p></div>''', terms_version=TERMS_VERSION, status=status is True, required=required, next_url=next_url)
+
+@app.post('/terms/decision')
+@login_required
+def terms_decision():
+    decision = clean(request.form.get('decision')).lower()
+    if decision not in ('agree', 'disagree'):
+        flash('Please choose I Agree or Disagree.', 'warning')
+        return redirect(url_for('public_terms'))
+    if decision == 'disagree':
+        log_activity('terms_disagree', f'User declined KOJA Terms version {TERMS_VERSION}.')
+        session.clear()
+        flash('You disagreed with the KOJA AFRICA Terms & Conditions. You have been signed out and no acceptance was recorded.', 'warning')
+        return redirect(url_for('home'))
+    ok, result = _record_terms_acceptance((current_user() or {}).get('id'), True)
+    if not ok:
+        flash('Your agreement could not be recorded. Please try again.', 'danger')
+        return redirect(url_for('public_terms', required=1, next=request.form.get('next') or url_for('dashboard')))
+    log_activity('terms_agree', f'User accepted KOJA Terms version {TERMS_VERSION}.')
+    flash('Terms & Conditions accepted successfully.', 'success')
+    return redirect(safe_next_url(request.form.get('next')) or url_for('dashboard'))
+
+@app.get('/auth/oauth/<provider>')
+def oauth_start(provider):
+    provider = clean(provider).lower()
+    if provider not in {'google','facebook','github'}:
+        abort(404)
+    if not (SUPABASE_URL and (SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY)):
+        flash('Social sign-in is not configured yet. Please use email login or configure Supabase Auth.', 'warning')
+        return redirect(url_for('login'))
+    return render_page('Continue with ' + provider.title(), r'''
+<div class="card" style="max-width:520px;margin:50px auto;text-align:center">
+<h2>Continue with {{ provider|title }}</h2>
+<p id="oauthStatus" class="small">Connecting securely…</p>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+(async function(){
+  const status=document.getElementById('oauthStatus');
+  try{
+    const client=supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }});
+    const {error}=await client.auth.signInWithOAuth({
+      provider:{{ provider|tojson }},
+      options:{redirectTo:{{ callback_url|tojson }},queryParams:{prompt:'select_account'}}
+    });
+    if(error) throw error;
+    status.textContent='Redirecting…';
+  }catch(e){
+    status.textContent='Sign-in could not start: '+(e.message||e);
+  }
+})();
+</script>
+''', provider=provider, supabase_url=SUPABASE_URL, supabase_key=SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY, callback_url=url_for('oauth_callback', _external=True))
+
+@app.get('/auth/callback')
+def oauth_callback():
+    return render_page('Completing sign-in', r'''
+<div class="card" style="max-width:520px;margin:50px auto;text-align:center">
+<h2>Completing KOJA sign-in</h2><p id="oauthStatus" class="small">Please wait…</p>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+(async function(){
+  const status=document.getElementById('oauthStatus');
+  try{
+    const client=supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }});
+    const code=new URLSearchParams(location.search).get('code');
+    if(!code) throw new Error('No authorization code was returned.');
+    const {data,error}=await client.auth.exchangeCodeForSession(code);
+    if(error) throw error;
+    const token=data?.session?.access_token;
+    if(!token) throw new Error('No authenticated session was returned.');
+    const r=await fetch({{ session_url|tojson }},{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({access_token:token})});
+    const out=await r.json().catch(()=>({}));
+    if(!r.ok||!out.ok) throw new Error(out.error||'KOJA could not create the local session.');
+    location.replace(out.terms_required ? out.terms_url : {{ dashboard_url|tojson }});
+  }catch(e){
+    status.textContent='Sign-in failed: '+(e.message||e);
+    setTimeout(()=>location.replace({{ login_url|tojson }}),3500);
+  }
+})();
+</script>
+''', supabase_url=SUPABASE_URL, supabase_key=SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY, session_url=url_for('oauth_session'), dashboard_url=url_for('dashboard'), login_url=url_for('login'))
+
+@app.post('/auth/oauth/session')
+def oauth_session():
+    body=request.get_json(silent=True) or {}
+    token=clean(body.get('access_token'))
+    if not token or not SUPABASE_URL:
+        return jsonify({'ok':False,'error':'Missing authentication token.'}),400
+    key=SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY or SUPABASE_SERVICE_KEY
+    try:
+        r=requests.get(f'{SUPABASE_URL}/auth/v1/user',headers={'apikey':key,'Authorization':f'Bearer {token}'},timeout=20)
+        if not r.ok:
+            return jsonify({'ok':False,'error':'Supabase authentication was rejected.'}),401
+        au=r.json() or {}
+        uid=au.get('id'); email=clean(au.get('email')).lower()
+        if not uid or not email:
+            return jsonify({'ok':False,'error':'The provider did not return a usable account.'}),400
+        meta=au.get('user_metadata') or {}
+        full_name=clean(meta.get('full_name') or meta.get('name') or meta.get('user_name') or meta.get('preferred_username') or email)
+        profile=find_user_by_id(uid)
+        if not profile:
+            profile,err=create_local_profile(uid,email,full_name)
+            if err:
+                # A profile may already exist by email when the provider account
+                # is linked to an older KOJA account.
+                profile=find_user_by_email(email)
+                if not profile:
+                    logger.error('OAuth profile creation failed: %s',err)
+                    return jsonify({'ok':False,'error':'Could not create your KOJA profile.'}),500
+        if profile.get('is_active') is False:
+            return jsonify({'ok':False,'error':'This KOJA account is inactive.'}),403
+        login_user(profile, {'user':au,'access_token':token})
+        log_activity('login','User logged in through social authentication.')
+        needs_terms = _terms_required_for_user(profile)
+        return jsonify({'ok':True,'terms_required':bool(needs_terms),'terms_url':url_for('public_terms', required=1, next=url_for('dashboard')) if needs_terms else url_for('dashboard')})
+    except Exception:
+        logger.exception('OAuth session bridge failed')
+        return jsonify({'ok':False,'error':'Social sign-in could not be completed.'}),500
+
 if __name__=="__main__":
     port=int(os.getenv("PORT","5000"))
     app.run(host="0.0.0.0",port=port,debug=False)
@@ -9662,9 +9715,7 @@ def production_health_api_v2():
     checks['flutterwave'] = bool(os.getenv('FLW_SECRET_KEY'))
     checks['site_url'] = bool(os.getenv('SITE_URL'))
     ok = all(checks.values())
-    # Do not expose infrastructure/table/provider configuration to anonymous clients.
-    # Detailed diagnostics remain available to administrators below.
-    return jsonify({'ok': ok, 'status': 'ready' if ok else 'attention_required', 'version': 'PRODUCTION-HARDENING-V3'})
+    return jsonify({'ok': ok, 'status': 'ready' if ok else 'attention_required', 'checks': checks, 'version': 'PRODUCTION-HARDENING-V2'})
 
 
 @app.route('/admin/production-hardening-v2')

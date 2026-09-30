@@ -1,8 +1,7 @@
-Flask
-requests
-python-dotenv
-Werkzeug
-gunicorn
-livekit-api
-pypdf
-python-docx
+Flask>=3.0,<4
+requests>=2.31,<3
+python-dotenv>=1.0,<2
+gunicorn>=23.0,<24
+livekit-api>=1.0
+pypdf>=5.0,<7
+python-docx>=1.1,<2
