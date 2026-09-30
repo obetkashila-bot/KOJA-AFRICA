@@ -1,9 +1,8 @@
-Flask>=3.0,<4
-Werkzeug>=3.0,<4
-requests>=2.31,<3
-python-dotenv>=1.0,<2
-pypdf>=5,<7
-python-docx>=1.1,<2
-pywebpush>=2.0,<3
-livekit-api>=1.0,<2
-gunicorn>=23,<24
+Flask>=3.0
+requests>=2.31
+python-dotenv>=1.0
+supabase>=2.0
+httpx>=0.24
+PyJWT>=2.8
+cryptography>=42.0
+pydantic>=2.0

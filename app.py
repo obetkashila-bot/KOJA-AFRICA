@@ -6975,139 +6975,109 @@ def connect():
         c['_other_name']=_profile_name(other['user_id']) if other else (c.get('name') or 'Group'); last=db_select('koja_messages',filters={'conversation_id':c['id']},order='created_at.desc',limit=1); c['_last']=(last[0].get('body') or last[0].get('message_type','')) if last else 'No messages yet'; conversations.append(c)
     return render_page('KOJA Connect',r'''<div class="hero"><h2> KOJA Connect</h2><p>Chat, voice messages, voice calls, video calls, photos, files, groups and status updates with other KOJA users.</p></div><div class="grid"><div class="card"><h3> Find People</h3><p>Search KOJA users and start a conversation.</p><a class="btn" href="{{ url_for('connect_people') }}">Find People</a></div><div class="card"><h3> Status</h3><p>Share a 24-hour status.</p><a class="btn" href="{{ url_for('connect_status') }}">My Status</a></div><div class="card"><h3> Calls</h3><p>Voice and video calls separate from Professional Services.</p><a class="btn" href="{{ url_for('connect_calls') }}">Call History</a></div></div><div class="card"><div class="actions"><h3 style="margin-right:auto">Recent Chats</h3><a class="btn" href="{{ url_for('connect_group_new') }}"> New Group</a></div>{% for c in conversations %}<a class="card" style="display:block;text-decoration:none;color:inherit" href="{{ url_for('connect_chat',conversation_id=c.id) }}"><strong>{{ c._other_name }}</strong><div class="small">{{ c._last }}</div></a>{% else %}<p>No chats yet. Find a KOJA user to start.</p>{% endfor %}</div>''',conversations=conversations)
 
-def _normalize_contact_phone(value):
-    raw = clean(value)
-    if not raw:
-        return ''
-    digits = re.sub(r'\D+', '', raw)
-    if not digits:
-        return ''
-    # Normalize common Zambian formats to country-code form. Other countries
-    # are retained as digits so international KOJA users can still match.
-    if digits.startswith('00'):
-        digits = digits[2:]
-    if digits.startswith('260'):
-        return digits
-    if digits.startswith('0') and len(digits) == 10:
-        return '260' + digits[1:]
-    if len(digits) == 9 and digits[0] in '79':
-        return '260' + digits
-    return digits
-
-@app.post('/connect/people/contacts')
-@login_required
-def connect_people_contacts():
-    if _rate_limited('contact-match:' + str(current_user()['id']), 12, 60):
-        return jsonify({'ok': False, 'error': 'Too many contact searches. Please wait a moment.'}), 429
-    payload = request.get_json(silent=True) or {}
-    raw_numbers = payload.get('phones') if isinstance(payload, dict) else []
-    if not isinstance(raw_numbers, list):
-        return jsonify({'ok': False, 'error': 'Invalid contacts payload.'}), 400
-    phones = []
-    for item in raw_numbers[:300]:
-        value = item.get('tel') if isinstance(item, dict) else item
-        normalized = _normalize_contact_phone(value)
-        if normalized and normalized not in phones:
-            phones.append(normalized)
-    if not phones:
-        return jsonify({'ok': True, 'matches': [], 'message': 'No usable phone numbers were found.'})
-    # We only return people whose phone number matches a supplied contact.
-    # Contact numbers themselves are never returned to the browser.
-    profiles = db_select('profiles', select='id,full_name,name,email,phone', filters={'phone':'is.not.null'}, limit=5000)
-    uid = str(current_user()['id'])
-    wanted = set(phones)
-    matches = []
-    for profile in profiles:
-        if str(profile.get('id')) == uid:
-            continue
-        if _normalize_contact_phone(profile.get('phone')) not in wanted:
-            continue
-        matches.append({
-            'id': str(profile.get('id')),
-            'name': first_nonempty(profile.get('full_name'), profile.get('name'), profile.get('email'), 'KOJA User')
-        })
-        if len(matches) >= 100:
-            break
-    return jsonify({'ok': True, 'matches': matches, 'count': len(matches)})
-
 @app.route('/connect/people',methods=['GET','POST'])
 @login_required
 def connect_people():
-    uid=current_user()['id']
+    uid=str(current_user()['id'])
     if request.method=='POST':
-        target=clean(request.form.get('user_id')); existing=first_row('koja_contacts',{'requester_id':uid,'addressee_id':target}) or first_row('koja_contacts',{'requester_id':target,'addressee_id':uid})
+        target=clean(request.form.get('user_id'))
+        existing=first_row('koja_contacts',{'requester_id':uid,'addressee_id':target}) or first_row('koja_contacts',{'requester_id':target,'addressee_id':uid})
         if target and target!=uid and find_user_by_id(target) and not existing:
-            db_insert('koja_contacts',{'id':str(uuid.uuid4()),'requester_id':uid,'addressee_id':target,'status':'pending','created_at':utc_now(),'updated_at':utc_now()}); notify_user(target,'New KOJA connection request',f'{_profile_name(uid)} wants to connect on KOJA.','friend_request',uid,'/connect/people'); flash('Connection request sent.','success')
-        else: flash('User not found or request already exists.','warning')
+            db_insert('koja_contacts',{'id':str(uuid.uuid4()),'requester_id':uid,'addressee_id':target,'status':'pending','created_at':utc_now(),'updated_at':utc_now()})
+            notify_user(target,'New KOJA connection request',f'{_profile_name(uid)} wants to connect on KOJA.','friend_request',uid,'/connect/people')
+            flash('Connection request sent.','success')
+        else:
+            flash('User not found or request already exists.','warning')
         return redirect(url_for('connect_people'))
+
     q=clean(request.args.get('q')); people=[]
     if q:
-        for col in ('email','full_name','name'):
+        for col in ('email','full_name','name','username'):
             for x in db_select('profiles',filters={col:f'ilike.*{q}*'},limit=30):
-                if str(x.get('id'))!=str(uid) and not any(str(p.get('id'))==str(x.get('id')) for p in people): people.append(x)
+                if str(x.get('id'))!=uid and not any(str(p.get('id'))==str(x.get('id')) for p in people):
+                    people.append(x)
+
     incoming=db_select('koja_contacts',filters={'addressee_id':uid,'status':'pending'},limit=50)
-    return render_page('KOJA People',r'''
-<style>
-.koja-find-tools{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:14px}
-.koja-find-tool{display:block;text-align:left;text-decoration:none;color:inherit;border:1px solid rgba(70,110,170,.25);border-radius:16px;padding:16px;background:linear-gradient(180deg,rgba(20,44,82,.08),rgba(20,44,82,.02));cursor:pointer}
-.koja-find-tool strong{display:block;font-size:1rem;margin-bottom:5px}.koja-find-tool span{display:block;font-size:.84rem;opacity:.75;line-height:1.45}
-#contactMatches{margin-top:14px}.koja-match{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid rgba(127,127,127,.15)}
-@media(max-width:700px){.koja-find-tools{grid-template-columns:1fr}}
+    accepted=[]
+    for r in db_select('koja_contacts',filters={'requester_id':uid,'status':'accepted'},limit=100)+db_select('koja_contacts',filters={'addressee_id':uid,'status':'accepted'},limit=100):
+        other=r.get('addressee_id') if str(r.get('requester_id'))==uid else r.get('requester_id')
+        if other and not any(str(x.get('id'))==str(other) for x in accepted):
+            u=find_user_by_id(other)
+            if u: accepted.append(u)
+
+    suggestions=[]
+    # Lightweight suggestions: active profiles with a visible name, excluding self and existing connections.
+    connected_ids={str(x.get('id')) for x in accepted}
+    for x in db_select('profiles',limit=40):
+        xid=str(x.get('id') or '')
+        if xid and xid!=uid and xid not in connected_ids and not any(str(p.get('id'))==xid for p in suggestions):
+            if first_nonempty(x.get('full_name'),x.get('name'),x.get('username'),x.get('email')):
+                suggestions.append(x)
+        if len(suggestions)>=8: break
+
+    return render_page('KOJA People',r'''<style>
+.people-hero{padding:26px;border-radius:24px;background:linear-gradient(135deg,rgba(20,70,140,.18),rgba(255,255,255,.03));border:1px solid var(--border);margin-bottom:16px}
+.people-tools{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.people-tool{min-height:150px;padding:20px;border:1px solid var(--border);border-radius:20px;background:var(--card);display:flex;flex-direction:column;justify-content:space-between}.people-tool h3{margin:0 0 7px}.people-tool p{font-size:.9rem;color:var(--muted)}
+.people-search{display:flex;gap:8px;align-items:center}.people-search input{flex:1}.people-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}.person-card{border:1px solid var(--border);border-radius:20px;padding:17px;background:var(--card)}.avatar{width:52px;height:52px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,#0b4ea2,#1769d1);color:#fff;font-weight:800;font-size:20px;margin-bottom:10px}.person-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:12px}.person-actions .btn{margin:0}.section-head{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:12px}.request-row{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:13px 0;border-bottom:1px solid var(--border)}
+@media(max-width:760px){.people-tools{grid-template-columns:1fr}.people-search{flex-direction:column;align-items:stretch}.request-row{align-items:flex-start;flex-direction:column}}
 </style>
-<div class="card">
-  <h2>Find KOJA People</h2>
-  <p class="small">Connect with people you already know or search the KOJA community.</p>
-  <div class="koja-find-tools">
-    <button type="button" class="koja-find-tool" id="kojaContactsBtn"><strong>Add from Contacts</strong><span>Find KOJA users whose phone number matches your contacts.</span></button>
-    <button type="button" class="koja-find-tool" id="kojaFacebookBtn"><strong>Add from Facebook</strong><span>Find or invite friends through Facebook without importing private friend data.</span></button>
-    <button type="button" class="koja-find-tool" id="kojaInviteBtn"><strong>Invite Friends</strong><span>Share KOJA by WhatsApp, SMS, Facebook or your device share menu.</span></button>
-  </div>
-  <form style="margin-top:16px"><input name="q" value="{{ q }}" placeholder="Search name or email"><button>Search</button></form>
-  <div id="contactMatches" class="card" style="display:none"></div>
+<div class="people-hero">
+  <div class="small">KOJA CONNECT</div><h2 style="margin:.25rem 0">Find KOJA People</h2>
+  <p>Discover people, connect with your network and start communication from their personal KOJA profile.</p>
+  <form class="people-search" method="get"><input name="q" value="{{ q }}" placeholder="Search name, username or email"><button class="btn" type="submit">Search KOJA</button></form>
 </div>
-<div class="grid">{% for p in people %}<div class="card"><h3>{{ p.get('full_name') or p.get('name') or p.get('email') }}</h3><p>{{ p.get('email') or '' }}</p><form method="post"><input type="hidden" name="user_id" value="{{ p.id }}"><button>Connect</button></form><a class="btn secondary" href="{{ url_for('connect_new',user_id=p.id) }}">Message</a></div>{% endfor %}</div>
-<div class="card"><h3>Incoming Requests</h3>{% for r in incoming %}<div class="card"><strong>{{ _profile_name(r.requester_id) }}</strong><form method="post" action="{{ url_for('connect_accept',contact_id=r.id) }}"><button>Accept</button></form></div>{% else %}<p>No pending requests.</p>{% endfor %}</div>
+<div class="people-tools">
+  <div class="people-tool"><div><h3>Add from Contacts</h3><p>Find KOJA users whose phone number matches contacts you choose to share from your device.</p></div><button class="btn" type="button" onclick="findFromContacts()">Find from Contacts</button></div>
+  <div class="people-tool"><div><h3>Add from Facebook</h3><p>Invite people through Facebook without importing or copying your private Facebook friend list.</p></div><button class="btn" type="button" onclick="inviteFacebook()">Invite on Facebook</button></div>
+  <div class="people-tool"><div><h3>Invite Friends</h3><p>Share KOJA through WhatsApp, SMS or your device share menu.</p></div><button class="btn" type="button" onclick="inviteKOJA()">Invite Friends</button></div>
+</div>
+<div class="card" id="contactResults" style="display:none;margin-top:16px"><div class="section-head"><h3 style="margin:0">Contacts on KOJA</h3><button class="btn secondary" type="button" onclick="document.getElementById('contactResults').style.display='none'">Close</button></div><div id="contactMatchGrid" class="people-grid"></div></div>
+{% if q %}<div class="card" style="margin-top:16px"><div class="section-head"><h3 style="margin:0">Search results</h3><span class="small">{{ people|length }} found</span></div><div class="people-grid">{% for p in people %}<div class="person-card"><div class="avatar">{{ (p.get('full_name') or p.get('name') or p.get('username') or p.get('email') or 'K')[:1]|upper }}</div><strong>{{ p.get('full_name') or p.get('name') or p.get('username') or p.get('email') }}</strong><div class="small">{% if p.get('username') %}@{{ p.get('username') }} · {% endif %}{{ p.get('role') or 'KOJA member' }}</div><p>{{ p.get('bio') or p.get('about') or 'KOJA community member.' }}</p><div class="person-actions"><a class="btn secondary" href="{{ url_for('connect_profile',user_id=p.id) }}">View Profile</a><form method="post"><input type="hidden" name="user_id" value="{{ p.id }}"><button class="btn" type="submit">Connect</button></form><a class="btn secondary" href="{{ url_for('connect_new',user_id=p.id) }}">Message</a></div></div>{% endfor %}{% if not people %}<p>No KOJA matches found.</p>{% endif %}</div></div>{% endif %}
+{% if suggestions %}<div class="card" style="margin-top:16px"><div class="section-head"><h3 style="margin:0">People You May Know</h3><span class="small">Suggested KOJA members</span></div><div class="people-grid">{% for p in suggestions %}<div class="person-card"><div class="avatar">{{ (p.get('full_name') or p.get('name') or p.get('username') or p.get('email') or 'K')[:1]|upper }}</div><strong>{{ p.get('full_name') or p.get('name') or p.get('username') or p.get('email') }}</strong><div class="small">{{ p.get('role') or 'KOJA member' }}</div><div class="person-actions"><a class="btn secondary" href="{{ url_for('connect_profile',user_id=p.id) }}">View Profile</a><form method="post"><input type="hidden" name="user_id" value="{{ p.id }}"><button class="btn" type="submit">Connect</button></form></div></div>{% endfor %}</div></div>{% endif %}
+{% if accepted %}<div class="card" style="margin-top:16px"><div class="section-head"><h3 style="margin:0">My Connections</h3><a class="btn secondary" href="{{ url_for('connect') }}">Open Connect+</a></div><div class="people-grid">{% for p in accepted %}<div class="person-card"><div class="avatar">{{ (p.get('full_name') or p.get('name') or p.get('email') or 'K')[:1]|upper }}</div><strong>{{ p.get('full_name') or p.get('name') or p.get('email') }}</strong><div class="small">{{ p.get('role') or 'KOJA member' }}</div><div class="person-actions"><a class="btn" href="{{ url_for('connect_new',user_id=p.id) }}">Message</a><a class="btn secondary" href="{{ url_for('connect_profile',user_id=p.id) }}">Profile</a></div></div>{% endfor %}</div></div>{% endif %}
+<div class="card" style="margin-top:16px"><div class="section-head"><h3 style="margin:0">Incoming Requests</h3><span class="small">{{ incoming|length }} pending</span></div>{% for r in incoming %}<div class="request-row"><div><strong>{{ _profile_name(r.requester_id) }}</strong><div class="small">wants to connect with you on KOJA</div></div><div class="person-actions"><a class="btn secondary" href="{{ url_for('connect_profile',user_id=r.requester_id) }}">View Profile</a><form method="post" action="{{ url_for('connect_accept',contact_id=r.id) }}"><button class="btn" type="submit">Accept</button></form></div></div>{% else %}<p>No pending requests.</p>{% endfor %}</div>
 <script>
-(function(){
-  const matches=document.getElementById('contactMatches');
-  const contactBtn=document.getElementById('kojaContactsBtn');
-  const fbBtn=document.getElementById('kojaFacebookBtn');
-  const inviteBtn=document.getElementById('kojaInviteBtn');
-  const inviteUrl={{ request.url_root|tojson }};
-  const inviteText='Join me on KOJA AFRICA — Knowledge, Questions, Answers: '+inviteUrl;
-  function showMatches(items,message){
-    matches.style.display='block';
-    if(!items.length){matches.innerHTML='<strong>No KOJA matches found.</strong><p class="small">'+(message||'No matching KOJA users were found in the selected contacts.')+'</p>';return;}
-    matches.innerHTML='<h3>KOJA people from your contacts</h3>'+items.map(function(p){return '<div class="koja-match"><strong>'+String(p.name||'KOJA User').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})+'</strong><form method="post" action="{{ url_for('connect_people') }}"><input type="hidden" name="user_id" value="'+p.id+'"><button>Connect</button></form></div>';}).join('');
-  }
-  async function matchPhones(phones){
-    matches.style.display='block';matches.innerHTML='<p>Checking your contacts securely…</p>';
-    try{
-      const r=await fetch('{{ url_for('connect_people_contacts') }}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phones:phones})});
-      const data=await r.json();
-      if(!r.ok) throw new Error(data.error||'Contact search failed.');
-      showMatches(data.matches||[],data.message);
-    }catch(e){matches.innerHTML='<strong>Could not check contacts.</strong><p class="small">'+String(e.message||e)+'</p>';matches.style.display='block';}
-  }
-  contactBtn.addEventListener('click',async function(){
-    if(navigator.contacts&&navigator.contacts.select){
-      try{const contacts=await navigator.contacts.select(['name','tel'],{multiple:true});let phones=[];contacts.forEach(function(c){(c.tel||[]).forEach(function(t){if(t)phones.push(t);});});await matchPhones(phones);return;}catch(e){if(e&&e.name==='AbortError')return;}
-    }
-    const pasted=window.prompt('Contact picker is not supported here. Paste phone numbers separated by commas or new lines:');
-    if(pasted) await matchPhones(pasted.split(/[\s,;]+/));
-  });
-  fbBtn.addEventListener('click',function(){
-    const share='https://www.facebook.com/sharer/sharer.php?u='+encodeURIComponent(inviteUrl)+'&quote='+encodeURIComponent('Join me on KOJA AFRICA — Knowledge, Questions, Answers.');
-    window.open(share,'_blank','noopener,noreferrer,width=700,height=600');
-  });
-  inviteBtn.addEventListener('click',async function(){
-    if(navigator.share){try{await navigator.share({title:'KOJA AFRICA',text:'Join me on KOJA AFRICA — Knowledge, Questions, Answers.',url:inviteUrl});return;}catch(e){if(e&&e.name==='AbortError')return;}}
-    const chooser=window.confirm('Share through WhatsApp? Press Cancel for SMS.');
-    if(chooser) window.open('https://wa.me/?text='+encodeURIComponent(inviteText),'_blank');
-    else window.location.href='sms:?body='+encodeURIComponent(inviteText);
-  });
-})();
-</script>''',people=people,q=q,incoming=incoming,_profile_name=_profile_name)
+function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function initials(n){return esc((n||'K').trim().charAt(0).toUpperCase());}
+function card(p){let n=p.full_name||p.name||p.username||p.email||'KOJA User';return '<div class="person-card"><div class="avatar">'+initials(n)+'</div><strong>'+esc(n)+'</strong><div class="small">'+esc(p.role||'KOJA member')+'</div><div class="person-actions"><a class="btn secondary" href="/connect/profile/'+encodeURIComponent(p.id)+'">View Profile</a><form method="post" action="/connect/people"><input type="hidden" name="user_id" value="'+esc(p.id)+'"><button class="btn">Connect</button></form></div></div>';}
+async function findFromContacts(){let box=document.getElementById('contactResults'),grid=document.getElementById('contactMatchGrid');box.style.display='block';grid.innerHTML='<p>Opening your device contacts…</p>';try{if(!('contacts'in navigator&&'ContactsManager'in window)){grid.innerHTML='<p>Your browser or WebView does not provide the Contacts Picker. Use Search KOJA or Invite Friends instead.</p>';return;}let props=['name','tel'];let opts={multiple:true};let contacts=await navigator.contacts.select(props,opts);let phones=[];for(let c of contacts){for(let t of (c.tel||[])){let v=String(t||'').replace(/[^0-9+]/g,'');if(v)phones.push(v);}}phones=[...new Set(phones)];if(!phones.length){grid.innerHTML='<p>No phone numbers were selected.</p>';return;}let r=await fetch('/api/connect/contact-matches',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phones})});let d=await r.json();if(!r.ok){grid.innerHTML='<p>Could not check contacts right now.</p>';return;}grid.innerHTML=d.matches?.length?d.matches.map(card).join(''):'<p>No selected contacts are currently registered on KOJA.</p>';}catch(e){grid.innerHTML='<p>Contact access was cancelled or is not available on this device.</p>';}}
+async function inviteKOJA(){let url=location.origin+'/register';let text='Join me on KOJA AFRICA — Knowledge, Questions & Answers.';if(navigator.share){try{await navigator.share({title:'KOJA AFRICA',text,url});return;}catch(e){}}let wa='https://wa.me/?text='+encodeURIComponent(text+' '+url);window.open(wa,'_blank','noopener');}
+function inviteFacebook(){let url=location.origin+'/register';window.open('https://www.facebook.com/sharer/sharer.php?u='+encodeURIComponent(url),'_blank','noopener');}
+</script>''',people=people,q=q,incoming=incoming,accepted=accepted,suggestions=suggestions,_profile_name=_profile_name)
+
+@app.route('/api/connect/contact-matches',methods=['POST'])
+@login_required
+def connect_contact_matches():
+    data=request.get_json(silent=True) or {}; phones=data.get('phones') or []
+    if not isinstance(phones,list): return jsonify(error='phones must be a list'),400
+    def norm(v): return ''.join(ch for ch in str(v or '') if ch.isdigit())
+    wanted={norm(x) for x in phones if norm(x)}
+    if not wanted: return jsonify(matches=[])
+    uid=str(current_user()['id']); matches=[]
+    for p in db_select('profiles',limit=500):
+        if str(p.get('id'))==uid: continue
+        values=[p.get('phone'),p.get('mobile'),p.get('mobile_phone'),p.get('mobile_money_phone')]
+        nums={norm(x) for x in values if norm(x)}
+        if wanted & nums:
+            matches.append(p)
+    return jsonify(matches=matches[:100])
+
+@app.route('/connect/profile/<user_id>')
+@login_required
+def connect_profile(user_id):
+    me=str(current_user()['id']); profile=find_user_by_id(user_id)
+    if not profile: abort(404)
+    is_me=str(user_id)==me
+    connection=first_row('koja_contacts',{'requester_id':me,'addressee_id':user_id}) or first_row('koja_contacts',{'requester_id':user_id,'addressee_id':me})
+    status=(connection or {}).get('status')
+    name=first_nonempty(profile.get('full_name'),profile.get('name'),profile.get('username'),profile.get('email'),'KOJA User')
+    return render_page('KOJA Personal Profile',r'''<style>
+.profile-hero{padding:28px;border:1px solid var(--border);border-radius:26px;background:linear-gradient(135deg,rgba(16,77,150,.22),rgba(255,255,255,.02));display:flex;gap:22px;align-items:center}.profile-avatar{width:96px;height:96px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,#0b4ea2,#1769d1);color:#fff;font-size:38px;font-weight:800;flex:0 0 auto}.profile-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.profile-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.profile-item{padding:18px;border:1px solid var(--border);border-radius:18px;background:var(--card)}.profile-item .small{margin-bottom:5px}@media(max-width:700px){.profile-hero{align-items:flex-start;flex-direction:column}.profile-grid{grid-template-columns:1fr}}
+</style>
+<div class="profile-hero"><div class="profile-avatar">{{ name[:1]|upper }}</div><div><div class="small">KOJA PERSONAL PROFILE</div><h2 style="margin:.2rem 0">{{ name }}</h2>{% if profile.username %}<div class="small">@{{ profile.username }}</div>{% endif %}<p>{{ profile.bio or profile.about or 'KOJA community member.' }}</p><div class="profile-actions">{% if is_me %}<a class="btn" href="{{ url_for('settings') }}">Account Settings</a>{% else %}{% if status == 'accepted' %}<a class="btn" href="{{ url_for('connect_new',user_id=user_id) }}">Message</a><a class="btn secondary" href="{{ url_for('connect_call',user_id=user_id,mode='voice') }}">Voice Call</a><a class="btn secondary" href="{{ url_for('connect_call',user_id=user_id,mode='video') }}">Video Call</a>{% elif status == 'pending' %}<span class="btn secondary">Connection Pending</span>{% else %}<form method="post" action="{{ url_for('connect_people') }}"><input type="hidden" name="user_id" value="{{ user_id }}"><button class="btn">Connect</button></form>{% endif %}<button class="btn secondary" type="button" onclick="shareProfile()">Share Profile</button>{% endif %}</div></div></div>
+<div class="profile-grid" style="margin-top:16px"><div class="profile-item"><div class="small">Role</div><strong>{{ profile.role or 'KOJA member' }}</strong></div><div class="profile-item"><div class="small">Location</div><strong>{{ profile.location or profile.city or profile.country or 'Not provided' }}</strong></div><div class="profile-item"><div class="small">Education</div><strong>{{ profile.education or profile.university or 'Not provided' }}</strong></div><div class="profile-item"><div class="small">Profession</div><strong>{{ profile.profession or profile.occupation or profile.job_title or 'Not provided' }}</strong></div></div>
+<div class="card" style="margin-top:16px"><h3>Communication</h3><p>Use this profile as the starting point for KOJA communication. Connections can message, share files, send voice messages, and use voice or video calls through Connect+.</p><a class="btn" href="{{ url_for('connect') }}">Open Connect+</a></div>
+<script>async function shareProfile(){let url=location.href,text='Connect with {{ name|e }} on KOJA AFRICA.';if(navigator.share){try{await navigator.share({title:'KOJA AFRICA profile',text,url});return;}catch(e){}}try{await navigator.clipboard.writeText(url);alert('Profile link copied.');}catch(e){prompt('Copy this profile link:',url);}}</script>''',profile=profile,name=name,is_me=is_me,status=status,user_id=user_id)
 
 @app.route('/connect/accept/<contact_id>',methods=['POST'])
 @login_required
