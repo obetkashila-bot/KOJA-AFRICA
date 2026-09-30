@@ -16,7 +16,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from functools import wraps
-from urllib.parse import quote, unquote, urlencode
+from urllib.parse import quote, unquote
 
 import requests
 from dotenv import load_dotenv
@@ -992,7 +992,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90
 {% endwith %}
 {{ body|safe }}
 </div>
-<footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services</footer>
+<footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services<br><a href="{{ url_for('privacy_policy') }}">Privacy Policy</a> · <a href="{{ url_for('data_deletion') }}">Data Deletion</a></footer>
 <!-- KOJA Connect incoming-call receiver: polls only while authenticated. -->
 {% if user and not request.path.startswith('/api/') and not request.path.startswith('/connect/call') and not request.path.startswith('/connect/answer') %}
 <div id="kojaIncomingCall" style="display:none;position:fixed;left:12px;right:12px;bottom:16px;z-index:99999;max-width:520px;margin:auto;background:var(--card,#fff);border:2px solid var(--accent,#1d4ed8);border-radius:18px;padding:16px;box-shadow:0 18px 50px rgba(0,0,0,.28)">
@@ -1145,6 +1145,101 @@ def settings():
 localStorage.setItem('koja_theme', {{ prefs.theme|tojson }}); document.documentElement.dataset.kojaTheme={{ prefs.theme|tojson }};
 async function activateEngine(engine,button){const box=document.getElementById('engineStatus'); const old=button.textContent; button.disabled=true; button.textContent='Connecting…'; box.style.display='block'; box.textContent='Connecting '+engine.replace('_',' ')+'…'; try{const r=await fetch('{{ url_for("koja_engine_access") }}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({engine})}); const d=await r.json(); if(!r.ok||!d.ok){box.textContent=d.error||'Engine connection failed.';return;} box.textContent=d.engine+' connected. Services: '+(d.attached_services||[]).join(', ')+'.'; button.textContent='Connected';}catch(e){box.textContent='Network error. Please try again.';}finally{if(button.textContent!=='Connected')button.textContent=old;button.disabled=false;}}
 </script>''', prefs=prefs)
+
+# ============================================================
+# PUBLIC LEGAL / PRIVACY PAGES
+# ============================================================
+
+@app.route("/privacy")
+def privacy_policy():
+    return render_page("Privacy Policy", r"""
+<div class="hero">
+  <h1>KOJA AFRICA Privacy Policy</h1>
+  <p><strong>Effective date:</strong> 30 September 2026</p>
+  <p>This Privacy Policy explains how KOJA AFRICA collects, uses, stores and protects information when you use the KOJA AFRICA platform and its services.</p>
+</div>
+
+<div class="card legal-content">
+  <h2>1. About KOJA AFRICA</h2>
+  <p>KOJA AFRICA is a digital platform providing knowledge, questions and answers together with services that may include academic resources, documents, research, communication, media, professional services, marketplace features, delivery services and AI-assisted features.</p>
+
+  <h2>2. Information we collect</h2>
+  <p>Depending on the services you use, KOJA AFRICA may process:</p>
+  <ul>
+    <li><strong>Account information:</strong> name, email address, phone number, password credentials and account/role information.</li>
+    <li><strong>Content you provide:</strong> questions, answers, documents, images, messages, profile information, listings and other material you choose to upload or submit.</li>
+    <li><strong>Communication information:</strong> information needed to provide messaging, groups, voice/video calling, contacts and related communication features.</li>
+    <li><strong>Location information:</strong> location or GPS information when you explicitly use a feature that requires it, such as driver or delivery tracking.</li>
+    <li><strong>Technical information:</strong> IP address, browser/device information, timestamps, session information, security logs and basic usage information needed to operate and protect the service.</li>
+    <li><strong>Payment and transaction information:</strong> information necessary to process or record transactions when you use payment, marketplace or business features. Payment credentials may be handled by the applicable payment provider rather than stored directly by KOJA AFRICA.</li>
+  </ul>
+
+  <h2>3. How we use information</h2>
+  <p>We use information to provide and secure KOJA AFRICA services, authenticate accounts, store and display user content, process requests and transactions, provide communication and delivery features, operate document and research tools, provide AI-assisted features, prevent abuse and fraud, troubleshoot technical problems, maintain records and improve the platform.</p>
+
+  <h2>4. AI-assisted features</h2>
+  <p>Some KOJA AFRICA features use AI services to help answer questions, analyse documents, generate notes or provide other requested assistance. Content may be processed by the AI service required for that feature. KOJA AFRICA does not represent AI-generated information as a substitute for professional advice where professional advice is required.</p>
+
+  <h2>5. Service providers</h2>
+  <p>KOJA AFRICA may use infrastructure and service providers to operate the platform, including hosting, database/storage, email, AI, communications, analytics, security and payment providers. Information is shared with a provider only as reasonably necessary to provide the relevant service, protect the platform or comply with applicable legal obligations.</p>
+
+  <h2>6. Facebook and Meta features</h2>
+  <p>If you choose to connect KOJA AFRICA with Facebook or another Meta service, KOJA AFRICA may receive information that Meta makes available through the permissions and authorization you grant. We use that information only for the connected feature and the purposes described in this Policy. You can manage or revoke permissions through the applicable Meta account settings, subject to the operation of the service.</p>
+
+  <h2>7. Documents and user content</h2>
+  <p>Documents and other content you submit may be stored so that KOJA AFRICA can provide the requested service. Access controls are applied to protected content. You should not upload confidential or sensitive information unless you are comfortable with the processing required to provide the feature.</p>
+
+  <h2>8. Location and live tracking</h2>
+  <p>Location is used only when a feature requires it and you choose to use that feature. For example, delivery and driver functionality may use location information to support matching, navigation or live tracking. You can stop location sharing by stopping the relevant feature and, where applicable, disabling the device permission.</p>
+
+  <h2>9. Cookies and sessions</h2>
+  <p>KOJA AFRICA may use browser storage, cookies and server sessions to keep you signed in, remember settings, protect forms and maintain essential platform functionality. These technologies are primarily used to operate the service and maintain security.</p>
+
+  <h2>10. Sharing and disclosure</h2>
+  <p>We do not treat your private account information as public merely because you have an account. Information may be visible to other users when you intentionally publish a profile, listing, document, post or other public content. Information may also be disclosed to service providers, authorised personnel, or authorities where required to provide the service, protect rights and safety, prevent abuse, or comply with applicable law.</p>
+
+  <h2>11. Data retention</h2>
+  <p>We retain information for as long as reasonably necessary to provide the requested services, maintain security and records, resolve disputes, enforce agreements, or satisfy legal and operational requirements. Retention periods can differ depending on the type of information and the service used.</p>
+
+  <h2>12. Your choices and requests</h2>
+  <p>Depending on your account and applicable law, you may request access to, correction of, or deletion of personal information. You may also stop using optional features or withdraw permissions where the feature allows it. Some information may need to be retained where required for security, legal, fraud-prevention or transaction-record purposes.</p>
+
+  <h2>13. Account and data deletion</h2>
+  <p>For information about requesting deletion of information associated with a KOJA AFRICA account or a Meta/Facebook connection, visit the <a href="{{ url_for('data_deletion') }}">KOJA AFRICA Data Deletion</a> page.</p>
+
+  <h2>14. Security</h2>
+  <p>KOJA AFRICA uses reasonable technical and organisational measures intended to protect information against unauthorised access, alteration, disclosure and destruction. No internet-based service can guarantee absolute security.</p>
+
+  <h2>15. Changes to this Policy</h2>
+  <p>This Policy may be updated when KOJA AFRICA adds or changes services, technology or legal requirements. The effective date at the top of this page identifies the current version.</p>
+
+  <h2>16. Contact</h2>
+  <p>For privacy questions or requests, use the KOJA AFRICA support/contact channel available on the platform. If a server contact email has been configured, it is: <strong>{{ privacy_contact }}</strong></p>
+
+  <div class="actions" style="margin-top:18px">
+    <a class="btn secondary" href="{{ url_for('home') }}">Back to KOJA AFRICA</a>
+    <a class="btn secondary" href="{{ url_for('data_deletion') }}">Data Deletion</a>
+  </div>
+</div>
+""", privacy_contact=(os.getenv("CONTACT_EMAIL", "").strip() or "the KOJA AFRICA support channel"))
+
+@app.route("/data-deletion")
+def data_deletion():
+    return render_page("Data Deletion", r"""
+<div class="hero">
+  <h1>KOJA AFRICA Data Deletion</h1>
+  <p>Instructions for requesting deletion of your KOJA AFRICA account information and data associated with connected services.</p>
+</div>
+<div class="card legal-content">
+  <h2>Request deletion</h2>
+  <p>To request deletion, contact KOJA AFRICA through the support/contact channel available on the platform and include the email address or account identifier associated with your KOJA AFRICA account. Do not send your password.</p>
+  <p>We will use the request to identify the relevant account and process deletion or explain any information that must be retained for security, legal, fraud-prevention or transaction-record purposes.</p>
+  <h2>Facebook / Meta data</h2>
+  <p>If you connected KOJA AFRICA to Facebook, your request can also identify that connection. KOJA AFRICA will process the deletion request for data held by KOJA AFRICA that was received through the connected feature, subject to applicable retention requirements.</p>
+  <p><strong>Current deletion page:</strong> <a href="{{ url_for('data_deletion', _external=True) }}">{{ url_for('data_deletion', _external=True) }}</a></p>
+  <p><strong>Privacy Policy:</strong> <a href="{{ url_for('privacy_policy', _external=True) }}">{{ url_for('privacy_policy', _external=True) }}</a></p>
+</div>
+""")
 
 # ============================================================
 # HOME / HEALTH
@@ -6968,68 +7063,6 @@ def connect():
         c['_other_name']=_profile_name(other['user_id']) if other else (c.get('name') or 'Group'); last=db_select('koja_messages',filters={'conversation_id':c['id']},order='created_at.desc',limit=1); c['_last']=(last[0].get('body') or last[0].get('message_type','')) if last else 'No messages yet'; conversations.append(c)
     return render_page('KOJA Connect',r'''<div class="hero"><h2> KOJA Connect</h2><p>Chat, voice messages, voice calls, video calls, photos, files, groups and status updates with other KOJA users.</p></div><div class="grid"><div class="card"><h3> Find People</h3><p>Search KOJA users and start a conversation.</p><a class="btn" href="{{ url_for('connect_people') }}">Find People</a></div><div class="card"><h3> Status</h3><p>Share a 24-hour status.</p><a class="btn" href="{{ url_for('connect_status') }}">My Status</a></div><div class="card"><h3> Calls</h3><p>Voice and video calls separate from Professional Services.</p><a class="btn" href="{{ url_for('connect_calls') }}">Call History</a></div></div><div class="card"><div class="actions"><h3 style="margin-right:auto">Recent Chats</h3><a class="btn" href="{{ url_for('connect_group_new') }}"> New Group</a></div>{% for c in conversations %}<a class="card" style="display:block;text-decoration:none;color:inherit" href="{{ url_for('connect_chat',conversation_id=c.id) }}"><strong>{{ c._other_name }}</strong><div class="small">{{ c._last }}</div></a>{% else %}<p>No chats yet. Find a KOJA user to start.</p>{% endfor %}</div>''',conversations=conversations)
 
-@app.route('/connect/contacts', methods=['GET'])
-@login_required
-def connect_contacts():
-    return redirect(url_for('connect_people', contacts='1'))
-
-@app.route('/api/connect/contacts/import', methods=['POST'])
-@login_required
-def connect_contacts_import():
-    uid=current_user()['id']; data=request.get_json(silent=True) or {}
-    contacts=data.get('contacts') if isinstance(data.get('contacts'),list) else []
-    matches=[]
-    for c in contacts[:500]:
-        if not isinstance(c,dict): continue
-        phones=c.get('phones') if isinstance(c.get('phones'),list) else []
-        emails=c.get('emails') if isinstance(c.get('emails'),list) else []
-        for value in phones+emails:
-            if isinstance(value,dict): value=value.get('value') or value.get('number') or value.get('email') or ''
-            value=clean(value)
-            if not value: continue
-            rows=db_select('profiles',filters={'email':value.lower()},limit=5) if '@' in value else db_select('profiles',filters={'phone':value},limit=5)
-            for row in rows:
-                if str(row.get('id'))==str(uid): continue
-                if not any(str(x.get('id'))==str(row.get('id')) for x in matches):
-                    matches.append({'id':row.get('id'),'name':row.get('full_name') or row.get('name') or row.get('email'),'email':row.get('email') or '', 'phone':row.get('phone') or '', 'source':'phone'})
-    return jsonify(matches=matches, imported=len(matches), message=f'Found {len(matches)} KOJA contact(s).')
-
-@app.route('/connect/facebook/start')
-@login_required
-def connect_facebook_start():
-    app_id=clean(os.getenv('META_APP_ID') or os.getenv('FACEBOOK_APP_ID'))
-    if not app_id:
-        flash('Facebook contact import needs META_APP_ID/FACEBOOK_APP_ID configured in Render first.','warning')
-        return redirect(url_for('connect_people', contacts='1'))
-    state=secrets.token_urlsafe(32); session['koja_facebook_state']=state
-    redirect_uri=url_for('connect_facebook_callback', _external=True)
-    auth='https://www.facebook.com/v23.0/dialog/oauth?'+urlencode({'client_id':app_id,'redirect_uri':redirect_uri,'state':state,'scope':'public_profile,email'})
-    return redirect(auth)
-
-@app.route('/connect/facebook/callback')
-@login_required
-def connect_facebook_callback():
-    if clean(request.args.get('state')) != session.pop('koja_facebook_state',None): abort(400)
-    code=clean(request.args.get('code'))
-    if not code: flash('Facebook connection was cancelled or failed.','warning'); return redirect(url_for('connect_people',contacts='1'))
-    app_id=clean(os.getenv('META_APP_ID') or os.getenv('FACEBOOK_APP_ID')); app_secret=os.getenv('META_APP_SECRET') or os.getenv('FACEBOOK_APP_SECRET')
-    if not app_id or not app_secret: flash('Facebook integration is not configured.','warning'); return redirect(url_for('connect_people',contacts='1'))
-    redirect_uri=url_for('connect_facebook_callback', _external=True)
-    try:
-        tok=requests.get('https://graph.facebook.com/v23.0/oauth/access_token',params={'client_id':app_id,'client_secret':app_secret,'redirect_uri':redirect_uri,'code':code},timeout=20); tok.raise_for_status(); access=tok.json().get('access_token')
-        if not access: raise RuntimeError('No Facebook access token')
-        friends=requests.get('https://graph.facebook.com/v23.0/me/friends',params={'fields':'id,name','access_token':access,'limit':500},timeout=20).json().get('data',[])
-        uid=current_user()['id']
-        for f in friends:
-            fid=str(f.get('id') or '')
-            if not fid: continue
-            existing=first_row('koja_external_contacts',{'user_id':uid,'provider':'facebook','external_id':fid})
-            if not existing: db_insert('koja_external_contacts',{'id':str(uuid.uuid4()),'user_id':uid,'provider':'facebook','external_id':fid,'display_name':clean(f.get('name')),'created_at':utc_now(),'updated_at':utc_now()})
-        flash(f'Facebook connected. {len(friends)} Facebook contact(s) available to KOJA.','success')
-    except Exception:
-        logger.exception('Facebook contact import failed'); flash('Facebook contact import could not be completed. Check the Meta app settings and permissions.','danger')
-    return redirect(url_for('connect_people',contacts='1'))
-
 @app.route('/connect/people',methods=['GET','POST'])
 @login_required
 def connect_people():
@@ -7046,7 +7079,7 @@ def connect_people():
             for x in db_select('profiles',filters={col:f'ilike.*{q}*'},limit=30):
                 if str(x.get('id'))!=str(uid) and not any(str(p.get('id'))==str(x.get('id')) for p in people): people.append(x)
     incoming=db_select('koja_contacts',filters={'addressee_id':uid,'status':'pending'},limit=50)
-    return render_page('KOJA People',r'''<div class="card"><h2>Find KOJA People</h2><form><input name="q" value="{{ q }}" placeholder="Search name, email or phone"><button>Search</button></form></div><div class="card"><h3>+ Add Contacts</h3><p class="small">Import contacts from your phone, connect Facebook, or search KOJA directly.</p><div class="actions"><button class="btn" type="button" id="phoneContacts">Phone Contacts</button><a class="btn secondary" href="{{ url_for('connect_facebook_start') }}">Connect Facebook</a></div><div id="contactResult" class="small" style="margin-top:10px"></div></div><div class="grid">{% for p in people %}<div class="card"><h3>{{ p.get('full_name') or p.get('name') or p.get('email') }}</h3><p>{{ p.get('email') or '' }}</p><form method="post"><input type="hidden" name="user_id" value="{{ p.id }}"><button> Connect</button></form><a class="btn secondary" href="{{ url_for('connect_new',user_id=p.id) }}">Message</a></div>{% endfor %}</div><div class="card"><h3>Incoming Requests</h3>{% for r in incoming %}<div class="card"><strong>{{ _profile_name(r.requester_id) }}</strong><form method="post" action="{{ url_for('connect_accept',contact_id=r.id) }}"><button>Accept</button></form></div>{% else %}<p>No pending requests.</p>{% endfor %}</div><script>const phoneBtn=document.getElementById('phoneContacts'),contactResult=document.getElementById('contactResult');if(phoneBtn){phoneBtn.onclick=async()=>{contactResult.textContent='Requesting contact permission…';try{if(!('contacts' in navigator)||!navigator.contacts.select){contactResult.textContent='Phone contact import is not supported by this browser. Use KOJA Search instead.';return;}const rows=await navigator.contacts.select(['name','tel','email'],{multiple:true});const contacts=rows.map(x=>({name:(x.name||[]).join(' '),phones:x.tel||[],emails:x.email||[]}));const r=await fetch('/api/connect/contacts/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contacts})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Import failed');contactResult.textContent=d.message||'Contacts checked.';if(d.matches&&d.matches.length){contactResult.innerHTML=d.matches.map(p=>'<div class=\"card\" style=\"margin-top:8px\"><strong>'+String(p.name||'KOJA user').replace(/[&<>]/g,'')+'</strong><div class=\"small\">'+String(p.email||p.phone||'KOJA user').replace(/[&<>]/g,'')+'</div><form method=\"post\" action=\"{{ url_for('connect_people') }}\"><input type=\"hidden\" name=\"user_id\" value=\"'+String(p.id).replace(/[^a-zA-Z0-9-]/g,'')+'\"><button class=\"btn\" type=\"submit\">Connect</button></form></div>').join('');}}catch(e){contactResult.textContent=e.message||'Contact import failed.';}};}</script>''',people=people,q=q,incoming=incoming,_profile_name=_profile_name)
+    return render_page('KOJA People',r'''<div class="card"><h2>Find KOJA People</h2><form><input name="q" value="{{ q }}" placeholder="Search name or email"><button>Search</button></form></div><div class="grid">{% for p in people %}<div class="card"><h3>{{ p.get('full_name') or p.get('name') or p.get('email') }}</h3><p>{{ p.get('email') or '' }}</p><form method="post"><input type="hidden" name="user_id" value="{{ p.id }}"><button> Connect</button></form><a class="btn secondary" href="{{ url_for('connect_new',user_id=p.id) }}">Message</a></div>{% endfor %}</div><div class="card"><h3>Incoming Requests</h3>{% for r in incoming %}<div class="card"><strong>{{ _profile_name(r.requester_id) }}</strong><form method="post" action="{{ url_for('connect_accept',contact_id=r.id) }}"><button>Accept</button></form></div>{% else %}<p>No pending requests.</p>{% endfor %}</div>''',people=people,q=q,incoming=incoming,_profile_name=_profile_name)
 
 @app.route('/connect/accept/<contact_id>',methods=['POST'])
 @login_required
