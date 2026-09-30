@@ -1,40 +1,78 @@
-KOJA AFRICA — Terms + Google/Facebook/GitHub Login Update
+KOJA AFRICA - Terms + Google/Facebook/GitHub Login
+===================================================
 
-This update preserves the existing KOJA email/password login and adds Supabase Auth social sign-in buttons for Google, Facebook and GitHub.
+This package uses the supplied KOJA AFRICA app.py as the baseline. Existing
+email/password authentication remains in place. The package includes:
 
-IMPORTANT: OAuth providers must be enabled/configured in the Supabase Dashboard. The Flask app does not contain provider client secrets.
+- /terms
+- /privacy
+- /data-deletion
+- Google OAuth
+- Facebook OAuth
+- GitHub OAuth
+- Supabase PKCE OAuth callback
+- Existing KOJA profile creation/linking
 
-1. Deploy app.py to the existing KOJA AFRICA Render service.
+DEPLOYMENT
+----------
+Use the normal KOJA AFRICA Render deployment command:
+    gunicorn app:app
 
-2. Render environment variables:
-   SUPABASE_URL=your existing Supabase project URL
-   SUPABASE_PUBLISHABLE_KEY=your Supabase publishable/anon key
-   (The current app already uses these when configured.)
+SUPABASE ENVIRONMENT VARIABLES
+------------------------------
+Set these on Render (server environment):
+    SUPABASE_URL=https://YOUR_PROJECT.supabase.co
+    SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_KEY
+    SUPABASE_PUBLISHABLE_KEY=YOUR_SUPABASE_PUBLISHABLE_KEY   (if used by your project)
+    SUPABASE_SERVICE_KEY=YOUR_SERVICE_ROLE_KEY
+    SECRET_KEY=YOUR_LONG_RANDOM_SECRET
 
-3. In Supabase Authentication > Providers, enable Google, Facebook and GitHub and enter each provider's client ID/secret.
+Do not put OAuth provider client secrets in app.py. Google/Facebook/GitHub
+client credentials belong in Supabase Authentication -> Providers.
 
-4. In Supabase Authentication > URL Configuration, set the production Site URL to:
-   https://koja-africa.onrender.com
+SUPABASE AUTH PROVIDERS
+-----------------------
+Enable:
+    Authentication -> Providers -> Google
+    Authentication -> Providers -> Facebook
+    Authentication -> Providers -> GitHub
 
-   Add this exact redirect URL:
-   https://koja-africa.onrender.com/auth/callback
+SUPABASE REDIRECT URL
+---------------------
+Add this exact URL to Supabase Authentication -> URL Configuration -> Redirect URLs:
+    https://koja-africa.onrender.com/auth/callback
 
-   Supabase requires redirect URLs to be explicitly allowed. See the official Supabase redirect URL documentation.
+The callback URL is also generated dynamically from the deployed application,
+so a different production hostname will use that hostname's /auth/callback.
 
-5. For each provider, use the callback URL shown by Supabase under the provider settings. Do not invent a different callback URL. GitHub, for example, uses the Supabase Auth callback URL shown in Authentication > Providers.
+PROVIDER SETUP
+--------------
+Google:
+- Create/configure the Google OAuth application.
+- Put the Google Client ID and Client Secret in Supabase's Google provider settings.
 
-6. Public legal pages added:
-   https://koja-africa.onrender.com/privacy
-   https://koja-africa.onrender.com/data-deletion
-   https://koja-africa.onrender.com/terms
+Facebook:
+- Create/configure the Meta/Facebook application.
+- Configure the OAuth redirect/callback URL shown by Supabase for the Facebook provider.
+- Put the Facebook App ID and App Secret in Supabase, not in Flask.
+- Configure the Meta app's privacy policy and data deletion URLs to point to:
+    https://koja-africa.onrender.com/privacy
+    https://koja-africa.onrender.com/data-deletion
 
-7. Facebook/Meta:
-   The existing Meta app can be configured as the Facebook provider in Supabase. The Facebook provider's client ID/secret are entered in Supabase, not in the public Flask page.
+GitHub:
+- Create/configure the GitHub OAuth application.
+- Put the GitHub Client ID and Client Secret in Supabase's GitHub provider settings.
 
-8. Email/password login is preserved. Existing local KOJA profiles and the existing Supabase password compatibility path are unchanged.
+IMPORTANT
+---------
+The browser receives only the Supabase public/publishable key. Provider secrets
+are never embedded in app.py. Supabase performs provider authentication and the
+KOJA callback exchanges the authorization code using the Supabase JavaScript SDK
+with PKCE enabled.
 
-9. OAuth behavior:
-   Provider -> Supabase Auth -> /auth/callback -> browser exchanges PKCE code -> /auth/oauth/session -> Flask creates/loads the KOJA profile -> dashboard.
-
-10. Security:
-   Never put provider client secrets in HTML, JavaScript, GitHub, or the public app. Store them in Supabase's provider configuration/secret storage.
+PUBLIC PAGES
+------------
+Privacy:       https://koja-africa.onrender.com/privacy
+Terms:         https://koja-africa.onrender.com/terms
+Data deletion: https://koja-africa.onrender.com/data-deletion
+OAuth callback:https://koja-africa.onrender.com/auth/callback

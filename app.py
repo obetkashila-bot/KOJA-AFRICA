@@ -9022,7 +9022,7 @@ def oauth_start(provider):
 (async function(){
   const status=document.getElementById('oauthStatus');
   try{
-    const client=supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }});
+    const client=supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }},{auth:{flowType:'pkce',persistSession:true,autoRefreshToken:true}});
     const {error}=await client.auth.signInWithOAuth({
       provider:{{ provider|tojson }},
       options:{redirectTo:{{ callback_url|tojson }},queryParams:{prompt:'select_account'}}
@@ -9047,7 +9047,7 @@ def oauth_callback():
 (async function(){
   const status=document.getElementById('oauthStatus');
   try{
-    const client=supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }});
+    const client=supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }},{auth:{flowType:'pkce',persistSession:true,autoRefreshToken:true}});
     const code=new URLSearchParams(location.search).get('code');
     if(!code) throw new Error('No authorization code was returned.');
     const {data,error}=await client.auth.exchangeCodeForSession(code);
