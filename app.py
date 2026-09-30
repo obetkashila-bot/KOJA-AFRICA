@@ -6975,6 +6975,61 @@ def connect():
         c['_other_name']=_profile_name(other['user_id']) if other else (c.get('name') or 'Group'); last=db_select('koja_messages',filters={'conversation_id':c['id']},order='created_at.desc',limit=1); c['_last']=(last[0].get('body') or last[0].get('message_type','')) if last else 'No messages yet'; conversations.append(c)
     return render_page('KOJA Connect',r'''<div class="hero"><h2> KOJA Connect</h2><p>Chat, voice messages, voice calls, video calls, photos, files, groups and status updates with other KOJA users.</p></div><div class="grid"><div class="card"><h3> Find People</h3><p>Search KOJA users and start a conversation.</p><a class="btn" href="{{ url_for('connect_people') }}">Find People</a></div><div class="card"><h3> Status</h3><p>Share a 24-hour status.</p><a class="btn" href="{{ url_for('connect_status') }}">My Status</a></div><div class="card"><h3> Calls</h3><p>Voice and video calls separate from Professional Services.</p><a class="btn" href="{{ url_for('connect_calls') }}">Call History</a></div></div><div class="card"><div class="actions"><h3 style="margin-right:auto">Recent Chats</h3><a class="btn" href="{{ url_for('connect_group_new') }}"> New Group</a></div>{% for c in conversations %}<a class="card" style="display:block;text-decoration:none;color:inherit" href="{{ url_for('connect_chat',conversation_id=c.id) }}"><strong>{{ c._other_name }}</strong><div class="small">{{ c._last }}</div></a>{% else %}<p>No chats yet. Find a KOJA user to start.</p>{% endfor %}</div>''',conversations=conversations)
 
+def _normalize_contact_phone(value):
+    raw = clean(value)
+    if not raw:
+        return ''
+    digits = re.sub(r'\D+', '', raw)
+    if not digits:
+        return ''
+    # Normalize common Zambian formats to country-code form. Other countries
+    # are retained as digits so international KOJA users can still match.
+    if digits.startswith('00'):
+        digits = digits[2:]
+    if digits.startswith('260'):
+        return digits
+    if digits.startswith('0') and len(digits) == 10:
+        return '260' + digits[1:]
+    if len(digits) == 9 and digits[0] in '79':
+        return '260' + digits
+    return digits
+
+@app.post('/connect/people/contacts')
+@login_required
+def connect_people_contacts():
+    if _rate_limited('contact-match:' + str(current_user()['id']), 12, 60):
+        return jsonify({'ok': False, 'error': 'Too many contact searches. Please wait a moment.'}), 429
+    payload = request.get_json(silent=True) or {}
+    raw_numbers = payload.get('phones') if isinstance(payload, dict) else []
+    if not isinstance(raw_numbers, list):
+        return jsonify({'ok': False, 'error': 'Invalid contacts payload.'}), 400
+    phones = []
+    for item in raw_numbers[:300]:
+        value = item.get('tel') if isinstance(item, dict) else item
+        normalized = _normalize_contact_phone(value)
+        if normalized and normalized not in phones:
+            phones.append(normalized)
+    if not phones:
+        return jsonify({'ok': True, 'matches': [], 'message': 'No usable phone numbers were found.'})
+    # We only return people whose phone number matches a supplied contact.
+    # Contact numbers themselves are never returned to the browser.
+    profiles = db_select('profiles', select='id,full_name,name,email,phone', filters={'phone':'is.not.null'}, limit=5000)
+    uid = str(current_user()['id'])
+    wanted = set(phones)
+    matches = []
+    for profile in profiles:
+        if str(profile.get('id')) == uid:
+            continue
+        if _normalize_contact_phone(profile.get('phone')) not in wanted:
+            continue
+        matches.append({
+            'id': str(profile.get('id')),
+            'name': first_nonempty(profile.get('full_name'), profile.get('name'), profile.get('email'), 'KOJA User')
+        })
+        if len(matches) >= 100:
+            break
+    return jsonify({'ok': True, 'matches': matches, 'count': len(matches)})
+
 @app.route('/connect/people',methods=['GET','POST'])
 @login_required
 def connect_people():
@@ -6991,7 +7046,68 @@ def connect_people():
             for x in db_select('profiles',filters={col:f'ilike.*{q}*'},limit=30):
                 if str(x.get('id'))!=str(uid) and not any(str(p.get('id'))==str(x.get('id')) for p in people): people.append(x)
     incoming=db_select('koja_contacts',filters={'addressee_id':uid,'status':'pending'},limit=50)
-    return render_page('KOJA People',r'''<div class="card"><h2>Find KOJA People</h2><form><input name="q" value="{{ q }}" placeholder="Search name or email"><button>Search</button></form></div><div class="grid">{% for p in people %}<div class="card"><h3>{{ p.get('full_name') or p.get('name') or p.get('email') }}</h3><p>{{ p.get('email') or '' }}</p><form method="post"><input type="hidden" name="user_id" value="{{ p.id }}"><button> Connect</button></form><a class="btn secondary" href="{{ url_for('connect_new',user_id=p.id) }}">Message</a></div>{% endfor %}</div><div class="card"><h3>Incoming Requests</h3>{% for r in incoming %}<div class="card"><strong>{{ _profile_name(r.requester_id) }}</strong><form method="post" action="{{ url_for('connect_accept',contact_id=r.id) }}"><button>Accept</button></form></div>{% else %}<p>No pending requests.</p>{% endfor %}</div>''',people=people,q=q,incoming=incoming,_profile_name=_profile_name)
+    return render_page('KOJA People',r'''
+<style>
+.koja-find-tools{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:14px}
+.koja-find-tool{display:block;text-align:left;text-decoration:none;color:inherit;border:1px solid rgba(70,110,170,.25);border-radius:16px;padding:16px;background:linear-gradient(180deg,rgba(20,44,82,.08),rgba(20,44,82,.02));cursor:pointer}
+.koja-find-tool strong{display:block;font-size:1rem;margin-bottom:5px}.koja-find-tool span{display:block;font-size:.84rem;opacity:.75;line-height:1.45}
+#contactMatches{margin-top:14px}.koja-match{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid rgba(127,127,127,.15)}
+@media(max-width:700px){.koja-find-tools{grid-template-columns:1fr}}
+</style>
+<div class="card">
+  <h2>Find KOJA People</h2>
+  <p class="small">Connect with people you already know or search the KOJA community.</p>
+  <div class="koja-find-tools">
+    <button type="button" class="koja-find-tool" id="kojaContactsBtn"><strong>Add from Contacts</strong><span>Find KOJA users whose phone number matches your contacts.</span></button>
+    <button type="button" class="koja-find-tool" id="kojaFacebookBtn"><strong>Add from Facebook</strong><span>Find or invite friends through Facebook without importing private friend data.</span></button>
+    <button type="button" class="koja-find-tool" id="kojaInviteBtn"><strong>Invite Friends</strong><span>Share KOJA by WhatsApp, SMS, Facebook or your device share menu.</span></button>
+  </div>
+  <form style="margin-top:16px"><input name="q" value="{{ q }}" placeholder="Search name or email"><button>Search</button></form>
+  <div id="contactMatches" class="card" style="display:none"></div>
+</div>
+<div class="grid">{% for p in people %}<div class="card"><h3>{{ p.get('full_name') or p.get('name') or p.get('email') }}</h3><p>{{ p.get('email') or '' }}</p><form method="post"><input type="hidden" name="user_id" value="{{ p.id }}"><button>Connect</button></form><a class="btn secondary" href="{{ url_for('connect_new',user_id=p.id) }}">Message</a></div>{% endfor %}</div>
+<div class="card"><h3>Incoming Requests</h3>{% for r in incoming %}<div class="card"><strong>{{ _profile_name(r.requester_id) }}</strong><form method="post" action="{{ url_for('connect_accept',contact_id=r.id) }}"><button>Accept</button></form></div>{% else %}<p>No pending requests.</p>{% endfor %}</div>
+<script>
+(function(){
+  const matches=document.getElementById('contactMatches');
+  const contactBtn=document.getElementById('kojaContactsBtn');
+  const fbBtn=document.getElementById('kojaFacebookBtn');
+  const inviteBtn=document.getElementById('kojaInviteBtn');
+  const inviteUrl={{ request.url_root|tojson }};
+  const inviteText='Join me on KOJA AFRICA — Knowledge, Questions, Answers: '+inviteUrl;
+  function showMatches(items,message){
+    matches.style.display='block';
+    if(!items.length){matches.innerHTML='<strong>No KOJA matches found.</strong><p class="small">'+(message||'No matching KOJA users were found in the selected contacts.')+'</p>';return;}
+    matches.innerHTML='<h3>KOJA people from your contacts</h3>'+items.map(function(p){return '<div class="koja-match"><strong>'+String(p.name||'KOJA User').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})+'</strong><form method="post" action="{{ url_for('connect_people') }}"><input type="hidden" name="user_id" value="'+p.id+'"><button>Connect</button></form></div>';}).join('');
+  }
+  async function matchPhones(phones){
+    matches.style.display='block';matches.innerHTML='<p>Checking your contacts securely…</p>';
+    try{
+      const r=await fetch('{{ url_for('connect_people_contacts') }}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phones:phones})});
+      const data=await r.json();
+      if(!r.ok) throw new Error(data.error||'Contact search failed.');
+      showMatches(data.matches||[],data.message);
+    }catch(e){matches.innerHTML='<strong>Could not check contacts.</strong><p class="small">'+String(e.message||e)+'</p>';matches.style.display='block';}
+  }
+  contactBtn.addEventListener('click',async function(){
+    if(navigator.contacts&&navigator.contacts.select){
+      try{const contacts=await navigator.contacts.select(['name','tel'],{multiple:true});let phones=[];contacts.forEach(function(c){(c.tel||[]).forEach(function(t){if(t)phones.push(t);});});await matchPhones(phones);return;}catch(e){if(e&&e.name==='AbortError')return;}
+    }
+    const pasted=window.prompt('Contact picker is not supported here. Paste phone numbers separated by commas or new lines:');
+    if(pasted) await matchPhones(pasted.split(/[\s,;]+/));
+  });
+  fbBtn.addEventListener('click',function(){
+    const share='https://www.facebook.com/sharer/sharer.php?u='+encodeURIComponent(inviteUrl)+'&quote='+encodeURIComponent('Join me on KOJA AFRICA — Knowledge, Questions, Answers.');
+    window.open(share,'_blank','noopener,noreferrer,width=700,height=600');
+  });
+  inviteBtn.addEventListener('click',async function(){
+    if(navigator.share){try{await navigator.share({title:'KOJA AFRICA',text:'Join me on KOJA AFRICA — Knowledge, Questions, Answers.',url:inviteUrl});return;}catch(e){if(e&&e.name==='AbortError')return;}}
+    const chooser=window.confirm('Share through WhatsApp? Press Cancel for SMS.');
+    if(chooser) window.open('https://wa.me/?text='+encodeURIComponent(inviteText),'_blank');
+    else window.location.href='sms:?body='+encodeURIComponent(inviteText);
+  });
+})();
+</script>''',people=people,q=q,incoming=incoming,_profile_name=_profile_name)
 
 @app.route('/connect/accept/<contact_id>',methods=['POST'])
 @login_required
@@ -9022,7 +9138,7 @@ def oauth_start(provider):
 (async function(){
   const status=document.getElementById('oauthStatus');
   try{
-    const client=window.supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }},{auth:{flowType:'pkce',persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}});
+    const client=supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }});
     const {error}=await client.auth.signInWithOAuth({
       provider:{{ provider|tojson }},
       options:{redirectTo:{{ callback_url|tojson }},queryParams:{prompt:'select_account'}}
@@ -9046,29 +9162,21 @@ def oauth_callback():
 <script>
 (async function(){
   const status=document.getElementById('oauthStatus');
-  const fail=(message)=>{
-    status.textContent='Sign-in failed: '+message;
-    const retry=document.createElement('a'); retry.className='btn'; retry.href={{ login_url|tojson }}; retry.textContent='Return to KOJA Login'; retry.style.display='inline-block'; retry.style.marginTop='16px'; status.parentNode.appendChild(retry);
-  };
   try{
-    if(!window.supabase || typeof window.supabase.createClient!=='function') throw new Error('Supabase authentication library did not load.');
-    const client=window.supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }},{auth:{flowType:'pkce',persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}});
+    const client=supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }});
     const code=new URLSearchParams(location.search).get('code');
     if(!code) throw new Error('No authorization code was returned.');
-    status.textContent='Verifying Google account…';
     const {data,error}=await client.auth.exchangeCodeForSession(code);
-    if(error) throw new Error(error.message||'Supabase could not exchange the authorization code.');
+    if(error) throw error;
     const token=data?.session?.access_token;
-    if(!token) throw new Error('No authenticated session was returned by Supabase.');
-    status.textContent='Creating your KOJA profile…';
-    const r=await fetch({{ session_url|tojson }},{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({access_token:token})});
+    if(!token) throw new Error('No authenticated session was returned.');
+    const r=await fetch({{ session_url|tojson }},{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({access_token:token})});
     const out=await r.json().catch(()=>({}));
-    if(!r.ok||!out.ok) throw new Error(out.error||('KOJA session creation failed (HTTP '+r.status+').'));
-    status.textContent='Sign-in complete. Opening KOJA…';
+    if(!r.ok||!out.ok) throw new Error(out.error||'KOJA could not create the local session.');
     location.replace({{ dashboard_url|tojson }});
   }catch(e){
-    console.error('KOJA OAuth callback failed',e);
-    fail(e?.message||String(e));
+    status.textContent='Sign-in failed: '+(e.message||e);
+    setTimeout(()=>location.replace({{ login_url|tojson }}),3500);
   }
 })();
 </script>
