@@ -799,6 +799,12 @@ def enforce_csrf():
     # Flutterwave server-to-server webhook is authenticated by its signature, not browser CSRF.
     if request.path == "/webhook/flutterwave":
         return None
+    # OAuth callback exchanges a short-lived Supabase access token for the
+    # local KOJA session. The bearer token itself is the authorization proof;
+    # requiring the browser CSRF token here can break the provider callback
+    # handoff on some browsers/webviews after a cross-site redirect.
+    if request.path == "/auth/oauth/session":
+        return None
 
     # KOJA Connect WebRTC signaling: keep login + call-participant authorization
     # below, but do not block browser ICE trickling on the page-level CSRF token.
@@ -1477,16 +1483,19 @@ def oauth_callback():
 def oauth_session():
     body=request.get_json(silent=True) or {}
     token=clean(body.get('access_token'))
-    if not token or not SUPABASE_URL:
+    if not token or len(token) > 12000 or not SUPABASE_URL:
+        _security_event('oauth_session_rejected', {'reason':'missing_or_invalid_token'})
         return jsonify({'ok':False,'error':'Missing authentication token.'}),400
     key=SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY or SUPABASE_SERVICE_KEY
     try:
         r=requests.get(f'{SUPABASE_URL}/auth/v1/user',headers={'apikey':key,'Authorization':f'Bearer {token}'},timeout=20)
         if not r.ok:
+            _security_event('oauth_session_rejected', {'reason':'supabase_user_rejected','status':r.status_code})
             return jsonify({'ok':False,'error':'Supabase authentication was rejected.'}),401
         au=r.json() or {}
         uid=au.get('id'); email=clean(au.get('email')).lower()
         if not uid or not email:
+            _security_event('oauth_session_rejected', {'reason':'provider_account_incomplete'})
             return jsonify({'ok':False,'error':'The provider did not return a usable account.'}),400
         meta=au.get('user_metadata') or {}
         full_name=clean(meta.get('full_name') or meta.get('name') or meta.get('user_name') or meta.get('preferred_username') or email)
@@ -1501,12 +1510,15 @@ def oauth_session():
                     logger.error('OAuth profile creation failed: %s',err)
                     return jsonify({'ok':False,'error':'Could not create your KOJA profile.'}),500
         if profile.get('is_active') is False:
+            _security_event('oauth_session_rejected', {'reason':'inactive_account','user_id':str(profile.get('id') or uid)[:120]})
             return jsonify({'ok':False,'error':'This KOJA account is inactive.'}),403
         login_user(profile, {'user':au,'access_token':token})
         log_activity('login','User logged in through social authentication.')
+        _security_event('oauth_login_success', {'provider':clean(meta.get('provider') or au.get('app_metadata',{}).get('provider') or 'oauth')[:40]})
         return jsonify({'ok':True})
     except Exception:
         logger.exception('OAuth session bridge failed')
+        _security_event('oauth_session_error', {'reason':'unexpected_server_error'})
         return jsonify({'ok':False,'error':'Social sign-in could not be completed.'}),500
 
 # ============================================================
