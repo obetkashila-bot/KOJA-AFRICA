@@ -1,29 +1,35 @@
-KOJA AFRICA — Documents Automatic Notes + In-Browser Reader
+KOJA AFRICA — Automatic Document Notes Reliability Upgrade
 
-This package is an incremental upgrade of the current KOJA AFRICA app.py.
+This ZIP is an incremental fix to the existing Documents system. It does NOT
+replace the Documents workspace, KOJA Document AI, document reader, upload
+flow, approval flow, or Show more / Show less note display.
 
-Included:
-- Existing KOJA Document AI remains unchanged.
-- Automatic document note generation in the background.
-- Notes are generated from the actual document text.
-- Notes are stored in Supabase in koja_document_automatic_notes.
-- Content hashing detects document content/version changes and regenerates the note.
-- Generated/updated timestamps are stored and shown.
-- Show more / Show less for long automatic notes.
-- Generation status is shown while a note is being prepared.
-- Upload returns without waiting for AI note generation.
-- Opening the Documents workspace also queues missing/stale notes.
-- Existing Download action remains separate.
-- Existing document viewer is preserved and improved so PDF, DOCX, TXT, MD, CSV and JSON can be read in-browser where supported.
-- DOCX is converted server-side to a safe HTML reader view.
-- Storage paths remain hidden from the browser.
-- Existing Document AI / Ask KOJA AI flow is preserved.
+WHAT WAS FIXED
+1. Automatic-note jobs are now durable in Supabase instead of depending only
+   on an in-process background thread.
+2. Each running job receives a 5-minute lease. If Render restarts, the worker
+   crashes, or a request dies, the next Documents request can recover the job.
+3. Browser status polling no longer re-downloads/re-extracts the document on
+   every poll while a job is generating. It reads the persisted job status.
+4. Only one in-process worker is scheduled for the same document at a time.
+5. Failed jobs become a visible failure state instead of staying in
+   “Generating…” forever.
+6. A “Try again” action was added for failed automatic notes.
+7. Existing legacy “generating” rows without a lease are recoverable.
+8. Automatic notes remain grounded in the actual extracted document content.
+9. The generated timestamp and source-content hash remain stored.
+10. Existing successful notes are preserved.
 
-Deployment:
-1. Deploy app.py and requirements.txt to the existing KOJA-AFRICA Render service.
-2. In Supabase SQL Editor, run KOJA_DOCUMENT_AUTOMATIC_NOTES.sql once.
-3. Do not replace the existing database. The SQL migration is additive/idempotent.
-4. Keep the existing KOJA environment variables and AI provider keys.
+SUPABASE STEP
+Run KOJA_DOCUMENT_AUTOMATIC_NOTES.sql once in the existing KOJA AFRICA
+Supabase SQL Editor before or immediately after deploying this ZIP.
 
-Important:
-Background generation is process-based. If Render restarts before a note finishes, the next Documents page/open request will automatically queue the note again.
+DEPLOYMENT
+Keep the existing Render command and environment variables. Replace the
+current app.py/ZIP contents with this version, deploy, then open Documents.
+No new AI provider or separate worker service is required.
+
+IMPORTANT
+The existing KOJA Document AI endpoint and AI functionality are unchanged.
+This upgrade only makes automatic document-note generation persistent,
+recoverable and observable.
