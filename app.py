@@ -1,6 +1,5 @@
 import os
 import io
-import html
 import uuid
 import math
 import secrets
@@ -17,7 +16,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from functools import wraps
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlencode
 
 import requests
 from dotenv import load_dotenv
@@ -77,14 +76,6 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_SECURE"] = os.getenv("SESSION_COOKIE_SECURE", "true").lower() not in ("0", "false", "no")
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
 app.config["SESSION_REFRESH_EACH_REQUEST"] = True
-
-# Background document intelligence. Uploads return immediately; note generation
-# runs in a small worker pool and is persisted in Supabase.
-_document_note_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="koja-doc-note")
-_document_note_futures = {}
-_document_note_lock = threading.Lock()
-_DOCUMENT_NOTE_LEASE_SECONDS = 300
-
 
 # Lightweight production rate limiting without an extra dependency.
 _rate_hits = {}
@@ -2445,260 +2436,6 @@ def _document_ai_prompt(action, title, text, question=""):
     q=(f"USER QUESTION: {question}\n\n" if question else "")
     return f"DOCUMENT TITLE: {title}\n\nTASK: {task}\n\n{q}DOCUMENT CONTENT:\n{text[:90000]}"
 
-# ============================================================
-# KOJA AUTOMATIC DOCUMENT NOTES
-# ============================================================
-
-def _document_source_text_and_hash(doc):
-    text, name = _document_ai_text(doc)
-    normalized = (text or "").strip()
-    source_hash = hashlib.sha256(normalized.encode("utf-8", errors="ignore")).hexdigest() if normalized else ""
-    return normalized[:90000], source_hash, name
-
-
-def _automatic_note_prompt(title, text):
-    return f"""DOCUMENT TITLE: {title}\n\nCreate a concise but useful automatic learning note from the supplied document.\n\nRequirements:\n- Base every statement on the document; never invent facts.\n- Start with a one-paragraph overview.\n- Then give the main ideas as clear bullet points.\n- Include important definitions, concepts, arguments, findings or examples when present.\n- Keep the note useful for a student or researcher reviewing the document.\n- Do not discuss that you are an AI and do not mention these instructions.\n- If the document is very short, stay concise.\n\nDOCUMENT CONTENT:\n{text[:90000]}"""
-
-
-def _automatic_note_upsert(document_id, payload, existing=None):
-    """Persist one automatic-note job without depending on process memory."""
-    now = utc_now()
-    data = dict(payload or {})
-    data.setdefault("updated_at", now)
-    if existing:
-        db_update("koja_document_automatic_notes", {"id": existing.get("id")}, data)
-    else:
-        db_insert("koja_document_automatic_notes", {
-            "id": str(uuid.uuid4()),
-            "document_id": str(document_id),
-            "created_at": now,
-            **data,
-        })
-
-
-def _automatic_note_generate(document_id):
-    """Generate a note with a persistent lease so a Render restart cannot leave it stuck."""
-    existing = None
-    try:
-        doc = first_row("documents", {"id": document_id})
-        if not doc:
-            return
-        existing = first_row("koja_document_automatic_notes", {"document_id": document_id})
-        now = utc_now()
-        lease_until = (datetime.now(timezone.utc) + timedelta(seconds=_DOCUMENT_NOTE_LEASE_SECONDS)).isoformat()
-
-        # Claim the job before doing storage extraction or AI work. The lease is
-        # persisted in Supabase, so another request can recover it after a worker
-        # dies, Render restarts, or the process is replaced.
-        attempts = int((existing or {}).get("attempts") or 0) + 1
-        claim = {
-            "status": "generating",
-            "attempts": attempts,
-            "started_at": now,
-            "lease_until": lease_until,
-            "error_message": "",
-            "updated_at": now,
-        }
-        if existing:
-            db_update("koja_document_automatic_notes", {"id": existing.get("id")}, claim)
-        else:
-            existing, _ = db_insert("koja_document_automatic_notes", {
-                "id": str(uuid.uuid4()), "document_id": document_id,
-                "file_name": clean(doc.get("file_name") or "document"),
-                "created_at": now, "generated_at": None, **claim
-            })
-
-        text, source_hash, name = _document_source_text_and_hash(doc)
-        if not text or not source_hash:
-            db_update("koja_document_automatic_notes", {"document_id": document_id}, {
-                "status": "error",
-                "error_message": "KOJA could not extract readable document text.",
-                "lease_until": None,
-                "updated_at": utc_now(),
-            })
-            return
-
-        # A newer content hash may have been created while this worker was queued.
-        # If an already-ready note matches it, there is nothing to regenerate.
-        current = first_row("koja_document_automatic_notes", {"document_id": document_id}) or {}
-        if current.get("content_hash") == source_hash and current.get("status") == "ready" and clean(current.get("note_text")):
-            return
-
-        title = clean(doc.get("title") or name or "KOJA Document")
-        answer, error = _ai_call(
-            _automatic_note_prompt(title, text),
-            "You are KOJA Automatic Document Notes. Produce accurate document-grounded learning notes. Never fabricate content.",
-            max_output_tokens=2200,
-            timeout=55,
-        )
-        if not answer:
-            db_update("koja_document_automatic_notes", {"document_id": document_id}, {
-                "status": "error",
-                "error_message": _ai_error_message(error)[:1000],
-                "lease_until": None,
-                "updated_at": utc_now(),
-            })
-            return
-
-        db_update("koja_document_automatic_notes", {"document_id": document_id}, {
-            "file_name": clean(doc.get("file_name") or name or "document"),
-            "content_hash": source_hash,
-            "source_characters": len(text),
-            "note_text": answer[:16000],
-            "status": "ready",
-            "error_message": "",
-            "lease_until": None,
-            "generated_at": utc_now(),
-            "updated_at": utc_now(),
-        })
-    except Exception:
-        logger.exception("Automatic document note generation failed for %s", document_id)
-        try:
-            db_update("koja_document_automatic_notes", {"document_id": document_id}, {
-                "status": "error",
-                "error_message": "Automatic note generation failed. KOJA will retry automatically.",
-                "lease_until": None,
-                "updated_at": utc_now(),
-            })
-        except Exception:
-            pass
-
-
-def _schedule_automatic_document_note(document_id, force=False):
-    """Schedule at most one in-process worker while keeping the job durable in Supabase."""
-    if not document_id or not supabase_configured():
-        return False
-    did = str(document_id)
-    with _document_note_lock:
-        future = _document_note_futures.get(did)
-        if future and not future.done() and not future.cancelled():
-            return True
-        try:
-            future = _document_note_executor.submit(_automatic_note_generate, did)
-            _document_note_futures[did] = future
-            def _done(_future, key=did):
-                with _document_note_lock:
-                    _document_note_futures.pop(key, None)
-            future.add_done_callback(_done)
-            return True
-        except Exception:
-            logger.exception("Could not schedule automatic document note for %s", did)
-            _document_note_futures.pop(did, None)
-            return False
-
-
-def _automatic_note_lease_expired(row):
-    if not row:
-        return False
-    if str(row.get("status") or "").lower() != "generating":
-        return False
-    raw = clean(row.get("lease_until"))
-    if not raw:
-        # Legacy rows created before the persistent lease migration are treated
-        # as recoverable immediately rather than being shown as Generating forever.
-        return True
-    try:
-        value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value <= datetime.now(timezone.utc)
-    except Exception:
-        return True
-
-@app.route("/documents/<document_id>/automatic-note")
-@login_required
-def document_automatic_note(document_id):
-    user = current_user() or {}
-    doc = first_row("documents", {"id": document_id})
-    if not doc or not _document_ai_allowed(doc, user):
-        abort(403)
-
-    row = first_row("koja_document_automatic_notes", {"document_id": document_id})
-    status = str((row or {}).get("status") or "").lower()
-
-    # Do not re-download/re-extract the document on every browser poll. This was
-    # a major source of slow requests and could keep a job looking stuck.
-    if row and status == "generating":
-        if _automatic_note_lease_expired(row):
-            db_update("koja_document_automatic_notes", {"id": row.get("id")}, {
-                "status": "queued", "lease_until": None,
-                "error_message": "", "updated_at": utc_now()
-            })
-            row["status"] = "queued"
-            status = "queued"
-            _schedule_automatic_document_note(document_id)
-        return jsonify(ok=True, document_id=document_id, status=status,
-                       note=row.get("note_text") or "", error=row.get("error_message") or "",
-                       generated_at=row.get("generated_at"), updated_at=row.get("updated_at"))
-
-    # A ready note is returned immediately. Source extraction is only performed
-    # when we need to establish a new job or verify a completed note's version.
-    if row and status == "ready" and clean(row.get("note_text")):
-        return jsonify(ok=True, document_id=document_id, status="ready",
-                       note=row.get("note_text") or "", error="",
-                       generated_at=row.get("generated_at"), updated_at=row.get("updated_at"))
-
-    if row and status in {"queued", "error", "failed"}:
-        # Errors are not hidden behind an endless "Retrying…" state. A request
-        # can retry them, but only one in-process worker is allowed at a time.
-        if status in {"error", "failed"}:
-            db_update("koja_document_automatic_notes", {"id": row.get("id")}, {
-                "status": "queued", "error_message": "", "updated_at": utc_now()
-            })
-            status = "queued"
-        _schedule_automatic_document_note(document_id)
-        return jsonify(ok=True, document_id=document_id, status=status,
-                       note=row.get("note_text") or "", error=row.get("error_message") or "",
-                       generated_at=row.get("generated_at"), updated_at=row.get("updated_at"))
-
-    # No job yet: create a durable queued record and let the worker calculate the
-    # actual source hash from the uploaded document.
-    now = utc_now()
-    payload = {
-        "document_id": document_id,
-        "file_name": clean(doc.get("file_name") or "document"),
-        "content_hash": "",
-        "source_characters": 0,
-        "status": "queued",
-        "error_message": "",
-        "updated_at": now,
-    }
-    row, insert_error = db_insert("koja_document_automatic_notes", {
-        "id": str(uuid.uuid4()), "created_at": now, "generated_at": None, **payload
-    })
-    if insert_error:
-        row = first_row("koja_document_automatic_notes", {"document_id": document_id})
-    _schedule_automatic_document_note(document_id)
-    row = row or {**payload, "note_text": ""}
-    return jsonify(ok=True, document_id=document_id, status=row.get("status") or "queued",
-                   note=row.get("note_text") or "", error=row.get("error_message") or "",
-                   generated_at=row.get("generated_at"), updated_at=row.get("updated_at"))
-
-
-@app.route("/documents/<document_id>/automatic-note/retry", methods=["POST"])
-@login_required
-def document_automatic_note_retry(document_id):
-    user = current_user() or {}
-    doc = first_row("documents", {"id": document_id})
-    if not doc or not _document_ai_allowed(doc, user):
-        abort(403)
-    row = first_row("koja_document_automatic_notes", {"document_id": document_id})
-    now = utc_now()
-    if row:
-        db_update("koja_document_automatic_notes", {"id": row.get("id")}, {
-            "status": "queued", "error_message": "", "lease_until": None, "updated_at": now
-        })
-    else:
-        db_insert("koja_document_automatic_notes", {
-            "id": str(uuid.uuid4()), "document_id": document_id,
-            "file_name": clean(doc.get("file_name") or "document"),
-            "content_hash": "", "source_characters": 0, "note_text": "",
-            "status": "queued", "error_message": "", "created_at": now,
-            "generated_at": None, "updated_at": now
-        })
-    _schedule_automatic_document_note(document_id, force=True)
-    return jsonify(ok=True, document_id=document_id, status="queued")
-
 @app.route("/documents/<document_id>/ai", methods=["POST"])
 @login_required
 def document_ai(document_id):
@@ -2764,9 +2501,8 @@ def documents():
             delete_storage_path(uploaded.get("path"))
             flash("Document could not be saved, so the uploaded file was cleaned up. Check the documents table schema.", "danger")
         else:
-            flash("Document uploaded and sent for approval. KOJA is preparing the automatic note in the background.", "success")
+            flash("Document uploaded and sent for approval.", "success")
             log_activity("document_uploaded", "User uploaded a KOJA document.")
-            _schedule_automatic_document_note(row.get("id") if row else base_payload.get("id"))
         return redirect(url_for("documents"))
 
     q = clean(request.args.get("q"))
@@ -2825,7 +2561,6 @@ def documents():
 .doc-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.doc-card{position:relative;background:var(--surface);border:1px solid var(--border);border-radius:17px;overflow:hidden;transition:.18s}.doc-card:hover{transform:translateY(-2px);box-shadow:0 10px 28px rgba(0,0,0,.08)}.doc-card-top{display:flex;gap:13px;padding:15px}.doc-cover{width:62px;height:78px;font-size:11px;box-shadow:0 5px 14px rgba(0,0,0,.12)}.doc-main{min-width:0;flex:1}.doc-main h3{margin:2px 0 6px;font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.doc-meta{font-size:12px;color:var(--muted);line-height:1.5}.doc-desc{font-size:13px;color:var(--muted);padding:0 15px;min-height:38px}.doc-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:13px 15px;border-top:1px solid var(--border);margin-top:12px}.doc-status{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.05em}.doc-status.approved{color:#18794e}.doc-status.pending,.doc-status.processing{color:#9a6a12}.doc-status.rejected{color:#b42318}.doc-status.archived{color:var(--muted)}.doc-menu{position:absolute;right:12px;top:12px}.doc-menu summary{list-style:none;width:32px;height:32px;border:1px solid var(--border);border-radius:9px;display:flex;align-items:center;justify-content:center;cursor:pointer}.doc-menu summary::-webkit-details-marker{display:none}.doc-menu-items{position:absolute;right:0;top:38px;z-index:30;width:150px;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 14px 34px rgba(0,0,0,.16);padding:5px}.doc-menu-items button,.doc-menu-items a{display:block;width:100%;text-align:left;padding:9px 10px;border:0;background:transparent;color:inherit;text-decoration:none;border-radius:8px;cursor:pointer;font-size:13px}.doc-menu-items button:hover,.doc-menu-items a:hover{background:rgba(127,127,127,.1)}.doc-buttons{display:flex;gap:7px}.doc-buttons .btn{padding:8px 11px;font-size:12px}
 .docs-modal{position:fixed;inset:0;z-index:300;display:none;background:rgba(8,18,32,.58);padding:18px;overflow:auto}.docs-modal.open{display:flex;align-items:center;justify-content:center}.docs-modal-panel{width:min(720px,100%);max-height:calc(100vh - 36px);overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:20px;box-shadow:0 25px 80px rgba(0,0,0,.25);padding:20px}.docs-modal-head{display:flex;align-items:center;gap:12px;margin-bottom:16px}.docs-modal-head strong{font-size:20px;margin-right:auto}.upload-drop{border:1.5px dashed var(--doc-blue);border-radius:16px;padding:25px;text-align:center;background:rgba(23,107,135,.045);cursor:pointer}.upload-drop strong{display:block}.upload-drop span{font-size:13px;color:var(--muted)}.upload-file{display:none}.upload-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.upload-grid .full{grid-column:1/-1}
 .docs-viewer{position:fixed;inset:0;z-index:400;background:#0b1422;display:none;flex-direction:column;color:#fff}.docs-viewer.open{display:flex}.viewer-head{height:58px;display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid rgba(255,255,255,.13);flex:0 0 auto}.viewer-head strong{margin-right:auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.viewer-btn{border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:#fff;border-radius:10px;padding:8px 10px;cursor:pointer}.viewer-body{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(330px,.8fr);min-height:0;flex:1}.viewer-doc{min-width:0;background:#202b39}.viewer-doc iframe{width:100%;height:100%;border:0;background:#fff}.viewer-ai{min-width:0;background:#f7f8fa;color:#172235;display:flex;flex-direction:column}.viewer-ai-head{padding:16px;border-bottom:1px solid #dfe4ea}.viewer-ai-head h3{margin:0 0 4px}.viewer-ai-head p{margin:0;color:#657080;font-size:13px}.viewer-ai-body{padding:15px;overflow:auto;flex:1}.ai-prompts{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:12px}.ai-prompts button{border:1px solid #d9dee5;background:#fff;border-radius:999px;padding:8px 10px;cursor:pointer;font-size:12px}.viewer-ai textarea{width:100%;box-sizing:border-box;min-height:90px;border:1px solid #d9dee5;border-radius:12px;padding:11px;resize:vertical}.viewer-answer{white-space:pre-wrap;line-height:1.55;margin-top:12px;background:#fff;border:1px solid #e0e4e9;border-radius:13px;padding:12px;font-size:13px}.viewer-tabs{display:none}
-.auto-note{margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:13px;background:rgba(23,107,135,.045)}.auto-note-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:7px;font-size:12px}.auto-note-status{color:var(--muted);font-weight:600}.auto-note-text{font-size:13px;line-height:1.55;white-space:pre-wrap;max-height:78px;overflow:hidden;position:relative}.auto-note-text.expanded{max-height:none}.auto-note-toggle{border:0;background:transparent;color:var(--doc-blue);padding:7px 0 0;font-weight:700;font-size:12px;cursor:pointer}.auto-note-time{margin-top:6px;color:var(--muted);font-size:11px}.auto-note-retry{border:0;background:transparent;color:#b42318;padding:7px 0 0;font-weight:700;font-size:12px;cursor:pointer;display:none}.auto-note-retry.show{display:inline-block}
 @media(max-width:1000px){.doc-cats{grid-template-columns:repeat(3,1fr)}.doc-grid{grid-template-columns:repeat(2,1fr)}.doc-strip{grid-template-columns:1fr 1fr}.viewer-body{grid-template-columns:1fr}.viewer-doc,.viewer-ai{display:none}.viewer-body.show-doc .viewer-doc{display:block}.viewer-body.show-ai .viewer-ai{display:flex}.viewer-tabs{display:flex;gap:0;padding:6px;background:#101c2b}.viewer-tabs button{flex:1;border:0;border-radius:9px;padding:9px;background:transparent;color:#fff}.viewer-tabs button.active{background:rgba(255,255,255,.12)}}
 @media(max-width:680px){.docs-head{padding-top:12px}.docs-search{border-radius:14px}.docs-search button{display:none}.doc-cats{grid-template-columns:repeat(2,1fr)}.doc-grid,.doc-strip{grid-template-columns:1fr}.upload-grid{grid-template-columns:1fr}.upload-grid .full{grid-column:auto}.docs-modal{padding:8px}.docs-modal-panel{border-radius:16px}.viewer-head{height:54px}.viewer-head .viewer-download{display:none}}
 </style>
@@ -2852,7 +2587,6 @@ def documents():
       <details class="doc-menu"><summary aria-label="More options">⋯</summary><div class="doc-menu-items"><a href="{{ url_for('document_download',document_id=did) }}">Download</a><button type="button" onclick="shareKOJADoc('{{ did }}','{{ d.get('_title','')|e }}')">Share</button><button type="button" onclick="saveKOJADoc('{{ did }}','{{ d.get('_title','')|e }}')">Save</button><button type="button" onclick="viewDocDetails('{{ did }}')">View details</button></div></details>
       <div class="doc-card-top"><div class="doc-cover">{{ (d.get('file_name') or 'PDF').split('.')[-1]|upper|truncate(5,True,'') }}</div><div class="doc-main"><h3 title="{{ d.get('_title','') }}">{{ d.get('_title','KOJA Document') }}</h3><div class="doc-meta">{{ cat }}{% if d.get('subject') %} · {{ d.get('subject') }}{% endif %}{% if d.get('author') %}<br>{{ d.get('author') }}{% endif %}</div></div></div>
       <div class="doc-desc">{{ d.get('description') or 'KOJA knowledge document available for learning and reference.'|truncate(110) }}</div>
-      <div class="auto-note" data-auto-note-id="{{ did }}"><div class="auto-note-head"><strong>Automatic Note</strong><span class="auto-note-status">Preparing…</span></div><div class="auto-note-text">KOJA is preparing a note from this document.</div><div><button class="auto-note-toggle" type="button" style="display:none" onclick="toggleAutoNote(this)">Show more</button><button class="auto-note-retry" type="button" onclick="retryAutoNote(this)">Try again</button></div><div class="auto-note-time"></div></div>
       <div class="doc-foot"><span class="doc-status {{ status }}">{{ 'Pending Approval' if status in ['pending','submitted','under_review'] else status|replace('_',' ')|title }}</span><div class="doc-buttons"><button class="btn secondary" type="button" onclick="openKOJADocument('{{ did }}','{{ d.get('_title','KOJA Document')|e }}')">Open</button><button class="btn" type="button" onclick="openKOJADocumentAI('{{ did }}','{{ d.get('_title','KOJA Document')|e }}')">Ask AI</button></div></div>
     </article>
   {% else %}<div class="card"><h3>No documents found</h3><p>Try another search or upload the first KOJA document.</p></div>{% endfor %}
@@ -2868,9 +2602,6 @@ def documents():
 <script>
 const KOJA_DOCS={};
 function openKOJADocument(id,title){KOJA_DOCS.current=id;document.getElementById('viewerTitle').textContent=title||'KOJA Document';document.getElementById('viewerSubtitle').textContent=title||'Selected document';document.getElementById('viewerFrame').src='/documents/file/'+encodeURIComponent(id)+'?inline=1';document.getElementById('viewerDownload').href='/documents/download/'+encodeURIComponent(id);document.getElementById('viewerAnswer').style.display='none';document.getElementById('docViewer').classList.add('open');document.body.style.overflow='hidden';localStorage.setItem('koja_doc_last',JSON.stringify({id:id,title:title||'KOJA Document',at:Date.now()}));}
-async function loadAutomaticNote(el){const id=el&&el.getAttribute('data-auto-note-id');if(!id)return;const status=el.querySelector('.auto-note-status'),text=el.querySelector('.auto-note-text'),toggle=el.querySelector('.auto-note-toggle'),retry=el.querySelector('.auto-note-retry'),time=el.querySelector('.auto-note-time');let attempts=0,stopped=false;async function poll(){if(stopped)return;attempts++;try{const r=await fetch('/documents/'+encodeURIComponent(id)+'/automatic-note',{headers:{'X-Requested-With':'XMLHttpRequest'},cache:'no-store'});const d=await r.json();if(!r.ok||!d.ok){status.textContent='Waiting to generate';if(attempts<20)setTimeout(poll,5000);return}const st=String(d.status||'queued').toLowerCase();status.textContent=st==='ready'?'Ready':st==='error'||st==='failed'?'Could not generate':'Generating…';retry.classList.toggle('show',st==='error'||st==='failed');if(d.error&&st==='error')time.textContent=d.error;if(d.note){text.textContent=d.note;toggle.style.display=d.note.length>220?'inline-block':'none';time.textContent=d.generated_at?'Updated '+new Date(d.generated_at).toLocaleString():'';retry.classList.remove('show');return}if(attempts<60)setTimeout(poll,3500)}catch(e){if(attempts<20)setTimeout(poll,5000)}}poll();el._stopAutoNote=()=>{stopped=true}}
-async function retryAutoNote(btn){const box=btn.closest('.auto-note'),id=box&&box.getAttribute('data-auto-note-id');if(!id)return;const status=box.querySelector('.auto-note-status'),retry=box.querySelector('.auto-note-retry');status.textContent='Queued…';retry.classList.remove('show');try{const r=await fetch('/documents/'+encodeURIComponent(id)+'/automatic-note/retry',{method:'POST',headers:{'X-Requested-With':'XMLHttpRequest'}});if(!r.ok)throw new Error();loadAutomaticNote(box)}catch(e){status.textContent='Retry failed';retry.classList.add('show')}}
-function toggleAutoNote(btn){const box=btn.closest('.auto-note'),txt=box.querySelector('.auto-note-text');txt.classList.toggle('expanded');btn.textContent=txt.classList.contains('expanded')?'Show less':'Show more';}
 function openKOJADocumentAI(id,title){openKOJADocument(id,title);showViewerTab('ai');}
 function closeKOJADocument(){document.getElementById('docViewer').classList.remove('open');document.body.style.overflow='';document.getElementById('viewerFrame').src='about:blank';}
 function showViewerTab(tab){const body=document.getElementById('viewerBody'),d=document.getElementById('viewerTabDoc'),a=document.getElementById('viewerTabAI');body.className='viewer-body show-'+tab;d.classList.toggle('active',tab==='doc');a.classList.toggle('active',tab==='ai');}
@@ -2878,7 +2609,7 @@ async function runViewerAI(action){const id=KOJA_DOCS.current;if(!id)return;cons
 function saveKOJADoc(id,title){let a=[];try{a=JSON.parse(localStorage.getItem('koja_doc_saved')||'[]')}catch(e){};if(!a.some(x=>x.id===id)){a.unshift({id,title,at:Date.now()});localStorage.setItem('koja_doc_saved',JSON.stringify(a.slice(0,100)));}document.getElementById('savedCount').textContent=a.length+' saved document'+(a.length===1?'':'s');}
 async function shareKOJADoc(id,title){const url=location.origin+'/documents/view/'+encodeURIComponent(id);if(navigator.share){try{await navigator.share({title:title||'KOJA Document',url})}catch(e){}}else{try{await navigator.clipboard.writeText(url);alert('Document link copied.')}catch(e){alert(url)}}}
 function viewDocDetails(id){const card=document.querySelector('[data-document-id="'+CSS.escape(id)+'"]');if(card)alert(card.dataset.title+'\n\nOpen the document to read it with KOJA AI.');}
-(function(){const f=document.getElementById('docUploadFile');if(f)f.addEventListener('change',function(){document.getElementById('docUploadName').textContent=this.files[0]?this.files[0].name:'PDF, Word, TXT, images · maximum 15 MB'});const saved=document.getElementById('savedCount');try{const a=JSON.parse(localStorage.getItem('koja_doc_saved')||'[]');saved.textContent=a.length+' saved document'+(a.length===1?'':'s')}catch(e){};document.querySelectorAll('.auto-note[data-auto-note-id]').forEach(loadAutomaticNote);const last=JSON.parse(localStorage.getItem('koja_doc_last')||'null');const strip=document.getElementById('continueStrip');if(last&&strip){strip.innerHTML='<a class="doc-mini" href="javascript:openKOJADocument('+JSON.stringify(last.id)+','+JSON.stringify(last.title)+')"><div class="doc-mini-cover">↻</div><div class="doc-mini-info"><strong>'+String(last.title).replace(/</g,'&lt;')+'</strong><span>Continue where you left off</span></div></a>'}})();
+(function(){const f=document.getElementById('docUploadFile');if(f)f.addEventListener('change',function(){document.getElementById('docUploadName').textContent=this.files[0]?this.files[0].name:'PDF, Word, TXT, images · maximum 15 MB'});const saved=document.getElementById('savedCount');try{const a=JSON.parse(localStorage.getItem('koja_doc_saved')||'[]');saved.textContent=a.length+' saved document'+(a.length===1?'':'s')}catch(e){};const last=JSON.parse(localStorage.getItem('koja_doc_last')||'null');const strip=document.getElementById('continueStrip');if(last&&strip){strip.innerHTML='<a class="doc-mini" href="javascript:openKOJADocument('+JSON.stringify(last.id)+','+JSON.stringify(last.title)+')"><div class="doc-mini-cover">↻</div><div class="doc-mini-info"><strong>'+String(last.title).replace(/</g,'&lt;')+'</strong><span>Continue where you left off</span></div></a>'}})();
 </script>
 """, categories=categories, counts=counts, visible=visible, q=q)
 
@@ -2918,44 +2649,9 @@ def document_file(document_id):
         r=requests.get(sb_storage_url(storage_path),headers=sb_headers(),timeout=30)
         if not r.ok: abort(404)
         filename=secure_filename(doc.get("file_name") or "koja-document") or "koja-document"
-        ext=filename.rsplit('.',1)[-1].lower() if '.' in filename else ''
-        title=clean(doc.get("title") or filename or "KOJA Document")
-        # Native browser formats remain native; document formats are converted
-        # into a safe reader view so users do not have to download the file.
-        if ext == 'docx' and DocxDocument is not None:
-            try:
-                parsed=DocxDocument(io.BytesIO(r.content))
-                parts=[f"<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'><title>{html.escape(title)}</title><style>body{{font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:900px;margin:0 auto;padding:28px;color:#172235;line-height:1.7}}h1{{font-size:28px}}p{{margin:0 0 14px}}table{{width:100%;border-collapse:collapse;margin:16px 0}}td,th{{border:1px solid #d9dee5;padding:8px;text-align:left}}.koja-reader-meta{{color:#667085;font-size:12px;margin-bottom:24px}}</style></head><body>"]
-                parts.append(f"<h1>{html.escape(title)}</h1><div class='koja-reader-meta'>{html.escape(filename)}</div>")
-                for para in parsed.paragraphs:
-                    txt=para.text.strip()
-                    if not txt: continue
-                    style=(para.style.name or '').lower() if para.style else ''
-                    tag='h2' if 'heading 2' in style else ('h1' if 'heading 1' in style else 'p')
-                    parts.append(f"<{tag}>{html.escape(txt)}</{tag}>")
-                for table in parsed.tables:
-                    parts.append('<table>')
-                    for ri,row in enumerate(table.rows):
-                        tag='th' if ri==0 else 'td'
-                        parts.append('<tr>'+''.join(f'<{tag}>{html.escape(cell.text.strip())}</{tag}>' for cell in row.cells)+'</tr>')
-                    parts.append('</table>')
-                parts.append('</body></html>')
-                return Response(''.join(parts),mimetype='text/html',headers={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'})
-            except Exception:
-                logger.exception('DOCX reader conversion failed')
-        if ext in {'txt','md','csv','json'}:
-            raw=r.content
-            text_content=''
-            for enc in ('utf-8','utf-8-sig','cp1252','latin-1'):
-                try: text_content=raw.decode(enc); break
-                except Exception: pass
-            body=html.escape(text_content[:250000])
-            page=f"<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'><title>{html.escape(title)}</title><style>body{{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;margin:0;padding:24px;background:#fff;color:#172235}}pre{{white-space:pre-wrap;word-break:break-word;line-height:1.6}}</style></head><body><pre>{body}</pre></body></html>"
-            return Response(page,mimetype='text/html',headers={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'})
         response=send_file(io.BytesIO(r.content),download_name=filename,mimetype=r.headers.get("Content-Type") or "application/octet-stream",as_attachment=False,max_age=0)
         response.headers["Content-Disposition"]="inline; filename="+quote(filename)
         response.headers["Cache-Control"]="private, no-store"
-        response.headers["X-Content-Type-Options"]="nosniff"
         return response
     except Exception:
         logger.exception("Document viewer load failed")
@@ -7272,6 +6968,68 @@ def connect():
         c['_other_name']=_profile_name(other['user_id']) if other else (c.get('name') or 'Group'); last=db_select('koja_messages',filters={'conversation_id':c['id']},order='created_at.desc',limit=1); c['_last']=(last[0].get('body') or last[0].get('message_type','')) if last else 'No messages yet'; conversations.append(c)
     return render_page('KOJA Connect',r'''<div class="hero"><h2> KOJA Connect</h2><p>Chat, voice messages, voice calls, video calls, photos, files, groups and status updates with other KOJA users.</p></div><div class="grid"><div class="card"><h3> Find People</h3><p>Search KOJA users and start a conversation.</p><a class="btn" href="{{ url_for('connect_people') }}">Find People</a></div><div class="card"><h3> Status</h3><p>Share a 24-hour status.</p><a class="btn" href="{{ url_for('connect_status') }}">My Status</a></div><div class="card"><h3> Calls</h3><p>Voice and video calls separate from Professional Services.</p><a class="btn" href="{{ url_for('connect_calls') }}">Call History</a></div></div><div class="card"><div class="actions"><h3 style="margin-right:auto">Recent Chats</h3><a class="btn" href="{{ url_for('connect_group_new') }}"> New Group</a></div>{% for c in conversations %}<a class="card" style="display:block;text-decoration:none;color:inherit" href="{{ url_for('connect_chat',conversation_id=c.id) }}"><strong>{{ c._other_name }}</strong><div class="small">{{ c._last }}</div></a>{% else %}<p>No chats yet. Find a KOJA user to start.</p>{% endfor %}</div>''',conversations=conversations)
 
+@app.route('/connect/contacts', methods=['GET'])
+@login_required
+def connect_contacts():
+    return redirect(url_for('connect_people', contacts='1'))
+
+@app.route('/api/connect/contacts/import', methods=['POST'])
+@login_required
+def connect_contacts_import():
+    uid=current_user()['id']; data=request.get_json(silent=True) or {}
+    contacts=data.get('contacts') if isinstance(data.get('contacts'),list) else []
+    matches=[]
+    for c in contacts[:500]:
+        if not isinstance(c,dict): continue
+        phones=c.get('phones') if isinstance(c.get('phones'),list) else []
+        emails=c.get('emails') if isinstance(c.get('emails'),list) else []
+        for value in phones+emails:
+            if isinstance(value,dict): value=value.get('value') or value.get('number') or value.get('email') or ''
+            value=clean(value)
+            if not value: continue
+            rows=db_select('profiles',filters={'email':value.lower()},limit=5) if '@' in value else db_select('profiles',filters={'phone':value},limit=5)
+            for row in rows:
+                if str(row.get('id'))==str(uid): continue
+                if not any(str(x.get('id'))==str(row.get('id')) for x in matches):
+                    matches.append({'id':row.get('id'),'name':row.get('full_name') or row.get('name') or row.get('email'),'email':row.get('email') or '', 'phone':row.get('phone') or '', 'source':'phone'})
+    return jsonify(matches=matches, imported=len(matches), message=f'Found {len(matches)} KOJA contact(s).')
+
+@app.route('/connect/facebook/start')
+@login_required
+def connect_facebook_start():
+    app_id=clean(os.getenv('META_APP_ID') or os.getenv('FACEBOOK_APP_ID'))
+    if not app_id:
+        flash('Facebook contact import needs META_APP_ID/FACEBOOK_APP_ID configured in Render first.','warning')
+        return redirect(url_for('connect_people', contacts='1'))
+    state=secrets.token_urlsafe(32); session['koja_facebook_state']=state
+    redirect_uri=url_for('connect_facebook_callback', _external=True)
+    auth='https://www.facebook.com/v23.0/dialog/oauth?'+urlencode({'client_id':app_id,'redirect_uri':redirect_uri,'state':state,'scope':'public_profile,email'})
+    return redirect(auth)
+
+@app.route('/connect/facebook/callback')
+@login_required
+def connect_facebook_callback():
+    if clean(request.args.get('state')) != session.pop('koja_facebook_state',None): abort(400)
+    code=clean(request.args.get('code'))
+    if not code: flash('Facebook connection was cancelled or failed.','warning'); return redirect(url_for('connect_people',contacts='1'))
+    app_id=clean(os.getenv('META_APP_ID') or os.getenv('FACEBOOK_APP_ID')); app_secret=os.getenv('META_APP_SECRET') or os.getenv('FACEBOOK_APP_SECRET')
+    if not app_id or not app_secret: flash('Facebook integration is not configured.','warning'); return redirect(url_for('connect_people',contacts='1'))
+    redirect_uri=url_for('connect_facebook_callback', _external=True)
+    try:
+        tok=requests.get('https://graph.facebook.com/v23.0/oauth/access_token',params={'client_id':app_id,'client_secret':app_secret,'redirect_uri':redirect_uri,'code':code},timeout=20); tok.raise_for_status(); access=tok.json().get('access_token')
+        if not access: raise RuntimeError('No Facebook access token')
+        friends=requests.get('https://graph.facebook.com/v23.0/me/friends',params={'fields':'id,name','access_token':access,'limit':500},timeout=20).json().get('data',[])
+        uid=current_user()['id']
+        for f in friends:
+            fid=str(f.get('id') or '')
+            if not fid: continue
+            existing=first_row('koja_external_contacts',{'user_id':uid,'provider':'facebook','external_id':fid})
+            if not existing: db_insert('koja_external_contacts',{'id':str(uuid.uuid4()),'user_id':uid,'provider':'facebook','external_id':fid,'display_name':clean(f.get('name')),'created_at':utc_now(),'updated_at':utc_now()})
+        flash(f'Facebook connected. {len(friends)} Facebook contact(s) available to KOJA.','success')
+    except Exception:
+        logger.exception('Facebook contact import failed'); flash('Facebook contact import could not be completed. Check the Meta app settings and permissions.','danger')
+    return redirect(url_for('connect_people',contacts='1'))
+
 @app.route('/connect/people',methods=['GET','POST'])
 @login_required
 def connect_people():
@@ -7288,7 +7046,7 @@ def connect_people():
             for x in db_select('profiles',filters={col:f'ilike.*{q}*'},limit=30):
                 if str(x.get('id'))!=str(uid) and not any(str(p.get('id'))==str(x.get('id')) for p in people): people.append(x)
     incoming=db_select('koja_contacts',filters={'addressee_id':uid,'status':'pending'},limit=50)
-    return render_page('KOJA People',r'''<div class="card"><h2>Find KOJA People</h2><form><input name="q" value="{{ q }}" placeholder="Search name or email"><button>Search</button></form></div><div class="grid">{% for p in people %}<div class="card"><h3>{{ p.get('full_name') or p.get('name') or p.get('email') }}</h3><p>{{ p.get('email') or '' }}</p><form method="post"><input type="hidden" name="user_id" value="{{ p.id }}"><button> Connect</button></form><a class="btn secondary" href="{{ url_for('connect_new',user_id=p.id) }}">Message</a></div>{% endfor %}</div><div class="card"><h3>Incoming Requests</h3>{% for r in incoming %}<div class="card"><strong>{{ _profile_name(r.requester_id) }}</strong><form method="post" action="{{ url_for('connect_accept',contact_id=r.id) }}"><button>Accept</button></form></div>{% else %}<p>No pending requests.</p>{% endfor %}</div>''',people=people,q=q,incoming=incoming,_profile_name=_profile_name)
+    return render_page('KOJA People',r'''<div class="card"><h2>Find KOJA People</h2><form><input name="q" value="{{ q }}" placeholder="Search name, email or phone"><button>Search</button></form></div><div class="card"><h3>+ Add Contacts</h3><p class="small">Import contacts from your phone, connect Facebook, or search KOJA directly.</p><div class="actions"><button class="btn" type="button" id="phoneContacts">Phone Contacts</button><a class="btn secondary" href="{{ url_for('connect_facebook_start') }}">Connect Facebook</a></div><div id="contactResult" class="small" style="margin-top:10px"></div></div><div class="grid">{% for p in people %}<div class="card"><h3>{{ p.get('full_name') or p.get('name') or p.get('email') }}</h3><p>{{ p.get('email') or '' }}</p><form method="post"><input type="hidden" name="user_id" value="{{ p.id }}"><button> Connect</button></form><a class="btn secondary" href="{{ url_for('connect_new',user_id=p.id) }}">Message</a></div>{% endfor %}</div><div class="card"><h3>Incoming Requests</h3>{% for r in incoming %}<div class="card"><strong>{{ _profile_name(r.requester_id) }}</strong><form method="post" action="{{ url_for('connect_accept',contact_id=r.id) }}"><button>Accept</button></form></div>{% else %}<p>No pending requests.</p>{% endfor %}</div><script>const phoneBtn=document.getElementById('phoneContacts'),contactResult=document.getElementById('contactResult');if(phoneBtn){phoneBtn.onclick=async()=>{contactResult.textContent='Requesting contact permission…';try{if(!('contacts' in navigator)||!navigator.contacts.select){contactResult.textContent='Phone contact import is not supported by this browser. Use KOJA Search instead.';return;}const rows=await navigator.contacts.select(['name','tel','email'],{multiple:true});const contacts=rows.map(x=>({name:(x.name||[]).join(' '),phones:x.tel||[],emails:x.email||[]}));const r=await fetch('/api/connect/contacts/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contacts})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Import failed');contactResult.textContent=d.message||'Contacts checked.';if(d.matches&&d.matches.length){contactResult.innerHTML=d.matches.map(p=>'<div class=\"card\" style=\"margin-top:8px\"><strong>'+String(p.name||'KOJA user').replace(/[&<>]/g,'')+'</strong><div class=\"small\">'+String(p.email||p.phone||'KOJA user').replace(/[&<>]/g,'')+'</div><form method=\"post\" action=\"{{ url_for('connect_people') }}\"><input type=\"hidden\" name=\"user_id\" value=\"'+String(p.id).replace(/[^a-zA-Z0-9-]/g,'')+'\"><button class=\"btn\" type=\"submit\">Connect</button></form></div>').join('');}}catch(e){contactResult.textContent=e.message||'Contact import failed.';}};}</script>''',people=people,q=q,incoming=incoming,_profile_name=_profile_name)
 
 @app.route('/connect/accept/<contact_id>',methods=['POST'])
 @login_required
