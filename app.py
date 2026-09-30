@@ -9022,7 +9022,7 @@ def oauth_start(provider):
 (async function(){
   const status=document.getElementById('oauthStatus');
   try{
-    const client=supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }},{auth:{flowType:'pkce',persistSession:true,autoRefreshToken:true}});
+    const client=window.supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }},{auth:{flowType:'pkce',persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}});
     const {error}=await client.auth.signInWithOAuth({
       provider:{{ provider|tojson }},
       options:{redirectTo:{{ callback_url|tojson }},queryParams:{prompt:'select_account'}}
@@ -9046,21 +9046,29 @@ def oauth_callback():
 <script>
 (async function(){
   const status=document.getElementById('oauthStatus');
+  const fail=(message)=>{
+    status.textContent='Sign-in failed: '+message;
+    const retry=document.createElement('a'); retry.className='btn'; retry.href={{ login_url|tojson }}; retry.textContent='Return to KOJA Login'; retry.style.display='inline-block'; retry.style.marginTop='16px'; status.parentNode.appendChild(retry);
+  };
   try{
-    const client=supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }},{auth:{flowType:'pkce',persistSession:true,autoRefreshToken:true}});
+    if(!window.supabase || typeof window.supabase.createClient!=='function') throw new Error('Supabase authentication library did not load.');
+    const client=window.supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }},{auth:{flowType:'pkce',persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}});
     const code=new URLSearchParams(location.search).get('code');
     if(!code) throw new Error('No authorization code was returned.');
+    status.textContent='Verifying Google account…';
     const {data,error}=await client.auth.exchangeCodeForSession(code);
-    if(error) throw error;
+    if(error) throw new Error(error.message||'Supabase could not exchange the authorization code.');
     const token=data?.session?.access_token;
-    if(!token) throw new Error('No authenticated session was returned.');
-    const r=await fetch({{ session_url|tojson }},{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({access_token:token})});
+    if(!token) throw new Error('No authenticated session was returned by Supabase.');
+    status.textContent='Creating your KOJA profile…';
+    const r=await fetch({{ session_url|tojson }},{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({access_token:token})});
     const out=await r.json().catch(()=>({}));
-    if(!r.ok||!out.ok) throw new Error(out.error||'KOJA could not create the local session.');
+    if(!r.ok||!out.ok) throw new Error(out.error||('KOJA session creation failed (HTTP '+r.status+').'));
+    status.textContent='Sign-in complete. Opening KOJA…';
     location.replace({{ dashboard_url|tojson }});
   }catch(e){
-    status.textContent='Sign-in failed: '+(e.message||e);
-    setTimeout(()=>location.replace({{ login_url|tojson }}),3500);
+    console.error('KOJA OAuth callback failed',e);
+    fail(e?.message||String(e));
   }
 })();
 </script>
