@@ -119,7 +119,7 @@ HLS_CDN_BASE = os.getenv("KOJA_HLS_CDN_BASE", "").strip().rstrip("/")
 
 APP_NAME = "KOJA AFRICA"
 APP_VERSION = "2026.09.09-V7-K100M-MONETIZATION-V53-SELLER-CENTER"
-APP_TAGLINE = "Knowledge • Questions • Answers"
+APP_TAGLINE = ""
 MAX_UPLOAD_MB = 15
 
 # Email delivery (server-side only; never expose SMTP passwords to the browser)
@@ -895,6 +895,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90
 <a href="{{ url_for('ai_nextgen') }}">KOJA AI</a>
 <a class="notification-bell" href="{{ url_for('notifications_page') }}" aria-label="Notifications">Notifications <span id="kojaNotifBadge" class="notif-badge" hidden></span></a>
 <a href="{{ '/market' }}">KOJA Market</a> <a href="{{ url_for('market_live') }}">Live Shop</a>
+<a href="{{ url_for('koja_business') }}">KOJA Business</a>
 <a href="{{ url_for('communication_nextgen') }}">Connect+</a>
 <div class="menu-group">
 <button type="button" id="moreMenuButton" aria-expanded="false" aria-haspopup="true">More ▾</button>
@@ -992,7 +993,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90
 {% endwith %}
 {{ body|safe }}
 </div>
-<footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services</footer>
+<footer>KOJA AFRICA</footer>
 <!-- KOJA Connect incoming-call receiver: polls only while authenticated. -->
 {% if user and not request.path.startswith('/api/') and not request.path.startswith('/connect/call') and not request.path.startswith('/connect/answer') %}
 <div id="kojaIncomingCall" style="display:none;position:fixed;left:12px;right:12px;bottom:16px;z-index:99999;max-width:520px;margin:auto;background:var(--card,#fff);border:2px solid var(--accent,#1d4ed8);border-radius:18px;padding:16px;box-shadow:0 18px 50px rgba(0,0,0,.28)">
@@ -1155,8 +1156,7 @@ def home():
     return render_page("KOJA AFRICA", r"""
 <div class="hero">
 <h1>KOJA AFRICA</h1>
-<p>Knowledge • Questions • Answers</p>
-<p>Research, academic questions, assignments, professional services, documents and delivery services.</p>
+<p>One connected platform for AI, people, business, learning, research, services, media and commerce.</p>
 {% if not user %}
 <div class="actions">
 <a class="btn" href="{{ url_for('register') }}">Create Account</a>
@@ -1357,26 +1357,47 @@ def logout():
 @login_required
 def dashboard():
     user = current_user()
-    questions_count = len(db_select("questions",filters={"user_id":user["id"]},limit=1000))
-    deliveries_count = len(db_select("deliveries",filters={"customer_id":user["id"]},limit=1000))
-    appointments_count = len(db_select("appointments",filters={"client_id":user["id"]},limit=1000))
+    uid = user["id"]
+    questions_count = len(db_select("questions",filters={"user_id":uid},limit=1000))
+    deliveries_count = len(db_select("deliveries",filters={"customer_id":uid},limit=1000))
+    appointments_count = len(db_select("appointments",filters={"client_id":uid},limit=1000))
+    connections_count = len(db_select("koja_contacts",filters={"requester_id":uid,"status":"accepted"},limit=1000)) + len(db_select("koja_contacts",filters={"addressee_id":uid,"status":"accepted"},limit=1000))
+    pending_requests = len(db_select("koja_contacts",filters={"addressee_id":uid,"status":"pending"},limit=1000))
+    documents_count = len(db_select("documents",filters={"user_id":uid},limit=1000)) + len(db_select("document_records",filters={"owner_id":uid},limit=1000))
+    notifications_count = len(db_select("notifications",filters={"user_id":uid},limit=1000))
+    market_count = len(db_select("koja_market_products",filters={"seller_id":uid},limit=1000))
+    business_count = len(db_select("koja_businesses",filters={"owner_id":uid},limit=1000))
     return render_page("Dashboard", r"""
-<div class="hero"><h2>Welcome, {{ user.name }}</h2><p>{{ user.email }}</p></div>
-<div class="grid">
-<div class="stat"><div class="big">{{ questions_count }}</div>Academic Questions</div>
-<div class="stat"><div class="big">{{ deliveries_count }}</div>Deliveries</div>
-<div class="stat"><div class="big">{{ appointments_count }}</div>Appointments</div>
-<div class="stat"><div class="big">{{ "ADMIN" if user.is_admin else user.role|upper }}</div>Account</div>
+<style>
+.koja-dashboard{display:grid;gap:18px}.koja-welcome{background:linear-gradient(135deg,#0b1f3a,#176b87);color:#fff;border-radius:20px;padding:24px;box-shadow:0 12px 30px rgba(11,31,58,.18)}
+.koja-welcome h1{margin:0 0 6px;font-size:clamp(1.65rem,5vw,2.4rem)}.koja-welcome p{margin:0;opacity:.9}.koja-section-title{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:4px 0}.koja-section-title h3{margin:0}
+.koja-app-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.koja-app{display:block;text-decoration:none;color:inherit;background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:17px;min-height:128px;transition:.18s ease}.koja-app:hover{transform:translateY(-2px);box-shadow:0 10px 24px rgba(0,0,0,.08);border-color:#176b87}.koja-app strong{display:block;font-size:1.05rem;margin-bottom:7px}.koja-app span{color:var(--muted);font-size:.88rem;line-height:1.4}.koja-app .go{display:block;margin-top:12px;color:#176b87;font-weight:700;font-size:.82rem}
+.koja-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.koja-stat{background:var(--surface);border:1px solid var(--border);border-radius:15px;padding:15px}.koja-stat .big{font-size:1.7rem}.koja-activity{display:grid;grid-template-columns:1.4fr 1fr;gap:12px}.koja-list{display:grid;gap:8px}.koja-list a{display:flex;justify-content:space-between;gap:12px;padding:12px;border:1px solid var(--border);border-radius:12px;text-decoration:none;color:inherit;background:var(--surface)}
+@media(max-width:900px){.koja-app-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.koja-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.koja-activity{grid-template-columns:1fr}}@media(max-width:520px){.koja-app-grid{grid-template-columns:1fr}.koja-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.koja-welcome{padding:20px}.koja-app{min-height:110px}}
+</style>
+<div class="koja-dashboard">
+<div class="koja-welcome"><h1>Welcome, {{ user.name }}</h1><p>{{ user.email }}</p><div class="actions" style="margin-top:16px"><a class="btn" href="{{ url_for('ai_nextgen') }}">Open KOJA AI</a><a class="btn secondary" href="{{ url_for('connect_people') }}">Find KOJA People</a></div></div>
+<div class="koja-section-title"><h3>KOJA</h3><span class="small">Everything connected in one dashboard</span></div>
+<div class="koja-app-grid">
+<a class="koja-app" href="{{ url_for('ai_nextgen') }}"><strong>KOJA AI</strong><span>Ask, explain, plan and work with AI.</span><b class="go">Open →</b></a>
+<a class="koja-app" href="{{ url_for('connect_people') }}"><strong>KOJA People</strong><span>Find people, manage requests and build connections.</span><b class="go">People →</b></a>
+<a class="koja-app" href="{{ url_for('koja_market') }}"><strong>KOJA Market</strong><span>Buy, sell and manage marketplace activity.</span><b class="go">Market →</b></a>
+<a class="koja-app" href="{{ url_for('koja_business') }}"><strong>KOJA Business</strong><span>Business, POS, inventory and operations.</span><b class="go">Business →</b></a>
+<a class="koja-app" href="{{ url_for('documents') }}"><strong>Documents</strong><span>Store, read and work with learning and research documents.</span><b class="go">Documents →</b></a>
+<a class="koja-app" href="{{ url_for('research') }}"><strong>Research</strong><span>Research topics and build structured study material.</span><b class="go">Research →</b></a>
+<a class="koja-app" href="{{ url_for('services') }}"><strong>Services</strong><span>Access professional, health and transport services.</span><b class="go">Services →</b></a>
+<a class="koja-app" href="{{ url_for('media_nextgen') }}"><strong>KOJA Media</strong><span>Watch and explore KOJA media experiences.</span><b class="go">Media →</b></a>
 </div>
-<div class="card"><h3>KOJA Services</h3>
-<div class="grid">
-<a class="btn" href="{{ url_for('cv') }}">Create CV</a>
-<a class="btn" href="{{ url_for('doctors') }}">Doctor Booking</a>
-<a class="btn" href="{{ url_for('teachers') }}">Teacher Booking</a>
-<a class="btn" href="{{ url_for('deliveries') }}">Find Driver / Delivery</a>
-{% if user.role in ['driver','admin'] or user.is_admin %}<a class="btn" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}
-</div></div>
-""",questions_count=questions_count,deliveries_count=deliveries_count,appointments_count=appointments_count)
+<div class="koja-stats">
+<div class="koja-stat"><div class="big">{{ connections_count }}</div><span>Connections</span></div><div class="koja-stat"><div class="big">{{ pending_requests }}</div><span>Requests</span></div><div class="koja-stat"><div class="big">{{ documents_count }}</div><span>Documents</span></div><div class="koja-stat"><div class="big">{{ notifications_count }}</div><span>Notifications</span></div>
+</div>
+<div class="koja-activity">
+<div class="card"><div class="koja-section-title"><h3>Your activity</h3><a href="{{ url_for('notifications_page') }}">View notifications</a></div><div class="koja-list"><a href="{{ url_for('questions') }}"><span>Academic questions</span><strong>{{ questions_count }}</strong></a><a href="{{ url_for('deliveries') }}"><span>Deliveries</span><strong>{{ deliveries_count }}</strong></a><a href="{{ url_for('doctors') }}"><span>Appointments</span><strong>{{ appointments_count }}</strong></a><a href="{{ url_for('koja_market') }}"><span>My market items</span><strong>{{ market_count }}</strong></a></div></div>
+<div class="card"><div class="koja-section-title"><h3>Quick access</h3></div><div class="actions"><a class="btn" href="{{ url_for('cv') }}">Create CV</a><a class="btn" href="{{ url_for('questions') }}">Ask Question</a><a class="btn" href="{{ url_for('documents') }}">Open Documents</a><a class="btn" href="{{ url_for('connect_people') }}">Find People</a>{% if business_count %}<a class="btn" href="{{ url_for('business_dashboard') }}">Business Dashboard</a>{% endif %}{% if user.role in ['driver','admin'] or user.is_admin %}<a class="btn" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}</div></div>
+</div>
+<div class="card"><strong>KOJA AFRICA</strong><p class="small" style="margin:6px 0 0">Your existing KOJA services remain connected to this dashboard. This screen is a unified entry point, not a separate system.</p></div>
+</div>
+""",questions_count=questions_count,deliveries_count=deliveries_count,appointments_count=appointments_count,connections_count=connections_count,pending_requests=pending_requests,documents_count=documents_count,notifications_count=notifications_count,market_count=market_count,business_count=business_count)
 
 # ============================================================
 # KOJA RESEARCH ENGINE V2
