@@ -992,7 +992,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90
 {% endwith %}
 {{ body|safe }}
 </div>
-<footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services<br><a href="{{ url_for('privacy_policy') }}">Privacy Policy</a> · <a href="{{ url_for('data_deletion') }}">Data Deletion</a></footer>
+<footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services</footer>
 <!-- KOJA Connect incoming-call receiver: polls only while authenticated. -->
 {% if user and not request.path.startswith('/api/') and not request.path.startswith('/connect/call') and not request.path.startswith('/connect/answer') %}
 <div id="kojaIncomingCall" style="display:none;position:fixed;left:12px;right:12px;bottom:16px;z-index:99999;max-width:520px;margin:auto;background:var(--card,#fff);border:2px solid var(--accent,#1d4ed8);border-radius:18px;padding:16px;box-shadow:0 18px 50px rgba(0,0,0,.28)">
@@ -1145,101 +1145,6 @@ def settings():
 localStorage.setItem('koja_theme', {{ prefs.theme|tojson }}); document.documentElement.dataset.kojaTheme={{ prefs.theme|tojson }};
 async function activateEngine(engine,button){const box=document.getElementById('engineStatus'); const old=button.textContent; button.disabled=true; button.textContent='Connecting…'; box.style.display='block'; box.textContent='Connecting '+engine.replace('_',' ')+'…'; try{const r=await fetch('{{ url_for("koja_engine_access") }}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({engine})}); const d=await r.json(); if(!r.ok||!d.ok){box.textContent=d.error||'Engine connection failed.';return;} box.textContent=d.engine+' connected. Services: '+(d.attached_services||[]).join(', ')+'.'; button.textContent='Connected';}catch(e){box.textContent='Network error. Please try again.';}finally{if(button.textContent!=='Connected')button.textContent=old;button.disabled=false;}}
 </script>''', prefs=prefs)
-
-# ============================================================
-# PUBLIC LEGAL / PRIVACY PAGES
-# ============================================================
-
-@app.route("/privacy")
-def privacy_policy():
-    return render_page("Privacy Policy", r"""
-<div class="hero">
-  <h1>KOJA AFRICA Privacy Policy</h1>
-  <p><strong>Effective date:</strong> 30 September 2026</p>
-  <p>This Privacy Policy explains how KOJA AFRICA collects, uses, stores and protects information when you use the KOJA AFRICA platform and its services.</p>
-</div>
-
-<div class="card legal-content">
-  <h2>1. About KOJA AFRICA</h2>
-  <p>KOJA AFRICA is a digital platform providing knowledge, questions and answers together with services that may include academic resources, documents, research, communication, media, professional services, marketplace features, delivery services and AI-assisted features.</p>
-
-  <h2>2. Information we collect</h2>
-  <p>Depending on the services you use, KOJA AFRICA may process:</p>
-  <ul>
-    <li><strong>Account information:</strong> name, email address, phone number, password credentials and account/role information.</li>
-    <li><strong>Content you provide:</strong> questions, answers, documents, images, messages, profile information, listings and other material you choose to upload or submit.</li>
-    <li><strong>Communication information:</strong> information needed to provide messaging, groups, voice/video calling, contacts and related communication features.</li>
-    <li><strong>Location information:</strong> location or GPS information when you explicitly use a feature that requires it, such as driver or delivery tracking.</li>
-    <li><strong>Technical information:</strong> IP address, browser/device information, timestamps, session information, security logs and basic usage information needed to operate and protect the service.</li>
-    <li><strong>Payment and transaction information:</strong> information necessary to process or record transactions when you use payment, marketplace or business features. Payment credentials may be handled by the applicable payment provider rather than stored directly by KOJA AFRICA.</li>
-  </ul>
-
-  <h2>3. How we use information</h2>
-  <p>We use information to provide and secure KOJA AFRICA services, authenticate accounts, store and display user content, process requests and transactions, provide communication and delivery features, operate document and research tools, provide AI-assisted features, prevent abuse and fraud, troubleshoot technical problems, maintain records and improve the platform.</p>
-
-  <h2>4. AI-assisted features</h2>
-  <p>Some KOJA AFRICA features use AI services to help answer questions, analyse documents, generate notes or provide other requested assistance. Content may be processed by the AI service required for that feature. KOJA AFRICA does not represent AI-generated information as a substitute for professional advice where professional advice is required.</p>
-
-  <h2>5. Service providers</h2>
-  <p>KOJA AFRICA may use infrastructure and service providers to operate the platform, including hosting, database/storage, email, AI, communications, analytics, security and payment providers. Information is shared with a provider only as reasonably necessary to provide the relevant service, protect the platform or comply with applicable legal obligations.</p>
-
-  <h2>6. Facebook and Meta features</h2>
-  <p>If you choose to connect KOJA AFRICA with Facebook or another Meta service, KOJA AFRICA may receive information that Meta makes available through the permissions and authorization you grant. We use that information only for the connected feature and the purposes described in this Policy. You can manage or revoke permissions through the applicable Meta account settings, subject to the operation of the service.</p>
-
-  <h2>7. Documents and user content</h2>
-  <p>Documents and other content you submit may be stored so that KOJA AFRICA can provide the requested service. Access controls are applied to protected content. You should not upload confidential or sensitive information unless you are comfortable with the processing required to provide the feature.</p>
-
-  <h2>8. Location and live tracking</h2>
-  <p>Location is used only when a feature requires it and you choose to use that feature. For example, delivery and driver functionality may use location information to support matching, navigation or live tracking. You can stop location sharing by stopping the relevant feature and, where applicable, disabling the device permission.</p>
-
-  <h2>9. Cookies and sessions</h2>
-  <p>KOJA AFRICA may use browser storage, cookies and server sessions to keep you signed in, remember settings, protect forms and maintain essential platform functionality. These technologies are primarily used to operate the service and maintain security.</p>
-
-  <h2>10. Sharing and disclosure</h2>
-  <p>We do not treat your private account information as public merely because you have an account. Information may be visible to other users when you intentionally publish a profile, listing, document, post or other public content. Information may also be disclosed to service providers, authorised personnel, or authorities where required to provide the service, protect rights and safety, prevent abuse, or comply with applicable law.</p>
-
-  <h2>11. Data retention</h2>
-  <p>We retain information for as long as reasonably necessary to provide the requested services, maintain security and records, resolve disputes, enforce agreements, or satisfy legal and operational requirements. Retention periods can differ depending on the type of information and the service used.</p>
-
-  <h2>12. Your choices and requests</h2>
-  <p>Depending on your account and applicable law, you may request access to, correction of, or deletion of personal information. You may also stop using optional features or withdraw permissions where the feature allows it. Some information may need to be retained where required for security, legal, fraud-prevention or transaction-record purposes.</p>
-
-  <h2>13. Account and data deletion</h2>
-  <p>For information about requesting deletion of information associated with a KOJA AFRICA account or a Meta/Facebook connection, visit the <a href="{{ url_for('data_deletion') }}">KOJA AFRICA Data Deletion</a> page.</p>
-
-  <h2>14. Security</h2>
-  <p>KOJA AFRICA uses reasonable technical and organisational measures intended to protect information against unauthorised access, alteration, disclosure and destruction. No internet-based service can guarantee absolute security.</p>
-
-  <h2>15. Changes to this Policy</h2>
-  <p>This Policy may be updated when KOJA AFRICA adds or changes services, technology or legal requirements. The effective date at the top of this page identifies the current version.</p>
-
-  <h2>16. Contact</h2>
-  <p>For privacy questions or requests, use the KOJA AFRICA support/contact channel available on the platform. If a server contact email has been configured, it is: <strong>{{ privacy_contact }}</strong></p>
-
-  <div class="actions" style="margin-top:18px">
-    <a class="btn secondary" href="{{ url_for('home') }}">Back to KOJA AFRICA</a>
-    <a class="btn secondary" href="{{ url_for('data_deletion') }}">Data Deletion</a>
-  </div>
-</div>
-""", privacy_contact=(os.getenv("CONTACT_EMAIL", "").strip() or "the KOJA AFRICA support channel"))
-
-@app.route("/data-deletion")
-def data_deletion():
-    return render_page("Data Deletion", r"""
-<div class="hero">
-  <h1>KOJA AFRICA Data Deletion</h1>
-  <p>Instructions for requesting deletion of your KOJA AFRICA account information and data associated with connected services.</p>
-</div>
-<div class="card legal-content">
-  <h2>Request deletion</h2>
-  <p>To request deletion, contact KOJA AFRICA through the support/contact channel available on the platform and include the email address or account identifier associated with your KOJA AFRICA account. Do not send your password.</p>
-  <p>We will use the request to identify the relevant account and process deletion or explain any information that must be retained for security, legal, fraud-prevention or transaction-record purposes.</p>
-  <h2>Facebook / Meta data</h2>
-  <p>If you connected KOJA AFRICA to Facebook, your request can also identify that connection. KOJA AFRICA will process the deletion request for data held by KOJA AFRICA that was received through the connected feature, subject to applicable retention requirements.</p>
-  <p><strong>Current deletion page:</strong> <a href="{{ url_for('data_deletion', _external=True) }}">{{ url_for('data_deletion', _external=True) }}</a></p>
-  <p><strong>Privacy Policy:</strong> <a href="{{ url_for('privacy_policy', _external=True) }}">{{ url_for('privacy_policy', _external=True) }}</a></p>
-</div>
-""")
 
 # ============================================================
 # HOME / HEALTH
@@ -1419,13 +1324,20 @@ def login():
     return render_page("Login", r"""
 <div class="card" style="max-width:500px;margin:auto">
 <h2>KOJA Login</h2>
-<p class="small">KOJA supports its local profile password and, when configured, Supabase Auth accounts.</p>
+<p class="small">Sign in with your existing KOJA email and password, or continue securely with a connected account.</p>
+<div style="display:grid;gap:10px;margin:16px 0">
+<a class="btn secondary" href="{{ url_for('oauth_start', provider='google') }}">Continue with Google</a>
+<a class="btn secondary" href="{{ url_for('oauth_start', provider='facebook') }}">Continue with Facebook</a>
+<a class="btn secondary" href="{{ url_for('oauth_start', provider='github') }}">Continue with GitHub</a>
+</div>
+<div style="display:flex;align-items:center;gap:10px;margin:14px 0;color:#8895a7;font-size:12px"><span style="height:1px;background:#d9e0e8;flex:1"></span><span>OR</span><span style="height:1px;background:#d9e0e8;flex:1"></span></div>
 <form method="post">
 <label>Email or username</label><input name="identifier" autocomplete="username" required>
 <label>Password</label><input name="password" type="password" autocomplete="current-password" required>
-<button type="submit">Login</button>
+<button type="submit">Login with Email</button>
 </form>
 <p>No account? <a href="{{ url_for('register') }}">Create one</a></p>
+<p class="small"><a href="{{ url_for('public_privacy') }}">Privacy Policy</a> · <a href="{{ url_for('public_terms') }}">Terms of Service</a> · <a href="{{ url_for('public_data_deletion') }}">Data Deletion</a></p>
 </div>
 """)
 
@@ -8996,6 +8908,199 @@ def business_accounting_v2(business_id):
     accounts=db_select('koja_business_bi_account_balances',{'business_id':business_id},order='account_code.asc',limit=100) or []
     summary=first_row('koja_business_bi_accounting_summary',{'business_id':business_id}) or {}
     return render_page('Business Accounting V2',r"""<div class="hero"><h1>Accounting</h1><p>{{ b.name }} — connected double-entry ledger.</p><div class="actions"><a class="btn secondary" href="{{ url_for('business_dashboard',business_id=b.id) }}">Business Dashboard</a><a class="btn secondary" href="{{ url_for('business_intelligence_v3',business_id=b.id) }}">AI Intelligence</a></div></div><div class="grid"><div class="card"><h3>Revenue</h3><h2>{{ money(summary.accounting_revenue or 0,'ZMW') }}</h2></div><div class="card"><h3>Expenses</h3><h2>{{ money(summary.accounting_expenses or 0,'ZMW') }}</h2></div><div class="card"><h3>Net Result</h3><h2>{{ money(summary.accounting_net_result or 0,'ZMW') }}</h2></div><div class="card"><h3>Transactions</h3><h2>{{ summary.transaction_count or 0 }}</h2></div></div><div class="card"><h2>Record Transaction</h2><form method="post"><label>Type</label><select name="kind"><option value="sale">Sale / Income</option><option value="expense">Expense</option></select><label>Description</label><input name="description" required><label>Amount (ZMW)</label><input name="amount" type="number" min="0" step="0.01" required><label>Payment Method</label><select name="payment_method"><option value="cash">Cash</option><option value="bank">Bank</option><option value="mobile_money">Mobile Money</option></select><label>Expense Category</label><select name="category"><option value="other">Other</option><option value="rent">Rent</option><option value="salary">Salary</option><option value="transport">Transport</option><option value="marketing">Marketing</option><option value="utilities">Utilities</option><option value="tax">Tax</option></select><button class="btn">Save & Post to Ledger</button></form></div><div class="card"><h2>Chart of Accounts</h2><table><tr><th>Code</th><th>Account</th><th>Type</th><th>Balance</th></tr>{% for a in accounts %}<tr><td>{{ a.account_code }}</td><td>{{ a.account_name }}</td><td>{{ a.account_type }}</td><td>{{ money(a.balance or 0,'ZMW') }}</td></tr>{% else %}<tr><td colspan="4">No accounts.</td></tr>{% endfor %}</table></div><div class="card"><h2>Recent Ledger Transactions</h2><table><tr><th>Date</th><th>Type</th><th>Description</th><th>Amount</th><th>Status</th></tr>{% for x in txs %}<tr><td>{{ x.transaction_date }}</td><td>{{ x.transaction_type }}</td><td>{{ x.description }}</td><td>{{ money(x.total_amount or 0,'ZMW') }}</td><td>{{ x.status }}</td></tr>{% else %}<tr><td colspan="5">No accounting transactions yet.</td></tr>{% endfor %}</table></div>""",b=b,summary=summary,accounts=accounts,txs=txs,money=market_money)
+
+
+# ============================================================
+# PUBLIC LEGAL PAGES + SOCIAL/OAUTH LOGIN
+# ============================================================
+# Social sign-in is handled by Supabase Auth. The provider credentials are
+# configured in Supabase; they are never exposed in this Flask application.
+# Email/password login above remains unchanged.
+
+@app.get('/privacy')
+def public_privacy():
+    return render_page('KOJA AFRICA Privacy Policy', r'''
+<div class="card legal-page" style="max-width:900px;margin:auto">
+<h1>KOJA AFRICA Privacy Policy</h1>
+<p class="small">Last updated: 30 September 2026</p>
+<p>KOJA AFRICA (“KOJA”, “we”, “us” or “our”) provides a knowledge, learning, research, communication, business and digital services platform. This Privacy Policy explains how information may be collected, used, stored and protected when you use KOJA AFRICA.</p>
+<h2>1. Information we collect</h2>
+<p>Depending on the features you use, KOJA may process account information such as your name, email address, phone number, account role and profile information; content you upload or create; messages and communication information; service and transaction information; technical information such as device, browser, IP address and log information; and information you choose to provide through connected sign-in providers.</p>
+<h2>2. Social sign-in</h2>
+<p>KOJA may allow sign-in through Google, Facebook and GitHub. These providers authenticate your account and may provide information permitted by the provider and your authorization. KOJA does not receive or store your provider password. Provider-specific processing is also governed by the provider’s own privacy policy and terms.</p>
+<h2>3. How we use information</h2>
+<p>We use information to create and maintain accounts, authenticate users, provide documents and learning features, operate communication and business services, provide AI-assisted features, respond to requests, improve security and reliability, prevent abuse, maintain records, and comply with applicable legal requirements.</p>
+<h2>4. Documents and AI</h2>
+<p>Documents and other content you submit may be processed to provide document search, document intelligence, automatic notes and AI-assisted answers. AI-generated content is assistance and should be reviewed by the user before being relied upon for important decisions.</p>
+<h2>5. Location and device information</h2>
+<p>Some KOJA services may use location information when you choose to enable a location-based feature, such as delivery or live driver tracking. Location access should be requested only for the feature that needs it.</p>
+<h2>6. Sharing and service providers</h2>
+<p>Information may be processed by infrastructure and service providers that help KOJA operate the platform, such as hosting, database/storage, email, authentication, AI and communication providers. We do not sell your personal information as a core business practice.</p>
+<h2>7. Security</h2>
+<p>KOJA uses reasonable technical and organizational safeguards intended to protect information. No internet service can guarantee absolute security.</p>
+<h2>8. Retention and deletion</h2>
+<p>We retain information for as long as reasonably necessary to provide the service, maintain security and records, resolve disputes, or comply with legal obligations. You may request deletion of your KOJA account and applicable personal information.</p>
+<p>For Facebook-related data deletion requests, see <a href="{{ url_for('public_data_deletion') }}">KOJA data deletion instructions</a>.</p>
+<h2>9. Children</h2>
+<p>KOJA is not intended to knowingly collect personal information from children in violation of applicable law. Where a service has age requirements, users must comply with them.</p>
+<h2>10. Changes</h2>
+<p>We may update this Privacy Policy as the platform changes. The updated version will be published on this page with a revised date.</p>
+<h2>11. Contact</h2>
+<p>For privacy or data questions, use the contact and support mechanisms available inside KOJA AFRICA. You may also use the account deletion process described on the data deletion page.</p>
+</div>
+''')
+
+@app.get('/data-deletion')
+def public_data_deletion():
+    return render_page('KOJA AFRICA Data Deletion', r'''
+<div class="card legal-page" style="max-width:900px;margin:auto">
+<h1>KOJA AFRICA User Data Deletion</h1>
+<p class="small">Last updated: 30 September 2026</p>
+<p>KOJA AFRICA provides a way for users to request deletion of their account and applicable personal information.</p>
+<h2>Request deletion</h2>
+<p>Sign in to KOJA AFRICA and use the available account/settings support or deletion controls. If a deletion control is not available for your account, contact KOJA through the support/contact mechanism inside the platform and include the email address associated with your account.</p>
+<h2>Facebook data</h2>
+<p>If you used Facebook to sign in, you may request deletion of KOJA-held information associated with that connection. KOJA will process a valid request subject to information that must be retained for security, fraud prevention, legal compliance or other legitimate operational requirements.</p>
+<h2>What happens after a request</h2>
+<p>We may verify the request before acting. Information eligible for deletion will be removed or de-identified where reasonably practicable. Some records may remain where retention is required by law or necessary for security, accounting, dispute resolution or enforcement.</p>
+<p><a href="{{ url_for('public_privacy') }}">Read the KOJA AFRICA Privacy Policy</a></p>
+</div>
+''')
+
+@app.get('/terms')
+def public_terms():
+    return render_page('KOJA AFRICA Terms of Service', r'''
+<div class="card legal-page" style="max-width:900px;margin:auto">
+<h1>KOJA AFRICA Terms of Service</h1>
+<p class="small">Last updated: 30 September 2026</p>
+<p>These Terms of Service (“Terms”) govern your use of KOJA AFRICA (“KOJA”, “we”, “us” or “our”). By creating an account or using KOJA, you agree to comply with these Terms and applicable law.</p>
+<h2>1. The KOJA service</h2>
+<p>KOJA provides digital services that may include learning and research tools, documents, AI-assisted features, communication, media, business tools, delivery-related services and other platform features. Features may change as the platform develops.</p>
+<h2>2. Accounts</h2>
+<p>You are responsible for information supplied for your account and for protecting your login credentials. You must not impersonate another person or create an account for an unlawful purpose. Social sign-in through Google, Facebook or GitHub is subject to the relevant provider's rules.</p>
+<h2>3. Acceptable use</h2>
+<p>You must not use KOJA to violate applicable law, infringe intellectual-property or privacy rights, distribute malware, attempt unauthorized access, abuse other users, interfere with the platform, or upload content that you are not authorized to use.</p>
+<h2>4. User content</h2>
+<p>You retain rights you already have in content you upload or create. You grant KOJA the permissions reasonably necessary to host, process, display and provide that content as part of the services you request. You are responsible for ensuring that you have the necessary rights to submit content.</p>
+<h2>5. AI-assisted features</h2>
+<p>KOJA AI and automatic document features provide computer-generated assistance. AI output may be incomplete or inaccurate and should be reviewed before being used for academic, professional, financial, medical, legal or other consequential purposes. KOJA does not represent AI output as a substitute for qualified professional advice.</p>
+<h2>6. Communication and media</h2>
+<p>Users are responsible for their communications and media they publish or share. You must respect applicable law and the rights of other users and content owners. KOJA may restrict or remove content or access where reasonably necessary to enforce these Terms or protect the platform.</p>
+<h2>7. Business, payments and third-party services</h2>
+<p>Where KOJA provides business, payment, delivery or third-party integrations, additional terms may apply. Payment and third-party services may be subject to the terms and policies of the relevant provider.</p>
+<h2>8. Intellectual property</h2>
+<p>KOJA's software, branding, interface and platform materials are protected by applicable intellectual-property laws. You may not copy, reverse engineer, redistribute or commercially exploit KOJA materials except as permitted by law or written authorization.</p>
+<h2>9. Availability and changes</h2>
+<p>KOJA is provided on an evolving basis. We may modify, suspend or discontinue features, including for maintenance, security or technical reasons. We do not guarantee uninterrupted availability.</p>
+<h2>10. Suspension and termination</h2>
+<p>KOJA may suspend or terminate access where reasonably necessary because of serious or repeated violations of these Terms, security risks, unlawful activity, fraud, or other circumstances permitted by law.</p>
+<h2>11. Disclaimers</h2>
+<p>To the extent permitted by law, KOJA is provided without guarantees that every feature will be uninterrupted, error-free or suitable for every purpose. Nothing in these Terms removes rights that cannot lawfully be excluded.</p>
+<h2>12. Changes to these Terms</h2>
+<p>We may update these Terms when the platform or applicable requirements change. The latest version will be published on this page with its updated date. Continued use after an effective update means you accept the updated Terms to the extent permitted by law.</p>
+<h2>13. Contact</h2>
+<p>For questions about these Terms, use the support/contact mechanisms available inside KOJA AFRICA.</p>
+<p><a href="{{ url_for('public_privacy') }}">Privacy Policy</a> · <a href="{{ url_for('public_data_deletion') }}">Data Deletion</a></p>
+</div>
+''')
+
+@app.get('/auth/oauth/<provider>')
+def oauth_start(provider):
+    provider = clean(provider).lower()
+    if provider not in {'google','facebook','github'}:
+        abort(404)
+    if not (SUPABASE_URL and (SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY)):
+        flash('Social sign-in is not configured yet. Please use email login or configure Supabase Auth.', 'warning')
+        return redirect(url_for('login'))
+    return render_page('Continue with ' + provider.title(), r'''
+<div class="card" style="max-width:520px;margin:50px auto;text-align:center">
+<h2>Continue with {{ provider|title }}</h2>
+<p id="oauthStatus" class="small">Connecting securely…</p>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+(async function(){
+  const status=document.getElementById('oauthStatus');
+  try{
+    const client=supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }});
+    const {error}=await client.auth.signInWithOAuth({
+      provider:{{ provider|tojson }},
+      options:{redirectTo:{{ callback_url|tojson }},queryParams:{prompt:'select_account'}}
+    });
+    if(error) throw error;
+    status.textContent='Redirecting…';
+  }catch(e){
+    status.textContent='Sign-in could not start: '+(e.message||e);
+  }
+})();
+</script>
+''', provider=provider, supabase_url=SUPABASE_URL, supabase_key=SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY, callback_url=url_for('oauth_callback', _external=True))
+
+@app.get('/auth/callback')
+def oauth_callback():
+    return render_page('Completing sign-in', r'''
+<div class="card" style="max-width:520px;margin:50px auto;text-align:center">
+<h2>Completing KOJA sign-in</h2><p id="oauthStatus" class="small">Please wait…</p>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+(async function(){
+  const status=document.getElementById('oauthStatus');
+  try{
+    const client=supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }});
+    const code=new URLSearchParams(location.search).get('code');
+    if(!code) throw new Error('No authorization code was returned.');
+    const {data,error}=await client.auth.exchangeCodeForSession(code);
+    if(error) throw error;
+    const token=data?.session?.access_token;
+    if(!token) throw new Error('No authenticated session was returned.');
+    const r=await fetch({{ session_url|tojson }},{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({access_token:token})});
+    const out=await r.json().catch(()=>({}));
+    if(!r.ok||!out.ok) throw new Error(out.error||'KOJA could not create the local session.');
+    location.replace({{ dashboard_url|tojson }});
+  }catch(e){
+    status.textContent='Sign-in failed: '+(e.message||e);
+    setTimeout(()=>location.replace({{ login_url|tojson }}),3500);
+  }
+})();
+</script>
+''', supabase_url=SUPABASE_URL, supabase_key=SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY, session_url=url_for('oauth_session'), dashboard_url=url_for('dashboard'), login_url=url_for('login'))
+
+@app.post('/auth/oauth/session')
+def oauth_session():
+    body=request.get_json(silent=True) or {}
+    token=clean(body.get('access_token'))
+    if not token or not SUPABASE_URL:
+        return jsonify({'ok':False,'error':'Missing authentication token.'}),400
+    key=SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY or SUPABASE_SERVICE_KEY
+    try:
+        r=requests.get(f'{SUPABASE_URL}/auth/v1/user',headers={'apikey':key,'Authorization':f'Bearer {token}'},timeout=20)
+        if not r.ok:
+            return jsonify({'ok':False,'error':'Supabase authentication was rejected.'}),401
+        au=r.json() or {}
+        uid=au.get('id'); email=clean(au.get('email')).lower()
+        if not uid or not email:
+            return jsonify({'ok':False,'error':'The provider did not return a usable account.'}),400
+        meta=au.get('user_metadata') or {}
+        full_name=clean(meta.get('full_name') or meta.get('name') or meta.get('user_name') or meta.get('preferred_username') or email)
+        profile=find_user_by_id(uid)
+        if not profile:
+            profile,err=create_local_profile(uid,email,full_name)
+            if err:
+                # A profile may already exist by email when the provider account
+                # is linked to an older KOJA account.
+                profile=find_user_by_email(email)
+                if not profile:
+                    logger.error('OAuth profile creation failed: %s',err)
+                    return jsonify({'ok':False,'error':'Could not create your KOJA profile.'}),500
+        if profile.get('is_active') is False:
+            return jsonify({'ok':False,'error':'This KOJA account is inactive.'}),403
+        login_user(profile, {'user':au,'access_token':token})
+        log_activity('login','User logged in through social authentication.')
+        return jsonify({'ok':True})
+    except Exception:
+        logger.exception('OAuth session bridge failed')
+        return jsonify({'ok':False,'error':'Social sign-in could not be completed.'}),500
 
 if __name__=="__main__":
     port=int(os.getenv("PORT","5000"))
