@@ -9114,60 +9114,101 @@ def public_terms():
 @app.get('/auth/oauth/<provider>')
 def oauth_start(provider):
     provider = clean(provider).lower()
-    if provider not in {'google','facebook','github'}:
+    if provider not in {'google', 'facebook', 'github'}:
         abort(404)
-    if not (SUPABASE_URL and (SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY)):
-        flash('Social sign-in is not configured yet. Please use email login or configure Supabase Auth.', 'warning')
+    public_key = SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY
+    if not (SUPABASE_URL and public_key):
+        flash('Social sign-in is not configured yet. Please configure the Supabase public/anon key.', 'warning')
         return redirect(url_for('login'))
-    return render_page('Continue with ' + provider.title(), r'''
-<div class="card" style="max-width:520px;margin:50px auto;text-align:center">
+    scopes = {
+        'google': 'openid email profile',
+        'facebook': 'email public_profile',
+        'github': 'read:user user:email',
+    }[provider]
+    return render_page('Continue with ' + provider.title(), r'''<div class="card" style="max-width:520px;margin:50px auto;text-align:center">
 <h2>Continue with {{ provider|title }}</h2>
 <p id="oauthStatus" class="small">Connecting securely…</p>
+<p id="oauthHelp" class="small" style="display:none"></p>
 </div>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script>
 (async function(){
   const status=document.getElementById('oauthStatus');
+  const help=document.getElementById('oauthHelp');
   try{
-    const client=supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }});
+    if(!window.supabase || !window.supabase.createClient){
+      throw new Error('The secure sign-in library could not be loaded.');
+    }
+    const client=window.supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }},{auth:{flowType:'pkce',persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});
     const {error}=await client.auth.signInWithOAuth({
       provider:{{ provider|tojson }},
-      options:{redirectTo:{{ callback_url|tojson }},queryParams:{prompt:'select_account'}}
+      options:{
+        redirectTo:{{ callback_url|tojson }},
+        scopes:{{ scopes|tojson }},
+        ...( {{ provider|tojson }} === 'google' ? {queryParams:{prompt:'select_account'}} : {} )
+      }
     });
     if(error) throw error;
-    status.textContent='Redirecting…';
+    status.textContent='Redirecting to {{ provider|title }}…';
   }catch(e){
-    status.textContent='Sign-in could not start: '+(e.message||e);
+    status.textContent='Sign-in could not start.';
+    help.style.display='block';
+    help.textContent=e && e.message ? e.message : String(e);
   }
 })();
 </script>
-''', provider=provider, supabase_url=SUPABASE_URL, supabase_key=SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY, callback_url=url_for('oauth_callback', _external=True))
+''', provider=provider, scopes=scopes, supabase_url=SUPABASE_URL, supabase_key=public_key, callback_url=url_for('oauth_callback', _external=True))
 
 @app.get('/auth/callback')
 def oauth_callback():
-    return render_page('Completing sign-in', r'''
-<div class="card" style="max-width:520px;margin:50px auto;text-align:center">
+    # Supabase PKCE stores the verifier in browser storage. The callback therefore
+    # completes the code exchange in the browser, then bridges the access token to
+    # the normal KOJA Flask session. Provider secrets remain server-side in Supabase.
+    return render_page('Completing sign-in', r'''<div class="card" style="max-width:520px;margin:50px auto;text-align:center">
 <h2>Completing KOJA sign-in</h2><p id="oauthStatus" class="small">Please wait…</p>
+<p id="oauthHelp" class="small" style="display:none"></p>
 </div>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script>
 (async function(){
   const status=document.getElementById('oauthStatus');
+  const help=document.getElementById('oauthHelp');
+  const fail=(msg)=>{
+    status.textContent='Sign-in failed.';
+    help.style.display='block';
+    help.textContent=msg || 'The social sign-in session could not be completed.';
+    setTimeout(()=>location.replace({{ login_url|tojson }}),5000);
+  };
   try{
-    const client=supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }});
-    const code=new URLSearchParams(location.search).get('code');
+    if(!window.supabase || !window.supabase.createClient){
+      throw new Error('The secure sign-in library could not be loaded. Please try again.');
+    }
+    const client=window.supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }},{auth:{flowType:'pkce',persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});
+    const params=new URLSearchParams(location.search);
+    const oauthError=params.get('error_description') || params.get('error');
+    if(oauthError) throw new Error(oauthError);
+    const code=params.get('code');
     if(!code) throw new Error('No authorization code was returned.');
+    status.textContent='Verifying your account…';
     const {data,error}=await client.auth.exchangeCodeForSession(code);
     if(error) throw error;
     const token=data?.session?.access_token;
     if(!token) throw new Error('No authenticated session was returned.');
-    const r=await fetch({{ session_url|tojson }},{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({access_token:token})});
+    status.textContent='Creating your KOJA session…';
+    const r=await fetch({{ session_url|tojson }},{
+      method:'POST',
+      credentials:'same-origin',
+      cache:'no-store',
+      headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},
+      body:JSON.stringify({access_token:token})
+    });
     const out=await r.json().catch(()=>({}));
-    if(!r.ok||!out.ok) throw new Error(out.error||'KOJA could not create the local session.');
+    if(!r.ok || !out.ok) throw new Error(out.error || ('KOJA session creation failed ('+r.status+').'));
+    status.textContent='Signed in. Opening KOJA…';
     location.replace({{ dashboard_url|tojson }});
   }catch(e){
-    status.textContent='Sign-in failed: '+(e.message||e);
-    setTimeout(()=>location.replace({{ login_url|tojson }}),3500);
+    console.error('KOJA OAuth callback error',e);
+    fail(e && e.message ? e.message : String(e));
   }
 })();
 </script>
