@@ -9139,7 +9139,7 @@ def oauth_start(provider):
     if(!window.supabase || !window.supabase.createClient){
       throw new Error('The secure sign-in library could not be loaded.');
     }
-    const client=window.supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }},{auth:{flowType:'pkce',persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});
+    const client=window.supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }},{auth:{flowType:'pkce',persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}});
     const {error}=await client.auth.signInWithOAuth({
       provider:{{ provider|tojson }},
       options:{
@@ -9183,7 +9183,7 @@ def oauth_callback():
     if(!window.supabase || !window.supabase.createClient){
       throw new Error('The secure sign-in library could not be loaded. Please try again.');
     }
-    const client=window.supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }},{auth:{flowType:'pkce',persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});
+    const client=window.supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }},{auth:{flowType:'pkce',persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}});
     const params=new URLSearchParams(location.search);
     const oauthError=params.get('error_description') || params.get('error');
     if(oauthError) throw new Error(oauthError);
