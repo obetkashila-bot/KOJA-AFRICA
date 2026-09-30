@@ -169,7 +169,7 @@ HLS_PUBLIC_BASE = os.getenv("KOJA_HLS_PUBLIC_BASE", "").strip().rstrip("/")
 HLS_CDN_BASE = os.getenv("KOJA_HLS_CDN_BASE", "").strip().rstrip("/")
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.09.30-SECURITY-HARDENING-V3"
+APP_VERSION = "2026.09.30-SECURITY-HARDENING-V3-OAUTH"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
 
@@ -1385,7 +1385,13 @@ def login():
     return render_page("Login", r"""
 <div class="card" style="max-width:500px;margin:auto">
 <h2>KOJA Login</h2>
-<p class="small">KOJA supports its local profile password and, when configured, Supabase Auth accounts.</p>
+<p class="small">Sign in with your KOJA account or continue securely with a connected account.</p>
+<div style="display:grid;gap:10px;margin:16px 0">
+<a class="btn secondary" href="{{ url_for('oauth_start', provider='google') }}">Continue with Google</a>
+<a class="btn secondary" href="{{ url_for('oauth_start', provider='facebook') }}">Continue with Facebook</a>
+<a class="btn secondary" href="{{ url_for('oauth_start', provider='github') }}">Continue with GitHub</a>
+</div>
+<div style="display:flex;align-items:center;gap:10px;margin:14px 0;color:#8895a7;font-size:12px"><span style="height:1px;background:#d9e0e8;flex:1"></span><span>OR</span><span style="height:1px;background:#d9e0e8;flex:1"></span></div>
 <form method="post">
 <label>Email or username</label><input name="identifier" autocomplete="username" required>
 <label>Password</label><input name="password" type="password" autocomplete="current-password" required>
@@ -1404,6 +1410,104 @@ def logout():
     session.clear()
     flash("You have been logged out.","success")
     return redirect(url_for("home"))
+
+@app.get('/auth/oauth/<provider>')
+def oauth_start(provider):
+    provider = clean(provider).lower()
+    if provider not in {'google','facebook','github'}:
+        abort(404)
+    if not (SUPABASE_URL and (SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY)):
+        flash('Social sign-in is not configured yet. Please use email login or configure Supabase Auth.', 'warning')
+        return redirect(url_for('login'))
+    return render_page('Continue with ' + provider.title(), r'''
+<div class="card" style="max-width:520px;margin:50px auto;text-align:center">
+<h2>Continue with {{ provider|title }}</h2>
+<p id="oauthStatus" class="small">Connecting securely…</p>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+(async function(){
+  const status=document.getElementById('oauthStatus');
+  try{
+    const client=supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }});
+    const {error}=await client.auth.signInWithOAuth({
+      provider:{{ provider|tojson }},
+      options:{redirectTo:{{ callback_url|tojson }},queryParams:{prompt:'select_account'}}
+    });
+    if(error) throw error;
+    status.textContent='Redirecting…';
+  }catch(e){
+    status.textContent='Sign-in could not start: '+(e.message||e);
+  }
+})();
+</script>
+''', provider=provider, supabase_url=SUPABASE_URL, supabase_key=SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY, callback_url=url_for('oauth_callback', _external=True))
+
+@app.get('/auth/callback')
+def oauth_callback():
+    return render_page('Completing sign-in', r'''
+<div class="card" style="max-width:520px;margin:50px auto;text-align:center">
+<h2>Completing KOJA sign-in</h2><p id="oauthStatus" class="small">Please wait…</p>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+(async function(){
+  const status=document.getElementById('oauthStatus');
+  try{
+    const client=supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }});
+    const code=new URLSearchParams(location.search).get('code');
+    if(!code) throw new Error('No authorization code was returned.');
+    const {data,error}=await client.auth.exchangeCodeForSession(code);
+    if(error) throw error;
+    const token=data?.session?.access_token;
+    if(!token) throw new Error('No authenticated session was returned.');
+    const r=await fetch({{ session_url|tojson }},{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':document.querySelector('meta[name=\"csrf-token\"]')?.content||''},body:JSON.stringify({access_token:token})});
+    const out=await r.json().catch(()=>({}));
+    if(!r.ok||!out.ok) throw new Error(out.error||'KOJA could not create the local session.');
+    location.replace({{ dashboard_url|tojson }});
+  }catch(e){
+    status.textContent='Sign-in failed: '+(e.message||e);
+    setTimeout(()=>location.replace({{ login_url|tojson }}),3500);
+  }
+})();
+</script>
+''', supabase_url=SUPABASE_URL, supabase_key=SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY, session_url=url_for('oauth_session'), dashboard_url=url_for('dashboard'), login_url=url_for('login'))
+
+@app.post('/auth/oauth/session')
+def oauth_session():
+    body=request.get_json(silent=True) or {}
+    token=clean(body.get('access_token'))
+    if not token or not SUPABASE_URL:
+        return jsonify({'ok':False,'error':'Missing authentication token.'}),400
+    key=SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY or SUPABASE_SERVICE_KEY
+    try:
+        r=requests.get(f'{SUPABASE_URL}/auth/v1/user',headers={'apikey':key,'Authorization':f'Bearer {token}'},timeout=20)
+        if not r.ok:
+            return jsonify({'ok':False,'error':'Supabase authentication was rejected.'}),401
+        au=r.json() or {}
+        uid=au.get('id'); email=clean(au.get('email')).lower()
+        if not uid or not email:
+            return jsonify({'ok':False,'error':'The provider did not return a usable account.'}),400
+        meta=au.get('user_metadata') or {}
+        full_name=clean(meta.get('full_name') or meta.get('name') or meta.get('user_name') or meta.get('preferred_username') or email)
+        profile=find_user_by_id(uid)
+        if not profile:
+            profile,err=create_local_profile(uid,email,full_name)
+            if err:
+                # A profile may already exist by email when the provider account
+                # is linked to an older KOJA account.
+                profile=find_user_by_email(email)
+                if not profile:
+                    logger.error('OAuth profile creation failed: %s',err)
+                    return jsonify({'ok':False,'error':'Could not create your KOJA profile.'}),500
+        if profile.get('is_active') is False:
+            return jsonify({'ok':False,'error':'This KOJA account is inactive.'}),403
+        login_user(profile, {'user':au,'access_token':token})
+        log_activity('login','User logged in through social authentication.')
+        return jsonify({'ok':True})
+    except Exception:
+        logger.exception('OAuth session bridge failed')
+        return jsonify({'ok':False,'error':'Social sign-in could not be completed.'}),500
 
 # ============================================================
 # DASHBOARD / SERVICES

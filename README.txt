@@ -1,14 +1,5 @@
-KOJA AFRICA Privacy Policy Update
-
-This package contains the current KOJA AFRICA app.py with public legal pages added:
-- /privacy
-- /data-deletion
-
-Privacy Policy URL for Meta:
-https://koja-africa.onrender.com/privacy
-
-Data deletion URL for Meta:
-https://koja-africa.onrender.com/data-deletion
-
-The existing KOJA AFRICA application structure and features are preserved.
-The app.py passes Python syntax compilation.
+KOJA AFRICA - Security Hardened + Google/GitHub OAuth
+Main file: app.py
+Google, Facebook and GitHub sign-in use the existing Supabase Auth provider configuration.
+No OAuth provider secret is stored in app.py.
+Python syntax check passed.
