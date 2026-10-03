@@ -11153,3 +11153,951 @@ def connect_ice_config():
         urls=[x.strip() for x in turn_url.split(',') if x.strip()]
         servers.append({'urls': urls or [turn_url], 'username':turn_username, 'credential':turn_credential})
     return jsonify({'iceServers':servers,'turnConfigured':len(servers)>1})
+
+# ============================================================
+# KOJA CORE 1-6 — APPLICATION INTEGRATION LAYER
+# Uses the existing KOJA AFRICA authentication and Supabase REST layer.
+# This block is additive: existing routes/services remain intact.
+# ============================================================
+
+KOJA_CORE_VERSION = "1.1.0-core1-6-africa"
+KOJA_CORE_SERVICES = [
+    "identity", "market", "business", "pay", "delivery", "ai",
+    "media", "documents", "notifications", "cloud", "education", "core"
+]
+
+# Africa-wide regional catalogue. Zambia is the initial/default deployment,
+# but KOJA CORE is designed for all 54 African countries.
+KOJA_AFRICA_REGIONS = [
+    ("DZ","Algeria","DZD","ar","Africa/Algiers","+213"),
+    ("AO","Angola","AOA","pt","Africa/Luanda","+244"),
+    ("BJ","Benin","XOF","fr","Africa/Porto-Novo","+229"),
+    ("BW","Botswana","BWP","en","Africa/Gaborone","+267"),
+    ("BF","Burkina Faso","XOF","fr","Africa/Ouagadougou","+226"),
+    ("BI","Burundi","BIF","fr","Africa/Bujumbura","+257"),
+    ("CV","Cabo Verde","CVE","pt","Atlantic/Cape_Verde","+238"),
+    ("CM","Cameroon","XAF","fr","Africa/Douala","+237"),
+    ("CF","Central African Republic","XAF","fr","Africa/Bangui","+236"),
+    ("TD","Chad","XAF","fr","Africa/Ndjamena","+235"),
+    ("KM","Comoros","KMF","ar","Indian/Comoro","+269"),
+    ("CG","Republic of the Congo","XAF","fr","Africa/Brazzaville","+242"),
+    ("CD","Democratic Republic of the Congo","CDF","fr","Africa/Kinshasa","+243"),
+    ("CI","Cote d'Ivoire","XOF","fr","Africa/Abidjan","+225"),
+    ("DJ","Djibouti","DJF","fr","Africa/Djibouti","+253"),
+    ("EG","Egypt","EGP","ar","Africa/Cairo","+20"),
+    ("GQ","Equatorial Guinea","XAF","es","Africa/Malabo","+240"),
+    ("ER","Eritrea","ERN","ar","Africa/Asmara","+291"),
+    ("SZ","Eswatini","SZL","en","Africa/Mbabane","+268"),
+    ("ET","Ethiopia","ETB","am","Africa/Addis_Ababa","+251"),
+    ("GA","Gabon","XAF","fr","Africa/Libreville","+241"),
+    ("GM","Gambia","GMD","en","Africa/Banjul","+220"),
+    ("GH","Ghana","GHS","en","Africa/Accra","+233"),
+    ("GN","Guinea","GNF","fr","Africa/Conakry","+224"),
+    ("GW","Guinea-Bissau","XOF","pt","Africa/Bissau","+245"),
+    ("KE","Kenya","KES","en","Africa/Nairobi","+254"),
+    ("LS","Lesotho","LSL","en","Africa/Maseru","+266"),
+    ("LR","Liberia","LRD","en","Africa/Monrovia","+231"),
+    ("LY","Libya","LYD","ar","Africa/Tripoli","+218"),
+    ("MG","Madagascar","MGA","mg","Indian/Antananarivo","+261"),
+    ("MW","Malawi","MWK","en","Africa/Blantyre","+265"),
+    ("ML","Mali","XOF","fr","Africa/Bamako","+223"),
+    ("MR","Mauritania","MRU","ar","Africa/Nouakchott","+222"),
+    ("MU","Mauritius","MUR","en","Indian/Mauritius","+230"),
+    ("MA","Morocco","MAD","ar","Africa/Casablanca","+212"),
+    ("MZ","Mozambique","MZN","pt","Africa/Maputo","+258"),
+    ("NA","Namibia","NAD","en","Africa/Windhoek","+264"),
+    ("NE","Niger","XOF","fr","Africa/Niamey","+227"),
+    ("NG","Nigeria","NGN","en","Africa/Lagos","+234"),
+    ("RW","Rwanda","RWF","en","Africa/Kigali","+250"),
+    ("ST","Sao Tome and Principe","STN","pt","Africa/Sao_Tome","+239"),
+    ("SN","Senegal","XOF","fr","Africa/Dakar","+221"),
+    ("SC","Seychelles","SCR","en","Indian/Mahe","+248"),
+    ("SL","Sierra Leone","SLE","en","Africa/Freetown","+232"),
+    ("SO","Somalia","SOS","so","Africa/Mogadishu","+252"),
+    ("ZA","South Africa","ZAR","en","Africa/Johannesburg","+27"),
+    ("SS","South Sudan","SSP","en","Africa/Juba","+211"),
+    ("SD","Sudan","SDG","ar","Africa/Khartoum","+249"),
+    ("TZ","Tanzania","TZS","sw","Africa/Dar_es_Salaam","+255"),
+    ("TG","Togo","XOF","fr","Africa/Lome","+228"),
+    ("TN","Tunisia","TND","ar","Africa/Tunis","+216"),
+    ("UG","Uganda","UGX","en","Africa/Kampala","+256"),
+    ("ZM","Zambia","ZMW","en","Africa/Lusaka","+260"),
+    ("ZW","Zimbabwe","ZWG","en","Africa/Harare","+263"),
+]
+
+
+def _core_json(value, default=None):
+    if value is None:
+        return default if default is not None else {}
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(value)
+    except Exception:
+        return default if default is not None else {}
+
+
+def _core_scopes(row):
+    scopes = _core_json(row.get("scopes"), [])
+    if isinstance(scopes, str):
+        scopes = [scopes]
+    return [str(x).strip() for x in scopes if str(x).strip()]
+
+
+def _core_api_key_actor():
+    """Resolve a kza_ API key without exposing the secret."""
+    auth = clean(request.headers.get("Authorization", ""))
+    if not auth.lower().startswith("bearer "):
+        return None
+    raw = auth.split(" ", 1)[1].strip()
+    if not raw.startswith("kza_"):
+        return None
+    digest = hashlib.sha256(raw.encode()).hexdigest()
+    rows = db_select("koja_api_keys", filters={"key_hash": digest, "status": "active"}, limit=1)
+    if not rows:
+        return None
+    key = rows[0]
+    return {
+        "type": "api_key",
+        "user_id": str(key.get("user_id")) if key.get("user_id") else None,
+        "key_id": str(key.get("id")) if key.get("id") else None,
+        "scopes": _core_scopes(key),
+        "key_prefix": key.get("key_prefix"),
+    }
+
+
+def _core_actor(required=True):
+    user = current_user()
+    if user:
+        return {
+            "type": "session",
+            "user_id": str(user.get("id")) if user.get("id") else None,
+            "scopes": ["*"] if user.get("is_admin") else [],
+            "user": user,
+        }
+    actor = _core_api_key_actor()
+    if actor:
+        return actor
+    if required:
+        return None
+    return {"type": "anonymous", "user_id": None, "scopes": []}
+
+
+def _core_has_scope(actor, scope):
+    if not actor:
+        return False
+    if actor.get("type") == "session" and actor.get("user", {}).get("is_admin"):
+        return True
+    scopes = actor.get("scopes") or []
+    return "*" in scopes or scope in scopes
+
+
+def _core_audit(user_id, action, resource_type=None, resource_id=None, metadata=None, organization_id=None):
+    if not table_exists("koja_core_audit_logs"):
+        return
+    payload = {
+        "user_id": user_id,
+        "organization_id": organization_id,
+        "action": str(action)[:180],
+        "resource_type": str(resource_type)[:100] if resource_type else None,
+        "resource_id": str(resource_id) if resource_id else None,
+        "metadata": metadata or {},
+        "created_at": utc_now(),
+    }
+    try:
+        db_insert("koja_core_audit_logs", payload)
+    except Exception:
+        logger.exception("KOJA CORE audit write failed")
+
+
+def _core_emit(event_type, payload=None, organization_id=None, actor=None, source_service="core"):
+    """Create a CORE event and queue deliveries for active subscriptions."""
+    actor = actor or _core_actor(required=False)
+    user_id = actor.get("user_id") if actor else None
+    event_payload = payload or {}
+    event = None
+    if not table_exists("koja_core_events"):
+        return None, "koja_core_events is not installed"
+
+    event_data = {
+        "organization_id": organization_id,
+        "event_type": str(event_type)[:160],
+        "source_service": str(source_service)[:80],
+        "payload": event_payload,
+        "created_at": utc_now(),
+    }
+    # CORE 1 schema may use actor/user fields depending on the installed revision.
+    event, err = db_insert("koja_core_events", event_data)
+    if err:
+        event_data.pop("source_service", None)
+        event, err = db_insert("koja_core_events", event_data)
+    if err or not event:
+        return None, err or "event creation failed"
+
+    event_id = event.get("id")
+    if table_exists("koja_core_event_subscriptions") and event_id:
+        subscriptions = db_select(
+            "koja_core_event_subscriptions",
+            filters={"event_type": event_type, "status": "active"},
+            limit=500,
+        )
+        for sub in subscriptions:
+            target = sub.get("subscriber_service") or sub.get("service_key")
+            delivery = {
+                "event_id": event_id,
+                "subscription_id": sub.get("id"),
+                "target_service": target,
+                "delivery_type": "internal",
+                "status": "pending",
+                "attempts": 0,
+                "available_at": utc_now(),
+                "next_attempt_at": utc_now(),
+                "created_at": utc_now(),
+                "updated_at": utc_now(),
+            }
+            _, derr = db_insert("koja_core_event_deliveries", delivery)
+            if derr:
+                # Compatible with the lean CORE 3 schema.
+                delivery.pop("target_service", None)
+                delivery.pop("delivery_type", None)
+                delivery.pop("available_at", None)
+                delivery.pop("updated_at", None)
+                db_insert("koja_core_event_deliveries", delivery)
+
+    _core_audit(user_id, "core.event.emit", "event", event_id,
+                {"event_type": event_type, "source_service": source_service}, organization_id)
+    return event, None
+
+
+def _core_service_status(service_key):
+    row = first_row("koja_core_services", {"service_key": service_key}) if table_exists("koja_core_services") else None
+    binding = first_row("koja_core_service_bindings", {"service_key": service_key}) if table_exists("koja_core_service_bindings") else None
+    return {
+        "service": service_key,
+        "registered": bool(row or binding),
+        "status": (row or binding or {}).get("status", "unknown"),
+        "binding": binding or {},
+    }
+
+
+@app.route("/core")
+def koja_core_dashboard():
+    actor = _core_actor(required=False)
+    user = current_user()
+    if not user and actor.get("type") == "anonymous":
+        return redirect(url_for("login", next="/core"))
+    services = [_core_service_status(s) for s in KOJA_CORE_SERVICES]
+    ready = sum(1 for x in services if x["registered"])
+    return render_page("KOJA CORE", r'''
+<div class="hero">
+  <h1>KOJA CORE</h1>
+  <p>The operating layer connecting KOJA Identity, services, data, events, permissions and infrastructure.</p>
+  <p><strong>Version:</strong> {{ version }} &nbsp; <strong>Registered services:</strong> {{ ready }}/{{ services|length }}</p>
+</div>
+<div class="grid">
+{% for s in services %}
+<div class="card">
+  <h3>{{ s.service|title }}</h3>
+  <p><strong>{{ 'CONNECTED' if s.registered else 'WAITING FOR BINDING' }}</strong></p>
+  <p>Status: {{ s.status }}</p>
+</div>
+{% endfor %}
+</div>
+<div class="card">
+  <h2>CORE responsibilities</h2>
+  <p>Identity • Organizations • Permissions • Events • Service Bus • Audit • Search • Webhooks • Files • API usage • Global configuration.</p>
+</div>
+''', version=KOJA_CORE_VERSION, services=services, ready=ready)
+
+
+@app.route("/api/v1/core/status")
+def koja_core_status_api():
+    services = [_core_service_status(s) for s in KOJA_CORE_SERVICES]
+    return jsonify({
+        "ok": True,
+        "core": "KOJA CORE",
+        "version": KOJA_CORE_VERSION,
+        "services": services,
+        "registered": sum(1 for s in services if s["registered"]),
+        "total": len(services),
+        "country": {"code": "ZM", "currency": "ZMW", "timezone": "Africa/Lusaka"},
+        "default_country": "ZM",
+        "region": "Africa",
+        "supported_countries": len(KOJA_AFRICA_REGIONS),
+        "supported_currency_codes": sorted({r[2] for r in KOJA_AFRICA_REGIONS}),
+        "timestamp": utc_now(),
+    })
+
+
+@app.route("/api/v1/core/me")
+def koja_core_me_api():
+    actor = _core_actor(required=False)
+    if actor.get("type") == "anonymous":
+        return jsonify({"ok": False, "error": "authentication_required"}), 401
+    user = current_user() or {}
+    uid = actor.get("user_id")
+    profile = first_row("profiles", {"id": uid}) if uid and table_exists("profiles") else None
+    memberships = db_select("koja_core_memberships", filters={"user_id": uid}, limit=100) if uid and table_exists("koja_core_memberships") else []
+    return jsonify({
+        "ok": True,
+        "actor": {"type": actor.get("type"), "user_id": uid, "scopes": actor.get("scopes", [])},
+        "user": profile or user,
+        "memberships": memberships,
+    })
+
+
+@app.route("/api/v1/core/permissions")
+def koja_core_permissions_api():
+    actor = _core_actor(required=False)
+    if actor.get("type") == "anonymous":
+        return jsonify({"ok": False, "error": "authentication_required"}), 401
+    rows = db_select("koja_core_permissions", order="key.asc", limit=500) if table_exists("koja_core_permissions") else []
+    return jsonify({"ok": True, "permissions": rows})
+
+
+@app.route("/api/v1/core/regions")
+def koja_core_regions_api():
+    rows = db_select("koja_core_regions", order="country_code.asc", limit=500) if table_exists("koja_core_regions") else []
+    return jsonify({"ok": True, "regions": rows})
+
+
+@app.route("/api/v1/core/organizations", methods=["GET", "POST"])
+def koja_core_organizations_api():
+    actor = _core_actor(required=False)
+    if actor.get("type") == "anonymous":
+        return jsonify({"ok": False, "error": "authentication_required"}), 401
+    uid = actor.get("user_id")
+    if request.method == "GET":
+        rows = db_select("koja_core_organizations", filters={"owner_user_id": uid}, order="created_at.desc", limit=100) if table_exists("koja_core_organizations") else []
+        if not rows and table_exists("koja_core_memberships"):
+            memberships = db_select("koja_core_memberships", filters={"user_id": uid}, limit=100)
+            ids = [m.get("organization_id") for m in memberships if m.get("organization_id")]
+            for oid in ids:
+                found = first_row("koja_core_organizations", {"id": oid})
+                if found:
+                    rows.append(found)
+        return jsonify({"ok": True, "organizations": rows})
+
+    if not _core_has_scope(actor, "core.organizations.write"):
+        return jsonify({"ok": False, "error": "permission_denied", "required_scope": "core.organizations.write"}), 403
+    data = request.get_json(silent=True) or request.form
+    name = clean(data.get("name") or data.get("organization_name") or "")[:160]
+    if not name:
+        return jsonify({"ok": False, "error": "name_required"}), 400
+    payload = {
+        "name": name,
+        "owner_user_id": uid,
+        "country_code": clean(data.get("country_code") or "ZM")[:8],
+        "status": "active",
+        "created_at": utc_now(),
+        "updated_at": utc_now(),
+    }
+    row, err = db_insert("koja_core_organizations", payload)
+    if err:
+        payload.pop("owner_user_id", None)
+        row, err = db_insert("koja_core_organizations", payload)
+    if err:
+        return jsonify({"ok": False, "error": "organization_create_failed", "detail": err}), 500
+    oid = row.get("id") if row else None
+    if oid and table_exists("koja_core_memberships"):
+        db_insert("koja_core_memberships", {
+            "organization_id": oid, "user_id": uid, "role_id": None,
+            "status": "active", "created_at": utc_now(), "updated_at": utc_now()
+        })
+    _core_audit(uid, "core.organization.create", "organization", oid, {"name": name})
+    _core_emit("CORE_ORGANIZATION_CREATED", {"organization_id": oid, "name": name}, oid, actor)
+    return jsonify({"ok": True, "organization": row}), 201
+
+
+@app.route("/api/v1/core/organizations/<organization_id>")
+def koja_core_organization_api(organization_id):
+    actor = _core_actor(required=False)
+    if actor.get("type") == "anonymous":
+        return jsonify({"ok": False, "error": "authentication_required"}), 401
+    row = first_row("koja_core_organizations", {"id": organization_id}) if table_exists("koja_core_organizations") else None
+    if not row:
+        return jsonify({"ok": False, "error": "organization_not_found"}), 404
+    return jsonify({"ok": True, "organization": row})
+
+
+@app.route("/api/v1/core/organizations/<organization_id>/members")
+def koja_core_members_api(organization_id):
+    actor = _core_actor(required=False)
+    if actor.get("type") == "anonymous":
+        return jsonify({"ok": False, "error": "authentication_required"}), 401
+    rows = db_select("koja_core_memberships", filters={"organization_id": organization_id}, limit=500) if table_exists("koja_core_memberships") else []
+    return jsonify({"ok": True, "organization_id": organization_id, "members": rows})
+
+
+@app.route("/api/v1/core/events", methods=["POST"])
+def koja_core_events_api():
+    actor = _core_actor(required=False)
+    if actor.get("type") == "anonymous":
+        return jsonify({"ok": False, "error": "authentication_required"}), 401
+    if not _core_has_scope(actor, "core.events.write") and not _core_has_scope(actor, "developer.events.write"):
+        return jsonify({"ok": False, "error": "permission_denied", "required_scope": "core.events.write"}), 403
+    data = request.get_json(silent=True) or request.form
+    event_type = clean(data.get("event_type") or data.get("type") or "")[:160]
+    if not event_type:
+        return jsonify({"ok": False, "error": "event_type_required"}), 400
+    payload = data.get("payload") or {}
+    if isinstance(payload, str):
+        payload = _core_json(payload, {})
+    organization_id = clean(data.get("organization_id") or "") or None
+    source_service = clean(data.get("source_service") or "core")[:80]
+    event, err = _core_emit(event_type, payload, organization_id, actor, source_service)
+    if err:
+        return jsonify({"ok": False, "error": "event_create_failed", "detail": err}), 500
+    return jsonify({"ok": True, "event": event}), 201
+
+
+@app.route("/api/v1/core/audit")
+def koja_core_audit_api():
+    actor = _core_actor(required=False)
+    if actor.get("type") == "anonymous":
+        return jsonify({"ok": False, "error": "authentication_required"}), 401
+    if not _core_has_scope(actor, "core.audit.read"):
+        return jsonify({"ok": False, "error": "permission_denied", "required_scope": "core.audit.read"}), 403
+    rows = db_select("koja_core_audit_logs", order="created_at.desc", limit=200) if table_exists("koja_core_audit_logs") else []
+    return jsonify({"ok": True, "audit": rows})
+
+
+@app.route("/api/v1/core/search")
+def koja_core_search_api():
+    actor = _core_actor(required=False)
+    if actor.get("type") == "anonymous":
+        return jsonify({"ok": False, "error": "authentication_required"}), 401
+    if not _core_has_scope(actor, "core.search.read"):
+        return jsonify({"ok": False, "error": "permission_denied", "required_scope": "core.search.read"}), 403
+    q = clean(request.args.get("q") or "")[:160]
+    if not q:
+        return jsonify({"ok": True, "query": "", "results": []})
+    rows = db_select("koja_core_search_index", filters={"content": f"ilike.%{q}%"}, limit=100) if table_exists("koja_core_search_index") else []
+    return jsonify({"ok": True, "query": q, "results": rows})
+
+
+@app.route("/api/v1/core/services")
+def koja_core_services_api():
+    actor = _core_actor(required=False)
+    if actor.get("type") == "anonymous":
+        return jsonify({"ok": False, "error": "authentication_required"}), 401
+    if not _core_has_scope(actor, "core.services.read"):
+        return jsonify({"ok": False, "error": "permission_denied", "required_scope": "core.services.read"}), 403
+    rows = db_select("koja_core_services", order="service_key.asc", limit=500) if table_exists("koja_core_services") else []
+    bindings = db_select("koja_core_service_bindings", order="service_key.asc", limit=500) if table_exists("koja_core_service_bindings") else []
+    return jsonify({"ok": True, "services": rows, "bindings": bindings})
+
+
+@app.route("/api/v1/core/emit", methods=["POST"])
+def koja_core_emit_alias():
+    # Convenience endpoint for internal KOJA services using the same CORE bus.
+    return koja_core_events_api()
+
+
+# ============================================================
+# KOJA CORE SERVICE EVENT HELPERS
+# Existing service routes can call these helpers without changing their UI.
+# ============================================================
+
+def koja_core_event(event_type, payload=None, organization_id=None, source_service="core", user_id=None):
+    actor = {"type": "internal", "user_id": user_id, "scopes": ["*"]}
+    event, err = _core_emit(event_type, payload or {}, organization_id, actor, source_service)
+    return event, err
+
+
+def koja_core_service_event(service_key, event_type, payload=None, organization_id=None, user_id=None):
+    return koja_core_event(
+        event_type,
+        {"service": service_key, **(payload or {})},
+        organization_id=organization_id,
+        source_service=service_key,
+        user_id=user_id,
+    )
+
+
+@app.route("/api/v1/core/service-event", methods=["POST"])
+def koja_core_service_event_api():
+    actor = _core_actor(required=False)
+    if actor.get("type") == "anonymous":
+        return jsonify({"ok": False, "error": "authentication_required"}), 401
+    if not _core_has_scope(actor, "core.service_events.write") and not _core_has_scope(actor, "developer.events.write"):
+        return jsonify({"ok": False, "error": "permission_denied", "required_scope": "core.service_events.write"}), 403
+    data = request.get_json(silent=True) or request.form
+    service = clean(data.get("service_key") or data.get("service") or "core")[:80]
+    event_type = clean(data.get("event_type") or "")[:160]
+    payload = data.get("payload") or {}
+    if isinstance(payload, str):
+        payload = _core_json(payload, {})
+    if not event_type:
+        return jsonify({"ok": False, "error": "event_type_required"}), 400
+    event, err = koja_core_service_event(service, event_type, payload, data.get("organization_id"), actor.get("user_id"))
+    if err:
+        return jsonify({"ok": False, "error": "event_create_failed", "detail": err}), 500
+    return jsonify({"ok": True, "event": event}), 201
+
+
+# ============================================================
+# CORE-AWARE SERVICE STATUS FOR THE EXISTING PLATFORM CENTER
+# ============================================================
+@app.route("/api/platform/core-status")
+def koja_platform_core_status_v2():
+    services = [_core_service_status(s) for s in KOJA_CORE_SERVICES]
+    return jsonify({
+        "ok": True,
+        "core_version": KOJA_CORE_VERSION,
+        "operating_layer": "KOJA CORE",
+        "services": services,
+        "country": "ZM",
+        "currency": "ZMW",
+    })
+
+# ============================================================
+# KOJA CORE REMAINING CONTROL-PLANE LAYER
+# Africa-wide: FX, tax, payments, delivery, notifications, billing,
+# cross-border commerce, observability and KOJA CLOUD links.
+# Additive only; existing KOJA service routes remain unchanged.
+# ============================================================
+
+KOJA_CORE_REMAINING_VERSION = "1.2.0-core-control-plane"
+
+
+def _core_require_scope(scope):
+    actor = _core_actor(required=False)
+    if actor.get("type") == "anonymous":
+        return None, (jsonify({"ok": False, "error": "authentication_required"}), 401)
+    if not _core_has_scope(actor, scope) and not _core_has_scope(actor, "*"):
+        return None, (jsonify({"ok": False, "error": "permission_denied", "required_scope": scope}), 403)
+    return actor, None
+
+
+def _core_region_row(country_code):
+    code = clean(country_code or "ZM").upper()[:8]
+    if table_exists("koja_core_regions"):
+        row = first_row("koja_core_regions", {"country_code": code})
+        if row:
+            return row
+    for item in KOJA_AFRICA_REGIONS:
+        if item[0] == code:
+            return {
+                "country_code": item[0], "country_name": item[1], "currency_code": item[2],
+                "language_code": item[3], "timezone": item[4], "phone_region": item[5],
+                "tax_region": item[0], "legal_region": item[0], "enabled": True, "config": {}
+            }
+    return None
+
+
+@app.route("/api/v1/core/regions/<country_code>")
+def koja_core_region_detail_api(country_code):
+    row = _core_region_row(country_code)
+    if not row:
+        return jsonify({"ok": False, "error": "country_not_supported"}), 404
+    code = row.get("country_code")
+    tax = db_select("koja_core_tax_profiles", filters={"country_code": code}, limit=1) if table_exists("koja_core_tax_profiles") else []
+    payments = db_select("koja_core_payment_providers", filters={"country_code": code, "status": "active"}, order="provider_key.asc", limit=100) if table_exists("koja_core_payment_providers") else []
+    delivery = db_select("koja_core_delivery_regions", filters={"country_code": code, "status": "active"}, order="region_name.asc", limit=500) if table_exists("koja_core_delivery_regions") else []
+    notifications = db_select("koja_core_notification_routes", filters={"country_code": code, "status": "active"}, order="priority.asc", limit=100) if table_exists("koja_core_notification_routes") else []
+    return jsonify({"ok": True, "region": row, "tax": tax[0] if tax else None, "payments": payments, "delivery": delivery, "notifications": notifications})
+
+
+@app.route("/api/v1/core/currencies")
+def koja_core_currencies_api():
+    regions = db_select("koja_core_regions", order="country_code.asc", limit=500) if table_exists("koja_core_regions") else []
+    if not regions:
+        regions = [_core_region_row(x[0]) for x in KOJA_AFRICA_REGIONS]
+    seen = {}
+    for r in regions:
+        code = clean(r.get("currency_code") or "").upper()
+        if code and code not in seen:
+            seen[code] = {"currency_code": code, "countries": [], "country_count": 0}
+        if code:
+            seen[code]["countries"].append(r.get("country_code"))
+            seen[code]["country_count"] += 1
+    rates = db_select("koja_core_currency_rates", filters={"status": "active"}, order="base_currency.asc", limit=2000) if table_exists("koja_core_currency_rates") else []
+    return jsonify({"ok": True, "currencies": list(seen.values()), "rates": rates, "count": len(seen)})
+
+
+@app.route("/api/v1/core/fx/convert", methods=["GET", "POST"])
+def koja_core_fx_convert_api():
+    data = request.get_json(silent=True) or request.args or request.form
+    base = clean(data.get("base_currency") or data.get("from") or "").upper()
+    quote = clean(data.get("quote_currency") or data.get("to") or "").upper()
+    try:
+        amount = float(data.get("amount") or 0)
+    except Exception:
+        amount = 0.0
+    if not base or not quote or amount < 0:
+        return jsonify({"ok": False, "error": "base_currency_quote_currency_and_valid_amount_required"}), 400
+    if base == quote:
+        return jsonify({"ok": True, "base_currency": base, "quote_currency": quote, "amount": amount, "rate": 1, "converted_amount": amount, "source": "identity"})
+    rate = first_row("koja_core_currency_rates", {"base_currency": base, "quote_currency": quote, "status": "active"}) if table_exists("koja_core_currency_rates") else None
+    if not rate:
+        inverse = first_row("koja_core_currency_rates", {"base_currency": quote, "quote_currency": base, "status": "active"}) if table_exists("koja_core_currency_rates") else None
+        if inverse:
+            try:
+                rate = dict(inverse)
+                rate["rate"] = 1 / float(inverse.get("rate"))
+                rate["source"] = str(inverse.get("source") or "inverse") + ":inverse"
+            except Exception:
+                rate = None
+    if not rate:
+        return jsonify({"ok": False, "error": "exchange_rate_not_configured", "base_currency": base, "quote_currency": quote}), 404
+    converted = round(amount * float(rate.get("rate") or 0), 6)
+    return jsonify({"ok": True, "base_currency": base, "quote_currency": quote, "amount": amount, "rate": float(rate.get("rate") or 0), "converted_amount": converted, "source": rate.get("source") or "configured"})
+
+
+@app.route("/api/v1/core/fx/rates", methods=["GET", "POST"])
+def koja_core_fx_rates_api():
+    if request.method == "GET":
+        rows = db_select("koja_core_currency_rates", filters={"status": "active"}, order="base_currency.asc", limit=2000) if table_exists("koja_core_currency_rates") else []
+        return jsonify({"ok": True, "rates": rows})
+    actor, error = _core_require_scope("core.currency.write")
+    if error:
+        return error
+    data = request.get_json(silent=True) or request.form
+    base = clean(data.get("base_currency") or "").upper()
+    quote = clean(data.get("quote_currency") or "").upper()
+    try:
+        rate_value = float(data.get("rate"))
+    except Exception:
+        rate_value = 0
+    if not base or not quote or rate_value <= 0:
+        return jsonify({"ok": False, "error": "valid_base_quote_and_positive_rate_required"}), 400
+    payload = {"base_currency": base, "quote_currency": quote, "rate": rate_value, "source": clean(data.get("source") or "manual"), "status": "active", "effective_at": utc_now(), "metadata": _core_json(data.get("metadata"), {})}
+    existing = first_row("koja_core_currency_rates", {"base_currency": base, "quote_currency": quote}) if table_exists("koja_core_currency_rates") else None
+    if existing:
+        row, err = db_update("koja_core_currency_rates", {"id": existing.get("id")}, payload)
+    else:
+        row, err = db_insert("koja_core_currency_rates", payload)
+    if err:
+        return jsonify({"ok": False, "error": "rate_save_failed", "detail": err}), 500
+    return jsonify({"ok": True, "rate": row}), 201
+
+
+@app.route("/api/v1/core/tax/<country_code>")
+def koja_core_tax_api(country_code):
+    code = clean(country_code).upper()
+    region = _core_region_row(code)
+    if not region:
+        return jsonify({"ok": False, "error": "country_not_supported"}), 404
+    row = first_row("koja_core_tax_profiles", {"country_code": code}) if table_exists("koja_core_tax_profiles") else None
+    return jsonify({"ok": True, "country_code": code, "region": region, "tax": row})
+
+
+@app.route("/api/v1/core/payments/<country_code>")
+def koja_core_payment_providers_api(country_code):
+    code = clean(country_code).upper()
+    if not _core_region_row(code):
+        return jsonify({"ok": False, "error": "country_not_supported"}), 404
+    rows = db_select("koja_core_payment_providers", filters={"country_code": code, "status": "active"}, order="provider_key.asc", limit=200) if table_exists("koja_core_payment_providers") else []
+    return jsonify({"ok": True, "country_code": code, "providers": rows})
+
+
+@app.route("/api/v1/core/delivery/<country_code>")
+def koja_core_delivery_regions_api(country_code):
+    code = clean(country_code).upper()
+    if not _core_region_row(code):
+        return jsonify({"ok": False, "error": "country_not_supported"}), 404
+    rows = db_select("koja_core_delivery_regions", filters={"country_code": code, "status": "active"}, order="region_name.asc", limit=500) if table_exists("koja_core_delivery_regions") else []
+    return jsonify({"ok": True, "country_code": code, "regions": rows})
+
+
+@app.route("/api/v1/core/notifications/<country_code>")
+def koja_core_notification_routes_api(country_code):
+    code = clean(country_code).upper()
+    if not _core_region_row(code):
+        return jsonify({"ok": False, "error": "country_not_supported"}), 404
+    rows = db_select("koja_core_notification_routes", filters={"country_code": code, "status": "active"}, order="priority.asc", limit=200) if table_exists("koja_core_notification_routes") else []
+    return jsonify({"ok": True, "country_code": code, "routes": rows})
+
+
+@app.route("/api/v1/core/cross-border/rules")
+def koja_core_cross_border_rules_api():
+    origin = clean(request.args.get("origin") or "").upper()
+    destination = clean(request.args.get("destination") or "").upper()
+    filters = {"enabled": True}
+    if origin: filters["origin_country"] = origin
+    if destination: filters["destination_country"] = destination
+    rows = db_select("koja_core_cross_border_rules", filters=filters, order="origin_country.asc", limit=2000) if table_exists("koja_core_cross_border_rules") else []
+    return jsonify({"ok": True, "rules": rows})
+
+
+@app.route("/api/v1/core/billing/usage", methods=["GET", "POST"])
+def koja_core_billing_usage_api():
+    if request.method == "GET":
+        actor, error = _core_require_scope("core.billing.read")
+        if error: return error
+        rows = db_select("koja_core_billing_usage", filters={"user_id": actor.get("user_id")}, order="created_at.desc", limit=500) if table_exists("koja_core_billing_usage") else []
+        return jsonify({"ok": True, "usage": rows})
+    actor, error = _core_require_scope("core.billing.write")
+    if error: return error
+    data = request.get_json(silent=True) or request.form
+    try:
+        quantity = float(data.get("quantity") or 0)
+        unit_price = float(data.get("unit_price") or 0)
+    except Exception:
+        return jsonify({"ok": False, "error": "quantity_and_unit_price_must_be_numeric"}), 400
+    service = clean(data.get("service_key") or "core")
+    metric = clean(data.get("metric") or "usage")
+    row, err = db_insert("koja_core_billing_usage", {"user_id": actor.get("user_id"), "service_key": service, "metric": metric, "quantity": quantity, "unit_price": unit_price, "currency_code": clean(data.get("currency_code") or "ZMW").upper(), "reference_id": clean(data.get("reference_id") or ""), "metadata": _core_json(data.get("metadata"), {}), "created_at": utc_now()})
+    if err:
+        return jsonify({"ok": False, "error": "billing_usage_record_failed", "detail": err}), 500
+    return jsonify({"ok": True, "usage": row}), 201
+
+
+@app.route("/api/v1/core/observability")
+def koja_core_observability_api():
+    actor, error = _core_require_scope("core.observability.read")
+    if error: return error
+    service = clean(request.args.get("service_key") or "")
+    rows = db_select("koja_core_observability", filters={"service_key": service} if service else None, order="created_at.desc", limit=500) if table_exists("koja_core_observability") else []
+    health = db_select("koja_core_service_health", order="service_key.asc", limit=500) if table_exists("koja_core_service_health") else []
+    return jsonify({"ok": True, "events": rows, "health": health})
+
+
+@app.route("/api/v1/core/cloud-links")
+def koja_core_cloud_links_api():
+    actor, error = _core_require_scope("core.cloud.read")
+    if error: return error
+    rows = db_select("koja_core_cloud_links", order="service_key.asc", limit=1000) if table_exists("koja_core_cloud_links") else []
+    return jsonify({"ok": True, "links": rows, "cloud_api_url": clean(os.getenv("KOJA_CLOUD_API_URL") or "")})
+
+
+@app.route("/api/v1/core/control-plane-status")
+def koja_core_control_plane_status_api():
+    table_names = [
+        "koja_core_currency_rates", "koja_core_tax_profiles", "koja_core_payment_providers",
+        "koja_core_delivery_regions", "koja_core_notification_routes", "koja_core_billing_accounts",
+        "koja_core_billing_usage", "koja_core_cross_border_rules", "koja_core_service_health",
+        "koja_core_observability", "koja_core_cloud_links"
+    ]
+    tables = {name: bool(table_exists(name)) for name in table_names}
+    return jsonify({
+        "ok": True,
+        "version": KOJA_CORE_REMAINING_VERSION,
+        "operating_layer": "KOJA CORE",
+        "scope": "Africa",
+        "default_country": "ZM",
+        "default_currency": "ZMW",
+        "supported_countries": len(KOJA_AFRICA_REGIONS),
+        "control_plane": {
+            "identity_iam": True,
+            "event_bus": True,
+            "shared_data": True,
+            "multi_currency": tables["koja_core_currency_rates"],
+            "tax_configuration": tables["koja_core_tax_profiles"],
+            "payments": tables["koja_core_payment_providers"],
+            "delivery": tables["koja_core_delivery_regions"],
+            "notifications": tables["koja_core_notification_routes"],
+            "billing": tables["koja_core_billing_accounts"] and tables["koja_core_billing_usage"],
+            "cross_border": tables["koja_core_cross_border_rules"],
+            "observability": tables["koja_core_observability"] and tables["koja_core_service_health"],
+            "cloud": tables["koja_core_cloud_links"]
+        },
+        "tables": tables
+    })
+
+
+# ---------------------------------------------------------------------------
+# KOJA PRODUCTION READINESS LAYER
+# Additive runtime controls. Existing KOJA services remain intact.
+# ---------------------------------------------------------------------------
+KOJA_READINESS_VERSION = "1.0.0"
+
+def _readiness_table(name):
+    try:
+        return bool(table_exists(name))
+    except Exception:
+        return False
+
+def _readiness_json_error(message, code=400):
+    return jsonify({"ok": False, "error": message}), code
+
+@app.after_request
+def _koja_readiness_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    return response
+
+@app.route("/api/v1/core/readiness")
+def koja_core_readiness_api():
+    checks = {
+        "security_policies": _readiness_table("koja_core_security_policies"),
+        "consents": _readiness_table("koja_core_consents"),
+        "idempotency": _readiness_table("koja_core_idempotency_keys"),
+        "rate_limits": _readiness_table("koja_core_rate_limits"),
+        "security_incidents": _readiness_table("koja_core_security_incidents"),
+        "backups": _readiness_table("koja_core_backup_registry"),
+        "feature_flags": _readiness_table("koja_core_feature_flags"),
+        "support": _readiness_table("koja_core_support_tickets"),
+        "compliance_profiles": _readiness_table("koja_core_compliance_profiles"),
+    }
+    return jsonify({
+        "ok": True,
+        "version": KOJA_READINESS_VERSION,
+        "platform": "KOJA AFRICA",
+        "operating_layer": "KOJA CORE",
+        "region": "Africa",
+        "default_country": "ZM",
+        "default_currency": "ZMW",
+        "checks": checks,
+        "security_headers": True,
+        "legal_approval": "external_review_required",
+        "production_status": "technical_controls_available"
+    })
+
+@app.route("/api/v1/core/compliance/<country_code>")
+def koja_core_compliance_api(country_code):
+    cc = clean(country_code).upper()[:3]
+    if not _readiness_table("koja_core_compliance_profiles"):
+        return _readiness_json_error("Compliance configuration is not installed", 503)
+    row = first_row("koja_core_compliance_profiles", {"country_code": cc})
+    if not row:
+        return _readiness_json_error("No compliance profile configured for this country", 404)
+    return jsonify({"ok": True, "profile": row, "activation_requires_review": True})
+
+@app.route("/api/v1/core/feature-flags")
+def koja_core_feature_flags_api():
+    if not _readiness_table("koja_core_feature_flags"):
+        return jsonify({"ok": True, "flags": []})
+    rows = db_select("koja_core_feature_flags", order="flag_key.asc", limit=1000) or []
+    return jsonify({"ok": True, "flags": rows})
+
+@app.route("/api/v1/core/security/status")
+def koja_core_security_status_api():
+    policies = []
+    if _readiness_table("koja_core_security_policies"):
+        policies = db_select("koja_core_security_policies", order="policy_key.asc", limit=1000) or []
+    return jsonify({
+        "ok": True,
+        "version": KOJA_READINESS_VERSION,
+        "security": {
+            "security_headers": True,
+            "policy_registry": bool(policies),
+            "audit": _readiness_table("koja_core_security_incidents"),
+            "consent_tracking": _readiness_table("koja_core_consents"),
+            "idempotency": _readiness_table("koja_core_idempotency_keys"),
+            "rate_limit_registry": _readiness_table("koja_core_rate_limits")
+        },
+        "policies": policies
+    })
+
+# ============================================================
+# KOJA FINAL REACHING / PRODUCTION COMPLETION STATUS
+# Additive verification surface. It does not claim external services are live.
+# ============================================================
+KOJA_FINAL_REACHING_VERSION = 'FINAL-REACHING-1.0'
+
+_FINAL_TABLES = [
+    'koja_core_service_credentials','koja_core_service_auth','koja_core_jobs',
+    'koja_core_job_attempts','koja_core_webhook_receipts','koja_core_payment_reconciliation',
+    'koja_core_settlements','koja_core_kyc_cases','koja_core_kyc_documents',
+    'koja_core_notification_deliveries','koja_core_media_jobs','koja_core_cloud_resources',
+    'koja_core_monitoring_alerts','koja_core_test_runs','koja_core_legal_controls'
+]
+
+def _final_env_status():
+    return {
+        'supabase': bool(supabase_configured()),
+        'site_url': bool(os.getenv('SITE_URL')),
+        'secret_key': bool(app.secret_key and app.secret_key not in ('change-me','dev-secret')),
+        'flutterwave': bool(os.getenv('FLW_SECRET_KEY')),
+        'livekit': bool(os.getenv('LIVEKIT_URL') and os.getenv('LIVEKIT_API_KEY') and os.getenv('LIVEKIT_API_SECRET')),
+        'koja_cloud_api': bool(os.getenv('KOJA_CLOUD_API_URL')),
+        'email_provider': bool(os.getenv('RESEND_API_KEY') or os.getenv('SENDGRID_API_KEY') or os.getenv('SMTP_HOST')),
+        'sms_provider': bool(os.getenv('TWILIO_ACCOUNT_SID') and os.getenv('TWILIO_AUTH_TOKEN')),
+        'fx_provider': bool(os.getenv('FX_API_URL') or os.getenv('EXCHANGE_RATE_API_KEY')),
+        'oauth_google': bool(os.getenv('GOOGLE_CLIENT_ID') and os.getenv('GOOGLE_CLIENT_SECRET')),
+        'oauth_facebook': bool(os.getenv('FACEBOOK_CLIENT_ID') and os.getenv('FACEBOOK_CLIENT_SECRET')),
+        'oauth_github': bool(os.getenv('GITHUB_CLIENT_ID') and os.getenv('GITHUB_CLIENT_SECRET')),
+    }
+
+def _final_table_status():
+    return {name: bool(table_exists(name)) for name in _FINAL_TABLES}
+
+@app.route('/api/v1/core/final-readiness')
+def koja_core_final_readiness():
+    env = _final_env_status()
+    tables = _final_table_status()
+    configured = sum(1 for v in env.values() if v)
+    available = sum(1 for v in tables.values() if v)
+    return jsonify({
+        'ok': True,
+        'version': KOJA_FINAL_REACHING_VERSION,
+        'scope': 'KOJA AFRICA production reaching audit',
+        'technical_controls': {'configured_env_count': configured, 'environment_checks': env, 'required_tables_available': available, 'required_tables_total': len(tables), 'tables': tables},
+        'external_activation_required': [
+            'production payment credentials and provider onboarding',
+            'LiveKit credentials', 'production notification providers',
+            'trusted FX provider', 'backup/restore verification',
+            'country-specific regulatory/licensing approvals',
+            'security/load/disaster-recovery testing'
+        ],
+        'note': 'READY means implemented/configured in this application; it does not mean an external provider, regulator or production test has been completed.'
+    })
+
+@app.route('/admin/final-readiness')
+@admin_required
+def koja_admin_final_readiness():
+    env = _final_env_status(); tables = _final_table_status()
+    rows = ''.join(f"<tr><td>{k}</td><td>{'READY' if v else 'MISSING / EXTERNAL SETUP'}</td></tr>" for k,v in env.items())
+    table_rows = ''.join(f"<tr><td>{k}</td><td>{'INSTALLED' if v else 'RUN FINAL SQL'}</td></tr>" for k,v in tables.items())
+    tpl = f'''<div class="hero"><h1>KOJA Final Readiness</h1><p>Final technical and external-activation audit.</p></div><div class="card"><h2>Environment</h2><table><tr><th>Control</th><th>Status</th></tr>{rows}</table></div><div class="card"><h2>Final CORE tables</h2><table><tr><th>Component</th><th>Status</th></tr>{table_rows}</table></div><div class="card"><p><strong>Important:</strong> external credentials, provider onboarding, regulator approvals and real production tests must be completed before regulated or live services are activated.</p></div>'''
+    return render_page('KOJA Final Readiness', tpl)
+
+# ============================================================
+# KOJA FINAL EXTERNAL GO-LIVE GATES
+# Tracks evidence-based external activation; it does not fake provider/regulator completion.
+# ============================================================
+KOJA_GO_LIVE_VERSION = 'GO-LIVE-1.0'
+_GO_LIVE_REQUIRED = [
+    'production_credentials','provider_onboarding','payment_licensing','livekit_production',
+    'notification_contracts','live_fx','backup_restore','security_testing',
+    'disaster_recovery','country_legal_regulatory','production_smoke','go_live_approval'
+]
+
+def _go_live_rows():
+    if not table_exists('koja_core_go_live_gates'):
+        return []
+    return db_select('koja_core_go_live_gates', order='category.asc,gate_key.asc', limit=200) or []
+
+def _go_live_summary():
+    rows = _go_live_rows()
+    by_key = {str(r.get('gate_key')): r for r in rows}
+    required = [by_key.get(k, {'gate_key': k, 'status': 'pending', 'required': True}) for k in _GO_LIVE_REQUIRED]
+    verified = sum(1 for r in required if str(r.get('status')) == 'verified')
+    blocked = sum(1 for r in required if str(r.get('status')) == 'blocked')
+    return required, verified, blocked
+
+@app.route('/api/v1/core/go-live')
+def koja_core_go_live_api():
+    required, verified, blocked = _go_live_summary()
+    complete = len(required) == len(_GO_LIVE_REQUIRED) and verified == len(required)
+    return jsonify({
+        'ok': True,
+        'version': KOJA_GO_LIVE_VERSION,
+        'go_live_ready': complete,
+        'required_gate_count': len(required),
+        'verified_gate_count': verified,
+        'blocked_gate_count': blocked,
+        'gates': required,
+        'rule': 'Required external gates are green only when evidence has been reviewed and recorded.'
+    })
+
+@app.route('/admin/go-live')
+@admin_required
+def koja_admin_go_live():
+    required, verified, blocked = _go_live_summary()
+    rows = ''.join(
+        f"<tr><td>{r.get('category','')}</td><td>{r.get('title',r.get('gate_key',''))}</td>"
+        f"<td><strong>{r.get('status','pending').upper()}</strong></td>"
+        f"<td>{r.get('owner') or ''}</td><td>{r.get('verified_at') or ''}</td></tr>"
+        for r in required
+    )
+    tpl = f'''<div class="hero"><h1>KOJA Go-Live Gates</h1><p>Evidence-based external activation audit.</p></div>
+    <div class="card"><h2>Status</h2><p><strong>{verified}/{len(required)}</strong> required gates verified; <strong>{blocked}</strong> blocked.</p>
+    <p>Go-live status: <strong>{'READY FOR OWNER APPROVAL' if verified == len(required) else 'NOT READY'}</strong></p></div>
+    <div class="card"><h2>Gates</h2><table><tr><th>Category</th><th>Gate</th><th>Status</th><th>Owner</th><th>Verified</th></tr>{rows}</table></div>
+    <div class="card"><p><strong>Important:</strong> this screen records evidence-based completion. It cannot create provider contracts, licences, regulatory registrations, security-test results or backup evidence.</p></div>'''
+    return render_page('KOJA Go-Live', tpl)
