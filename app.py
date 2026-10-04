@@ -898,6 +898,7 @@ nav{background:#10233f;color:#fff;padding:10px 15px;position:sticky;top:0;z-inde
 .nav-links{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
 nav a{color:#fff;text-decoration:none;padding:8px 9px;border-radius:7px;transition:background .2s ease,transform .2s ease}
 nav a:hover{background:rgba(255,255,255,.12);transform:translateY(-1px)}
+.nexus-nav-link{font-weight:800;background:rgba(23,107,135,.28);border:1px solid rgba(255,255,255,.16);border-radius:8px;padding:8px 10px!important;white-space:nowrap}
 .notification-bell{position:relative}.notif-badge{display:inline-flex;min-width:18px;height:18px;padding:0 5px;align-items:center;justify-content:center;border-radius:99px;background:#e11d48;color:#fff;font-size:11px;font-weight:800;margin-left:4px}.notification-row{display:flex;gap:12px;padding:15px;border-bottom:1px solid var(--border);cursor:pointer}.notification-row.unread{background:rgba(23,107,135,.07)}.notification-dot{width:9px;height:9px;border-radius:50%;background:var(--accent);margin-top:7px;flex:none}.notification-row:not(.unread) .notification-dot{background:transparent}#np label{display:block;padding:12px 0;border-bottom:1px solid var(--border)}
 .menu-group{position:relative}.menu-group>button{width:auto;margin:0;padding:8px 10px;background:rgba(255,255,255,.08);color:#fff;border:0;border-radius:7px;cursor:pointer;font:inherit}.menu-group>button:hover{background:rgba(255,255,255,.15);transform:none}
 .dropdown{display:none;position:absolute;right:0;top:calc(100% + 7px);min-width:210px;background:var(--surface);border-radius:11px;padding:7px;box-shadow:0 12px 35px rgba(0,0,0,.2);border:1px solid #e5e7eb}
@@ -958,6 +959,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90
 <a class="notification-bell" href="{{ url_for('notifications_page') }}" aria-label="Notifications">Notifications <span id="kojaNotifBadge" class="notif-badge" hidden></span></a>
 <a href="{{ '/market' }}">KOJA Market</a> <a href="{{ url_for('market_live') }}">Live Shop</a>
 <a href="{{ url_for('communication_nextgen') }}">Connect+</a>
+<a class="nexus-nav-link" href="{{ url_for('koja_nexus_home_alias') }}">KOJA NEXUS</a>
 <div class="menu-group">
 <button type="button" id="moreMenuButton" aria-expanded="false" aria-haspopup="true">More ▾</button>
 <div class="dropdown" id="moreMenu" role="menu">
@@ -12424,7 +12426,7 @@ def _africa_now_panel_html():
     return r"""
 <section class="anx-panel" id="kojaAfricaNow" aria-label="Africa Now" style="display:block!important;visibility:visible!important;opacity:1!important;">
 <div class="anx-head"><div><strong>AFRICA NOW</strong><span class="anx-sub">TOP STORIES ACROSS AFRICA</span></div><div class="anx-updated" id="anxUpdated">Updating automatically…</div></div>
-<div class="anx-screen" id="anxScreen"><div class="anx-main" id="anxMain"><div class="anx-placeholder anx-boot"><strong>AFRICA NOW</strong><span>Loading the latest African story…</span></div></div></div>
+<div class="anx-screen" id="anxScreen"><div class="anx-main" id="anxMain"><div class="anx-overlay anx-instant"><div class="anx-kicker">AFRICA NEWS · AFRICANEWS</div><div class="anx-title">Ethiopian forces recapture Mekelle airport from Tigrayan fighters</div><div class="anx-summary">Africa Now is ready immediately. The latest stories will replace this screen automatically when the news collector refreshes.</div><a class="anx-open" href="https://www.africanews.com/" target="_blank" rel="noopener noreferrer">Open source</a></div></div></div>
 <div class="anx-foot"><span>Stories update automatically</span><span id="anxProgress">1 / 1</span></div>
 </section>
 <style>
@@ -12439,7 +12441,7 @@ def _africa_now_panel_html():
  let items=[], index=0, rotateTimer=null;
  function esc(v){return String(v||'').replace(/[&<>\"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[m]));}
  function renderItem(){
-   if(!items.length){main.innerHTML='<div class="anx-placeholder"><strong>AFRICA NOW</strong><span>Waiting for the next automatic story update…</span></div>'; if(progress)progress.textContent='1 / 1'; return;}
+   if(!items.length){if(progress)progress.textContent='1 / 1'; return;}
    const h=items[index % items.length]||{};
    let media='';
    if(h.video_url){media='<video src="'+esc(h.video_url)+'" muted playsinline controls preload="metadata"></video>';}
@@ -12464,6 +12466,8 @@ def _africa_now_panel_html():
 
 
 _start_africa_now_worker()
+# NEXUS service data is loaded after the web process is available; page requests never wait.
+_schedule_nexus_services_cache_refresh(force=True)
 
 # ============================================================
 # KOJA NEXUS — PUBLIC AFRICA SERVICE DIRECTORY
@@ -12494,9 +12498,49 @@ def _world_verified(row):
 def _world_active(row):
     return not (row.get("active") is False or row.get("is_active") is False)
 
+# Public NEXUS service cache: never make the first page request wait for Supabase.
+# A stale cache is served immediately while a daemon refreshes it in the background.
+_nexus_services_cache = {"rows": [], "loaded_at": 0.0, "refreshing": False}
+_nexus_services_cache_lock = threading.Lock()
+_NEXUS_SERVICES_CACHE_TTL = max(30, int(os.getenv("KOJA_NEXUS_SERVICES_CACHE_TTL", "300")))
+
+def _refresh_nexus_services_cache():
+    try:
+        rows = db_select("koja_world_services", order="sort_order.asc,created_at.asc", limit=5000) or []
+        with _nexus_services_cache_lock:
+            _nexus_services_cache["rows"] = rows
+            _nexus_services_cache["loaded_at"] = time.time()
+            _nexus_services_cache["refreshing"] = False
+        logger.info("KOJA NEXUS service cache refreshed: %s records", len(rows))
+    except Exception:
+        logger.exception("KOJA NEXUS service cache refresh failed")
+        with _nexus_services_cache_lock:
+            _nexus_services_cache["refreshing"] = False
+
+def _schedule_nexus_services_cache_refresh(force=False):
+    now = time.time()
+    with _nexus_services_cache_lock:
+        age = now - float(_nexus_services_cache.get("loaded_at") or 0)
+        if _nexus_services_cache.get("refreshing"):
+            return
+        if not force and _nexus_services_cache.get("rows") and age < _NEXUS_SERVICES_CACHE_TTL:
+            return
+        _nexus_services_cache["refreshing"] = True
+    threading.Thread(target=_refresh_nexus_services_cache, name="koja-nexus-services", daemon=True).start()
+
 def _world_rows(include_inactive=False):
-    rows = db_select("koja_world_services", order="sort_order.asc,created_at.asc", limit=5000) or []
-    return rows if include_inactive else [r for r in rows if _world_active(r)]
+    # Admin screens need authoritative data; public screens use the non-blocking cache.
+    if include_inactive:
+        return db_select("koja_world_services", order="sort_order.asc,created_at.asc", limit=5000) or []
+    with _nexus_services_cache_lock:
+        rows = list(_nexus_services_cache.get("rows") or [])
+        loaded_at = float(_nexus_services_cache.get("loaded_at") or 0)
+    if not rows:
+        _schedule_nexus_services_cache_refresh(force=True)
+        return []
+    if time.time() - loaded_at >= _NEXUS_SERVICES_CACHE_TTL:
+        _schedule_nexus_services_cache_refresh(force=True)
+    return [r for r in rows if _world_active(r)]
 
 def _world_matches(row, query="", country="", category=""):
     query, country, category = clean(query).lower(), clean(country).lower(), clean(category).lower()
@@ -12541,6 +12585,21 @@ def koja_world():
 <form method="get" class="card kw-filter"><div class="kw-search"><label for="kwq">Search KOJA NEXUS</label><input id="kwq" name="q" value="{{ query }}" placeholder="e.g. immigration, university, tax, health, jobs"></div><div><label for="kwcountry">Country</label><select id="kwcountry" name="country"><option value="">All countries</option>{% for code,name in countries|dictsort %}<option value="{{ code }}" {% if country|upper==code %}selected{% endif %}>{{ name }} ({{ code }})</option>{% endfor %}</select></div><div><label for="kwcategory">Category</label><select id="kwcategory" name="category"><option value="">All categories</option>{% for cat in categories %}<option value="{{ cat }}" {% if category|lower==cat|lower %}selected{% endif %}>{{ cat }}</option>{% endfor %}</select></div><div><button class="btn" type="submit">Search</button></div></form>
 {% if not query and not country and not category %}<section class="kw-section"><h2>Browse by service</h2><div class="kw-cat-grid">{% for cat in categories %}<a class="kw-cat" href="{{ url_for('koja_world',category=cat) }}"><strong>{{ cat }}</strong><span>{{ category_counts.get(cat,0) }} services</span></a>{% endfor %}</div></section>{% endif %}
 <section class="kw-section"><h2>{% if query or country or category %}Search results{% else %}All public services{% endif %}</h2><p class="kw-muted">{{ filtered|length }} service{% if filtered|length != 1 %}s{% endif %} shown. Verification pending services remain visible so users can discover them, but KOJA does not represent them as verified.</p><div class="kw-grid">{% for s in filtered %}<article class="kw-card"><div class="kw-country">{{ s.country_code or '' }} · {{ s.country_name or 'Africa' }}</div><h3>{{ service_name(s) }}</h3><div class="kw-muted">{{ s.category or 'Public Service' }}</div><p>{{ s.description or 'Official public service available through the listed provider.' }}</p><div class="kw-badges">{% if verified(s) %}<span class="kw-badge">Verified</span>{% else %}<span class="kw-badge pending">Verification pending</span>{% endif %}<span class="kw-badge">Official provider</span></div><div class="kw-actions"><a class="btn" href="{{ url_for('koja_world_open',service_id=s.id) }}">Open service</a>{% if s.country_code %}<a class="btn secondary" href="{{ url_for('koja_world',country=s.country_code) }}">More {{ s.country_code }}</a>{% endif %}</div></article>{% else %}<div class="kw-empty" style="grid-column:1/-1"><h3>No matching services</h3><p>Try another country, category or search term.</p><a class="btn" href="{{ url_for('koja_world') }}">Show all KOJA NEXUS</a></div>{% endfor %}</div></section></div>
+<script>
+(function(){
+  var serviceCount={{ service_count|tojson }};
+  if(serviceCount===0){
+    var tries=0;
+    var timer=setInterval(function(){
+      tries++;
+      fetch('{{ url_for("koja_world_services_api") }}?limit=1',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){
+        if((d.count||0)>0){clearInterval(timer);location.reload();}
+      }).catch(function(){});
+      if(tries>=10)clearInterval(timer);
+    },1500);
+  }
+})();
+</script>
 ''', filtered=filtered, countries=countries, categories=KOJA_WORLD_CATEGORIES, category_counts=category_counts, query=query, country=country, category=category, country_count=len(countries), service_count=len(rows), verified_count=sum(1 for r in rows if _world_verified(r)), pending_count=sum(1 for r in rows if not _world_verified(r)), service_name=_world_service_name, verified=_world_verified, africa_now_panel=_africa_now_panel_html())
 
 @app.route("/world/open/<service_id>")
