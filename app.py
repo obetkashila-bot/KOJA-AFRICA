@@ -12144,8 +12144,6 @@ _KOJA_AFRICA_NOW_FEEDS = [
     ("BBC Economy", "https://feeds.bbci.co.uk/news/business/economy/rss.xml", "business_markets"),
     ("BBC Technology", "https://feeds.bbci.co.uk/news/technology/rss.xml", "technology"),
     ("BBC Health", "https://feeds.bbci.co.uk/news/health/rss.xml", "health"),
-    ("BBC Education", "https://feeds.bbci.co.uk/news/education/rss.xml", "education"),
-    ("BBC Science", "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml", "science"),
     ("BBC Sport", "https://feeds.bbci.co.uk/sport/rss.xml", "sports"),
     ("BBC Entertainment", "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml", "culture"),
     ("BBC Asia", "https://feeds.bbci.co.uk/news/world/asia/rss.xml", "world_news"),
@@ -12179,14 +12177,13 @@ _AFRICA_COUNTRY_NAMES = [
 
 _AFRICA_NOW_CATEGORY_TERMS = {
     "Politics & Government": ["president","government","election","parliament","minister","politics","coup","cabinet","summit","senate","congress"],
-    "Business & Economy": ["business","economy","market","markets","stock","stocks","share","shares","exchange","index","nasdaq","dow","s&p","ftse","nikkei","bank","investment","trade","currency","forex","finance","energy","oil","gold","commodities","company","earnings","revenue"],
+    "Business & Markets": ["business","economy","market","markets","stock","stocks","share","shares","exchange","index","nasdaq","dow","s&p","ftse","nikkei","bank","investment","trade","currency","forex","finance","energy","oil","gold","commodities","company","earnings","revenue"],
     "Health": ["health","hospital","disease","outbreak","virus","cholera","malaria","medicine","who","pandemic"],
     "Sports": ["football","soccer","sport","afcon","fifa","basketball","rugby","olympics","match","tennis","cricket"],
     "Technology": ["technology","tech","ai","digital","startup","innovation","internet","telecom","cyber","software"],
     "Security & Emergencies": ["attack","war","conflict","military","police","security","flood","earthquake","fire","disaster","crash","explosion"],
-    "Science & Research": ["science","space","climate","research","environment","nasa"],
-    "Education": ["education","school","student","university","college","scholarship","teacher","learning","campus"],
-    "Culture & Travel": ["culture","music","film","movie","entertainment","artist","celebrity","festival","travel","tourism","tourist","heritage"],
+    "Science": ["science","space","climate","research","environment","nasa"],
+    "Culture & Entertainment": ["culture","music","film","movie","entertainment","artist","celebrity","festival"],
 }
 
 _africa_now_runtime = {"last_success": None, "last_attempt": None, "last_error": None, "source_status": {}, "registry_offset": 0}
@@ -12323,19 +12320,14 @@ def _africa_now_country(title, summary):
     return "Africa"
 
 
-def _africa_now_category(title, summary, feed_kind=""):
+def _africa_now_category(title, summary):
     hay = f"{title} {summary}".lower()
-    fk = str(feed_kind or "").lower()
-    feed_map = {"business_markets":"Business & Economy","technology":"Technology","health":"Health","education":"Education","sports":"Sports","science":"Science & Research","culture":"Culture & Travel","jobs":"Jobs & Opportunities"}
-    if fk in feed_map:
-        return feed_map[fk]
-    best, best_n = "Top Stories", 0
+    best, best_n = "Africa News", 0
     for category, terms in _AFRICA_NOW_CATEGORY_TERMS.items():
         n = sum(1 for term in terms if term in hay)
         if n > best_n:
             best, best_n = category, n
     return best
-
 
 
 def _africa_now_score(title, summary, published):
@@ -12944,18 +12936,38 @@ def _africa_now_panel_html():
    culture:{section:'anxCultureSection',row:'anxCulture',count:'anxCultureCount',keys:['Culture & Travel','Culture','Travel','Arts','Entertainment']}
  };
  function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]});}
- function categoryOf(h){const c=String(h.category||'').trim();const text=(c+' '+String(h.title||'')+' '+String(h.summary||'')).toLowerCase();if(text.includes('job')||text.includes('vacancy')||text.includes('opportunit')||text.includes('internship'))return'jobs';if(text.includes('business')||text.includes('econom')||text.includes('market')||text.includes('finance')||text.includes('trade')||text.includes('investment'))return'business';if(text.includes('health')||text.includes('medical')||text.includes('hospital')||text.includes('disease'))return'health';if(text.includes('technolog')||text.includes('digital')||text.includes('startup')||text.includes('software')||text.includes('telecom')||text.includes(' ai '))return'technology';if(text.includes('education')||text.includes('university')||text.includes('school')||text.includes('student')||text.includes('scholarship'))return'education';if(text.includes('politic')||text.includes('government')||text.includes('election')||text.includes('president')||text.includes('parliament'))return'politics';if(text.includes('sport')||text.includes('football')||text.includes('soccer')||text.includes('athlet')||text.includes('rugby')||text.includes('tennis'))return'sports';if(text.includes('science')||text.includes('research')||text.includes('environment')||text.includes('climate')||text.includes('space'))return'science';if(text.includes('culture')||text.includes('travel')||text.includes('tourism')||text.includes('tourist')||text.includes('film')||text.includes('music')||text.includes('festival'))return'culture';return null;}
- function isTop(h){return categoryOf(h)!=='jobs' && !h.is_live;}
+ function categoryOf(h){const c=String(h.category||'').trim();const low=c.toLowerCase();if(low.includes('job')||low.includes('opportun'))return'jobs';if(low.includes('business')||low.includes('econom')||low.includes('market'))return'business';if(low.includes('health')||low.includes('medical'))return'health';if(low.includes('tech')||low.includes('digital')||low.includes('ai'))return'technology';if(low.includes('education')||low.includes('university')||low.includes('scholar'))return'education';if(low.includes('politic')||low.includes('government')||low.includes('election'))return'politics';if(low.includes('sport')||low.includes('football')||low.includes('athlet'))return'sports';if(low.includes('science')||low.includes('research')||low.includes('environment'))return'science';if(low.includes('culture')||low.includes('travel')||low.includes('tour')||low.includes('art')||low.includes('entertain'))return'culture';return null;}
+ function topScore(h){
+   const title=String(h.title||'').toLowerCase(), summary=String(h.summary||'').toLowerCase(), hay=title+' '+summary;
+   let score=Number(h.score)||0;
+   if(h.is_live) score+=4;
+   if(/\b(breaking|major|urgent|historic|landmark|crisis|deadly|massive|national|president|election|summit|outbreak|earthquake|flood|war|conflict)\b/.test(hay)) score+=3;
+   if(/\b(live now|live stream|watch live|broadcast live)\b/.test(hay)) score+=2;
+   return score;
+ }
  function generatedVisual(h){return '<div class="anx-generated"><span class="anx-orbit"></span><strong>KOJA VISUAL</strong><small>'+esc((h.category||'AFRICA NOW').toUpperCase())+' · GENERATED VISUAL</small></div>';}
  function mediaHtml(h){let media='';if(h.video_url){media='<video src="'+esc(h.video_url)+'" muted playsinline controls preload="metadata"></video><span class="anx-video-tag">SOURCE VIDEO</span>';}else if(h.image_url){media='<img src="'+esc(h.image_url)+'" alt="" loading="lazy">';}else{media=generatedVisual(h);}if(h.is_live)media+='<span class="anx-live-dot">● LIVE</span>';return media;}
  function renderLead(h){if(!h)return;let media=mediaHtml(h);const live=!!h.is_live;main.innerHTML='<div class="anx-card-media" style="height:100%">'+media+'</div><div class="anx-overlay"><div class="anx-kicker">'+(live?'<span class="anx-live">● LIVE</span> ':'')+esc(h.category||'Top Stories')+' · '+esc(h.country||'Africa')+'</div><div class="anx-title">'+esc(h.title||'Top Africa story')+'</div><div class="anx-summary">'+esc(h.summary||('Latest report from '+(h.source_name||'source')))+'</div><a class="anx-open" href="'+esc(h.url||'#')+'" target="_blank" rel="noopener noreferrer">'+(live?'Watch / Open Live Story':'Open Story')+'</a></div>'}
  function renderCard(h){return '<article class="anx-card"><div class="anx-card-media">'+mediaHtml(h)+'</div><div class="anx-card-body"><div class="anx-card-kicker">'+esc(h.category||'Africa')+' · '+esc(h.country||'Africa')+'</div><div class="anx-card-title">'+esc(h.title||'Africa story')+'</div><div class="anx-card-summary">'+esc(h.summary||('Latest report from '+(h.source_name||'source')))+'</div><a class="anx-card-link" href="'+esc(h.url||'#')+'" target="_blank" rel="noopener noreferrer">'+(h.category==='Jobs & Opportunities'?'VIEW OPPORTUNITY':'READ STORY')+' →</a></div></article>';}
  function put(groupKey,arr){const g=groups[groupKey],sec=document.getElementById(g.section),row=document.getElementById(g.row),count=document.getElementById(g.count);if(!g||!sec||!row)return;if(!arr.length){sec.style.display='none';return;}sec.style.display='block';row.innerHTML=arr.slice(0,10).map(renderCard).join('');if(count)count.textContent=arr.length+' available';}
- function renderSections(items){const nonJobs=items.filter(h=>categoryOf(h)!=='jobs');const live=nonJobs.filter(h=>h.is_live);const topAll=[...live,...nonJobs.filter(h=>!live.includes(h))].slice(0,10);put('business',items.filter(h=>categoryOf(h)==='business'));put('jobs',items.filter(h=>categoryOf(h)==='jobs'));put('health',items.filter(h=>categoryOf(h)==='health'));put('technology',items.filter(h=>categoryOf(h)==='technology'));put('education',items.filter(h=>categoryOf(h)==='education'));put('politics',items.filter(h=>categoryOf(h)==='politics'));put('sports',items.filter(h=>categoryOf(h)==='sports'));put('science',items.filter(h=>categoryOf(h)==='science'));put('culture',items.filter(h=>categoryOf(h)==='culture'));const ts=document.getElementById('anxTopSection'),tr=document.getElementById('anxTop'),tc=document.getElementById('anxTopCount');if(topAll.length){ts.style.display='block';tr.innerHTML=topAll.map(renderCard).join('');tc.textContent=topAll.length+' available';}else{ts.style.display='none';}progress.textContent=items.length+' stories';startRowAutoScroll();}
- function startRowAutoScroll(){document.querySelectorAll('.anx-row').forEach(row=>{if(row.dataset.autoBound)return;row.dataset.autoBound='1';let paused=false;row.addEventListener('mouseenter',()=>paused=true);row.addEventListener('mouseleave',()=>paused=false);row.addEventListener('touchstart',()=>paused=true,{passive:true});row.addEventListener('touchend',()=>setTimeout(()=>paused=false,2500),{passive:true});setInterval(()=>{if(paused||row.scrollWidth<=row.clientWidth+8)return;const step=Math.max(180,Math.floor(row.clientWidth*.55));if(row.scrollLeft+row.clientWidth>=row.scrollWidth-8)row.scrollTo({left:0,behavior:'smooth'});else row.scrollBy({left:step,behavior:'smooth'});},7000);});}
- let leadItems=[],leadIndex=0,leadTimer=null;function startLeadRotation(){clearInterval(leadTimer);if(leadItems.length>1)leadTimer=setInterval(()=>{leadIndex=(leadIndex+1)%leadItems.length;renderLead(leadItems[leadIndex]);},20000);}
- async function load(){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),7000);try{const r=await fetch('/api/nexus/africa-now?limit=80',{cache:'no-store',signal:controller.signal});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();items=Array.isArray(d.items)?d.items.filter(x=>x&&x.is_active!==false):[];if(items.length){leadItems=items.filter(h=>categoryOf(h)!=='jobs').slice(0,12);if(!leadItems.length)leadItems=items.slice(0,12);leadIndex=0;renderLead(leadItems[0]);startLeadRotation();renderSections(items);const live=items.some(x=>x.is_live);updated.textContent=(live?'● LIVE · ':'')+'Updated '+(d.updated_at?new Date(d.updated_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'just now');}else{updated.textContent='Waiting for fresh Africa stories…';}}catch(e){updated.textContent='Cached story shown · retrying live feed';}finally{clearTimeout(timer);}}
- load();setInterval(load,60000);
+ function renderSections(items){
+   const news=items.filter(h=>categoryOf(h)!=='jobs');
+   const top=news.slice().sort((a,b)=>topScore(b)-topScore(a)).slice(0,10);
+   put('business',items.filter(h=>categoryOf(h)==='business'));
+   put('jobs',items.filter(h=>categoryOf(h)==='jobs'));
+   put('health',items.filter(h=>categoryOf(h)==='health'));
+   put('technology',items.filter(h=>categoryOf(h)==='technology'));
+   put('education',items.filter(h=>categoryOf(h)==='education'));
+   put('politics',items.filter(h=>categoryOf(h)==='politics'));
+   put('sports',items.filter(h=>categoryOf(h)==='sports'));
+   put('science',items.filter(h=>categoryOf(h)==='science'));
+   put('culture',items.filter(h=>categoryOf(h)==='culture'));
+   const ts=document.getElementById('anxTopSection'),tr=document.getElementById('anxTop'),tc=document.getElementById('anxTopCount');
+   if(top.length){ts.style.display='block';tr.innerHTML=top.map(renderCard).join('');tc.textContent=top.length+' available';}else{ts.style.display='none';}
+   progress.textContent=items.length+' stories';
+ }
+ async function load(){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),7000);try{const r=await fetch('/api/nexus/africa-now?limit=40',{cache:'no-store',signal:controller.signal});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();const items=Array.isArray(d.items)?d.items.filter(x=>x&&x.is_active!==false):[];if(items.length){const news=items.filter(x=>categoryOf(x)!=='jobs').sort((a,b)=>topScore(b)-topScore(a));const lead=news[0]||items[0];renderLead(lead);renderSections(items);updated.textContent=(lead&&lead.is_live?'● LIVE · ':'')+'Updated '+(d.updated_at?new Date(d.updated_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'just now');}else{updated.textContent='Waiting for fresh Africa stories…';}}catch(e){updated.textContent='Cached Africa story shown · retrying feed';}finally{clearTimeout(timer);}}
+ load();setInterval(load,30000);
 })();
 </script>
 """
