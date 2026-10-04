@@ -12684,27 +12684,50 @@ def _refresh_market_quotes(symbols=None, force=False):
         return dict(_koja_market_cache["quotes"]), float(_koja_market_cache["updated_at"] or 0)
 
 def _market_panel_html():
-    return """
+    return r"""
 <style>
 .km-panel{margin:0 0 18px;border:1px solid rgba(50,80,120,.22);border-radius:22px;background:linear-gradient(135deg,#071a32,#0b315c);color:#fff;padding:20px;box-shadow:0 12px 35px rgba(0,0,0,.14)}
 .km-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap}.km-head h2{margin:0;font-size:22px}.km-head p{margin:5px 0 0;color:rgba(255,255,255,.72);font-size:12px}.km-meta{font-size:11px;color:rgba(255,255,255,.62)}
-.km-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-top:15px}.km-card{border:1px solid rgba(255,255,255,.13);background:rgba(255,255,255,.06);border-radius:15px;padding:13px}.km-card strong{display:block;font-size:13px}.km-price{font-size:20px;font-weight:800;margin-top:8px}.km-change{font-size:11px;margin-top:4px}.km-up{color:#6ee7a8}.km-down{color:#ff9a9a}.km-muted{color:rgba(255,255,255,.55);font-size:10px;margin-top:7px;line-height:1.4}.km-footer{display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin-top:13px;color:rgba(255,255,255,.58);font-size:10px}.km-footer a{color:#b9dcff;text-decoration:none}.km-empty{padding:18px;border:1px dashed rgba(255,255,255,.2);border-radius:14px;margin-top:14px;color:rgba(255,255,255,.72);font-size:12px}
-@media(max-width:1100px){.km-grid{grid-template-columns:repeat(3,1fr)}}@media(max-width:700px){.km-grid{grid-template-columns:repeat(2,1fr)}}@media(max-width:430px){.km-grid{grid-template-columns:1fr}}
+.km-tabs{display:flex;gap:7px;flex-wrap:wrap;margin:14px 0}.km-tab{border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.06);color:#dcecff;border-radius:999px;padding:7px 11px;font-size:11px;cursor:pointer}.km-tab.active{background:#176b87;color:#fff}
+.km-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-top:10px}.km-card{border:1px solid rgba(255,255,255,.13);background:rgba(255,255,255,.06);border-radius:15px;padding:13px}.km-card strong{display:block;font-size:13px}.km-price{font-size:20px;font-weight:800;margin-top:8px}.km-change{font-size:11px;margin-top:4px}.km-up{color:#6ee7a8}.km-down{color:#ff9a9a}.km-muted{color:rgba(255,255,255,.55);font-size:10px;margin-top:7px;line-height:1.4}
+.km-tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:12px 0}.km-tools select{background:#071525;color:#fff;border:1px solid rgba(255,255,255,.16);border-radius:9px;padding:8px 10px;font-size:11px}.km-chart{margin-top:12px;border:1px solid rgba(255,255,255,.12);border-radius:16px;background:rgba(0,0,0,.16);padding:10px}.km-chart-head{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:7px;font-size:11px}.km-chart-head strong{font-size:13px}.km-chart-wrap{height:230px;position:relative}.km-chart svg{width:100%;height:100%;display:block}.km-chart-empty{display:grid;place-items:center;height:100%;color:rgba(255,255,255,.58);font-size:11px}.km-currency-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-top:10px}.km-fx-card{border:1px solid rgba(255,255,255,.13);background:rgba(255,255,255,.06);border-radius:15px;padding:13px}.km-fx-pair{font-size:12px;font-weight:800}.km-fx-rate{font-size:19px;font-weight:800;margin-top:7px}.km-fx-name{font-size:10px;color:rgba(255,255,255,.58);margin-top:4px}.km-footer{display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin-top:13px;color:rgba(255,255,255,.58);font-size:10px}.km-footer a{color:#b9dcff;text-decoration:none}.km-empty{padding:18px;border:1px dashed rgba(255,255,255,.2);border-radius:14px;margin-top:14px;color:rgba(255,255,255,.72);font-size:12px}
+@media(max-width:1100px){.km-grid,.km-currency-grid{grid-template-columns:repeat(3,1fr)}}@media(max-width:700px){.km-grid,.km-currency-grid{grid-template-columns:repeat(2,1fr)}}@media(max-width:430px){.km-grid,.km-currency-grid{grid-template-columns:1fr}}
 </style>
 <section class="km-panel" id="kojaMarketData">
-<div class="km-head"><div><h2>KOJA MARKET DATA</h2><p>Direct market quotes from financial-data APIs. Market news remains sourced separately through NEXUS feeds.</p></div><div class="km-meta" id="kmStatus">Checking providers…</div></div>
+<div class="km-head"><div><h2>KOJA MARKET DATA</h2><p>Stocks, charts, foreign exchange and currency conversion from financial-data APIs.</p></div><div class="km-meta" id="kmStatus">Checking providers…</div></div>
+<div class="km-tabs"><button class="km-tab active" id="kmTabStocks" type="button">Stocks</button><button class="km-tab" id="kmTabFx" type="button">Currencies & FX</button></div>
+<div id="kmStocksView">
 <div class="km-grid" id="kmGrid"><div class="km-empty">Market data will appear here when a provider API key is configured.</div></div>
-<div class="km-footer"><span>Prices are informational and may be delayed according to exchange/provider entitlement.</span><a href="https://www.alphavantage.co/" target="_blank" rel="noopener">Alpha Vantage</a><a href="https://twelvedata.com/" target="_blank" rel="noopener">Twelve Data</a></div>
+<div class="km-tools"><label style="font-size:11px;color:rgba(255,255,255,.65)">Chart</label><select id="kmChartSymbol"><option>AAPL</option><option>MSFT</option><option>NVDA</option><option>AMZN</option><option>TSLA</option><option>GOOGL</option><option>META</option><option>ORCL</option><option>KO</option><option>SONY</option></select><select id="kmChartInterval"><option value="1day">Daily</option><option value="1week">Weekly</option><option value="1month">Monthly</option></select></div>
+<div class="km-chart"><div class="km-chart-head"><strong id="kmChartTitle">AAPL price history</strong><span id="kmChartMeta">Loading…</span></div><div class="km-chart-wrap" id="kmChart"><div class="km-chart-empty">Loading chart…</div></div></div>
+</div>
+<div id="kmFxView" style="display:none"><div class="km-currency-grid" id="kmFxGrid"><div class="km-empty">Loading currency rates…</div></div></div>
+<div class="km-footer"><span>Prices/rates are informational and may be delayed according to exchange/provider entitlement.</span><a href="https://www.alphavantage.co/" target="_blank" rel="noopener">Alpha Vantage</a><a href="https://twelvedata.com/" target="_blank" rel="noopener">Twelve Data</a></div>
 </section>
 <script>
 (function(){
-const grid=document.getElementById('kmGrid'),status=document.getElementById('kmStatus');
+const grid=document.getElementById('kmGrid'),status=document.getElementById('kmStatus'),chart=document.getElementById('kmChart'),chartTitle=document.getElementById('kmChartTitle'),chartMeta=document.getElementById('kmChartMeta'),fxGrid=document.getElementById('kmFxGrid');
+const stocksView=document.getElementById('kmStocksView'),fxView=document.getElementById('kmFxView'),tabStocks=document.getElementById('kmTabStocks'),tabFx=document.getElementById('kmTabFx'),chartSymbol=document.getElementById('kmChartSymbol'),chartInterval=document.getElementById('kmChartInterval');
 function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
 function card(q){const n=parseFloat(String(q.change_percent||'').replace('%',''));const cls=isNaN(n)?'':(n>=0?'km-up':'km-down');return '<div class="km-card"><strong>'+esc(q.symbol)+'</strong><div class="km-price">'+esc(q.price||'—')+'</div><div class="km-change '+cls+'">'+esc(q.change_percent||'')+' '+esc(q.change||'')+'</div><div class="km-muted">'+esc(q.provider)+'<br>'+esc(q.freshness)+'</div></div>';}
-async function load(){try{const r=await fetch('/api/markets/quotes',{cache:'no-store'});const d=await r.json();const rows=d.quotes||[];grid.innerHTML=rows.length?rows.map(card).join(''):'<div class="km-empty">No market provider is configured or no quote is currently available.</div>';status.textContent=d.updated_at?'Updated '+new Date(d.updated_at*1000).toLocaleTimeString():'No provider data';}catch(e){status.textContent='Market data temporarily unavailable';}}
-load();setInterval(load,30000);
+function drawChart(rows,symbol){
+ if(!rows.length){chart.innerHTML='<div class="km-chart-empty">No historical data available for this symbol.</div>';return;}
+ const vals=rows.map(x=>Number(x.close)).filter(Number.isFinite); if(!vals.length){chart.innerHTML='<div class="km-chart-empty">No usable price data.</div>';return;}
+ const w=900,h=220,pad=28,min=Math.min.apply(null,vals),max=Math.max.apply(null,vals),span=(max-min)||1;
+ const pts=rows.map((x,i)=>{const v=Number(x.close);return [pad+(i/(Math.max(1,rows.length-1)))*(w-pad*2),h-pad-((v-min)/span)*(h-pad*2)];}).filter(x=>Number.isFinite(x[1]));
+ const line=pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ');
+ const area=line+' L '+pts[pts.length-1][0].toFixed(1)+' '+(h-pad)+' L '+pts[0][0].toFixed(1)+' '+(h-pad)+' Z';
+ const last=vals[vals.length-1]; chart.innerHTML='<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" aria-label="'+esc(symbol)+' price chart"><path d="'+area+'" fill="rgba(78,164,207,.12)" stroke="none"></path><path d="'+line+'" fill="none" stroke="#69bdd3" stroke-width="3" vector-effect="non-scaling-stroke"></path><line x1="'+pad+'" y1="'+(h-pad)+'" x2="'+(w-pad)+'" y2="'+(h-pad)+'" stroke="rgba(255,255,255,.15)"/><text x="'+pad+'" y="16" fill="rgba(255,255,255,.55)" font-size="11">'+esc(min.toFixed(2))+'</text><text x="'+(w-pad)+'" y="16" text-anchor="end" fill="rgba(255,255,255,.75)" font-size="11">'+esc(max.toFixed(2))+'</text><circle cx="'+pts[pts.length-1][0].toFixed(1)+'" cy="'+pts[pts.length-1][1].toFixed(1)+'" r="4" fill="#fff"/></svg>';
+ chartTitle.textContent=symbol+' price history';chartMeta.textContent='Latest '+last.toFixed(2)+' · '+rows.length+' points';
+}
+async function loadStocks(){try{const r=await fetch('/api/markets/quotes',{cache:'no-store'});const d=await r.json();const rows=d.quotes||[];grid.innerHTML=rows.length?rows.map(card).join(''):'<div class="km-empty">No market provider is configured or no quote is currently available.</div>';status.textContent=d.updated_at?'Updated '+new Date(d.updated_at*1000).toLocaleTimeString():'No provider data';}catch(e){status.textContent='Market data temporarily unavailable';}}
+async function loadChart(){try{const s=chartSymbol.value,i=chartInterval.value;const r=await fetch('/api/markets/chart?symbol='+encodeURIComponent(s)+'&interval='+encodeURIComponent(i)+'&outputsize=30',{cache:'no-store'});const d=await r.json();drawChart(d.values||[],s);}catch(e){chart.innerHTML='<div class="km-chart-empty">Chart temporarily unavailable.</div>';}}
+async function loadFx(){try{const r=await fetch('/api/markets/fx',{cache:'no-store'});const d=await r.json();const rows=d.rates||[];fxGrid.innerHTML=rows.length?rows.map(x=>'<div class="km-fx-card"><div class="km-fx-pair">'+esc(x.symbol)+'</div><div class="km-fx-rate">'+esc(x.rate||'—')+'</div><div class="km-fx-name">'+esc(x.base_name||'')+' → '+esc(x.quote_name||'')+'<br>'+esc(x.provider||'')+'</div></div>').join(''):'<div class="km-empty">No currency data is currently available.</div>';}catch(e){fxGrid.innerHTML='<div class="km-empty">Currency data temporarily unavailable.</div>';}}
+function tab(which){const stocks=which==='stocks';stocksView.style.display=stocks?'block':'none';fxView.style.display=stocks?'none':'block';tabStocks.classList.toggle('active',stocks);tabFx.classList.toggle('active',!stocks);if(!stocks)loadFx();}
+tabStocks.onclick=()=>tab('stocks');tabFx.onclick=()=>tab('fx');chartSymbol.onchange=loadChart;chartInterval.onchange=loadChart;loadStocks();loadChart();setInterval(loadStocks,30000);setInterval(loadFx,60000);setInterval(loadChart,300000);
 })();
 </script>"""
+
 
 @app.route('/api/markets/quotes')
 def koja_market_quotes_api():
@@ -12719,6 +12742,65 @@ def koja_market_status_api():
     with _koja_market_lock:
         updated_at=float(_koja_market_cache.get('updated_at') or 0);count=len(_koja_market_cache.get('quotes') or {})
     return jsonify({'alpha_vantage_configured':bool(ALPHAVANTAGE_API_KEY),'twelve_data_configured':bool(TWELVEDATA_API_KEY),'cached_quotes':count,'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL})
+
+
+KOJA_FX_PAIRS = [
+    ("USD/ZMW","US Dollar","Zambian Kwacha"),
+    ("EUR/USD","Euro","US Dollar"),
+    ("GBP/USD","British Pound","US Dollar"),
+    ("USD/JPY","US Dollar","Japanese Yen"),
+    ("USD/CNY","US Dollar","Chinese Yuan"),
+    ("USD/ZAR","US Dollar","South African Rand"),
+    ("USD/NGN","US Dollar","Nigerian Naira"),
+    ("USD/KES","US Dollar","Kenyan Shilling"),
+    ("USD/GHS","US Dollar","Ghanaian Cedi"),
+    ("USD/AOA","US Dollar","Angolan Kwanza"),
+]
+
+def _twelve_time_series(symbol, interval="1day", outputsize=30):
+    if not TWELVEDATA_API_KEY:
+        return []
+    body=_market_http_json("https://api.twelvedata.com/time_series", {"symbol":symbol,"interval":interval,"outputsize":max(1,min(int(outputsize),100)),"apikey":TWELVEDATA_API_KEY})
+    values=(body or {}).get("values") or []
+    out=[]
+    for row in reversed(values):
+        if isinstance(row,dict) and row.get("close") is not None:
+            out.append({"datetime":row.get("datetime"),"close":row.get("close")})
+    return out
+
+def _twelve_fx_rate(symbol):
+    if not TWELVEDATA_API_KEY:
+        return None
+    body=_market_http_json("https://api.twelvedata.com/exchange_rate", {"symbol":symbol,"apikey":TWELVEDATA_API_KEY})
+    if not body:
+        return None
+    rate=body.get("rate") or body.get("close")
+    if rate is None:
+        return None
+    return rate
+
+@app.route('/api/markets/chart')
+def koja_market_chart_api():
+    symbol=clean(request.args.get('symbol') or 'AAPL').upper()
+    interval=clean(request.args.get('interval') or '1day').lower()
+    if interval not in ('1day','1week','1month'):
+        interval='1day'
+    try: outputsize=max(5,min(int(request.args.get('outputsize') or 30),100))
+    except Exception: outputsize=30
+    values=_twelve_time_series(symbol,interval,outputsize)
+    return jsonify({'symbol':symbol,'interval':interval,'values':values,'provider':'Twelve Data' if values else None,'freshness':'Historical/provider data; exact latency depends on market/plan'})
+
+@app.route('/api/markets/fx')
+def koja_market_fx_api():
+    rates=[]
+    for symbol,base_name,quote_name in KOJA_FX_PAIRS:
+        try:
+            rate=_twelve_fx_rate(symbol)
+            if rate is not None:
+                rates.append({'symbol':symbol,'rate':rate,'base_name':base_name,'quote_name':quote_name,'provider':'Twelve Data','freshness':'Provider FX rate; plan/market terms apply'})
+        except Exception:
+            logger.exception('FX rate error for %s',symbol)
+    return jsonify({'rates':rates,'updated_at':time.time(),'pairs_requested':[x[0] for x in KOJA_FX_PAIRS]})
 
 
 # ============================================================
