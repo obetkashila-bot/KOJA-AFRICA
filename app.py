@@ -12853,14 +12853,14 @@ _start_africa_now_worker()
 # ============================================================
 # KOJA GLOBAL NOW — MARKET DATA ENGINE
 # ============================================================
-KOJA_MARKET_CACHE_TTL = max(10, int(os.getenv("KOJA_MARKET_CACHE_TTL", "30")))
+KOJA_MARKET_CACHE_TTL = max(120, int(os.getenv("KOJA_MARKET_CACHE_TTL", "600")))
 KOJA_MARKET_TIMEOUT = max(3, min(int(os.getenv("KOJA_MARKET_TIMEOUT", "8")), 20))
-KOJA_MARKET_SYMBOLS = [x.strip().upper() for x in os.getenv("KOJA_MARKET_SYMBOLS", "AAPL,MSFT,NVDA,AMZN,TSLA,GOOGL,META,ORCL,KO,SONY").split(",") if x.strip()][:30]
+KOJA_MARKET_SYMBOLS = [x.strip().upper() for x in os.getenv("KOJA_MARKET_SYMBOLS", "AAPL,MSFT,NVDA,AMZN,TSLA,GOOGL").split(",") if x.strip()][:6]
 ALPHAVANTAGE_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY", "").strip()
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "").strip()
 _koja_market_cache = {"quotes": {}, "updated_at": 0.0}
 _koja_fx_cache = {"rates": {}, "updated_at": 0.0}
-_koja_market_diag = {"last_error": None, "last_provider": None}
+_koja_market_diag = {"last_error": None, "last_provider": None, "last_attempt_at": 0.0, "provider_credits_left": None}
 _koja_market_lock = threading.Lock()
 
 def _market_http_json(url, params):
@@ -12913,24 +12913,42 @@ def _market_quote(symbol):
     return _alpha_quote(symbol) or _twelve_quote(symbol) if symbol else None
 
 def _refresh_market_quotes(symbols=None, force=False):
-    symbols = list(dict.fromkeys([clean(x).upper() for x in (symbols or KOJA_MARKET_SYMBOLS) if clean(x)]))[:30]
+    # Basic Twelve Data allows only 8 API credits/minute. Keep KOJA well below
+    # that ceiling, and cache aggressively because Render may run multiple workers.
+    symbols = list(dict.fromkeys([clean(x).upper() for x in (symbols or KOJA_MARKET_SYMBOLS) if clean(x)]))[:6]
     now = time.time()
     with _koja_market_lock:
-        if not force and _koja_market_cache["quotes"] and now-float(_koja_market_cache["updated_at"] or 0) < KOJA_MARKET_CACHE_TTL:
-            return dict(_koja_market_cache["quotes"]), float(_koja_market_cache["updated_at"])
-    quotes={}
-    for symbol in symbols:
-        try:
-            q=_market_quote(symbol)
-            if q: quotes[symbol]=q
-        except Exception:
-            logger.exception("Market quote error for %s", symbol)
+        cached = dict(_koja_market_cache.get("quotes") or {})
+        cached_at = float(_koja_market_cache.get("updated_at") or 0)
+        last_attempt = float(_koja_market_diag.get("last_attempt_at") or 0)
+        if cached and (now-cached_at < KOJA_MARKET_CACHE_TTL or now-last_attempt < 60):
+            return cached, cached_at
+        _koja_market_diag["last_attempt_at"] = now
+
+    quotes = {}
+    # Alpha Vantage is attempted first, symbol-by-symbol only when configured.
+    if ALPHAVANTAGE_API_KEY:
+        for symbol in symbols:
+            q = _alpha_quote(symbol)
+            if q:
+                quotes[symbol] = q
+    # Twelve Data: one batch /quote request for all remaining symbols. Each symbol
+    # still costs one credit, but one HTTP request prevents request storms.
+    missing = [x for x in symbols if x not in quotes]
+    if missing and TWELVEDATA_API_KEY:
+        body = _market_http_json("https://api.twelvedata.com/quote", {"symbol": ",".join(missing), "apikey": TWELVEDATA_API_KEY})
+        if isinstance(body, dict):
+            if all(k in body for k in ("symbol", "close")):
+                body = {body.get("symbol"): body}
+            for sym, q in body.items():
+                if isinstance(q, dict) and q.get("close"):
+                    quotes[str(sym).upper()] = {"symbol":str(sym).upper(),"price":q.get("close"),"change":q.get("change"),"change_percent":q.get("percent_change"),"volume":q.get("volume"),"previous_close":q.get("previous_close"),"latest_trading_day":q.get("datetime"),"provider":"Twelve Data","freshness":"Provider quote; exchange delay/entitlement depends on market/plan","source_url":"https://twelvedata.com/"}
     if quotes:
         with _koja_market_lock:
-            _koja_market_cache["quotes"].update(quotes)
-            _koja_market_cache["updated_at"]=now
+            _koja_market_cache["quotes"] = quotes
+            _koja_market_cache["updated_at"] = now
     with _koja_market_lock:
-        return dict(_koja_market_cache["quotes"]), float(_koja_market_cache["updated_at"] or 0)
+        return dict(_koja_market_cache.get("quotes") or {}), float(_koja_market_cache.get("updated_at") or 0)
 
 def _market_panel_html():
     return r"""
@@ -12987,13 +13005,13 @@ def koja_market_quotes_api():
     symbols=[x.strip().upper() for x in raw.split(',') if x.strip()] if raw else KOJA_MARKET_SYMBOLS
     symbols=list(dict.fromkeys(symbols))[:30]
     quotes,updated_at=_refresh_market_quotes(symbols)
-    return jsonify({'provider_order':['Alpha Vantage','Twelve Data'],'quotes':[quotes[s] for s in symbols if s in quotes],'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'configured':bool(ALPHAVANTAGE_API_KEY or TWELVEDATA_API_KEY)})
+    return jsonify({'provider_order':['Alpha Vantage','Twelve Data'],'quotes':[quotes[s] for s in symbols if s in quotes],'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'credit_safe_mode':True,'configured':bool(ALPHAVANTAGE_API_KEY or TWELVEDATA_API_KEY)})
 
 @app.route('/api/markets/status')
 def koja_market_status_api():
     with _koja_market_lock:
         updated_at=float(_koja_market_cache.get('updated_at') or 0);count=len(_koja_market_cache.get('quotes') or {})
-    return jsonify({'alpha_vantage_configured':bool(ALPHAVANTAGE_API_KEY),'twelve_data_configured':bool(TWELVEDATA_API_KEY),'cached_quotes':count,'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'last_error':_koja_market_diag.get('last_error'),'provider_order':['Alpha Vantage','Twelve Data']})
+    return jsonify({'alpha_vantage_configured':bool(ALPHAVANTAGE_API_KEY),'twelve_data_configured':bool(TWELVEDATA_API_KEY),'cached_quotes':count,'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'credit_safe_mode':True,'last_error':_koja_market_diag.get('last_error'),'provider_order':['Alpha Vantage','Twelve Data']})
 
 
 KOJA_FX_PAIRS = [
@@ -13069,6 +13087,11 @@ def koja_market_chart_api():
         values=_alpha_time_series(symbol,interval,outputsize)
         if values: provider="Alpha Vantage"
     if not values and TWELVEDATA_API_KEY:
+        with _koja_market_lock:
+            last_attempt=float(_koja_market_diag.get("last_chart_attempt_at") or 0)
+            if time.time()-last_attempt < 60:
+                return jsonify({"symbol":symbol,"interval":interval,"values":[],"provider":None,"freshness":"Chart request throttled; cached market quotes remain available.","error":"Chart provider temporarily throttled to protect API credits."})
+            _koja_market_diag["last_chart_attempt_at"] = time.time()
         values=_twelve_time_series(symbol,interval,outputsize)
         if values: provider="Twelve Data"
     return jsonify({'symbol':symbol,'interval':interval,'values':values,'provider':provider,'freshness':'Historical/provider data; exact latency depends on market/plan','error':None if values else _koja_market_diag.get("last_error")})
@@ -13079,10 +13102,10 @@ def koja_market_fx_api():
     with _koja_market_lock:
         cached=dict(_koja_fx_cache.get("rates") or {})
         cached_at=float(_koja_fx_cache.get("updated_at") or 0)
-    if cached and now-cached_at < 60:
-        return jsonify({'rates':[cached[x[0]] for x in KOJA_FX_PAIRS if x[0] in cached],'updated_at':cached_at,'provider_order':['Alpha Vantage','Twelve Data'],'cached':True,'error':None})
+    if cached and now-cached_at < 300:
+        return jsonify({'rates':[cached[x[0]] for x in KOJA_FX_PAIRS[:4] if x[0] in cached],'updated_at':cached_at,'provider_order':['Alpha Vantage','Twelve Data'],'cached':True,'error':None})
     rates=[]
-    for symbol,base_name,quote_name in KOJA_FX_PAIRS:
+    for symbol,base_name,quote_name in KOJA_FX_PAIRS[:4]:
         rate=None; provider=None
         try:
             if ALPHAVANTAGE_API_KEY:
@@ -13101,7 +13124,7 @@ def koja_market_fx_api():
             _koja_fx_cache['updated_at']=now
         return jsonify({'rates':rates,'updated_at':now,'provider_order':['Alpha Vantage','Twelve Data'],'cached':False,'error':None})
     if cached:
-        return jsonify({'rates':[cached[x[0]] for x in KOJA_FX_PAIRS if x[0] in cached],'updated_at':cached_at,'provider_order':['Alpha Vantage','Twelve Data'],'cached':True,'error':_koja_market_diag.get('last_error') or 'Live provider unavailable; showing last successful rates.'})
+        return jsonify({'rates':[cached[x[0]] for x in KOJA_FX_PAIRS[:4] if x[0] in cached],'updated_at':cached_at,'provider_order':['Alpha Vantage','Twelve Data'],'cached':True,'error':_koja_market_diag.get('last_error') or 'Live provider unavailable; showing last successful rates.'})
     return jsonify({'rates':[],'updated_at':None,'provider_order':['Alpha Vantage','Twelve Data'],'cached':False,'error':_koja_market_diag.get('last_error') or 'No financial-data provider is configured. Add TWELVEDATA_API_KEY or ALPHAVANTAGE_API_KEY in Render Environment.'})
 
 
