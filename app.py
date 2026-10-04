@@ -12126,7 +12126,7 @@ def koja_admin_go_live():
 # KOJA NEXUS — AFRICA NOW AUTOMATIC TOP SCREEN
 # ============================================================
 KOJA_NEXUS_AFRICA_NOW_VERSION = "3.0-global-multi-source-business-markets-30s-nexus"
-KOJA_NEXUS_AFRICA_NOW_INTERVAL = max(300, int(os.getenv("KOJA_NEXUS_AFRICA_NOW_INTERVAL", "300")))
+KOJA_NEXUS_AFRICA_NOW_INTERVAL = max(60, int(os.getenv("KOJA_NEXUS_AFRICA_NOW_INTERVAL", "60")))
 KOJA_NEXUS_AFRICA_NOW_ROTATE_SECONDS = max(30, int(os.getenv("KOJA_NEXUS_AFRICA_NOW_ROTATE_SECONDS", "30")))
 KOJA_NEXUS_AFRICA_NOW_ENABLED = os.getenv("KOJA_NEXUS_AFRICA_NOW_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
 KOJA_NEXUS_AFRICA_NOW_TIMEOUT = max(4, min(int(os.getenv("KOJA_NEXUS_AFRICA_NOW_TIMEOUT", "8")), 20))
@@ -12317,21 +12317,75 @@ def _africa_now_parse_item(item, label, feed_kind):
     }
 
 
+def _africa_now_fetch_html_fallback(label, page_url, feed_kind):
+    """Best-effort HTML fallback when an RSS endpoint is unavailable."""
+    headers = {"User-Agent": "KOJA-AFRICA/3.1 (+Africa Now)", "Accept": "text/html,application/xhtml+xml"}
+    r = requests.get(page_url, timeout=(5, KOJA_NEXUS_AFRICA_NOW_TIMEOUT), headers=headers)
+    r.raise_for_status()
+    html = r.text
+    links = re.findall(r'<a\b[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', html, flags=re.I|re.S)
+    found, seen = [], set()
+    for href, raw in links:
+        title = _africa_now_text(raw)
+        if len(title) < 18 or len(title) > 260:
+            continue
+        url = urljoin(page_url, href).split('#', 1)[0]
+        if not url.startswith(('http://','https://')) or url in seen:
+            continue
+        low = title.lower()
+        if low in ('read more','view all','watch live','subscribe','sign in','menu'):
+            continue
+        seen.add(url)
+        found.append((title, url))
+        if len(found) >= 30:
+            break
+    items=[]
+    for title,url in found:
+        items.append({
+            "source_key": hashlib.sha256(url.encode()).hexdigest(),
+            "title": title[:500], "url": url, "source_name": label[:160],
+            "summary": f"Latest report from {label}.", "image_url": None, "video_url": None,
+            "published_at": None, "country": _africa_now_country(title, ""),
+            "category": _africa_now_category(title, ""),
+            "score": 12.0, "media_type": "story", "is_live": False, "feed_kind": feed_kind,
+        })
+    return items
+
 def _africa_now_fetch_feed(label, feed_url, feed_kind):
     headers = {
-        "User-Agent": "KOJA-AFRICA/2.0 (+Africa Now RSS aggregator)",
+        "User-Agent": "KOJA-AFRICA/3.1 (+Africa Now RSS aggregator)",
         "Accept": "application/rss+xml, application/rdf+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.1",
     }
-    r = requests.get(feed_url, timeout=(5, KOJA_NEXUS_AFRICA_NOW_TIMEOUT), headers=headers)
-    r.raise_for_status()
-    root = ET.fromstring(r.content)
-    items = []
-    for node in root.iter():
-        if _africa_now_tag(node) in ("item", "entry"):
-            parsed = _africa_now_parse_item(node, label, feed_kind)
-            if parsed:
-                items.append(parsed)
-    return items
+    try:
+        r = requests.get(feed_url, timeout=(5, KOJA_NEXUS_AFRICA_NOW_TIMEOUT), headers=headers)
+        r.raise_for_status()
+        root = ET.fromstring(r.content)
+        items = []
+        for node in root.iter():
+            if _africa_now_tag(node) in ("item", "entry"):
+                parsed = _africa_now_parse_item(node, label, feed_kind)
+                if parsed:
+                    items.append(parsed)
+        if items:
+            return items
+    except Exception as rss_exc:
+        logger.warning("Africa Now RSS failed (%s): %s; trying HTML fallback", label, rss_exc)
+
+    html_pages = {
+        "Africanews Africa": "https://www.africanews.com/news/",
+        "Africanews Business": "https://www.africanews.com/business/",
+        "AllAfrica Africa": "https://allafrica.com/",
+        "AllAfrica Business": "https://allafrica.com/business/",
+        "BBC Africa": "https://www.bbc.com/news/world/africa",
+        "BBC World": "https://www.bbc.com/news",
+        "BBC Business": "https://www.bbc.com/news/business",
+        "BBC Technology": "https://www.bbc.com/news/technology",
+        "BBC Sport": "https://www.bbc.com/sport",
+    }
+    page = html_pages.get(label)
+    if not page:
+        return []
+    return _africa_now_fetch_html_fallback(label, page, feed_kind)
 
 
 def _africa_now_job_clean_html(value):
@@ -12610,7 +12664,7 @@ def _africa_now_panel_html():
      updated.textContent='Updated '+(d.updated_at?new Date(d.updated_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'just now');
    }catch(e){updated.textContent='Automatic update retrying';}
  }
- load(); setInterval(load,300000);
+ load(); setInterval(load,60000);
 })();
 </script>
 """
