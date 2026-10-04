@@ -13,6 +13,9 @@ import base64
 import re
 import time
 import threading
+import xml.etree.ElementTree as ET
+from html import unescape
+from urllib.parse import urlparse, parse_qs
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from functools import wraps
@@ -930,7 +933,6 @@ footer{text-align:center;color:var(--muted);padding:30px}
 html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90deg,transparent,rgba(255,255,255,.08),transparent)}
 @keyframes kojaSpin{to{transform:rotate(360deg)}}
 @keyframes kojaShimmer{100%{transform:translateX(100%)}}
-.koja-nexus-nav{font-weight:800!important;color:#f2b84b!important;border-bottom:2px solid #f2b84b!important}
 .actions{display:flex;gap:8px;flex-wrap:wrap}.actions .btn,.actions button{width:auto}
 @keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}@keyframes logoFloat{0%,100%{transform:translateY(0) rotate(0deg)}50%{transform:translateY(-2px) rotate(1deg)}}@keyframes pulseSoft{0%,100%{box-shadow:0 0 0 0 rgba(25,167,184,.18)}50%{box-shadow:0 0 0 7px rgba(25,167,184,0)}}:focus-visible{outline:3px solid var(--focus);outline-offset:2px}.hero{animation:fadeUp .55s ease both}.stat{animation:fadeUp .5s ease both}.online{animation:pulseSoft 2.4s ease-in-out infinite}@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition:none!important;transform:none!important}}
 @media(max-width:760px){nav{padding:9px 12px}.nav-inner{position:relative;flex-wrap:wrap}.menu-toggle{display:block}.nav-links{display:none;width:100%;flex-direction:column;align-items:stretch;gap:3px;padding-top:8px}.nav-links.open{display:flex;animation:fadeUp .2s ease both}.nav-links>a{font-size:14px;padding:11px 12px;background:rgba(255,255,255,.05)}.menu-group{width:100%}.menu-group>button{width:100%;text-align:left;padding:11px 12px}.dropdown{position:static;width:100%;box-shadow:none;margin-top:4px;background:var(--surface)}.dropdown a{font-size:14px}.container{width:min(100% - 14px,1250px)}table{display:block;overflow-x:auto}#map{height:350px}.actions .btn,.actions button{width:100%}}
@@ -949,7 +951,6 @@ html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90
 <a href="{{ url_for('dashboard') }}">Dashboard</a>
 <a href="{{ url_for('services') }}">Services</a>
 <a href="{{ url_for('research') }}">Research</a>
-<a href="{{ url_for('koja_nexus') }}" class="koja-nexus-nav">KOJA NEXUS</a>
 <a href="{{ url_for('ai_nextgen') }}">KOJA AI</a>
 <a class="notification-bell" href="{{ url_for('notifications_page') }}" aria-label="Notifications">Notifications <span id="kojaNotifBadge" class="notif-badge" hidden></span></a>
 <a href="{{ '/market' }}">KOJA Market</a> <a href="{{ url_for('market_live') }}">Live Shop</a>
@@ -12117,7 +12118,177 @@ def koja_admin_go_live():
     return render_page('KOJA Go-Live', tpl)
 
 # ============================================================
-# KOJA WORLD — PUBLIC AFRICA SERVICE DIRECTORY
+# KOJA NEXUS — AFRICA NOW AUTOMATIC TOP SCREEN
+# ============================================================
+KOJA_NEXUS_AFRICA_NOW_VERSION = "1.0"
+KOJA_NEXUS_AFRICA_NOW_INTERVAL = max(60, int(os.getenv("KOJA_NEXUS_AFRICA_NOW_INTERVAL", "300")))
+KOJA_NEXUS_AFRICA_NOW_ENABLED = os.getenv("KOJA_NEXUS_AFRICA_NOW_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
+
+_KOJA_AFRICA_NOW_FEEDS = [
+    ("Africa Breaking", "https://news.google.com/rss/search?q=Africa+breaking+news&hl=en&gl=US&ceid=US:en"),
+    ("Africa Latest", "https://news.google.com/rss/search?q=Africa+latest+news&hl=en&gl=US&ceid=US:en"),
+    ("Africa Politics", "https://news.google.com/rss/search?q=Africa+politics+government&hl=en&gl=US&ceid=US:en"),
+    ("Africa Business", "https://news.google.com/rss/search?q=Africa+business+economy&hl=en&gl=US&ceid=US:en"),
+    ("Africa Health", "https://news.google.com/rss/search?q=Africa+health outbreak&hl=en&gl=US&ceid=US:en"),
+    ("Africa Sports", "https://news.google.com/rss/search?q=Africa+sports&hl=en&gl=US&ceid=US:en"),
+    ("Africa Technology", "https://news.google.com/rss/search?q=Africa+technology+innovation&hl=en&gl=US&ceid=US:en"),
+]
+
+_AFRICA_COUNTRY_NAMES = [
+    "Algeria","Angola","Benin","Botswana","Burkina Faso","Burundi","Cabo Verde","Cameroon",
+    "Central African Republic","Chad","Comoros","Republic of Congo","Democratic Republic of the Congo","DR Congo",
+    "Côte d’Ivoire","Ivory Coast","Djibouti","Egypt","Equatorial Guinea","Eritrea","Eswatini","Ethiopia","Gabon",
+    "Gambia","Ghana","Guinea","Guinea-Bissau","Kenya","Lesotho","Liberia","Libya","Madagascar","Malawi","Mali",
+    "Mauritania","Mauritius","Morocco","Mozambique","Namibia","Niger","Nigeria","Rwanda","São Tomé and Príncipe",
+    "Senegal","Seychelles","Sierra Leone","Somalia","South Africa","South Sudan","Sudan","Tanzania","Togo","Tunisia",
+    "Uganda","Zambia","Zimbabwe"
+]
+
+_AFRICA_NOW_CATEGORY_TERMS = {
+    "Politics & Government": ["president","government","election","parliament","minister","politics","coup","cabinet"],
+    "Business & Economy": ["business","economy","market","bank","investment","trade","currency","company","finance"],
+    "Health": ["health","hospital","disease","outbreak","virus","cholera","malaria","medicine"],
+    "Sports": ["football","soccer","sport","afcon","fifa","basketball","rugby","olympics","match"],
+    "Technology": ["technology","tech","ai","digital","startup","innovation","internet","telecom"],
+    "Security & Emergencies": ["attack","war","conflict","military","police","security","flood","earthquake","fire","disaster"],
+}
+
+def _africa_now_text(value):
+    return re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]+>", " ", value or ""))).strip()
+
+def _africa_now_image(value):
+    if not value: return None
+    m = re.search(r'<img[^>]+src=["\']([^"\']+)', value, re.I)
+    return unescape(m.group(1)) if m else None
+
+def _africa_now_country(title, summary):
+    hay = f"{title} {summary}".lower()
+    for country in _AFRICA_COUNTRY_NAMES:
+        if country.lower() in hay: return country
+    return "Africa"
+
+def _africa_now_category(title, summary):
+    hay = f"{title} {summary}".lower(); best, best_n = "Africa News", 0
+    for category, terms in _AFRICA_NOW_CATEGORY_TERMS.items():
+        n = sum(1 for term in terms if term in hay)
+        if n > best_n: best, best_n = category, n
+    return best
+
+def _africa_now_score(title, summary, published):
+    hay = f"{title} {summary}".lower(); score = 1.0
+    if any(x in hay for x in ("breaking", "urgent", "live", "just in")): score += 8
+    score += min(sum(1 for terms in _AFRICA_NOW_CATEGORY_TERMS.values() for term in terms if term in hay), 8) * .7
+    if published:
+        age_hours = max(0, (datetime.now(timezone.utc) - published).total_seconds() / 3600)
+        score += max(0, 8 - age_hours * .8)
+    return round(score, 3)
+
+def _africa_now_refresh():
+    if not KOJA_NEXUS_AFRICA_NOW_ENABLED or not supabase_configured():
+        return {"ok": False, "reason": "disabled" if not KOJA_NEXUS_AFRICA_NOW_ENABLED else "supabase_not_configured"}
+    collected, seen = [], set()
+    for label, feed_url in _KOJA_AFRICA_NOW_FEEDS:
+        try:
+            r = requests.get(feed_url, timeout=18, headers={"User-Agent":"KOJA-AFRICA/1.0 Africa-Now"})
+            if not r.ok: continue
+            root = ET.fromstring(r.content)
+        except Exception as exc:
+            logger.warning("Africa Now source failed: %s", exc); continue
+        items = []
+        for node in root.iter():
+            if node.tag.lower().endswith("item") or node.tag.lower().endswith("entry"):
+                items.append(node)
+        for item in items:
+            fields={c.tag.split("}")[-1].lower():(c.text or "") for c in list(item)}
+            title=_africa_now_text(fields.get("title")); link=fields.get("link","").strip()
+            if not link:
+                for c in list(item):
+                    if c.tag.split("}")[-1].lower()=="link": link=c.attrib.get("href","") or c.text or ""
+                    if link: break
+            if not title or not link: continue
+            summary_raw=fields.get("description") or fields.get("summary") or ""
+            summary=_africa_now_text(summary_raw)
+            pub=fields.get("pubdate") or fields.get("published") or fields.get("updated") or ""
+            try:
+                from email.utils import parsedate_to_datetime
+                published=parsedate_to_datetime(pub)
+                if published.tzinfo is None: published=published.replace(tzinfo=timezone.utc)
+                published=published.astimezone(timezone.utc)
+            except Exception: published=None
+            source=_africa_now_text(fields.get("source")) or label
+            low=f"{title} {summary}".lower()
+            image_url=_africa_now_image(summary_raw)
+            video_url=None
+            for c in list(item):
+                tag=c.tag.split("}")[-1].lower()
+                if tag in ("content","enclosure") and c.attrib.get("url"):
+                    media_type=(c.attrib.get("type") or "").lower()
+                    if media_type.startswith("video/") or "video" in tag: video_url=c.attrib.get("url")
+                    if not image_url and media_type.startswith("image/"): image_url=c.attrib.get("url")
+            key=hashlib.sha256(link.encode()).hexdigest()
+            if link.split("#",1)[0] in seen: continue
+            seen.add(link.split("#",1)[0])
+            collected.append({
+                "source_key":key,"title":title[:500],"url":link,"source_name":source[:160],"summary":summary[:900],
+                "image_url":image_url,"video_url":video_url,"published_at":published.isoformat() if published else None,
+                "country":_africa_now_country(title,summary),"category":_africa_now_category(title,summary),
+                "score":_africa_now_score(title,summary,published),"media_type":"video" if video_url or "video" in low or "live stream" in low else "story",
+                "is_live":any(x in low for x in ("live now","live stream","watch live"))
+            })
+    collected.sort(key=lambda x:(float(x.get("score") or 0),x.get("published_at") or ""),reverse=True)
+    collected=collected[:80]
+    if not collected: return {"ok":False,"reason":"no_items"}
+    db_delete("koja_nexus_africa_now", {"is_active":True})
+    now=utc_now(); inserted=0
+    for x in collected:
+        payload={k:x.get(k) for k in ("source_key","title","url","source_name","category","country","published_at","score","image_url","video_url","media_type","is_live","summary")}
+        payload.update({"fetched_at":now,"is_active":True})
+        _,err=db_insert("koja_nexus_africa_now",payload,returning="minimal")
+        if not err: inserted+=1
+    logger.info("Africa Now refresh complete: %s items",inserted)
+    return {"ok":inserted>0,"items":inserted,"fetched_at":now}
+
+_africa_now_thread_started=False
+_africa_now_thread_lock=threading.Lock()
+def _africa_now_background_worker():
+    while True:
+        try: _africa_now_refresh()
+        except Exception: logger.exception("Africa Now background refresh failed")
+        time.sleep(KOJA_NEXUS_AFRICA_NOW_INTERVAL)
+def _start_africa_now_worker():
+    global _africa_now_thread_started
+    with _africa_now_thread_lock:
+        if _africa_now_thread_started or not KOJA_NEXUS_AFRICA_NOW_ENABLED: return
+        _africa_now_thread_started=True
+        threading.Thread(target=_africa_now_background_worker,name="koja-africa-now",daemon=True).start()
+
+@app.route("/api/nexus/africa-now")
+def koja_nexus_africa_now_api():
+    try: limit=min(max(int(request.args.get("limit") or 12),1),40)
+    except Exception: limit=12
+    rows=db_select("koja_nexus_africa_now",order="score.desc,published_at.desc",limit=limit) or []
+    rows=[r for r in rows if r.get("is_active") is not False]
+    return jsonify({"ok":True,"version":KOJA_NEXUS_AFRICA_NOW_VERSION,"refresh_interval_seconds":KOJA_NEXUS_AFRICA_NOW_INTERVAL,"updated_at":(rows[0].get("fetched_at") if rows else None),"items":rows,"count":len(rows)})
+
+def _africa_now_panel_html():
+    return r"""
+<section class="anx-panel" id="kojaAfricaNow" aria-label="Africa Now">
+<div class="anx-head"><div><span class="anx-live-dot"></span><strong>AFRICA NOW</strong><span class="anx-sub">TOP THINGS HAPPENING ACROSS AFRICA</span></div><div class="anx-updated" id="anxUpdated">Updating automatically…</div></div>
+<div class="anx-screen"><div class="anx-main" id="anxMain"><div class="anx-placeholder"><strong>Loading Africa Now</strong><span>KOJA is collecting the latest African stories.</span></div></div><div class="anx-side" id="anxSide"></div></div>
+<div class="anx-foot"><span>Automatic refresh every 5 minutes</span><a href="{{ url_for('koja_nexus_africa_now_api') }}" target="_blank" rel="noopener">Live feed</a></div>
+</section>
+<style>
+.anx-panel{margin:0 0 20px;border-radius:22px;overflow:hidden;background:#07111e;color:#fff;box-shadow:0 18px 50px rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.10)}.anx-head{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:13px 16px;background:#0d2036;border-bottom:1px solid rgba(255,255,255,.09);font-size:13px}.anx-sub{margin-left:9px;color:#8fa4ba;font-size:10px;letter-spacing:.08em}.anx-live-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#e11d48;margin-right:7px;box-shadow:0 0 0 4px rgba(225,29,72,.13)}.anx-updated{font-size:10px;color:#91a4b8}.anx-screen{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(260px,.75fr);min-height:330px}.anx-main{position:relative;min-height:330px;background:#02070d;overflow:hidden}.anx-main img,.anx-main video{width:100%;height:100%;min-height:330px;object-fit:cover;display:block;opacity:.82}.anx-overlay{position:absolute;inset:auto 0 0;padding:22px;background:linear-gradient(transparent,rgba(0,0,0,.94));padding-top:90px}.anx-kicker{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:#55b8d2;font-weight:800}.anx-title{font-size:clamp(20px,3vw,34px);line-height:1.18;margin:6px 0}.anx-summary{font-size:12px;color:#c4cfdb;max-width:850px}.anx-open{display:inline-block;margin-top:10px;background:#176b87;color:#fff;text-decoration:none;padding:8px 11px;border-radius:8px;font-size:11px;font-weight:800}.anx-side{padding:11px;background:#0a1522;display:flex;flex-direction:column;gap:8px;overflow:auto}.anx-card{display:block;text-decoration:none;color:#fff;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:10px}.anx-card-top{font-size:9px;color:#69bdd3;text-transform:uppercase;font-weight:800}.anx-card-title{font-size:12px;line-height:1.35;margin-top:4px}.anx-card-meta{font-size:9px;color:#8395a8;margin-top:5px}.anx-placeholder{height:100%;min-height:330px;display:grid;place-content:center;text-align:center;gap:7px;color:#b8c5d3}.anx-placeholder span{font-size:11px;color:#74879b}.anx-foot{display:flex;justify-content:space-between;gap:10px;padding:9px 14px;background:#06101b;color:#71869b;font-size:10px}.anx-foot a{color:#79bfd3;text-decoration:none}@media(max-width:760px){.anx-head{align-items:flex-start}.anx-sub{display:block;margin:3px 0 0 15px}.anx-screen{grid-template-columns:1fr}.anx-main,.anx-placeholder{min-height:280px}.anx-main img,.anx-main video{min-height:280px}.anx-side{max-height:230px}.anx-foot{font-size:9px}}
+</style>
+<script>
+(function(){const main=document.getElementById('anxMain'),side=document.getElementById('anxSide'),updated=document.getElementById('anxUpdated');if(!main||!side)return;function esc(v){return String(v||'').replace(/[&<>\"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[m]));}function render(d){const items=Array.isArray(d.items)?d.items:[];if(!items.length){main.innerHTML='<div class="anx-placeholder"><strong>No fresh Africa stories yet</strong><span>The automatic collector is waiting for the next source update.</span></div>';side.innerHTML='';}else{const h=items[0];let media='';if(h.video_url){media='<video src="'+esc(h.video_url)+'" autoplay muted playsinline controls preload="metadata"></video>';}else if(h.image_url){media='<img src="'+esc(h.image_url)+'" alt="" loading="eager">';}main.innerHTML=media+'<div class="anx-overlay"><div class="anx-kicker">'+esc(h.is_live?'LIVE NOW':h.category||'AFRICA NEWS')+' · '+esc(h.country||'Africa')+'</div><div class="anx-title">'+esc(h.title)+'</div><div class="anx-summary">'+esc(h.summary||'Latest report from '+(h.source_name||'source'))+'</div><a class="anx-open" href="'+esc(h.url)+'" target="_blank" rel="noopener noreferrer">Open source</a></div>';side.innerHTML=items.slice(1,7).map(x=>'<a class="anx-card" href="'+esc(x.url)+'" target="_blank" rel="noopener noreferrer"><div class="anx-card-top">'+esc(x.is_live?'LIVE NOW':x.category||'AFRICA NEWS')+' · '+esc(x.country||'Africa')+'</div><div class="anx-card-title">'+esc(x.title)+'</div><div class="anx-card-meta">'+esc(x.source_name||'Source')+'</div></a>').join('');}updated.textContent='Updated '+(d.updated_at?new Date(d.updated_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'just now');}async function load(){try{const r=await fetch('{{ url_for('koja_nexus_africa_now_api') }}?limit=12',{cache:'no-store'});if(!r.ok)throw new Error('feed');render(await r.json());}catch(e){updated.textContent='Waiting for automatic update';}}load();setInterval(load,300000);})();
+</script>
+"""
+
+_start_africa_now_worker()
+
+# ============================================================
+# KOJA NEXUS — PUBLIC AFRICA SERVICE DIRECTORY
 # ============================================================
 KOJA_WORLD_CATEGORIES = [
     "Government Services", "Health & Medical", "Universities & Education",
@@ -12134,7 +12305,7 @@ def _world_clean_url(value):
     return value
 
 def _world_service_name(row):
-    return first_nonempty(row.get("name"), row.get("service_name"), "KOJA WORLD Service")
+    return first_nonempty(row.get("name"), row.get("service_name"), "KOJA NEXUS Service")
 
 def _world_country(row):
     return first_nonempty(row.get("country_name"), row.get("country_code"), "Africa")
@@ -12166,10 +12337,6 @@ def _world_matches(row, query="", country="", category=""):
             return False
     return True
 
-@app.route("/nexus")
-def koja_nexus():
-    return redirect(url_for("koja_world"))
-
 @app.route("/world")
 def koja_world():
     rows = _world_rows()
@@ -12192,11 +12359,11 @@ def koja_world():
 .kw-country{font-size:11px;font-weight:800;letter-spacing:.08em;color:#0b4ea2;text-transform:uppercase}.kw-card h3{margin:7px 0 5px;font-size:18px}.kw-card p{font-size:13px;line-height:1.55;color:#657386}.kw-badges{display:flex;gap:6px;flex-wrap:wrap;margin:11px 0}.kw-badge{font-size:10px;padding:5px 8px;border-radius:999px;background:#edf4ff;color:#0b4ea2;font-weight:800}.kw-badge.pending{background:#fff4dc;color:#8a5b00}.kw-actions{display:flex;gap:8px;flex-wrap:wrap}.kw-actions .btn{font-size:12px}.kw-cat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px}.kw-cat{display:block;border:1px solid rgba(90,110,135,.20);border-radius:14px;padding:14px;text-decoration:none;color:inherit;background:var(--card-bg,#fff)}.kw-cat strong{display:block}.kw-cat span{font-size:12px;color:#718096}.kw-empty{padding:35px;text-align:center;border:1px dashed #9aa8b8;border-radius:16px}
 @media(max-width:1000px){.kw-grid{grid-template-columns:repeat(2,1fr)}.kw-cat-grid{grid-template-columns:repeat(2,1fr)}.kw-filter{grid-template-columns:1fr 1fr}.kw-filter .kw-search{grid-column:1/-1}.kw-stats{grid-template-columns:repeat(2,1fr)}}@media(max-width:650px){.kw-grid,.kw-cat-grid,.kw-filter{grid-template-columns:1fr}.kw-filter .kw-search{grid-column:auto}.kw-stats{grid-template-columns:1fr 1fr}.kw-hero{padding:21px}}
 </style>
-<div class="kw-shell"><section class="kw-hero"><h1>KOJA NEXUS</h1><p>Open public services from across Africa through one KOJA directory. Choose a country, select a service category, search for a service, then open the official provider.</p><div class="kw-stats"><div class="kw-stat"><strong>{{ country_count }}</strong><span>African countries</span></div><div class="kw-stat"><strong>{{ service_count }}</strong><span>Active services</span></div><div class="kw-stat"><strong>{{ verified_count }}</strong><span>Verified services</span></div><div class="kw-stat"><strong>{{ pending_count }}</strong><span>Verification pending</span></div></div></section>
+<div class="kw-shell">{{ africa_now_panel|safe }}<section class="kw-hero"><h1>KOJA NEXUS</h1><p>Open public services from across Africa through one KOJA directory. Choose a country, select a service category, search for a service, then open the official provider.</p><div class="kw-stats"><div class="kw-stat"><strong>{{ country_count }}</strong><span>African countries</span></div><div class="kw-stat"><strong>{{ service_count }}</strong><span>Active services</span></div><div class="kw-stat"><strong>{{ verified_count }}</strong><span>Verified services</span></div><div class="kw-stat"><strong>{{ pending_count }}</strong><span>Verification pending</span></div></div></section>
 <form method="get" class="card kw-filter"><div class="kw-search"><label for="kwq">Search KOJA NEXUS</label><input id="kwq" name="q" value="{{ query }}" placeholder="e.g. immigration, university, tax, health, jobs"></div><div><label for="kwcountry">Country</label><select id="kwcountry" name="country"><option value="">All countries</option>{% for code,name in countries|dictsort %}<option value="{{ code }}" {% if country|upper==code %}selected{% endif %}>{{ name }} ({{ code }})</option>{% endfor %}</select></div><div><label for="kwcategory">Category</label><select id="kwcategory" name="category"><option value="">All categories</option>{% for cat in categories %}<option value="{{ cat }}" {% if category|lower==cat|lower %}selected{% endif %}>{{ cat }}</option>{% endfor %}</select></div><div><button class="btn" type="submit">Search</button></div></form>
 {% if not query and not country and not category %}<section class="kw-section"><h2>Browse by service</h2><div class="kw-cat-grid">{% for cat in categories %}<a class="kw-cat" href="{{ url_for('koja_world',category=cat) }}"><strong>{{ cat }}</strong><span>{{ category_counts.get(cat,0) }} services</span></a>{% endfor %}</div></section>{% endif %}
 <section class="kw-section"><h2>{% if query or country or category %}Search results{% else %}All public services{% endif %}</h2><p class="kw-muted">{{ filtered|length }} service{% if filtered|length != 1 %}s{% endif %} shown. Verification pending services remain visible so users can discover them, but KOJA does not represent them as verified.</p><div class="kw-grid">{% for s in filtered %}<article class="kw-card"><div class="kw-country">{{ s.country_code or '' }} · {{ s.country_name or 'Africa' }}</div><h3>{{ service_name(s) }}</h3><div class="kw-muted">{{ s.category or 'Public Service' }}</div><p>{{ s.description or 'Official public service available through the listed provider.' }}</p><div class="kw-badges">{% if verified(s) %}<span class="kw-badge">Verified</span>{% else %}<span class="kw-badge pending">Verification pending</span>{% endif %}<span class="kw-badge">Official provider</span></div><div class="kw-actions"><a class="btn" href="{{ url_for('koja_world_open',service_id=s.id) }}">Open service</a>{% if s.country_code %}<a class="btn secondary" href="{{ url_for('koja_world',country=s.country_code) }}">More {{ s.country_code }}</a>{% endif %}</div></article>{% else %}<div class="kw-empty" style="grid-column:1/-1"><h3>No matching services</h3><p>Try another country, category or search term.</p><a class="btn" href="{{ url_for('koja_world') }}">Show all KOJA NEXUS</a></div>{% endfor %}</div></section></div>
-''', filtered=filtered, countries=countries, categories=KOJA_WORLD_CATEGORIES, category_counts=category_counts, query=query, country=country, category=category, country_count=len(countries), service_count=len(rows), verified_count=sum(1 for r in rows if _world_verified(r)), pending_count=sum(1 for r in rows if not _world_verified(r)), service_name=_world_service_name, verified=_world_verified)
+''', filtered=filtered, countries=countries, categories=KOJA_WORLD_CATEGORIES, category_counts=category_counts, query=query, country=country, category=category, country_count=len(countries), service_count=len(rows), verified_count=sum(1 for r in rows if _world_verified(r)), pending_count=sum(1 for r in rows if not _world_verified(r)), service_name=_world_service_name, verified=_world_verified, africa_now_panel=_africa_now_panel_html())
 
 @app.route("/world/open/<service_id>")
 def koja_world_open(service_id):
@@ -12206,7 +12373,7 @@ def koja_world_open(service_id):
     if not target:
         flash("This service does not currently have a valid official URL.", "warning")
         return redirect(url_for("koja_world"))
-    log_activity("world_service_open", f"Opened KOJA WORLD service: {_world_service_name(row)}")
+    log_activity("world_service_open", f"Opened KOJA NEXUS service: {_world_service_name(row)}")
     return redirect(target)
 
 @app.route("/api/world/services")
@@ -12228,7 +12395,7 @@ def admin_koja_world():
         action, service_id = clean(request.form.get("action")), clean(request.form.get("service_id"))
         row = first_row("koja_world_services", {"id":service_id}) if service_id else None
         if not row:
-            flash("KOJA WORLD service not found.","danger"); return redirect(url_for("admin_koja_world"))
+            flash("KOJA NEXUS service not found.","danger"); return redirect(url_for("admin_koja_world"))
         if action == "verify":
             now=utc_now(); db_update("koja_world_services",{"id":service_id},{"verified":True,"is_verified":True,"check_status":"verified","check_note":"Verified by KOJA administrator.","last_verified_at":now,"last_checked_at":now,"updated_at":now}); flash("Service verified and made publicly trusted.","success")
         elif action == "unverify":
@@ -12236,10 +12403,213 @@ def admin_koja_world():
         elif action == "toggle":
             new_active=not _world_active(row); db_update("koja_world_services",{"id":service_id},{"active":new_active,"is_active":new_active,"updated_at":utc_now()}); flash("Service status updated.","success")
         elif action == "delete":
-            db_delete("koja_world_services",{"id":service_id}); flash("KOJA WORLD service deleted.","success")
+            db_delete("koja_world_services",{"id":service_id}); flash("KOJA NEXUS service deleted.","success")
         return redirect(url_for("admin_koja_world"))
     rows=_world_rows(include_inactive=True); rows.sort(key=lambda r:(str(r.get("country_name") or ""),int(r.get("sort_order") or 100),_world_service_name(r)))
-    return render_page("KOJA WORLD Administration", r'''
+    return render_page("KOJA NEXUS Administration", r'''
 <style>.wa-toolbar{display:flex;gap:9px;flex-wrap:wrap;align-items:center}.wa-table{overflow:auto}.wa-table table{width:100%;min-width:850px;border-collapse:collapse}.wa-table th,.wa-table td{padding:10px;border-bottom:1px solid rgba(120,130,145,.2);text-align:left;font-size:12px}.wa-status{font-size:10px;font-weight:800;padding:5px 8px;border-radius:999px}.wa-ok{background:#e4f7ec;color:#14733e}.wa-pending{background:#fff3d8;color:#875a00}.wa-off{background:#f3e5e5;color:#8c2727}</style>
-<div class="hero"><h1>KOJA WORLD Administration</h1><p>Verify official services, activate or deactivate entries, and control what users can open.</p></div><div class="card wa-toolbar"><strong>{{ rows|length }} total records</strong><span class="small">Pending services remain visible publicly until verified.</span><a class="btn secondary" href="{{ url_for('koja_world') }}">Open KOJA WORLD</a></div><div class="card wa-table"><table><thead><tr><th>Country</th><th>Service</th><th>Category</th><th>Trust</th><th>Active</th><th>Actions</th></tr></thead><tbody>{% for s in rows %}<tr><td><strong>{{ s.country_code }}</strong><br>{{ s.country_name }}</td><td>{{ service_name(s) }}</td><td>{{ s.category }}</td><td>{% if verified(s) %}<span class="wa-status wa-ok">VERIFIED</span>{% else %}<span class="wa-status wa-pending">PENDING</span>{% endif %}</td><td>{% if active(s) %}<span class="wa-status wa-ok">ACTIVE</span>{% else %}<span class="wa-status wa-off">OFF</span>{% endif %}</td><td><div class="actions"><a class="btn secondary" target="_blank" rel="noopener" href="{{ url_for('koja_world_open',service_id=s.id) }}">Open</a><form method="post" style="display:inline"><input type="hidden" name="service_id" value="{{ s.id }}"><input type="hidden" name="action" value="{{ 'unverify' if verified(s) else 'verify' }}"><button class="btn" type="submit">{{ 'Unverify' if verified(s) else 'Verify' }}</button></form><form method="post" style="display:inline"><input type="hidden" name="service_id" value="{{ s.id }}"><input type="hidden" name="action" value="toggle"><button class="btn secondary" type="submit">{{ 'Deactivate' if active(s) else 'Activate' }}</button></form></div></td></tr>{% endfor %}</tbody></table></div>
+<div class="hero"><h1>KOJA NEXUS Administration</h1><p>Verify official services, activate or deactivate entries, and control what users can open.</p></div><div class="card wa-toolbar"><strong>{{ rows|length }} total records</strong><span class="small">Pending services remain visible publicly until verified.</span><a class="btn secondary" href="{{ url_for('koja_world') }}">Open KOJA NEXUS</a></div><div class="card wa-table"><table><thead><tr><th>Country</th><th>Service</th><th>Category</th><th>Trust</th><th>Active</th><th>Actions</th></tr></thead><tbody>{% for s in rows %}<tr><td><strong>{{ s.country_code }}</strong><br>{{ s.country_name }}</td><td>{{ service_name(s) }}</td><td>{{ s.category }}</td><td>{% if verified(s) %}<span class="wa-status wa-ok">VERIFIED</span>{% else %}<span class="wa-status wa-pending">PENDING</span>{% endif %}</td><td>{% if active(s) %}<span class="wa-status wa-ok">ACTIVE</span>{% else %}<span class="wa-status wa-off">OFF</span>{% endif %}</td><td><div class="actions"><a class="btn secondary" target="_blank" rel="noopener" href="{{ url_for('koja_world_open',service_id=s.id) }}">Open</a><form method="post" style="display:inline"><input type="hidden" name="service_id" value="{{ s.id }}"><input type="hidden" name="action" value="{{ 'unverify' if verified(s) else 'verify' }}"><button class="btn" type="submit">{{ 'Unverify' if verified(s) else 'Verify' }}</button></form><form method="post" style="display:inline"><input type="hidden" name="service_id" value="{{ s.id }}"><input type="hidden" name="action" value="toggle"><button class="btn secondary" type="submit">{{ 'Deactivate' if active(s) else 'Activate' }}</button></form></div></td></tr>{% endfor %}</tbody></table></div>
 ''', rows=rows, service_name=_world_service_name, verified=_world_verified, active=_world_active)
+
+# ============================================================
+# KOJA NEXUS — ENHANCED DISCOVERY, DETAILS, HEALTH CHECKS & ADMIN
+# ============================================================
+KOJA_NEXUS_SEARCH_ALIASES = {
+    "immigration": ["visa", "passport", "citizenship", "border", "migration"],
+    "visa": ["immigration", "passport", "migration"],
+    "tax": ["revenue", "taxation", "income", "vat", "customs"],
+    "revenue": ["tax", "taxation", "vat", "customs"],
+    "university": ["universities", "education", "college", "student", "higher education"],
+    "education": ["university", "universities", "college", "student", "school"],
+    "health": ["medical", "hospital", "clinic", "healthcare"],
+    "medical": ["health", "hospital", "clinic", "healthcare"],
+    "job": ["jobs", "employment", "labour", "labor", "work", "career"],
+    "jobs": ["job", "employment", "labour", "labor", "work", "career"],
+    "business": ["company", "companies", "registration", "enterprise", "trade"],
+    "company": ["business", "companies", "registration", "enterprise"],
+    "police": ["justice", "legal", "law", "court", "security"],
+    "justice": ["police", "legal", "law", "court"],
+    "driving": ["driver", "licence", "license", "vehicle", "transport", "road"],
+    "transport": ["driving", "vehicle", "road", "driver", "licence", "license"],
+    "agriculture": ["farming", "land", "environment", "farmer"],
+    "land": ["agriculture", "property", "environment"],
+    "utility": ["utilities", "water", "electricity", "energy", "public service"],
+    "utilities": ["utility", "water", "electricity", "energy"],
+}
+
+def _nexus_query_terms(query):
+    raw = [x for x in re.split(r"\s+", clean(query).lower()) if x]
+    terms = list(raw)
+    for token in raw:
+        terms.extend(KOJA_NEXUS_SEARCH_ALIASES.get(token, []))
+    return list(dict.fromkeys(terms))
+
+def _world_matches(row, query="", country="", category=""):
+    query, country, category = clean(query).lower(), clean(country).lower(), clean(category).lower()
+    if country and country not in str(row.get("country_code") or "").lower() and country not in str(row.get("country_name") or "").lower():
+        return False
+    if category and category != str(row.get("category") or "").lower():
+        return False
+    if not query:
+        return True
+    haystack = " ".join([
+        str(row.get("country_code") or ""), str(row.get("country_name") or ""),
+        str(row.get("service_name") or ""), str(row.get("name") or ""),
+        str(row.get("category") or ""), str(row.get("description") or ""),
+        " ".join(str(x) for x in (row.get("tags") or [])),
+    ]).lower()
+    # Search terms are expanded with common public-service synonyms.
+    return any(term in haystack for term in _nexus_query_terms(query))
+
+def _world_score(row, query=""):
+    q = clean(query).lower()
+    if not q:
+        return 0
+    name = str(row.get("name") or row.get("service_name") or "").lower()
+    category = str(row.get("category") or "").lower()
+    country = str(row.get("country_name") or "").lower()
+    hay = " ".join([name, category, country, str(row.get("description") or "").lower()])
+    score = 0
+    if q in name: score += 100
+    if q in category: score += 50
+    if q in country: score += 40
+    if q in hay: score += 10
+    if _world_verified(row): score += 5
+    return score
+
+@app.route("/nexus")
+def koja_nexus_home_alias():
+    return redirect(url_for("koja_world"))
+
+@app.route("/world/service/<service_id>")
+def koja_nexus_service_details(service_id):
+    row = first_row("koja_world_services", {"id": service_id})
+    if not row or not _world_active(row):
+        abort(404)
+    target = _world_clean_url(first_nonempty(row.get("official_url"), row.get("url")))
+    return render_page("KOJA NEXUS Service", r'''
+<style>
+.nx-detail{max-width:1050px;margin:auto}.nx-panel{padding:28px;border-radius:22px}.nx-country{font-size:12px;font-weight:800;color:#0b4ea2;text-transform:uppercase}.nx-title{font-size:clamp(28px,5vw,44px);margin:8px 0}.nx-badges{display:flex;gap:7px;flex-wrap:wrap;margin:15px 0}.nx-badge{font-size:11px;font-weight:800;padding:6px 10px;border-radius:999px;background:#edf4ff;color:#0b4ea2}.nx-pending{background:#fff4dc;color:#8a5b00}.nx-description{line-height:1.7;color:#657386}.nx-actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:22px}.nx-note{font-size:12px;color:#78879a;margin-top:18px}
+</style>
+<div class="nx-detail"><div class="card nx-panel"><div class="nx-country">{{ row.country_code }} · {{ row.country_name }}</div><h1 class="nx-title">{{ service_name(row) }}</h1><div class="nx-badges"><span class="nx-badge">{{ row.category or 'Public Service' }}</span>{% if verified(row) %}<span class="nx-badge">Verified</span>{% else %}<span class="nx-badge nx-pending">Verification pending</span>{% endif %}<span class="nx-badge">Official provider</span></div><p class="nx-description">{{ row.description or 'This public service is listed in KOJA NEXUS. KOJA provides discovery and routing; the official provider controls accounts, applications and transactions.' }}</p>{% if row.tags %}<p class="nx-note"><strong>Search tags:</strong> {{ row.tags|join(', ') }}</p>{% endif %}<div class="nx-actions">{% if target %}<a class="btn" href="{{ url_for('koja_world_open',service_id=row.id) }}">Open official service</a>{% endif %}<a class="btn secondary" href="{{ url_for('koja_world',country=row.country_code) }}">More services in {{ row.country_code }}</a><a class="btn secondary" href="{{ url_for('koja_world') }}">Back to KOJA NEXUS</a></div></div></div>
+''', row=row, target=target, service_name=_world_service_name, verified=_world_verified)
+
+@app.route("/api/world/meta")
+def koja_nexus_meta_api():
+    rows = _world_rows()
+    countries = {}
+    for r in rows:
+        code = clean(r.get("country_code")).upper()
+        if code:
+            countries[code] = _world_country(r)
+    return jsonify({
+        "name": "KOJA NEXUS",
+        "country_count": len(countries),
+        "service_count": len(rows),
+        "verified_count": sum(1 for r in rows if _world_verified(r)),
+        "pending_count": sum(1 for r in rows if not _world_verified(r)),
+        "countries": [{"code": k, "name": v} for k, v in sorted(countries.items())],
+        "categories": KOJA_WORLD_CATEGORIES,
+    })
+
+@app.route("/api/nexus/services")
+def koja_nexus_services_api_alias():
+    return koja_world_services_api()
+
+@app.route("/admin/nexus", methods=["GET", "POST"])
+@admin_required
+def admin_koja_nexus():
+    if request.method == "POST":
+        action = clean(request.form.get("action"))
+        service_id = clean(request.form.get("service_id"))
+        row = first_row("koja_world_services", {"id": service_id}) if service_id else None
+
+        if action == "save":
+            name = clean(request.form.get("name") or request.form.get("service_name"))
+            country_code = clean(request.form.get("country_code")).upper()
+            country_name = clean(request.form.get("country_name"))
+            official_url = _world_clean_url(request.form.get("official_url") or request.form.get("url"))
+            category = clean(request.form.get("category")) or "Government Services"
+            if not name or not country_code or not country_name or not official_url:
+                flash("Name, country code, country name and a valid official URL are required.", "danger")
+                return redirect(url_for("admin_koja_nexus"))
+            slug = clean(request.form.get("slug"))
+            if not slug:
+                slug = re.sub(r"[^a-z0-9]+", "-", f"{country_code}-{name}".lower()).strip("-")
+            tags = [x.strip().lower() for x in re.split(r"[,\n]", clean(request.form.get("tags"))) if x.strip()]
+            try:
+                sort_order = int(request.form.get("sort_order") or 100)
+            except Exception:
+                sort_order = 100
+            active = clean(request.form.get("active")) not in {"0", "false", "off", "no"}
+            payload = {
+                "name": name, "service_name": name, "slug": slug,
+                "country_code": country_code, "country_name": country_name,
+                "category": category, "description": clean(request.form.get("description")),
+                "url": official_url, "official_url": official_url,
+                "access_mode": clean(request.form.get("access_mode")) or "external",
+                "active": active, "is_active": active, "tags": tags,
+                "sort_order": sort_order, "updated_at": utc_now(),
+            }
+            if row:
+                result, err = db_update("koja_world_services", {"id": service_id}, payload)
+                flash("KOJA NEXUS service updated." if not err else f"Update failed: {err}", "success" if not err else "danger")
+            else:
+                payload.update({"id": str(uuid.uuid4()), "created_at": utc_now(), "verified": False, "is_verified": False, "check_status": "needs_review", "check_note": "New service awaiting KOJA verification."})
+                result, err = db_insert("koja_world_services", payload)
+                flash("KOJA NEXUS service added." if result else f"Add failed: {err}", "success" if result else "danger")
+            return redirect(url_for("admin_koja_nexus"))
+
+        if not row:
+            flash("KOJA NEXUS service not found.", "danger")
+            return redirect(url_for("admin_koja_nexus"))
+
+        now = utc_now()
+        if action in {"verify", "unverify"}:
+            trusted = action == "verify"
+            db_update("koja_world_services", {"id": service_id}, {
+                "verified": trusted, "is_verified": trusted,
+                "check_status": "verified" if trusted else "needs_review",
+                "check_note": "Verified by KOJA administrator." if trusted else "Verification removed by KOJA administrator.",
+                "last_verified_at": now if trusted else row.get("last_verified_at"),
+                "last_checked_at": now, "updated_at": now,
+            })
+            flash("Service verified." if trusted else "Service returned to verification pending.", "success" if trusted else "warning")
+        elif action == "toggle":
+            active = not _world_active(row)
+            db_update("koja_world_services", {"id": service_id}, {"active": active, "is_active": active, "updated_at": now})
+            flash("Service activated." if active else "Service deactivated.", "success")
+        elif action == "check":
+            target = _world_clean_url(first_nonempty(row.get("official_url"), row.get("url")))
+            status, note = "error", "No valid official URL."
+            if target:
+                try:
+                    resp = requests.head(target, allow_redirects=True, timeout=6, headers={"User-Agent": "KOJA-NEXUS-Checker/1.0"})
+                    if resp.status_code in (405, 403) or resp.status_code >= 500:
+                        resp = requests.get(target, allow_redirects=True, timeout=6, stream=True, headers={"User-Agent": "KOJA-NEXUS-Checker/1.0"})
+                    status = "online" if resp.status_code < 400 else "error"
+                    note = f"HTTP {resp.status_code}; checked {now}."
+                except Exception as exc:
+                    note = f"Check failed: {str(exc)[:180]}"
+            db_update("koja_world_services", {"id": service_id}, {"last_checked_at": now, "check_status": status, "check_note": note, "updated_at": now})
+            flash(f"Service check: {status.upper()}.", "success" if status == "online" else "warning")
+        elif action == "delete":
+            db_delete("koja_world_services", {"id": service_id})
+            flash("KOJA NEXUS service deleted.", "success")
+        return redirect(url_for("admin_koja_nexus"))
+
+    rows = _world_rows(include_inactive=True)
+    rows.sort(key=lambda r: (str(r.get("country_name") or ""), int(r.get("sort_order") or 100), _world_service_name(r)))
+    return render_page("KOJA NEXUS Administration", r'''
+<style>
+.nxa{max-width:1500px;margin:auto}.nxa-form{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.nxa-form .full{grid-column:1/-1}.nxa-form input,.nxa-form select,.nxa-form textarea{width:100%;box-sizing:border-box}.nxa-toolbar{display:flex;gap:9px;align-items:center;flex-wrap:wrap}.nxa-table{overflow:auto}.nxa-table table{width:100%;min-width:1150px;border-collapse:collapse}.nxa-table th,.nxa-table td{padding:9px;border-bottom:1px solid rgba(120,130,145,.2);text-align:left;font-size:12px}.nxa-status{font-size:10px;font-weight:800;padding:5px 8px;border-radius:999px;background:#edf4ff;color:#0b4ea2}.nxa-ok{background:#e4f7ec;color:#14733e}.nxa-pending{background:#fff3d8;color:#875a00}.nxa-off{background:#f3e5e5;color:#8c2727}.nxa-actions{display:flex;gap:5px;flex-wrap:wrap}@media(max-width:850px){.nxa-form{grid-template-columns:1fr 1fr}}@media(max-width:520px){.nxa-form{grid-template-columns:1fr}.nxa-form .full{grid-column:auto}}
+</style>
+<div class="nxa"><div class="hero"><h1>KOJA NEXUS Administration</h1><p>Manage official public-service records, verification, reachability checks and availability.</p></div>
+<div class="card"><h2>Add or update a service</h2><form method="post" class="nxa-form"><input type="hidden" name="action" value="save"><input type="hidden" name="service_id" id="nxa_id"><div><label>Name</label><input required name="name" id="nxa_name"></div><div><label>Country code</label><input required name="country_code" id="nxa_code" maxlength="3"></div><div><label>Country name</label><input required name="country_name" id="nxa_country"></div><div><label>Category</label><select name="category" id="nxa_category">{% for c in categories %}<option>{{ c }}</option>{% endfor %}</select></div><div class="full"><label>Official URL</label><input required name="official_url" id="nxa_url" placeholder="https://official-provider.example"></div><div class="full"><label>Description</label><textarea name="description" id="nxa_description" rows="2"></textarea></div><div><label>Tags</label><input name="tags" id="nxa_tags" placeholder="tax, revenue, online"></div><div><label>Sort order</label><input type="number" name="sort_order" id="nxa_sort" value="100"></div><div><label>Active</label><select name="active" id="nxa_active"><option value="1">Active</option><option value="0">Inactive</option></select></div><div style="display:flex;align-items:end"><button class="btn" type="submit">Save service</button></div></form></div>
+<div class="card nxa-toolbar"><strong>{{ rows|length }} total records</strong><span class="small">A reachability check does not automatically make a service verified.</span><a class="btn secondary" href="{{ url_for('koja_world') }}">Open KOJA NEXUS</a></div>
+<div class="card nxa-table"><table><thead><tr><th>Country</th><th>Service</th><th>Category</th><th>Trust</th><th>Check</th><th>Active</th><th>Actions</th></tr></thead><tbody>{% for s in rows %}<tr><td><strong>{{ s.country_code }}</strong><br>{{ s.country_name }}</td><td>{{ service_name(s) }}</td><td>{{ s.category }}</td><td>{% if verified(s) %}<span class="nxa-status nxa-ok">VERIFIED</span>{% else %}<span class="nxa-status nxa-pending">PENDING</span>{% endif %}</td><td><span class="nxa-status">{{ s.check_status or 'not checked' }}</span><br><span class="small">{{ s.last_checked_at or '' }}</span></td><td>{% if active(s) %}<span class="nxa-status nxa-ok">ACTIVE</span>{% else %}<span class="nxa-status nxa-off">OFF</span>{% endif %}</td><td><div class="nxa-actions"><button class="btn secondary" type="button" onclick="editNexus('{{ s.id }}')">Edit</button><a class="btn secondary" target="_blank" rel="noopener" href="{{ url_for('koja_nexus_service_details',service_id=s.id) }}">View</a><form method="post"><input type="hidden" name="service_id" value="{{ s.id }}"><input type="hidden" name="action" value="{{ 'unverify' if verified(s) else 'verify' }}"><button class="btn" type="submit">{{ 'Unverify' if verified(s) else 'Verify' }}</button></form><form method="post"><input type="hidden" name="service_id" value="{{ s.id }}"><input type="hidden" name="action" value="check"><button class="btn secondary" type="submit">Check</button></form><form method="post"><input type="hidden" name="service_id" value="{{ s.id }}"><input type="hidden" name="action" value="toggle"><button class="btn secondary" type="submit">{{ 'Deactivate' if active(s) else 'Activate' }}</button></form></div></td></tr>{% endfor %}</tbody></table></div></div>
+<script>
+const nexusAdminRows={{ rows|tojson }};
+function editNexus(id){const r=nexusAdminRows.find(x=>String(x.id)===String(id));if(!r)return;document.getElementById('nxa_id').value=r.id||'';document.getElementById('nxa_name').value=r.name||r.service_name||'';document.getElementById('nxa_code').value=r.country_code||'';document.getElementById('nxa_country').value=r.country_name||'';document.getElementById('nxa_category').value=r.category||'';document.getElementById('nxa_url').value=r.official_url||r.url||'';document.getElementById('nxa_description').value=r.description||'';document.getElementById('nxa_tags').value=(r.tags||[]).join(', ');document.getElementById('nxa_sort').value=r.sort_order||100;document.getElementById('nxa_active').value=(r.active===false||r.is_active===false)?'0':'1';window.scrollTo({top:0,behavior:'smooth'})}
+</script>
+''', rows=rows, categories=KOJA_WORLD_CATEGORIES, service_name=_world_service_name, verified=_world_verified, active=_world_active)
