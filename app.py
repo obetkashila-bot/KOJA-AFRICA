@@ -14,7 +14,7 @@ import re
 import time
 import threading
 import xml.etree.ElementTree as ET
-from html import unescape
+from html import unescape, escape
 from urllib.parse import urlparse, parse_qs, urljoin
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
@@ -12788,7 +12788,13 @@ def koja_nexus_africa_now_api():
             continue
         seen_keys.add(key)
         rows.append(r)
-    rows = rows[:max(limit, min(8, len(job_rows)))]
+    # Keep the news carousel balanced: a burst of vacancies must not hide all news.
+    news_items = [r for r in rows if r.get("category") != "Jobs & Opportunities"]
+    job_items = [r for r in rows if r.get("category") == "Jobs & Opportunities"]
+    if news_items and job_items:
+        rows = (news_items[:max(1, limit - min(4, len(job_items)))] + job_items[:min(4, len(job_items))])[:limit]
+    else:
+        rows = rows[:limit]
     stale = True
     if rows and rows[0].get("fetched_at"):
         fetched = _africa_now_parse_date(str(rows[0].get("fetched_at")))
@@ -12854,15 +12860,43 @@ def koja_nexus_jobs_api():
 
 
 def _africa_now_panel_html():
-    return r"""
+    # Render a real cached item on the server so first paint does not depend on JavaScript.
+    initial_rows = []
+    try:
+        initial_rows = db_select("koja_nexus_africa_now", order="score.desc,published_at.desc", limit=30) or []
+    except Exception:
+        initial_rows = []
+    initial = next((r for r in initial_rows if isinstance(r, dict) and r.get("is_active") is not False and r.get("category") != "Jobs & Opportunities"), None)
+    if initial is None:
+        initial = next((r for r in initial_rows if isinstance(r, dict) and r.get("is_active") is not False), None)
+    def _safe(value):
+        return escape(str(value or ""), quote=True)
+    if initial:
+        is_job = initial.get("category") == "Jobs & Opportunities"
+        if initial.get("image_url"):
+            media = '<img src="' + _safe(initial.get("image_url")) + '" alt="" loading="eager">'
+        elif initial.get("video_url"):
+            media = '<video src="' + _safe(initial.get("video_url")) + '" muted playsinline controls preload="metadata"></video>'
+        else:
+            media = '<div class="anx-placeholder anx-boot"><strong>AFRICA NOW</strong><span>Latest Africa and world news, business, markets and opportunities</span></div>'
+        href = _safe(initial.get("url"))
+        title = _safe(initial.get("title") or "Latest report")
+        category = _safe(initial.get("category") or "Africa News")
+        country = _safe(initial.get("country") or "Africa")
+        summary = _safe(initial.get("summary") or ("Latest report from " + str(initial.get("source_name") or "source")))
+        label = "Open original vacancy" if is_job else "Open story"
+        first_html = media + '<div class="anx-overlay"><div class="anx-kicker">' + category + ' · ' + country + '</div><div class="anx-title">' + title + '</div><div class="anx-summary">' + summary + '</div><a class="anx-open" href="' + href + '" target="_blank" rel="noopener noreferrer">' + label + '</a></div>'
+    else:
+        first_html = '<div class="anx-placeholder anx-boot"><strong>AFRICA NOW</strong><span>Stories are being collected. This screen will update automatically.</span></div>'
+    template = r"""
 <section class="anx-panel" id="kojaAfricaNow" aria-label="Africa Now" style="display:block!important;visibility:visible!important;opacity:1!important;">
-<div class="anx-head"><div><strong>AFRICA NOW</strong><span class="anx-sub">NEWS · JOBS · OPPORTUNITIES ACROSS AFRICA</span></div><div class="anx-updated" id="anxUpdated">Updating automatically…</div></div>
-<div class="anx-screen" id="anxScreen"><div class="anx-main" id="anxMain"><div class="anx-placeholder anx-boot"><strong>AFRICA NOW</strong><span>Connecting to live Africa, world, business and opportunities sources…</span></div></div></div>
+<div class="anx-head"><div><strong>AFRICA NOW</strong><span class="anx-sub">NEWS · JOBS · OPPORTUNITIES ACROSS AFRICA</span></div><div class="anx-updated" id="anxUpdated">Cached story ready · Updating automatically…</div></div>
+<div class="anx-screen" id="anxScreen"><div class="anx-main" id="anxMain">__AFRICA_NOW_FIRST_STORY__</div></div>
 <div class="anx-foot"><span>Stories update automatically</span><span id="anxProgress">1 / 1</span></div>
 </section>
 <style>
 .anx-panel{display:block!important;visibility:visible!important;opacity:1!important;position:relative;z-index:2;width:100%;box-sizing:border-box;margin:0 0 20px;border-radius:22px;overflow:hidden;background:#07111e;color:#fff;box-shadow:0 18px 50px rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.10)}
-.anx-head{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:13px 16px;background:#0d2036;border-bottom:1px solid rgba(255,255,255,.09);font-size:13px}.anx-sub{margin-left:9px;color:#8fa4ba;font-size:10px;letter-spacing:.08em}.anx-updated{font-size:10px;color:#91a4b8}.anx-screen{min-height:390px}.anx-main{position:relative;min-height:390px;background:#02070d;overflow:hidden}.anx-main img,.anx-main video{width:100%;height:390px;object-fit:cover;display:block}.anx-main video{background:#000}.anx-placeholder{height:390px;min-height:390px;display:grid;place-content:center;text-align:center;gap:8px;color:#b8c5d3;padding:24px;box-sizing:border-box}.anx-placeholder strong{font-size:clamp(25px,5vw,46px);letter-spacing:.05em;color:#fff}.anx-placeholder span{font-size:11px;color:#74879b}.anx-overlay{position:absolute;inset:auto 0 0;padding:24px;background:linear-gradient(transparent,rgba(0,0,0,.95));padding-top:120px}.anx-kicker{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:#69bdd3;font-weight:800}.anx-title{font-size:clamp(21px,4vw,38px);line-height:1.15;margin:7px 0}.anx-summary{font-size:12px;color:#d0d9e2;max-width:900px;line-height:1.5}.anx-open{display:inline-block;margin-top:11px;background:#176b87;color:#fff;text-decoration:none;padding:8px 12px;border-radius:8px;font-size:11px;font-weight:800}.anx-video-link{display:inline-block;margin-left:7px;margin-top:11px;background:rgba(255,255,255,.14);color:#fff;text-decoration:none;padding:8px 12px;border-radius:8px;font-size:11px;font-weight:800}.anx-foot{display:flex;justify-content:space-between;gap:10px;padding:9px 14px;background:#06101b;color:#71869b;font-size:10px}.anx-boot{background:linear-gradient(135deg,#07111e,#102b45)}
+.anx-head{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:13px 16px;background:#0d2036;border-bottom:1px solid rgba(255,255,255,.09);font-size:13px}.anx-sub{margin-left:9px;color:#8fa4ba;font-size:10px;letter-spacing:.08em}.anx-updated{font-size:10px;color:#91a4b8}.anx-screen{min-height:390px}.anx-main{position:relative;min-height:390px;background:#02070d;overflow:hidden}.anx-main img,.anx-main video{width:100%;height:390px;object-fit:cover;display:block}.anx-main video{background:#000}.anx-placeholder{height:390px;min-height:390px;display:grid;place-content:center;text-align:center;gap:8px;color:#b8c5d3;padding:24px;box-sizing:border-box}.anx-placeholder strong{font-size:clamp(25px,5vw,46px);letter-spacing:.05em;color:#fff}.anx-placeholder span{font-size:11px;color:#74879b}.anx-overlay{position:absolute;inset:auto 0 0;padding:24px;background:linear-gradient(transparent,rgba(0,0,0,.95));padding-top:120px}.anx-kicker{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:#69bdd3;font-weight:800}.anx-title{font-size:clamp(21px,4vw,38px);line-height:1.15;margin:7px 0}.anx-summary{font-size:12px;color:#d0d9e2;max-width:900px;line-height:1.5;max-height:90px;overflow:auto}.anx-open{display:inline-block;margin-top:11px;background:#176b87;color:#fff;text-decoration:none;padding:8px 12px;border-radius:8px;font-size:11px;font-weight:800}.anx-video-link{display:inline-block;margin-left:7px;margin-top:11px;background:rgba(255,255,255,.14);color:#fff;text-decoration:none;padding:8px 12px;border-radius:8px;font-size:11px;font-weight:800}.anx-foot{display:flex;justify-content:space-between;gap:10px;padding:9px 14px;background:#06101b;color:#71869b;font-size:10px}.anx-boot{background:linear-gradient(135deg,#07111e,#102b45)}
 @media(max-width:650px){.anx-head{align-items:flex-start}.anx-sub{display:block;margin:3px 0 0 0}.anx-screen,.anx-main{min-height:310px}.anx-main img,.anx-main video{height:310px}.anx-placeholder{min-height:310px;height:310px}.anx-overlay{padding:18px;padding-top:100px}.anx-title{font-size:24px}.anx-foot{font-size:9px}}
 </style>
 <script>
@@ -12872,42 +12906,30 @@ def _africa_now_panel_html():
  let items=[], index=0, rotateTimer=null;
  function esc(v){return String(v||'').replace(/[&<>\"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[m]));}
  function renderItem(){
-   if(!items.length){if(progress)progress.textContent='1 / 1'; return;}
-   const h=items[index % items.length]||{};
-   let media='';
-   if(h.video_url){media='<video src="'+esc(h.video_url)+'" muted playsinline controls preload="metadata"></video>';}
-   else if(h.image_url){media='<img src="'+esc(h.image_url)+'" alt="" loading="eager">';}
-   const videoButton=h.video_url?' <a class="anx-video-link" href="'+esc(h.url)+'" target="_blank" rel="noopener noreferrer">Watch source video</a>':'';
+   if(!items.length)return;
+   const h=items[index%items.length]||{}; let media='';
+   if(h.video_url)media='<video src="'+esc(h.video_url)+'" muted playsinline controls preload="metadata"></video>';
+   else if(h.image_url)media='<img src="'+esc(h.image_url)+'" alt="" loading="eager">';
    const isJob=(h.category||'')==='Jobs & Opportunities';
-   const jobButton=isJob?' <a class="anx-video-link" href="'+esc(h.url)+'" target="_blank" rel="noopener noreferrer">View vacancy</a>':'';
-   main.innerHTML=(media||'<div class="anx-placeholder anx-boot"><strong>AFRICA NOW</strong><span>Latest Africa and world news, business, markets and opportunities</span></div>')+
-     '<div class="anx-overlay"><div class="anx-kicker">'+esc(h.category||'Africa News')+' · '+esc(h.country||'Africa')+'</div><div class="anx-title">'+esc(h.title)+'</div><div class="anx-summary">'+esc(h.summary||('Latest report from '+(h.source_name||'source')))+'</div><a class="anx-open" href="'+esc(h.url)+'" target="_blank" rel="noopener noreferrer">'+(isJob?'Open original vacancy':'Open story')+'</a>'+videoButton+jobButton+'</div>';
-   if(progress)progress.textContent=((index%items.length)+1)+' / '+items.length;
+   const fallback=media?'':'<div class="anx-placeholder anx-boot"><strong>AFRICA NOW</strong><span>Latest Africa and world news, business, markets and opportunities</span></div>';
+   main.innerHTML=(media||fallback)+'<div class="anx-overlay"><div class="anx-kicker">'+esc(h.category||'Africa News')+' · '+esc(h.country||'Africa')+'</div><div class="anx-title">'+esc(h.title||'Latest report')+'</div><div class="anx-summary">'+esc(h.summary||('Latest report from '+(h.source_name||'source')))+'</div><a class="anx-open" href="'+esc(h.url)+'" target="_blank" rel="noopener noreferrer">'+(isJob?'Open original vacancy':'Open story')+'</a></div>';
+   if(progress)progress.textContent=(index+1)+' / '+items.length;
  }
- function startRotation(){clearInterval(rotateTimer); if(items.length>1) rotateTimer=setInterval(function(){index=(index+1)%items.length;renderItem();},30000);}
+ function startRotation(){clearInterval(rotateTimer);if(items.length>1)rotateTimer=setInterval(()=>{index=(index+1)%items.length;renderItem();},30000);}
  async function load(){
-   const controller=new AbortController();
-   const timer=setTimeout(()=>controller.abort(),3500);
-   try{
-     const r=await fetch('{{ url_for('koja_nexus_africa_now_api') }}?limit=20',{cache:'no-store',signal:controller.signal});
-     if(!r.ok)throw new Error('feed');
-     const d=await r.json();
-     const incoming=Array.isArray(d.items)?d.items:[];
-     if(incoming.length){ items=incoming; index=0; renderItem(); startRotation(); }
-     else {
-       main.innerHTML='<div class="anx-placeholder anx-boot"><strong>AFRICA NOW</strong><span>Collecting the first stories. Retrying automatically…</span></div>';
-       updated.textContent='Connecting to available sources…';
-     }
-     updated.textContent=incoming.length ? ('Updated '+(d.updated_at?new Date(d.updated_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'just now')) : 'Live sources updating in background…';
-   }catch(e){
-     updated.textContent=(e&&e.name==='AbortError')?'Live sources updating in background…':'Automatic update retrying';
-   }finally{ clearTimeout(timer); }
+   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),7000);
+   try{const r=await fetch('/api/nexus/africa-now?limit=20',{cache:'no-store',signal:controller.signal});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();items=Array.isArray(d.items)?d.items:[];
+     if(items.length){index=0;renderItem();startRotation();updated.textContent='Updated '+(d.updated_at?new Date(d.updated_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'just now');}
+     else{updated.textContent='Waiting for fresh stories…';}
+   }catch(e){updated.textContent='Cached story shown · retrying live feed';}
+   finally{clearTimeout(timer);}
  }
- async function poll(){ await load(); setTimeout(poll, items.length ? 60000 : 7000); }
- poll();
+ async function poll(){await load();setTimeout(poll,items.length?60000:7000);}poll();
 })();
 </script>
 """
+    return template.replace("__AFRICA_NOW_FIRST_STORY__", first_html)
+
 
 
 _start_africa_now_worker()
