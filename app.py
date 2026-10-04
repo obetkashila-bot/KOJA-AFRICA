@@ -12860,76 +12860,59 @@ def koja_nexus_jobs_api():
 
 
 def _africa_now_panel_html():
-    # Render a real cached item on the server so first paint does not depend on JavaScript.
-    initial_rows = []
-    try:
-        initial_rows = db_select("koja_nexus_africa_now", order="score.desc,published_at.desc", limit=30) or []
-    except Exception:
-        initial_rows = []
-    initial = next((r for r in initial_rows if isinstance(r, dict) and r.get("is_active") is not False and r.get("category") != "Jobs & Opportunities"), None)
-    if initial is None:
-        initial = next((r for r in initial_rows if isinstance(r, dict) and r.get("is_active") is not False), None)
-    def _safe(value):
-        return escape(str(value or ""), quote=True)
+    initial_rows=[]
+    try: initial_rows=db_select("koja_nexus_africa_now", order="score.desc,published_at.desc", limit=100) or []
+    except Exception: initial_rows=[]
+    def _safe(v): return escape(str(v or ""), quote=True)
+    initial=next((r for r in initial_rows if isinstance(r,dict) and r.get("is_active") is not False),None)
+    first_html='<div class="anx-placeholder anx-boot"><strong>AFRICA NOW</strong><span>Stories are being collected. This screen will update automatically.</span></div>'
     if initial:
-        is_job = initial.get("category") == "Jobs & Opportunities"
-        if initial.get("image_url"):
-            media = '<img src="' + _safe(initial.get("image_url")) + '" alt="" loading="eager">'
-        elif initial.get("video_url"):
-            media = '<video src="' + _safe(initial.get("video_url")) + '" muted playsinline controls preload="metadata"></video>'
-        else:
-            media = '<div class="anx-placeholder anx-boot"><strong>AFRICA NOW</strong><span>Latest Africa and world news, business, markets and opportunities</span></div>'
-        href = _safe(initial.get("url"))
-        title = _safe(initial.get("title") or "Latest report")
-        category = _safe(initial.get("category") or "Africa News")
-        country = _safe(initial.get("country") or "Africa")
-        summary = _safe(initial.get("summary") or ("Latest report from " + str(initial.get("source_name") or "source")))
-        label = "Open original vacancy" if is_job else "Open story"
-        first_html = media + '<div class="anx-overlay"><div class="anx-kicker">' + category + ' · ' + country + '</div><div class="anx-title">' + title + '</div><div class="anx-summary">' + summary + '</div><a class="anx-open" href="' + href + '" target="_blank" rel="noopener noreferrer">' + label + '</a></div>'
-    else:
-        first_html = '<div class="anx-placeholder anx-boot"><strong>AFRICA NOW</strong><span>Stories are being collected. This screen will update automatically.</span></div>'
-    template = r"""
-<section class="anx-panel" id="kojaAfricaNow" aria-label="Africa Now" style="display:block!important;visibility:visible!important;opacity:1!important;">
-<div class="anx-head"><div><strong>AFRICA NOW</strong><span class="anx-sub">NEWS · JOBS · OPPORTUNITIES ACROSS AFRICA</span></div><div class="anx-updated" id="anxUpdated">Cached story ready · Updating automatically…</div></div>
-<div class="anx-screen" id="anxScreen"><div class="anx-main" id="anxMain">__AFRICA_NOW_FIRST_STORY__</div></div>
-<div class="anx-foot"><span>Stories update automatically</span><span id="anxProgress">1 / 1</span></div>
+        media='<video src="'+_safe(initial.get('video_url'))+'" muted playsinline controls preload="metadata"></video>' if initial.get('video_url') else ('<img src="'+_safe(initial.get('image_url'))+'" alt="" loading="eager">' if initial.get('image_url') else '<div class="anx-visual"><span>KOJA VISUAL</span><i></i><b></b></div>')
+        is_job=str(initial.get('category') or '').lower() in ('jobs','jobs & opportunities','job')
+        first_html=media+'<div class="anx-overlay"><div class="anx-kicker">'+_safe(initial.get('category') or 'TOP STORIES')+' · '+_safe(initial.get('country') or 'Africa')+'</div><div class="anx-title">'+_safe(initial.get('title') or 'Latest Africa report')+'</div><div class="anx-summary">'+_safe(initial.get('summary') or '')+'</div><a class="anx-open" href="'+_safe(initial.get('url'))+'" target="_blank" rel="noopener noreferrer">'+('Open original vacancy' if is_job else 'Open Story')+'</a></div>'
+    template="""
+<section class="anx-panel" id="kojaAfricaNow" aria-label="Africa Now">
+<div class="anx-nav"><div class="anx-brand">AFRICA NOW</div><nav><a href="#anxTop">TOP STORIES</a><a href="#anxBusiness">BUSINESS</a><a href="#anxJobs">JOBS</a><a href="#anxHealth">HEALTH</a><a href="#anxTech">TECHNOLOGY</a><a href="#anxEducation">EDUCATION</a><a href="#anxSports">SPORTS</a><a href="#anxMore">MORE</a></nav><div class="anx-updated" id="anxUpdated">Updated ...</div></div>
+<div class="anx-main" id="anxMain">__AFRICA_NOW_FIRST_STORY__</div>
+<div class="anx-section" id="anxTop"><h2>TOP STORIES</h2><div class="anx-grid" id="anxTopGrid"></div></div>
+<div class="anx-section" id="anxBusiness"><h2>BUSINESS &amp; ECONOMY</h2><div class="anx-grid" id="anxBusinessGrid"></div></div>
+<div class="anx-section" id="anxJobs"><h2>JOBS &amp; OPPORTUNITIES</h2><div class="anx-grid" id="anxJobsGrid"></div></div>
+<div class="anx-section" id="anxHealth"><h2>HEALTH</h2><div class="anx-grid" id="anxHealthGrid"></div></div>
+<div class="anx-section" id="anxTech"><h2>TECHNOLOGY</h2><div class="anx-grid" id="anxTechGrid"></div></div>
+<div class="anx-section" id="anxEducation"><h2>EDUCATION</h2><div class="anx-grid" id="anxEducationGrid"></div></div>
+<div class="anx-section" id="anxPolitics"><h2>POLITICS &amp; GOVERNMENT</h2><div class="anx-grid" id="anxPoliticsGrid"></div></div>
+<div class="anx-section" id="anxSports"><h2>SPORTS</h2><div class="anx-grid" id="anxSportsGrid"></div></div>
+<div class="anx-section" id="anxScience"><h2>SCIENCE &amp; RESEARCH</h2><div class="anx-grid" id="anxScienceGrid"></div></div>
+<div class="anx-section" id="anxCulture"><h2>CULTURE &amp; TRAVEL</h2><div class="anx-grid" id="anxCultureGrid"></div></div>
+<div class="anx-note">AFRICA NOW · Source media only · KOJA-generated visuals are clearly labelled</div>
 </section>
 <style>
-.anx-panel{display:block!important;visibility:visible!important;opacity:1!important;position:relative;z-index:2;width:100%;box-sizing:border-box;margin:0 0 20px;border-radius:22px;overflow:hidden;background:#07111e;color:#fff;box-shadow:0 18px 50px rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.10)}
-.anx-head{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:13px 16px;background:#0d2036;border-bottom:1px solid rgba(255,255,255,.09);font-size:13px}.anx-sub{margin-left:9px;color:#8fa4ba;font-size:10px;letter-spacing:.08em}.anx-updated{font-size:10px;color:#91a4b8}.anx-screen{min-height:390px}.anx-main{position:relative;min-height:390px;background:#02070d;overflow:hidden}.anx-main img,.anx-main video{width:100%;height:390px;object-fit:cover;display:block}.anx-main video{background:#000}.anx-placeholder{height:390px;min-height:390px;display:grid;place-content:center;text-align:center;gap:8px;color:#b8c5d3;padding:24px;box-sizing:border-box}.anx-placeholder strong{font-size:clamp(25px,5vw,46px);letter-spacing:.05em;color:#fff}.anx-placeholder span{font-size:11px;color:#74879b}.anx-overlay{position:absolute;inset:auto 0 0;padding:24px;background:linear-gradient(transparent,rgba(0,0,0,.95));padding-top:120px}.anx-kicker{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:#69bdd3;font-weight:800}.anx-title{font-size:clamp(21px,4vw,38px);line-height:1.15;margin:7px 0}.anx-summary{font-size:12px;color:#d0d9e2;max-width:900px;line-height:1.5;max-height:90px;overflow:auto}.anx-open{display:inline-block;margin-top:11px;background:#176b87;color:#fff;text-decoration:none;padding:8px 12px;border-radius:8px;font-size:11px;font-weight:800}.anx-video-link{display:inline-block;margin-left:7px;margin-top:11px;background:rgba(255,255,255,.14);color:#fff;text-decoration:none;padding:8px 12px;border-radius:8px;font-size:11px;font-weight:800}.anx-foot{display:flex;justify-content:space-between;gap:10px;padding:9px 14px;background:#06101b;color:#71869b;font-size:10px}.anx-boot{background:linear-gradient(135deg,#07111e,#102b45)}
-@media(max-width:650px){.anx-head{align-items:flex-start}.anx-sub{display:block;margin:3px 0 0 0}.anx-screen,.anx-main{min-height:310px}.anx-main img,.anx-main video{height:310px}.anx-placeholder{min-height:310px;height:310px}.anx-overlay{padding:18px;padding-top:100px}.anx-title{font-size:24px}.anx-foot{font-size:9px}}
+.anx-panel{width:100%;box-sizing:border-box;margin:0 0 22px;border-radius:22px;overflow:hidden;background:#07111e;color:#fff;border:1px solid rgba(255,255,255,.1);box-shadow:0 18px 50px rgba(0,0,0,.18)}
+.anx-nav{display:flex;align-items:center;gap:16px;padding:14px 18px;background:#0d2036;border-bottom:1px solid rgba(255,255,255,.08);position:sticky;top:0;z-index:5}.anx-brand{font-weight:900;letter-spacing:.08em;white-space:nowrap}.anx-nav nav{display:flex;gap:12px;overflow:auto;scrollbar-width:none;flex:1}.anx-nav nav a{color:#a9bed1;text-decoration:none;font-size:10px;font-weight:800;white-space:nowrap}.anx-updated{font-size:10px;color:#8297aa;white-space:nowrap}
+.anx-main{position:relative;min-height:410px;background:#02070d;overflow:hidden}.anx-main>img,.anx-main>video{width:100%;height:410px;object-fit:cover;display:block}.anx-overlay{position:absolute;left:0;right:0;bottom:0;padding:28px;background:linear-gradient(transparent,rgba(0,0,0,.96));padding-top:145px}.anx-kicker{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:#65c5e4;font-weight:900}.anx-title{font-size:clamp(24px,4vw,44px);line-height:1.08;margin:8px 0;max-width:950px}.anx-summary{font-size:13px;line-height:1.5;color:#d3dce5;max-width:900px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}.anx-open{display:inline-block;margin-top:13px;background:#176b87;color:#fff;text-decoration:none;padding:9px 13px;border-radius:8px;font-size:11px;font-weight:900}
+.anx-section{padding:18px}.anx-section h2{font-size:14px;letter-spacing:.06em;margin:0 0 12px;color:#f2f7fb}.anx-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.anx-card{background:#0c1c2d;border:1px solid rgba(255,255,255,.08);border-radius:14px;overflow:hidden;min-width:0}.anx-card-media{height:145px;background:#081421;overflow:hidden}.anx-card-media img,.anx-card-media video{width:100%;height:100%;object-fit:cover;display:block}.anx-card-body{padding:11px}.anx-card-kicker{font-size:9px;text-transform:uppercase;color:#67bfdc;font-weight:800}.anx-card-title{font-size:14px;font-weight:850;line-height:1.25;margin:5px 0}.anx-card-summary{font-size:11px;color:#aebdca;line-height:1.4;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}.anx-card-link{display:inline-block;margin-top:8px;color:#dbeeff;text-decoration:none;font-size:10px;font-weight:850}.anx-visual{height:100%;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;background:radial-gradient(circle at 50% 50%,#17445d,#07111e 65%)}.anx-visual span{position:relative;z-index:2;font-size:11px;letter-spacing:.18em;font-weight:900}.anx-visual i,.anx-visual b{position:absolute;border:1px solid rgba(102,208,239,.45);border-radius:50%;width:120px;height:120px;animation:anxPulse 3s ease-in-out infinite}.anx-visual b{width:210px;height:210px;animation-delay:1s}.anx-placeholder{height:410px;display:grid;place-content:center;text-align:center;gap:8px;color:#b8c5d3}.anx-placeholder strong{font-size:40px}.anx-placeholder span{font-size:11px;color:#74879b}.anx-note{padding:12px 18px;background:#06101b;color:#74889b;font-size:10px;border-top:1px solid rgba(255,255,255,.07)}
+@keyframes anxPulse{0%,100%{transform:scale(.7);opacity:.15}50%{transform:scale(1.08);opacity:.7}}
+@media(max-width:850px){.anx-nav{align-items:flex-start;flex-wrap:wrap}.anx-updated{margin-left:auto}.anx-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.anx-main,.anx-main>img,.anx-main>video,.anx-placeholder{min-height:330px;height:330px}.anx-overlay{padding-top:105px}}
+@media(max-width:560px){.anx-grid{grid-template-columns:1fr}.anx-nav{gap:9px}.anx-nav nav{order:3;flex-basis:100%}.anx-title{font-size:25px}.anx-section{padding:14px}.anx-card-media{height:170px}}
 </style>
 <script>
 (function(){
- const main=document.getElementById('anxMain'),updated=document.getElementById('anxUpdated'),progress=document.getElementById('anxProgress');
- if(!main)return;
- let items=[], index=0, rotateTimer=null;
- function esc(v){return String(v||'').replace(/[&<>\"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[m]));}
- function renderItem(){
-   if(!items.length)return;
-   const h=items[index%items.length]||{}; let media='';
-   if(h.video_url)media='<video src="'+esc(h.video_url)+'" muted playsinline controls preload="metadata"></video>';
-   else if(h.image_url)media='<img src="'+esc(h.image_url)+'" alt="" loading="eager">';
-   const isJob=(h.category||'')==='Jobs & Opportunities';
-   const fallback=media?'':'<div class="anx-placeholder anx-boot"><strong>AFRICA NOW</strong><span>Latest Africa and world news, business, markets and opportunities</span></div>';
-   main.innerHTML=(media||fallback)+'<div class="anx-overlay"><div class="anx-kicker">'+esc(h.category||'Africa News')+' · '+esc(h.country||'Africa')+'</div><div class="anx-title">'+esc(h.title||'Latest report')+'</div><div class="anx-summary">'+esc(h.summary||('Latest report from '+(h.source_name||'source')))+'</div><a class="anx-open" href="'+esc(h.url)+'" target="_blank" rel="noopener noreferrer">'+(isJob?'Open original vacancy':'Open story')+'</a></div>';
-   if(progress)progress.textContent=(index+1)+' / '+items.length;
- }
- function startRotation(){clearInterval(rotateTimer);if(items.length>1)rotateTimer=setInterval(()=>{index=(index+1)%items.length;renderItem();},30000);}
- async function load(){
-   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),7000);
-   try{const r=await fetch('/api/nexus/africa-now?limit=20',{cache:'no-store',signal:controller.signal});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();items=Array.isArray(d.items)?d.items:[];
-     if(items.length){index=0;renderItem();startRotation();updated.textContent='Updated '+(d.updated_at?new Date(d.updated_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'just now');}
-     else{updated.textContent='Waiting for fresh stories…';}
-   }catch(e){updated.textContent='Cached story shown · retrying live feed';}
-   finally{clearTimeout(timer);}
- }
- async function poll(){await load();setTimeout(poll,items.length?60000:7000);}poll();
+const main=document.getElementById('anxMain'),updated=document.getElementById('anxUpdated');if(!main)return;let items=[];
+function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
+function cleanSummary(v){let s=String(v||'').replace(/\s+/g,' ').trim();s=s.replace(/(Skip to main content|FreshTalent|About Us|JobCopilot|Slack Community|Sign in|Log in|Home|Menu).*/i,'').trim();return s.length>260?s.slice(0,257)+'...':s;}
+const rules=[['Jobs & Opportunities',['job','vacancy','vacancies','career','careers','hiring','recruit','internship','employment','welder','technician']],['Sports',['sport','football','soccer','rugby','cricket','tennis','wrc','olympic','championship','league','afcon','athletics']],['Health',['health','hospital','medical','medicine','disease','malaria','hiv','aids','vaccine','vaccination','doctor','patient','clinic','maternal']],['Technology',['technology','tech ','artificial intelligence','software','digital','cyber','internet','startup','telecom','mobile app','data centre']],['Education',['education','school','university','student','students','scholarship','teacher','learning','academic','exam']],['Business & Economy',['business','economy','economic','market','markets','trade','investment','investor','bank','finance','currency','inflation','company','industry','mining','oil','gas','agriculture','african development bank']],['Politics & Government',['president','presidency','government','parliament','minister','election','elections','politics','political','cabinet','senate','governance','court','policy']],['Science & Research',['science','research','researcher','scientist','climate','space','laboratory','lab','study','discovery','innovation']],['Culture & Travel',['culture','travel','tourism','tourist','music','film','festival','heritage','art','fashion','hotel']]];
+function classify(x){let explicit=String(x.category||'').trim();if(explicit==='Jobs & Opportunities'||explicit==='Jobs')return 'Jobs & Opportunities';let t=(String(x.title||'')+' '+String(x.summary||'')+' '+explicit).toLowerCase();for(const r of rules)if(r[1].some(k=>t.includes(k)))return r[0];return 'Top Stories';}
+function visual(){return '<div class="anx-visual"><span>KOJA VISUAL</span><i></i><b></b></div>';}
+function media(x){if(x.video_url)return '<video src="'+esc(x.video_url)+'" muted playsinline controls preload="metadata"></video>';if(x.image_url)return '<img src="'+esc(x.image_url)+'" alt="" loading="lazy">';return visual();}
+function link(x){let job=classify(x)==='Jobs & Opportunities';return '<a class="anx-card-link" href="'+esc(x.url||'#')+'" target="_blank" rel="noopener noreferrer">'+(job?'Open original vacancy':'Open Story')+'</a>';}
+function card(x){let c=classify(x);return '<article class="anx-card"><div class="anx-card-media">'+media(x)+'</div><div class="anx-card-body"><div class="anx-card-kicker">'+esc(c)+' · '+esc(x.country||'Africa')+'</div><div class="anx-card-title">'+esc(x.title||'Latest report')+'</div><div class="anx-card-summary">'+esc(cleanSummary(x.summary))+'</div>'+link(x)+'</div></article>';}
+function renderMain(x){main.innerHTML=media(x)+'<div class="anx-overlay"><div class="anx-kicker">'+esc(classify(x))+' · '+esc(x.country||'Africa')+'</div><div class="anx-title">'+esc(x.title||'Latest Africa report')+'</div><div class="anx-summary">'+esc(cleanSummary(x.summary))+'</div><a class="anx-open" href="'+esc(x.url||'#')+'" target="_blank" rel="noopener noreferrer">'+(classify(x)==='Jobs & Opportunities'?'Open original vacancy':'Open Story')+'</a></div>';}
+function render(){let groups={'Top Stories':'anxTopGrid','Business & Economy':'anxBusinessGrid','Jobs & Opportunities':'anxJobsGrid','Health':'anxHealthGrid','Technology':'anxTechGrid','Education':'anxEducationGrid','Politics & Government':'anxPoliticsGrid','Sports':'anxSportsGrid','Science & Research':'anxScienceGrid','Culture & Travel':'anxCultureGrid'};Object.keys(groups).forEach(k=>{let el=document.getElementById(groups[k]),section=el&&el.parentElement;if(!el)return;let arr=items.filter(x=>classify(x)===k).slice(0,3);section.style.display=arr.length?'block':'none';el.innerHTML=arr.map(card).join('');});}
+async function load(){try{let r=await fetch('/api/nexus/africa-now?limit=100',{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);let d=await r.json();items=Array.isArray(d.items)?d.items:[];if(items.length){items.sort((a,b)=>(Number(b.score||0)-Number(a.score||0))||String(b.published_at||'').localeCompare(String(a.published_at||'')));renderMain(items[0]);render();updated.textContent='Updated '+(d.updated_at?new Date(d.updated_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'just now');}else updated.textContent='Updated · waiting for stories';}catch(e){updated.textContent='Updated · cached stories shown';}}load();setInterval(load,60000);
 })();
 </script>
 """
-    return template.replace("__AFRICA_NOW_FIRST_STORY__", first_html)
-
+    return template.replace('__AFRICA_NOW_FIRST_STORY__',first_html)
 
 
 _start_africa_now_worker()
@@ -12938,9 +12921,7 @@ _start_africa_now_worker()
 # ============================================================
 # KOJA GLOBAL NOW — MARKET DATA ENGINE
 # ============================================================
-KOJA_MARKET_CACHE_TTL = max(60, int(os.getenv("KOJA_MARKET_CACHE_TTL", "300")))
-KOJA_MARKET_PROVIDER_COOLDOWN = max(300, int(os.getenv("KOJA_MARKET_PROVIDER_COOLDOWN", "21600")))
-_koja_market_provider_blocked_until = {"Alpha Vantage": 0.0, "Twelve Data": 0.0}
+KOJA_MARKET_CACHE_TTL = max(10, int(os.getenv("KOJA_MARKET_CACHE_TTL", "30")))
 KOJA_MARKET_TIMEOUT = max(3, min(int(os.getenv("KOJA_MARKET_TIMEOUT", "8")), 20))
 KOJA_MARKET_SYMBOLS = [x.strip().upper() for x in os.getenv("KOJA_MARKET_SYMBOLS", "AAPL,MSFT,NVDA,AMZN,TSLA,GOOGL,META,ORCL,KO,SONY").split(",") if x.strip()][:30]
 ALPHAVANTAGE_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY", "").strip()
@@ -12950,9 +12931,7 @@ _koja_fx_cache = {"rates": {}, "updated_at": 0.0}
 _koja_market_diag = {"last_error": None, "last_provider": None}
 _koja_market_lock = threading.Lock()
 
-def _market_http_json(url, params, provider=None):
-    if provider and time.time() < float(_koja_market_provider_blocked_until.get(provider, 0) or 0):
-        return None
+def _market_http_json(url, params):
     try:
         r = requests.get(url, params=params, timeout=KOJA_MARKET_TIMEOUT, headers={"User-Agent":"KOJA-AFRICA/1.0 market-data"})
         if not r.ok:
@@ -12963,125 +12942,27 @@ def _market_http_json(url, params, provider=None):
             except Exception:
                 pass
             _koja_market_diag["last_error"] = msg
-            if r.status_code == 429 and provider:
-                _koja_market_provider_blocked_until[provider] = time.time() + KOJA_MARKET_PROVIDER_COOLDOWN
-                logger.warning("%s rate limited; cooling down provider for %ss", provider, KOJA_MARKET_PROVIDER_COOLDOWN)
-            else:
-                logger.warning("Market provider returned %s: %s", r.status_code, msg)
+            logger.warning("Market provider returned %s: %s", r.status_code, msg)
             return None
         body = r.json()
         if not isinstance(body, dict):
             _koja_market_diag["last_error"] = "Provider returned an unexpected response."
             return None
-        # Some providers (notably Alpha Vantage) signal quota/rate limits with
-        # HTTP 200 plus a Note/Information field instead of HTTP 429. Treat those
-        # responses as provider throttling so KOJA immediately uses fallback data.
-        quota_msg = str(body.get("message") or body.get("error") or body.get("Note") or body.get("Information") or "")[:300]
-        quota_text = quota_msg.lower()
-        if body.get("status") == "error" or body.get("code") not in (None, 200) or any(x in quota_text for x in ("rate limit", "rate-limit", "api call frequency", "credits", "credit limit", "call volume", "premium endpoint", "thank you for using alpha vantage")):
-            msg = quota_msg or "Provider rejected the request"
+        if body.get("status") == "error" or body.get("code") not in (None, 200):
+            msg = str(body.get("message") or body.get("error") or "Provider rejected the request")[:300]
             _koja_market_diag["last_error"] = msg
-            if provider and any(x in quota_text for x in ("limit", "credit", "frequency", "call volume", "429", "thank you for using alpha vantage")):
-                _koja_market_provider_blocked_until[provider] = time.time() + KOJA_MARKET_PROVIDER_COOLDOWN
-                logger.warning("%s quota/rate limit detected; using fallback data for %ss", provider, KOJA_MARKET_PROVIDER_COOLDOWN)
-            else:
-                logger.warning("Market provider error: %s", msg)
+            logger.warning("Market provider error: %s", msg)
             return None
-        if provider:
-            _koja_market_diag["last_provider"] = provider
         return body
     except Exception as exc:
         _koja_market_diag["last_error"] = str(exc)[:300]
         logger.warning("Market provider request failed: %s", exc)
         return None
 
-# Emergency display fallback: used only when both licensed providers and the public
-# reference feed are unavailable. Values are explicitly labelled as reference data
-# and must never be presented as live exchange prices.
-KOJA_REFERENCE_QUOTES = {
-    "AAPL": (256.00, 254.63), "MSFT": (510.00, 506.69), "NVDA": (188.00, 186.56),
-    "AMZN": (235.00, 232.12), "TSLA": (455.00, 449.44), "GOOGL": (325.00, 321.98),
-    "META": (790.00, 781.13), "ORCL": (305.00, 300.70), "KO": (72.00, 71.46), "SONY": (30.00, 29.76),
-}
-KOJA_REFERENCE_FX = {
-    "USD/ZMW": 23.50, "EUR/USD": 1.17, "GBP/USD": 1.35, "USD/JPY": 149.0,
-    "USD/CNY": 7.10, "USD/ZAR": 17.0, "USD/NGN": 1500.0, "USD/KES": 129.0,
-    "USD/GHS": 11.0, "USD/AOA": 920.0,
-}
-
-def _reference_market_quote(symbol):
-    pair = KOJA_REFERENCE_QUOTES.get(symbol)
-    if not pair:
-        return None
-    price, previous = pair
-    change = price - previous
-    pct = (change / previous * 100.0) if previous else 0.0
-    return {
-        'symbol': symbol, 'price': f"{price:.2f}", 'change': f"{change:+.2f}",
-        'change_percent': f"{pct:+.2f}%", 'volume': None, 'previous_close': f"{previous:.2f}",
-        'latest_trading_day': None, 'provider': 'KOJA Reference Fallback',
-        'freshness': 'Reference snapshot only; not live market data', 'source_url': None
-    }
-
-def _public_market_quote(symbol):
-    """No-key fallback using Stooq public daily CSV data."""
-    try:
-        stooq = symbol.lower() + '.us'
-        url = 'https://stooq.com/q/d/l/'
-        r = requests.get(url, params={'s':stooq,'i':'d','d1':(datetime.now(timezone.utc)-timedelta(days=10)).strftime('%Y%m%d')}, timeout=KOJA_MARKET_TIMEOUT, headers={'User-Agent':'KOJA-AFRICA/1.0 market-data'})
-        if not r.ok:
-            return None
-        lines=[x.strip() for x in r.text.splitlines() if x.strip()]
-        if len(lines)<2 or not lines[0].lower().startswith('date,'):
-            return None
-        rows=[]
-        for line in lines[1:]:
-            parts=line.split(',')
-            if len(parts)>=6:
-                try: rows.append({'datetime':parts[0],'close':float(parts[4])})
-                except Exception: pass
-        if not rows: return None
-        last=rows[-1]; prev=rows[-2] if len(rows)>1 else None
-        change=(last['close']-prev['close']) if prev else 0.0
-        pct=(change/prev['close']*100) if prev and prev['close'] else 0.0
-        return {'symbol':symbol,'price':f"{last['close']:.4f}",'change':f"{change:+.4f}",'change_percent':f"{pct:+.2f}%",'volume':None,'previous_close':f"{prev['close']:.4f}" if prev else None,'latest_trading_day':last['datetime'],'provider':'KOJA Public Market Fallback','freshness':'Latest available daily market close; informational','source_url':'https://stooq.com/'}
-    except Exception as exc:
-        logger.warning('Public market fallback failed for %s: %s',symbol,exc)
-        return None
-
-def _reference_market_history(symbol, outputsize=30):
-    pair = KOJA_REFERENCE_QUOTES.get(symbol)
-    if not pair:
-        return []
-    price, previous = pair
-    # A small deterministic reference curve for display continuity only.
-    steps = max(5, min(int(outputsize), 30))
-    out=[]
-    base = previous
-    for i in range(steps):
-        frac = i / max(1, steps - 1)
-        close = base + (price - base) * frac
-        out.append({'datetime': f'reference-{i+1:02d}', 'close': round(close, 4)})
-    return out
-
-def _public_market_history(symbol, outputsize=30):
-    try:
-        url='https://stooq.com/q/d/l/'
-        r=requests.get(url,params={'s':symbol.lower()+'.us','i':'d','d1':(datetime.now(timezone.utc)-timedelta(days=180)).strftime('%Y%m%d')},timeout=KOJA_MARKET_TIMEOUT,headers={'User-Agent':'KOJA-AFRICA/1.0 market-data'})
-        if not r.ok: return []
-        out=[]
-        for line in r.text.splitlines()[1:]:
-            parts=line.strip().split(',')
-            if len(parts)>=6:
-                try: out.append({'datetime':parts[0],'close':float(parts[4])})
-                except Exception: pass
-        return out[-max(1,min(int(outputsize),100)):]
-    except Exception: return []
-
 def _alpha_quote(symbol):
     if not ALPHAVANTAGE_API_KEY:
         return None
-    body = _market_http_json("https://www.alphavantage.co/query", {"function":"GLOBAL_QUOTE","symbol":symbol,"apikey":ALPHAVANTAGE_API_KEY}, "Alpha Vantage")
+    body = _market_http_json("https://www.alphavantage.co/query", {"function":"GLOBAL_QUOTE","symbol":symbol,"apikey":ALPHAVANTAGE_API_KEY})
     q = (body or {}).get("Global Quote") or {}
     if not q.get("05. price"):
         return None
@@ -13090,14 +12971,14 @@ def _alpha_quote(symbol):
 def _twelve_quote(symbol):
     if not TWELVEDATA_API_KEY:
         return None
-    body = _market_http_json("https://api.twelvedata.com/quote", {"symbol":symbol,"apikey":TWELVEDATA_API_KEY}, "Twelve Data")
+    body = _market_http_json("https://api.twelvedata.com/quote", {"symbol":symbol,"apikey":TWELVEDATA_API_KEY})
     if not body or not body.get("close"):
         return None
     return {"symbol":symbol,"price":body.get("close"),"change":body.get("change"),"change_percent":body.get("percent_change"),"volume":body.get("volume"),"previous_close":body.get("previous_close"),"latest_trading_day":body.get("datetime"),"provider":"Twelve Data","freshness":"Provider quote; exchange delay/entitlement depends on market/plan","source_url":"https://twelvedata.com/"}
 
 def _market_quote(symbol):
     symbol = clean(symbol).upper()
-    return (_alpha_quote(symbol) or _twelve_quote(symbol) or _public_market_quote(symbol) or _reference_market_quote(symbol)) if symbol else None
+    return _alpha_quote(symbol) or _twelve_quote(symbol) if symbol else None
 
 def _refresh_market_quotes(symbols=None, force=False):
     symbols = list(dict.fromkeys([clean(x).upper() for x in (symbols or KOJA_MARKET_SYMBOLS) if clean(x)]))[:30]
@@ -13145,7 +13026,7 @@ def _market_panel_html():
 const grid=document.getElementById('kmGrid'),status=document.getElementById('kmStatus'),chart=document.getElementById('kmChart'),chartTitle=document.getElementById('kmChartTitle'),chartMeta=document.getElementById('kmChartMeta'),fxGrid=document.getElementById('kmFxGrid');
 const stocksView=document.getElementById('kmStocksView'),fxView=document.getElementById('kmFxView'),tabStocks=document.getElementById('kmTabStocks'),tabFx=document.getElementById('kmTabFx'),chartSymbol=document.getElementById('kmChartSymbol'),chartInterval=document.getElementById('kmChartInterval');
 function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
-function card(q){const n=parseFloat(String(q.change_percent||'').replace('%',''));const cls=isNaN(n)?'':(n>=0?'km-up':'km-down');const fallback=/fallback|reference/i.test(String(q.provider||''));return '<div class="km-card"><strong>'+esc(q.symbol)+'</strong><div class="km-price">'+esc(q.price||'—')+'</div><div class="km-change '+cls+'">'+esc(q.change_percent||'')+' '+esc(q.change||'')+'</div><div class="km-muted">'+esc(q.provider)+(fallback?'<br><b>FALLBACK DATA · informational</b>':'')+'<br>'+esc(q.freshness)+'</div></div>';}
+function card(q){const n=parseFloat(String(q.change_percent||'').replace('%',''));const cls=isNaN(n)?'':(n>=0?'km-up':'km-down');return '<div class="km-card"><strong>'+esc(q.symbol)+'</strong><div class="km-price">'+esc(q.price||'—')+'</div><div class="km-change '+cls+'">'+esc(q.change_percent||'')+' '+esc(q.change||'')+'</div><div class="km-muted">'+esc(q.provider)+'<br>'+esc(q.freshness)+'</div></div>';}
 function drawChart(rows,symbol){
  if(!rows.length){chart.innerHTML='<div class="km-chart-empty">No historical data available for this symbol.</div>';return;}
  const vals=rows.map(x=>Number(x.close)).filter(Number.isFinite); if(!vals.length){chart.innerHTML='<div class="km-chart-empty">No usable price data.</div>';return;}
@@ -13159,11 +13040,11 @@ function drawChart(rows,symbol){
  chart.innerHTML='<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" aria-label="'+esc(symbol)+' business market chart"><defs><linearGradient id="kmGlow" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#5fe1ff" stop-opacity=".34"/><stop offset="1" stop-color="#5fe1ff" stop-opacity="0"/></linearGradient><filter id="kmLineGlow"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>'+gridLines+vertical+'<path d="'+area+'" fill="url(#kmGlow)" stroke="none"/><path d="'+line+'" fill="none" stroke="#73e3ff" stroke-width="2.8" vector-effect="non-scaling-stroke" filter="url(#kmLineGlow)"/><path d="'+line+'" fill="none" stroke="#e8fbff" stroke-width="1" vector-effect="non-scaling-stroke" opacity=".85"/><circle cx="'+pts[pts.length-1][0].toFixed(1)+'" cy="'+pts[pts.length-1][1].toFixed(1)+'" r="5" fill="#fff"/><circle cx="'+pts[pts.length-1][0].toFixed(1)+'" cy="'+pts[pts.length-1][1].toFixed(1)+'" r="10" fill="none" stroke="#73e3ff" stroke-opacity=".35"/><text x="'+padL+'" y="18" fill="rgba(220,245,255,.72)" font-size="10">KOJA MARKET ENGINE · '+esc(symbol)+'</text><text x="'+(w-padR)+'" y="18" text-anchor="end" fill="'+(pct>=0?'#72e5ae':'#ff9d9d')+'" font-size="11">'+(pct>=0?'+':'')+pct.toFixed(2)+'%</text></svg>';
  chartTitle.textContent=symbol+' · PRICE HISTORY'; chartMeta.textContent='LAST '+last.toFixed(2)+' · '+(delta>=0?'+':'')+delta.toFixed(2)+' · '+rows.length+' DATA POINTS';
 }
-async function loadStocks(){try{const r=await fetch('/api/markets/quotes',{cache:'no-store'});const d=await r.json();const rows=d.quotes||[];grid.innerHTML=rows.length?rows.map(card).join(''):'<div class="km-empty">KOJA market reference data is temporarily unavailable. KOJA will retry automatically.</div>';const hasFallback=rows.some(x=>/fallback|reference/i.test(String(x.provider||'')));status.textContent=rows.length?(hasFallback?'SYSTEM ONLINE · Fallback data displayed · Updated ':'SYSTEM ONLINE · Updated ')+new Date((d.updated_at||Date.now()/1000)*1000).toLocaleTimeString():'MARKET DATA INITIALIZING';}catch(e){grid.innerHTML='<div class="km-empty">KOJA market reference data is temporarily unavailable. KOJA will retry automatically.</div>';status.textContent='MARKET DATA RETRYING';}}
+async function loadStocks(){try{const r=await fetch('/api/markets/quotes',{cache:'no-store'});const d=await r.json();const rows=d.quotes||[];grid.innerHTML=rows.length?rows.map(card).join(''):'<div class="km-empty">'+esc(d.error||'No market quote is currently available. Check Render Environment API keys.')+'</div>';status.textContent=d.updated_at?'SYSTEM ONLINE · Updated '+new Date(d.updated_at*1000).toLocaleTimeString():'PROVIDER OFFLINE';}catch(e){status.textContent='Market data temporarily unavailable';}}
 async function loadChart(){try{const s=chartSymbol.value,i=chartInterval.value;const r=await fetch('/api/markets/chart?symbol='+encodeURIComponent(s)+'&interval='+encodeURIComponent(i)+'&outputsize=30',{cache:'no-store'});const d=await r.json();drawChart(d.values||[],s);}catch(e){chart.innerHTML='<div class="km-chart-empty">Chart temporarily unavailable.</div>';}}
-async function loadFx(){try{const r=await fetch('/api/markets/fx',{cache:'no-store'});const d=await r.json();const rows=d.rates||[];fxGrid.innerHTML=rows.length?rows.map(x=>'<div class="km-fx-card"><div class="km-fx-pair">'+esc(x.symbol)+'</div><div class="km-fx-rate">'+esc(Number(x.rate).toLocaleString(undefined,{maximumFractionDigits:6}))+'</div><div class="km-fx-name">'+esc(x.base_name||'')+' → '+esc(x.quote_name||'')+'<br>'+esc(x.provider||'')+'</div></div>').join(''):'<div class="km-empty">'+esc(d.error||'KOJA fallback currency data is temporarily unavailable. Please refresh shortly.')+'</div>'; status.textContent=d.updated_at?'FX ENGINE ONLINE · '+new Date(d.updated_at*1000).toLocaleTimeString():'FX REFERENCE DATA UNAVAILABLE';}catch(e){fxGrid.innerHTML='<div class="km-empty">Currency data temporarily unavailable.</div>';}}
+async function loadFx(){try{const r=await fetch('/api/markets/fx',{cache:'no-store'});const d=await r.json();const rows=d.rates||[];fxGrid.innerHTML=rows.length?rows.map(x=>'<div class="km-fx-card"><div class="km-fx-pair">'+esc(x.symbol)+'</div><div class="km-fx-rate">'+esc(Number(x.rate).toLocaleString(undefined,{maximumFractionDigits:6}))+'</div><div class="km-fx-name">'+esc(x.base_name||'')+' → '+esc(x.quote_name||'')+'<br>'+esc(x.provider||'')+'</div></div>').join(''):'<div class="km-empty">'+esc(d.error||'Currency provider unavailable. Add a financial-data API key in Render Environment.')+'</div>'; status.textContent=d.updated_at?'FX ENGINE ONLINE · '+new Date(d.updated_at*1000).toLocaleTimeString():'FX PROVIDER OFFLINE';}catch(e){fxGrid.innerHTML='<div class="km-empty">Currency data temporarily unavailable.</div>';}}
 function tab(which){const stocks=which==='stocks';stocksView.style.display=stocks?'block':'none';fxView.style.display=stocks?'none':'block';tabStocks.classList.toggle('active',stocks);tabFx.classList.toggle('active',!stocks);if(!stocks)loadFx();}
-tabStocks.onclick=()=>tab('stocks');tabFx.onclick=()=>tab('fx');chartSymbol.onchange=loadChart;chartInterval.onchange=loadChart;loadStocks();loadChart();setInterval(loadStocks,30000);setInterval(loadFx,30000);setInterval(loadChart,900000);
+tabStocks.onclick=()=>tab('stocks');tabFx.onclick=()=>tab('fx');chartSymbol.onchange=loadChart;chartInterval.onchange=loadChart;loadStocks();loadChart();setInterval(loadStocks,30000);setInterval(loadFx,60000);setInterval(loadChart,300000);
 })();
 </script>"""
 
@@ -13223,7 +13104,7 @@ def _alpha_fx_rate(symbol):
 def _twelve_time_series(symbol, interval="1day", outputsize=30):
     if not TWELVEDATA_API_KEY:
         return []
-    body=_market_http_json("https://api.twelvedata.com/time_series", {"symbol":symbol,"interval":interval,"outputsize":max(1,min(int(outputsize),100)),"apikey":TWELVEDATA_API_KEY}, "Twelve Data")
+    body=_market_http_json("https://api.twelvedata.com/time_series", {"symbol":symbol,"interval":interval,"outputsize":max(1,min(int(outputsize),100)),"apikey":TWELVEDATA_API_KEY})
     values=(body or {}).get("values") or []
     out=[]
     for row in reversed(values):
@@ -13258,23 +13139,7 @@ def koja_market_chart_api():
     if not values and TWELVEDATA_API_KEY:
         values=_twelve_time_series(symbol,interval,outputsize)
         if values: provider="Twelve Data"
-    if not values:
-        values=_public_market_history(symbol,outputsize)
-        if values: provider="KOJA Public Market Fallback"
-    if not values:
-        values=_reference_market_history(symbol,outputsize)
-        if values: provider="KOJA Reference Fallback"
-    return jsonify({'symbol':symbol,'interval':interval,'values':values,'provider':provider,'freshness':'Latest available market history; informational and may be delayed','error':None if values else 'Market history temporarily unavailable; KOJA will retry automatically.'})
-
-def _public_fx_rates():
-    try:
-        targets=','.join(['ZMW','EUR','GBP','JPY','CNY','ZAR','NGN','KES','GHS','AOA'])
-        r=requests.get('https://api.frankfurter.app/latest',params={'from':'USD','to':targets},timeout=KOJA_MARKET_TIMEOUT,headers={'User-Agent':'KOJA-AFRICA/1.0 market-data'})
-        if not r.ok: return {}
-        rates=r.json().get('rates') or {}
-        return {'USD/ZMW':rates.get('ZMW'),'EUR/USD':(1/rates.get('EUR')) if rates.get('EUR') else None,'GBP/USD':(1/rates.get('GBP')) if rates.get('GBP') else None,'USD/JPY':rates.get('JPY'),'USD/CNY':rates.get('CNY'),'USD/ZAR':rates.get('ZAR'),'USD/NGN':rates.get('NGN'),'USD/KES':rates.get('KES'),'USD/GHS':rates.get('GHS'),'USD/AOA':rates.get('AOA')}
-    except Exception as exc:
-        logger.warning('Public FX fallback failed: %s',exc); return {}
+    return jsonify({'symbol':symbol,'interval':interval,'values':values,'provider':provider,'freshness':'Historical/provider data; exact latency depends on market/plan','error':None if values else _koja_market_diag.get("last_error")})
 
 @app.route('/api/markets/fx')
 def koja_market_fx_api():
@@ -13304,25 +13169,8 @@ def koja_market_fx_api():
             _koja_fx_cache['updated_at']=now
         return jsonify({'rates':rates,'updated_at':now,'provider_order':['Alpha Vantage','Twelve Data'],'cached':False,'error':None})
     if cached:
-        return jsonify({'rates':[cached[x[0]] for x in KOJA_FX_PAIRS if x[0] in cached],'updated_at':cached_at,'provider_order':['Alpha Vantage','Twelve Data','Frankfurter'],'cached':True,'error':_koja_market_diag.get('last_error') or 'Live provider unavailable; showing last successful rates.'})
-    public=_public_fx_rates()
-    for symbol,base_name,quote_name in KOJA_FX_PAIRS:
-        rate=public.get(symbol)
-        if rate is not None:
-            rates.append({'symbol':symbol,'rate':rate,'base_name':base_name,'quote_name':quote_name,'provider':'KOJA Public FX Fallback','freshness':'Latest available public reference rate; informational'})
-    if rates:
-        with _koja_market_lock:
-            _koja_fx_cache['rates']={x['symbol']:x for x in rates}; _koja_fx_cache['updated_at']=now
-        return jsonify({'rates':rates,'updated_at':now,'provider_order':['Alpha Vantage','Twelve Data','Frankfurter'],'cached':False,'error':None})
-    for symbol,base_name,quote_name in KOJA_FX_PAIRS:
-        rate=KOJA_REFERENCE_FX.get(symbol)
-        if rate is not None:
-            rates.append({'symbol':symbol,'rate':rate,'base_name':base_name,'quote_name':quote_name,'provider':'KOJA Reference Fallback','freshness':'Reference snapshot only; not live FX data'})
-    if rates:
-        with _koja_market_lock:
-            _koja_fx_cache['rates']={x['symbol']:x for x in rates}; _koja_fx_cache['updated_at']=now
-        return jsonify({'rates':rates,'updated_at':now,'provider_order':['Alpha Vantage','Twelve Data','Frankfurter','KOJA Reference Fallback'],'cached':False,'error':None})
-    return jsonify({'rates':[],'updated_at':None,'provider_order':['Alpha Vantage','Twelve Data','Frankfurter'],'cached':False,'error':'No market reference data is currently available.'})
+        return jsonify({'rates':[cached[x[0]] for x in KOJA_FX_PAIRS if x[0] in cached],'updated_at':cached_at,'provider_order':['Alpha Vantage','Twelve Data'],'cached':True,'error':_koja_market_diag.get('last_error') or 'Live provider unavailable; showing last successful rates.'})
+    return jsonify({'rates':[],'updated_at':None,'provider_order':['Alpha Vantage','Twelve Data'],'cached':False,'error':_koja_market_diag.get('last_error') or 'No financial-data provider is configured. Add TWELVEDATA_API_KEY or ALPHAVANTAGE_API_KEY in Render Environment.'})
 
 
 # ============================================================
