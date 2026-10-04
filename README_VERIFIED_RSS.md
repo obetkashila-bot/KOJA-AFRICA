@@ -10,10 +10,10 @@ This package replaces the earlier Google-News-search-feed collector with verifie
 
 ## Automatic updating
 
-- Background collector runs immediately when the Render process is awake.
+- Background collector starts 10 seconds after the Render process is ready, so RSS network calls cannot delay Gunicorn startup or Render health checks.
 - Default interval: 5 minutes.
 - NEXUS browser screen also refreshes every 5 minutes.
-- If the cache is stale, `/api/nexus/africa-now` can refresh it automatically.
+- If the cache is stale, `/api/nexus/africa-now` triggers a non-blocking refresh and immediately returns the cached screen.
 - Feed failures do not crash KOJA; the last cached feed is preserved when no new items are collected.
 - Per-source status is exposed in the API collector metadata for troubleshooting.
 
@@ -28,7 +28,7 @@ This package replaces the earlier Google-News-search-feed collector with verifie
 
 - `KOJA_NEXUS_AFRICA_NOW_ENABLED=true`
 - `KOJA_NEXUS_AFRICA_NOW_INTERVAL=300`
-- `KOJA_NEXUS_AFRICA_NOW_TIMEOUT=15`
+- `KOJA_NEXUS_AFRICA_NOW_TIMEOUT=8`
 
 The interval is clamped to at least 300 seconds.
 

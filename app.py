@@ -343,7 +343,10 @@ def db_delete(table, filters):
 
     params = {}
     for key, value in filters.items():
-        params[key] = f"eq.{value}"
+        if isinstance(value, str) and value.startswith(("eq.", "neq.", "gt.", "gte.", "lt.", "lte.", "in.", "is.", "like.", "ilike.")):
+            params[key] = value
+        else:
+            params[key] = f"eq.{value}"
 
     try:
         r = requests.delete(
@@ -12123,7 +12126,7 @@ def koja_admin_go_live():
 KOJA_NEXUS_AFRICA_NOW_VERSION = "2.0"
 KOJA_NEXUS_AFRICA_NOW_INTERVAL = max(300, int(os.getenv("KOJA_NEXUS_AFRICA_NOW_INTERVAL", "300")))
 KOJA_NEXUS_AFRICA_NOW_ENABLED = os.getenv("KOJA_NEXUS_AFRICA_NOW_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
-KOJA_NEXUS_AFRICA_NOW_TIMEOUT = max(5, min(int(os.getenv("KOJA_NEXUS_AFRICA_NOW_TIMEOUT", "15")), 45))
+KOJA_NEXUS_AFRICA_NOW_TIMEOUT = max(4, min(int(os.getenv("KOJA_NEXUS_AFRICA_NOW_TIMEOUT", "8")), 20))
 
 _KOJA_AFRICA_NOW_FEEDS = [
     ("Africanews", "https://www.africanews.com/feed/rss", "publisher"),
@@ -12291,6 +12294,7 @@ def _africa_now_fetch_feed(label, feed_url, feed_kind):
 
 
 def _africa_now_refresh(force=False):
+    """Refresh feeds without blocking Flask startup. Feed failures are isolated."""
     if not KOJA_NEXUS_AFRICA_NOW_ENABLED:
         return {"ok": False, "reason": "disabled"}
     if not supabase_configured():
@@ -12299,29 +12303,42 @@ def _africa_now_refresh(force=False):
         return {"ok": False, "reason": "refresh_in_progress"}
     try:
         _africa_now_runtime["last_attempt"] = datetime.now(timezone.utc).isoformat()
-        collected, seen = [], set()
-        source_status = {}
-        for label, feed_url, feed_kind in _KOJA_AFRICA_NOW_FEEDS:
+        source_status, collected = {}, []
+
+        # Fetch sources concurrently so one slow publisher cannot hold up the entire update.
+        def fetch_one(feed):
+            label, feed_url, feed_kind = feed
             try:
-                items = _africa_now_fetch_feed(label, feed_url, feed_kind)
-                accepted = 0
-                for item in items:
-                    if item["url"] in seen:
-                        continue
-                    seen.add(item["url"])
-                    collected.append(item)
-                    accepted += 1
-                source_status[label] = {"ok": True, "items": accepted}
+                return label, _africa_now_fetch_feed(label, feed_url, feed_kind), None
             except Exception as exc:
-                source_status[label] = {"ok": False, "error": str(exc)[:180]}
-                logger.warning("Africa Now feed failed (%s): %s", label, exc)
+                return label, [], str(exc)[:180]
+
+        with ThreadPoolExecutor(max_workers=min(5, len(_KOJA_AFRICA_NOW_FEEDS))) as pool:
+            futures = [pool.submit(fetch_one, feed) for feed in _KOJA_AFRICA_NOW_FEEDS]
+            for future in as_completed(futures):
+                label, items, error = future.result()
+                if error:
+                    source_status[label] = {"ok": False, "error": error}
+                    logger.warning("Africa Now feed failed (%s): %s", label, error)
+                else:
+                    source_status[label] = {"ok": True, "items": len(items)}
+                    collected.extend(items)
+
+        # De-duplicate by canonical article URL and keep the strongest ranking.
+        best = {}
+        for item in collected:
+            key = item.get("url") or item.get("source_key")
+            if not key:
+                continue
+            if key not in best or float(item.get("score") or 0) > float(best[key].get("score") or 0):
+                best[key] = item
+        collected = sorted(best.values(), key=lambda x: (float(x.get("score") or 0), x.get("published_at") or ""), reverse=True)[:100]
         _africa_now_runtime["source_status"] = source_status
+
         if not collected:
-            _africa_now_runtime["last_error"] = "No feed items were collected. Existing cached items were preserved."
+            _africa_now_runtime["last_error"] = "No feed items collected; existing cached stories preserved."
             return {"ok": False, "reason": "no_items", "sources": source_status}
-        collected.sort(key=lambda x: (float(x.get("score") or 0), x.get("published_at") or ""), reverse=True)
-        collected = collected[:100]
-        db_delete("koja_nexus_africa_now", {"is_active": True})
+
         fetched_at = utc_now()
         inserted = 0
         for item in collected:
@@ -12330,9 +12347,15 @@ def _africa_now_refresh(force=False):
             _, err = db_insert("koja_nexus_africa_now", payload, returning="minimal")
             if not err:
                 inserted += 1
-        if inserted == 0:
-            _africa_now_runtime["last_error"] = "Feed collection succeeded, but database insertion failed."
-            return {"ok": False, "reason": "database_insert_failed", "sources": source_status}
+
+        # Only replace the old cache after a complete successful write. This prevents a
+        # temporary Supabase/feed failure from leaving AFRICA NOW empty.
+        if inserted == len(collected):
+            db_delete("koja_nexus_africa_now", {"is_active": "true", "fetched_at": f"neq.{fetched_at}"})
+        else:
+            _africa_now_runtime["last_error"] = f"Only {inserted}/{len(collected)} stories were saved; old cache preserved."
+            return {"ok": False, "reason": "partial_database_write", "inserted": inserted, "sources": source_status}
+
         _africa_now_runtime["last_success"] = fetched_at
         _africa_now_runtime["last_error"] = None
         logger.info("Africa Now refresh complete: %s items from %s feeds", inserted, len(_KOJA_AFRICA_NOW_FEEDS))
@@ -12342,9 +12365,16 @@ def _africa_now_refresh(force=False):
 
 
 def _africa_now_background_worker():
+    # Never perform network I/O during Flask/Gunicorn import. Give the web server
+    # a short head-start so Render health checks can pass immediately.
+    time.sleep(10)
     while True:
         try:
-            _africa_now_refresh()
+            result = _africa_now_refresh()
+            if not result.get("ok") and result.get("reason") not in ("refresh_in_progress", "disabled", "supabase_not_configured"):
+                # Fast retry after a transient source failure; normal cadence remains 5 minutes.
+                time.sleep(20)
+                _africa_now_refresh()
         except Exception:
             logger.exception("Africa Now background refresh failed")
         time.sleep(KOJA_NEXUS_AFRICA_NOW_INTERVAL)
@@ -12357,6 +12387,7 @@ def _start_africa_now_worker():
             return
         _africa_now_thread_started = True
         threading.Thread(target=_africa_now_background_worker, name="koja-africa-now", daemon=True).start()
+
 
 @app.route("/api/nexus/africa-now")
 def koja_nexus_africa_now_api():
@@ -12371,10 +12402,9 @@ def koja_nexus_africa_now_api():
         fetched = _africa_now_parse_date(str(rows[0].get("fetched_at")))
         stale = not fetched or (datetime.now(timezone.utc) - fetched).total_seconds() >= KOJA_NEXUS_AFRICA_NOW_INTERVAL
     if stale:
-        result = _africa_now_refresh()
-        if result.get("ok"):
-            rows = db_select("koja_nexus_africa_now", order="score.desc,published_at.desc", limit=limit) or []
-            rows = [r for r in rows if r.get("is_active") is not False]
+        # Never make a user request wait for external RSS servers. The background
+        # worker performs the actual refresh; this request only nudges it.
+        threading.Thread(target=_africa_now_refresh, kwargs={"force": True}, name="koja-africa-now-on-demand", daemon=True).start()
     return jsonify({
         "ok": True,
         "version": KOJA_NEXUS_AFRICA_NOW_VERSION,
