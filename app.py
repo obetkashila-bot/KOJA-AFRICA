@@ -12860,59 +12860,85 @@ def koja_nexus_jobs_api():
 
 
 def _africa_now_panel_html():
-    initial_rows=[]
-    try: initial_rows=db_select("koja_nexus_africa_now", order="score.desc,published_at.desc", limit=100) or []
-    except Exception: initial_rows=[]
-    def _safe(v): return escape(str(v or ""), quote=True)
-    initial=next((r for r in initial_rows if isinstance(r,dict) and r.get("is_active") is not False),None)
-    first_html='<div class="anx-placeholder anx-boot"><strong>AFRICA NOW</strong><span>Stories are being collected. This screen will update automatically.</span></div>'
-    if initial:
-        media='<video src="'+_safe(initial.get('video_url'))+'" muted playsinline controls preload="metadata"></video>' if initial.get('video_url') else ('<img src="'+_safe(initial.get('image_url'))+'" alt="" loading="eager">' if initial.get('image_url') else '<div class="anx-visual"><span>KOJA VISUAL</span><i></i><b></b></div>')
-        is_job=str(initial.get('category') or '').lower() in ('jobs','jobs & opportunities','job')
-        first_html=media+'<div class="anx-overlay"><div class="anx-kicker">'+_safe(initial.get('category') or 'TOP STORIES')+' · '+_safe(initial.get('country') or 'Africa')+'</div><div class="anx-title">'+_safe(initial.get('title') or 'Latest Africa report')+'</div><div class="anx-summary">'+_safe(initial.get('summary') or '')+'</div><a class="anx-open" href="'+_safe(initial.get('url'))+'" target="_blank" rel="noopener noreferrer">'+('Open original vacancy' if is_job else 'Open Story')+'</a></div>'
-    template="""
+    """AFRICA NOW: live-updating horizontal category rows with clean source content."""
+    initial_rows = []
+    try:
+        initial_rows = db_select("koja_nexus_africa_now", order="score.desc,published_at.desc", limit=100) or []
+    except Exception:
+        initial_rows = []
+
+    def _safe(value):
+        return escape(str(value or ""), quote=True)
+
+    template = r"""
 <section class="anx-panel" id="kojaAfricaNow" aria-label="Africa Now">
-<div class="anx-nav"><div class="anx-brand">AFRICA NOW</div><nav><a href="#anxTop">TOP STORIES</a><a href="#anxBusiness">BUSINESS</a><a href="#anxJobs">JOBS</a><a href="#anxHealth">HEALTH</a><a href="#anxTech">TECHNOLOGY</a><a href="#anxEducation">EDUCATION</a><a href="#anxSports">SPORTS</a><a href="#anxMore">MORE</a></nav><div class="anx-updated" id="anxUpdated">Updated ...</div></div>
-<div class="anx-main" id="anxMain">__AFRICA_NOW_FIRST_STORY__</div>
-<div class="anx-section" id="anxTop"><h2>TOP STORIES</h2><div class="anx-grid" id="anxTopGrid"></div></div>
-<div class="anx-section" id="anxBusiness"><h2>BUSINESS &amp; ECONOMY</h2><div class="anx-grid" id="anxBusinessGrid"></div></div>
-<div class="anx-section" id="anxJobs"><h2>JOBS &amp; OPPORTUNITIES</h2><div class="anx-grid" id="anxJobsGrid"></div></div>
-<div class="anx-section" id="anxHealth"><h2>HEALTH</h2><div class="anx-grid" id="anxHealthGrid"></div></div>
-<div class="anx-section" id="anxTech"><h2>TECHNOLOGY</h2><div class="anx-grid" id="anxTechGrid"></div></div>
-<div class="anx-section" id="anxEducation"><h2>EDUCATION</h2><div class="anx-grid" id="anxEducationGrid"></div></div>
-<div class="anx-section" id="anxPolitics"><h2>POLITICS &amp; GOVERNMENT</h2><div class="anx-grid" id="anxPoliticsGrid"></div></div>
-<div class="anx-section" id="anxSports"><h2>SPORTS</h2><div class="anx-grid" id="anxSportsGrid"></div></div>
-<div class="anx-section" id="anxScience"><h2>SCIENCE &amp; RESEARCH</h2><div class="anx-grid" id="anxScienceGrid"></div></div>
-<div class="anx-section" id="anxCulture"><h2>CULTURE &amp; TRAVEL</h2><div class="anx-grid" id="anxCultureGrid"></div></div>
-<div class="anx-note">AFRICA NOW · Source media only · KOJA-generated visuals are clearly labelled</div>
+  <div class="anx-head">
+    <div><strong>AFRICA NOW</strong><span class="anx-sub">TOP STORIES · BUSINESS · JOBS · HEALTH · TECHNOLOGY · EDUCATION · SPORTS · MORE</span></div>
+    <div class="anx-updated" id="anxUpdated">Updating automatically…</div>
+  </div>
+  <div class="anx-hero" id="anxHero"></div>
+  <div id="anxRows"></div>
+  <div class="anx-foot"><span>AFRICA NOW · Source media only · KOJA-generated visuals are clearly labelled</span><span id="anxStatus">Live updates enabled</span></div>
 </section>
 <style>
-.anx-panel{width:100%;box-sizing:border-box;margin:0 0 22px;border-radius:22px;overflow:hidden;background:#07111e;color:#fff;border:1px solid rgba(255,255,255,.1);box-shadow:0 18px 50px rgba(0,0,0,.18)}
-.anx-nav{display:flex;align-items:center;gap:16px;padding:14px 18px;background:#0d2036;border-bottom:1px solid rgba(255,255,255,.08);position:sticky;top:0;z-index:5}.anx-brand{font-weight:900;letter-spacing:.08em;white-space:nowrap}.anx-nav nav{display:flex;gap:12px;overflow:auto;scrollbar-width:none;flex:1}.anx-nav nav a{color:#a9bed1;text-decoration:none;font-size:10px;font-weight:800;white-space:nowrap}.anx-updated{font-size:10px;color:#8297aa;white-space:nowrap}
-.anx-main{position:relative;min-height:410px;background:#02070d;overflow:hidden}.anx-main>img,.anx-main>video{width:100%;height:410px;object-fit:cover;display:block}.anx-overlay{position:absolute;left:0;right:0;bottom:0;padding:28px;background:linear-gradient(transparent,rgba(0,0,0,.96));padding-top:145px}.anx-kicker{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:#65c5e4;font-weight:900}.anx-title{font-size:clamp(24px,4vw,44px);line-height:1.08;margin:8px 0;max-width:950px}.anx-summary{font-size:13px;line-height:1.5;color:#d3dce5;max-width:900px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}.anx-open{display:inline-block;margin-top:13px;background:#176b87;color:#fff;text-decoration:none;padding:9px 13px;border-radius:8px;font-size:11px;font-weight:900}
-.anx-section{padding:18px}.anx-section h2{font-size:14px;letter-spacing:.06em;margin:0 0 12px;color:#f2f7fb}.anx-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.anx-card{background:#0c1c2d;border:1px solid rgba(255,255,255,.08);border-radius:14px;overflow:hidden;min-width:0}.anx-card-media{height:145px;background:#081421;overflow:hidden}.anx-card-media img,.anx-card-media video{width:100%;height:100%;object-fit:cover;display:block}.anx-card-body{padding:11px}.anx-card-kicker{font-size:9px;text-transform:uppercase;color:#67bfdc;font-weight:800}.anx-card-title{font-size:14px;font-weight:850;line-height:1.25;margin:5px 0}.anx-card-summary{font-size:11px;color:#aebdca;line-height:1.4;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}.anx-card-link{display:inline-block;margin-top:8px;color:#dbeeff;text-decoration:none;font-size:10px;font-weight:850}.anx-visual{height:100%;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;background:radial-gradient(circle at 50% 50%,#17445d,#07111e 65%)}.anx-visual span{position:relative;z-index:2;font-size:11px;letter-spacing:.18em;font-weight:900}.anx-visual i,.anx-visual b{position:absolute;border:1px solid rgba(102,208,239,.45);border-radius:50%;width:120px;height:120px;animation:anxPulse 3s ease-in-out infinite}.anx-visual b{width:210px;height:210px;animation-delay:1s}.anx-placeholder{height:410px;display:grid;place-content:center;text-align:center;gap:8px;color:#b8c5d3}.anx-placeholder strong{font-size:40px}.anx-placeholder span{font-size:11px;color:#74879b}.anx-note{padding:12px 18px;background:#06101b;color:#74889b;font-size:10px;border-top:1px solid rgba(255,255,255,.07)}
-@keyframes anxPulse{0%,100%{transform:scale(.7);opacity:.15}50%{transform:scale(1.08);opacity:.7}}
-@media(max-width:850px){.anx-nav{align-items:flex-start;flex-wrap:wrap}.anx-updated{margin-left:auto}.anx-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.anx-main,.anx-main>img,.anx-main>video,.anx-placeholder{min-height:330px;height:330px}.anx-overlay{padding-top:105px}}
-@media(max-width:560px){.anx-grid{grid-template-columns:1fr}.anx-nav{gap:9px}.anx-nav nav{order:3;flex-basis:100%}.anx-title{font-size:25px}.anx-section{padding:14px}.anx-card-media{height:170px}}
+.anx-panel{display:block!important;width:100%;box-sizing:border-box;margin:0 0 20px;border-radius:22px;overflow:hidden;background:#07111e;color:#fff;border:1px solid rgba(255,255,255,.10);box-shadow:0 18px 50px rgba(0,0,0,.18)}
+.anx-head{display:flex;justify-content:space-between;gap:14px;align-items:center;padding:14px 17px;background:#0d2036;border-bottom:1px solid rgba(255,255,255,.09)}
+.anx-head strong{font-size:18px;letter-spacing:.04em}.anx-sub{margin-left:12px;color:#8fa4ba;font-size:10px;letter-spacing:.06em}.anx-updated{font-size:10px;color:#91a4b8;white-space:nowrap}
+.anx-hero{min-height:260px;background:#02070d;position:relative}.anx-hero img,.anx-hero video{width:100%;height:330px;object-fit:cover;display:block}.anx-hero video{background:#000}.anx-hero-placeholder{height:260px;display:grid;place-content:center;text-align:center;background:linear-gradient(135deg,#07111e,#102b45);color:#b8c5d3}.anx-hero-placeholder strong{font-size:clamp(25px,5vw,46px);color:#fff}.anx-hero-placeholder span{font-size:11px;margin-top:7px}.anx-overlay{position:absolute;inset:auto 0 0;padding:24px;background:linear-gradient(transparent,rgba(0,0,0,.95));padding-top:120px}.anx-kicker{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:#69bdd3;font-weight:800}.anx-title{font-size:clamp(21px,4vw,38px);line-height:1.15;margin:7px 0}.anx-summary{font-size:12px;color:#d0d9e2;max-width:900px;line-height:1.5;max-height:70px;overflow:hidden}.anx-open{display:inline-block;margin-top:11px;background:#176b87;color:#fff;text-decoration:none;padding:8px 12px;border-radius:8px;font-size:11px;font-weight:800}
+.anx-row{padding:15px 0 16px;border-top:1px solid rgba(255,255,255,.07)}.anx-row-head{display:flex;align-items:center;justify-content:space-between;padding:0 15px 9px}.anx-row-title{font-size:14px;font-weight:900;letter-spacing:.04em}.anx-row-more{color:#73bdd2;text-decoration:none;font-size:11px;font-weight:800}.anx-track{display:flex;gap:10px;overflow-x:auto;padding:0 15px 5px;scroll-snap-type:x mandatory;scrollbar-width:thin}.anx-card{flex:0 0 245px;scroll-snap-align:start;background:#0d1c2c;border:1px solid rgba(255,255,255,.08);border-radius:12px;overflow:hidden;min-height:190px}.anx-card-media{height:112px;background:#081421}.anx-card-media img,.anx-card-media video{width:100%;height:100%;object-fit:cover;display:block}.anx-card-media.koja{display:grid;place-content:center;text-align:center;padding:12px;box-sizing:border-box;background:linear-gradient(135deg,#0b2034,#123e59)}.anx-card-media.koja strong{font-size:15px}.anx-card-media.koja span{font-size:9px;color:#8fb0c2;margin-top:3px}.anx-card-body{padding:9px 10px}.anx-card-kicker{font-size:8px;text-transform:uppercase;color:#6fb9ce;font-weight:800}.anx-card-title{font-size:12px;font-weight:800;line-height:1.28;margin:4px 0}.anx-card-summary{font-size:10px;color:#9fb0bf;line-height:1.35;max-height:29px;overflow:hidden}.anx-card-link{display:inline-block;margin-top:7px;color:#fff;background:#176b87;text-decoration:none;border-radius:6px;padding:5px 7px;font-size:9px;font-weight:800}.anx-job-meta{font-size:9px;color:#8ea2b5;margin-top:4px}.anx-empty{padding:0 15px 4px;color:#71869b;font-size:10px}.anx-foot{display:flex;justify-content:space-between;gap:10px;padding:10px 14px;background:#06101b;color:#71869b;font-size:9px}
+@media(max-width:650px){.anx-head{align-items:flex-start}.anx-sub{display:block;margin:4px 0 0}.anx-updated{font-size:9px}.anx-hero,.anx-hero-placeholder{min-height:240px}.anx-hero img,.anx-hero video{height:280px}.anx-card{flex-basis:220px}.anx-foot{flex-direction:column}}
 </style>
 <script>
 (function(){
-const main=document.getElementById('anxMain'),updated=document.getElementById('anxUpdated');if(!main)return;let items=[];
-function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
-function cleanSummary(v){let s=String(v||'').replace(/\s+/g,' ').trim();s=s.replace(/(Skip to main content|FreshTalent|About Us|JobCopilot|Slack Community|Sign in|Log in|Home|Menu).*/i,'').trim();return s.length>260?s.slice(0,257)+'...':s;}
-const rules=[['Jobs & Opportunities',['job','vacancy','vacancies','career','careers','hiring','recruit','internship','employment','welder','technician']],['Sports',['sport','football','soccer','rugby','cricket','tennis','wrc','olympic','championship','league','afcon','athletics']],['Health',['health','hospital','medical','medicine','disease','malaria','hiv','aids','vaccine','vaccination','doctor','patient','clinic','maternal']],['Technology',['technology','tech ','artificial intelligence','software','digital','cyber','internet','startup','telecom','mobile app','data centre']],['Education',['education','school','university','student','students','scholarship','teacher','learning','academic','exam']],['Business & Economy',['business','economy','economic','market','markets','trade','investment','investor','bank','finance','currency','inflation','company','industry','mining','oil','gas','agriculture','african development bank']],['Politics & Government',['president','presidency','government','parliament','minister','election','elections','politics','political','cabinet','senate','governance','court','policy']],['Science & Research',['science','research','researcher','scientist','climate','space','laboratory','lab','study','discovery','innovation']],['Culture & Travel',['culture','travel','tourism','tourist','music','film','festival','heritage','art','fashion','hotel']]];
-function classify(x){let explicit=String(x.category||'').trim();if(explicit==='Jobs & Opportunities'||explicit==='Jobs')return 'Jobs & Opportunities';let t=(String(x.title||'')+' '+String(x.summary||'')+' '+explicit).toLowerCase();for(const r of rules)if(r[1].some(k=>t.includes(k)))return r[0];return 'Top Stories';}
-function visual(){return '<div class="anx-visual"><span>KOJA VISUAL</span><i></i><b></b></div>';}
-function media(x){if(x.video_url)return '<video src="'+esc(x.video_url)+'" muted playsinline controls preload="metadata"></video>';if(x.image_url)return '<img src="'+esc(x.image_url)+'" alt="" loading="lazy">';return visual();}
-function link(x){let job=classify(x)==='Jobs & Opportunities';return '<a class="anx-card-link" href="'+esc(x.url||'#')+'" target="_blank" rel="noopener noreferrer">'+(job?'Open original vacancy':'Open Story')+'</a>';}
-function card(x){let c=classify(x);return '<article class="anx-card"><div class="anx-card-media">'+media(x)+'</div><div class="anx-card-body"><div class="anx-card-kicker">'+esc(c)+' · '+esc(x.country||'Africa')+'</div><div class="anx-card-title">'+esc(x.title||'Latest report')+'</div><div class="anx-card-summary">'+esc(cleanSummary(x.summary))+'</div>'+link(x)+'</div></article>';}
-function renderMain(x){main.innerHTML=media(x)+'<div class="anx-overlay"><div class="anx-kicker">'+esc(classify(x))+' · '+esc(x.country||'Africa')+'</div><div class="anx-title">'+esc(x.title||'Latest Africa report')+'</div><div class="anx-summary">'+esc(cleanSummary(x.summary))+'</div><a class="anx-open" href="'+esc(x.url||'#')+'" target="_blank" rel="noopener noreferrer">'+(classify(x)==='Jobs & Opportunities'?'Open original vacancy':'Open Story')+'</a></div>';}
-function render(){let groups={'Top Stories':'anxTopGrid','Business & Economy':'anxBusinessGrid','Jobs & Opportunities':'anxJobsGrid','Health':'anxHealthGrid','Technology':'anxTechGrid','Education':'anxEducationGrid','Politics & Government':'anxPoliticsGrid','Sports':'anxSportsGrid','Science & Research':'anxScienceGrid','Culture & Travel':'anxCultureGrid'};Object.keys(groups).forEach(k=>{let el=document.getElementById(groups[k]),section=el&&el.parentElement;if(!el)return;let arr=items.filter(x=>classify(x)===k).slice(0,3);section.style.display=arr.length?'block':'none';el.innerHTML=arr.map(card).join('');});}
-async function load(){try{let r=await fetch('/api/nexus/africa-now?limit=100',{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);let d=await r.json();items=Array.isArray(d.items)?d.items:[];if(items.length){items.sort((a,b)=>(Number(b.score||0)-Number(a.score||0))||String(b.published_at||'').localeCompare(String(a.published_at||'')));renderMain(items[0]);render();updated.textContent='Updated '+(d.updated_at?new Date(d.updated_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'just now');}else updated.textContent='Updated · waiting for stories';}catch(e){updated.textContent='Updated · cached stories shown';}}load();setInterval(load,60000);
+ const hero=document.getElementById('anxHero'), rows=document.getElementById('anxRows'), updated=document.getElementById('anxUpdated'), status=document.getElementById('anxStatus');
+ if(!hero||!rows)return;
+ const sections=[['Top Stories',['Top Stories']],['Business & Economy',['Business & Economy','Business']],['Jobs & Opportunities',['Jobs & Opportunities','Jobs']],['Health',['Health']],['Technology',['Technology']],['Education',['Education']],['Politics & Government',['Politics & Government','Politics']],['Sports',['Sports']],['Science & Research',['Science & Research','Science']],['Culture & Travel',['Culture & Travel','Culture','Travel']]];
+ let items=[], heroIndex=0, heroTimer=null, pollTimer=null;
+ function esc(v){return String(v||'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
+ function clean(v,max){let s=String(v||'').replace(/\s+/g,' ').trim(); return max&&s.length>max?s.slice(0,max-1).trim()+'…':s;}
+ function media(item,small){
+   if(item.video_url)return '<video src="'+esc(item.video_url)+'" muted playsinline controls preload="metadata"></video>';
+   if(item.image_url)return '<img src="'+esc(item.image_url)+'" alt="" loading="lazy">';
+   return '<div class="anx-card-media koja"><strong>KOJA VISUAL</strong><span>KOJA-generated visual</span></div>';
+ }
+ function card(item){
+   const job=String(item.category||'')==='Jobs & Opportunities';
+   const employer=item.source_name&&job?clean(item.source_name,55):'';
+   const meta=[item.country||'Africa', item.job_type||''].filter(Boolean).join(' · ');
+   return '<article class="anx-card"><div class="anx-card-media">'+media(item,true)+'</div><div class="anx-card-body"><div class="anx-card-kicker">'+esc(item.category||'AFRICA')+' · '+esc(item.country||'AFRICA')+'</div><div class="anx-card-title">'+esc(clean(item.title||'Latest report',95))+'</div>'+(employer?'<div class="anx-job-meta">'+esc(employer)+'</div>':'')+(meta?'<div class="anx-job-meta">'+esc(meta)+'</div>':'')+'<div class="anx-card-summary">'+esc(clean(item.summary||'',145))+'</div><a class="anx-card-link" href="'+esc(item.url||'#')+'" target="_blank" rel="noopener noreferrer">'+(job?'Open original vacancy':'Open story')+'</a></div></article>';
+ }
+ function renderHero(){
+   if(!items.length){hero.innerHTML='<div class="anx-hero-placeholder"><strong>AFRICA NOW</strong><span>Waiting for fresh Africa stories…</span></div>';return;}
+   const h=items[heroIndex%items.length]||{}; const media=h.video_url?'<video src="'+esc(h.video_url)+'" muted playsinline controls preload="metadata"></video>':h.image_url?'<img src="'+esc(h.image_url)+'" alt="" loading="eager">':'<div class="anx-hero-placeholder"><strong>KOJA VISUAL</strong><span>KOJA-generated visual</span></div>';
+   const job=String(h.category||'')==='Jobs & Opportunities';
+   hero.innerHTML=media+'<div class="anx-overlay"><div class="anx-kicker">'+esc(h.category||'Top Stories')+' · '+esc(h.country||'Africa')+'</div><div class="anx-title">'+esc(clean(h.title||'Latest report',150))+'</div><div class="anx-summary">'+esc(clean(h.summary||'',260))+'</div><a class="anx-open" href="'+esc(h.url||'#')+'" target="_blank" rel="noopener noreferrer">'+(job?'Open original vacancy':'Open story')+'</a></div>';
+ }
+ function renderRows(){
+   rows.innerHTML=''; let shown=0;
+   sections.forEach(function(sec){
+     const wanted=sec[1].map(x=>x.toLowerCase());
+     const list=items.filter(x=>wanted.includes(String(x.category||'').toLowerCase())).slice(0,12);
+     if(!list.length)return;
+     shown++;
+     const row=document.createElement('section'); row.className='anx-row';
+     row.innerHTML='<div class="anx-row-head"><div class="anx-row-title">'+esc(sec[0].toUpperCase())+'</div><a class="anx-row-more" href="#" aria-label="See more '+esc(sec[0])+'">→</a></div><div class="anx-track">'+list.map(card).join('')+'</div>';
+     const more=row.querySelector('.anx-row-more'); more.addEventListener('click',function(e){e.preventDefault();row.querySelector('.anx-track').scrollBy({left:Math.min(650,row.querySelector('.anx-track').clientWidth*.8),behavior:'smooth'});});
+     rows.appendChild(row);
+   });
+   if(!shown)rows.innerHTML='<div class="anx-empty">Fresh AFRICA NOW stories are being collected. This screen will update automatically.</div>';
+ }
+ function startRotation(){clearInterval(heroTimer);if(items.length>1)heroTimer=setInterval(function(){heroIndex=(heroIndex+1)%items.length;renderHero();},20000);}
+ async function load(){
+   const controller=new AbortController(), timeout=setTimeout(()=>controller.abort(),7000);
+   try{const r=await fetch('/api/nexus/africa-now?limit=100',{cache:'no-store',signal:controller.signal});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();items=Array.isArray(d.items)?d.items:[]; heroIndex=0; renderHero(); renderRows(); startRotation(); updated.textContent='Updated '+(d.updated_at?new Date(d.updated_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'just now'); status.textContent='Live updates enabled · '+items.length+' items';}
+   catch(e){status.textContent='Cached content retained · retrying automatically';}
+   finally{clearTimeout(timeout);}
+ }
+ async function poll(){await load();pollTimer=setTimeout(poll,30000);} poll();
 })();
 </script>
 """
-    return template.replace('__AFRICA_NOW_FIRST_STORY__',first_html)
+    return template
 
 
 _start_africa_now_worker()
