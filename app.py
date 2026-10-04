@@ -966,10 +966,11 @@ html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90
 <a role="menuitem" href="{{ url_for('professional_communication') }}">Professional Communication</a>
 <a role="menuitem" href="{{ url_for('deliveries') }}">Deliveries</a>
 <a role="menuitem" href="{{ url_for('drivers') }}">Drivers</a>
+<a role="menuitem" href="{{ url_for('koja_world') }}">KOJA World</a>
 <a role="menuitem" href="{{ url_for('koja_cloud_page') }}">KOJA Cloud</a>
 <a role="menuitem" href="{{ url_for('settings') }}">Settings</a>
 {% if user.role in ['driver','admin'] or user.is_admin %}<a role="menuitem" href="{{ url_for('driver_dashboard') }}">Driver Dashboard</a>{% endif %}
-{% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('admin') }}">Admin</a><a role="menuitem" href="{{ url_for('admin_market') }}">KOJA Market Admin</a><a role="menuitem" href="{{ url_for('admin_marketplace') }}">Digital Marketplace Admin</a>{% endif %}
+{% if user and user.is_admin %}<a role="menuitem" href="{{ url_for('admin') }}">Admin</a><a role="menuitem" href="{{ url_for('admin_koja_world') }}">KOJA World Admin</a><a role="menuitem" href="{{ url_for('admin_market') }}">KOJA Market Admin</a><a role="menuitem" href="{{ url_for('admin_marketplace') }}">Digital Marketplace Admin</a>{% endif %}
 <a role="menuitem" href="{{ url_for('logout') }}">Logout</a>
 </div></div>
 {% else %}
@@ -1206,6 +1207,243 @@ async function activateEngine(engine,button){const box=document.getElementById('
 # HOME / HEALTH
 # ============================================================
 
+
+# ============================================================
+# KOJA WORLD — AFRICA PUBLIC SERVICES GATEWAY
+# Additive module: public-service directory + safe in-KOJA launcher.
+# The directory stores official/public destinations; it does not
+# impersonate providers or bypass their authentication/security.
+# ============================================================
+
+KOJA_WORLD_VERSION = "1.0.0"
+KOJA_WORLD_COUNTRIES = [
+    ("DZ","Algeria"),("AO","Angola"),("BJ","Benin"),("BW","Botswana"),
+    ("BF","Burkina Faso"),("BI","Burundi"),("CV","Cabo Verde"),("CM","Cameroon"),
+    ("CF","Central African Republic"),("TD","Chad"),("KM","Comoros"),
+    ("CG","Republic of the Congo"),("CD","Democratic Republic of the Congo"),
+    ("CI","Côte d'Ivoire"),("DJ","Djibouti"),("EG","Egypt"),
+    ("GQ","Equatorial Guinea"),("ER","Eritrea"),("SZ","Eswatini"),
+    ("ET","Ethiopia"),("GA","Gabon"),("GM","The Gambia"),("GH","Ghana"),
+    ("GN","Guinea"),("GW","Guinea-Bissau"),("KE","Kenya"),("LS","Lesotho"),
+    ("LR","Liberia"),("LY","Libya"),("MG","Madagascar"),("MW","Malawi"),
+    ("ML","Mali"),("MR","Mauritania"),("MU","Mauritius"),("MA","Morocco"),
+    ("MZ","Mozambique"),("NA","Namibia"),("NE","Niger"),("NG","Nigeria"),
+    ("RW","Rwanda"),("ST","São Tomé and Príncipe"),("SN","Senegal"),
+    ("SC","Seychelles"),("SL","Sierra Leone"),("SO","Somalia"),
+    ("ZA","South Africa"),("SS","South Sudan"),("SD","Sudan"),
+    ("TZ","Tanzania"),("TG","Togo"),("TN","Tunisia"),("UG","Uganda"),
+    ("ZM","Zambia"),("ZW","Zimbabwe")
+]
+
+KOJA_WORLD_CATEGORIES = [
+    "Government","Banking","Loans & Finance","Education","Universities",
+    "Healthcare","Telecom","Insurance","Jobs","Business","Tax",
+    "Transport","Utilities","News & Media","Travel","Research",
+    "Public Information","Other"
+]
+
+def _world_table():
+    return "koja_world_services"
+
+def _world_valid_url(value):
+    try:
+        u = urlparse(clean(value))
+        if u.scheme not in ("http", "https") or not u.netloc:
+            return False
+        if u.username or u.password:
+            return False
+        host = (u.hostname or "").lower().strip(".")
+        if not host or host in {"localhost", "localhost.localdomain"}:
+            return False
+        # Reject obvious private/link-local IPv4 destinations. Domain DNS is
+        # deliberately not resolved here; this is a directory, not a proxy.
+        import ipaddress
+        try:
+            ip = ipaddress.ip_address(host)
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+                return False
+        except ValueError:
+            pass
+        return True
+    except Exception:
+        return False
+
+def _world_seed_if_empty():
+    try:
+        rows = db_select(_world_table(), limit=1)
+        if rows:
+            return
+        now = utc_now()
+        seeds = []
+        for code, name in KOJA_WORLD_COUNTRIES:
+            seeds.append({
+                "country_code": code,
+                "country_name": name,
+                "service_name": f"{name} — Public Services",
+                "category": "Government",
+                "description": f"Official/public-service directory entry for {name}.",
+                "url": "",
+                "access_mode": "external",
+                "is_active": True,
+                "is_verified": False,
+                "created_at": now,
+                "updated_at": now,
+            })
+        db_insert(_world_table(), seeds)
+    except Exception as exc:
+        logger.warning("KOJA WORLD seed skipped: %s", exc)
+
+def _world_services(country="", category="", q=""):
+    filters = {}
+    if country:
+        filters["country_code"] = country
+    if category:
+        filters["category"] = category
+    rows = db_select(_world_table(), filters, order="country_name.asc,service_name.asc", limit=1000) or []
+    q = clean(q).lower()
+    if q:
+        rows = [r for r in rows if q in " ".join([
+            str(r.get("service_name") or ""),
+            str(r.get("country_name") or ""),
+            str(r.get("category") or ""),
+            str(r.get("description") or "")
+        ]).lower()]
+    return rows
+
+@app.route("/world")
+def koja_world():
+    _world_seed_if_empty()
+    country = clean(request.args.get("country")).upper()
+    category = clean(request.args.get("category"))
+    q = clean(request.args.get("q"))
+    rows = _world_services(country, category, q)
+    countries = [{"code": c, "name": n} for c, n in KOJA_WORLD_COUNTRIES]
+    return render_page("KOJA WORLD", r"""
+<div class="hero">
+  <h1>KOJA WORLD</h1>
+  <p>Access public digital services across Africa from one KOJA gateway.</p>
+  <p class="small">54 African countries • Government • Banking • Loans • Education • Health • Business • Jobs • Transport and more</p>
+</div>
+
+<div class="card">
+<form method="get" class="grid">
+  <div><label>Search</label><input name="q" value="{{ q }}" placeholder="Search service, country or category"></div>
+  <div><label>Country</label><select name="country"><option value="">All 54 countries</option>{% for c in countries %}<option value="{{ c.code }}" {% if c.code==country %}selected{% endif %}>{{ c.name }}</option>{% endfor %}</select></div>
+  <div><label>Category</label><select name="category"><option value="">All categories</option>{% for c in categories %}<option {% if c==category %}selected{% endif %}>{{ c }}</option>{% endfor %}</select></div>
+  <div style="display:flex;align-items:end"><button class="btn" type="submit">Search KOJA WORLD</button></div>
+</form>
+</div>
+
+<div class="card">
+<h2>Verified public services</h2>
+<p class="small">KOJA lists public destinations; the original provider remains responsible for its service, accounts and security.</p>
+<div class="grid">
+{% for r in rows if r.url %}
+<div class="card">
+  <h3>{{ r.service_name }}</h3>
+  <p><strong>{{ r.country_name }}</strong> · {{ r.category }}</p>
+  <p>{{ r.description }}</p>
+  {% if r.is_verified %}<span class="small">Verified public destination</span>{% endif %}
+  <div class="actions">
+    <a class="btn" href="{{ url_for('koja_world_open', service_id=r.id) }}">Open in KOJA</a>
+    <a class="btn secondary" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open externally</a>
+  </div>
+</div>
+{% else %}
+<div class="card"><h3>More services are being added</h3><p>KOJA World contains all 54 country hubs. Official service links are added only after their public destination is verified.</p></div>
+{% endfor %}
+</div>
+</div>
+
+<div class="card">
+<h2>54-country network</h2>
+<div class="grid">{% for c in countries %}<a class="card" href="{{ url_for('koja_world', country=c.code) }}"><strong>{{ c.name }}</strong><span class="small">Explore public services</span></a>{% endfor %}</div>
+</div>
+""", rows=rows, countries=countries, categories=KOJA_WORLD_CATEGORIES,
+       country=country, category=category, q=q)
+
+@app.route("/world/open/<service_id>")
+def koja_world_open(service_id):
+    row = first_row(_world_table(), {"id": service_id}) or {}
+    if not row or not row.get("is_active") or not _world_valid_url(row.get("url")):
+        abort(404)
+    return render_page(f"KOJA WORLD — {row.get('service_name')}", r"""
+<div class="hero">
+<h1>{{ row.service_name }}</h1>
+<p>{{ row.country_name }} · {{ row.category }}</p>
+<p class="small">The service below is provided by the original public-service operator. KOJA does not receive or store credentials entered on the destination.</p>
+</div>
+<div class="card" style="padding:0;overflow:hidden">
+<iframe src="{{ row.url }}" title="{{ row.service_name }}" style="width:100%;height:78vh;min-height:620px;border:0;background:#fff" referrerpolicy="strict-origin-when-cross-origin"></iframe>
+</div>
+<div class="card">
+<p>If the provider blocks embedded access, use the external button.</p>
+<a class="btn" href="{{ row.url }}" target="_blank" rel="noopener noreferrer">Open Original Service</a>
+<a class="btn secondary" href="{{ url_for('koja_world') }}">Back to KOJA WORLD</a>
+</div>
+""", row=row)
+
+@app.route("/admin/world", methods=["GET","POST"])
+@admin_required
+def admin_koja_world():
+    _world_seed_if_empty()
+    if request.method == "POST":
+        action = clean(request.form.get("action"))
+        sid = clean(request.form.get("id"))
+        if action == "delete" and sid:
+            db_delete(_world_table(), {"id": sid})
+            flash("KOJA WORLD service removed.", "success")
+        else:
+            name = clean(request.form.get("service_name"))
+            code = clean(request.form.get("country_code")).upper()
+            category = clean(request.form.get("category")) or "Other"
+            url = clean(request.form.get("url"))
+            desc = clean(request.form.get("description"))
+            verified = bool(request.form.get("is_verified"))
+            active = bool(request.form.get("is_active"))
+            country_name = dict(KOJA_WORLD_COUNTRIES).get(code, code)
+            if not name or code not in dict(KOJA_WORLD_COUNTRIES) or not _world_valid_url(url):
+                flash("Enter a valid 54-country code and a public http/https URL.", "danger")
+            else:
+                payload = {
+                    "country_code": code, "country_name": country_name,
+                    "service_name": name, "category": category,
+                    "description": desc, "url": url,
+                    "access_mode": "embed_or_external",
+                    "is_active": active, "is_verified": verified,
+                    "updated_at": utc_now()
+                }
+                if sid:
+                    db_update(_world_table(), {"id": sid}, payload)
+                    flash("KOJA WORLD service updated.", "success")
+                else:
+                    payload["created_at"] = utc_now()
+                    db_insert(_world_table(), payload)
+                    flash("KOJA WORLD service added.", "success")
+        return redirect(url_for("admin_koja_world"))
+    rows = db_select(_world_table(), order="country_name.asc,service_name.asc", limit=2000) or []
+    return render_page("Admin — KOJA WORLD", r"""
+<div class="hero"><h1>KOJA WORLD Administration</h1><p>Register and maintain official/public service destinations for all 54 African countries.</p></div>
+<div class="card">
+<h2>Add public service</h2>
+<form method="post">
+<input type="hidden" name="action" value="save">
+<label>Service name</label><input name="service_name" required placeholder="e.g. HELSB">
+<label>Country</label><select name="country_code" required>{% for c in countries %}<option value="{{ c[0] }}">{{ c[1] }}</option>{% endfor %}</select>
+<label>Category</label><select name="category">{% for c in categories %}<option>{{ c }}</option>{% endfor %}</select>
+<label>Official/public URL</label><input name="url" type="url" required placeholder="https://example.gov">
+<label>Description</label><textarea name="description" maxlength="2000"></textarea>
+<label><input type="checkbox" name="is_verified"> Verified by KOJA admin</label>
+<label><input type="checkbox" name="is_active" checked> Active</label>
+<button class="btn" type="submit">Add Service</button>
+</form>
+</div>
+<div class="card"><h2>Registered services</h2>
+<table><tr><th>Service</th><th>Country</th><th>Category</th><th>Status</th><th>URL</th><th>Action</th></tr>
+{% for r in rows %}<tr><td>{{ r.service_name }}</td><td>{{ r.country_name }}</td><td>{{ r.category }}</td><td>{{ "Verified" if r.is_verified else "Pending" }}</td><td>{{ r.url or "Country hub" }}</td><td>{% if r.url %}<a class="btn" href="{{ url_for('koja_world_open',service_id=r.id) }}">Open</a>{% endif %}<form method="post" style="display:inline"><input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="{{ r.id }}"><button class="btn secondary" onclick="return confirm('Remove this KOJA WORLD service?')">Delete</button></form></td></tr>{% endfor %}</table>
+</div>
+""", rows=rows, countries=KOJA_WORLD_COUNTRIES, categories=KOJA_WORLD_CATEGORIES)
+
 @app.route("/")
 def home():
     return render_page("KOJA AFRICA", r"""
@@ -1231,6 +1469,7 @@ def home():
 <div class="card"><h3> Documents</h3><p>Browse and upload KOJA learning and research documents.</p><a class="btn" href="{{ url_for('documents') }}">Open Documents</a></div>
 <div class="card"><h3>KOJA Market</h3><p>Buy and sell physical and digital products and services across Africa.</p><div class="actions"><a class="btn" href="{{ url_for('koja_market') }}">Open KOJA Market</a><a class="btn secondary" href="{{ url_for('market_seller_register') }}">Become a Seller</a></div></div>
 <div class="card"><h3>Digital Marketplace</h3><p>Discover digital learning and business resources.</p><a class="btn" href="{{ url_for('marketplace') }}">Open Digital Marketplace</a></div>
+<div class="card"><h3>KOJA WORLD</h3><p>Access verified public services across 54 African countries from inside KOJA.</p><a class="btn" href="{{ url_for('koja_world') }}">Open KOJA WORLD</a></div>
 </div>
 """)
 
@@ -2883,38 +3122,6 @@ def can_access_assignment(item, user):
         return True
     return str(assignment_owner_id(item) or "") == str(user.get("id") or "")
 
-@app.route("/assignments/<assignment_id>/delete", methods=["POST"])
-@login_required
-def assignment_delete(assignment_id):
-    item = first_row("assignments", {"id": assignment_id})
-    if not item:
-        flash("Assignment not found.", "danger")
-        return redirect(url_for("assignments"))
-    user = current_user()
-    if not can_access_assignment(item, user):
-        flash("You are not authorized to delete this assignment.", "danger")
-        return redirect(url_for("assignments"))
-
-    # Remove database-owned assignment data first. Storage cleanup is best-effort
-    # afterwards so a failed object deletion does not leave the database record behind.
-    ok, error = db_delete("assignments", {"id": assignment_id})
-    if not ok:
-        logger.error("Assignment deletion failed for %s: %s", assignment_id, error)
-        flash("Assignment could not be deleted. Please try again.", "danger")
-        return redirect(url_for("assignments"))
-
-    for path_field in ("file_path", "answer_file_path", "answered_file_path"):
-        path = item.get(path_field)
-        if path:
-            delete_storage_path(path)
-
-    log_activity(
-        "assignment_deleted",
-        f"Assignment {item.get('tracking_code') or assignment_id} deleted by {user.get('id') or 'user'}."
-    )
-    flash("Assignment deleted successfully.", "success")
-    return redirect(url_for("assignments"))
-
 @app.route("/assignments", methods=["GET","POST"])
 @login_required
 def assignments():
@@ -2968,129 +3175,33 @@ def assignments():
     if user.get("is_admin"):
         rows=db_select("assignments",order="created_at.desc",limit=100)
     else:
+        # Assignments and their documents are private to their specific sender/owner.
         rows=db_select("assignments",filters={"owner_id":user["id"]},order="created_at.desc",limit=100)
         if not rows:
             rows=db_select("assignments",filters={"user_id":user["id"]},order="created_at.desc",limit=100)
-
-    active_count=sum(1 for x in rows if str(x.get("status") or "submitted").lower() in {"submitted","in_progress","under_review"})
-    answered_count=sum(1 for x in rows if str(x.get("status") or "").lower() in {"answered","answer_approved","answer_sent","completed"} or x.get("answer_file_path") or x.get("answered_file_path") or x.get("answer"))
-    submitted_count=sum(1 for x in rows if str(x.get("status") or "").lower() == "submitted")
-
-    community_answers = db_select("koja_assignment_answers", order="created_at.asc", limit=2000) or []
-    answered_assignment_ids = {str(x.get("assignment_id")) for x in community_answers if x.get("assignment_id")}
-    all_open = db_select("assignments", order="created_at.desc", limit=500) or []
-    available_rows = [x for x in all_open if str(x.get("id")) not in answered_assignment_ids and str(assignment_owner_id(x) or "") != str(user.get("id") or "")]
-    community_answer_ids = answered_assignment_ids
-
     return render_page("Assignments",r"""
-<style>
-.assignment-shell{max-width:1180px;margin:0 auto;padding:8px 0 40px}
-.assignment-hero{background:linear-gradient(135deg,#071b3a 0%,#0d3f78 68%,#1769aa 100%);color:#fff;border-radius:22px;padding:26px;margin-bottom:18px;box-shadow:0 12px 30px rgba(5,24,54,.18)}
-.assignment-hero h1{margin:0 0 7px;font-size:clamp(25px,4vw,36px);letter-spacing:-.5px}
-.assignment-hero p{margin:0;color:#d9e7f7;max-width:720px}
-.assignment-toolbar{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin:18px 0}
-.assignment-search{flex:1;min-width:220px;position:relative}
-.assignment-search input{width:100%;box-sizing:border-box;padding:13px 15px 13px 42px;border:1px solid #d8e1ec;border-radius:13px;background:#fff;color:#132238}
-.assignment-search:before{content:'⌕';position:absolute;left:15px;top:8px;font-size:23px;color:#58718d;z-index:1}
-.assignment-new{white-space:nowrap}
-.assignment-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:18px}
-.assignment-stat{background:#fff;border:1px solid #e1e8f0;border-radius:16px;padding:16px;box-shadow:0 5px 18px rgba(15,39,67,.06)}
-.assignment-stat strong{display:block;font-size:25px;color:#0b2d55}.assignment-stat span{font-size:13px;color:#65778b}
-.assignment-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
-.assignment-card{background:#fff;border:1px solid #e1e8f0;border-radius:18px;padding:18px;box-shadow:0 6px 20px rgba(15,39,67,.06);min-width:0}
-.assignment-card-top{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
-.assignment-card h3{margin:0 0 7px;color:#102c4f;font-size:19px;line-height:1.3}
-.assignment-description{color:#526579;font-size:14px;line-height:1.55;margin:0 0 13px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
-.assignment-meta{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 15px}
-.assignment-meta span{font-size:12px;color:#53677c;background:#f2f6fa;border:1px solid #e2e9f0;border-radius:999px;padding:6px 9px}
-.assignment-status{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.45px;border-radius:999px;padding:7px 9px;white-space:nowrap;background:#edf4fb;color:#14548a}
-.assignment-status.done{background:#eaf7ef;color:#176b3c}.assignment-status.review{background:#fff5dc;color:#805d00}
-.assignment-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-.assignment-actions .btn{font-size:13px;padding:9px 12px;border-radius:10px;text-decoration:none}
-.assignment-delete{margin-left:auto}
-.assignment-delete button{border:1px solid #e1bcbc;background:#fff7f7;color:#a52323;border-radius:10px;padding:9px 12px;cursor:pointer;font-weight:600}
-.assignment-upload{margin-bottom:18px}
-.assignment-upload summary{cursor:pointer;font-weight:700;color:#10375f;padding:2px}
-.assignment-upload form{margin-top:14px}
-.assignment-empty{background:#fff;border:1px dashed #c9d5e2;border-radius:18px;padding:35px;text-align:center;color:#617386;grid-column:1/-1}
-@media(max-width:850px){.assignment-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.assignment-list{grid-template-columns:1fr}}
-@media(max-width:520px){.assignment-shell{padding-left:2px;padding-right:2px}.assignment-hero{padding:21px;border-radius:18px}.assignment-toolbar{align-items:stretch}.assignment-new{width:100%}.assignment-new button,.assignment-new a{width:100%;box-sizing:border-box;text-align:center}.assignment-card-top{flex-direction:column}.assignment-delete{margin-left:0;width:100%}.assignment-delete button{width:100%}}
-</style>
-<div class="assignment-shell">
-  <section class="assignment-hero">
-    <h1>Assignments</h1>
-    <p>Manage your academic work in one workspace. Upload questions, track progress, read answers and keep every assignment tied to its tracking code.</p>
-  </section>
-
-  <div class="assignment-toolbar">
-    <div class="assignment-search"><input id="assignmentSearch" type="search" placeholder="Search assignments, courses or tracking codes…" aria-label="Search assignments"></div>
-    <div class="assignment-new"><a class="btn" href="#new-assignment">+ New Assignment</a></div>
-  </div>
-
-  <div class="assignment-stats" aria-label="Assignment summary">
-    <div class="assignment-stat"><strong>{{ rows|length }}</strong><span>Total assignments</span></div>
-    <div class="assignment-stat"><strong>{{ active_count }}</strong><span>Active</span></div>
-    <div class="assignment-stat"><strong>{{ submitted_count }}</strong><span>Submitted</span></div>
-    <div class="assignment-stat"><strong>{{ answered_count }}</strong><span>Answered</span></div>
-  </div>
-
-  <details class="card assignment-upload" id="new-assignment">
-    <summary>Upload a new assignment</summary>
-    <form method="post" enctype="multipart/form-data">
-      <label>Assignment Title</label><input name="title" required placeholder="e.g. Physics — Elasticity Assignment">
-      <label>Description / Question</label><textarea name="description" placeholder="Enter the question, instructions or assignment details…"></textarea>
-      <label>Assignment File</label><input type="file" name="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png">
-      <button type="submit">Upload Assignment</button>
-    </form>
-  </details>
-
-{% if not current_user.get("is_admin") %}
-  <section class="card" style="margin:18px 0;border:1px solid #cfe0f0;background:linear-gradient(180deg,#f8fbff,#fff)">
-    <h2 style="margin:0 0 6px;color:#0b2d55">Assignments Available to Answer</h2>
-    <p class="small">Registered KOJA users can answer unanswered assignments. The first successful submission removes the assignment from this pool for everyone else.</p>
-    <div class="assignment-list">{% for item in available_rows %}<article class="assignment-card"><div class="assignment-card-top"><div><h3>{{ item.get("title") or "Assignment" }}</h3><p class="assignment-description">{{ item.get("description") or "No written question was provided." }}</p></div><span class="assignment-status">Open</span></div><div class="assignment-meta"><span>Code: {{ item.get("tracking_code") or "—" }}</span></div><div class="assignment-actions"><a class="btn secondary" href="{{ url_for('assignment_question_view',assignment_id=item.get('id')) }}">Read Question</a><a class="btn" href="{{ url_for('assignment_answer_submission',assignment_id=item.get('id')) }}">Answer Assignment</a></div></article>{% else %}<div class="assignment-empty"><strong>No unanswered assignments are available right now.</strong></div>{% endfor %}</div>
-  </section>
-{% endif %}
-
-  <div class="assignment-list" id="assignmentList">
-  {% for item in rows %}
-    {% set status = (item.get("status") or "submitted")|lower %}
-    {% set answered = status in ["answered","answer_approved","answer_sent","completed"] or item.get("answer_file_path") or item.get("answered_file_path") or item.get("answer") %}
-    <article class="assignment-card" data-assignment-search="{{ ((item.get('title') or '') ~ ' ' ~ (item.get('description') or '') ~ ' ' ~ (item.get('tracking_code') or '') ~ ' ' ~ (item.get('status') or ''))|lower }}">
-      <div class="assignment-card-top">
-        <div><h3>{{ item.get("title") or "Untitled Assignment" }}</h3><div class="assignment-meta"><span>Tracking: {{ item.get("tracking_code") or "—" }}</span><span>Status: {{ status.replace('_',' ').title() }}</span></div></div>
-        <span class="assignment-status {% if answered %}done{% elif status in ['under_review','submitted'] %}review{% endif %}">{{ "Answer ready" if answered else status.replace('_',' ').title() }}</span>
-      </div>
-      <p class="assignment-description">{{ item.get("description") or "No written description was provided." }}</p>
-      <div class="assignment-actions">
-        <a class="btn secondary" href="{{ url_for('assignment_question_view',assignment_id=item.get('id')) }}">Open</a>
-        <a class="btn secondary" href="{{ url_for('assignment_question_download',assignment_id=item.get('id')) }}">Download Question</a>
-        {% if item.get("file_path") %}<a class="btn" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='original') }}">Assignment File</a>{% endif %}
-        {% if item.get("answer_file_path") %}<a class="btn success" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='answer') }}">View Answer</a>{% endif %}
-        {% if item.get("answered_file_path") %}<a class="btn success" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='answered') }}">Answered File</a>{% endif %}
-        {% if item.get("id")|string in community_answer_ids %}<a class="btn success" href="{{ url_for('assignment_unlock_answer',assignment_id=item.get('id')) }}">Unlock Registered Answer</a>{% endif %}
-        <form class="assignment-delete" method="post" action="{{ url_for('assignment_delete',assignment_id=item.get('id')) }}" onsubmit="return confirm('Delete assignment? This will permanently remove this assignment and its associated files/answers. This action cannot be undone.');">
-          <button type="submit">Delete</button>
-        </form>
-      </div>
-    </article>
-  {% else %}
-    <div class="assignment-empty"><strong>No assignments yet.</strong><br>Upload your first assignment to start tracking it here.</div>
-  {% endfor %}
-  </div>
+<div class="card"><h2>Upload Assignment</h2>
+<p class="small">Each assignment is linked to your account as its specific sender and owner. Other users cannot see your assignment documents.</p>
+<form method="post" enctype="multipart/form-data">
+<label>Assignment Title</label><input name="title" required>
+<label>Description / Question</label><textarea name="description"></textarea>
+<label>Assignment File</label><input type="file" name="file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png">
+<button type="submit">Upload Assignment</button>
+</form></div>
+<div class="card"><h2>{% if current_user and current_user.get("is_admin") %}All Assignments{% else %}My Assignments{% endif %}</h2>
+{% for item in rows %}
+<div class="card"><h3>{{ item.get("title") or "Assignment" }}</h3>
+<p>{{ item.get("description") or "" }}</p>
+<p class="small"><strong>Sender/Owner:</strong> {{ item.get("sender_id") or item.get("owner_id") or item.get("user_id") or item.get("student_id") }}{% if item.get("tracking_code") %} · <strong>Tracking:</strong> {{ item.get("tracking_code") }}{% endif %}</p>
+<a class="btn secondary" href="{{ url_for('assignment_question_download',assignment_id=item.get('id')) }}">⬇️ Download Question</a>
+<a class="btn secondary" href="{{ url_for('assignment_question_view',assignment_id=item.get('id')) }}"> Read Question</a>
+{% if item.get("file_path") %}<a class="btn" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='original') }}">⬇️ Download Assignment File</a>{% endif %}
+{% if item.get("answer_file_path") %}<a class="btn success" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='answer') }}">⬇️ Download Answer</a>{% endif %}
+{% if item.get("answered_file_path") %}<a class="btn success" href="{{ url_for('assignment_file',assignment_id=item.get('id'),kind='answered') }}">Download Answered File</a>{% endif %}
 </div>
-<script>
-(function(){
-  const input=document.getElementById('assignmentSearch');
-  const cards=[...document.querySelectorAll('.assignment-card')];
-  if(!input) return;
-  input.addEventListener('input',function(){
-    const q=this.value.trim().toLowerCase();
-    cards.forEach(c=>{c.style.display=!q || (c.dataset.assignmentSearch||'').includes(q)?'':'none';});
-  });
-})();
-</script>
-""",rows=rows,current_user=user,active_count=active_count,answered_count=answered_count,submitted_count=submitted_count,available_rows=available_rows,community_answer_ids=community_answer_ids)
+{% else %}<p>No assignments found for this account.</p>{% endfor %}
+</div>
+""",rows=rows,current_user=user)
 
 @app.route("/assignments/<assignment_id>/question", methods=["GET"])
 @login_required
@@ -4283,8 +4394,7 @@ def flutterwave_webhook():
     marketplace_order=first_row('koja_marketplace_orders',{'payment_reference':tx_ref})
     monetization_order=_mono_order_for_ref(tx_ref)
     b2b_orders=db_select('koja_b2b_v4_orders',{'payment_reference':tx_ref},order='created_at.asc',limit=100) or []
-    assignment_answer_order=first_row('koja_assignment_answer_orders',{'payment_reference':tx_ref})
-    if not market_orders and not marketplace_order and not monetization_order and not b2b_orders and not assignment_answer_order:
+    if not market_orders and not marketplace_order and not monetization_order and not b2b_orders:
         logger.warning('Flutterwave webhook unknown reference tx_ref=%s',tx_ref)
         return jsonify({'status':'ignored','reason':'unknown_reference'}),200
     results=[]
@@ -4302,9 +4412,6 @@ def flutterwave_webhook():
         ok=_finalize_monetization(monetization_order,tx)
         logger.info('KOJA monetization finalization tx_ref=%s order=%s result=%s',tx_ref,monetization_order.get('id'),ok)
         results.append('monetization:'+('finalized_or_paid' if ok else 'failed'))
-    if assignment_answer_order:
-        ok=_assignment_answer_finalize_order(assignment_answer_order,tx)
-        results.append('assignment_answer:'+('unlocked' if ok else 'failed'))
     if b2b_orders:
         ok_count=0
         for b2b_order in b2b_orders:
@@ -6192,7 +6299,7 @@ def admin_assignments():
     return render_page("Admin Assignments", r"""
 <div class="hero"><h2> Assignment Answer Management</h2>
 <p>Write an answer, upload the answer PDF, save it to the specific assignment owner, and send the PDF by email.</p></div>
-<div class="card"><p><strong>Email status:</strong> {{ "Configured" if email_configured else "Not configured" }} · <a class="btn secondary" href="{{ url_for('admin_email_settings') }}">Manage Email</a> <a class="btn secondary" href="{{ url_for('admin_assignment_community_answers') }}">Registered User Answers</a></p>
+<div class="card"><p><strong>Email status:</strong> {{ "Configured" if email_configured else "Not configured" }} · <a class="btn secondary" href="{{ url_for('admin_email_settings') }}">Manage Email</a></p>
 <p class="small">For Gmail, use a Google App Password in the server environment. Never place the password in this page.</p></div>
 {% for item in rows %}
 <div class="card">
@@ -6364,132 +6471,6 @@ SMTP_USE_TLS=true</pre>
 # ============================================================
 KOJA_AI_AUTO_APPROVAL = str(os.getenv("KOJA_AI_AUTO_APPROVAL", "true")).strip().lower() in {"1","true","yes","on"}
 KOJA_AI_AUTO_APPROVAL_THRESHOLD = float(os.getenv("KOJA_AI_AUTO_APPROVAL_THRESHOLD", "0.90") or 0.90)
-# ============================================================
-# KOJA ASSIGNMENT ANSWER MARKET — REGISTERED USERS + PAY-TO-UNLOCK
-# ============================================================
-KOJA_ASSIGNMENT_UNLOCK_PRICE = float(os.getenv("KOJA_ASSIGNMENT_UNLOCK_PRICE", "10") or 10)
-KOJA_ASSIGNMENT_UNLOCK_CURRENCY = "ZMW"
-
-def _community_assignment_answer(assignment_id):
-    return first_row("koja_assignment_answers", {"assignment_id": assignment_id})
-
-def _community_answer_unlocked(assignment_id, user_id):
-    rows = db_select("koja_assignment_answer_orders", {"assignment_id": assignment_id, "buyer_id": user_id, "status": "paid"}, order="paid_at.desc", limit=1) or []
-    return rows[0] if rows else None
-
-def _assignment_answer_owner(assignment):
-    return assignment_owner_id(assignment)
-
-@app.route("/assignments/<assignment_id>/answer", methods=["GET", "POST"])
-@login_required
-def assignment_answer_submission(assignment_id):
-    assignment=first_row("assignments",{"id":assignment_id}); user=current_user() or {}
-    if not assignment: return "Assignment not found.",404
-    if str(_assignment_answer_owner(assignment) or "")==str(user.get("id") or ""):
-        flash("You cannot answer your own assignment.","warning"); return redirect(url_for("assignments"))
-    if _community_assignment_answer(assignment_id):
-        flash("This assignment has already been answered by another registered user.","info"); return redirect(url_for("assignments"))
-    if request.method=="POST":
-        answer_text=clean(request.form.get("answer")); answer_file=request.files.get("answer_file")
-        if not answer_text and not (answer_file and answer_file.filename):
-            flash("Write an answer or upload an answer file.","danger"); return redirect(url_for("assignment_answer_submission",assignment_id=assignment_id))
-        uploaded=None
-        if answer_file and answer_file.filename:
-            uploaded,err=upload_storage(answer_file,"assignment-community-answers",public=False)
-            if err: flash(f"Answer upload failed: {err}","danger"); return redirect(url_for("assignment_answer_submission",assignment_id=assignment_id))
-        payload={"id":str(uuid.uuid4()),"assignment_id":assignment_id,"answerer_id":user.get("id"),"answer_text":answer_text or None,"answer_file_name":(uploaded or {}).get("file_name") if uploaded else None,"answer_file_path":(uploaded or {}).get("path") if uploaded else None,"status":"submitted","created_at":utc_now(),"updated_at":utc_now()}
-        row,err=db_insert("koja_assignment_answers",payload)
-        if err or not row:
-            if uploaded: delete_storage_path(uploaded.get("path"))
-            flash("This assignment was just answered by another registered user. It is no longer available.","info"); return redirect(url_for("assignments"))
-        owner_id=_assignment_answer_owner(assignment)
-        if owner_id: notify_user(owner_id,"Assignment answer received",f"A registered KOJA user answered {assignment.get('title') or 'your assignment'}. Pay to unlock the submitted answer.","assignment_answer",assignment_id,"/assignments")
-        log_activity("community_assignment_answered",f"Registered user {user.get('id')} answered assignment {assignment.get('tracking_code') or assignment_id}.")
-        flash("Answer submitted. The assignment has been removed from the public answering pool.","success"); return redirect(url_for("assignments"))
-    return render_page("Answer Assignment",r"""
-<div class="hero"><h2>Answer Assignment</h2><p>{{ assignment.get("title") or "Assignment" }} · Code {{ assignment.get("tracking_code") or "—" }}</p></div>
-<div class="card"><p><strong>First-answer system:</strong> once another registered user submits a valid answer, this assignment closes to other answerers.</p><h3>Question</h3><div style="white-space:pre-wrap;line-height:1.75">{{ assignment.get("description") or "No written question was provided." }}</div><div class="actions" style="margin-top:14px"><a class="btn secondary" href="{{ url_for('assignment_question_download',assignment_id=assignment.get('id')) }}">Download Question</a>{% if assignment.get("file_path") %}<a class="btn" href="{{ url_for('assignment_file',assignment_id=assignment.get('id'),kind='original') }}">Open Assignment File</a>{% endif %}</div></div>
-<div class="card"><form method="post" enctype="multipart/form-data"><label>Your Answer</label><textarea name="answer" rows="12" placeholder="Write the complete answer, working and explanation..."></textarea><label>Optional Answer File</label><input type="file" name="answer_file" accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png"><p class="small">The first successful registered-user submission closes this assignment to other answerers.</p><button class="btn" type="submit">Submit Answer</button></form></div>
-""",assignment=assignment,user=user)
-
-@app.route("/assignments/<assignment_id>/unlock",methods=["GET","POST"])
-@login_required
-def assignment_unlock_answer(assignment_id):
-    assignment=first_row("assignments",{"id":assignment_id}); user=current_user() or {}
-    if not assignment: return "Assignment not found.",404
-    if str(_assignment_answer_owner(assignment) or "")!=str(user.get("id") or "") and not user.get("is_admin"): return "Only the assignment owner can unlock this answer.",403
-    answer=_community_assignment_answer(assignment_id)
-    if not answer: flash("No registered-user answer has been submitted yet.","info"); return redirect(url_for("assignments"))
-    paid=_community_answer_unlocked(assignment_id,user.get("id"))
-    if paid:
-        return render_page("Unlocked Assignment Answer",r"""
-<div class="hero"><h2>Assignment Answer Unlocked</h2><p>{{ assignment.get("title") or "Assignment" }} · {{ assignment.get("tracking_code") or "—" }}</p></div>
-<div class="card"><p><span class="badge">Paid and unlocked</span></p><h3>Registered User Answer</h3><div style="white-space:pre-wrap;line-height:1.75">{{ answer.get("answer_text") or "The responder submitted an answer file." }}</div>{% if answer.get("answer_file_path") %}<div class="actions" style="margin-top:14px"><a class="btn" href="{{ url_for('assignment_community_answer_file',answer_id=answer.get('id')) }}">Open Answer File</a></div>{% endif %}<p class="small">Answered by a registered KOJA user on {{ answer.get("created_at") or "" }}.</p></div>
-""",assignment=assignment,answer=answer)
-    if request.method=="GET":
-        return render_page("Unlock Assignment Answer",r"""
-<div class="hero"><h2>Unlock Assignment Answer</h2><p>{{ assignment.get("title") or "Assignment" }} · {{ assignment.get("tracking_code") or "—" }}</p></div>
-<div class="card"><h3>Answer available</h3><p>A registered KOJA user has submitted the answer. Pay <strong>{{ price }} {{ currency }}</strong> to unlock it.</p><p class="small">Payment methods: MTN Mobile Money, Airtel Money and Zamtel Money through Flutterwave.</p><form method="post"><label>Mobile-money network</label><select name="network" required><option value="">Select network</option><option>MTN</option><option>AIRTEL</option><option>ZAMTEL</option></select><label>Mobile-money phone</label><input name="phone" value="{{ user.get('phone') or '' }}" inputmode="tel" required><button class="btn" type="submit">Pay {{ price }} {{ currency }} and Open Answer</button></form></div>
-""",assignment=assignment,price=KOJA_ASSIGNMENT_UNLOCK_PRICE,currency=KOJA_ASSIGNMENT_UNLOCK_CURRENCY,user=user)
-    if not FLW_SECRET_KEY:
-        flash("Online payment is not configured. Add FLW_SECRET_KEY in Render Environment Variables.","warning"); return redirect(url_for("assignment_unlock_answer",assignment_id=assignment_id))
-    email=clean(user.get("email")).lower(); network=clean(request.form.get("network")).upper(); phone=clean(request.form.get("phone")) or clean(user.get("phone"))
-    if not email or network not in ("MTN","AIRTEL","ZAMTEL") or not phone:
-        flash("A valid email, mobile-money network and phone number are required.","warning"); return redirect(url_for("assignment_unlock_answer",assignment_id=assignment_id))
-    tx_ref="KOJA-ASSIGN-"+uuid.uuid4().hex[:24]
-    order,err=db_insert("koja_assignment_answer_orders",{"id":str(uuid.uuid4()),"assignment_id":assignment_id,"answer_id":answer.get("id"),"buyer_id":user.get("id"),"amount":KOJA_ASSIGNMENT_UNLOCK_PRICE,"currency":"ZMW","status":"pending","payment_method":"flutterwave_mobile_money","payment_reference":tx_ref,"created_at":utc_now(),"updated_at":utc_now()})
-    if err or not order:
-        flash("Payment order could not be created. Run the assignment payment migration in Supabase.","danger"); return redirect(url_for("assignment_unlock_answer",assignment_id=assignment_id))
-    payload={"tx_ref":tx_ref,"amount":int(round(KOJA_ASSIGNMENT_UNLOCK_PRICE)),"currency":"ZMW","email":email,"fullname":first_nonempty(user.get("name"),user.get("full_name"),email),"phone_number":phone,"network":network,"order_id":str(order.get("id")),"redirect_url":url_for("assignment_payment_callback",_external=True,tx_ref=tx_ref),"meta":{"koja_assignment_answer_order_id":str(order.get("id")),"assignment_id":str(assignment_id),"type":"assignment_answer_unlock"}}
-    try:
-        r=requests.post(FLW_BASE_URL+"/charges?type=mobile_money_zambia",headers={"Authorization":"Bearer "+FLW_SECRET_KEY,"Content-Type":"application/json","Accept":"application/json"},json=payload,timeout=30); body=json_or_empty(r); redirect_url=((body.get("meta") or {}).get("authorization") or {}).get("redirect") if isinstance(body,dict) else None
-        if r.ok and str(body.get("status") or "").lower()=="success" and redirect_url: return redirect(redirect_url)
-    except Exception: logger.exception("KOJA assignment answer unlock checkout error")
-    flash("Payment could not be started. The order remains pending.","danger"); return redirect(url_for("assignment_unlock_answer",assignment_id=assignment_id))
-
-@app.route("/assignments/payment/callback")
-@login_required
-def assignment_payment_callback():
-    tx_ref=clean(request.args.get("tx_ref") or request.args.get("reference")); tid=clean(request.args.get("transaction_id") or request.args.get("id")); tx=_flutterwave_verify(tid,tx_ref) if tid else None
-    if tx and not tx_ref: tx_ref=clean(tx.get("tx_ref") or tx.get("reference"))
-    order=first_row("koja_assignment_answer_orders",{"payment_reference":tx_ref}) if tx_ref else None; uid=(current_user() or {}).get("id")
-    if order and str(order.get("buyer_id"))==str(uid) and tx and _flutterwave_payment_valid(tx,tx_ref,order.get("amount"),order.get("currency") or "ZMW"):
-        db_update("koja_assignment_answer_orders",{"id":order.get("id")},{"status":"paid","payment_transaction_id":str(tx.get("id") or ""),"paid_at":utc_now(),"updated_at":utc_now()}); flash("Payment verified. The assignment answer is now unlocked.","success"); return redirect(url_for("assignment_unlock_answer",assignment_id=order.get("assignment_id")))
-    flash("Payment is still pending. KOJA will confirm it automatically when Flutterwave reports the successful transaction.","info"); return redirect(url_for("assignments"))
-
-@app.route("/assignments/community-answer-file/<answer_id>")
-@login_required
-def assignment_community_answer_file(answer_id):
-    answer=first_row("koja_assignment_answers",{"id":answer_id})
-    if not answer: return "Answer not found.",404
-    assignment=first_row("assignments",{"id":answer.get("assignment_id")}); user=current_user() or {}
-    if not assignment or (str(_assignment_answer_owner(assignment) or "")!=str(user.get("id") or "") and not user.get("is_admin")): return "Not authorized.",403
-    if not _community_answer_unlocked(answer.get("assignment_id"),user.get("id")) and not user.get("is_admin"): return "Payment required to open this answer.",402
-    path=answer.get("answer_file_path")
-    if not path: return "No answer file was uploaded.",404
-    r=requests.get(sb_storage_url(path),headers=sb_headers(),timeout=60)
-    if not r.ok: return "Answer file could not be retrieved.",502
-    return send_file(io.BytesIO(r.content),download_name=answer.get("answer_file_name") or "KOJA-assignment-answer",mimetype="application/octet-stream",as_attachment=False)
-
-@app.route("/admin/assignments/community-answers")
-@admin_required
-def admin_assignment_community_answers():
-    answers=db_select("koja_assignment_answers",order="created_at.desc",limit=500) or []; enriched=[]
-    for a in answers:
-        assignment=first_row("assignments",{"id":a.get("assignment_id")}) or {}; responder=first_row("profiles",{"id":a.get("answerer_id")}) or {}; owner=first_row("profiles",{"id":assignment_owner_id(assignment)}) or {}; paid=first_row("koja_assignment_answer_orders",{"assignment_id":a.get("assignment_id"),"status":"paid"}); x=dict(a); x.update({"assignment":assignment,"responder":responder,"owner":owner,"paid_order":paid}); enriched.append(x)
-    return render_page("Registered Assignment Answers",r"""
-<div class="hero"><h2>Registered User Assignment Answers</h2><p>Monitor answers submitted by registered KOJA users and whether the assignment owner has paid to unlock them.</p></div>
-{% for x in answers %}<div class="card"><h3>{{ x.assignment.get("title") or "Assignment" }}</h3><p><strong>Code:</strong> {{ x.assignment.get("tracking_code") or "—" }} · <strong>Responder:</strong> {{ x.responder.get("full_name") or x.responder.get("email") or x.answerer_id }}</p><p><strong>Owner:</strong> {{ x.owner.get("full_name") or x.owner.get("email") or "—" }} · <strong>Submitted:</strong> {{ x.created_at }}</p><p><span class="badge">{{ x.status }}</span> {% if x.paid_order %}<span class="badge">Paid / Unlocked</span>{% else %}<span class="badge">Awaiting payment</span>{% endif %}</p><div style="white-space:pre-wrap;line-height:1.65">{{ x.answer_text or "Answer file submitted." }}</div></div>{% else %}<div class="card"><p>No registered-user answers yet.</p></div>{% endfor %}
-""",answers=enriched)
-
-def _assignment_answer_finalize_order(order,tx):
-    if not order or not tx: return False
-    if str(order.get("status") or "").lower()=="paid": return True
-    if not _flutterwave_payment_valid(tx,order.get("payment_reference"),order.get("amount"),order.get("currency") or "ZMW"): return False
-    if not _community_assignment_answer(order.get("assignment_id")): return False
-    db_update("koja_assignment_answer_orders",{"id":order.get("id")},{"status":"paid","payment_transaction_id":str(tx.get("id") or ""),"paid_at":utc_now(),"updated_at":utc_now()})
-    return True
-
 KOJA_AI_AUTO_APPROVAL_KINDS = {"assignment", "assignment_answer", "document", "delivery", "appointment", "product"}
 KOJA_AI_MANUAL_ONLY_KINDS = {"doctor", "teacher", "driver", "provider"}
 
