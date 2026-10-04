@@ -28,8 +28,18 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-# Live Shopping / LiveKit server SDK
-from livekit import api as livekit_api
+# Live Shopping / LiveKit server SDK. The official distribution is `livekit-api`.
+# Keep the main Flask application bootable if that optional SDK is absent or
+# shadowed by an unrelated `livekit` namespace; LiveKit endpoints report a clear
+# configuration error instead of taking the entire KOJA service down.
+try:
+    from livekit import api as livekit_api
+except (ImportError, AttributeError) as exc:
+    livekit_api = None
+    logging.getLogger("koja-africa").warning(
+        "LiveKit server SDK is unavailable (%s); live video token endpoints will be disabled until livekit-api is installed.",
+        exc,
+    )
 
 # Optional document parsers used by KOJA AI file intelligence.
 try:
@@ -10159,6 +10169,8 @@ def _livekit_server_url():
     return url
 
 def _livekit_token(room_id, participant_id, participant_name, can_publish=False):
+    if livekit_api is None:
+        raise RuntimeError('LiveKit server SDK is unavailable. Install the livekit-api package and redeploy.')
     if not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET or not LIVEKIT_URL:
         raise RuntimeError('Live Shopping video service is not configured.')
     grants = livekit_api.VideoGrants(

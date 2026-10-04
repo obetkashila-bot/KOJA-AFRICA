@@ -1,28 +1,37 @@
-KOJA AFRICA - PRODUCTION PACKAGE
-Date: 2026-09-13
+KOJA AFRICA — Render deployment package
 
-This package is based on the KOJA production application dated 2026-09-12.
+FILES
+- app.py: complete Flask application with a guarded LiveKit import.
+- requirements.txt: production dependencies, including the official livekit-api SDK.
 
-Included:
-- app.py: unified production Flask application
-- requirements.txt: production dependencies, including livekit-api and document AI parsers
-- Procfile: Render/Gunicorn start command
-- KOJA_ALL_SQL_MASTER_20260912.sql: existing additive KOJA master migration
+RENDER SETTINGS
+- Runtime: Python
+- Build command: pip install -r requirements.txt
+- Start command: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 120 --graceful-timeout 30 --keep-alive 5
 
-Changes in this build:
-1. Added unified Document AI to the existing Documents module.
-2. Document AI can summarize, extract key points, create study questions, explain, perform research analysis, rewrite, and answer questions from an uploaded document.
-3. Document AI indexes extracted text in koja_document_ai_index when that table exists.
-4. Document AI learning history is recorded in koja_document_ai_memory and koja_document_learning_progress when those tables exist.
-5. Existing document access controls are preserved.
-6. Related user-facing modules are grouped into unified service areas: Learning and Research; AI and Workspace; Professional Services; Market and Business; Delivery and Logistics; Communication.
-7. Existing underlying routes/services are preserved rather than deleted.
-8. UI emoji characters were removed from the Python application.
-9. Communications/WebRTC/FCM code was not intentionally removed.
-10. LiveKit dependency is explicitly included in requirements.txt.
+REQUIRED ENVIRONMENT VARIABLES
+- SECRET_KEY (or FLASK_SECRET_KEY): a long, random secret value.
 
-Deployment target:
-Existing KOJA-AFRICA Render production service.
+KOJA integrations also use existing environment variables such as SUPABASE_URL,
+SUPABASE_SERVICE_KEY (or the supported key alias in app.py), and SUPABASE_ANON_KEY.
+Set these in Render's Environment page using the values from your existing Supabase
+project. Do not put secrets in this file or commit them to GitHub.
 
-Important environment variables remain managed in Render and are not stored in this package.
-Required integrations include the existing Supabase, AI provider, payment, site URL, session secret, push, and LiveKit environment configuration used by KOJA.
+LIVEKIT
+- This project imports `from livekit import api`; the official distribution is
+  `livekit-api`, which is listed in requirements.txt.
+- For live video, set LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET in Render.
+- The app now handles a missing/broken SDK without crashing the whole Flask service;
+  LiveKit token endpoints will return a controlled error until the SDK is installed.
+
+DEPLOY STEPS
+1. Replace the repository's app.py with this app.py.
+2. Replace the repository's requirements.txt with this requirements.txt.
+3. Commit and push both files to the production branch of KOJA-AFRICA.
+4. In Render, confirm the build command and start command above.
+5. Confirm SECRET_KEY or FLASK_SECRET_KEY exists in Render Environment.
+6. Trigger a new deploy and inspect the newest deploy logs.
+
+This package does not change Render settings or deploy automatically. Existing
+Supabase schema, OAuth provider settings, and third-party credentials remain managed
+in their respective dashboards.
