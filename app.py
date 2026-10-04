@@ -13079,7 +13079,7 @@ def _market_panel_html():
 <section class="km-panel" id="kojaMarketData">
 <div class="km-head"><div><h2>KOJA MARKET INTELLIGENCE</h2><p>Markets · FX · commodities · bonds · economy · business · industries · opportunities · Africa</p></div><div class="km-meta" id="kmStatus">Checking market feeds…</div></div>
 <div class="km-tabs" id="kmTabs">
-<button class="km-tab active" data-view="stocks" type="button">Stocks & Indices</button><button class="km-tab" data-view="fx" type="button">Currencies & FX</button><button class="km-tab" data-view="commodities" type="button">Commodities</button><button class="km-tab" data-view="bonds" type="button">Bonds & Rates</button><button class="km-tab" data-view="economy" type="button">Africa Economy</button><button class="km-tab" data-view="business" type="button">Business</button><button class="km-tab" data-view="industries" type="button">Industries</button><button class="km-tab" data-view="opportunities" type="button">Opportunities</button></div>
+<button class="km-tab active" data-view="stocks" type="button">Stocks & Indices</button><button class="km-tab" data-view="fx" type="button">Currencies & FX</button><button class="km-tab" data-view="commodities" type="button">Commodities</button><button class="km-tab" data-view="bonds" type="button">Bonds & Rates</button><button class="km-tab" data-view="economy" type="button">Africa Economy</button><button class="km-tab" data-view="business" type="button">Business</button><button class="km-tab" data-view="industries" type="button">Industries</button><button class="km-tab" data-view="opportunities" type="button">Opportunities</button><button class="km-tab" data-view="company" type="button">Company Intelligence</button><button class="km-tab" data-view="investment" type="button">Investment</button><button class="km-tab" data-view="analytics" type="button">Analytics & Alerts</button></div>
 <div id="kmStocksView">
 <div class="km-grid" id="kmGrid"><div class="km-empty">Loading market prices…</div></div>
 <div class="km-tools"><label style="font-size:11px;color:rgba(255,255,255,.65)">Chart</label><select id="kmChartSymbol"><option>AAPL</option><option>MSFT</option><option>NVDA</option><option>AMZN</option><option>TSLA</option><option>GOOGL</option><option>META</option><option>ORCL</option><option>KO</option><option>SONY</option></select><select id="kmChartInterval"><option value="1day">Daily</option><option value="1week">Weekly</option><option value="1month">Monthly</option></select></div>
@@ -13088,19 +13088,22 @@ def _market_panel_html():
 <div id="kmFxView" style="display:none"><div class="km-currency-grid" id="kmFxGrid"><div class="km-empty">Loading currency rates…</div></div></div>
 <div id="kmCommoditiesView" style="display:none"><div class="km-section-title">Global commodities</div><div class="km-asset-grid" id="kmCommoditiesGrid"><div class="km-empty">Loading commodity prices…</div></div></div>
 <div id="kmBondsView" style="display:none"><div class="km-section-title">Government and benchmark rates</div><div class="km-asset-grid" id="kmBondsGrid"><div class="km-empty">Loading rates…</div></div></div>
-<div id="kmEconomyView" style="display:none"><div class="km-section-title">African macroeconomic intelligence</div><div class="km-country-tools"><select id="kmCountry"><option value="ZM">Zambia</option><option value="ZA">South Africa</option><option value="NG">Nigeria</option><option value="KE">Kenya</option><option value="GH">Ghana</option><option value="EG">Egypt</option><option value="TZ">Tanzania</option><option value="UG">Uganda</option><option value="MA">Morocco</option><option value="ET">Ethiopia</option><option value="AO">Angola</option><option value="BW">Botswana</option><option value="MZ">Mozambique</option><option value="RW">Rwanda</option><option value="SN">Senegal</option><option value="CI">Côte d’Ivoire</option></select><span id="kmEconomyMeta" class="km-muted">World Bank indicators</span></div><div class="km-intel-grid" id="kmEconomyGrid"><div class="km-empty">Loading economy indicators…</div></div></div>
+<div id="kmEconomyView" style="display:none"><div class="km-section-title">African macroeconomic intelligence</div><div class="km-country-tools"><select id="kmCountry"><option value="DZ">Algeria</option><option value="AO">Angola</option><option value="BJ">Benin</option><option value="BW">Botswana</option><option value="BF">Burkina Faso</option><option value="BI">Burundi</option><option value="CV">Cabo Verde</option><option value="CM">Cameroon</option><option value="CF">Central African Republic</option><option value="TD">Chad</option><option value="KM">Comoros</option><option value="CG">Republic of the Congo</option><option value="CI">Côte d'Ivoire</option><option value="CD">Democratic Republic of the Congo</option><option value="DJ">Djibouti</option><option value="EG">Egypt</option><option value="GQ">Equatorial Guinea</option><option value="ER">Eritrea</option><option value="SZ">Eswatini</option><option value="ET">Ethiopia</option><option value="GA">Gabon</option><option value="GM">The Gambia</option><option value="GH">Ghana</option><option value="GN">Guinea</option><option value="GW">Guinea-Bissau</option><option value="KE">Kenya</option><option value="LS">Lesotho</option><option value="LR">Liberia</option><option value="LY">Libya</option><option value="MG">Madagascar</option><option value="MW">Malawi</option><option value="ML">Mali</option><option value="MR">Mauritania</option><option value="MU">Mauritius</option><option value="MA">Morocco</option><option value="MZ">Mozambique</option><option value="NA">Namibia</option><option value="NE">Niger</option><option value="NG">Nigeria</option><option value="RW">Rwanda</option><option value="ST">São Tomé and Príncipe</option><option value="SN">Senegal</option><option value="SC">Seychelles</option><option value="SL">Sierra Leone</option><option value="SO">Somalia</option><option value="ZA">South Africa</option><option value="SS">South Sudan</option><option value="SD">Sudan</option><option value="TZ">Tanzania</option><option value="TG">Togo</option><option value="TN">Tunisia</option><option value="UG">Uganda</option><option value="ZM">Zambia</option><option value="ZW">Zimbabwe</option></select><span id="kmEconomyMeta" class="km-muted">World Bank indicators</span></div><div class="km-intel-grid" id="kmEconomyGrid"><div class="km-empty">Loading economy indicators…</div></div></div>
 <div id="kmBusinessView" style="display:none"><div class="km-section-title">Business intelligence</div><div class="km-intel-grid" id="kmBusinessGrid"></div></div>
 <div id="kmIndustriesView" style="display:none"><div class="km-section-title">African industry intelligence</div><div class="km-intel-grid" id="kmIndustriesGrid"></div></div>
 <div id="kmOpportunitiesView" style="display:none"><div class="km-section-title">Business and investment opportunity intelligence</div><div class="km-intel-grid" id="kmOpportunitiesGrid"></div></div>
+<div id="kmCompanyView" style="display:none"><div class="km-section-title">Company intelligence</div><div class="km-tools"><input id="kmCompanySymbol" value="AAPL" maxlength="20" placeholder="Ticker, e.g. AAPL" style="background:#071525;color:#fff;border:1px solid rgba(255,255,255,.16);border-radius:9px;padding:9px 11px;font-size:11px;max-width:180px;text-transform:uppercase"><button id="kmCompanyLoad" class="km-tab active" type="button">Analyse company</button></div><div class="km-intel-grid" id="kmCompanyGrid"><div class="km-empty">Enter a listed company ticker to load public company intelligence.</div></div></div>
+<div id="kmInvestmentView" style="display:none"><div class="km-section-title">Investment, funding and corporate activity</div><div class="km-intel-grid" id="kmInvestmentGrid"><div class="km-empty">Loading investment intelligence…</div></div></div>
+<div id="kmAnalyticsView" style="display:none"><div class="km-section-title">Market analytics</div><div class="km-intel-grid" id="kmAnalyticsGrid"><div class="km-empty">Loading analytics…</div></div><div class="km-section-title">Personal market alerts</div><div class="km-tools"><input id="kmAlertSymbol" value="AAPL" maxlength="20" placeholder="Symbol" style="background:#071525;color:#fff;border:1px solid rgba(255,255,255,.16);border-radius:9px;padding:9px 11px;font-size:11px;max-width:120px;text-transform:uppercase"><input id="kmAlertTarget" type="number" step="any" placeholder="Target price" style="background:#071525;color:#fff;border:1px solid rgba(255,255,255,.16);border-radius:9px;padding:9px 11px;font-size:11px;max-width:140px"><button id="kmAlertAdd" class="km-tab active" type="button">Add alert</button></div><div class="km-intel-grid" id="kmAlertsGrid"></div></div>
 <div class="km-footer"><span>Prices and rates are informational and may be delayed according to exchange/provider entitlement. Macro indicators are published by their source agencies.</span><a href="https://www.alphavantage.co/" target="_blank" rel="noopener">Alpha Vantage</a><a href="https://twelvedata.com/" target="_blank" rel="noopener">Twelve Data</a></div>
 </section>
 <script>
 (function(){
 const grid=document.getElementById('kmGrid'),status=document.getElementById('kmStatus'),chart=document.getElementById('kmChart'),chartSymbol=document.getElementById('kmChartSymbol'),chartInterval=document.getElementById('kmChartInterval');
-const views=['stocks','fx','commodities','bonds','economy','business','industries','opportunities'];
+const views=['stocks','fx','commodities','bonds','economy','business','industries','opportunities','company','investment','analytics'];
 function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function n(v){const x=Number(v);return Number.isFinite(x)?x.toLocaleString(undefined,{maximumFractionDigits:4}):'—';}
-function show(view){views.forEach(v=>{const el=document.getElementById('km'+v[0].toUpperCase()+v.slice(1)+'View');if(el)el.style.display=v===view?'block':'none';});document.querySelectorAll('#kmTabs .km-tab').forEach(b=>b.classList.toggle('active',b.dataset.view===view));if(view==='fx')loadFx();if(view==='commodities')loadAssets('commodities');if(view==='bonds')loadAssets('bonds');if(view==='economy')loadEconomy();if(view==='business')loadBusiness();if(view==='industries')loadIndustries();if(view==='opportunities')loadOpportunities();}
+function show(view){views.forEach(v=>{const el=document.getElementById('km'+v[0].toUpperCase()+v.slice(1)+'View');if(el)el.style.display=v===view?'block':'none';});document.querySelectorAll('#kmTabs .km-tab').forEach(b=>b.classList.toggle('active',b.dataset.view===view));if(view==='fx')loadFx();if(view==='commodities')loadAssets('commodities');if(view==='bonds')loadAssets('bonds');if(view==='economy')loadEconomy();if(view==='business')loadBusiness();if(view==='industries')loadIndustries();if(view==='opportunities')loadOpportunities();if(view==='company')loadCompany();if(view==='investment')loadInvestment();if(view==='analytics'){loadAnalytics();renderAlerts();}}
 document.querySelectorAll('#kmTabs .km-tab').forEach(b=>b.addEventListener('click',()=>show(b.dataset.view)));
 function card(x){const ch=Number(x.change_percent);const cls=Number.isFinite(ch)?(ch>=0?'km-up':'km-down'):'';return '<div class="km-card"><strong>'+esc(x.symbol)+'</strong><div class="km-price">'+n(x.price)+'</div><div class="km-change '+cls+'">'+(Number.isFinite(ch)?(ch>=0?'+':'')+ch.toFixed(2)+'%':'No change data')+'</div><div class="km-muted">'+esc(x.provider||'Market feed')+' · '+esc(x.freshness||'')+'</div></div>';}
 async function loadStocks(){try{const r=await fetch('/api/markets/quotes',{cache:'no-store'}),d=await r.json(),rows=d.quotes||[];grid.innerHTML=rows.length?rows.map(card).join(''):'<div class="km-empty">No market prices are currently available.</div>';status.textContent=rows.length?'MARKET DATA ONLINE · '+new Date((d.updated_at||Date.now()/1000)*1000).toLocaleTimeString():'Market feeds waiting for data';}catch(e){status.textContent='Market data temporarily unavailable';}}
@@ -13112,8 +13115,18 @@ async function loadEconomy(){const c=document.getElementById('kmCountry').value,
 async function loadBusiness(){const el=document.getElementById('kmBusinessGrid');try{const r=await fetch('/api/markets/business',{cache:'no-store'}),d=await r.json();el.innerHTML=(d.items||[]).map(x=>'<div class="km-intel-card"><strong>'+esc(x.name)+'</strong><p>'+esc(x.description)+'</p><span class="km-badge">'+esc(x.focus)+'</span></div>').join('');}catch(e){}}
 async function loadIndustries(){const el=document.getElementById('kmIndustriesGrid');try{const r=await fetch('/api/markets/industries',{cache:'no-store'}),d=await r.json();el.innerHTML=(d.items||[]).map(x=>'<div class="km-intel-card"><strong>'+esc(x.name)+'</strong><p>'+esc(x.description)+'</p><span class="km-badge">'+esc(x.signal)+'</span></div>').join('');}catch(e){}}
 async function loadOpportunities(){const el=document.getElementById('kmOpportunitiesGrid');try{const r=await fetch('/api/markets/opportunities',{cache:'no-store'}),d=await r.json();el.innerHTML=(d.items||[]).map(x=>'<div class="km-intel-card"><strong>'+esc(x.name)+'</strong><p>'+esc(x.description)+'</p><span class="km-badge">'+esc(x.type)+'</span></div>').join('');}catch(e){}}
+async function loadCompany(){const el=document.getElementById('kmCompanyGrid'),sym=(document.getElementById('kmCompanySymbol').value||'AAPL').trim().toUpperCase();if(!sym)return;el.innerHTML='<div class="km-empty">Loading company intelligence…</div>';try{const r=await fetch('/api/markets/company?symbol='+encodeURIComponent(sym),{cache:'no-store'}),d=await r.json();if(d.error){el.innerHTML='<div class="km-empty">'+esc(d.error)+'</div>';return;}const q=d.quote||{};const o=d.overview||{};el.innerHTML='<div class="km-intel-card"><strong>'+esc(o.Name||sym)+'</strong><p>'+esc(o.Description||'Public company profile and market data.')+'</p><span class="km-badge">'+esc(o.Sector||'Sector unavailable')+'</span></div><div class="km-intel-card"><strong>Market value</strong><p>'+esc(o.MarketCapitalization||'Not available')+'</p><span class="km-badge">Market cap</span></div><div class="km-intel-card"><strong>Valuation</strong><p>P/E '+esc(o.PERatio||'—')+' · EPS '+esc(o.EPS||'—')</p><span class="km-badge">Fundamentals</span></div><div class="km-intel-card"><strong>Current price</strong><p>'+n(q.price)+' · '+(Number.isFinite(Number(q.change_percent))?(Number(q.change_percent)>=0?'+':'')+Number(q.change_percent).toFixed(2)+'%':'No change data')+'</p><span class="km-badge">'+esc(q.provider||'Market feed')+'</span></div>'; }catch(e){el.innerHTML='<div class="km-empty">Company intelligence temporarily unavailable.</div>';}}
+async function loadInvestment(){const el=document.getElementById('kmInvestmentGrid');try{const r=await fetch('/api/markets/investment',{cache:'no-store'}),d=await r.json();el.innerHTML=(d.items||[]).map(x=>'<div class="km-intel-card"><strong>'+esc(x.title)+'</strong><p>'+esc(x.summary||'')+'</p><span class="km-badge">'+esc(x.type||'Investment')+' · '+esc(x.country||'Africa')+'</span></div>').join('')||'<div class="km-empty">No recent investment intelligence is available.</div>';}catch(e){el.innerHTML='<div class="km-empty">Investment intelligence temporarily unavailable.</div>';}}
+async function loadAnalytics(){const el=document.getElementById('kmAnalyticsGrid');try{const r=await fetch('/api/markets/analytics',{cache:'no-store'}),d=await r.json();el.innerHTML=(d.items||[]).map(x=>'<div class="km-intel-card"><strong>'+esc(x.name)+'</strong><p>'+esc(x.value)+'</p><span class="km-badge">'+esc(x.type||'Analytics')+'</span></div>').join('')||'<div class="km-empty">No analytics available.</div>';}catch(e){el.innerHTML='<div class="km-empty">Analytics temporarily unavailable.</div>';}}
+function getAlerts(){try{return JSON.parse(localStorage.getItem('kojaMarketAlerts')||'[]')}catch(e){return[]}}
+function renderAlerts(){const el=document.getElementById('kmAlertsGrid');if(!el)return;const a=getAlerts();el.innerHTML=a.length?a.map((x,i)=>'<div class="km-intel-card"><strong>'+esc(x.symbol)+' ≥ '+n(x.target)+'</strong><p>Browser alert · checks with KOJA market refresh</p><button type="button" data-del-alert="'+i+'" class="km-tab">Remove</button></div>').join(''):'<div class="km-empty">No personal price alerts saved on this device.</div>';el.querySelectorAll('[data-del-alert]').forEach(b=>b.onclick=()=>{const a=getAlerts();a.splice(Number(b.dataset.delAlert),1);localStorage.setItem('kojaMarketAlerts',JSON.stringify(a));renderAlerts();});}
+function checkAlerts(rows){const a=getAlerts();if(!a.length)return;a.forEach(x=>{const q=rows.find(r=>String(r.symbol).toUpperCase()===String(x.symbol).toUpperCase());if(q&&Number(q.price)>=Number(x.target)){if('Notification' in window&&Notification.permission==='granted')new Notification('KOJA Market Alert',{body:x.symbol+' reached '+n(q.price)});x.triggered=true;}});localStorage.setItem('kojaMarketAlerts',JSON.stringify(a));}
+const oldLoadStocks=loadStocks;loadStocks=async function(){await oldLoadStocks();try{const r=await fetch('/api/markets/quotes',{cache:'no-store'}),d=await r.json();checkAlerts(d.quotes||[]);}catch(e){}}
+if(document.getElementById('kmCompanyLoad'))document.getElementById('kmCompanyLoad').onclick=loadCompany;
+if(document.getElementById('kmAlertAdd'))document.getElementById('kmAlertAdd').onclick=()=>{const symbol=(document.getElementById('kmAlertSymbol').value||'').trim().toUpperCase(),target=Number(document.getElementById('kmAlertTarget').value);if(!symbol||!Number.isFinite(target))return;const a=getAlerts();a.push({symbol,target,created_at:Date.now()});localStorage.setItem('kojaMarketAlerts',JSON.stringify(a));renderAlerts();if('Notification' in window&&Notification.permission==='default')Notification.requestPermission().catch(()=>{});};
+
 chartSymbol.addEventListener('change',loadChart);chartInterval.addEventListener('change',loadChart);document.getElementById('kmCountry').addEventListener('change',loadEconomy);
-loadStocks();loadChart();setInterval(loadStocks,30000);setInterval(()=>{const active=document.querySelector('#kmTabs .km-tab.active')?.dataset.view;if(active==='fx')loadFx();else if(active==='commodities')loadAssets('commodities');else if(active==='bonds')loadAssets('bonds');else if(active==='economy')loadEconomy();else loadStocks();},30000);
+loadStocks();loadChart();renderAlerts();setInterval(loadStocks,30000);setInterval(()=>{const active=document.querySelector('#kmTabs .km-tab.active')?.dataset.view;if(active==='fx')loadFx();else if(active==='commodities')loadAssets('commodities');else if(active==='bonds')loadAssets('bonds');else if(active==='economy')loadEconomy();else if(active==='business')loadBusiness();else if(active==='industries')loadIndustries();else if(active==='opportunities')loadOpportunities();else if(active==='investment')loadInvestment();else if(active==='analytics')loadAnalytics();else if(active==='company')loadCompany();else loadStocks();},30000);
 })();
 </script>
 """
@@ -13420,7 +13433,71 @@ def koja_market_industries_api():
 
 @app.route('/api/markets/opportunities')
 def koja_market_opportunities_api():
-    return jsonify({'items':[{'name':a,'description':b,'type':c} for a,b,c in KOJA_MARKET_OPPORTUNITIES],'updated_at':time.time()})
+    live=_market_intelligence_rows(24,'opportunities')
+    static=[{'title':a,'summary':b,'type':c,'country':'Africa','url':None} for a,b,c in KOJA_MARKET_OPPORTUNITIES]
+    return jsonify({'items':live+static,'updated_at':time.time(),'source':'KOJA AFRICA source intelligence + opportunity categories'})
+
+
+@app.route('/api/markets/company')
+def koja_market_company_api():
+    symbol=clean(request.args.get('symbol') or 'AAPL').upper()[:20]
+    if not re.match(r'^[A-Z0-9.\-]+$', symbol):
+        return jsonify({'error':'Invalid company ticker.'}),400
+    overview={}
+    if ALPHAVANTAGE_API_KEY:
+        try:
+            body=_market_http_json('https://www.alphavantage.co/query',{'function':'OVERVIEW','symbol':symbol,'apikey':ALPHAVANTAGE_API_KEY}) or {}
+            if body.get('Symbol'): overview=body
+        except Exception: pass
+    q=_market_quote(symbol)
+    if not overview and not q:
+        return jsonify({'error':'No public company data was found for '+symbol+'.'}),404
+    return jsonify({'symbol':symbol,'overview':overview,'quote':q,'updated_at':time.time(),'source':'Alpha Vantage / public market fallback'})
+
+
+def _market_intelligence_rows(limit=30, mode='investment'):
+    try:
+        rows=db_select('koja_nexus_africa_now',order='score.desc,published_at.desc',limit=150) or []
+    except Exception:
+        rows=[]
+    out=[]
+    for r in rows:
+        if not isinstance(r,dict) or r.get('is_active') is False: continue
+        cat=str(r.get('category') or '').lower()
+        text=f"{r.get('title','')} {r.get('summary','')}".lower()
+        if mode=='investment':
+            keys=('investment','funding','finance','bank','acquisition','merger','m&a','startup','capital','project','contract','expansion','economy','business')
+        else:
+            keys=('tender','procurement','grant','funding','investment','contract','project','opportunity','jobs','vacancy','export','expansion')
+        if any(k in text for k in keys) or cat in ('business & economy','business','economy','investment'):
+            out.append({'title':r.get('title') or 'Business intelligence update','summary':r.get('summary') or '', 'country':r.get('country') or 'Africa','type':('Investment & corporate activity' if mode=='investment' else 'Business opportunity'),'url':r.get('url'),'published_at':r.get('published_at')})
+        if len(out)>=limit: break
+    return out
+
+@app.route('/api/markets/investment')
+def koja_market_investment_api():
+    return jsonify({'items':_market_intelligence_rows(30,'investment'),'updated_at':time.time(),'source':'KOJA AFRICA source intelligence'})
+
+@app.route('/api/markets/analytics')
+def koja_market_analytics_api():
+    quotes,_=_refresh_market_quotes(KOJA_MARKET_SYMBOLS)
+    rows=list(quotes.values())
+    valid=[r for r in rows if isinstance(r,dict) and r.get('price') is not None]
+    gainers=sorted(valid,key=lambda x:float(x.get('change_percent') or 0),reverse=True)
+    losers=sorted(valid,key=lambda x:float(x.get('change_percent') or 0))
+    items=[
+        {'name':'Markets covered','value':str(len(valid))+' tracked instruments','type':'Coverage'},
+        {'name':'Top gainer','value':(gainers[0].get('symbol')+' '+str(gainers[0].get('change_percent'))+'%') if gainers else 'No data','type':'Gainer'},
+        {'name':'Top decliner','value':(losers[0].get('symbol')+' '+str(losers[0].get('change_percent'))+'%') if losers else 'No data','type':'Loser'},
+        {'name':'Positive breadth','value':str(sum(1 for r in valid if float(r.get('change_percent') or 0)>0))+' of '+str(len(valid))+' instruments','type':'Breadth'},
+        {'name':'Negative breadth','value':str(sum(1 for r in valid if float(r.get('change_percent') or 0)<0))+' of '+str(len(valid))+' instruments','type':'Breadth'},
+        {'name':'Data hierarchy','value':'Alpha Vantage → Twelve Data → public fallback','type':'Data source'},
+    ]
+    return jsonify({'items':items,'updated_at':time.time()})
+
+@app.route('/api/markets/opportunities/live')
+def koja_market_live_opportunities_api():
+    return jsonify({'items':_market_intelligence_rows(40,'opportunities'),'updated_at':time.time()})
 
 
 # ============================================================
