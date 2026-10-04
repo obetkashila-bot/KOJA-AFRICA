@@ -9173,209 +9173,278 @@ def oauth_session():
         logger.exception('OAuth session bridge failed')
         return jsonify({'ok':False,'error':'Social sign-in could not be completed.'}),500
 
-# KOJA NEXUS INTELLIGENCE — RESTORED DATA LAYER
-# ============================================================
-KOJA_INTELLIGENCE_VERSION = "2026.10.04-RESTORED-V1"
-KOJA_INTEL_TIMEOUT = max(5, min(int(os.getenv("KOJA_INTEL_TIMEOUT", "12")), 30))
-KOJA_INTEL_CACHE_TTL = max(60, int(os.getenv("KOJA_INTEL_CACHE_TTL", "900")))
-_koja_intel_cache = {}
-_koja_intel_lock = threading.Lock()
-KOJA_54_COUNTRIES = {"DZA":"Algeria","AGO":"Angola","BEN":"Benin","BWA":"Botswana","BFA":"Burkina Faso","BDI":"Burundi","CPV":"Cabo Verde","CMR":"Cameroon","CAF":"Central African Republic","TCD":"Chad","COM":"Comoros","COG":"Republic of the Congo","CIV":"Côte d'Ivoire","COD":"Democratic Republic of the Congo","DJI":"Djibouti","EGY":"Egypt","GNQ":"Equatorial Guinea","ERI":"Eritrea","SWZ":"Eswatini","ETH":"Ethiopia","GAB":"Gabon","GMB":"Gambia","GHA":"Ghana","GIN":"Guinea","GNB":"Guinea-Bissau","KEN":"Kenya","LSO":"Lesotho","LBR":"Liberia","LBY":"Libya","MDG":"Madagascar","MWI":"Malawi","MLI":"Mali","MRT":"Mauritania","MUS":"Mauritius","MAR":"Morocco","MOZ":"Mozambique","NAM":"Namibia","NER":"Niger","NGA":"Nigeria","RWA":"Rwanda","STP":"São Tomé and Príncipe","SEN":"Senegal","SYC":"Seychelles","SLE":"Sierra Leone","SOM":"Somalia","ZAF":"South Africa","SSD":"South Sudan","SDN":"Sudan","TZA":"Tanzania","TGO":"Togo","TUN":"Tunisia","UGA":"Uganda","ZMB":"Zambia","ZWE":"Zimbabwe"}
-KOJA_WB_INDICATORS = {"gdp":"NY.GDP.MKTP.CD","gdp_growth":"NY.GDP.MKTP.KD.ZG","inflation":"FP.CPI.TOTL.ZG","unemployment":"SL.UEM.TOTL.ZS","public_debt":"GC.DOD.TOTL.GD.ZS","trade":"NE.TRD.GNFS.ZS","exports":"NE.EXP.GNFS.CD","imports":"NE.IMP.GNFS.CD","fdi":"BX.KLT.DINV.CD.WD","lending_rate":"FR.INR.LEND","real_interest_rate":"FR.INR.RINR"}
-KOJA_INTEL_CENTRAL_BANKS = {
- "Algeria":"Bank of Algeria","Angola":"Banco Nacional de Angola","Botswana":"Bank of Botswana","Egypt":"Central Bank of Egypt","Eswatini":"Central Bank of Eswatini","Ethiopia":"National Bank of Ethiopia","Ghana":"Bank of Ghana","Kenya":"Central Bank of Kenya","Malawi":"Reserve Bank of Malawi","Mauritius":"Bank of Mauritius","Morocco":"Bank Al-Maghrib","Mozambique":"Bank of Mozambique","Namibia":"Bank of Namibia","Nigeria":"Central Bank of Nigeria","Rwanda":"National Bank of Rwanda","Seychelles":"Central Bank of Seychelles","Sierra Leone":"Bank of Sierra Leone","South Africa":"South African Reserve Bank","Tanzania":"Bank of Tanzania","Tunisia":"Central Bank of Tunisia","Uganda":"Bank of Uganda","Zambia":"Bank of Zambia","Zimbabwe":"Reserve Bank of Zimbabwe"}
-KOJA_INTEL_INDUSTRIES = ["Mining","Agriculture","Banking/Fintech","Telecom","Energy","Manufacturing","Construction","Transport/logistics","Retail","Tourism","Healthcare","Education","Technology","Real estate"]
 
-def _intel_cache_get(key):
-    with _koja_intel_lock:
-        x=_koja_intel_cache.get(key)
-        if x and time.time()-x[0] < KOJA_INTEL_CACHE_TTL:return x[1]
+# ============================================================
+# KOJA NEXUS PROCUREMENT INTELLIGENCE — LIVE TENDERS / CONTRACTS
+# Additive source adapter. Existing KOJA Market/NEXUS routes are preserved.
+# Sources: World Bank Finances One + African Development Bank official pages.
+# ============================================================
+KOJA_NEXUS_PROC_CACHE = {}
+KOJA_NEXUS_PROC_LOCK = threading.Lock()
+KOJA_NEXUS_PROC_TTL = max(120, int(os.getenv("KOJA_NEXUS_PROC_TTL", "900")))
+KOJA_NEXUS_PROC_TIMEOUT = max(5, min(int(os.getenv("KOJA_NEXUS_PROC_TIMEOUT", str(KOJA_MARKET_TIMEOUT))), 20))
+
+
+def _nexus_proc_cache_get(key):
+    now=time.time()
+    with KOJA_NEXUS_PROC_LOCK:
+        row=KOJA_NEXUS_PROC_CACHE.get(key)
+        if row and now-float(row.get("updated_at") or 0) < KOJA_NEXUS_PROC_TTL:
+            return row.get("payload")
     return None
 
-def _intel_cache_set(key,value):
-    with _koja_intel_lock:_koja_intel_cache[key]=(time.time(),value)
 
-def _intel_get_text(url, params=None, timeout=None):
+def _nexus_proc_cache_set(key,payload):
+    with KOJA_NEXUS_PROC_LOCK:
+        KOJA_NEXUS_PROC_CACHE[key]={"updated_at":time.time(),"payload":payload}
+    return payload
+
+
+def _nexus_proc_date(value):
+    if not value:
+        return None
+    text=clean(value)
+    for fmt in ("%Y-%m-%d","%d-%b-%Y","%d-%B-%Y","%Y/%m/%d","%d/%m/%Y","%m/%d/%Y"):
+        try:
+            return datetime.strptime(text[:10] if fmt=="%Y-%m-%d" else text,fmt).date().isoformat()
+        except Exception:
+            pass
+    return text or None
+
+
+def _nexus_proc_normalize(title=None,country=None,organization=None,procurement_type=None,reference=None,
+                           publication_date=None,closing_date=None,value=None,status=None,source=None,url=None,
+                           summary=None,record_type="tender",**extra):
+    return {
+        "title": clean(title) or "Untitled procurement notice",
+        "country": clean(country) or "Africa",
+        "organization": clean(organization) or source or "",
+        "procurement_type": clean(procurement_type) or "Procurement",
+        "reference": clean(reference) or None,
+        "publication_date": _nexus_proc_date(publication_date),
+        "closing_date": _nexus_proc_date(closing_date),
+        "estimated_value": value,
+        "status": clean(status) or ("Open" if record_type=="tender" else "Awarded"),
+        "source": clean(source) or "",
+        "url": clean(url) or None,
+        "summary": clean(summary) or None,
+        "record_type": record_type,
+        **extra,
+    }
+
+
+def _nexus_wb_api(dataset_id,resource_id,params=None,top=100):
+    base="https://datacatalogapi.worldbank.org/dexapps/fone/api/apiservice"
+    q={"datasetId":dataset_id,"resourceId":resource_id,"top":min(max(int(top),1),1000),"type":"json"}
+    if params:
+        q.update(params)
     try:
-        r=requests.get(url, params=params or {}, headers={"User-Agent":"KOJA-NEXUS-Intelligence/1.0"}, timeout=timeout or KOJA_INTEL_TIMEOUT)
+        r=requests.get(base,params=q,timeout=KOJA_NEXUS_PROC_TIMEOUT,
+                        headers={"User-Agent":"KOJA-AFRICA/1.0 (NEXUS Procurement Intelligence)"})
         if not r.ok:
-            return None, f"HTTP {r.status_code}"
-        return r.text, None
+            return {"ok":False,"error":f"HTTP {r.status_code}","items":[]}
+        data=r.json()
+        rows=data.get("data") if isinstance(data,dict) else data
+        if not isinstance(rows,list):
+            rows=[]
+        return {"ok":True,"items":rows,"count":data.get("count") if isinstance(data,dict) else len(rows)}
     except Exception as exc:
-        return None, str(exc)[:300]
+        logger.warning("NEXUS World Bank procurement source failed: %s",exc)
+        return {"ok":False,"error":str(exc)[:240],"items":[]}
 
-def _intel_get_json(url,params=None,timeout=None):
-    try:
-        r=requests.get(url,params=params or {},headers={"User-Agent":"KOJA-NEXUS-Intelligence/1.0"},timeout=timeout or KOJA_INTEL_TIMEOUT)
-        if not r.ok:return None,f"HTTP {r.status_code}"
-        return r.json(),None
-    except Exception as exc:return None,str(exc)[:300]
 
-def _wb_indicator(indicator):
-    key="wb:"+indicator; cached=_intel_cache_get(key)
-    if cached is not None:return cached
-    data,err=_intel_get_json(f"https://api.worldbank.org/v2/country/all/indicator/{quote(indicator,safe='')}",{"format":"json","per_page":"500"})
-    if not isinstance(data,list) or len(data)<2 or not isinstance(data[1],list):return {"ok":False,"source":"World Bank","error":err or "No data","items":[]}
-    rows=[]
-    for x in data[1]:
-        code=str(x.get("countryiso3code") or "").upper()
-        if code in KOJA_54_COUNTRIES and x.get("value") is not None:rows.append({"country_code":code,"country":KOJA_54_COUNTRIES[code],"year":x.get("date"),"value":x.get("value")})
-    out={"ok":True,"source":"World Bank","indicator":indicator,"items":rows};_intel_cache_set(key,out);return out
-
-def _worldbank_country(code):
-    code=clean(code).upper(); out={"ok":True,"country_code":code,"country":KOJA_54_COUNTRIES.get(code,code),"source":"World Bank","metrics":{}}
-    for name,ind in KOJA_WB_INDICATORS.items():
-        vals=[x for x in _wb_indicator(ind).get("items",[]) if x["country_code"]==code]
-        if vals:out["metrics"][name]=max(vals,key=lambda x:str(x.get("year") or ""))
+def _nexus_wb_recent_days(dataset_id,resource_id,days=14,top_per_day=100):
+    """Query recent exact publication/signing dates instead of downloading huge datasets.
+    The official Finances One API documents DD-MMM-YYYY date filters and 1,000-row pages.
+    """
+    from concurrent.futures import ThreadPoolExecutor,as_completed
+    today=datetime.now(timezone.utc).date()
+    dates=[today-timedelta(days=i) for i in range(max(1,int(days)))]
+    def one(day):
+        field="publication_date" if dataset_id=="DS00979" else "contract_signing_date"
+        return day,{"day":day.isoformat(),"result":_nexus_wb_api(dataset_id,resource_id,{field:day.strftime("%d-%b-%Y")},top_per_day)}
+    out=[]
+    with ThreadPoolExecutor(max_workers=min(6,len(dates))) as ex:
+        futures=[ex.submit(one,d) for d in dates]
+        for f in as_completed(futures):
+            try: out.append(f.result()[1])
+            except Exception as exc: logger.warning("World Bank procurement date query failed: %s",exc)
     return out
 
-def _nexus_news(query,limit=30):
-    key=f"news:{query}:{limit}"; cached=_intel_cache_get(key)
+
+def _nexus_worldbank_tenders(limit=80):
+    key=f"wb-tenders:{limit}"
+    cached=_nexus_proc_cache_get(key)
+    if cached is not None: return cached
+    results=_nexus_wb_recent_days("DS00979","RS00909",days=21,top_per_day=min(100,limit))
+    items=[]; diagnostics=[]
+    for batch in results:
+        res=batch["result"]; diagnostics.append({"date":batch["day"],"ok":res.get("ok"),"error":res.get("error")})
+        for x in res.get("items",[]):
+            if not isinstance(x,dict): continue
+            items.append(_nexus_proc_normalize(
+                title=x.get("bid_description") or x.get("notice_type") or "World Bank procurement notice",
+                country=x.get("country_name") or x.get("country_code") or "Africa",
+                organization="World Bank Group",
+                procurement_type=x.get("procurement_category") or x.get("procurement_method") or x.get("notice_type") or "Procurement",
+                reference=x.get("id") or x.get("project_id"),
+                publication_date=x.get("publication_date"),closing_date=x.get("deadline_date"),
+                source="World Bank Procurement Notice",url=x.get("url") or ("https://projects.worldbank.org/en/projects-operations/procurement-detail/"+clean(x.get("id"))),
+                status="Open" if x.get("deadline_date") else "Published",record_type="tender",
+                project_id=x.get("project_id"),sector=x.get("sector"),region=x.get("region"),
+                procurement_method=x.get("procurement_method"),notice_type=x.get("notice_type")))
+    dedup={}
+    for x in items: dedup[(x.get("url"),x.get("reference"),x.get("title"))]=x
+    items=list(dedup.values())
+    items.sort(key=lambda x:(x.get("publication_date") or "",x.get("closing_date") or ""),reverse=True)
+    payload={"ok":bool(items),"source":"World Bank Procurement Notice","items":items[:limit],"diagnostics":diagnostics,
+             "source_url":"https://financesone.worldbank.org/procurement-notice/DS00979"}
+    return _nexus_proc_cache_set(key,payload)
+
+
+def _nexus_worldbank_contracts(limit=80):
+    key=f"wb-contracts:{limit}"
+    cached=_nexus_proc_cache_get(key)
+    if cached is not None: return cached
+    results=_nexus_wb_recent_days("DS00005","RS00005",days=21,top_per_day=min(100,limit))
+    items=[]; diagnostics=[]
+    for batch in results:
+        res=batch["result"]; diagnostics.append({"date":batch["day"],"ok":res.get("ok"),"error":res.get("error")})
+        for x in res.get("items",[]):
+            if not isinstance(x,dict): continue
+            value=x.get("supplier_contract_amount_usd")
+            try: value=float(value) if value not in (None,"") else None
+            except Exception: pass
+            items.append(_nexus_proc_normalize(
+                title=x.get("contract_description") or x.get("project_name") or "World Bank contract award",
+                country=x.get("borrower_country") or x.get("borrower_country_code") or "Africa",
+                organization="World Bank Group",
+                procurement_type=x.get("procurement_category") or x.get("procurement_method") or "Contract Award",
+                reference=x.get("wb_contract_number") or x.get("borrower_contract_reference_number") or x.get("project_id"),
+                publication_date=x.get("contract_signing_date") or x.get("as_of_date"),
+                closing_date=None,value=value,status="Awarded",source="World Bank Contract Awards",
+                url="https://financesone.worldbank.org/contract-awards-in-investment-project-financing/DS00005",
+                summary=x.get("supplier") or None,record_type="contract",
+                supplier=x.get("supplier"),supplier_country=x.get("supplier_country"),project_id=x.get("project_id"),
+                project_name=x.get("project_name"),review_type=x.get("review_type"),procurement_method=x.get("procurement_method")))
+    dedup={}
+    for x in items: dedup[(x.get("reference"),x.get("title"),x.get("publication_date"))]=x
+    items=list(dedup.values()); items.sort(key=lambda x:x.get("publication_date") or "",reverse=True)
+    payload={"ok":bool(items),"source":"World Bank Contract Awards","items":items[:limit],"diagnostics":diagnostics,
+             "source_url":"https://financesone.worldbank.org/contract-awards-in-investment-project-financing/DS00005"}
+    return _nexus_proc_cache_set(key,payload)
+
+
+def _nexus_afdb_page(url,limit=40,record_type="tender",page_count=3):
+    out=[]; seen=set(); diagnostics=[]
+    for page in range(max(1,int(page_count))):
+        target=url
+        if "current-solicitations" in url:
+            target=url + ("&" if "?" in url else "?") + f"page={page}"
+        else:
+            target=url.rstrip("/") + f"/{page+1}"
+        try:
+            r=requests.get(target,timeout=KOJA_NEXUS_PROC_TIMEOUT,headers={"User-Agent":"KOJA-AFRICA/1.0 (NEXUS Procurement Intelligence)"})
+            diagnostics.append({"url":target,"status":r.status_code})
+            if not r.ok: continue
+            from bs4 import BeautifulSoup
+            soup=BeautifulSoup(r.text,"html.parser")
+            # Drupal AfDB listing pages expose each record as a linked title with
+            # nearby metadata. We keep the parser deliberately tolerant of markup changes.
+            for node in soup.select("article, .views-row, .node, .view-content > div"):
+                a=node.find("a",href=True)
+                if not a: continue
+                title=" ".join(a.get_text(" ",strip=True).split())
+                href=a.get("href") or ""
+                if len(title)<8: continue
+                if href.startswith("/"): href="https://www.afdb.org"+href
+                if not href.startswith("http") or href in seen: continue
+                text=" ".join(node.get_text(" ",strip=True).split())
+                # Ignore navigation/filter links that are not records.
+                if not any(k in text.lower() for k in ("publication date","deadline date","contract awards","spn","eoi","ifb","aao","ppm")) and record_type=="tender":
+                    continue
+                seen.add(href)
+                import re as _re
+                ref=(next(iter(_re.findall(r"(?:ADB|TCGS|CONE|RD)[/A-Z0-9._-]{5,}",text)),None))
+                dates=_re.findall(r"\b\d{1,2}-[A-Za-z]{3}-\d{4}\b",text)
+                pub=dates[0] if dates else None; close=dates[1] if len(dates)>1 else None
+                country="Africa"
+                m=_re.search(r"(?:SPN|EOI|IFB|PPM|AAO)\s*-\s*([^\-]+)",title,re.I)
+                if m: country=m.group(1).strip()
+                items_type="Contract Award" if record_type=="contract" else ("AfDB Corporate Procurement" if "corporate" in url else "AfDB Project Procurement")
+                out.append(_nexus_proc_normalize(title=title,country=country,organization="African Development Bank",procurement_type=items_type,
+                    reference=ref,publication_date=pub,closing_date=close,status="Awarded" if record_type=="contract" else ("Open" if close else "Published"),
+                    source="African Development Bank",url=href,summary=text[:500],record_type=record_type))
+                if len(out)>=limit: break
+            if len(out)>=limit: break
+        except Exception as exc:
+            diagnostics.append({"url":target,"error":str(exc)[:200]})
+    return {"ok":bool(out),"source":"African Development Bank","items":out[:limit],"diagnostics":diagnostics,"source_url":url}
+
+
+def _nexus_afdb_tenders(limit=80):
+    key=f"afdb-tenders:{limit}"; cached=_nexus_proc_cache_get(key)
     if cached is not None:return cached
-    try:
-        r=requests.get("https://news.google.com/rss/search",params={"q":query,"hl":"en","gl":"US","ceid":"US:en"},headers={"User-Agent":"KOJA-NEXUS-News/1.0"},timeout=KOJA_INTEL_TIMEOUT);r.raise_for_status();root=ET.fromstring(r.text);items=[]
-        for item in root.findall("./channel/item")[:limit]:
-            src=item.find("source");items.append({"title":unescape(item.findtext("title") or ""),"url":item.findtext("link") or "","published_at":item.findtext("pubDate") or "","summary":re.sub("<[^>]+>"," ",unescape(item.findtext("description") or "")).strip()[:500],"source":(src.text or "Google News RSS") if src is not None else "Google News RSS"})
-        out={"ok":True,"source":"Google News RSS","items":items}
-    except Exception as exc:out={"ok":False,"source":"Google News RSS","items":[],"error":str(exc)[:300]}
-    _intel_cache_set(key,out);return out
-
-def _alpha_company(symbol):
-    if not ALPHAVANTAGE_API_KEY:return {"ok":False,"source":"Alpha Vantage","error":"ALPHAVANTAGE_API_KEY is not configured"}
-    body,err=_intel_get_json("https://www.alphavantage.co/query",{"function":"OVERVIEW","symbol":symbol,"apikey":ALPHAVANTAGE_API_KEY})
-    if not body or not body.get("Symbol"):return {"ok":False,"source":"Alpha Vantage","error":err or str((body or {}).get("Note") or (body or {}).get("Information") or "Company overview unavailable")[:300]}
-    mp={"symbol":"Symbol","name":"Name","exchange":"Exchange","sector":"Sector","industry":"Industry","market_cap":"MarketCapitalization","pe":"PERatio","eps":"EPS","revenue":"RevenueTTM","profit_margin":"ProfitMargin","employees":"FullTimeEmployees","description":"Description","gross_profit_ttm":"GrossProfitTTM","ebitda":"EBITDA","book_value":"BookValue","dividend_yield":"DividendYield","52_week_high":"52WeekHigh","52_week_low":"52WeekLow","analyst_target":"AnalystTargetPrice"}
-    company={k:body.get(v) for k,v in mp.items()}
-    company["profit"] = body.get("ProfitLoss") or body.get("NetIncomeTTM")
-    company["growth"] = body.get("QuarterlyRevenueGrowthYOY") or body.get("QuarterlyEarningsGrowthYOY")
-    company["market_share"] = body.get("MarketShare") or None
-    income, ierr = _intel_get_json("https://www.alphavantage.co/query", {"function":"INCOME_STATEMENT","symbol":symbol,"apikey":ALPHAVANTAGE_API_KEY})
-    annual = (income or {}).get("annualReports") or []
-    if annual:
-        latest = annual[0]; company["reported_revenue"] = latest.get("totalRevenue"); company["profit"] = latest.get("netIncome") or company.get("profit")
-        company["latest_fiscal_year"] = latest.get("fiscalDateEnding")
-        if len(annual) > 1:
-            prev = annual[1]
-            try:
-                r0,r1=float(latest.get("totalRevenue")),float(prev.get("totalRevenue"))
-                company["revenue_growth_yoy"]=(r0-r1)/abs(r1)*100 if r1 else None
-            except Exception: company["revenue_growth_yoy"] = None
-            try:
-                n0,n1=float(latest.get("netIncome")),float(prev.get("netIncome"))
-                company["net_income_growth_yoy"]=(n0-n1)/abs(n1)*100 if n1 else None
-            except Exception: company["net_income_growth_yoy"] = None
-    else: company["income_statement_note"] = ierr or "Reported income statement unavailable"
-    return {"ok":True,"source":"Alpha Vantage","company":company}
-
-def _worldbank_tenders(limit=25,country=None):
-    params={"format":"json","rows":str(min(limit,100))}
-    if country:params["countrycode"]=country.lower()
-    data,err=_intel_get_json("https://api.worldbank.org/v2/procurementnotices",params)
-    if not isinstance(data,list) or len(data)<2:return {"ok":False,"source":"World Bank Procurement","items":[],"error":err or "Procurement feed unavailable"}
-    rows=data[1] if isinstance(data[1],list) else []
-    return {"ok":True,"source":"World Bank Procurement","items":[{"title":x.get("noticeTitle") or x.get("projectName") or x.get("title"),"country":x.get("countryName") or x.get("country"),"deadline":x.get("submissionDeadline") or x.get("deadline"),"url":x.get("noticeUrl") or x.get("url"),"source":"World Bank Procurement"} for x in rows[:limit]]}
-
-def _afdb_current_solicitations(limit=30):
-    key=f"afdb:sol:{limit}"; cached=_intel_cache_get(key)
-    if cached is not None:return cached
-    url="https://www.afdb.org/en/about-us/corporate-procurement/procurement-notices/current-solicitations"
-    html,err=_intel_get_text(url)
-    if not html:return {"ok":False,"source":"African Development Bank","items":[],"error":err or "AfDB procurement unavailable","source_url":url}
+    sources=[
+        _nexus_afdb_page("https://www.afdb.org/en/about-us/corporate-procurement/procurement-notices/current-solicitations",limit=limit,record_type="tender",page_count=4),
+        _nexus_afdb_page("https://www.afdb.org/en/documents/project-related-procurement/procurement-notices/specific-procurement-notices",limit=limit,record_type="tender",page_count=3),
+    ]
     items=[]
-    for m in re.finditer(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',html,re.I|re.S):
-        title=re.sub(r'<[^>]+>',' ',unescape(m.group(2))).strip(); href=urljoin(url,unescape(m.group(1)))
-        if len(title)<12 or not any(k in title.lower() for k in ("request","supply","acquisition","provision","selection","construction","works","services","procurement","installation","consultant","fourniture","demande")):continue
-        if any(x.get("url")==href for x in items):continue
-        context=re.sub(r'\s+',' ',re.sub(r'<[^>]+>',' ',unescape(html[m.start():m.start()+1800]))).strip()
-        refm=re.search(r'(?:Reference|Ref(?:erence)?\s*No?\.?)[\s:]*([A-Z0-9][A-Z0-9./_-]{4,})',context,re.I)
-        dates=re.findall(r'\b\d{1,2}[-/](?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[-/]\d{4}\b|\b\d{1,2}[-/]\d{1,2}[-/]\d{4}\b',context,re.I)
-        items.append({"title":title,"url":href,"reference":refm.group(1) if refm else None,"published_at":dates[0] if dates else None,"deadline":dates[1] if len(dates)>1 else None,"source":"African Development Bank","source_url":url})
-        if len(items)>=limit:break
-    out={"ok":bool(items),"source":"African Development Bank","items":items,"source_url":url}
-    if not items:out["error"]="No solicitation rows parsed from official AfDB page"
-    _intel_cache_set(key,out);return out
+    for x in sources: items.extend(x.get("items",[]))
+    dedup={}
+    for x in items: dedup[(x.get("url"),x.get("title"))]=x
+    items=list(dedup.values()); items.sort(key=lambda x:x.get("publication_date") or "",reverse=True)
+    payload={"ok":bool(items),"source":"African Development Bank","items":items[:limit],"sources":sources,
+             "source_url":"https://www.afdb.org/en/about-us/corporate-procurement/procurement-notices/current-solicitations"}
+    return _nexus_proc_cache_set(key,payload)
 
-def _market_analytics():
-    try:q,_=_refresh_market_quotes(KOJA_MARKET_SYMBOLS)
-    except Exception:q={}
-    rows=[]
-    for sym,x in q.items():
-        def num(v):
-            try:return float(str(v).replace('%','').replace(',',''))
-            except:return None
-        rows.append({"symbol":sym,"price":x.get("price"),"change":num(x.get("change")),"change_percent":num(x.get("change_percent")),"provider":x.get("provider"),"freshness":x.get("freshness")})
-    valid=[x for x in rows if x["change_percent"] is not None]
-    return {"ok":True,"source":"KOJA Market providers","items":rows,"gainers":sorted(valid,key=lambda x:x["change_percent"],reverse=True)[:10],"losers":sorted(valid,key=lambda x:x["change_percent"])[:10]}
 
-def _intel_company_announcements(symbol, company_name="", limit=20):
-    q = f'("{symbol}" OR "{company_name}") (contract OR expansion OR acquisition OR merger OR investment OR partnership OR results)' if company_name else f'"{symbol}" (contract OR expansion OR acquisition OR merger OR investment OR partnership OR results)'
-    return _nexus_news(q, limit)
+def _nexus_afdb_contracts(limit=80):
+    key=f"afdb-contracts:{limit}"; cached=_nexus_proc_cache_get(key)
+    if cached is not None:return cached
+    sources=[
+        _nexus_afdb_page("https://www.afdb.org/en/documents/project-related-procurement/procurement-notices/contract-awards",limit=limit,record_type="contract",page_count=4),
+        _nexus_afdb_page("https://www.afdb.org/en/documents/project-related-procurement/procurement-notices/contract-awards/human-capital-development",limit=limit,record_type="contract",page_count=2),
+    ]
+    items=[]
+    for x in sources: items.extend(x.get("items",[]))
+    dedup={}
+    for x in items: dedup[(x.get("url"),x.get("title"),x.get("publication_date"))]=x
+    items=list(dedup.values()); items.sort(key=lambda x:x.get("publication_date") or "",reverse=True)
+    payload={"ok":bool(items),"source":"African Development Bank","items":items[:limit],"sources":sources,
+             "source_url":"https://www.afdb.org/en/documents/project-related-procurement/procurement-notices/contract-awards"}
+    return _nexus_proc_cache_set(key,payload)
 
-def _intel_central_bank_news(limit=30):
-    names = " OR ".join([f'"{x}"' for x in KOJA_INTEL_CENTRAL_BANKS.values()])
-    return _nexus_news(f'Africa central bank ({names}) (interest rate OR monetary policy OR rate decision OR policy rate)', limit)
 
-def _intel_jobs(limit=30):
-    try:
-        if "_africa_now_refresh" in globals(): _africa_now_refresh(False)
-        rows=db_select("koja_nexus_africa_now",{"is_active":"true"},order="published_at.desc",limit=max(limit*3,60)) or []
-        jobs=[x for x in rows if str(x.get("category") or "").lower() in ("jobs & opportunities","jobs","opportunities") or any(w in str(x.get("title") or "").lower() for w in ("job","vacancy","career","internship","consultant","position"))]
-        return {"ok":True,"source":"KOJA AFRICA NOW job feeds","items":jobs[:limit]}
-    except Exception as exc:
-        return {"ok":False,"source":"KOJA AFRICA NOW job feeds","items":[],"error":str(exc)[:300]}
+@app.route('/api/nexus/intelligence/tenders')
+def koja_nexus_intelligence_tenders():
+    """Live normalized procurement opportunities. Provider failures never erase working sources."""
+    try: limit=min(max(int(request.args.get('limit') or 80),1),200)
+    except Exception: limit=80
+    wb=_nexus_worldbank_tenders(limit); afdb=_nexus_afdb_tenders(limit)
+    items=(wb.get('items') or [])+(afdb.get('items') or [])
+    items.sort(key=lambda x:x.get('publication_date') or '',reverse=True)
+    return jsonify({
+        'ok':bool(items), 'section':'tenders', 'items':items[:limit*2],
+        'world_bank':wb, 'afdb':afdb,
+        'providers':{
+            'world_bank':{'ok':wb.get('ok'), 'count':len(wb.get('items') or []), 'error':next((d.get('error') for d in wb.get('diagnostics',[]) if d.get('error')),None)},
+            'afdb':{'ok':afdb.get('ok'), 'count':len(afdb.get('items') or [])}
+        },
+        'updated_at':time.time(),
+        'cache_ttl_seconds':KOJA_NEXUS_PROC_TTL
+    })
 
-def _intel_analysis(section="market", country="", symbol="AAPL", query=""):
-    base = _intel_payload(section,country,symbol,query,20)
-    evidence = json.dumps(base, default=str)[:14000]
-    prompt = f"Analyze only the source-backed evidence below for KOJA NEXUS. Do not invent figures, events, companies or causality. Return exactly four concise labeled sections: WHAT IS HAPPENING, WHY IT MAY BE HAPPENING, WHO IS AFFECTED, OPPORTUNITY. Distinguish facts from reasonable interpretation and say when evidence is insufficient. Section={section}. Country={country or 'Africa'}. Symbol={symbol}.\n\nEVIDENCE:\n{evidence}"
-    answer,err=_ai_call(prompt,"You are KOJA Intelligence. Use only supplied evidence. Never expose the underlying AI provider, model, API key or internal routing.",max_output_tokens=1800,timeout=18)
-    return {"ok":bool(answer),"section":section,"source":"KOJA Intelligence","analysis":answer or "AI analysis is temporarily unavailable; review the source records directly.","evidence":base,"error":err if not answer else ""}
 
-def _intel_payload(section,country="",symbol="AAPL",query="",limit=30):
-    if section=="economy":return {"ok":True,"section":"economy","source":"World Bank","country_count":54,"countries":list(KOJA_54_COUNTRIES.items()),"metrics":{k:_wb_indicator(v) for k,v in KOJA_WB_INDICATORS.items()},"central_bank_decisions":_intel_central_bank_news(min(limit,20))}
-    if section=="country":return _worldbank_country(country or "ZMB")
-    if section=="company":
-        c=_alpha_company(symbol); c["announcements"]=_intel_company_announcements(symbol,(c.get("company") or {}).get("name"),limit); return c
-    if section=="market":return {**_market_analytics(),"fx_note":"Use the existing KOJA FX provider endpoint for currency rates; no rate is fabricated here."}
-    if section=="news" or section=="business":return _nexus_news(query or "Africa business economy companies markets",limit)
-    if section=="tenders":return {"ok":True,"section":"tenders","world_bank":_worldbank_tenders(limit,country),"afdb":_afdb_current_solicitations(limit)}
-    if section=="investment":return {"ok":True,"section":"investment","fdi":_wb_indicator(KOJA_WB_INDICATORS["fdi"]),"projects":_nexus_news("site:afdb.org Africa project investment infrastructure",limit),"investment_news":_nexus_news("Africa FDI venture capital startup funding M&A IPO infrastructure investment",limit)}
-    if section=="opportunities":return {"ok":True,"section":"opportunities","tenders":_intel_payload("tenders",country,symbol,query,limit),"opportunities":_nexus_news("Africa government tender grant procurement investment export project expansion opportunity",limit),"jobs":_intel_jobs(limit)}
-    if section=="industry":return {"ok":True,"section":"industry","sectors":KOJA_INTEL_INDUSTRIES,"items":_nexus_news("Africa mining agriculture fintech telecom energy manufacturing construction logistics retail tourism healthcare education technology real estate",limit)}
-    if section=="alerts":return {"ok":True,"section":"alerts","price_movement":_market_analytics().get("items",[]),"announcements":_nexus_news("Africa company announcement tender investment economic indicator central bank",limit),"jobs":_intel_jobs(min(limit,15))}
-    if section=="analysis":return _intel_analysis("market",country,symbol,query)
-    return {"ok":False,"error":"Unknown intelligence section"}
-
-@app.get('/api/nexus/intelligence/<section>')
-def koja_nexus_intelligence_api(section):
-    section=clean(section).lower()
-    allowed={"business","company","economy","country","tenders","investment","opportunities","industry","market","news","alerts","analysis","jobs"}
-    if section not in allowed:return jsonify({"ok":False,"error":"Unknown intelligence section"}),404
-    try:limit=min(max(int(request.args.get('limit') or 30),1),100)
-    except:limit=30
-    country=clean(request.args.get('country')).upper();symbol=clean(request.args.get('symbol') or 'AAPL').upper();query=clean(request.args.get('q'))
-    if section=='analysis':
-        try:return jsonify(_intel_analysis("market",country,symbol,query))
-        except Exception as exc:logger.exception('NEXUS intelligence analysis failed');return jsonify({"ok":False,"error":str(exc)[:500]}),502
-    if section=='jobs': return jsonify(_intel_jobs(limit))
-    if section=='alerts':
-        return jsonify(_intel_payload("alerts",country,symbol,query,limit))
-    try:return jsonify(_intel_payload(section,country,symbol,query,limit))
-    except Exception as exc:logger.exception('NEXUS intelligence failed');return jsonify({"ok":False,"error":str(exc)[:500]}),502
-
-@app.get('/nexus/intelligence')
-def koja_nexus_intelligence_page():
-    return render_page('KOJA NEXUS Intelligence', r'''
-<style>.ni-tabs{display:flex;gap:7px;flex-wrap:wrap}.ni-tabs button{width:auto}.ni-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.ni-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px}.ni-list{max-height:430px;overflow:auto}.ni-item{padding:10px 0;border-bottom:1px solid var(--border)}.ni-muted{color:var(--muted);font-size:13px}@media(max-width:800px){.ni-grid{grid-template-columns:1fr}}</style>
-<div class="hero"><h1>KOJA NEXUS Intelligence</h1><p>Company Intelligence · African Economy · Investment Intelligence · Business Opportunities · Industry Intelligence · Market Analytics · KOJA Intelligence · Alerts</p></div>
-<div class="card"><div class="ni-tabs">{% for x in ['company','economy','investment','tenders','opportunities','industry','market','news','jobs','alerts','analysis'] %}<button type="button" onclick="loadIntel('{{x}}')">{{x.replace('_',' ').title()}}</button>{% endfor %}</div><p class="ni-muted">Source-backed data only. KOJA does not invent unavailable figures.</p></div><div id="intelOut" class="ni-grid"><div class="ni-card"><h2>Company Intelligence</h2><p>Revenue/profit where available · employees · market data · contracts and expansion announcements.</p></div><div class="ni-card"><h2>African Economy</h2><p>GDP · inflation · unemployment · public debt · trade · imports/exports · FDI · 54-country comparison.</p></div></div>
-<script>
-function esc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
-function news(a){a=a||[];return '<div class="ni-list">'+(a.length?a.map(x=>'<div class="ni-item"><b>'+esc(x.title||'Untitled')+'</b><div class="ni-muted">'+esc(x.source||'Source')+' · '+esc(x.published_at||x.deadline||'')+'</div>'+(x.url?'<a target="_blank" rel="noopener" href="'+esc(x.url)+'">Open original source</a>':'')+'</div>').join(''):'<p>No source records returned.</p>')+'</div>'}
-async function loadIntel(s){let o=document.getElementById('intelOut');o.innerHTML='<div class="ni-card"><h2>Loading…</h2></div>';try{let r=await fetch('/api/nexus/intelligence/'+s+'?limit=40',{cache:'no-store'}),d=await r.json();if(!r.ok||!d.ok)throw Error(d.error||'Feed unavailable');if(s==='company'){let c=d.company||{};o.innerHTML='<div class="ni-card"><h2>Company Intelligence</h2><p><b>'+esc(c.name||c.symbol)+'</b> · '+esc(c.exchange||'')+' · '+esc(c.sector||'')+'</p><p>Revenue: '+esc(c.revenue||'Unavailable')+' · Profit margin: '+esc(c.profit_margin||'Unavailable')+' · Employees: '+esc(c.employees||'Unavailable')+'</p><p>Market cap: '+esc(c.market_cap||'Unavailable')+' · P/E: '+esc(c.pe||'Unavailable')+' · EPS: '+esc(c.eps||'Unavailable')+'</p><p class="ni-muted">Source: '+esc(d.source)+'</p></div>'}else if(s==='economy'){o.innerHTML='<div class="ni-card"><h2>African Economy — 54 countries</h2><div class="ni-list">'+d.countries.map(x=>'<div class="ni-item"><b>'+esc(x[1])+'</b> ('+x[0]+')</div>').join('')+'</div></div><div class="ni-card"><h2>Indicators</h2><p>GDP · GDP growth · inflation · unemployment · public debt · trade · imports · exports · FDI</p><p class="ni-muted">Source: World Bank</p></div>'}else if(s==='investment'){o.innerHTML='<div class="ni-card"><h2>Investment Intelligence</h2><p>FDI plus source-attributed investment, project, VC, startup funding, M&A, IPO and infrastructure announcements.</p>'+news(d.projects&&d.projects.items)+'</div>'}else if(s==='tenders'){o.innerHTML='<div class="ni-card"><h2>World Bank Procurement</h2>'+news(d.world_bank&&d.world_bank.items)+'</div><div class="ni-card"><h2>African Development Bank Procurement</h2>'+news(d.afdb&&d.afdb.items)+'</div>'}else if(s==='opportunities'){o.innerHTML='<div class="ni-card"><h2>Business Opportunities</h2>'+news((d.tenders&&d.tenders.world_bank&&d.tenders.world_bank.items)||[]) + news((d.tenders&&d.tenders.afdb&&d.tenders.afdb.items)||[]) + news(d.opportunities&&d.opportunities.items)+'</div>'}else if(s==='industry'||s==='news'||s==='business'){o.innerHTML='<div class="ni-card"><h2>Industry Intelligence / Business News</h2>'+news(d.items)+'</div>'}else if(s==='market'){o.innerHTML='<div class="ni-card"><h2>Market Analytics</h2>'+((d.items||[]).map(x=>'<div class="ni-item"><b>'+esc(x.symbol)+'</b> '+esc(x.price)+' · '+esc(x.change_percent)+'% · '+esc(x.provider||'')+'</div>').join('')+'</div>'}else if(s==='alerts'){o.innerHTML='<div class="ni-card"><h2>Alerts & Announcements</h2>'+news(d.announcements)+(d.jobs?news(d.jobs.items):'')+'</div>'}else if(s==='jobs'){o.innerHTML='<div class="ni-card"><h2>Jobs & Opportunities</h2>'+news(d.items)+'</div>'}else if(s==='analysis'){o.innerHTML='<div class="ni-card"><h2>KOJA Intelligence</h2><p>'+esc(d.analysis||'Analysis unavailable.')+'</p></div>'}}catch(e){o.innerHTML='<div class="ni-card"><h2>Source temporarily unavailable</h2><p>'+esc(e.message)+'</p></div>'}}
-loadIntel('economy');
-</script>
-''')
+@app.route('/api/nexus/intelligence/contracts')
+def koja_nexus_intelligence_contracts():
+    try: limit=min(max(int(request.args.get('limit') or 80),1),200)
+    except Exception: limit=80
+    wb=_nexus_worldbank_contracts(limit); afdb=_nexus_afdb_contracts(limit)
+    items=(wb.get('items') or [])+(afdb.get('items') or [])
+    items.sort(key=lambda x:x.get('publication_date') or '',reverse=True)
+    return jsonify({'ok':bool(items),'section':'contracts','items':items[:limit*2],
+                    'world_bank':wb,'afdb':afdb,'updated_at':time.time(),'cache_ttl_seconds':KOJA_NEXUS_PROC_TTL})
 
 if __name__=="__main__":
     port=int(os.getenv("PORT","5000"))
@@ -13164,42 +13233,15 @@ _start_africa_now_worker()
 # ============================================================
 KOJA_MARKET_CACHE_TTL = max(10, int(os.getenv("KOJA_MARKET_CACHE_TTL", "30")))
 KOJA_MARKET_TIMEOUT = max(3, min(int(os.getenv("KOJA_MARKET_TIMEOUT", "8")), 20))
-KOJA_MARKET_429_COOLDOWN = max(300, int(os.getenv("KOJA_MARKET_429_COOLDOWN", str(6 * 60 * 60))))
 KOJA_MARKET_SYMBOLS = [x.strip().upper() for x in os.getenv("KOJA_MARKET_SYMBOLS", "AAPL,MSFT,NVDA,AMZN,TSLA,GOOGL,META,ORCL,KO,SONY").split(",") if x.strip()][:30]
 ALPHAVANTAGE_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY", "").strip()
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "").strip()
 _koja_market_cache = {"quotes": {}, "updated_at": 0.0}
 _koja_fx_cache = {"rates": {}, "updated_at": 0.0}
 _koja_market_diag = {"last_error": None, "last_provider": None}
-_koja_market_provider_cooldown = {"Alpha Vantage": 0.0, "Twelve Data": 0.0}
 _koja_market_lock = threading.Lock()
 
-def _market_provider_for_url(url):
-    u=str(url or "").lower()
-    if "alphavantage.co" in u:
-        return "Alpha Vantage"
-    if "twelvedata.com" in u:
-        return "Twelve Data"
-    return None
-
-def _market_provider_ready(provider):
-    return time.time() >= float(_koja_market_provider_cooldown.get(provider, 0.0) or 0.0)
-
-def _market_reference_quote(symbol):
-    # Final non-live display fallback. Values are intentionally labelled as reference data.
-    refs={
-        "AAPL":226.47,"MSFT":510.82,"NVDA":187.62,"AMZN":225.31,"TSLA":429.19,
-        "GOOGL":245.12,"META":745.38,"ORCL":279.54,"KO":68.41,"SONY":28.73,
-    }
-    price=refs.get(clean(symbol).upper())
-    if price is None:
-        return None
-    return {"symbol":clean(symbol).upper(),"price":price,"change":None,"change_percent":None,"volume":None,"previous_close":None,"latest_trading_day":None,"provider":"KOJA Reference Fallback","freshness":"Indicative reference value; not live market data","source_url":None}
-
 def _market_http_json(url, params):
-    provider = _market_provider_for_url(url)
-    if provider and not _market_provider_ready(provider):
-        return None
     try:
         r = requests.get(url, params=params, timeout=KOJA_MARKET_TIMEOUT, headers={"User-Agent":"KOJA-AFRICA/1.0 market-data"})
         if not r.ok:
@@ -13210,11 +13252,7 @@ def _market_http_json(url, params):
             except Exception:
                 pass
             _koja_market_diag["last_error"] = msg
-            if provider and r.status_code == 429:
-                _koja_market_provider_cooldown[provider] = time.time() + KOJA_MARKET_429_COOLDOWN
-                logger.warning("Market provider %s returned 429; cooling down for %ss", provider, KOJA_MARKET_429_COOLDOWN)
-            else:
-                logger.warning("Market provider returned %s: %s", r.status_code, msg)
+            logger.warning("Market provider returned %s: %s", r.status_code, msg)
             return None
         body = r.json()
         if not isinstance(body, dict):
@@ -13278,7 +13316,7 @@ def _market_quote(symbol):
     symbol = clean(symbol).upper()
     if not symbol:
         return None
-    return _alpha_quote(symbol) or _twelve_quote(symbol) or _yahoo_quote(symbol) or _market_reference_quote(symbol)
+    return _alpha_quote(symbol) or _twelve_quote(symbol) or _yahoo_quote(symbol)
 
 def _refresh_market_quotes(symbols=None, force=False):
     symbols = list(dict.fromkeys([clean(x).upper() for x in (symbols or KOJA_MARKET_SYMBOLS) if clean(x)]))[:30]
@@ -13314,7 +13352,7 @@ def _market_panel_html():
 <section class="km-panel" id="kojaMarketData">
 <div class="km-head"><div><h2>KOJA MARKET INTELLIGENCE</h2><p>Markets · FX · commodities · bonds · economy · business · industries · opportunities · Africa</p></div><div class="km-meta" id="kmStatus">Checking market feeds…</div></div>
 <div class="km-tabs" id="kmTabs">
-<button class="km-tab active" data-view="stocks" type="button">Stocks & Indices</button><button class="km-tab" data-view="fx" type="button">Currencies & FX</button><button class="km-tab" data-view="commodities" type="button">Commodities</button><button class="km-tab" data-view="bonds" type="button">Bonds & Rates</button><button class="km-tab" data-view="economy" type="button">Africa Economy</button><button class="km-tab" data-view="business" type="button">Business</button><button class="km-tab" data-view="industries" type="button">Industries</button><button class="km-tab" data-view="tenders" type="button">Tenders</button><button class="km-tab" data-view="news" type="button">Business News</button><button class="km-tab" data-view="opportunities" type="button">Opportunities</button><button class="km-tab" data-view="company" type="button">Company Intelligence</button><button class="km-tab" data-view="investment" type="button">Investment</button><button class="km-tab" data-view="analytics" type="button">Analytics & Alerts</button></div>
+<button class="km-tab active" data-view="stocks" type="button">Stocks & Indices</button><button class="km-tab" data-view="fx" type="button">Currencies & FX</button><button class="km-tab" data-view="commodities" type="button">Commodities</button><button class="km-tab" data-view="bonds" type="button">Bonds & Rates</button><button class="km-tab" data-view="economy" type="button">Africa Economy</button><button class="km-tab" data-view="business" type="button">Business</button><button class="km-tab" data-view="industries" type="button">Industries</button><button class="km-tab" data-view="opportunities" type="button">Opportunities</button><button class="km-tab" data-view="company" type="button">Company Intelligence</button><button class="km-tab" data-view="investment" type="button">Investment</button><button class="km-tab" data-view="analytics" type="button">Analytics & Alerts</button></div>
 <div id="kmStocksView">
 <div class="km-grid" id="kmGrid"><div class="km-empty">Loading market prices…</div></div>
 <div class="km-tools"><label style="font-size:11px;color:rgba(255,255,255,.65)">Chart</label><select id="kmChartSymbol"><option>AAPL</option><option>MSFT</option><option>NVDA</option><option>AMZN</option><option>TSLA</option><option>GOOGL</option><option>META</option><option>ORCL</option><option>KO</option><option>SONY</option></select><select id="kmChartInterval"><option value="1day">Daily</option><option value="1week">Weekly</option><option value="1month">Monthly</option></select></div>
@@ -13326,7 +13364,7 @@ def _market_panel_html():
 <div id="kmEconomyView" style="display:none"><div class="km-section-title">African macroeconomic intelligence</div><div class="km-country-tools"><select id="kmCountry"><option value="DZ">Algeria</option><option value="AO">Angola</option><option value="BJ">Benin</option><option value="BW">Botswana</option><option value="BF">Burkina Faso</option><option value="BI">Burundi</option><option value="CV">Cabo Verde</option><option value="CM">Cameroon</option><option value="CF">Central African Republic</option><option value="TD">Chad</option><option value="KM">Comoros</option><option value="CG">Republic of the Congo</option><option value="CI">Côte d'Ivoire</option><option value="CD">Democratic Republic of the Congo</option><option value="DJ">Djibouti</option><option value="EG">Egypt</option><option value="GQ">Equatorial Guinea</option><option value="ER">Eritrea</option><option value="SZ">Eswatini</option><option value="ET">Ethiopia</option><option value="GA">Gabon</option><option value="GM">The Gambia</option><option value="GH">Ghana</option><option value="GN">Guinea</option><option value="GW">Guinea-Bissau</option><option value="KE">Kenya</option><option value="LS">Lesotho</option><option value="LR">Liberia</option><option value="LY">Libya</option><option value="MG">Madagascar</option><option value="MW">Malawi</option><option value="ML">Mali</option><option value="MR">Mauritania</option><option value="MU">Mauritius</option><option value="MA">Morocco</option><option value="MZ">Mozambique</option><option value="NA">Namibia</option><option value="NE">Niger</option><option value="NG">Nigeria</option><option value="RW">Rwanda</option><option value="ST">São Tomé and Príncipe</option><option value="SN">Senegal</option><option value="SC">Seychelles</option><option value="SL">Sierra Leone</option><option value="SO">Somalia</option><option value="ZA">South Africa</option><option value="SS">South Sudan</option><option value="SD">Sudan</option><option value="TZ">Tanzania</option><option value="TG">Togo</option><option value="TN">Tunisia</option><option value="UG">Uganda</option><option value="ZM">Zambia</option><option value="ZW">Zimbabwe</option></select><span id="kmEconomyMeta" class="km-muted">World Bank indicators</span></div><div class="km-intel-grid" id="kmEconomyGrid"><div class="km-empty">Loading economy indicators…</div></div></div>
 <div id="kmBusinessView" style="display:none"><div class="km-section-title">Business intelligence</div><div class="km-intel-grid" id="kmBusinessGrid"></div></div>
 <div id="kmIndustriesView" style="display:none"><div class="km-section-title">African industry intelligence</div><div class="km-intel-grid" id="kmIndustriesGrid"></div></div>
-<div id="kmTendersView" style="display:none"><div class="km-section-title">Live procurement and tender intelligence</div><div class="km-intel-grid" id="kmTendersGrid"><div class="km-empty">Loading tender notices…</div></div></div><div id="kmNewsView" style="display:none"><div class="km-section-title">Business and economic news from external sources</div><div class="km-intel-grid" id="kmNewsGrid"><div class="km-empty">Loading business news…</div></div></div><div id="kmOpportunitiesView" style="display:none"><div class="km-section-title">Business and investment opportunity intelligence</div><div class="km-intel-grid" id="kmOpportunitiesGrid"></div></div>
+<div id="kmOpportunitiesView" style="display:none"><div class="km-section-title">Business and investment opportunity intelligence</div><div class="km-intel-grid" id="kmOpportunitiesGrid"></div></div>
 <div id="kmCompanyView" style="display:none"><div class="km-section-title">Company intelligence</div><div class="km-tools"><input id="kmCompanySymbol" value="AAPL" maxlength="20" placeholder="Ticker, e.g. AAPL" style="background:#071525;color:#fff;border:1px solid rgba(255,255,255,.16);border-radius:9px;padding:9px 11px;font-size:11px;max-width:180px;text-transform:uppercase"><button id="kmCompanyLoad" class="km-tab active" type="button">Analyse company</button></div><div class="km-intel-grid" id="kmCompanyGrid"><div class="km-empty">Enter a listed company ticker to load public company intelligence.</div></div></div>
 <div id="kmInvestmentView" style="display:none"><div class="km-section-title">Investment, funding and corporate activity</div><div class="km-intel-grid" id="kmInvestmentGrid"><div class="km-empty">Loading investment intelligence…</div></div></div>
 <div id="kmAnalyticsView" style="display:none"><div class="km-section-title">Market analytics</div><div class="km-intel-grid" id="kmAnalyticsGrid"><div class="km-empty">Loading analytics…</div></div><div class="km-section-title">Personal market alerts</div><div class="km-tools"><input id="kmAlertSymbol" value="AAPL" maxlength="20" placeholder="Symbol" style="background:#071525;color:#fff;border:1px solid rgba(255,255,255,.16);border-radius:9px;padding:9px 11px;font-size:11px;max-width:120px;text-transform:uppercase"><input id="kmAlertTarget" type="number" step="any" placeholder="Target price" style="background:#071525;color:#fff;border:1px solid rgba(255,255,255,.16);border-radius:9px;padding:9px 11px;font-size:11px;max-width:140px"><button id="kmAlertAdd" class="km-tab active" type="button">Add alert</button></div><div class="km-intel-grid" id="kmAlertsGrid"></div></div>
@@ -13335,13 +13373,13 @@ def _market_panel_html():
 <script>
 (function(){
 const grid=document.getElementById('kmGrid'),status=document.getElementById('kmStatus'),chart=document.getElementById('kmChart'),chartSymbol=document.getElementById('kmChartSymbol'),chartInterval=document.getElementById('kmChartInterval');
-const views=['stocks','fx','commodities','bonds','economy','business','industries','tenders','news','opportunities','company','investment','analytics'];
+const views=['stocks','fx','commodities','bonds','economy','business','industries','opportunities','company','investment','analytics'];
 function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function n(v){const x=Number(v);return Number.isFinite(x)?x.toLocaleString(undefined,{maximumFractionDigits:4}):'—';}
-function show(view){views.forEach(v=>{const el=document.getElementById('km'+v[0].toUpperCase()+v.slice(1)+'View');if(el)el.style.display=v===view?'block':'none';});document.querySelectorAll('#kmTabs .km-tab').forEach(b=>b.classList.toggle('active',b.dataset.view===view));if(view==='fx')loadFx();if(view==='commodities')loadAssets('commodities');if(view==='bonds')loadAssets('bonds');if(view==='economy')loadEconomy();if(view==='business')loadBusiness();if(view==='industries')loadIndustries();if(view==='tenders')loadTenders();if(view==='news')loadNews();if(view==='opportunities')loadOpportunities();if(view==='company')loadCompany();if(view==='investment')loadInvestment();if(view==='analytics'){loadAnalytics();renderAlerts();}}
+function show(view){views.forEach(v=>{const el=document.getElementById('km'+v[0].toUpperCase()+v.slice(1)+'View');if(el)el.style.display=v===view?'block':'none';});document.querySelectorAll('#kmTabs .km-tab').forEach(b=>b.classList.toggle('active',b.dataset.view===view));if(view==='fx')loadFx();if(view==='commodities')loadAssets('commodities');if(view==='bonds')loadAssets('bonds');if(view==='economy')loadEconomy();if(view==='business')loadBusiness();if(view==='industries')loadIndustries();if(view==='opportunities')loadOpportunities();if(view==='company')loadCompany();if(view==='investment')loadInvestment();if(view==='analytics'){loadAnalytics();renderAlerts();}}
 document.querySelectorAll('#kmTabs .km-tab').forEach(b=>b.addEventListener('click',()=>show(b.dataset.view)));
 function card(x){const ch=Number(x.change_percent);const cls=Number.isFinite(ch)?(ch>=0?'km-up':'km-down'):'';return '<div class="km-card"><strong>'+esc(x.symbol)+'</strong><div class="km-price">'+n(x.price)+'</div><div class="km-change '+cls+'">'+(Number.isFinite(ch)?(ch>=0?'+':'')+ch.toFixed(2)+'%':'No change data')+'</div><div class="km-muted">'+esc(x.provider||'Market feed')+' · '+esc(x.freshness||'')+'</div></div>';}
-async function loadStocks(){try{const r=await fetch('/api/markets/quotes',{cache:'no-store'}),d=await r.json(),rows=d.quotes||[];grid.innerHTML=rows.length?rows.map(card).join(''):'<div class="km-empty">Reference market data is temporarily unavailable.</div>';status.textContent=rows.length?'MARKET DATA · '+(rows.some(x=>String(x.provider||'').includes('Fallback'))?'FALLBACK':'ONLINE')+' · '+new Date((d.updated_at||Date.now()/1000)*1000).toLocaleTimeString():'Market data temporarily unavailable';checkAlerts(rows);}catch(e){status.textContent='Market data temporarily unavailable';}}
+async function loadStocks(){try{const r=await fetch('/api/markets/quotes',{cache:'no-store'}),d=await r.json(),rows=d.quotes||[];grid.innerHTML=rows.length?rows.map(card).join(''):'<div class="km-empty">No market prices are currently available.</div>';status.textContent=rows.length?'MARKET DATA ONLINE · '+new Date((d.updated_at||Date.now()/1000)*1000).toLocaleTimeString():'Market feeds waiting for data';}catch(e){status.textContent='Market data temporarily unavailable';}}
 function drawChart(vals,symbol){if(!chart)return;if(!vals.length){chart.innerHTML='<div class="km-chart-empty">Chart temporarily unavailable.</div>';return;}const w=900,h=220,p=20,ys=vals.map(x=>Number(x.close)).filter(Number.isFinite),min=Math.min(...ys),max=Math.max(...ys),span=max-min||1;const pts=ys.map((y,i)=>{const x=p+(i*Math.max(1,w-2*p)/(ys.length-1||1));const yy=h-p-((y-min)/span)*(h-2*p);return [x,yy];});const poly=pts.map(a=>a.join(',')).join(' ');chart.innerHTML='<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none"><polyline points="'+poly+'" fill="none" stroke="currentColor" stroke-width="3" vector-effect="non-scaling-stroke"></polyline></svg>';document.getElementById('kmChartTitle').textContent=symbol+' · PRICE HISTORY';document.getElementById('kmChartMeta').textContent=vals.length+' points';}
 async function loadChart(){try{const s=chartSymbol.value,i=chartInterval.value,r=await fetch('/api/markets/chart?symbol='+encodeURIComponent(s)+'&interval='+encodeURIComponent(i)+'&outputsize=30',{cache:'no-store'}),d=await r.json();drawChart(d.values||[],s);}catch(e){chart.innerHTML='<div class="km-chart-empty">Chart temporarily unavailable.</div>';}}
 async function loadFx(){try{const r=await fetch('/api/markets/fx',{cache:'no-store'}),d=await r.json(),rows=d.rates||[];document.getElementById('kmFxGrid').innerHTML=rows.length?rows.map(x=>'<div class="km-fx-card"><div class="km-fx-pair">'+esc(x.symbol)+'</div><div class="km-fx-rate">'+n(x.rate)+'</div><div class="km-fx-name">'+esc(x.base_name||'')+' → '+esc(x.quote_name||'')+'<br>'+esc(x.provider||'')+'</div></div>').join(''):'<div class="km-empty">Currency data temporarily unavailable.</div>';}catch(e){}}
@@ -13349,20 +13387,19 @@ async function loadAssets(type){const el=document.getElementById(type==='commodi
 async function loadEconomy(){const c=document.getElementById('kmCountry').value,el=document.getElementById('kmEconomyGrid');try{const r=await fetch('/api/markets/economy?country='+encodeURIComponent(c),{cache:'no-store'}),d=await r.json();document.getElementById('kmEconomyMeta').textContent=(d.country_name||c)+' · World Bank';el.innerHTML=(d.indicators||[]).map(x=>'<div class="km-intel-card"><strong>'+esc(x.name)+'</strong><p>'+esc(x.value_text||'Not available')+'</p><span class="km-badge">'+esc(x.year||'latest')+'</span></div>').join('')||'<div class="km-empty">No macroeconomic data returned.</div>';}catch(e){el.innerHTML='<div class="km-empty">Economy data temporarily unavailable.</div>';}}
 async function loadBusiness(){const el=document.getElementById('kmBusinessGrid');try{const r=await fetch('/api/markets/business',{cache:'no-store'}),d=await r.json();el.innerHTML=(d.items||[]).map(x=>'<div class="km-intel-card"><strong>'+esc(x.name)+'</strong><p>'+esc(x.description)+'</p><span class="km-badge">'+esc(x.focus)+'</span></div>').join('');}catch(e){}}
 async function loadIndustries(){const el=document.getElementById('kmIndustriesGrid');try{const r=await fetch('/api/markets/industries',{cache:'no-store'}),d=await r.json();el.innerHTML=(d.items||[]).map(x=>'<div class="km-intel-card"><strong>'+esc(x.name)+'</strong><p>'+esc(x.description)+'</p><span class="km-badge">'+esc(x.signal)+'</span></div>').join('');}catch(e){}}
-async function loadTenders(){const el=document.getElementById('kmTendersGrid');try{const r=await fetch('/api/markets/tenders',{cache:'no-store'}),d=await r.json();el.innerHTML=(d.items||[]).map(x=>'<div class="km-intel-card"><strong>'+esc(x.title||'Tender notice')+'</strong><p>'+esc(x.summary||'')+'</p><span class="km-badge">'+esc(x.country||'Africa')+' · '+esc(x.type||'Tender')+' · '+esc(x.source||'Official source')+'</span>'+(x.url?'<p><a href="'+esc(x.url)+'" target="_blank" rel="noopener noreferrer" style="color:#b9dcff">Open original notice →</a></p>':'')+'</div>').join('')||'<div class="km-empty">No live tender notices are currently available.</div>';}catch(e){el.innerHTML='<div class="km-empty">Tender data temporarily unavailable.</div>';}}
-async function loadNews(){const el=document.getElementById('kmNewsGrid');try{const r=await fetch('/api/markets/news',{cache:'no-store'}),d=await r.json();el.innerHTML=(d.items||[]).map(x=>'<div class="km-intel-card"><strong>'+esc(x.title||'Business news')+'</strong><p>'+esc(x.summary||'')+'</p><span class="km-badge">'+esc(x.country||'Africa')+' · '+esc(x.source||'External source')+'</span>'+(x.url?'<p><a href="'+esc(x.url)+'" target="_blank" rel="noopener noreferrer" style="color:#b9dcff">Read original →</a></p>':'')+'</div>').join('')||'<div class="km-empty">No current business news is available.</div>';}catch(e){el.innerHTML='<div class="km-empty">Business news temporarily unavailable.</div>';}}
-async function loadOpportunities(){const el=document.getElementById('kmOpportunitiesGrid');try{const r=await fetch('/api/markets/opportunities',{cache:'no-store'}),d=await r.json();el.innerHTML=(d.items||[]).map(x=>'<div class="km-intel-card"><strong>'+esc(x.name||x.title||'Opportunity')+'</strong><p>'+esc(x.description||x.summary||'')+'</p><span class="km-badge">'+esc(x.type||'Opportunity')+' · '+esc(x.country||'Africa')+'</span>'+(x.url?'<p><a href="'+esc(x.url)+'" target="_blank" rel="noopener noreferrer" style="color:#b9dcff">Open original →</a></p>':'')+'</div>').join('');}catch(e){}}
+async function loadOpportunities(){const el=document.getElementById('kmOpportunitiesGrid');try{const r=await fetch('/api/markets/opportunities',{cache:'no-store'}),d=await r.json();el.innerHTML=(d.items||[]).map(x=>'<div class="km-intel-card"><strong>'+esc(x.name)+'</strong><p>'+esc(x.description)+'</p><span class="km-badge">'+esc(x.type)+'</span></div>').join('');}catch(e){}}
 async function loadCompany(){const el=document.getElementById('kmCompanyGrid'),sym=(document.getElementById('kmCompanySymbol').value||'AAPL').trim().toUpperCase();if(!sym)return;el.innerHTML='<div class="km-empty">Loading company intelligence…</div>';try{const r=await fetch('/api/markets/company?symbol='+encodeURIComponent(sym),{cache:'no-store'}),d=await r.json();if(d.error){el.innerHTML='<div class="km-empty">'+esc(d.error)+'</div>';return;}const q=d.quote||{};const o=d.overview||{};el.innerHTML='<div class="km-intel-card"><strong>'+esc(o.Name||sym)+'</strong><p>'+esc(o.Description||'Public company profile and market data.')+'</p><span class="km-badge">'+esc(o.Sector||'Sector unavailable')+'</span></div><div class="km-intel-card"><strong>Market value</strong><p>'+esc(o.MarketCapitalization||'Not available')+'</p><span class="km-badge">Market cap</span></div><div class="km-intel-card"><strong>Valuation</strong><p>P/E '+esc(o.PERatio||'—')+' · EPS '+esc(o.EPS||'—')</p><span class="km-badge">Fundamentals</span></div><div class="km-intel-card"><strong>Current price</strong><p>'+n(q.price)+' · '+(Number.isFinite(Number(q.change_percent))?(Number(q.change_percent)>=0?'+':'')+Number(q.change_percent).toFixed(2)+'%':'No change data')+'</p><span class="km-badge">'+esc(q.provider||'Market feed')+'</span></div>'; }catch(e){el.innerHTML='<div class="km-empty">Company intelligence temporarily unavailable.</div>';}}
 async function loadInvestment(){const el=document.getElementById('kmInvestmentGrid');try{const r=await fetch('/api/markets/investment',{cache:'no-store'}),d=await r.json();el.innerHTML=(d.items||[]).map(x=>'<div class="km-intel-card"><strong>'+esc(x.title)+'</strong><p>'+esc(x.summary||'')+'</p><span class="km-badge">'+esc(x.type||'Investment')+' · '+esc(x.country||'Africa')+'</span></div>').join('')||'<div class="km-empty">No recent investment intelligence is available.</div>';}catch(e){el.innerHTML='<div class="km-empty">Investment intelligence temporarily unavailable.</div>';}}
 async function loadAnalytics(){const el=document.getElementById('kmAnalyticsGrid');try{const r=await fetch('/api/markets/analytics',{cache:'no-store'}),d=await r.json();el.innerHTML=(d.items||[]).map(x=>'<div class="km-intel-card"><strong>'+esc(x.name)+'</strong><p>'+esc(x.value)+'</p><span class="km-badge">'+esc(x.type||'Analytics')+'</span></div>').join('')||'<div class="km-empty">No analytics available.</div>';}catch(e){el.innerHTML='<div class="km-empty">Analytics temporarily unavailable.</div>';}}
 function getAlerts(){try{return JSON.parse(localStorage.getItem('kojaMarketAlerts')||'[]')}catch(e){return[]}}
 function renderAlerts(){const el=document.getElementById('kmAlertsGrid');if(!el)return;const a=getAlerts();el.innerHTML=a.length?a.map((x,i)=>'<div class="km-intel-card"><strong>'+esc(x.symbol)+' ≥ '+n(x.target)+'</strong><p>Browser alert · checks with KOJA market refresh</p><button type="button" data-del-alert="'+i+'" class="km-tab">Remove</button></div>').join(''):'<div class="km-empty">No personal price alerts saved on this device.</div>';el.querySelectorAll('[data-del-alert]').forEach(b=>b.onclick=()=>{const a=getAlerts();a.splice(Number(b.dataset.delAlert),1);localStorage.setItem('kojaMarketAlerts',JSON.stringify(a));renderAlerts();});}
 function checkAlerts(rows){const a=getAlerts();if(!a.length)return;a.forEach(x=>{const q=rows.find(r=>String(r.symbol).toUpperCase()===String(x.symbol).toUpperCase());if(q&&Number(q.price)>=Number(x.target)){if('Notification' in window&&Notification.permission==='granted')new Notification('KOJA Market Alert',{body:x.symbol+' reached '+n(q.price)});x.triggered=true;}});localStorage.setItem('kojaMarketAlerts',JSON.stringify(a));}
+const oldLoadStocks=loadStocks;loadStocks=async function(){await oldLoadStocks();try{const r=await fetch('/api/markets/quotes',{cache:'no-store'}),d=await r.json();checkAlerts(d.quotes||[]);}catch(e){}}
 if(document.getElementById('kmCompanyLoad'))document.getElementById('kmCompanyLoad').onclick=loadCompany;
 if(document.getElementById('kmAlertAdd'))document.getElementById('kmAlertAdd').onclick=()=>{const symbol=(document.getElementById('kmAlertSymbol').value||'').trim().toUpperCase(),target=Number(document.getElementById('kmAlertTarget').value);if(!symbol||!Number.isFinite(target))return;const a=getAlerts();a.push({symbol,target,created_at:Date.now()});localStorage.setItem('kojaMarketAlerts',JSON.stringify(a));renderAlerts();if('Notification' in window&&Notification.permission==='default')Notification.requestPermission().catch(()=>{});};
 
 chartSymbol.addEventListener('change',loadChart);chartInterval.addEventListener('change',loadChart);document.getElementById('kmCountry').addEventListener('change',loadEconomy);
-loadStocks();loadChart();renderAlerts();setInterval(loadStocks,30000);setInterval(()=>{const active=document.querySelector('#kmTabs .km-tab.active')?.dataset.view;if(active==='fx')loadFx();else if(active==='commodities')loadAssets('commodities');else if(active==='bonds')loadAssets('bonds');else if(active==='economy')loadEconomy();else if(active==='business')loadBusiness();else if(active==='industries')loadIndustries();else if(active==='tenders')loadTenders();else if(active==='news')loadNews();else if(active==='opportunities')loadOpportunities();else if(active==='investment')loadInvestment();else if(active==='analytics')loadAnalytics();else if(active==='company')loadCompany();else loadStocks();},30000);
+loadStocks();loadChart();renderAlerts();setInterval(loadStocks,30000);setInterval(()=>{const active=document.querySelector('#kmTabs .km-tab.active')?.dataset.view;if(active==='fx')loadFx();else if(active==='commodities')loadAssets('commodities');else if(active==='bonds')loadAssets('bonds');else if(active==='economy')loadEconomy();else if(active==='business')loadBusiness();else if(active==='industries')loadIndustries();else if(active==='opportunities')loadOpportunities();else if(active==='investment')loadInvestment();else if(active==='analytics')loadAnalytics();else if(active==='company')loadCompany();else loadStocks();},30000);
 })();
 </script>
 """
@@ -13374,7 +13411,7 @@ def koja_market_quotes_api():
     symbols=[x.strip().upper() for x in raw.split(',') if x.strip()] if raw else KOJA_MARKET_SYMBOLS
     symbols=list(dict.fromkeys(symbols))[:30]
     quotes,updated_at=_refresh_market_quotes(symbols)
-    return jsonify({'provider_order':['Alpha Vantage','Twelve Data','Public market fallback','KOJA Reference Fallback'],'quotes':[quotes[s] for s in symbols if s in quotes],'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'configured':bool(ALPHAVANTAGE_API_KEY or TWELVEDATA_API_KEY)})
+    return jsonify({'provider_order':['Alpha Vantage','Twelve Data','Public market fallback'],'quotes':[quotes[s] for s in symbols if s in quotes],'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'configured':bool(ALPHAVANTAGE_API_KEY or TWELVEDATA_API_KEY)})
 
 @app.route('/api/markets/status')
 def koja_market_status_api():
@@ -13747,48 +13784,6 @@ def _worldbank_live_projects(limit=25):
         return []
 
 
-def _worldbank_live_tenders(limit=30, africa_only=True):
-    """Fetch live World Bank procurement notices from the official API."""
-    url="https://search.worldbank.org/api/procnotices"
-    params={"format":"json","fl":"id,submission_deadline_date,project_ctry_name,project_id,project_name,bid_description,notice_type,publication_date,url","srt":"publication_date","order":"desc","os":0,"rows":min(max(limit*3,20),100),"srce":"both","notice_type_exact":"Invitation for Bids^Invitation for Prequalification^Request for Expression of Interest"}
-    if africa_only: params["regionname_exact"]="Eastern and Southern Africa^Western and Central Africa^Middle East and North Africa"
-    r=_live_source_get(url,params=params,timeout=KOJA_MARKET_TIMEOUT)
-    if not r: return []
-    try:
-        data=r.json(); docs=data.get("response",{}).get("docs",[]) if isinstance(data,dict) else []; out=[]
-        for x in docs:
-            if not isinstance(x,dict): continue
-            title=clean(x.get("bid_description") or x.get("project_name") or "World Bank procurement notice")
-            if not title: continue
-            href=clean(x.get("url") or ""); pid=clean(x.get("id") or x.get("project_id") or "")
-            if not href and pid: href="https://projects.worldbank.org/en/projects-operations/procurement-detail?id="+quote_plus(pid)
-            out.append({"title":title[:240],"summary":"Official World Bank procurement notice for a financed project.","country":clean(x.get("project_ctry_name") or "Africa"),"type":clean(x.get("notice_type") or "Procurement notice"),"url":href,"source":"World Bank","source_url":href,"published_at":x.get("publication_date"),"deadline":x.get("submission_deadline_date"),"project_id":x.get("project_id")})
-            if len(out)>=limit: break
-        return out
-    except Exception as exc:
-        logger.warning("World Bank procurement parser failed: %s",exc); return []
-
-def _afdb_current_solicitations(limit=30):
-    """Read current AfDB solicitations from the official procurement page."""
-    url="https://www.afdb.org/en/about-us/corporate-procurement/procurement-notices/current-solicitations"
-    r=_live_source_get(url,timeout=KOJA_MARKET_TIMEOUT)
-    if not r: return []
-    try:
-        from bs4 import BeautifulSoup
-        soup=BeautifulSoup(r.text,"html.parser"); out=[]; seen=set()
-        for a in soup.find_all("a",href=True):
-            title=" ".join(a.get_text(" ",strip=True).split()); href=a.get("href") or ""
-            if len(title)<12: continue
-            if href.startswith("/"): href="https://www.afdb.org"+href
-            if not href.startswith("http") or href in seen: continue
-            parent=" ".join(a.parent.get_text(" ",strip=True).split()) if a.parent else ""; blob=(title+" "+parent).lower()
-            if not any(k in blob for k in ("request for proposal","invitation to bid","demande de propositions","appel d'offres","supply,","works","services")): continue
-            seen.add(href); out.append({"title":title[:240],"summary":"Current solicitation published by the African Development Bank.","country":"Africa","type":"AfDB current solicitation","url":href,"source":"African Development Bank","source_url":href})
-            if len(out)>=limit: break
-        return out
-    except Exception as exc:
-        logger.warning("AfDB current solicitation parser failed: %s",exc); return []
-
 def _live_africa_business_rows(limit=30):
     """Reuse the already-ingested AFRICA NOW source layer for current business/company news."""
     try:
@@ -13843,21 +13838,6 @@ def _refresh_live_business_sources(force=False):
     return unique
 
 
-@app.route('/api/markets/tenders')
-def koja_market_tenders_api():
-    wb=_worldbank_live_tenders(24,True); afdb=_afdb_current_solicitations(24); items=[]; seen=set()
-    for x in wb+afdb:
-        key=clean(x.get('url') or x.get('title')).lower()
-        if key and key in seen: continue
-        if key: seen.add(key)
-        items.append(x)
-    return jsonify({'items':items[:60],'updated_at':time.time(),'sources':['World Bank Procurement Notices API','African Development Bank Current Solicitations'],'live_count':len(items)})
-
-@app.route('/api/markets/news')
-def koja_market_news_api():
-    items=_live_africa_business_rows(40)
-    return jsonify({'items':items,'updated_at':time.time(),'sources':['AFRICA NOW external source intelligence'],'live_count':len(items)})
-
 @app.route('/api/markets/business')
 def koja_market_business_api():
     live = _refresh_live_business_sources()
@@ -13906,7 +13886,7 @@ def koja_market_company_api():
     q=_market_quote(symbol)
     if not overview and not q:
         return jsonify({'error':'No public company data was found for '+symbol+'.'}),404
-    return jsonify({'symbol':symbol,'overview':overview,'quote':q,'updated_at':time.time(),'source':'Alpha Vantage / public market fallback','source_url':'https://www.alphavantage.co/'})
+    return jsonify({'symbol':symbol,'overview':overview,'quote':q,'updated_at':time.time(),'source':'Alpha Vantage / public market fallback'})
 
 
 def _market_intelligence_rows(limit=30, mode='investment'):
