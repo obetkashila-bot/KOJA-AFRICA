@@ -12125,13 +12125,24 @@ KOJA_NEXUS_AFRICA_NOW_INTERVAL = max(60, int(os.getenv("KOJA_NEXUS_AFRICA_NOW_IN
 KOJA_NEXUS_AFRICA_NOW_ENABLED = os.getenv("KOJA_NEXUS_AFRICA_NOW_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
 
 _KOJA_AFRICA_NOW_FEEDS = [
+    # Direct publisher feeds first: these provide a more stable primary stream.
+    ("Africanews", "https://www.africanews.com/feed/"),
+    ("BBC Africa", "https://feeds.bbci.co.uk/news/world/africa/rss.xml"),
+    ("Al Jazeera", "https://www.aljazeera.com/xml/rss/all.xml"),
+    # Broad discovery feeds provide redundancy when a direct feed is unavailable.
     ("Africa Breaking", "https://news.google.com/rss/search?q=Africa+breaking+news&hl=en&gl=US&ceid=US:en"),
     ("Africa Latest", "https://news.google.com/rss/search?q=Africa+latest+news&hl=en&gl=US&ceid=US:en"),
     ("Africa Politics", "https://news.google.com/rss/search?q=Africa+politics+government&hl=en&gl=US&ceid=US:en"),
     ("Africa Business", "https://news.google.com/rss/search?q=Africa+business+economy&hl=en&gl=US&ceid=US:en"),
-    ("Africa Health", "https://news.google.com/rss/search?q=Africa+health outbreak&hl=en&gl=US&ceid=US:en"),
+    ("Africa Health", "https://news.google.com/rss/search?q=Africa+health+outbreak&hl=en&gl=US&ceid=US:en"),
     ("Africa Sports", "https://news.google.com/rss/search?q=Africa+sports&hl=en&gl=US&ceid=US:en"),
     ("Africa Technology", "https://news.google.com/rss/search?q=Africa+technology+innovation&hl=en&gl=US&ceid=US:en"),
+]
+
+KOJA_NEXUS_AFRICA_NOW_SOURCE_PAGES = [
+    ("Africanews Live", "https://www.africanews.com/"),
+    ("BBC Africa", "https://www.bbc.com/news/world/africa"),
+    ("Al Jazeera Africa", "https://www.aljazeera.com/africa/"),
 ]
 
 _AFRICA_COUNTRY_NAMES = [
@@ -12268,14 +12279,14 @@ def koja_nexus_africa_now_api():
     except Exception: limit=12
     rows=db_select("koja_nexus_africa_now",order="score.desc,published_at.desc",limit=limit) or []
     rows=[r for r in rows if r.get("is_active") is not False]
-    return jsonify({"ok":True,"version":KOJA_NEXUS_AFRICA_NOW_VERSION,"refresh_interval_seconds":KOJA_NEXUS_AFRICA_NOW_INTERVAL,"updated_at":(rows[0].get("fetched_at") if rows else None),"items":rows,"count":len(rows)})
+    return jsonify({"ok":True,"version":KOJA_NEXUS_AFRICA_NOW_VERSION,"refresh_interval_seconds":KOJA_NEXUS_AFRICA_NOW_INTERVAL,"updated_at":(rows[0].get("fetched_at") if rows else None),"items":rows,"count":len(rows),"sources":[{"name":n,"url":u} for n,u in KOJA_NEXUS_AFRICA_NOW_SOURCE_PAGES]})
 
 def _africa_now_panel_html():
     return r"""
 <section class="anx-panel" id="kojaAfricaNow" aria-label="Africa Now">
 <div class="anx-head"><div><span class="anx-live-dot"></span><strong>AFRICA NOW</strong><span class="anx-sub">TOP THINGS HAPPENING ACROSS AFRICA</span></div><div class="anx-updated" id="anxUpdated">Updating automatically…</div></div>
 <div class="anx-screen"><div class="anx-main" id="anxMain"><div class="anx-placeholder"><strong>Loading Africa Now</strong><span>KOJA is collecting the latest African stories.</span></div></div><div class="anx-side" id="anxSide"></div></div>
-<div class="anx-foot"><span>Automatic refresh every 5 minutes</span><a href="{{ url_for('koja_nexus_africa_now_api') }}" target="_blank" rel="noopener">Live feed</a></div>
+<div class="anx-foot"><span>Automatic refresh every 5 minutes · multiple African news sources</span><a href="{{ url_for('koja_nexus_africa_now_api') }}" target="_blank" rel="noopener">Live feed</a></div>
 </section>
 <style>
 .anx-panel{margin:0 0 20px;border-radius:22px;overflow:hidden;background:#07111e;color:#fff;box-shadow:0 18px 50px rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.10)}.anx-head{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:13px 16px;background:#0d2036;border-bottom:1px solid rgba(255,255,255,.09);font-size:13px}.anx-sub{margin-left:9px;color:#8fa4ba;font-size:10px;letter-spacing:.08em}.anx-live-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#e11d48;margin-right:7px;box-shadow:0 0 0 4px rgba(225,29,72,.13)}.anx-updated{font-size:10px;color:#91a4b8}.anx-screen{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(260px,.75fr);min-height:330px}.anx-main{position:relative;min-height:330px;background:#02070d;overflow:hidden}.anx-main img,.anx-main video{width:100%;height:100%;min-height:330px;object-fit:cover;display:block;opacity:.82}.anx-overlay{position:absolute;inset:auto 0 0;padding:22px;background:linear-gradient(transparent,rgba(0,0,0,.94));padding-top:90px}.anx-kicker{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:#55b8d2;font-weight:800}.anx-title{font-size:clamp(20px,3vw,34px);line-height:1.18;margin:6px 0}.anx-summary{font-size:12px;color:#c4cfdb;max-width:850px}.anx-open{display:inline-block;margin-top:10px;background:#176b87;color:#fff;text-decoration:none;padding:8px 11px;border-radius:8px;font-size:11px;font-weight:800}.anx-side{padding:11px;background:#0a1522;display:flex;flex-direction:column;gap:8px;overflow:auto}.anx-card{display:block;text-decoration:none;color:#fff;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:10px}.anx-card-top{font-size:9px;color:#69bdd3;text-transform:uppercase;font-weight:800}.anx-card-title{font-size:12px;line-height:1.35;margin-top:4px}.anx-card-meta{font-size:9px;color:#8395a8;margin-top:5px}.anx-placeholder{height:100%;min-height:330px;display:grid;place-content:center;text-align:center;gap:7px;color:#b8c5d3}.anx-placeholder span{font-size:11px;color:#74879b}.anx-foot{display:flex;justify-content:space-between;gap:10px;padding:9px 14px;background:#06101b;color:#71869b;font-size:10px}.anx-foot a{color:#79bfd3;text-decoration:none}@media(max-width:760px){.anx-head{align-items:flex-start}.anx-sub{display:block;margin:3px 0 0 15px}.anx-screen{grid-template-columns:1fr}.anx-main,.anx-placeholder{min-height:280px}.anx-main img,.anx-main video{min-height:280px}.anx-side{max-height:230px}.anx-foot{font-size:9px}}
