@@ -12958,14 +12958,14 @@ _start_africa_now_worker()
 # ============================================================
 # KOJA GLOBAL NOW — MARKET DATA ENGINE
 # ============================================================
-KOJA_MARKET_CACHE_TTL = max(10, int(os.getenv("KOJA_MARKET_CACHE_TTL", "30")))
+KOJA_MARKET_CACHE_TTL = max(60, int(os.getenv("KOJA_MARKET_CACHE_TTL", "1800")))
 KOJA_MARKET_TIMEOUT = max(3, min(int(os.getenv("KOJA_MARKET_TIMEOUT", "8")), 20))
 KOJA_MARKET_SYMBOLS = [x.strip().upper() for x in os.getenv("KOJA_MARKET_SYMBOLS", "AAPL,MSFT,NVDA,AMZN,TSLA,GOOGL,META,ORCL,KO,SONY").split(",") if x.strip()][:30]
 ALPHAVANTAGE_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY", "").strip()
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "").strip()
 _koja_market_cache = {"quotes": {}, "updated_at": 0.0}
 _koja_fx_cache = {"rates": {}, "updated_at": 0.0}
-_koja_market_diag = {"last_error": None, "last_provider": None}
+_koja_market_diag = {"last_error": None, "last_provider": None, "provider_cooldown_until": 0.0, "provider_cooldown_reason": None}
 _koja_market_lock = threading.Lock()
 
 def _market_http_json(url, params):
@@ -12979,6 +12979,11 @@ def _market_http_json(url, params):
             except Exception:
                 pass
             _koja_market_diag["last_error"] = msg
+            if r.status_code == 429:
+                # Stop hammering an exhausted provider. Render instances may serve many
+                # browser refreshes, so a long cooldown protects the daily quota.
+                _koja_market_diag["provider_cooldown_until"] = time.time() + 21600
+                _koja_market_diag["provider_cooldown_reason"] = msg
             logger.warning("Market provider returned %s: %s", r.status_code, msg)
             return None
         body = r.json()
@@ -13043,7 +13048,19 @@ def _market_quote(symbol):
     symbol = clean(symbol).upper()
     if not symbol:
         return None
-    return _alpha_quote(symbol) or _twelve_quote(symbol) or _yahoo_quote(symbol)
+    # If a provider has returned HTTP 429, use the public fallback during the
+    # cooldown instead of repeatedly consuming the exhausted daily quota.
+    cooldown = float(_koja_market_diag.get("provider_cooldown_until") or 0)
+    if cooldown > time.time():
+        return _yahoo_quote(symbol)
+    q = _alpha_quote(symbol) or _twelve_quote(symbol)
+    if q:
+        _koja_market_diag["last_provider"] = q.get("provider")
+        return q
+    q = _yahoo_quote(symbol)
+    if q:
+        _koja_market_diag["last_provider"] = q.get("provider")
+    return q
 
 def _refresh_market_quotes(symbols=None, force=False):
     symbols = list(dict.fromkeys([clean(x).upper() for x in (symbols or KOJA_MARKET_SYMBOLS) if clean(x)]))[:30]
@@ -13079,7 +13096,7 @@ def _market_panel_html():
 <div class="km-head"><div><h2>KOJA MARKET INTELLIGENCE</h2><p>Professional market dashboard · equities · charts · foreign exchange · conversion</p></div><div class="km-meta" id="kmStatus">Checking providers…</div></div>
 <div class="km-tabs"><button class="km-tab active" id="kmTabStocks" type="button">Stocks</button><button class="km-tab" id="kmTabFx" type="button">Currencies & FX</button></div>
 <div id="kmStocksView">
-<div class="km-grid" id="kmGrid"><div class="km-empty">Market data will appear here when a provider API key is configured.</div></div>
+<div class="km-grid" id="kmGrid"><div class="km-empty">Loading market data from the KOJA market engine…</div></div>
 <div class="km-tools"><label style="font-size:11px;color:rgba(255,255,255,.65)">Chart</label><select id="kmChartSymbol"><option>AAPL</option><option>MSFT</option><option>NVDA</option><option>AMZN</option><option>TSLA</option><option>GOOGL</option><option>META</option><option>ORCL</option><option>KO</option><option>SONY</option></select><select id="kmChartInterval"><option value="1day">Daily</option><option value="1week">Weekly</option><option value="1month">Monthly</option></select></div>
 <div class="km-chart"><div class="km-chart-head"><strong id="kmChartTitle">AAPL · PRICE HISTORY</strong><span id="kmChartMeta">SYSTEM INITIALIZING</span></div><div class="km-chart-wrap" id="kmChart"><div class="km-chart-empty">Loading chart…</div></div></div>
 </div>
@@ -13105,11 +13122,11 @@ function drawChart(rows,symbol){
  chart.innerHTML='<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" aria-label="'+esc(symbol)+' business market chart"><defs><linearGradient id="kmGlow" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#5fe1ff" stop-opacity=".34"/><stop offset="1" stop-color="#5fe1ff" stop-opacity="0"/></linearGradient><filter id="kmLineGlow"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>'+gridLines+vertical+'<path d="'+area+'" fill="url(#kmGlow)" stroke="none"/><path d="'+line+'" fill="none" stroke="#73e3ff" stroke-width="2.8" vector-effect="non-scaling-stroke" filter="url(#kmLineGlow)"/><path d="'+line+'" fill="none" stroke="#e8fbff" stroke-width="1" vector-effect="non-scaling-stroke" opacity=".85"/><circle cx="'+pts[pts.length-1][0].toFixed(1)+'" cy="'+pts[pts.length-1][1].toFixed(1)+'" r="5" fill="#fff"/><circle cx="'+pts[pts.length-1][0].toFixed(1)+'" cy="'+pts[pts.length-1][1].toFixed(1)+'" r="10" fill="none" stroke="#73e3ff" stroke-opacity=".35"/><text x="'+padL+'" y="18" fill="rgba(220,245,255,.72)" font-size="10">KOJA MARKET ENGINE · '+esc(symbol)+'</text><text x="'+(w-padR)+'" y="18" text-anchor="end" fill="'+(pct>=0?'#72e5ae':'#ff9d9d')+'" font-size="11">'+(pct>=0?'+':'')+pct.toFixed(2)+'%</text></svg>';
  chartTitle.textContent=symbol+' · PRICE HISTORY'; chartMeta.textContent='LAST '+last.toFixed(2)+' · '+(delta>=0?'+':'')+delta.toFixed(2)+' · '+rows.length+' DATA POINTS';
 }
-async function loadStocks(){try{const r=await fetch('/api/markets/quotes',{cache:'no-store'});const d=await r.json();const rows=d.quotes||[];grid.innerHTML=rows.length?rows.map(card).join(''):'<div class="km-empty">'+esc(d.error||'No market quote is currently available. Check Render Environment API keys.')+'</div>';status.textContent=d.updated_at?'SYSTEM ONLINE · Updated '+new Date(d.updated_at*1000).toLocaleTimeString():'PROVIDER OFFLINE';}catch(e){status.textContent='Market data temporarily unavailable';}}
+async function loadStocks(){try{const r=await fetch('/api/markets/quotes',{cache:'no-store'});const d=await r.json();const rows=d.quotes||[];grid.innerHTML=rows.length?rows.map(card).join(''):'<div class="km-empty">'+esc(d.error||'Market data is temporarily unavailable; the public fallback will retry automatically.')+'</div>';status.textContent=rows.length?('SYSTEM ONLINE · '+((d.active_providers||[]).join(' + ')||'Public market feed')+' · Updated '+(d.updated_at?new Date(d.updated_at*1000).toLocaleTimeString():'now')):'MARKET DATA RETRYING';}catch(e){status.textContent='Market data temporarily unavailable';}}
 async function loadChart(){try{const s=chartSymbol.value,i=chartInterval.value;const r=await fetch('/api/markets/chart?symbol='+encodeURIComponent(s)+'&interval='+encodeURIComponent(i)+'&outputsize=30',{cache:'no-store'});const d=await r.json();drawChart(d.values||[],s);}catch(e){chart.innerHTML='<div class="km-chart-empty">Chart temporarily unavailable.</div>';}}
-async function loadFx(){try{const r=await fetch('/api/markets/fx',{cache:'no-store'});const d=await r.json();const rows=d.rates||[];fxGrid.innerHTML=rows.length?rows.map(x=>'<div class="km-fx-card"><div class="km-fx-pair">'+esc(x.symbol)+'</div><div class="km-fx-rate">'+esc(Number(x.rate).toLocaleString(undefined,{maximumFractionDigits:6}))+'</div><div class="km-fx-name">'+esc(x.base_name||'')+' → '+esc(x.quote_name||'')+'<br>'+esc(x.provider||'')+'</div></div>').join(''):'<div class="km-empty">'+esc(d.error||'Currency provider unavailable. Add a financial-data API key in Render Environment.')+'</div>'; status.textContent=d.updated_at?'FX ENGINE ONLINE · '+new Date(d.updated_at*1000).toLocaleTimeString():'FX PROVIDER OFFLINE';}catch(e){fxGrid.innerHTML='<div class="km-empty">Currency data temporarily unavailable.</div>';}}
+async function loadFx(){try{const r=await fetch('/api/markets/fx',{cache:'no-store'});const d=await r.json();const rows=d.rates||[];fxGrid.innerHTML=rows.length?rows.map(x=>'<div class="km-fx-card"><div class="km-fx-pair">'+esc(x.symbol)+'</div><div class="km-fx-rate">'+esc(Number(x.rate).toLocaleString(undefined,{maximumFractionDigits:6}))+'</div><div class="km-fx-name">'+esc(x.base_name||'')+' → '+esc(x.quote_name||'')+'<br>'+esc(x.provider||'')+'</div></div>').join(''):'<div class="km-empty">'+esc(d.error||'Currency provider unavailable. Add a financial-data API key in Render Environment.')+'</div>'; status.textContent=rows.length?('FX ENGINE ONLINE · '+(rows[0].provider||'Public FX feed')+' · Updated '+(d.updated_at?new Date(d.updated_at*1000).toLocaleTimeString():'now')):'FX DATA RETRYING';}catch(e){fxGrid.innerHTML='<div class="km-empty">Currency data temporarily unavailable.</div>';}}
 function tab(which){const stocks=which==='stocks';stocksView.style.display=stocks?'block':'none';fxView.style.display=stocks?'none':'block';tabStocks.classList.toggle('active',stocks);tabFx.classList.toggle('active',!stocks);if(!stocks)loadFx();}
-tabStocks.onclick=()=>tab('stocks');tabFx.onclick=()=>tab('fx');chartSymbol.onchange=loadChart;chartInterval.onchange=loadChart;loadStocks();loadChart();setInterval(loadStocks,30000);setInterval(loadFx,60000);setInterval(loadChart,300000);
+tabStocks.onclick=()=>tab('stocks');tabFx.onclick=()=>tab('fx');chartSymbol.onchange=loadChart;chartInterval.onchange=loadChart;loadStocks();loadChart();setInterval(loadStocks,600000);setInterval(loadFx,600000);setInterval(loadChart,900000);
 })();
 </script>"""
 
@@ -13120,13 +13137,16 @@ def koja_market_quotes_api():
     symbols=[x.strip().upper() for x in raw.split(',') if x.strip()] if raw else KOJA_MARKET_SYMBOLS
     symbols=list(dict.fromkeys(symbols))[:30]
     quotes,updated_at=_refresh_market_quotes(symbols)
-    return jsonify({'provider_order':['Alpha Vantage','Twelve Data','Public market fallback'],'quotes':[quotes[s] for s in symbols if s in quotes],'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'configured':bool(ALPHAVANTAGE_API_KEY or TWELVEDATA_API_KEY)})
+    rows=[quotes[s] for s in symbols if s in quotes]
+    providers=list(dict.fromkeys([str(x.get('provider') or '') for x in rows if x.get('provider')]))
+    return jsonify({'provider_order':['Alpha Vantage','Twelve Data','Public market fallback'],'quotes':rows,'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'configured':bool(ALPHAVANTAGE_API_KEY or TWELVEDATA_API_KEY),'public_fallback_available':True,'active_providers':providers,'status':'online' if rows else 'unavailable'})
 
 @app.route('/api/markets/status')
 def koja_market_status_api():
     with _koja_market_lock:
         updated_at=float(_koja_market_cache.get('updated_at') or 0);count=len(_koja_market_cache.get('quotes') or {})
-    return jsonify({'alpha_vantage_configured':bool(ALPHAVANTAGE_API_KEY),'twelve_data_configured':bool(TWELVEDATA_API_KEY),'cached_quotes':count,'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'last_error':_koja_market_diag.get('last_error'),'provider_order':['Alpha Vantage','Twelve Data']})
+    cooldown_until=float(_koja_market_diag.get('provider_cooldown_until') or 0)
+    return jsonify({'alpha_vantage_configured':bool(ALPHAVANTAGE_API_KEY),'twelve_data_configured':bool(TWELVEDATA_API_KEY),'public_fallback_available':True,'cached_quotes':count,'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'last_error':_koja_market_diag.get('last_error'),'provider_cooldown':cooldown_until > time.time(),'provider_cooldown_until':cooldown_until or None,'provider_order':['Alpha Vantage','Twelve Data','Public market fallback']})
 
 
 KOJA_FX_PAIRS = [
