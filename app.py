@@ -12155,10 +12155,14 @@ _KOJA_AFRICA_NOW_FEEDS = [
     ("BBC Australia", "https://feeds.bbci.co.uk/news/world/australia/rss.xml", "world_news"),
     # Official vacancies
     ("African Development Bank Vacancies", "https://www.afdb.org/en/vacancies/directeur/news-and-events/about-us/careers/current-vacancies/rss", "jobs"),
+    ("UN Careers", "https://careers.un.org/jobfeed?isPage=true&language=en", "jobs"),
 ]
 _KOJA_AFRICA_NOW_JOB_PAGES = [
+    ("FreshTalent Africa", "https://jobs.freshtalent.africa/jobs", "Algeria;Angola;Benin;Botswana;Burkina Faso;Burundi;Cabo Verde;Cameroon;Central African Republic;Chad;Comoros;DR Congo;Democratic Republic of the Congo;Republic of Congo;Republic of the Congo;Côte d’Ivoire;Djibouti;Egypt;Equatorial Guinea;Eritrea;Eswatini;Ethiopia;Gabon;Gambia;Ghana;Guinea;Guinea-Bissau;Kenya;Lesotho;Liberia;Libya;Madagascar;Malawi;Mali;Mauritania;Mauritius;Morocco;Mozambique;Namibia;Niger;Nigeria;Rwanda;São Tomé and Príncipe;Senegal;Seychelles;Sierra Leone;Somalia;South Africa;South Sudan;Sudan;Tanzania;Togo;Tunisia;Uganda;Zambia;Zimbabwe;Africa"),
     ("AfriCareers", "https://jobs.africareers.net/jobs", "Uganda;Kenya;Rwanda;Tanzania;South Africa;Nigeria;Ghana;Africa"),
     ("ZambiaJobsToday", "https://www.zambiajobstoday.com/jobs", "Zambia"),
+    ("African Development Bank Current Vacancies", "https://www.afdb.org/en/about-us/careers/current-vacancies", "Africa"),
+    ("African Development Bank Consultants", "https://www.afdb.org/en/about-us/careers/current-vacancies/consultants", "Africa"),
 ]
 
 _AFRICA_COUNTRY_NAMES = [
@@ -12212,10 +12216,68 @@ def _africa_now_child_text(item, names):
     return ""
 
 
+_AFRICA_NOW_LOCATION_HINTS = {
+    "lusaka":"Zambia", "kitwe":"Zambia", "ndola":"Zambia", "livingstone":"Zambia",
+    "harare":"Zimbabwe", "bulawayo":"Zimbabwe", "nairobi":"Kenya", "mombasa":"Kenya",
+    "kampala":"Uganda", "dar es salaam":"Tanzania", "dodoma":"Tanzania", "kigali":"Rwanda",
+    "addis ababa":"Ethiopia", "cairo":"Egypt", "alexandria":"Egypt", "lagos":"Nigeria",
+    "abuja":"Nigeria", "accra":"Ghana", "abidjan":"Côte d’Ivoire", "dakar":"Senegal",
+    "johannesburg":"South Africa", "pretoria":"South Africa", "cape town":"South Africa",
+    "windhoek":"Namibia", "gaborone":"Botswana", "maputo":"Mozambique", "luanda":"Angola",
+    "kinshasa":"Democratic Republic of the Congo", "lubumbashi":"Democratic Republic of the Congo",
+    "brazzaville":"Republic of Congo", "yaounde":"Cameroon", "douala":"Cameroon",
+    "monrovia":"Liberia", "freetown":"Sierra Leone", "banjul":"Gambia", "conakry":"Guinea",
+    "bamako":"Mali", "ouagadougou":"Burkina Faso", "niamey":"Niger", "ndjamena":"Chad",
+    "n'djamena":"Chad", "tripoli":"Libya", "tunis":"Tunisia", "algiers":"Algeria",
+    "rabat":"Morocco", "antananarivo":"Madagascar", "port louis":"Mauritius",
+    "maseru":"Lesotho", "mbabane":"Eswatini", "khartoum":"Sudan", "juba":"South Sudan",
+    "mogadishu":"Somalia", "djibouti":"Djibouti", "asmara":"Eritrea", "moroni":"Comoros",
+    "victoria":"Seychelles", "bangui":"Central African Republic", "malabo":"Equatorial Guinea",
+    "libreville":"Gabon", "praia":"Cabo Verde", "sao tome":"São Tomé and Príncipe",
+    "bissau":"Guinea-Bissau", "nouakchott":"Mauritania", "porto-novo":"Benin", "cotonou":"Benin",
+    "lome":"Togo", "lomé":"Togo", "porto-novo":"Benin", "kinshasa":"Democratic Republic of the Congo",
+}
+
+def _africa_now_extract_deadline(text):
+    if not text:
+        return None
+    raw = re.sub(r"\s+", " ", text or "")
+    patterns = [
+        r"(?:deadline|closing date|closing|closes|application deadline)\s*[:\-]?\s*([A-Za-z0-9 ,./-]{6,40})",
+        r"(?:apply by|applications? close)\s*[:\-]?\s*([A-Za-z0-9 ,./-]{6,40})",
+    ]
+    for pat in patterns:
+        m = re.search(pat, raw, re.I)
+        if not m:
+            continue
+        candidate = m.group(1).strip(" .;,")
+        for fmt in ("%d/%m/%Y", "%m/%d/%Y", "%Y-%m-%d", "%d-%m-%Y", "%d %B %Y", "%B %d, %Y", "%d %b %Y", "%b %d, %Y"):
+            try:
+                return datetime.strptime(candidate, fmt).replace(tzinfo=timezone.utc)
+            except Exception:
+                pass
+    return None
+
+def _africa_now_job_type(title, summary):
+    hay = f"{title} {summary}".lower()
+    if any(x in hay for x in ("intern", "internship", "trainee", "graduate programme", "graduate trainee")):
+        return "Internship"
+    if "part-time" in hay or "part time" in hay:
+        return "Part-time"
+    if any(x in hay for x in ("contract", "consultant", "consultancy", "individual contractor")):
+        return "Contract"
+    if "remote" in hay or "home based" in hay or "home-based" in hay:
+        return "Remote"
+    return "Full-time"
+
+
 def _africa_now_country(title, summary):
     hay = f"{title} {summary}".lower()
     for country in _AFRICA_COUNTRY_NAMES:
         if country.lower() in hay:
+            return country
+    for place, country in _AFRICA_NOW_LOCATION_HINTS.items():
+        if re.search(r"(?<![a-z])" + re.escape(place) + r"(?![a-z])", hay):
             return country
     return "Africa"
 
@@ -12303,17 +12365,25 @@ def _africa_now_parse_item(item, label, feed_kind):
         return None
     clean_link = link.split("#", 1)[0]
     low = f"{title} {summary}".lower()
+    is_job = str(feed_kind).lower() == "jobs" or any(x in low for x in ("vacancy", "job opening", "position", "internship", "consultant", "closing date", "deadline"))
+    deadline = _africa_now_extract_deadline(summary) if is_job else None
+    if deadline and deadline < datetime.now(timezone.utc):
+        return None
+    category = "Jobs & Opportunities" if is_job else _africa_now_category(title, summary)
+    job_type = _africa_now_job_type(title, summary) if is_job else None
     return {
         "source_key": hashlib.sha256(clean_link.encode()).hexdigest(),
         "title": title[:500], "url": clean_link, "source_name": source[:160],
         "summary": summary[:900], "image_url": image_url, "video_url": video_url,
         "published_at": published.isoformat() if published else None,
         "country": _africa_now_country(title, summary),
-        "category": _africa_now_category(title, summary),
-        "score": _africa_now_score(title, summary, published),
-        "media_type": "video" if video_url else "story",
+        "category": category,
+        "score": round((_africa_now_score(title, summary, published) + (4 if is_job else 0)), 3),
+        "media_type": "job" if is_job else ("video" if video_url else "story"),
         "is_live": any(x in low for x in ("live now", "live stream", "watch live")),
         "feed_kind": feed_kind,
+        "job_deadline": deadline.isoformat() if deadline else None,
+        "job_type": job_type,
     }
 
 
@@ -12420,7 +12490,7 @@ def _africa_now_parse_job_page(label, page_url, default_countries):
             continue
         seen.add(url)
         found.append((title, url))
-        if len(found) >= 18:
+        if len(found) >= 35:
             break
 
     items = []
@@ -12439,19 +12509,12 @@ def _africa_now_parse_job_page(label, page_url, default_countries):
                     country = c
                     break
         # Avoid displaying vacancies whose explicit closing date has already passed.
-        deadline = None
-        m = re.search(r"(?:closing\s+date|deadline|closes?)\s*[:\-]?\s*([A-Za-z0-9 ,./-]{6,40})", sample, re.I)
-        if m:
-            raw_date = m.group(1).strip(" .")
-            for fmt in ("%d/%m/%Y", "%m/%d/%Y", "%Y-%m-%d", "%d-%m-%Y", "%d %B %Y", "%B %d, %Y"):
-                try:
-                    deadline = datetime.strptime(raw_date, fmt).replace(tzinfo=timezone.utc)
-                    break
-                except Exception:
-                    pass
+        deadline = _africa_now_extract_deadline(sample)
         if deadline and deadline < datetime.now(timezone.utc):
             continue
         summary = sample[:700].strip() if sample else f"Job opportunity from {label}. Open the original listing for full requirements and application instructions."
+        if deadline:
+            summary = (summary + f" Closing date: {deadline.strftime('%d %B %Y')}.").strip()[:900]
         items.append({
             "source_key": hashlib.sha256(url.split("#",1)[0].encode()).hexdigest(),
             "title": title[:500], "url": url.split("#",1)[0], "source_name": label[:160],
@@ -12459,6 +12522,7 @@ def _africa_now_parse_job_page(label, page_url, default_countries):
             "published_at": None, "country": country, "category": "Jobs & Opportunities",
             "score": round(14 + (2 if deadline else 0), 3), "media_type": "job",
             "is_live": False, "feed_kind": "jobs", "job_deadline": deadline.isoformat() if deadline else None,
+            "job_type": _africa_now_job_type(title, sample),
         })
     return items
 
@@ -12625,6 +12689,45 @@ def koja_nexus_africa_now_api():
         }
     })
 
+@app.route("/api/nexus/jobs")
+def koja_nexus_jobs_api():
+    """Dedicated live jobs feed. Jobs are collected automatically by the AFRICA NOW collector."""
+    country = clean(request.args.get("country") or "")
+    job_type = clean(request.args.get("type") or "")
+    q = clean(request.args.get("q") or "").lower()
+    try:
+        limit = min(max(int(request.args.get("limit") or 50), 1), 100)
+    except Exception:
+        limit = 50
+    rows = db_select("koja_nexus_africa_now", filters={"category": "Jobs & Opportunities"}, order="score.desc,published_at.desc", limit=200) or []
+    now = datetime.now(timezone.utc)
+    out=[]
+    for r in rows:
+        deadline = _africa_now_parse_date(str(r.get("job_deadline") or "")) if r.get("job_deadline") else _africa_now_extract_deadline(str(r.get("summary") or ""))
+        if deadline and deadline < now:
+            continue
+        derived_type = str(r.get("job_type") or "") or _africa_now_job_type(str(r.get("title") or ""), str(r.get("summary") or ""))
+        if country and str(r.get("country") or "").lower() != country.lower():
+            continue
+        if job_type and derived_type.lower() != job_type.lower():
+            continue
+        if q and q not in f"{r.get('title','')} {r.get('source_name','')} {r.get('summary','')} {r.get('country','')}".lower():
+            continue
+        r = dict(r)
+        r["job_deadline"] = deadline.isoformat() if deadline else None
+        r["job_type"] = derived_type
+        out.append(r)
+        if len(out) >= limit:
+            break
+    return jsonify({
+        "ok": True, "count": len(out), "countries": sorted({r.get("country") for r in out if r.get("country") and r.get("country") != "Africa"}),
+        "job_types": sorted({r.get("job_type") for r in out if r.get("job_type")}),
+        "updated_at": max((r.get("fetched_at") or "" for r in out), default=None),
+        "items": out,
+        "refresh_interval_seconds": KOJA_NEXUS_AFRICA_NOW_INTERVAL,
+    })
+
+
 def _africa_now_panel_html():
     return r"""
 <section class="anx-panel" id="kojaAfricaNow" aria-label="Africa Now" style="display:block!important;visibility:visible!important;opacity:1!important;">
@@ -12676,42 +12779,15 @@ _start_africa_now_worker()
 # ============================================================
 # KOJA GLOBAL NOW — MARKET DATA ENGINE
 # ============================================================
-KOJA_MARKET_CACHE_TTL = max(60, int(os.getenv("KOJA_MARKET_CACHE_TTL", "300")))
+KOJA_MARKET_CACHE_TTL = max(10, int(os.getenv("KOJA_MARKET_CACHE_TTL", "30")))
 KOJA_MARKET_TIMEOUT = max(3, min(int(os.getenv("KOJA_MARKET_TIMEOUT", "8")), 20))
-KOJA_MARKET_SYMBOLS = [x.strip().upper() for x in os.getenv("KOJA_MARKET_SYMBOLS", "AAPL,MSFT,NVDA,AMZN").split(",") if x.strip()][:4]
+KOJA_MARKET_SYMBOLS = [x.strip().upper() for x in os.getenv("KOJA_MARKET_SYMBOLS", "AAPL,MSFT,NVDA,AMZN,TSLA,GOOGL,META,ORCL,KO,SONY").split(",") if x.strip()][:30]
 ALPHAVANTAGE_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY", "").strip()
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "").strip()
 _koja_market_cache = {"quotes": {}, "updated_at": 0.0}
 _koja_fx_cache = {"rates": {}, "updated_at": 0.0}
-_koja_chart_cache = {}
-KOJA_CHART_CACHE_TTL = max(300, int(os.getenv("KOJA_CHART_CACHE_TTL", "900")))
 _koja_market_diag = {"last_error": None, "last_provider": None}
-# Twelve Data Basic allows 8 API credits/minute. KOJA deliberately keeps a safety
-# reserve so charts/FX cannot exhaust the whole minute. Alpha Vantage, when
-# configured, remains the preferred provider and is not counted here.
-KOJA_TD_CREDIT_BUDGET = max(1, min(int(os.getenv("KOJA_TD_CREDIT_BUDGET", "7")), 8))
-_koja_td_budget = {"minute": 0, "used": 0}
-_koja_td_lock = threading.Lock()
 _koja_market_lock = threading.Lock()
-
-def _td_allow_credit(cost=1):
-    now_min = int(time.time() // 60)
-    with _koja_td_lock:
-        if _koja_td_budget["minute"] != now_min:
-            _koja_td_budget["minute"] = now_min
-            _koja_td_budget["used"] = 0
-        if _koja_td_budget["used"] + int(cost) > KOJA_TD_CREDIT_BUDGET:
-            _koja_market_diag["last_error"] = "KOJA market request paused to protect the Twelve Data minute credit limit."
-            return False
-        _koja_td_budget["used"] += int(cost)
-        return True
-
-def _td_budget_status():
-    now_min = int(time.time() // 60)
-    with _koja_td_lock:
-        if _koja_td_budget["minute"] != now_min:
-            return {"used": 0, "budget": KOJA_TD_CREDIT_BUDGET, "remaining": KOJA_TD_CREDIT_BUDGET}
-        return {"used": _koja_td_budget["used"], "budget": KOJA_TD_CREDIT_BUDGET, "remaining": max(0, KOJA_TD_CREDIT_BUDGET-_koja_td_budget["used"])}
 
 def _market_http_json(url, params):
     try:
@@ -12751,7 +12827,7 @@ def _alpha_quote(symbol):
     return {"symbol":symbol,"price":q.get("05. price"),"change":q.get("09. change"),"change_percent":q.get("10. change percent"),"volume":q.get("06. volume"),"previous_close":q.get("08. previous close"),"latest_trading_day":q.get("07. latest trading day"),"provider":"Alpha Vantage","freshness":"Provider quote; real-time entitlement depends on market/plan","source_url":"https://www.alphavantage.co/"}
 
 def _twelve_quote(symbol):
-    if not TWELVEDATA_API_KEY or not _td_allow_credit(1):
+    if not TWELVEDATA_API_KEY:
         return None
     body = _market_http_json("https://api.twelvedata.com/quote", {"symbol":symbol,"apikey":TWELVEDATA_API_KEY})
     if not body or not body.get("close"):
@@ -12826,7 +12902,7 @@ async function loadStocks(){try{const r=await fetch('/api/markets/quotes',{cache
 async function loadChart(){try{const s=chartSymbol.value,i=chartInterval.value;const r=await fetch('/api/markets/chart?symbol='+encodeURIComponent(s)+'&interval='+encodeURIComponent(i)+'&outputsize=30',{cache:'no-store'});const d=await r.json();drawChart(d.values||[],s);}catch(e){chart.innerHTML='<div class="km-chart-empty">Chart temporarily unavailable.</div>';}}
 async function loadFx(){try{const r=await fetch('/api/markets/fx',{cache:'no-store'});const d=await r.json();const rows=d.rates||[];fxGrid.innerHTML=rows.length?rows.map(x=>'<div class="km-fx-card"><div class="km-fx-pair">'+esc(x.symbol)+'</div><div class="km-fx-rate">'+esc(Number(x.rate).toLocaleString(undefined,{maximumFractionDigits:6}))+'</div><div class="km-fx-name">'+esc(x.base_name||'')+' → '+esc(x.quote_name||'')+'<br>'+esc(x.provider||'')+'</div></div>').join(''):'<div class="km-empty">'+esc(d.error||'Currency provider unavailable. Add a financial-data API key in Render Environment.')+'</div>'; status.textContent=d.updated_at?'FX ENGINE ONLINE · '+new Date(d.updated_at*1000).toLocaleTimeString():'FX PROVIDER OFFLINE';}catch(e){fxGrid.innerHTML='<div class="km-empty">Currency data temporarily unavailable.</div>';}}
 function tab(which){const stocks=which==='stocks';stocksView.style.display=stocks?'block':'none';fxView.style.display=stocks?'none':'block';tabStocks.classList.toggle('active',stocks);tabFx.classList.toggle('active',!stocks);if(!stocks)loadFx();}
-tabStocks.onclick=()=>tab('stocks');tabFx.onclick=()=>tab('fx');chartSymbol.onchange=loadChart;chartInterval.onchange=loadChart;loadStocks();loadChart();setInterval(loadStocks,120000);setInterval(loadFx,300000);setInterval(loadChart,900000);
+tabStocks.onclick=()=>tab('stocks');tabFx.onclick=()=>tab('fx');chartSymbol.onchange=loadChart;chartInterval.onchange=loadChart;loadStocks();loadChart();setInterval(loadStocks,30000);setInterval(loadFx,60000);setInterval(loadChart,300000);
 })();
 </script>"""
 
@@ -12843,7 +12919,7 @@ def koja_market_quotes_api():
 def koja_market_status_api():
     with _koja_market_lock:
         updated_at=float(_koja_market_cache.get('updated_at') or 0);count=len(_koja_market_cache.get('quotes') or {})
-    return jsonify({'alpha_vantage_configured':bool(ALPHAVANTAGE_API_KEY),'twelve_data_configured':bool(TWELVEDATA_API_KEY),'cached_quotes':count,'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'last_error':_koja_market_diag.get('last_error'),'provider_order':['Alpha Vantage','Twelve Data'],'twelve_data_budget':_td_budget_status()})
+    return jsonify({'alpha_vantage_configured':bool(ALPHAVANTAGE_API_KEY),'twelve_data_configured':bool(TWELVEDATA_API_KEY),'cached_quotes':count,'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'last_error':_koja_market_diag.get('last_error'),'provider_order':['Alpha Vantage','Twelve Data']})
 
 
 KOJA_FX_PAIRS = [
@@ -12884,7 +12960,7 @@ def _alpha_fx_rate(symbol):
     return data.get("5. Exchange Rate") or data.get("6. Last Refreshed") and None
 
 def _twelve_time_series(symbol, interval="1day", outputsize=30):
-    if not TWELVEDATA_API_KEY or not _td_allow_credit(1):
+    if not TWELVEDATA_API_KEY:
         return []
     body=_market_http_json("https://api.twelvedata.com/time_series", {"symbol":symbol,"interval":interval,"outputsize":max(1,min(int(outputsize),100)),"apikey":TWELVEDATA_API_KEY})
     values=(body or {}).get("values") or []
@@ -12895,7 +12971,7 @@ def _twelve_time_series(symbol, interval="1day", outputsize=30):
     return out
 
 def _twelve_fx_rate(symbol):
-    if not TWELVEDATA_API_KEY or not _td_allow_credit(1):
+    if not TWELVEDATA_API_KEY:
         return None
     body=_market_http_json("https://api.twelvedata.com/exchange_rate", {"symbol":symbol,"apikey":TWELVEDATA_API_KEY})
     if not body:
@@ -12913,11 +12989,6 @@ def koja_market_chart_api():
         interval='1day'
     try: outputsize=max(5,min(int(request.args.get('outputsize') or 30),100))
     except Exception: outputsize=30
-    cache_key=(symbol,interval,outputsize)
-    now=time.time()
-    cached=_koja_chart_cache.get(cache_key)
-    if cached and now-cached.get("updated_at",0) < KOJA_CHART_CACHE_TTL:
-        return jsonify(dict(cached, cached=True, cache_ttl_seconds=KOJA_CHART_CACHE_TTL))
     values=[]
     provider=None
     if ALPHAVANTAGE_API_KEY:
@@ -12926,10 +12997,7 @@ def koja_market_chart_api():
     if not values and TWELVEDATA_API_KEY:
         values=_twelve_time_series(symbol,interval,outputsize)
         if values: provider="Twelve Data"
-    payload={'symbol':symbol,'interval':interval,'values':values,'provider':provider,'freshness':'Historical/provider data; exact latency depends on market/plan','error':None if values else _koja_market_diag.get("last_error"),'updated_at':now,'cache_ttl_seconds':KOJA_CHART_CACHE_TTL}
-    if values:
-        _koja_chart_cache[cache_key]=payload
-    return jsonify(dict(payload, cached=False))
+    return jsonify({'symbol':symbol,'interval':interval,'values':values,'provider':provider,'freshness':'Historical/provider data; exact latency depends on market/plan','error':None if values else _koja_market_diag.get("last_error")})
 
 @app.route('/api/markets/fx')
 def koja_market_fx_api():
@@ -12937,11 +13005,10 @@ def koja_market_fx_api():
     with _koja_market_lock:
         cached=dict(_koja_fx_cache.get("rates") or {})
         cached_at=float(_koja_fx_cache.get("updated_at") or 0)
-    if cached and now-cached_at < 300:
+    if cached and now-cached_at < 60:
         return jsonify({'rates':[cached[x[0]] for x in KOJA_FX_PAIRS if x[0] in cached],'updated_at':cached_at,'provider_order':['Alpha Vantage','Twelve Data'],'cached':True,'error':None})
     rates=[]
-    pairs_to_fetch = KOJA_FX_PAIRS if ALPHAVANTAGE_API_KEY else KOJA_FX_PAIRS[:2]
-    for symbol,base_name,quote_name in pairs_to_fetch:
+    for symbol,base_name,quote_name in KOJA_FX_PAIRS:
         rate=None; provider=None
         try:
             if ALPHAVANTAGE_API_KEY:
