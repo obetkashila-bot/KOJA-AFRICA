@@ -12937,37 +12937,15 @@ def _africa_now_panel_html():
  };
  function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]});}
  function categoryOf(h){const c=String(h.category||'').trim();const low=c.toLowerCase();if(low.includes('job')||low.includes('opportun'))return'jobs';if(low.includes('business')||low.includes('econom')||low.includes('market'))return'business';if(low.includes('health')||low.includes('medical'))return'health';if(low.includes('tech')||low.includes('digital')||low.includes('ai'))return'technology';if(low.includes('education')||low.includes('university')||low.includes('scholar'))return'education';if(low.includes('politic')||low.includes('government')||low.includes('election'))return'politics';if(low.includes('sport')||low.includes('football')||low.includes('athlet'))return'sports';if(low.includes('science')||low.includes('research')||low.includes('environment'))return'science';if(low.includes('culture')||low.includes('travel')||low.includes('tour')||low.includes('art')||low.includes('entertain'))return'culture';return null;}
- function topScore(h){
-   const title=String(h.title||'').toLowerCase(), summary=String(h.summary||'').toLowerCase(), hay=title+' '+summary;
-   let score=Number(h.score)||0;
-   if(h.is_live) score+=4;
-   if(/\b(breaking|major|urgent|historic|landmark|crisis|deadly|massive|national|president|election|summit|outbreak|earthquake|flood|war|conflict)\b/.test(hay)) score+=3;
-   if(/\b(live now|live stream|watch live|broadcast live)\b/.test(hay)) score+=2;
-   return score;
- }
+ function isTop(h){return !h.is_live && categoryOf(h)!=='jobs' && !categoryOf(h);}
  function generatedVisual(h){return '<div class="anx-generated"><span class="anx-orbit"></span><strong>KOJA VISUAL</strong><small>'+esc((h.category||'AFRICA NOW').toUpperCase())+' · GENERATED VISUAL</small></div>';}
  function mediaHtml(h){let media='';if(h.video_url){media='<video src="'+esc(h.video_url)+'" muted playsinline controls preload="metadata"></video><span class="anx-video-tag">SOURCE VIDEO</span>';}else if(h.image_url){media='<img src="'+esc(h.image_url)+'" alt="" loading="lazy">';}else{media=generatedVisual(h);}if(h.is_live)media+='<span class="anx-live-dot">● LIVE</span>';return media;}
  function renderLead(h){if(!h)return;let media=mediaHtml(h);const live=!!h.is_live;main.innerHTML='<div class="anx-card-media" style="height:100%">'+media+'</div><div class="anx-overlay"><div class="anx-kicker">'+(live?'<span class="anx-live">● LIVE</span> ':'')+esc(h.category||'Top Stories')+' · '+esc(h.country||'Africa')+'</div><div class="anx-title">'+esc(h.title||'Top Africa story')+'</div><div class="anx-summary">'+esc(h.summary||('Latest report from '+(h.source_name||'source')))+'</div><a class="anx-open" href="'+esc(h.url||'#')+'" target="_blank" rel="noopener noreferrer">'+(live?'Watch / Open Live Story':'Open Story')+'</a></div>'}
  function renderCard(h){return '<article class="anx-card"><div class="anx-card-media">'+mediaHtml(h)+'</div><div class="anx-card-body"><div class="anx-card-kicker">'+esc(h.category||'Africa')+' · '+esc(h.country||'Africa')+'</div><div class="anx-card-title">'+esc(h.title||'Africa story')+'</div><div class="anx-card-summary">'+esc(h.summary||('Latest report from '+(h.source_name||'source')))+'</div><a class="anx-card-link" href="'+esc(h.url||'#')+'" target="_blank" rel="noopener noreferrer">'+(h.category==='Jobs & Opportunities'?'VIEW OPPORTUNITY':'READ STORY')+' →</a></div></article>';}
  function put(groupKey,arr){const g=groups[groupKey],sec=document.getElementById(g.section),row=document.getElementById(g.row),count=document.getElementById(g.count);if(!g||!sec||!row)return;if(!arr.length){sec.style.display='none';return;}sec.style.display='block';row.innerHTML=arr.slice(0,10).map(renderCard).join('');if(count)count.textContent=arr.length+' available';}
- function renderSections(items){
-   const news=items.filter(h=>categoryOf(h)!=='jobs');
-   const top=news.slice().sort((a,b)=>topScore(b)-topScore(a)).slice(0,10);
-   put('business',items.filter(h=>categoryOf(h)==='business'));
-   put('jobs',items.filter(h=>categoryOf(h)==='jobs'));
-   put('health',items.filter(h=>categoryOf(h)==='health'));
-   put('technology',items.filter(h=>categoryOf(h)==='technology'));
-   put('education',items.filter(h=>categoryOf(h)==='education'));
-   put('politics',items.filter(h=>categoryOf(h)==='politics'));
-   put('sports',items.filter(h=>categoryOf(h)==='sports'));
-   put('science',items.filter(h=>categoryOf(h)==='science'));
-   put('culture',items.filter(h=>categoryOf(h)==='culture'));
-   const ts=document.getElementById('anxTopSection'),tr=document.getElementById('anxTop'),tc=document.getElementById('anxTopCount');
-   if(top.length){ts.style.display='block';tr.innerHTML=top.map(renderCard).join('');tc.textContent=top.length+' available';}else{ts.style.display='none';}
-   progress.textContent=items.length+' stories';
- }
- async function load(){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),7000);try{const r=await fetch('/api/nexus/africa-now?limit=40',{cache:'no-store',signal:controller.signal});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();const items=Array.isArray(d.items)?d.items.filter(x=>x&&x.is_active!==false):[];if(items.length){const news=items.filter(x=>categoryOf(x)!=='jobs').sort((a,b)=>topScore(b)-topScore(a));const lead=news[0]||items[0];renderLead(lead);renderSections(items);updated.textContent=(lead&&lead.is_live?'● LIVE · ':'')+'Updated '+(d.updated_at?new Date(d.updated_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'just now');}else{updated.textContent='Waiting for fresh Africa stories…';}}catch(e){updated.textContent='Cached Africa story shown · retrying feed';}finally{clearTimeout(timer);}}
- load();setInterval(load,30000);
+ function renderSections(items){const top=items.filter(isTop).slice(0,10);const live=items.filter(h=>h.is_live&&categoryOf(h)!=='jobs');const topAll=[...live,...top.filter(h=>!live.includes(h))].slice(0,10);put('business',items.filter(h=>categoryOf(h)==='business'));put('jobs',items.filter(h=>categoryOf(h)==='jobs'));put('health',items.filter(h=>categoryOf(h)==='health'));put('technology',items.filter(h=>categoryOf(h)==='technology'));put('education',items.filter(h=>categoryOf(h)==='education'));put('politics',items.filter(h=>categoryOf(h)==='politics'));put('sports',items.filter(h=>categoryOf(h)==='sports'));put('science',items.filter(h=>categoryOf(h)==='science'));put('culture',items.filter(h=>categoryOf(h)==='culture'));const ts=document.getElementById('anxTopSection'),tr=document.getElementById('anxTop'),tc=document.getElementById('anxTopCount');if(topAll.length){ts.style.display='block';tr.innerHTML=topAll.map(renderCard).join('');tc.textContent=topAll.length+' available';}else{ts.style.display='none';}progress.textContent=items.length+' stories';}
+ async function load(){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),7000);try{const r=await fetch('/api/nexus/africa-now?limit=40',{cache:'no-store',signal:controller.signal});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();const items=Array.isArray(d.items)?d.items.filter(x=>x&&x.is_active!==false):[];if(items.length){const live=items.find(x=>x.is_live&&categoryOf(x)!=='jobs');const lead=live||items.find(x=>categoryOf(x)!=='jobs')||items[0];renderLead(lead);renderSections(items);updated.textContent=(live?'● LIVE · ':'')+'Updated '+(d.updated_at?new Date(d.updated_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'just now');}else{updated.textContent='Waiting for fresh Africa stories…';}}catch(e){updated.textContent='Cached Africa story shown · retrying feed';}finally{clearTimeout(timer);}}
+ load();setInterval(load,60000);
 })();
 </script>
 """
@@ -13094,46 +13072,51 @@ def _market_panel_html():
 .km-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap}.km-head h2{margin:0;font-size:22px}.km-head p{margin:5px 0 0;color:rgba(255,255,255,.72);font-size:12px}.km-meta{font-size:11px;color:rgba(255,255,255,.62)}
 .km-tabs{display:flex;gap:7px;flex-wrap:wrap;margin:14px 0}.km-tab{border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.06);color:#dcecff;border-radius:999px;padding:7px 11px;font-size:11px;cursor:pointer}.km-tab.active{background:#176b87;color:#fff}
 .km-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-top:10px}.km-card{border:1px solid rgba(255,255,255,.13);background:rgba(255,255,255,.06);border-radius:15px;padding:13px}.km-card strong{display:block;font-size:13px}.km-price{font-size:20px;font-weight:800;margin-top:8px}.km-change{font-size:11px;margin-top:4px}.km-up{color:#6ee7a8}.km-down{color:#ff9a9a}.km-muted{color:rgba(255,255,255,.55);font-size:10px;margin-top:7px;line-height:1.4}
-.km-tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:12px 0}.km-tools select{background:#071525;color:#fff;border:1px solid rgba(255,255,255,.16);border-radius:9px;padding:8px 10px;font-size:11px}.km-chart{margin-top:12px;border:1px solid rgba(74,170,210,.28);border-radius:18px;background:radial-gradient(circle at 75% 20%,rgba(32,111,160,.16),transparent 38%),linear-gradient(180deg,rgba(2,12,24,.92),rgba(4,21,38,.78));padding:12px;box-shadow:inset 0 0 30px rgba(0,0,0,.22),0 12px 30px rgba(0,0,0,.16)}.km-chart-head{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:7px;font-size:11px}.km-chart-head strong{font-size:13px}.km-chart-wrap{height:230px;position:relative}.km-chart svg{width:100%;height:100%;display:block}.km-chart-empty{display:grid;place-items:center;height:100%;color:rgba(255,255,255,.58);font-size:11px}.km-currency-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-top:10px}.km-fx-card{border:1px solid rgba(255,255,255,.13);background:rgba(255,255,255,.06);border-radius:15px;padding:13px}.km-fx-pair{font-size:12px;font-weight:800}.km-fx-rate{font-size:19px;font-weight:800;margin-top:7px}.km-fx-name{font-size:10px;color:rgba(255,255,255,.58);margin-top:4px}.km-footer{display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin-top:13px;color:rgba(255,255,255,.58);font-size:10px}.km-footer a{color:#b9dcff;text-decoration:none}.km-empty{padding:18px;border:1px dashed rgba(255,255,255,.2);border-radius:14px;margin-top:14px;color:rgba(255,255,255,.72);font-size:12px}
-@media(max-width:1100px){.km-grid,.km-currency-grid{grid-template-columns:repeat(3,1fr)}}@media(max-width:700px){.km-grid,.km-currency-grid{grid-template-columns:repeat(2,1fr)}}@media(max-width:430px){.km-grid,.km-currency-grid{grid-template-columns:1fr}}
+.km-tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:12px 0}.km-tools select{background:#071525;color:#fff;border:1px solid rgba(255,255,255,.16);border-radius:9px;padding:8px 10px;font-size:11px}.km-chart{margin-top:12px;border:1px solid rgba(74,170,210,.28);border-radius:18px;background:radial-gradient(circle at 75% 20%,rgba(32,111,160,.16),transparent 38%),linear-gradient(180deg,rgba(2,12,24,.92),rgba(4,21,38,.78));padding:12px;box-shadow:inset 0 0 30px rgba(0,0,0,.22),0 12px 30px rgba(0,0,0,.16)}.km-chart-head{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:7px;font-size:11px}.km-chart-head strong{font-size:13px}.km-chart-wrap{height:230px;position:relative}.km-chart svg{width:100%;height:100%;display:block}.km-chart-empty{display:grid;place-items:center;height:100%;color:rgba(255,255,255,.58);font-size:11px}
+.km-currency-grid,.km-asset-grid,.km-intel-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:10px}.km-fx-card,.km-asset-card,.km-intel-card{border:1px solid rgba(255,255,255,.13);background:rgba(255,255,255,.06);border-radius:15px;padding:13px}.km-fx-pair,.km-asset-name{font-size:12px;font-weight:800}.km-fx-rate,.km-asset-price{font-size:19px;font-weight:800;margin-top:7px}.km-fx-name,.km-asset-meta{font-size:10px;color:rgba(255,255,255,.58);margin-top:4px;line-height:1.45}.km-section-title{font-size:14px;font-weight:800;margin:16px 0 4px}.km-country-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.km-country-tools select{background:#071525;color:#fff;border:1px solid rgba(255,255,255,.16);border-radius:9px;padding:9px 11px;font-size:11px;min-width:190px}.km-intel-card strong{font-size:12px}.km-intel-card p{font-size:10px;line-height:1.5;color:rgba(255,255,255,.64);margin:7px 0 0}.km-badge{display:inline-block;margin-top:8px;padding:4px 7px;border-radius:999px;background:rgba(23,107,135,.28);font-size:9px;color:#bfeaff}.km-footer{display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin-top:13px;color:rgba(255,255,255,.58);font-size:10px}.km-footer a{color:#b9dcff;text-decoration:none}.km-empty{padding:18px;border:1px dashed rgba(255,255,255,.2);border-radius:14px;margin-top:14px;color:rgba(255,255,255,.72);font-size:12px}
+@media(max-width:1100px){.km-grid,.km-currency-grid,.km-asset-grid,.km-intel-grid{grid-template-columns:repeat(3,1fr)}}@media(max-width:700px){.km-grid,.km-currency-grid,.km-asset-grid,.km-intel-grid{grid-template-columns:repeat(2,1fr)}}@media(max-width:430px){.km-grid,.km-currency-grid,.km-asset-grid,.km-intel-grid{grid-template-columns:1fr}}
 </style>
 <section class="km-panel" id="kojaMarketData">
-<div class="km-head"><div><h2>KOJA MARKET INTELLIGENCE</h2><p>Professional market dashboard · equities · charts · foreign exchange · conversion</p></div><div class="km-meta" id="kmStatus">Checking providers…</div></div>
-<div class="km-tabs"><button class="km-tab active" id="kmTabStocks" type="button">Stocks</button><button class="km-tab" id="kmTabFx" type="button">Currencies & FX</button></div>
+<div class="km-head"><div><h2>KOJA MARKET INTELLIGENCE</h2><p>Markets · FX · commodities · bonds · economy · business · industries · opportunities · Africa</p></div><div class="km-meta" id="kmStatus">Checking market feeds…</div></div>
+<div class="km-tabs" id="kmTabs">
+<button class="km-tab active" data-view="stocks" type="button">Stocks & Indices</button><button class="km-tab" data-view="fx" type="button">Currencies & FX</button><button class="km-tab" data-view="commodities" type="button">Commodities</button><button class="km-tab" data-view="bonds" type="button">Bonds & Rates</button><button class="km-tab" data-view="economy" type="button">Africa Economy</button><button class="km-tab" data-view="business" type="button">Business</button><button class="km-tab" data-view="industries" type="button">Industries</button><button class="km-tab" data-view="opportunities" type="button">Opportunities</button></div>
 <div id="kmStocksView">
-<div class="km-grid" id="kmGrid"><div class="km-empty">Market data will appear here when a provider API key is configured.</div></div>
+<div class="km-grid" id="kmGrid"><div class="km-empty">Loading market prices…</div></div>
 <div class="km-tools"><label style="font-size:11px;color:rgba(255,255,255,.65)">Chart</label><select id="kmChartSymbol"><option>AAPL</option><option>MSFT</option><option>NVDA</option><option>AMZN</option><option>TSLA</option><option>GOOGL</option><option>META</option><option>ORCL</option><option>KO</option><option>SONY</option></select><select id="kmChartInterval"><option value="1day">Daily</option><option value="1week">Weekly</option><option value="1month">Monthly</option></select></div>
-<div class="km-chart"><div class="km-chart-head"><strong id="kmChartTitle">AAPL · PRICE HISTORY</strong><span id="kmChartMeta">SYSTEM INITIALIZING</span></div><div class="km-chart-wrap" id="kmChart"><div class="km-chart-empty">Loading chart…</div></div></div>
+<div class="km-chart"><div class="km-chart-head"><strong id="kmChartTitle">AAPL · PRICE HISTORY</strong><span id="kmChartMeta">LOADING</span></div><div class="km-chart-wrap" id="kmChart"><div class="km-chart-empty">Loading chart…</div></div></div>
 </div>
 <div id="kmFxView" style="display:none"><div class="km-currency-grid" id="kmFxGrid"><div class="km-empty">Loading currency rates…</div></div></div>
-<div class="km-footer"><span>Prices/rates are informational and may be delayed according to exchange/provider entitlement.</span><a href="https://www.alphavantage.co/" target="_blank" rel="noopener">Alpha Vantage</a><a href="https://twelvedata.com/" target="_blank" rel="noopener">Twelve Data</a></div>
+<div id="kmCommoditiesView" style="display:none"><div class="km-section-title">Global commodities</div><div class="km-asset-grid" id="kmCommoditiesGrid"><div class="km-empty">Loading commodity prices…</div></div></div>
+<div id="kmBondsView" style="display:none"><div class="km-section-title">Government and benchmark rates</div><div class="km-asset-grid" id="kmBondsGrid"><div class="km-empty">Loading rates…</div></div></div>
+<div id="kmEconomyView" style="display:none"><div class="km-section-title">African macroeconomic intelligence</div><div class="km-country-tools"><select id="kmCountry"><option value="ZM">Zambia</option><option value="ZA">South Africa</option><option value="NG">Nigeria</option><option value="KE">Kenya</option><option value="GH">Ghana</option><option value="EG">Egypt</option><option value="TZ">Tanzania</option><option value="UG">Uganda</option><option value="MA">Morocco</option><option value="ET">Ethiopia</option><option value="AO">Angola</option><option value="BW">Botswana</option><option value="MZ">Mozambique</option><option value="RW">Rwanda</option><option value="SN">Senegal</option><option value="CI">Côte d’Ivoire</option></select><span id="kmEconomyMeta" class="km-muted">World Bank indicators</span></div><div class="km-intel-grid" id="kmEconomyGrid"><div class="km-empty">Loading economy indicators…</div></div></div>
+<div id="kmBusinessView" style="display:none"><div class="km-section-title">Business intelligence</div><div class="km-intel-grid" id="kmBusinessGrid"></div></div>
+<div id="kmIndustriesView" style="display:none"><div class="km-section-title">African industry intelligence</div><div class="km-intel-grid" id="kmIndustriesGrid"></div></div>
+<div id="kmOpportunitiesView" style="display:none"><div class="km-section-title">Business and investment opportunity intelligence</div><div class="km-intel-grid" id="kmOpportunitiesGrid"></div></div>
+<div class="km-footer"><span>Prices and rates are informational and may be delayed according to exchange/provider entitlement. Macro indicators are published by their source agencies.</span><a href="https://www.alphavantage.co/" target="_blank" rel="noopener">Alpha Vantage</a><a href="https://twelvedata.com/" target="_blank" rel="noopener">Twelve Data</a></div>
 </section>
 <script>
 (function(){
-const grid=document.getElementById('kmGrid'),status=document.getElementById('kmStatus'),chart=document.getElementById('kmChart'),chartTitle=document.getElementById('kmChartTitle'),chartMeta=document.getElementById('kmChartMeta'),fxGrid=document.getElementById('kmFxGrid');
-const stocksView=document.getElementById('kmStocksView'),fxView=document.getElementById('kmFxView'),tabStocks=document.getElementById('kmTabStocks'),tabFx=document.getElementById('kmTabFx'),chartSymbol=document.getElementById('kmChartSymbol'),chartInterval=document.getElementById('kmChartInterval');
-function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
-function card(q){const n=parseFloat(String(q.change_percent||'').replace('%',''));const cls=isNaN(n)?'':(n>=0?'km-up':'km-down');return '<div class="km-card"><strong>'+esc(q.symbol)+'</strong><div class="km-price">'+esc(q.price||'—')+'</div><div class="km-change '+cls+'">'+esc(q.change_percent||'')+' '+esc(q.change||'')+'</div><div class="km-muted">'+esc(q.provider)+'<br>'+esc(q.freshness)+'</div></div>';}
-function drawChart(rows,symbol){
- if(!rows.length){chart.innerHTML='<div class="km-chart-empty">No historical data available for this symbol.</div>';return;}
- const vals=rows.map(x=>Number(x.close)).filter(Number.isFinite); if(!vals.length){chart.innerHTML='<div class="km-chart-empty">No usable price data.</div>';return;}
- const w=1100,h=300,padL=42,padR=22,padT=28,padB=30,min=Math.min.apply(null,vals),max=Math.max.apply(null,vals),span=(max-min)||1;
- const pts=rows.map((x,i)=>{const v=Number(x.close);return [padL+(i/(Math.max(1,rows.length-1)))*(w-padL-padR),h-padB-((v-min)/span)*(h-padT-padB)];}).filter(x=>Number.isFinite(x[1]));
- const line=pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ');
- const area=line+' L '+pts[pts.length-1][0].toFixed(1)+' '+(h-padB)+' L '+pts[0][0].toFixed(1)+' '+(h-padB)+' Z';
- const last=vals[vals.length-1], first=vals[0], delta=last-first, pct=first?delta/first*100:0;
- let gridLines=''; for(let i=0;i<5;i++){const y=padT+i*((h-padT-padB)/4);const v=max-i*(span/4);gridLines+='<line x1="'+padL+'" y1="'+y.toFixed(1)+'" x2="'+(w-padR)+'" y2="'+y.toFixed(1)+'" stroke="rgba(115,190,220,.12)"/><text x="8" y="'+(y+4).toFixed(1)+'" fill="rgba(190,220,235,.42)" font-size="10">'+v.toFixed(2)+'</text>';}
- let vertical=''; for(let i=0;i<6;i++){const x=padL+i*((w-padL-padR)/5);vertical+='<line x1="'+x.toFixed(1)+'" y1="'+padT+'" x2="'+x.toFixed(1)+'" y2="'+(h-padB)+'" stroke="rgba(115,190,220,.07)"/>';}
- chart.innerHTML='<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" aria-label="'+esc(symbol)+' business market chart"><defs><linearGradient id="kmGlow" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#5fe1ff" stop-opacity=".34"/><stop offset="1" stop-color="#5fe1ff" stop-opacity="0"/></linearGradient><filter id="kmLineGlow"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>'+gridLines+vertical+'<path d="'+area+'" fill="url(#kmGlow)" stroke="none"/><path d="'+line+'" fill="none" stroke="#73e3ff" stroke-width="2.8" vector-effect="non-scaling-stroke" filter="url(#kmLineGlow)"/><path d="'+line+'" fill="none" stroke="#e8fbff" stroke-width="1" vector-effect="non-scaling-stroke" opacity=".85"/><circle cx="'+pts[pts.length-1][0].toFixed(1)+'" cy="'+pts[pts.length-1][1].toFixed(1)+'" r="5" fill="#fff"/><circle cx="'+pts[pts.length-1][0].toFixed(1)+'" cy="'+pts[pts.length-1][1].toFixed(1)+'" r="10" fill="none" stroke="#73e3ff" stroke-opacity=".35"/><text x="'+padL+'" y="18" fill="rgba(220,245,255,.72)" font-size="10">KOJA MARKET ENGINE · '+esc(symbol)+'</text><text x="'+(w-padR)+'" y="18" text-anchor="end" fill="'+(pct>=0?'#72e5ae':'#ff9d9d')+'" font-size="11">'+(pct>=0?'+':'')+pct.toFixed(2)+'%</text></svg>';
- chartTitle.textContent=symbol+' · PRICE HISTORY'; chartMeta.textContent='LAST '+last.toFixed(2)+' · '+(delta>=0?'+':'')+delta.toFixed(2)+' · '+rows.length+' DATA POINTS';
-}
-async function loadStocks(){try{const r=await fetch('/api/markets/quotes',{cache:'no-store'});const d=await r.json();const rows=d.quotes||[];grid.innerHTML=rows.length?rows.map(card).join(''):'<div class="km-empty">'+esc(d.error||'No market quote is currently available. Check Render Environment API keys.')+'</div>';status.textContent=d.updated_at?'SYSTEM ONLINE · Updated '+new Date(d.updated_at*1000).toLocaleTimeString():'PROVIDER OFFLINE';}catch(e){status.textContent='Market data temporarily unavailable';}}
-async function loadChart(){try{const s=chartSymbol.value,i=chartInterval.value;const r=await fetch('/api/markets/chart?symbol='+encodeURIComponent(s)+'&interval='+encodeURIComponent(i)+'&outputsize=30',{cache:'no-store'});const d=await r.json();drawChart(d.values||[],s);}catch(e){chart.innerHTML='<div class="km-chart-empty">Chart temporarily unavailable.</div>';}}
-async function loadFx(){try{const r=await fetch('/api/markets/fx',{cache:'no-store'});const d=await r.json();const rows=d.rates||[];fxGrid.innerHTML=rows.length?rows.map(x=>'<div class="km-fx-card"><div class="km-fx-pair">'+esc(x.symbol)+'</div><div class="km-fx-rate">'+esc(Number(x.rate).toLocaleString(undefined,{maximumFractionDigits:6}))+'</div><div class="km-fx-name">'+esc(x.base_name||'')+' → '+esc(x.quote_name||'')+'<br>'+esc(x.provider||'')+'</div></div>').join(''):'<div class="km-empty">'+esc(d.error||'Currency provider unavailable. Add a financial-data API key in Render Environment.')+'</div>'; status.textContent=d.updated_at?'FX ENGINE ONLINE · '+new Date(d.updated_at*1000).toLocaleTimeString():'FX PROVIDER OFFLINE';}catch(e){fxGrid.innerHTML='<div class="km-empty">Currency data temporarily unavailable.</div>';}}
-function tab(which){const stocks=which==='stocks';stocksView.style.display=stocks?'block':'none';fxView.style.display=stocks?'none':'block';tabStocks.classList.toggle('active',stocks);tabFx.classList.toggle('active',!stocks);if(!stocks)loadFx();}
-tabStocks.onclick=()=>tab('stocks');tabFx.onclick=()=>tab('fx');chartSymbol.onchange=loadChart;chartInterval.onchange=loadChart;loadStocks();loadChart();setInterval(loadStocks,30000);setInterval(loadFx,60000);setInterval(loadChart,300000);
+const grid=document.getElementById('kmGrid'),status=document.getElementById('kmStatus'),chart=document.getElementById('kmChart'),chartSymbol=document.getElementById('kmChartSymbol'),chartInterval=document.getElementById('kmChartInterval');
+const views=['stocks','fx','commodities','bonds','economy','business','industries','opportunities'];
+function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function n(v){const x=Number(v);return Number.isFinite(x)?x.toLocaleString(undefined,{maximumFractionDigits:4}):'—';}
+function show(view){views.forEach(v=>{const el=document.getElementById('km'+v[0].toUpperCase()+v.slice(1)+'View');if(el)el.style.display=v===view?'block':'none';});document.querySelectorAll('#kmTabs .km-tab').forEach(b=>b.classList.toggle('active',b.dataset.view===view));if(view==='fx')loadFx();if(view==='commodities')loadAssets('commodities');if(view==='bonds')loadAssets('bonds');if(view==='economy')loadEconomy();if(view==='business')loadBusiness();if(view==='industries')loadIndustries();if(view==='opportunities')loadOpportunities();}
+document.querySelectorAll('#kmTabs .km-tab').forEach(b=>b.addEventListener('click',()=>show(b.dataset.view)));
+function card(x){const ch=Number(x.change_percent);const cls=Number.isFinite(ch)?(ch>=0?'km-up':'km-down'):'';return '<div class="km-card"><strong>'+esc(x.symbol)+'</strong><div class="km-price">'+n(x.price)+'</div><div class="km-change '+cls+'">'+(Number.isFinite(ch)?(ch>=0?'+':'')+ch.toFixed(2)+'%':'No change data')+'</div><div class="km-muted">'+esc(x.provider||'Market feed')+' · '+esc(x.freshness||'')+'</div></div>';}
+async function loadStocks(){try{const r=await fetch('/api/markets/quotes',{cache:'no-store'}),d=await r.json(),rows=d.quotes||[];grid.innerHTML=rows.length?rows.map(card).join(''):'<div class="km-empty">No market prices are currently available.</div>';status.textContent=rows.length?'MARKET DATA ONLINE · '+new Date((d.updated_at||Date.now()/1000)*1000).toLocaleTimeString():'Market feeds waiting for data';}catch(e){status.textContent='Market data temporarily unavailable';}}
+function drawChart(vals,symbol){if(!chart)return;if(!vals.length){chart.innerHTML='<div class="km-chart-empty">Chart temporarily unavailable.</div>';return;}const w=900,h=220,p=20,ys=vals.map(x=>Number(x.close)).filter(Number.isFinite),min=Math.min(...ys),max=Math.max(...ys),span=max-min||1;const pts=ys.map((y,i)=>{const x=p+(i*Math.max(1,w-2*p)/(ys.length-1||1));const yy=h-p-((y-min)/span)*(h-2*p);return [x,yy];});const poly=pts.map(a=>a.join(',')).join(' ');chart.innerHTML='<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none"><polyline points="'+poly+'" fill="none" stroke="currentColor" stroke-width="3" vector-effect="non-scaling-stroke"></polyline></svg>';document.getElementById('kmChartTitle').textContent=symbol+' · PRICE HISTORY';document.getElementById('kmChartMeta').textContent=vals.length+' points';}
+async function loadChart(){try{const s=chartSymbol.value,i=chartInterval.value,r=await fetch('/api/markets/chart?symbol='+encodeURIComponent(s)+'&interval='+encodeURIComponent(i)+'&outputsize=30',{cache:'no-store'}),d=await r.json();drawChart(d.values||[],s);}catch(e){chart.innerHTML='<div class="km-chart-empty">Chart temporarily unavailable.</div>';}}
+async function loadFx(){try{const r=await fetch('/api/markets/fx',{cache:'no-store'}),d=await r.json(),rows=d.rates||[];document.getElementById('kmFxGrid').innerHTML=rows.length?rows.map(x=>'<div class="km-fx-card"><div class="km-fx-pair">'+esc(x.symbol)+'</div><div class="km-fx-rate">'+n(x.rate)+'</div><div class="km-fx-name">'+esc(x.base_name||'')+' → '+esc(x.quote_name||'')+'<br>'+esc(x.provider||'')+'</div></div>').join(''):'<div class="km-empty">Currency data temporarily unavailable.</div>';}catch(e){}}
+async function loadAssets(type){const el=document.getElementById(type==='commodities'?'kmCommoditiesGrid':'kmBondsGrid');try{const r=await fetch('/api/markets/assets?type='+type,{cache:'no-store'}),d=await r.json();el.innerHTML=(d.assets||[]).map(x=>'<div class="km-asset-card"><div class="km-asset-name">'+esc(x.name)+'</div><div class="km-asset-price">'+n(x.price)+'</div><div class="km-asset-meta">'+esc(x.symbol)+' · '+esc(x.provider||'Public fallback')+'</div></div>').join('')||'<div class="km-empty">No asset data available.</div>';}catch(e){el.innerHTML='<div class="km-empty">Asset data temporarily unavailable.</div>';}}
+async function loadEconomy(){const c=document.getElementById('kmCountry').value,el=document.getElementById('kmEconomyGrid');try{const r=await fetch('/api/markets/economy?country='+encodeURIComponent(c),{cache:'no-store'}),d=await r.json();document.getElementById('kmEconomyMeta').textContent=(d.country_name||c)+' · World Bank';el.innerHTML=(d.indicators||[]).map(x=>'<div class="km-intel-card"><strong>'+esc(x.name)+'</strong><p>'+esc(x.value_text||'Not available')+'</p><span class="km-badge">'+esc(x.year||'latest')+'</span></div>').join('')||'<div class="km-empty">No macroeconomic data returned.</div>';}catch(e){el.innerHTML='<div class="km-empty">Economy data temporarily unavailable.</div>';}}
+async function loadBusiness(){const el=document.getElementById('kmBusinessGrid');try{const r=await fetch('/api/markets/business',{cache:'no-store'}),d=await r.json();el.innerHTML=(d.items||[]).map(x=>'<div class="km-intel-card"><strong>'+esc(x.name)+'</strong><p>'+esc(x.description)+'</p><span class="km-badge">'+esc(x.focus)+'</span></div>').join('');}catch(e){}}
+async function loadIndustries(){const el=document.getElementById('kmIndustriesGrid');try{const r=await fetch('/api/markets/industries',{cache:'no-store'}),d=await r.json();el.innerHTML=(d.items||[]).map(x=>'<div class="km-intel-card"><strong>'+esc(x.name)+'</strong><p>'+esc(x.description)+'</p><span class="km-badge">'+esc(x.signal)+'</span></div>').join('');}catch(e){}}
+async function loadOpportunities(){const el=document.getElementById('kmOpportunitiesGrid');try{const r=await fetch('/api/markets/opportunities',{cache:'no-store'}),d=await r.json();el.innerHTML=(d.items||[]).map(x=>'<div class="km-intel-card"><strong>'+esc(x.name)+'</strong><p>'+esc(x.description)+'</p><span class="km-badge">'+esc(x.type)+'</span></div>').join('');}catch(e){}}
+chartSymbol.addEventListener('change',loadChart);chartInterval.addEventListener('change',loadChart);document.getElementById('kmCountry').addEventListener('change',loadEconomy);
+loadStocks();loadChart();setInterval(loadStocks,30000);setInterval(()=>{const active=document.querySelector('#kmTabs .km-tab.active')?.dataset.view;if(active==='fx')loadFx();else if(active==='commodities')loadAssets('commodities');else if(active==='bonds')loadAssets('bonds');else if(active==='economy')loadEconomy();else loadStocks();},30000);
 })();
-</script>"""
+</script>
+"""
 
 
 @app.route('/api/markets/quotes')
@@ -13323,6 +13306,121 @@ def koja_market_fx_api():
             _koja_fx_cache['updated_at']=now
         return jsonify({'rates':public_rates,'updated_at':now,'provider_order':['Alpha Vantage','Twelve Data','Public FX fallback'],'cached':False,'error':None})
     return jsonify({'rates':[],'updated_at':None,'provider_order':['Alpha Vantage','Twelve Data','Public FX fallback'],'cached':False,'error':_koja_market_diag.get('last_error') or 'Market data temporarily unavailable.'})
+
+
+# ============================================================
+# KOJA MARKET INTELLIGENCE — ASSETS / ECONOMY / BUSINESS
+# ============================================================
+KOJA_MARKET_ASSETS = {
+    "commodities": [
+        ("Gold", "GC=F"), ("Silver", "SI=F"), ("Copper", "HG=F"),
+        ("Crude Oil", "CL=F"), ("Brent Oil", "BZ=F"), ("Natural Gas", "NG=F"),
+        ("Platinum", "PL=F"), ("Palladium", "PA=F"),
+        ("Wheat", "ZW=F"), ("Corn", "ZC=F"), ("Coffee", "KC=F"), ("Cocoa", "CC=F")
+    ],
+    "bonds": [
+        ("US 13-Week Treasury", "^IRX"), ("US 5-Year Treasury", "^FVX"),
+        ("US 10-Year Treasury", "^TNX"), ("US 30-Year Treasury", "^TYX"),
+        ("S&P 500", "^GSPC"), ("Nasdaq 100", "^NDX"), ("Dow Jones", "^DJI"), ("FTSE 100", "^FTSE"),
+        ("DAX", "^GDAXI"), ("Nikkei 225", "^N225"), ("JSE All Share", "^JALSH")
+    ]
+}
+
+KOJA_MARKET_BUSINESS = [
+    ("Companies", "Company profiles, listed-company prices, performance and market context.", "Company intelligence"),
+    ("Startups", "Track startup ecosystems, funding themes, new ventures and expansion signals across Africa.", "Growth intelligence"),
+    ("Investments", "Monitor investment themes, capital flows, expansion announcements and major projects.", "Capital intelligence"),
+    ("Funding & M&A", "Follow funding rounds, acquisitions, partnerships and strategic corporate activity.", "Corporate activity"),
+    ("Financial Performance", "Use market prices and public financial disclosures to compare business performance.", "Financial intelligence"),
+    ("Tenders & Contracts", "Monitor procurement, infrastructure, government and private-sector contracting opportunities.", "Opportunity intelligence"),
+]
+KOJA_MARKET_INDUSTRIES = [
+    ("Banking & Fintech", "Banks, mobile money, payments, digital lending and financial inclusion.", "Financial sector"),
+    ("Telecom", "Mobile networks, broadband, data centres, towers and digital connectivity.", "Digital infrastructure"),
+    ("Mining & Minerals", "Copper, cobalt, lithium, gold, manganese, platinum and strategic minerals.", "Commodity exposure"),
+    ("Agriculture", "Food production, agro-processing, fertilizer, irrigation, exports and supply chains.", "Food security"),
+    ("Energy", "Electricity, renewables, oil, gas, transmission, storage and energy access.", "Energy transition"),
+    ("Construction & Infrastructure", "Roads, rail, ports, airports, housing and major capital projects.", "Infrastructure"),
+    ("Manufacturing", "Industrial production, consumer goods, machinery, chemicals and local value addition.", "Industrialization"),
+    ("Retail & Consumer", "Retail chains, FMCG, e-commerce, distribution and consumer demand.", "Consumer economy"),
+    ("Transport & Logistics", "Freight, aviation, ports, trucking, last-mile delivery and trade corridors.", "Trade infrastructure"),
+    ("Tourism & Hospitality", "Hotels, tourism flows, aviation links and destination investment.", "Services economy"),
+    ("Real Estate", "Residential, commercial, industrial property and urban development.", "Property market"),
+    ("Health & Education", "Hospitals, pharmaceuticals, health technology, schools and higher education.", "Human capital"),
+    ("Technology", "Software, cloud, AI, cybersecurity, digital platforms and technology services.", "Digital economy"),
+]
+KOJA_MARKET_OPPORTUNITIES = [
+    ("Government Tenders", "Procurement notices, infrastructure contracts and public-sector supplier opportunities.", "Tenders"),
+    ("Investment Projects", "Large projects in energy, mining, agriculture, manufacturing, logistics and infrastructure.", "Investment"),
+    ("Startup Funding", "Venture capital, accelerators, grants and other startup financing themes.", "Funding"),
+    ("Business Grants", "Public and development-finance programmes that support businesses and entrepreneurs.", "Grants"),
+    ("Infrastructure", "Roads, rail, ports, airports, utilities, housing and digital infrastructure opportunities.", "Projects"),
+    ("Export Opportunities", "Cross-border trade, commodity exports, manufactured goods and regional markets.", "Trade"),
+    ("Jobs & Talent", "Employment demand and skills opportunities connected to expanding sectors.", "Jobs"),
+    ("Franchises & Expansion", "Market-entry, distribution, franchise and regional expansion opportunities.", "Expansion"),
+]
+
+@app.route('/api/markets/assets')
+def koja_market_assets_api():
+    kind=clean(request.args.get('type') or 'commodities').lower()
+    if kind not in KOJA_MARKET_ASSETS:
+        return jsonify({'assets':[],'error':'Unsupported asset type'}),400
+    assets=[]
+    for name,symbol in KOJA_MARKET_ASSETS[kind]:
+        q=_yahoo_quote(symbol)
+        if q:
+            assets.append({'name':name,'symbol':symbol,'price':q.get('price'),'change':q.get('change'),'change_percent':q.get('change_percent'),'provider':q.get('provider'),'freshness':q.get('freshness')})
+    return jsonify({'type':kind,'assets':assets,'updated_at':time.time(),'provider':'Public market fallback'})
+
+KOJA_MARKET_COUNTRIES = {
+    'DZ':'Algeria','AO':'Angola','BJ':'Benin','BW':'Botswana','BF':'Burkina Faso','BI':'Burundi','CV':'Cabo Verde','CM':'Cameroon','CF':'Central African Republic','TD':'Chad','KM':'Comoros','CG':'Republic of the Congo','CI':"Côte d'Ivoire",'CD':'Democratic Republic of the Congo','DJ':'Djibouti','EG':'Egypt','GQ':'Equatorial Guinea','ER':'Eritrea','SZ':'Eswatini','ET':'Ethiopia','GA':'Gabon','GM':'The Gambia','GH':'Ghana','GN':'Guinea','GW':'Guinea-Bissau','KE':'Kenya','LS':'Lesotho','LR':'Liberia','LY':'Libya','MG':'Madagascar','MW':'Malawi','ML':'Mali','MR':'Mauritania','MU':'Mauritius','MA':'Morocco','MZ':'Mozambique','NA':'Namibia','NE':'Niger','NG':'Nigeria','RW':'Rwanda','ST':'São Tomé and Príncipe','SN':'Senegal','SC':'Seychelles','SL':'Sierra Leone','SO':'Somalia','ZA':'South Africa','SS':'South Sudan','SD':'Sudan','TZ':'Tanzania','TG':'Togo','TN':'Tunisia','UG':'Uganda','ZM':'Zambia','ZW':'Zimbabwe'
+}
+KOJA_WB_INDICATORS = [
+    ('NY.GDP.MKTP.CD','GDP','USD'),
+    ('NY.GDP.MKTP.KD.ZG','GDP growth','%'),
+    ('FP.CPI.TOTL.ZG','Inflation','%'),
+    ('SL.UEM.TOTL.ZS','Unemployment','%'),
+    ('GC.DOD.TOTL.GD.ZS','Government debt','% of GDP'),
+    ('NE.TRD.GNFS.ZS','Trade','% of GDP'),
+]
+
+@app.route('/api/markets/economy')
+def koja_market_economy_api():
+    code=clean(request.args.get('country') or 'ZM').upper()
+    if code not in KOJA_MARKET_COUNTRIES:
+        code='ZM'
+    indicators=[]
+    for ind,name,unit in KOJA_WB_INDICATORS:
+        try:
+            url=f'https://api.worldbank.org/v2/country/{quote_plus(code)}/indicator/{quote_plus(ind)}'
+            r=requests.get(url,params={'format':'json','per_page':5},timeout=KOJA_MARKET_TIMEOUT,headers={'User-Agent':'KOJA-AFRICA/1.0 market-intelligence'})
+            data=r.json() if r.ok else []
+            rows=data[1] if isinstance(data,list) and len(data)>1 else []
+            row=next((x for x in rows if x.get('value') is not None),None)
+            if row:
+                value=float(row['value'])
+                if ind=='NY.GDP.MKTP.CD': text=f"${value:,.0f}"
+                elif ind=='NY.GDP.MKTP.KD.ZG': text=f"{value:.2f}%"
+                elif ind=='FP.CPI.TOTL.ZG': text=f"{value:.2f}%"
+                elif ind=='SL.UEM.TOTL.ZS': text=f"{value:.2f}%"
+                elif ind=='GC.DOD.TOTL.GD.ZS': text=f"{value:.2f}% of GDP"
+                else: text=f"{value:.2f}% of GDP"
+                indicators.append({'name':name,'value':value,'value_text':text,'unit':unit,'year':row.get('date')})
+        except Exception as exc:
+            logger.warning('World Bank market indicator failed for %s/%s: %s',code,ind,exc)
+    return jsonify({'country':code,'country_name':KOJA_MARKET_COUNTRIES[code],'indicators':indicators,'source':'World Bank API','updated_at':time.time()})
+
+@app.route('/api/markets/business')
+def koja_market_business_api():
+    return jsonify({'items':[{'name':a,'description':b,'focus':c} for a,b,c in KOJA_MARKET_BUSINESS],'updated_at':time.time()})
+
+@app.route('/api/markets/industries')
+def koja_market_industries_api():
+    return jsonify({'items':[{'name':a,'description':b,'signal':c} for a,b,c in KOJA_MARKET_INDUSTRIES],'updated_at':time.time()})
+
+@app.route('/api/markets/opportunities')
+def koja_market_opportunities_api():
+    return jsonify({'items':[{'name':a,'description':b,'type':c} for a,b,c in KOJA_MARKET_OPPORTUNITIES],'updated_at':time.time()})
 
 
 # ============================================================
