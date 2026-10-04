@@ -12973,12 +12973,19 @@ def _market_http_json(url, params, provider=None):
         if not isinstance(body, dict):
             _koja_market_diag["last_error"] = "Provider returned an unexpected response."
             return None
-        if body.get("status") == "error" or body.get("code") not in (None, 200):
-            msg = str(body.get("message") or body.get("error") or "Provider rejected the request")[:300]
+        # Some providers (notably Alpha Vantage) signal quota/rate limits with
+        # HTTP 200 plus a Note/Information field instead of HTTP 429. Treat those
+        # responses as provider throttling so KOJA immediately uses fallback data.
+        quota_msg = str(body.get("message") or body.get("error") or body.get("Note") or body.get("Information") or "")[:300]
+        quota_text = quota_msg.lower()
+        if body.get("status") == "error" or body.get("code") not in (None, 200) or any(x in quota_text for x in ("rate limit", "rate-limit", "api call frequency", "credits", "credit limit", "call volume", "premium endpoint", "thank you for using alpha vantage")):
+            msg = quota_msg or "Provider rejected the request"
             _koja_market_diag["last_error"] = msg
-            if provider and ("limit" in msg.lower() or "credit" in msg.lower() or "429" in msg):
+            if provider and any(x in quota_text for x in ("limit", "credit", "frequency", "call volume", "429", "thank you for using alpha vantage")):
                 _koja_market_provider_blocked_until[provider] = time.time() + KOJA_MARKET_PROVIDER_COOLDOWN
-            logger.warning("Market provider error: %s", msg)
+                logger.warning("%s quota/rate limit detected; using fallback data for %ss", provider, KOJA_MARKET_PROVIDER_COOLDOWN)
+            else:
+                logger.warning("Market provider error: %s", msg)
             return None
         if provider:
             _koja_market_diag["last_provider"] = provider
@@ -13138,7 +13145,7 @@ def _market_panel_html():
 const grid=document.getElementById('kmGrid'),status=document.getElementById('kmStatus'),chart=document.getElementById('kmChart'),chartTitle=document.getElementById('kmChartTitle'),chartMeta=document.getElementById('kmChartMeta'),fxGrid=document.getElementById('kmFxGrid');
 const stocksView=document.getElementById('kmStocksView'),fxView=document.getElementById('kmFxView'),tabStocks=document.getElementById('kmTabStocks'),tabFx=document.getElementById('kmTabFx'),chartSymbol=document.getElementById('kmChartSymbol'),chartInterval=document.getElementById('kmChartInterval');
 function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
-function card(q){const n=parseFloat(String(q.change_percent||'').replace('%',''));const cls=isNaN(n)?'':(n>=0?'km-up':'km-down');return '<div class="km-card"><strong>'+esc(q.symbol)+'</strong><div class="km-price">'+esc(q.price||'—')+'</div><div class="km-change '+cls+'">'+esc(q.change_percent||'')+' '+esc(q.change||'')+'</div><div class="km-muted">'+esc(q.provider)+'<br>'+esc(q.freshness)+'</div></div>';}
+function card(q){const n=parseFloat(String(q.change_percent||'').replace('%',''));const cls=isNaN(n)?'':(n>=0?'km-up':'km-down');const fallback=/fallback|reference/i.test(String(q.provider||''));return '<div class="km-card"><strong>'+esc(q.symbol)+'</strong><div class="km-price">'+esc(q.price||'—')+'</div><div class="km-change '+cls+'">'+esc(q.change_percent||'')+' '+esc(q.change||'')+'</div><div class="km-muted">'+esc(q.provider)+(fallback?'<br><b>FALLBACK DATA · informational</b>':'')+'<br>'+esc(q.freshness)+'</div></div>';}
 function drawChart(rows,symbol){
  if(!rows.length){chart.innerHTML='<div class="km-chart-empty">No historical data available for this symbol.</div>';return;}
  const vals=rows.map(x=>Number(x.close)).filter(Number.isFinite); if(!vals.length){chart.innerHTML='<div class="km-chart-empty">No usable price data.</div>';return;}
@@ -13152,7 +13159,7 @@ function drawChart(rows,symbol){
  chart.innerHTML='<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" aria-label="'+esc(symbol)+' business market chart"><defs><linearGradient id="kmGlow" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#5fe1ff" stop-opacity=".34"/><stop offset="1" stop-color="#5fe1ff" stop-opacity="0"/></linearGradient><filter id="kmLineGlow"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>'+gridLines+vertical+'<path d="'+area+'" fill="url(#kmGlow)" stroke="none"/><path d="'+line+'" fill="none" stroke="#73e3ff" stroke-width="2.8" vector-effect="non-scaling-stroke" filter="url(#kmLineGlow)"/><path d="'+line+'" fill="none" stroke="#e8fbff" stroke-width="1" vector-effect="non-scaling-stroke" opacity=".85"/><circle cx="'+pts[pts.length-1][0].toFixed(1)+'" cy="'+pts[pts.length-1][1].toFixed(1)+'" r="5" fill="#fff"/><circle cx="'+pts[pts.length-1][0].toFixed(1)+'" cy="'+pts[pts.length-1][1].toFixed(1)+'" r="10" fill="none" stroke="#73e3ff" stroke-opacity=".35"/><text x="'+padL+'" y="18" fill="rgba(220,245,255,.72)" font-size="10">KOJA MARKET ENGINE · '+esc(symbol)+'</text><text x="'+(w-padR)+'" y="18" text-anchor="end" fill="'+(pct>=0?'#72e5ae':'#ff9d9d')+'" font-size="11">'+(pct>=0?'+':'')+pct.toFixed(2)+'%</text></svg>';
  chartTitle.textContent=symbol+' · PRICE HISTORY'; chartMeta.textContent='LAST '+last.toFixed(2)+' · '+(delta>=0?'+':'')+delta.toFixed(2)+' · '+rows.length+' DATA POINTS';
 }
-async function loadStocks(){try{const r=await fetch('/api/markets/quotes',{cache:'no-store'});const d=await r.json();const rows=d.quotes||[];grid.innerHTML=rows.length?rows.map(card).join(''):'<div class="km-empty">Market data is temporarily unavailable. KOJA will retry automatically.</div>';status.textContent=d.updated_at?'SYSTEM ONLINE · Updated '+new Date(d.updated_at*1000).toLocaleTimeString():'MARKET DATA INITIALIZING';}catch(e){status.textContent='Market data temporarily unavailable';}}
+async function loadStocks(){try{const r=await fetch('/api/markets/quotes',{cache:'no-store'});const d=await r.json();const rows=d.quotes||[];grid.innerHTML=rows.length?rows.map(card).join(''):'<div class="km-empty">KOJA market reference data is temporarily unavailable. KOJA will retry automatically.</div>';const hasFallback=rows.some(x=>/fallback|reference/i.test(String(x.provider||'')));status.textContent=rows.length?(hasFallback?'SYSTEM ONLINE · Fallback data displayed · Updated ':'SYSTEM ONLINE · Updated ')+new Date((d.updated_at||Date.now()/1000)*1000).toLocaleTimeString():'MARKET DATA INITIALIZING';}catch(e){grid.innerHTML='<div class="km-empty">KOJA market reference data is temporarily unavailable. KOJA will retry automatically.</div>';status.textContent='MARKET DATA RETRYING';}}
 async function loadChart(){try{const s=chartSymbol.value,i=chartInterval.value;const r=await fetch('/api/markets/chart?symbol='+encodeURIComponent(s)+'&interval='+encodeURIComponent(i)+'&outputsize=30',{cache:'no-store'});const d=await r.json();drawChart(d.values||[],s);}catch(e){chart.innerHTML='<div class="km-chart-empty">Chart temporarily unavailable.</div>';}}
 async function loadFx(){try{const r=await fetch('/api/markets/fx',{cache:'no-store'});const d=await r.json();const rows=d.rates||[];fxGrid.innerHTML=rows.length?rows.map(x=>'<div class="km-fx-card"><div class="km-fx-pair">'+esc(x.symbol)+'</div><div class="km-fx-rate">'+esc(Number(x.rate).toLocaleString(undefined,{maximumFractionDigits:6}))+'</div><div class="km-fx-name">'+esc(x.base_name||'')+' → '+esc(x.quote_name||'')+'<br>'+esc(x.provider||'')+'</div></div>').join(''):'<div class="km-empty">'+esc(d.error||'KOJA fallback currency data is temporarily unavailable. Please refresh shortly.')+'</div>'; status.textContent=d.updated_at?'FX ENGINE ONLINE · '+new Date(d.updated_at*1000).toLocaleTimeString():'FX REFERENCE DATA UNAVAILABLE';}catch(e){fxGrid.innerHTML='<div class="km-empty">Currency data temporarily unavailable.</div>';}}
 function tab(which){const stocks=which==='stocks';stocksView.style.display=stocks?'block':'none';fxView.style.display=stocks?'none':'block';tabStocks.classList.toggle('active',stocks);tabFx.classList.toggle('active',!stocks);if(!stocks)loadFx();}
