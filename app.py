@@ -12125,7 +12125,7 @@ def koja_admin_go_live():
 # ============================================================
 # KOJA NEXUS — AFRICA NOW AUTOMATIC TOP SCREEN
 # ============================================================
-KOJA_NEXUS_AFRICA_NOW_VERSION = "3.0-global-multi-source-business-markets-30s-nexus"
+KOJA_NEXUS_AFRICA_NOW_VERSION = "3.1-schema-safe-global-news-jobs"
 KOJA_NEXUS_AFRICA_NOW_INTERVAL = max(60, int(os.getenv("KOJA_NEXUS_AFRICA_NOW_INTERVAL", "60")))
 KOJA_NEXUS_AFRICA_NOW_ROTATE_SECONDS = max(30, int(os.getenv("KOJA_NEXUS_AFRICA_NOW_ROTATE_SECONDS", "30")))
 KOJA_NEXUS_AFRICA_NOW_ENABLED = os.getenv("KOJA_NEXUS_AFRICA_NOW_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
@@ -12134,8 +12134,7 @@ KOJA_NEXUS_AFRICA_NOW_TIMEOUT = max(4, min(int(os.getenv("KOJA_NEXUS_AFRICA_NOW_
 _KOJA_AFRICA_NOW_FEEDS = [
     # Africa / pan-African
     ("Africanews Africa", "https://www.africanews.com/feed/rss", "africa_news"),
-    ("Africanews Business", "https://www.africanews.com/business/feed/rss", "business_markets"),
-    ("BBC Africa", "https://feeds.bbci.co.uk/news/world/africa/rss.xml", "africa_news"),
+        ("BBC Africa", "https://feeds.bbci.co.uk/news/world/africa/rss.xml", "africa_news"),
     ("BBC Afrique", "https://feeds.bbci.co.uk/afrique/rss.xml", "africa_news"),
     ("AllAfrica Africa", "https://allafrica.com/tools/headlines/rdf/africa/headlines.rdf", "africa_news"),
     ("AllAfrica Business", "https://allafrica.com/tools/headlines/rdf/business/headlines.rdf", "business_markets"),
@@ -12650,7 +12649,14 @@ def _africa_now_refresh(force=False):
         fetched_at = utc_now()
         inserted = 0
         for item in collected:
-            payload = {k: item.get(k) for k in ("source_key","title","url","source_name","category","country","published_at","score","image_url","video_url","media_type","is_live","summary","job_deadline","job_type")}
+            # Keep the collector compatible with the existing Supabase table schema.
+            # job_deadline and job_type are derived at read time by /api/nexus/jobs,
+            # so they must not be required columns for ingestion.
+            payload = {k: item.get(k) for k in (
+                "source_key","title","url","source_name","category","country",
+                "published_at","score","image_url","video_url","media_type",
+                "is_live","summary"
+            )}
             payload.update({"fetched_at": fetched_at, "is_active": True})
             _, err = db_insert("koja_nexus_africa_now", payload, returning="minimal")
             if not err:
@@ -12680,9 +12686,13 @@ def _africa_now_background_worker():
         try:
             result = _africa_now_refresh()
             if not result.get("ok") and result.get("reason") not in ("refresh_in_progress", "disabled", "supabase_not_configured"):
-                # Fast retry after a transient source failure; normal cadence remains 5 minutes.
-                time.sleep(20)
-                _africa_now_refresh()
+                # One controlled retry after a transient source failure; avoid a
+                # tight loop that can repeatedly hit provider endpoints or Supabase.
+                time.sleep(30)
+                try:
+                    _africa_now_refresh()
+                except Exception:
+                    logger.exception("Africa Now controlled retry failed")
         except Exception:
             logger.exception("Africa Now background refresh failed")
         time.sleep(KOJA_NEXUS_AFRICA_NOW_INTERVAL)
