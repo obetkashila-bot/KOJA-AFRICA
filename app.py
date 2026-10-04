@@ -1257,14 +1257,14 @@ self.addEventListener('fetch', function(event) {
 
 @app.route("/health")
 def health():
+    # Render's health check must be extremely fast and must not depend on
+    # Supabase/network availability. Deep dependency checks belong elsewhere.
     return jsonify({
         "status": "ok",
         "application": APP_NAME,
-        "supabase_configured": supabase_configured(),
-        "gps_table_available": table_exists("driver_locations"),
         "timestamp": utc_now(),
         "python": os.sys.version.split()[0],
-    })
+    }), 200
 
 # ============================================================
 # REGISTER / LOGIN
