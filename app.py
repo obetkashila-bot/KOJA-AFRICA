@@ -12770,9 +12770,19 @@ def koja_nexus_africa_now_api():
         ).start()
     rows = []
     seen_keys = set()
-    for r in news_rows + job_rows:
+    # Supabase is the primary cache. If it is empty/slow or another Gunicorn
+    # worker has not refreshed its process-local state yet, merge the emergency
+    # cache so the browser can still display stories immediately.
+    emergency_rows = []
+    try:
+        emergency_rows = list(_africa_now_emergency_cache.get("items") or [])
+    except Exception:
+        emergency_rows = []
+    for r in news_rows + job_rows + emergency_rows:
+        if not isinstance(r, dict):
+            continue
         key = r.get("url") or r.get("source_key")
-        if key in seen_keys:
+        if not key or key in seen_keys:
             continue
         if r.get("is_active") is False:
             continue
@@ -12884,12 +12894,17 @@ def _africa_now_panel_html():
      const d=await r.json();
      const incoming=Array.isArray(d.items)?d.items:[];
      if(incoming.length){ items=incoming; index=0; renderItem(); startRotation(); }
+     else {
+       main.innerHTML='<div class="anx-placeholder anx-boot"><strong>AFRICA NOW</strong><span>Collecting the first stories. Retrying automatically…</span></div>';
+       updated.textContent='Connecting to available sources…';
+     }
      updated.textContent=incoming.length ? ('Updated '+(d.updated_at?new Date(d.updated_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'just now')) : 'Live sources updating in background…';
    }catch(e){
      updated.textContent=(e&&e.name==='AbortError')?'Live sources updating in background…':'Automatic update retrying';
    }finally{ clearTimeout(timer); }
  }
- load(); setInterval(load,60000);
+ async function poll(){ await load(); setTimeout(poll, items.length ? 60000 : 7000); }
+ poll();
 })();
 </script>
 """
