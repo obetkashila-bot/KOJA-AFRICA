@@ -12987,16 +12987,31 @@ ALPHAVANTAGE_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY", "").strip()
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "").strip()
 _koja_market_cache = {"quotes": {}, "updated_at": 0.0}
 _koja_fx_cache = {"rates": {}, "updated_at": 0.0}
-_koja_market_diag = {"last_error": None, "last_provider": None, "last_attempt": None, "providers": {}}
+_koja_market_diag = {
+    "last_error": None, "last_provider": None, "last_attempt": None,
+    "providers": {}
+}
 _koja_market_lock = threading.Lock()
 
-def _market_http_json(url, params, provider="unknown"):
-    _koja_market_diag["last_attempt"] = time.time()
+def _market_diag(provider, status, message=None, http_status=None, latency_ms=None):
+    now = time.time()
+    item = {"status":status, "attempted_at":now}
+    if http_status is not None: item["http_status"] = http_status
+    if latency_ms is not None: item["latency_ms"] = round(float(latency_ms), 1)
+    if message: item["message"] = str(message)[:300]
+    with _koja_market_lock:
+        _koja_market_diag["providers"][provider] = item
+        _koja_market_diag["last_attempt"] = now
+        if status == "ok":
+            _koja_market_diag["last_provider"] = provider
+        elif message:
+            _koja_market_diag["last_error"] = str(message)[:300]
+
+def _market_http_json(url, params, provider="Market provider"):
     started = time.time()
     try:
         r = requests.get(url, params=params, timeout=KOJA_MARKET_TIMEOUT, headers={"User-Agent":"KOJA-AFRICA/1.0 market-data"})
-        entry = _koja_market_diag.setdefault("providers", {}).setdefault(provider, {})
-        entry.update({"configured": True, "http_status": r.status_code, "attempted_at": time.time(), "latency_ms": round((time.time()-started)*1000)})
+        latency=(time.time()-started)*1000
         if not r.ok:
             msg = f"HTTP {r.status_code}"
             try:
@@ -13004,29 +13019,25 @@ def _market_http_json(url, params, provider="unknown"):
                 msg = str(body.get("message") or body.get("Note") or body.get("Information") or body.get("error") or msg)[:300]
             except Exception:
                 pass
-            entry.update({"status":"error", "message":msg})
-            _koja_market_diag["last_error"] = f"{provider}: {msg}"
-            logger.warning("Market provider returned %s: %s", r.status_code, msg)
+            _market_diag(provider, "error", msg, r.status_code, latency)
+            logger.warning("%s returned %s: %s", provider, r.status_code, msg)
             return None
         body = r.json()
         if not isinstance(body, dict):
             msg="Provider returned an unexpected response."
-            entry.update({"status":"error", "message":msg})
-            _koja_market_diag["last_error"] = f"{provider}: {msg}"
+            _market_diag(provider, "error", msg, r.status_code, latency)
             return None
         if body.get("status") == "error" or body.get("code") not in (None, 200):
             msg = str(body.get("message") or body.get("error") or body.get("Note") or body.get("Information") or "Provider rejected the request")[:300]
-            entry.update({"status":"error", "message":msg})
-            _koja_market_diag["last_error"] = f"{provider}: {msg}"
-            logger.warning("Market provider error: %s", msg)
+            _market_diag(provider, "error", msg, r.status_code, latency)
+            logger.warning("%s error: %s", provider, msg)
             return None
-        entry.update({"status":"ok", "message":None})
+        _market_diag(provider, "ok", "Provider response received", r.status_code, latency)
         return body
     except Exception as exc:
-        msg=str(exc)[:300]
-        _koja_market_diag.setdefault("providers", {}).setdefault(provider, {}).update({"configured":True,"status":"error","message":msg,"attempted_at":time.time()})
-        _koja_market_diag["last_error"] = f"{provider}: {msg}"
-        logger.warning("Market provider request failed: %s", exc)
+        latency=(time.time()-started)*1000
+        _market_diag(provider, "error", str(exc), None, latency)
+        logger.warning("%s request failed: %s", provider, exc)
         return None
 
 def _alpha_quote(symbol):
@@ -13073,38 +13084,38 @@ def _yahoo_quote(symbol):
         return None
 
 KOJA_REFERENCE_QUOTES = {
-    "AAPL": 226.47, "MSFT": 510.82, "NVDA": 187.62, "AMZN": 225.31,
-    "TSLA": 429.19, "GOOGL": 245.12, "META": 745.38, "ORCL": 279.54,
-    "KO": 68.41, "SONY": 28.73,
+    "AAPL":226.47,"MSFT":510.82,"NVDA":187.62,"AMZN":225.31,"TSLA":429.19,
+    "GOOGL":245.12,"META":745.38,"ORCL":279.54,"KO":68.41,"SONY":28.73
 }
 
 def _koja_reference_quote(symbol):
-    price = KOJA_REFERENCE_QUOTES.get(symbol)
+    price=KOJA_REFERENCE_QUOTES.get(symbol)
     if price is None:
         return None
-    return {"symbol":symbol,"price":price,"change":None,"change_percent":None,"volume":None,"previous_close":None,"latest_trading_day":None,"provider":"KOJA Reference Fallback","freshness":"Indicative reference value; not live market data","source_url":None}
+    return {"symbol":symbol,"price":price,"change":None,"change_percent":None,"volume":None,
+            "previous_close":None,"latest_trading_day":None,"provider":"KOJA Reference Fallback",
+            "freshness":"Indicative reference value; not live market data","source_url":None}
 
 def _market_quote(symbol):
     symbol = clean(symbol).upper()
     if not symbol:
         return None
-    q = _alpha_quote(symbol)
+    providers=[("Alpha Vantage",_alpha_quote), ("Twelve Data",_twelve_quote), ("Public market fallback",_yahoo_quote)]
+    for provider, fn in providers:
+        try:
+            q=fn(symbol)
+            if q:
+                with _koja_market_lock:
+                    _koja_market_diag["last_provider"]=provider
+                return q
+        except Exception as exc:
+            _market_diag(provider, "error", str(exc))
+    q=_koja_reference_quote(symbol)
     if q:
-        _koja_market_diag["last_provider"] = "Alpha Vantage"
-        return q
-    q = _twelve_quote(symbol)
-    if q:
-        _koja_market_diag["last_provider"] = "Twelve Data"
-        return q
-    q = _yahoo_quote(symbol)
-    if q:
-        _koja_market_diag["last_provider"] = "Public market fallback"
-        return q
-    q = _koja_reference_quote(symbol)
-    if q:
-        _koja_market_diag["last_provider"] = "KOJA Reference Fallback"
-        return q
-    return None
+        with _koja_market_lock:
+            _koja_market_diag["last_provider"]="KOJA Reference Fallback"
+            _koja_market_diag["last_attempt"]=time.time()
+    return q
 
 def _refresh_market_quotes(symbols=None, force=False):
     symbols = list(dict.fromkeys([clean(x).upper() for x in (symbols or KOJA_MARKET_SYMBOLS) if clean(x)]))[:30]
@@ -13181,13 +13192,13 @@ def koja_market_quotes_api():
     symbols=[x.strip().upper() for x in raw.split(',') if x.strip()] if raw else KOJA_MARKET_SYMBOLS
     symbols=list(dict.fromkeys(symbols))[:30]
     quotes,updated_at=_refresh_market_quotes(symbols)
-    return jsonify({'provider_order':['Alpha Vantage','Twelve Data','Public market fallback','KOJA Reference Fallback'],'quotes':[quotes[s] for s in symbols if s in quotes],'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'configured':bool(ALPHAVANTAGE_API_KEY or TWELVEDATA_API_KEY)})
+    return jsonify({'provider_order':['Alpha Vantage','Twelve Data','Public market fallback','KOJA Reference Fallback'],'quotes':[quotes[s] for s in symbols if s in quotes],'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'configured':bool(ALPHAVANTAGE_API_KEY or TWELVEDATA_API_KEY),'diagnostics':dict(_koja_market_diag)})
 
 @app.route('/api/markets/status')
 def koja_market_status_api():
     with _koja_market_lock:
         updated_at=float(_koja_market_cache.get('updated_at') or 0);count=len(_koja_market_cache.get('quotes') or {})
-    return jsonify({'alpha_vantage_configured':bool(ALPHAVANTAGE_API_KEY),'twelve_data_configured':bool(TWELVEDATA_API_KEY),'cached_quotes':count,'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'last_error':_koja_market_diag.get('last_error'),'last_provider':_koja_market_diag.get('last_provider'),'last_attempt':_koja_market_diag.get('last_attempt'),'providers':_koja_market_diag.get('providers') or {},'provider_order':['Alpha Vantage','Twelve Data','Public market fallback','KOJA Reference Fallback']})
+    return jsonify({'alpha_vantage_configured':bool(ALPHAVANTAGE_API_KEY),'twelve_data_configured':bool(TWELVEDATA_API_KEY),'cached_quotes':count,'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'last_error':_koja_market_diag.get('last_error'),'last_provider':_koja_market_diag.get('last_provider'),'last_attempt':_koja_market_diag.get('last_attempt'),'providers':dict(_koja_market_diag.get('providers') or {}),'provider_order':['Alpha Vantage','Twelve Data','Public market fallback','KOJA Reference Fallback']})
 
 
 KOJA_FX_PAIRS = [
@@ -13207,7 +13218,7 @@ def _alpha_time_series(symbol, interval="1day", outputsize=30):
     if not ALPHAVANTAGE_API_KEY:
         return []
     fn = {"1day":"TIME_SERIES_DAILY", "1week":"TIME_SERIES_WEEKLY", "1month":"TIME_SERIES_MONTHLY"}.get(interval, "TIME_SERIES_DAILY")
-    body = _market_http_json("https://www.alphavantage.co/query", {"function":fn,"symbol":symbol,"outputsize":"compact","apikey":ALPHAVANTAGE_API_KEY})
+    body = _market_http_json("https://www.alphavantage.co/query", {"function":fn,"symbol":symbol,"outputsize":"compact","apikey":ALPHAVANTAGE_API_KEY}, "Alpha Vantage")
     key = {"TIME_SERIES_DAILY":"Time Series (Daily)","TIME_SERIES_WEEKLY":"Weekly Time Series","TIME_SERIES_MONTHLY":"Monthly Time Series"}[fn]
     values = (body or {}).get(key) or {}
     out=[]
