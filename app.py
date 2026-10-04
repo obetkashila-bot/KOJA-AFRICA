@@ -12125,7 +12125,7 @@ def koja_admin_go_live():
 # ============================================================
 # KOJA NEXUS — AFRICA NOW AUTOMATIC TOP SCREEN
 # ============================================================
-KOJA_NEXUS_AFRICA_NOW_VERSION = "2.1-jobs"
+KOJA_NEXUS_AFRICA_NOW_VERSION = "2.3-jobs-images-video-30s-nexus-load"
 KOJA_NEXUS_AFRICA_NOW_INTERVAL = max(300, int(os.getenv("KOJA_NEXUS_AFRICA_NOW_INTERVAL", "300")))
 KOJA_NEXUS_AFRICA_NOW_ENABLED = os.getenv("KOJA_NEXUS_AFRICA_NOW_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
 KOJA_NEXUS_AFRICA_NOW_TIMEOUT = max(4, min(int(os.getenv("KOJA_NEXUS_AFRICA_NOW_TIMEOUT", "8")), 20))
@@ -12247,7 +12247,7 @@ def _africa_now_parse_item(item, label, feed_kind):
     title = _africa_now_text(_africa_now_child_text(item, ("title",)))
     link = _africa_now_child_text(item, ("link",))
     if not link:
-        for child in list(item):
+        for child in item.iter():
             if _africa_now_tag(child) == "link":
                 link = (child.attrib.get("href") or child.text or "").strip()
                 if link:
@@ -12257,16 +12257,30 @@ def _africa_now_parse_item(item, label, feed_kind):
     pub = _africa_now_child_text(item, ("pubdate", "published", "updated", "date"))
     published = _africa_now_parse_date(pub)
     source = _africa_now_text(_africa_now_child_text(item, ("source",))) or label
+
+    # RSS/Atom feeds commonly put story artwork in media:content,
+    # media:thumbnail, enclosure, image, or inside content:encoded HTML.
+    # Walk descendants rather than only direct children so namespaced media
+    # groups are also detected.
     image_url = _africa_now_image(summary_raw)
     video_url = None
-    for child in list(item):
+    for child in item.iter():
+        if child is item:
+            continue
         tag = _africa_now_tag(child)
-        media_url = child.attrib.get("url") or child.attrib.get("href")
-        media_type = (child.attrib.get("type") or "").lower()
-        if media_url and media_type.startswith("image/") and not image_url:
-            image_url = media_url
-        if media_url and (media_type.startswith("video/") or tag in ("video", "player")):
-            video_url = media_url
+        attrs = getattr(child, "attrib", {}) or {}
+        media_url = (attrs.get("url") or attrs.get("href") or attrs.get("src") or "").strip()
+        media_type = (attrs.get("type") or attrs.get("medium") or "").lower().strip()
+        if media_url and not image_url:
+            if media_type.startswith("image/") or media_type in ("image", "photo", "thumbnail") or tag in ("thumbnail", "image"):
+                image_url = media_url
+            elif tag == "enclosure" and "image" in media_type:
+                image_url = media_url
+        if media_url and not video_url:
+            if media_type.startswith("video/") or media_type in ("video", "video/mp4", "video/webm") or tag in ("video", "player"):
+                video_url = media_url
+        if tag == "image" and not image_url and child.text:
+            image_url = child.text.strip()
     if not title or not link:
         return None
     clean_link = link.split("#", 1)[0]
@@ -12569,7 +12583,7 @@ def _africa_now_panel_html():
      '<div class="anx-overlay"><div class="anx-kicker">'+esc(h.category||'Africa News')+' · '+esc(h.country||'Africa')+'</div><div class="anx-title">'+esc(h.title)+'</div><div class="anx-summary">'+esc(h.summary||('Latest report from '+(h.source_name||'source')))+'</div><a class="anx-open" href="'+esc(h.url)+'" target="_blank" rel="noopener noreferrer">'+(isJob?'Open original vacancy':'Open story')+'</a>'+videoButton+jobButton+'</div>';
    if(progress)progress.textContent=((index%items.length)+1)+' / '+items.length;
  }
- function startRotation(){clearInterval(rotateTimer); if(items.length>1) rotateTimer=setInterval(function(){index=(index+1)%items.length;renderItem();},12000);}
+ function startRotation(){clearInterval(rotateTimer); if(items.length>1) rotateTimer=setInterval(function(){index=(index+1)%items.length;renderItem();},30000);}
  async function load(){
    try{
      const r=await fetch('{{ url_for('koja_nexus_africa_now_api') }}?limit=20',{cache:'no-store'}); if(!r.ok)throw new Error('feed');
@@ -12656,8 +12670,19 @@ def _world_rows(include_inactive=False):
         rows = list(_nexus_services_cache.get("rows") or [])
         loaded_at = float(_nexus_services_cache.get("loaded_at") or 0)
     if not rows:
-        _schedule_nexus_services_cache_refresh(force=True)
-        return []
+        # First public request: load the already-seeded NEXUS directory now.
+        # This avoids rendering the real directory as 0 services while the
+        # background warm-up thread is still waiting on Supabase.
+        fresh = db_select("koja_world_services", order="sort_order.asc,created_at.asc", limit=5000) or []
+        if fresh:
+            with _nexus_services_cache_lock:
+                _nexus_services_cache["rows"] = fresh
+                _nexus_services_cache["loaded_at"] = time.time()
+                _nexus_services_cache["refreshing"] = False
+            rows = fresh
+        else:
+            _schedule_nexus_services_cache_refresh(force=True)
+            return []
     if time.time() - loaded_at >= _NEXUS_SERVICES_CACHE_TTL:
         _schedule_nexus_services_cache_refresh(force=True)
     return [r for r in rows if _world_active(r)]
