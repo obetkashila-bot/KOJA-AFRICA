@@ -12584,8 +12584,6 @@ def _africa_now_panel_html():
 
 
 _start_africa_now_worker()
-# NEXUS service data is loaded after the web process is available; page requests never wait.
-_schedule_nexus_services_cache_refresh(force=True)
 
 # ============================================================
 # KOJA NEXUS — PUBLIC AFRICA SERVICE DIRECTORY
@@ -12645,6 +12643,10 @@ def _schedule_nexus_services_cache_refresh(force=False):
             return
         _nexus_services_cache["refreshing"] = True
     threading.Thread(target=_refresh_nexus_services_cache, name="koja-nexus-services", daemon=True).start()
+
+# Warm the NEXUS service cache only after its scheduler is defined.
+# This prevents Gunicorn import-time NameError while keeping first page loads non-blocking.
+_schedule_nexus_services_cache_refresh(force=True)
 
 def _world_rows(include_inactive=False):
     # Admin screens need authoritative data; public screens use the non-blocking cache.
