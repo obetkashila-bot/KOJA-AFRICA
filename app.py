@@ -12960,15 +12960,42 @@ _start_africa_now_worker()
 # ============================================================
 KOJA_MARKET_CACHE_TTL = max(10, int(os.getenv("KOJA_MARKET_CACHE_TTL", "30")))
 KOJA_MARKET_TIMEOUT = max(3, min(int(os.getenv("KOJA_MARKET_TIMEOUT", "8")), 20))
+KOJA_MARKET_429_COOLDOWN = max(300, int(os.getenv("KOJA_MARKET_429_COOLDOWN", str(6 * 60 * 60))))
 KOJA_MARKET_SYMBOLS = [x.strip().upper() for x in os.getenv("KOJA_MARKET_SYMBOLS", "AAPL,MSFT,NVDA,AMZN,TSLA,GOOGL,META,ORCL,KO,SONY").split(",") if x.strip()][:30]
 ALPHAVANTAGE_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY", "").strip()
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "").strip()
 _koja_market_cache = {"quotes": {}, "updated_at": 0.0}
 _koja_fx_cache = {"rates": {}, "updated_at": 0.0}
 _koja_market_diag = {"last_error": None, "last_provider": None}
+_koja_market_provider_cooldown = {"Alpha Vantage": 0.0, "Twelve Data": 0.0}
 _koja_market_lock = threading.Lock()
 
+def _market_provider_for_url(url):
+    u=str(url or "").lower()
+    if "alphavantage.co" in u:
+        return "Alpha Vantage"
+    if "twelvedata.com" in u:
+        return "Twelve Data"
+    return None
+
+def _market_provider_ready(provider):
+    return time.time() >= float(_koja_market_provider_cooldown.get(provider, 0.0) or 0.0)
+
+def _market_reference_quote(symbol):
+    # Final non-live display fallback. Values are intentionally labelled as reference data.
+    refs={
+        "AAPL":226.47,"MSFT":510.82,"NVDA":187.62,"AMZN":225.31,"TSLA":429.19,
+        "GOOGL":245.12,"META":745.38,"ORCL":279.54,"KO":68.41,"SONY":28.73,
+    }
+    price=refs.get(clean(symbol).upper())
+    if price is None:
+        return None
+    return {"symbol":clean(symbol).upper(),"price":price,"change":None,"change_percent":None,"volume":None,"previous_close":None,"latest_trading_day":None,"provider":"KOJA Reference Fallback","freshness":"Indicative reference value; not live market data","source_url":None}
+
 def _market_http_json(url, params):
+    provider = _market_provider_for_url(url)
+    if provider and not _market_provider_ready(provider):
+        return None
     try:
         r = requests.get(url, params=params, timeout=KOJA_MARKET_TIMEOUT, headers={"User-Agent":"KOJA-AFRICA/1.0 market-data"})
         if not r.ok:
@@ -12979,7 +13006,11 @@ def _market_http_json(url, params):
             except Exception:
                 pass
             _koja_market_diag["last_error"] = msg
-            logger.warning("Market provider returned %s: %s", r.status_code, msg)
+            if provider and r.status_code == 429:
+                _koja_market_provider_cooldown[provider] = time.time() + KOJA_MARKET_429_COOLDOWN
+                logger.warning("Market provider %s returned 429; cooling down for %ss", provider, KOJA_MARKET_429_COOLDOWN)
+            else:
+                logger.warning("Market provider returned %s: %s", r.status_code, msg)
             return None
         body = r.json()
         if not isinstance(body, dict):
@@ -13043,7 +13074,7 @@ def _market_quote(symbol):
     symbol = clean(symbol).upper()
     if not symbol:
         return None
-    return _alpha_quote(symbol) or _twelve_quote(symbol) or _yahoo_quote(symbol)
+    return _alpha_quote(symbol) or _twelve_quote(symbol) or _yahoo_quote(symbol) or _market_reference_quote(symbol)
 
 def _refresh_market_quotes(symbols=None, force=False):
     symbols = list(dict.fromkeys([clean(x).upper() for x in (symbols or KOJA_MARKET_SYMBOLS) if clean(x)]))[:30]
@@ -13106,7 +13137,7 @@ function n(v){const x=Number(v);return Number.isFinite(x)?x.toLocaleString(undef
 function show(view){views.forEach(v=>{const el=document.getElementById('km'+v[0].toUpperCase()+v.slice(1)+'View');if(el)el.style.display=v===view?'block':'none';});document.querySelectorAll('#kmTabs .km-tab').forEach(b=>b.classList.toggle('active',b.dataset.view===view));if(view==='fx')loadFx();if(view==='commodities')loadAssets('commodities');if(view==='bonds')loadAssets('bonds');if(view==='economy')loadEconomy();if(view==='business')loadBusiness();if(view==='industries')loadIndustries();if(view==='opportunities')loadOpportunities();if(view==='company')loadCompany();if(view==='investment')loadInvestment();if(view==='analytics'){loadAnalytics();renderAlerts();}}
 document.querySelectorAll('#kmTabs .km-tab').forEach(b=>b.addEventListener('click',()=>show(b.dataset.view)));
 function card(x){const ch=Number(x.change_percent);const cls=Number.isFinite(ch)?(ch>=0?'km-up':'km-down'):'';return '<div class="km-card"><strong>'+esc(x.symbol)+'</strong><div class="km-price">'+n(x.price)+'</div><div class="km-change '+cls+'">'+(Number.isFinite(ch)?(ch>=0?'+':'')+ch.toFixed(2)+'%':'No change data')+'</div><div class="km-muted">'+esc(x.provider||'Market feed')+' · '+esc(x.freshness||'')+'</div></div>';}
-async function loadStocks(){try{const r=await fetch('/api/markets/quotes',{cache:'no-store'}),d=await r.json(),rows=d.quotes||[];grid.innerHTML=rows.length?rows.map(card).join(''):'<div class="km-empty">No market prices are currently available.</div>';status.textContent=rows.length?'MARKET DATA ONLINE · '+new Date((d.updated_at||Date.now()/1000)*1000).toLocaleTimeString():'Market feeds waiting for data';}catch(e){status.textContent='Market data temporarily unavailable';}}
+async function loadStocks(){try{const r=await fetch('/api/markets/quotes',{cache:'no-store'}),d=await r.json(),rows=d.quotes||[];grid.innerHTML=rows.length?rows.map(card).join(''):'<div class="km-empty">Reference market data is temporarily unavailable.</div>';status.textContent=rows.length?'MARKET DATA · '+(rows.some(x=>String(x.provider||'').includes('Fallback'))?'FALLBACK':'ONLINE')+' · '+new Date((d.updated_at||Date.now()/1000)*1000).toLocaleTimeString():'Market data temporarily unavailable';checkAlerts(rows);}catch(e){status.textContent='Market data temporarily unavailable';}}
 function drawChart(vals,symbol){if(!chart)return;if(!vals.length){chart.innerHTML='<div class="km-chart-empty">Chart temporarily unavailable.</div>';return;}const w=900,h=220,p=20,ys=vals.map(x=>Number(x.close)).filter(Number.isFinite),min=Math.min(...ys),max=Math.max(...ys),span=max-min||1;const pts=ys.map((y,i)=>{const x=p+(i*Math.max(1,w-2*p)/(ys.length-1||1));const yy=h-p-((y-min)/span)*(h-2*p);return [x,yy];});const poly=pts.map(a=>a.join(',')).join(' ');chart.innerHTML='<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none"><polyline points="'+poly+'" fill="none" stroke="currentColor" stroke-width="3" vector-effect="non-scaling-stroke"></polyline></svg>';document.getElementById('kmChartTitle').textContent=symbol+' · PRICE HISTORY';document.getElementById('kmChartMeta').textContent=vals.length+' points';}
 async function loadChart(){try{const s=chartSymbol.value,i=chartInterval.value,r=await fetch('/api/markets/chart?symbol='+encodeURIComponent(s)+'&interval='+encodeURIComponent(i)+'&outputsize=30',{cache:'no-store'}),d=await r.json();drawChart(d.values||[],s);}catch(e){chart.innerHTML='<div class="km-chart-empty">Chart temporarily unavailable.</div>';}}
 async function loadFx(){try{const r=await fetch('/api/markets/fx',{cache:'no-store'}),d=await r.json(),rows=d.rates||[];document.getElementById('kmFxGrid').innerHTML=rows.length?rows.map(x=>'<div class="km-fx-card"><div class="km-fx-pair">'+esc(x.symbol)+'</div><div class="km-fx-rate">'+n(x.rate)+'</div><div class="km-fx-name">'+esc(x.base_name||'')+' → '+esc(x.quote_name||'')+'<br>'+esc(x.provider||'')+'</div></div>').join(''):'<div class="km-empty">Currency data temporarily unavailable.</div>';}catch(e){}}
@@ -13121,7 +13152,6 @@ async function loadAnalytics(){const el=document.getElementById('kmAnalyticsGrid
 function getAlerts(){try{return JSON.parse(localStorage.getItem('kojaMarketAlerts')||'[]')}catch(e){return[]}}
 function renderAlerts(){const el=document.getElementById('kmAlertsGrid');if(!el)return;const a=getAlerts();el.innerHTML=a.length?a.map((x,i)=>'<div class="km-intel-card"><strong>'+esc(x.symbol)+' ≥ '+n(x.target)+'</strong><p>Browser alert · checks with KOJA market refresh</p><button type="button" data-del-alert="'+i+'" class="km-tab">Remove</button></div>').join(''):'<div class="km-empty">No personal price alerts saved on this device.</div>';el.querySelectorAll('[data-del-alert]').forEach(b=>b.onclick=()=>{const a=getAlerts();a.splice(Number(b.dataset.delAlert),1);localStorage.setItem('kojaMarketAlerts',JSON.stringify(a));renderAlerts();});}
 function checkAlerts(rows){const a=getAlerts();if(!a.length)return;a.forEach(x=>{const q=rows.find(r=>String(r.symbol).toUpperCase()===String(x.symbol).toUpperCase());if(q&&Number(q.price)>=Number(x.target)){if('Notification' in window&&Notification.permission==='granted')new Notification('KOJA Market Alert',{body:x.symbol+' reached '+n(q.price)});x.triggered=true;}});localStorage.setItem('kojaMarketAlerts',JSON.stringify(a));}
-const oldLoadStocks=loadStocks;loadStocks=async function(){await oldLoadStocks();try{const r=await fetch('/api/markets/quotes',{cache:'no-store'}),d=await r.json();checkAlerts(d.quotes||[]);}catch(e){}}
 if(document.getElementById('kmCompanyLoad'))document.getElementById('kmCompanyLoad').onclick=loadCompany;
 if(document.getElementById('kmAlertAdd'))document.getElementById('kmAlertAdd').onclick=()=>{const symbol=(document.getElementById('kmAlertSymbol').value||'').trim().toUpperCase(),target=Number(document.getElementById('kmAlertTarget').value);if(!symbol||!Number.isFinite(target))return;const a=getAlerts();a.push({symbol,target,created_at:Date.now()});localStorage.setItem('kojaMarketAlerts',JSON.stringify(a));renderAlerts();if('Notification' in window&&Notification.permission==='default')Notification.requestPermission().catch(()=>{});};
 
@@ -13138,7 +13168,7 @@ def koja_market_quotes_api():
     symbols=[x.strip().upper() for x in raw.split(',') if x.strip()] if raw else KOJA_MARKET_SYMBOLS
     symbols=list(dict.fromkeys(symbols))[:30]
     quotes,updated_at=_refresh_market_quotes(symbols)
-    return jsonify({'provider_order':['Alpha Vantage','Twelve Data','Public market fallback'],'quotes':[quotes[s] for s in symbols if s in quotes],'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'configured':bool(ALPHAVANTAGE_API_KEY or TWELVEDATA_API_KEY)})
+    return jsonify({'provider_order':['Alpha Vantage','Twelve Data','Public market fallback','KOJA Reference Fallback'],'quotes':[quotes[s] for s in symbols if s in quotes],'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'configured':bool(ALPHAVANTAGE_API_KEY or TWELVEDATA_API_KEY)})
 
 @app.route('/api/markets/status')
 def koja_market_status_api():
