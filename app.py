@@ -13423,19 +13423,180 @@ def koja_market_economy_api():
             logger.warning('World Bank market indicator failed for %s/%s: %s',code,ind,exc)
     return jsonify({'country':code,'country_name':KOJA_MARKET_COUNTRIES[code],'indicators':indicators,'source':'World Bank API','updated_at':time.time()})
 
+# ------------------------------------------------------------
+# LIVE BUSINESS / OPPORTUNITY SOURCES
+# Official public sources are preferred.  These feeds are additive to
+# AFRICA NOW and never replace existing market/NEXUS functionality.
+# ------------------------------------------------------------
+KOJA_LIVE_BUSINESS_CACHE = {"items": [], "updated_at": 0.0}
+KOJA_LIVE_BUSINESS_LOCK = threading.Lock()
+KOJA_LIVE_BUSINESS_TTL = max(60, int(os.getenv("KOJA_MARKET_BUSINESS_TTL", "900")))
+
+
+def _live_source_get(url, params=None, timeout=None):
+    try:
+        r = requests.get(url, params=params or {}, timeout=timeout or KOJA_MARKET_TIMEOUT,
+                         headers={"User-Agent": "KOJA-AFRICA/1.0 (+market-intelligence)"})
+        if not r.ok:
+            return None
+        return r
+    except Exception as exc:
+        logger.warning("KOJA live source failed %s: %s", url, exc)
+        return None
+
+
+def _afdb_live_opportunities(limit=25):
+    """Read current AfDB business/procurement notices from the official public page.
+    The page is intentionally treated as a source index: KOJA links users to the
+    original notice rather than copying tender documents.
+    """
+    url = "https://www.afdb.org/en/projects-and-operations/procurement/resources-for-businesses"
+    r = _live_source_get(url, timeout=KOJA_MARKET_TIMEOUT)
+    if not r:
+        return []
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(r.text, "html.parser")
+        out, seen = [], set()
+        for a in soup.find_all("a", href=True):
+            title = " ".join(a.get_text(" ", strip=True).split())
+            href = a.get("href") or ""
+            if len(title) < 12 or not any(k in title.lower() for k in (
+                "project", "programme", "program", "procurement", "consult", "electrification",
+                "agriculture", "finance", "insurtech", "marketability", "development", "supply"
+            )):
+                continue
+            if href.startswith("/"):
+                href = "https://www.afdb.org" + href
+            if not href.startswith("http") or href in seen:
+                continue
+            seen.add(href)
+            out.append({"title": title[:220], "summary": "Official African Development Bank business/project opportunity.",
+                        "country": "Africa", "type": "AfDB project / procurement", "url": href,
+                        "source": "African Development Bank", "source_url": href})
+            if len(out) >= limit:
+                break
+        return out
+    except Exception as exc:
+        logger.warning("AfDB parser failed: %s", exc)
+        return []
+
+
+def _worldbank_live_projects(limit=25):
+    """Use the public World Bank Projects API for live project/investment signals."""
+    url = "https://api.worldbank.org/v2/project"
+    r = _live_source_get(url, params={"format": "json", "rows": min(limit, 50), "statuscode": "A"}, timeout=KOJA_MARKET_TIMEOUT)
+    if not r:
+        return []
+    try:
+        data = r.json()
+        rows = data[1] if isinstance(data, list) and len(data) > 1 else []
+        out = []
+        for x in rows:
+            if not isinstance(x, dict):
+                continue
+            title = clean(x.get("project_name") or x.get("projectname") or x.get("project_name"))
+            if not title:
+                continue
+            country = clean(x.get("countryname") or x.get("country") or "Africa")
+            pid = clean(x.get("id") or x.get("projectid"))
+            href = "https://projects.worldbank.org/en/projects-operations/project-detail/" + quote_plus(pid) if pid else "https://projects.worldbank.org/"
+            out.append({"title": title[:220],
+                        "summary": "Active World Bank project with potential business, infrastructure or development activity.",
+                        "country": country or "Africa", "type": "World Bank project", "url": href,
+                        "source": "World Bank", "source_url": href, "project_id": pid})
+        return out[:limit]
+    except Exception as exc:
+        logger.warning("World Bank projects parser failed: %s", exc)
+        return []
+
+
+def _live_africa_business_rows(limit=30):
+    """Reuse the already-ingested AFRICA NOW source layer for current business/company news."""
+    try:
+        rows = db_select('koja_nexus_africa_now', order='score.desc,published_at.desc', limit=180) or []
+    except Exception:
+        rows = []
+    out, seen = [], set()
+    business_words = ('business','company','companies','investment','funding','startup','bank','finance',
+                      'telecom','mining','agriculture','energy','manufacturing','contract','acquisition',
+                      'merger','expansion','economy','market','project','industry')
+    for r in rows:
+        if not isinstance(r, dict) or r.get('is_active') is False:
+            continue
+        title = clean(r.get('title') or '')
+        summary = clean(r.get('summary') or '')
+        blob = (title + ' ' + summary).lower()
+        cat = clean(r.get('category') or '').lower()
+        if not (any(w in blob for w in business_words) or 'business' in cat or 'economy' in cat or 'investment' in cat):
+            continue
+        key = clean(r.get('url') or title).lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append({"title": title[:220], "summary": summary[:500],
+                    "country": clean(r.get('country') or 'Africa'),
+                    "type": "Business / company intelligence", "url": r.get('url'),
+                    "source": clean(r.get('source') or 'AFRICA NOW source'),
+                    "source_url": r.get('url'), "published_at": r.get('published_at')})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _refresh_live_business_sources(force=False):
+    now = time.time()
+    with KOJA_LIVE_BUSINESS_LOCK:
+        if not force and KOJA_LIVE_BUSINESS_CACHE["items"] and now - KOJA_LIVE_BUSINESS_CACHE["updated_at"] < KOJA_LIVE_BUSINESS_TTL:
+            return KOJA_LIVE_BUSINESS_CACHE["items"]
+    items = _live_africa_business_rows(24) + _afdb_live_opportunities(18) + _worldbank_live_projects(18)
+    # De-duplicate while preserving source diversity.
+    unique, seen = [], set()
+    for item in items:
+        key = clean(item.get('url') or item.get('title')).lower()
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        unique.append(item)
+    with KOJA_LIVE_BUSINESS_LOCK:
+        KOJA_LIVE_BUSINESS_CACHE["items"] = unique
+        KOJA_LIVE_BUSINESS_CACHE["updated_at"] = now
+    return unique
+
+
 @app.route('/api/markets/business')
 def koja_market_business_api():
-    return jsonify({'items':[{'name':a,'description':b,'focus':c} for a,b,c in KOJA_MARKET_BUSINESS],'updated_at':time.time()})
+    live = _refresh_live_business_sources()
+    items = live[:40] + [
+        {'name':a,'description':b,'focus':c,'live':False,'source':'KOJA category'}
+        for a,b,c in KOJA_MARKET_BUSINESS
+    ]
+    return jsonify({'items':items,'updated_at':time.time(),
+                    'sources':['AFRICA NOW source intelligence','African Development Bank','World Bank'],
+                    'live_count':len(live)})
 
 @app.route('/api/markets/industries')
 def koja_market_industries_api():
-    return jsonify({'items':[{'name':a,'description':b,'signal':c} for a,b,c in KOJA_MARKET_INDUSTRIES],'updated_at':time.time()})
+    live=_refresh_live_business_sources()
+    sector_items=[]
+    sectors=('bank','fintech','telecom','mining','agric','energy','construction','manufactur','retail','logistics','tourism','real estate','health','education','technology')
+    for x in live:
+        blob=(str(x.get('title',''))+' '+str(x.get('summary',''))).lower()
+        if any(k in blob for k in sectors):
+            sector_items.append(x)
+    static=[{'name':a,'description':b,'signal':c,'live':False,'source':'KOJA category'} for a,b,c in KOJA_MARKET_INDUSTRIES]
+    return jsonify({'items':sector_items[:40]+static,'updated_at':time.time(),'live_count':len(sector_items),
+                    'sources':['AFRICA NOW source intelligence','African Development Bank','World Bank']})
 
 @app.route('/api/markets/opportunities')
 def koja_market_opportunities_api():
-    live=_market_intelligence_rows(24,'opportunities')
-    static=[{'title':a,'summary':b,'type':c,'country':'Africa','url':None} for a,b,c in KOJA_MARKET_OPPORTUNITIES]
-    return jsonify({'items':live+static,'updated_at':time.time(),'source':'KOJA AFRICA source intelligence + opportunity categories'})
+    live=_refresh_live_business_sources()
+    selected=[x for x in live if any(k in str(x.get('type','')).lower() or k in str(x.get('title','')).lower() for k in ('tender','procurement','project','funding','investment','contract','grant'))]
+    selected += _market_intelligence_rows(20,'opportunities')
+    static=[{'title':a,'summary':b,'type':c,'country':'Africa','url':None,'source':'KOJA category'} for a,b,c in KOJA_MARKET_OPPORTUNITIES]
+    return jsonify({'items':selected[:60]+static,'updated_at':time.time(),
+                    'sources':['African Development Bank','World Bank','AFRICA NOW source intelligence']})
 
 
 @app.route('/api/markets/company')
@@ -13476,7 +13637,11 @@ def _market_intelligence_rows(limit=30, mode='investment'):
 
 @app.route('/api/markets/investment')
 def koja_market_investment_api():
-    return jsonify({'items':_market_intelligence_rows(30,'investment'),'updated_at':time.time(),'source':'KOJA AFRICA source intelligence'})
+    live=_refresh_live_business_sources()
+    selected=[x for x in live if any(k in (str(x.get('title',''))+' '+str(x.get('summary',''))).lower() for k in ('investment','funding','project','capital','expansion','finance','acquisition','merger'))]
+    selected += _market_intelligence_rows(20,'investment')
+    return jsonify({'items':selected[:60],'updated_at':time.time(),
+                    'sources':['World Bank','African Development Bank','AFRICA NOW source intelligence']})
 
 @app.route('/api/markets/analytics')
 def koja_market_analytics_api():
