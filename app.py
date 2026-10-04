@@ -675,13 +675,6 @@ def _record_terms_acceptance(user_id, accepted):
     return True, row
 
 
-def _terms_required_for_user(user):
-    if not user:
-        return False
-    status = _terms_acceptance_status(user.get("id"))
-    return status is False
-
-
 def login_required(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
@@ -689,8 +682,8 @@ def login_required(fn):
         if not user:
             flash("Please log in first.", "warning")
             return redirect(url_for("login", next=request.path))
-        if request.path not in ("/terms", "/terms/decision") and _terms_required_for_user(user):
-            return redirect(url_for("public_terms", required=1, next=request.path))
+        # Terms & Privacy acceptance is collected during account creation.
+        # Do not interrupt normal authenticated use on every login/request.
         return fn(*args, **kwargs)
     return wrapper
 
@@ -892,8 +885,6 @@ nav{background:#10233f;color:#fff;padding:10px 15px;position:sticky;top:0;z-inde
 .nav-links{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
 nav a{color:#fff;text-decoration:none;padding:8px 9px;border-radius:7px;transition:background .2s ease,transform .2s ease}
 nav a:hover{background:rgba(255,255,255,.12);transform:translateY(-1px)}
-.nexus-nav-btn{background:#176b87;font-weight:700;border:1px solid rgba(255,255,255,.28)}
-.nexus-nav-btn:hover{background:#2a8aa7!important;transform:translateY(-1px)}
 .notification-bell{position:relative}.notif-badge{display:inline-flex;min-width:18px;height:18px;padding:0 5px;align-items:center;justify-content:center;border-radius:99px;background:#e11d48;color:#fff;font-size:11px;font-weight:800;margin-left:4px}.notification-row{display:flex;gap:12px;padding:15px;border-bottom:1px solid var(--border);cursor:pointer}.notification-row.unread{background:rgba(23,107,135,.07)}.notification-dot{width:9px;height:9px;border-radius:50%;background:var(--accent);margin-top:7px;flex:none}.notification-row:not(.unread) .notification-dot{background:transparent}#np label{display:block;padding:12px 0;border-bottom:1px solid var(--border)}
 .menu-group{position:relative}.menu-group>button{width:auto;margin:0;padding:8px 10px;background:rgba(255,255,255,.08);color:#fff;border:0;border-radius:7px;cursor:pointer;font:inherit}.menu-group>button:hover{background:rgba(255,255,255,.15);transform:none}
 .dropdown{display:none;position:absolute;right:0;top:calc(100% + 7px);min-width:210px;background:var(--surface);border-radius:11px;padding:7px;box-shadow:0 12px 35px rgba(0,0,0,.2);border:1px solid #e5e7eb}
@@ -950,7 +941,6 @@ html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90
 <a href="{{ url_for('dashboard') }}">Dashboard</a>
 <a href="{{ url_for('services') }}">Services</a>
 <a href="{{ url_for('research') }}">Research</a>
-<a class="nexus-nav-btn" href="{{ url_for('koja_world') }}">KOJA NEXUS</a>
 <a href="{{ url_for('ai_nextgen') }}">KOJA AI</a>
 <a class="notification-bell" href="{{ url_for('notifications_page') }}" aria-label="Notifications">Notifications <span id="kojaNotifBadge" class="notif-badge" hidden></span></a>
 <a href="{{ '/market' }}">KOJA Market</a> <a href="{{ url_for('market_live') }}">Live Shop</a>
@@ -1051,7 +1041,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90
 {% endwith %}
 {{ body|safe }}
 </div>
-<footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services<br><div style="margin-top:10px"><a href="{{ url_for('public_terms') }}">Terms &amp; Conditions</a> · <a href="{{ url_for('public_privacy') }}">Privacy Policy</a> · <a href="{{ url_for('public_data_deletion') }}">Data Deletion</a></div></footer>
+<footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services</footer>
 <!-- KOJA Connect incoming-call receiver: polls only while authenticated. -->
 {% if user and not request.path.startswith('/api/') and not request.path.startswith('/connect/call') and not request.path.startswith('/connect/answer') %}
 <div id="kojaIncomingCall" style="display:none;position:fixed;left:12px;right:12px;bottom:16px;z-index:99999;max-width:520px;margin:auto;background:var(--card,#fff);border:2px solid var(--accent,#1d4ed8);border-radius:18px;padding:16px;box-shadow:0 18px 50px rgba(0,0,0,.28)">
@@ -1274,6 +1264,7 @@ def register():
         email = clean(request.form.get("email")).lower()
         phone = clean(request.form.get("phone"))
         password = request.form.get("password","")
+        password_confirm = request.form.get("password_confirm","")
         role = clean(request.form.get("role")) or "student"
         terms_agreed = request.form.get("terms_agreed") == "1"
 
@@ -1284,10 +1275,13 @@ def register():
             flash("Full name, email and password are required.","danger")
             return redirect(url_for("register"))
         if not terms_agreed:
-            flash("You must select I Agree to the KOJA AFRICA Terms & Conditions and applicable laws and regulations before creating an account.","warning")
+            flash("You must agree to the KOJA AFRICA Terms & Conditions and Privacy Policy before creating an account.","warning")
             return redirect(url_for("register"))
         if len(password) < 6:
             flash("Password must contain at least 6 characters.","danger")
+            return redirect(url_for("register"))
+        if password != password_confirm:
+            flash("Passwords do not match.","danger")
             return redirect(url_for("register"))
         if find_user_by_email(email):
             flash("An account with this email already exists. Please log in.","warning")
@@ -1320,8 +1314,9 @@ def register():
         ok_terms, terms_error = _record_terms_acceptance(created_user.get("id"), True)
         if not ok_terms:
             logger.error("Account created but terms acceptance could not be recorded: %s", terms_error)
-            flash("Account was created, but your Terms acceptance could not be recorded. Please contact support before continuing.", "danger")
-            return redirect(url_for("login"))
+            db_delete("profiles", {"id": created_user.get("id")})
+            flash("Account could not be created because your Terms & Privacy acceptance could not be recorded. Please try again.", "danger")
+            return redirect(url_for("register"))
         login_user(created_user)
         log_activity("registration","New KOJA account registered and Terms accepted.")
         flash("Account created successfully.","success")
@@ -1341,8 +1336,9 @@ def register():
 <option value="teacher">Teacher / Tutor</option>
 <option value="doctor">Doctor</option>
 </select>
-<label>Password</label><input name="password" type="password" minlength="6" required>
-<label style="display:flex;align-items:flex-start;gap:10px;margin:14px 0;line-height:1.45"><input type="checkbox" name="terms_agreed" value="1" required style="width:auto;margin:3px 0 0"> <span>I agree to the <a href="{{ url_for('public_terms') }}" target="_blank" rel="noopener">KOJA AFRICA Terms &amp; Conditions</a> and applicable laws and regulations.</span></label>
+<label>Password</label><input name="password" type="password" minlength="6" autocomplete="new-password" required>
+<label>Confirm Password</label><input name="password_confirm" type="password" minlength="6" autocomplete="new-password" required>
+<label style="display:flex;align-items:flex-start;gap:10px;margin:14px 0;line-height:1.45"><input type="checkbox" name="terms_agreed" value="1" required style="width:auto;margin:3px 0 0"> <span>I agree to the <a href="{{ url_for('public_terms') }}" target="_blank" rel="noopener">KOJA AFRICA Terms &amp; Conditions</a> and <a href="{{ url_for('public_privacy') }}" target="_blank" rel="noopener">Privacy Policy</a>.</span></label>
 <button type="submit">Create Account</button>
 </form>
 <p>Already registered? <a href="{{ url_for('login') }}">Login</a></p>
@@ -1372,8 +1368,6 @@ def login():
                 return redirect(url_for("login"))
             login_user(user)
             log_activity("login","User logged into KOJA.")
-            if _terms_required_for_user(user):
-                return redirect(url_for("public_terms", required=1, next=request.args.get("next") or url_for("dashboard")))
             return redirect(safe_next_url(request.args.get("next")) if request.args.get("next") else url_for("dashboard"))
 
         # Second: Supabase Auth compatibility.
@@ -1388,8 +1382,6 @@ def login():
                 )
             login_user(profile, auth)
             log_activity("login","User logged in through Supabase Auth.")
-            if _terms_required_for_user(profile):
-                return redirect(url_for("public_terms", required=1, next=request.args.get("next") or url_for("dashboard")))
             return redirect(safe_next_url(request.args.get("next")) if request.args.get("next") else url_for("dashboard"))
 
         flash("Invalid login credentials. Use the same email and password used to create the KOJA account.","danger")
@@ -1398,20 +1390,14 @@ def login():
     return render_page("Login", r"""
 <div class="card" style="max-width:500px;margin:auto">
 <h2>KOJA Login</h2>
-<p class="small">Sign in with your existing KOJA email and password, or continue securely with a connected account.</p>
-<div style="display:grid;gap:10px;margin:16px 0">
-<a class="btn secondary" href="{{ url_for('oauth_start', provider='google') }}">Continue with Google</a>
-<a class="btn secondary" href="{{ url_for('oauth_start', provider='facebook') }}">Continue with Facebook</a>
-<a class="btn secondary" href="{{ url_for('oauth_start', provider='github') }}">Continue with GitHub</a>
-</div>
-<div style="display:flex;align-items:center;gap:10px;margin:14px 0;color:#8895a7;font-size:12px"><span style="height:1px;background:#d9e0e8;flex:1"></span><span>OR</span><span style="height:1px;background:#d9e0e8;flex:1"></span></div>
+<p class="small">Sign in with your KOJA email and password.</p>
 <form method="post">
 <label>Email or username</label><input name="identifier" autocomplete="username" required>
 <label>Password</label><input name="password" type="password" autocomplete="current-password" required>
 <button type="submit">Login with Email</button>
 </form>
 <p>No account? <a href="{{ url_for('register') }}">Create one</a></p>
-<p class="small"><a href="{{ url_for('public_privacy') }}">Privacy Policy</a> · <a href="{{ url_for('public_terms') }}">Terms of Service</a> · <a href="{{ url_for('public_data_deletion') }}">Data Deletion</a></p>
+
 </div>
 """)
 
@@ -9043,130 +9029,7 @@ def public_data_deletion():
 
 @app.get('/terms')
 def public_terms():
-    user = current_user()
-    status = _terms_acceptance_status(user.get('id')) if user else None
-    required = request.args.get('required') == '1'
-    next_url = safe_next_url(request.args.get('next'))
-    return render_page('KOJA AFRICA Terms of Service', r'''<div class="card legal-page" style="max-width:900px;margin:auto"><h1>KOJA AFRICA Terms &amp; Conditions</h1><p class="small">Version {{ terms_version }} · Last updated: 1 October 2026</p>{% if required %}<div class="alert"><strong>Terms acceptance required.</strong><br>Please review the Terms &amp; Conditions below and select <strong>I Agree</strong> before continuing to use your KOJA account.</div>{% endif %}<p>These Terms of Service (“Terms”) govern your use of KOJA AFRICA (“KOJA”, “we”, “us” or “our”). By creating an account or using KOJA, you agree to comply with these Terms and applicable laws and regulations.</p><h2>1. The KOJA service</h2><p>KOJA provides digital services that may include learning and research tools, documents, AI-assisted features, communication, media, business tools, delivery-related services and other platform features. Features may change as the platform develops.</p><h2>2. Accounts</h2><p>You are responsible for information supplied for your account and for protecting your login credentials. You must not impersonate another person or create an account for an unlawful purpose. Social sign-in through Google, Facebook or GitHub is subject to the relevant provider's rules.</p><h2>3. Acceptable use</h2><p>You must not use KOJA to violate applicable law, infringe intellectual-property or privacy rights, distribute malware, attempt unauthorized access, abuse other users, interfere with the platform, or upload content that you are not authorized to use.</p><h2>4. User content</h2><p>You retain rights you already have in content you upload or create. You grant KOJA the permissions reasonably necessary to host, process, display and provide that content as part of the services you request. You are responsible for ensuring that you have the necessary rights to submit content.</p><h2>5. AI-assisted features</h2><p>KOJA AI and automatic document features provide computer-generated assistance. AI output may be incomplete or inaccurate and should be reviewed before being used for academic, professional, financial, medical, legal or other consequential purposes. KOJA does not represent AI output as a substitute for qualified professional advice.</p><h2>6. Communication and media</h2><p>Users are responsible for their communications and media they publish or share. You must respect applicable law and the rights of other users and content owners. KOJA may restrict or remove content or access where reasonably necessary to enforce these Terms or protect the platform.</p><h2>7. Business, payments and third-party services</h2><p>Where KOJA provides business, payment, delivery or third-party integrations, additional terms may apply. Payment and third-party services may be subject to the terms and policies of the relevant provider.</p><h2>8. Intellectual property</h2><p>KOJA's software, branding, interface and platform materials are protected by applicable intellectual-property laws. You may not copy, reverse engineer, redistribute or commercially exploit KOJA materials except as permitted by law or written authorization.</p><h2>9. Availability and changes</h2><p>KOJA is provided on an evolving basis. We may modify, suspend or discontinue features, including for maintenance, security or technical reasons. We do not guarantee uninterrupted availability.</p><h2>10. Suspension and termination</h2><p>KOJA may suspend or terminate access where reasonably necessary because of serious or repeated violations of these Terms, security risks, unlawful activity, fraud, or other circumstances permitted by law.</p><h2>11. Disclaimers</h2><p>To the extent permitted by law, KOJA is provided without guarantees that every feature will be uninterrupted, error-free or suitable for every purpose. Nothing in these Terms removes rights that cannot lawfully be excluded.</p><h2>12. Changes to these Terms</h2><p>We may update these Terms when the platform or applicable requirements change. The latest version will be published on this page with its updated version and date. Where a new version requires renewed acceptance, KOJA will ask you to review and accept it before continuing to use protected account features.</p><h2>13. Contact</h2><p>For questions about these Terms, use the support/contact mechanisms available inside KOJA AFRICA.</p>{% if user %}<div class="card" style="border:2px solid var(--border);margin-top:24px"><h2>Agreement</h2>{% if status %}<p><strong>Accepted.</strong> You accepted Terms version {{ terms_version }}.</p>{% else %}<p>By selecting <strong>I Agree</strong>, you confirm that you have read and agree to the KOJA AFRICA Terms &amp; Conditions and applicable laws and regulations.</p><form method="post" action="{{ url_for('terms_decision') }}" style="display:flex;gap:10px;flex-wrap:wrap"><input type="hidden" name="next" value="{{ next_url }}"><button class="btn success" type="submit" name="decision" value="agree" style="width:auto">I Agree</button><button class="btn danger" type="submit" name="decision" value="disagree" style="width:auto">Disagree</button></form><p class="small">If you select Disagree, KOJA will not record your acceptance and you will be signed out of the account.</p>{% endif %}</div>{% else %}<div class="card" style="border:2px solid var(--border);margin-top:24px"><h2>Ready to create an account?</h2><p>Review the Terms &amp; Conditions before registering. Agreement is required to create a KOJA account.</p><a class="btn" href="{{ url_for('register') }}">Create Account</a> <a class="btn secondary" href="{{ url_for('login') }}">Login</a></div>{% endif %}<p><a href="{{ url_for('public_privacy') }}">Privacy Policy</a> · <a href="{{ url_for('public_data_deletion') }}">Data Deletion</a></p></div>''', terms_version=TERMS_VERSION, status=status is True, required=required, next_url=next_url)
-
-@app.post('/terms/decision')
-@login_required
-def terms_decision():
-    decision = clean(request.form.get('decision')).lower()
-    if decision not in ('agree', 'disagree'):
-        flash('Please choose I Agree or Disagree.', 'warning')
-        return redirect(url_for('public_terms'))
-    if decision == 'disagree':
-        log_activity('terms_disagree', f'User declined KOJA Terms version {TERMS_VERSION}.')
-        session.clear()
-        flash('You disagreed with the KOJA AFRICA Terms & Conditions. You have been signed out and no acceptance was recorded.', 'warning')
-        return redirect(url_for('home'))
-    ok, result = _record_terms_acceptance((current_user() or {}).get('id'), True)
-    if not ok:
-        flash('Your agreement could not be recorded. Please try again.', 'danger')
-        return redirect(url_for('public_terms', required=1, next=request.form.get('next') or url_for('dashboard')))
-    log_activity('terms_agree', f'User accepted KOJA Terms version {TERMS_VERSION}.')
-    flash('Terms & Conditions accepted successfully.', 'success')
-    return redirect(safe_next_url(request.form.get('next')) or url_for('dashboard'))
-
-@app.get('/auth/oauth/<provider>')
-def oauth_start(provider):
-    provider = clean(provider).lower()
-    if provider not in {'google','facebook','github'}:
-        abort(404)
-    if not (SUPABASE_URL and (SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY)):
-        flash('Social sign-in is not configured yet. Please use email login or configure Supabase Auth.', 'warning')
-        return redirect(url_for('login'))
-    return render_page('Continue with ' + provider.title(), r'''
-<div class="card" style="max-width:520px;margin:50px auto;text-align:center">
-<h2>Continue with {{ provider|title }}</h2>
-<p id="oauthStatus" class="small">Connecting securely…</p>
-</div>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script>
-(async function(){
-  const status=document.getElementById('oauthStatus');
-  try{
-    const client=supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }},{auth:{flowType:'pkce',persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}});
-    const {error}=await client.auth.signInWithOAuth({
-      provider:{{ provider|tojson }},
-      options:{redirectTo:{{ callback_url|tojson }},queryParams:{prompt:'select_account'}}
-    });
-    if(error) throw error;
-    status.textContent='Redirecting…';
-  }catch(e){
-    status.textContent='Sign-in could not start: '+(e.message||e);
-  }
-})();
-</script>
-''', provider=provider, supabase_url=SUPABASE_URL, supabase_key=SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY, callback_url=url_for('oauth_callback', _external=True))
-
-@app.get('/auth/callback')
-def oauth_callback():
-    return render_page('Completing sign-in', r'''
-<div class="card" style="max-width:520px;margin:50px auto;text-align:center">
-<h2>Completing KOJA sign-in</h2><p id="oauthStatus" class="small">Please wait…</p>
-</div>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script>
-(async function(){
-  const status=document.getElementById('oauthStatus');
-  try{
-    const client=supabase.createClient({{ supabase_url|tojson }},{{ supabase_key|tojson }},{auth:{flowType:'pkce',persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}});
-    const code=new URLSearchParams(location.search).get('code');
-    if(!code) throw new Error('No authorization code was returned.');
-    const {data,error}=await client.auth.exchangeCodeForSession(code);
-    if(error) throw error;
-    const token=data?.session?.access_token;
-    if(!token) throw new Error('No authenticated session was returned.');
-    const r=await fetch({{ session_url|tojson }},{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({access_token:token})});
-    const out=await r.json().catch(()=>({}));
-    if(!r.ok||!out.ok) throw new Error(out.error||'KOJA could not create the local session.');
-    location.replace(out.terms_required ? out.terms_url : {{ dashboard_url|tojson }});
-  }catch(e){
-    status.textContent='Sign-in failed: '+(e.message||e);
-    setTimeout(()=>location.replace({{ login_url|tojson }}),3500);
-  }
-})();
-</script>
-''', supabase_url=SUPABASE_URL, supabase_key=SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY, session_url=url_for('oauth_session'), dashboard_url=url_for('dashboard'), login_url=url_for('login'))
-
-@app.post('/auth/oauth/session')
-def oauth_session():
-    body=request.get_json(silent=True) or {}
-    token=clean(body.get('access_token'))
-    if not token or not SUPABASE_URL:
-        return jsonify({'ok':False,'error':'Missing authentication token.'}),400
-    key=SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY or SUPABASE_SERVICE_KEY
-    try:
-        r=requests.get(f'{SUPABASE_URL}/auth/v1/user',headers={'apikey':key,'Authorization':f'Bearer {token}'},timeout=20)
-        if not r.ok:
-            return jsonify({'ok':False,'error':'Supabase authentication was rejected.'}),401
-        au=r.json() or {}
-        uid=au.get('id'); email=clean(au.get('email')).lower()
-        if not uid or not email:
-            return jsonify({'ok':False,'error':'The provider did not return a usable account.'}),400
-        meta=au.get('user_metadata') or {}
-        full_name=clean(meta.get('full_name') or meta.get('name') or meta.get('user_name') or meta.get('preferred_username') or email)
-        profile=find_user_by_id(uid)
-        if not profile:
-            profile,err=create_local_profile(uid,email,full_name)
-            if err:
-                # A profile may already exist by email when the provider account
-                # is linked to an older KOJA account.
-                profile=find_user_by_email(email)
-                if not profile:
-                    logger.error('OAuth profile creation failed: %s',err)
-                    return jsonify({'ok':False,'error':'Could not create your KOJA profile.'}),500
-        if profile.get('is_active') is False:
-            return jsonify({'ok':False,'error':'This KOJA account is inactive.'}),403
-        login_user(profile, {'user':au,'access_token':token})
-        log_activity('login','User logged in through social authentication.')
-        needs_terms = _terms_required_for_user(profile)
-        return jsonify({'ok':True,'terms_required':bool(needs_terms),'terms_url':url_for('public_terms', required=1, next=url_for('dashboard')) if needs_terms else url_for('dashboard')})
-    except Exception:
-        logger.exception('OAuth session bridge failed')
-        return jsonify({'ok':False,'error':'Social sign-in could not be completed.'}),500
+    return render_page('KOJA AFRICA Terms of Service', r'''<div class="card legal-page" style="max-width:900px;margin:auto"><h1>KOJA AFRICA Terms &amp; Conditions</h1><p class="small">Version {{ terms_version }} · Last updated: 1 October 2026</p><p>These Terms of Service (“Terms”) govern your use of KOJA AFRICA (“KOJA”, “we”, “us” or “our”). By creating an account or using KOJA, you agree to comply with these Terms and applicable laws and regulations.</p><h2>1. The KOJA service</h2><p>KOJA provides digital services that may include learning and research tools, documents, AI-assisted features, communication, media, business tools, delivery-related services and other platform features. Features may change as the platform develops.</p><h2>2. Accounts</h2><p>You are responsible for information supplied for your account and for protecting your login credentials. You must not impersonate another person or create an account for an unlawful purpose.</p><h2>3. Acceptable use</h2><p>You must not use KOJA to violate applicable law, infringe intellectual-property or privacy rights, distribute malware, attempt unauthorized access, abuse other users, interfere with the platform, or upload content that you are not authorized to use.</p><h2>4. User content</h2><p>You retain rights you already have in content you upload or create. You grant KOJA the permissions reasonably necessary to host, process, display and provide that content as part of the services you request. You are responsible for ensuring that you have the necessary rights to submit content.</p><h2>5. AI-assisted features</h2><p>KOJA AI and automatic document features provide computer-generated assistance. AI output may be incomplete or inaccurate and should be reviewed before being used for academic, professional, financial, medical, legal or other consequential purposes. KOJA does not represent AI output as a substitute for qualified professional advice.</p><h2>6. Communication and media</h2><p>Users are responsible for their communications and media they publish or share. You must respect applicable law and the rights of other users and content owners. KOJA may restrict or remove content or access where reasonably necessary to enforce these Terms or protect the platform.</p><h2>7. Business, payments and third-party services</h2><p>Where KOJA provides business, payment, delivery or third-party integrations, additional terms may apply. Payment and third-party services may be subject to the terms and policies of the relevant provider.</p><h2>8. Intellectual property</h2><p>KOJA's software, branding, interface and platform materials are protected by applicable intellectual-property laws. You may not copy, reverse engineer, redistribute or commercially exploit KOJA materials except as permitted by law or written authorization.</p><h2>9. Availability and changes</h2><p>KOJA is provided on an evolving basis. We may modify, suspend or discontinue features, including for maintenance, security or technical reasons. We do not guarantee uninterrupted availability.</p><h2>10. Suspension and termination</h2><p>KOJA may suspend or terminate access where reasonably necessary because of serious or repeated violations of these Terms, security risks, unlawful activity, fraud, or other circumstances permitted by law.</p><h2>11. Disclaimers</h2><p>To the extent permitted by law, KOJA is provided without guarantees that every feature will be uninterrupted, error-free or suitable for every purpose. Nothing in these Terms removes rights that cannot lawfully be excluded.</p><h2>12. Changes to these Terms</h2><p>We may update these Terms when the platform or applicable requirements change. The latest version will be published on this page with its updated version and date. Where a new version requires renewed acceptance, KOJA will ask you to review and accept it before continuing to use protected account features.</p><h2>13. Contact</h2><p>For questions about these Terms, use the support/contact mechanisms available inside KOJA AFRICA.</p><div class="card" style="border:2px solid var(--border);margin-top:24px"><h2>Account creation</h2><p>These Terms are presented for acceptance during KOJA account creation. Acceptance is not requested again during normal use of KOJA services.</p><a class="btn" href="{{ url_for('register') }}">Create Account</a></div><p><a href="{{ url_for('public_privacy') }}">Privacy Policy</a> · <a href="{{ url_for('public_data_deletion') }}">Data Deletion</a></p></div>''', terms_version=TERMS_VERSION)
 
 if __name__=="__main__":
     port=int(os.getenv("PORT","5000"))
@@ -12023,9 +11886,6 @@ def _final_env_status():
         'email_provider': bool(os.getenv('RESEND_API_KEY') or os.getenv('SENDGRID_API_KEY') or os.getenv('SMTP_HOST')),
         'sms_provider': bool(os.getenv('TWILIO_ACCOUNT_SID') and os.getenv('TWILIO_AUTH_TOKEN')),
         'fx_provider': bool(os.getenv('FX_API_URL') or os.getenv('EXCHANGE_RATE_API_KEY')),
-        'oauth_google': bool(os.getenv('GOOGLE_CLIENT_ID') and os.getenv('GOOGLE_CLIENT_SECRET')),
-        'oauth_facebook': bool(os.getenv('FACEBOOK_CLIENT_ID') and os.getenv('FACEBOOK_CLIENT_SECRET')),
-        'oauth_github': bool(os.getenv('GITHUB_CLIENT_ID') and os.getenv('GITHUB_CLIENT_SECRET')),
     }
 
 def _final_table_status():
@@ -12116,127 +11976,3 @@ def koja_admin_go_live():
     <div class="card"><h2>Gates</h2><table><tr><th>Category</th><th>Gate</th><th>Status</th><th>Owner</th><th>Verified</th></tr>{rows}</table></div>
     <div class="card"><p><strong>Important:</strong> this screen records evidence-based completion. It cannot create provider contracts, licences, regulatory registrations, security-test results or backup evidence.</p></div>'''
     return render_page('KOJA Go-Live', tpl)
-
-# ============================================================
-# KOJA WORLD — PUBLIC AFRICA SERVICE DIRECTORY
-# ============================================================
-KOJA_WORLD_CATEGORIES = [
-    "Government Services", "Health & Medical", "Universities & Education",
-    "Defence & Armed Forces", "Jobs & Labour", "Business & Company Registration",
-    "Tax & Revenue", "Immigration & Visas", "Police, Justice & Legal",
-    "Transport & Driving", "Social Services", "Agriculture, Land & Environment",
-    "Utilities & Public Services", "Online Applications & Forms",
-]
-
-def _world_clean_url(value):
-    value = clean(value)
-    if not value or not re.match(r"^https?://[^\s]+$", value, re.I):
-        return None
-    return value
-
-def _world_service_name(row):
-    return first_nonempty(row.get("name"), row.get("service_name"), "KOJA WORLD Service")
-
-def _world_country(row):
-    return first_nonempty(row.get("country_name"), row.get("country_code"), "Africa")
-
-def _world_verified(row):
-    return bool(row.get("verified")) or bool(row.get("is_verified"))
-
-def _world_active(row):
-    return not (row.get("active") is False or row.get("is_active") is False)
-
-def _world_rows(include_inactive=False):
-    rows = db_select("koja_world_services", order="sort_order.asc,created_at.asc", limit=5000) or []
-    return rows if include_inactive else [r for r in rows if _world_active(r)]
-
-def _world_matches(row, query="", country="", category=""):
-    query, country, category = clean(query).lower(), clean(country).lower(), clean(category).lower()
-    if country and country not in str(row.get("country_code") or "").lower() and country not in str(row.get("country_name") or "").lower():
-        return False
-    if category and category != str(row.get("category") or "").lower():
-        return False
-    if query:
-        haystack = " ".join([
-            str(row.get("country_code") or ""), str(row.get("country_name") or ""),
-            str(row.get("service_name") or ""), str(row.get("name") or ""),
-            str(row.get("category") or ""), str(row.get("description") or ""),
-            " ".join(str(x) for x in (row.get("tags") or [])),
-        ]).lower()
-        if query not in haystack:
-            return False
-    return True
-
-@app.route("/world")
-def koja_world():
-    rows = _world_rows()
-    query, country, category = clean(request.args.get("q")), clean(request.args.get("country")), clean(request.args.get("category"))
-    filtered = [r for r in rows if _world_matches(r, query, country, category)]
-    filtered.sort(key=lambda r: (str(r.get("country_name") or ""), int(r.get("sort_order") or 100), _world_service_name(r)))
-    countries = {}
-    for r in rows:
-        code = clean(r.get("country_code")).upper()
-        if code: countries[code] = _world_country(r)
-    category_counts = {}
-    for r in rows:
-        c = str(r.get("category") or "Other")
-        category_counts[c] = category_counts.get(c, 0) + 1
-    return render_page("KOJA WORLD", r'''
-<style>
-.kw-shell{max-width:1400px;margin:auto}.kw-hero{background:linear-gradient(135deg,#061a33,#0b4ea2 65%,#0a79c7);color:#fff;border-radius:24px;padding:28px;margin-bottom:18px;box-shadow:0 18px 50px rgba(0,0,0,.20)}
-.kw-hero h1{margin:0 0 8px;font-size:clamp(30px,5vw,48px)}.kw-hero p{margin:0;max-width:900px;color:rgba(255,255,255,.86);line-height:1.6}.kw-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:20px}.kw-stat{background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.16);border-radius:15px;padding:14px}.kw-stat strong{display:block;font-size:25px}.kw-stat span{font-size:12px;color:rgba(255,255,255,.72)}
-.kw-filter{display:grid;grid-template-columns:1.7fr 1fr 1.2fr auto;gap:10px;align-items:end;margin-bottom:18px}.kw-filter label{font-size:12px;font-weight:700;display:block;margin-bottom:6px}.kw-filter input,.kw-filter select{width:100%;box-sizing:border-box}.kw-section{margin-top:18px}.kw-section h2{margin-bottom:5px}.kw-muted{color:#758397;font-size:13px}.kw-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:14px}.kw-card{border:1px solid rgba(90,110,135,.24);border-radius:18px;padding:18px;background:var(--card-bg,#fff);box-shadow:0 8px 24px rgba(0,0,0,.07)}
-.kw-country{font-size:11px;font-weight:800;letter-spacing:.08em;color:#0b4ea2;text-transform:uppercase}.kw-card h3{margin:7px 0 5px;font-size:18px}.kw-card p{font-size:13px;line-height:1.55;color:#657386}.kw-badges{display:flex;gap:6px;flex-wrap:wrap;margin:11px 0}.kw-badge{font-size:10px;padding:5px 8px;border-radius:999px;background:#edf4ff;color:#0b4ea2;font-weight:800}.kw-badge.pending{background:#fff4dc;color:#8a5b00}.kw-actions{display:flex;gap:8px;flex-wrap:wrap}.kw-actions .btn{font-size:12px}.kw-cat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px}.kw-cat{display:block;border:1px solid rgba(90,110,135,.20);border-radius:14px;padding:14px;text-decoration:none;color:inherit;background:var(--card-bg,#fff)}.kw-cat strong{display:block}.kw-cat span{font-size:12px;color:#718096}.kw-empty{padding:35px;text-align:center;border:1px dashed #9aa8b8;border-radius:16px}
-@media(max-width:1000px){.kw-grid{grid-template-columns:repeat(2,1fr)}.kw-cat-grid{grid-template-columns:repeat(2,1fr)}.kw-filter{grid-template-columns:1fr 1fr}.kw-filter .kw-search{grid-column:1/-1}.kw-stats{grid-template-columns:repeat(2,1fr)}}@media(max-width:650px){.kw-grid,.kw-cat-grid,.kw-filter{grid-template-columns:1fr}.kw-filter .kw-search{grid-column:auto}.kw-stats{grid-template-columns:1fr 1fr}.kw-hero{padding:21px}}
-</style>
-<div class="kw-shell"><section class="kw-hero"><h1>KOJA WORLD</h1><p>Open public services from across Africa through one KOJA directory. Choose a country, select a service category, search for a service, then open the official provider.</p><div class="kw-stats"><div class="kw-stat"><strong>{{ country_count }}</strong><span>African countries</span></div><div class="kw-stat"><strong>{{ service_count }}</strong><span>Active services</span></div><div class="kw-stat"><strong>{{ verified_count }}</strong><span>Verified services</span></div><div class="kw-stat"><strong>{{ pending_count }}</strong><span>Verification pending</span></div></div></section>
-<form method="get" class="card kw-filter"><div class="kw-search"><label for="kwq">Search KOJA WORLD</label><input id="kwq" name="q" value="{{ query }}" placeholder="e.g. immigration, university, tax, health, jobs"></div><div><label for="kwcountry">Country</label><select id="kwcountry" name="country"><option value="">All countries</option>{% for code,name in countries|dictsort %}<option value="{{ code }}" {% if country|upper==code %}selected{% endif %}>{{ name }} ({{ code }})</option>{% endfor %}</select></div><div><label for="kwcategory">Category</label><select id="kwcategory" name="category"><option value="">All categories</option>{% for cat in categories %}<option value="{{ cat }}" {% if category|lower==cat|lower %}selected{% endif %}>{{ cat }}</option>{% endfor %}</select></div><div><button class="btn" type="submit">Search</button></div></form>
-{% if not query and not country and not category %}<section class="kw-section"><h2>Browse by service</h2><div class="kw-cat-grid">{% for cat in categories %}<a class="kw-cat" href="{{ url_for('koja_world',category=cat) }}"><strong>{{ cat }}</strong><span>{{ category_counts.get(cat,0) }} services</span></a>{% endfor %}</div></section>{% endif %}
-<section class="kw-section"><h2>{% if query or country or category %}Search results{% else %}All public services{% endif %}</h2><p class="kw-muted">{{ filtered|length }} service{% if filtered|length != 1 %}s{% endif %} shown. Verification pending services remain visible so users can discover them, but KOJA does not represent them as verified.</p><div class="kw-grid">{% for s in filtered %}<article class="kw-card"><div class="kw-country">{{ s.country_code or '' }} · {{ s.country_name or 'Africa' }}</div><h3>{{ service_name(s) }}</h3><div class="kw-muted">{{ s.category or 'Public Service' }}</div><p>{{ s.description or 'Official public service available through the listed provider.' }}</p><div class="kw-badges">{% if verified(s) %}<span class="kw-badge">Verified</span>{% else %}<span class="kw-badge pending">Verification pending</span>{% endif %}<span class="kw-badge">Official provider</span></div><div class="kw-actions"><a class="btn" href="{{ url_for('koja_world_open',service_id=s.id) }}">Open service</a>{% if s.country_code %}<a class="btn secondary" href="{{ url_for('koja_world',country=s.country_code) }}">More {{ s.country_code }}</a>{% endif %}</div></article>{% else %}<div class="kw-empty" style="grid-column:1/-1"><h3>No matching services</h3><p>Try another country, category or search term.</p><a class="btn" href="{{ url_for('koja_world') }}">Show all KOJA WORLD</a></div>{% endfor %}</div></section></div>
-''', filtered=filtered, countries=countries, categories=KOJA_WORLD_CATEGORIES, category_counts=category_counts, query=query, country=country, category=category, country_count=len(countries), service_count=len(rows), verified_count=sum(1 for r in rows if _world_verified(r)), pending_count=sum(1 for r in rows if not _world_verified(r)), service_name=_world_service_name, verified=_world_verified)
-
-@app.route("/world/open/<service_id>")
-def koja_world_open(service_id):
-    row = first_row("koja_world_services", {"id": service_id})
-    if not row or not _world_active(row): abort(404)
-    target = _world_clean_url(first_nonempty(row.get("official_url"), row.get("url")))
-    if not target:
-        flash("This service does not currently have a valid official URL.", "warning")
-        return redirect(url_for("koja_world"))
-    log_activity("world_service_open", f"Opened KOJA WORLD service: {_world_service_name(row)}")
-    return redirect(target)
-
-@app.route("/api/world/services")
-def koja_world_services_api():
-    rows = _world_rows(); query, country, category = clean(request.args.get("q")), clean(request.args.get("country")), clean(request.args.get("category"))
-    try: limit = min(max(int(request.args.get("limit") or 500), 1), 1000)
-    except Exception: limit = 500
-    rows = [r for r in rows if _world_matches(r, query, country, category)]
-    rows.sort(key=lambda r: (str(r.get("country_name") or ""), int(r.get("sort_order") or 100), _world_service_name(r)))
-    data=[]
-    for r in rows[:limit]:
-        data.append({"id":r.get("id"),"country_code":r.get("country_code"),"country_name":r.get("country_name"),"name":_world_service_name(r),"category":r.get("category"),"description":r.get("description") or "","official_url":_world_clean_url(first_nonempty(r.get("official_url"),r.get("url"))),"open_url":url_for("koja_world_open",service_id=r.get("id"),_external=True),"verified":_world_verified(r),"verification_status":"verified" if _world_verified(r) else "pending","active":_world_active(r),"tags":r.get("tags") or []})
-    return jsonify({"services":data,"count":len(data)})
-
-@app.route("/admin/world", methods=["GET","POST"])
-@admin_required
-def admin_koja_world():
-    if request.method == "POST":
-        action, service_id = clean(request.form.get("action")), clean(request.form.get("service_id"))
-        row = first_row("koja_world_services", {"id":service_id}) if service_id else None
-        if not row:
-            flash("KOJA WORLD service not found.","danger"); return redirect(url_for("admin_koja_world"))
-        if action == "verify":
-            now=utc_now(); db_update("koja_world_services",{"id":service_id},{"verified":True,"is_verified":True,"check_status":"verified","check_note":"Verified by KOJA administrator.","last_verified_at":now,"last_checked_at":now,"updated_at":now}); flash("Service verified and made publicly trusted.","success")
-        elif action == "unverify":
-            now=utc_now(); db_update("koja_world_services",{"id":service_id},{"verified":False,"is_verified":False,"check_status":"needs_review","check_note":"Verification removed by KOJA administrator.","last_checked_at":now,"updated_at":now}); flash("Service moved back to verification pending.","warning")
-        elif action == "toggle":
-            new_active=not _world_active(row); db_update("koja_world_services",{"id":service_id},{"active":new_active,"is_active":new_active,"updated_at":utc_now()}); flash("Service status updated.","success")
-        elif action == "delete":
-            db_delete("koja_world_services",{"id":service_id}); flash("KOJA WORLD service deleted.","success")
-        return redirect(url_for("admin_koja_world"))
-    rows=_world_rows(include_inactive=True); rows.sort(key=lambda r:(str(r.get("country_name") or ""),int(r.get("sort_order") or 100),_world_service_name(r)))
-    return render_page("KOJA WORLD Administration", r'''
-<style>.wa-toolbar{display:flex;gap:9px;flex-wrap:wrap;align-items:center}.wa-table{overflow:auto}.wa-table table{width:100%;min-width:850px;border-collapse:collapse}.wa-table th,.wa-table td{padding:10px;border-bottom:1px solid rgba(120,130,145,.2);text-align:left;font-size:12px}.wa-status{font-size:10px;font-weight:800;padding:5px 8px;border-radius:999px}.wa-ok{background:#e4f7ec;color:#14733e}.wa-pending{background:#fff3d8;color:#875a00}.wa-off{background:#f3e5e5;color:#8c2727}</style>
-<div class="hero"><h1>KOJA WORLD Administration</h1><p>Verify official services, activate or deactivate entries, and control what users can open.</p></div><div class="card wa-toolbar"><strong>{{ rows|length }} total records</strong><span class="small">Pending services remain visible publicly until verified.</span><a class="btn secondary" href="{{ url_for('koja_world') }}">Open KOJA WORLD</a></div><div class="card wa-table"><table><thead><tr><th>Country</th><th>Service</th><th>Category</th><th>Trust</th><th>Active</th><th>Actions</th></tr></thead><tbody>{% for s in rows %}<tr><td><strong>{{ s.country_code }}</strong><br>{{ s.country_name }}</td><td>{{ service_name(s) }}</td><td>{{ s.category }}</td><td>{% if verified(s) %}<span class="wa-status wa-ok">VERIFIED</span>{% else %}<span class="wa-status wa-pending">PENDING</span>{% endif %}</td><td>{% if active(s) %}<span class="wa-status wa-ok">ACTIVE</span>{% else %}<span class="wa-status wa-off">OFF</span>{% endif %}</td><td><div class="actions"><a class="btn secondary" target="_blank" rel="noopener" href="{{ url_for('koja_world_open',service_id=s.id) }}">Open</a><form method="post" style="display:inline"><input type="hidden" name="service_id" value="{{ s.id }}"><input type="hidden" name="action" value="{{ 'unverify' if verified(s) else 'verify' }}"><button class="btn" type="submit">{{ 'Unverify' if verified(s) else 'Verify' }}</button></form><form method="post" style="display:inline"><input type="hidden" name="service_id" value="{{ s.id }}"><input type="hidden" name="action" value="toggle"><button class="btn secondary" type="submit">{{ 'Deactivate' if active(s) else 'Activate' }}</button></form></div></td></tr>{% endfor %}</tbody></table></div>
-''', rows=rows, service_name=_world_service_name, verified=_world_verified, active=_world_active)
