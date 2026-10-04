@@ -12618,6 +12618,109 @@ def _africa_now_panel_html():
 
 _start_africa_now_worker()
 
+
+# ============================================================
+# KOJA GLOBAL NOW — MARKET DATA ENGINE
+# ============================================================
+KOJA_MARKET_CACHE_TTL = max(10, int(os.getenv("KOJA_MARKET_CACHE_TTL", "30")))
+KOJA_MARKET_TIMEOUT = max(3, min(int(os.getenv("KOJA_MARKET_TIMEOUT", "8")), 20))
+KOJA_MARKET_SYMBOLS = [x.strip().upper() for x in os.getenv("KOJA_MARKET_SYMBOLS", "AAPL,MSFT,NVDA,AMZN,TSLA,GOOGL,META,ORCL,KO,SONY").split(",") if x.strip()][:30]
+ALPHAVANTAGE_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY", "").strip()
+TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "").strip()
+_koja_market_cache = {"quotes": {}, "updated_at": 0.0}
+_koja_market_lock = threading.Lock()
+
+def _market_http_json(url, params):
+    try:
+        r = requests.get(url, params=params, timeout=KOJA_MARKET_TIMEOUT, headers={"User-Agent":"KOJA-AFRICA/1.0 market-data"})
+        if not r.ok:
+            logger.warning("Market provider returned %s: %s", r.status_code, r.text[:300])
+            return None
+        body = r.json()
+        return body if isinstance(body, dict) else None
+    except Exception as exc:
+        logger.warning("Market provider request failed: %s", exc)
+        return None
+
+def _alpha_quote(symbol):
+    if not ALPHAVANTAGE_API_KEY:
+        return None
+    body = _market_http_json("https://www.alphavantage.co/query", {"function":"GLOBAL_QUOTE","symbol":symbol,"apikey":ALPHAVANTAGE_API_KEY})
+    q = (body or {}).get("Global Quote") or {}
+    if not q.get("05. price"):
+        return None
+    return {"symbol":symbol,"price":q.get("05. price"),"change":q.get("09. change"),"change_percent":q.get("10. change percent"),"volume":q.get("06. volume"),"previous_close":q.get("08. previous close"),"latest_trading_day":q.get("07. latest trading day"),"provider":"Alpha Vantage","freshness":"Provider quote; real-time entitlement depends on market/plan","source_url":"https://www.alphavantage.co/"}
+
+def _twelve_quote(symbol):
+    if not TWELVEDATA_API_KEY:
+        return None
+    body = _market_http_json("https://api.twelvedata.com/quote", {"symbol":symbol,"apikey":TWELVEDATA_API_KEY})
+    if not body or not body.get("close"):
+        return None
+    return {"symbol":symbol,"price":body.get("close"),"change":body.get("change"),"change_percent":body.get("percent_change"),"volume":body.get("volume"),"previous_close":body.get("previous_close"),"latest_trading_day":body.get("datetime"),"provider":"Twelve Data","freshness":"Provider quote; exchange delay/entitlement depends on market/plan","source_url":"https://twelvedata.com/"}
+
+def _market_quote(symbol):
+    symbol = clean(symbol).upper()
+    return _alpha_quote(symbol) or _twelve_quote(symbol) if symbol else None
+
+def _refresh_market_quotes(symbols=None, force=False):
+    symbols = list(dict.fromkeys([clean(x).upper() for x in (symbols or KOJA_MARKET_SYMBOLS) if clean(x)]))[:30]
+    now = time.time()
+    with _koja_market_lock:
+        if not force and _koja_market_cache["quotes"] and now-float(_koja_market_cache["updated_at"] or 0) < KOJA_MARKET_CACHE_TTL:
+            return dict(_koja_market_cache["quotes"]), float(_koja_market_cache["updated_at"])
+    quotes={}
+    for symbol in symbols:
+        try:
+            q=_market_quote(symbol)
+            if q: quotes[symbol]=q
+        except Exception:
+            logger.exception("Market quote error for %s", symbol)
+    if quotes:
+        with _koja_market_lock:
+            _koja_market_cache["quotes"].update(quotes)
+            _koja_market_cache["updated_at"]=now
+    with _koja_market_lock:
+        return dict(_koja_market_cache["quotes"]), float(_koja_market_cache["updated_at"] or 0)
+
+def _market_panel_html():
+    return """
+<style>
+.km-panel{margin:0 0 18px;border:1px solid rgba(50,80,120,.22);border-radius:22px;background:linear-gradient(135deg,#071a32,#0b315c);color:#fff;padding:20px;box-shadow:0 12px 35px rgba(0,0,0,.14)}
+.km-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap}.km-head h2{margin:0;font-size:22px}.km-head p{margin:5px 0 0;color:rgba(255,255,255,.72);font-size:12px}.km-meta{font-size:11px;color:rgba(255,255,255,.62)}
+.km-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-top:15px}.km-card{border:1px solid rgba(255,255,255,.13);background:rgba(255,255,255,.06);border-radius:15px;padding:13px}.km-card strong{display:block;font-size:13px}.km-price{font-size:20px;font-weight:800;margin-top:8px}.km-change{font-size:11px;margin-top:4px}.km-up{color:#6ee7a8}.km-down{color:#ff9a9a}.km-muted{color:rgba(255,255,255,.55);font-size:10px;margin-top:7px;line-height:1.4}.km-footer{display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin-top:13px;color:rgba(255,255,255,.58);font-size:10px}.km-footer a{color:#b9dcff;text-decoration:none}.km-empty{padding:18px;border:1px dashed rgba(255,255,255,.2);border-radius:14px;margin-top:14px;color:rgba(255,255,255,.72);font-size:12px}
+@media(max-width:1100px){.km-grid{grid-template-columns:repeat(3,1fr)}}@media(max-width:700px){.km-grid{grid-template-columns:repeat(2,1fr)}}@media(max-width:430px){.km-grid{grid-template-columns:1fr}}
+</style>
+<section class="km-panel" id="kojaMarketData">
+<div class="km-head"><div><h2>KOJA MARKET DATA</h2><p>Direct market quotes from financial-data APIs. Market news remains sourced separately through NEXUS feeds.</p></div><div class="km-meta" id="kmStatus">Checking providers…</div></div>
+<div class="km-grid" id="kmGrid"><div class="km-empty">Market data will appear here when a provider API key is configured.</div></div>
+<div class="km-footer"><span>Prices are informational and may be delayed according to exchange/provider entitlement.</span><a href="https://www.alphavantage.co/" target="_blank" rel="noopener">Alpha Vantage</a><a href="https://twelvedata.com/" target="_blank" rel="noopener">Twelve Data</a></div>
+</section>
+<script>
+(function(){
+const grid=document.getElementById('kmGrid'),status=document.getElementById('kmStatus');
+function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+function card(q){const n=parseFloat(String(q.change_percent||'').replace('%',''));const cls=isNaN(n)?'':(n>=0?'km-up':'km-down');return '<div class="km-card"><strong>'+esc(q.symbol)+'</strong><div class="km-price">'+esc(q.price||'—')+'</div><div class="km-change '+cls+'">'+esc(q.change_percent||'')+' '+esc(q.change||'')+'</div><div class="km-muted">'+esc(q.provider)+'<br>'+esc(q.freshness)+'</div></div>';}
+async function load(){try{const r=await fetch('/api/markets/quotes',{cache:'no-store'});const d=await r.json();const rows=d.quotes||[];grid.innerHTML=rows.length?rows.map(card).join(''):'<div class="km-empty">No market provider is configured or no quote is currently available.</div>';status.textContent=d.updated_at?'Updated '+new Date(d.updated_at*1000).toLocaleTimeString():'No provider data';}catch(e){status.textContent='Market data temporarily unavailable';}}
+load();setInterval(load,30000);
+})();
+</script>"""
+
+@app.route('/api/markets/quotes')
+def koja_market_quotes_api():
+    raw=clean(request.args.get('symbols'))
+    symbols=[x.strip().upper() for x in raw.split(',') if x.strip()] if raw else KOJA_MARKET_SYMBOLS
+    symbols=list(dict.fromkeys(symbols))[:30]
+    quotes,updated_at=_refresh_market_quotes(symbols)
+    return jsonify({'provider_order':['Alpha Vantage','Twelve Data'],'quotes':[quotes[s] for s in symbols if s in quotes],'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'configured':bool(ALPHAVANTAGE_API_KEY or TWELVEDATA_API_KEY)})
+
+@app.route('/api/markets/status')
+def koja_market_status_api():
+    with _koja_market_lock:
+        updated_at=float(_koja_market_cache.get('updated_at') or 0);count=len(_koja_market_cache.get('quotes') or {})
+    return jsonify({'alpha_vantage_configured':bool(ALPHAVANTAGE_API_KEY),'twelve_data_configured':bool(TWELVEDATA_API_KEY),'cached_quotes':count,'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL})
+
+
 # ============================================================
 # KOJA NEXUS — PUBLIC AFRICA SERVICE DIRECTORY
 # ============================================================
@@ -12745,7 +12848,7 @@ def koja_world():
 .kw-country{font-size:11px;font-weight:800;letter-spacing:.08em;color:#0b4ea2;text-transform:uppercase}.kw-card h3{margin:7px 0 5px;font-size:18px}.kw-card p{font-size:13px;line-height:1.55;color:#657386}.kw-badges{display:flex;gap:6px;flex-wrap:wrap;margin:11px 0}.kw-badge{font-size:10px;padding:5px 8px;border-radius:999px;background:#edf4ff;color:#0b4ea2;font-weight:800}.kw-badge.pending{background:#fff4dc;color:#8a5b00}.kw-actions{display:flex;gap:8px;flex-wrap:wrap}.kw-actions .btn{font-size:12px}.kw-cat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px}.kw-cat{display:block;border:1px solid rgba(90,110,135,.20);border-radius:14px;padding:14px;text-decoration:none;color:inherit;background:var(--card-bg,#fff)}.kw-cat strong{display:block}.kw-cat span{font-size:12px;color:#718096}.kw-empty{padding:35px;text-align:center;border:1px dashed #9aa8b8;border-radius:16px}
 @media(max-width:1000px){.kw-grid{grid-template-columns:repeat(2,1fr)}.kw-cat-grid{grid-template-columns:repeat(2,1fr)}.kw-filter{grid-template-columns:1fr 1fr}.kw-filter .kw-search{grid-column:1/-1}.kw-stats{grid-template-columns:repeat(2,1fr)}}@media(max-width:650px){.kw-grid,.kw-cat-grid,.kw-filter{grid-template-columns:1fr}.kw-filter .kw-search{grid-column:auto}.kw-stats{grid-template-columns:1fr 1fr}.kw-hero{padding:21px}}
 </style>
-<div class="kw-shell">{{ africa_now_panel|safe }}<section class="kw-hero"><h1>KOJA NEXUS</h1><p>Open public services from across Africa through one KOJA directory. Choose a country, select a service category, search for a service, then open the official provider.</p><div class="kw-stats"><div class="kw-stat"><strong>{{ country_count }}</strong><span>African countries</span></div><div class="kw-stat"><strong>{{ service_count }}</strong><span>Active services</span></div><div class="kw-stat"><strong>{{ verified_count }}</strong><span>Verified services</span></div><div class="kw-stat"><strong>{{ pending_count }}</strong><span>Verification pending</span></div></div></section>
+<div class="kw-shell">{{ africa_now_panel|safe }}{{ market_data_panel|safe }}<section class="kw-hero"><h1>KOJA NEXUS</h1><p>Open public services from across Africa through one KOJA directory. Choose a country, select a service category, search for a service, then open the official provider.</p><div class="kw-stats"><div class="kw-stat"><strong>{{ country_count }}</strong><span>African countries</span></div><div class="kw-stat"><strong>{{ service_count }}</strong><span>Active services</span></div><div class="kw-stat"><strong>{{ verified_count }}</strong><span>Verified services</span></div><div class="kw-stat"><strong>{{ pending_count }}</strong><span>Verification pending</span></div></div></section>
 <form method="get" class="card kw-filter"><div class="kw-search"><label for="kwq">Search KOJA NEXUS</label><input id="kwq" name="q" value="{{ query }}" placeholder="e.g. immigration, university, tax, health, jobs"></div><div><label for="kwcountry">Country</label><select id="kwcountry" name="country"><option value="">All countries</option>{% for code,name in countries|dictsort %}<option value="{{ code }}" {% if country|upper==code %}selected{% endif %}>{{ name }} ({{ code }})</option>{% endfor %}</select></div><div><label for="kwcategory">Category</label><select id="kwcategory" name="category"><option value="">All categories</option>{% for cat in categories %}<option value="{{ cat }}" {% if category|lower==cat|lower %}selected{% endif %}>{{ cat }}</option>{% endfor %}</select></div><div><button class="btn" type="submit">Search</button></div></form>
 {% if not query and not country and not category %}<section class="kw-section"><h2>Browse by service</h2><div class="kw-cat-grid">{% for cat in categories %}<a class="kw-cat" href="{{ url_for('koja_world',category=cat) }}"><strong>{{ cat }}</strong><span>{{ category_counts.get(cat,0) }} services</span></a>{% endfor %}</div></section>{% endif %}
 <section class="kw-section"><h2>{% if query or country or category %}Search results{% else %}All public services{% endif %}</h2><p class="kw-muted">{{ filtered|length }} service{% if filtered|length != 1 %}s{% endif %} shown. Verification pending services remain visible so users can discover them, but KOJA does not represent them as verified.</p><div class="kw-grid">{% for s in filtered %}<article class="kw-card"><div class="kw-country">{{ s.country_code or '' }} · {{ s.country_name or 'Africa' }}</div><h3>{{ service_name(s) }}</h3><div class="kw-muted">{{ s.category or 'Public Service' }}</div><p>{{ s.description or 'Official public service available through the listed provider.' }}</p><div class="kw-badges">{% if verified(s) %}<span class="kw-badge">Verified</span>{% else %}<span class="kw-badge pending">Verification pending</span>{% endif %}<span class="kw-badge">Official provider</span></div><div class="kw-actions"><a class="btn" href="{{ url_for('koja_world_open',service_id=s.id) }}">Open service</a>{% if s.country_code %}<a class="btn secondary" href="{{ url_for('koja_world',country=s.country_code) }}">More {{ s.country_code }}</a>{% endif %}</div></article>{% else %}<div class="kw-empty" style="grid-column:1/-1"><h3>No matching services</h3><p>Try another country, category or search term.</p><a class="btn" href="{{ url_for('koja_world') }}">Show all KOJA NEXUS</a></div>{% endfor %}</div></section></div>
@@ -12764,7 +12867,7 @@ def koja_world():
   }
 })();
 </script>
-''', filtered=filtered, countries=countries, categories=KOJA_WORLD_CATEGORIES, category_counts=category_counts, query=query, country=country, category=category, country_count=len(countries), service_count=len(rows), verified_count=sum(1 for r in rows if _world_verified(r)), pending_count=sum(1 for r in rows if not _world_verified(r)), service_name=_world_service_name, verified=_world_verified, africa_now_panel=_africa_now_panel_html())
+''', filtered=filtered, countries=countries, categories=KOJA_WORLD_CATEGORIES, category_counts=category_counts, query=query, country=country, category=category, country_count=len(countries), service_count=len(rows), verified_count=sum(1 for r in rows if _world_verified(r)), pending_count=sum(1 for r in rows if not _world_verified(r)), service_name=_world_service_name, verified=_world_verified, africa_now_panel=_africa_now_panel_html(), market_data_panel=_market_panel_html())
 
 @app.route("/world/open/<service_id>")
 def koja_world_open(service_id):
