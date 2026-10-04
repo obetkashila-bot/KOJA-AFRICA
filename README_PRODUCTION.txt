@@ -35,3 +35,16 @@ DEPLOY STEPS
 This package does not change Render settings or deploy automatically. Existing
 Supabase schema, OAuth provider settings, and third-party credentials remain managed
 in their respective dashboards.
+
+
+OAUTH PKCE FIX — 04 OCTOBER 2026
+- Social OAuth now uses server-side PKCE for Google, Facebook and GitHub.
+- The Flask session stores the state and PKCE code verifier across the external provider redirect.
+- /auth/callback validates state and exchanges the authorization code directly with Supabase Auth.
+- This removes dependence on supabase-js localStorage/sessionStorage in the Median WebView/external browser flow.
+- Keep PKCE enabled.
+
+IMPORTANT RENDER ENVIRONMENT
+- SECRET_KEY or FLASK_SECRET_KEY must be set and must remain stable across deploys.
+- SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY (or SUPABASE_ANON_KEY) must be configured.
+- If SECRET_KEY changes while a social login is in progress, restart the login from the beginning.

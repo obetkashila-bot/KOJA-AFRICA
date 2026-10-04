@@ -9058,12 +9058,8 @@ def terms_decision():
 
 @app.get('/auth/oauth/<provider>')
 def oauth_start(provider):
-    """Start OAuth using server-side PKCE state/verifier storage.
-
-    This avoids relying on Supabase JS localStorage for the PKCE verifier,
-    which can be lost when a mobile WebView hands OAuth off to an external
-    browser and then returns to the app.
-    """
+    """Start OAuth with server-side PKCE so WebView/external-browser returns do not
+    depend on supabase-js localStorage/sessionStorage for the code verifier."""
     provider = clean(provider).lower()
     if provider not in {'google', 'facebook', 'github'}:
         abort(404)
@@ -9071,106 +9067,104 @@ def oauth_start(provider):
         flash('Social sign-in is not configured yet. Please use email login or configure Supabase Auth.', 'warning')
         return redirect(url_for('login'))
 
-    # RFC 7636 PKCE verifier/challenge.
-    verifier = secrets.token_urlsafe(64)
-    challenge = hashlib.sha256(verifier.encode('ascii')).digest()
-    challenge_b64 = quote(__import__('base64').urlsafe_b64encode(challenge).rstrip(b'=').decode('ascii'), safe='')
-    oauth_state = secrets.token_urlsafe(32)
+    redirect_uri = url_for('oauth_callback', _external=True)
+    state = secrets.token_urlsafe(32)
+    code_verifier = secrets.token_urlsafe(64)
+    code_challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(code_verifier.encode('ascii')).digest()
+    ).rstrip(b'=').decode('ascii')
 
-    session['koja_oauth_state'] = oauth_state
-    session['koja_oauth_verifier'] = verifier
-    session['koja_oauth_provider'] = provider
+    # Flask's signed session cookie carries the verifier across the external
+    # provider redirect. The verifier itself is never placed in the URL.
     session.permanent = True
+    session['oauth_state'] = state
+    session['oauth_code_verifier'] = code_verifier
+    session['oauth_provider'] = provider
+    session['oauth_redirect_uri'] = redirect_uri
+    session.modified = True
 
-    callback_url = url_for('oauth_callback', _external=True)
     params = {
         'provider': provider,
-        'redirect_to': callback_url,
-        'code_challenge': challenge_b64,
-        'code_challenge_method': 's256',
-        'state': oauth_state,
+        'redirect_to': redirect_uri,
+        'code_challenge': code_challenge,
+        'code_challenge_method': 'S256',
+        'state': state,
+        'prompt': 'select_account',
     }
-    # Supabase forwards common provider query parameters such as prompt.
-    if provider in {'google', 'github'}:
-        params['prompt'] = 'select_account'
-
     authorize_url = f"{SUPABASE_URL}/auth/v1/authorize?{urlencode(params)}"
     return redirect(authorize_url, code=302)
 
 @app.get('/auth/callback')
 def oauth_callback():
-    """Complete server-side PKCE OAuth and create the KOJA local session."""
+    """Complete the server-side PKCE exchange and create the KOJA session."""
     error = clean(request.args.get('error'))
     error_description = clean(request.args.get('error_description'))
     if error:
-        flash(error_description or f'Social sign-in failed: {error}.', 'danger')
+        logger.warning('OAuth provider returned error: %s %s', error, error_description)
+        flash(error_description or f'Social sign-in was cancelled ({error}).', 'warning')
         return redirect(url_for('login'))
 
-    returned_state = clean(request.args.get('state'))
-    expected_state = clean(session.get('koja_oauth_state'))
-    verifier = clean(session.get('koja_oauth_verifier'))
-    provider = clean(session.get('koja_oauth_provider')).lower()
     code = clean(request.args.get('code'))
+    returned_state = clean(request.args.get('state'))
+    expected_state = clean(session.get('oauth_state'))
+    code_verifier = clean(session.get('oauth_code_verifier'))
+    redirect_uri = clean(session.get('oauth_redirect_uri')) or url_for('oauth_callback', _external=True)
 
-    # Consume the one-time OAuth state before doing the token exchange.
-    session.pop('koja_oauth_state', None)
-    session.pop('koja_oauth_verifier', None)
-    session.pop('koja_oauth_provider', None)
-
-    if not returned_state or not expected_state or not secrets.compare_digest(returned_state, expected_state):
+    if not code:
+        flash('Social sign-in failed: no authorization code was returned.', 'danger')
+        return redirect(url_for('login'))
+    if not expected_state or not returned_state or not hmac.compare_digest(returned_state, expected_state):
+        logger.warning('OAuth state mismatch on callback. returned=%s expected_present=%s', bool(returned_state), bool(expected_state))
+        session.pop('oauth_state', None)
+        session.pop('oauth_code_verifier', None)
+        session.pop('oauth_provider', None)
+        session.pop('oauth_redirect_uri', None)
         flash('Social sign-in failed: the security state did not match. Please try again.', 'danger')
         return redirect(url_for('login'))
-    if not code or not verifier or provider not in {'google', 'facebook', 'github'}:
-        flash('Social sign-in failed: the authorization response was incomplete. Please try again.', 'danger')
+    if not code_verifier:
+        logger.warning('OAuth callback missing PKCE code verifier.')
+        flash('Social sign-in failed: the secure login session expired. Please try again.', 'danger')
         return redirect(url_for('login'))
 
     key = SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY
     try:
         token_url = f'{SUPABASE_URL}/auth/v1/token?grant_type=pkce'
-        r = requests.post(
+        token_resp = requests.post(
             token_url,
-            headers={
-                'apikey': key,
-                'Content-Type': 'application/json',
-            },
-            json={'auth_code': code, 'code_verifier': verifier},
-            timeout=25,
-        )
-        if not r.ok:
-            try:
-                detail = (r.json() or {}).get('msg') or (r.json() or {}).get('error_description')
-            except Exception:
-                detail = None
-            logger.warning('OAuth PKCE token exchange failed: %s', detail or r.text[:500])
-            flash('Social sign-in could not be completed. Please try again.', 'danger')
-            return redirect(url_for('login'))
-
-        data = r.json() or {}
-        token = clean(data.get('access_token'))
-        if not token:
-            flash('Social sign-in did not return a valid session. Please try again.', 'danger')
-            return redirect(url_for('login'))
-
-        user_r = requests.get(
-            f'{SUPABASE_URL}/auth/v1/user',
-            headers={'apikey': key, 'Authorization': f'Bearer {token}'},
+            headers={'apikey': key, 'Content-Type': 'application/json', 'Accept': 'application/json'},
+            json={'auth_code': code, 'code_verifier': code_verifier},
             timeout=20,
         )
-        if not user_r.ok:
-            flash('Supabase authentication was rejected. Please try again.', 'danger')
+        token_data = token_resp.json() if token_resp.content else {}
+        if not token_resp.ok:
+            logger.warning('Supabase PKCE exchange failed: HTTP %s body=%s', token_resp.status_code, token_data)
+            msg = token_data.get('msg') or token_data.get('message') or token_data.get('error_description') or token_data.get('error') or 'The secure authorization code could not be exchanged.'
+            flash(f'Social sign-in failed: {msg}', 'danger')
             return redirect(url_for('login'))
-        au = user_r.json() or {}
+
+        access_token = clean(token_data.get('access_token'))
+        if not access_token:
+            flash('Social sign-in failed: Supabase returned no access token.', 'danger')
+            return redirect(url_for('login'))
+
+        user_resp = requests.get(
+            f'{SUPABASE_URL}/auth/v1/user',
+            headers={'apikey': key, 'Authorization': f'Bearer {access_token}'},
+            timeout=20,
+        )
+        if not user_resp.ok:
+            logger.warning('Supabase user lookup after OAuth failed: HTTP %s', user_resp.status_code)
+            flash('Social sign-in failed: the authenticated account could not be loaded.', 'danger')
+            return redirect(url_for('login'))
+        au = user_resp.json() or {}
         uid = au.get('id')
         email = clean(au.get('email')).lower()
         if not uid or not email:
-            flash('The provider did not return a usable account.', 'danger')
+            flash('Social sign-in failed: the provider did not return a usable account.', 'danger')
             return redirect(url_for('login'))
 
         meta = au.get('user_metadata') or {}
-        full_name = clean(
-            meta.get('full_name') or meta.get('name') or meta.get('user_name')
-            or meta.get('preferred_username') or email
-        )
+        full_name = clean(meta.get('full_name') or meta.get('name') or meta.get('user_name') or meta.get('preferred_username') or email)
         profile = find_user_by_id(uid)
         if not profile:
             profile, err = create_local_profile(uid, email, full_name)
@@ -9178,17 +9172,27 @@ def oauth_callback():
                 profile = find_user_by_email(email)
                 if not profile:
                     logger.error('OAuth profile creation failed: %s', err)
-                    flash('Could not create your KOJA profile.', 'danger')
+                    flash('Social sign-in failed: your KOJA profile could not be created.', 'danger')
                     return redirect(url_for('login'))
         if profile.get('is_active') is False:
             flash('This KOJA account is inactive.', 'danger')
             return redirect(url_for('login'))
 
-        login_user(profile, {'user': au, 'access_token': token, 'provider': provider})
+        login_user(profile, {'user': au, 'access_token': access_token, 'refresh_token': token_data.get('refresh_token')})
         log_activity('login', 'User logged in through social authentication.')
+        needs_terms = _terms_required_for_user(profile)
+
+        # One-time OAuth values must never be reusable.
+        session.pop('oauth_state', None)
+        session.pop('oauth_code_verifier', None)
+        session.pop('oauth_provider', None)
+        session.pop('oauth_redirect_uri', None)
+
+        if needs_terms:
+            return redirect(url_for('public_terms', required=1, next=url_for('dashboard')))
         return redirect(url_for('dashboard'))
     except Exception:
-        logger.exception('OAuth PKCE callback failed')
+        logger.exception('Server-side OAuth callback failed')
         flash('Social sign-in could not be completed. Please try again.', 'danger')
         return redirect(url_for('login'))
 
