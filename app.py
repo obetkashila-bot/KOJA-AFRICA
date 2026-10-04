@@ -12120,179 +12120,288 @@ def koja_admin_go_live():
 # ============================================================
 # KOJA NEXUS — AFRICA NOW AUTOMATIC TOP SCREEN
 # ============================================================
-KOJA_NEXUS_AFRICA_NOW_VERSION = "1.0"
-KOJA_NEXUS_AFRICA_NOW_INTERVAL = max(60, int(os.getenv("KOJA_NEXUS_AFRICA_NOW_INTERVAL", "300")))
+KOJA_NEXUS_AFRICA_NOW_VERSION = "2.0"
+KOJA_NEXUS_AFRICA_NOW_INTERVAL = max(300, int(os.getenv("KOJA_NEXUS_AFRICA_NOW_INTERVAL", "300")))
 KOJA_NEXUS_AFRICA_NOW_ENABLED = os.getenv("KOJA_NEXUS_AFRICA_NOW_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
+KOJA_NEXUS_AFRICA_NOW_TIMEOUT = max(5, min(int(os.getenv("KOJA_NEXUS_AFRICA_NOW_TIMEOUT", "15")), 45))
 
 _KOJA_AFRICA_NOW_FEEDS = [
-    # Direct publisher feeds first: these provide a more stable primary stream.
-    ("Africanews", "https://www.africanews.com/feed/"),
-    ("BBC Africa", "https://feeds.bbci.co.uk/news/world/africa/rss.xml"),
-    ("Al Jazeera", "https://www.aljazeera.com/xml/rss/all.xml"),
-    # Broad discovery feeds provide redundancy when a direct feed is unavailable.
-    ("Africa Breaking", "https://news.google.com/rss/search?q=Africa+breaking+news&hl=en&gl=US&ceid=US:en"),
-    ("Africa Latest", "https://news.google.com/rss/search?q=Africa+latest+news&hl=en&gl=US&ceid=US:en"),
-    ("Africa Politics", "https://news.google.com/rss/search?q=Africa+politics+government&hl=en&gl=US&ceid=US:en"),
-    ("Africa Business", "https://news.google.com/rss/search?q=Africa+business+economy&hl=en&gl=US&ceid=US:en"),
-    ("Africa Health", "https://news.google.com/rss/search?q=Africa+health+outbreak&hl=en&gl=US&ceid=US:en"),
-    ("Africa Sports", "https://news.google.com/rss/search?q=Africa+sports&hl=en&gl=US&ceid=US:en"),
-    ("Africa Technology", "https://news.google.com/rss/search?q=Africa+technology+innovation&hl=en&gl=US&ceid=US:en"),
-]
-
-KOJA_NEXUS_AFRICA_NOW_SOURCE_PAGES = [
-    ("Africanews Live", "https://www.africanews.com/"),
-    ("BBC Africa", "https://www.bbc.com/news/world/africa"),
-    ("Al Jazeera Africa", "https://www.aljazeera.com/africa/"),
+    ("Africanews", "https://www.africanews.com/feed/rss", "publisher"),
+    ("BBC Africa", "https://feeds.bbci.co.uk/news/world/africa/rss.xml", "publisher"),
+    ("BBC Afrique", "https://feeds.bbci.co.uk/afrique/rss.xml", "publisher"),
+    ("AllAfrica Africa", "https://allafrica.com/tools/headlines/rdf/africa/headlines.rdf", "aggregator"),
+    ("AllAfrica Business", "https://allafrica.com/tools/headlines/rdf/business/headlines.rdf", "aggregator"),
 ]
 
 _AFRICA_COUNTRY_NAMES = [
     "Algeria","Angola","Benin","Botswana","Burkina Faso","Burundi","Cabo Verde","Cameroon",
-    "Central African Republic","Chad","Comoros","Republic of Congo","Democratic Republic of the Congo","DR Congo",
-    "Côte d’Ivoire","Ivory Coast","Djibouti","Egypt","Equatorial Guinea","Eritrea","Eswatini","Ethiopia","Gabon",
-    "Gambia","Ghana","Guinea","Guinea-Bissau","Kenya","Lesotho","Liberia","Libya","Madagascar","Malawi","Mali",
-    "Mauritania","Mauritius","Morocco","Mozambique","Namibia","Niger","Nigeria","Rwanda","São Tomé and Príncipe",
-    "Senegal","Seychelles","Sierra Leone","Somalia","South Africa","South Sudan","Sudan","Tanzania","Togo","Tunisia",
-    "Uganda","Zambia","Zimbabwe"
+    "Central African Republic","Chad","Comoros","Republic of Congo","Republic of the Congo",
+    "Democratic Republic of the Congo","DR Congo","Côte d’Ivoire","Ivory Coast","Djibouti","Egypt",
+    "Equatorial Guinea","Eritrea","Eswatini","Ethiopia","Gabon","Gambia","Ghana","Guinea",
+    "Guinea-Bissau","Kenya","Lesotho","Liberia","Libya","Madagascar","Malawi","Mali","Mauritania",
+    "Mauritius","Morocco","Mozambique","Namibia","Niger","Nigeria","Rwanda","São Tomé and Príncipe",
+    "Senegal","Seychelles","Sierra Leone","Somalia","South Africa","South Sudan","Sudan","Tanzania",
+    "Togo","Tunisia","Uganda","Zambia","Zimbabwe"
 ]
 
 _AFRICA_NOW_CATEGORY_TERMS = {
-    "Politics & Government": ["president","government","election","parliament","minister","politics","coup","cabinet"],
-    "Business & Economy": ["business","economy","market","bank","investment","trade","currency","company","finance"],
-    "Health": ["health","hospital","disease","outbreak","virus","cholera","malaria","medicine"],
+    "Politics & Government": ["president","government","election","parliament","minister","politics","coup","cabinet","summit"],
+    "Business & Economy": ["business","economy","market","bank","investment","trade","currency","company","finance","energy"],
+    "Health": ["health","hospital","disease","outbreak","virus","cholera","malaria","medicine","wfp"],
     "Sports": ["football","soccer","sport","afcon","fifa","basketball","rugby","olympics","match"],
     "Technology": ["technology","tech","ai","digital","startup","innovation","internet","telecom"],
-    "Security & Emergencies": ["attack","war","conflict","military","police","security","flood","earthquake","fire","disaster"],
+    "Security & Emergencies": ["attack","war","conflict","military","police","security","flood","earthquake","fire","disaster","crash"],
 }
+
+_africa_now_runtime = {"last_success": None, "last_attempt": None, "last_error": None, "source_status": {}}
+_africa_now_thread_started = False
+_africa_now_thread_lock = threading.Lock()
+_africa_now_refresh_lock = threading.Lock()
+
 
 def _africa_now_text(value):
     return re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]+>", " ", value or ""))).strip()
 
+
 def _africa_now_image(value):
-    if not value: return None
+    if not value:
+        return None
     m = re.search(r'<img[^>]+src=["\']([^"\']+)', value, re.I)
     return unescape(m.group(1)) if m else None
+
+
+def _africa_now_tag(element):
+    return element.tag.split("}")[-1].lower() if getattr(element, "tag", None) else ""
+
+
+def _africa_now_child_text(item, names):
+    names = {n.lower() for n in names}
+    for child in list(item):
+        if _africa_now_tag(child) in names and child.text:
+            return child.text.strip()
+    return ""
+
 
 def _africa_now_country(title, summary):
     hay = f"{title} {summary}".lower()
     for country in _AFRICA_COUNTRY_NAMES:
-        if country.lower() in hay: return country
+        if country.lower() in hay:
+            return country
     return "Africa"
 
+
 def _africa_now_category(title, summary):
-    hay = f"{title} {summary}".lower(); best, best_n = "Africa News", 0
+    hay = f"{title} {summary}".lower()
+    best, best_n = "Africa News", 0
     for category, terms in _AFRICA_NOW_CATEGORY_TERMS.items():
         n = sum(1 for term in terms if term in hay)
-        if n > best_n: best, best_n = category, n
+        if n > best_n:
+            best, best_n = category, n
     return best
 
+
 def _africa_now_score(title, summary, published):
-    hay = f"{title} {summary}".lower(); score = 1.0
-    if any(x in hay for x in ("breaking", "urgent", "live", "just in")): score += 8
+    hay = f"{title} {summary}".lower()
+    score = 1.0
+    if any(x in hay for x in ("breaking", "urgent", "live", "just in")):
+        score += 8
     score += min(sum(1 for terms in _AFRICA_NOW_CATEGORY_TERMS.values() for term in terms if term in hay), 8) * .7
     if published:
         age_hours = max(0, (datetime.now(timezone.utc) - published).total_seconds() / 3600)
         score += max(0, 8 - age_hours * .8)
     return round(score, 3)
 
-def _africa_now_refresh():
-    if not KOJA_NEXUS_AFRICA_NOW_ENABLED or not supabase_configured():
-        return {"ok": False, "reason": "disabled" if not KOJA_NEXUS_AFRICA_NOW_ENABLED else "supabase_not_configured"}
-    collected, seen = [], set()
-    for label, feed_url in _KOJA_AFRICA_NOW_FEEDS:
-        try:
-            r = requests.get(feed_url, timeout=18, headers={"User-Agent":"KOJA-AFRICA/1.0 Africa-Now"})
-            if not r.ok: continue
-            root = ET.fromstring(r.content)
-        except Exception as exc:
-            logger.warning("Africa Now source failed: %s", exc); continue
-        items = []
-        for node in root.iter():
-            if node.tag.lower().endswith("item") or node.tag.lower().endswith("entry"):
-                items.append(node)
-        for item in items:
-            fields={c.tag.split("}")[-1].lower():(c.text or "") for c in list(item)}
-            title=_africa_now_text(fields.get("title")); link=fields.get("link","").strip()
-            if not link:
-                for c in list(item):
-                    if c.tag.split("}")[-1].lower()=="link": link=c.attrib.get("href","") or c.text or ""
-                    if link: break
-            if not title or not link: continue
-            summary_raw=fields.get("description") or fields.get("summary") or ""
-            summary=_africa_now_text(summary_raw)
-            pub=fields.get("pubdate") or fields.get("published") or fields.get("updated") or ""
-            try:
-                from email.utils import parsedate_to_datetime
-                published=parsedate_to_datetime(pub)
-                if published.tzinfo is None: published=published.replace(tzinfo=timezone.utc)
-                published=published.astimezone(timezone.utc)
-            except Exception: published=None
-            source=_africa_now_text(fields.get("source")) or label
-            low=f"{title} {summary}".lower()
-            image_url=_africa_now_image(summary_raw)
-            video_url=None
-            for c in list(item):
-                tag=c.tag.split("}")[-1].lower()
-                if tag in ("content","enclosure") and c.attrib.get("url"):
-                    media_type=(c.attrib.get("type") or "").lower()
-                    if media_type.startswith("video/") or "video" in tag: video_url=c.attrib.get("url")
-                    if not image_url and media_type.startswith("image/"): image_url=c.attrib.get("url")
-            key=hashlib.sha256(link.encode()).hexdigest()
-            if link.split("#",1)[0] in seen: continue
-            seen.add(link.split("#",1)[0])
-            collected.append({
-                "source_key":key,"title":title[:500],"url":link,"source_name":source[:160],"summary":summary[:900],
-                "image_url":image_url,"video_url":video_url,"published_at":published.isoformat() if published else None,
-                "country":_africa_now_country(title,summary),"category":_africa_now_category(title,summary),
-                "score":_africa_now_score(title,summary,published),"media_type":"video" if video_url or "video" in low or "live stream" in low else "story",
-                "is_live":any(x in low for x in ("live now","live stream","watch live"))
-            })
-    collected.sort(key=lambda x:(float(x.get("score") or 0),x.get("published_at") or ""),reverse=True)
-    collected=collected[:80]
-    if not collected: return {"ok":False,"reason":"no_items"}
-    db_delete("koja_nexus_africa_now", {"is_active":True})
-    now=utc_now(); inserted=0
-    for x in collected:
-        payload={k:x.get(k) for k in ("source_key","title","url","source_name","category","country","published_at","score","image_url","video_url","media_type","is_live","summary")}
-        payload.update({"fetched_at":now,"is_active":True})
-        _,err=db_insert("koja_nexus_africa_now",payload,returning="minimal")
-        if not err: inserted+=1
-    logger.info("Africa Now refresh complete: %s items",inserted)
-    return {"ok":inserted>0,"items":inserted,"fetched_at":now}
 
-_africa_now_thread_started=False
-_africa_now_thread_lock=threading.Lock()
+def _africa_now_parse_date(value):
+    if not value:
+        return None
+    try:
+        from email.utils import parsedate_to_datetime
+        dt = parsedate_to_datetime(value.strip())
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        try:
+            dt = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except Exception:
+            return None
+
+
+def _africa_now_parse_item(item, label, feed_kind):
+    title = _africa_now_text(_africa_now_child_text(item, ("title",)))
+    link = _africa_now_child_text(item, ("link",))
+    if not link:
+        for child in list(item):
+            if _africa_now_tag(child) == "link":
+                link = (child.attrib.get("href") or child.text or "").strip()
+                if link:
+                    break
+    summary_raw = _africa_now_child_text(item, ("description", "summary", "content", "encoded"))
+    summary = _africa_now_text(summary_raw)
+    pub = _africa_now_child_text(item, ("pubdate", "published", "updated", "date"))
+    published = _africa_now_parse_date(pub)
+    source = _africa_now_text(_africa_now_child_text(item, ("source",))) or label
+    image_url = _africa_now_image(summary_raw)
+    video_url = None
+    for child in list(item):
+        tag = _africa_now_tag(child)
+        media_url = child.attrib.get("url") or child.attrib.get("href")
+        media_type = (child.attrib.get("type") or "").lower()
+        if media_url and media_type.startswith("image/") and not image_url:
+            image_url = media_url
+        if media_url and (media_type.startswith("video/") or tag in ("video", "player")):
+            video_url = media_url
+    if not title or not link:
+        return None
+    clean_link = link.split("#", 1)[0]
+    low = f"{title} {summary}".lower()
+    return {
+        "source_key": hashlib.sha256(clean_link.encode()).hexdigest(),
+        "title": title[:500], "url": clean_link, "source_name": source[:160],
+        "summary": summary[:900], "image_url": image_url, "video_url": video_url,
+        "published_at": published.isoformat() if published else None,
+        "country": _africa_now_country(title, summary),
+        "category": _africa_now_category(title, summary),
+        "score": _africa_now_score(title, summary, published),
+        "media_type": "video" if video_url else "story",
+        "is_live": any(x in low for x in ("live now", "live stream", "watch live")),
+        "feed_kind": feed_kind,
+    }
+
+
+def _africa_now_fetch_feed(label, feed_url, feed_kind):
+    headers = {
+        "User-Agent": "KOJA-AFRICA/2.0 (+Africa Now RSS aggregator)",
+        "Accept": "application/rss+xml, application/rdf+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.1",
+    }
+    r = requests.get(feed_url, timeout=(5, KOJA_NEXUS_AFRICA_NOW_TIMEOUT), headers=headers)
+    r.raise_for_status()
+    root = ET.fromstring(r.content)
+    items = []
+    for node in root.iter():
+        if _africa_now_tag(node) in ("item", "entry"):
+            parsed = _africa_now_parse_item(node, label, feed_kind)
+            if parsed:
+                items.append(parsed)
+    return items
+
+
+def _africa_now_refresh(force=False):
+    if not KOJA_NEXUS_AFRICA_NOW_ENABLED:
+        return {"ok": False, "reason": "disabled"}
+    if not supabase_configured():
+        return {"ok": False, "reason": "supabase_not_configured"}
+    if not _africa_now_refresh_lock.acquire(blocking=False):
+        return {"ok": False, "reason": "refresh_in_progress"}
+    try:
+        _africa_now_runtime["last_attempt"] = datetime.now(timezone.utc).isoformat()
+        collected, seen = [], set()
+        source_status = {}
+        for label, feed_url, feed_kind in _KOJA_AFRICA_NOW_FEEDS:
+            try:
+                items = _africa_now_fetch_feed(label, feed_url, feed_kind)
+                accepted = 0
+                for item in items:
+                    if item["url"] in seen:
+                        continue
+                    seen.add(item["url"])
+                    collected.append(item)
+                    accepted += 1
+                source_status[label] = {"ok": True, "items": accepted}
+            except Exception as exc:
+                source_status[label] = {"ok": False, "error": str(exc)[:180]}
+                logger.warning("Africa Now feed failed (%s): %s", label, exc)
+        _africa_now_runtime["source_status"] = source_status
+        if not collected:
+            _africa_now_runtime["last_error"] = "No feed items were collected. Existing cached items were preserved."
+            return {"ok": False, "reason": "no_items", "sources": source_status}
+        collected.sort(key=lambda x: (float(x.get("score") or 0), x.get("published_at") or ""), reverse=True)
+        collected = collected[:100]
+        db_delete("koja_nexus_africa_now", {"is_active": True})
+        fetched_at = utc_now()
+        inserted = 0
+        for item in collected:
+            payload = {k: item.get(k) for k in ("source_key","title","url","source_name","category","country","published_at","score","image_url","video_url","media_type","is_live","summary")}
+            payload.update({"fetched_at": fetched_at, "is_active": True})
+            _, err = db_insert("koja_nexus_africa_now", payload, returning="minimal")
+            if not err:
+                inserted += 1
+        if inserted == 0:
+            _africa_now_runtime["last_error"] = "Feed collection succeeded, but database insertion failed."
+            return {"ok": False, "reason": "database_insert_failed", "sources": source_status}
+        _africa_now_runtime["last_success"] = fetched_at
+        _africa_now_runtime["last_error"] = None
+        logger.info("Africa Now refresh complete: %s items from %s feeds", inserted, len(_KOJA_AFRICA_NOW_FEEDS))
+        return {"ok": True, "items": inserted, "fetched_at": fetched_at, "sources": source_status}
+    finally:
+        _africa_now_refresh_lock.release()
+
+
 def _africa_now_background_worker():
     while True:
-        try: _africa_now_refresh()
-        except Exception: logger.exception("Africa Now background refresh failed")
+        try:
+            _africa_now_refresh()
+        except Exception:
+            logger.exception("Africa Now background refresh failed")
         time.sleep(KOJA_NEXUS_AFRICA_NOW_INTERVAL)
+
+
 def _start_africa_now_worker():
     global _africa_now_thread_started
     with _africa_now_thread_lock:
-        if _africa_now_thread_started or not KOJA_NEXUS_AFRICA_NOW_ENABLED: return
-        _africa_now_thread_started=True
-        threading.Thread(target=_africa_now_background_worker,name="koja-africa-now",daemon=True).start()
+        if _africa_now_thread_started or not KOJA_NEXUS_AFRICA_NOW_ENABLED:
+            return
+        _africa_now_thread_started = True
+        threading.Thread(target=_africa_now_background_worker, name="koja-africa-now", daemon=True).start()
 
 @app.route("/api/nexus/africa-now")
 def koja_nexus_africa_now_api():
-    try: limit=min(max(int(request.args.get("limit") or 12),1),40)
-    except Exception: limit=12
-    rows=db_select("koja_nexus_africa_now",order="score.desc,published_at.desc",limit=limit) or []
-    rows=[r for r in rows if r.get("is_active") is not False]
-    return jsonify({"ok":True,"version":KOJA_NEXUS_AFRICA_NOW_VERSION,"refresh_interval_seconds":KOJA_NEXUS_AFRICA_NOW_INTERVAL,"updated_at":(rows[0].get("fetched_at") if rows else None),"items":rows,"count":len(rows),"sources":[{"name":n,"url":u} for n,u in KOJA_NEXUS_AFRICA_NOW_SOURCE_PAGES]})
+    try:
+        limit = min(max(int(request.args.get("limit") or 12), 1), 40)
+    except Exception:
+        limit = 12
+    rows = db_select("koja_nexus_africa_now", order="score.desc,published_at.desc", limit=limit) or []
+    rows = [r for r in rows if r.get("is_active") is not False]
+    stale = True
+    if rows and rows[0].get("fetched_at"):
+        fetched = _africa_now_parse_date(str(rows[0].get("fetched_at")))
+        stale = not fetched or (datetime.now(timezone.utc) - fetched).total_seconds() >= KOJA_NEXUS_AFRICA_NOW_INTERVAL
+    if stale:
+        result = _africa_now_refresh()
+        if result.get("ok"):
+            rows = db_select("koja_nexus_africa_now", order="score.desc,published_at.desc", limit=limit) or []
+            rows = [r for r in rows if r.get("is_active") is not False]
+    return jsonify({
+        "ok": True,
+        "version": KOJA_NEXUS_AFRICA_NOW_VERSION,
+        "refresh_interval_seconds": KOJA_NEXUS_AFRICA_NOW_INTERVAL,
+        "updated_at": (rows[0].get("fetched_at") if rows else None),
+        "items": rows,
+        "count": len(rows),
+        "collector": {
+            "last_success": _africa_now_runtime.get("last_success").isoformat() if hasattr(_africa_now_runtime.get("last_success"), "isoformat") else _africa_now_runtime.get("last_success"),
+            "last_attempt": _africa_now_runtime.get("last_attempt"),
+            "last_error": _africa_now_runtime.get("last_error"),
+            "sources": _africa_now_runtime.get("source_status", {}),
+        }
+    })
 
 def _africa_now_panel_html():
     return r"""
-<section class="anx-panel" id="kojaAfricaNow" aria-label="Africa Now">
+<section class="anx-panel" id="kojaAfricaNow" aria-label="Africa Now" style="display:block!important;visibility:visible!important;opacity:1!important;">
 <div class="anx-head"><div><span class="anx-live-dot"></span><strong>AFRICA NOW</strong><span class="anx-sub">TOP THINGS HAPPENING ACROSS AFRICA</span></div><div class="anx-updated" id="anxUpdated">Updating automatically…</div></div>
-<div class="anx-screen"><div class="anx-main" id="anxMain"><div class="anx-placeholder"><strong>Loading Africa Now</strong><span>KOJA is collecting the latest African stories.</span></div></div><div class="anx-side" id="anxSide"></div></div>
-<div class="anx-foot"><span>Automatic refresh every 5 minutes · multiple African news sources</span><a href="{{ url_for('koja_nexus_africa_now_api') }}" target="_blank" rel="noopener">Live feed</a></div>
+<div class="anx-screen"><div class="anx-main" id="anxMain"><div class="anx-placeholder anx-boot"><div class="anx-boot-title">AFRICA NOW <span>LIVE</span></div><strong>Top things happening across Africa</strong><span>KOJA is connecting to verified African news feeds.</span><a class="anx-live-link" href="https://www.africanews.com/live/" target="_blank" rel="noopener noreferrer">WATCH AFRICANEWS LIVE</a></div></div><div class="anx-side" id="anxSide"><a class="anx-card" href="https://www.africanews.com/live/" target="_blank" rel="noopener noreferrer"><div class="anx-card-top">LIVE TV</div><div class="anx-card-title">Africanews Live TV</div><div class="anx-card-meta">Open the authorized live channel</div></a></div></div>
+<div class="anx-foot"><span>Automatic refresh every 5 minutes</span><a href="{{ url_for('koja_nexus_africa_now_api') }}" target="_blank" rel="noopener">Live feed</a></div>
 </section>
 <style>
-.anx-panel{margin:0 0 20px;border-radius:22px;overflow:hidden;background:#07111e;color:#fff;box-shadow:0 18px 50px rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.10)}.anx-head{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:13px 16px;background:#0d2036;border-bottom:1px solid rgba(255,255,255,.09);font-size:13px}.anx-sub{margin-left:9px;color:#8fa4ba;font-size:10px;letter-spacing:.08em}.anx-live-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#e11d48;margin-right:7px;box-shadow:0 0 0 4px rgba(225,29,72,.13)}.anx-updated{font-size:10px;color:#91a4b8}.anx-screen{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(260px,.75fr);min-height:330px}.anx-main{position:relative;min-height:330px;background:#02070d;overflow:hidden}.anx-main img,.anx-main video{width:100%;height:100%;min-height:330px;object-fit:cover;display:block;opacity:.82}.anx-overlay{position:absolute;inset:auto 0 0;padding:22px;background:linear-gradient(transparent,rgba(0,0,0,.94));padding-top:90px}.anx-kicker{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:#55b8d2;font-weight:800}.anx-title{font-size:clamp(20px,3vw,34px);line-height:1.18;margin:6px 0}.anx-summary{font-size:12px;color:#c4cfdb;max-width:850px}.anx-open{display:inline-block;margin-top:10px;background:#176b87;color:#fff;text-decoration:none;padding:8px 11px;border-radius:8px;font-size:11px;font-weight:800}.anx-side{padding:11px;background:#0a1522;display:flex;flex-direction:column;gap:8px;overflow:auto}.anx-card{display:block;text-decoration:none;color:#fff;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:10px}.anx-card-top{font-size:9px;color:#69bdd3;text-transform:uppercase;font-weight:800}.anx-card-title{font-size:12px;line-height:1.35;margin-top:4px}.anx-card-meta{font-size:9px;color:#8395a8;margin-top:5px}.anx-placeholder{height:100%;min-height:330px;display:grid;place-content:center;text-align:center;gap:7px;color:#b8c5d3}.anx-placeholder span{font-size:11px;color:#74879b}.anx-foot{display:flex;justify-content:space-between;gap:10px;padding:9px 14px;background:#06101b;color:#71869b;font-size:10px}.anx-foot a{color:#79bfd3;text-decoration:none}@media(max-width:760px){.anx-head{align-items:flex-start}.anx-sub{display:block;margin:3px 0 0 15px}.anx-screen{grid-template-columns:1fr}.anx-main,.anx-placeholder{min-height:280px}.anx-main img,.anx-main video{min-height:280px}.anx-side{max-height:230px}.anx-foot{font-size:9px}}
+.anx-panel{display:block!important;visibility:visible!important;opacity:1!important;position:relative;z-index:2;width:100%;box-sizing:border-box;margin:0 0 20px;border-radius:22px;overflow:hidden;background:#07111e;color:#fff;box-shadow:0 18px 50px rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.10)}.anx-head{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:13px 16px;background:#0d2036;border-bottom:1px solid rgba(255,255,255,.09);font-size:13px}.anx-sub{margin-left:9px;color:#8fa4ba;font-size:10px;letter-spacing:.08em}.anx-live-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#e11d48;margin-right:7px;box-shadow:0 0 0 4px rgba(225,29,72,.13)}.anx-updated{font-size:10px;color:#91a4b8}.anx-screen{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(260px,.75fr);min-height:330px}.anx-main{position:relative;min-height:330px;background:#02070d;overflow:hidden}.anx-main img,.anx-main video{width:100%;height:100%;min-height:330px;object-fit:cover;display:block;opacity:.82}.anx-overlay{position:absolute;inset:auto 0 0;padding:22px;background:linear-gradient(transparent,rgba(0,0,0,.94));padding-top:90px}.anx-kicker{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:#55b8d2;font-weight:800}.anx-title{font-size:clamp(20px,3vw,34px);line-height:1.18;margin:6px 0}.anx-summary{font-size:12px;color:#c4cfdb;max-width:850px}.anx-open{display:inline-block;margin-top:10px;background:#176b87;color:#fff;text-decoration:none;padding:8px 11px;border-radius:8px;font-size:11px;font-weight:800}.anx-side{padding:11px;background:#0a1522;display:flex;flex-direction:column;gap:8px;overflow:auto}.anx-card{display:block;text-decoration:none;color:#fff;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:10px}.anx-card-top{font-size:9px;color:#69bdd3;text-transform:uppercase;font-weight:800}.anx-card-title{font-size:12px;line-height:1.35;margin-top:4px}.anx-card-meta{font-size:9px;color:#8395a8;margin-top:5px}.anx-placeholder{height:100%;min-height:330px;display:grid;place-content:center;text-align:center;gap:7px;color:#b8c5d3;padding:24px;box-sizing:border-box}.anx-placeholder span{font-size:11px;color:#74879b}.anx-boot-title{font-size:clamp(24px,4vw,42px);font-weight:900;letter-spacing:.08em;color:#fff}.anx-boot-title span{display:inline-block;margin-left:7px;padding:4px 7px;border-radius:5px;background:#e11d48;color:#fff;font-size:10px;font-weight:900;vertical-align:middle}.anx-live-link{display:inline-block;margin:9px auto 0;background:#176b87;color:#fff;text-decoration:none;padding:9px 13px;border-radius:8px;font-size:10px;font-weight:900}.anx-foot{display:flex;justify-content:space-between;gap:10px;padding:9px 14px;background:#06101b;color:#71869b;font-size:10px}.anx-foot a{color:#79bfd3;text-decoration:none}@media(max-width:760px){.anx-head{align-items:flex-start}.anx-sub{display:block;margin:3px 0 0 15px}.anx-screen{grid-template-columns:1fr}.anx-main,.anx-placeholder{min-height:280px}.anx-main img,.anx-main video{min-height:280px}.anx-side{max-height:230px}.anx-foot{font-size:9px}}
 </style>
 <script>
-(function(){const main=document.getElementById('anxMain'),side=document.getElementById('anxSide'),updated=document.getElementById('anxUpdated');if(!main||!side)return;function esc(v){return String(v||'').replace(/[&<>\"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[m]));}function render(d){const items=Array.isArray(d.items)?d.items:[];if(!items.length){main.innerHTML='<div class="anx-placeholder"><strong>No fresh Africa stories yet</strong><span>The automatic collector is waiting for the next source update.</span></div>';side.innerHTML='';}else{const h=items[0];let media='';if(h.video_url){media='<video src="'+esc(h.video_url)+'" autoplay muted playsinline controls preload="metadata"></video>';}else if(h.image_url){media='<img src="'+esc(h.image_url)+'" alt="" loading="eager">';}main.innerHTML=media+'<div class="anx-overlay"><div class="anx-kicker">'+esc(h.is_live?'LIVE NOW':h.category||'AFRICA NEWS')+' · '+esc(h.country||'Africa')+'</div><div class="anx-title">'+esc(h.title)+'</div><div class="anx-summary">'+esc(h.summary||'Latest report from '+(h.source_name||'source'))+'</div><a class="anx-open" href="'+esc(h.url)+'" target="_blank" rel="noopener noreferrer">Open source</a></div>';side.innerHTML=items.slice(1,7).map(x=>'<a class="anx-card" href="'+esc(x.url)+'" target="_blank" rel="noopener noreferrer"><div class="anx-card-top">'+esc(x.is_live?'LIVE NOW':x.category||'AFRICA NEWS')+' · '+esc(x.country||'Africa')+'</div><div class="anx-card-title">'+esc(x.title)+'</div><div class="anx-card-meta">'+esc(x.source_name||'Source')+'</div></a>').join('');}updated.textContent='Updated '+(d.updated_at?new Date(d.updated_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'just now');}async function load(){try{const r=await fetch('{{ url_for('koja_nexus_africa_now_api') }}?limit=12',{cache:'no-store'});if(!r.ok)throw new Error('feed');render(await r.json());}catch(e){updated.textContent='Waiting for automatic update';}}load();setInterval(load,300000);})();
+(function(){const main=document.getElementById('anxMain'),side=document.getElementById('anxSide'),updated=document.getElementById('anxUpdated');if(!main||!side)return;function esc(v){return String(v||'').replace(/[&<>\"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[m]));}function render(d){const items=Array.isArray(d.items)?d.items:[];if(!items.length){main.innerHTML='<div class="anx-placeholder"><strong>No fresh Africa stories yet</strong><span>The automatic collector is waiting for the next source update.</span></div>';side.innerHTML='';}else{const h=items[0];let media='';if(h.video_url){media='<video src="'+esc(h.video_url)+'" autoplay muted playsinline controls preload="metadata"></video>';}else if(h.image_url){media='<img src="'+esc(h.image_url)+'" alt="" loading="eager">';}main.innerHTML=media+'<div class="anx-overlay"><div class="anx-kicker">'+esc(h.is_live?'LIVE NOW':h.category||'AFRICA NEWS')+' · '+esc(h.country||'Africa')+'</div><div class="anx-title">'+esc(h.title)+'</div><div class="anx-summary">'+esc(h.summary||'Latest report from '+(h.source_name||'source'))+'</div><a class="anx-open" href="'+esc(h.url)+'" target="_blank" rel="noopener noreferrer">Open source</a></div>';side.innerHTML=items.slice(1,7).map(x=>'<a class="anx-card" href="'+esc(x.url)+'" target="_blank" rel="noopener noreferrer"><div class="anx-card-top">'+esc(x.is_live?'LIVE NOW':x.category||'AFRICA NEWS')+' · '+esc(x.country||'Africa')+'</div><div class="anx-card-title">'+esc(x.title)+'</div><div class="anx-card-meta">'+esc(x.source_name||'Source')+'</div></a>').join('');}updated.textContent='Updated '+(d.updated_at?new Date(d.updated_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'just now');}async function load(){try{const r=await fetch('{{ url_for('koja_nexus_africa_now_api') }}?limit=12',{cache:'no-store'});if(!r.ok)throw new Error('feed');render(await r.json());}catch(e){main.innerHTML='<div class=\"anx-placeholder anx-boot\"><div class=\"anx-boot-title\">AFRICA NOW <span>LIVE</span></div><strong>News screen is online</strong><span>Automatic feed connection is retrying.</span><a class=\"anx-live-link\" href=\"https://www.africanews.com/live/\" target=\"_blank\" rel=\"noopener noreferrer\">WATCH AFRICANEWS LIVE</a></div>';updated.textContent='Retrying automatic update';}}load();setInterval(load,300000);})();
 </script>
 """
 
@@ -12490,7 +12599,7 @@ def _world_score(row, query=""):
 
 @app.route("/nexus")
 def koja_nexus_home_alias():
-    return redirect(url_for("koja_world"))
+    return koja_world()
 
 @app.route("/world/service/<service_id>")
 def koja_nexus_service_details(service_id):
