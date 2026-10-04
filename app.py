@@ -9058,8 +9058,13 @@ def terms_decision():
 
 @app.get('/auth/oauth/<provider>')
 def oauth_start(provider):
-    """Start OAuth with server-side PKCE so WebView/external-browser returns do not
-    depend on supabase-js localStorage/sessionStorage for the code verifier."""
+    """Hardened OAuth start for Chrome, Median Android/WebView, and external browsers.
+
+    The OAuth transaction is carried in a dedicated short-lived HttpOnly cookie as
+    well as the Flask session. This avoids stale Flask-session state when an OAuth
+    redirect crosses browser/WebView boundaries or workers, while the PKCE verifier
+    never enters the URL.
+    """
     provider = clean(provider).lower()
     if provider not in {'google', 'facebook', 'github'}:
         abort(404)
@@ -9067,73 +9072,118 @@ def oauth_start(provider):
         flash('Social sign-in is not configured yet. Please use email login or configure Supabase Auth.', 'warning')
         return redirect(url_for('login'))
 
-    state = secrets.token_urlsafe(32)
     redirect_uri = url_for('oauth_callback', _external=True)
-    # V3: carry a signed transaction marker in the redirect URI as a compatibility
-    # fallback for OAuth clients/providers that drop the top-level state parameter.
-    # Supabase redirects preserve this query component while the actual PKCE
-    # verifier remains server-side in the session cookie.
-    redirect_uri_with_state = f"{redirect_uri}?oauth_state={quote(state, safe='')}" 
+    state = secrets.token_urlsafe(32)
     code_verifier = secrets.token_urlsafe(64)
     code_challenge = base64.urlsafe_b64encode(
         hashlib.sha256(code_verifier.encode('ascii')).digest()
     ).rstrip(b'=').decode('ascii')
 
-    # Flask's signed session cookie carries the verifier across the external
-    # provider redirect. The verifier itself is never placed in the URL.
+    # Store a short-lived signed transaction cookie. It is HttpOnly and Secure;
+    # the verifier is never placed in the callback URL. The verifier is a normal
+    # PKCE secret and is protected from page JavaScript by HttpOnly.
+    tx_payload = base64.urlsafe_b64encode(
+        json.dumps({'s': state, 'v': code_verifier, 'p': provider}, separators=(',', ':')).encode('utf-8')
+    ).rstrip(b'=').decode('ascii')
+    tx_sig = hmac.new(
+        str(app.secret_key).encode('utf-8'),
+        tx_payload.encode('ascii'),
+        hashlib.sha256,
+    ).hexdigest()
+    oauth_tx = f'{tx_payload}.{tx_sig}'
+
+    # Keep Flask session values for compatibility, but callback prefers the
+    # dedicated transaction cookie so stale session state cannot break OAuth.
     session.permanent = True
     session['oauth_state'] = state
     session['oauth_code_verifier'] = code_verifier
     session['oauth_provider'] = provider
-    session['oauth_redirect_uri'] = redirect_uri_with_state
+    session['oauth_redirect_uri'] = redirect_uri
     session.modified = True
 
     params = {
         'provider': provider,
-        'redirect_to': redirect_uri_with_state,
+        'redirect_to': f"{redirect_uri}?oauth_state={quote(state, safe='')}",
         'code_challenge': code_challenge,
         'code_challenge_method': 'S256',
         'state': state,
         'prompt': 'select_account',
     }
     authorize_url = f"{SUPABASE_URL}/auth/v1/authorize?{urlencode(params)}"
-    return redirect(authorize_url, code=302)
+    response = redirect(authorize_url, code=302)
+    response.set_cookie(
+        'koja_oauth_tx', oauth_tx, max_age=600, httponly=True, secure=True,
+        samesite='Lax', path='/'
+    )
+    return response
 
 @app.get('/auth/callback')
 def oauth_callback():
-    """Complete the server-side PKCE exchange and create the KOJA session."""
+    """Complete OAuth with strict state + PKCE validation.
+
+    Supports both the standard OAuth state query parameter and the V3
+    oauth_state callback fallback used by some embedded/external browser paths.
+    """
     error = clean(request.args.get('error'))
     error_description = clean(request.args.get('error_description'))
     if error:
         logger.warning('OAuth provider returned error: %s %s', error, error_description)
+        response = redirect(url_for('login'))
+        response.delete_cookie('koja_oauth_tx', path='/')
         flash(error_description or f'Social sign-in was cancelled ({error}).', 'warning')
-        return redirect(url_for('login'))
+        return response
 
     code = clean(request.args.get('code'))
-    returned_state = clean(request.args.get('state'))
-    # V3 compatibility: some embedded/external OAuth browser paths can drop the
-    # top-level state parameter. Supabase preserves query parameters embedded in
-    # redirect_to, so recover the transaction state from oauth_state when present.
-    returned_state = returned_state or clean(request.args.get('oauth_state'))
-    expected_state = clean(session.get('oauth_state'))
-    code_verifier = clean(session.get('oauth_code_verifier'))
+    returned_state = clean(request.args.get('state')) or clean(request.args.get('oauth_state'))
+
+    # Prefer the dedicated OAuth transaction cookie. This prevents an old/stale
+    # Flask session from causing a false state mismatch after external OAuth.
+    tx_raw = request.cookies.get('koja_oauth_tx') or ''
+    tx_state = tx_verifier = tx_provider = ''
+    if tx_raw and '.' in tx_raw:
+        try:
+            tx_payload, tx_sig = tx_raw.rsplit('.', 1)
+            expected_sig = hmac.new(
+                str(app.secret_key).encode('utf-8'), tx_payload.encode('ascii'), hashlib.sha256
+            ).hexdigest()
+            if hmac.compare_digest(tx_sig, expected_sig):
+                padded = tx_payload + '=' * (-len(tx_payload) % 4)
+                tx = json.loads(base64.urlsafe_b64decode(padded.encode('ascii')).decode('utf-8'))
+                tx_state = clean(tx.get('s'))
+                tx_verifier = clean(tx.get('v'))
+                tx_provider = clean(tx.get('p')).lower()
+        except Exception:
+            logger.warning('Invalid OAuth transaction cookie received.')
+
+    expected_state = tx_state or clean(session.get('oauth_state'))
+    code_verifier = tx_verifier or clean(session.get('oauth_code_verifier'))
+    provider = tx_provider or clean(session.get('oauth_provider')).lower()
     redirect_uri = clean(session.get('oauth_redirect_uri')) or url_for('oauth_callback', _external=True)
 
     if not code:
+        response = redirect(url_for('login'))
+        response.delete_cookie('koja_oauth_tx', path='/')
         flash('Social sign-in failed: no authorization code was returned.', 'danger')
-        return redirect(url_for('login'))
+        return response
+
     if not expected_state or not returned_state or not hmac.compare_digest(returned_state, expected_state):
-        logger.warning('OAuth state mismatch on callback. returned=%s expected_present=%s', bool(returned_state), bool(expected_state))
-        session.pop('oauth_state', None)
-        session.pop('oauth_code_verifier', None)
-        session.pop('oauth_provider', None)
-        session.pop('oauth_redirect_uri', None)
+        logger.warning(
+            'OAuth state mismatch on callback. returned=%s expected=%s cookie=%s',
+            bool(returned_state), bool(expected_state), bool(tx_state)
+        )
+        response = redirect(url_for('login'))
+        response.delete_cookie('koja_oauth_tx', path='/')
+        for k in ('oauth_state', 'oauth_code_verifier', 'oauth_provider', 'oauth_redirect_uri'):
+            session.pop(k, None)
         flash('Social sign-in failed: the security state did not match. Please try again.', 'danger')
-        return redirect(url_for('login'))
+        return response
+
     if not code_verifier:
         logger.warning('OAuth callback missing PKCE code verifier.')
+        response = redirect(url_for('login'))
+        response.delete_cookie('koja_oauth_tx', path='/')
         flash('Social sign-in failed: the secure login session expired. Please try again.', 'danger')
-        return redirect(url_for('login'))
+        return response
 
     key = SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY
     try:
@@ -9148,13 +9198,17 @@ def oauth_callback():
         if not token_resp.ok:
             logger.warning('Supabase PKCE exchange failed: HTTP %s body=%s', token_resp.status_code, token_data)
             msg = token_data.get('msg') or token_data.get('message') or token_data.get('error_description') or token_data.get('error') or 'The secure authorization code could not be exchanged.'
+            response = redirect(url_for('login'))
+            response.delete_cookie('koja_oauth_tx', path='/')
             flash(f'Social sign-in failed: {msg}', 'danger')
-            return redirect(url_for('login'))
+            return response
 
         access_token = clean(token_data.get('access_token'))
         if not access_token:
+            response = redirect(url_for('login'))
+            response.delete_cookie('koja_oauth_tx', path='/')
             flash('Social sign-in failed: Supabase returned no access token.', 'danger')
-            return redirect(url_for('login'))
+            return response
 
         user_resp = requests.get(
             f'{SUPABASE_URL}/auth/v1/user',
@@ -9163,14 +9217,18 @@ def oauth_callback():
         )
         if not user_resp.ok:
             logger.warning('Supabase user lookup after OAuth failed: HTTP %s', user_resp.status_code)
+            response = redirect(url_for('login'))
+            response.delete_cookie('koja_oauth_tx', path='/')
             flash('Social sign-in failed: the authenticated account could not be loaded.', 'danger')
-            return redirect(url_for('login'))
+            return response
         au = user_resp.json() or {}
         uid = au.get('id')
         email = clean(au.get('email')).lower()
         if not uid or not email:
+            response = redirect(url_for('login'))
+            response.delete_cookie('koja_oauth_tx', path='/')
             flash('Social sign-in failed: the provider did not return a usable account.', 'danger')
-            return redirect(url_for('login'))
+            return response
 
         meta = au.get('user_metadata') or {}
         full_name = clean(meta.get('full_name') or meta.get('name') or meta.get('user_name') or meta.get('preferred_username') or email)
@@ -9181,29 +9239,31 @@ def oauth_callback():
                 profile = find_user_by_email(email)
                 if not profile:
                     logger.error('OAuth profile creation failed: %s', err)
+                    response = redirect(url_for('login'))
+                    response.delete_cookie('koja_oauth_tx', path='/')
                     flash('Social sign-in failed: your KOJA profile could not be created.', 'danger')
-                    return redirect(url_for('login'))
+                    return response
         if profile.get('is_active') is False:
+            response = redirect(url_for('login'))
+            response.delete_cookie('koja_oauth_tx', path='/')
             flash('This KOJA account is inactive.', 'danger')
-            return redirect(url_for('login'))
+            return response
 
         login_user(profile, {'user': au, 'access_token': access_token, 'refresh_token': token_data.get('refresh_token')})
         log_activity('login', 'User logged in through social authentication.')
         needs_terms = _terms_required_for_user(profile)
 
-        # One-time OAuth values must never be reusable.
-        session.pop('oauth_state', None)
-        session.pop('oauth_code_verifier', None)
-        session.pop('oauth_provider', None)
-        session.pop('oauth_redirect_uri', None)
-
-        if needs_terms:
-            return redirect(url_for('public_terms', required=1, next=url_for('dashboard')))
-        return redirect(url_for('dashboard'))
+        for k in ('oauth_state', 'oauth_code_verifier', 'oauth_provider', 'oauth_redirect_uri'):
+            session.pop(k, None)
+        response = redirect(url_for('public_terms', required=1, next=url_for('dashboard')) if needs_terms else url_for('dashboard'))
+        response.delete_cookie('koja_oauth_tx', path='/')
+        return response
     except Exception:
         logger.exception('Server-side OAuth callback failed')
+        response = redirect(url_for('login'))
+        response.delete_cookie('koja_oauth_tx', path='/')
         flash('Social sign-in could not be completed. Please try again.', 'danger')
-        return redirect(url_for('login'))
+        return response
 
 @app.post('/auth/oauth/session')
 def oauth_session():
