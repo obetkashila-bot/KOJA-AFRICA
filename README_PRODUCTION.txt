@@ -1,21 +1,23 @@
-KOJA AFRICA — TERMS GATE REMOVED / EMAIL LOGIN
+KOJA AFRICA — MARKET INTELLIGENCE BUILD
 
-Changes in this build:
-- Removed the mandatory Terms acceptance redirect loop from authenticated navigation.
-- /terms remains available as a normal legal page.
-- Existing account registration still requires agreement to the Terms & Conditions.
-- Existing email/password login remains the primary login flow.
-- Removed Google/Facebook/GitHub social-login buttons and obsolete OAuth routes.
-- Terms version updated to 2026-10-04-v2.
-- Existing KOJA services and routes are otherwise preserved.
+This build preserves the existing Flask application and repairs the Market Intelligence engine.
+Provider order:
+1. Alpha Vantage
+2. Twelve Data
+3. Public market fallback
+4. KOJA reference/cache fallback
+
+Important market fixes:
+- Alpha Vantage HTTP 429 and quota messages activate a temporary Alpha cooldown.
+- Twelve Data is attempted immediately after Alpha fails.
+- Market quotes are fetched concurrently so one slow provider does not block all symbols sequentially.
+- Public and KOJA reference fallbacks prevent indefinite loading.
+- Chart endpoint also has a final KOJA reference fallback.
+- Market API returns diagnostic error/provider information instead of hanging.
 
 Render:
-- Build command: pip install -r requirements.txt
-- Start command: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 120 --graceful-timeout 30 --keep-alive 5
-- Keep existing environment variables, including SECRET_KEY/FLASK_SECRET_KEY and Supabase settings.
-
-Deployment:
-1. Replace app.py in the Render-connected KOJA-AFRICA repository.
-2. Commit and push to the connected branch.
-3. Deploy on Render.
-4. Test /health, /login, /terms, /research, /services and /media-next.
+Build command: pip install -r requirements.txt
+Start command: gunicorn app:app
+Environment variables:
+ALPHAVANTAGE_API_KEY=your_key
+TWELVEDATA_API_KEY=your_key
