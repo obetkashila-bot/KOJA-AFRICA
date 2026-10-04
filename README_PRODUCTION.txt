@@ -48,3 +48,15 @@ IMPORTANT RENDER ENVIRONMENT
 - SECRET_KEY or FLASK_SECRET_KEY must be set and must remain stable across deploys.
 - SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY (or SUPABASE_ANON_KEY) must be configured.
 - If SECRET_KEY changes while a social login is in progress, restart the login from the beginning.
+
+OAUTH PKCE HARDENED V3 — 04 OCTOBER 2026
+- Hardened server-side PKCE for Median Android/external browser and normal Chrome.
+- Google, Facebook and GitHub continue through Supabase Auth with S256 PKCE.
+- OAuth state is generated with high entropy and stored in the Flask session.
+- V3 additionally embeds the same transaction state into the Supabase redirect_to URL as oauth_state.
+- The callback accepts the normal top-level state or the preserved oauth_state redirect parameter, then requires an exact constant-time match with the server session state.
+- The PKCE verifier remains server-side and is never exposed in the URL.
+- One-time OAuth transaction values are cleared after completion.
+- Keep SECRET_KEY/FLASK_SECRET_KEY stable across Render deployments and workers.
+- Supabase Site URL: https://koja-africa.onrender.com
+- Supabase redirect URL: https://koja-africa.onrender.com/auth/callback (and ensure Supabase Auth allows the callback URL with its oauth_state query parameter if your project enforces exact redirect matching).

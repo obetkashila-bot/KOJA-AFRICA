@@ -9067,8 +9067,13 @@ def oauth_start(provider):
         flash('Social sign-in is not configured yet. Please use email login or configure Supabase Auth.', 'warning')
         return redirect(url_for('login'))
 
-    redirect_uri = url_for('oauth_callback', _external=True)
     state = secrets.token_urlsafe(32)
+    redirect_uri = url_for('oauth_callback', _external=True)
+    # V3: carry a signed transaction marker in the redirect URI as a compatibility
+    # fallback for OAuth clients/providers that drop the top-level state parameter.
+    # Supabase redirects preserve this query component while the actual PKCE
+    # verifier remains server-side in the session cookie.
+    redirect_uri_with_state = f"{redirect_uri}?oauth_state={quote(state, safe='')}" 
     code_verifier = secrets.token_urlsafe(64)
     code_challenge = base64.urlsafe_b64encode(
         hashlib.sha256(code_verifier.encode('ascii')).digest()
@@ -9080,12 +9085,12 @@ def oauth_start(provider):
     session['oauth_state'] = state
     session['oauth_code_verifier'] = code_verifier
     session['oauth_provider'] = provider
-    session['oauth_redirect_uri'] = redirect_uri
+    session['oauth_redirect_uri'] = redirect_uri_with_state
     session.modified = True
 
     params = {
         'provider': provider,
-        'redirect_to': redirect_uri,
+        'redirect_to': redirect_uri_with_state,
         'code_challenge': code_challenge,
         'code_challenge_method': 'S256',
         'state': state,
@@ -9106,6 +9111,10 @@ def oauth_callback():
 
     code = clean(request.args.get('code'))
     returned_state = clean(request.args.get('state'))
+    # V3 compatibility: some embedded/external OAuth browser paths can drop the
+    # top-level state parameter. Supabase preserves query parameters embedded in
+    # redirect_to, so recover the transaction state from oauth_state when present.
+    returned_state = returned_state or clean(request.args.get('oauth_state'))
     expected_state = clean(session.get('oauth_state'))
     code_verifier = clean(session.get('oauth_code_verifier'))
     redirect_uri = clean(session.get('oauth_redirect_uri')) or url_for('oauth_callback', _external=True)
