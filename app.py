@@ -19,7 +19,7 @@ from urllib.parse import urlparse, parse_qs, urljoin
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from functools import wraps
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, quote_plus
 
 import requests
 from dotenv import load_dotenv
@@ -12144,6 +12144,8 @@ _KOJA_AFRICA_NOW_FEEDS = [
     ("BBC Economy", "https://feeds.bbci.co.uk/news/business/economy/rss.xml", "business_markets"),
     ("BBC Technology", "https://feeds.bbci.co.uk/news/technology/rss.xml", "technology"),
     ("BBC Health", "https://feeds.bbci.co.uk/news/health/rss.xml", "health"),
+    ("BBC Education", "https://feeds.bbci.co.uk/news/education/rss.xml", "education"),
+    ("BBC Science", "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml", "science"),
     ("BBC Sport", "https://feeds.bbci.co.uk/sport/rss.xml", "sports"),
     ("BBC Entertainment", "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml", "culture"),
     ("BBC Asia", "https://feeds.bbci.co.uk/news/world/asia/rss.xml", "world_news"),
@@ -12177,13 +12179,14 @@ _AFRICA_COUNTRY_NAMES = [
 
 _AFRICA_NOW_CATEGORY_TERMS = {
     "Politics & Government": ["president","government","election","parliament","minister","politics","coup","cabinet","summit","senate","congress"],
-    "Business & Markets": ["business","economy","market","markets","stock","stocks","share","shares","exchange","index","nasdaq","dow","s&p","ftse","nikkei","bank","investment","trade","currency","forex","finance","energy","oil","gold","commodities","company","earnings","revenue"],
+    "Business & Economy": ["business","economy","market","markets","stock","stocks","share","shares","exchange","index","nasdaq","dow","s&p","ftse","nikkei","bank","investment","trade","currency","forex","finance","energy","oil","gold","commodities","company","earnings","revenue"],
     "Health": ["health","hospital","disease","outbreak","virus","cholera","malaria","medicine","who","pandemic"],
     "Sports": ["football","soccer","sport","afcon","fifa","basketball","rugby","olympics","match","tennis","cricket"],
     "Technology": ["technology","tech","ai","digital","startup","innovation","internet","telecom","cyber","software"],
     "Security & Emergencies": ["attack","war","conflict","military","police","security","flood","earthquake","fire","disaster","crash","explosion"],
-    "Science": ["science","space","climate","research","environment","nasa"],
-    "Culture & Entertainment": ["culture","music","film","movie","entertainment","artist","celebrity","festival"],
+    "Science & Research": ["science","space","climate","research","environment","nasa"],
+    "Education": ["education","school","student","university","college","scholarship","teacher","learning","campus"],
+    "Culture & Travel": ["culture","music","film","movie","entertainment","artist","celebrity","festival","travel","tourism","tourist","heritage"],
 }
 
 _africa_now_runtime = {"last_success": None, "last_attempt": None, "last_error": None, "source_status": {}, "registry_offset": 0}
@@ -12320,14 +12323,19 @@ def _africa_now_country(title, summary):
     return "Africa"
 
 
-def _africa_now_category(title, summary):
+def _africa_now_category(title, summary, feed_kind=""):
     hay = f"{title} {summary}".lower()
-    best, best_n = "Africa News", 0
+    fk = str(feed_kind or "").lower()
+    feed_map = {"business_markets":"Business & Economy","technology":"Technology","health":"Health","education":"Education","sports":"Sports","science":"Science & Research","culture":"Culture & Travel","jobs":"Jobs & Opportunities"}
+    if fk in feed_map:
+        return feed_map[fk]
+    best, best_n = "Top Stories", 0
     for category, terms in _AFRICA_NOW_CATEGORY_TERMS.items():
         n = sum(1 for term in terms if term in hay)
         if n > best_n:
             best, best_n = category, n
     return best
+
 
 
 def _africa_now_score(title, summary, published):
@@ -12860,85 +12868,98 @@ def koja_nexus_jobs_api():
 
 
 def _africa_now_panel_html():
-    """AFRICA NOW: live-updating horizontal category rows with clean source content."""
+    # AFRICA NOW is a single Africa information hub. KOJA Media is intentionally
+    # not used here; only media attached to an Africa Now source is rendered.
     initial_rows = []
     try:
-        initial_rows = db_select("koja_nexus_africa_now", order="score.desc,published_at.desc", limit=100) or []
+        initial_rows = db_select("koja_nexus_africa_now", order="score.desc,published_at.desc", limit=40) or []
     except Exception:
         initial_rows = []
 
     def _safe(value):
         return escape(str(value or ""), quote=True)
 
+    # Prefer a live item, otherwise the highest-scoring non-job story.
+    initial = next((r for r in initial_rows if isinstance(r, dict) and r.get("is_active") is not False and r.get("is_live") and r.get("category") != "Jobs & Opportunities"), None)
+    if initial is None:
+        initial = next((r for r in initial_rows if isinstance(r, dict) and r.get("is_active") is not False and r.get("category") != "Jobs & Opportunities"), None)
+    if initial is None:
+        initial = next((r for r in initial_rows if isinstance(r, dict) and r.get("is_active") is not False), None)
+
+    if initial:
+        live = bool(initial.get("is_live"))
+        if initial.get("video_url"):
+            media = '<video src="' + _safe(initial.get("video_url")) + '" muted playsinline controls preload="metadata"></video>'
+        elif initial.get("image_url"):
+            media = '<img src="' + _safe(initial.get("image_url")) + '" alt="" loading="eager">'
+        else:
+            media = '<div class="anx-generated anx-boot"><span class="anx-orbit"></span><strong>KOJA VISUAL</strong><small>AFRICA NOW · VISUAL STORY</small></div>'
+        href = _safe(initial.get("url"))
+        title = _safe(initial.get("title") or "Top Africa story")
+        category = _safe(initial.get("category") or "Top Stories")
+        country = _safe(initial.get("country") or "Africa")
+        summary = _safe(initial.get("summary") or ("Latest report from " + str(initial.get("source_name") or "source")))
+        live_badge = '<span class="anx-live">● LIVE</span>' if live else ''
+        first_html = media + '<div class="anx-overlay"><div class="anx-kicker">' + live_badge + ' ' + category + ' · ' + country + '</div><div class="anx-title">' + title + '</div><div class="anx-summary">' + summary + '</div><a class="anx-open" href="' + href + '" target="_blank" rel="noopener noreferrer">' + ('Watch / Open Live Story' if live else 'Open Story') + '</a></div>'
+    else:
+        first_html = '<div class="anx-generated anx-boot"><span class="anx-orbit"></span><strong>AFRICA NOW</strong><small>Collecting the latest stories across Africa…</small></div>'
+
     template = r"""
-<section class="anx-panel" id="kojaAfricaNow" aria-label="Africa Now">
-  <div class="anx-head">
-    <div><strong>AFRICA NOW</strong><span class="anx-sub">TOP STORIES · BUSINESS · JOBS · HEALTH · TECHNOLOGY · EDUCATION · SPORTS · MORE</span></div>
-    <div class="anx-updated" id="anxUpdated">Updating automatically…</div>
-  </div>
-  <div class="anx-hero" id="anxHero"></div>
-  <div id="anxRows"></div>
-  <div class="anx-foot"><span>AFRICA NOW · Source media only · KOJA-generated visuals are clearly labelled</span><span id="anxStatus">Live updates enabled</span></div>
+<section class="anx-panel" id="kojaAfricaNow" aria-label="Africa Now" style="display:block!important;visibility:visible!important;opacity:1!important;">
+<div class="anx-head"><div><strong>AFRICA NOW</strong><span class="anx-sub">TOP STORIES · BUSINESS · JOBS · HEALTH · TECHNOLOGY · EDUCATION · SPORTS · MORE</span></div><div class="anx-updated" id="anxUpdated">Updating automatically…</div></div>
+<div class="anx-screen" id="anxScreen">
+  <div class="anx-main" id="anxMain">__AFRICA_NOW_FIRST_STORY__</div>
+  <div class="anx-section anx-top" id="anxTopSection"><div class="anx-section-head"><div><strong>TOP STORIES</strong><span>Major developments across Africa</span></div><span class="anx-count" id="anxTopCount"></span></div><div class="anx-row" id="anxTop"></div></div>
+  <div class="anx-section" id="anxBusinessSection"><div class="anx-section-head"><div><strong>BUSINESS & ECONOMY</strong><span>Companies · markets · investment · trade</span></div><span class="anx-count" id="anxBusinessCount"></span></div><div class="anx-row" id="anxBusiness"></div></div>
+  <div class="anx-section" id="anxJobsSection"><div class="anx-section-head"><div><strong>JOBS & OPPORTUNITIES</strong><span>Jobs · internships · scholarships · grants · opportunities</span></div><span class="anx-count" id="anxJobsCount"></span></div><div class="anx-row" id="anxJobs"></div></div>
+  <div class="anx-section" id="anxHealthSection"><div class="anx-section-head"><div><strong>HEALTH</strong><span>Health · healthcare · public health</span></div><span class="anx-count" id="anxHealthCount"></span></div><div class="anx-row" id="anxHealth"></div></div>
+  <div class="anx-section" id="anxTechnologySection"><div class="anx-section-head"><div><strong>TECHNOLOGY</strong><span>AI · digital · telecoms · innovation</span></div><span class="anx-count" id="anxTechnologyCount"></span></div><div class="anx-row" id="anxTechnology"></div></div>
+  <div class="anx-section" id="anxEducationSection"><div class="anx-section-head"><div><strong>EDUCATION</strong><span>Universities · research · scholarships</span></div><span class="anx-count" id="anxEducationCount"></span></div><div class="anx-row" id="anxEducation"></div></div>
+  <div class="anx-section" id="anxPoliticsSection"><div class="anx-section-head"><div><strong>POLITICS & GOVERNMENT</strong><span>Governments · elections · policy</span></div><span class="anx-count" id="anxPoliticsCount"></span></div><div class="anx-row" id="anxPolitics"></div></div>
+  <div class="anx-section" id="anxSportsSection"><div class="anx-section-head"><div><strong>SPORTS</strong><span>Football · athletics · major sporting events</span></div><span class="anx-count" id="anxSportsCount"></span></div><div class="anx-row" id="anxSports"></div></div>
+  <div class="anx-section" id="anxScienceSection"><div class="anx-section-head"><div><strong>SCIENCE & RESEARCH</strong><span>Science · discoveries · environment</span></div><span class="anx-count" id="anxScienceCount"></span></div><div class="anx-row" id="anxScience"></div></div>
+  <div class="anx-section" id="anxCultureSection"><div class="anx-section-head"><div><strong>CULTURE & TRAVEL</strong><span>Culture · tourism · arts · entertainment</span></div><span class="anx-count" id="anxCultureCount"></span></div><div class="anx-row" id="anxCulture"></div></div>
+</div>
+<div class="anx-foot"><span>AFRICA NOW · Source media only · KOJA-generated visuals are clearly labelled</span><span id="anxProgress">0 stories</span></div>
 </section>
 <style>
-.anx-panel{display:block!important;width:100%;box-sizing:border-box;margin:0 0 20px;border-radius:22px;overflow:hidden;background:#07111e;color:#fff;border:1px solid rgba(255,255,255,.10);box-shadow:0 18px 50px rgba(0,0,0,.18)}
-.anx-head{display:flex;justify-content:space-between;gap:14px;align-items:center;padding:14px 17px;background:#0d2036;border-bottom:1px solid rgba(255,255,255,.09)}
-.anx-head strong{font-size:18px;letter-spacing:.04em}.anx-sub{margin-left:12px;color:#8fa4ba;font-size:10px;letter-spacing:.06em}.anx-updated{font-size:10px;color:#91a4b8;white-space:nowrap}
-.anx-hero{min-height:260px;background:#02070d;position:relative}.anx-hero img,.anx-hero video{width:100%;height:330px;object-fit:cover;display:block}.anx-hero video{background:#000}.anx-hero-placeholder{height:260px;display:grid;place-content:center;text-align:center;background:linear-gradient(135deg,#07111e,#102b45);color:#b8c5d3}.anx-hero-placeholder strong{font-size:clamp(25px,5vw,46px);color:#fff}.anx-hero-placeholder span{font-size:11px;margin-top:7px}.anx-overlay{position:absolute;inset:auto 0 0;padding:24px;background:linear-gradient(transparent,rgba(0,0,0,.95));padding-top:120px}.anx-kicker{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:#69bdd3;font-weight:800}.anx-title{font-size:clamp(21px,4vw,38px);line-height:1.15;margin:7px 0}.anx-summary{font-size:12px;color:#d0d9e2;max-width:900px;line-height:1.5;max-height:70px;overflow:hidden}.anx-open{display:inline-block;margin-top:11px;background:#176b87;color:#fff;text-decoration:none;padding:8px 12px;border-radius:8px;font-size:11px;font-weight:800}
-.anx-row{padding:15px 0 16px;border-top:1px solid rgba(255,255,255,.07)}.anx-row-head{display:flex;align-items:center;justify-content:space-between;padding:0 15px 9px}.anx-row-title{font-size:14px;font-weight:900;letter-spacing:.04em}.anx-row-more{color:#73bdd2;text-decoration:none;font-size:11px;font-weight:800}.anx-track{display:flex;gap:10px;overflow-x:auto;padding:0 15px 5px;scroll-snap-type:x mandatory;scrollbar-width:thin}.anx-card{flex:0 0 245px;scroll-snap-align:start;background:#0d1c2c;border:1px solid rgba(255,255,255,.08);border-radius:12px;overflow:hidden;min-height:190px}.anx-card-media{height:112px;background:#081421}.anx-card-media img,.anx-card-media video{width:100%;height:100%;object-fit:cover;display:block}.anx-card-media.koja{display:grid;place-content:center;text-align:center;padding:12px;box-sizing:border-box;background:linear-gradient(135deg,#0b2034,#123e59)}.anx-card-media.koja strong{font-size:15px}.anx-card-media.koja span{font-size:9px;color:#8fb0c2;margin-top:3px}.anx-card-body{padding:9px 10px}.anx-card-kicker{font-size:8px;text-transform:uppercase;color:#6fb9ce;font-weight:800}.anx-card-title{font-size:12px;font-weight:800;line-height:1.28;margin:4px 0}.anx-card-summary{font-size:10px;color:#9fb0bf;line-height:1.35;max-height:29px;overflow:hidden}.anx-card-link{display:inline-block;margin-top:7px;color:#fff;background:#176b87;text-decoration:none;border-radius:6px;padding:5px 7px;font-size:9px;font-weight:800}.anx-job-meta{font-size:9px;color:#8ea2b5;margin-top:4px}.anx-empty{padding:0 15px 4px;color:#71869b;font-size:10px}.anx-foot{display:flex;justify-content:space-between;gap:10px;padding:10px 14px;background:#06101b;color:#71869b;font-size:9px}
-@media(max-width:650px){.anx-head{align-items:flex-start}.anx-sub{display:block;margin:4px 0 0}.anx-updated{font-size:9px}.anx-hero,.anx-hero-placeholder{min-height:240px}.anx-hero img,.anx-hero video{height:280px}.anx-card{flex-basis:220px}.anx-foot{flex-direction:column}}
+.anx-panel{display:block!important;visibility:visible!important;opacity:1!important;position:relative;z-index:2;width:100%;box-sizing:border-box;margin:0 0 20px;border-radius:22px;overflow:hidden;background:#07111e;color:#fff;box-shadow:0 18px 50px rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.10)}
+.anx-head{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:14px 16px;background:#0d2036;border-bottom:1px solid rgba(255,255,255,.09);font-size:13px}.anx-sub{margin-left:9px;color:#8fa4ba;font-size:10px;letter-spacing:.06em}.anx-updated{font-size:10px;color:#91a4b8;white-space:nowrap}.anx-screen{background:#06101b}.anx-main{position:relative;min-height:410px;background:#02070d;overflow:hidden}.anx-main img,.anx-main video{width:100%;height:410px;object-fit:cover;display:block}.anx-main video{background:#000}.anx-placeholder{height:410px;display:grid;place-content:center;text-align:center;gap:8px;color:#b8c5d3;padding:24px;box-sizing:border-box}.anx-overlay{position:absolute;inset:auto 0 0;padding:25px;background:linear-gradient(transparent,rgba(0,0,0,.96));padding-top:145px}.anx-kicker{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:#69bdd3;font-weight:800;display:flex;align-items:center;gap:7px;flex-wrap:wrap}.anx-live{color:#ff7777;font-weight:900}.anx-title{font-size:clamp(22px,4vw,40px);line-height:1.12;margin:7px 0}.anx-summary{font-size:12px;color:#d0d9e2;max-width:950px;line-height:1.5;max-height:76px;overflow:auto}.anx-open{display:inline-block;margin-top:11px;background:#176b87;color:#fff;text-decoration:none;padding:8px 13px;border-radius:8px;font-size:11px;font-weight:800}.anx-section{padding:18px 16px 3px}.anx-top{padding-top:20px}.anx-section-head{display:flex;justify-content:space-between;align-items:end;gap:10px;margin-bottom:10px}.anx-section-head strong{font-size:15px;letter-spacing:.02em}.anx-section-head span:not(.anx-count){display:block;color:#71879d;font-size:10px;margin-top:3px}.anx-count{font-size:10px;color:#7891a8;white-space:nowrap}.anx-row{display:flex;gap:11px;overflow-x:auto;scrollbar-width:thin;padding:1px 1px 11px;scroll-snap-type:x proximity}.anx-card{flex:0 0 245px;min-height:225px;border:1px solid rgba(255,255,255,.10);border-radius:14px;overflow:hidden;background:#0b1a2a;scroll-snap-align:start;display:flex;flex-direction:column}.anx-card-media{height:128px;background:#02070d;position:relative;overflow:hidden}.anx-card-media img,.anx-card-media video{width:100%;height:100%;object-fit:cover;display:block}.anx-card-body{padding:10px 11px;display:flex;flex-direction:column;gap:5px;flex:1}.anx-card-kicker{font-size:9px;color:#69bdd3;font-weight:800;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.anx-card-title{font-size:13px;font-weight:800;line-height:1.25;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.anx-card-summary{font-size:10px;color:#9dafc0;line-height:1.35;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}.anx-card-link{margin-top:auto;color:#a9d9ed;text-decoration:none;font-size:10px;font-weight:800}.anx-generated{height:100%;min-height:128px;display:grid;place-content:center;text-align:center;gap:5px;position:relative;overflow:hidden;background:radial-gradient(circle at 50% 45%,#174c67 0,#0b2439 34%,#030a12 76%)}.anx-generated strong{font-size:15px;letter-spacing:.08em;position:relative;z-index:2}.anx-generated small{font-size:8px;color:#91b5c8;letter-spacing:.08em;position:relative;z-index:2}.anx-orbit{position:absolute;width:70px;height:70px;border:1px solid rgba(105,189,211,.5);border-radius:50%;left:50%;top:50%;transform:translate(-50%,-50%);box-shadow:0 0 28px rgba(58,170,210,.2);animation:anxOrbit 4s linear infinite}.anx-orbit:after{content:"";position:absolute;width:7px;height:7px;border-radius:50%;background:#69bdd3;left:-3px;top:31px;box-shadow:0 0 12px #69bdd3}.anx-live-dot{position:absolute;right:8px;top:8px;background:#d33b3b;color:#fff;border-radius:999px;padding:4px 6px;font-size:8px;font-weight:900}.anx-video-tag{position:absolute;left:8px;bottom:8px;background:rgba(0,0,0,.72);border-radius:6px;padding:4px 6px;font-size:8px;font-weight:800}.anx-foot{display:flex;justify-content:space-between;gap:10px;padding:9px 14px;background:#06101b;color:#71869b;font-size:9px}
+@keyframes anxOrbit{to{transform:translate(-50%,-50%) rotate(360deg)}}
+@media(max-width:700px){.anx-head{align-items:flex-start}.anx-sub{display:block;margin:3px 0 0}.anx-updated{white-space:normal}.anx-main{min-height:320px}.anx-main img,.anx-main video{height:320px}.anx-overlay{padding:18px;padding-top:105px}.anx-title{font-size:25px}.anx-section{padding-left:12px;padding-right:12px}.anx-card{flex-basis:215px;min-height:215px}.anx-card-media{height:112px}}
 </style>
 <script>
 (function(){
- const hero=document.getElementById('anxHero'), rows=document.getElementById('anxRows'), updated=document.getElementById('anxUpdated'), status=document.getElementById('anxStatus');
- if(!hero||!rows)return;
- const sections=[['Top Stories',['Top Stories']],['Business & Economy',['Business & Economy','Business']],['Jobs & Opportunities',['Jobs & Opportunities','Jobs']],['Health',['Health']],['Technology',['Technology']],['Education',['Education']],['Politics & Government',['Politics & Government','Politics']],['Sports',['Sports']],['Science & Research',['Science & Research','Science']],['Culture & Travel',['Culture & Travel','Culture','Travel']]];
- let items=[], heroIndex=0, heroTimer=null, pollTimer=null;
- function esc(v){return String(v||'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
- function clean(v,max){let s=String(v||'').replace(/\s+/g,' ').trim(); return max&&s.length>max?s.slice(0,max-1).trim()+'…':s;}
- function media(item,small){
-   if(item.video_url)return '<video src="'+esc(item.video_url)+'" muted playsinline controls preload="metadata"></video>';
-   if(item.image_url)return '<img src="'+esc(item.image_url)+'" alt="" loading="lazy">';
-   return '<div class="anx-card-media koja"><strong>KOJA VISUAL</strong><span>KOJA-generated visual</span></div>';
- }
- function card(item){
-   const job=String(item.category||'')==='Jobs & Opportunities';
-   const employer=item.source_name&&job?clean(item.source_name,55):'';
-   const meta=[item.country||'Africa', item.job_type||''].filter(Boolean).join(' · ');
-   return '<article class="anx-card"><div class="anx-card-media">'+media(item,true)+'</div><div class="anx-card-body"><div class="anx-card-kicker">'+esc(item.category||'AFRICA')+' · '+esc(item.country||'AFRICA')+'</div><div class="anx-card-title">'+esc(clean(item.title||'Latest report',95))+'</div>'+(employer?'<div class="anx-job-meta">'+esc(employer)+'</div>':'')+(meta?'<div class="anx-job-meta">'+esc(meta)+'</div>':'')+'<div class="anx-card-summary">'+esc(clean(item.summary||'',145))+'</div><a class="anx-card-link" href="'+esc(item.url||'#')+'" target="_blank" rel="noopener noreferrer">'+(job?'Open original vacancy':'Open story')+'</a></div></article>';
- }
- function renderHero(){
-   if(!items.length){hero.innerHTML='<div class="anx-hero-placeholder"><strong>AFRICA NOW</strong><span>Waiting for fresh Africa stories…</span></div>';return;}
-   const h=items[heroIndex%items.length]||{}; const media=h.video_url?'<video src="'+esc(h.video_url)+'" muted playsinline controls preload="metadata"></video>':h.image_url?'<img src="'+esc(h.image_url)+'" alt="" loading="eager">':'<div class="anx-hero-placeholder"><strong>KOJA VISUAL</strong><span>KOJA-generated visual</span></div>';
-   const job=String(h.category||'')==='Jobs & Opportunities';
-   hero.innerHTML=media+'<div class="anx-overlay"><div class="anx-kicker">'+esc(h.category||'Top Stories')+' · '+esc(h.country||'Africa')+'</div><div class="anx-title">'+esc(clean(h.title||'Latest report',150))+'</div><div class="anx-summary">'+esc(clean(h.summary||'',260))+'</div><a class="anx-open" href="'+esc(h.url||'#')+'" target="_blank" rel="noopener noreferrer">'+(job?'Open original vacancy':'Open story')+'</a></div>';
- }
- function renderRows(){
-   rows.innerHTML=''; let shown=0;
-   sections.forEach(function(sec){
-     const wanted=sec[1].map(x=>x.toLowerCase());
-     const list=items.filter(x=>wanted.includes(String(x.category||'').toLowerCase())).slice(0,12);
-     if(!list.length)return;
-     shown++;
-     const row=document.createElement('section'); row.className='anx-row';
-     row.innerHTML='<div class="anx-row-head"><div class="anx-row-title">'+esc(sec[0].toUpperCase())+'</div><a class="anx-row-more" href="#" aria-label="See more '+esc(sec[0])+'">→</a></div><div class="anx-track">'+list.map(card).join('')+'</div>';
-     const more=row.querySelector('.anx-row-more'); more.addEventListener('click',function(e){e.preventDefault();row.querySelector('.anx-track').scrollBy({left:Math.min(650,row.querySelector('.anx-track').clientWidth*.8),behavior:'smooth'});});
-     rows.appendChild(row);
-   });
-   if(!shown)rows.innerHTML='<div class="anx-empty">Fresh AFRICA NOW stories are being collected. This screen will update automatically.</div>';
- }
- function startRotation(){clearInterval(heroTimer);if(items.length>1)heroTimer=setInterval(function(){heroIndex=(heroIndex+1)%items.length;renderHero();},20000);}
- async function load(){
-   const controller=new AbortController(), timeout=setTimeout(()=>controller.abort(),7000);
-   try{const r=await fetch('/api/nexus/africa-now?limit=100',{cache:'no-store',signal:controller.signal});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();items=Array.isArray(d.items)?d.items:[]; heroIndex=0; renderHero(); renderRows(); startRotation(); updated.textContent='Updated '+(d.updated_at?new Date(d.updated_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'just now'); status.textContent='Live updates enabled · '+items.length+' items';}
-   catch(e){status.textContent='Cached content retained · retrying automatically';}
-   finally{clearTimeout(timeout);}
- }
- async function poll(){await load();pollTimer=setTimeout(poll,30000);} poll();
+ const main=document.getElementById('anxMain'),updated=document.getElementById('anxUpdated'),progress=document.getElementById('anxProgress');
+ if(!main)return;
+ const groups={
+   business:{section:'anxBusinessSection',row:'anxBusiness',count:'anxBusinessCount',keys:['Business & Economy','Business','Markets','Economy']},
+   jobs:{section:'anxJobsSection',row:'anxJobs',count:'anxJobsCount',keys:['Jobs & Opportunities']},
+   health:{section:'anxHealthSection',row:'anxHealth',count:'anxHealthCount',keys:['Health']},
+   technology:{section:'anxTechnologySection',row:'anxTechnology',count:'anxTechnologyCount',keys:['Technology','Tech']},
+   education:{section:'anxEducationSection',row:'anxEducation',count:'anxEducationCount',keys:['Education']},
+   politics:{section:'anxPoliticsSection',row:'anxPolitics',count:'anxPoliticsCount',keys:['Politics & Government','Politics','Government']},
+   sports:{section:'anxSportsSection',row:'anxSports',count:'anxSportsCount',keys:['Sports']},
+   science:{section:'anxScienceSection',row:'anxScience',count:'anxScienceCount',keys:['Science & Research','Science','Research','Environment']},
+   culture:{section:'anxCultureSection',row:'anxCulture',count:'anxCultureCount',keys:['Culture & Travel','Culture','Travel','Arts','Entertainment']}
+ };
+ function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]});}
+ function categoryOf(h){const c=String(h.category||'').trim();const text=(c+' '+String(h.title||'')+' '+String(h.summary||'')).toLowerCase();if(text.includes('job')||text.includes('vacancy')||text.includes('opportunit')||text.includes('internship'))return'jobs';if(text.includes('business')||text.includes('econom')||text.includes('market')||text.includes('finance')||text.includes('trade')||text.includes('investment'))return'business';if(text.includes('health')||text.includes('medical')||text.includes('hospital')||text.includes('disease'))return'health';if(text.includes('technolog')||text.includes('digital')||text.includes('startup')||text.includes('software')||text.includes('telecom')||text.includes(' ai '))return'technology';if(text.includes('education')||text.includes('university')||text.includes('school')||text.includes('student')||text.includes('scholarship'))return'education';if(text.includes('politic')||text.includes('government')||text.includes('election')||text.includes('president')||text.includes('parliament'))return'politics';if(text.includes('sport')||text.includes('football')||text.includes('soccer')||text.includes('athlet')||text.includes('rugby')||text.includes('tennis'))return'sports';if(text.includes('science')||text.includes('research')||text.includes('environment')||text.includes('climate')||text.includes('space'))return'science';if(text.includes('culture')||text.includes('travel')||text.includes('tourism')||text.includes('tourist')||text.includes('film')||text.includes('music')||text.includes('festival'))return'culture';return null;}
+ function isTop(h){return categoryOf(h)!=='jobs' && !h.is_live;}
+ function generatedVisual(h){return '<div class="anx-generated"><span class="anx-orbit"></span><strong>KOJA VISUAL</strong><small>'+esc((h.category||'AFRICA NOW').toUpperCase())+' · GENERATED VISUAL</small></div>';}
+ function mediaHtml(h){let media='';if(h.video_url){media='<video src="'+esc(h.video_url)+'" muted playsinline controls preload="metadata"></video><span class="anx-video-tag">SOURCE VIDEO</span>';}else if(h.image_url){media='<img src="'+esc(h.image_url)+'" alt="" loading="lazy">';}else{media=generatedVisual(h);}if(h.is_live)media+='<span class="anx-live-dot">● LIVE</span>';return media;}
+ function renderLead(h){if(!h)return;let media=mediaHtml(h);const live=!!h.is_live;main.innerHTML='<div class="anx-card-media" style="height:100%">'+media+'</div><div class="anx-overlay"><div class="anx-kicker">'+(live?'<span class="anx-live">● LIVE</span> ':'')+esc(h.category||'Top Stories')+' · '+esc(h.country||'Africa')+'</div><div class="anx-title">'+esc(h.title||'Top Africa story')+'</div><div class="anx-summary">'+esc(h.summary||('Latest report from '+(h.source_name||'source')))+'</div><a class="anx-open" href="'+esc(h.url||'#')+'" target="_blank" rel="noopener noreferrer">'+(live?'Watch / Open Live Story':'Open Story')+'</a></div>'}
+ function renderCard(h){return '<article class="anx-card"><div class="anx-card-media">'+mediaHtml(h)+'</div><div class="anx-card-body"><div class="anx-card-kicker">'+esc(h.category||'Africa')+' · '+esc(h.country||'Africa')+'</div><div class="anx-card-title">'+esc(h.title||'Africa story')+'</div><div class="anx-card-summary">'+esc(h.summary||('Latest report from '+(h.source_name||'source')))+'</div><a class="anx-card-link" href="'+esc(h.url||'#')+'" target="_blank" rel="noopener noreferrer">'+(h.category==='Jobs & Opportunities'?'VIEW OPPORTUNITY':'READ STORY')+' →</a></div></article>';}
+ function put(groupKey,arr){const g=groups[groupKey],sec=document.getElementById(g.section),row=document.getElementById(g.row),count=document.getElementById(g.count);if(!g||!sec||!row)return;if(!arr.length){sec.style.display='none';return;}sec.style.display='block';row.innerHTML=arr.slice(0,10).map(renderCard).join('');if(count)count.textContent=arr.length+' available';}
+ function renderSections(items){const nonJobs=items.filter(h=>categoryOf(h)!=='jobs');const live=nonJobs.filter(h=>h.is_live);const topAll=[...live,...nonJobs.filter(h=>!live.includes(h))].slice(0,10);put('business',items.filter(h=>categoryOf(h)==='business'));put('jobs',items.filter(h=>categoryOf(h)==='jobs'));put('health',items.filter(h=>categoryOf(h)==='health'));put('technology',items.filter(h=>categoryOf(h)==='technology'));put('education',items.filter(h=>categoryOf(h)==='education'));put('politics',items.filter(h=>categoryOf(h)==='politics'));put('sports',items.filter(h=>categoryOf(h)==='sports'));put('science',items.filter(h=>categoryOf(h)==='science'));put('culture',items.filter(h=>categoryOf(h)==='culture'));const ts=document.getElementById('anxTopSection'),tr=document.getElementById('anxTop'),tc=document.getElementById('anxTopCount');if(topAll.length){ts.style.display='block';tr.innerHTML=topAll.map(renderCard).join('');tc.textContent=topAll.length+' available';}else{ts.style.display='none';}progress.textContent=items.length+' stories';startRowAutoScroll();}
+ function startRowAutoScroll(){document.querySelectorAll('.anx-row').forEach(row=>{if(row.dataset.autoBound)return;row.dataset.autoBound='1';let paused=false;row.addEventListener('mouseenter',()=>paused=true);row.addEventListener('mouseleave',()=>paused=false);row.addEventListener('touchstart',()=>paused=true,{passive:true});row.addEventListener('touchend',()=>setTimeout(()=>paused=false,2500),{passive:true});setInterval(()=>{if(paused||row.scrollWidth<=row.clientWidth+8)return;const step=Math.max(180,Math.floor(row.clientWidth*.55));if(row.scrollLeft+row.clientWidth>=row.scrollWidth-8)row.scrollTo({left:0,behavior:'smooth'});else row.scrollBy({left:step,behavior:'smooth'});},7000);});}
+ let leadItems=[],leadIndex=0,leadTimer=null;function startLeadRotation(){clearInterval(leadTimer);if(leadItems.length>1)leadTimer=setInterval(()=>{leadIndex=(leadIndex+1)%leadItems.length;renderLead(leadItems[leadIndex]);},20000);}
+ async function load(){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),7000);try{const r=await fetch('/api/nexus/africa-now?limit=80',{cache:'no-store',signal:controller.signal});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();items=Array.isArray(d.items)?d.items.filter(x=>x&&x.is_active!==false):[];if(items.length){leadItems=items.filter(h=>categoryOf(h)!=='jobs').slice(0,12);if(!leadItems.length)leadItems=items.slice(0,12);leadIndex=0;renderLead(leadItems[0]);startLeadRotation();renderSections(items);const live=items.some(x=>x.is_live);updated.textContent=(live?'● LIVE · ':'')+'Updated '+(d.updated_at?new Date(d.updated_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'just now');}else{updated.textContent='Waiting for fresh Africa stories…';}}catch(e){updated.textContent='Cached story shown · retrying live feed';}finally{clearTimeout(timer);}}
+ load();setInterval(load,60000);
 })();
 </script>
 """
-    return template
+    return template.replace("__AFRICA_NOW_FIRST_STORY__", first_html)
 
 
 _start_africa_now_worker()
@@ -13002,9 +13023,37 @@ def _twelve_quote(symbol):
         return None
     return {"symbol":symbol,"price":body.get("close"),"change":body.get("change"),"change_percent":body.get("percent_change"),"volume":body.get("volume"),"previous_close":body.get("previous_close"),"latest_trading_day":body.get("datetime"),"provider":"Twelve Data","freshness":"Provider quote; exchange delay/entitlement depends on market/plan","source_url":"https://twelvedata.com/"}
 
+def _yahoo_quote(symbol):
+    """Public fallback quote feed used when configured providers are unavailable."""
+    symbol = clean(symbol).upper()
+    if not symbol:
+        return None
+    try:
+        body = _market_http_json(f"https://query1.finance.yahoo.com/v8/finance/chart/{quote_plus(symbol)}", {"range":"5d","interval":"1d","events":"div,splits"})
+        result = ((body or {}).get("chart") or {}).get("result") or []
+        meta = (result[0].get("meta") or {}) if result else {}
+        price = meta.get("regularMarketPrice")
+        prev = meta.get("previousClose") or meta.get("chartPreviousClose")
+        if price is None and result:
+            closes = (((result[0].get("indicators") or {}).get("quote") or [{}])[0].get("close") or [])
+            closes = [float(x) for x in closes if x is not None]
+            if closes:
+                price = closes[-1]
+                prev = prev or (closes[-2] if len(closes) > 1 else None)
+        if price is None:
+            return None
+        change = (float(price) - float(prev)) if prev not in (None, "") else None
+        pct = (change / float(prev) * 100.0) if change is not None and float(prev) else None
+        return {"symbol":symbol,"price":price,"change":change,"change_percent":pct,"volume":meta.get("regularMarketVolume"),"previous_close":prev,"latest_trading_day":meta.get("regularMarketTime"),"provider":"Public market fallback","freshness":"Public delayed/market-feed fallback","source_url":"https://finance.yahoo.com/"}
+    except Exception as exc:
+        logger.warning("Public market fallback failed for %s: %s", symbol, exc)
+        return None
+
 def _market_quote(symbol):
     symbol = clean(symbol).upper()
-    return _alpha_quote(symbol) or _twelve_quote(symbol) if symbol else None
+    if not symbol:
+        return None
+    return _alpha_quote(symbol) or _twelve_quote(symbol) or _yahoo_quote(symbol)
 
 def _refresh_market_quotes(symbols=None, force=False):
     symbols = list(dict.fromkeys([clean(x).upper() for x in (symbols or KOJA_MARKET_SYMBOLS) if clean(x)]))[:30]
@@ -13081,7 +13130,7 @@ def koja_market_quotes_api():
     symbols=[x.strip().upper() for x in raw.split(',') if x.strip()] if raw else KOJA_MARKET_SYMBOLS
     symbols=list(dict.fromkeys(symbols))[:30]
     quotes,updated_at=_refresh_market_quotes(symbols)
-    return jsonify({'provider_order':['Alpha Vantage','Twelve Data'],'quotes':[quotes[s] for s in symbols if s in quotes],'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'configured':bool(ALPHAVANTAGE_API_KEY or TWELVEDATA_API_KEY)})
+    return jsonify({'provider_order':['Alpha Vantage','Twelve Data','Public market fallback'],'quotes':[quotes[s] for s in symbols if s in quotes],'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'configured':bool(ALPHAVANTAGE_API_KEY or TWELVEDATA_API_KEY)})
 
 @app.route('/api/markets/status')
 def koja_market_status_api():
@@ -13149,6 +13198,33 @@ def _twelve_fx_rate(symbol):
         return None
     return rate
 
+def _yahoo_time_series(symbol, interval="1day", outputsize=30):
+    symbol=clean(symbol).upper()
+    if not symbol:
+        return []
+    interval_map={"1day":"1d","1week":"1wk","1month":"1mo"}
+    yint=interval_map.get(interval,"1d")
+    try:
+        period2=int(time.time())
+        span={"1d":"1y","1wk":"5y","1mo":"10y"}.get(yint,"1y")
+        import datetime as _dt
+        days={"1y":365,"5y":1825,"10y":3650}.get(span,365)
+        period1=period2-days*86400
+        body=_market_http_json(f"https://query1.finance.yahoo.com/v8/finance/chart/{quote_plus(symbol)}", {"period1":period1,"period2":period2,"interval":yint,"events":"div,splits"})
+        result=((body or {}).get("chart") or {}).get("result") or []
+        if not result:
+            return []
+        r=result[0]; times=r.get("timestamp") or []
+        closes=((((r.get("indicators") or {}).get("quote") or [{}])[0]).get("close") or [])
+        out=[]
+        for ts,close in zip(times,closes):
+            if close is not None:
+                out.append({"datetime":_dt.datetime.fromtimestamp(ts, _dt.timezone.utc).strftime("%Y-%m-%d"),"close":close})
+        return out[-max(1,min(int(outputsize),100)): ]
+    except Exception as exc:
+        logger.warning("Public chart fallback failed for %s: %s", symbol, exc)
+        return []
+
 @app.route('/api/markets/chart')
 def koja_market_chart_api():
     symbol=clean(request.args.get('symbol') or 'AAPL').upper()
@@ -13165,7 +13241,39 @@ def koja_market_chart_api():
     if not values and TWELVEDATA_API_KEY:
         values=_twelve_time_series(symbol,interval,outputsize)
         if values: provider="Twelve Data"
+    if not values:
+        values=_yahoo_time_series(symbol,interval,outputsize)
+        if values: provider="Public market fallback"
     return jsonify({'symbol':symbol,'interval':interval,'values':values,'provider':provider,'freshness':'Historical/provider data; exact latency depends on market/plan','error':None if values else _koja_market_diag.get("last_error")})
+
+def _public_fx_rates(pairs):
+    """Public FX fallback using ECB-derived rates via Frankfurter."""
+    try:
+        symbols=[]
+        for pair,_,_ in pairs:
+            base,quote=pair.split('/',1)
+            if base != "USD":
+                symbols.append(base)
+            if quote != "USD":
+                symbols.append(quote)
+        symbols=sorted(set(symbols))
+        params={"base":"USD","symbols":",".join(symbols)}
+        body=_market_http_json("https://api.frankfurter.app/latest",params) or {}
+        rates={"USD":1.0}
+        for k,v in (body.get("rates") or {}).items():
+            try: rates[k]=float(v)
+            except Exception: pass
+        out=[]
+        for symbol,base_name,quote_name in pairs:
+            base,quote=symbol.split('/',1)
+            if base not in rates or quote not in rates:
+                continue
+            rate=rates[quote]/rates[base]
+            out.append({'symbol':symbol,'rate':rate,'base_name':base_name,'quote_name':quote_name,'provider':'Public FX fallback','freshness':'ECB-derived public reference rate'})
+        return out
+    except Exception as exc:
+        logger.warning("Public FX fallback failed: %s", exc)
+        return []
 
 @app.route('/api/markets/fx')
 def koja_market_fx_api():
@@ -13195,13 +13303,31 @@ def koja_market_fx_api():
             _koja_fx_cache['updated_at']=now
         return jsonify({'rates':rates,'updated_at':now,'provider_order':['Alpha Vantage','Twelve Data'],'cached':False,'error':None})
     if cached:
-        return jsonify({'rates':[cached[x[0]] for x in KOJA_FX_PAIRS if x[0] in cached],'updated_at':cached_at,'provider_order':['Alpha Vantage','Twelve Data'],'cached':True,'error':_koja_market_diag.get('last_error') or 'Live provider unavailable; showing last successful rates.'})
-    return jsonify({'rates':[],'updated_at':None,'provider_order':['Alpha Vantage','Twelve Data'],'cached':False,'error':_koja_market_diag.get('last_error') or 'No financial-data provider is configured. Add TWELVEDATA_API_KEY or ALPHAVANTAGE_API_KEY in Render Environment.'})
+        return jsonify({'rates':[cached[x[0]] for x in KOJA_FX_PAIRS if x[0] in cached],'updated_at':cached_at,'provider_order':['Alpha Vantage','Twelve Data','Public FX fallback'],'cached':True,'error':_koja_market_diag.get('last_error') or 'Live provider unavailable; showing last successful rates.'})
+    public_rates=_public_fx_rates(KOJA_FX_PAIRS)
+    if public_rates:
+        with _koja_market_lock:
+            _koja_fx_cache['rates']={x['symbol']:x for x in public_rates}
+            _koja_fx_cache['updated_at']=now
+        return jsonify({'rates':public_rates,'updated_at':now,'provider_order':['Alpha Vantage','Twelve Data','Public FX fallback'],'cached':False,'error':None})
+    return jsonify({'rates':[],'updated_at':None,'provider_order':['Alpha Vantage','Twelve Data','Public FX fallback'],'cached':False,'error':_koja_market_diag.get('last_error') or 'Market data temporarily unavailable.'})
 
 
 # ============================================================
 # KOJA NEXUS — PUBLIC AFRICA SERVICE DIRECTORY
 # ============================================================
+KOJA_AFRICA_54 = [
+    ("DZ","Algeria"),("AO","Angola"),("BJ","Benin"),("BW","Botswana"),("BF","Burkina Faso"),("BI","Burundi"),
+    ("CV","Cabo Verde"),("CM","Cameroon"),("CF","Central African Republic"),("TD","Chad"),("KM","Comoros"),("CG","Republic of the Congo"),
+    ("CI","Côte d’Ivoire"),("CD","Democratic Republic of the Congo"),("DJ","Djibouti"),("EG","Egypt"),("GQ","Equatorial Guinea"),("ER","Eritrea"),
+    ("SZ","Eswatini"),("ET","Ethiopia"),("GA","Gabon"),("GM","The Gambia"),("GH","Ghana"),("GN","Guinea"),("GW","Guinea-Bissau"),
+    ("KE","Kenya"),("LS","Lesotho"),("LR","Liberia"),("LY","Libya"),("MG","Madagascar"),("MW","Malawi"),("ML","Mali"),("MR","Mauritania"),
+    ("MU","Mauritius"),("MA","Morocco"),("MZ","Mozambique"),("NA","Namibia"),("NE","Niger"),("NG","Nigeria"),("RW","Rwanda"),
+    ("ST","São Tomé and Príncipe"),("SN","Senegal"),("SC","Seychelles"),("SL","Sierra Leone"),("SO","Somalia"),("ZA","South Africa"),
+    ("SS","South Sudan"),("SD","Sudan"),("TZ","Tanzania"),("TG","Togo"),("TN","Tunisia"),("UG","Uganda"),("ZM","Zambia"),("ZW","Zimbabwe")
+]
+KOJA_WORLD_COUNTRIES = dict(KOJA_AFRICA_54)
+
 KOJA_WORLD_CATEGORIES = [
     "Government Services", "Health & Medical", "Universities & Education",
     "Defence & Armed Forces", "Jobs & Labour", "Business & Company Registration",
@@ -13310,7 +13436,7 @@ def koja_world():
     query, country, category = clean(request.args.get("q")), clean(request.args.get("country")), clean(request.args.get("category"))
     filtered = [r for r in rows if _world_matches(r, query, country, category)]
     filtered.sort(key=lambda r: (str(r.get("country_name") or ""), int(r.get("sort_order") or 100), _world_service_name(r)))
-    countries = {}
+    countries = dict(KOJA_WORLD_COUNTRIES)
     for r in rows:
         code = clean(r.get("country_code")).upper()
         if code: countries[code] = _world_country(r)
@@ -13324,13 +13450,33 @@ def koja_world():
 .kw-hero h1{margin:0 0 8px;font-size:clamp(30px,5vw,48px)}.kw-hero p{margin:0;max-width:900px;color:rgba(255,255,255,.86);line-height:1.6}.kw-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:20px}.kw-stat{background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.16);border-radius:15px;padding:14px}.kw-stat strong{display:block;font-size:25px}.kw-stat span{font-size:12px;color:rgba(255,255,255,.72)}
 .kw-filter{display:grid;grid-template-columns:1.7fr 1fr 1.2fr auto;gap:10px;align-items:end;margin-bottom:18px}.kw-filter label{font-size:12px;font-weight:700;display:block;margin-bottom:6px}.kw-filter input,.kw-filter select{width:100%;box-sizing:border-box}.kw-section{margin-top:18px}.kw-section h2{margin-bottom:5px}.kw-muted{color:#758397;font-size:13px}.kw-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:14px}.kw-card{border:1px solid rgba(90,110,135,.24);border-radius:18px;padding:18px;background:var(--card-bg,#fff);box-shadow:0 8px 24px rgba(0,0,0,.07)}
 .kw-country{font-size:11px;font-weight:800;letter-spacing:.08em;color:#0b4ea2;text-transform:uppercase}.kw-card h3{margin:7px 0 5px;font-size:18px}.kw-card p{font-size:13px;line-height:1.55;color:#657386}.kw-badges{display:flex;gap:6px;flex-wrap:wrap;margin:11px 0}.kw-badge{font-size:10px;padding:5px 8px;border-radius:999px;background:#edf4ff;color:#0b4ea2;font-weight:800}.kw-badge.pending{background:#fff4dc;color:#8a5b00}.kw-actions{display:flex;gap:8px;flex-wrap:wrap}.kw-actions .btn{font-size:12px}.kw-cat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px}.kw-cat{display:block;border:1px solid rgba(90,110,135,.20);border-radius:14px;padding:14px;text-decoration:none;color:inherit;background:var(--card-bg,#fff)}.kw-cat strong{display:block}.kw-cat span{font-size:12px;color:#718096}.kw-empty{padding:35px;text-align:center;border:1px dashed #9aa8b8;border-radius:16px}
+.kw-spotlight{border:1px solid rgba(11,78,162,.15);border-radius:20px;padding:18px;background:linear-gradient(180deg,rgba(11,78,162,.045),transparent)}.kw-spot-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.kw-spot-head h2{margin:0 0 4px}.kw-spot-head>strong{font-size:12px;letter-spacing:.08em;color:#0b4ea2;white-space:nowrap}
 @media(max-width:1000px){.kw-grid{grid-template-columns:repeat(2,1fr)}.kw-cat-grid{grid-template-columns:repeat(2,1fr)}.kw-filter{grid-template-columns:1fr 1fr}.kw-filter .kw-search{grid-column:1/-1}.kw-stats{grid-template-columns:repeat(2,1fr)}}@media(max-width:650px){.kw-grid,.kw-cat-grid,.kw-filter{grid-template-columns:1fr}.kw-filter .kw-search{grid-column:auto}.kw-stats{grid-template-columns:1fr 1fr}.kw-hero{padding:21px}}
 </style>
 <div class="kw-shell">{{ africa_now_panel|safe }}{{ market_data_panel|safe }}<section class="kw-hero"><h1>KOJA NEXUS</h1><p>Open public services from across Africa through one KOJA directory. Choose a country, select a service category, search for a service, then open the official provider.</p><div class="kw-stats"><div class="kw-stat"><strong>{{ country_count }}</strong><span>African countries</span></div><div class="kw-stat"><strong>{{ service_count }}</strong><span>Active services</span></div><div class="kw-stat"><strong>{{ verified_count }}</strong><span>Verified services</span></div><div class="kw-stat"><strong>{{ pending_count }}</strong><span>Verification pending</span></div></div></section>
+<section class="kw-section kw-spotlight">
+  <div class="kw-spot-head"><div><h2>AFRICA COUNTRY SPOTLIGHT</h2><p class="kw-muted">KOJA NEXUS rotates through all 54 African countries automatically. Services shown come from the KOJA directory; official providers remain responsible for the service.</p></div><strong id="kwSpotCountry">AFRICA</strong></div>
+  <div id="kwSpotGrid" class="kw-grid"><div class="kw-empty" style="grid-column:1/-1">Loading country resources…</div></div>
+</section>
 <form method="get" class="card kw-filter"><div class="kw-search"><label for="kwq">Search KOJA NEXUS</label><input id="kwq" name="q" value="{{ query }}" placeholder="e.g. immigration, university, tax, health, jobs"></div><div><label for="kwcountry">Country</label><select id="kwcountry" name="country"><option value="">All countries</option>{% for code,name in countries|dictsort %}<option value="{{ code }}" {% if country|upper==code %}selected{% endif %}>{{ name }} ({{ code }})</option>{% endfor %}</select></div><div><label for="kwcategory">Category</label><select id="kwcategory" name="category"><option value="">All categories</option>{% for cat in categories %}<option value="{{ cat }}" {% if category|lower==cat|lower %}selected{% endif %}>{{ cat }}</option>{% endfor %}</select></div><div><button class="btn" type="submit">Search</button></div></form>
 {% if not query and not country and not category %}<section class="kw-section"><h2>Browse by service</h2><div class="kw-cat-grid">{% for cat in categories %}<a class="kw-cat" href="{{ url_for('koja_world',category=cat) }}"><strong>{{ cat }}</strong><span>{{ category_counts.get(cat,0) }} services</span></a>{% endfor %}</div></section>{% endif %}
 <section class="kw-section"><h2>{% if query or country or category %}Search results{% else %}All public services{% endif %}</h2><p class="kw-muted">{{ filtered|length }} service{% if filtered|length != 1 %}s{% endif %} shown. Verification pending services remain visible so users can discover them, but KOJA does not represent them as verified.</p><div class="kw-grid">{% for s in filtered %}<article class="kw-card"><div class="kw-country">{{ s.country_code or '' }} · {{ s.country_name or 'Africa' }}</div><h3>{{ service_name(s) }}</h3><div class="kw-muted">{{ s.category or 'Public Service' }}</div><p>{{ s.description or 'Official public service available through the listed provider.' }}</p><div class="kw-badges">{% if verified(s) %}<span class="kw-badge">Verified</span>{% else %}<span class="kw-badge pending">Verification pending</span>{% endif %}<span class="kw-badge">Official provider</span></div><div class="kw-actions"><a class="btn" href="{{ url_for('koja_world_open',service_id=s.id) }}">Open service</a>{% if s.country_code %}<a class="btn secondary" href="{{ url_for('koja_world',country=s.country_code) }}">More {{ s.country_code }}</a>{% endif %}</div></article>{% else %}<div class="kw-empty" style="grid-column:1/-1"><h3>No matching services</h3><p>Try another country, category or search term.</p><a class="btn" href="{{ url_for('koja_world') }}">Show all KOJA NEXUS</a></div>{% endfor %}</div></section></div>
 <script>
+(function(){
+  var countries={{ KOJA_AFRICA_54|tojson }};
+  var spotGrid=document.getElementById('kwSpotGrid'), spotCountry=document.getElementById('kwSpotCountry'), index=0;
+  function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]});}
+  function renderCountry(code,name){
+    spotCountry.textContent=name.toUpperCase()+' · '+code;
+    fetch('{{ url_for("koja_world_services_api") }}?country='+encodeURIComponent(code)+'&limit=6',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){
+      var rows=d.services||[];
+      if(!rows.length){spotGrid.innerHTML='<div class="kw-empty" style="grid-column:1/-1"><h3>'+esc(name)+'</h3><p>No KOJA-indexed public services are available for this country yet.</p><a class="btn secondary" href="{{ url_for("koja_world") }}?country='+encodeURIComponent(code)+'">Open country directory</a></div>';return;}
+      spotGrid.innerHTML=rows.slice(0,3).map(function(x){return '<article class="kw-card"><div class="kw-country">'+esc(x.country_code)+' · '+esc(x.country_name)+'</div><h3>'+esc(x.name)+'</h3><div class="kw-muted">'+esc(x.category||'Public Service')+'</div><p>'+esc(x.description||'Official public service available through the listed provider.')+'</p><div class="kw-actions"><a class="btn" href="'+esc(x.open_url)+'">Open service</a></div></article>';}).join('');
+    }).catch(function(){spotGrid.innerHTML='<div class="kw-empty" style="grid-column:1/-1">Country resources temporarily unavailable.</div>';});
+  }
+  function next(){var item=countries[index % countries.length];index++;renderCountry(item[0],item[1]);}
+  next(); setInterval(next,8000);
+})();
 (function(){
   var serviceCount={{ service_count|tojson }};
   if(serviceCount===0){
@@ -13345,7 +13491,7 @@ def koja_world():
   }
 })();
 </script>
-''', filtered=filtered, countries=countries, categories=KOJA_WORLD_CATEGORIES, category_counts=category_counts, query=query, country=country, category=category, country_count=len(countries), service_count=len(rows), verified_count=sum(1 for r in rows if _world_verified(r)), pending_count=sum(1 for r in rows if not _world_verified(r)), service_name=_world_service_name, verified=_world_verified, africa_now_panel=_africa_now_panel_html(), market_data_panel=_market_panel_html())
+''', filtered=filtered, countries=countries, categories=KOJA_WORLD_CATEGORIES, category_counts=category_counts, query=query, country=country, category=category, country_count=len(countries), service_count=len(rows), verified_count=sum(1 for r in rows if _world_verified(r)), pending_count=sum(1 for r in rows if not _world_verified(r)), service_name=_world_service_name, verified=_world_verified, KOJA_AFRICA_54=KOJA_AFRICA_54, africa_now_panel=_africa_now_panel_html(), market_data_panel=_market_panel_html())
 
 @app.route("/world/open/<service_id>")
 def koja_world_open(service_id):
