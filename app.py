@@ -19,7 +19,7 @@ from urllib.parse import urlparse, parse_qs, urljoin
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from functools import wraps
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, quote_plus
 
 import requests
 from dotenv import load_dotenv
@@ -13013,9 +13013,37 @@ def _twelve_quote(symbol):
         return None
     return {"symbol":symbol,"price":body.get("close"),"change":body.get("change"),"change_percent":body.get("percent_change"),"volume":body.get("volume"),"previous_close":body.get("previous_close"),"latest_trading_day":body.get("datetime"),"provider":"Twelve Data","freshness":"Provider quote; exchange delay/entitlement depends on market/plan","source_url":"https://twelvedata.com/"}
 
+def _yahoo_quote(symbol):
+    """Public fallback quote feed used when configured providers are unavailable."""
+    symbol = clean(symbol).upper()
+    if not symbol:
+        return None
+    try:
+        body = _market_http_json(f"https://query1.finance.yahoo.com/v8/finance/chart/{quote_plus(symbol)}", {"range":"5d","interval":"1d","events":"div,splits"})
+        result = ((body or {}).get("chart") or {}).get("result") or []
+        meta = (result[0].get("meta") or {}) if result else {}
+        price = meta.get("regularMarketPrice")
+        prev = meta.get("previousClose") or meta.get("chartPreviousClose")
+        if price is None and result:
+            closes = (((result[0].get("indicators") or {}).get("quote") or [{}])[0].get("close") or [])
+            closes = [float(x) for x in closes if x is not None]
+            if closes:
+                price = closes[-1]
+                prev = prev or (closes[-2] if len(closes) > 1 else None)
+        if price is None:
+            return None
+        change = (float(price) - float(prev)) if prev not in (None, "") else None
+        pct = (change / float(prev) * 100.0) if change is not None and float(prev) else None
+        return {"symbol":symbol,"price":price,"change":change,"change_percent":pct,"volume":meta.get("regularMarketVolume"),"previous_close":prev,"latest_trading_day":meta.get("regularMarketTime"),"provider":"Public market fallback","freshness":"Public delayed/market-feed fallback","source_url":"https://finance.yahoo.com/"}
+    except Exception as exc:
+        logger.warning("Public market fallback failed for %s: %s", symbol, exc)
+        return None
+
 def _market_quote(symbol):
     symbol = clean(symbol).upper()
-    return _alpha_quote(symbol) or _twelve_quote(symbol) if symbol else None
+    if not symbol:
+        return None
+    return _alpha_quote(symbol) or _twelve_quote(symbol) or _yahoo_quote(symbol)
 
 def _refresh_market_quotes(symbols=None, force=False):
     symbols = list(dict.fromkeys([clean(x).upper() for x in (symbols or KOJA_MARKET_SYMBOLS) if clean(x)]))[:30]
@@ -13092,7 +13120,7 @@ def koja_market_quotes_api():
     symbols=[x.strip().upper() for x in raw.split(',') if x.strip()] if raw else KOJA_MARKET_SYMBOLS
     symbols=list(dict.fromkeys(symbols))[:30]
     quotes,updated_at=_refresh_market_quotes(symbols)
-    return jsonify({'provider_order':['Alpha Vantage','Twelve Data'],'quotes':[quotes[s] for s in symbols if s in quotes],'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'configured':bool(ALPHAVANTAGE_API_KEY or TWELVEDATA_API_KEY)})
+    return jsonify({'provider_order':['Alpha Vantage','Twelve Data','Public market fallback'],'quotes':[quotes[s] for s in symbols if s in quotes],'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'configured':bool(ALPHAVANTAGE_API_KEY or TWELVEDATA_API_KEY)})
 
 @app.route('/api/markets/status')
 def koja_market_status_api():
@@ -13160,6 +13188,33 @@ def _twelve_fx_rate(symbol):
         return None
     return rate
 
+def _yahoo_time_series(symbol, interval="1day", outputsize=30):
+    symbol=clean(symbol).upper()
+    if not symbol:
+        return []
+    interval_map={"1day":"1d","1week":"1wk","1month":"1mo"}
+    yint=interval_map.get(interval,"1d")
+    try:
+        period2=int(time.time())
+        span={"1d":"1y","1wk":"5y","1mo":"10y"}.get(yint,"1y")
+        import datetime as _dt
+        days={"1y":365,"5y":1825,"10y":3650}.get(span,365)
+        period1=period2-days*86400
+        body=_market_http_json(f"https://query1.finance.yahoo.com/v8/finance/chart/{quote_plus(symbol)}", {"period1":period1,"period2":period2,"interval":yint,"events":"div,splits"})
+        result=((body or {}).get("chart") or {}).get("result") or []
+        if not result:
+            return []
+        r=result[0]; times=r.get("timestamp") or []
+        closes=((((r.get("indicators") or {}).get("quote") or [{}])[0]).get("close") or [])
+        out=[]
+        for ts,close in zip(times,closes):
+            if close is not None:
+                out.append({"datetime":_dt.datetime.fromtimestamp(ts, _dt.timezone.utc).strftime("%Y-%m-%d"),"close":close})
+        return out[-max(1,min(int(outputsize),100)): ]
+    except Exception as exc:
+        logger.warning("Public chart fallback failed for %s: %s", symbol, exc)
+        return []
+
 @app.route('/api/markets/chart')
 def koja_market_chart_api():
     symbol=clean(request.args.get('symbol') or 'AAPL').upper()
@@ -13176,7 +13231,39 @@ def koja_market_chart_api():
     if not values and TWELVEDATA_API_KEY:
         values=_twelve_time_series(symbol,interval,outputsize)
         if values: provider="Twelve Data"
+    if not values:
+        values=_yahoo_time_series(symbol,interval,outputsize)
+        if values: provider="Public market fallback"
     return jsonify({'symbol':symbol,'interval':interval,'values':values,'provider':provider,'freshness':'Historical/provider data; exact latency depends on market/plan','error':None if values else _koja_market_diag.get("last_error")})
+
+def _public_fx_rates(pairs):
+    """Public FX fallback using ECB-derived rates via Frankfurter."""
+    try:
+        symbols=[]
+        for pair,_,_ in pairs:
+            base,quote=pair.split('/',1)
+            if base != "USD":
+                symbols.append(base)
+            if quote != "USD":
+                symbols.append(quote)
+        symbols=sorted(set(symbols))
+        params={"base":"USD","symbols":",".join(symbols)}
+        body=_market_http_json("https://api.frankfurter.app/latest",params) or {}
+        rates={"USD":1.0}
+        for k,v in (body.get("rates") or {}).items():
+            try: rates[k]=float(v)
+            except Exception: pass
+        out=[]
+        for symbol,base_name,quote_name in pairs:
+            base,quote=symbol.split('/',1)
+            if base not in rates or quote not in rates:
+                continue
+            rate=rates[quote]/rates[base]
+            out.append({'symbol':symbol,'rate':rate,'base_name':base_name,'quote_name':quote_name,'provider':'Public FX fallback','freshness':'ECB-derived public reference rate'})
+        return out
+    except Exception as exc:
+        logger.warning("Public FX fallback failed: %s", exc)
+        return []
 
 @app.route('/api/markets/fx')
 def koja_market_fx_api():
@@ -13206,13 +13293,31 @@ def koja_market_fx_api():
             _koja_fx_cache['updated_at']=now
         return jsonify({'rates':rates,'updated_at':now,'provider_order':['Alpha Vantage','Twelve Data'],'cached':False,'error':None})
     if cached:
-        return jsonify({'rates':[cached[x[0]] for x in KOJA_FX_PAIRS if x[0] in cached],'updated_at':cached_at,'provider_order':['Alpha Vantage','Twelve Data'],'cached':True,'error':_koja_market_diag.get('last_error') or 'Live provider unavailable; showing last successful rates.'})
-    return jsonify({'rates':[],'updated_at':None,'provider_order':['Alpha Vantage','Twelve Data'],'cached':False,'error':_koja_market_diag.get('last_error') or 'No financial-data provider is configured. Add TWELVEDATA_API_KEY or ALPHAVANTAGE_API_KEY in Render Environment.'})
+        return jsonify({'rates':[cached[x[0]] for x in KOJA_FX_PAIRS if x[0] in cached],'updated_at':cached_at,'provider_order':['Alpha Vantage','Twelve Data','Public FX fallback'],'cached':True,'error':_koja_market_diag.get('last_error') or 'Live provider unavailable; showing last successful rates.'})
+    public_rates=_public_fx_rates(KOJA_FX_PAIRS)
+    if public_rates:
+        with _koja_market_lock:
+            _koja_fx_cache['rates']={x['symbol']:x for x in public_rates}
+            _koja_fx_cache['updated_at']=now
+        return jsonify({'rates':public_rates,'updated_at':now,'provider_order':['Alpha Vantage','Twelve Data','Public FX fallback'],'cached':False,'error':None})
+    return jsonify({'rates':[],'updated_at':None,'provider_order':['Alpha Vantage','Twelve Data','Public FX fallback'],'cached':False,'error':_koja_market_diag.get('last_error') or 'Market data temporarily unavailable.'})
 
 
 # ============================================================
 # KOJA NEXUS — PUBLIC AFRICA SERVICE DIRECTORY
 # ============================================================
+KOJA_AFRICA_54 = [
+    ("DZ","Algeria"),("AO","Angola"),("BJ","Benin"),("BW","Botswana"),("BF","Burkina Faso"),("BI","Burundi"),
+    ("CV","Cabo Verde"),("CM","Cameroon"),("CF","Central African Republic"),("TD","Chad"),("KM","Comoros"),("CG","Republic of the Congo"),
+    ("CI","Côte d’Ivoire"),("CD","Democratic Republic of the Congo"),("DJ","Djibouti"),("EG","Egypt"),("GQ","Equatorial Guinea"),("ER","Eritrea"),
+    ("SZ","Eswatini"),("ET","Ethiopia"),("GA","Gabon"),("GM","The Gambia"),("GH","Ghana"),("GN","Guinea"),("GW","Guinea-Bissau"),
+    ("KE","Kenya"),("LS","Lesotho"),("LR","Liberia"),("LY","Libya"),("MG","Madagascar"),("MW","Malawi"),("ML","Mali"),("MR","Mauritania"),
+    ("MU","Mauritius"),("MA","Morocco"),("MZ","Mozambique"),("NA","Namibia"),("NE","Niger"),("NG","Nigeria"),("RW","Rwanda"),
+    ("ST","São Tomé and Príncipe"),("SN","Senegal"),("SC","Seychelles"),("SL","Sierra Leone"),("SO","Somalia"),("ZA","South Africa"),
+    ("SS","South Sudan"),("SD","Sudan"),("TZ","Tanzania"),("TG","Togo"),("TN","Tunisia"),("UG","Uganda"),("ZM","Zambia"),("ZW","Zimbabwe")
+]
+KOJA_WORLD_COUNTRIES = dict(KOJA_AFRICA_54)
+
 KOJA_WORLD_CATEGORIES = [
     "Government Services", "Health & Medical", "Universities & Education",
     "Defence & Armed Forces", "Jobs & Labour", "Business & Company Registration",
@@ -13321,7 +13426,7 @@ def koja_world():
     query, country, category = clean(request.args.get("q")), clean(request.args.get("country")), clean(request.args.get("category"))
     filtered = [r for r in rows if _world_matches(r, query, country, category)]
     filtered.sort(key=lambda r: (str(r.get("country_name") or ""), int(r.get("sort_order") or 100), _world_service_name(r)))
-    countries = {}
+    countries = dict(KOJA_WORLD_COUNTRIES)
     for r in rows:
         code = clean(r.get("country_code")).upper()
         if code: countries[code] = _world_country(r)
@@ -13335,13 +13440,33 @@ def koja_world():
 .kw-hero h1{margin:0 0 8px;font-size:clamp(30px,5vw,48px)}.kw-hero p{margin:0;max-width:900px;color:rgba(255,255,255,.86);line-height:1.6}.kw-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:20px}.kw-stat{background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.16);border-radius:15px;padding:14px}.kw-stat strong{display:block;font-size:25px}.kw-stat span{font-size:12px;color:rgba(255,255,255,.72)}
 .kw-filter{display:grid;grid-template-columns:1.7fr 1fr 1.2fr auto;gap:10px;align-items:end;margin-bottom:18px}.kw-filter label{font-size:12px;font-weight:700;display:block;margin-bottom:6px}.kw-filter input,.kw-filter select{width:100%;box-sizing:border-box}.kw-section{margin-top:18px}.kw-section h2{margin-bottom:5px}.kw-muted{color:#758397;font-size:13px}.kw-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:14px}.kw-card{border:1px solid rgba(90,110,135,.24);border-radius:18px;padding:18px;background:var(--card-bg,#fff);box-shadow:0 8px 24px rgba(0,0,0,.07)}
 .kw-country{font-size:11px;font-weight:800;letter-spacing:.08em;color:#0b4ea2;text-transform:uppercase}.kw-card h3{margin:7px 0 5px;font-size:18px}.kw-card p{font-size:13px;line-height:1.55;color:#657386}.kw-badges{display:flex;gap:6px;flex-wrap:wrap;margin:11px 0}.kw-badge{font-size:10px;padding:5px 8px;border-radius:999px;background:#edf4ff;color:#0b4ea2;font-weight:800}.kw-badge.pending{background:#fff4dc;color:#8a5b00}.kw-actions{display:flex;gap:8px;flex-wrap:wrap}.kw-actions .btn{font-size:12px}.kw-cat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px}.kw-cat{display:block;border:1px solid rgba(90,110,135,.20);border-radius:14px;padding:14px;text-decoration:none;color:inherit;background:var(--card-bg,#fff)}.kw-cat strong{display:block}.kw-cat span{font-size:12px;color:#718096}.kw-empty{padding:35px;text-align:center;border:1px dashed #9aa8b8;border-radius:16px}
+.kw-spotlight{border:1px solid rgba(11,78,162,.15);border-radius:20px;padding:18px;background:linear-gradient(180deg,rgba(11,78,162,.045),transparent)}.kw-spot-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.kw-spot-head h2{margin:0 0 4px}.kw-spot-head>strong{font-size:12px;letter-spacing:.08em;color:#0b4ea2;white-space:nowrap}
 @media(max-width:1000px){.kw-grid{grid-template-columns:repeat(2,1fr)}.kw-cat-grid{grid-template-columns:repeat(2,1fr)}.kw-filter{grid-template-columns:1fr 1fr}.kw-filter .kw-search{grid-column:1/-1}.kw-stats{grid-template-columns:repeat(2,1fr)}}@media(max-width:650px){.kw-grid,.kw-cat-grid,.kw-filter{grid-template-columns:1fr}.kw-filter .kw-search{grid-column:auto}.kw-stats{grid-template-columns:1fr 1fr}.kw-hero{padding:21px}}
 </style>
 <div class="kw-shell">{{ africa_now_panel|safe }}{{ market_data_panel|safe }}<section class="kw-hero"><h1>KOJA NEXUS</h1><p>Open public services from across Africa through one KOJA directory. Choose a country, select a service category, search for a service, then open the official provider.</p><div class="kw-stats"><div class="kw-stat"><strong>{{ country_count }}</strong><span>African countries</span></div><div class="kw-stat"><strong>{{ service_count }}</strong><span>Active services</span></div><div class="kw-stat"><strong>{{ verified_count }}</strong><span>Verified services</span></div><div class="kw-stat"><strong>{{ pending_count }}</strong><span>Verification pending</span></div></div></section>
+<section class="kw-section kw-spotlight">
+  <div class="kw-spot-head"><div><h2>AFRICA COUNTRY SPOTLIGHT</h2><p class="kw-muted">KOJA NEXUS rotates through all 54 African countries automatically. Services shown come from the KOJA directory; official providers remain responsible for the service.</p></div><strong id="kwSpotCountry">AFRICA</strong></div>
+  <div id="kwSpotGrid" class="kw-grid"><div class="kw-empty" style="grid-column:1/-1">Loading country resources…</div></div>
+</section>
 <form method="get" class="card kw-filter"><div class="kw-search"><label for="kwq">Search KOJA NEXUS</label><input id="kwq" name="q" value="{{ query }}" placeholder="e.g. immigration, university, tax, health, jobs"></div><div><label for="kwcountry">Country</label><select id="kwcountry" name="country"><option value="">All countries</option>{% for code,name in countries|dictsort %}<option value="{{ code }}" {% if country|upper==code %}selected{% endif %}>{{ name }} ({{ code }})</option>{% endfor %}</select></div><div><label for="kwcategory">Category</label><select id="kwcategory" name="category"><option value="">All categories</option>{% for cat in categories %}<option value="{{ cat }}" {% if category|lower==cat|lower %}selected{% endif %}>{{ cat }}</option>{% endfor %}</select></div><div><button class="btn" type="submit">Search</button></div></form>
 {% if not query and not country and not category %}<section class="kw-section"><h2>Browse by service</h2><div class="kw-cat-grid">{% for cat in categories %}<a class="kw-cat" href="{{ url_for('koja_world',category=cat) }}"><strong>{{ cat }}</strong><span>{{ category_counts.get(cat,0) }} services</span></a>{% endfor %}</div></section>{% endif %}
 <section class="kw-section"><h2>{% if query or country or category %}Search results{% else %}All public services{% endif %}</h2><p class="kw-muted">{{ filtered|length }} service{% if filtered|length != 1 %}s{% endif %} shown. Verification pending services remain visible so users can discover them, but KOJA does not represent them as verified.</p><div class="kw-grid">{% for s in filtered %}<article class="kw-card"><div class="kw-country">{{ s.country_code or '' }} · {{ s.country_name or 'Africa' }}</div><h3>{{ service_name(s) }}</h3><div class="kw-muted">{{ s.category or 'Public Service' }}</div><p>{{ s.description or 'Official public service available through the listed provider.' }}</p><div class="kw-badges">{% if verified(s) %}<span class="kw-badge">Verified</span>{% else %}<span class="kw-badge pending">Verification pending</span>{% endif %}<span class="kw-badge">Official provider</span></div><div class="kw-actions"><a class="btn" href="{{ url_for('koja_world_open',service_id=s.id) }}">Open service</a>{% if s.country_code %}<a class="btn secondary" href="{{ url_for('koja_world',country=s.country_code) }}">More {{ s.country_code }}</a>{% endif %}</div></article>{% else %}<div class="kw-empty" style="grid-column:1/-1"><h3>No matching services</h3><p>Try another country, category or search term.</p><a class="btn" href="{{ url_for('koja_world') }}">Show all KOJA NEXUS</a></div>{% endfor %}</div></section></div>
 <script>
+(function(){
+  var countries={{ KOJA_AFRICA_54|tojson }};
+  var spotGrid=document.getElementById('kwSpotGrid'), spotCountry=document.getElementById('kwSpotCountry'), index=0;
+  function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]});}
+  function renderCountry(code,name){
+    spotCountry.textContent=name.toUpperCase()+' · '+code;
+    fetch('{{ url_for("koja_world_services_api") }}?country='+encodeURIComponent(code)+'&limit=6',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){
+      var rows=d.services||[];
+      if(!rows.length){spotGrid.innerHTML='<div class="kw-empty" style="grid-column:1/-1"><h3>'+esc(name)+'</h3><p>No KOJA-indexed public services are available for this country yet.</p><a class="btn secondary" href="{{ url_for("koja_world") }}?country='+encodeURIComponent(code)+'">Open country directory</a></div>';return;}
+      spotGrid.innerHTML=rows.slice(0,3).map(function(x){return '<article class="kw-card"><div class="kw-country">'+esc(x.country_code)+' · '+esc(x.country_name)+'</div><h3>'+esc(x.name)+'</h3><div class="kw-muted">'+esc(x.category||'Public Service')+'</div><p>'+esc(x.description||'Official public service available through the listed provider.')+'</p><div class="kw-actions"><a class="btn" href="'+esc(x.open_url)+'">Open service</a></div></article>';}).join('');
+    }).catch(function(){spotGrid.innerHTML='<div class="kw-empty" style="grid-column:1/-1">Country resources temporarily unavailable.</div>';});
+  }
+  function next(){var item=countries[index % countries.length];index++;renderCountry(item[0],item[1]);}
+  next(); setInterval(next,8000);
+})();
 (function(){
   var serviceCount={{ service_count|tojson }};
   if(serviceCount===0){
@@ -13356,7 +13481,7 @@ def koja_world():
   }
 })();
 </script>
-''', filtered=filtered, countries=countries, categories=KOJA_WORLD_CATEGORIES, category_counts=category_counts, query=query, country=country, category=category, country_count=len(countries), service_count=len(rows), verified_count=sum(1 for r in rows if _world_verified(r)), pending_count=sum(1 for r in rows if not _world_verified(r)), service_name=_world_service_name, verified=_world_verified, africa_now_panel=_africa_now_panel_html(), market_data_panel=_market_panel_html())
+''', filtered=filtered, countries=countries, categories=KOJA_WORLD_CATEGORIES, category_counts=category_counts, query=query, country=country, category=category, country_count=len(countries), service_count=len(rows), verified_count=sum(1 for r in rows if _world_verified(r)), pending_count=sum(1 for r in rows if not _world_verified(r)), service_name=_world_service_name, verified=_world_verified, KOJA_AFRICA_54=KOJA_AFRICA_54, africa_now_panel=_africa_now_panel_html(), market_data_panel=_market_panel_html())
 
 @app.route("/world/open/<service_id>")
 def koja_world_open(service_id):
