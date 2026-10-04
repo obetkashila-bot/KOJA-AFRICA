@@ -12125,21 +12125,37 @@ def koja_admin_go_live():
 # ============================================================
 # KOJA NEXUS — AFRICA NOW AUTOMATIC TOP SCREEN
 # ============================================================
-KOJA_NEXUS_AFRICA_NOW_VERSION = "2.3-jobs-images-video-30s-nexus-load"
+KOJA_NEXUS_AFRICA_NOW_VERSION = "3.0-global-multi-source-business-markets-30s-nexus"
 KOJA_NEXUS_AFRICA_NOW_INTERVAL = max(300, int(os.getenv("KOJA_NEXUS_AFRICA_NOW_INTERVAL", "300")))
+KOJA_NEXUS_AFRICA_NOW_ROTATE_SECONDS = max(30, int(os.getenv("KOJA_NEXUS_AFRICA_NOW_ROTATE_SECONDS", "30")))
 KOJA_NEXUS_AFRICA_NOW_ENABLED = os.getenv("KOJA_NEXUS_AFRICA_NOW_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
 KOJA_NEXUS_AFRICA_NOW_TIMEOUT = max(4, min(int(os.getenv("KOJA_NEXUS_AFRICA_NOW_TIMEOUT", "8")), 20))
 
 _KOJA_AFRICA_NOW_FEEDS = [
-    ("Africanews", "https://www.africanews.com/feed/rss", "publisher"),
-    ("BBC Africa", "https://feeds.bbci.co.uk/news/world/africa/rss.xml", "publisher"),
-    ("BBC Afrique", "https://feeds.bbci.co.uk/afrique/rss.xml", "publisher"),
-    ("AllAfrica Africa", "https://allafrica.com/tools/headlines/rdf/africa/headlines.rdf", "aggregator"),
-    ("AllAfrica Business", "https://allafrica.com/tools/headlines/rdf/business/headlines.rdf", "aggregator"),
-    # African Development Bank publishes an official vacancies RSS endpoint.
+    # Africa / pan-African
+    ("Africanews Africa", "https://www.africanews.com/feed/rss", "africa_news"),
+    ("Africanews Business", "https://www.africanews.com/business/feed/rss", "business_markets"),
+    ("BBC Africa", "https://feeds.bbci.co.uk/news/world/africa/rss.xml", "africa_news"),
+    ("BBC Afrique", "https://feeds.bbci.co.uk/afrique/rss.xml", "africa_news"),
+    ("AllAfrica Africa", "https://allafrica.com/tools/headlines/rdf/africa/headlines.rdf", "africa_news"),
+    ("AllAfrica Business", "https://allafrica.com/tools/headlines/rdf/business/headlines.rdf", "business_markets"),
+    # Global / outside Africa
+    ("BBC World", "https://feeds.bbci.co.uk/news/world/rss.xml", "world_news"),
+    ("BBC Business", "https://feeds.bbci.co.uk/news/business/rss.xml", "business_markets"),
+    ("BBC Economy", "https://feeds.bbci.co.uk/news/business/economy/rss.xml", "business_markets"),
+    ("BBC Technology", "https://feeds.bbci.co.uk/news/technology/rss.xml", "technology"),
+    ("BBC Health", "https://feeds.bbci.co.uk/news/health/rss.xml", "health"),
+    ("BBC Sport", "https://feeds.bbci.co.uk/sport/rss.xml", "sports"),
+    ("BBC Entertainment", "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml", "culture"),
+    ("BBC Asia", "https://feeds.bbci.co.uk/news/world/asia/rss.xml", "world_news"),
+    ("BBC Europe", "https://feeds.bbci.co.uk/news/world/europe/rss.xml", "world_news"),
+    ("BBC Middle East", "https://feeds.bbci.co.uk/news/world/middle_east/rss.xml", "world_news"),
+    ("BBC US & Canada", "https://feeds.bbci.co.uk/news/world/us_and_canada/rss.xml", "world_news"),
+    ("BBC Latin America", "https://feeds.bbci.co.uk/news/world/latin_america/rss.xml", "world_news"),
+    ("BBC Australia", "https://feeds.bbci.co.uk/news/world/australia/rss.xml", "world_news"),
+    # Official vacancies
     ("African Development Bank Vacancies", "https://www.afdb.org/en/vacancies/directeur/news-and-events/about-us/careers/current-vacancies/rss", "jobs"),
 ]
-
 _KOJA_AFRICA_NOW_JOB_PAGES = [
     ("AfriCareers", "https://jobs.africareers.net/jobs", "Uganda;Kenya;Rwanda;Tanzania;South Africa;Nigeria;Ghana;Africa"),
     ("ZambiaJobsToday", "https://www.zambiajobstoday.com/jobs", "Zambia"),
@@ -12157,12 +12173,14 @@ _AFRICA_COUNTRY_NAMES = [
 ]
 
 _AFRICA_NOW_CATEGORY_TERMS = {
-    "Politics & Government": ["president","government","election","parliament","minister","politics","coup","cabinet","summit"],
-    "Business & Markets": ["business","economy","market","markets","stock","stocks","share","shares","exchange","index","bank","investment","trade","currency","company","finance","energy","commodities"],
-    "Health": ["health","hospital","disease","outbreak","virus","cholera","malaria","medicine","wfp"],
-    "Sports": ["football","soccer","sport","afcon","fifa","basketball","rugby","olympics","match"],
-    "Technology": ["technology","tech","ai","digital","startup","innovation","internet","telecom"],
-    "Security & Emergencies": ["attack","war","conflict","military","police","security","flood","earthquake","fire","disaster","crash"],
+    "Politics & Government": ["president","government","election","parliament","minister","politics","coup","cabinet","summit","senate","congress"],
+    "Business & Markets": ["business","economy","market","markets","stock","stocks","share","shares","exchange","index","nasdaq","dow","s&p","ftse","nikkei","bank","investment","trade","currency","forex","finance","energy","oil","gold","commodities","company","earnings","revenue"],
+    "Health": ["health","hospital","disease","outbreak","virus","cholera","malaria","medicine","who","pandemic"],
+    "Sports": ["football","soccer","sport","afcon","fifa","basketball","rugby","olympics","match","tennis","cricket"],
+    "Technology": ["technology","tech","ai","digital","startup","innovation","internet","telecom","cyber","software"],
+    "Security & Emergencies": ["attack","war","conflict","military","police","security","flood","earthquake","fire","disaster","crash","explosion"],
+    "Science": ["science","space","climate","research","environment","nasa"],
+    "Culture & Entertainment": ["culture","music","film","movie","entertainment","artist","celebrity","festival"],
 }
 
 _africa_now_runtime = {"last_success": None, "last_attempt": None, "last_error": None, "source_status": {}}
@@ -12540,6 +12558,7 @@ def koja_nexus_africa_now_api():
         "ok": True,
         "version": KOJA_NEXUS_AFRICA_NOW_VERSION,
         "refresh_interval_seconds": KOJA_NEXUS_AFRICA_NOW_INTERVAL,
+        "rotation_interval_seconds": KOJA_NEXUS_AFRICA_NOW_ROTATE_SECONDS,
         "updated_at": (rows[0].get("fetched_at") if rows else None),
         "items": rows,
         "count": len(rows),
@@ -12579,7 +12598,7 @@ def _africa_now_panel_html():
    const videoButton=h.video_url?' <a class="anx-video-link" href="'+esc(h.url)+'" target="_blank" rel="noopener noreferrer">Watch source video</a>':'';
    const isJob=(h.category||'')==='Jobs & Opportunities';
    const jobButton=isJob?' <a class="anx-video-link" href="'+esc(h.url)+'" target="_blank" rel="noopener noreferrer">View vacancy</a>':'';
-   main.innerHTML=(media||'<div class="anx-placeholder anx-boot"><strong>AFRICA NOW</strong><span>Latest African news and job opportunities</span></div>')+
+   main.innerHTML=(media||'<div class="anx-placeholder anx-boot"><strong>AFRICA NOW</strong><span>Latest Africa and world news, business, markets and opportunities</span></div>')+
      '<div class="anx-overlay"><div class="anx-kicker">'+esc(h.category||'Africa News')+' · '+esc(h.country||'Africa')+'</div><div class="anx-title">'+esc(h.title)+'</div><div class="anx-summary">'+esc(h.summary||('Latest report from '+(h.source_name||'source')))+'</div><a class="anx-open" href="'+esc(h.url)+'" target="_blank" rel="noopener noreferrer">'+(isJob?'Open original vacancy':'Open story')+'</a>'+videoButton+jobButton+'</div>';
    if(progress)progress.textContent=((index%items.length)+1)+' / '+items.length;
  }
