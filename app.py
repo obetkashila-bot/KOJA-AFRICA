@@ -12186,7 +12186,43 @@ _AFRICA_NOW_CATEGORY_TERMS = {
     "Culture & Entertainment": ["culture","music","film","movie","entertainment","artist","celebrity","festival"],
 }
 
-_africa_now_runtime = {"last_success": None, "last_attempt": None, "last_error": None, "source_status": {}}
+_africa_now_runtime = {"last_success": None, "last_attempt": None, "last_error": None, "source_status": {}, "registry_offset": 0}
+
+# Supabase-backed source registry. The registry can contain 1,000+ live URLs without
+# making every refresh hammer the network. A rotating window is fetched each cycle.
+KOJA_NEXUS_AFRICA_NOW_REGISTRY_TABLE = "koja_nexus_news_sources"
+KOJA_NEXUS_AFRICA_NOW_REGISTRY_BATCH = max(24, min(int(os.getenv("KOJA_NEXUS_AFRICA_NOW_REGISTRY_BATCH", "48")), 120))
+
+def _africa_now_registry_feeds():
+    try:
+        rows = db_select(
+            KOJA_NEXUS_AFRICA_NOW_REGISTRY_TABLE,
+            filters={"active": "true"},
+            order="priority.asc,created_at.asc",
+            limit=1000,
+        ) or []
+    except Exception as exc:
+        logger.warning("Africa Now source registry unavailable: %s", exc)
+        return []
+    feeds = []
+    for row in rows:
+        url = str(row.get("url") or row.get("feed_url") or "").strip()
+        name = str(row.get("name") or row.get("source_name") or "").strip()
+        if not url or not name:
+            continue
+        kind = str(row.get("feed_kind") or row.get("category") or "world_news").strip()
+        feeds.append((name, url, kind))
+    if not feeds:
+        return []
+    # Rotate through the full registry so 1,000 sources are covered over time while
+    # keeping each refresh fast enough for Render's free instance.
+    batch = min(KOJA_NEXUS_AFRICA_NOW_REGISTRY_BATCH, len(feeds))
+    offset = int(_africa_now_runtime.get("registry_offset") or 0) % len(feeds)
+    selected = feeds[offset:offset + batch]
+    if len(selected) < batch:
+        selected += feeds[:batch - len(selected)]
+    _africa_now_runtime["registry_offset"] = (offset + batch) % len(feeds)
+    return selected
 _africa_now_thread_started = False
 _africa_now_thread_lock = threading.Lock()
 _africa_now_refresh_lock = threading.Lock()
@@ -12606,6 +12642,11 @@ def _africa_now_refresh(force=False):
         _africa_now_runtime["last_attempt"] = datetime.now(timezone.utc).isoformat()
         source_status, collected = {}, []
 
+        # Prefer the Supabase source registry. If it is unavailable or empty, fall back
+        # to the built-in core feeds so AFRICA NOW never becomes dependent on the registry.
+        registry_feeds = _africa_now_registry_feeds()
+        active_feeds = registry_feeds or _KOJA_AFRICA_NOW_FEEDS
+
         # Fetch sources concurrently so one slow publisher cannot hold up the entire update.
         def fetch_one(feed):
             label, feed_url, feed_kind = feed
@@ -12614,8 +12655,8 @@ def _africa_now_refresh(force=False):
             except Exception as exc:
                 return label, [], str(exc)[:180]
 
-        with ThreadPoolExecutor(max_workers=min(6, len(_KOJA_AFRICA_NOW_FEEDS))) as pool:
-            futures = [pool.submit(fetch_one, feed) for feed in _KOJA_AFRICA_NOW_FEEDS]
+        with ThreadPoolExecutor(max_workers=min(8, max(1, len(active_feeds)))) as pool:
+            futures = [pool.submit(fetch_one, feed) for feed in active_feeds]
             for future in as_completed(futures):
                 label, items, error = future.result()
                 if error:
@@ -12672,7 +12713,7 @@ def _africa_now_refresh(force=False):
 
         _africa_now_runtime["last_success"] = fetched_at
         _africa_now_runtime["last_error"] = None
-        logger.info("Africa Now refresh complete: %s items from %s feeds", inserted, len(_KOJA_AFRICA_NOW_FEEDS))
+        logger.info("Africa Now refresh complete: %s items from %s feeds (registry=%s)", inserted, len(active_feeds), bool(registry_feeds))
         return {"ok": True, "items": inserted, "fetched_at": fetched_at, "sources": source_status}
     finally:
         _africa_now_refresh_lock.release()
@@ -12717,14 +12758,16 @@ def koja_nexus_africa_now_api():
     # crowd them out of the top-story rotation.
     job_rows = db_select("koja_nexus_africa_now", filters={"category": "Jobs & Opportunities"}, order="score.desc,published_at.desc", limit=max(8, min(16, limit))) or []
     news_rows = db_select("koja_nexus_africa_now", order="score.desc,published_at.desc", limit=limit) or []
-    # If the database cache is empty (or only contains the bootstrap item), fetch
-    # a small live source pool immediately. This is deliberately cache-limited and
-    # does not depend on Supabase being configured, so a cold Render instance still
-    # displays current news/jobs rather than the old hard-coded story.
+    # Never fetch external publishers inside the user's request. A cold/empty
+    # cache must return immediately and let the background collector populate it.
+    # This prevents a slow RSS/HTML publisher from making AFRICA NOW appear stuck.
     if len(news_rows) + len(job_rows) < 4:
-        live_rows = _africa_now_emergency_fetch(max(12, limit))
-        job_rows = job_rows + [r for r in live_rows if r.get("category") == "Jobs & Opportunities"]
-        news_rows = news_rows + [r for r in live_rows if r.get("category") != "Jobs & Opportunities"]
+        threading.Thread(
+            target=_africa_now_emergency_fetch,
+            kwargs={"limit": max(12, limit)},
+            name="koja-africa-now-emergency",
+            daemon=True,
+        ).start()
     rows = []
     seen_keys = set()
     for r in news_rows + job_rows:
@@ -12833,13 +12876,18 @@ def _africa_now_panel_html():
  }
  function startRotation(){clearInterval(rotateTimer); if(items.length>1) rotateTimer=setInterval(function(){index=(index+1)%items.length;renderItem();},30000);}
  async function load(){
+   const controller=new AbortController();
+   const timer=setTimeout(()=>controller.abort(),3500);
    try{
-     const r=await fetch('{{ url_for('koja_nexus_africa_now_api') }}?limit=20',{cache:'no-store'}); if(!r.ok)throw new Error('feed');
+     const r=await fetch('{{ url_for('koja_nexus_africa_now_api') }}?limit=20',{cache:'no-store',signal:controller.signal});
+     if(!r.ok)throw new Error('feed');
      const d=await r.json();
      const incoming=Array.isArray(d.items)?d.items:[];
      if(incoming.length){ items=incoming; index=0; renderItem(); startRotation(); }
-     updated.textContent=incoming.length ? ('Updated '+(d.updated_at?new Date(d.updated_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'just now')) : 'Waiting for live sources…';
-   }catch(e){updated.textContent='Automatic update retrying';}
+     updated.textContent=incoming.length ? ('Updated '+(d.updated_at?new Date(d.updated_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'just now')) : 'Live sources updating in background…';
+   }catch(e){
+     updated.textContent=(e&&e.name==='AbortError')?'Live sources updating in background…':'Automatic update retrying';
+   }finally{ clearTimeout(timer); }
  }
  load(); setInterval(load,60000);
 })();
@@ -12853,14 +12901,14 @@ _start_africa_now_worker()
 # ============================================================
 # KOJA GLOBAL NOW — MARKET DATA ENGINE
 # ============================================================
-KOJA_MARKET_CACHE_TTL = max(120, int(os.getenv("KOJA_MARKET_CACHE_TTL", "600")))
+KOJA_MARKET_CACHE_TTL = max(10, int(os.getenv("KOJA_MARKET_CACHE_TTL", "30")))
 KOJA_MARKET_TIMEOUT = max(3, min(int(os.getenv("KOJA_MARKET_TIMEOUT", "8")), 20))
-KOJA_MARKET_SYMBOLS = [x.strip().upper() for x in os.getenv("KOJA_MARKET_SYMBOLS", "AAPL,MSFT,NVDA,AMZN,TSLA,GOOGL").split(",") if x.strip()][:6]
+KOJA_MARKET_SYMBOLS = [x.strip().upper() for x in os.getenv("KOJA_MARKET_SYMBOLS", "AAPL,MSFT,NVDA,AMZN,TSLA,GOOGL,META,ORCL,KO,SONY").split(",") if x.strip()][:30]
 ALPHAVANTAGE_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY", "").strip()
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "").strip()
 _koja_market_cache = {"quotes": {}, "updated_at": 0.0}
 _koja_fx_cache = {"rates": {}, "updated_at": 0.0}
-_koja_market_diag = {"last_error": None, "last_provider": None, "last_attempt_at": 0.0, "provider_credits_left": None}
+_koja_market_diag = {"last_error": None, "last_provider": None}
 _koja_market_lock = threading.Lock()
 
 def _market_http_json(url, params):
@@ -12913,42 +12961,24 @@ def _market_quote(symbol):
     return _alpha_quote(symbol) or _twelve_quote(symbol) if symbol else None
 
 def _refresh_market_quotes(symbols=None, force=False):
-    # Basic Twelve Data allows only 8 API credits/minute. Keep KOJA well below
-    # that ceiling, and cache aggressively because Render may run multiple workers.
-    symbols = list(dict.fromkeys([clean(x).upper() for x in (symbols or KOJA_MARKET_SYMBOLS) if clean(x)]))[:6]
+    symbols = list(dict.fromkeys([clean(x).upper() for x in (symbols or KOJA_MARKET_SYMBOLS) if clean(x)]))[:30]
     now = time.time()
     with _koja_market_lock:
-        cached = dict(_koja_market_cache.get("quotes") or {})
-        cached_at = float(_koja_market_cache.get("updated_at") or 0)
-        last_attempt = float(_koja_market_diag.get("last_attempt_at") or 0)
-        if cached and (now-cached_at < KOJA_MARKET_CACHE_TTL or now-last_attempt < 60):
-            return cached, cached_at
-        _koja_market_diag["last_attempt_at"] = now
-
-    quotes = {}
-    # Alpha Vantage is attempted first, symbol-by-symbol only when configured.
-    if ALPHAVANTAGE_API_KEY:
-        for symbol in symbols:
-            q = _alpha_quote(symbol)
-            if q:
-                quotes[symbol] = q
-    # Twelve Data: one batch /quote request for all remaining symbols. Each symbol
-    # still costs one credit, but one HTTP request prevents request storms.
-    missing = [x for x in symbols if x not in quotes]
-    if missing and TWELVEDATA_API_KEY:
-        body = _market_http_json("https://api.twelvedata.com/quote", {"symbol": ",".join(missing), "apikey": TWELVEDATA_API_KEY})
-        if isinstance(body, dict):
-            if all(k in body for k in ("symbol", "close")):
-                body = {body.get("symbol"): body}
-            for sym, q in body.items():
-                if isinstance(q, dict) and q.get("close"):
-                    quotes[str(sym).upper()] = {"symbol":str(sym).upper(),"price":q.get("close"),"change":q.get("change"),"change_percent":q.get("percent_change"),"volume":q.get("volume"),"previous_close":q.get("previous_close"),"latest_trading_day":q.get("datetime"),"provider":"Twelve Data","freshness":"Provider quote; exchange delay/entitlement depends on market/plan","source_url":"https://twelvedata.com/"}
+        if not force and _koja_market_cache["quotes"] and now-float(_koja_market_cache["updated_at"] or 0) < KOJA_MARKET_CACHE_TTL:
+            return dict(_koja_market_cache["quotes"]), float(_koja_market_cache["updated_at"])
+    quotes={}
+    for symbol in symbols:
+        try:
+            q=_market_quote(symbol)
+            if q: quotes[symbol]=q
+        except Exception:
+            logger.exception("Market quote error for %s", symbol)
     if quotes:
         with _koja_market_lock:
-            _koja_market_cache["quotes"] = quotes
-            _koja_market_cache["updated_at"] = now
+            _koja_market_cache["quotes"].update(quotes)
+            _koja_market_cache["updated_at"]=now
     with _koja_market_lock:
-        return dict(_koja_market_cache.get("quotes") or {}), float(_koja_market_cache.get("updated_at") or 0)
+        return dict(_koja_market_cache["quotes"]), float(_koja_market_cache["updated_at"] or 0)
 
 def _market_panel_html():
     return r"""
@@ -13005,13 +13035,13 @@ def koja_market_quotes_api():
     symbols=[x.strip().upper() for x in raw.split(',') if x.strip()] if raw else KOJA_MARKET_SYMBOLS
     symbols=list(dict.fromkeys(symbols))[:30]
     quotes,updated_at=_refresh_market_quotes(symbols)
-    return jsonify({'provider_order':['Alpha Vantage','Twelve Data'],'quotes':[quotes[s] for s in symbols if s in quotes],'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'credit_safe_mode':True,'configured':bool(ALPHAVANTAGE_API_KEY or TWELVEDATA_API_KEY)})
+    return jsonify({'provider_order':['Alpha Vantage','Twelve Data'],'quotes':[quotes[s] for s in symbols if s in quotes],'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'configured':bool(ALPHAVANTAGE_API_KEY or TWELVEDATA_API_KEY)})
 
 @app.route('/api/markets/status')
 def koja_market_status_api():
     with _koja_market_lock:
         updated_at=float(_koja_market_cache.get('updated_at') or 0);count=len(_koja_market_cache.get('quotes') or {})
-    return jsonify({'alpha_vantage_configured':bool(ALPHAVANTAGE_API_KEY),'twelve_data_configured':bool(TWELVEDATA_API_KEY),'cached_quotes':count,'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'credit_safe_mode':True,'last_error':_koja_market_diag.get('last_error'),'provider_order':['Alpha Vantage','Twelve Data']})
+    return jsonify({'alpha_vantage_configured':bool(ALPHAVANTAGE_API_KEY),'twelve_data_configured':bool(TWELVEDATA_API_KEY),'cached_quotes':count,'updated_at':updated_at or None,'cache_ttl_seconds':KOJA_MARKET_CACHE_TTL,'last_error':_koja_market_diag.get('last_error'),'provider_order':['Alpha Vantage','Twelve Data']})
 
 
 KOJA_FX_PAIRS = [
@@ -13087,11 +13117,6 @@ def koja_market_chart_api():
         values=_alpha_time_series(symbol,interval,outputsize)
         if values: provider="Alpha Vantage"
     if not values and TWELVEDATA_API_KEY:
-        with _koja_market_lock:
-            last_attempt=float(_koja_market_diag.get("last_chart_attempt_at") or 0)
-            if time.time()-last_attempt < 60:
-                return jsonify({"symbol":symbol,"interval":interval,"values":[],"provider":None,"freshness":"Chart request throttled; cached market quotes remain available.","error":"Chart provider temporarily throttled to protect API credits."})
-            _koja_market_diag["last_chart_attempt_at"] = time.time()
         values=_twelve_time_series(symbol,interval,outputsize)
         if values: provider="Twelve Data"
     return jsonify({'symbol':symbol,'interval':interval,'values':values,'provider':provider,'freshness':'Historical/provider data; exact latency depends on market/plan','error':None if values else _koja_market_diag.get("last_error")})
@@ -13102,10 +13127,10 @@ def koja_market_fx_api():
     with _koja_market_lock:
         cached=dict(_koja_fx_cache.get("rates") or {})
         cached_at=float(_koja_fx_cache.get("updated_at") or 0)
-    if cached and now-cached_at < 300:
-        return jsonify({'rates':[cached[x[0]] for x in KOJA_FX_PAIRS[:4] if x[0] in cached],'updated_at':cached_at,'provider_order':['Alpha Vantage','Twelve Data'],'cached':True,'error':None})
+    if cached and now-cached_at < 60:
+        return jsonify({'rates':[cached[x[0]] for x in KOJA_FX_PAIRS if x[0] in cached],'updated_at':cached_at,'provider_order':['Alpha Vantage','Twelve Data'],'cached':True,'error':None})
     rates=[]
-    for symbol,base_name,quote_name in KOJA_FX_PAIRS[:4]:
+    for symbol,base_name,quote_name in KOJA_FX_PAIRS:
         rate=None; provider=None
         try:
             if ALPHAVANTAGE_API_KEY:
@@ -13124,7 +13149,7 @@ def koja_market_fx_api():
             _koja_fx_cache['updated_at']=now
         return jsonify({'rates':rates,'updated_at':now,'provider_order':['Alpha Vantage','Twelve Data'],'cached':False,'error':None})
     if cached:
-        return jsonify({'rates':[cached[x[0]] for x in KOJA_FX_PAIRS[:4] if x[0] in cached],'updated_at':cached_at,'provider_order':['Alpha Vantage','Twelve Data'],'cached':True,'error':_koja_market_diag.get('last_error') or 'Live provider unavailable; showing last successful rates.'})
+        return jsonify({'rates':[cached[x[0]] for x in KOJA_FX_PAIRS if x[0] in cached],'updated_at':cached_at,'provider_order':['Alpha Vantage','Twelve Data'],'cached':True,'error':_koja_market_diag.get('last_error') or 'Live provider unavailable; showing last successful rates.'})
     return jsonify({'rates':[],'updated_at':None,'provider_order':['Alpha Vantage','Twelve Data'],'cached':False,'error':_koja_market_diag.get('last_error') or 'No financial-data provider is configured. Add TWELVEDATA_API_KEY or ALPHAVANTAGE_API_KEY in Render Environment.'})
 
 
