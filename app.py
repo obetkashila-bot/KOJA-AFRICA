@@ -12191,6 +12191,9 @@ _africa_now_runtime = {"last_success": None, "last_attempt": None, "last_error":
 _africa_now_thread_started = False
 _africa_now_thread_lock = threading.Lock()
 _africa_now_refresh_lock = threading.Lock()
+_africa_now_emergency_cache = {"items": [], "updated_at": 0.0}
+_africa_now_emergency_lock = threading.Lock()
+KOJA_NEXUS_AFRICA_NOW_EMERGENCY_TTL = max(60, int(os.getenv("KOJA_NEXUS_AFRICA_NOW_EMERGENCY_TTL", "90")))
 
 
 def _africa_now_text(value):
@@ -12541,6 +12544,57 @@ def _africa_now_fetch_jobs():
     return collected, status
 
 
+def _africa_now_emergency_fetch(limit=20):
+    """Fetch a small live source set when the Supabase cache is empty/unavailable.
+    This keeps AFRICA NOW alive on a cold Render instance and prevents the UI from
+    being stuck on the bootstrap story. Results are memory-cached briefly.
+    """
+    now = time.time()
+    with _africa_now_emergency_lock:
+        cached = list(_africa_now_emergency_cache.get("items") or [])
+        if cached and now - float(_africa_now_emergency_cache.get("updated_at") or 0) < KOJA_NEXUS_AFRICA_NOW_EMERGENCY_TTL:
+            return cached[:limit]
+
+    sources = [
+        ("Africanews Africa", "https://www.africanews.com/news/", "africa_news", "html"),
+        ("Africanews Business", "https://www.africanews.com/business/", "business_markets", "html"),
+        ("BBC Africa", "https://www.bbc.com/news/world/africa", "africa_news", "html"),
+        ("BBC World", "https://www.bbc.com/news", "world_news", "html"),
+        ("UN Careers", "https://careers.un.org/jobfeed?isPage=true&language=en", "jobs", "feed"),
+        ("African Development Bank Vacancies", "https://www.afdb.org/en/vacancies/directeur/news-and-events/about-us/careers/current-vacancies/rss", "jobs", "feed"),
+    ]
+    collected = []
+    status = {}
+    def one(src):
+        label, url, kind, mode = src
+        try:
+            if mode == "html":
+                rows = _africa_now_fetch_html_fallback(label, url, kind)
+            else:
+                rows = _africa_now_fetch_feed(label, url, kind)
+            return label, rows, None
+        except Exception as exc:
+            return label, [], str(exc)[:180]
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = [pool.submit(one, src) for src in sources]
+        for f in as_completed(futures):
+            label, rows, err = f.result()
+            status[label] = {"ok": not bool(err), "items": len(rows), **({"error": err} if err else {})}
+            collected.extend(rows)
+    best = {}
+    for item in collected:
+        key = item.get("url") or item.get("source_key")
+        if key and (key not in best or float(item.get("score") or 0) > float(best[key].get("score") or 0)):
+            best[key] = item
+    rows = sorted(best.values(), key=lambda x: (float(x.get("score") or 0), x.get("published_at") or ""), reverse=True)[:60]
+    with _africa_now_emergency_lock:
+        if rows:
+            _africa_now_emergency_cache["items"] = rows
+            _africa_now_emergency_cache["updated_at"] = time.time()
+        _africa_now_runtime["source_status"].update({f"emergency:{k}": v for k, v in status.items()})
+    return rows[:limit]
+
+
 def _africa_now_refresh(force=False):
     """Refresh feeds without blocking Flask startup. Feed failures are isolated."""
     if not KOJA_NEXUS_AFRICA_NOW_ENABLED:
@@ -12596,7 +12650,7 @@ def _africa_now_refresh(force=False):
         fetched_at = utc_now()
         inserted = 0
         for item in collected:
-            payload = {k: item.get(k) for k in ("source_key","title","url","source_name","category","country","published_at","score","image_url","video_url","media_type","is_live","summary")}
+            payload = {k: item.get(k) for k in ("source_key","title","url","source_name","category","country","published_at","score","image_url","video_url","media_type","is_live","summary","job_deadline","job_type")}
             payload.update({"fetched_at": fetched_at, "is_active": True})
             _, err = db_insert("koja_nexus_africa_now", payload, returning="minimal")
             if not err:
@@ -12651,8 +12705,16 @@ def koja_nexus_africa_now_api():
         limit = 12
     # Keep jobs visible even when a burst of high-scoring news would otherwise
     # crowd them out of the top-story rotation.
-    job_rows = db_select("koja_nexus_africa_now", filters={"category": "Jobs & Opportunities"}, order="score.desc,published_at.desc", limit=max(6, min(12, limit))) or []
+    job_rows = db_select("koja_nexus_africa_now", filters={"category": "Jobs & Opportunities"}, order="score.desc,published_at.desc", limit=max(8, min(16, limit))) or []
     news_rows = db_select("koja_nexus_africa_now", order="score.desc,published_at.desc", limit=limit) or []
+    # If the database cache is empty (or only contains the bootstrap item), fetch
+    # a small live source pool immediately. This is deliberately cache-limited and
+    # does not depend on Supabase being configured, so a cold Render instance still
+    # displays current news/jobs rather than the old hard-coded story.
+    if len(news_rows) + len(job_rows) < 4:
+        live_rows = _africa_now_emergency_fetch(max(12, limit))
+        job_rows = job_rows + [r for r in live_rows if r.get("category") == "Jobs & Opportunities"]
+        news_rows = news_rows + [r for r in live_rows if r.get("category") != "Jobs & Opportunities"]
     rows = []
     seen_keys = set()
     for r in news_rows + job_rows:
@@ -12732,7 +12794,7 @@ def _africa_now_panel_html():
     return r"""
 <section class="anx-panel" id="kojaAfricaNow" aria-label="Africa Now" style="display:block!important;visibility:visible!important;opacity:1!important;">
 <div class="anx-head"><div><strong>AFRICA NOW</strong><span class="anx-sub">NEWS · JOBS · OPPORTUNITIES ACROSS AFRICA</span></div><div class="anx-updated" id="anxUpdated">Updating automatically…</div></div>
-<div class="anx-screen" id="anxScreen"><div class="anx-main" id="anxMain"><div class="anx-overlay anx-instant"><div class="anx-kicker">AFRICA NEWS · AFRICANEWS</div><div class="anx-title">Ethiopian forces recapture Mekelle airport from Tigrayan fighters</div><div class="anx-summary">Africa Now is ready immediately. The latest stories will replace this screen automatically when the news collector refreshes.</div><a class="anx-open" href="https://www.africanews.com/" target="_blank" rel="noopener noreferrer">Open source</a></div></div></div>
+<div class="anx-screen" id="anxScreen"><div class="anx-main" id="anxMain"><div class="anx-placeholder anx-boot"><strong>AFRICA NOW</strong><span>Connecting to live Africa, world, business and opportunities sources…</span></div></div></div>
 <div class="anx-foot"><span>Stories update automatically</span><span id="anxProgress">1 / 1</span></div>
 </section>
 <style>
@@ -12763,8 +12825,10 @@ def _africa_now_panel_html():
  async function load(){
    try{
      const r=await fetch('{{ url_for('koja_nexus_africa_now_api') }}?limit=20',{cache:'no-store'}); if(!r.ok)throw new Error('feed');
-     const d=await r.json(); items=Array.isArray(d.items)?d.items:[]; index=0; renderItem(); startRotation();
-     updated.textContent='Updated '+(d.updated_at?new Date(d.updated_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'just now');
+     const d=await r.json();
+     const incoming=Array.isArray(d.items)?d.items:[];
+     if(incoming.length){ items=incoming; index=0; renderItem(); startRotation(); }
+     updated.textContent=incoming.length ? ('Updated '+(d.updated_at?new Date(d.updated_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'just now')) : 'Waiting for live sources…';
    }catch(e){updated.textContent='Automatic update retrying';}
  }
  load(); setInterval(load,60000);
