@@ -15,7 +15,7 @@ import time
 import threading
 import xml.etree.ElementTree as ET
 from html import unescape
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, urljoin
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from functools import wraps
@@ -11039,7 +11039,7 @@ def detect_live_provider(value):
     return 'other'
 
 def youtube_embed_url(value):
-    from urllib.parse import urlparse, parse_qs
+    from urllib.parse import urlparse, parse_qs, urljoin
     u=clean(value)
     try:
         q=parse_qs(urlparse(u).query)
@@ -12125,7 +12125,7 @@ def koja_admin_go_live():
 # ============================================================
 # KOJA NEXUS — AFRICA NOW AUTOMATIC TOP SCREEN
 # ============================================================
-KOJA_NEXUS_AFRICA_NOW_VERSION = "2.0"
+KOJA_NEXUS_AFRICA_NOW_VERSION = "2.1-jobs"
 KOJA_NEXUS_AFRICA_NOW_INTERVAL = max(300, int(os.getenv("KOJA_NEXUS_AFRICA_NOW_INTERVAL", "300")))
 KOJA_NEXUS_AFRICA_NOW_ENABLED = os.getenv("KOJA_NEXUS_AFRICA_NOW_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
 KOJA_NEXUS_AFRICA_NOW_TIMEOUT = max(4, min(int(os.getenv("KOJA_NEXUS_AFRICA_NOW_TIMEOUT", "8")), 20))
@@ -12136,6 +12136,13 @@ _KOJA_AFRICA_NOW_FEEDS = [
     ("BBC Afrique", "https://feeds.bbci.co.uk/afrique/rss.xml", "publisher"),
     ("AllAfrica Africa", "https://allafrica.com/tools/headlines/rdf/africa/headlines.rdf", "aggregator"),
     ("AllAfrica Business", "https://allafrica.com/tools/headlines/rdf/business/headlines.rdf", "aggregator"),
+    # African Development Bank publishes an official vacancies RSS endpoint.
+    ("African Development Bank Vacancies", "https://www.afdb.org/en/vacancies/directeur/news-and-events/about-us/careers/current-vacancies/rss", "jobs"),
+]
+
+_KOJA_AFRICA_NOW_JOB_PAGES = [
+    ("AfriCareers", "https://jobs.africareers.net/jobs", "Uganda;Kenya;Rwanda;Tanzania;South Africa;Nigeria;Ghana;Africa"),
+    ("ZambiaJobsToday", "https://www.zambiajobstoday.com/jobs", "Zambia"),
 ]
 
 _AFRICA_COUNTRY_NAMES = [
@@ -12295,6 +12302,95 @@ def _africa_now_fetch_feed(label, feed_url, feed_kind):
     return items
 
 
+def _africa_now_job_clean_html(value):
+    value = unescape(value or "")
+    value = re.sub(r"<script\b[^>]*>.*?</script>", " ", value, flags=re.I|re.S)
+    value = re.sub(r"<style\b[^>]*>.*?</style>", " ", value, flags=re.I|re.S)
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", value)).strip()
+
+
+def _africa_now_parse_job_page(label, page_url, default_countries):
+    """Best-effort parser for reputable job listing pages without adding a new dependency."""
+    headers = {"User-Agent": "KOJA-AFRICA/2.1 (+Africa Now jobs collector)", "Accept": "text/html,application/xhtml+xml"}
+    r = requests.get(page_url, timeout=(5, KOJA_NEXUS_AFRICA_NOW_TIMEOUT), headers=headers)
+    r.raise_for_status()
+    html = r.text
+    found = []
+    # Listing pages expose job detail links in ordinary anchor tags. Limit the
+    # collector so a single refresh cannot generate an excessive request burst.
+    links = re.findall(r'<a\b[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', html, flags=re.I|re.S)
+    seen = set()
+    for href, raw_title in links:
+        title = _africa_now_job_clean_html(raw_title)
+        if not title or len(title) < 4 or len(title) > 220:
+            continue
+        low_href = href.lower()
+        if "/jobs/" not in low_href and not (label.lower().startswith("africareers") and "/job" in low_href):
+            continue
+        if any(x in title.lower() for x in ("login", "register", "find a job", "browse jobs", "hire talent", "apply now")):
+            continue
+        url = urljoin(page_url, href)
+        if url in seen:
+            continue
+        seen.add(url)
+        found.append((title, url))
+        if len(found) >= 18:
+            break
+
+    items = []
+    for title, url in found:
+        try:
+            detail = requests.get(url, timeout=(4, min(KOJA_NEXUS_AFRICA_NOW_TIMEOUT, 8)), headers=headers)
+            detail.raise_for_status()
+            body = _africa_now_job_clean_html(detail.text)
+        except Exception:
+            body = ""
+        sample = body[:7000]
+        country = _africa_now_country(title, sample)
+        if country == "Africa":
+            for c in [x.strip() for x in default_countries.split(";") if x.strip()]:
+                if c.lower() in sample.lower():
+                    country = c
+                    break
+        # Avoid displaying vacancies whose explicit closing date has already passed.
+        deadline = None
+        m = re.search(r"(?:closing\s+date|deadline|closes?)\s*[:\-]?\s*([A-Za-z0-9 ,./-]{6,40})", sample, re.I)
+        if m:
+            raw_date = m.group(1).strip(" .")
+            for fmt in ("%d/%m/%Y", "%m/%d/%Y", "%Y-%m-%d", "%d-%m-%Y", "%d %B %Y", "%B %d, %Y"):
+                try:
+                    deadline = datetime.strptime(raw_date, fmt).replace(tzinfo=timezone.utc)
+                    break
+                except Exception:
+                    pass
+        if deadline and deadline < datetime.now(timezone.utc):
+            continue
+        summary = sample[:700].strip() if sample else f"Job opportunity from {label}. Open the original listing for full requirements and application instructions."
+        items.append({
+            "source_key": hashlib.sha256(url.split("#",1)[0].encode()).hexdigest(),
+            "title": title[:500], "url": url.split("#",1)[0], "source_name": label[:160],
+            "summary": summary[:900], "image_url": None, "video_url": None,
+            "published_at": None, "country": country, "category": "Jobs & Opportunities",
+            "score": round(14 + (2 if deadline else 0), 3), "media_type": "job",
+            "is_live": False, "feed_kind": "jobs", "job_deadline": deadline.isoformat() if deadline else None,
+        })
+    return items
+
+
+def _africa_now_fetch_jobs():
+    collected = []
+    status = {}
+    for label, page_url, countries in _KOJA_AFRICA_NOW_JOB_PAGES:
+        try:
+            rows = _africa_now_parse_job_page(label, page_url, countries)
+            collected.extend(rows)
+            status[label] = {"ok": True, "items": len(rows)}
+        except Exception as exc:
+            status[label] = {"ok": False, "error": str(exc)[:180]}
+            logger.warning("Africa Now job source failed (%s): %s", label, exc)
+    return collected, status
+
+
 def _africa_now_refresh(force=False):
     """Refresh feeds without blocking Flask startup. Feed failures are isolated."""
     if not KOJA_NEXUS_AFRICA_NOW_ENABLED:
@@ -12315,7 +12411,7 @@ def _africa_now_refresh(force=False):
             except Exception as exc:
                 return label, [], str(exc)[:180]
 
-        with ThreadPoolExecutor(max_workers=min(5, len(_KOJA_AFRICA_NOW_FEEDS))) as pool:
+        with ThreadPoolExecutor(max_workers=min(6, len(_KOJA_AFRICA_NOW_FEEDS))) as pool:
             futures = [pool.submit(fetch_one, feed) for feed in _KOJA_AFRICA_NOW_FEEDS]
             for future in as_completed(futures):
                 label, items, error = future.result()
@@ -12326,7 +12422,13 @@ def _africa_now_refresh(force=False):
                     source_status[label] = {"ok": True, "items": len(items)}
                     collected.extend(items)
 
-        # De-duplicate by canonical article URL and keep the strongest ranking.
+        # Jobs are collected separately because major African job portals expose
+        # current vacancies as HTML rather than RSS. Only open/active listings are kept.
+        job_items, job_status = _africa_now_fetch_jobs()
+        collected.extend(job_items)
+        source_status.update(job_status)
+
+        # De-duplicate by canonical article/job URL and keep the strongest ranking.
         best = {}
         for item in collected:
             key = item.get("url") or item.get("source_key")
@@ -12397,8 +12499,21 @@ def koja_nexus_africa_now_api():
         limit = min(max(int(request.args.get("limit") or 12), 1), 40)
     except Exception:
         limit = 12
-    rows = db_select("koja_nexus_africa_now", order="score.desc,published_at.desc", limit=limit) or []
-    rows = [r for r in rows if r.get("is_active") is not False]
+    # Keep jobs visible even when a burst of high-scoring news would otherwise
+    # crowd them out of the top-story rotation.
+    job_rows = db_select("koja_nexus_africa_now", filters={"category": "Jobs & Opportunities"}, order="score.desc,published_at.desc", limit=max(6, min(12, limit))) or []
+    news_rows = db_select("koja_nexus_africa_now", order="score.desc,published_at.desc", limit=limit) or []
+    rows = []
+    seen_keys = set()
+    for r in news_rows + job_rows:
+        key = r.get("url") or r.get("source_key")
+        if key in seen_keys:
+            continue
+        if r.get("is_active") is False:
+            continue
+        seen_keys.add(key)
+        rows.append(r)
+    rows = rows[:max(limit, min(8, len(job_rows)))]
     stale = True
     if rows and rows[0].get("fetched_at"):
         fetched = _africa_now_parse_date(str(rows[0].get("fetched_at")))
@@ -12414,6 +12529,7 @@ def koja_nexus_africa_now_api():
         "updated_at": (rows[0].get("fetched_at") if rows else None),
         "items": rows,
         "count": len(rows),
+        "job_count": len([r for r in rows if r.get("category") == "Jobs & Opportunities"]),
         "collector": {
             "last_success": _africa_now_runtime.get("last_success").isoformat() if hasattr(_africa_now_runtime.get("last_success"), "isoformat") else _africa_now_runtime.get("last_success"),
             "last_attempt": _africa_now_runtime.get("last_attempt"),
@@ -12425,7 +12541,7 @@ def koja_nexus_africa_now_api():
 def _africa_now_panel_html():
     return r"""
 <section class="anx-panel" id="kojaAfricaNow" aria-label="Africa Now" style="display:block!important;visibility:visible!important;opacity:1!important;">
-<div class="anx-head"><div><strong>AFRICA NOW</strong><span class="anx-sub">TOP STORIES ACROSS AFRICA</span></div><div class="anx-updated" id="anxUpdated">Updating automatically…</div></div>
+<div class="anx-head"><div><strong>AFRICA NOW</strong><span class="anx-sub">NEWS · JOBS · OPPORTUNITIES ACROSS AFRICA</span></div><div class="anx-updated" id="anxUpdated">Updating automatically…</div></div>
 <div class="anx-screen" id="anxScreen"><div class="anx-main" id="anxMain"><div class="anx-overlay anx-instant"><div class="anx-kicker">AFRICA NEWS · AFRICANEWS</div><div class="anx-title">Ethiopian forces recapture Mekelle airport from Tigrayan fighters</div><div class="anx-summary">Africa Now is ready immediately. The latest stories will replace this screen automatically when the news collector refreshes.</div><a class="anx-open" href="https://www.africanews.com/" target="_blank" rel="noopener noreferrer">Open source</a></div></div></div>
 <div class="anx-foot"><span>Stories update automatically</span><span id="anxProgress">1 / 1</span></div>
 </section>
@@ -12447,8 +12563,10 @@ def _africa_now_panel_html():
    if(h.video_url){media='<video src="'+esc(h.video_url)+'" muted playsinline controls preload="metadata"></video>';}
    else if(h.image_url){media='<img src="'+esc(h.image_url)+'" alt="" loading="eager">';}
    const videoButton=h.video_url?' <a class="anx-video-link" href="'+esc(h.url)+'" target="_blank" rel="noopener noreferrer">Watch source video</a>':'';
-   main.innerHTML=(media||'<div class="anx-placeholder anx-boot"><strong>AFRICA NOW</strong><span>Top African story</span></div>')+
-     '<div class="anx-overlay"><div class="anx-kicker">'+esc(h.category||'Africa News')+' · '+esc(h.country||'Africa')+'</div><div class="anx-title">'+esc(h.title)+'</div><div class="anx-summary">'+esc(h.summary||('Latest report from '+(h.source_name||'source')))+'</div><a class="anx-open" href="'+esc(h.url)+'" target="_blank" rel="noopener noreferrer">Open story</a>'+videoButton+'</div>';
+   const isJob=(h.category||'')==='Jobs & Opportunities';
+   const jobButton=isJob?' <a class="anx-video-link" href="'+esc(h.url)+'" target="_blank" rel="noopener noreferrer">View vacancy</a>':'';
+   main.innerHTML=(media||'<div class="anx-placeholder anx-boot"><strong>AFRICA NOW</strong><span>Latest African news and job opportunities</span></div>')+
+     '<div class="anx-overlay"><div class="anx-kicker">'+esc(h.category||'Africa News')+' · '+esc(h.country||'Africa')+'</div><div class="anx-title">'+esc(h.title)+'</div><div class="anx-summary">'+esc(h.summary||('Latest report from '+(h.source_name||'source')))+'</div><a class="anx-open" href="'+esc(h.url)+'" target="_blank" rel="noopener noreferrer">'+(isJob?'Open original vacancy':'Open story')+'</a>'+videoButton+jobButton+'</div>';
    if(progress)progress.textContent=((index%items.length)+1)+' / '+items.length;
  }
  function startRotation(){clearInterval(rotateTimer); if(items.length>1) rotateTimer=setInterval(function(){index=(index+1)%items.length;renderItem();},12000);}
