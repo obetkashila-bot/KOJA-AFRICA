@@ -1,38 +1,21 @@
-KOJA AFRICA — OAUTH HARDENED V3.1
+KOJA AFRICA — TERMS GATE REMOVED / EMAIL LOGIN
 
-This replacement hardens the Google/Facebook/GitHub OAuth flow for normal Chrome and Median Android/WebView/external-browser redirects.
+Changes in this build:
+- Removed the mandatory Terms acceptance redirect loop from authenticated navigation.
+- /terms remains available as a normal legal page.
+- Existing account registration still requires agreement to the Terms & Conditions.
+- Existing email/password login remains the primary login flow.
+- Removed Google/Facebook/GitHub social-login buttons and obsolete OAuth routes.
+- Terms version updated to 2026-10-04-v2.
+- Existing KOJA services and routes are otherwise preserved.
 
-Key changes:
-- Server-side S256 PKCE remains enabled.
-- OAuth transaction is stored in a dedicated short-lived Secure + HttpOnly SameSite=Lax cookie.
-- Flask session remains as compatibility storage, but callback prefers the dedicated transaction cookie.
-- Supports both normal OAuth ?state= and the Median-compatible ?oauth_state= fallback.
-- State is compared with constant-time HMAC comparison.
-- PKCE verifier is never placed in the callback URL.
-- OAuth transaction cookie is deleted after completion/failure.
-- Existing email/password authentication is untouched.
-- Supported social providers: Google, Facebook, GitHub.
+Render:
+- Build command: pip install -r requirements.txt
+- Start command: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 120 --graceful-timeout 30 --keep-alive 5
+- Keep existing environment variables, including SECRET_KEY/FLASK_SECRET_KEY and Supabase settings.
 
-REQUIRED RENDER ENVIRONMENT:
-- SECRET_KEY or FLASK_SECRET_KEY must be a stable, long random value and MUST NOT change between deployments/workers.
-- SUPABASE_URL must be configured.
-- SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY must be configured.
-
-SUPABASE AUTH URLS:
-Site URL: https://koja-africa.onrender.com
-Redirect URL: https://koja-africa.onrender.com/auth/callback
-
-Provider callback URLs remain the Supabase provider callback URLs shown by Supabase. Do not point Google/Facebook/GitHub directly at the Render callback unless Supabase explicitly instructs you to.
-
-After deployment, the expected callback is:
-/auth/callback?code=...&state=...
-or, for browser paths that drop top-level state:
-/auth/callback?code=...&oauth_state=...
-
-If the flow fails after this build, inspect logs for:
-- OAuth state mismatch
-- OAuth callback missing PKCE code verifier
-- Supabase PKCE exchange failed
-- Supabase user lookup after OAuth failed
-
-Do not disable PKCE.
+Deployment:
+1. Replace app.py in the Render-connected KOJA-AFRICA repository.
+2. Commit and push to the connected branch.
+3. Deploy on Render.
+4. Test /health, /login, /terms, /research, /services and /media-next.
