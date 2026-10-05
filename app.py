@@ -6580,6 +6580,32 @@ def music_dashboard_v2():
 # ============================================================
 # KOJA MUSIC GLOBAL INDUSTRY NETWORK
 # ============================================================
+KOJA_MUSIC_REAL_INDUSTRY_CONNECTIONS = [
+    ('Global','IFPI','Recording industry','https://www.ifpi.org/','recording_rights','external_reference'),
+    ('Global','CISAC','Authors and composers societies','https://www.cisac.org/','creator_rights','external_reference'),
+    ('Global','WIPO Music','Music intellectual property','https://www.wipo.int/en/web/music','copyright','external_reference'),
+    ('Global','DDEX','Digital music data standards','https://ddex.net/','metadata','standards'),
+    ('Zambia','ZAMCOPS','Collecting society','https://zamcops.org/','performing_mechanical_sync_rights','licensing_partner'),
+    ('Zambia','Zambia Association of Musicians','Artist industry association','https://www.zamunited.com/','artist_network','industry_partner'),
+    ('Zambia','National Arts Council of Zambia','Arts regulation and promoter licensing','https://arts.gov.zm/','events_regulation','regulatory_reference'),
+    ('Global','YouTube for Artists','Artist and video platform','https://artists.youtube/','video_distribution','platform'),
+    ('Global','Spotify for Artists','Streaming platform','https://artists.spotify.com/','streaming_distribution','platform'),
+    ('Global','Apple Music for Artists','Streaming platform','https://artists.apple.com/','streaming_distribution','platform'),
+    ('Global','Amazon Music for Artists','Streaming platform','https://artists.amazonmusic.com/','streaming_distribution','platform'),
+    ('Global','TikTok for Artists','Short-form music platform','https://www.tiktok.com/music','social_promotion','platform'),
+]
+
+def _music_real_industry_seed():
+    try:
+        if not table_exists('koja_music_industry_connections'): return
+        existing=_music_rows('koja_music_industry_connections',limit=500)
+        keys={(clean(x.get('name')).lower(),clean(x.get('region')).lower()) for x in existing}
+        for region,name,kind,url,capability,connection_type in KOJA_MUSIC_REAL_INDUSTRY_CONNECTIONS:
+            if (name.lower(),region.lower()) in keys: continue
+            db_insert('koja_music_industry_connections',{'id':str(uuid.uuid4()),'region':region,'name':name,'industry_type':kind,'website':url,'capability':capability,'connection_type':connection_type,'status':'reference','created_at':utc_now(),'updated_at':utc_now()})
+    except Exception as exc:
+        logger.info('KOJA MUSIC real industry seed skipped: %s',exc)
+
 KOJA_MUSIC_INDUSTRY_SEEDS = [
     ('Africa','Zambia','ZAMCOPS','Collecting Society','https://zamcops.org/','Rights, licensing and creator representation'),
     ('Africa','South Africa','Recording Industry of South Africa (RISA)','Industry Association','https://risa.org.za/','Recording-industry representation and information'),
@@ -6637,6 +6663,7 @@ def _music_industry_videos(country=None, region=None, limit=80):
 @app.route('/music/industry')
 def music_industry():
     _music_industry_seed()
+    _music_real_industry_seed()
     region=clean(request.args.get('region')); country=clean(request.args.get('country'))
     industries=_music_rows('koja_music_industries', {}, order='region.asc,country.asc,name.asc', limit=500)
     if region: industries=[x for x in industries if clean(x.get('region')).lower()==region.lower()]
@@ -6663,6 +6690,15 @@ def music_industry_api():
     return jsonify({'ok':True,'count':len(rows),'industries':rows})
 
 
+
+@app.route('/music/industry-suite/network')
+@music_artist_required
+def music_industry_network():
+    _music_real_industry_seed()
+    rows=_music_rows('koja_music_industry_connections',{},order='region.asc,name.asc',limit=200)
+    return render_page('KOJA MUSIC Real Industry Network',r'''
+<div class="hero"><div class="small">KOJA MUSIC GLOBAL INDUSTRY NETWORK</div><h1>Real industry connections</h1><p>Verified industry and platform endpoints used to guide rights, metadata, distribution, promotion, licensing and artist development. KOJA does not claim an API or commercial partnership unless one is actually established.</p><div class="actions"><a class="btn secondary" href="{{ url_for('music_industry_suite') }}">Lifecycle</a><a class="btn" href="{{ url_for('music_industry') }}">Industry directory</a></div></div>
+<div class="grid">{% for r in rows %}<div class="card"><div class="small">{{ r.region }} · {{ r.connection_type|replace('_',' ')|title }}</div><h3>{{ r.name }}</h3><p>{{ r.industry_type }} · {{ r.capability|replace('_',' ')|title }}</p><p><strong>Status:</strong> {{ r.status|title }}</p><a class="btn secondary" target="_blank" rel="noopener" href="{{ r.website }}">Open official industry site</a></div>{% endfor %}</div>''',rows=rows)
 
 # ============================================================
 # KOJA MUSIC INDUSTRY LIFECYCLE
@@ -6695,6 +6731,78 @@ KOJA_MUSIC_LIFECYCLE_TABLES = {
 
 def _music_lifecycle_user_id():
     return (current_user() or {}).get('id')
+
+def _music_lifecycle_schema_status():
+    """Return lifecycle-table availability without requiring a direct Postgres connection."""
+    status = {}
+    for key, table in KOJA_MUSIC_LIFECYCLE_TABLES.items():
+        try:
+            if not supabase_configured():
+                status[key] = {'table': table, 'available': False, 'reason': 'supabase_not_configured'}
+                continue
+            r = requests.get(
+                sb_rest_url(table),
+                headers=sb_headers(),
+                params={'select':'*', 'limit':'1'},
+                timeout=12,
+            )
+            if r.ok:
+                status[key] = {'table': table, 'available': True, 'reason': 'ok'}
+            else:
+                body = r.text[:600]
+                status[key] = {
+                    'table': table,
+                    'available': False,
+                    'reason': 'table_or_api_error',
+                    'http_status': r.status_code,
+                    'detail': body,
+                }
+        except Exception as exc:
+            status[key] = {'table': table, 'available': False, 'reason': 'request_error', 'detail': str(exc)[:300]}
+    return status
+
+
+def _music_lifecycle_readiness(uid):
+    """Calculate a conservative per-release readiness view from lifecycle records.
+
+    A release is not marked monetisation-ready merely because a row exists. Rights
+    and royalty/accounting records are treated as control points, while distribution,
+    promotion and media are operational stages.
+    """
+    artists = _music_rows('koja_music_artists', {'created_by': uid}, limit=200) if uid else []
+    out = []
+    for artist in artists:
+        aid = artist.get('id')
+        tracks = _music_rows('koja_music_tracks', {'artist_id': aid}, order='created_at.desc', limit=200)
+        for track in tracks:
+            tid = track.get('id')
+            checks = {}
+            for key in ('songwriter','producer','recording','rights','distribution','promotion','radio_media','live_events','fans','monetisation','royalties','accounting'):
+                table = KOJA_MUSIC_LIFECYCLE_TABLES[key]
+                filters = {'created_by': uid}
+                if key not in ('songwriter','producer','fans','accounting'):
+                    filters['track_id'] = tid
+                else:
+                    # People/accounting records can be linked through artist ownership.
+                    filters['artist_id'] = aid
+                try:
+                    checks[key] = bool(_music_rows(table, filters, limit=1))
+                except Exception:
+                    checks[key] = False
+            critical = all(checks.get(k) for k in ('rights','recording'))
+            commercial = all(checks.get(k) for k in ('distribution','monetisation','royalties','accounting'))
+            out.append({
+                'track_id': tid,
+                'title': track.get('title') or 'Untitled',
+                'artist_id': aid,
+                'artist_name': artist.get('artist_name') or 'Artist',
+                'critical_ready': critical,
+                'commercial_ready': commercial,
+                'checks': checks,
+                'completed': sum(1 for v in checks.values() if v),
+                'total': len(checks),
+            })
+    return out
 
 def _music_lifecycle_artist_ids(uid):
     if not uid: return set()
@@ -6805,7 +6913,36 @@ def music_lifecycle_module(module):
 @app.route('/api/music/industry-lifecycle')
 @music_artist_required
 def music_lifecycle_api():
-    uid=_music_lifecycle_user_id(); return jsonify({'ok':True,'lifecycle':[{'key':x[0],'name':x[1],'description':x[2],'count':_music_lifecycle_counts(uid).get(x[0],0)} for x in KOJA_MUSIC_LIFECYCLE]})
+    uid=_music_lifecycle_user_id()
+    schema=_music_lifecycle_schema_status()
+    return jsonify({
+        'ok':True,
+        'lifecycle':[{'key':x[0],'name':x[1],'description':x[2],'count':_music_lifecycle_counts(uid).get(x[0],0),'table_available':schema.get(x[0],{}).get('available',False)} for x in KOJA_MUSIC_LIFECYCLE],
+        'schema':schema,
+        'readiness':_music_lifecycle_readiness(uid),
+    })
+
+
+@app.route('/music/industry-suite/readiness')
+@music_artist_required
+def music_lifecycle_readiness_page():
+    uid=_music_lifecycle_user_id()
+    schema=_music_lifecycle_schema_status()
+    readiness=_music_lifecycle_readiness(uid)
+    return render_page('KOJA MUSIC Lifecycle Readiness', r'''
+<style>
+.kmr{max-width:1180px;margin:auto}.kmr-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.kmr-card{border:1px solid var(--border,rgba(255,255,255,.12));border-radius:15px;padding:15px;background:var(--card,#0b1727)}.kmr-ok{color:#39d98a;font-weight:900}.kmr-warn{color:#ffb84d;font-weight:900}.kmr-bad{color:#ff6b6b;font-weight:900}.kmr-bar{height:8px;border-radius:99px;background:rgba(255,255,255,.1);overflow:hidden;margin:9px 0}.kmr-bar span{display:block;height:100%;background:#2787d9}.kmr-chips{display:flex;gap:6px;flex-wrap:wrap}.kmr-chip{font-size:10px;padding:5px 7px;border-radius:999px;background:#10233a}.kmr-schema{font-size:12px}.kmr-schema div{padding:7px 0;border-bottom:1px solid var(--border,rgba(255,255,255,.08))}@media(max-width:800px){.kmr-grid{grid-template-columns:1fr 1fr}}@media(max-width:520px){.kmr-grid{grid-template-columns:1fr}}
+</style>
+<div class="kmr"><div class="hero"><div class="small">KOJA MUSIC INDUSTRY OPERATING SYSTEM</div><h1>Lifecycle readiness</h1><p>Track every release from creation through rights, distribution, monetisation, royalties and accounting.</p><div class="actions"><a class="btn secondary" href="{{ url_for('music_industry_suite') }}">Lifecycle</a><a class="btn" href="{{ url_for('music_studio') }}">MUSIC Studio</a></div></div>
+<div class="card"><h2>Database readiness</h2><p class="small">The app checks the Supabase Data API without creating or altering tables. Run the lifecycle SQL migration for any missing module.</p><div class="kmr-schema">{% for key,x in schema.items() %}<div><strong>{{ x.table }}</strong> — {% if x.available %}<span class="kmr-ok">Available</span>{% else %}<span class="kmr-bad">Missing / unavailable</span>{% endif %}</div>{% endfor %}</div></div>
+<div class="kmr-grid">{% for r in readiness %}<div class="kmr-card"><h3>{{ r.artist_name }} · {{ r.title }}</h3><p><strong>{{ r.completed }}/{{ r.total }}</strong> lifecycle stages recorded</p><div class="kmr-bar"><span style="width:{{ ((r.completed / r.total) * 100) if r.total else 0 }}%"></span></div><p>{% if r.critical_ready %}<span class="kmr-ok">Critical rights/recording ready</span>{% else %}<span class="kmr-warn">Rights or recording incomplete</span>{% endif %}</p><p>{% if r.commercial_ready %}<span class="kmr-ok">Commercial accounting chain ready</span>{% else %}<span class="kmr-warn">Commercial chain incomplete</span>{% endif %}</p><div class="kmr-chips">{% for key,val in r.checks.items() %}<span class="kmr-chip">{{ key.replace('_',' ') }}: {{ 'yes' if val else 'no' }}</span>{% endfor %}</div></div>{% else %}<div class="card"><p>No releases are linked to your MUSIC artist profile yet.</p></div>{% endfor %}</div></div>''', schema=schema, readiness=readiness)
+
+
+@app.route('/api/music/industry-lifecycle/readiness')
+@music_artist_required
+def music_lifecycle_readiness_api():
+    uid=_music_lifecycle_user_id()
+    return jsonify({'ok':True,'schema':_music_lifecycle_schema_status(),'readiness':_music_lifecycle_readiness(uid)})
 
 
 # ADMIN
