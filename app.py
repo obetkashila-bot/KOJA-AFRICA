@@ -6310,7 +6310,7 @@ def music_studio():
     artist_active=bool(active_artist_ids)
     return render_page('KOJA MUSIC Studio', r'''
 <style>.kstudio{max-width:900px;margin:0 auto}.upload-box{border:1px solid rgba(255,255,255,.1);border-radius:18px;padding:20px;background:#0a1422}.upload-box h2{margin-top:0}.upload-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.upload-grid .full{grid-column:1/-1}@media(max-width:700px){.upload-grid{grid-template-columns:1fr}.upload-grid .full{grid-column:auto}}.kstudio small{color:#91a0b3}.kstudio .file{padding:12px;border:1px dashed rgba(255,255,255,.18);border-radius:12px}</style>
-<div class="kstudio"><div class="hero"><h1>KOJA MUSIC STUDIO</h1><p>Artist-only upload workspace. Publish your music directly when all required rights information is complete.</p><div class="actions"><a class="btn secondary" href="{{ url_for('music_home') }}">Public Music</a></div></div>
+<div class="kstudio"><div class="hero"><h1>KOJA MUSIC STUDIO</h1><p>Artist-only upload workspace. Publish your music directly when all required rights information is complete.</p><div class="actions"><a class="btn secondary" href="{{ url_for('music_home') }}">Public Music</a><a class="btn secondary" href="{{ url_for('music_industry_suite') }}">Industry Lifecycle</a></div></div>
 {% if not artists %}<div class="card"><h2>Artist profile required</h2><p>Only registered KOJA MUSIC artists can use this studio.</p><a class="btn success" href="{{ url_for('music_artist_new') }}">Create Artist Profile</a></div>
 {% else %}{% if not artist_active %}<div class="card" style="border-color:rgba(255,184,107,.45)"><h2>Artist activation required</h2><p>Your MUSIC artist profile is currently <strong>pending</strong>. Once KOJA activates the artist, the full MUSIC Studio becomes available and qualifying releases can be published to Public Music automatically.</p></div>{% else %}<div class="upload-box"><h2>Upload a song</h2><small>Required: song title, music video, master owner, composition owner and rights reference. Audio and artwork are optional.</small><form method="post" action="{{ url_for('music_artist_upload') }}" enctype="multipart/form-data"><div class="upload-grid"><div><label>Artist</label><select name="artist_id" required>{% for a in artists %}<option value="{{ a.id }}">{{ a.artist_name }}</option>{% endfor %}</select></div><div><label>Song title</label><input name="title" required placeholder="Song title"></div><div><label>Release type</label><select name="release_type"><option value="single">Single</option><option value="EP">EP</option><option value="album">Album</option></select></div><div><label>Album / EP</label><input name="album_title" placeholder="Optional"></div><div><label>Genre</label><input name="genre" placeholder="Afrobeats, Gospel, Hip-Hop..."></div><div><label>Release date</label><input type="date" name="release_date"></div><div class="full"><label>Music video</label><input class="file" type="file" name="music_video" accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov" required></div><div><label>Audio file (optional)</label><input class="file" type="file" name="audio_file" accept="audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/ogg,.mp3,.wav,.m4a,.ogg"></div><div><label>Cover artwork (optional)</label><input class="file" type="file" name="cover_image" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"></div><div class="full"><label>Description</label><textarea name="description" rows="4" placeholder="About this song..."></textarea></div><div><label>Master owner *</label><input name="master_owner" required placeholder="Rights holder"></div><div><label>Composition owner *</label><input name="composition_owner" required placeholder="Rights holder"></div><div class="full"><label>Licence / rights reference *</label><input name="licence_reference" required placeholder="Reference or ownership statement"></div><div class="full"><label><input type="checkbox" name="downloadable_visual"> Allow public video download</label></div><div class="full"><label><input type="checkbox" name="downloadable_audio"> Allow public audio download</label></div></div><button class="btn success" type="submit">Publish Song</button></form></div>{% endif %}<div class="card"><h2>Your uploads</h2>{% for t in tracks %}<div class="card"><strong>{{ t.title }}</strong><div class="small">{{ 'Published automatically' if t.status=='published' else (t.status or 'pending') }} · {{ t.rights_status or 'rights_pending' }}</div></div>{% else %}<p>No songs uploaded yet.</p>{% endfor %}</div>{% endif %}</div>
 ''', artists=artists, tracks=tracks)
@@ -6662,6 +6662,150 @@ def music_industry_api():
     rows=_music_rows('koja_music_industries',{},order='region.asc,country.asc,name.asc',limit=500)
     return jsonify({'ok':True,'count':len(rows),'industries':rows})
 
+
+
+# ============================================================
+# KOJA MUSIC INDUSTRY LIFECYCLE
+# Artist -> Songwriter -> Producer -> Recording -> Rights ->
+# Distribution -> Promotion -> Radio/Media -> Live Events -> Fans ->
+# Monetisation -> Royalties -> Accounting
+# ============================================================
+KOJA_MUSIC_LIFECYCLE = [
+    ('artist','Artist','Profiles, teams, management and artist identity'),
+    ('songwriter','Songwriter','Compositions, writers, publishers and split sheets'),
+    ('producer','Producer','Producers, beats, production credits and agreements'),
+    ('recording','Recording','Masters, sessions, stems, versions and identifiers'),
+    ('rights','Rights','Master, composition, publishing, neighbouring and permissions'),
+    ('distribution','Distribution','Release delivery, territories, stores and scheduling'),
+    ('promotion','Promotion','Campaigns, playlists, social, press and influencers'),
+    ('radio_media','Radio / Media','Radio, TV, interviews, blogs and media submissions'),
+    ('live_events','Live Events','Shows, festivals, venues, bookings and ticketing'),
+    ('fans','Fans','Followers, engagement, communities and audience activity'),
+    ('monetisation','Monetisation','Streaming, ads, licensing, tickets, subscriptions and merch'),
+    ('royalties','Royalties','Royalty pools, splits, statements and payment calculations'),
+    ('accounting','Accounting','Invoices, expenses, settlements, taxes and financial reports'),
+]
+
+KOJA_MUSIC_LIFECYCLE_TABLES = {
+    'songwriter':'koja_music_songwriters','producer':'koja_music_producers','recording':'koja_music_recordings',
+    'rights':'koja_music_rights','distribution':'koja_music_distributions','promotion':'koja_music_promotions',
+    'radio_media':'koja_music_media_outreach','live_events':'koja_music_live_events','fans':'koja_music_fans',
+    'monetisation':'koja_music_monetisation','royalties':'koja_music_royalties','accounting':'koja_music_accounting'
+}
+
+def _music_lifecycle_user_id():
+    return (current_user() or {}).get('id')
+
+def _music_lifecycle_artist_ids(uid):
+    if not uid: return set()
+    return {str(x.get('id')) for x in _music_rows('koja_music_artists', {'created_by':uid}, limit=500) if x.get('id')}
+
+def _music_lifecycle_owned_rows(table, uid, limit=500):
+    # Best-effort ownership filtering for lifecycle tables.
+    return _music_rows(table, {'created_by':uid}, order='created_at.desc', limit=limit) if uid else []
+
+def _music_lifecycle_counts(uid):
+    counts={'artist':len(_music_lifecycle_artist_ids(uid))}
+    for key,table in KOJA_MUSIC_LIFECYCLE_TABLES.items():
+        try: counts[key]=len(_music_lifecycle_owned_rows(table,uid,500))
+        except Exception: counts[key]=0
+    return counts
+
+@app.route('/music/industry-suite')
+@music_artist_required
+def music_industry_suite():
+    uid=_music_lifecycle_user_id(); counts=_music_lifecycle_counts(uid)
+    artists=_music_rows('koja_music_artists', {'created_by':uid}, limit=100)
+    tracks=[]
+    for a in artists:
+        tracks += _music_rows('koja_music_tracks', {'artist_id':a.get('id')}, order='created_at.desc', limit=200)
+    recent=[]
+    for key,table in KOJA_MUSIC_LIFECYCLE_TABLES.items():
+        try:
+            rows=_music_lifecycle_owned_rows(table,uid,8)
+            for row in rows:
+                row=dict(row); row['_module']=dict((x for x in KOJA_MUSIC_LIFECYCLE if x[0]==key))[1]
+                recent.append(row)
+        except Exception: pass
+    recent.sort(key=lambda x:x.get('created_at') or '', reverse=True)
+    return render_page('KOJA MUSIC Industry Lifecycle',r'''
+<style>
+.kml{max-width:1180px;margin:auto}.kml-hero{background:linear-gradient(135deg,#071426,#123b69);border:1px solid rgba(255,255,255,.1);border-radius:22px;padding:24px;color:#fff}.kml-flow{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:16px 0}.kml-stage{display:block;text-decoration:none;color:inherit;background:var(--card,#0b1727);border:1px solid var(--border,rgba(255,255,255,.12));border-radius:15px;padding:15px;min-height:120px}.kml-stage:hover{border-color:#2687d9;transform:translateY(-1px)}.kml-stage .num{font-size:11px;font-weight:900;color:#4da7ff}.kml-stage h3{margin:6px 0}.kml-stage p{font-size:12px;opacity:.8}.kml-count{font-size:22px;font-weight:900}.kml-track{display:flex;gap:6px;overflow:auto;padding:8px 0}.kml-chip{white-space:nowrap;padding:7px 10px;border-radius:999px;background:#10233a;color:#fff;font-size:11px;font-weight:800}.kml-grid{display:grid;grid-template-columns:1.2fr .8fr;gap:14px}@media(max-width:800px){.kml-flow{grid-template-columns:repeat(2,1fr)}.kml-grid{grid-template-columns:1fr}}@media(max-width:480px){.kml-flow{grid-template-columns:1fr}}
+</style>
+<div class="kml">
+<div class="kml-hero"><div class="small">KOJA MUSIC INDUSTRY OPERATING SYSTEM</div><h1>From creation to royalty accounting</h1><p>One connected lifecycle for the artist, composition, recording, rights, distribution, promotion, audience and money.</p><div class="kml-track">{% for x in lifecycle %}<span class="kml-chip">{{ loop.index }} · {{ x[1] }}</span>{% endfor %}</div></div>
+<div class="card"><h2>Industry lifecycle</h2><div class="kml-flow">{% for x in lifecycle %}<a class="kml-stage" href="{{ url_for('music_lifecycle_module',module=x[0]) }}"><div class="num">{{ '%02d'|format(loop.index) }}</div><h3>{{ x[1] }}</h3><p>{{ x[2] }}</p><div class="kml-count">{{ counts.get(x[0],0) }}</div><div class="small">records</div></a>{% endfor %}</div></div>
+<div class="kml-grid"><div class="card"><h2>Your releases</h2>{% for t in tracks[:20] %}<div style="padding:10px 0;border-bottom:1px solid var(--border)"><strong>{{ t.title }}</strong><span class="small"> · {{ t.status or 'draft' }}</span></div>{% else %}<p>No releases yet. Create an artist profile and release in MUSIC Studio.</p>{% endfor %}</div>
+<div class="card"><h2>Lifecycle activity</h2>{% for r in recent[:20] %}<div style="padding:9px 0;border-bottom:1px solid var(--border)"><strong>{{ r.get('_module') }}</strong><div class="small">{{ r.get('name') or r.get('title') or r.get('description') or 'Record' }}</div></div>{% else %}<p>No lifecycle records yet.</p>{% endfor %}</div></div>
+</div>''',lifecycle=KOJA_MUSIC_LIFECYCLE,counts=counts,tracks=tracks,recent=recent)
+
+@app.route('/music/industry-suite/<module>', methods=['GET','POST'])
+@music_artist_required
+def music_lifecycle_module(module):
+    if module not in dict((x[0],x) for x in KOJA_MUSIC_LIFECYCLE): abort(404)
+    label=dict((x[0],x) for x in KOJA_MUSIC_LIFECYCLE)[module][1]
+    uid=_music_lifecycle_user_id(); table=KOJA_MUSIC_LIFECYCLE_TABLES.get(module)
+    if request.method=='POST':
+        title=clean(request.form.get('title') or request.form.get('name'))
+        artist_id=clean(request.form.get('artist_id'))
+        track_id=clean(request.form.get('track_id'))
+        description=clean(request.form.get('description'))
+        status=clean(request.form.get('status')) or 'draft'
+        if module=='songwriter':
+            payload={'created_by':uid,'artist_id':artist_id or None,'name':title,'email':clean(request.form.get('email')),'publisher':clean(request.form.get('publisher')),'share_percent':request.form.get('share_percent') or None,'status':status}
+        elif module=='producer':
+            payload={'created_by':uid,'artist_id':artist_id or None,'name':title,'email':clean(request.form.get('email')),'role':clean(request.form.get('role')) or 'Producer','fee':request.form.get('fee') or None,'royalty_percent':request.form.get('royalty_percent') or None,'status':status}
+        elif module=='recording':
+            payload={'created_by':uid,'artist_id':artist_id or None,'track_id':track_id or None,'title':title,'master_url':clean(request.form.get('url')),'isrc':clean(request.form.get('isrc')),'version':clean(request.form.get('version')) or 'Original','status':status}
+        elif module=='rights':
+            payload={'created_by':uid,'artist_id':artist_id or None,'track_id':track_id or None,'right_type':clean(request.form.get('right_type')) or 'master','owner_name':title,'share_percent':request.form.get('share_percent') or None,'territory':clean(request.form.get('territory')) or 'Worldwide','status':status,'reference':clean(request.form.get('reference'))}
+        elif module=='distribution':
+            payload={'created_by':uid,'artist_id':artist_id or None,'track_id':track_id or None,'distributor':title,'territories':clean(request.form.get('territories')) or 'Worldwide','release_date':clean(request.form.get('release_date')) or None,'stores':clean(request.form.get('stores')),'status':status}
+        elif module=='promotion':
+            payload={'created_by':uid,'artist_id':artist_id or None,'track_id':track_id or None,'campaign_name':title,'channel':clean(request.form.get('channel')),'budget':request.form.get('budget') or None,'start_date':clean(request.form.get('start_date')) or None,'end_date':clean(request.form.get('end_date')) or None,'status':status}
+        elif module=='radio_media':
+            payload={'created_by':uid,'artist_id':artist_id or None,'track_id':track_id or None,'outlet_name':title,'outlet_type':clean(request.form.get('outlet_type')) or 'Radio','contact':clean(request.form.get('contact')),'submission_url':clean(request.form.get('url')),'status':status}
+        elif module=='live_events':
+            payload={'created_by':uid,'artist_id':artist_id or None,'event_name':title,'venue':clean(request.form.get('venue')),'event_date':clean(request.form.get('event_date')) or None,'promoter':clean(request.form.get('promoter')),'fee':request.form.get('fee') or None,'status':status}
+        elif module=='fans':
+            payload={'created_by':uid,'artist_id':artist_id or None,'name':title,'email':clean(request.form.get('email')),'country':clean(request.form.get('country')),'source':clean(request.form.get('source')) or 'KOJA MUSIC','status':status}
+        elif module=='monetisation':
+            payload={'created_by':uid,'artist_id':artist_id or None,'track_id':track_id or None,'source':title,'period':clean(request.form.get('period')),'gross_amount':request.form.get('amount') or 0,'currency':clean(request.form.get('currency')) or 'USD','reference':clean(request.form.get('reference')),'status':status}
+        elif module=='royalties':
+            payload={'created_by':uid,'artist_id':artist_id or None,'track_id':track_id or None,'payee_name':title,'right_type':clean(request.form.get('right_type')) or 'master','share_percent':request.form.get('share_percent') or 0,'gross_amount':request.form.get('amount') or 0,'royalty_amount':request.form.get('royalty_amount') or 0,'period':clean(request.form.get('period')),'status':status}
+        else:
+            payload={'created_by':uid,'artist_id':artist_id or None,'entry_type':clean(request.form.get('entry_type')) or 'income','description':description or title,'amount':request.form.get('amount') or 0,'currency':clean(request.form.get('currency')) or 'USD','reference':clean(request.form.get('reference')),'entry_date':clean(request.form.get('entry_date')) or None,'status':status}
+        payload={k:v for k,v in payload.items() if v is not None}
+        _,err=db_insert(table,payload)
+        flash(f'{label} record saved.' if not err else f'{label} record could not be saved. Run the KOJA MUSIC lifecycle migration in Supabase.','success' if not err else 'danger')
+        return redirect(url_for('music_lifecycle_module',module=module))
+    rows=_music_lifecycle_owned_rows(table,uid,300)
+    artists=_music_rows('koja_music_artists',{'created_by':uid},limit=100)
+    tracks=[]
+    for a in artists: tracks += _music_rows('koja_music_tracks',{'artist_id':a.get('id')},limit=200)
+    return render_page(f'KOJA MUSIC · {label}',r'''
+<div class="hero"><div class="small">KOJA MUSIC INDUSTRY LIFECYCLE</div><h1>{{ label }}</h1><p>{{ description }}</p><div class="actions"><a class="btn secondary" href="{{ url_for('music_industry_suite') }}">Lifecycle</a><a class="btn" href="{{ url_for('music_studio') }}">MUSIC Studio</a></div></div>
+<div class="card"><h2>Add {{ label }} record</h2><form method="post"><div class="grid"><div><label>Name / title</label><input name="title" required></div><div><label>Artist</label><select name="artist_id"><option value="">Select artist</option>{% for a in artists %}<option value="{{ a.id }}">{{ a.artist_name }}</option>{% endfor %}</select></div>{% if module in ['recording','rights','distribution','promotion','radio_media','monetisation','royalties'] %}<div><label>Release</label><select name="track_id"><option value="">Select release</option>{% for t in tracks %}<option value="{{ t.id }}">{{ t.title }}</option>{% endfor %}</select></div>{% endif %}
+{% if module in ['songwriter','fans'] %}<div><label>Email</label><input name="email" type="email"></div>{% endif %}
+{% if module=='songwriter' %}<div><label>Publisher</label><input name="publisher"></div><div><label>Share %</label><input name="share_percent" type="number" step="0.01" min="0" max="100"></div>{% endif %}
+{% if module=='producer' %}<div><label>Role</label><input name="role" value="Producer"></div><div><label>Fee</label><input name="fee" type="number" step="0.01"></div><div><label>Royalty %</label><input name="royalty_percent" type="number" step="0.01"></div>{% endif %}
+{% if module=='recording' %}<div><label>Master URL</label><input name="url"></div><div><label>ISRC</label><input name="isrc"></div><div><label>Version</label><input name="version" value="Original"></div>{% endif %}
+{% if module=='rights' %}<div><label>Right type</label><select name="right_type"><option>master</option><option>composition</option><option>publishing</option><option>neighbouring</option><option>synchronisation</option><option>performance</option></select></div><div><label>Share %</label><input name="share_percent" type="number" step="0.01" min="0" max="100"></div><div><label>Territory</label><input name="territory" value="Worldwide"></div><div><label>Rights reference</label><input name="reference"></div>{% endif %}
+{% if module=='distribution' %}<div><label>Stores</label><input name="stores" placeholder="KOJA, Spotify, Apple Music, etc."></div><div><label>Territories</label><input name="territories" value="Worldwide"></div><div><label>Release date</label><input name="release_date" type="date"></div>{% endif %}
+{% if module=='promotion' %}<div><label>Channel</label><input name="channel" placeholder="Playlist / Social / Press / Influencer"></div><div><label>Budget</label><input name="budget" type="number" step="0.01"></div><div><label>Start</label><input name="start_date" type="date"></div><div><label>End</label><input name="end_date" type="date"></div>{% endif %}
+{% if module=='radio_media' %}<div><label>Outlet type</label><select name="outlet_type"><option>Radio</option><option>TV</option><option>Blog</option><option>Podcast</option><option>Press</option><option>Playlist</option></select></div><div><label>Contact</label><input name="contact"></div><div><label>Submission URL</label><input name="url"></div>{% endif %}
+{% if module=='live_events' %}<div><label>Venue</label><input name="venue"></div><div><label>Event date</label><input name="event_date" type="date"></div><div><label>Promoter</label><input name="promoter"></div><div><label>Fee</label><input name="fee" type="number" step="0.01"></div>{% endif %}
+{% if module=='fans' %}<div><label>Country</label><input name="country"></div><div><label>Source</label><input name="source" value="KOJA MUSIC"></div>{% endif %}
+{% if module=='monetisation' %}<div><label>Period</label><input name="period" placeholder="2026-10"></div><div><label>Gross amount</label><input name="amount" type="number" step="0.0001"></div><div><label>Currency</label><input name="currency" value="USD"></div><div><label>Reference</label><input name="reference"></div>{% endif %}
+{% if module=='royalties' %}<div><label>Payee</label><input name="title" required></div><div><label>Right type</label><select name="right_type"><option>master</option><option>composition</option><option>publishing</option><option>producer</option><option>neighbouring</option></select></div><div><label>Share %</label><input name="share_percent" type="number" step="0.0001"></div><div><label>Gross amount</label><input name="amount" type="number" step="0.0001"></div><div><label>Royalty amount</label><input name="royalty_amount" type="number" step="0.0001"></div><div><label>Period</label><input name="period"></div>{% endif %}
+{% if module=='accounting' %}<div><label>Entry type</label><select name="entry_type"><option>income</option><option>expense</option><option>invoice</option><option>settlement</option><option>tax</option><option>payout</option></select></div><div><label>Description</label><input name="description"></div><div><label>Amount</label><input name="amount" type="number" step="0.0001"></div><div><label>Currency</label><input name="currency" value="USD"></div><div><label>Reference</label><input name="reference"></div><div><label>Date</label><input name="entry_date" type="date"></div>{% endif %}
+<div><label>Status</label><select name="status"><option value="draft">Draft</option><option value="pending">Pending</option><option value="active">Active</option><option value="verified">Verified</option><option value="completed">Completed</option></select></div></div><button class="btn" type="submit">Save {{ label }}</button></form></div>
+<div class="card"><h2>{{ label }} records</h2>{% for r in rows %}<div style="padding:11px 0;border-bottom:1px solid var(--border)"><strong>{{ r.get('name') or r.get('title') or r.get('campaign_name') or r.get('outlet_name') or r.get('event_name') or r.get('distributor') or r.get('payee_name') or r.get('source') or r.get('description') or 'Record' }}</strong><span class="small"> · {{ r.get('status','draft') }} · {{ r.get('created_at','') }}</span></div>{% else %}<p>No records yet.</p>{% endfor %}</div>''',label=label,description=dict((x[0],x[2]) for x in KOJA_MUSIC_LIFECYCLE)[module],module=module,rows=rows,artists=artists,tracks=tracks)
+
+@app.route('/api/music/industry-lifecycle')
+@music_artist_required
+def music_lifecycle_api():
+    uid=_music_lifecycle_user_id(); return jsonify({'ok':True,'lifecycle':[{'key':x[0],'name':x[1],'description':x[2],'count':_music_lifecycle_counts(uid).get(x[0],0)} for x in KOJA_MUSIC_LIFECYCLE]})
 
 
 # ADMIN
