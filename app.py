@@ -131,7 +131,7 @@ HLS_PUBLIC_BASE = os.getenv("KOJA_HLS_PUBLIC_BASE", "").strip().rstrip("/")
 HLS_CDN_BASE = os.getenv("KOJA_HLS_CDN_BASE", "").strip().rstrip("/")
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = os.getenv("KOJA_APP_VERSION", "2026.10.05-CLOUDFLARE-FREE-MUSIC-V2")
+APP_VERSION = os.getenv("KOJA_APP_VERSION", "2026.10.05-MUSIC-V3")
 TERMS_VERSION = "2026-10-01-v1"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
@@ -6111,6 +6111,41 @@ def music_artist_upload():
     _,err=db_insert('koja_music_tracks',payload)
     flash(('Song uploaded successfully and sent to MUSIC Management for review.' if not err else 'Song could not be saved: '+str(err)), 'success' if not err else 'danger')
     return redirect(url_for('music_studio'))
+
+@app.route('/admin/music', methods=['GET','POST'])
+@admin_required
+def music_admin():
+    if request.method == 'POST':
+        action = clean(request.form.get('action'))
+        track_id = clean(request.form.get('track_id'))
+        if track_id and action in ('publish','reject','suspend','feature','unfeature','verify_rights'):
+            if action == 'publish':
+                db_update('koja_music_tracks', {'id': track_id}, {'status':'published','updated_at':utc_now()})
+                flash('Music release published.', 'success')
+            elif action == 'reject':
+                db_update('koja_music_tracks', {'id': track_id}, {'status':'rejected','updated_at':utc_now()})
+                flash('Music release rejected.', 'success')
+            elif action == 'suspend':
+                db_update('koja_music_tracks', {'id': track_id}, {'status':'suspended','updated_at':utc_now()})
+                flash('Music release suspended.', 'success')
+            elif action == 'feature':
+                db_update('koja_music_tracks', {'id': track_id}, {'featured':True,'updated_at':utc_now()})
+                flash('Music release featured.', 'success')
+            elif action == 'unfeature':
+                db_update('koja_music_tracks', {'id': track_id}, {'featured':False,'updated_at':utc_now()})
+                flash('Music release removed from featured.', 'success')
+            elif action == 'verify_rights':
+                db_update('koja_music_tracks', {'id': track_id}, {'rights_status':'verified','updated_at':utc_now()})
+                flash('Music rights marked verified.', 'success')
+        return redirect(url_for('music_admin'))
+    tracks = _music_rows('koja_music_tracks', order='created_at.desc', limit=500)
+    artists = _music_rows('koja_music_artists', order='created_at.desc', limit=500)
+    amap = {str(a.get('id')): a for a in artists}
+    return render_page('KOJA MUSIC Management', r'''
+<div class="hero"><h1>KOJA MUSIC Management</h1><p>Review artist submissions, rights status and published music.</p><div class="actions"><a class="btn secondary" href="{{ url_for('music_home') }}">Public Music</a><a class="btn secondary" href="{{ url_for('music_studio') }}">Artist Studio</a></div></div>
+<div class="card"><h2>Release Queue</h2><table><tr><th>Song</th><th>Artist</th><th>Status</th><th>Rights</th><th>Actions</th></tr>{% for t in tracks %}<tr><td>{{ t.title }}</td><td>{{ amap.get(t.artist_id,{}).get('artist_name','Artist') }}</td><td>{{ t.status or 'review' }}</td><td>{{ t.rights_status or 'review_required' }}</td><td><form method="post" style="display:flex;gap:6px;flex-wrap:wrap"><input type="hidden" name="track_id" value="{{ t.id }}">{% if t.status != 'published' %}<button class="btn success" name="action" value="publish">Publish</button>{% endif %}{% if t.status != 'rejected' %}<button class="btn danger" name="action" value="reject">Reject</button>{% endif %}{% if t.status != 'suspended' %}<button class="btn warning" name="action" value="suspend">Suspend</button>{% endif %}{% if t.rights_status != 'verified' %}<button class="btn" name="action" value="verify_rights">Verify Rights</button>{% endif %}<button class="btn secondary" name="action" value="{{ 'unfeature' if t.featured else 'feature' }}">{{ 'Unfeature' if t.featured else 'Feature' }}</button></form></td></tr>{% else %}<tr><td colspan="5">No music submissions yet.</td></tr>{% endfor %}</table></div>
+<div class="card"><h2>Artists</h2><table><tr><th>Artist</th><th>Country</th><th>Genre</th><th>Status</th></tr>{% for a in artists %}<tr><td>{{ a.artist_name }}</td><td>{{ a.country or '' }}</td><td>{{ a.genre or '' }}</td><td>{{ a.status or 'draft' }}</td></tr>{% else %}<tr><td colspan="4">No artists yet.</td></tr>{% endfor %}</table></div>
+''', tracks=tracks, artists=artists, amap=amap)
 
 # ADMIN
 # ============================================================
