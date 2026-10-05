@@ -6158,15 +6158,15 @@ def music_home():
     videos += _music_initial_catalogue(q)
     return render_page('KOJA MUSIC VIDEO', """
 <style>
-.km-wrap{max-width:760px;margin:0 auto;padding:0 8px 54px}.km-search{position:sticky;top:0;z-index:40;padding:10px 0;background:rgba(7,20,38,.98);backdrop-filter:blur(10px)}.km-search form{display:flex;gap:8px}.km-search input{flex:1;min-width:0;border-radius:28px;padding:14px 18px;font-size:16px}.km-search button{border-radius:28px;min-width:58px;font-weight:800}.km-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 12px}.km-toolbar .km-tool{display:inline-flex;align-items:center;padding:9px 12px;border-radius:10px;background:#10233a;color:#fff;border:1px solid rgba(255,255,255,.12);text-decoration:none;font-size:13px;font-weight:800}.km-feed{scroll-snap-type:y mandatory}.km-item{scroll-snap-align:start;scroll-snap-stop:always;background:#0a1422;border-radius:16px;overflow:hidden;border:1px solid rgba(255,255,255,.08);margin-bottom:18px}.km-video-wrap{position:relative;background:#000}.km-item video,.km-external-frame{display:block;width:100%;aspect-ratio:9/16;max-height:78vh;background:#000;border:0}.km-external-frame{min-height:540px}.km-info{padding:9px 10px 11px;display:flex;align-items:center;gap:8px;min-height:46px}.km-bottom-meta{display:flex;align-items:center;gap:6px;min-width:0;flex:1;flex-wrap:wrap}.km-title{font-weight:800;color:#fff;font-size:11px}.km-artist{color:#c0cad7;font-size:11px}.km-actions{display:flex;align-items:center;gap:5px;flex:0 0 auto}.km-icon{width:38px;height:38px;display:flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.18);background:#14253a;color:#fff;border-radius:50%;cursor:pointer;text-decoration:none;padding:0}.km-icon svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2}.km-icon.liked{color:#ff4d67;background:#281522}.km-mp3{font-size:9px;font-weight:900;color:#fff;background:#177245;padding:4px 6px;border-radius:5px}.km-float-actions{position:absolute;right:9px;bottom:60px;display:flex;flex-direction:column;gap:9px;z-index:5}.km-float-actions .km-icon{width:42px;height:42px;background:rgba(8,18,31,.88)}.km-source{font-size:10px;color:#91a0b3;margin:0 10px 10px}.km-source a{color:#6ab8ff}.km-head{margin:10px 0 12px}.km-small{font-size:12px;color:#93a3b7}@media(min-width:800px){.km-item video,.km-external-frame{max-height:760px}}
+.km-wrap{max-width:760px;margin:0 auto;padding:0 8px 54px}.km-search{position:sticky;top:0;z-index:40;padding:10px 0;background:rgba(7,20,38,.98);backdrop-filter:blur(10px)}.km-search form{display:flex;gap:8px}.km-search input{flex:1;min-width:0;border-radius:28px;padding:14px 18px;font-size:16px}.km-search button{border-radius:28px;min-width:58px;font-weight:800}.km-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 12px}.km-toolbar .km-tool{display:inline-flex;align-items:center;padding:9px 12px;border-radius:10px;background:#10233a;color:#fff;border:1px solid rgba(255,255,255,.12);text-decoration:none;font-size:13px;font-weight:800}.km-data-toggle{cursor:pointer}.km-data-toggle.km-data-on{background:#177245;border-color:rgba(255,255,255,.25)}.km-feed{scroll-snap-type:y mandatory}.km-item{scroll-snap-align:start;scroll-snap-stop:always;background:#0a1422;border-radius:16px;overflow:hidden;border:1px solid rgba(255,255,255,.08);margin-bottom:18px}.km-video-wrap{position:relative;background:#000}.km-item video,.km-external-frame{display:block;width:100%;aspect-ratio:9/16;max-height:78vh;background:#000;border:0}.km-external-frame{min-height:540px}.km-info{padding:9px 10px 11px;display:flex;align-items:center;gap:8px;min-height:46px}.km-bottom-meta{display:flex;align-items:center;gap:6px;min-width:0;flex:1;flex-wrap:wrap}.km-title{font-weight:800;color:#fff;font-size:11px}.km-artist{color:#c0cad7;font-size:11px}.km-actions{display:flex;align-items:center;gap:5px;flex:0 0 auto}.km-icon{width:38px;height:38px;display:flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.18);background:#14253a;color:#fff;border-radius:50%;cursor:pointer;text-decoration:none;padding:0}.km-icon svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2}.km-icon.liked{color:#ff4d67;background:#281522}.km-mp3{font-size:9px;font-weight:900;color:#fff;background:#177245;padding:4px 6px;border-radius:5px}.km-float-actions{position:absolute;right:9px;bottom:60px;display:flex;flex-direction:column;gap:9px;z-index:5}.km-float-actions .km-icon{width:42px;height:42px;background:rgba(8,18,31,.88)}.km-source{font-size:10px;color:#91a0b3;margin:0 10px 10px}.km-source a{color:#6ab8ff}.km-head{margin:10px 0 12px}.km-small{font-size:12px;color:#93a3b7}@media(min-width:800px){.km-item video,.km-external-frame{max-height:760px}}
 </style>
 <div class="km-wrap">
 <div class="km-search"><form method="get" action="{{ url_for('music_home') }}"><input name="q" value="{{ q }}" placeholder="Search songs, artists or albums"><button class="btn" type="submit">Search</button></form></div>
 <div class="km-head"><h1>KOJA MUSIC</h1><div class="km-small">Music videos playing now · KOJA catalogue + official external embeds</div></div>
-<div class="km-toolbar"><a class="km-tool" href="{{ url_for('music_home') }}">Music Home</a><a class="km-tool" href="{{ url_for('music_industry') }}">Music Industry</a>{% if user and user.role in ['artist','musician','music_artist'] %}<a class="km-tool" href="{{ url_for('music_studio') }}">MUSIC Studio</a>{% endif %}{% if user and user.is_admin %}<a class="km-tool" href="{{ url_for('music_admin') }}">Admin MUSIC</a>{% endif %}</div>
+<div class="km-toolbar"><a class="km-tool" href="{{ url_for('music_home') }}">Music Home</a><a class="km-tool" href="{{ url_for('music_industry') }}">Music Industry</a>{% if user and user.role in ['artist','musician','music_artist'] %}<a class="km-tool" href="{{ url_for('music_studio') }}">MUSIC Studio</a>{% endif %}{% if user and user.is_admin %}<a class="km-tool" href="{{ url_for('music_admin') }}">Admin MUSIC</a>{% endif %}<button class="km-tool km-data-toggle" id="kmDataToggle" type="button" aria-pressed="false">Data Saver: Off</button></div>
 <div class="km-feed">
 {% for t in videos %}{% set external=t.get('external_video_provider')=='youtube' %}{% set video=t.video_url or t.music_video_url or t.visual_url %}{% set artist=amap.get(t.artist_id,{}) %}
-<article class="km-item"><div class="km-video-wrap">{% if external %}<iframe class="km-external-frame" src="{{ t.external_video_url }}" title="{{ t.title }} — {{ t.artist }}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>{% else %}<video class="km-feed-video" data-track="{{ t.id }}" controls playsinline preload="metadata" poster="{{ t.cover_image_url or '' }}"><source src="{{ video }}"></video><div class="km-float-actions"><button class="km-icon" type="button" onclick="kmLike(this,'{{ t.id }}')" aria-label="Like"><svg viewBox="0 0 24 24"><path d="M20.8 8.6c0 5.3-8.8 10.2-8.8 10.2S3.2 13.9 3.2 8.6A4.6 4.6 0 0 1 12 6.4a4.6 4.6 0 0 1 8.8 2.2Z"/></svg></button>{% if t.downloadable_visual %}<a class="km-icon" href="{{ video }}" download>↓</a>{% endif %}{% if t.audio_url and t.downloadable_audio %}<a class="km-icon" href="{{ t.audio_url }}" download><span class="km-mp3">MP3</span></a>{% endif %}</div>{% endif %}</div><div class="km-info"><div class="km-bottom-meta"><span class="km-title">{{ t.title }}</span><span class="km-artist">{{ t.artist or artist.get('artist_name','Artist') }}</span>{% if t.audio_url %}<span class="km-mp3">MP3</span>{% endif %}</div>{% if external %}<div class="km-actions"><button class="km-icon km-local-like" type="button" data-id="{{ t.id }}" onclick="kmLocalLike(this,'{{ t.id }}')" aria-label="Like"><svg viewBox="0 0 24 24"><path d="M20.8 8.6c0 5.3-8.8 10.2-8.8 10.2S3.2 13.9 3.2 8.6A4.6 4.6 0 0 1 12 6.4a4.6 4.6 0 0 1 8.8 2.2Z"/></svg></button><a class="km-icon" href="{{ t.source_url }}" target="_blank" rel="noopener">↗</a></div>{% endif %}</div>{% if external %}<p class="km-source">Official video embedded from its YouTube publication. <a href="{{ t.source_url }}" target="_blank" rel="noopener">View on YouTube</a></p>{% endif %}</article>
+<article class="km-item"><div class="km-video-wrap">{% if external %}<iframe class="km-external-frame" data-src="{{ t.external_video_url }}" loading="lazy" title="{{ t.title }} — {{ t.artist }}" allow="accelerometer; autoplay; encrypted-media; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>{% else %}<video class="km-feed-video" data-track="{{ t.id }}" controls playsinline preload="none" loading="lazy" poster="{{ t.cover_image_url or '' }}"><source data-src="{{ video }}"></video><div class="km-float-actions"><button class="km-icon" type="button" onclick="kmLike(this,'{{ t.id }}')" aria-label="Like"><svg viewBox="0 0 24 24"><path d="M20.8 8.6c0 5.3-8.8 10.2-8.8 10.2S3.2 13.9 3.2 8.6A4.6 4.6 0 0 1 12 6.4a4.6 4.6 0 0 1 8.8 2.2Z"/></svg></button>{% if t.downloadable_visual %}<a class="km-icon" href="{{ video }}" download>↓</a>{% endif %}{% if t.audio_url and t.downloadable_audio %}<a class="km-icon" href="{{ t.audio_url }}" download><span class="km-mp3">MP3</span></a>{% endif %}</div>{% endif %}</div><div class="km-info"><div class="km-bottom-meta"><span class="km-title">{{ t.title }}</span><span class="km-artist">{{ t.artist or artist.get('artist_name','Artist') }}</span>{% if t.audio_url %}<span class="km-mp3">MP3</span>{% endif %}</div>{% if external %}<div class="km-actions"><button class="km-icon km-local-like" type="button" data-id="{{ t.id }}" onclick="kmLocalLike(this,'{{ t.id }}')" aria-label="Like"><svg viewBox="0 0 24 24"><path d="M20.8 8.6c0 5.3-8.8 10.2-8.8 10.2S3.2 13.9 3.2 8.6A4.6 4.6 0 0 1 12 6.4a4.6 4.6 0 0 1 8.8 2.2Z"/></svg></button><a class="km-icon" href="{{ t.source_url }}" target="_blank" rel="noopener">↗</a></div>{% endif %}</div>{% if external %}<p class="km-source">Official video embedded from its YouTube publication. <a href="{{ t.source_url }}" target="_blank" rel="noopener">View on YouTube</a></p>{% endif %}</article>
 {% endfor %}
 </div></div>
 <script>
@@ -6174,76 +6174,87 @@ function kmLocalLike(btn,id){const k='koja_music_external_like_'+id;const on=loc
 async function kmLike(btn,id){try{const r=await fetch('/api/music/track/'+encodeURIComponent(id)+'/like',{method:'POST'});const d=await r.json();if(r.ok)btn.classList.toggle('liked',!!d.liked)}catch(e){}}
 document.querySelectorAll('.km-local-like').forEach(b=>b.classList.toggle('liked',localStorage.getItem('koja_music_external_like_'+b.dataset.id)==='1'));
 
-/* KOJA MUSIC vertical-feed player: one active item at a time. When the user
-   scrolls away, the old video is paused and the next visible item becomes
-   active. IntersectionObserver is used because it is designed for viewport
-   visibility changes and avoids continuous scroll polling. */
+/* KOJA MUSIC low-data vertical feed.
+   Only the dominant visible item gets a media source. Off-screen native videos
+   keep preload=none and external embeds have no src until activated. This avoids
+   downloading many music videos/iframes while the user scrolls. */
 (function(){
   const items=[...document.querySelectorAll('.km-item')];
   const native=[...document.querySelectorAll('.km-feed-video')];
   const frames=[...document.querySelectorAll('.km-external-frame')];
+  const toggle=document.getElementById('kmDataToggle');
+  const conn=navigator.connection||navigator.mozConnection||navigator.webkitConnection;
+  const autoSaver=!!(conn&&((conn.saveData===true)||/^(slow-2g|2g)$/.test(conn.effectiveType||'')));
+  let dataSaver=autoSaver;
+  try{if(localStorage.getItem('koja_music_data_saver')==='1')dataSaver=true;if(localStorage.getItem('koja_music_data_saver')==='0')dataSaver=false}catch(e){}
   let active=null;
-  let userInteracted=false;
-  function youtubeCommand(frame,func){
-    try{frame.contentWindow.postMessage(JSON.stringify({event:'command',func:func,args:[]}), 'https://www.youtube.com')}catch(e){}
+  function updateToggle(){if(!toggle)return;toggle.textContent='Data Saver: '+(dataSaver?'On':'Off');toggle.setAttribute('aria-pressed',String(dataSaver));toggle.classList.toggle('km-data-on',dataSaver)}
+  updateToggle();
+  if(toggle)toggle.addEventListener('click',function(){dataSaver=!dataSaver;try{localStorage.setItem('koja_music_data_saver',dataSaver?'1':'0')}catch(e){};updateToggle();if(active)prepareAndPlay(active)});
+
+  function youtubeCommand(frame,func){try{if(frame&&frame.contentWindow)frame.contentWindow.postMessage(JSON.stringify({event:'command',func:func,args:[]}), 'https://www.youtube.com')}catch(e){}}
+  function loadNative(v){
+    const src=v.querySelector('source[data-src]');
+    if(src&&!src.src)src.src=src.dataset.src;
+    if(src&&!v.currentSrc)try{v.load()}catch(e){}
   }
-  function pauseItem(item){
+  function loadFrame(f){
+    if(f&&!f.src){f.src=f.dataset.src||'';}
+  }
+  function unloadFrame(f){
+    if(!f)return;
+    try{youtubeCommand(f,'pauseVideo');}catch(e){}
+    /* Removing the source stops the external player from continuing to consume data. */
+    if(f.src){f.src='about:blank';}
+  }
+  function pauseItem(item,unload){
     if(!item)return;
     const v=item.querySelector('.km-feed-video');
     if(v){try{v.pause()}catch(e){}}
     const f=item.querySelector('.km-external-frame');
-    if(f) youtubeCommand(f,'pauseVideo');
+    if(f){youtubeCommand(f,'pauseVideo');if(unload)unloadFrame(f)}
+    if(v&&unload){v.preload='none';}
     item.classList.remove('km-active');
   }
-  function playItem(item){
+  function prepareAndPlay(item){
     if(!item)return;
-    items.forEach(x=>{if(x!==item)pauseItem(x)});
-    active=item; item.classList.add('km-active');
+    items.forEach(x=>{if(x!==item)pauseItem(x,true)});
+    active=item;item.classList.add('km-active');
     const v=item.querySelector('.km-feed-video');
     if(v){
-      const p=v.play();
-      if(p&&p.catch)p.catch(()=>{});
+      loadNative(v);
+      v.preload=dataSaver?'none':'metadata';
+      /* Data Saver still permits the active item to play; it simply never preloads off-screen items. */
+      const p=v.play();if(p&&p.catch)p.catch(()=>{});
     }
     const f=item.querySelector('.km-external-frame');
-    if(f) youtubeCommand(f,'playVideo');
+    if(f){loadFrame(f);}
   }
   const observer=new IntersectionObserver(entries=>{
-    entries.forEach(entry=>{
-      entry.target._kmRatio=entry.isIntersecting?entry.intersectionRatio:0;
-    });
+    entries.forEach(entry=>{entry.target._kmRatio=entry.isIntersecting?entry.intersectionRatio:0});
     let best=null,bestRatio=0;
     items.forEach(item=>{const r=item._kmRatio||0;if(r>bestRatio){bestRatio=r;best=item}});
-    if(best && bestRatio>=0.60 && best!==active) playItem(best);
-    if(active && (active._kmRatio||0)<0.20) pauseItem(active);
+    if(best&&bestRatio>=0.60&&best!==active)prepareAndPlay(best);
+    if(active&&(active._kmRatio||0)<0.20){pauseItem(active,true);active=null}
   },{threshold:[0,0.2,0.6,0.85]});
   items.forEach(item=>observer.observe(item));
 
-  native.forEach(v=>{
-    v.addEventListener('play',()=>{
-      userInteracted=true;
-      native.forEach(other=>{if(other!==v)try{other.pause()}catch(e){}});
-      const item=v.closest('.km-item');
-      if(item) active=item;
-      if(v.dataset.playTracked!=='1'){
-        v.dataset.playTracked='1';
-        fetch('/api/music/track/'+encodeURIComponent(v.dataset.track)+'/play',{method:'POST'}).catch(()=>{});
-      }
-    });
-  });
-
-  // If the user manually pauses the active video, respect that choice until
-  // another item becomes the dominant visible item.
-  native.forEach(v=>v.addEventListener('pause',()=>{if(v===document.activeElement||userInteracted){} }));
-
-  // Start the first sufficiently visible item. Browsers may reject autoplay;
-  // the normal video control remains available in that case.
+  native.forEach(v=>v.addEventListener('play',()=>{
+    native.forEach(other=>{if(other!==v)try{other.pause()}catch(e){}});
+    const item=v.closest('.km-item');if(item)active=item;
+    if(v.dataset.playTracked!=='1'){
+      v.dataset.playTracked='1';
+      fetch('/api/music/track/'+encodeURIComponent(v.dataset.track)+'/play',{method:'POST'}).catch(()=>{});
+    }
+  }));
+  document.addEventListener('visibilitychange',()=>{if(document.hidden&&active)pauseItem(active,true)});
+  window.addEventListener('pagehide',()=>{items.forEach(x=>pauseItem(x,true))});
   setTimeout(()=>{
     let best=null,br=0;
     items.forEach(item=>{const r=item.getBoundingClientRect();const visible=Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(r.top,0))/Math.max(1,r.height);if(visible>br){br=visible;best=item}});
-    if(best&&br>=0.60)playItem(best);
+    if(best&&br>=0.60)prepareAndPlay(best);
   },250);
-})();
-</script>
+})();</script>
 """, videos=videos, amap=amap, q=q)
 
 @app.route('/music/search', methods=['GET'])
