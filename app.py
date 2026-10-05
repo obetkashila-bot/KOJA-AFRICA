@@ -131,7 +131,7 @@ HLS_PUBLIC_BASE = os.getenv("KOJA_HLS_PUBLIC_BASE", "").strip().rstrip("/")
 HLS_CDN_BASE = os.getenv("KOJA_HLS_CDN_BASE", "").strip().rstrip("/")
 
 APP_NAME = "KOJA AFRICA"
-APP_VERSION = "2026.10.01-TERMS-CONSENT-V1"
+APP_VERSION = "2026.10.05-TERMS-CREATION-ONLY-V2"
 TERMS_VERSION = "2026-10-01-v1"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
@@ -681,12 +681,6 @@ def _record_terms_acceptance(user_id, accepted):
     return True, row
 
 
-def _terms_required_for_user(user):
-    if not user:
-        return False
-    status = _terms_acceptance_status(user.get("id"))
-    return status is False
-
 
 def login_required(fn):
     @wraps(fn)
@@ -695,8 +689,8 @@ def login_required(fn):
         if not user:
             flash("Please log in first.", "warning")
             return redirect(url_for("login", next=request.path))
-        if request.path not in ("/terms", "/terms/decision") and _terms_required_for_user(user):
-            return redirect(url_for("public_terms", required=1, next=request.path))
+        # Terms acceptance is required only during account creation.
+        # Existing users are not redirected to Terms on every protected route.
         return fn(*args, **kwargs)
     return wrapper
 
@@ -1057,7 +1051,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90
 {% endwith %}
 {{ body|safe }}
 </div>
-<footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services<br><div style="margin-top:10px"><a href="{{ url_for('public_terms') }}">Terms &amp; Conditions</a> · <a href="{{ url_for('public_privacy') }}">Privacy Policy</a> · <a href="{{ url_for('public_data_deletion') }}">Data Deletion</a></div></footer>
+<footer>KOJA AFRICA — Knowledge • Questions • Answers<br>Academic • Professional • Research • Communication • Health • Transport Services<br><div style="margin-top:10px"><a href="{{ url_for('public_privacy') }}">Privacy Policy</a> · <a href="{{ url_for('public_data_deletion') }}">Data Deletion</a></div></footer>
 <!-- KOJA Connect incoming-call receiver: polls only while authenticated. -->
 {% if user and not request.path.startswith('/api/') and not request.path.startswith('/connect/call') and not request.path.startswith('/connect/answer') %}
 <div id="kojaIncomingCall" style="display:none;position:fixed;left:12px;right:12px;bottom:16px;z-index:99999;max-width:520px;margin:auto;background:var(--card,#fff);border:2px solid var(--accent,#1d4ed8);border-radius:18px;padding:16px;box-shadow:0 18px 50px rgba(0,0,0,.28)">
@@ -1378,8 +1372,6 @@ def login():
                 return redirect(url_for("login"))
             login_user(user)
             log_activity("login","User logged into KOJA.")
-            if _terms_required_for_user(user):
-                return redirect(url_for("public_terms", required=1, next=request.args.get("next") or url_for("dashboard")))
             return redirect(safe_next_url(request.args.get("next")) if request.args.get("next") else url_for("dashboard"))
 
         # Second: Supabase Auth compatibility.
@@ -1394,8 +1386,6 @@ def login():
                 )
             login_user(profile, auth)
             log_activity("login","User logged in through Supabase Auth.")
-            if _terms_required_for_user(profile):
-                return redirect(url_for("public_terms", required=1, next=request.args.get("next") or url_for("dashboard")))
             return redirect(safe_next_url(request.args.get("next")) if request.args.get("next") else url_for("dashboard"))
 
         flash("Invalid login credentials. Use the same email and password used to create the KOJA account.","danger")
@@ -1417,7 +1407,7 @@ def login():
 <button type="submit">Login with Email</button>
 </form>
 <p>No account? <a href="{{ url_for('register') }}">Create one</a></p>
-<p class="small"><a href="{{ url_for('public_privacy') }}">Privacy Policy</a> · <a href="{{ url_for('public_terms') }}">Terms of Service</a> · <a href="{{ url_for('public_data_deletion') }}">Data Deletion</a></p>
+<p class="small"><a href="{{ url_for('public_privacy') }}">Privacy Policy</a> · <a href="{{ url_for('public_data_deletion') }}">Data Deletion</a></p>
 </div>
 """)
 
@@ -9155,6 +9145,7 @@ def oauth_session():
         meta=au.get('user_metadata') or {}
         full_name=clean(meta.get('full_name') or meta.get('name') or meta.get('user_name') or meta.get('preferred_username') or email)
         profile=find_user_by_id(uid)
+        new_social_account = False
         if not profile:
             profile,err=create_local_profile(uid,email,full_name)
             if err:
@@ -9164,12 +9155,16 @@ def oauth_session():
                 if not profile:
                     logger.error('OAuth profile creation failed: %s',err)
                     return jsonify({'ok':False,'error':'Could not create your KOJA profile.'}),500
+            else:
+                new_social_account = True
         if profile.get('is_active') is False:
             return jsonify({'ok':False,'error':'This KOJA account is inactive.'}),403
         login_user(profile, {'user':au,'access_token':token})
         log_activity('login','User logged in through social authentication.')
-        needs_terms = _terms_required_for_user(profile)
-        return jsonify({'ok':True,'terms_required':bool(needs_terms),'terms_url':url_for('public_terms', required=1, next=url_for('dashboard')) if needs_terms else url_for('dashboard')})
+        # Terms are shown/required only when a new account is being created.
+        # Existing accounts are never redirected to Terms during normal login.
+        terms_required = bool(new_social_account and not _terms_acceptance_status(profile.get('id')))
+        return jsonify({'ok':True,'terms_required':terms_required,'terms_url':url_for('public_terms', required=1, next=url_for('dashboard')) if terms_required else url_for('dashboard')})
     except Exception:
         logger.exception('OAuth session bridge failed')
         return jsonify({'ok':False,'error':'Social sign-in could not be completed.'}),500
