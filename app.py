@@ -6180,7 +6180,7 @@ def music_home():
 <div class="km-wrap">
 <div class="km-search"><form method="get" action="{{ url_for('music_home') }}"><input name="q" value="{{ q }}" placeholder="Search songs, artists or albums"><button class="btn" type="submit">Search</button></form></div>
 <div class="km-head"><h1>KOJA MUSIC</h1><div class="km-small">Music videos playing now · KOJA catalogue + official external embeds</div></div>
-<div class="km-toolbar"><a class="km-tool" href="{{ url_for('music_home') }}">Music Home</a><a class="km-tool" href="{{ url_for('music_industry') }}">Music Industry</a>{% if user and user.role in ['artist','musician','music_artist'] %}<a class="km-tool" href="{{ url_for('music_studio') }}">MUSIC Studio</a>{% endif %}{% if user and user.is_admin %}<a class="km-tool" href="{{ url_for('music_admin') }}">Admin MUSIC</a>{% endif %}<button class="km-tool km-data-toggle" id="kmDataToggle" type="button" aria-pressed="false">Data Saver: Off</button></div>
+<div class="km-toolbar"><a class="km-tool" href="{{ url_for('music_home') }}">Music Home</a><a class="km-tool" href="{{ url_for('music_industry') }}">Music Industry</a>{% if user and (user.role in ['artist','musician','music_artist'] or _music_artist_is_active(user)) %}<a class="km-tool" href="{{ url_for('music_studio') }}">MUSIC Studio</a>{% endif %}{% if user and user.is_admin %}<a class="km-tool" href="{{ url_for('music_admin') }}">Admin MUSIC</a>{% endif %}<button class="km-tool km-data-toggle" id="kmDataToggle" type="button" aria-pressed="false">Data Saver: Off</button></div>
 <div class="km-feed">
 {% for t in videos %}{% set external=t.get('external_video_provider')=='youtube' %}{% set video=t.video_url or t.music_video_url or t.visual_url %}{% set artist=amap.get(t.artist_id,{}) %}
 <article class="km-item"><div class="km-video-wrap">{% if external %}<iframe class="km-external-frame" data-src="{{ t.external_video_url }}" loading="lazy" title="{{ t.title }} — {{ t.artist }}" allow="accelerometer; autoplay; encrypted-media; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>{% else %}<video class="km-feed-video" data-track="{{ t.id }}" controls playsinline preload="none" loading="lazy" poster="{{ t.cover_image_url or '' }}"><source data-src="{{ video }}"></video><div class="km-float-actions"><button class="km-icon" type="button" onclick="kmLike(this,'{{ t.id }}')" aria-label="Like"><svg viewBox="0 0 24 24"><path d="M20.8 8.6c0 5.3-8.8 10.2-8.8 10.2S3.2 13.9 3.2 8.6A4.6 4.6 0 0 1 12 6.4a4.6 4.6 0 0 1 8.8 2.2Z"/></svg></button>{% if t.downloadable_visual %}<a class="km-icon" href="{{ video }}" download>↓</a>{% endif %}{% if t.audio_url and t.downloadable_audio %}<a class="km-icon" href="{{ t.audio_url }}" download><span class="km-mp3">MP3</span></a>{% endif %}</div>{% endif %}</div><div class="km-info"><div class="km-bottom-meta"><span class="km-title">{{ t.title }}</span><span class="km-artist">{{ t.artist or artist.get('artist_name','Artist') }}</span>{% if t.audio_url %}<span class="km-mp3">MP3</span>{% endif %}</div>{% if external %}<div class="km-actions"><button class="km-icon km-local-like" type="button" data-id="{{ t.id }}" onclick="kmLocalLike(this,'{{ t.id }}')" aria-label="Like"><svg viewBox="0 0 24 24"><path d="M20.8 8.6c0 5.3-8.8 10.2-8.8 10.2S3.2 13.9 3.2 8.6A4.6 4.6 0 0 1 12 6.4a4.6 4.6 0 0 1 8.8 2.2Z"/></svg></button><a class="km-icon" href="{{ t.source_url }}" target="_blank" rel="noopener">↗</a></div>{% endif %}</div>{% if external %}<p class="km-source">Official video embedded from its YouTube publication. <a href="{{ t.source_url }}" target="_blank" rel="noopener">View on YouTube</a></p>{% endif %}</article>
@@ -6365,23 +6365,40 @@ def music_admin():
             elif action=='verify_rights': db_update('koja_music_tracks', {'id':track_id}, {'rights_status':'verified','updated_at':utc_now()}); flash('Music rights marked verified.','success')
         elif artist_id and action in ('artist_publish','artist_suspend'):
             new_status = 'published' if action == 'artist_publish' else 'suspended'
-            db_update('koja_music_artists', {'id':artist_id}, {'status':new_status,'updated_at':utc_now()})
+            # Do not report success until the database actually contains the new state.
+            updated, update_err = db_update('koja_music_artists', {'id':artist_id}, {'status':new_status,'updated_at':utc_now()})
+            if update_err:
+                # Compatibility retry for older MUSIC tables that do not expose updated_at.
+                updated, update_err = db_update('koja_music_artists', {'id':artist_id}, {'status':new_status})
             artist_row = (_music_rows('koja_music_artists', {'id':artist_id}, limit=1) or [None])[0]
-            if action == 'artist_publish' and artist_row:
-                owner_id = artist_row.get('created_by')
-                # Give the activated artist the MUSIC role where the profile table supports it.
+            verified_status = str((artist_row or {}).get('status') or '').lower()
+            if action == 'artist_publish' and verified_status != 'published':
+                # Some older deployments have duplicate/legacy artist records keyed by created_by.
+                owner_id = (artist_row or {}).get('created_by')
                 if owner_id:
-                    try:
-                        db_update('profiles', {'id':owner_id}, {'role':'artist','updated_at':utc_now()})
-                    except Exception:
-                        pass
+                    updated, update_err = db_update('koja_music_artists', {'created_by':owner_id}, {'status':'published'})
+                    artist_row = (_music_rows('koja_music_artists', {'id':artist_id}, limit=1) or [None])[0]
+                    verified_status = str((artist_row or {}).get('status') or '').lower()
+            if action == 'artist_publish' and artist_row and verified_status == 'published':
+                owner_id = artist_row.get('created_by')
+                # Give the activated artist the MUSIC role and keep the account active.
+                if owner_id:
+                    role_updated, role_err = db_update('profiles', {'id':owner_id}, {'role':'artist','is_active':True,'updated_at':utc_now()})
+                    if role_err:
+                        # Compatibility retry when an older profiles table lacks updated_at.
+                        db_update('profiles', {'id':owner_id}, {'role':'artist','is_active':True})
                 # Any complete releases belonging to this artist become public immediately.
                 for tr in _music_rows('koja_music_tracks', {'artist_id':artist_id}, limit=1000):
                     if _music_track_ready_for_publication(tr) and str(tr.get('status') or '').lower() not in ('rejected','suspended'):
                         db_update('koja_music_tracks', {'id':tr.get('id')}, {'status':'published','rights_status':'verified','updated_at':utc_now()})
-                flash('Artist activated. The artist now has full MUSIC access and qualifying music is live in Public Music.','success')
+                flash('Artist activated. Full MUSIC access is now enabled and qualifying music is live in Public Music.','success')
+            elif action == 'artist_publish':
+                flash('Artist activation could not be saved. The database did not change the artist from pending to published. Please check the MUSIC artist table permissions/schema.','danger')
             else:
-                flash('Artist status updated.','success')
+                if verified_status == 'suspended':
+                    flash('Artist suspended successfully.','success')
+                else:
+                    flash('Artist suspension could not be confirmed in the database.','danger')
         return redirect(url_for('music_admin'))
     tracks=_music_rows('koja_music_tracks', order='created_at.desc', limit=1000)
     artists=_music_rows('koja_music_artists', order='created_at.desc', limit=1000)
