@@ -6199,13 +6199,13 @@ document.querySelectorAll('.km-local-like').forEach(b=>b.classList.toggle('liked
     if(src&&!v.currentSrc)try{v.load()}catch(e){}
   }
   function loadFrame(f){
-    if(f&&!f.src){f.src=f.dataset.src||'';}
+    if(f&&!(f.getAttribute('src')||'').trim()){f.src=f.dataset.src||'';}
   }
   function unloadFrame(f){
     if(!f)return;
     try{youtubeCommand(f,'pauseVideo');}catch(e){}
     /* Removing the source stops the external player from continuing to consume data. */
-    if(f.src){f.src='about:blank';}
+    if(f.getAttribute('src')){f.removeAttribute('src');}
   }
   function pauseItem(item,unload){
     if(!item)return;
@@ -6238,6 +6238,15 @@ document.querySelectorAll('.km-local-like').forEach(b=>b.classList.toggle('liked
     if(active&&(active._kmRatio||0)<0.20){pauseItem(active,true);active=null}
   },{threshold:[0,0.2,0.6,0.85]});
   items.forEach(item=>observer.observe(item));
+  /* Start the first feed item immediately. IntersectionObserver can be delayed on
+     some mobile WebViews while the page is still settling, which otherwise leaves
+     an empty/white external-player area on first paint. */
+  if(items.length){
+    const first=items[0];
+    requestAnimationFrame(()=>{
+      if(!active)prepareAndPlay(first);
+    });
+  }
 
   native.forEach(v=>v.addEventListener('play',()=>{
     native.forEach(other=>{if(other!==v)try{other.pause()}catch(e){}});
