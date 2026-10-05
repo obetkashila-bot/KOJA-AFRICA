@@ -1,13 +1,5 @@
-Flask>=3.0,<4.0
-gunicorn>=23.0,<24.0
-requests>=2.32,<3.0
-python-dotenv>=1.0,<2.0
-# Official LiveKit Python server SDK (do not install the unrelated `livekit` package).
-livekit-api>=1.0,<2.0
-# Document extraction used by KOJA Documents / AI.
-pypdf>=5.0,<7.0
-python-docx>=1.1,<2.0
-# Google Search Console service-account integration.
-google-auth>=2.35,<3.0
-# Optional web push support used by notifications.
-pywebpush>=2.0,<3.0
+Flask>=3.0,<4
+requests>=2.31,<3
+Werkzeug>=3.0,<4
+gunicorn>=22,<24
+python-dotenv>=1.0,<2
