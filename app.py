@@ -6127,19 +6127,36 @@ def _music_initial_catalogue(q=''):
         rows.append(y)
     return rows
 
+def _music_artist_profiles_for_user(user):
+    if not user or not user.get('id'):
+        return []
+    try:
+        return _music_rows('koja_music_artists', {'created_by': user.get('id')}, order='created_at.desc', limit=100)
+    except Exception:
+        return []
+
+def _music_artist_is_active(user):
+    """An activated/published MUSIC artist can use the full MUSIC workspace."""
+    profiles = _music_artist_profiles_for_user(user)
+    return any(str(a.get('status') or '').strip().lower() == 'published' for a in profiles)
+
 def _music_artist_user(user):
-    """Return True only for a MUSIC artist account/profile owner."""
+    """Return True for MUSIC artists, while allowing an artist role to create/view a pending profile."""
     if not user:
         return False
     role = str(user.get('role') or '').strip().lower()
     if role in ('artist', 'musician', 'music_artist'):
         return True
-    # Preserve existing artist accounts whose profile role predates the MUSIC role.
-    try:
-        rows = _music_rows('koja_music_artists', {'created_by': user.get('id')}, limit=1)
-        return bool(rows)
-    except Exception:
-        return False
+    return bool(_music_artist_profiles_for_user(user))
+
+def _music_track_ready_for_publication(track):
+    return bool(
+        clean(track.get('title'))
+        and (track.get('video_url') or track.get('music_video_url') or track.get('visual_url'))
+        and clean(track.get('master_owner'))
+        and clean(track.get('composition_owner'))
+        and clean(track.get('licence_reference'))
+    )
 
 
 @app.route('/music', methods=['GET'])
@@ -6288,13 +6305,14 @@ def music_studio():
     u=current_user()
     if not _music_artist_user(u):
         abort(403)
-    artists=_music_rows('koja_music_artists', {'created_by':u.get('id')}, limit=100); artist_ids=[str(a.get('id')) for a in artists]; tracks=[]
+    artists=_music_artist_profiles_for_user(u); active_artist_ids=[str(a.get('id')) for a in artists if str(a.get('status') or '').lower()=='published']; artist_ids=[str(a.get('id')) for a in artists]; tracks=[]
     for aid in artist_ids: tracks.extend(_music_rows('koja_music_tracks', {'artist_id':aid}, order='created_at.desc', limit=300))
+    artist_active=bool(active_artist_ids)
     return render_page('KOJA MUSIC Studio', r'''
 <style>.kstudio{max-width:900px;margin:0 auto}.upload-box{border:1px solid rgba(255,255,255,.1);border-radius:18px;padding:20px;background:#0a1422}.upload-box h2{margin-top:0}.upload-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.upload-grid .full{grid-column:1/-1}@media(max-width:700px){.upload-grid{grid-template-columns:1fr}.upload-grid .full{grid-column:auto}}.kstudio small{color:#91a0b3}.kstudio .file{padding:12px;border:1px dashed rgba(255,255,255,.18);border-radius:12px}</style>
 <div class="kstudio"><div class="hero"><h1>KOJA MUSIC STUDIO</h1><p>Artist-only upload workspace. Publish your music directly when all required rights information is complete.</p><div class="actions"><a class="btn secondary" href="{{ url_for('music_home') }}">Public Music</a></div></div>
 {% if not artists %}<div class="card"><h2>Artist profile required</h2><p>Only registered KOJA MUSIC artists can use this studio.</p><a class="btn success" href="{{ url_for('music_artist_new') }}">Create Artist Profile</a></div>
-{% else %}<div class="upload-box"><h2>Upload a song</h2><small>Required: song title, music video, master owner, composition owner and rights reference. Audio and artwork are optional.</small><form method="post" action="{{ url_for('music_artist_upload') }}" enctype="multipart/form-data"><div class="upload-grid"><div><label>Artist</label><select name="artist_id" required>{% for a in artists %}<option value="{{ a.id }}">{{ a.artist_name }}</option>{% endfor %}</select></div><div><label>Song title</label><input name="title" required placeholder="Song title"></div><div><label>Release type</label><select name="release_type"><option value="single">Single</option><option value="EP">EP</option><option value="album">Album</option></select></div><div><label>Album / EP</label><input name="album_title" placeholder="Optional"></div><div><label>Genre</label><input name="genre" placeholder="Afrobeats, Gospel, Hip-Hop..."></div><div><label>Release date</label><input type="date" name="release_date"></div><div class="full"><label>Music video</label><input class="file" type="file" name="music_video" accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov" required></div><div><label>Audio file (optional)</label><input class="file" type="file" name="audio_file" accept="audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/ogg,.mp3,.wav,.m4a,.ogg"></div><div><label>Cover artwork (optional)</label><input class="file" type="file" name="cover_image" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"></div><div class="full"><label>Description</label><textarea name="description" rows="4" placeholder="About this song..."></textarea></div><div><label>Master owner *</label><input name="master_owner" required placeholder="Rights holder"></div><div><label>Composition owner *</label><input name="composition_owner" required placeholder="Rights holder"></div><div class="full"><label>Licence / rights reference *</label><input name="licence_reference" required placeholder="Reference or ownership statement"></div><div class="full"><label><input type="checkbox" name="downloadable_visual"> Allow public video download</label></div><div class="full"><label><input type="checkbox" name="downloadable_audio"> Allow public audio download</label></div></div><button class="btn success" type="submit">Publish Song</button></form></div><div class="card"><h2>Your uploads</h2>{% for t in tracks %}<div class="card"><strong>{{ t.title }}</strong><div class="small">{{ 'Published automatically' if t.status=='published' else (t.status or 'pending') }} · {{ t.rights_status or 'rights_pending' }}</div></div>{% else %}<p>No songs uploaded yet.</p>{% endfor %}</div>{% endif %}</div>
+{% else %}{% if not artist_active %}<div class="card" style="border-color:rgba(255,184,107,.45)"><h2>Artist activation required</h2><p>Your MUSIC artist profile is currently <strong>pending</strong>. Once KOJA activates the artist, the full MUSIC Studio becomes available and qualifying releases can be published to Public Music automatically.</p></div>{% else %}<div class="upload-box"><h2>Upload a song</h2><small>Required: song title, music video, master owner, composition owner and rights reference. Audio and artwork are optional.</small><form method="post" action="{{ url_for('music_artist_upload') }}" enctype="multipart/form-data"><div class="upload-grid"><div><label>Artist</label><select name="artist_id" required>{% for a in artists %}<option value="{{ a.id }}">{{ a.artist_name }}</option>{% endfor %}</select></div><div><label>Song title</label><input name="title" required placeholder="Song title"></div><div><label>Release type</label><select name="release_type"><option value="single">Single</option><option value="EP">EP</option><option value="album">Album</option></select></div><div><label>Album / EP</label><input name="album_title" placeholder="Optional"></div><div><label>Genre</label><input name="genre" placeholder="Afrobeats, Gospel, Hip-Hop..."></div><div><label>Release date</label><input type="date" name="release_date"></div><div class="full"><label>Music video</label><input class="file" type="file" name="music_video" accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov" required></div><div><label>Audio file (optional)</label><input class="file" type="file" name="audio_file" accept="audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/ogg,.mp3,.wav,.m4a,.ogg"></div><div><label>Cover artwork (optional)</label><input class="file" type="file" name="cover_image" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"></div><div class="full"><label>Description</label><textarea name="description" rows="4" placeholder="About this song..."></textarea></div><div><label>Master owner *</label><input name="master_owner" required placeholder="Rights holder"></div><div><label>Composition owner *</label><input name="composition_owner" required placeholder="Rights holder"></div><div class="full"><label>Licence / rights reference *</label><input name="licence_reference" required placeholder="Reference or ownership statement"></div><div class="full"><label><input type="checkbox" name="downloadable_visual"> Allow public video download</label></div><div class="full"><label><input type="checkbox" name="downloadable_audio"> Allow public audio download</label></div></div><button class="btn success" type="submit">Publish Song</button></form></div>{% endif %}<div class="card"><h2>Your uploads</h2>{% for t in tracks %}<div class="card"><strong>{{ t.title }}</strong><div class="small">{{ 'Published automatically' if t.status=='published' else (t.status or 'pending') }} · {{ t.rights_status or 'rights_pending' }}</div></div>{% else %}<p>No songs uploaded yet.</p>{% endfor %}</div>{% endif %}</div>
 ''', artists=artists, tracks=tracks)
 
 @app.route('/music/studio/upload', methods=['POST'])
@@ -6304,7 +6322,11 @@ def music_artist_upload():
     if not _music_artist_user(u):
         abort(403)
     artist_id=clean(request.form.get('artist_id')); own_artists=_music_rows('koja_music_artists', {'created_by':u.get('id')}, limit=100)
-    if not any(str(a.get('id'))==artist_id for a in own_artists): abort(403)
+    selected_artist = next((a for a in own_artists if str(a.get('id')) == artist_id), None)
+    if not selected_artist: abort(403)
+    if str(selected_artist.get('status') or '').lower() != 'published':
+        flash('Your artist profile must be activated before you can publish music.','warning')
+        return redirect(url_for('music_studio'))
     required_fields = {
         'title': clean(request.form.get('title')),
         'master_owner': clean(request.form.get('master_owner')),
@@ -6342,7 +6364,24 @@ def music_admin():
             elif action=='unfeature': db_update('koja_music_tracks', {'id':track_id}, {'featured':False,'updated_at':utc_now()}); flash('Music release removed from featured.','success')
             elif action=='verify_rights': db_update('koja_music_tracks', {'id':track_id}, {'rights_status':'verified','updated_at':utc_now()}); flash('Music rights marked verified.','success')
         elif artist_id and action in ('artist_publish','artist_suspend'):
-            db_update('koja_music_artists', {'id':artist_id}, {'status':'published' if action=='artist_publish' else 'suspended','updated_at':utc_now()}); flash('Artist status updated.','success')
+            new_status = 'published' if action == 'artist_publish' else 'suspended'
+            db_update('koja_music_artists', {'id':artist_id}, {'status':new_status,'updated_at':utc_now()})
+            artist_row = (_music_rows('koja_music_artists', {'id':artist_id}, limit=1) or [None])[0]
+            if action == 'artist_publish' and artist_row:
+                owner_id = artist_row.get('created_by')
+                # Give the activated artist the MUSIC role where the profile table supports it.
+                if owner_id:
+                    try:
+                        db_update('profiles', {'id':owner_id}, {'role':'artist','updated_at':utc_now()})
+                    except Exception:
+                        pass
+                # Any complete releases belonging to this artist become public immediately.
+                for tr in _music_rows('koja_music_tracks', {'artist_id':artist_id}, limit=1000):
+                    if _music_track_ready_for_publication(tr) and str(tr.get('status') or '').lower() not in ('rejected','suspended'):
+                        db_update('koja_music_tracks', {'id':tr.get('id')}, {'status':'published','rights_status':'verified','updated_at':utc_now()})
+                flash('Artist activated. The artist now has full MUSIC access and qualifying music is live in Public Music.','success')
+            else:
+                flash('Artist status updated.','success')
         return redirect(url_for('music_admin'))
     tracks=_music_rows('koja_music_tracks', order='created_at.desc', limit=1000)
     artists=_music_rows('koja_music_artists', order='created_at.desc', limit=1000)
