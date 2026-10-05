@@ -6138,7 +6138,7 @@ def _music_artist_profiles_for_user(user):
 def _music_artist_is_active(user):
     """An activated/published MUSIC artist can use the full MUSIC workspace."""
     profiles = _music_artist_profiles_for_user(user)
-    return any(str(a.get('status') or '').strip().lower() == 'published' for a in profiles)
+    return any(bool(a.get('active')) or str(a.get('status') or '').strip().lower() in ('published','approved','active') for a in profiles)
 
 def _music_artist_user(user):
     """Return True for MUSIC artists, while allowing an artist role to create/view a pending profile."""
@@ -6365,21 +6365,33 @@ def music_admin():
             elif action=='verify_rights': db_update('koja_music_tracks', {'id':track_id}, {'rights_status':'verified','updated_at':utc_now()}); flash('Music rights marked verified.','success')
         elif artist_id and action in ('artist_publish','artist_suspend'):
             new_status = 'published' if action == 'artist_publish' else 'suspended'
-            # Do not report success until the database actually contains the new state.
-            updated, update_err = db_update('koja_music_artists', {'id':artist_id}, {'status':new_status,'updated_at':utc_now()})
-            if update_err:
-                # Compatibility retry for older MUSIC tables that do not expose updated_at.
-                updated, update_err = db_update('koja_music_artists', {'id':artist_id}, {'status':new_status})
+            # Some existing KOJA MUSIC databases constrain artist.status to approved/pending/etc.
+            # Activation therefore writes the independent active flag first, then uses published
+            # when the schema permits it, falling back to approved without losing activation.
+            if action == 'artist_publish':
+                updated, update_err = db_update('koja_music_artists', {'id':artist_id}, {'active':True,'updated_at':utc_now()})
+                if update_err:
+                    updated, update_err = db_update('koja_music_artists', {'id':artist_id}, {'active':True})
+                updated_status, status_err = db_update('koja_music_artists', {'id':artist_id}, {'status':'published','updated_at':utc_now()})
+                if status_err:
+                    updated_status, status_err = db_update('koja_music_artists', {'id':artist_id}, {'status':'approved'})
+            else:
+                updated, update_err = db_update('koja_music_artists', {'id':artist_id}, {'status':new_status,'active':False,'updated_at':utc_now()})
+                if update_err:
+                    updated, update_err = db_update('koja_music_artists', {'id':artist_id}, {'status':new_status,'active':False})
             artist_row = (_music_rows('koja_music_artists', {'id':artist_id}, limit=1) or [None])[0]
             verified_status = str((artist_row or {}).get('status') or '').lower()
-            if action == 'artist_publish' and verified_status != 'published':
+            verified_active = bool((artist_row or {}).get('active'))
+            if action == 'artist_publish' and not (verified_active or verified_status in ('published','approved','active')):
                 # Some older deployments have duplicate/legacy artist records keyed by created_by.
                 owner_id = (artist_row or {}).get('created_by')
                 if owner_id:
-                    updated, update_err = db_update('koja_music_artists', {'created_by':owner_id}, {'status':'published'})
+                    db_update('koja_music_artists', {'created_by':owner_id}, {'active':True})
+                    db_update('koja_music_artists', {'created_by':owner_id}, {'status':'published'})
                     artist_row = (_music_rows('koja_music_artists', {'id':artist_id}, limit=1) or [None])[0]
                     verified_status = str((artist_row or {}).get('status') or '').lower()
-            if action == 'artist_publish' and artist_row and verified_status == 'published':
+                    verified_active = bool((artist_row or {}).get('active'))
+            if action == 'artist_publish' and artist_row and (verified_active or verified_status in ('published','approved','active')):
                 owner_id = artist_row.get('created_by')
                 # Give the activated artist the MUSIC role and keep the account active.
                 if owner_id:
