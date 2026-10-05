@@ -13796,14 +13796,66 @@ def koja_music_home():
 .music-tags a{display:inline-block;border:1px solid var(--border);border-radius:999px;padding:7px 10px;margin:4px;text-decoration:none;color:inherit}
 .music-player{width:100%;margin-top:8px}
 </style>
-<section class="music-hero"><h1>KOJA MUSIC GLOBAL</h1><p>Discover artists and rights-cleared music from Zambia, Africa and the world.</p><form method="get" action="{{ url_for('koja_music_search') }}" class="actions"><input name="q" placeholder="Search artists, tracks, genres or countries"><button class="btn">Search</button></form></section>
-<div class="card"><h2>Featured Releases</h2><div class="music-grid">
-{% for t in featured %}<article class="music-card">{% if t.artwork_url %}<img class="music-cover" src="{{ t.artwork_url }}">{% endif %}<h3>{{ t.title }}</h3><p>{{ t.artist_name or '' }} · {{ t.genre or '' }}</p>{% if t.audio_url %}<audio class="music-player" controls preload="none" src="{{ t.audio_url }}"></audio>{% endif %}</article>{% else %}<p>No featured releases yet.</p>{% endfor %}
-</div></div>
-<div class="card"><h2>Trending</h2><div class="music-grid">{% for t in trending %}<article class="music-card"><h3>{{ t.title }}</h3><p>{{ t.artist_name or '' }}</p>{% if t.audio_url %}<audio class="music-player" controls preload="none" src="{{ t.audio_url }}"></audio>{% endif %}<small>{{ t.plays or 0 }} plays</small></article>{% else %}<p>No published music yet.</p>{% endfor %}</div></div>
-<div class="card"><h2>Explore</h2><div class="music-tags">{% for g in genres %}<a href="{{ url_for('koja_music_search',genre=g) }}">{{ g }}</a>{% endfor %}{% for c in countries %}<a href="{{ url_for('koja_music_search',country=c) }}">{{ c }}</a>{% endfor %}</div></div>
+<style>
+.music-screen{max-width:1180px;margin:auto}.music-top{display:flex;gap:10px;align-items:center;margin:12px 0}.music-top input{flex:1}.music-tabs{display:flex;gap:8px;overflow:auto;padding:4px 0 14px}.music-tabs a{white-space:nowrap;border:1px solid var(--border);border-radius:999px;padding:9px 14px;text-decoration:none;color:inherit}.music-card{position:relative}.music-downloads{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.music-downloads a{font-size:.84rem;padding:7px 9px;border:1px solid var(--border);border-radius:9px;text-decoration:none;color:inherit}.music-mobilebar{position:sticky;bottom:8px;z-index:10;display:flex;justify-content:space-around;gap:8px;background:rgba(8,27,54,.96);border-radius:18px;padding:10px;margin-top:18px}.music-mobilebar a{color:white;text-decoration:none;font-size:.85rem;text-align:center}
+</style>
+<div class="music-screen"><section class="music-hero"><h1>KOJA MUSIC GLOBAL</h1><p>Music, artists and rights-cleared releases from Zambia, Africa and the world.</p><form method="get" action="{{ url_for('koja_music_search') }}" class="music-top"><input name="q" placeholder="Search music, artists, genres or countries"><button class="btn">Search</button></form></section>
+<div class="music-tabs"><a href="#featured">Featured</a><a href="#trending">Trending</a><a href="#explore">Explore</a><a href="{{ url_for('koja_music_submit') }}">Submit Music</a></div>
+<div class="card" id="featured"><h2>Featured Releases</h2><div class="music-grid">{% for t in featured %}<article class="music-card">{% if t.artwork_url %}<img class="music-cover" src="{{ t.artwork_url }}">{% endif %}<h3>{{ t.title }}</h3><p>{{ t.artist_name or '' }} · {{ t.genre or '' }}</p>{% if t.audio_url %}<audio class="music-player" controls preload="none" src="{{ t.audio_url }}"></audio>{% endif %}<div class="music-downloads"><a href="{{ url_for('koja_music_watch',track_id=t.id) }}">Watch / Play</a>{% if t.audio_url %}<a href="{{ url_for('koja_music_download',track_id=t.id,format='audio') }}">Audio</a>{% endif %}{% if t.visual_url or t.video_url or t.music_video_url %}<a href="{{ url_for('koja_music_download',track_id=t.id,format='visual') }}">Visual</a>{% endif %}</div></article>{% else %}<p>No featured releases yet.</p>{% endfor %}</div></div>
+<div class="card" id="trending"><h2>Trending</h2><div class="music-grid">{% for t in trending %}<article class="music-card"><h3>{{ t.title }}</h3><p>{{ t.artist_name or '' }}</p>{% if t.audio_url %}<audio class="music-player" controls preload="none" src="{{ t.audio_url }}"></audio>{% endif %}<small>{{ t.plays or 0 }} plays</small><div class="music-downloads"><a href="{{ url_for('koja_music_watch',track_id=t.id) }}">Play</a>{% if t.audio_url %}<a href="{{ url_for('koja_music_download',track_id=t.id,format='audio') }}">Audio</a>{% endif %}{% if t.visual_url or t.video_url or t.music_video_url %}<a href="{{ url_for('koja_music_download',track_id=t.id,format='visual') }}">Visual</a>{% endif %}</div></article>{% else %}<p>No published music yet.</p>{% endfor %}</div></div>
 <div class="actions"><a class="btn" href="{{ url_for('koja_music_submit') }}">Artist Submission</a>{% if user %}<a class="btn secondary" href="{{ url_for('koja_music_dashboard') }}">Artist Dashboard</a>{% endif %}</div>
+<div class="music-mobilebar"><a href="{{ url_for('koja_music_home') }}">Home</a><a href="{{ url_for('koja_music_search') }}">Search</a><a href="#trending">Trending</a><a href="{{ url_for('koja_music_submit') }}">Upload</a></div></div>
 ''',featured=featured,trending=trending,artists=artists,countries=countries,genres=genres)
+
+
+@app.route("/music/watch/<track_id>")
+def koja_music_watch(track_id):
+    """YouTube/Vidmate-style music watch/player screen for rights-cleared catalogue."""
+    rows=db_select("koja_music_tracks",filters={"id":track_id,"status":"published","rights_status":"approved"},limit=1) or []
+    if not rows: return "Track not found or not publicly available.",404
+    t=rows[0]
+    artist_id=t.get("artist_id")
+    artist=_music_artist(artist_id,True) if artist_id else None
+    visual=t.get("visual_url") or t.get("video_url") or t.get("music_video_url") or ""
+    audio=t.get("audio_url") or t.get("stream_url") or ""
+    return render_page("KOJA MUSIC — "+str(t.get("title") or "Player"),r'''
+<style>
+.km-watch{max-width:1100px;margin:auto}.km-video{background:#050b14;border-radius:20px;overflow:hidden;box-shadow:0 18px 50px rgba(0,0,0,.25)}
+.km-video video{width:100%;display:block;max-height:68vh;background:#000}.km-video audio{width:100%;padding:14px;box-sizing:border-box}
+.km-actions{display:flex;gap:10px;flex-wrap:wrap;margin:16px 0}.km-choice{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:14px}
+.km-choice a{display:block;text-decoration:none;padding:18px;border:1px solid var(--border);border-radius:16px;background:var(--surface);color:inherit}.km-choice strong{display:block;font-size:1.05rem}.km-muted{opacity:.72;font-size:.9rem}
+</style>
+<div class="km-watch">
+<div class="km-video">{% if visual %}<video controls playsinline preload="metadata" poster="{{ t.artwork_url or t.cover_image_url or '' }}" src="{{ visual }}"></video>{% elif audio %}<div style="padding:28px;text-align:center"><img src="{{ t.artwork_url or t.cover_image_url or '' }}" style="width:min(360px,80%);aspect-ratio:1;object-fit:cover;border-radius:18px" onerror="this.style.display='none'"><h2>{{ t.title }}</h2><audio controls preload="metadata" src="{{ audio }}"></audio></div>{% else %}<div style="padding:50px;text-align:center">No playable media is attached to this release.</div>{% endif %}</div>
+<div class="card"><h1>{{ t.title }}</h1><p>{{ t.artist_name or (artist.artist_name if artist else '') }}{% if t.genre %} · {{ t.genre }}{% endif %}</p><div class="km-actions"><a class="btn" href="#downloads">Download</a>{% if artist %}<a class="btn secondary" href="{{ url_for('koja_music_artist',artist_id=artist.id) }}">Artist</a>{% endif %}</div></div>
+<div class="card" id="downloads"><h2>Download</h2><p class="km-muted">Choose the format made available by the rights holder.</p><div class="km-choice">{% if audio %}<a href="{{ url_for('koja_music_download',track_id=t.id,format='audio') }}"><strong>Audio</strong><span>MP3 / audio file</span></a>{% endif %}{% if visual %}<a href="{{ url_for('koja_music_download',track_id=t.id,format='visual') }}"><strong>Visual</strong><span>Music video / video file</span></a>{% endif %}{% if not audio and not visual %}<div class="km-muted">Downloads are not available for this release.</div>{% endif %}</div></div>
+</div>
+<script>fetch('/api/music/v1/play',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({track_id:{{ t.id|tojson }}})}).catch(()=>{});</script>
+''',t=t,artist=artist,visual=visual,audio=audio)
+
+@app.route("/music/download/<track_id>")
+@login_required
+def koja_music_download(track_id):
+    fmt=clean(request.args.get("format")).lower()
+    if fmt not in {"audio","visual"}: return "Choose format=audio or format=visual.",400
+    rows=db_select("koja_music_tracks",filters={"id":track_id,"status":"published","rights_status":"approved"},limit=1) or []
+    if not rows:return "Track not available for download.",404
+    t=rows[0]
+    url=(t.get("audio_url") if fmt=="audio" else (t.get("visual_url") or t.get("video_url") or t.get("music_video_url"))) or ""
+    allowed=(t.get("downloadable_audio") if fmt=="audio" else t.get("downloadable_visual"))
+    if allowed is False or not url:return "This format is not available for download.",403
+    try:
+        r=requests.get(url,stream=True,timeout=20,allow_redirects=True); r.raise_for_status()
+    except Exception:return "Media download is temporarily unavailable.",502
+    mime=r.headers.get("Content-Type") or ("audio/mpeg" if fmt=="audio" else "video/mp4")
+    filename=_music_slug(str(t.get("artist_name") or "artist")+"-"+str(t.get("title") or "track"))+((".mp3") if fmt=="audio" else ".mp4")
+    db_update("koja_music_tracks",{"id":track_id},{"download_count":int(t.get("download_count") or 0)+1})
+    def stream():
+        for chunk in r.iter_content(chunk_size=1024*256):
+            if chunk: yield chunk
+    from flask import Response
+    resp=Response(stream(),mimetype=mime); resp.headers["Content-Disposition"]=f'attachment; filename="{filename}"'; resp.headers["Cache-Control"]="private, no-store"
+    return resp
 
 @app.route("/music/search")
 def koja_music_search():
