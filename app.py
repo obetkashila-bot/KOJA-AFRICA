@@ -6158,7 +6158,7 @@ def music_home():
     videos += _music_initial_catalogue(q)
     return render_page('KOJA MUSIC VIDEO', """
 <style>
-.km-wrap{max-width:760px;margin:0 auto;padding:0 8px 54px}.km-search{position:sticky;top:0;z-index:40;padding:10px 0;background:rgba(7,20,38,.98);backdrop-filter:blur(10px)}.km-search form{display:flex;gap:8px}.km-search input{flex:1;min-width:0;border-radius:28px;padding:14px 18px;font-size:16px}.km-search button{border-radius:28px;min-width:58px;font-weight:800}.km-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 12px}.km-toolbar .km-tool{display:inline-flex;align-items:center;padding:9px 12px;border-radius:10px;background:#10233a;color:#fff;border:1px solid rgba(255,255,255,.12);text-decoration:none;font-size:13px;font-weight:800}.km-item{background:#0a1422;border-radius:16px;overflow:hidden;border:1px solid rgba(255,255,255,.08);margin-bottom:18px}.km-video-wrap{position:relative;background:#000}.km-item video,.km-external-frame{display:block;width:100%;aspect-ratio:9/16;max-height:78vh;background:#000;border:0}.km-external-frame{min-height:540px}.km-info{padding:9px 10px 11px;display:flex;align-items:center;gap:8px;min-height:46px}.km-bottom-meta{display:flex;align-items:center;gap:6px;min-width:0;flex:1;flex-wrap:wrap}.km-title{font-weight:800;color:#fff;font-size:11px}.km-artist{color:#c0cad7;font-size:11px}.km-actions{display:flex;align-items:center;gap:5px;flex:0 0 auto}.km-icon{width:38px;height:38px;display:flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.18);background:#14253a;color:#fff;border-radius:50%;cursor:pointer;text-decoration:none;padding:0}.km-icon svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2}.km-icon.liked{color:#ff4d67;background:#281522}.km-mp3{font-size:9px;font-weight:900;color:#fff;background:#177245;padding:4px 6px;border-radius:5px}.km-float-actions{position:absolute;right:9px;bottom:60px;display:flex;flex-direction:column;gap:9px;z-index:5}.km-float-actions .km-icon{width:42px;height:42px;background:rgba(8,18,31,.88)}.km-source{font-size:10px;color:#91a0b3;margin:0 10px 10px}.km-source a{color:#6ab8ff}.km-head{margin:10px 0 12px}.km-small{font-size:12px;color:#93a3b7}@media(min-width:800px){.km-item video,.km-external-frame{max-height:760px}}
+.km-wrap{max-width:760px;margin:0 auto;padding:0 8px 54px}.km-search{position:sticky;top:0;z-index:40;padding:10px 0;background:rgba(7,20,38,.98);backdrop-filter:blur(10px)}.km-search form{display:flex;gap:8px}.km-search input{flex:1;min-width:0;border-radius:28px;padding:14px 18px;font-size:16px}.km-search button{border-radius:28px;min-width:58px;font-weight:800}.km-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 12px}.km-toolbar .km-tool{display:inline-flex;align-items:center;padding:9px 12px;border-radius:10px;background:#10233a;color:#fff;border:1px solid rgba(255,255,255,.12);text-decoration:none;font-size:13px;font-weight:800}.km-feed{scroll-snap-type:y mandatory}.km-item{scroll-snap-align:start;scroll-snap-stop:always;background:#0a1422;border-radius:16px;overflow:hidden;border:1px solid rgba(255,255,255,.08);margin-bottom:18px}.km-video-wrap{position:relative;background:#000}.km-item video,.km-external-frame{display:block;width:100%;aspect-ratio:9/16;max-height:78vh;background:#000;border:0}.km-external-frame{min-height:540px}.km-info{padding:9px 10px 11px;display:flex;align-items:center;gap:8px;min-height:46px}.km-bottom-meta{display:flex;align-items:center;gap:6px;min-width:0;flex:1;flex-wrap:wrap}.km-title{font-weight:800;color:#fff;font-size:11px}.km-artist{color:#c0cad7;font-size:11px}.km-actions{display:flex;align-items:center;gap:5px;flex:0 0 auto}.km-icon{width:38px;height:38px;display:flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.18);background:#14253a;color:#fff;border-radius:50%;cursor:pointer;text-decoration:none;padding:0}.km-icon svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2}.km-icon.liked{color:#ff4d67;background:#281522}.km-mp3{font-size:9px;font-weight:900;color:#fff;background:#177245;padding:4px 6px;border-radius:5px}.km-float-actions{position:absolute;right:9px;bottom:60px;display:flex;flex-direction:column;gap:9px;z-index:5}.km-float-actions .km-icon{width:42px;height:42px;background:rgba(8,18,31,.88)}.km-source{font-size:10px;color:#91a0b3;margin:0 10px 10px}.km-source a{color:#6ab8ff}.km-head{margin:10px 0 12px}.km-small{font-size:12px;color:#93a3b7}@media(min-width:800px){.km-item video,.km-external-frame{max-height:760px}}
 </style>
 <div class="km-wrap">
 <div class="km-search"><form method="get" action="{{ url_for('music_home') }}"><input name="q" value="{{ q }}" placeholder="Search songs, artists or albums"><button class="btn" type="submit">Search</button></form></div>
@@ -6172,8 +6172,77 @@ def music_home():
 <script>
 function kmLocalLike(btn,id){const k='koja_music_external_like_'+id;const on=localStorage.getItem(k)==='1';localStorage.setItem(k,on?'0':'1');btn.classList.toggle('liked',!on)}
 async function kmLike(btn,id){try{const r=await fetch('/api/music/track/'+encodeURIComponent(id)+'/like',{method:'POST'});const d=await r.json();if(r.ok)btn.classList.toggle('liked',!!d.liked)}catch(e){}}
-document.querySelectorAll('.km-feed-video').forEach(v=>{let sent=false;v.addEventListener('play',()=>{if(sent)return;sent=true;fetch('/api/music/track/'+encodeURIComponent(v.dataset.track)+'/play',{method:'POST'}).catch(()=>{})})});
 document.querySelectorAll('.km-local-like').forEach(b=>b.classList.toggle('liked',localStorage.getItem('koja_music_external_like_'+b.dataset.id)==='1'));
+
+/* KOJA MUSIC vertical-feed player: one active item at a time. When the user
+   scrolls away, the old video is paused and the next visible item becomes
+   active. IntersectionObserver is used because it is designed for viewport
+   visibility changes and avoids continuous scroll polling. */
+(function(){
+  const items=[...document.querySelectorAll('.km-item')];
+  const native=[...document.querySelectorAll('.km-feed-video')];
+  const frames=[...document.querySelectorAll('.km-external-frame')];
+  let active=null;
+  let userInteracted=false;
+  function youtubeCommand(frame,func){
+    try{frame.contentWindow.postMessage(JSON.stringify({event:'command',func:func,args:[]}), 'https://www.youtube.com')}catch(e){}
+  }
+  function pauseItem(item){
+    if(!item)return;
+    const v=item.querySelector('.km-feed-video');
+    if(v){try{v.pause()}catch(e){}}
+    const f=item.querySelector('.km-external-frame');
+    if(f) youtubeCommand(f,'pauseVideo');
+    item.classList.remove('km-active');
+  }
+  function playItem(item){
+    if(!item)return;
+    items.forEach(x=>{if(x!==item)pauseItem(x)});
+    active=item; item.classList.add('km-active');
+    const v=item.querySelector('.km-feed-video');
+    if(v){
+      const p=v.play();
+      if(p&&p.catch)p.catch(()=>{});
+    }
+    const f=item.querySelector('.km-external-frame');
+    if(f) youtubeCommand(f,'playVideo');
+  }
+  const observer=new IntersectionObserver(entries=>{
+    entries.forEach(entry=>{
+      entry.target._kmRatio=entry.isIntersecting?entry.intersectionRatio:0;
+    });
+    let best=null,bestRatio=0;
+    items.forEach(item=>{const r=item._kmRatio||0;if(r>bestRatio){bestRatio=r;best=item}});
+    if(best && bestRatio>=0.60 && best!==active) playItem(best);
+    if(active && (active._kmRatio||0)<0.20) pauseItem(active);
+  },{threshold:[0,0.2,0.6,0.85]});
+  items.forEach(item=>observer.observe(item));
+
+  native.forEach(v=>{
+    v.addEventListener('play',()=>{
+      userInteracted=true;
+      native.forEach(other=>{if(other!==v)try{other.pause()}catch(e){}});
+      const item=v.closest('.km-item');
+      if(item) active=item;
+      if(v.dataset.playTracked!=='1'){
+        v.dataset.playTracked='1';
+        fetch('/api/music/track/'+encodeURIComponent(v.dataset.track)+'/play',{method:'POST'}).catch(()=>{});
+      }
+    });
+  });
+
+  // If the user manually pauses the active video, respect that choice until
+  // another item becomes the dominant visible item.
+  native.forEach(v=>v.addEventListener('pause',()=>{if(v===document.activeElement||userInteracted){} }));
+
+  // Start the first sufficiently visible item. Browsers may reject autoplay;
+  // the normal video control remains available in that case.
+  setTimeout(()=>{
+    let best=null,br=0;
+    items.forEach(item=>{const r=item.getBoundingClientRect();const visible=Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(r.top,0))/Math.max(1,r.height);if(visible>br){br=visible;best=item}});
+    if(best&&br>=0.60)playItem(best);
+  },250);
+})();
 </script>
 """, videos=videos, amap=amap, q=q)
 
