@@ -6079,14 +6079,32 @@ def music_home():
 <div class="km-toolbar"><a class="km-tool" href="{{ url_for('music_home') }}"><svg viewBox="0 0 24 24"><path d="M3 11.5 12 4l9 7.5V21H5a2 2 0 0 1-2-2z"/><path d="M9 21v-6h6v6"/></svg>Music Home</a>{% if user and user.role in ['artist','musician','music_artist'] %}<a class="km-tool" href="{{ url_for('music_studio') }}"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z"/><path d="m8 12 3 3 5-6"/></svg>MUSIC Studio</a>{% endif %}{% if user and user.is_admin %}<a class="km-tool" href="{{ url_for('music_admin') }}"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>Admin MUSIC</a>{% endif %}</div>
 {% if videos %}
 {% set first=videos[0] %}{% set first_video=first.video_url or first.music_video_url or first.visual_url %}{% set first_artist=amap.get(first.artist_id,{}) %}
-<div class="km-player"><div class="km-screen"><video id="km-main-player" controls playsinline preload="metadata" poster="{{ first.cover_image_url or '' }}"><source src="{{ first_video }}"></video><div class="km-float-actions"><button class="km-icon km-like" type="button" data-id="{{ first.id }}" aria-label="Like" title="Like" onclick="kmLike(this,'{{ first.id }}')"><svg viewBox="0 0 24 24"><path d="M20.8 8.6c0 5.3-8.8 10.2-8.8 10.2S3.2 13.9 3.2 8.6A4.6 4.6 0 0 1 12 6.4a4.6 4.6 0 0 1 8.8 2.2Z"/></svg></button>{% if first.downloadable_visual %}<a class="km-icon download" href="{{ first_video }}" download aria-label="Download video" title="Download video"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 5-5m-5 5-5-5M5 21h14"/></svg></a>{% endif %}{% if first.audio_url and first.downloadable_audio %}<a class="km-icon" href="{{ first.audio_url }}" download aria-label="Download MP3" title="Download MP3"><span class="km-mp3">MP3</span></a>{% endif %}</div></div><div class="km-main-meta"><div class="km-bottom-meta"><span class="km-title">{{ first.title }}</span><span class="km-artist">{{ first_artist.get('artist_name','Artist') }}</span>{% if first.audio_url %}<span class="km-mp3">MP3</span>{% endif %}</div></div></div>
+<div class="km-player"><div class="km-screen"><video id="km-main-player" data-track="{{ first.id }}" controls playsinline preload="metadata" poster="{{ first.cover_image_url or '' }}"><source src="{{ first_video }}"></video><div class="km-float-actions"><button class="km-icon km-like" type="button" data-id="{{ first.id }}" aria-label="Like" title="Like" onclick="kmLike(this,'{{ first.id }}')"><svg viewBox="0 0 24 24"><path d="M20.8 8.6c0 5.3-8.8 10.2-8.8 10.2S3.2 13.9 3.2 8.6A4.6 4.6 0 0 1 12 6.4a4.6 4.6 0 0 1 8.8 2.2Z"/></svg></button>{% if first.downloadable_visual %}<a class="km-icon download" href="{{ first_video }}" download aria-label="Download video" title="Download video"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 5-5m-5 5-5-5M5 21h14"/></svg></a>{% endif %}{% if first.audio_url and first.downloadable_audio %}<a class="km-icon" href="{{ first.audio_url }}" download aria-label="Download MP3" title="Download MP3"><span class="km-mp3">MP3</span></a>{% endif %}</div></div><div class="km-main-meta"><div class="km-bottom-meta"><span class="km-title">{{ first.title }}</span><span class="km-artist">{{ first_artist.get('artist_name','Artist') }}</span>{% if first.audio_url %}<span class="km-mp3">MP3</span>{% endif %}</div></div></div>
 <div class="km-feed">
 {% for t in videos %}{% set video=t.video_url or t.music_video_url or t.visual_url %}{% set artist=amap.get(t.artist_id,{}) %}
-<article class="km-item"><div class="km-video-wrap"><video class="km-feed-video" controls playsinline preload="metadata" poster="{{ t.cover_image_url or '' }}"><source src="{{ video }}"></video><div class="km-float-actions"><button class="km-icon km-like" type="button" data-id="{{ t.id }}" aria-label="Like" title="Like" onclick="kmLike(this,'{{ t.id }}')"><svg viewBox="0 0 24 24"><path d="M20.8 8.6c0 5.3-8.8 10.2-8.8 10.2S3.2 13.9 3.2 8.6A4.6 4.6 0 0 1 12 6.4a4.6 4.6 0 0 1 8.8 2.2Z"/></svg></button>{% if t.downloadable_visual %}<a class="km-icon download" href="{{ video }}" download aria-label="Download video" title="Download video"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 5-5m-5 5-5-5M5 21h14"/></svg></a>{% endif %}{% if t.audio_url and t.downloadable_audio %}<a class="km-icon" href="{{ t.audio_url }}" download aria-label="Download MP3" title="Download MP3"><span class="km-mp3">MP3</span></a>{% endif %}</div></div><div class="km-info"><div class="km-bottom-meta"><span class="km-title">{{ t.title }}</span><span class="km-artist">{{ artist.get('artist_name','Artist') }}</span>{% if t.audio_url %}<span class="km-mp3">MP3</span>{% endif %}</div></div></article>
+<article class="km-item"><div class="km-video-wrap"><video class="km-feed-video" data-track="{{ t.id }}" controls playsinline preload="metadata" poster="{{ t.cover_image_url or '' }}"><source src="{{ video }}"></video><div class="km-float-actions"><button class="km-icon km-like" type="button" data-id="{{ t.id }}" aria-label="Like" title="Like" onclick="kmLike(this,'{{ t.id }}')"><svg viewBox="0 0 24 24"><path d="M20.8 8.6c0 5.3-8.8 10.2-8.8 10.2S3.2 13.9 3.2 8.6A4.6 4.6 0 0 1 12 6.4a4.6 4.6 0 0 1 8.8 2.2Z"/></svg></button>{% if t.downloadable_visual %}<a class="km-icon download" href="{{ video }}" download aria-label="Download video" title="Download video"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 5-5m-5 5-5-5M5 21h14"/></svg></a>{% endif %}{% if t.audio_url and t.downloadable_audio %}<a class="km-icon" href="{{ t.audio_url }}" download aria-label="Download MP3" title="Download MP3"><span class="km-mp3">MP3</span></a>{% endif %}</div></div><div class="km-info"><div class="km-bottom-meta"><span class="km-title">{{ t.title }}</span><span class="km-artist">{{ artist.get('artist_name','Artist') }}</span>{% if t.audio_url %}<span class="km-mp3">MP3</span>{% endif %}</div></div></article>
 {% endfor %}</div>
 {% else %}<div class="km-player"><div class="km-empty">No published music videos are available yet.<div class="km-empty-actions"><a class="btn" href="{{ url_for('music_home') }}">Refresh Music</a>{% if user and user.role in ['artist','musician','music_artist'] %}<a class="btn success" href="{{ url_for('music_studio') }}">Upload Music</a>{% endif %}</div></div></div>{% endif %}
 </div>
-<script>function kmLike(btn,id){const key='koja_music_like_'+id;const liked=localStorage.getItem(key)==='1';localStorage.setItem(key,liked?'0':'1');btn.classList.toggle('liked',!liked);}document.querySelectorAll('.km-like').forEach(function(btn){const id=btn.getAttribute('data-id');if(id&&localStorage.getItem('koja_music_like_'+id)==='1')btn.classList.add('liked');});</script>
+<script>
+async function kmLike(btn,id){
+  const key='koja_music_like_'+id;
+  const was=localStorage.getItem(key)==='1';
+  try{
+    const r=await fetch('/api/music/track/'+encodeURIComponent(id)+'/like',{method:'POST',headers:{'Content-Type':'application/json'}});
+    const d=await r.json();
+    if(!r.ok){ if(r.status===401) window.location.href='/login?next='+encodeURIComponent(location.pathname); return; }
+    localStorage.setItem(key,d.liked?'1':'0'); btn.classList.toggle('liked',!!d.liked); btn.setAttribute('aria-label',d.liked?'Unlike':'Like');
+  }catch(e){localStorage.setItem(key,was?'0':'1');btn.classList.toggle('liked',!was);}
+}
+function kmTrackPlay(video){
+  const id=video.getAttribute('data-track'); if(!id || video.dataset.kmPlayed==='1') return;
+  video.dataset.kmPlayed='1'; fetch('/api/music/track/'+encodeURIComponent(id)+'/play',{method:'POST',headers:{'Content-Type':'application/json','X-Koja-Session':sessionStorage.getItem('koja_music_session')||''}}).catch(function(){});
+}
+if(!sessionStorage.getItem('koja_music_session')) sessionStorage.setItem('koja_music_session',Math.random().toString(36).slice(2)+Date.now().toString(36));
+document.querySelectorAll('.km-like').forEach(function(btn){const id=btn.getAttribute('data-id');if(id&&localStorage.getItem('koja_music_like_'+id)==='1')btn.classList.add('liked');});
+document.querySelectorAll('.km-feed-video,#km-main-player').forEach(function(v){v.addEventListener('play',function(){kmTrackPlay(v)},{once:true});});
+</script>
 ''', q=q, videos=videos, amap=amap)
 
 @app.route('/music/search', methods=['GET'])
@@ -6104,10 +6122,6 @@ def music_track(track_id):
 <div class="hero"><h1>{{ track.title }}</h1><p>{{ artist.get('artist_name','Artist') }}</p></div><div class="card"><video controls playsinline preload="metadata" poster="{{ track.cover_image_url or '' }}" style="width:100%;max-height:760px;background:#000"><source src="{{ video }}"></video><div class="actions" style="margin-top:12px">{% if track.downloadable_visual %}<a class="btn" href="{{ video }}" download>Download Video</a>{% endif %}{% if track.audio_url and track.downloadable_audio %}<a class="btn secondary" href="{{ track.audio_url }}" download>Download Audio</a>{% endif %}</div></div>
 ''', track=track, artist=artist, video=video)
 
-@app.route('/music/dashboard')
-@login_required
-def music_dashboard():
-    return redirect(url_for('music_studio'))
 
 @app.route('/music/studio')
 @music_artist_required
@@ -6190,6 +6204,141 @@ def music_admin():
 <div class="card"><h2>Release Queue</h2><table><tr><th>Song</th><th>Artist</th><th>Status</th><th>Rights</th><th>Actions</th></tr>{% for t in tracks %}<tr><td>{{ t.title }}</td><td>{{ amap.get(t.artist_id,{}).get('artist_name','Artist') }}</td><td>{{ t.status or 'review' }}</td><td>{{ t.rights_status or 'review_required' }}</td><td><form method="post" style="display:flex;gap:6px;flex-wrap:wrap"><input type="hidden" name="track_id" value="{{ t.id }}">{% if t.status != 'published' %}<button class="btn success" name="action" value="publish">Publish</button>{% endif %}{% if t.status != 'rejected' %}<button class="btn danger" name="action" value="reject">Reject</button>{% endif %}{% if t.status != 'suspended' %}<button class="btn warning" name="action" value="suspend">Suspend</button>{% endif %}{% if t.rights_status != 'verified' %}<button class="btn" name="action" value="verify_rights">Verify Rights</button>{% endif %}<button class="btn secondary" name="action" value="{{ 'unfeature' if t.featured else 'feature' }}">{{ 'Unfeature' if t.featured else 'Feature' }}</button></form></td></tr>{% else %}<tr><td colspan="5">No music submissions yet.</td></tr>{% endfor %}</table></div>
 <div class="card"><h2>Artists</h2><table><tr><th>Artist</th><th>Country</th><th>Genre</th><th>Status</th></tr>{% for a in artists %}<tr><td>{{ a.artist_name }}</td><td>{{ a.country or '' }}</td><td>{{ a.genre or '' }}</td><td>{{ a.status or 'draft' }}</td></tr>{% else %}<tr><td colspan="4">No artists yet.</td></tr>{% endfor %}</table></div>
 ''', tracks=tracks, artists=artists, amap=amap)
+
+
+# ============================================================
+# KOJA MUSIC GLOBAL — COMPLETION LAYER
+# Artist profiles, persistent engagement, analytics, albums and playlists.
+# All additions are additive and degrade gracefully if optional tables are absent.
+# ============================================================
+
+def _music_optional_insert(table, payload):
+    try:
+        row, err = db_insert(table, payload)
+        return row, err
+    except Exception as exc:
+        return None, str(exc)
+
+
+def _music_public_artist(artist_id):
+    rows = _music_rows('koja_music_artists', {'id': artist_id}, limit=1)
+    return rows[0] if rows else None
+
+
+def _music_artist_tracks(artist_id):
+    return _music_rows('koja_music_tracks', {'artist_id': artist_id, 'status':'published'}, order='release_date.desc,created_at.desc', limit=500)
+
+
+def _music_user_liked(user_id, track_id):
+    if not user_id or not track_id:
+        return False
+    rows = _music_rows('koja_music_likes', {'user_id': user_id, 'track_id': track_id}, limit=1)
+    return bool(rows)
+
+
+@app.route('/music/artist/new', methods=['GET','POST'])
+@music_artist_required
+def music_artist_new():
+    user=current_user()
+    if request.method=='POST':
+        name=clean(request.form.get('artist_name'))
+        country=clean(request.form.get('country'))
+        genre=clean(request.form.get('genre'))
+        bio=clean(request.form.get('bio'))
+        if not name:
+            flash('Artist name is required.','danger')
+            return redirect(url_for('music_artist_new'))
+        existing=_music_rows('koja_music_artists', {'created_by':user.get('id')}, limit=100)
+        if any(str(x.get('artist_name','')).strip().lower()==name.lower() for x in existing):
+            flash('You already have an artist profile with that name.','warning')
+            return redirect(url_for('music_studio'))
+        payload={'id':str(uuid.uuid4()),'created_by':user.get('id'),'artist_name':name,'country':country,'genre':genre,'bio':bio,'status':'published','featured':False,'created_at':utc_now(),'updated_at':utc_now()}
+        _,err=db_insert('koja_music_artists',payload)
+        flash('Artist profile created.' if not err else 'Artist profile could not be saved: '+str(err),'success' if not err else 'danger')
+        return redirect(url_for('music_studio'))
+    return render_page('Create MUSIC Artist Profile',r'''
+<div class="hero"><h1>Create Artist Profile</h1><p>Your public KOJA MUSIC identity.</p></div>
+<div class="card" style="max-width:760px;margin:auto"><form method="post">
+<label>Artist name</label><input name="artist_name" required maxlength="160" placeholder="Stage or professional name">
+<label>Country</label><input name="country" maxlength="80" placeholder="Zambia">
+<label>Primary genre</label><input name="genre" maxlength="100" placeholder="Afrobeats, Gospel, Hip-Hop...">
+<label>Artist bio</label><textarea name="bio" rows="6" maxlength="5000" placeholder="Tell listeners about the artist..."></textarea>
+<div class="actions" style="margin-top:14px"><button class="btn success" type="submit">Create Artist</button><a class="btn secondary" href="{{ url_for('music_studio') }}">Back to Studio</a></div>
+</form></div>''')
+
+
+@app.route('/music/artist/<artist_id>')
+def music_artist_page(artist_id):
+    artist=_music_public_artist(artist_id)
+    if not artist or artist.get('status') not in (None,'published'):
+        abort(404)
+    tracks=_music_artist_tracks(artist_id)
+    return render_page('KOJA MUSIC Artist',r'''
+<div class="hero"><h1>{{ artist.artist_name }}</h1><p>{{ artist.country or '' }}{% if artist.country and artist.genre %} · {% endif %}{{ artist.genre or '' }}</p><p>{{ artist.bio or 'KOJA MUSIC artist' }}</p></div>
+<div class="card"><h2>Releases</h2><div class="grid">{% for t in tracks %}<div class="card"><h3>{{ t.title }}</h3><p class="small">{{ t.album_title or t.release_type or 'Single' }}</p><a class="btn" href="{{ url_for('music_track',track_id=t.id) }}">Watch</a></div>{% else %}<p>No published releases yet.</p>{% endfor %}</div></div>''',artist=artist,tracks=tracks)
+
+
+@app.route('/music/album/<path:album_name>')
+def music_album_page(album_name):
+    target=clean(album_name).lower()
+    all_tracks=_music_rows('koja_music_tracks', {'status':'published'}, order='release_date.desc,created_at.desc', limit=1000)
+    tracks=[t for t in all_tracks if clean(t.get('album_title')).lower()==target]
+    if not tracks: abort(404)
+    artist=_music_public_artist(tracks[0].get('artist_id')) or {}
+    return render_page('KOJA MUSIC Album',r'''
+<div class="hero"><h1>{{ album }}</h1><p>{{ artist.artist_name or 'KOJA MUSIC' }}</p></div>
+<div class="card"><div class="grid">{% for t in tracks %}<div class="card"><h3>{{ t.title }}</h3><p class="small">{{ t.genre or '' }}</p><a class="btn" href="{{ url_for('music_track',track_id=t.id) }}">Watch</a></div>{% endfor %}</div></div>''',album=tracks[0].get('album_title'),artist=artist,tracks=tracks)
+
+
+@app.route('/api/music/track/<track_id>/like', methods=['POST'])
+def music_like_api(track_id):
+    track=first_row('koja_music_tracks',{'id':track_id})
+    if not track or track.get('status')!='published':
+        return jsonify({'ok':False,'error':'track_not_found'}),404
+    user=current_user(); uid=str(user.get('id')) if user else None
+    if not uid:
+        return jsonify({'ok':False,'error':'login_required'}),401
+    existing=_music_rows('koja_music_likes',{'user_id':uid,'track_id':track_id},limit=1)
+    if existing:
+        try: db_delete('koja_music_likes',{'id':existing[0].get('id')})
+        except Exception: pass
+        liked=False
+    else:
+        _,err=_music_optional_insert('koja_music_likes',{'id':str(uuid.uuid4()),'user_id':uid,'track_id':track_id,'created_at':utc_now()})
+        if err: return jsonify({'ok':False,'error':'like_unavailable','detail':str(err)[:200]}),503
+        liked=True
+    count=_music_count('koja_music_likes',{'track_id':track_id})
+    return jsonify({'ok':True,'liked':liked,'likes':count})
+
+
+@app.route('/api/music/track/<track_id>/play', methods=['POST'])
+def music_play_api(track_id):
+    track=first_row('koja_music_tracks',{'id':track_id})
+    if not track or track.get('status')!='published':
+        return jsonify({'ok':False,'error':'track_not_found'}),404
+    user=current_user(); uid=str(user.get('id')) if user else None
+    payload={'id':str(uuid.uuid4()),'track_id':track_id,'user_id':uid,'session_key':clean(request.headers.get('X-Koja-Session'))[:120],'created_at':utc_now()}
+    _,err=_music_optional_insert('koja_music_plays',payload)
+    if err: return jsonify({'ok':False,'error':'play_tracking_unavailable'}),503
+    return jsonify({'ok':True})
+
+
+@app.route('/music/dashboard')
+@music_artist_required
+def music_dashboard_v2():
+    u=current_user(); artists=_music_rows('koja_music_artists',{'created_by':u.get('id')},limit=100)
+    ids={str(a.get('id')) for a in artists}; tracks=[]
+    for aid in ids: tracks.extend(_music_rows('koja_music_tracks',{'artist_id':aid},limit=500))
+    plays=[]; likes=[]
+    for t in tracks:
+        tid=t.get('id'); plays += _music_rows('koja_music_plays',{'track_id':tid},limit=1000); likes += _music_rows('koja_music_likes',{'track_id':tid},limit=1000)
+    published=sum(1 for t in tracks if t.get('status')=='published')
+    return render_page('KOJA MUSIC Artist Dashboard',r'''
+<div class="hero"><h1>KOJA MUSIC Artist Dashboard</h1><p>Releases, audience activity and artist controls.</p><div class="actions"><a class="btn" href="{{ url_for('music_studio') }}">MUSIC Studio</a><a class="btn secondary" href="{{ url_for('music_home') }}">Public Music</a></div></div>
+<div class="grid"><div class="stat"><div class="big">{{ artists|length }}</div><div class="small">Artist profiles</div></div><div class="stat"><div class="big">{{ published }}</div><div class="small">Published releases</div></div><div class="stat"><div class="big">{{ plays|length }}</div><div class="small">Tracked plays</div></div><div class="stat"><div class="big">{{ likes|length }}</div><div class="small">Likes</div></div></div>
+<div class="card"><h2>Your releases</h2>{% for t in tracks %}<div style="padding:12px 0;border-bottom:1px solid var(--border)"><strong>{{ t.title }}</strong><span class="small"> · {{ t.status or 'draft' }} · {{ t.album_title or 'Single' }}</span><div style="margin-top:7px"><a class="btn secondary" href="{{ url_for('music_track',track_id=t.id) if t.status=='published' else url_for('music_studio') }}">{{ 'View release' if t.status=='published' else 'Manage' }}</a></div></div>{% else %}<p>No releases yet.</p>{% endfor %}</div>''',artists=artists,tracks=tracks,plays=plays,likes=likes,published=published)
+
+
 
 # ADMIN
 # ============================================================
