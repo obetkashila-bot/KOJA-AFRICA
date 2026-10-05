@@ -6076,7 +6076,7 @@ def music_home():
 <div class="km-wrap">
 <div class="km-search"><form method="get" action="{{ url_for('music_home') }}"><input name="q" value="{{ q }}" placeholder="Search songs, artists or albums" aria-label="Search songs, artists or albums"><button class="btn" type="submit">Search</button></form></div>
 <div class="km-head"><div><h1>KOJA MUSIC</h1><div class="km-small">Vertical music videos</div></div></div>
-<div class="km-toolbar"><a class="km-tool" href="{{ url_for('music_home') }}"><svg viewBox="0 0 24 24"><path d="M3 11.5 12 4l9 7.5V21H5a2 2 0 0 1-2-2z"/><path d="M9 21v-6h6v6"/></svg>Music Home</a>{% if user and user.role in ['artist','musician','music_artist'] %}<a class="km-tool" href="{{ url_for('music_studio') }}"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z"/><path d="m8 12 3 3 5-6"/></svg>MUSIC Studio</a>{% endif %}{% if user and user.is_admin %}<a class="km-tool" href="{{ url_for('music_admin') }}"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>Admin MUSIC</a>{% endif %}</div>
+<div class="km-toolbar"><a class="km-tool" href="{{ url_for('music_home') }}"><svg viewBox="0 0 24 24"><path d="M3 11.5 12 4l9 7.5V21H5a2 2 0 0 1-2-2z"/><path d="M9 21v-6h6v6"/></svg>Music Home</a><a class="km-tool" href="{{ url_for('music_industry') }}"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>Music Industry</a>{% if user and user.role in ['artist','musician','music_artist'] %}<a class="km-tool" href="{{ url_for('music_studio') }}"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z"/><path d="m8 12 3 3 5-6"/></svg>MUSIC Studio</a>{% endif %}{% if user and user.is_admin %}<a class="km-tool" href="{{ url_for('music_admin') }}"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>Admin MUSIC</a>{% endif %}</div>
 {% if videos %}
 {% set first=videos[0] %}{% set first_video=first.video_url or first.music_video_url or first.visual_url %}{% set first_artist=amap.get(first.artist_id,{}) %}
 <div class="km-player"><div class="km-screen"><video id="km-main-player" data-track="{{ first.id }}" controls playsinline preload="metadata" poster="{{ first.cover_image_url or '' }}"><source src="{{ first_video }}"></video><div class="km-float-actions"><button class="km-icon km-like" type="button" data-id="{{ first.id }}" aria-label="Like" title="Like" onclick="kmLike(this,'{{ first.id }}')"><svg viewBox="0 0 24 24"><path d="M20.8 8.6c0 5.3-8.8 10.2-8.8 10.2S3.2 13.9 3.2 8.6A4.6 4.6 0 0 1 12 6.4a4.6 4.6 0 0 1 8.8 2.2Z"/></svg></button>{% if first.downloadable_visual %}<a class="km-icon download" href="{{ first_video }}" download aria-label="Download video" title="Download video"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 5-5m-5 5-5-5M5 21h14"/></svg></a>{% endif %}{% if first.audio_url and first.downloadable_audio %}<a class="km-icon" href="{{ first.audio_url }}" download aria-label="Download MP3" title="Download MP3"><span class="km-mp3">MP3</span></a>{% endif %}</div></div><div class="km-main-meta"><div class="km-bottom-meta"><span class="km-title">{{ first.title }}</span><span class="km-artist">{{ first_artist.get('artist_name','Artist') }}</span>{% if first.audio_url %}<span class="km-mp3">MP3</span>{% endif %}</div></div></div>
@@ -6337,6 +6337,93 @@ def music_dashboard_v2():
 <div class="hero"><h1>KOJA MUSIC Artist Dashboard</h1><p>Releases, audience activity and artist controls.</p><div class="actions"><a class="btn" href="{{ url_for('music_studio') }}">MUSIC Studio</a><a class="btn secondary" href="{{ url_for('music_home') }}">Public Music</a></div></div>
 <div class="grid"><div class="stat"><div class="big">{{ artists|length }}</div><div class="small">Artist profiles</div></div><div class="stat"><div class="big">{{ published }}</div><div class="small">Published releases</div></div><div class="stat"><div class="big">{{ plays|length }}</div><div class="small">Tracked plays</div></div><div class="stat"><div class="big">{{ likes|length }}</div><div class="small">Likes</div></div></div>
 <div class="card"><h2>Your releases</h2>{% for t in tracks %}<div style="padding:12px 0;border-bottom:1px solid var(--border)"><strong>{{ t.title }}</strong><span class="small"> · {{ t.status or 'draft' }} · {{ t.album_title or 'Single' }}</span><div style="margin-top:7px"><a class="btn secondary" href="{{ url_for('music_track',track_id=t.id) if t.status=='published' else url_for('music_studio') }}">{{ 'View release' if t.status=='published' else 'Manage' }}</a></div></div>{% else %}<p>No releases yet.</p>{% endfor %}</div>''',artists=artists,tracks=tracks,plays=plays,likes=likes,published=published)
+
+
+
+# ============================================================
+# KOJA MUSIC GLOBAL INDUSTRY NETWORK
+# ============================================================
+KOJA_MUSIC_INDUSTRY_SEEDS = [
+    ('Africa','Zambia','ZAMCOPS','Collecting Society','https://zamcops.org/','Rights, licensing and creator representation'),
+    ('Africa','South Africa','Recording Industry of South Africa (RISA)','Industry Association','https://risa.org.za/','Recording-industry representation and information'),
+    ('Africa','Kenya','Recording Industry of Kenya (RIKE)','Industry Association','https://www.rike.or.ke/','Recording industry and rights information'),
+    ('Africa','Nigeria','IFPI Sub-Saharan Africa','Regional Industry','https://www.ifpi.org/','Regional recording-industry information and licensing'),
+    ('Africa','Ghana','IFPI / Ghana music industry network','Industry Network','https://www.ifpi.org/','Industry, licensing and rights information'),
+    ('Africa','Uganda','Uganda Performing Right Society (UPRS)','Collecting Society','https://www.uprs.go.ug/','Creator rights and licensing'),
+    ('Africa','Tanzania','IFPI Sub-Saharan Africa','Regional Industry','https://www.ifpi.org/','Recording-industry information'),
+    ('Asia','India','Indian Music Industry (IMI)','Industry Association','https://indianmi.org/','Recording-industry representation and ISRC information'),
+    ('Asia','Japan','Recording Industry Association of Japan (RIAJ)','Industry Association','https://www.riaj.or.jp/','Recording-industry and rights information'),
+    ('Asia','South Korea','Korea Music Content Association (KMCA)','Industry Association','https://www.k-mca.or.kr/','Music-content industry information'),
+    ('Asia','Malaysia','Recording Industry Association of Malaysia (RIM)','Industry Association','https://www.rim.org.my/','Recording-industry information'),
+    ('Asia','Singapore','Recording Industry Association (Singapore) (RIAS)','Industry Association','https://www.rias.org.sg/','Recording-industry information'),
+    ('Asia','China','IFPI Asia / regional network','Regional Industry','https://www.ifpi.org/','Music industry and rights information'),
+    ('Americas','United States','Recording Industry Association of America (RIAA)','Industry Association','https://www.riaa.com/','Recording-industry and rights information'),
+    ('Americas','Canada','Re:Sound','Collecting Society','https://www.resound.ca/','Neighbouring-rights licensing and information'),
+    ('Americas','Mexico','SOMEXFON','Collecting Society','https://somexfon.com/','Music licensing and rights information'),
+    ('Americas','Brazil','ABRAMUS','Collecting Society','https://www.abramus.org.br/','Music rights and creator representation'),
+    ('Americas','Argentina','CAPIF','Industry Association','https://www.capif.org.ar/','Recording-industry information'),
+    ('Americas','Jamaica','JAMMS','Collecting Society','https://jammsonline.com/','Music rights and licensing'),
+    ('Global','Global','IFPI','Global Recording Industry','https://www.ifpi.org/','Global recording-industry data, licensing and rights'),
+    ('Global','Global','YouTube for Artists','Artist Platform','https://artists.youtube/','Official artist-channel and music-video resources'),
+]
+
+def _music_industry_seed():
+    try:
+        existing=_music_rows('koja_music_industries', limit=500)
+        keys={(clean(x.get('region')).lower(),clean(x.get('country')).lower(),clean(x.get('name')).lower()) for x in existing}
+        for region,country,name,kind,url,desc in KOJA_MUSIC_INDUSTRY_SEEDS:
+            key=(region.lower(),country.lower(),name.lower())
+            if key in keys: continue
+            db_insert('koja_music_industries', {'id':str(uuid.uuid4()),'region':region,'country':country,'name':name,'industry_type':kind,'website':url,'description':desc,'status':'active','created_at':utc_now(),'updated_at':utc_now()})
+    except Exception as exc:
+        logger.info('KOJA MUSIC industry seed skipped: %s', exc)
+
+def _music_industry_videos(country=None, region=None, limit=80):
+    tracks=_music_rows('koja_music_tracks', {'status':'published'}, order='featured.desc,release_date.desc,created_at.desc', limit=1000)
+    artists=_music_rows('koja_music_artists', {'status':'published'}, limit=1000)
+    amap={str(a.get('id')):a for a in artists}; out=[]
+    region_countries={
+        'Africa':{'zambia','south africa','kenya','nigeria','ghana','uganda','tanzania','zimbabwe','namibia','rwanda','botswana','malawi','mozambique','ethiopia','egypt'},
+        'Asia':{'india','japan','south korea','korea','malaysia','singapore','china','indonesia','philippines','thailand','pakistan','bangladesh'},
+        'Americas':{'united states','usa','canada','mexico','brazil','argentina','jamaica','colombia','chile','peru'}
+    }
+    for t in tracks:
+        video=t.get('video_url') or t.get('music_video_url') or t.get('visual_url')
+        if not video: continue
+        a=amap.get(str(t.get('artist_id')),{}); ac=clean(a.get('country')).lower()
+        if country and clean(country).lower() not in ac: continue
+        if region and ac and not any(ac in c for c in region_countries.get(region,set())): continue
+        t=dict(t); t['_artist']=a; out.append(t)
+        if len(out)>=limit: break
+    return out
+
+@app.route('/music/industry')
+def music_industry():
+    _music_industry_seed()
+    region=clean(request.args.get('region')); country=clean(request.args.get('country'))
+    industries=_music_rows('koja_music_industries', {}, order='region.asc,country.asc,name.asc', limit=500)
+    if region: industries=[x for x in industries if clean(x.get('region')).lower()==region.lower()]
+    if country: industries=[x for x in industries if clean(x.get('country')).lower()==country.lower()]
+    videos=_music_industry_videos(country=country or None, region=region or None, limit=80)
+    return render_page('KOJA MUSIC Industry',r'''
+<style>
+.mi{max-width:1100px;margin:auto}.mi-nav{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.mi-nav a{padding:9px 12px;border-radius:10px;background:#10233a;color:#fff;text-decoration:none;font-weight:800;font-size:13px}.mi-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.mi-card{background:#0a1422;border:1px solid rgba(255,255,255,.1);border-radius:15px;padding:14px}.mi-card h3{margin:0 0 6px}.mi-card a{color:#65b7ff}.mi-videos{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.mi-video{background:#08111d;border-radius:14px;overflow:hidden}.mi-video video{width:100%;aspect-ratio:9/16;object-fit:cover;display:block;background:#000}.mi-video .cap{padding:8px;font-size:11px}.mi-region{font-size:11px;color:#69b9ff;font-weight:800;text-transform:uppercase}@media(max-width:850px){.mi-grid{grid-template-columns:1fr 1fr}.mi-videos{grid-template-columns:repeat(2,1fr)}}@media(max-width:520px){.mi-grid,.mi-videos{grid-template-columns:1fr}}
+</style>
+<div class="mi"><div class="hero"><h1>KOJA MUSIC INDUSTRY</h1><p>Connect artists, labels, rights organisations and music markets across Africa, Asia and the Americas.</p></div>
+<div class="mi-nav"><a href="{{ url_for('music_home') }}">Music Home</a><a href="{{ url_for('music_industry') }}">All Industries</a><a href="{{ url_for('music_industry',region='Africa') }}">Africa</a><a href="{{ url_for('music_industry',region='Asia') }}">Asia</a><a href="{{ url_for('music_industry',region='Americas') }}">Americas</a><a href="{{ url_for('music_industry',region='Global') }}">Global</a></div>
+<div class="card"><h2>Music videos</h2><p class="small">KOJA shows videos that are published in the KOJA catalogue. Rights-pending third-party recordings are not copied into KOJA.</p><div class="mi-videos">{% for t in videos %}<div class="mi-video"><a href="{{ url_for('music_track',track_id=t.id) }}"><video muted playsinline preload="metadata" poster="{{ t.cover_image_url or '' }}"><source src="{{ t.video_url or t.music_video_url or t.visual_url }}"></video></a><div class="cap"><strong>{{ t.title }}</strong><br>{{ t._artist.get('artist_name','Artist') }}{% if t.audio_url %} · MP3{% endif %}</div></div>{% else %}<div class="card"><p>No published KOJA videos are available for this region yet.</p><a class="btn" href="{{ url_for('music_home') }}">Watch KOJA MUSIC</a></div>{% endfor %}</div></div>
+<div class="card"><h2>Industry network{% if region %} · {{ region }}{% endif %}{% if country %} · {{ country }}{% endif %}</h2><div class="mi-grid">{% for x in industries %}<div class="mi-card"><div class="mi-region">{{ x.region }} · {{ x.country }}</div><h3>{{ x.name }}</h3><p class="small">{{ x.industry_type }}</p><p class="small">{{ x.description }}</p><a href="{{ x.website }}" target="_blank" rel="noopener">Official website</a></div>{% else %}<p>No industry records yet.</p>{% endfor %}</div></div>
+<div class="card"><h2>Artist recruitment</h2><p>Artists and rights holders can join KOJA MUSIC and submit authorised music videos through the separate MUSIC Studio.</p></div></div>''',industries=industries,videos=videos,region=region,country=country)
+
+@app.route('/music/industry/<path:country_name>')
+def music_industry_country(country_name):
+    return redirect(url_for('music_industry', country=country_name))
+
+@app.route('/api/music/industry')
+def music_industry_api():
+    _music_industry_seed()
+    rows=_music_rows('koja_music_industries',{},order='region.asc,country.asc,name.asc',limit=500)
+    return jsonify({'ok':True,'count':len(rows),'industries':rows})
 
 
 
