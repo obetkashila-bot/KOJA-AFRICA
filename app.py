@@ -6173,6 +6173,7 @@ def music_home():
         videos=[t for t in videos if needle in str(t.get('title','')).lower() or needle in str(t.get('genre','')).lower() or needle in str(t.get('album_title','')).lower() or needle in str(amap.get(str(t.get('artist_id')),{}).get('artist_name','')).lower()]
     # Keep MUSIC populated while the direct KOJA catalogue grows. Native releases remain first.
     videos += _music_initial_catalogue(q)
+    artist_active = _music_artist_is_active(current_user())
     return render_page('KOJA MUSIC VIDEO', """
 <style>
 .km-wrap{max-width:760px;margin:0 auto;padding:0 8px 54px}.km-search{position:sticky;top:0;z-index:40;padding:10px 0;background:rgba(7,20,38,.98);backdrop-filter:blur(10px)}.km-search form{display:flex;gap:8px}.km-search input{flex:1;min-width:0;border-radius:28px;padding:14px 18px;font-size:16px}.km-search button{border-radius:28px;min-width:58px;font-weight:800}.km-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 12px}.km-toolbar .km-tool{display:inline-flex;align-items:center;padding:9px 12px;border-radius:10px;background:#10233a;color:#fff;border:1px solid rgba(255,255,255,.12);text-decoration:none;font-size:13px;font-weight:800}.km-data-toggle{cursor:pointer}.km-data-toggle.km-data-on{background:#177245;border-color:rgba(255,255,255,.25)}.km-feed{scroll-snap-type:y mandatory}.km-item{scroll-snap-align:start;scroll-snap-stop:always;background:#0a1422;border-radius:16px;overflow:hidden;border:1px solid rgba(255,255,255,.08);margin-bottom:18px}.km-video-wrap{position:relative;background:#000}.km-item video,.km-external-frame{display:block;width:100%;aspect-ratio:9/16;max-height:78vh;background:#000;border:0}.km-external-frame{min-height:540px}.km-info{padding:9px 10px 11px;display:flex;align-items:center;gap:8px;min-height:46px}.km-bottom-meta{display:flex;align-items:center;gap:6px;min-width:0;flex:1;flex-wrap:wrap}.km-title{font-weight:800;color:#fff;font-size:11px}.km-artist{color:#c0cad7;font-size:11px}.km-actions{display:flex;align-items:center;gap:5px;flex:0 0 auto}.km-icon{width:38px;height:38px;display:flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.18);background:#14253a;color:#fff;border-radius:50%;cursor:pointer;text-decoration:none;padding:0}.km-icon svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2}.km-icon.liked{color:#ff4d67;background:#281522}.km-mp3{font-size:9px;font-weight:900;color:#fff;background:#177245;padding:4px 6px;border-radius:5px}.km-float-actions{position:absolute;right:9px;bottom:60px;display:flex;flex-direction:column;gap:9px;z-index:5}.km-float-actions .km-icon{width:42px;height:42px;background:rgba(8,18,31,.88)}.km-source{font-size:10px;color:#91a0b3;margin:0 10px 10px}.km-source a{color:#6ab8ff}.km-head{margin:10px 0 12px}.km-small{font-size:12px;color:#93a3b7}@media(min-width:800px){.km-item video,.km-external-frame{max-height:760px}}
@@ -6180,7 +6181,7 @@ def music_home():
 <div class="km-wrap">
 <div class="km-search"><form method="get" action="{{ url_for('music_home') }}"><input name="q" value="{{ q }}" placeholder="Search songs, artists or albums"><button class="btn" type="submit">Search</button></form></div>
 <div class="km-head"><h1>KOJA MUSIC</h1><div class="km-small">Music videos playing now · KOJA catalogue + official external embeds</div></div>
-<div class="km-toolbar"><a class="km-tool" href="{{ url_for('music_home') }}">Music Home</a><a class="km-tool" href="{{ url_for('music_industry') }}">Music Industry</a>{% if user and (user.role in ['artist','musician','music_artist'] or _music_artist_is_active(user)) %}<a class="km-tool" href="{{ url_for('music_studio') }}">MUSIC Studio</a>{% endif %}{% if user and user.is_admin %}<a class="km-tool" href="{{ url_for('music_admin') }}">Admin MUSIC</a>{% endif %}<button class="km-tool km-data-toggle" id="kmDataToggle" type="button" aria-pressed="false">Data Saver: Off</button></div>
+<div class="km-toolbar"><a class="km-tool" href="{{ url_for('music_home') }}">Music Home</a><a class="km-tool" href="{{ url_for('music_industry') }}">Music Industry</a>{% if user and (user.role in ['artist','musician','music_artist'] or artist_active) %}<a class="km-tool" href="{{ url_for('music_studio') }}">MUSIC Studio</a>{% endif %}{% if user and user.is_admin %}<a class="km-tool" href="{{ url_for('music_admin') }}">Admin MUSIC</a>{% endif %}<button class="km-tool km-data-toggle" id="kmDataToggle" type="button" aria-pressed="false">Data Saver: Off</button></div>
 <div class="km-feed">
 {% for t in videos %}{% set external=t.get('external_video_provider')=='youtube' %}{% set video=t.video_url or t.music_video_url or t.visual_url %}{% set artist=amap.get(t.artist_id,{}) %}
 <article class="km-item"><div class="km-video-wrap">{% if external %}<iframe class="km-external-frame" data-src="{{ t.external_video_url }}" loading="lazy" title="{{ t.title }} — {{ t.artist }}" allow="accelerometer; autoplay; encrypted-media; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>{% else %}<video class="km-feed-video" data-track="{{ t.id }}" controls playsinline preload="none" loading="lazy" poster="{{ t.cover_image_url or '' }}"><source data-src="{{ video }}"></video><div class="km-float-actions"><button class="km-icon" type="button" onclick="kmLike(this,'{{ t.id }}')" aria-label="Like"><svg viewBox="0 0 24 24"><path d="M20.8 8.6c0 5.3-8.8 10.2-8.8 10.2S3.2 13.9 3.2 8.6A4.6 4.6 0 0 1 12 6.4a4.6 4.6 0 0 1 8.8 2.2Z"/></svg></button>{% if t.downloadable_visual %}<a class="km-icon" href="{{ video }}" download>↓</a>{% endif %}{% if t.audio_url and t.downloadable_audio %}<a class="km-icon" href="{{ t.audio_url }}" download><span class="km-mp3">MP3</span></a>{% endif %}</div>{% endif %}</div><div class="km-info"><div class="km-bottom-meta"><span class="km-title">{{ t.title }}</span><span class="km-artist">{{ t.artist or artist.get('artist_name','Artist') }}</span>{% if t.audio_url %}<span class="km-mp3">MP3</span>{% endif %}</div>{% if external %}<div class="km-actions"><button class="km-icon km-local-like" type="button" data-id="{{ t.id }}" onclick="kmLocalLike(this,'{{ t.id }}')" aria-label="Like"><svg viewBox="0 0 24 24"><path d="M20.8 8.6c0 5.3-8.8 10.2-8.8 10.2S3.2 13.9 3.2 8.6A4.6 4.6 0 0 1 12 6.4a4.6 4.6 0 0 1 8.8 2.2Z"/></svg></button><a class="km-icon" href="{{ t.source_url }}" target="_blank" rel="noopener">↗</a></div>{% endif %}</div>{% if external %}<p class="km-source">Official video embedded from its YouTube publication. <a href="{{ t.source_url }}" target="_blank" rel="noopener">View on YouTube</a></p>{% endif %}</article>
@@ -6281,7 +6282,7 @@ document.querySelectorAll('.km-local-like').forEach(b=>b.classList.toggle('liked
     if(best&&br>=0.60)prepareAndPlay(best);
   },250);
 })();</script>
-""", videos=videos, amap=amap, q=q)
+""", videos=videos, amap=amap, q=q, artist_active=artist_active)
 
 @app.route('/music/search', methods=['GET'])
 def music_search():
@@ -6580,32 +6581,6 @@ def music_dashboard_v2():
 # ============================================================
 # KOJA MUSIC GLOBAL INDUSTRY NETWORK
 # ============================================================
-KOJA_MUSIC_REAL_INDUSTRY_CONNECTIONS = [
-    ('Global','IFPI','Recording industry','https://www.ifpi.org/','recording_rights','external_reference'),
-    ('Global','CISAC','Authors and composers societies','https://www.cisac.org/','creator_rights','external_reference'),
-    ('Global','WIPO Music','Music intellectual property','https://www.wipo.int/en/web/music','copyright','external_reference'),
-    ('Global','DDEX','Digital music data standards','https://ddex.net/','metadata','standards'),
-    ('Zambia','ZAMCOPS','Collecting society','https://zamcops.org/','performing_mechanical_sync_rights','licensing_partner'),
-    ('Zambia','Zambia Association of Musicians','Artist industry association','https://www.zamunited.com/','artist_network','industry_partner'),
-    ('Zambia','National Arts Council of Zambia','Arts regulation and promoter licensing','https://arts.gov.zm/','events_regulation','regulatory_reference'),
-    ('Global','YouTube for Artists','Artist and video platform','https://artists.youtube/','video_distribution','platform'),
-    ('Global','Spotify for Artists','Streaming platform','https://artists.spotify.com/','streaming_distribution','platform'),
-    ('Global','Apple Music for Artists','Streaming platform','https://artists.apple.com/','streaming_distribution','platform'),
-    ('Global','Amazon Music for Artists','Streaming platform','https://artists.amazonmusic.com/','streaming_distribution','platform'),
-    ('Global','TikTok for Artists','Short-form music platform','https://www.tiktok.com/music','social_promotion','platform'),
-]
-
-def _music_real_industry_seed():
-    try:
-        if not table_exists('koja_music_industry_connections'): return
-        existing=_music_rows('koja_music_industry_connections',limit=500)
-        keys={(clean(x.get('name')).lower(),clean(x.get('region')).lower()) for x in existing}
-        for region,name,kind,url,capability,connection_type in KOJA_MUSIC_REAL_INDUSTRY_CONNECTIONS:
-            if (name.lower(),region.lower()) in keys: continue
-            db_insert('koja_music_industry_connections',{'id':str(uuid.uuid4()),'region':region,'name':name,'industry_type':kind,'website':url,'capability':capability,'connection_type':connection_type,'status':'reference','created_at':utc_now(),'updated_at':utc_now()})
-    except Exception as exc:
-        logger.info('KOJA MUSIC real industry seed skipped: %s',exc)
-
 KOJA_MUSIC_INDUSTRY_SEEDS = [
     ('Africa','Zambia','ZAMCOPS','Collecting Society','https://zamcops.org/','Rights, licensing and creator representation'),
     ('Africa','South Africa','Recording Industry of South Africa (RISA)','Industry Association','https://risa.org.za/','Recording-industry representation and information'),
@@ -6663,7 +6638,6 @@ def _music_industry_videos(country=None, region=None, limit=80):
 @app.route('/music/industry')
 def music_industry():
     _music_industry_seed()
-    _music_real_industry_seed()
     region=clean(request.args.get('region')); country=clean(request.args.get('country'))
     industries=_music_rows('koja_music_industries', {}, order='region.asc,country.asc,name.asc', limit=500)
     if region: industries=[x for x in industries if clean(x.get('region')).lower()==region.lower()]
@@ -6690,15 +6664,6 @@ def music_industry_api():
     return jsonify({'ok':True,'count':len(rows),'industries':rows})
 
 
-
-@app.route('/music/industry-suite/network')
-@music_artist_required
-def music_industry_network():
-    _music_real_industry_seed()
-    rows=_music_rows('koja_music_industry_connections',{},order='region.asc,name.asc',limit=200)
-    return render_page('KOJA MUSIC Real Industry Network',r'''
-<div class="hero"><div class="small">KOJA MUSIC GLOBAL INDUSTRY NETWORK</div><h1>Real industry connections</h1><p>Verified industry and platform endpoints used to guide rights, metadata, distribution, promotion, licensing and artist development. KOJA does not claim an API or commercial partnership unless one is actually established.</p><div class="actions"><a class="btn secondary" href="{{ url_for('music_industry_suite') }}">Lifecycle</a><a class="btn" href="{{ url_for('music_industry') }}">Industry directory</a></div></div>
-<div class="grid">{% for r in rows %}<div class="card"><div class="small">{{ r.region }} · {{ r.connection_type|replace('_',' ')|title }}</div><h3>{{ r.name }}</h3><p>{{ r.industry_type }} · {{ r.capability|replace('_',' ')|title }}</p><p><strong>Status:</strong> {{ r.status|title }}</p><a class="btn secondary" target="_blank" rel="noopener" href="{{ r.website }}">Open official industry site</a></div>{% endfor %}</div>''',rows=rows)
 
 # ============================================================
 # KOJA MUSIC INDUSTRY LIFECYCLE
