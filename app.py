@@ -131,6 +131,7 @@ HLS_PUBLIC_BASE = os.getenv("KOJA_HLS_PUBLIC_BASE", "").strip().rstrip("/")
 HLS_CDN_BASE = os.getenv("KOJA_HLS_CDN_BASE", "").strip().rstrip("/")
 
 APP_NAME = "KOJA AFRICA"
+APP_VERSION = os.getenv("KOJA_APP_VERSION", "2026.10.05-CLOUDFLARE-FREE-MUSIC-V2")
 TERMS_VERSION = "2026-10-01-v1"
 APP_TAGLINE = "Knowledge • Questions • Answers"
 MAX_UPLOAD_MB = 15
