@@ -6333,36 +6333,46 @@ def music_artist_upload():
 @admin_required
 def music_admin():
     if request.method == 'POST':
-        action = clean(request.form.get('action'))
-        track_id = clean(request.form.get('track_id'))
+        action=clean(request.form.get('action')); track_id=clean(request.form.get('track_id')); artist_id=clean(request.form.get('artist_id'))
         if track_id and action in ('publish','reject','suspend','feature','unfeature','verify_rights'):
-            if action == 'publish':
-                db_update('koja_music_tracks', {'id': track_id}, {'status':'published','updated_at':utc_now()})
-                flash('Music release published.', 'success')
-            elif action == 'reject':
-                db_update('koja_music_tracks', {'id': track_id}, {'status':'rejected','updated_at':utc_now()})
-                flash('Music release rejected.', 'success')
-            elif action == 'suspend':
-                db_update('koja_music_tracks', {'id': track_id}, {'status':'suspended','updated_at':utc_now()})
-                flash('Music release suspended.', 'success')
-            elif action == 'feature':
-                db_update('koja_music_tracks', {'id': track_id}, {'featured':True,'updated_at':utc_now()})
-                flash('Music release featured.', 'success')
-            elif action == 'unfeature':
-                db_update('koja_music_tracks', {'id': track_id}, {'featured':False,'updated_at':utc_now()})
-                flash('Music release removed from featured.', 'success')
-            elif action == 'verify_rights':
-                db_update('koja_music_tracks', {'id': track_id}, {'rights_status':'verified','updated_at':utc_now()})
-                flash('Music rights marked verified.', 'success')
+            if action=='publish': db_update('koja_music_tracks', {'id':track_id}, {'status':'published','updated_at':utc_now()}); flash('Music release published.','success')
+            elif action=='reject': db_update('koja_music_tracks', {'id':track_id}, {'status':'rejected','updated_at':utc_now()}); flash('Music release rejected.','success')
+            elif action=='suspend': db_update('koja_music_tracks', {'id':track_id}, {'status':'suspended','updated_at':utc_now()}); flash('Music release suspended.','success')
+            elif action=='feature': db_update('koja_music_tracks', {'id':track_id}, {'featured':True,'updated_at':utc_now()}); flash('Music release featured.','success')
+            elif action=='unfeature': db_update('koja_music_tracks', {'id':track_id}, {'featured':False,'updated_at':utc_now()}); flash('Music release removed from featured.','success')
+            elif action=='verify_rights': db_update('koja_music_tracks', {'id':track_id}, {'rights_status':'verified','updated_at':utc_now()}); flash('Music rights marked verified.','success')
+        elif artist_id and action in ('artist_publish','artist_suspend'):
+            db_update('koja_music_artists', {'id':artist_id}, {'status':'published' if action=='artist_publish' else 'suspended','updated_at':utc_now()}); flash('Artist status updated.','success')
         return redirect(url_for('music_admin'))
-    tracks = _music_rows('koja_music_tracks', order='created_at.desc', limit=500)
-    artists = _music_rows('koja_music_artists', order='created_at.desc', limit=500)
-    amap = {str(a.get('id')): a for a in artists}
-    return render_page('KOJA MUSIC Management', r'''
-<div class="hero"><h1>KOJA MUSIC Management</h1><p>Manage published MUSIC releases and artists. Artist uploads are automatically approved when all required fields are present.</p><div class="actions"><a class="btn secondary" href="{{ url_for('music_home') }}">Public Music</a>{% if user and (user.role in ['artist','musician','music_artist']) %}<a class="btn secondary" href="{{ url_for('music_studio') }}">Artist MUSIC Studio</a>{% endif %}</div></div>
-<div class="card"><h2>Release Queue</h2><table><tr><th>Song</th><th>Artist</th><th>Status</th><th>Rights</th><th>Actions</th></tr>{% for t in tracks %}<tr><td>{{ t.title }}</td><td>{{ amap.get(t.artist_id,{}).get('artist_name','Artist') }}</td><td>{{ t.status or 'review' }}</td><td>{{ t.rights_status or 'review_required' }}</td><td><form method="post" style="display:flex;gap:6px;flex-wrap:wrap"><input type="hidden" name="track_id" value="{{ t.id }}">{% if t.status != 'published' %}<button class="btn success" name="action" value="publish">Publish</button>{% endif %}{% if t.status != 'rejected' %}<button class="btn danger" name="action" value="reject">Reject</button>{% endif %}{% if t.status != 'suspended' %}<button class="btn warning" name="action" value="suspend">Suspend</button>{% endif %}{% if t.rights_status != 'verified' %}<button class="btn" name="action" value="verify_rights">Verify Rights</button>{% endif %}<button class="btn secondary" name="action" value="{{ 'unfeature' if t.featured else 'feature' }}">{{ 'Unfeature' if t.featured else 'Feature' }}</button></form></td></tr>{% else %}<tr><td colspan="5">No music submissions yet.</td></tr>{% endfor %}</table></div>
-<div class="card"><h2>Artists</h2><table><tr><th>Artist</th><th>Country</th><th>Genre</th><th>Status</th></tr>{% for a in artists %}<tr><td>{{ a.artist_name }}</td><td>{{ a.country or '' }}</td><td>{{ a.genre or '' }}</td><td>{{ a.status or 'draft' }}</td></tr>{% else %}<tr><td colspan="4">No artists yet.</td></tr>{% endfor %}</table></div>
-''', tracks=tracks, artists=artists, amap=amap)
+    tracks=_music_rows('koja_music_tracks', order='created_at.desc', limit=1000)
+    artists=_music_rows('koja_music_artists', order='created_at.desc', limit=1000)
+    amap={str(a.get('id')):a for a in artists}
+    q=clean(request.args.get('q')).lower(); sf=clean(request.args.get('status')).lower(); cf=clean(request.args.get('country')).lower()
+    if q:
+        tracks=[t for t in tracks if q in str(t.get('title') or '').lower() or q in str(amap.get(str(t.get('artist_id')),{}).get('artist_name') or '').lower()]
+        artists=[a for a in artists if q in str(a.get('artist_name') or '').lower()]
+    if sf and sf!='all':
+        tracks=[t for t in tracks if str(t.get('status') or 'review').lower()==sf]; artists=[a for a in artists if str(a.get('status') or 'draft').lower()==sf]
+    if cf and cf!='all':
+        tracks=[t for t in tracks if str(amap.get(str(t.get('artist_id')),{}).get('country') or '').lower()==cf]; artists=[a for a in artists if str(a.get('country') or '').lower()==cf]
+    all_tracks=_music_rows('koja_music_tracks', order='created_at.desc', limit=1000); all_artists=_music_rows('koja_music_artists', order='created_at.desc', limit=1000)
+    stats={'artists':len(all_artists),'releases':len(all_tracks),'published':sum(str(t.get('status') or '').lower()=='published' for t in all_tracks),'pending':sum(str(t.get('status') or '').lower() not in ('published','rejected','suspended') for t in all_tracks),'rights_verified':sum(str(t.get('rights_status') or '').lower()=='verified' for t in all_tracks),'featured':sum(bool(t.get('featured')) for t in all_tracks)}
+    countries=sorted({str(a.get('country') or '').strip() for a in all_artists if str(a.get('country') or '').strip()},key=str.lower)
+    for t in tracks:
+        missing=[]
+        if not clean(t.get('title')): missing.append('song title')
+        if not (t.get('video_url') or t.get('music_video_url') or t.get('visual_url')): missing.append('music video')
+        if not clean(t.get('master_owner')): missing.append('master owner')
+        if not clean(t.get('composition_owner')): missing.append('composition owner')
+        if not clean(t.get('licence_reference')): missing.append('rights reference')
+        t['_missing_requirements']=missing; t['_ready']=not missing
+    return render_page('KOJA MUSIC Management', r'''<style>
+.km-admin{max-width:1400px;margin:0 auto}.km-stats{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin:14px 0}.km-stat{padding:16px;border:1px solid rgba(255,255,255,.1);border-radius:14px;background:rgba(9,20,34,.82)}.km-stat b{display:block;font-size:25px}.km-stat span{font-size:12px;color:#91a0b3}.km-filters{display:grid;grid-template-columns:2fr 1fr 1fr auto;gap:10px;align-items:end}.km-table-wrap{overflow:auto}.km-admin table{min-width:1100px}.km-actions{display:flex;gap:6px;flex-wrap:wrap}.km-badge{display:inline-block;padding:4px 8px;border-radius:999px;font-size:12px;background:rgba(255,255,255,.08)}.km-ready{color:#78e08f}.km-missing{color:#ffb86b}.km-missing-list{font-size:12px;color:#ffb86b;margin-top:5px}.km-muted{color:#91a0b3;font-size:12px}@media(max-width:900px){.km-stats{grid-template-columns:repeat(3,1fr)}.km-filters{grid-template-columns:1fr 1fr}.km-filters .wide{grid-column:1/-1}}@media(max-width:520px){.km-stats{grid-template-columns:repeat(2,1fr)}}
+</style><div class="km-admin"><div class="hero"><h1>KOJA MUSIC Management</h1><p>Manage releases, artists, rights and publication from one MUSIC control centre. Releases with all required fields are automatically approved by the Artist Studio.</p><div class="actions"><a class="btn secondary" href="{{ url_for('music_home') }}">Public Music</a><a class="btn secondary" href="{{ url_for('music_industry') }}">Music Industry</a><a class="btn success" href="{{ url_for('music_studio') }}">Artist MUSIC Studio</a></div></div>
+<div class="km-stats"><div class="km-stat"><b>{{ stats.artists }}</b><span>Artists</span></div><div class="km-stat"><b>{{ stats.releases }}</b><span>Releases</span></div><div class="km-stat"><b>{{ stats.published }}</b><span>Published</span></div><div class="km-stat"><b>{{ stats.pending }}</b><span>Needs attention</span></div><div class="km-stat"><b>{{ stats.rights_verified }}</b><span>Rights verified</span></div><div class="km-stat"><b>{{ stats.featured }}</b><span>Featured</span></div></div>
+<div class="card"><form method="get" class="km-filters"><div class="wide"><label>Search</label><input name="q" value="{{ request.args.get('q','') }}" placeholder="Search song or artist"></div><div><label>Status</label><select name="status"><option value="all">All statuses</option>{% for s in ['published','review','pending','rejected','suspended'] %}<option value="{{ s }}" {% if sf==s %}selected{% endif %}>{{ s|title }}</option>{% endfor %}</select></div><div><label>Country</label><select name="country"><option value="all">All countries</option>{% for c in countries %}<option value="{{ c|lower }}" {% if cf==c|lower %}selected{% endif %}>{{ c }}</option>{% endfor %}</select></div><button class="btn" type="submit">Filter</button></form></div>
+<div class="card"><h2>Release Queue</h2><p class="km-muted">{{ tracks|length }} release(s) shown. Missing requirements are identified automatically.</p><div class="km-table-wrap"><table><tr><th>Song</th><th>Artist</th><th>Release</th><th>Status</th><th>Rights</th><th>Readiness</th><th>Actions</th></tr>{% for t in tracks %}<tr><td><strong>{{ t.title or 'Untitled' }}</strong>{% if t.album_title %}<div class="km-muted">{{ t.album_title }}</div>{% endif %}</td><td>{{ amap.get(t.artist_id,{}).get('artist_name','Artist') }}<div class="km-muted">{{ amap.get(t.artist_id,{}).get('country','') }}</div></td><td>{{ t.release_type or 'Single' }}{% if t.genre %}<div class="km-muted">{{ t.genre }}</div>{% endif %}</td><td><span class="km-badge">{{ t.status or 'review' }}</span></td><td><span class="km-badge">{{ t.rights_status or 'review_required' }}</span></td><td>{% if t._ready %}<strong class="km-ready">Ready</strong>{% else %}<strong class="km-missing">Incomplete</strong><div class="km-missing-list">Missing: {{ t._missing_requirements|join(', ') }}</div>{% endif %}</td><td><div class="km-actions"><form method="post"><input type="hidden" name="track_id" value="{{ t.id }}">{% if t.status != 'published' and t._ready %}<button class="btn success" name="action" value="publish">Publish</button>{% endif %}{% if t.status != 'rejected' %}<button class="btn danger" name="action" value="reject">Reject</button>{% endif %}{% if t.status != 'suspended' %}<button class="btn warning" name="action" value="suspend">Suspend</button>{% endif %}{% if t.rights_status != 'verified' %}<button class="btn" name="action" value="verify_rights">Verify Rights</button>{% endif %}<button class="btn secondary" name="action" value="{{ 'unfeature' if t.featured else 'feature' }}">{{ 'Unfeature' if t.featured else 'Feature' }}</button></form></div></td></tr>{% else %}<tr><td colspan="7">No music releases match the current filters.</td></tr>{% endfor %}</table></div></div>
+<div class="card"><h2>Artists</h2><div class="km-table-wrap"><table><tr><th>Artist</th><th>Country</th><th>Genre</th><th>Releases</th><th>Status</th><th>Actions</th></tr>{% for a in artists %}{% set acount=all_tracks|selectattr('artist_id','equalto',a.id)|list|length %}<tr><td><strong>{{ a.artist_name }}</strong></td><td>{{ a.country or '—' }}</td><td>{{ a.genre or '—' }}</td><td>{{ acount }}</td><td><span class="km-badge">{{ a.status or 'draft' }}</span></td><td><form method="post" class="km-actions"><input type="hidden" name="artist_id" value="{{ a.id }}">{% if a.status != 'published' %}<button class="btn success" name="action" value="artist_publish">Activate</button>{% endif %}{% if a.status != 'suspended' %}<button class="btn warning" name="action" value="artist_suspend">Suspend</button>{% endif %}</form></td></tr>{% else %}<tr><td colspan="6">No artists match the current filters.</td></tr>{% endfor %}</table></div></div></div>''', tracks=tracks, artists=artists, amap=amap, stats=stats, countries=countries, all_tracks=all_tracks, sf=sf, cf=cf)
 
 
 # ============================================================
