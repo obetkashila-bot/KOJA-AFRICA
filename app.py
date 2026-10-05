@@ -153,7 +153,7 @@ GSC_SERVICE_ACCOUNT_JSON = os.getenv("GSC_SERVICE_ACCOUNT_JSON", "").strip()
 
 ALLOWED_EXTENSIONS = {
     "pdf", "doc", "docx", "txt",
-    "jpg", "jpeg", "png", "webp", "mp4", "webm", "mov"
+    "jpg", "jpeg", "png", "webp", "mp4", "webm", "mov", "mp3", "wav", "m4a", "aac", "flac"
 }
 
 # ============================================================
@@ -951,6 +951,7 @@ html[data-koja-theme="dark"] .koja-skeleton::after{background:linear-gradient(90
 <button class="menu-toggle" id="menuToggle" type="button" aria-expanded="false" aria-controls="navLinks" aria-label="Open menu"> Menu</button>
 <div class="nav-links" id="navLinks">
 <a href="{{ url_for('home') }}">Home</a>
+<a href="/music">KOJA MUSIC</a>
 {% if user %}
 <a href="{{ url_for('dashboard') }}">Dashboard</a>
 <a href="{{ url_for('services') }}">Services</a>
@@ -9173,560 +9174,6 @@ def oauth_session():
         logger.exception('OAuth session bridge failed')
         return jsonify({'ok':False,'error':'Social sign-in could not be completed.'}),500
 
-# ============================================================
-# KOJA MUSIC — AUTOMATED ARTIST OUTREACH / WHATSAPP PIPELINE
-# Additive module. Requires the KOJA MUSIC recruitment foundation.
-# No additional Python dependency is required: uses existing requests.
-# ============================================================
-
-WHATSAPP_GRAPH_VERSION = os.getenv('WHATSAPP_GRAPH_VERSION', 'v23.0').strip()
-WHATSAPP_PHONE_NUMBER_ID = os.getenv('WHATSAPP_PHONE_NUMBER_ID', '').strip()
-WHATSAPP_BUSINESS_ACCOUNT_ID = os.getenv('WHATSAPP_BUSINESS_ACCOUNT_ID', '').strip()
-WHATSAPP_ACCESS_TOKEN = os.getenv('WHATSAPP_ACCESS_TOKEN', '').strip()
-WHATSAPP_VERIFY_TOKEN = os.getenv('WHATSAPP_VERIFY_TOKEN', '').strip()
-WHATSAPP_TEMPLATE_NAME = os.getenv('KOJA_MUSIC_WHATSAPP_TEMPLATE', 'koja_music_artist_invitation').strip()
-WHATSAPP_TEMPLATE_LANG = os.getenv('KOJA_MUSIC_WHATSAPP_TEMPLATE_LANG', 'en_US').strip()
-WHATSAPP_ONBOARDING_BASE = os.getenv('KOJA_MUSIC_ONBOARDING_BASE', '').strip().rstrip('/')
-KOJA_MUSIC_WORKER_ENABLED = os.getenv('KOJA_MUSIC_WORKER_ENABLED', 'true').lower() not in ('0', 'false', 'no')
-KOJA_MUSIC_WORKER_INTERVAL = max(60, int(os.getenv('KOJA_MUSIC_WORKER_INTERVAL', '300') or 300))
-KOJA_MUSIC_WORKER_SECRET = os.getenv('KOJA_MUSIC_WORKER_SECRET', '').strip()
-WHATSAPP_OUTREACH_DAILY_LIMIT = max(1, int(os.getenv('KOJA_MUSIC_OUTREACH_DAILY_LIMIT', '50') or 50))
-WHATSAPP_FOLLOWUP_BATCH = max(1, int(os.getenv('KOJA_MUSIC_FOLLOWUP_BATCH', '25') or 25))
-WHATSAPP_API_TIMEOUT = max(5, int(os.getenv('KOJA_MUSIC_WHATSAPP_TIMEOUT', '25') or 25))
-
-
-def _music_outreach_configured():
-    return bool(WHATSAPP_PHONE_NUMBER_ID and WHATSAPP_ACCESS_TOKEN and WHATSAPP_VERIFY_TOKEN)
-
-
-def _music_whatsapp_headers():
-    return {
-        'Authorization': f'Bearer {WHATSAPP_ACCESS_TOKEN}',
-        'Content-Type': 'application/json',
-    }
-
-
-def _music_whatsapp_messages_url():
-    if not WHATSAPP_PHONE_NUMBER_ID:
-        return ''
-    return f'https://graph.facebook.com/{WHATSAPP_GRAPH_VERSION}/{WHATSAPP_PHONE_NUMBER_ID}/messages'
-
-
-def _music_normalize_phone(value):
-    value = re.sub(r'[^0-9+]', '', str(value or '').strip())
-    if value.startswith('00'):
-        value = '+' + value[2:]
-    if value.startswith('+'):
-        return '+' + re.sub(r'[^0-9]', '', value[1:])
-    return re.sub(r'[^0-9]', '', value)
-
-
-def _music_phone_digits(value):
-    return re.sub(r'\D', '', str(value or ''))
-
-
-def _music_json(value):
-    try:
-        return json.loads(value) if isinstance(value, str) else (value or {})
-    except Exception:
-        return {}
-
-
-def _music_outreach_status(row):
-    return str((row or {}).get('status') or '').lower()
-
-
-def _music_has_replied(row):
-    return _music_outreach_status(row) in {'replied', 'interested', 'onboarding', 'completed', 'rights_review', 'approved', 'declined'} or bool((row or {}).get('replied_at'))
-
-
-def _music_template_components(artist, followup=False, onboarding_url=''):
-    name = first_nonempty((artist or {}).get('artist_name'), 'Artist')
-    params = [name]
-    # Set KOJA_MUSIC_TEMPLATE_BODY_PARAMS_JSON when the approved Meta template
-    # contains a different parameter layout. Example: ["{{artist_name}}","KOJA MUSIC"].
-    raw = os.getenv('KOJA_MUSIC_TEMPLATE_BODY_PARAMS_JSON', '').strip()
-    if raw:
-        try:
-            configured = json.loads(raw)
-            if isinstance(configured, list):
-                params = [str(x).replace('{{artist_name}}', name).replace('{{onboarding_url}}', onboarding_url) for x in configured]
-        except Exception:
-            logger.warning('Invalid KOJA_MUSIC_TEMPLATE_BODY_PARAMS_JSON; using artist-name parameter.')
-    return [{'type': 'body', 'parameters': [{'type': 'text', 'text': str(x)} for x in params]}]
-
-
-def _music_send_whatsapp_template(to, artist_name='', campaign_id=None, outreach_id=None, followup=False, onboarding_url=''):
-    if not _music_outreach_configured():
-        return {'ok': False, 'status': 'not_configured', 'error': 'WhatsApp Business API credentials are not configured.'}
-    phone = _music_normalize_phone(to)
-    if not phone or len(_music_phone_digits(phone)) < 7:
-        return {'ok': False, 'status': 'invalid_phone', 'error': 'Invalid WhatsApp number.'}
-    payload = {
-        'messaging_product': 'whatsapp',
-        'to': phone,
-        'type': 'template',
-        'template': {
-            'name': WHATSAPP_TEMPLATE_NAME,
-            'language': {'code': WHATSAPP_TEMPLATE_LANG},
-        },
-    }
-    # Template parameter counts are controlled by Meta. Only add components when explicitly configured.
-    if os.getenv('KOJA_MUSIC_TEMPLATE_HAS_BODY_PARAMS', 'true').lower() not in ('0', 'false', 'no'):
-        payload['template']['components'] = _music_template_components({'artist_name': artist_name}, followup=followup, onboarding_url=onboarding_url)
-    try:
-        r = requests.post(_music_whatsapp_messages_url(), headers=_music_whatsapp_headers(), json=payload, timeout=WHATSAPP_API_TIMEOUT)
-        data = _music_json(r.text)
-        if not r.ok:
-            return {'ok': False, 'status': 'failed', 'http_status': r.status_code, 'error': data.get('error', {}).get('message') or r.text[:1000], 'response': data}
-        messages = data.get('messages') or []
-        message_id = messages[0].get('id') if messages else None
-        return {'ok': True, 'status': 'sent', 'message_id': message_id, 'response': data}
-    except Exception as exc:
-        logger.exception('KOJA MUSIC WhatsApp send failed')
-        return {'ok': False, 'status': 'failed', 'error': str(exc)}
-
-
-def _music_send_whatsapp_text(to, text):
-    if not _music_outreach_configured():
-        return {'ok': False, 'status': 'not_configured', 'error': 'WhatsApp Business API credentials are not configured.'}
-    phone = _music_normalize_phone(to)
-    if not phone or len(_music_phone_digits(phone)) < 7:
-        return {'ok': False, 'status': 'invalid_phone', 'error': 'Invalid WhatsApp number.'}
-    payload = {'messaging_product': 'whatsapp', 'to': phone, 'type': 'text', 'text': {'preview_url': True, 'body': str(text)[:4096]}}
-    try:
-        r = requests.post(_music_whatsapp_messages_url(), headers=_music_whatsapp_headers(), json=payload, timeout=WHATSAPP_API_TIMEOUT)
-        data = _music_json(r.text)
-        if not r.ok:
-            return {'ok': False, 'status': 'failed', 'http_status': r.status_code, 'error': data.get('error', {}).get('message') or r.text[:1000], 'response': data}
-        messages = data.get('messages') or []
-        return {'ok': True, 'status': 'sent', 'message_id': messages[0].get('id') if messages else None, 'response': data}
-    except Exception as exc:
-        logger.exception('KOJA MUSIC WhatsApp text send failed')
-        return {'ok': False, 'status': 'failed', 'error': str(exc)}
-
-
-def _music_log_outreach_event(outreach_id, event_type, payload=None, message_id=None):
-    if not table_exists('koja_music_outreach_events'):
-        return
-    try:
-        db_insert('koja_music_outreach_events', {
-            'outreach_id': outreach_id,
-            'event_type': str(event_type)[:80],
-            'message_id': message_id,
-            'payload': payload or {},
-            'created_at': utc_now(),
-        })
-    except Exception:
-        logger.exception('KOJA MUSIC outreach event log failed')
-
-
-def _music_record_outreach_message(outreach, direction, message_type, status, message_id=None, payload=None, error=None, sent_at=None):
-    if not table_exists('koja_music_outreach_messages'):
-        return None
-    row, err = db_insert('koja_music_outreach_messages', {
-        'outreach_id': outreach.get('id'),
-        'direction': direction,
-        'message_type': message_type,
-        'status': status,
-        'provider_message_id': message_id,
-        'payload': payload or {},
-        'error_message': error,
-        'sent_at': sent_at or (utc_now() if direction == 'outbound' and status == 'sent' else None),
-        'created_at': utc_now(),
-    })
-    return row
-
-
-def _music_update_outreach_after_send(outreach, result, message_type='initial', followup_day=None):
-    now = utc_now()
-    if result.get('ok'):
-        patch = {
-            'status': 'sent' if message_type != 'followup' else 'followup_sent',
-            'last_sent_at': now,
-            'last_provider_message_id': result.get('message_id'),
-            'last_error': None,
-            'updated_at': now,
-        }
-        if message_type == 'initial':
-            patch['initial_sent_at'] = now
-            patch['followup3_due_at'] = (datetime.now(timezone.utc) + timedelta(days=3)).isoformat()
-            patch['followup7_due_at'] = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
-        elif followup_day == 3:
-            patch['followup3_sent_at'] = now
-        elif followup_day == 7:
-            patch['followup7_sent_at'] = now
-        db_update('koja_music_outreach', {'id': outreach.get('id')}, patch)
-        _music_record_outreach_message(outreach, 'outbound', message_type, 'sent', result.get('message_id'), result.get('response'))
-        _music_log_outreach_event(outreach.get('id'), 'message_sent', result.get('response'), result.get('message_id'))
-    else:
-        db_update('koja_music_outreach', {'id': outreach.get('id')}, {'status': 'failed', 'last_error': result.get('error'), 'updated_at': now})
-        _music_record_outreach_message(outreach, 'outbound', message_type, 'failed', result.get('message_id'), result.get('response'), result.get('error'))
-        _music_log_outreach_event(outreach.get('id'), 'message_failed', result, result.get('message_id'))
-    return result
-
-
-def _music_onboarding_url(token):
-    if not token:
-        return ''
-    if WHATSAPP_ONBOARDING_BASE:
-        return f'{WHATSAPP_ONBOARDING_BASE}/music/onboarding/{quote(str(token))}'
-    try:
-        return url_for('music_artist_onboarding', token=token, _external=True)
-    except Exception:
-        return f'/music/onboarding/{quote(str(token))}'
-
-
-def _music_create_onboarding(outreach):
-    existing = first_row('koja_music_artist_onboarding', {'outreach_id': outreach.get('id')})
-    if existing:
-        return existing
-    token = secrets.token_urlsafe(32)
-    artist_id = outreach.get('artist_id')
-    row, err = db_insert('koja_music_artist_onboarding', {
-        'outreach_id': outreach.get('id'),
-        'artist_id': artist_id,
-        'token': token,
-        'status': 'invited',
-        'created_at': utc_now(),
-        'updated_at': utc_now(),
-    })
-    if not row:
-        logger.error('Unable to create artist onboarding: %s', err)
-        return None
-    db_update('koja_music_outreach', {'id': outreach.get('id')}, {'status': 'onboarding', 'onboarding_id': row.get('id'), 'updated_at': utc_now()})
-    return row
-
-
-def _music_positive_reply(outreach, body):
-    text = clean(body).lower()
-    if not text:
-        return False
-    compact = re.sub(r'[^a-z0-9]+', ' ', text).strip()
-    if compact in {'yes', 'y', 'yes please', 'yes i am interested', 'yes im interested', 'i am interested', 'im interested', 'interested'}:
-        return True
-    return bool(re.search(r'\b(yes|interested)\b', text) and len(text.split()) <= 8)
-
-
-def _music_find_outreach_by_phone(phone):
-    digits = _music_phone_digits(phone)
-    if not digits:
-        return None
-    # Exact normalized phone when available, then fallback over a small recent set for databases with legacy formatting.
-    row = first_row('koja_music_outreach', {'whatsapp_phone': phone})
-    if row:
-        return row
-    rows = db_select('koja_music_outreach', order='updated_at.desc', limit=500) or []
-    for r in rows:
-        if _music_phone_digits(r.get('whatsapp_phone')) == digits:
-            return r
-    return None
-
-
-def _music_handle_incoming_message(phone, message_id, body, message_payload):
-    outreach = _music_find_outreach_by_phone(phone)
-    if not outreach:
-        return {'ok': False, 'matched': False}
-    now = utc_now()
-    db_update('koja_music_outreach', {'id': outreach.get('id')}, {
-        'status': 'replied', 'replied_at': now, 'last_inbound_at': now,
-        'last_inbound_message': clean(body)[:4000], 'followup3_due_at': None,
-        'followup7_due_at': None, 'updated_at': now,
-    })
-    _music_record_outreach_message(outreach, 'inbound', 'text', 'received', message_id, message_payload)
-    _music_log_outreach_event(outreach.get('id'), 'message_received', message_payload, message_id)
-    if _music_positive_reply(outreach, body):
-        onboarding = _music_create_onboarding(outreach)
-        if onboarding:
-            url = _music_onboarding_url(onboarding.get('token'))
-            reply = f"Thank you for your interest in KOJA MUSIC. Please complete your artist onboarding here: {url}"
-            result = _music_send_whatsapp_text(phone, reply)
-            _music_record_outreach_message(outreach, 'outbound', 'onboarding_link', 'sent' if result.get('ok') else 'failed', result.get('message_id'), result.get('response'), result.get('error'))
-            _music_log_outreach_event(outreach.get('id'), 'onboarding_link_sent', result, result.get('message_id'))
-            return {'ok': True, 'matched': True, 'positive': True, 'onboarding_url': url, 'send': result}
-    return {'ok': True, 'matched': True, 'positive': False}
-
-
-def _music_process_outreach_send_queue(limit=25):
-    if not _music_outreach_configured():
-        return {'ok': False, 'status': 'not_configured', 'sent': 0, 'failed': 0, 'message': 'Configure WhatsApp credentials first.'}
-    today = datetime.now(timezone.utc).date().isoformat()
-    sent_today = len([x for x in (db_select('koja_music_outreach_messages', {'direction': 'eq.outbound', 'status': 'eq.sent'}, order='created_at.desc', limit=1000) or []) if str(x.get('created_at') or '')[:10] == today]) if table_exists('koja_music_outreach_messages') else 0
-    remaining = max(0, WHATSAPP_OUTREACH_DAILY_LIMIT - sent_today)
-    limit = min(max(1, int(limit)), remaining)
-    if limit <= 0:
-        return {'ok': True, 'status': 'daily_limit', 'sent': 0, 'failed': 0, 'message': 'Daily outreach limit reached.'}
-    queue = db_select('koja_music_outreach', {'status': 'eq.approved'}, order='created_at.asc', limit=limit) or []
-    sent = failed = 0
-    for outreach in queue:
-        if not outreach.get('whatsapp_phone'):
-            db_update('koja_music_outreach', {'id': outreach.get('id')}, {'status': 'failed', 'last_error': 'No WhatsApp phone number.', 'updated_at': utc_now()})
-            failed += 1
-            continue
-        result = _music_send_whatsapp_template(outreach.get('whatsapp_phone'), outreach.get('artist_name'), outreach.get('campaign_id'), outreach.get('id'), False)
-        _music_update_outreach_after_send(outreach, result, 'initial')
-        if result.get('ok'): sent += 1
-        else: failed += 1
-    return {'ok': True, 'status': 'processed', 'sent': sent, 'failed': failed, 'remaining_today': max(0, remaining - sent)}
-
-
-def _music_process_followups(limit=25):
-    now = datetime.now(timezone.utc)
-    rows = db_select('koja_music_outreach', {'status': 'eq.followup_due'}, order='followup3_due_at.asc', limit=max(1, int(limit))) or []
-    # Also inspect sent records because older rows may predate the explicit followup_due status.
-    if not rows:
-        rows = db_select('koja_music_outreach', order='followup3_due_at.asc', limit=max(1, int(limit))) or []
-    sent = failed = stopped = 0
-    for outreach in rows:
-        if _music_has_replied(outreach):
-            stopped += 1
-            continue
-        day = None
-        due3 = outreach.get('followup3_due_at')
-        due7 = outreach.get('followup7_due_at')
-        sent3 = outreach.get('followup3_sent_at')
-        sent7 = outreach.get('followup7_sent_at')
-        def dt(v):
-            try:
-                x = datetime.fromisoformat(str(v).replace('Z', '+00:00'))
-                return x if x.tzinfo else x.replace(tzinfo=timezone.utc)
-            except Exception:
-                return None
-        d3, d7 = dt(due3), dt(due7)
-        if d7 and now >= d7 and not sent7:
-            day = 7
-        elif d3 and now >= d3 and not sent3:
-            day = 3
-        if not day or not outreach.get('whatsapp_phone'):
-            continue
-        result = _music_send_whatsapp_template(outreach.get('whatsapp_phone'), outreach.get('artist_name'), outreach.get('campaign_id'), outreach.get('id'), True)
-        _music_update_outreach_after_send(outreach, result, 'followup', followup_day=day)
-        if result.get('ok'):
-            sent += 1
-            db_update('koja_music_outreach', {'id': outreach.get('id')}, {'status': 'followup_sent', 'updated_at': utc_now()})
-        else:
-            failed += 1
-    return {'ok': True, 'sent': sent, 'failed': failed, 'stopped': stopped}
-
-
-def _music_recruitment_worker():
-    try:
-        _music_process_outreach_send_queue(min(WHATSAPP_FOLLOWUP_BATCH, 25))
-        _music_process_followups(WHATSAPP_FOLLOWUP_BATCH)
-    except Exception:
-        logger.exception('KOJA MUSIC recruitment worker failed')
-
-
-@app.route('/webhooks/whatsapp', methods=['GET', 'POST'])
-def music_whatsapp_webhook():
-    if request.method == 'GET':
-        mode = request.args.get('hub.mode')
-        token = request.args.get('hub.verify_token')
-        challenge = request.args.get('hub.challenge')
-        if mode == 'subscribe' and WHATSAPP_VERIFY_TOKEN and hmac.compare_digest(str(token or ''), WHATSAPP_VERIFY_TOKEN):
-            return Response(str(challenge or ''), status=200, mimetype='text/plain')
-        return Response('Verification failed', status=403)
-    payload = request.get_json(silent=True) or {}
-    try:
-        for entry in payload.get('entry', []) or []:
-            for change in entry.get('changes', []) or []:
-                value = change.get('value') or {}
-                for message in value.get('messages', []) or []:
-                    if message.get('type') != 'text':
-                        continue
-                    phone = message.get('from')
-                    body = ((message.get('text') or {}).get('body') or '').strip()
-                    _music_handle_incoming_message(phone, message.get('id'), body, message)
-                for status in value.get('statuses', []) or []:
-                    mid = status.get('id')
-                    state = status.get('status')
-                    if mid and table_exists('koja_music_outreach_messages'):
-                        matches = db_select('koja_music_outreach_messages', {'provider_message_id': mid}, limit=5) or []
-                        for m in matches:
-                            db_update('koja_music_outreach_messages', {'id': m.get('id')}, {'provider_status': state, 'updated_at': utc_now()})
-                            if m.get('outreach_id'):
-                                _music_log_outreach_event(m.get('outreach_id'), f'provider_{state}', status, mid)
-        return jsonify({'ok': True})
-    except Exception:
-        logger.exception('KOJA MUSIC WhatsApp webhook processing failed')
-        return jsonify({'ok': True})
-
-
-@app.route('/music/onboarding/<token>', methods=['GET', 'POST'])
-def music_artist_onboarding(token):
-    onboarding = first_row('koja_music_artist_onboarding', {'token': token})
-    if not onboarding:
-        return 'Onboarding link is invalid or expired.', 404
-    outreach = first_row('koja_music_outreach', {'id': onboarding.get('outreach_id')}) or {}
-    target = first_row('koja_music_recruitment_targets', {'id': outreach.get('artist_id')}) or {}
-    if request.method == 'POST':
-        data = {
-            'legal_name': clean(request.form.get('legal_name')),
-            'artist_name': clean(request.form.get('artist_name')) or target.get('artist_name'),
-            'country': clean(request.form.get('country')) or target.get('country'),
-            'city': clean(request.form.get('city')),
-            'phone': clean(request.form.get('phone')) or outreach.get('whatsapp_phone'),
-            'email': clean(request.form.get('email')),
-            'genres': [x.strip() for x in clean(request.form.get('genres')).split(',') if x.strip()][:20],
-            'bio': clean(request.form.get('bio'))[:5000],
-            'catalogue_links': [x.strip() for x in clean(request.form.get('catalogue_links')).splitlines() if x.strip()][:50],
-            'master_ownership': clean(request.form.get('master_ownership')),
-            'composition_ownership': clean(request.form.get('composition_ownership')),
-            'rightsholder_declaration': request.form.get('rightsholder_declaration') == 'yes',
-            'updated_at': utc_now(),
-        }
-        db_update('koja_music_artist_onboarding', {'id': onboarding.get('id')}, {**data, 'status': 'submitted', 'submitted_at': utc_now(), 'updated_at': utc_now()})
-        db_update('koja_music_outreach', {'id': outreach.get('id')}, {'status': 'rights_review', 'onboarding_completed_at': utc_now(), 'updated_at': utc_now()})
-        if table_exists('koja_music_rights_reviews'):
-            db_insert('koja_music_rights_reviews', {'onboarding_id': onboarding.get('id'), 'artist_id': outreach.get('artist_id'), 'status': 'pending', 'created_at': utc_now(), 'updated_at': utc_now()})
-        return render_page('KOJA MUSIC Onboarding Submitted', r'''<div class="hero"><h1>KOJA MUSIC onboarding submitted</h1><p>Your information has been received. KOJA MUSIC will review ownership and rights before any music is published.</p></div>''')
-    return render_page('KOJA MUSIC Artist Onboarding', r'''
-<div class="hero"><h1>KOJA MUSIC Artist Onboarding</h1><p>Artist: <strong>{{ target.artist_name or 'Artist' }}</strong>. Submission does not itself grant KOJA streaming, reproduction, distribution or monetization rights.</p></div>
-<div class="card"><form method="post"><div class="grid"><div><label>Artist / Stage Name</label><input name="artist_name" value="{{ target.artist_name or '' }}" required></div><div><label>Legal Name</label><input name="legal_name"></div><div><label>Country</label><input name="country" value="{{ target.country or '' }}" required></div><div><label>City</label><input name="city"></div><div><label>WhatsApp / Phone</label><input name="phone" value="{{ outreach.whatsapp_phone or '' }}"></div><div><label>Email</label><input type="email" name="email"></div><div><label>Genres</label><input name="genres" placeholder="Afrobeats, Hip-hop, R&B"></div></div><label>Artist Bio</label><textarea name="bio" rows="5"></textarea><label>Catalogue / music links (one per line)</label><textarea name="catalogue_links" rows="5"></textarea><div class="grid"><div><label>Master ownership / control</label><select name="master_ownership" required><option value="">Select</option><option>100% owned</option><option>Shared ownership</option><option>Label / third-party controlled</option><option>Unsure</option></select></div><div><label>Composition ownership / control</label><select name="composition_ownership" required><option value="">Select</option><option>100% owned</option><option>Shared ownership</option><option>Publisher / third-party controlled</option><option>Unsure</option></select></div></div><label><input type="checkbox" name="rightsholder_declaration" value="yes" required> I confirm that the information supplied is accurate and I am authorized to make the rights declarations above.</label><button class="btn" type="submit">Submit for KOJA MUSIC review</button></form></div>
-''', target=target, outreach=outreach)
-
-
-@app.route('/admin/music/outreach', methods=['GET'])
-@admin_required
-def admin_music_outreach():
-    campaigns = db_select('koja_music_outreach_campaigns', order='created_at.desc', limit=100) if table_exists('koja_music_outreach_campaigns') else []
-    rows = db_select('koja_music_outreach', order='created_at.desc', limit=200) if table_exists('koja_music_outreach') else []
-    return render_page('KOJA MUSIC Outreach', r'''
-<div class="hero"><h1>KOJA MUSIC Artist Outreach</h1><p>Campaign approval, WhatsApp sending, replies, follow-ups and onboarding.</p></div>
-<div class="grid"><div class="stat"><div class="big">{{ campaigns|length }}</div>Campaigns</div><div class="stat"><div class="big">{{ rows|selectattr('status','equalto','approved')|list|length }}</div>Approved queue</div><div class="stat"><div class="big">{{ rows|selectattr('status','equalto','replied')|list|length }}</div>Replies</div><div class="stat"><div class="big">{{ rows|selectattr('status','equalto','onboarding')|list|length }}</div>Onboarding</div></div>
-<div class="card"><h2>Worker / API status</h2><p>WhatsApp API: <strong>{{ 'Configured' if configured else 'Not configured' }}</strong>. Template: <code>{{ template }}</code>. Daily limit: {{ daily_limit }}.</p><div class="actions"><form method="post" action="{{ url_for('admin_music_outreach_worker') }}"><button class="btn">Run recruitment worker now</button></form><a class="btn secondary" href="{{ url_for('admin_music_outreach_campaign_new') }}">Create campaign</a><a class="btn secondary" href="{{ url_for('admin_music_onboarding') }}">Onboarding</a><a class="btn secondary" href="{{ url_for('admin_music_rights') }}">Rights review</a></div></div>
-<div class="card"><h2>Campaigns</h2><table><tr><th>Name</th><th>Status</th><th>Created</th><th>Actions</th></tr>{% for c in campaigns %}<tr><td>{{ c.name }}</td><td>{{ c.status }}</td><td>{{ c.created_at }}</td><td>{% if c.status == 'draft' %}<form method="post" action="{{ url_for('admin_music_campaign_approve', campaign_id=c.id) }}"><button class="btn">Approve campaign</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="4">No campaigns yet.</td></tr>{% endfor %}</table></div>
-<div class="card"><h2>Outreach queue</h2><table><tr><th>Artist</th><th>Country</th><th>WhatsApp</th><th>Status</th><th>Last activity</th><th>Error</th></tr>{% for r in rows %}<tr><td>{{ r.artist_name }}</td><td>{{ r.country }}</td><td>{{ r.whatsapp_phone or 'Missing' }}</td><td>{{ r.status }}</td><td>{{ r.last_inbound_at or r.last_sent_at or r.created_at }}</td><td>{{ r.last_error or '' }}</td></tr>{% else %}<tr><td colspan="6">No outreach records.</td></tr>{% endfor %}</table></div>
-''', campaigns=campaigns, rows=rows, configured=_music_outreach_configured(), template=WHATSAPP_TEMPLATE_NAME, daily_limit=WHATSAPP_OUTREACH_DAILY_LIMIT)
-
-
-@app.route('/admin/music/outreach/campaign/new', methods=['GET', 'POST'])
-@admin_required
-def admin_music_outreach_campaign_new():
-    if request.method == 'POST':
-        name = clean(request.form.get('name')) or 'KOJA MUSIC Artist Recruitment'
-        countries = [x.strip() for x in clean(request.form.get('countries')).split(',') if x.strip()]
-        priority = int(request.form.get('priority') or 2)
-        campaign, err = db_insert('koja_music_outreach_campaigns', {'name': name, 'status': 'draft', 'countries': countries, 'priority_max': priority, 'created_by': (current_user() or {}).get('id'), 'created_at': utc_now(), 'updated_at': utc_now()})
-        if not campaign:
-            flash('Campaign could not be created: ' + str(err or ''), 'danger')
-            return redirect(url_for('admin_music_outreach_campaign_new'))
-        targets = db_select('koja_music_recruitment_targets', order='priority.asc,created_at.asc', limit=500) or []
-        selected = [t for t in targets if (not countries or t.get('country') in countries) and int(t.get('priority') or 2) <= priority and t.get('status') in ('not_contacted','unverified')]
-        created = 0
-        for t in selected:
-            phone = first_nonempty(t.get('whatsapp_phone'), t.get('phone'), t.get('contact_phone'))
-            if not phone:
-                continue
-            exists = first_row('koja_music_outreach', {'campaign_id': campaign.get('id'), 'artist_id': t.get('id')})
-            if exists:
-                continue
-            row, _ = db_insert('koja_music_outreach', {'campaign_id': campaign.get('id'), 'artist_id': t.get('id'), 'artist_name': t.get('artist_name'), 'country': t.get('country'), 'whatsapp_phone': _music_normalize_phone(phone), 'status': 'pending_approval', 'created_at': utc_now(), 'updated_at': utc_now()})
-            if row: created += 1
-        flash(f'Campaign created with {created} outreach records. Add/verify WhatsApp numbers before approval.', 'success')
-        return redirect(url_for('admin_music_outreach'))
-    return render_page('Create KOJA MUSIC Campaign', r'''<div class="hero"><h1>Create Artist Recruitment Campaign</h1><p>Only prospects with verified public contact information should be placed into a live WhatsApp campaign.</p></div><div class="card"><form method="post"><label>Campaign name</label><input name="name" required value="KOJA MUSIC Zambia Artist Recruitment"><label>Countries</label><input name="countries" value="Zambia" placeholder="Zambia, Ghana, Kenya"><label>Maximum prospect priority</label><select name="priority"><option value="1">Priority 1 only</option><option value="2" selected>Priority 1–2</option></select><button class="btn">Build campaign queue</button></form></div>''')
-
-
-@app.route('/admin/music/outreach/campaign/<campaign_id>/approve', methods=['POST'])
-@admin_required
-def admin_music_campaign_approve(campaign_id):
-    campaign = first_row('koja_music_outreach_campaigns', {'id': campaign_id})
-    if not campaign:
-        abort(404)
-    db_update('koja_music_outreach_campaigns', {'id': campaign_id}, {'status': 'approved', 'approved_by': (current_user() or {}).get('id'), 'approved_at': utc_now(), 'updated_at': utc_now()})
-    rows = db_select('koja_music_outreach', {'campaign_id': campaign_id, 'status': 'pending_approval'}, limit=1000) or []
-    for r in rows:
-        db_update('koja_music_outreach', {'id': r.get('id')}, {'status': 'approved', 'updated_at': utc_now()})
-    flash(f'{len(rows)} outreach records approved. Sending is subject to WhatsApp configuration and the daily limit.', 'success')
-    return redirect(url_for('admin_music_outreach'))
-
-
-@app.route('/admin/music/outreach/worker', methods=['POST'])
-@admin_required
-def admin_music_outreach_worker():
-    result = _music_recruitment_worker() or {}
-    # Worker intentionally returns no payload; provide a fresh processing result for admin visibility.
-    send = _music_process_outreach_send_queue(0) if False else {'ok': True}
-    flash('Recruitment worker executed. Review the outreach queue for send/follow-up results.', 'success')
-    return redirect(url_for('admin_music_outreach'))
-
-
-@app.route('/admin/music/onboarding', methods=['GET'])
-@admin_required
-def admin_music_onboarding():
-    rows = db_select('koja_music_artist_onboarding', order='created_at.desc', limit=300) if table_exists('koja_music_artist_onboarding') else []
-    return render_page('KOJA MUSIC Onboarding', r'''<div class="hero"><h1>Artist Onboarding</h1><p>Review artist profiles, catalogue submissions and rights declarations.</p></div><div class="card"><table><tr><th>Artist</th><th>Country</th><th>Status</th><th>Master</th><th>Composition</th><th>Submitted</th></tr>{% for r in rows %}<tr><td>{{ r.artist_name or r.id }}</td><td>{{ r.country }}</td><td>{{ r.status }}</td><td>{{ r.master_ownership }}</td><td>{{ r.composition_ownership }}</td><td>{{ r.submitted_at or '' }}</td></tr>{% else %}<tr><td colspan="6">No onboarding submissions.</td></tr>{% endfor %}</table></div>''', rows=rows)
-
-
-@app.route('/admin/music/rights', methods=['GET', 'POST'])
-@admin_required
-def admin_music_rights():
-    if request.method == 'POST':
-        review_id = clean(request.form.get('review_id'))
-        action = clean(request.form.get('action'))
-        review = first_row('koja_music_rights_reviews', {'id': review_id})
-        if review and action in ('verified', 'rejected', 'needs_correction'):
-            db_update('koja_music_rights_reviews', {'id': review_id}, {'status': action, 'reviewed_by': (current_user() or {}).get('id'), 'reviewed_at': utc_now(), 'updated_at': utc_now()})
-            outreach = first_row('koja_music_outreach', {'id': review.get('outreach_id')})
-            if action == 'verified' and outreach:
-                db_update('koja_music_outreach', {'id': outreach.get('id')}, {'status': 'approved', 'rights_verified_at': utc_now(), 'updated_at': utc_now()})
-            elif outreach:
-                db_update('koja_music_outreach', {'id': outreach.get('id')}, {'status': 'rights_review', 'updated_at': utc_now()})
-        return redirect(url_for('admin_music_rights'))
-    rows = db_select('koja_music_rights_reviews', order='created_at.desc', limit=300) if table_exists('koja_music_rights_reviews') else []
-    for r in rows:
-        ob = first_row('koja_music_artist_onboarding', {'id': r.get('onboarding_id')}) or {}
-        r['artist_name'] = ob.get('artist_name') or r.get('artist_name') or 'Artist'
-        r['country'] = ob.get('country') or ''
-        r['master_ownership'] = ob.get('master_ownership') or ''
-        r['composition_ownership'] = ob.get('composition_ownership') or ''
-    return render_page('KOJA MUSIC Rights Review', r'''<div class="hero"><h1>Rights Verification</h1><p>No track is approved for publication merely because an artist joined KOJA MUSIC.</p></div><div class="card"><table><tr><th>Artist</th><th>Country</th><th>Master</th><th>Composition</th><th>Status</th><th>Action</th></tr>{% for r in rows %}<tr><td>{{ r.artist_name }}</td><td>{{ r.country }}</td><td>{{ r.master_ownership }}</td><td>{{ r.composition_ownership }}</td><td>{{ r.status }}</td><td>{% if r.status == 'pending' or r.status == 'needs_correction' %}<form method="post" style="display:inline"><input type="hidden" name="review_id" value="{{ r.id }}"><button class="btn" name="action" value="verified">Verify</button> <button class="btn secondary" name="action" value="needs_correction">Needs correction</button> <button class="btn secondary" name="action" value="rejected">Reject</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="6">No rights reviews.</td></tr>{% endfor %}</table></div>''', rows=rows)
-
-
-@app.route('/api/admin/music/outreach/status', methods=['GET'])
-@admin_required
-def api_admin_music_outreach_status():
-    rows = db_select('koja_music_outreach', order='created_at.desc', limit=1000) if table_exists('koja_music_outreach') else []
-    counts = {}
-    for r in rows:
-        counts[r.get('status') or 'unknown'] = counts.get(r.get('status') or 'unknown', 0) + 1
-    return jsonify({'ok': True, 'whatsapp_configured': _music_outreach_configured(), 'template': WHATSAPP_TEMPLATE_NAME, 'daily_limit': WHATSAPP_OUTREACH_DAILY_LIMIT, 'counts': counts, 'total': len(rows)})
-
-
-
-@app.route('/api/music/outreach/worker', methods=['POST', 'GET'])
-def api_music_outreach_worker():
-    supplied = request.headers.get('X-KOJA-MUSIC-WORKER-SECRET') or request.args.get('secret') or request.form.get('secret')
-    if not KOJA_MUSIC_WORKER_SECRET or not hmac.compare_digest(str(supplied or ''), KOJA_MUSIC_WORKER_SECRET):
-        return jsonify({'ok': False, 'error': 'Unauthorized'}), 401
-    result = {
-        'send_queue': _music_process_outreach_send_queue(WHATSAPP_FOLLOWUP_BATCH),
-        'followups': _music_process_followups(WHATSAPP_FOLLOWUP_BATCH),
-    }
-    return jsonify({'ok': True, 'result': result})
-
-
-def _music_worker_loop():
-    # Render web services can restart or sleep; the worker is deliberately best-effort.
-    # All state is persisted in Supabase so a restart resumes from the database.
-    while True:
-        time.sleep(KOJA_MUSIC_WORKER_INTERVAL)
-        if not KOJA_MUSIC_WORKER_ENABLED:
-            continue
-        try:
-            _music_recruitment_worker()
-        except Exception:
-            logger.exception('KOJA MUSIC background worker iteration failed')
-
-
-if KOJA_MUSIC_WORKER_ENABLED:
-    try:
-        threading.Thread(target=_music_worker_loop, name='koja-music-outreach', daemon=True).start()
-    except Exception:
-        logger.exception('KOJA MUSIC background worker could not start')
-
-
 if __name__=="__main__":
     port=int(os.getenv("PORT","5000"))
     app.run(host="0.0.0.0",port=port,debug=False)
@@ -14307,3 +13754,207 @@ const nexusAdminRows={{ rows|tojson }};
 function editNexus(id){const r=nexusAdminRows.find(x=>String(x.id)===String(id));if(!r)return;document.getElementById('nxa_id').value=r.id||'';document.getElementById('nxa_name').value=r.name||r.service_name||'';document.getElementById('nxa_code').value=r.country_code||'';document.getElementById('nxa_country').value=r.country_name||'';document.getElementById('nxa_category').value=r.category||'';document.getElementById('nxa_url').value=r.official_url||r.url||'';document.getElementById('nxa_description').value=r.description||'';document.getElementById('nxa_tags').value=(r.tags||[]).join(', ');document.getElementById('nxa_sort').value=r.sort_order||100;document.getElementById('nxa_active').value=(r.active===false||r.is_active===false)?'0':'1';window.scrollTo({top:0,behavior:'smooth'})}
 </script>
 ''', rows=rows, categories=KOJA_WORLD_CATEGORIES, service_name=_world_service_name, verified=_world_verified, active=_world_active)
+
+
+# ============================================================
+# KOJA MUSIC GLOBAL — additive production module
+# No business/catalogue cap. Public streaming requires approval + rights clearance.
+# ============================================================
+
+def _music_admin_user():
+    u=current_user() or {}
+    return bool(u.get("is_admin"))
+
+def _music_published_artists(limit=500):
+    rows=db_select("koja_music_artists", filters={"status":"approved"}, order="featured.desc,created_at.desc", limit=limit) or []
+    return rows
+
+def _music_public_tracks(limit=1000):
+    rows=db_select("koja_music_tracks", filters={"status":"published","rights_status":"approved"}, order="featured.desc,published_at.desc,created_at.desc", limit=limit) or []
+    return rows
+
+def _music_artist(artist_id, public=False):
+    filters={"id":artist_id}
+    if public: filters["status"]="approved"
+    rows=db_select("koja_music_artists", filters=filters, limit=1) or []
+    return rows[0] if rows else None
+
+def _music_slug(value):
+    value=clean(value or "")
+    value=re.sub(r"[^a-zA-Z0-9]+","-",value).strip("-").lower()
+    return value[:120] or uuid.uuid4().hex[:12]
+
+@app.route("/music")
+def koja_music_home():
+    tracks=_music_public_tracks(1000)
+    artists=_music_published_artists(500)
+    featured=[t for t in tracks if t.get("featured")][:30]
+    trending=sorted(tracks,key=lambda x:int(x.get("plays") or x.get("play_count") or 0),reverse=True)[:30]
+    countries=sorted({str(a.get("country") or "").strip() for a in artists if a.get("country")})
+    genres=sorted({str(t.get("genre") or "").strip() for t in tracks if t.get("genre")})
+    return render_page("KOJA MUSIC GLOBAL",r'''
+<style>
+.music-hero{background:linear-gradient(135deg,#081b36,#0b5ed7);color:white;border-radius:24px;padding:34px;margin-bottom:22px}
+.music-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}
+.music-card{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:16px}
+.music-cover{width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:14px;background:#101722}
+.music-tags a{display:inline-block;border:1px solid var(--border);border-radius:999px;padding:7px 10px;margin:4px;text-decoration:none;color:inherit}
+.music-player{width:100%;margin-top:8px}
+</style>
+<section class="music-hero"><h1>KOJA MUSIC GLOBAL</h1><p>Discover artists and rights-cleared music from Zambia, Africa and the world.</p><form method="get" action="{{ url_for('koja_music_search') }}" class="actions"><input name="q" placeholder="Search artists, tracks, genres or countries"><button class="btn">Search</button></form></section>
+<div class="card"><h2>Featured Releases</h2><div class="music-grid">
+{% for t in featured %}<article class="music-card">{% if t.artwork_url %}<img class="music-cover" src="{{ t.artwork_url }}">{% endif %}<h3>{{ t.title }}</h3><p>{{ t.artist_name or '' }} · {{ t.genre or '' }}</p>{% if t.audio_url %}<audio class="music-player" controls preload="none" src="{{ t.audio_url }}"></audio>{% endif %}</article>{% else %}<p>No featured releases yet.</p>{% endfor %}
+</div></div>
+<div class="card"><h2>Trending</h2><div class="music-grid">{% for t in trending %}<article class="music-card"><h3>{{ t.title }}</h3><p>{{ t.artist_name or '' }}</p>{% if t.audio_url %}<audio class="music-player" controls preload="none" src="{{ t.audio_url }}"></audio>{% endif %}<small>{{ t.plays or 0 }} plays</small></article>{% else %}<p>No published music yet.</p>{% endfor %}</div></div>
+<div class="card"><h2>Explore</h2><div class="music-tags">{% for g in genres %}<a href="{{ url_for('koja_music_search',genre=g) }}">{{ g }}</a>{% endfor %}{% for c in countries %}<a href="{{ url_for('koja_music_search',country=c) }}">{{ c }}</a>{% endfor %}</div></div>
+<div class="actions"><a class="btn" href="{{ url_for('koja_music_submit') }}">Artist Submission</a>{% if user %}<a class="btn secondary" href="{{ url_for('koja_music_dashboard') }}">Artist Dashboard</a>{% endif %}</div>
+''',featured=featured,trending=trending,artists=artists,countries=countries,genres=genres)
+
+@app.route("/music/search")
+def koja_music_search():
+    q=clean(request.args.get("q")); genre=clean(request.args.get("genre")); country=clean(request.args.get("country"))
+    artists=_music_published_artists(5000); tracks=_music_public_tracks(5000)
+    def hit(row,keys):
+        hay=" ".join(str(row.get(k) or "") for k in keys).lower()
+        return not q or q.lower() in hay
+    artists=[a for a in artists if hit(a,["artist_name","country","genre","genres","bio"])]
+    tracks=[t for t in tracks if hit(t,["title","artist_name","album","genre","country"])]
+    if genre: tracks=[t for t in tracks if genre.lower() in str(t.get("genre") or "").lower()]
+    if country: tracks=[t for t in tracks if country.lower() in str(t.get("country") or "").lower()]
+    return render_page("KOJA MUSIC Search",r'''
+<div class="hero"><h1>Music Search</h1><form class="actions"><input name="q" value="{{ q }}" placeholder="Artist, track, genre or country"><input name="genre" value="{{ genre }}" placeholder="Genre"><input name="country" value="{{ country }}" placeholder="Country"><button class="btn">Search</button></form></div>
+<div class="card"><h2>Artists</h2><div class="music-grid">{% for a in artists %}<a class="music-card" href="{{ url_for('koja_music_artist',artist_id=a.id) }}"><h3>{{ a.artist_name }}</h3><p>{{ a.country or '' }} · {{ a.genre or '' }}</p></a>{% else %}<p>No matching artists.</p>{% endfor %}</div></div>
+<div class="card"><h2>Tracks</h2>{% for t in tracks %}<div class="music-card"><h3>{{ t.title }}</h3><p>{{ t.artist_name or '' }} · {{ t.genre or '' }}</p>{% if t.audio_url %}<audio class="music-player" controls preload="none" src="{{ t.audio_url }}"></audio>{% endif %}</div>{% else %}<p>No matching tracks.</p>{% endfor %}</div>
+''',q=q,genre=genre,country=country,artists=artists,tracks=tracks)
+
+@app.route("/music/artist/<artist_id>")
+def koja_music_artist(artist_id):
+    artist=_music_artist(artist_id,True)
+    if not artist: return "Artist not found.",404
+    tracks=db_select("koja_music_tracks",filters={"artist_id":artist_id,"status":"published","rights_status":"approved"},order="release_date.desc,created_at.desc",limit=5000) or []
+    releases=db_select("koja_music_releases",filters={"artist_id":artist_id,"status":"published"},order="release_date.desc,created_at.desc",limit=5000) or []
+    return render_page("KOJA MUSIC — "+str(artist.get("artist_name") or "Artist"),r'''
+<div class="hero"><h1>{{ artist.artist_name }}</h1><p>{{ artist.country or '' }}{% if artist.genre %} · {{ artist.genre }}{% endif %}</p><p>{{ artist.bio or '' }}</p></div>
+<div class="card"><h2>Releases</h2><div class="music-grid">{% for r in releases %}<div class="music-card"><h3>{{ r.title }}</h3><p>{{ r.release_type or 'release' }} · {{ r.release_date or '' }}</p></div>{% else %}<p>No releases yet.</p>{% endfor %}</div></div>
+<div class="card"><h2>Music</h2>{% for t in tracks %}<div class="music-card"><h3>{{ t.title }}</h3><p>{{ t.album or '' }} · {{ t.genre or '' }}</p>{% if t.audio_url %}<audio class="music-player" controls preload="none" data-track-id="{{ t.id }}" src="{{ t.audio_url }}"></audio>{% endif %}</div>{% else %}<p>No published tracks.</p>{% endfor %}</div>
+<script>document.querySelectorAll('audio[data-track-id]').forEach(a=>a.addEventListener('play',()=>fetch('/api/music/v1/play',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({track_id:a.dataset.trackId})}).catch(()=>{}),{once:true}));</script>
+''',artist=artist,tracks=tracks,releases=releases)
+
+@app.route("/music/submit",methods=["GET","POST"])
+def koja_music_submit():
+    if request.method=="POST":
+        u=current_user() or {}
+        artist_name=clean(request.form.get("artist_name")); country=clean(request.form.get("country"))
+        if not artist_name or not country:return "Artist name and country are required.",400
+        payload={"user_id":str(u.get("id") or ""),"artist_name":artist_name,"country":country,"genre":clean(request.form.get("genre")),"bio":request.form.get("bio") or "","social_url":clean(request.form.get("social_url")),"status":"pending","rights_declaration":bool(request.form.get("rights_declaration"))}
+        if payload["rights_declaration"]: payload["rights_declaration_at"]=utc_now()
+        _,err=db_insert("koja_music_artists",payload)
+        if err:return "Artist submission could not be saved: "+str(err),500
+        flash("Artist submitted for KOJA MUSIC review.","success")
+        return redirect(url_for("koja_music_home"))
+    return render_page("KOJA MUSIC Artist Submission",r'''
+<div class="hero"><h1>Global Artist Submission</h1><p>Submit your artist profile. Music is not publicly streamed until rights and release approval are completed.</p></div>
+<div class="card"><form method="post"><label>Artist name</label><input name="artist_name" required><label>Country</label><input name="country" required><label>Genre</label><input name="genre"><label>Website / social URL</label><input name="social_url"><label>Bio</label><textarea name="bio"></textarea><label><input type="checkbox" name="rights_declaration" value="1"> I confirm I can authorize KOJA to review this submission.</label><button class="btn">Submit Artist</button></form></div>
+''')
+
+@app.route("/music/dashboard")
+@login_required
+def koja_music_dashboard():
+    uid=str((current_user() or {}).get("id") or "")
+    artists=db_select("koja_music_artists",filters={"user_id":uid},order="created_at.desc",limit=5000) or []
+    submissions=db_select("koja_music_artist_submissions",filters={"user_id":uid},order="created_at.desc",limit=5000) or []
+    return render_page("KOJA MUSIC Artist Dashboard",r'''
+<div class="hero"><h1>KOJA MUSIC Artist Dashboard</h1><p>Profiles, releases, submissions and approval status.</p></div>
+<div class="card"><h2>My Artist Profiles</h2>{% for a in artists %}<div class="music-card"><h3>{{ a.artist_name }}</h3><p>{{ a.country }} · {{ a.status }} · rights: {{ a.rights_status or 'review_required' }}</p><a class="btn" href="{{ url_for('koja_music_release_new',artist_id=a.id) }}">Add Release</a></div>{% else %}<p>No artist profile yet. <a href="{{ url_for('koja_music_submit') }}">Submit one</a>.</p>{% endfor %}</div>
+<div class="card"><h2>Submissions</h2>{% for s in submissions %}<p>{{ s.artist_name }} — {{ s.status }}</p>{% else %}<p>No submissions.</p>{% endfor %}</div>
+''',artists=artists,submissions=submissions)
+
+@app.route("/music/release/new/<artist_id>",methods=["GET","POST"])
+@login_required
+def koja_music_release_new(artist_id):
+    uid=str((current_user() or {}).get("id") or "")
+    artist=db_select("koja_music_artists",filters={"id":artist_id,"user_id":uid},limit=1) or []
+    if not artist:return "Artist profile not found.",404
+    artist=artist[0]
+    if request.method=="POST":
+        title=clean(request.form.get("title")); rtype=clean(request.form.get("release_type")) or "single"
+        if not title or rtype not in {"single","ep","album"}:return "Valid title and release type are required.",400
+        artwork=request.files.get("artwork"); artwork_url=None; artwork_path=None
+        if artwork and artwork.filename:
+            result,err=upload_storage(artwork,"music/artwork",public=True)
+            if err:return "Artwork upload failed: "+str(err),400
+            artwork_url=(result or {}).get("public_url") or (result or {}).get("url"); artwork_path=(result or {}).get("path")
+        rel,err=db_insert("koja_music_releases",{"artist_id":artist_id,"title":title,"release_type":rtype,"genre":clean(request.form.get("genre")),"release_date":request.form.get("release_date") or None,"cover_art_url":artwork_url,"cover_art_path":artwork_path,"status":"submitted","created_by":uid})
+        if err:return "Release could not be created: "+str(err),500
+        rid=(rel or [{}])[0].get("id") if isinstance(rel,list) else (rel or {}).get("id")
+        audio=request.files.get("audio")
+        if audio and audio.filename and rid:
+            result,err=upload_storage(audio,"music/audio",public=True)
+            if err:return "Release created, but audio upload failed: "+str(err),400
+            audio_url=(result or {}).get("public_url") or (result or {}).get("url"); audio_path=(result or {}).get("path")
+            db_insert("koja_music_tracks",{"release_id":rid,"artist_id":artist_id,"user_id":uid,"artist_name":artist.get("artist_name"),"country":artist.get("country"),"title":title,"album":title,"genre":clean(request.form.get("genre")),"release_date":request.form.get("release_date") or None,"audio_path":audio_path,"audio_url":audio_url,"audio_mime":audio.mimetype,"audio_size":None,"artwork_path":artwork_path,"artwork_url":artwork_url,"rights_status":"pending_review","status":"pending_review","rights_declaration":bool(request.form.get("rights_declaration")),"rights_declaration_at":utc_now() if request.form.get("rights_declaration") else None})
+        flash("Release submitted for rights review.","success")
+        return redirect(url_for("koja_music_dashboard"))
+    return render_page("New KOJA MUSIC Release",r'''
+<div class="hero"><h1>New Release</h1><p>{{ artist.artist_name }} · single, EP or album.</p></div>
+<div class="card"><form method="post" enctype="multipart/form-data"><label>Title</label><input name="title" required><label>Release type</label><select name="release_type"><option>single</option><option>ep</option><option>album</option></select><label>Genre</label><input name="genre"><label>Release date</label><input type="date" name="release_date"><label>Cover artwork</label><input type="file" name="artwork" accept="image/jpeg,image/png,image/webp"><label>Audio (single-track release)</label><input type="file" name="audio" accept="audio/mpeg,audio/wav,audio/mp4,audio/aac,audio/flac,.mp3,.wav,.m4a,.aac,.flac"><label><input type="checkbox" name="rights_declaration" value="1"> I confirm I control/hold the necessary rights for this submission.</label><button class="btn">Submit Release</button></form></div>
+''',artist=artist)
+
+@app.route("/api/music/v1/play",methods=["POST"])
+def koja_music_play():
+    d=request.get_json(silent=True) or {}; tid=clean(d.get("track_id"))
+    if not tid:return jsonify(ok=False,error="track_id_required"),400
+    rows=db_select("koja_music_tracks",filters={"id":tid,"status":"published","rights_status":"approved"},limit=1) or []
+    if not rows:return jsonify(ok=False,error="track_not_public"),404
+    u=current_user() or {}
+    db_insert("koja_music_play_events",{"track_id":tid,"user_id":str(u.get("id") or "")})
+    plays=int(rows[0].get("plays") or 0)+1
+    db_update("koja_music_tracks",{"id":tid},{"plays":plays,"last_played_at":utc_now()})
+    return jsonify(ok=True,plays=plays)
+
+@app.route("/music/admin")
+@admin_required
+def koja_music_admin():
+    artists=db_select("koja_music_artists",order="created_at.desc",limit=5000) or []
+    tracks=db_select("koja_music_tracks",order="created_at.desc",limit=5000) or []
+    releases=db_select("koja_music_releases",order="created_at.desc",limit=5000) or []
+    return render_page("KOJA MUSIC Admin",r'''
+<div class="hero"><h1>KOJA MUSIC Administration</h1><p>Global artist, release, rights and catalogue management.</p></div>
+<div class="card"><h2>Artists</h2>{% for a in artists %}<div class="music-card"><strong>{{ a.artist_name }}</strong> — {{ a.country }} — {{ a.status }} <form method="post" action="{{ url_for('koja_music_admin_artist',artist_id=a.id) }}" class="actions"><select name="status"><option>pending</option><option>approved</option><option>rejected</option><option>suspended</option></select><button class="btn">Save</button></form></div>{% endfor %}</div>
+<div class="card"><h2>Tracks / Rights</h2>{% for t in tracks %}<div class="music-card"><strong>{{ t.title }}</strong> — {{ t.artist_name }} — status {{ t.status }} — rights {{ t.rights_status }}<form method="post" action="{{ url_for('koja_music_admin_track',track_id=t.id) }}" class="actions"><select name="status"><option>pending_review</option><option>published</option><option>rejected</option><option>suspended</option></select><select name="rights_status"><option>pending_review</option><option>approved</option><option>rejected</option><option>revoked</option></select><label>Featured <input type="checkbox" name="featured" value="1" {% if t.featured %}checked{% endif %}></label><button class="btn">Apply</button></form></div>{% endfor %}</div>
+<div class="card"><h2>Releases</h2>{% for r in releases %}<p><strong>{{ r.title }}</strong> — {{ r.release_type }} — {{ r.status }}</p>{% endfor %}</div>
+''',artists=artists,tracks=tracks,releases=releases)
+
+@app.route("/music/admin/artist/<artist_id>",methods=["POST"])
+@admin_required
+def koja_music_admin_artist(artist_id):
+    status=clean(request.form.get("status"))
+    if status not in {"pending","approved","rejected","suspended"}:return "Invalid status",400
+    db_update("koja_music_artists",{"id":artist_id},{"status":status,"reviewed_by":str((current_user() or {}).get("id") or ""),"reviewed_at":utc_now()})
+    return redirect(url_for("koja_music_admin"))
+
+@app.route("/music/admin/track/<track_id>",methods=["POST"])
+@admin_required
+def koja_music_admin_track(track_id):
+    status=clean(request.form.get("status")); rights=clean(request.form.get("rights_status"))
+    if status not in {"pending_review","published","rejected","suspended"}:return "Invalid track status",400
+    if rights not in {"pending_review","approved","rejected","revoked"}:return "Invalid rights status",400
+    # Public streaming is only allowed when both publication and rights are approved.
+    if status=="published" and rights!="approved": status="pending_review"
+    db_update("koja_music_tracks",{"id":track_id},{"status":status,"rights_status":rights,"featured":bool(request.form.get("featured")),"reviewed_by":str((current_user() or {}).get("id") or ""),"reviewed_at":utc_now(),"published_at":utc_now() if status=="published" else None})
+    return redirect(url_for("koja_music_admin"))
+
+@app.route("/api/music/v1/artists")
+def koja_music_api_artists():
+    q=clean(request.args.get("q")).lower(); country=clean(request.args.get("country")).lower(); genre=clean(request.args.get("genre")).lower()
+    rows=_music_published_artists(5000)
+    if q:rows=[r for r in rows if q in (str(r.get("artist_name"))+" "+str(r.get("bio"))).lower()]
+    if country:rows=[r for r in rows if country in str(r.get("country") or "").lower()]
+    if genre:rows=[r for r in rows if genre in (str(r.get("genre") or "")+" "+str(r.get("genres") or "")).lower()]
+    return jsonify(ok=True,count=len(rows),artists=rows)
+
+@app.route("/api/music/v1/tracks")
+def koja_music_api_tracks():
+    rows=_music_public_tracks(5000); q=clean(request.args.get("q")).lower()
+    if q:rows=[r for r in rows if q in (str(r.get("title"))+" "+str(r.get("artist_name"))+" "+str(r.get("genre"))).lower()]
+    return jsonify(ok=True,count=len(rows),tracks=rows)
