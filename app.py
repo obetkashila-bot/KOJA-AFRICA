@@ -14005,3 +14005,163 @@ def koja_music_api_tracks():
     rows=_music_public_tracks(5000); q=clean(request.args.get("q")).lower()
     if q:rows=[r for r in rows if q in (str(r.get("title"))+" "+str(r.get("artist_name"))+" "+str(r.get("genre"))).lower()]
     return jsonify(ok=True,count=len(rows),tracks=rows)
+
+
+# ============================================================
+# KOJA MUSIC GLOBAL NEXT — streaming, playlists, recommendations,
+# download analytics and expanded artist/admin screens.
+# Additive routes only; existing KOJA AFRICA routes are preserved.
+# ============================================================
+
+def _music_device_type():
+    ua=(request.headers.get("User-Agent") or "").lower()
+    if "mobile" in ua or "android" in ua or "iphone" in ua or "ipad" in ua:
+        return "mobile"
+    return "desktop"
+
+def _music_public_track(track_id):
+    rows=db_select("koja_music_tracks", filters={"id":track_id,"status":"published","rights_status":"approved"}, limit=1) or []
+    return rows[0] if rows else None
+
+def _music_track_visual(t):
+    return first_nonempty(t.get("visual_url"), t.get("video_url"), t.get("music_video_url"), "")
+
+def _music_track_audio(t):
+    return first_nonempty(t.get("audio_url"), t.get("stream_url"), t.get("file_url"), "")
+
+def _music_public_track_list(limit=1000):
+    return db_select("koja_music_tracks", filters={"status":"published","rights_status":"approved"}, order="created_at.desc", limit=limit) or []
+
+def _music_event(table, payload):
+    try:
+        db_insert(table, payload)
+    except Exception:
+        logger.exception("KOJA MUSIC event write failed: %s", table)
+
+@app.route("/music/playlists")
+def koja_music_playlists():
+    playlists=db_select("koja_music_playlists", filters={"visibility":"public"}, order="featured.desc,updated_at.desc", limit=5000) or []
+    return render_page("KOJA MUSIC Playlists",r'''
+<style>.mnext{max-width:1200px;margin:auto}.mnext-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:15px}.mnext-card{border:1px solid var(--border);background:var(--surface);border-radius:18px;padding:16px;text-decoration:none;color:inherit}.mnext-cover{width:100%;aspect-ratio:1;object-fit:cover;border-radius:14px;background:#0b1728}.mnext-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}</style>
+<div class="mnext"><div class="hero"><h1>KOJA MUSIC PLAYLISTS</h1><p>Discover curated music from Zambia, Africa and the world.</p><div class="mnext-actions"><a class="btn" href="{{ url_for('koja_music_home') }}">Music Home</a>{% if user %}<a class="btn secondary" href="{{ url_for('koja_music_playlist_new') }}">Create Playlist</a>{% endif %}</div></div>
+<div class="card"><div class="mnext-grid">{% for p in playlists %}<a class="mnext-card" href="{{ url_for('koja_music_playlist',playlist_id=p.id) }}">{% if p.cover_url %}<img class="mnext-cover" src="{{ p.cover_url }}" alt="">{% endif %}<h3>{{ p.name }}</h3><p>{{ p.description or 'KOJA MUSIC playlist' }}</p></a>{% else %}<p>No public playlists yet.</p>{% endfor %}</div></div></div>
+''',playlists=playlists)
+
+@app.route("/music/playlist/new",methods=["GET","POST"])
+@login_required
+def koja_music_playlist_new():
+    if request.method=="POST":
+        u=current_user() or {}; uid=str(u.get("id") or "")
+        name=clean(request.form.get("name")); description=clean(request.form.get("description")); visibility=clean(request.form.get("visibility")) or "private"
+        if not name:return "Playlist name is required.",400
+        if visibility not in {"private","public"}:visibility="private"
+        row,err=db_insert("koja_music_playlists",{"owner_user_id":uid,"name":name,"description":description,"visibility":visibility,"featured":False})
+        if err:return "Playlist could not be created: "+str(err),500
+        pid=(row or {}).get("id") if isinstance(row,dict) else None
+        return redirect(url_for("koja_music_playlist",playlist_id=pid)) if pid else redirect(url_for("koja_music_playlists"))
+    return render_page("Create KOJA MUSIC Playlist",r'''
+<div class="hero"><h1>Create Playlist</h1><p>Build a personal KOJA MUSIC collection.</p></div>
+<div class="card"><form method="post"><label>Name</label><input name="name" required maxlength="160"><label>Description</label><textarea name="description" rows="4"></textarea><label>Visibility</label><select name="visibility"><option value="private">Private</option><option value="public">Public</option></select><button class="btn" type="submit">Create Playlist</button></form></div>
+''')
+
+@app.route("/music/playlist/<playlist_id>")
+def koja_music_playlist(playlist_id):
+    rows=db_select("koja_music_playlists", filters={"id":playlist_id}, limit=1) or []
+    if not rows:return "Playlist not found.",404
+    playlist=rows[0]; u=current_user() or {}; uid=str(u.get("id") or "")
+    if playlist.get("visibility")!="public" and uid!=str(playlist.get("owner_user_id") or "") and not _music_admin_user():return "Playlist is private.",403
+    links=db_select("koja_music_playlist_tracks",filters={"playlist_id":playlist_id},order="position.asc,added_at.asc",limit=5000) or []
+    tracks=[]
+    for link in links:
+        t=_music_public_track(link.get("track_id"))
+        if t:
+            t=dict(t); t["playlist_position"]=link.get("position"); tracks.append(t)
+    return render_page("KOJA MUSIC — "+str(playlist.get("name") or "Playlist"),r'''
+<div class="hero"><h1>{{ playlist.name }}</h1><p>{{ playlist.description or '' }}</p><div class="actions"><a class="btn" href="{{ url_for('koja_music_playlists') }}">All Playlists</a></div></div>
+<div class="card"><h2>Tracks</h2>{% for t in tracks %}<div class="music-card" style="margin-bottom:10px"><h3>{{ loop.index }}. {{ t.title }}</h3><p>{{ t.artist_name or '' }} · {{ t.genre or '' }}</p>{% if t.audio_url %}<audio class="music-player" controls preload="none" src="{{ t.audio_url }}"></audio>{% endif %}<div class="music-downloads"><a href="{{ url_for('koja_music_watch',track_id=t.id) }}">Open player</a></div></div>{% else %}<p>This playlist has no published tracks yet.</p>{% endfor %}</div>
+''',playlist=playlist,tracks=tracks)
+
+@app.route("/api/music/v1/playlist/<playlist_id>/add",methods=["POST"])
+@login_required
+def koja_music_playlist_add(playlist_id):
+    u=current_user() or {}; uid=str(u.get("id") or "")
+    rows=db_select("koja_music_playlists",filters={"id":playlist_id},limit=1) or []
+    if not rows:return jsonify(ok=False,error="playlist_not_found"),404
+    p=rows[0]
+    if str(p.get("owner_user_id") or "")!=uid and not _music_admin_user():return jsonify(ok=False,error="forbidden"),403
+    d=request.get_json(silent=True) or {}; tid=clean(d.get("track_id"))
+    if not _music_public_track(tid):return jsonify(ok=False,error="track_not_public"),404
+    existing=db_select("koja_music_playlist_tracks",filters={"playlist_id":playlist_id,"track_id":tid},limit=1) or []
+    if not existing:
+        links=db_select("koja_music_playlist_tracks",filters={"playlist_id":playlist_id},limit=5000) or []
+        db_insert("koja_music_playlist_tracks",{"playlist_id":playlist_id,"track_id":tid,"position":len(links)})
+    return jsonify(ok=True)
+
+@app.route("/api/music/v1/download",methods=["POST"])
+@login_required
+def koja_music_download_api():
+    d=request.get_json(silent=True) or {}; tid=clean(d.get("track_id")); fmt=clean(d.get("format")).lower()
+    if fmt not in {"audio","visual"}:return jsonify(ok=False,error="invalid_format"),400
+    t=_music_public_track(tid)
+    if not t:return jsonify(ok=False,error="track_not_public"),404
+    url=_music_track_audio(t) if fmt=="audio" else _music_track_visual(t)
+    allowed=t.get("downloadable_audio") if fmt=="audio" else t.get("downloadable_visual")
+    if not url or allowed is False:return jsonify(ok=False,error="download_not_available"),403
+    u=current_user() or {}
+    _music_event("koja_music_download_events",{"track_id":tid,"user_id":str(u.get("id") or "") or None,"format":fmt,"country":clean(request.headers.get("CF-IPCountry") or ""),"device_type":_music_device_type(),"source":"koja_music"})
+    return jsonify(ok=True,url=url,format=fmt)
+
+@app.route("/music/genres")
+def koja_music_genres():
+    tracks=_music_public_track_list(5000); counts={}
+    for t in tracks:
+        g=clean(t.get("genre")) or "Other"; counts[g]=counts.get(g,0)+1
+    genres=sorted(counts.items(),key=lambda x:(-x[1],x[0].lower()))
+    return render_page("KOJA MUSIC Genres",r'''
+<div class="hero"><h1>Explore Genres</h1><p>Discover rights-cleared music by genre.</p></div><div class="card"><div class="music-tags">{% for g,n in genres %}<a href="{{ url_for('koja_music_search',genre=g) }}">{{ g }} <small>{{ n }}</small></a>{% else %}<p>No genres available yet.</p>{% endfor %}</div></div>
+''',genres=genres)
+
+@app.route("/music/countries")
+def koja_music_countries():
+    artists=_music_published_artists(5000); counts={}
+    for a in artists:
+        c=clean(a.get("country")) or "Unknown"; counts[c]=counts.get(c,0)+1
+    countries=sorted(counts.items(),key=lambda x:(-x[1],x[0].lower()))
+    return render_page("KOJA MUSIC Countries",r'''
+<div class="hero"><h1>Explore Countries</h1><p>Discover artists across Zambia, Africa and the world.</p></div><div class="card"><div class="music-tags">{% for c,n in countries %}<a href="{{ url_for('koja_music_search',country=c) }}">{{ c }} <small>{{ n }}</small></a>{% else %}<p>No countries available yet.</p>{% endfor %}</div></div>
+''',countries=countries)
+
+@app.route("/music/admin/analytics")
+@admin_required
+def koja_music_admin_analytics():
+    tracks=_music_public_track_list(5000)
+    downloads=db_select("koja_music_download_events",order="created_at.desc",limit=5000) or []
+    events=db_select("koja_music_play_events",order="created_at.desc",limit=5000) or []
+    total_plays=sum(int(t.get("plays") or t.get("play_count") or 0) for t in tracks)
+    total_downloads=sum(int(t.get("download_count") or 0) for t in tracks)
+    by_format={}
+    for d in downloads:
+        key=str(d.get("format") or "unknown"); by_format[key]=by_format.get(key,0)+1
+    top=sorted(tracks,key=lambda t:int(t.get("plays") or t.get("play_count") or 0),reverse=True)[:50]
+    return render_page("KOJA MUSIC Analytics",r'''
+<div class="hero"><h1>KOJA MUSIC Analytics</h1><p>Catalogue performance, plays and downloads.</p></div>
+<div class="music-grid"><div class="card"><h2>{{ total_plays }}</h2><p>Total plays</p></div><div class="card"><h2>{{ total_downloads }}</h2><p>Track download counters</p></div><div class="card"><h2>{{ event_plays }}</h2><p>Recorded play events</p></div><div class="card"><h2>{{ event_downloads }}</h2><p>Recorded download events</p></div></div>
+<div class="card"><h2>Downloads by format</h2>{% for k,v in by_format.items() %}<p><strong>{{ k }}</strong>: {{ v }}</p>{% else %}<p>No download events yet.</p>{% endfor %}</div>
+<div class="card"><h2>Top tracks</h2>{% for t in top %}<p><strong>{{ loop.index }}. {{ t.title }}</strong> — {{ t.artist_name or '' }} — {{ t.plays or t.play_count or 0 }} plays</p>{% else %}<p>No published tracks yet.</p>{% endfor %}</div>
+''',total_plays=total_plays,total_downloads=total_downloads,event_plays=len(events),event_downloads=len(downloads),by_format=by_format,top=top)
+
+@app.route("/api/music/v1/recommendations")
+def koja_music_recommendations():
+    tid=clean(request.args.get("track_id")); tracks=_music_public_track_list(5000); base=_music_public_track(tid) if tid else None
+    if base:
+        genre=clean(base.get("genre")).lower(); country=clean(base.get("country")).lower(); artist=str(base.get("artist_id") or "")
+        scored=[]
+        for t in tracks:
+            if str(t.get("id"))==str(tid):continue
+            score=(3 if genre and genre==clean(t.get("genre")).lower() else 0)+(2 if country and country==clean(t.get("country")).lower() else 0)+(4 if artist and str(t.get("artist_id") or "")==artist else 0)
+            score+=min(int(t.get("plays") or t.get("play_count") or 0),1000)/1000
+            scored.append((score,t))
+        tracks=[t for _,t in sorted(scored,key=lambda x:x[0],reverse=True)[:30]]
+    else:
+        tracks=sorted(tracks,key=lambda t:int(t.get("plays") or t.get("play_count") or 0),reverse=True)[:30]
+    return jsonify(ok=True,count=len(tracks),tracks=tracks)
