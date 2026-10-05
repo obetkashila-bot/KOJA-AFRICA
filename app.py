@@ -6044,12 +6044,39 @@ def _music_upload(file_storage, folder):
 
 # Initial KOJA MUSIC discovery catalogue. Official YouTube embeds keep the public feed working while direct rights are being cleared.
 KOJA_MUSIC_INITIAL_CATALOGUE = [
+    # Africa
     {'id':'ext-tyla-water','title':'Water','artist':'Tyla','country':'South Africa','region':'Africa','genre':'Afrobeats / Pop','provider':'youtube','video_id':'XoiOOiuH8iI','source_url':'https://www.youtube.com/watch?v=XoiOOiuH8iI'},
     {'id':'ext-rema-calm-down','title':'Calm Down','artist':'Rema & Selena Gomez','country':'Nigeria / United States','region':'Africa / Americas','genre':'Afrobeats / Pop','provider':'youtube','video_id':'WcIcVapfqXw','source_url':'https://www.youtube.com/watch?v=WcIcVapfqXw'},
     {'id':'ext-diamond-jeje','title':'Jeje','artist':'Diamond Platnumz','country':'Tanzania','region':'Africa','genre':'Bongo Flava','provider':'youtube','video_id':'g5rFro4XdZ0','source_url':'https://www.youtube.com/watch?v=g5rFro4XdZ0'},
     {'id':'ext-masterkg-jerusalema','title':'Jerusalema','artist':'Master KG ft. Nomcebo','country':'South Africa','region':'Africa','genre':'Afro House','provider':'youtube','video_id':'fCZVL_8D048','source_url':'https://www.youtube.com/watch?v=fCZVL_8D048'},
-    {'id':'ext-shakira-waka-waka','title':'Waka Waka (This Time for Africa)','artist':'Shakira','country':'Colombia','region':'Americas / Africa','genre':'Pop / World','provider':'youtube','video_id':'pRpeEdMmmQ0','source_url':'https://www.youtube.com/watch?v=pRpeEdMmmQ0'},
-    {'id':'ext-psy-gangnam','title':'Gangnam Style','artist':'PSY','country':'South Korea','region':'Asia','genre':'K-Pop','provider':'youtube','video_id':'SW_iujvUAzQ','source_url':'https://www.youtube.com/watch?v=SW_iujvUAzQ'},
+    {'id':'ext-shakira-waka-waka','title':'Waka Waka (This Time for Africa)','artist':'Shakira','country':'Colombia / South Africa','region':'Americas / Africa','genre':'Pop / World','provider':'youtube','video_id':'pRpeEdMmmQ0','source_url':'https://www.youtube.com/watch?v=pRpeEdMmmQ0'},
+    {'id':'ext-davido-fall','title':'Fall','artist':'Davido','country':'Nigeria','region':'Africa','genre':'Afrobeats','provider':'youtube','video_id':'3JZ_D3ELwOQ','source_url':'https://www.youtube.com/watch?v=3JZ_D3ELwOQ'},
+    {'id':'ext-ayrastarr-rush','title':'Rush','artist':'Ayra Starr','country':'Nigeria','region':'Africa','genre':'Afropop','provider':'youtube','video_id':'crtQSTYWtY0','source_url':'https://www.youtube.com/watch?v=crtQSTYWtY0'},
+    {'id':'ext-burna-lastlast','title':'Last Last','artist':'Burna Boy','country':'Nigeria','region':'Africa','genre':'Afrobeats','provider':'youtube','video_id':'421w1j87fEM','source_url':'https://www.youtube.com/watch?v=421w1j87fEM'},
+    {'id':'ext-ckay-love','title':'Love Nwantiti','artist':'CKay','country':'Nigeria','region':'Africa','genre':'Afrobeats','provider':'youtube','video_id':'D-YDEyuDxWU','source_url':'https://www.youtube.com/watch?v=D-YDEyuDxWU'},
+    {'id':'ext-omahlay-soso','title':'soso','artist':'Omah Lay','country':'Nigeria','region':'Africa','genre':'Afrobeats','provider':'youtube','video_id':'D8K90hX4PrE','source_url':'https://www.youtube.com/watch?v=D8K90hX4PrE'},
+    {'id':'ext-sautisol-suzanna','title':'Suzanna','artist':'Sauti Sol','country':'Kenya','region':'Africa','genre':'Afropop','provider':'youtube','video_id':'5mXnY6Wf1hA','source_url':'https://www.youtube.com/watch?v=5mXnY6Wf1hA'},
+    {'id':'ext-kizz-buga','title':'Buga','artist':'Kizz Daniel ft. Tekno','country':'Nigeria','region':'Africa','genre':'Afrobeats','provider':'youtube','video_id':'K3Qzzggn--s','source_url':'https://www.youtube.com/watch?v=K3Qzzggn--s'},
+    # Asia
+    {'id':'ext-psy-gangnam','title':'Gangnam Style','artist':'PSY','country':'South Korea','region':'Asia','genre':'K-Pop','provider':'youtube','video_id':'9bZkp7q19f0','source_url':'https://www.youtube.com/watch?v=9bZkp7q19f0'},
+    {'id':'ext-bts-dynamite','title':'Dynamite','artist':'BTS','country':'South Korea','region':'Asia','genre':'K-Pop','provider':'youtube','video_id':'gdZLi9oWNZg','source_url':'https://www.youtube.com/watch?v=gdZLi9oWNZg'},
+    {'id':'ext-blackpink-dduddu','title':'DDU-DU DDU-DU','artist':'BLACKPINK','country':'South Korea','region':'Asia','genre':'K-Pop','provider':'youtube','video_id':'IHNzOHi8sJs','source_url':'https://www.youtube.com/watch?v=IHNzOHi8sJs'},
+    {'id':'ext-blackpink-hylt','title':'How You Like That','artist':'BLACKPINK','country':'South Korea','region':'Asia','genre':'K-Pop','provider':'youtube','video_id':'ioNng23DkIM','source_url':'https://www.youtube.com/watch?v=ioNng23DkIM'},
+    {'id':'ext-psy-gentleman','title':'Gentleman','artist':'PSY','country':'South Korea','region':'Asia','genre':'K-Pop','provider':'youtube','video_id':'ASO_zypdnsQ','source_url':'https://www.youtube.com/watch?v=ASO_zypdnsQ'},
+    {'id':'ext-jungkook-seven','title':'Seven','artist':'Jung Kook ft. Latto','country':'South Korea / United States','region':'Asia / Americas','genre':'Pop / K-Pop','provider':'youtube','video_id':'QU9c0053UAU','source_url':'https://www.youtube.com/watch?v=QU9c0053UAU'},
+    {'id':'ext-arijit-tum-hi-ho','title':'Tum Hi Ho','artist':'Arijit Singh','country':'India','region':'Asia','genre':'Indian Pop / Bollywood','provider':'youtube','video_id':'Umqb9KENgmk','source_url':'https://www.youtube.com/watch?v=Umqb9KENgmk'},
+    {'id':'ext-arijit-chaleya','title':'Chaleya','artist':'Arijit Singh & Shilpa Rao','country':'India','region':'Asia','genre':'Indian Pop / Bollywood','provider':'youtube','video_id':'VAdGW7QDJiU','source_url':'https://www.youtube.com/watch?v=VAdGW7QDJiU'},
+    # Americas / Global Pop
+    {'id':'ext-luis-despacito','title':'Despacito','artist':'Luis Fonsi ft. Daddy Yankee','country':'Puerto Rico','region':'Americas','genre':'Latin Pop / Reggaeton','provider':'youtube','video_id':'kJQP7kiw5Fk','source_url':'https://www.youtube.com/watch?v=kJQP7kiw5Fk'},
+    {'id':'ext-shakira-hips','title':'Hips Don’t Lie','artist':'Shakira ft. Wyclef Jean','country':'Colombia','region':'Americas','genre':'Pop / Latin','provider':'youtube','video_id':'DUT5rEU6pqM','source_url':'https://www.youtube.com/watch?v=DUT5rEU6pqM'},
+    {'id':'ext-bad-bunny-titi','title':'Tití Me Preguntó','artist':'Bad Bunny','country':'Puerto Rico','region':'Americas','genre':'Latin / Reggaeton','provider':'youtube','video_id':'Cr8K88UcO0s','source_url':'https://www.youtube.com/watch?v=Cr8K88UcO0s'},
+    {'id':'ext-camila-havana','title':'Havana','artist':'Camila Cabello ft. Young Thug','country':'United States / Cuba','region':'Americas','genre':'Pop / Latin','provider':'youtube','video_id':'HCjNJDNzw8Y','source_url':'https://www.youtube.com/watch?v=HCjNJDNzw8Y'},
+    {'id':'ext-bruno-uptown','title':'Uptown Funk','artist':'Mark Ronson ft. Bruno Mars','country':'United States / United Kingdom','region':'Americas / Europe','genre':'Pop / Funk','provider':'youtube','video_id':'OPf0YbXqDm0','source_url':'https://www.youtube.com/watch?v=OPf0YbXqDm0'},
+    {'id':'ext-weeknd-blinding','title':'Blinding Lights','artist':'The Weeknd','country':'Canada','region':'Americas','genre':'Pop / R&B','provider':'youtube','video_id':'4NRXx6U8ABQ','source_url':'https://www.youtube.com/watch?v=4NRXx6U8ABQ'},
+    {'id':'ext-gaga-bad-romance','title':'Bad Romance','artist':'Lady Gaga','country':'United States','region':'Americas','genre':'Pop','provider':'youtube','video_id':'qrO4YZeyl0I','source_url':'https://www.youtube.com/watch?v=qrO4YZeyl0I'},
+    {'id':'ext-ed-sheeran-shape','title':'Shape of You','artist':'Ed Sheeran','country':'United Kingdom','region':'Europe','genre':'Pop','provider':'youtube','video_id':'JGwWNGJdvx8','source_url':'https://www.youtube.com/watch?v=JGwWNGJdvx8'},
+    {'id':'ext-taylor-blank-space','title':'Blank Space','artist':'Taylor Swift','country':'United States','region':'Americas','genre':'Pop','provider':'youtube','video_id':'e-ORhEE9VVg','source_url':'https://www.youtube.com/watch?v=e-ORhEE9VVg'},
+    {'id':'ext-rihanna-diamonds','title':'Diamonds','artist':'Rihanna','country':'Barbados / United States','region':'Americas','genre':'Pop / R&B','provider':'youtube','video_id':'lWA2pjMjpBs','source_url':'https://www.youtube.com/watch?v=lWA2pjMjpBs'},
 ]
 
 def _music_initial_catalogue(q=''):
